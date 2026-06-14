@@ -1153,6 +1153,10 @@ h3 {
 }
 
 .warehouse-info-grid dt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 6px;
   color: var(--muted);
   font-size: 12px;
@@ -1164,6 +1168,41 @@ h3 {
   font-size: 13px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.copyable-address-field dt {
+  align-items: flex-start;
+}
+
+.copy-field-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.copy-field-button:hover {
+  border-color: rgba(255, 106, 31, 0.55);
+  background: rgba(255, 106, 31, 0.14);
+  color: var(--text);
+}
+
+.copy-field-button.copied {
+  border-color: rgba(76, 211, 138, 0.55);
+  background: rgba(76, 211, 138, 0.14);
+  color: #8ee6b5;
 }
 
 .warehouse-animation-placeholder {

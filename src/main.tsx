@@ -7,6 +7,8 @@ import {
   Boxes,
   CalendarDays,
   ChevronDown,
+  Check,
+  Copy,
   DatabaseZap,
   Download,
   ExternalLink,
@@ -305,6 +307,30 @@ function isWarehouseWorking(record?: WarehouseInfoRecord) {
   const current = minutesInWarehouseTimezone(record?.timezone);
   if (start <= end) return current >= start && current <= end;
   return current >= start || current <= end;
+}
+
+function isConfiguredText(value?: string) {
+  return Boolean(value && value.trim() && value.trim() !== "未配置");
+}
+
+function isWarehouseAddressValue(record: WarehouseInfoRecord, value: string) {
+  return [record.shopShippingAddress, record.shopReturnAddress, record.firstMileReceivingAddress].some((address) => address === value && isConfiguredText(address));
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
 }
 
 function flagCodeForCountry(country: string) {
@@ -2765,6 +2791,7 @@ function WarehouseInfoLibrary({
   const records = warehouseInfoPayload?.warehouseInfo ?? [];
   const [selectedId, setSelectedId] = React.useState(records[0]?.id || "");
   const [keyword, setKeyword] = React.useState("");
+  const [copiedAddressKey, setCopiedAddressKey] = React.useState("");
   const filteredRecords = records.filter((item) => {
     const text = [item.tongzhouSerialNo, item.warehouseName, item.countryRegion, item.warehouseCode, item.shopShippingAddress, item.shopReturnAddress, item.firstMileReceivingAddress, item.timezone, item.remark]
       .join(" ")
@@ -2782,6 +2809,14 @@ function WarehouseInfoLibrary({
       setSelectedId(records[0].id);
     }
   }, [records, selectedId]);
+
+  async function handleCopyAddress(key: string, value: string) {
+    await copyText(value);
+    setCopiedAddressKey(key);
+    window.setTimeout(() => {
+      setCopiedAddressKey((currentKey) => currentKey === key ? "" : currentKey);
+    }, 1400);
+  }
 
   return (
     <main className="library-page">
@@ -2840,12 +2875,29 @@ function WarehouseInfoLibrary({
                     </div>
                   </div>
                   <dl className="warehouse-info-grid">
-                    {selectedRecord.details.map((item) => (
-                      <div key={item.label}>
-                        <dt>{item.label}</dt>
-                        <dd>{item.value}</dd>
-                      </div>
-                    ))}
+                    {selectedRecord.details.map((item) => {
+                      const isCopyableAddress = isWarehouseAddressValue(selectedRecord, item.value);
+                      const copied = copiedAddressKey === item.label;
+                      return (
+                        <div key={item.label} className={isCopyableAddress ? "copyable-address-field" : ""}>
+                          <dt>
+                            {item.label}
+                            {isCopyableAddress ? (
+                              <button
+                                className={`copy-field-button ${copied ? "copied" : ""}`}
+                                type="button"
+                                onClick={() => handleCopyAddress(item.label, item.value)}
+                                aria-label={`复制${item.label}`}
+                              >
+                                {copied ? <Check size={13} /> : <Copy size={13} />}
+                                <span>{copied ? "已复制" : "复制"}</span>
+                              </button>
+                            ) : null}
+                          </dt>
+                          <dd>{item.value}</dd>
+                        </div>
+                      );
+                    })}
                   </dl>
                 </section>
 
