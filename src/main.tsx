@@ -39,6 +39,7 @@ import {
   UserManagementPayload,
   WarehousePayload,
   WarehouseInfoPayload,
+  WarehouseInfoRecord,
   createWarehouseConnection,
   createUser,
   deleteUser,
@@ -249,6 +250,61 @@ function formatDateTime(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function parseTimeToMinutes(value?: string) {
+  const match = String(value || "").match(/(\d{1,2})[:：](\d{1,2})|(\d{1,2})\s*(?:点|时|h)/i);
+  if (!match) return null;
+  const hour = Number(match[1] ?? match[3]);
+  const minute = Number(match[2] ?? 0);
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23 || !Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+function timezoneOffsetMinutes(value?: string) {
+  const text = String(value || "");
+  const match = text.match(/UTC\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?|GMT\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?/i);
+  if (!match) return null;
+  const sign = (match[1] || match[4]) === "-" ? -1 : 1;
+  const hour = Number(match[2] || match[5] || 0);
+  const minute = Number(match[3] || match[6] || 0);
+  return sign * (hour * 60 + minute);
+}
+
+function minutesInWarehouseTimezone(timezone?: string) {
+  const now = new Date();
+  const offset = timezoneOffsetMinutes(timezone);
+  if (offset !== null) {
+    const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    return (utcMinutes + offset + 24 * 60) % (24 * 60);
+  }
+
+  try {
+    if (timezone && /[A-Za-z]+\/[A-Za-z_]+/.test(timezone)) {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(now);
+      const hour = Number(parts.find((part) => part.type === "hour")?.value || 0);
+      const minute = Number(parts.find((part) => part.type === "minute")?.value || 0);
+      return hour * 60 + minute;
+    }
+  } catch {
+    // Fall back to local time if the configured timezone is not an IANA name.
+  }
+
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function isWarehouseWorking(record?: WarehouseInfoRecord) {
+  const start = parseTimeToMinutes(record?.workStartTime);
+  const end = parseTimeToMinutes(record?.workEndTime);
+  if (start === null || end === null) return true;
+  const current = minutesInWarehouseTimezone(record?.timezone);
+  if (start <= end) return current >= start && current <= end;
+  return current >= start || current <= end;
 }
 
 function flagCodeForCountry(country: string) {
@@ -2710,7 +2766,7 @@ function WarehouseInfoLibrary({
   const [selectedId, setSelectedId] = React.useState(records[0]?.id || "");
   const [keyword, setKeyword] = React.useState("");
   const filteredRecords = records.filter((item) => {
-    const text = [item.serialNo, item.sku, item.productName, item.warehouseName, item.warehouseSku, item.location, item.remark]
+    const text = [item.tongzhouSerialNo, item.warehouseName, item.countryRegion, item.warehouseCode, item.shopShippingAddress, item.shopReturnAddress, item.firstMileReceivingAddress, item.timezone, item.remark]
       .join(" ")
       .toLowerCase();
     return text.includes(keyword.trim().toLowerCase());
@@ -2747,7 +2803,7 @@ function WarehouseInfoLibrary({
         <div className="warehouse-info-toolbar">
           <label className="catalog-search large">
             <Search size={17} />
-            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 SKU、产品、仓库、库位" />
+            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索仓库名称、国家/地区、仓库代码、地址" />
           </label>
           <span className={`status-pill ${warehouseInfoPayload?.source === "jiandaoyun" ? "good" : "warning"}`}>
             {warehouseInfoPayload?.source === "jiandaoyun" ? "简道云已同步" : "等待同步"}
@@ -2763,9 +2819,9 @@ function WarehouseInfoLibrary({
                 className={`warehouse-info-item ${selectedRecord?.id === item.id ? "active" : ""}`}
                 onClick={() => setSelectedId(item.id)}
               >
-                <strong>{item.sku || item.serialNo || "未配置 SKU"}</strong>
-                <span>{item.productName}</span>
-                <small>{item.warehouseName} · {item.location || item.warehouseSku || "未配置仓位"}</small>
+                <strong>{item.warehouseName || "未配置仓库"}</strong>
+                <span>{item.countryRegion || "未配置国家/地区"}</span>
+                <small>{item.warehouseCode || item.tongzhouSerialNo || "未配置仓库代码"}</small>
               </button>
             )) : (
               <div className="stockup-empty">暂无仓库信息。请先同步简道云仓库信息表。</div>
@@ -2779,8 +2835,8 @@ function WarehouseInfoLibrary({
                   <div className="detail-section-head">
                     <Truck size={18} />
                     <div>
-                      <h3>{selectedRecord.productName}</h3>
-                      <span>{selectedRecord.sku || selectedRecord.serialNo}</span>
+                      <h3>{selectedRecord.warehouseName}</h3>
+                      <span>{selectedRecord.countryRegion || selectedRecord.warehouseCode || selectedRecord.tongzhouSerialNo}</span>
                     </div>
                   </div>
                   <dl className="warehouse-info-grid">
@@ -2793,15 +2849,7 @@ function WarehouseInfoLibrary({
                   </dl>
                 </section>
 
-                <aside className="warehouse-animation-placeholder" aria-label="交互式动画预留区域">
-                  <div className="placeholder-orbit">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                  <strong>交互式仓储动画预留区</strong>
-                  <small>后续可放入 3D 仓库动线、库位分布或出入库流程动画。</small>
-                </aside>
+                <WarehouseWorkScene record={selectedRecord} />
               </>
             ) : (
               <div className="stockup-empty">请选择一条仓库信息。</div>
@@ -2810,6 +2858,45 @@ function WarehouseInfoLibrary({
         </div>
       </section>
     </main>
+  );
+}
+
+function WarehouseWorkScene({ record }: { record: WarehouseInfoRecord }) {
+  const working = isWarehouseWorking(record);
+  const localMinutes = minutesInWarehouseTimezone(record.timezone);
+  const localTime = `${String(Math.floor(localMinutes / 60)).padStart(2, "0")}:${String(localMinutes % 60).padStart(2, "0")}`;
+
+  return (
+    <aside className={`warehouse-animation-placeholder warehouse-work-scene ${working ? "working" : "resting"}`} aria-label="仓库工作状态动画">
+      <div className="warehouse-scene-status">
+        <span className={`status-pill ${working ? "good" : "muted"}`}>{working ? "仓库工作中" : "仓库休息中"}</span>
+        <small>{record.timezone || "本地时区"} · 当前 {localTime}</small>
+      </div>
+
+      <div className="worker-stage" aria-hidden="true">
+        <div className="warehouse-floor" />
+        <div className="sleep-bubble">Z</div>
+        <div className="worker-model">
+          <span className="worker-head" />
+          <span className="worker-cap" />
+          <span className="worker-body" />
+          <span className="worker-arm left" />
+          <span className="worker-arm right" />
+          <span className="worker-leg left" />
+          <span className="worker-leg right" />
+        </div>
+        <div className="packing-table">
+          <span className="box box-main" />
+          <span className="box box-side" />
+          <span className="tape-roll" />
+        </div>
+      </div>
+
+      <strong>{working ? "打包工人正在打包" : "下班啦，打包工人在休息"}</strong>
+      <small>
+        上班时间 {record.workStartTime || "未配置"} - {record.workEndTime || "未配置"}。后续可以在这里替换为更复杂的仓库动线或 3D 库位动画。
+      </small>
+    </aside>
   );
 }
 

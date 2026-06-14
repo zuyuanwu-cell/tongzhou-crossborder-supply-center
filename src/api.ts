@@ -213,17 +213,20 @@ export type AssetPayload = {
 
 export type WarehouseInfoRecord = {
   id: string;
-  serialNo: string;
-  sku: string;
-  productName: string;
+  tongzhouSerialNo: string;
   warehouseName: string;
-  warehouseSku: string;
-  location: string;
-  packageInfo: string;
-  storageInfo: string;
-  shippingInfo: string;
-  contactInfo: string;
+  countryRegion: string;
+  warehouseCode: string;
+  shopShippingAddress: string;
+  shopReturnAddress: string;
+  firstMileReceivingAddress: string;
+  timezone: string;
+  workStartTime: string;
+  workEndTime: string;
   remark: string;
+  creator: string;
+  createTime: string;
+  updateTime: string;
   details: Array<{
     label: string;
     value: string;
@@ -238,7 +241,7 @@ export type WarehouseInfoPayload = {
   counts: {
     records: number;
     warehouses: number;
-    skus: number;
+    countries?: number;
   };
   warehouseInfo: WarehouseInfoRecord[];
 };

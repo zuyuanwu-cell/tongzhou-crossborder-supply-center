@@ -1188,32 +1188,236 @@ h3 {
   line-height: 1.55;
 }
 
-.placeholder-orbit {
+.warehouse-work-scene {
+  perspective: 900px;
+}
+
+.warehouse-work-scene.working {
+  border-color: rgba(76, 211, 194, 0.38);
+}
+
+.warehouse-work-scene.resting {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.warehouse-scene-status {
+  display: grid;
+  gap: 7px;
+  justify-items: center;
+}
+
+.worker-stage {
   position: relative;
-  width: 140px;
-  height: 140px;
-  border: 1px solid rgba(255, 106, 31, 0.35);
-  border-radius: 50%;
+  width: 250px;
+  height: 220px;
+  transform-style: preserve-3d;
+  transform: rotateX(58deg) rotateZ(-24deg);
 }
 
-.placeholder-orbit span {
+.warehouse-floor {
   position: absolute;
-  inset: 22px;
-  border: 1px dashed rgba(255, 255, 255, 0.22);
+  inset: 40px 12px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    rgba(255, 255, 255, 0.045);
+  background-size: 34px 34px;
+  transform: translateZ(-18px);
+}
+
+.worker-model {
+  position: absolute;
+  left: 72px;
+  top: 48px;
+  width: 78px;
+  height: 112px;
+  transform: rotateZ(24deg) rotateX(-58deg) translateZ(22px);
+  transform-style: preserve-3d;
+}
+
+.worker-head,
+.worker-cap,
+.worker-body,
+.worker-arm,
+.worker-leg {
+  position: absolute;
+  display: block;
+}
+
+.worker-head {
+  left: 27px;
+  top: 5px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
+  background: #ffd0a3;
+  box-shadow: inset -5px -4px 0 rgba(0, 0, 0, 0.12);
 }
 
-.placeholder-orbit span:nth-child(2) {
-  inset: 46px;
-  border-style: solid;
-  border-color: rgba(76, 211, 194, 0.35);
-}
-
-.placeholder-orbit span:nth-child(3) {
-  inset: 64px;
+.worker-cap {
+  left: 22px;
+  top: 0;
+  width: 38px;
+  height: 15px;
+  border-radius: 14px 14px 6px 6px;
   background: var(--orange);
-  border: 0;
-  box-shadow: 0 0 40px rgba(255, 106, 31, 0.45);
+}
+
+.worker-body {
+  left: 18px;
+  top: 36px;
+  width: 46px;
+  height: 44px;
+  border-radius: 12px 12px 9px 9px;
+  background: linear-gradient(135deg, #4cd3c2, #2d8f84);
+  box-shadow: inset -7px -6px 0 rgba(0, 0, 0, 0.14);
+}
+
+.worker-arm {
+  top: 42px;
+  width: 14px;
+  height: 42px;
+  border-radius: 999px;
+  background: #ffd0a3;
+  transform-origin: top center;
+}
+
+.worker-arm.left {
+  left: 9px;
+  transform: rotate(28deg);
+}
+
+.worker-arm.right {
+  right: 6px;
+  transform: rotate(-30deg);
+}
+
+.warehouse-work-scene.working .worker-arm.left {
+  animation: pack-left 900ms ease-in-out infinite;
+}
+
+.warehouse-work-scene.working .worker-arm.right {
+  animation: pack-right 900ms ease-in-out infinite;
+}
+
+.worker-leg {
+  top: 78px;
+  width: 15px;
+  height: 34px;
+  border-radius: 999px;
+  background: #31343c;
+}
+
+.worker-leg.left {
+  left: 24px;
+  transform: rotate(8deg);
+}
+
+.worker-leg.right {
+  right: 20px;
+  transform: rotate(-8deg);
+}
+
+.packing-table {
+  position: absolute;
+  right: 44px;
+  top: 88px;
+  width: 92px;
+  height: 68px;
+  transform: rotateZ(24deg) rotateX(-58deg) translateZ(18px);
+  transform-style: preserve-3d;
+}
+
+.box {
+  position: absolute;
+  display: block;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  background: linear-gradient(135deg, #d99a47, #a96525);
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.28);
+}
+
+.box-main {
+  left: 18px;
+  top: 16px;
+  width: 54px;
+  height: 44px;
+}
+
+.box-main::after {
+  content: "";
+  position: absolute;
+  left: 24px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  background: rgba(255, 235, 176, 0.72);
+}
+
+.box-side {
+  left: 58px;
+  top: 2px;
+  width: 28px;
+  height: 25px;
+  transform: translateZ(-4px);
+}
+
+.tape-roll {
+  position: absolute;
+  left: 2px;
+  top: 44px;
+  width: 18px;
+  height: 18px;
+  border: 5px solid #e9eef4;
+  border-radius: 50%;
+  background: #4cd3c2;
+}
+
+.sleep-bubble {
+  position: absolute;
+  left: 96px;
+  top: 4px;
+  z-index: 3;
+  display: none;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+  font-weight: 900;
+  transform: rotateZ(24deg) rotateX(-58deg);
+}
+
+.warehouse-work-scene.resting .sleep-bubble {
+  display: grid;
+  animation: sleep-float 1.8s ease-in-out infinite;
+}
+
+.warehouse-work-scene.resting .worker-model {
+  transform: rotateZ(82deg) rotateX(-58deg) translateZ(22px) translateX(8px) translateY(18px);
+}
+
+.warehouse-work-scene.resting .packing-table {
+  opacity: 0.55;
+}
+
+@keyframes pack-left {
+  0%, 100% { transform: rotate(28deg); }
+  50% { transform: rotate(70deg) translateY(3px); }
+}
+
+@keyframes pack-right {
+  0%, 100% { transform: rotate(-30deg); }
+  50% { transform: rotate(-72deg) translateY(3px); }
+}
+
+@keyframes sleep-float {
+  0%, 100% { transform: rotateZ(24deg) rotateX(-58deg) translateY(0); opacity: 0.7; }
+  50% { transform: rotateZ(24deg) rotateX(-58deg) translateY(-12px); opacity: 1; }
 }
 
 .warehouse-hero {
