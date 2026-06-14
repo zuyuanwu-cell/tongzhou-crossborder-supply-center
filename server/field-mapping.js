@@ -90,6 +90,23 @@ export const JIANYUN_FORMS = {
       sourceFiles: "_widget_1751602601287",
     },
   },
+  warehouseInfo: {
+    appId: "6694ed87e77ca045d563d581",
+    entryId: "6a2a8d48c3e061cc82bb27b7",
+    fields: {
+      serialNo: "_widget_1781402362212",
+      sku: "_widget_1781402362213",
+      productName: "_widget_1781402362214",
+      warehouseName: "_widget_1781402868733",
+      warehouseSku: "_widget_1781402362220",
+      location: "_widget_1781402362221",
+      packageInfo: "_widget_1781402362223",
+      storageInfo: "_widget_1781402893180",
+      shippingInfo: "_widget_1781403111945",
+      contactInfo: "_widget_1781403111948",
+      remark: "_widget_1781403111953",
+    },
+  },
   userAccounts: {
     appId: "6694ed87e77ca045d563d581",
     entryId: "6a2d6fad64b121c09d83419c",

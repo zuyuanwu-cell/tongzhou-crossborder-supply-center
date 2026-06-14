@@ -211,6 +211,38 @@ export type AssetPayload = {
   assets: AssetRecord[];
 };
 
+export type WarehouseInfoRecord = {
+  id: string;
+  serialNo: string;
+  sku: string;
+  productName: string;
+  warehouseName: string;
+  warehouseSku: string;
+  location: string;
+  packageInfo: string;
+  storageInfo: string;
+  shippingInfo: string;
+  contactInfo: string;
+  remark: string;
+  details: Array<{
+    label: string;
+    value: string;
+  }>;
+};
+
+export type WarehouseInfoPayload = {
+  ok: boolean;
+  source: "empty" | "sample" | "jiandaoyun";
+  syncedAt: string;
+  warning?: string;
+  counts: {
+    records: number;
+    warehouses: number;
+    skus: number;
+  };
+  warehouseInfo: WarehouseInfoRecord[];
+};
+
 export type WmsProvider = {
   id: string;
   name: string;
@@ -512,6 +544,10 @@ export function fetchAssets() {
   return requestJson<AssetPayload>("/api/assets");
 }
 
+export function fetchWarehouseInfo() {
+  return requestJson<WarehouseInfoPayload>("/api/warehouse-info");
+}
+
 export function fetchUsers() {
   return requestJson<UserManagementPayload>("/api/users");
 }
@@ -538,6 +574,10 @@ export function deleteUser(id: string) {
 
 export function syncAssets() {
   return requestJson<AssetPayload>("/api/assets/sync", { method: "POST" });
+}
+
+export function syncWarehouseInfo() {
+  return requestJson<WarehouseInfoPayload>("/api/warehouse-info/sync", { method: "POST" });
 }
 
 export function qualificationFileDownloadUrl(fileId: string, fileName?: string) {

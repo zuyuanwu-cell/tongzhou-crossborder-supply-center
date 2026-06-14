@@ -210,6 +210,10 @@ export async function fetchAllJdyAssets() {
   return fetchJdyDataList(JIANYUN_FORMS.assets);
 }
 
+export async function fetchAllJdyWarehouseInfo() {
+  return fetchJdyDataList(JIANYUN_FORMS.warehouseInfo);
+}
+
 export async function fetchAllJdyUserAccounts() {
   return fetchJdyDataList(JIANYUN_FORMS.userAccounts, { maxPages: 10 });
 }

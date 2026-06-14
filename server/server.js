@@ -1,10 +1,11 @@
 import http from "node:http";
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
+import { buildWarehouseInfoPayload } from "./normalize-warehouse-info.js";
 import { buildOutsourcingOrderPayload } from "./normalize-outsourcing-orders.js";
 import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js";
 import { JIANYUN_FORMS } from "./field-mapping.js";
@@ -37,6 +38,7 @@ const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const warehouseConnectionsPath = resolve(cacheDir, "warehouse-connections.json");
 const qualificationCachePath = resolve(cacheDir, "qualifications.json");
 const assetCachePath = resolve(cacheDir, "assets.json");
+const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
@@ -48,6 +50,7 @@ let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", order
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
+let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
 const internalAccessCode = process.env.INTERNAL_ACCESS_CODE || "admin123";
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
@@ -109,6 +112,10 @@ function saveQualificationCache(payload) {
 
 function saveAssetCache(payload) {
   saveJsonCache(assetCachePath, payload);
+}
+
+function saveWarehouseInfoCache(payload) {
+  saveJsonCache(warehouseInfoCachePath, payload);
 }
 
 function saveOutsourcingOrderCache(payload) {
@@ -626,6 +633,32 @@ async function refreshAssetCache() {
   return cachedAssets;
 }
 
+async function handleWarehouseInfoSync(req, res) {
+  if (!canManage(getAuth(req))) {
+    sendJson(res, 401, { ok: false, message: "同步仓库信息需要直营部门登录。" });
+    return;
+  }
+
+  const result = await refreshWarehouseInfoCache();
+  sendJson(res, 200, result);
+}
+
+async function refreshWarehouseInfoCache() {
+  if (!hasJdyCredentials()) {
+    cachedWarehouseInfo = buildWarehouseInfoPayload([], "empty");
+    saveWarehouseInfoCache(cachedWarehouseInfo);
+    return {
+      ...cachedWarehouseInfo,
+      warning: "未配置 JIANYUN_API_KEY，暂未同步真实仓库信息数据。",
+    };
+  }
+
+  const records = await fetchAllJdyWarehouseInfo();
+  cachedWarehouseInfo = buildWarehouseInfoPayload(records, "jiandaoyun");
+  saveWarehouseInfoCache(cachedWarehouseInfo);
+  return cachedWarehouseInfo;
+}
+
 async function refreshOutsourcingOrderCache() {
   if (!hasJdyCredentials()) {
     cachedOutsourcingOrders = buildOutsourcingOrderPayload([], "empty");
@@ -685,6 +718,7 @@ async function runAutoSync() {
     await refreshProductCache();
     await refreshQualificationCache();
     await refreshAssetCache();
+    await refreshWarehouseInfoCache();
     await refreshOutsourcingOrderCache();
     lastAutoSyncAt = new Date().toISOString();
     console.log(`[auto-sync] refreshed products, qualifications and assets at ${lastAutoSyncAt}`);
@@ -713,6 +747,7 @@ const server = http.createServer(async (req, res) => {
         catalogForm: "6694ed87e77ca045d563d581 / 67f3d481b3fa6711aab2588f",
         qualificationForm: "6694ed87e77ca045d563d581 / 68ee195f8074d5854a7ebfb1",
         assetForm: "6694ed87e77ca045d563d581 / 68672aabdfae6388ba2e3ab5",
+        warehouseInfoForm: "6694ed87e77ca045d563d581 / 6a2a8d48c3e061cc82bb27b7",
         outsourcingOrderForm: "67bc8e21da0d14f9f67224a5 / 67ce5652fb7c0d1442ddd88b",
         autoSyncIntervalMs,
         autoSyncIntervalMinutes: autoSyncIntervalMs ? Math.round(autoSyncIntervalMs / 60000) : 0,
@@ -774,6 +809,20 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/assets/sync" && req.method === "POST") {
       await handleAssetSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-info" && req.method === "GET") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看仓库信息需要登录。" });
+        return;
+      }
+      sendJson(res, 200, cachedWarehouseInfo);
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-info/sync" && req.method === "POST") {
+      await handleWarehouseInfoSync(req, res);
       return;
     }
 

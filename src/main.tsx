@@ -38,6 +38,7 @@ import {
   StockupPayload,
   UserManagementPayload,
   WarehousePayload,
+  WarehouseInfoPayload,
   createWarehouseConnection,
   createUser,
   deleteUser,
@@ -51,6 +52,7 @@ import {
   fetchStockup,
   fetchUsers,
   fetchWarehouses,
+  fetchWarehouseInfo,
   getStoredUser,
   importWarehouseConnections,
   loginInternal,
@@ -63,6 +65,7 @@ import {
   syncQualifications,
   syncStockupOrders,
   syncWarehouses,
+  syncWarehouseInfo,
   updateUserStatus,
   updateWarehouseConnection,
 } from "./api";
@@ -199,6 +202,7 @@ const navItems = [
   { label: "产品库", icon: ShoppingBag, hash: "#products" },
   { label: "资质库", icon: FileText, hash: "#qualifications", childOf: "产品库" },
   { label: "素材库", icon: Boxes, hash: "#assets", childOf: "产品库" },
+  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", childOf: "产品库" },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
 ];
@@ -216,7 +220,7 @@ function hashForView(view: string) {
 function visibleNavItems(user: AuthUser) {
   if (canManage(user)) return navItems;
   if (canViewPartnerAssets(user)) {
-    return navItems.filter((item) => ["产品库", "资质库", "素材库"].includes(item.label));
+    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息"].includes(item.label));
   }
   return navItems.filter((item) => item.label === "产品库");
 }
@@ -340,6 +344,7 @@ function App() {
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
   const [qualificationPayload, setQualificationPayload] = React.useState<QualificationPayload | null>(null);
   const [assetPayload, setAssetPayload] = React.useState<AssetPayload | null>(null);
+  const [warehouseInfoPayload, setWarehouseInfoPayload] = React.useState<WarehouseInfoPayload | null>(null);
   const [userPayload, setUserPayload] = React.useState<UserManagementPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
@@ -374,6 +379,7 @@ function App() {
     if (canViewPartnerAssets(currentUser)) {
       loadQualifications();
       loadAssets();
+      loadWarehouseInfo();
     }
   }, [currentUser.role]);
 
@@ -388,6 +394,7 @@ function App() {
       if (canViewPartnerAssets(currentUser)) {
         void loadQualifications();
         void loadAssets();
+        void loadWarehouseInfo();
       }
       if (canManage(currentUser)) {
         void loadMovement();
@@ -466,6 +473,15 @@ function App() {
     }
   }
 
+  async function loadWarehouseInfo() {
+    try {
+      const data = await fetchWarehouseInfo();
+      setWarehouseInfoPayload(data);
+    } catch {
+      setWarehouseInfoPayload(null);
+    }
+  }
+
   async function loadUsers() {
     try {
       const data = await fetchUsers();
@@ -482,7 +498,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets()]);
+      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -550,6 +566,19 @@ function App() {
       setAssetPayload(data);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "素材库同步失败");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleWarehouseInfoSync() {
+    setSyncing(true);
+    setError("");
+    try {
+      const data = await syncWarehouseInfo();
+      setWarehouseInfoPayload(data);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "仓库信息同步失败");
     } finally {
       setSyncing(false);
     }
@@ -626,7 +655,7 @@ function App() {
     setCurrentUser(result.user);
     await loadProducts();
     if (canViewPartnerAssets(result.user)) {
-      await Promise.all([loadQualifications(), loadAssets()]);
+      await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo()]);
     }
     if (canManage(result.user)) {
       await Promise.all([loadWarehouses(), loadMovement(), loadStockup(), loadUsers()]);
@@ -638,6 +667,7 @@ function App() {
     setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"] });
     setQualificationPayload(null);
     setAssetPayload(null);
+    setWarehouseInfoPayload(null);
     setWarehousePayload(null);
     setMovementPayload(null);
     setStockupPayload(null);
@@ -660,7 +690,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -710,6 +740,8 @@ function App() {
             onSyncAssets={handleAssetSync}
             syncing={syncing}
           />
+        ) : activeView === "仓库信息" ? (
+          <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} />
         ) : activeView === "仓库授权" || activeView === "库存同步" ? (
           <WarehouseBoard
             warehousePayload={warehousePayload}
@@ -2661,6 +2693,122 @@ function ProductLibrary({
           onClose={() => setDetailProduct(null)}
         />
       ) : null}
+    </main>
+  );
+}
+
+function WarehouseInfoLibrary({
+  warehouseInfoPayload,
+  onSyncWarehouseInfo,
+  syncing,
+}: {
+  warehouseInfoPayload: WarehouseInfoPayload | null;
+  onSyncWarehouseInfo: () => Promise<void>;
+  syncing: boolean;
+}) {
+  const records = warehouseInfoPayload?.warehouseInfo ?? [];
+  const [selectedId, setSelectedId] = React.useState(records[0]?.id || "");
+  const [keyword, setKeyword] = React.useState("");
+  const filteredRecords = records.filter((item) => {
+    const text = [item.serialNo, item.sku, item.productName, item.warehouseName, item.warehouseSku, item.location, item.remark]
+      .join(" ")
+      .toLowerCase();
+    return text.includes(keyword.trim().toLowerCase());
+  });
+  const selectedRecord = filteredRecords.find((item) => item.id === selectedId) || filteredRecords[0] || records[0];
+
+  React.useEffect(() => {
+    if (!selectedId && records[0]?.id) {
+      setSelectedId(records[0].id);
+      return;
+    }
+    if (selectedId && !records.some((item) => item.id === selectedId) && records[0]?.id) {
+      setSelectedId(records[0].id);
+    }
+  }, [records, selectedId]);
+
+  return (
+    <main className="library-page">
+      <section className="qualification-panel warehouse-info-panel">
+        <div className="qualification-head">
+          <div>
+            <p className="eyebrow">Warehouse Info</p>
+            <h3>仓库信息</h3>
+            <span>
+              来自简道云仓库信息表，已同步 {formatNumber(warehouseInfoPayload?.counts.records || 0)} 条记录，覆盖 {formatNumber(warehouseInfoPayload?.counts.warehouses || 0)} 个仓库。
+            </span>
+          </div>
+          <button className="sync-button" type="button" onClick={onSyncWarehouseInfo} disabled={syncing}>
+            <RefreshCw size={16} className={syncing ? "spinning" : ""} />
+            同步仓库信息
+          </button>
+        </div>
+
+        <div className="warehouse-info-toolbar">
+          <label className="catalog-search large">
+            <Search size={17} />
+            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 SKU、产品、仓库、库位" />
+          </label>
+          <span className={`status-pill ${warehouseInfoPayload?.source === "jiandaoyun" ? "good" : "warning"}`}>
+            {warehouseInfoPayload?.source === "jiandaoyun" ? "简道云已同步" : "等待同步"}
+          </span>
+        </div>
+
+        <div className="warehouse-info-layout">
+          <div className="warehouse-info-list">
+            {filteredRecords.length ? filteredRecords.map((item) => (
+              <button
+                type="button"
+                key={item.id}
+                className={`warehouse-info-item ${selectedRecord?.id === item.id ? "active" : ""}`}
+                onClick={() => setSelectedId(item.id)}
+              >
+                <strong>{item.sku || item.serialNo || "未配置 SKU"}</strong>
+                <span>{item.productName}</span>
+                <small>{item.warehouseName} · {item.location || item.warehouseSku || "未配置仓位"}</small>
+              </button>
+            )) : (
+              <div className="stockup-empty">暂无仓库信息。请先同步简道云仓库信息表。</div>
+            )}
+          </div>
+
+          <div className="warehouse-info-detail">
+            {selectedRecord ? (
+              <>
+                <section className="warehouse-info-card">
+                  <div className="detail-section-head">
+                    <Truck size={18} />
+                    <div>
+                      <h3>{selectedRecord.productName}</h3>
+                      <span>{selectedRecord.sku || selectedRecord.serialNo}</span>
+                    </div>
+                  </div>
+                  <dl className="warehouse-info-grid">
+                    {selectedRecord.details.map((item) => (
+                      <div key={item.label}>
+                        <dt>{item.label}</dt>
+                        <dd>{item.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+
+                <aside className="warehouse-animation-placeholder" aria-label="交互式动画预留区域">
+                  <div className="placeholder-orbit">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <strong>交互式仓储动画预留区</strong>
+                  <small>后续可放入 3D 仓库动线、库位分布或出入库流程动画。</small>
+                </aside>
+              </>
+            ) : (
+              <div className="stockup-empty">请选择一条仓库信息。</div>
+            )}
+          </div>
+        </div>
+      </section>
     </main>
   );
 }
