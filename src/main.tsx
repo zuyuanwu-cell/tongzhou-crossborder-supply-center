@@ -387,7 +387,7 @@ function canViewPrices(user: AuthUser) {
 }
 
 function canViewInventory(user: AuthUser) {
-  return user.role === "direct";
+  return user.role === "direct" || user.role === "distributor";
 }
 
 function includesFuzzy(product: CatalogProduct, keyword: string) {

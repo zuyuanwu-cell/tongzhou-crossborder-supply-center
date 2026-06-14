@@ -555,7 +555,7 @@ function filterProductPayload(payload, auth) {
   } else if (auth.role === "distributor") {
     catalog = catalog
       .filter((product) => product.channel === "分销")
-      .map(({ directPrice, directCurrency, directCostPrice, directCostCurrency, raw, ...product }) => stripInventory(product));
+      .map(({ directPrice, directCurrency, directCostPrice, directCostCurrency, raw, ...product }) => product);
   } else {
     catalog = catalog.map(({ raw, ...product }) => product);
   }

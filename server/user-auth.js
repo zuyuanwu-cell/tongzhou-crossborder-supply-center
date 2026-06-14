@@ -119,7 +119,7 @@ export function publicUser(user) {
   const role = normalizeRole(user.role);
   const permissions = role === "direct"
     ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "operations", "users"]
-    : ["product_view", "distribution_price", "sales_price", "assets", "qualifications"];
+    : ["product_view", "distribution_price", "sales_price", "inventory", "assets", "qualifications"];
   return {
     id: user.id,
     username: user.username,
