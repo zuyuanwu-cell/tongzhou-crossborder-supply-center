@@ -1309,8 +1309,8 @@ h3 {
 
 .warehouse-video-frame {
   width: 100%;
-  max-width: 380px;
-  aspect-ratio: 1 / 1;
+  max-width: min(520px, 100%);
+  aspect-ratio: 16 / 11;
   overflow: visible;
   background: transparent;
 }
