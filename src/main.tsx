@@ -3164,6 +3164,7 @@ function WarehouseWorkScene({ record }: { record: WarehouseInfoRecord }) {
   const working = isWarehouseWorking(record);
   const localMinutes = minutesInWarehouseTimezone(record.timezone);
   const localTime = `${String(Math.floor(localMinutes / 60)).padStart(2, "0")}:${String(localMinutes % 60).padStart(2, "0")}`;
+  const videoSrc = working ? "/warehouse-videos/warehouse-working.mp4" : "/warehouse-videos/warehouse-resting.mp4";
 
   return (
     <aside className={`warehouse-animation-placeholder warehouse-work-scene ${working ? "working" : "resting"}`} aria-label="仓库工作状态动画">
@@ -3172,28 +3173,23 @@ function WarehouseWorkScene({ record }: { record: WarehouseInfoRecord }) {
         <small>{record.timezone || "本地时区"} · 当前 {localTime}</small>
       </div>
 
-      <div className="worker-stage" aria-hidden="true">
-        <div className="warehouse-floor" />
-        <div className="sleep-bubble">Z</div>
-        <div className="worker-model">
-          <span className="worker-head" />
-          <span className="worker-cap" />
-          <span className="worker-body" />
-          <span className="worker-arm left" />
-          <span className="worker-arm right" />
-          <span className="worker-leg left" />
-          <span className="worker-leg right" />
-        </div>
-        <div className="packing-table">
-          <span className="box box-main" />
-          <span className="box box-side" />
-          <span className="tape-roll" />
-        </div>
+      <div className="warehouse-video-frame">
+        <video
+          key={videoSrc}
+          className="warehouse-status-video"
+          src={videoSrc}
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          aria-label={working ? "仓库上班状态视频" : "仓库休息状态视频"}
+        />
       </div>
 
-      <strong>{working ? "打包工人正在打包" : "下班啦，打包工人在休息"}</strong>
+      <strong>{working ? "仓库工作中" : "仓库休息中"}</strong>
       <small>
-        上班时间 {record.workStartTime || "未配置"} - {record.workEndTime || "未配置"}。后续可以在这里替换为更复杂的仓库动线或 3D 库位动画。
+        上班时间 {record.workStartTime || "未配置"} - {record.workEndTime || "未配置"}。
       </small>
     </aside>
   );
