@@ -27,7 +27,7 @@ export function hasJdyCredentials() {
 export async function fetchJdyDataList(formConfig, options = {}) {
   const apiKey = getEnv("JIANYUN_API_KEY");
   if (!apiKey) {
-    throw new Error("缺少 JIANYUN_API_KEY，当前无法请求简道云真实数据。");
+    throw new Error("缺少系统同步 API Key，当前无法请求同舟供应链数智化系统真实数据。");
   }
 
   const host = getEnv("JIANYUN_API_HOST", DEFAULT_HOST).replace(/\/$/, "");
@@ -63,7 +63,7 @@ export async function fetchJdyDataList(formConfig, options = {}) {
     }
 
     if (!response.ok) {
-      throw new Error(`简道云请求失败 ${response.status}: ${text.slice(0, 240)}`);
+      throw new Error(`同舟供应链数智化系统请求失败 ${response.status}: ${text.slice(0, 240)}`);
     }
 
     const records = extractRecords(payload);
@@ -81,7 +81,7 @@ export async function fetchJdyDataList(formConfig, options = {}) {
 export async function createJdyData(formConfig, data) {
   const apiKey = getEnv("JIANYUN_API_KEY");
   if (!apiKey) {
-    throw new Error("缺少 JIANYUN_API_KEY，无法同步到简道云。");
+    throw new Error("缺少系统同步 API Key，无法同步到同舟供应链数智化系统。");
   }
 
   const host = getEnv("JIANYUN_API_HOST", DEFAULT_HOST).replace(/\/$/, "");
@@ -108,7 +108,7 @@ export async function createJdyData(formConfig, data) {
   }
 
   if (!response.ok) {
-    throw new Error(`简道云创建数据失败 ${response.status}: ${text.slice(0, 240)}`);
+    throw new Error(`同舟供应链数智化系统创建数据失败 ${response.status}: ${text.slice(0, 240)}`);
   }
 
   return payload;
@@ -117,10 +117,10 @@ export async function createJdyData(formConfig, data) {
 export async function updateJdyData(formConfig, dataId, data) {
   const apiKey = getEnv("JIANYUN_API_KEY");
   if (!apiKey) {
-    throw new Error("缺少 JIANYUN_API_KEY，无法同步更新到简道云。");
+    throw new Error("缺少系统同步 API Key，无法同步更新到同舟供应链数智化系统。");
   }
   if (!dataId) {
-    throw new Error("缺少简道云数据 ID，无法更新简道云记录。");
+    throw new Error("缺少系统数据 ID，无法更新同舟供应链数智化系统记录。");
   }
 
   const host = getEnv("JIANYUN_API_HOST", DEFAULT_HOST).replace(/\/$/, "");
@@ -148,7 +148,7 @@ export async function updateJdyData(formConfig, dataId, data) {
   }
 
   if (!response.ok) {
-    throw new Error(`简道云更新数据失败 ${response.status}: ${text.slice(0, 240)}`);
+    throw new Error(`同舟供应链数智化系统更新数据失败 ${response.status}: ${text.slice(0, 240)}`);
   }
 
   return payload;
@@ -157,10 +157,10 @@ export async function updateJdyData(formConfig, dataId, data) {
 export async function deleteJdyData(formConfig, dataId) {
   const apiKey = getEnv("JIANYUN_API_KEY");
   if (!apiKey) {
-    throw new Error("缺少 JIANYUN_API_KEY，无法同步删除到简道云。");
+    throw new Error("缺少系统同步 API Key，无法同步删除同舟供应链数智化系统记录。");
   }
   if (!dataId) {
-    throw new Error("缺少简道云数据 ID，无法删除简道云记录。");
+    throw new Error("缺少系统数据 ID，无法删除同舟供应链数智化系统记录。");
   }
 
   const host = getEnv("JIANYUN_API_HOST", DEFAULT_HOST).replace(/\/$/, "");
@@ -187,7 +187,7 @@ export async function deleteJdyData(formConfig, dataId) {
   }
 
   if (!response.ok) {
-    throw new Error(`简道云删除数据失败 ${response.status}: ${text.slice(0, 240)}`);
+    throw new Error(`同舟供应链数智化系统删除数据失败 ${response.status}: ${text.slice(0, 240)}`);
   }
 
   return payload;

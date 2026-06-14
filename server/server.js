@@ -174,7 +174,7 @@ function publicUsersPayload() {
 
 async function syncUserToJdy(user, plainPassword) {
   if (!hasJdyCredentials()) {
-    throw new Error("未配置简道云 API Key，用户已保存在本地，但未同步到简道云。");
+    throw new Error("未配置系统同步 API Key，用户已保存在本地，但未同步到同舟供应链数智化系统。");
   }
   const payload = await createJdyData(JIANYUN_FORMS.userAccounts, jdyUserRecordData(user, plainPassword));
   return payload?.data?._id || payload?.data_id || payload?._id || payload?.id || "";
@@ -182,17 +182,17 @@ async function syncUserToJdy(user, plainPassword) {
 
 async function syncUserStatusToJdy(user) {
   if (!hasJdyCredentials()) {
-    throw new Error("未配置简道云 API Key，用户状态已保存到本地，但未同步到简道云。");
+    throw new Error("未配置系统同步 API Key，用户状态已保存到本地，但未同步到同舟供应链数智化系统。");
   }
   if (!JIANYUN_FORMS.userAccounts.fields.status) {
-    throw new Error("未配置 USER_ACCOUNT_STATUS_FIELD，用户状态已保存到本地，但未同步到简道云。");
+    throw new Error("未配置用户状态同步字段，用户状态已保存到本地，但未同步到同舟供应链数智化系统。");
   }
   await updateJdyData(JIANYUN_FORMS.userAccounts, user.jdyDataId, jdyUserStatusData(user));
 }
 
 async function deleteUserFromJdy(user) {
   if (!hasJdyCredentials()) {
-    throw new Error("未配置简道云 API Key，用户已从本地删除，但未同步删除到简道云。");
+    throw new Error("未配置系统同步 API Key，用户已从本地删除，但未同步到同舟供应链数智化系统。");
   }
   await deleteJdyData(JIANYUN_FORMS.userAccounts, user.jdyDataId);
 }
@@ -685,7 +685,7 @@ async function handleQualificationFile(req, res, url) {
   if (!template) {
     sendJson(res, 501, {
       ok: false,
-      message: "当前简道云附件只返回了文件 ID。请在 .env 配置 JIANYUN_FILE_DOWNLOAD_TEMPLATE 后再直接下载，例如包含 {fileId} 的文件下载地址模板。",
+      message: "当前系统附件只返回了文件 ID。请在 .env 配置文件下载地址模板后再直接下载，例如包含 {fileId} 的文件下载地址模板。",
     });
     return;
   }
@@ -858,7 +858,7 @@ const server = http.createServer(async (req, res) => {
         user.jdyDataId = await syncUserToJdy(user, payload.password);
         user.jdySyncedAt = new Date().toISOString();
       } catch (error) {
-        user.jdySyncError = error.message || "同步简道云失败";
+        user.jdySyncError = error.message || "同步同舟供应链数智化系统失败";
       }
 
       cachedUsers.users = [user, ...(cachedUsers.users || [])];
@@ -907,7 +907,7 @@ const server = http.createServer(async (req, res) => {
         await syncUserStatusToJdy(user);
         user.jdySyncedAt = new Date().toISOString();
       } catch (error) {
-        user.jdySyncError = error.message || "同步简道云状态失败";
+        user.jdySyncError = error.message || "同步同舟供应链数智化系统状态失败";
       }
 
       cachedUsers.syncedAt = new Date().toISOString();
@@ -951,7 +951,7 @@ const server = http.createServer(async (req, res) => {
       try {
         await deleteUserFromJdy(user);
       } catch (error) {
-        warning = error.message || "同步删除简道云失败";
+        warning = error.message || "同步删除系统账号失败";
       }
       saveUsersCache();
       sendJson(res, warning ? 202 : 200, {

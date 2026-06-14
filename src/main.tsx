@@ -910,7 +910,7 @@ function LoginButton({ onLogin }: { onLogin: (input: { username?: string; passwo
       </button>
       {open ? (
         <form className="login-popover" onSubmit={submit}>
-          <span>使用简道云账号密码登录</span>
+          <span>使用系统账号密码登录</span>
           <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" autoComplete="username" />
           <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码" type="password" autoComplete="current-password" />
           {error ? <small>{error}</small> : null}
@@ -966,9 +966,9 @@ function Sidebar({
           })}
         </nav>
         <div className="integration-card">
-          <p>数据基座</p>
-          <strong>简道云 + 多 WMS</strong>
-          <span>2 个表单 · 多仓库授权</span>
+          <p>同舟供应链</p>
+          <strong>同舟供应链数智化系统</strong>
+          <span>产品 · 仓库 · 备货协同</span>
         </div>
         <button className="settings-link">
           <Settings size={17} />
@@ -1009,7 +1009,7 @@ function Dashboard({
       <section className="panel sales-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">JiandaoYun Sync</p>
+            <p className="eyebrow">System Sync</p>
             <h2>产品数据同步</h2>
           </div>
           <span className={`status-pill ${payload?.source === "jiandaoyun" ? "good" : "warning"}`}>
@@ -1445,7 +1445,7 @@ function StockupCenter({
           <p className="eyebrow">Stockup Center</p>
           <h2>备货中心</h2>
           <p>
-            将动销分析里需要补货的 SKU 汇总成备货建议，后续可一键生成简道云备货计划；同时预留 WMS 备货单 / 入库单明细同步，用于核对在途和已创建单据。
+            将动销分析里需要补货的 SKU 汇总成备货建议，后续可一键生成同舟供应链备货计划；同时预留 WMS 备货单 / 入库单明细同步，用于核对在途和已创建单据。
           </p>
           <div className="source-row">
             <span className={`status-pill ${stockupPayload?.stockupSyncedAt ? "good" : "warning"}`}>
@@ -1625,7 +1625,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
       const result = await createUser(form);
       setLocalPayload(result);
       setForm({ username: "", password: "", displayName: "", role: "distributor" });
-      setMessage(result.warning || "用户已创建，并已同步到简道云。");
+      setMessage(result.warning || "用户已创建，并已同步到同舟供应链数智化系统。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "创建用户失败。");
     } finally {
@@ -1639,7 +1639,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
     try {
       const result = await updateUserStatus(userId, status);
       setLocalPayload(result);
-      setMessage(result.warning || (status === "disabled" ? "用户已停用，并已同步到简道云。" : "用户已启用，并已同步到简道云。"));
+      setMessage(result.warning || (status === "disabled" ? "用户已停用，并已同步到同舟供应链数智化系统。" : "用户已启用，并已同步到同舟供应链数智化系统。"));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "更新用户状态失败。");
     } finally {
@@ -1654,7 +1654,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
     try {
       const result = await deleteUser(userId);
       setLocalPayload(result);
-      setMessage(result.warning || "用户已删除，并已同步到简道云。");
+      setMessage(result.warning || "用户已删除，并已同步到同舟供应链数智化系统。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "删除用户失败。");
     } finally {
@@ -1669,7 +1669,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
           <p className="eyebrow">User Access</p>
           <h2>用户管理</h2>
           <p>
-            用户账号和角色来自简道云账号密码管理表。这里用于查看当前可登录账号，不在本系统里展示或修改密码。
+            用户账号和角色由管理员统一维护。这里用于查看当前可登录账号，不在系统里展示或修改密码。
           </p>
           <div className="source-row">
             <span className={`status-pill ${userPayload?.syncedAt ? "good" : "warning"}`}>
@@ -1681,7 +1681,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
       </section>
 
       <section className="metric-strip movement-metrics">
-        <Metric title="用户总数" value={formatNumber(visiblePayload?.counts.users ?? 0)} note="本地库为准，创建后同步简道云" icon={Lock} tone="blue" />
+        <Metric title="用户总数" value={formatNumber(visiblePayload?.counts.users ?? 0)} note="本地库为准，创建后同步系统" icon={Lock} tone="blue" />
         <Metric title="直营部门" value={formatNumber(visiblePayload?.counts.direct ?? 0)} note="可查看全部内容" icon={ShieldCheck} tone="green" />
         <Metric title="分销商" value={formatNumber(visiblePayload?.counts.distributor ?? 0)} note="仅看产品、分销价、素材和资质" icon={ShoppingBag} tone="orange" />
         <Metric title="停用用户" value={formatNumber(visiblePayload?.counts.disabled ?? 0)} note="停用后不可登录" icon={X} tone="red" />
@@ -1717,7 +1717,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
           <div className="warehouse-auth-actions">
             <button className="sync-button" type="submit" disabled={saving}>
               <Lock size={16} />
-              {saving ? "创建中" : "创建并同步简道云"}
+              {saving ? "创建中" : "创建并同步系统"}
             </button>
           </div>
         </form>
@@ -1768,7 +1768,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
               </span>
             </article>
           )) : (
-            <div className="stockup-empty">暂无可显示用户。请确认简道云账号密码管理表可读取。</div>
+            <div className="stockup-empty">暂无可显示用户。请确认系统账号数据可读取。</div>
           )}
         </div>
       </section>
@@ -1905,8 +1905,8 @@ function WarehouseBoard({
           <button className="ghost-button">先确认再同步</button>
         </div>
         <div className="gap-summary">
-          <span>仓库有库存但简道云未建档：<strong>{formatNumber(warehouseOnlyCount)}</strong></span>
-          <span>简道云有产品但仓库无库存：<strong>{formatNumber(productMissingWarehouseCount)}</strong></span>
+          <span>仓库有库存但系统未建档：<strong>{formatNumber(warehouseOnlyCount)}</strong></span>
+          <span>系统有产品但仓库无库存：<strong>{formatNumber(productMissingWarehouseCount)}</strong></span>
         </div>
         {warehouseOnlyItems.length ? (
           <div className="gap-table">
@@ -1919,7 +1919,7 @@ function WarehouseBoard({
                 <span>可售 {formatNumber(item.availableQty)}</span>
                 <span>在途 {formatNumber(item.inTransitQty)}</span>
                 <div className="gap-actions">
-                  <button className="ghost-button compact-button">同步创建到简道云</button>
+                  <button className="ghost-button compact-button">同步创建到系统</button>
                   <button className="ghost-button compact-button">同步创建到仓库</button>
                 </div>
               </article>
@@ -2633,7 +2633,7 @@ function ProductLibrary({
           </p>
           <div className="source-row">
             <span className={`status-pill ${payload?.source === "jiandaoyun" ? "good" : "warning"}`}>
-              {payload?.source === "jiandaoyun" ? "简道云已同步" : "样例数据"}
+              {payload?.source === "jiandaoyun" ? "系统已同步" : "样例数据"}
             </span>
             <span>{payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN") : "等待同步"}</span>
           </div>
@@ -2826,7 +2826,7 @@ function WarehouseInfoLibrary({
             <p className="eyebrow">Warehouse Info</p>
             <h3>仓库信息</h3>
             <span>
-              来自简道云仓库信息表，已同步 {formatNumber(warehouseInfoPayload?.counts.records || 0)} 条记录，覆盖 {formatNumber(warehouseInfoPayload?.counts.warehouses || 0)} 个仓库。
+              来自同舟供应链数智化系统，已同步 {formatNumber(warehouseInfoPayload?.counts.records || 0)} 条记录，覆盖 {formatNumber(warehouseInfoPayload?.counts.warehouses || 0)} 个仓库。
             </span>
           </div>
           <button className="sync-button" type="button" onClick={onSyncWarehouseInfo} disabled={syncing}>
@@ -2841,7 +2841,7 @@ function WarehouseInfoLibrary({
             <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索仓库名称、国家/地区、仓库代码、地址" />
           </label>
           <span className={`status-pill ${warehouseInfoPayload?.source === "jiandaoyun" ? "good" : "warning"}`}>
-            {warehouseInfoPayload?.source === "jiandaoyun" ? "简道云已同步" : "等待同步"}
+            {warehouseInfoPayload?.source === "jiandaoyun" ? "系统已同步" : "等待同步"}
           </span>
         </div>
 
@@ -2859,7 +2859,7 @@ function WarehouseInfoLibrary({
                 <small>{item.warehouseCode || item.tongzhouSerialNo || "未配置仓库代码"}</small>
               </button>
             )) : (
-              <div className="stockup-empty">暂无仓库信息。请先同步简道云仓库信息表。</div>
+              <div className="stockup-empty">暂无仓库信息。请先同步同舟供应链数智化系统。</div>
             )}
           </div>
 
