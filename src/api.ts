@@ -304,6 +304,57 @@ export type WarehousePayload = {
   nextRequiredSecrets: string[];
 };
 
+export type InventorySnapshotRow = {
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  sku: string;
+  countrySku: string;
+  productName: string;
+  availableQty: number;
+  lockedQty: number;
+  waitInQty: number;
+  inTransitQty: number;
+  faultyQty: number;
+  temporaryQty: number;
+  totalQty: number;
+  sourceSyncedAt: string;
+};
+
+export type InventorySnapshot = {
+  date: string;
+  capturedAt: string;
+  sourceSyncedAt: string;
+  reason: string;
+  rowCount: number;
+  warehouseCount: number;
+  skuCount: number;
+  totals: {
+    availableQty: number;
+    lockedQty: number;
+    waitInQty: number;
+    inTransitQty: number;
+    totalQty: number;
+  };
+  rows: InventorySnapshotRow[];
+};
+
+export type InventorySnapshotPayload = {
+  ok: boolean;
+  updatedAt: string;
+  lastSnapshotAt: string;
+  selectedDate: string;
+  dates: Array<{
+    date: string;
+    capturedAt: string;
+    rowCount: number;
+    warehouseCount: number;
+    skuCount: number;
+    totals: InventorySnapshot["totals"];
+  }>;
+  snapshot: InventorySnapshot | null;
+};
+
 export type WarehouseExportPayload = {
   ok: boolean;
   version: number;
@@ -594,6 +645,33 @@ export function fetchWarehouses() {
 
 export function syncWarehouses() {
   return requestJson<WarehousePayload["lastSync"] & { ok: boolean }>("/api/warehouses/sync", { method: "POST" });
+}
+
+export function fetchInventorySnapshots(date?: string) {
+  const query = date ? `?date=${encodeURIComponent(date)}` : "";
+  return requestJson<InventorySnapshotPayload>(`/api/inventory-snapshots${query}`);
+}
+
+export function captureInventorySnapshot() {
+  return requestJson<InventorySnapshotPayload>("/api/inventory-snapshots/capture", { method: "POST" });
+}
+
+export async function downloadInventorySnapshotCsv(date?: string) {
+  const query = date ? `?date=${encodeURIComponent(date)}` : "";
+  const response = await fetch(`${API_BASE}/api/inventory-snapshots/export${query}`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    let message = "库存快照导出失败";
+    try {
+      const payload = await response.json();
+      message = payload.message || message;
+    } catch {
+      // CSV endpoints return text on success; keep the default message on failure.
+    }
+    throw new Error(message);
+  }
+  return response.blob();
 }
 
 export function fetchMovement() {

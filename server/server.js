@@ -34,6 +34,7 @@ const port = Number(process.env.API_PORT || 8787);
 const cacheDir = resolve(process.cwd(), ".cache");
 const productCachePath = resolve(cacheDir, "products.json");
 const warehouseCachePath = resolve(cacheDir, "warehouse-sync.json");
+const inventorySnapshotCachePath = resolve(cacheDir, "inventory-snapshots.json");
 const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const warehouseConnectionsPath = resolve(cacheDir, "warehouse-connections.json");
 const qualificationCachePath = resolve(cacheDir, "qualifications.json");
@@ -43,8 +44,10 @@ const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
+const inventorySnapshotTimezone = process.env.INVENTORY_SNAPSHOT_TIMEZONE || "Asia/Shanghai";
 let cachedProducts = loadProductCache() || buildProductPayload(sampleProductBaseRecords, sampleCatalogRecords, "sample");
 let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", products: [], inventory: [], results: [] };
+let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
@@ -67,6 +70,8 @@ const directAuth = {
 let cachedUsers = loadUsersCache();
 let autoSyncRunning = false;
 let lastAutoSyncAt = "";
+let lastScheduledInventorySnapshotDate = "";
+let scheduledInventorySnapshotRunning = false;
 
 function loadProductCache() {
   return loadJsonCache(productCachePath);
@@ -92,6 +97,10 @@ function saveProductCache(payload) {
 
 function saveWarehouseCache(payload) {
   saveJsonCache(warehouseCachePath, payload);
+}
+
+function saveInventorySnapshotCache(payload) {
+  saveJsonCache(inventorySnapshotCachePath, payload);
 }
 
 function saveOrderCache(payload) {
@@ -396,6 +405,146 @@ function stripInventory(product) {
   };
 }
 
+function dateKeyInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function minutesInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value || 0);
+  return hour * 60 + minute;
+}
+
+function productNameBySku() {
+  const names = new Map();
+  for (const product of cachedProducts.catalog || []) {
+    if (product.sku) names.set(String(product.sku).toLowerCase(), product.name || product.nameEn || product.sku);
+  }
+  for (const product of cachedProducts.productBase || []) {
+    if (product.sku && !names.has(String(product.sku).toLowerCase())) {
+      names.set(String(product.sku).toLowerCase(), product.name || product.nameEn || product.sku);
+    }
+  }
+  return names;
+}
+
+function buildInventorySnapshotRows() {
+  const names = productNameBySku();
+  return (cachedWarehouseSync.inventory || []).map((item) => ({
+    warehouseId: item.warehouseId || "",
+    warehouseName: item.warehouseName || warehouseConnections.find((warehouse) => warehouse.id === item.warehouseId)?.name || item.warehouseId || "",
+    country: item.country || "",
+    sku: item.sku || "",
+    countrySku: item.countrySku || "",
+    productName: item.name || names.get(String(item.sku || "").toLowerCase()) || item.sku || "",
+    availableQty: Number(item.availableQty || 0),
+    lockedQty: Number(item.lockedQty || 0),
+    waitInQty: Number(item.waitInQty || 0),
+    inTransitQty: Number(item.inTransitQty || 0),
+    faultyQty: Number(item.faultyQty || 0),
+    temporaryQty: Number(item.temporaryQty || 0),
+    totalQty: Number(item.totalQty || 0),
+    sourceSyncedAt: item.syncedAt || cachedWarehouseSync.syncedAt || "",
+  }));
+}
+
+function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") {
+  const rows = buildInventorySnapshotRows();
+  const totals = rows.reduce((sum, item) => ({
+    availableQty: sum.availableQty + item.availableQty,
+    lockedQty: sum.lockedQty + item.lockedQty,
+    waitInQty: sum.waitInQty + item.waitInQty,
+    inTransitQty: sum.inTransitQty + item.inTransitQty,
+    totalQty: sum.totalQty + item.totalQty,
+  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, totalQty: 0 });
+  const snapshot = {
+    date,
+    capturedAt: new Date().toISOString(),
+    sourceSyncedAt: cachedWarehouseSync.syncedAt || "",
+    reason,
+    rowCount: rows.length,
+    warehouseCount: new Set(rows.map((item) => item.warehouseId).filter(Boolean)).size,
+    skuCount: new Set(rows.map((item) => item.sku).filter(Boolean)).size,
+    totals,
+    rows,
+  };
+
+  const snapshots = (cachedInventorySnapshots.snapshots || []).filter((item) => item.date !== date);
+  snapshots.unshift(snapshot);
+  snapshots.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  cachedInventorySnapshots = {
+    updatedAt: new Date().toISOString(),
+    lastSnapshotAt: snapshot.capturedAt,
+    snapshots: snapshots.slice(0, 370),
+  };
+  saveInventorySnapshotCache(cachedInventorySnapshots);
+  return snapshot;
+}
+
+function inventorySnapshotPayload(date) {
+  const snapshots = cachedInventorySnapshots.snapshots || [];
+  const selectedDate = date || snapshots[0]?.date || "";
+  const selectedSnapshot = snapshots.find((item) => item.date === selectedDate) || null;
+  return {
+    ok: true,
+    updatedAt: cachedInventorySnapshots.updatedAt || "",
+    lastSnapshotAt: cachedInventorySnapshots.lastSnapshotAt || "",
+    dates: snapshots.map((item) => ({
+      date: item.date,
+      capturedAt: item.capturedAt,
+      rowCount: item.rowCount || 0,
+      warehouseCount: item.warehouseCount || 0,
+      skuCount: item.skuCount || 0,
+      totals: item.totals || {},
+    })),
+    selectedDate,
+    snapshot: selectedSnapshot,
+  };
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function inventorySnapshotCsv(snapshot) {
+  const headers = ["日期", "仓库", "国家/地区", "SKU", "国家SKU", "产品名称", "可售", "锁定", "待入库", "在途", "不良", "暂存", "总库存", "库存同步时间", "快照时间"];
+  const lines = [headers.map(csvCell).join(",")];
+  for (const row of snapshot?.rows || []) {
+    lines.push([
+      snapshot.date,
+      row.warehouseName,
+      row.country,
+      row.sku,
+      row.countrySku,
+      row.productName,
+      row.availableQty,
+      row.lockedQty,
+      row.waitInQty,
+      row.inTransitQty,
+      row.faultyQty,
+      row.temporaryQty,
+      row.totalQty,
+      row.sourceSyncedAt,
+      snapshot.capturedAt,
+    ].map(csvCell).join(","));
+  }
+  return `\uFEFF${lines.join("\r\n")}`;
+}
+
 function filterProductPayload(payload, auth) {
   const mergedPayload = mergeWarehouseDataIntoProducts(payload, cachedWarehouseSync);
   let catalog = mergedPayload.catalog;
@@ -457,7 +606,39 @@ async function handleWarehouseSync(req, res) {
     results,
   };
   saveWarehouseCache(cachedWarehouseSync);
+  upsertInventorySnapshot(dateKeyInTimezone(), "warehouse_sync");
   sendJson(res, 200, { ok: true, ...cachedWarehouseSync, products: undefined, inventory: undefined });
+}
+
+async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_3am") {
+  const results = [];
+  const products = [];
+  const inventory = [];
+
+  for (const connection of warehouseConnections) {
+    const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
+    const connectionChanged = updateResolvedWarehouseId(connection, result);
+    if (connectionChanged) saveWarehouseConnections();
+    results.push({
+      warehouseId: result.warehouseId,
+      ok: result.ok,
+      skipped: result.skipped,
+      message: result.message || "",
+      productCount: result.products.length,
+      inventoryCount: result.inventory.length,
+    });
+    products.push(...result.products);
+    inventory.push(...result.inventory);
+  }
+
+  cachedWarehouseSync = {
+    syncedAt: new Date().toISOString(),
+    products,
+    inventory,
+    results,
+  };
+  saveWarehouseCache(cachedWarehouseSync);
+  return upsertInventorySnapshot(dateKeyInTimezone(), snapshotReason);
 }
 
 async function handleOrderSync(req, res) {
@@ -726,6 +907,24 @@ async function runAutoSync() {
     console.error("[auto-sync] failed", error);
   } finally {
     autoSyncRunning = false;
+  }
+}
+
+async function runScheduledInventorySnapshot() {
+  if (scheduledInventorySnapshotRunning) return;
+  const now = new Date();
+  const date = dateKeyInTimezone(now);
+  const minutes = minutesInTimezone(now);
+  if (minutes < 180 || minutes >= 190 || lastScheduledInventorySnapshotDate === date) return;
+  scheduledInventorySnapshotRunning = true;
+  try {
+    await refreshWarehouseInventoryForSnapshot("daily_3am");
+    lastScheduledInventorySnapshotDate = date;
+    console.log(`[inventory-snapshot] captured ${date} at ${new Date().toISOString()}`);
+  } catch (error) {
+    console.error("[inventory-snapshot] failed", error);
+  } finally {
+    scheduledInventorySnapshotRunning = false;
   }
 }
 
@@ -1014,6 +1213,45 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/inventory-snapshots" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看库存快照需要直营部门登录。" });
+        return;
+      }
+      sendJson(res, 200, inventorySnapshotPayload(url.searchParams.get("date") || ""));
+      return;
+    }
+
+    if (url.pathname === "/api/inventory-snapshots/capture" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "生成库存快照需要直营部门登录。" });
+        return;
+      }
+      const snapshot = upsertInventorySnapshot(dateKeyInTimezone(), "manual");
+      sendJson(res, 200, { ok: true, snapshot, ...inventorySnapshotPayload(snapshot.date) });
+      return;
+    }
+
+    if (url.pathname === "/api/inventory-snapshots/export" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "导出库存快照需要直营部门登录。" });
+        return;
+      }
+      const payload = inventorySnapshotPayload(url.searchParams.get("date") || "");
+      if (!payload.snapshot) {
+        sendJson(res, 404, { ok: false, message: "没有找到该日期的库存快照。" });
+        return;
+      }
+      const csv = inventorySnapshotCsv(payload.snapshot);
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`inventory-snapshot-${payload.snapshot.date}.csv`)}`,
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(csv);
+      return;
+    }
+
     if (url.pathname === "/api/warehouses/export" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "导出仓库配置需要内部登录。" });
@@ -1193,4 +1431,6 @@ server.listen(port, () => {
     setInterval(runAutoSync, autoSyncIntervalMs);
     console.log(`[auto-sync] enabled every ${Math.round(autoSyncIntervalMs / 60000)} minutes`);
   }
+  setInterval(runScheduledInventorySnapshot, 60 * 1000);
+  runScheduledInventorySnapshot();
 });
