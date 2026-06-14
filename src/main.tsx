@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  ArrowUp,
   ArrowUpRight,
   BarChart3,
   Boxes,
@@ -2626,6 +2627,7 @@ function ProductLibrary({
   const [keywordInput, setKeywordInput] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
   const [detailProduct, setDetailProduct] = React.useState<CatalogProduct | null>(null);
+  const [showBackTop, setShowBackTop] = React.useState(false);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showPrices = canViewPrices(currentUser);
   const showInventory = canViewInventory(currentUser);
@@ -2640,6 +2642,16 @@ function ProductLibrary({
   React.useEffect(() => {
     if (!internal) setChannel("分销");
   }, [internal]);
+
+  React.useEffect(() => {
+    function handleScroll() {
+      setShowBackTop(window.scrollY > 520);
+    }
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   return (
     <main className="library-page">
@@ -2794,6 +2806,16 @@ function ProductLibrary({
           onClose={() => setDetailProduct(null)}
         />
       ) : null}
+      <button
+        className={`back-to-top-button ${showBackTop ? "visible" : ""}`}
+        type="button"
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        aria-label="回到顶部"
+        title="回到顶部"
+      >
+        <ArrowUp size={18} />
+        <span>顶部</span>
+      </button>
     </main>
   );
 }
