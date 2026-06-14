@@ -1718,6 +1718,23 @@ h3 {
   white-space: nowrap;
 }
 
+.snapshot-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.snapshot-pagination > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .gap-summary {
   display: flex;
   flex-wrap: wrap;
@@ -2967,6 +2984,7 @@ h3 {
   }
 
   .snapshot-actions,
+  .snapshot-pagination,
   .inventory-snapshot-panel .panel-heading {
     align-items: stretch;
     flex-direction: column;
@@ -2987,6 +3005,14 @@ h3 {
   .snapshot-row span:nth-child(6),
   .snapshot-row strong:nth-child(6) {
     display: block;
+  }
+
+  .snapshot-pagination > div {
+    justify-content: stretch;
+  }
+
+  .snapshot-pagination .ghost-button {
+    flex: 1 1 calc(50% - 6px);
   }
 
   .back-to-top-button {

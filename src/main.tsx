@@ -204,6 +204,7 @@ const dailyOrders: DailyOrder[] = [
 const navItems = [
   { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard" },
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory" },
+  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots" },
   { label: "订单日报", icon: CalendarDays, hash: "#orders" },
   { label: "动销监控", icon: BarChart3, hash: "#movement" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup" },
@@ -874,13 +875,16 @@ function App() {
           />
         ) : activeView === "仓库信息" ? (
           <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} />
+        ) : activeView === "库存快照" ? (
+          <InventorySnapshotPage
+            inventorySnapshotPayload={inventorySnapshotPayload}
+            onLoadInventorySnapshots={loadInventorySnapshots}
+            onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
+          />
         ) : activeView === "仓库授权" || activeView === "库存同步" ? (
           <WarehouseBoard
             warehousePayload={warehousePayload}
-            inventorySnapshotPayload={inventorySnapshotPayload}
             onSync={handleWarehouseSync}
-            onLoadInventorySnapshots={loadInventorySnapshots}
-            onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
             syncing={syncing}
             onCreate={handleCreateWarehouse}
             onUpdate={handleUpdateWarehouse}
@@ -1831,10 +1835,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
 
 function WarehouseBoard({
   warehousePayload,
-  inventorySnapshotPayload,
   onSync,
-  onLoadInventorySnapshots,
-  onCaptureInventorySnapshot,
   syncing,
   onCreate,
   onUpdate,
@@ -1843,10 +1844,7 @@ function WarehouseBoard({
   onImport,
 }: {
   warehousePayload: WarehousePayload | null;
-  inventorySnapshotPayload: InventorySnapshotPayload | null;
   onSync: () => void;
-  onLoadInventorySnapshots: (date?: string) => Promise<void>;
-  onCaptureInventorySnapshot: () => Promise<InventorySnapshotPayload>;
   syncing: boolean;
   onCreate: (input: Parameters<typeof createWarehouseConnection>[0]) => Promise<void>;
   onUpdate: (id: string, input: Parameters<typeof updateWarehouseConnection>[1]) => Promise<void>;
@@ -1863,52 +1861,8 @@ function WarehouseBoard({
   const [editingWarehouse, setEditingWarehouse] = React.useState<WarehousePayload["warehouses"][number] | null>(null);
   const [deletingId, setDeletingId] = React.useState("");
   const [importing, setImporting] = React.useState(false);
-  const [snapshotBusy, setSnapshotBusy] = React.useState(false);
   const importInputRef = React.useRef<HTMLInputElement | null>(null);
   const authorizedCount = connections.filter((item) => item.status === "已授权").length;
-  const snapshot = inventorySnapshotPayload?.snapshot || null;
-  const snapshotRows = snapshot?.rows ?? [];
-  const snapshotDates = inventorySnapshotPayload?.dates ?? [];
-  const selectedSnapshotDate = inventorySnapshotPayload?.selectedDate || snapshotDates[0]?.date || "";
-
-  async function changeSnapshotDate(date: string) {
-    setSnapshotBusy(true);
-    try {
-      await onLoadInventorySnapshots(date);
-    } finally {
-      setSnapshotBusy(false);
-    }
-  }
-
-  async function captureSnapshot() {
-    setSnapshotBusy(true);
-    try {
-      await onCaptureInventorySnapshot();
-    } finally {
-      setSnapshotBusy(false);
-    }
-  }
-
-  async function exportSnapshotCsv() {
-    if (!selectedSnapshotDate) return;
-    setSnapshotBusy(true);
-    try {
-      const blob = await downloadInventorySnapshotCsv(selectedSnapshotDate);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `inventory-snapshot-${selectedSnapshotDate}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "库存快照导出失败");
-    } finally {
-      setSnapshotBusy(false);
-    }
-  }
-
   function openCreateForm() {
     setEditingWarehouse(null);
     setFormOpen((value) => !value);
@@ -1998,60 +1952,6 @@ function WarehouseBoard({
         <Metric title="待授权仓库" value={String(connections.length - authorizedCount)} note="补齐凭据后启用" icon={ShieldCheck} tone="red" />
       </section>
 
-      <section className="panel inventory-snapshot-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Inventory Snapshot</p>
-            <h2>库存快照</h2>
-            <span>每天凌晨 3 点自动保存当天库存；手动同步仓库后也会更新当天快照。</span>
-          </div>
-          <div className="snapshot-actions">
-            <select value={selectedSnapshotDate} onChange={(event) => changeSnapshotDate(event.target.value)} disabled={snapshotBusy || !snapshotDates.length}>
-              {snapshotDates.length ? snapshotDates.map((item) => (
-                <option key={item.date} value={item.date}>{item.date}</option>
-              )) : <option value="">暂无快照</option>}
-            </select>
-            <button className="ghost-button" type="button" onClick={exportSnapshotCsv} disabled={!snapshot || snapshotBusy}>
-              <Download size={16} />
-              导出 CSV
-            </button>
-            <button className="sync-button" type="button" onClick={captureSnapshot} disabled={snapshotBusy}>
-              <DatabaseZap size={16} />
-              {snapshotBusy ? "处理中" : "生成今日快照"}
-            </button>
-          </div>
-        </div>
-        <div className="snapshot-summary">
-          <span>快照日期 <strong>{snapshot?.date || "暂无"}</strong></span>
-          <span>仓库 <strong>{formatNumber(snapshot?.warehouseCount || 0)}</strong></span>
-          <span>SKU <strong>{formatNumber(snapshot?.skuCount || 0)}</strong></span>
-          <span>可售库存 <strong>{formatNumber(snapshot?.totals?.availableQty || 0)}</strong></span>
-          <span>总库存 <strong>{formatNumber(snapshot?.totals?.totalQty || 0)}</strong></span>
-        </div>
-        <div className="snapshot-table">
-          <div className="snapshot-row snapshot-head">
-            <span>仓库</span>
-            <span>SKU / 产品</span>
-            <span>可售</span>
-            <span>锁定</span>
-            <span>在途</span>
-            <span>总库存</span>
-          </div>
-          {snapshotRows.length ? snapshotRows.slice(0, 80).map((item) => (
-            <article className="snapshot-row" key={`${snapshot?.date}-${item.warehouseId}-${item.countrySku}-${item.sku}`}>
-              <span>{item.warehouseName}<small>{item.country}</small></span>
-              <span><strong>{item.sku}</strong><small>{item.productName || item.countrySku}</small></span>
-              <strong>{formatNumber(item.availableQty)}</strong>
-              <span>{formatNumber(item.lockedQty)}</span>
-              <span>{formatNumber(item.inTransitQty)}</span>
-              <strong>{formatNumber(item.totalQty)}</strong>
-            </article>
-          )) : (
-            <div className="stockup-empty">暂无库存快照。请先同步仓库，或点击“生成今日快照”。</div>
-          )}
-        </div>
-      </section>
-
       <section className="panel gap-panel">
         <div className="panel-heading">
           <div>
@@ -2139,6 +2039,176 @@ function WarehouseBoard({
               </div>
             </article>
           ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function InventorySnapshotPage({
+  inventorySnapshotPayload,
+  onLoadInventorySnapshots,
+  onCaptureInventorySnapshot,
+}: {
+  inventorySnapshotPayload: InventorySnapshotPayload | null;
+  onLoadInventorySnapshots: (date?: string) => Promise<void>;
+  onCaptureInventorySnapshot: () => Promise<InventorySnapshotPayload>;
+}) {
+  const [snapshotBusy, setSnapshotBusy] = React.useState(false);
+  const [warehouseId, setWarehouseId] = React.useState("全部");
+  const [pageSize, setPageSize] = React.useState(50);
+  const [page, setPage] = React.useState(1);
+  const snapshot = inventorySnapshotPayload?.snapshot || null;
+  const snapshotDates = inventorySnapshotPayload?.dates ?? [];
+  const selectedSnapshotDate = inventorySnapshotPayload?.selectedDate || snapshotDates[0]?.date || "";
+  const snapshotRows = snapshot?.rows ?? [];
+  const warehouses = Array.from(new Map(snapshotRows.map((item) => [item.warehouseId, item])).values())
+    .filter((item) => item.warehouseId)
+    .sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN"));
+  const filteredRows = warehouseId === "全部" ? snapshotRows : snapshotRows.filter((item) => item.warehouseId === warehouseId);
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const visibleRows = filteredRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const filteredTotals = filteredRows.reduce((sum, item) => ({
+    availableQty: sum.availableQty + item.availableQty,
+    lockedQty: sum.lockedQty + item.lockedQty,
+    inTransitQty: sum.inTransitQty + item.inTransitQty,
+    totalQty: sum.totalQty + item.totalQty,
+  }), { availableQty: 0, lockedQty: 0, inTransitQty: 0, totalQty: 0 });
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [selectedSnapshotDate, warehouseId, pageSize]);
+
+  async function changeSnapshotDate(date: string) {
+    setSnapshotBusy(true);
+    try {
+      await onLoadInventorySnapshots(date);
+      setWarehouseId("全部");
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
+
+  async function captureSnapshot() {
+    setSnapshotBusy(true);
+    try {
+      await onCaptureInventorySnapshot();
+      setWarehouseId("全部");
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
+
+  async function exportSnapshotCsv() {
+    if (!selectedSnapshotDate) return;
+    setSnapshotBusy(true);
+    try {
+      const selectedWarehouseId = warehouseId === "全部" ? "" : warehouseId;
+      const blob = await downloadInventorySnapshotCsv(selectedSnapshotDate, selectedWarehouseId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `inventory-snapshot-${selectedSnapshotDate}${selectedWarehouseId ? `-${selectedWarehouseId}` : ""}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "库存快照导出失败");
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
+
+  return (
+    <main className="warehouse-page">
+      <section className="library-hero warehouse-hero">
+        <div>
+          <p className="eyebrow">Inventory Snapshot</p>
+          <h2>库存快照</h2>
+          <p>每天凌晨 3 点自动同步仓库库存并保存当天快照；也可以手动生成今日快照，按日期和仓库筛选后导出 CSV。</p>
+          <div className="source-row">
+            <span className={`status-pill ${snapshot ? "good" : "warning"}`}>{snapshot ? "快照已生成" : "暂无快照"}</span>
+            <span>{snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString("zh-CN") : "等待生成库存快照"}</span>
+          </div>
+        </div>
+        <button className="sync-button" type="button" onClick={captureSnapshot} disabled={snapshotBusy}>
+          <DatabaseZap size={16} />
+          {snapshotBusy ? "处理中" : "生成今日快照"}
+        </button>
+      </section>
+
+      <section className="panel inventory-snapshot-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Snapshot Query</p>
+            <h2>快照明细</h2>
+            <span>当前显示 {formatNumber(visibleRows.length)} / {formatNumber(filteredRows.length)} 条记录。</span>
+          </div>
+          <div className="snapshot-actions">
+            <select value={selectedSnapshotDate} onChange={(event) => changeSnapshotDate(event.target.value)} disabled={snapshotBusy || !snapshotDates.length}>
+              {snapshotDates.length ? snapshotDates.map((item) => (
+                <option key={item.date} value={item.date}>{item.date}</option>
+              )) : <option value="">暂无快照</option>}
+            </select>
+            <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} disabled={!snapshotRows.length}>
+              <option value="全部">全部仓库</option>
+              {warehouses.map((item) => (
+                <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>
+              ))}
+            </select>
+            <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+              {[50, 200, 500].map((size) => (
+                <option key={size} value={size}>每页 {size} 条</option>
+              ))}
+            </select>
+            <button className="ghost-button" type="button" onClick={exportSnapshotCsv} disabled={!snapshot || snapshotBusy}>
+              <Download size={16} />
+              导出 CSV
+            </button>
+          </div>
+        </div>
+
+        <div className="snapshot-summary">
+          <span>快照日期 <strong>{snapshot?.date || "暂无"}</strong></span>
+          <span>仓库 <strong>{formatNumber(warehouseId === "全部" ? snapshot?.warehouseCount || 0 : 1)}</strong></span>
+          <span>SKU <strong>{formatNumber(new Set(filteredRows.map((item) => item.sku).filter(Boolean)).size)}</strong></span>
+          <span>可售库存 <strong>{formatNumber(filteredTotals.availableQty)}</strong></span>
+          <span>总库存 <strong>{formatNumber(filteredTotals.totalQty)}</strong></span>
+        </div>
+
+        <div className="snapshot-table">
+          <div className="snapshot-row snapshot-head">
+            <span>仓库</span>
+            <span>SKU / 产品</span>
+            <span>可售</span>
+            <span>锁定</span>
+            <span>在途</span>
+            <span>总库存</span>
+          </div>
+          {visibleRows.length ? visibleRows.map((item) => (
+            <article className="snapshot-row" key={`${snapshot?.date}-${item.warehouseId}-${item.countrySku}-${item.sku}`}>
+              <span>{item.warehouseName}<small>{item.country}</small></span>
+              <span><strong>{item.sku}</strong><small>{item.productName || item.countrySku}</small></span>
+              <strong>{formatNumber(item.availableQty)}</strong>
+              <span>{formatNumber(item.lockedQty)}</span>
+              <span>{formatNumber(item.inTransitQty)}</span>
+              <strong>{formatNumber(item.totalQty)}</strong>
+            </article>
+          )) : (
+            <div className="stockup-empty">暂无库存快照。请先同步仓库，或点击“生成今日快照”。</div>
+          )}
+        </div>
+
+        <div className="snapshot-pagination">
+          <span>第 {formatNumber(safePage)} / {formatNumber(totalPages)} 页</span>
+          <div>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage(1)} disabled={safePage <= 1}>首页</button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={safePage <= 1}>上一页</button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={safePage >= totalPages}>下一页</button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
+          </div>
         </div>
       </section>
     </main>

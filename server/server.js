@@ -1242,10 +1242,15 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { ok: false, message: "没有找到该日期的库存快照。" });
         return;
       }
-      const csv = inventorySnapshotCsv(payload.snapshot);
+      const warehouseId = url.searchParams.get("warehouseId") || "";
+      const snapshot = warehouseId
+        ? { ...payload.snapshot, rows: (payload.snapshot.rows || []).filter((row) => row.warehouseId === warehouseId) }
+        : payload.snapshot;
+      const csv = inventorySnapshotCsv(snapshot);
+      const suffix = warehouseId ? `-${warehouseId}` : "";
       res.writeHead(200, {
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`inventory-snapshot-${payload.snapshot.date}.csv`)}`,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`inventory-snapshot-${payload.snapshot.date}${suffix}.csv`)}`,
         "Access-Control-Allow-Origin": "*",
       });
       res.end(csv);

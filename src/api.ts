@@ -656,8 +656,11 @@ export function captureInventorySnapshot() {
   return requestJson<InventorySnapshotPayload>("/api/inventory-snapshots/capture", { method: "POST" });
 }
 
-export async function downloadInventorySnapshotCsv(date?: string) {
-  const query = date ? `?date=${encodeURIComponent(date)}` : "";
+export async function downloadInventorySnapshotCsv(date?: string, warehouseId?: string) {
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  if (warehouseId) params.set("warehouseId", warehouseId);
+  const query = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(`${API_BASE}/api/inventory-snapshots/export${query}`, {
     headers: authHeaders(),
   });
