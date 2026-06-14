@@ -589,6 +589,51 @@ h3 {
   font-size: 12px;
 }
 
+.copyable-sku {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin: 0 0 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.copyable-sku span {
+  display: inline;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyable-sku svg {
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.18s ease, color 0.18s ease;
+}
+
+.copyable-sku:hover,
+.copyable-sku.copied {
+  color: #ffb24a;
+}
+
+.copyable-sku:hover svg,
+.copyable-sku.copied svg {
+  opacity: 1;
+}
+
+.risk-sku {
+  margin: 4px 0 0;
+}
+
 .warehouse-meta {
   display: grid;
   justify-items: end;
@@ -2525,7 +2570,7 @@ h3 {
   align-items: flex-start;
 }
 
-.product-title-row span {
+.product-title-row > div > span {
   display: block;
   margin-bottom: 7px;
   color: var(--muted);

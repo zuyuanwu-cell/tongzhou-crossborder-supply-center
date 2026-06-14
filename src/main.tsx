@@ -333,6 +333,25 @@ async function copyText(text: string) {
   document.body.removeChild(textarea);
 }
 
+function CopyableSku({ sku, className = "" }: { sku: string; className?: string }) {
+  const [copied, setCopied] = React.useState(false);
+
+  async function handleCopy(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    await copyText(sku);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  return (
+    <button className={`copyable-sku ${copied ? "copied" : ""} ${className}`} type="button" onClick={handleCopy} title="点击复制 SKU">
+      <span>{copied ? "已复制" : sku}</span>
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  );
+}
+
 function flagCodeForCountry(country: string) {
   if (/俄罗斯|RU\b/i.test(country)) return "ru";
   if (/越南|VN\b/i.test(country)) return "vn";
@@ -1086,7 +1105,7 @@ function Dashboard({
             <article key={product.id} className="risk-row">
               <div>
                 <strong>{product.name}</strong>
-                <span>{product.sku}</span>
+                <CopyableSku sku={product.sku} className="risk-sku" />
               </div>
               <span>{product.country}</span>
               <span>{stockLabel(product)}</span>
@@ -2719,7 +2738,7 @@ function ProductLibrary({
               <div className="product-body">
                 <div className="product-title-row">
                   <div>
-                    <span>{product.sku}</span>
+                    <CopyableSku sku={product.sku} />
                     <h3>{product.name}</h3>
                   </div>
                   {showInventory ? <span className={`status-pill ${alertClass(product.alert)}`}>{product.alert}</span> : null}
