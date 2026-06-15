@@ -350,6 +350,28 @@ function aiUserQueryFromPayload(payload) {
   return String(lastUser || prompt || "").trim();
 }
 
+function aiMessageContentFromPayloadMessage(message) {
+  const text = String(message?.content || "").trim();
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const images = attachments
+    .map((attachment) => String(attachment?.url || "").trim())
+    .filter(Boolean);
+  if (!images.length) return text;
+  return [
+    { type: "text", text: text || "请分析这张图片。" },
+    ...images.map((url) => ({ type: "image_url", image_url: { url } })),
+  ];
+}
+
+function aiContentToText(content) {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (part?.type === "text" ? String(part.text || "").trim() : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function scoreContextItem(query, values) {
   const normalizedQuery = String(query || "").toLowerCase();
   if (!normalizedQuery) return 1;
@@ -461,6 +483,9 @@ function aiProductRowsForQuery(query, limit) {
 
 function aiDirectSafeContextAnswer(payload, auth = { role: "guest" }) {
   if (!canViewPartnerAssets(auth)) return "";
+  const payloadMessages = Array.isArray(payload.messages) ? payload.messages : [];
+  const lastUser = [...payloadMessages].reverse().find((message) => message?.role === "user");
+  if (Array.isArray(lastUser?.attachments) && lastUser.attachments.length) return "";
   const query = aiUserQueryFromPayload(payload);
   if (!aiShouldDirectLookupAnswer(query)) return "";
   const limit = aiNumberLimitFromQuery(query, 8);
@@ -528,16 +553,25 @@ function aiMessagesFromPayload(payload, auth = { role: "guest" }) {
     ? `\n\n【系统已检索到的安全上下文】\n${inlineContext}\n\n【回答要求】请直接基于上面的检索结果回答本轮问题；如果用户要求列举产品或仓库，请直接列举名称/SKU/关键信息；如果用户要求写文案，请直接开始写；不要反问用户需要什么帮助；不要输出任何价格、成本、库存数量。`
     : "\n\n【回答要求】请直接回答本轮问题；不要输出任何价格、成本、库存数量。";
   const messages = payloadMessages
-    .map((message) => ({
-      role: ["system", "assistant", "user"].includes(message?.role) ? message.role : "user",
-      content: String(message?.content || "").trim(),
-    }))
-        .filter((message) => message.content);
+    .map((message) => {
+      const role = ["system", "assistant", "user"].includes(message?.role) ? message.role : "user";
+      const content = role === "user" ? aiMessageContentFromPayloadMessage(message) : String(message?.content || "").trim();
+      return { role, content };
+    })
+    .filter((message) => aiContentToText(message.content) || Array.isArray(message.content));
   if (messages.length) {
     const lastUserIndex = messages.map((message) => message.role).lastIndexOf("user");
     const strengthenedMessages = messages.map((message, index) => (
       index === lastUserIndex
-        ? { ...message, content: `${message.content}${contextInstruction}` }
+        ? {
+            ...message,
+            content: Array.isArray(message.content)
+              ? [
+                  { type: "text", text: `${aiContentToText(message.content)}${contextInstruction}` },
+                  ...message.content.filter((part) => part?.type !== "text"),
+                ]
+              : `${message.content}${contextInstruction}`,
+          }
         : message
     ));
     return messages.some((message) => message.role === "system")

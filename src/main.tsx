@@ -34,6 +34,8 @@ import {
 } from "lucide-react";
 import {
   AiConfigPayload,
+  AiChatAttachment,
+  AiChatMessage,
   AssetPayload,
   AssetRecord,
   AuthUser,
@@ -3310,6 +3312,87 @@ function QuickNavPage({
   );
 }
 
+function renderInlineMarkdown(text: string, keyPrefix: string) {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g).filter(Boolean);
+  return parts.map((part, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={key}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={key}>{part.slice(2, -2)}</strong>;
+    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (link) {
+      return (
+        <a key={key} href={link[2]} target="_blank" rel="noreferrer">
+          {link[1]}
+        </a>
+      );
+    }
+    return <React.Fragment key={key}>{part}</React.Fragment>;
+  });
+}
+
+function renderMarkdown(content: string) {
+  const lines = String(content || "").split(/\r?\n/);
+  const nodes: React.ReactNode[] = [];
+  let listItems: string[] = [];
+  let codeLines: string[] = [];
+  let inCode = false;
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    const items = listItems;
+    listItems = [];
+    nodes.push(
+      <ul key={`list-${nodes.length}`}>
+        {items.map((item, index) => <li key={index}>{renderInlineMarkdown(item, `li-${nodes.length}-${index}`)}</li>)}
+      </ul>,
+    );
+  };
+
+  const flushCode = () => {
+    if (!codeLines.length) return;
+    const code = codeLines.join("\n");
+    codeLines = [];
+    nodes.push(<pre key={`code-${nodes.length}`}><code>{code}</code></pre>);
+  };
+
+  lines.forEach((line) => {
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        inCode = false;
+        flushCode();
+      } else {
+        flushList();
+        inCode = true;
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      nodes.push(<h4 className={`level-${heading[1].length}`} key={`heading-${nodes.length}`}>{renderInlineMarkdown(heading[2], `h-${nodes.length}`)}</h4>);
+      return;
+    }
+    const bullet = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+    if (bullet) {
+      listItems.push(bullet[1]);
+      return;
+    }
+    flushList();
+    if (!line.trim()) {
+      nodes.push(<br key={`br-${nodes.length}`} />);
+      return;
+    }
+    nodes.push(<p key={`p-${nodes.length}`}>{renderInlineMarkdown(line, `p-${nodes.length}`)}</p>);
+  });
+  flushList();
+  flushCode();
+  return nodes.length ? nodes : null;
+}
+
 function TongzhouAiPanel({
   aiConfig,
   currentUser,
@@ -3329,7 +3412,8 @@ function TongzhouAiPanel({
     videoModel: aiConfig?.models.video || "agnes-video-v2.0",
   });
   const [textPrompt, setTextPrompt] = React.useState("");
-  const [chatMessages, setChatMessages] = React.useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [chatMessages, setChatMessages] = React.useState<AiChatMessage[]>([]);
+  const [textAttachments, setTextAttachments] = React.useState<AiChatAttachment[]>([]);
   const [textParams, setTextParams] = React.useState({ temperature: 0.7, topP: 1, maxTokens: 1200 });
   const [showTextAdvanced, setShowTextAdvanced] = React.useState(false);
   const [imagePrompt, setImagePrompt] = React.useState("");
@@ -3353,6 +3437,8 @@ function TongzhouAiPanel({
   const [videoUrl, setVideoUrl] = React.useState("");
   const [busy, setBusy] = React.useState<"config" | "text" | "image" | "video" | "poll" | "upload" | "">("");
   const [message, setMessage] = React.useState("");
+  const chatWindowRef = React.useRef<HTMLDivElement | null>(null);
+  const textImageInputRef = React.useRef<HTMLInputElement | null>(null);
 
   React.useEffect(() => {
     if (!aiConfig) return;
@@ -3372,6 +3458,13 @@ function TongzhouAiPanel({
     }, 8000);
     return () => window.clearInterval(timer);
   }, [videoTask, videoUrl]);
+
+  React.useEffect(() => {
+    chatWindowRef.current?.scrollTo({
+      top: chatWindowRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [chatMessages]);
 
   async function saveConfig(event: React.FormEvent) {
     event.preventDefault();
@@ -3399,17 +3492,23 @@ function TongzhouAiPanel({
 
   async function submitText(event: React.FormEvent) {
     event.preventDefault();
-    if (!textPrompt.trim()) {
+    if (!textPrompt.trim() && !textAttachments.length) {
       setMessage("请先输入要对话的内容。");
       return;
     }
     setBusy("text");
     setMessage("");
-    const nextMessages = [...chatMessages, { role: "user" as const, content: textPrompt.trim() }];
+    const userMessage: AiChatMessage = {
+      role: "user",
+      content: textPrompt.trim() || "请分析我上传的图片。",
+      attachments: textAttachments.length ? textAttachments : undefined,
+    };
+    const nextMessages = [...chatMessages, userMessage];
     let answer = "";
     const assistantIndex = nextMessages.length;
     setChatMessages([...nextMessages, { role: "assistant", content: "" }]);
     setTextPrompt("");
+    setTextAttachments([]);
     try {
       await streamAiText({
         messages: nextMessages,
@@ -3449,6 +3548,35 @@ function TongzhouAiPanel({
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
     }
+  }
+
+  async function uploadTextAttachments(files: File[]) {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    setBusy("upload");
+    setMessage("");
+    try {
+      const uploaded: AiChatAttachment[] = [];
+      for (const file of images) {
+        const dataUrl = await fileToDataUrl(file);
+        const result = await uploadAiImage({ fileName: file.name || `paste-${Date.now()}.png`, dataUrl });
+        uploaded.push({ name: file.name || "粘贴图片", url: result.upload.url });
+      }
+      setTextAttachments((current) => [...current, ...uploaded]);
+      setMessage(uploaded.some((item) => isPrivateUploadUrl(item.url)) ? "图片已添加到本轮对话。当前是本地/内网地址，部署到公网后模型才能稳定读取图片。" : "图片已添加到本轮对话。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "图片上传失败。");
+    } finally {
+      setBusy("");
+      if (textImageInputRef.current) textImageInputRef.current.value = "";
+    }
+  }
+
+  function handleTextPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files || []).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    void uploadTextAttachments(files);
   }
 
   async function submitImage(event: React.FormEvent) {
@@ -3633,11 +3761,21 @@ function TongzhouAiPanel({
               <h3>文字模型 <span>TZ-Text Pro</span></h3>
             </div>
           </div>
-          <div className="ai-chat-window">
+          <div className="ai-chat-window" ref={chatWindowRef}>
             {chatMessages.length ? chatMessages.map((item, index) => (
               <article key={`${item.role}-${index}`} className={`ai-chat-message ${item.role}`}>
                 <strong>{item.role === "user" ? "你" : "同舟AI"}</strong>
-                <p>{item.content}</p>
+                <div className="ai-markdown">{renderMarkdown(item.content)}</div>
+                {item.attachments?.length ? (
+                  <div className="ai-message-attachments">
+                    {item.attachments.map((attachment) => (
+                      <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer">
+                        <img src={attachment.url} alt={attachment.name} />
+                        <span>{attachment.name}</span>
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
               </article>
             )) : (
               <div className="stockup-empty">可以询问产品信息、仓库信息，或让同舟AI基于产品资料撰写卖点文案。系统不会向模型提供价格、成本和库存敏感字段。</div>
@@ -3648,8 +3786,20 @@ function TongzhouAiPanel({
             value={textPrompt}
             onChange={(event) => setTextPrompt(event.target.value)}
             onKeyDown={handleTextKeyDown}
-            placeholder="输入问题、改写需求、翻译内容或分析任务。按 Enter 发送，Shift + Enter 换行。"
+            onPaste={handleTextPaste}
+            placeholder="输入问题、改写需求、翻译内容或分析任务。按 Enter 发送，Shift + Enter 换行；可 Ctrl + V 粘贴图片。"
           />
+          {textAttachments.length ? (
+            <div className="ai-upload-list ai-text-attachments">
+              {textAttachments.map((item) => (
+                <span key={item.url}>
+                  <img src={item.url} alt={item.name} />
+                  <em>{item.name}</em>
+                  <button type="button" onClick={() => setTextAttachments((current) => current.filter((attachment) => attachment.url !== item.url))}>移除</button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           {showTextAdvanced ? (
           <div className="ai-parameter-grid">
             <label>
@@ -3667,6 +3817,18 @@ function TongzhouAiPanel({
           </div>
           ) : null}
           <div className="ai-action-row">
+            <input
+              ref={textImageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="ai-hidden-file"
+              onChange={(event) => void uploadTextAttachments(Array.from(event.currentTarget.files || []))}
+            />
+            <button className="ghost-button" type="button" onClick={() => textImageInputRef.current?.click()} disabled={busy === "upload" || busy === "text"}>
+              <Image size={15} />
+              {busy === "upload" ? "上传中" : "上传图片"}
+            </button>
             <button className="ghost-button" type="button" onClick={() => setChatMessages([])}>清空对话</button>
             <button className="ghost-button" type="button" onClick={() => setShowTextAdvanced((value) => !value)}>
               {showTextAdvanced ? "隐藏参数" : "高级参数"}

@@ -299,6 +299,17 @@ export type AiTextResult = {
   raw?: unknown;
 };
 
+export type AiChatAttachment = {
+  name: string;
+  url: string;
+};
+
+export type AiChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+  attachments?: AiChatAttachment[];
+};
+
 export type AiImageResult = {
   ok: boolean;
   model: string;
@@ -722,7 +733,7 @@ export function updateAiConfig(input: { apiKey?: string; baseUrl?: string; model
   });
 }
 
-export function runAiText(input: { prompt?: string; messages?: Array<{ role: "user" | "assistant" | "system"; content: string }>; model?: string; temperature?: number; maxTokens?: number; topP?: number }) {
+export function runAiText(input: { prompt?: string; messages?: AiChatMessage[]; model?: string; temperature?: number; maxTokens?: number; topP?: number }) {
   return requestJson<AiTextResult>("/api/ai/text", {
     method: "POST",
     body: JSON.stringify(input),
@@ -730,7 +741,7 @@ export function runAiText(input: { prompt?: string; messages?: Array<{ role: "us
 }
 
 export async function streamAiText(
-  input: { messages: Array<{ role: "user" | "assistant" | "system"; content: string }>; model?: string; temperature?: number; maxTokens?: number; topP?: number },
+  input: { messages: AiChatMessage[]; model?: string; temperature?: number; maxTokens?: number; topP?: number },
   onDelta: (delta: string) => void,
 ) {
   const response = await fetch(`${API_BASE}/api/ai/text/stream`, {

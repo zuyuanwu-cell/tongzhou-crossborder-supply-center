@@ -1434,8 +1434,8 @@ h3 {
 }
 
 .ai-tool-card .ai-chat-input {
-  min-height: 96px;
-  max-height: 180px;
+  min-height: 120px;
+  max-height: 220px;
 }
 
 .ai-tool-card select,
@@ -1538,13 +1538,14 @@ h3 {
   justify-content: flex-end;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .ai-chat-window {
   display: grid;
   gap: 10px;
-  min-height: 230px;
-  max-height: 420px;
+  min-height: 360px;
+  max-height: min(62vh, 680px);
   overflow-y: auto;
   padding: 12px;
   border: 1px solid var(--line);
@@ -1555,7 +1556,7 @@ h3 {
 .ai-chat-message {
   display: grid;
   gap: 6px;
-  max-width: min(760px, 92%);
+  max-width: min(1080px, 94%);
   padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1577,10 +1578,102 @@ h3 {
   font-size: 12px;
 }
 
-.ai-chat-message p {
+.ai-markdown {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-markdown p,
+.ai-markdown ul,
+.ai-markdown h4 {
   margin: 0;
+}
+
+.ai-markdown p,
+.ai-markdown li {
   line-height: 1.65;
   white-space: pre-wrap;
+}
+
+.ai-markdown ul {
+  padding-left: 18px;
+}
+
+.ai-markdown li + li {
+  margin-top: 4px;
+}
+
+.ai-markdown h4 {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.ai-markdown h4.level-1 {
+  font-size: 18px;
+}
+
+.ai-markdown code {
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--amber);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.ai-markdown pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.ai-markdown pre code {
+  padding: 0;
+  border: 0;
+  color: #e9e2d8;
+  background: transparent;
+}
+
+.ai-markdown a {
+  color: #66d9ff;
+}
+
+.ai-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-message-attachments a {
+  display: grid;
+  gap: 5px;
+  width: 92px;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.ai-message-attachments img {
+  width: 92px;
+  height: 72px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.ai-message-attachments span,
+.ai-text-attachments em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.ai-hidden-file {
+  display: none;
 }
 
 .ai-result-text {
