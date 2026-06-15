@@ -338,6 +338,28 @@ function compactPayload(payload) {
   );
 }
 
+async function requestAgnesWithUnsupportedParamRetry(path, payload) {
+  let nextPayload = compactPayload(payload);
+  const dropped = [];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      const data = await requestAgnes(path, nextPayload);
+      return { data, dropped };
+    } catch (error) {
+      const message = error.message || "";
+      const match = message.match(/Setting [`'"]([^`'"]+)[`'"] is not supported/i)
+        || message.match(/[`'"]([^`'"]+)[`'"].*not supported/i);
+      const param = match?.[1];
+      if (!param || !(param in nextPayload)) throw error;
+      dropped.push(param);
+      const { [param]: _ignored, ...rest } = nextPayload;
+      nextPayload = rest;
+    }
+  }
+  const data = await requestAgnes(path, nextPayload);
+  return { data, dropped };
+}
+
 function truncateText(value, maxLength = 180) {
   const text = String(value || "").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
@@ -1827,21 +1849,22 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.image);
-      const data = await requestAgnes("/images/generations", compactPayload({
+      const imagePayload = {
         model,
         prompt,
         size: payload.size || "1024x1024",
         n: Math.max(1, Math.min(4, Number(payload.n) || 1)),
         quality: payload.quality,
-        style: payload.style,
         seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
         negative_prompt: payload.negativePrompt,
         reference_images: Array.isArray(payload.referenceImages) ? payload.referenceImages.filter(Boolean) : undefined,
-      }));
+      };
+      const { data, dropped } = await requestAgnesWithUnsupportedParamRetry("/images/generations", imagePayload);
       sendJson(res, 200, {
         ok: true,
         model,
         images: extractImageUrls(data),
+        droppedParams: dropped,
         raw: data,
       });
       return;
