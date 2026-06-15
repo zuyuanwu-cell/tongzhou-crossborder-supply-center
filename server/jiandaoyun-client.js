@@ -42,6 +42,7 @@ export async function fetchJdyDataList(formConfig, options = {}) {
       app_id: formConfig.appId,
       entry_id: formConfig.entryId,
       limit,
+      ...(options.filter ? { filter: options.filter } : {}),
       ...(dataId ? { data_id: dataId } : {}),
     };
 
@@ -219,5 +220,24 @@ export async function fetchAllJdyUserAccounts() {
 }
 
 export async function fetchAllJdyOutsourcingOrders() {
-  return fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders);
+  const inProductionFilter = {
+    rel: "and",
+    cond: [
+      {
+        field: JIANYUN_FORMS.outsourcingOrders.fields.status,
+        method: "eq",
+        value: ["进行中"],
+      },
+    ],
+  };
+  const [defaultRecords, inProductionRecords] = await Promise.all([
+    fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders),
+    fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders, { filter: inProductionFilter, maxPages: 10 }),
+  ]);
+  const merged = new Map();
+  for (const record of [...defaultRecords, ...inProductionRecords]) {
+    const id = record?._id || record?.data_id || record?.id || JSON.stringify(record);
+    merged.set(id, record);
+  }
+  return [...merged.values()];
 }
