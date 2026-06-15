@@ -3428,6 +3428,7 @@ function TongzhouAiPanel({
   const [imageParams, setImageParams] = React.useState({ size: "1024x1024", n: 1, quality: "standard", style: "natural", seed: "", negativePrompt: "" });
   const [imageReferenceUploads, setImageReferenceUploads] = React.useState<Array<{ name: string; url: string }>>([]);
   const [images, setImages] = React.useState<string[]>([]);
+  const [previewImage, setPreviewImage] = React.useState("");
   const [videoPrompt, setVideoPrompt] = React.useState("");
   const [videoParams, setVideoParams] = React.useState({
     duration: 5,
@@ -3474,6 +3475,15 @@ function TongzhouAiPanel({
       behavior: "smooth",
     });
   }, [chatMessages]);
+
+  React.useEffect(() => {
+    if (!previewImage) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreviewImage("");
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [previewImage]);
 
   async function saveConfig(event: React.FormEvent) {
     event.preventDefault();
@@ -3959,7 +3969,9 @@ function imageSrc(value: string) {
                 const src = imageSrc(item);
                 return (
                   <figure className="ai-image-card" key={`${item}-${index}`}>
-                    <img src={src} alt={`AI 生成图片 ${index + 1}`} />
+                    <button className="ai-image-preview-trigger" type="button" onClick={() => setPreviewImage(src)}>
+                      <img src={src} alt={`AI 生成图片 ${index + 1}`} />
+                    </button>
                     <figcaption>
                       <span>图片 {index + 1}</span>
                       <a className="ghost-button compact-button" href={src} download={`tongzhou-ai-image-${index + 1}.png`}>
@@ -4074,6 +4086,15 @@ function imageSrc(value: string) {
         </form>
         ) : null}
       </section>
+
+      {previewImage ? (
+        <div className="ai-image-lightbox" role="dialog" aria-modal="true" onClick={() => setPreviewImage("")}>
+          <button className="icon-button" type="button" aria-label="关闭预览" onClick={() => setPreviewImage("")}>
+            <X size={20} />
+          </button>
+          <img src={previewImage} alt="AI 生成图片预览" onClick={(event) => event.stopPropagation()} />
+        </div>
+      ) : null}
 
       {admin ? (
         <section className="panel ai-config-panel">

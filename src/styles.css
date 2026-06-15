@@ -1536,11 +1536,12 @@ h3 {
 
 .ai-ratio-options button {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 1fr;
+  justify-items: center;
   align-items: center;
-  gap: 8px;
-  min-height: 40px;
-  padding: 7px 9px;
+  gap: 5px;
+  min-height: 58px;
+  padding: 7px 6px;
   color: var(--muted);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1566,10 +1567,11 @@ h3 {
 }
 
 .ai-ratio-options b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
+  width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.15;
 }
 
 .ai-upload-list button:hover {
@@ -1749,7 +1751,17 @@ h3 {
   background: rgba(255, 255, 255, 0.035);
 }
 
-.ai-image-card img {
+.ai-image-preview-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.ai-image-card img,
+.ai-image-preview-trigger img {
   width: 100%;
   max-height: 340px;
   object-fit: contain;
@@ -1768,6 +1780,34 @@ h3 {
 
 .ai-image-card a {
   text-decoration: none;
+}
+
+.ai-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.86);
+  backdrop-filter: blur(10px);
+}
+
+.ai-image-lightbox img {
+  max-width: min(96vw, 1400px);
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.ai-image-lightbox .icon-button {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 81;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .ai-video-status {
