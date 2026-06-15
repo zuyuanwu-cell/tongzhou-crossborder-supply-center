@@ -1528,6 +1528,50 @@ h3 {
   cursor: pointer;
 }
 
+.ai-ratio-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-ratio-options button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 7px 9px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+  cursor: pointer;
+}
+
+.ai-ratio-options button:hover,
+.ai-ratio-options button.active {
+  color: var(--text);
+  border-color: rgba(255, 106, 31, 0.7);
+  background: rgba(255, 106, 31, 0.13);
+}
+
+.ai-ratio-options i {
+  display: block;
+  width: 28px;
+  max-height: 28px;
+  justify-self: center;
+  border: 2px solid currentColor;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.ai-ratio-options b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 .ai-upload-list button:hover {
   color: var(--text);
   border-color: rgba(255, 106, 31, 0.5);
@@ -1691,16 +1735,39 @@ h3 {
 
 .ai-image-results {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
 }
 
-.ai-image-results img {
+.ai-image-card {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.ai-image-card img {
   width: 100%;
   max-height: 340px;
   object-fit: contain;
-  border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.16);
+}
+
+.ai-image-card figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ai-image-card a {
+  text-decoration: none;
 }
 
 .ai-video-status {

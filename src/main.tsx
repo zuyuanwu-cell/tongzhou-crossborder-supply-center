@@ -3733,10 +3733,16 @@ function TongzhouAiPanel({
     }
   }
 
-  function imageSrc(value: string) {
-    if (/^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
-    return `data:image/png;base64,${value}`;
-  }
+function imageSrc(value: string) {
+  if (/^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
+  return `data:image/png;base64,${value}`;
+}
+
+  const imageSizeOptions = [
+    { value: "1024x1024", label: "1:1 方图", ratio: "1 / 1" },
+    { value: "1024x1792", label: "9:16 竖图", ratio: "9 / 16" },
+    { value: "1792x1024", label: "16:9 横图", ratio: "16 / 9" },
+  ];
 
   const tabs = [
     { id: "text" as const, label: "文字模型", model: "TZ-Text Pro", icon: Bot },
@@ -3888,11 +3894,19 @@ function TongzhouAiPanel({
           <div className="ai-parameter-grid">
             <label>
               <span>尺寸</span>
-              <select value={imageParams.size} onChange={(event) => setImageParams((current) => ({ ...current, size: event.target.value }))}>
-                <option value="1024x1024">1:1 方图</option>
-                <option value="1024x1792">9:16 竖图</option>
-                <option value="1792x1024">16:9 横图</option>
-              </select>
+              <div className="ai-ratio-options" role="radiogroup" aria-label="图片比例">
+                {imageSizeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={imageParams.size === option.value ? "active" : ""}
+                    onClick={() => setImageParams((current) => ({ ...current, size: option.value }))}
+                  >
+                    <i style={{ aspectRatio: option.ratio }} />
+                    <b>{option.label}</b>
+                  </button>
+                ))}
+              </div>
             </label>
             <label>
               <span>数量</span>
@@ -3941,7 +3955,21 @@ function TongzhouAiPanel({
           </button>
           {images.length ? (
             <div className="ai-image-results">
-              {images.map((item, index) => <img key={`${item}-${index}`} src={imageSrc(item)} alt={`AI 生成图片 ${index + 1}`} />)}
+              {images.map((item, index) => {
+                const src = imageSrc(item);
+                return (
+                  <figure className="ai-image-card" key={`${item}-${index}`}>
+                    <img src={src} alt={`AI 生成图片 ${index + 1}`} />
+                    <figcaption>
+                      <span>图片 {index + 1}</span>
+                      <a className="ghost-button compact-button" href={src} download={`tongzhou-ai-image-${index + 1}.png`}>
+                        <Download size={14} />
+                        下载
+                      </a>
+                    </figcaption>
+                  </figure>
+                );
+              })}
             </div>
           ) : null}
         </form>

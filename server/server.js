@@ -1849,23 +1849,36 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.image);
+      const requestedCount = Math.max(1, Math.min(4, Number(payload.n) || 1));
       const imagePayload = {
         model,
         prompt,
         size: payload.size || "1024x1024",
-        n: Math.max(1, Math.min(4, Number(payload.n) || 1)),
+        n: 1,
         quality: payload.quality,
         seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
         negative_prompt: payload.negativePrompt,
         reference_images: Array.isArray(payload.referenceImages) ? payload.referenceImages.filter(Boolean) : undefined,
       };
-      const { data, dropped } = await requestAgnesWithUnsupportedParamRetry("/images/generations", imagePayload);
+      const images = [];
+      const droppedParams = new Set();
+      let raw = null;
+      for (let index = 0; index < requestedCount; index += 1) {
+        const perImagePayload = {
+          ...imagePayload,
+          seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) + index : undefined,
+        };
+        const { data, dropped } = await requestAgnesWithUnsupportedParamRetry("/images/generations", perImagePayload);
+        raw = data;
+        dropped.forEach((param) => droppedParams.add(param));
+        images.push(...extractImageUrls(data));
+      }
       sendJson(res, 200, {
         ok: true,
         model,
-        images: extractImageUrls(data),
-        droppedParams: dropped,
-        raw: data,
+        images: images.slice(0, requestedCount),
+        droppedParams: [...droppedParams],
+        raw,
       });
       return;
     }
