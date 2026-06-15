@@ -118,8 +118,8 @@ export function publicUser(user) {
   if (!user) return { role: "guest", roleLabel: "游客", permissions: ["product_view"] };
   const role = normalizeRole(user.role);
   const permissions = role === "direct"
-    ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "operations", "users"]
-    : ["product_view", "distribution_price", "sales_price", "inventory", "assets", "qualifications", "quick_nav"];
+    ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai", "operations", "users"]
+    : ["product_view", "distribution_price", "sales_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai"];
   return {
     id: user.id,
     username: user.username,

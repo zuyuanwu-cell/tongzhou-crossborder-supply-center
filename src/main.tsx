@@ -5,6 +5,7 @@ import {
   ArrowUp,
   ArrowUpRight,
   BarChart3,
+  Bot,
   Boxes,
   CalendarDays,
   ChevronDown,
@@ -15,6 +16,8 @@ import {
   ExternalLink,
   FileText,
   Globe2,
+  Image,
+  KeyRound,
   LayoutDashboard,
   Lock,
   LogOut,
@@ -25,10 +28,12 @@ import {
   Settings,
   ShieldCheck,
   ShoppingBag,
+  Video,
   Truck,
   X,
 } from "lucide-react";
 import {
+  AiConfigPayload,
   AssetPayload,
   AssetRecord,
   AuthUser,
@@ -82,6 +87,12 @@ import {
   syncWarehouseInfo,
   updateUserStatus,
   updateWarehouseConnection,
+  fetchAiConfig,
+  fetchAiVideoStatus,
+  runAiImage,
+  runAiText,
+  runAiVideo,
+  updateAiConfig,
 } from "./api";
 import "./styles.css";
 
@@ -219,6 +230,7 @@ const navItems = [
   { label: "素材库", icon: Boxes, hash: "#assets", childOf: "产品库" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", childOf: "产品库" },
   { label: "快捷导航", icon: Globe2, hash: "#quick-nav" },
+  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", beta: true },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
 ];
@@ -236,7 +248,7 @@ function hashForView(view: string) {
 function visibleNavItems(user: AuthUser) {
   if (canManage(user)) return navItems;
   if (canViewPartnerAssets(user)) {
-    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航"].includes(item.label));
+    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航", "同舟AI"].includes(item.label));
   }
   return navItems.filter((item) => item.label === "产品库");
 }
@@ -461,6 +473,7 @@ function App() {
   const [assetPayload, setAssetPayload] = React.useState<AssetPayload | null>(null);
   const [warehouseInfoPayload, setWarehouseInfoPayload] = React.useState<WarehouseInfoPayload | null>(null);
   const [quickNavPayload, setQuickNavPayload] = React.useState<QuickNavPayload | null>(null);
+  const [aiConfigPayload, setAiConfigPayload] = React.useState<AiConfigPayload | null>(null);
   const [userPayload, setUserPayload] = React.useState<UserManagementPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
@@ -498,6 +511,7 @@ function App() {
       loadAssets();
       loadWarehouseInfo();
       loadQuickNav();
+      loadAiConfig();
     }
   }, [currentUser.role]);
 
@@ -514,6 +528,7 @@ function App() {
         void loadAssets();
         void loadWarehouseInfo();
         void loadQuickNav();
+        void loadAiConfig();
       }
       if (canManage(currentUser)) {
         void loadWarehouses();
@@ -621,6 +636,15 @@ function App() {
     }
   }
 
+  async function loadAiConfig() {
+    try {
+      const data = await fetchAiConfig();
+      setAiConfigPayload(data);
+    } catch {
+      setAiConfigPayload(null);
+    }
+  }
+
   async function loadUsers() {
     try {
       const data = await fetchUsers();
@@ -637,7 +661,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav()]);
+      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -806,7 +830,7 @@ function App() {
     setCurrentUser(result.user);
     await loadProducts();
     if (canViewPartnerAssets(result.user)) {
-      await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav()]);
+      await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
     }
     if (canManage(result.user)) {
       await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers()]);
@@ -820,6 +844,7 @@ function App() {
     setAssetPayload(null);
     setWarehouseInfoPayload(null);
     setQuickNavPayload(null);
+    setAiConfigPayload(null);
     setWarehousePayload(null);
     setInventorySnapshotPayload(null);
     setMovementPayload(null);
@@ -843,7 +868,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -897,6 +922,8 @@ function App() {
           <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} />
         ) : activeView === "快捷导航" ? (
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
+        ) : activeView === "同舟AI" ? (
+          <TongzhouAiPanel aiConfig={aiConfigPayload} currentUser={currentUser} onRefreshConfig={loadAiConfig} />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -1039,7 +1066,10 @@ function Sidebar({
                 onClick={() => onChange(item.label)}
               >
                 <Icon size={18} />
-                {item.label}
+                <span className="nav-label-wrap">
+                  {item.beta ? <small>Beta</small> : null}
+                  <span>{item.label}</span>
+                </span>
               </button>
             );
           })}
@@ -3274,6 +3304,274 @@ function QuickNavPage({
           )}
         </div>
       </section>
+    </main>
+  );
+}
+
+function TongzhouAiPanel({
+  aiConfig,
+  currentUser,
+  onRefreshConfig,
+}: {
+  aiConfig: AiConfigPayload | null;
+  currentUser: AuthUser;
+  onRefreshConfig: () => Promise<void>;
+}) {
+  const admin = canManage(currentUser);
+  const [configForm, setConfigForm] = React.useState({
+    apiKey: "",
+    baseUrl: aiConfig?.baseUrl || "https://apihub.agnes-ai.com/v1",
+    textModel: aiConfig?.models.text || "agnes-2.0-flash",
+    imageModel: aiConfig?.models.image || "agnes-image-2.1-flash",
+    videoModel: aiConfig?.models.video || "agnes-video-v2.0",
+  });
+  const [textPrompt, setTextPrompt] = React.useState("");
+  const [textAnswer, setTextAnswer] = React.useState("");
+  const [imagePrompt, setImagePrompt] = React.useState("");
+  const [imageSize, setImageSize] = React.useState("1024x1024");
+  const [images, setImages] = React.useState<string[]>([]);
+  const [videoPrompt, setVideoPrompt] = React.useState("");
+  const [videoTask, setVideoTask] = React.useState("");
+  const [videoStatus, setVideoStatus] = React.useState("");
+  const [videoUrl, setVideoUrl] = React.useState("");
+  const [busy, setBusy] = React.useState<"config" | "text" | "image" | "video" | "poll" | "">("");
+  const [message, setMessage] = React.useState("");
+
+  React.useEffect(() => {
+    if (!aiConfig) return;
+    setConfigForm((current) => ({
+      ...current,
+      baseUrl: aiConfig.baseUrl || current.baseUrl,
+      textModel: aiConfig.models.text || current.textModel,
+      imageModel: aiConfig.models.image || current.imageModel,
+      videoModel: aiConfig.models.video || current.videoModel,
+    }));
+  }, [aiConfig?.updatedAt]);
+
+  async function saveConfig(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("config");
+    setMessage("");
+    try {
+      await updateAiConfig({
+        apiKey: configForm.apiKey || undefined,
+        baseUrl: configForm.baseUrl,
+        models: {
+          text: configForm.textModel,
+          image: configForm.imageModel,
+          video: configForm.videoModel,
+        },
+      });
+      setConfigForm((current) => ({ ...current, apiKey: "" }));
+      await onRefreshConfig();
+      setMessage("同舟AI 配置已保存。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存同舟AI配置失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function submitText(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("text");
+    setMessage("");
+    setTextAnswer("");
+    try {
+      const result = await runAiText({ prompt: textPrompt, model: aiConfig?.models.text });
+      setTextAnswer(result.answer || "模型没有返回文本内容。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "文本生成失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function submitImage(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("image");
+    setMessage("");
+    setImages([]);
+    try {
+      const result = await runAiImage({ prompt: imagePrompt, model: aiConfig?.models.image, size: imageSize, n: 1 });
+      setImages(result.images || []);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "图片生成失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function submitVideo(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("video");
+    setMessage("");
+    setVideoTask("");
+    setVideoStatus("");
+    setVideoUrl("");
+    try {
+      const result = await runAiVideo({ prompt: videoPrompt, model: aiConfig?.models.video, duration: 5, aspectRatio: "16:9" });
+      setVideoTask(result.taskId || "");
+      setVideoStatus(result.status || "submitted");
+      setVideoUrl(result.videoUrl || "");
+      if (!result.videoUrl && result.taskId) setMessage("视频任务已提交，可稍后点击查询结果。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "视频生成失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function pollVideo() {
+    if (!videoTask) return;
+    setBusy("poll");
+    setMessage("");
+    try {
+      const result = await fetchAiVideoStatus(videoTask);
+      setVideoStatus(result.status || videoStatus || "处理中");
+      setVideoUrl(result.videoUrl || "");
+      if (result.videoUrl) setMessage("视频已生成。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "查询视频状态失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function imageSrc(value: string) {
+    if (/^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
+    return `data:image/png;base64,${value}`;
+  }
+
+  return (
+    <main className="movement-page ai-page">
+      <section className="library-hero ai-hero">
+        <div>
+          <p className="eyebrow">Tongzhou AI</p>
+          <h2>同舟AI</h2>
+          <p>把文本、图片、视频生成能力集中在一个工作台里，由管理员统一配置 API Key 和模型。</p>
+          <div className="source-row">
+            <span className={`status-pill ${aiConfig?.configured ? "good" : "warning"}`}>
+              {aiConfig?.configured ? "API Key 已配置" : "等待管理员配置 API Key"}
+            </span>
+            <span>{aiConfig?.apiKeyMasked || "未配置"}</span>
+          </div>
+        </div>
+        <div className="ai-model-stack">
+          <span><Bot size={15} /> {aiConfig?.models.text || "agnes-2.0-flash"}</span>
+          <span><Image size={15} /> {aiConfig?.models.image || "agnes-image-2.1-flash"}</span>
+          <span><Video size={15} /> {aiConfig?.models.video || "agnes-video-v2.0"}</span>
+        </div>
+      </section>
+
+      {message ? <div className={`notice ${message.includes("失败") || message.includes("尚未配置") ? "warning" : ""}`}>{message}</div> : null}
+
+      <section className="ai-capability-grid">
+        <form className="panel ai-tool-card" onSubmit={submitText}>
+          <div className="ai-tool-head">
+            <Bot size={20} />
+            <div>
+              <p className="eyebrow">Text Model</p>
+              <h3>文本模型</h3>
+            </div>
+          </div>
+          <textarea value={textPrompt} onChange={(event) => setTextPrompt(event.target.value)} placeholder="输入要生成、改写、翻译或分析的内容" />
+          <button className="sync-button" type="submit" disabled={busy === "text" || !textPrompt.trim()}>
+            {busy === "text" ? "生成中" : "生成文本"}
+          </button>
+          {textAnswer ? <div className="ai-result-text">{textAnswer}</div> : null}
+        </form>
+
+        <form className="panel ai-tool-card" onSubmit={submitImage}>
+          <div className="ai-tool-head">
+            <Image size={20} />
+            <div>
+              <p className="eyebrow">Image Model</p>
+              <h3>图片模型</h3>
+            </div>
+          </div>
+          <textarea value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} placeholder="描述要生成的图片，例如产品场景图、素材图、社媒配图" />
+          <select value={imageSize} onChange={(event) => setImageSize(event.target.value)}>
+            <option value="1024x1024">1:1 方图</option>
+            <option value="1024x1792">9:16 竖图</option>
+            <option value="1792x1024">16:9 横图</option>
+          </select>
+          <button className="sync-button" type="submit" disabled={busy === "image" || !imagePrompt.trim()}>
+            {busy === "image" ? "生成中" : "生成图片"}
+          </button>
+          {images.length ? (
+            <div className="ai-image-results">
+              {images.map((item, index) => <img key={`${item}-${index}`} src={imageSrc(item)} alt={`AI 生成图片 ${index + 1}`} />)}
+            </div>
+          ) : null}
+        </form>
+
+        <form className="panel ai-tool-card" onSubmit={submitVideo}>
+          <div className="ai-tool-head">
+            <Video size={20} />
+            <div>
+              <p className="eyebrow">Video Model</p>
+              <h3>视频模型</h3>
+            </div>
+          </div>
+          <textarea value={videoPrompt} onChange={(event) => setVideoPrompt(event.target.value)} placeholder="描述要生成的视频，例如产品展示短片、仓库流程动画、广告分镜" />
+          <button className="sync-button" type="submit" disabled={busy === "video" || !videoPrompt.trim()}>
+            {busy === "video" ? "提交中" : "生成视频"}
+          </button>
+          {videoTask ? (
+            <div className="ai-video-status">
+              <span>任务：{videoTask}</span>
+              <span>状态：{videoStatus || "处理中"}</span>
+              {!videoUrl ? (
+                <button className="ghost-button" type="button" onClick={pollVideo} disabled={busy === "poll"}>
+                  {busy === "poll" ? "查询中" : "查询结果"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {videoUrl ? <video className="ai-video-result" src={videoUrl} controls playsInline /> : null}
+        </form>
+      </section>
+
+      {admin ? (
+        <section className="panel ai-config-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Admin Config</p>
+              <h2>AI 配置</h2>
+            </div>
+            <span className={`status-pill ${aiConfig?.configured ? "good" : "warning"}`}>
+              {aiConfig?.configured ? `已配置 ${aiConfig.apiKeyMasked}` : "未配置"}
+            </span>
+          </div>
+          <form className="ai-config-form" onSubmit={saveConfig}>
+            <label>
+              <span>API Key</span>
+              <input value={configForm.apiKey} onChange={(event) => setConfigForm((current) => ({ ...current, apiKey: event.target.value }))} placeholder={aiConfig?.configured ? "留空则不修改现有 Key" : "请输入 Agnes AI API Key"} type="password" />
+            </label>
+            <label>
+              <span>Base URL</span>
+              <input value={configForm.baseUrl} onChange={(event) => setConfigForm((current) => ({ ...current, baseUrl: event.target.value }))} />
+            </label>
+            <label>
+              <span>文本模型</span>
+              <input value={configForm.textModel} onChange={(event) => setConfigForm((current) => ({ ...current, textModel: event.target.value }))} />
+            </label>
+            <label>
+              <span>图片模型</span>
+              <input value={configForm.imageModel} onChange={(event) => setConfigForm((current) => ({ ...current, imageModel: event.target.value }))} />
+            </label>
+            <label>
+              <span>视频模型</span>
+              <input value={configForm.videoModel} onChange={(event) => setConfigForm((current) => ({ ...current, videoModel: event.target.value }))} />
+            </label>
+            <button className="sync-button" type="submit" disabled={busy === "config"}>
+              <KeyRound size={16} />
+              {busy === "config" ? "保存中" : "保存配置"}
+            </button>
+          </form>
+        </section>
+      ) : null}
     </main>
   );
 }

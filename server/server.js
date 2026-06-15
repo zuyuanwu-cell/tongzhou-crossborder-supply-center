@@ -41,6 +41,7 @@ const qualificationCachePath = resolve(cacheDir, "qualifications.json");
 const assetCachePath = resolve(cacheDir, "assets.json");
 const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
 const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
+const aiConfigCachePath = resolve(cacheDir, "ai-config.json");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
@@ -56,6 +57,7 @@ let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualifi
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
 let cachedQuickNav = loadJsonCache(quickNavCachePath) || buildQuickNavPayload([]);
+let cachedAiConfig = loadJsonCache(aiConfigCachePath) || buildAiConfig({});
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
 const internalAccessCode = process.env.INTERNAL_ACCESS_CODE || "admin123";
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
@@ -192,6 +194,101 @@ function normalizeQuickNavUrl(value) {
   const parsed = new URL(withProtocol);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("快捷方式仅支持 http 或 https 链接。");
   return parsed.toString();
+}
+
+function buildAiConfig(input) {
+  return {
+    ok: true,
+    source: "local",
+    updatedAt: input.updatedAt || "",
+    provider: "agnes",
+    baseUrl: String(input.baseUrl || process.env.AGNES_AI_BASE_URL || "https://apihub.agnes-ai.com/v1").replace(/\/$/, ""),
+    apiKey: String(input.apiKey || process.env.AGNES_AI_API_KEY || ""),
+    models: {
+      text: String(input.models?.text || process.env.AGNES_TEXT_MODEL || "agnes-2.0-flash"),
+      image: String(input.models?.image || process.env.AGNES_IMAGE_MODEL || "agnes-image-2.1-flash"),
+      video: String(input.models?.video || process.env.AGNES_VIDEO_MODEL || "agnes-video-v2.0"),
+    },
+  };
+}
+
+function saveAiConfigCache() {
+  cachedAiConfig = buildAiConfig({ ...cachedAiConfig, updatedAt: new Date().toISOString() });
+  saveJsonCache(aiConfigCachePath, cachedAiConfig);
+}
+
+function maskedSecret(value) {
+  const secret = String(value || "");
+  if (!secret) return "";
+  if (secret.length <= 8) return `${secret.slice(0, 2)}****`;
+  return `${secret.slice(0, 4)}****${secret.slice(-4)}`;
+}
+
+function publicAiConfigPayload() {
+  return {
+    ok: true,
+    provider: cachedAiConfig.provider,
+    baseUrl: cachedAiConfig.baseUrl,
+    updatedAt: cachedAiConfig.updatedAt || "",
+    configured: Boolean(cachedAiConfig.apiKey),
+    apiKeyMasked: maskedSecret(cachedAiConfig.apiKey),
+    models: cachedAiConfig.models,
+  };
+}
+
+async function requestAgnes(path, payload, options = {}) {
+  if (!cachedAiConfig.apiKey) {
+    throw new Error("同舟AI 尚未配置 API Key。");
+  }
+
+  const response = await fetch(`${cachedAiConfig.baseUrl}${path}`, {
+    method: options.method || "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cachedAiConfig.apiKey}`,
+    },
+    body: options.method === "GET" ? undefined : JSON.stringify(payload || {}),
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : { text: await response.text() };
+  if (!response.ok) {
+    const message = data?.error?.message || data?.message || data?.text || "同舟AI 请求失败。";
+    throw new Error(message);
+  }
+  return data;
+}
+
+function extractTextAnswer(data) {
+  return data?.choices?.[0]?.message?.content
+    || data?.choices?.[0]?.text
+    || data?.data?.choices?.[0]?.message?.content
+    || data?.output_text
+    || data?.text
+    || "";
+}
+
+function extractImageUrls(data) {
+  const items = data?.data || data?.images || data?.output || [];
+  return (Array.isArray(items) ? items : [items])
+    .map((item) => item?.url || item?.image_url || item?.b64_json || item)
+    .filter(Boolean);
+}
+
+function extractVideoTask(data) {
+  return data?.task_id || data?.id || data?.data?.task_id || data?.data?.id || "";
+}
+
+function extractVideoUrl(data) {
+  return data?.video_url
+    || data?.url
+    || data?.data?.video_url
+    || data?.data?.url
+    || data?.output?.video_url
+    || data?.output?.url
+    || data?.result?.video_url
+    || data?.result?.url
+    || "";
 }
 
 function loadUsersCache() {
@@ -1223,6 +1320,138 @@ const server = http.createServer(async (req, res) => {
       category.updatedAt = new Date().toISOString();
       saveQuickNavCache();
       sendJson(res, 200, cachedQuickNav);
+      return;
+    }
+
+    if (url.pathname === "/api/ai/config" && req.method === "GET") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看同舟AI需要登录。" });
+        return;
+      }
+      sendJson(res, 200, publicAiConfigPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/ai/config" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "配置同舟AI需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      cachedAiConfig = buildAiConfig({
+        ...cachedAiConfig,
+        baseUrl: payload.baseUrl || cachedAiConfig.baseUrl,
+        apiKey: payload.apiKey === undefined ? cachedAiConfig.apiKey : String(payload.apiKey || "").trim(),
+        models: {
+          ...cachedAiConfig.models,
+          ...(payload.models || {}),
+        },
+      });
+      saveAiConfigCache();
+      sendJson(res, 200, publicAiConfigPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/ai/text" && req.method === "POST") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const prompt = String(payload.prompt || "").trim();
+      if (!prompt) {
+        sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
+        return;
+      }
+      const model = String(payload.model || cachedAiConfig.models.text);
+      const data = await requestAgnes("/chat/completions", {
+        model,
+        messages: [
+          { role: "system", content: "你是同舟供应链数智化系统中的AI助手，回答要准确、简洁、可执行。" },
+          { role: "user", content: prompt },
+        ],
+        temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        model,
+        answer: extractTextAnswer(data),
+        raw: data,
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/ai/image" && req.method === "POST") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const prompt = String(payload.prompt || "").trim();
+      if (!prompt) {
+        sendJson(res, 400, { ok: false, message: "请输入图片提示词。" });
+        return;
+      }
+      const model = String(payload.model || cachedAiConfig.models.image);
+      const data = await requestAgnes("/images/generations", {
+        model,
+        prompt,
+        size: payload.size || "1024x1024",
+        n: Math.max(1, Math.min(4, Number(payload.n) || 1)),
+      });
+      sendJson(res, 200, {
+        ok: true,
+        model,
+        images: extractImageUrls(data),
+        raw: data,
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/ai/video" && req.method === "POST") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const prompt = String(payload.prompt || "").trim();
+      if (!prompt) {
+        sendJson(res, 400, { ok: false, message: "请输入视频提示词。" });
+        return;
+      }
+      const model = String(payload.model || cachedAiConfig.models.video);
+      const data = await requestAgnes("/videos", {
+        model,
+        prompt,
+        duration: Number(payload.duration) || 5,
+        aspect_ratio: payload.aspectRatio || "16:9",
+      });
+      sendJson(res, 200, {
+        ok: true,
+        model,
+        taskId: extractVideoTask(data),
+        videoUrl: extractVideoUrl(data),
+        status: data?.status || data?.data?.status || "submitted",
+        raw: data,
+      });
+      return;
+    }
+
+    const aiVideoStatusMatch = url.pathname.match(/^\/api\/ai\/video\/([^/]+)$/);
+    if (aiVideoStatusMatch && req.method === "GET") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
+        return;
+      }
+      const taskId = decodeURIComponent(aiVideoStatusMatch[1]);
+      const data = await requestAgnes(`/videos/${encodeURIComponent(taskId)}`, null, { method: "GET" });
+      sendJson(res, 200, {
+        ok: true,
+        taskId,
+        videoUrl: extractVideoUrl(data),
+        status: data?.status || data?.data?.status || data?.result?.status || "",
+        raw: data,
+      });
       return;
     }
 

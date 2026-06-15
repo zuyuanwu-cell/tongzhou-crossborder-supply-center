@@ -278,6 +278,43 @@ export type QuickNavPayload = {
   categories: QuickNavCategory[];
 };
 
+export type AiConfigPayload = {
+  ok: boolean;
+  provider: "agnes";
+  baseUrl: string;
+  updatedAt: string;
+  configured: boolean;
+  apiKeyMasked: string;
+  models: {
+    text: string;
+    image: string;
+    video: string;
+  };
+};
+
+export type AiTextResult = {
+  ok: boolean;
+  model: string;
+  answer: string;
+  raw?: unknown;
+};
+
+export type AiImageResult = {
+  ok: boolean;
+  model: string;
+  images: string[];
+  raw?: unknown;
+};
+
+export type AiVideoResult = {
+  ok: boolean;
+  model?: string;
+  taskId: string;
+  status: string;
+  videoUrl: string;
+  raw?: unknown;
+};
+
 export type WmsProvider = {
   id: string;
   name: string;
@@ -662,6 +699,42 @@ export function deleteQuickNavLink(categoryId: string, linkId: string) {
   return requestJson<QuickNavPayload>(`/api/quick-nav/categories/${encodeURIComponent(categoryId)}/links/${encodeURIComponent(linkId)}`, {
     method: "DELETE",
   });
+}
+
+export function fetchAiConfig() {
+  return requestJson<AiConfigPayload>("/api/ai/config");
+}
+
+export function updateAiConfig(input: { apiKey?: string; baseUrl?: string; models?: Partial<AiConfigPayload["models"]> }) {
+  return requestJson<AiConfigPayload>("/api/ai/config", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function runAiText(input: { prompt: string; model?: string; temperature?: number }) {
+  return requestJson<AiTextResult>("/api/ai/text", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function runAiImage(input: { prompt: string; model?: string; size?: string; n?: number }) {
+  return requestJson<AiImageResult>("/api/ai/image", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function runAiVideo(input: { prompt: string; model?: string; duration?: number; aspectRatio?: string }) {
+  return requestJson<AiVideoResult>("/api/ai/video", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchAiVideoStatus(taskId: string) {
+  return requestJson<AiVideoResult>(`/api/ai/video/${encodeURIComponent(taskId)}`);
 }
 
 export function fetchUsers() {
