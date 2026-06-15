@@ -90,6 +90,7 @@ import {
   fetchAiConfig,
   fetchAiVideoStatus,
   runAiImage,
+  runAiText,
   runAiVideo,
   streamAiText,
   updateAiConfig,
@@ -3363,6 +3364,14 @@ function TongzhouAiPanel({
     }));
   }, [aiConfig?.updatedAt]);
 
+  React.useEffect(() => {
+    if (!videoTask || videoUrl) return;
+    const timer = window.setInterval(() => {
+      void pollVideo(true);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [videoTask, videoUrl]);
+
   async function saveConfig(event: React.FormEvent) {
     event.preventDefault();
     setBusy("config");
@@ -3391,12 +3400,12 @@ function TongzhouAiPanel({
     event.preventDefault();
     setBusy("text");
     setMessage("");
+    const nextMessages = [...chatMessages, { role: "user" as const, content: textPrompt.trim() }];
+    let answer = "";
+    const assistantIndex = nextMessages.length;
+    setChatMessages([...nextMessages, { role: "assistant", content: "" }]);
+    setTextPrompt("");
     try {
-      const nextMessages = [...chatMessages, { role: "user" as const, content: textPrompt.trim() }];
-      let answer = "";
-      const assistantIndex = nextMessages.length;
-      setChatMessages([...nextMessages, { role: "assistant", content: "" }]);
-      setTextPrompt("");
       await streamAiText({
         messages: nextMessages,
         model: aiConfig?.models.text,
@@ -3411,8 +3420,20 @@ function TongzhouAiPanel({
         setChatMessages((current) => current.map((item, index) => index === assistantIndex ? { ...item, content: "模型没有返回文本内容。" } : item));
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "文本生成失败。");
-      setChatMessages((current) => current.filter((item) => item.content));
+      try {
+        const result = await runAiText({
+          messages: nextMessages,
+          model: aiConfig?.models.text,
+          temperature: textParams.temperature,
+          topP: textParams.topP,
+          maxTokens: textParams.maxTokens,
+        });
+        setChatMessages((current) => current.map((item, index) => index === assistantIndex ? { ...item, content: result.answer || "模型没有返回文本内容。" } : item));
+        setMessage("流式连接不可用，已切换为普通对话模式。");
+      } catch (fallbackError) {
+        setMessage(fallbackError instanceof Error ? fallbackError.message : error instanceof Error ? error.message : "文本生成失败。");
+        setChatMessages((current) => current.filter((item) => item.content));
+      }
     } finally {
       setBusy("");
     }
@@ -3469,7 +3490,7 @@ function TongzhouAiPanel({
       setVideoTask(result.taskId || "");
       setVideoStatus(result.status || "submitted");
       setVideoUrl(result.videoUrl || "");
-      if (!result.videoUrl && result.taskId) setMessage("视频任务已提交，可稍后点击查询结果。");
+      if (!result.videoUrl && result.taskId) setMessage("视频任务已提交，系统会自动查询生成结果。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "视频生成失败。");
     } finally {
@@ -3484,6 +3505,10 @@ function TongzhouAiPanel({
       reader.onerror = () => reject(new Error("图片读取失败。"));
       reader.readAsDataURL(file);
     });
+  }
+
+  function isPrivateUploadUrl(url: string) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(url);
   }
 
   async function uploadFiles(files: FileList | null, target: "imageRefs" | "videoRefs" | "videoImage" | "videoFirst" | "videoLast") {
@@ -3505,7 +3530,7 @@ function TongzhouAiPanel({
         const key = target === "videoImage" ? "image" : target === "videoFirst" ? "first" : "last";
         setVideoFrameUploads((current) => ({ ...current, [key]: uploaded[uploaded.length - 1] }));
       }
-      setMessage("图片已上传，可直接用于模型参考。");
+      setMessage(uploaded.some((item) => isPrivateUploadUrl(item.url)) ? "图片已上传；当前是本地/内网地址，部署到公网后模型才能稳定读取参考图。" : "图片已上传，可直接用于模型参考。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "图片上传失败。");
     } finally {
@@ -3513,19 +3538,21 @@ function TongzhouAiPanel({
     }
   }
 
-  async function pollVideo() {
+  async function pollVideo(silent = false) {
     if (!videoTask) return;
-    setBusy("poll");
-    setMessage("");
+    if (!silent) {
+      setBusy("poll");
+      setMessage("");
+    }
     try {
       const result = await fetchAiVideoStatus(videoTask);
       setVideoStatus(result.status || videoStatus || "处理中");
       setVideoUrl(result.videoUrl || "");
       if (result.videoUrl) setMessage("视频已生成。");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "查询视频状态失败。");
+      if (!silent) setMessage(error instanceof Error ? error.message : "查询视频状态失败。");
     } finally {
-      setBusy("");
+      if (!silent) setBusy("");
     }
   }
 
@@ -3781,7 +3808,7 @@ function TongzhouAiPanel({
               <span>任务：{videoTask}</span>
               <span>状态：{videoStatus || "处理中"}</span>
               {!videoUrl ? (
-                <button className="ghost-button" type="button" onClick={pollVideo} disabled={busy === "poll"}>
+                <button className="ghost-button" type="button" onClick={() => pollVideo()} disabled={busy === "poll"}>
                   {busy === "poll" ? "查询中" : "查询结果"}
                 </button>
               ) : null}

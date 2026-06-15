@@ -346,11 +346,15 @@ function aiMessagesFromPayload(payload) {
       role: ["system", "assistant", "user"].includes(message?.role) ? message.role : "user",
       content: String(message?.content || "").trim(),
     }))
-    .filter((message) => message.content);
-  if (messages.length) return messages;
+        .filter((message) => message.content);
+  if (messages.length) {
+    return messages.some((message) => message.role === "system")
+      ? messages
+      : [{ role: "system", content: "你是同舟供应链数智化系统中的AI助手，默认使用中文回答，回答要准确、简洁、可执行。" }, ...messages];
+  }
   if (!prompt) return [];
   return [
-    { role: "system", content: "你是同舟供应链数智化系统中的AI助手，回答要准确、简洁、可执行。" },
+    { role: "system", content: "你是同舟供应链数智化系统中的AI助手，默认使用中文回答，回答要准确、简洁、可执行。" },
     { role: "user", content: prompt },
   ];
 }
