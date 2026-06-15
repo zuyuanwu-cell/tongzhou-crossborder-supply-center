@@ -1086,7 +1086,7 @@ function Sidebar({
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand-row">
           <div className="brand-mark">
-            <Truck size={22} />
+            <img src="/tongzhou-logo.png" alt="同舟跨境" />
           </div>
           <div>
             <strong>同舟供应链</strong>
