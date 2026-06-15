@@ -315,6 +315,16 @@ export type AiVideoResult = {
   raw?: unknown;
 };
 
+export type AiUploadResult = {
+  ok: boolean;
+  upload: {
+    id: string;
+    url: string;
+    mimeType: string;
+    size: number;
+  };
+};
+
 export type WmsProvider = {
   id: string;
   name: string;
@@ -714,6 +724,51 @@ export function updateAiConfig(input: { apiKey?: string; baseUrl?: string; model
 
 export function runAiText(input: { prompt?: string; messages?: Array<{ role: "user" | "assistant" | "system"; content: string }>; model?: string; temperature?: number; maxTokens?: number; topP?: number }) {
   return requestJson<AiTextResult>("/api/ai/text", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function streamAiText(
+  input: { messages: Array<{ role: "user" | "assistant" | "system"; content: string }>; model?: string; temperature?: number; maxTokens?: number; topP?: number },
+  onDelta: (delta: string) => void,
+) {
+  const response = await fetch(`${API_BASE}/api/ai/text/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({ message: "同舟AI 流式对话失败。" }));
+    throw new Error(payload.message || "同舟AI 流式对话失败。");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split(/\n\n/);
+    buffer = events.pop() || "";
+    for (const event of events) {
+      const eventName = event.match(/^event:\s*(.+)$/m)?.[1]?.trim();
+      const dataText = event.match(/^data:\s*(.+)$/m)?.[1];
+      if (!dataText) continue;
+      const payload = JSON.parse(dataText);
+      if (eventName === "error") throw new Error(payload.message || "同舟AI 流式对话失败。");
+      if (eventName === "delta" && payload.delta) onDelta(payload.delta);
+    }
+  }
+}
+
+export function uploadAiImage(input: { fileName: string; dataUrl: string }) {
+  return requestJson<AiUploadResult>("/api/ai/uploads", {
     method: "POST",
     body: JSON.stringify(input),
   });

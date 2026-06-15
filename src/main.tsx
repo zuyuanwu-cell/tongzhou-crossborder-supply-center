@@ -90,9 +90,10 @@ import {
   fetchAiConfig,
   fetchAiVideoStatus,
   runAiImage,
-  runAiText,
   runAiVideo,
+  streamAiText,
   updateAiConfig,
+  uploadAiImage,
 } from "./api";
 import "./styles.css";
 
@@ -3330,7 +3331,8 @@ function TongzhouAiPanel({
   const [chatMessages, setChatMessages] = React.useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const [textParams, setTextParams] = React.useState({ temperature: 0.7, topP: 1, maxTokens: 1200 });
   const [imagePrompt, setImagePrompt] = React.useState("");
-  const [imageParams, setImageParams] = React.useState({ size: "1024x1024", n: 1, quality: "standard", style: "natural", seed: "", negativePrompt: "", referenceImages: "" });
+  const [imageParams, setImageParams] = React.useState({ size: "1024x1024", n: 1, quality: "standard", style: "natural", seed: "", negativePrompt: "" });
+  const [imageReferenceUploads, setImageReferenceUploads] = React.useState<Array<{ name: string; url: string }>>([]);
   const [images, setImages] = React.useState<string[]>([]);
   const [videoPrompt, setVideoPrompt] = React.useState("");
   const [videoParams, setVideoParams] = React.useState({
@@ -3338,18 +3340,16 @@ function TongzhouAiPanel({
     aspectRatio: "16:9",
     resolution: "720p",
     seed: "",
-    imageUrl: "",
-    referenceImages: "",
-    firstFrameUrl: "",
-    lastFrameUrl: "",
     negativePrompt: "",
     cameraControl: "",
     motionStrength: 0.5,
   });
+  const [videoReferenceUploads, setVideoReferenceUploads] = React.useState<Array<{ name: string; url: string }>>([]);
+  const [videoFrameUploads, setVideoFrameUploads] = React.useState<{ image?: { name: string; url: string }; first?: { name: string; url: string }; last?: { name: string; url: string } }>({});
   const [videoTask, setVideoTask] = React.useState("");
   const [videoStatus, setVideoStatus] = React.useState("");
   const [videoUrl, setVideoUrl] = React.useState("");
-  const [busy, setBusy] = React.useState<"config" | "text" | "image" | "video" | "poll" | "">("");
+  const [busy, setBusy] = React.useState<"config" | "text" | "image" | "video" | "poll" | "upload" | "">("");
   const [message, setMessage] = React.useState("");
 
   React.useEffect(() => {
@@ -3393,18 +3393,26 @@ function TongzhouAiPanel({
     setMessage("");
     try {
       const nextMessages = [...chatMessages, { role: "user" as const, content: textPrompt.trim() }];
-      setChatMessages(nextMessages);
+      let answer = "";
+      const assistantIndex = nextMessages.length;
+      setChatMessages([...nextMessages, { role: "assistant", content: "" }]);
       setTextPrompt("");
-      const result = await runAiText({
+      await streamAiText({
         messages: nextMessages,
         model: aiConfig?.models.text,
         temperature: textParams.temperature,
         topP: textParams.topP,
         maxTokens: textParams.maxTokens,
+      }, (delta) => {
+        answer += delta;
+        setChatMessages((current) => current.map((item, index) => index === assistantIndex ? { ...item, content: answer } : item));
       });
-      setChatMessages([...nextMessages, { role: "assistant", content: result.answer || "模型没有返回文本内容。" }]);
+      if (!answer) {
+        setChatMessages((current) => current.map((item, index) => index === assistantIndex ? { ...item, content: "模型没有返回文本内容。" } : item));
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "文本生成失败。");
+      setChatMessages((current) => current.filter((item) => item.content));
     } finally {
       setBusy("");
     }
@@ -3425,7 +3433,7 @@ function TongzhouAiPanel({
         style: imageParams.style,
         seed: imageParams.seed ? Number(imageParams.seed) : undefined,
         negativePrompt: imageParams.negativePrompt,
-        referenceImages: imageParams.referenceImages.split(/\n|,/).map((item) => item.trim()).filter(Boolean),
+        referenceImages: imageReferenceUploads.map((item) => item.url),
       });
       setImages(result.images || []);
     } catch (error) {
@@ -3450,10 +3458,10 @@ function TongzhouAiPanel({
         aspectRatio: videoParams.aspectRatio,
         resolution: videoParams.resolution,
         seed: videoParams.seed ? Number(videoParams.seed) : undefined,
-        imageUrl: videoParams.imageUrl,
-        referenceImages: videoParams.referenceImages.split(/\n|,/).map((item) => item.trim()).filter(Boolean),
-        firstFrameUrl: videoParams.firstFrameUrl,
-        lastFrameUrl: videoParams.lastFrameUrl,
+        imageUrl: videoFrameUploads.image?.url,
+        referenceImages: videoReferenceUploads.map((item) => item.url),
+        firstFrameUrl: videoFrameUploads.first?.url,
+        lastFrameUrl: videoFrameUploads.last?.url,
         negativePrompt: videoParams.negativePrompt,
         cameraControl: videoParams.cameraControl,
         motionStrength: videoParams.motionStrength,
@@ -3464,6 +3472,42 @@ function TongzhouAiPanel({
       if (!result.videoUrl && result.taskId) setMessage("视频任务已提交，可稍后点击查询结果。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "视频生成失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function fileToDataUrl(file: File) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("图片读取失败。"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadFiles(files: FileList | null, target: "imageRefs" | "videoRefs" | "videoImage" | "videoFirst" | "videoLast") {
+    if (!files?.length) return;
+    setBusy("upload");
+    setMessage("");
+    try {
+      const uploaded = [] as Array<{ name: string; url: string }>;
+      for (const file of Array.from(files)) {
+        const dataUrl = await fileToDataUrl(file);
+        const result = await uploadAiImage({ fileName: file.name, dataUrl });
+        uploaded.push({ name: file.name, url: result.upload.url });
+      }
+      if (target === "imageRefs") {
+        setImageReferenceUploads((current) => [...current, ...uploaded]);
+      } else if (target === "videoRefs") {
+        setVideoReferenceUploads((current) => [...current, ...uploaded]);
+      } else {
+        const key = target === "videoImage" ? "image" : target === "videoFirst" ? "first" : "last";
+        setVideoFrameUploads((current) => ({ ...current, [key]: uploaded[uploaded.length - 1] }));
+      }
+      setMessage("图片已上传，可直接用于模型参考。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "图片上传失败。");
     } finally {
       setBusy("");
     }
@@ -3623,8 +3667,19 @@ function TongzhouAiPanel({
             <input value={imageParams.negativePrompt} onChange={(event) => setImageParams((current) => ({ ...current, negativePrompt: event.target.value }))} placeholder="不希望出现在图片里的内容" />
           </label>
           <label className="ai-wide-field">
-            <span>参考图片 URL</span>
-            <textarea value={imageParams.referenceImages} onChange={(event) => setImageParams((current) => ({ ...current, referenceImages: event.target.value }))} placeholder="每行一个图片 URL，用于图片参考或风格参考" />
+            <span>参考图片</span>
+            <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.currentTarget.files, "imageRefs")} />
+            {imageReferenceUploads.length ? (
+              <div className="ai-upload-list">
+                {imageReferenceUploads.map((item) => (
+                  <span key={item.url}>
+                    <img src={item.url} alt={item.name} />
+                    {item.name}
+                    <button type="button" onClick={() => setImageReferenceUploads((current) => current.filter((upload) => upload.url !== item.url))}>移除</button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </label>
           <button className="sync-button" type="submit" disabled={busy === "image" || !imagePrompt.trim()}>
             {busy === "image" ? "生成中" : "生成图片"}
@@ -3679,20 +3734,34 @@ function TongzhouAiPanel({
           <div className="ai-frame-grid">
             <label>
               <span>图片参考</span>
-              <input value={videoParams.imageUrl} onChange={(event) => setVideoParams((current) => ({ ...current, imageUrl: event.target.value }))} placeholder="图片参考 URL" />
+              <input type="file" accept="image/*" onChange={(event) => uploadFiles(event.currentTarget.files, "videoImage")} />
+              {videoFrameUploads.image ? <small>{videoFrameUploads.image.name}</small> : null}
             </label>
             <label>
               <span>首帧图片</span>
-              <input value={videoParams.firstFrameUrl} onChange={(event) => setVideoParams((current) => ({ ...current, firstFrameUrl: event.target.value }))} placeholder="首帧 URL" />
+              <input type="file" accept="image/*" onChange={(event) => uploadFiles(event.currentTarget.files, "videoFirst")} />
+              {videoFrameUploads.first ? <small>{videoFrameUploads.first.name}</small> : null}
             </label>
             <label>
               <span>尾帧图片</span>
-              <input value={videoParams.lastFrameUrl} onChange={(event) => setVideoParams((current) => ({ ...current, lastFrameUrl: event.target.value }))} placeholder="尾帧 URL" />
+              <input type="file" accept="image/*" onChange={(event) => uploadFiles(event.currentTarget.files, "videoLast")} />
+              {videoFrameUploads.last ? <small>{videoFrameUploads.last.name}</small> : null}
             </label>
           </div>
           <label className="ai-wide-field">
-            <span>多张参考图 URL</span>
-            <textarea value={videoParams.referenceImages} onChange={(event) => setVideoParams((current) => ({ ...current, referenceImages: event.target.value }))} placeholder="每行一个图片 URL，支持多参考图" />
+            <span>多张参考图</span>
+            <input type="file" accept="image/*" multiple onChange={(event) => uploadFiles(event.currentTarget.files, "videoRefs")} />
+            {videoReferenceUploads.length ? (
+              <div className="ai-upload-list">
+                {videoReferenceUploads.map((item) => (
+                  <span key={item.url}>
+                    <img src={item.url} alt={item.name} />
+                    {item.name}
+                    <button type="button" onClick={() => setVideoReferenceUploads((current) => current.filter((upload) => upload.url !== item.url))}>移除</button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </label>
           <div className="ai-frame-grid">
             <label>

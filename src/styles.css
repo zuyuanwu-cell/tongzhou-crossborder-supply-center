@@ -1472,6 +1472,62 @@ h3 {
   min-height: 82px;
 }
 
+.ai-wide-field input[type="file"],
+.ai-frame-grid input[type="file"] {
+  min-height: 42px;
+  padding: 8px;
+  color: var(--muted);
+}
+
+.ai-frame-grid small {
+  color: var(--amber);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-upload-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-upload-list span {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 12px;
+}
+
+.ai-upload-list img {
+  width: 46px;
+  height: 46px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.ai-upload-list button {
+  min-height: 28px;
+  padding: 0 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.ai-upload-list button:hover {
+  color: var(--text);
+  border-color: rgba(255, 106, 31, 0.5);
+}
+
 .ai-action-row {
   display: flex;
   justify-content: flex-end;

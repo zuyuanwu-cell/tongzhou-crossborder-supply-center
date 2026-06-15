@@ -1,6 +1,6 @@
 import http from "node:http";
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
@@ -42,6 +42,7 @@ const assetCachePath = resolve(cacheDir, "assets.json");
 const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
 const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
 const aiConfigCachePath = resolve(cacheDir, "ai-config.json");
+const aiUploadDir = resolve(cacheDir, "ai-uploads");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
@@ -259,6 +260,42 @@ async function requestAgnes(path, payload, options = {}) {
   return data;
 }
 
+async function requestAgnesStream(path, payload) {
+  if (!cachedAiConfig.apiKey) {
+    throw new Error("同舟AI 尚未配置 API Key。");
+  }
+
+  const response = await fetch(`${cachedAiConfig.baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cachedAiConfig.apiKey}`,
+    },
+    body: JSON.stringify(payload || {}),
+  });
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json") ? await response.json() : { text: await response.text() };
+    const message = data?.error?.message || data?.message || data?.text || "同舟AI 请求失败。";
+    throw new Error(message);
+  }
+  return response;
+}
+
+function extractStreamDelta(data) {
+  return data?.choices?.[0]?.delta?.content
+    || data?.choices?.[0]?.message?.content
+    || data?.choices?.[0]?.text
+    || data?.delta
+    || data?.content
+    || "";
+}
+
+function sendSse(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
 function extractTextAnswer(data) {
   return data?.choices?.[0]?.message?.content
     || data?.choices?.[0]?.text
@@ -299,6 +336,65 @@ function compactPayload(payload) {
       return true;
     }),
   );
+}
+
+function aiMessagesFromPayload(payload) {
+  const prompt = String(payload.prompt || "").trim();
+  const payloadMessages = Array.isArray(payload.messages) ? payload.messages : [];
+  const messages = payloadMessages
+    .map((message) => ({
+      role: ["system", "assistant", "user"].includes(message?.role) ? message.role : "user",
+      content: String(message?.content || "").trim(),
+    }))
+    .filter((message) => message.content);
+  if (messages.length) return messages;
+  if (!prompt) return [];
+  return [
+    { role: "system", content: "你是同舟供应链数智化系统中的AI助手，回答要准确、简洁、可执行。" },
+    { role: "user", content: prompt },
+  ];
+}
+
+function aiChatPayload(payload, model) {
+  return compactPayload({
+    model,
+    messages: aiMessagesFromPayload(payload),
+    temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
+    max_tokens: Number.isFinite(Number(payload.maxTokens)) ? Number(payload.maxTokens) : undefined,
+    top_p: Number.isFinite(Number(payload.topP)) ? Number(payload.topP) : undefined,
+    stream: Boolean(payload.stream),
+  });
+}
+
+function mimeFromExtension(fileName) {
+  const ext = extname(fileName).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  return "image/png";
+}
+
+function saveAiUpload(payload, req) {
+  const dataUrl = String(payload.dataUrl || "");
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,(.+)$/i);
+  if (!match) throw new Error("请上传 PNG、JPG、WEBP 或 GIF 图片。");
+  const mimeType = match[1].replace("image/jpg", "image/jpeg");
+  const bytes = Buffer.from(match[2], "base64");
+  if (!bytes.length) throw new Error("图片内容为空。");
+  if (bytes.length > 8 * 1024 * 1024) throw new Error("单张图片不能超过 8MB。");
+
+  const extension = mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1];
+  const id = `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  mkdirSync(aiUploadDir, { recursive: true });
+  writeFileSync(resolve(aiUploadDir, id), bytes);
+  const protocol = req.headers["x-forwarded-proto"] || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return {
+    id,
+    url: `${protocol}://${host}/api/ai/uploads/${encodeURIComponent(id)}`,
+    mimeType,
+    size: bytes.length,
+  };
 }
 
 function loadUsersCache() {
@@ -1362,35 +1458,112 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname.startsWith("/api/ai/uploads/") && req.method === "GET") {
+      const fileName = decodeURIComponent(url.pathname.replace("/api/ai/uploads/", ""));
+      if (!/^[a-z0-9-]+\.(png|jpg|jpeg|webp|gif)$/i.test(fileName)) {
+        sendJson(res, 400, { ok: false, message: "文件名不正确。" });
+        return;
+      }
+      const filePath = resolve(aiUploadDir, fileName);
+      if (!existsSync(filePath)) {
+        sendJson(res, 404, { ok: false, message: "图片不存在。" });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": mimeFromExtension(fileName),
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(readFileSync(filePath));
+      return;
+    }
+
+    if (url.pathname === "/api/ai/uploads" && req.method === "POST") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "上传同舟AI参考图需要登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const upload = saveAiUpload(payload, req);
+      sendJson(res, 201, { ok: true, upload });
+      return;
+    }
+
+    if (url.pathname === "/api/ai/text/stream" && req.method === "POST") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      if (!aiMessagesFromPayload(payload).length) {
+        sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+
+      try {
+        const model = String(payload.model || cachedAiConfig.models.text);
+        const upstream = await requestAgnesStream("/chat/completions", aiChatPayload({ ...payload, stream: true }, model));
+        const upstreamType = upstream.headers.get("content-type") || "";
+        if (upstreamType.includes("application/json")) {
+          const data = await upstream.json();
+          const answer = extractTextAnswer(data);
+          if (answer) sendSse(res, "delta", { delta: answer });
+          sendSse(res, "done", { ok: true });
+          res.end();
+          return;
+        }
+        const reader = upstream.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (reader) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const raw = trimmed.replace(/^data:\s*/, "");
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(raw);
+              const delta = extractStreamDelta(parsed);
+              if (delta) sendSse(res, "delta", { delta });
+            } catch {
+              sendSse(res, "delta", { delta: raw });
+            }
+          }
+        }
+        sendSse(res, "done", { ok: true });
+      } catch (error) {
+        sendSse(res, "error", { message: error.message || "同舟AI 流式对话失败。" });
+      } finally {
+        res.end();
+      }
+      return;
+    }
+
     if (url.pathname === "/api/ai/text" && req.method === "POST") {
       if (!canViewPartnerAssets(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
-      const prompt = String(payload.prompt || "").trim();
-      const payloadMessages = Array.isArray(payload.messages) ? payload.messages : [];
-      const messages = payloadMessages
-        .map((message) => ({
-          role: ["system", "assistant", "user"].includes(message?.role) ? message.role : "user",
-          content: String(message?.content || "").trim(),
-        }))
-        .filter((message) => message.content);
-      if (!messages.length && !prompt) {
+      const messages = aiMessagesFromPayload(payload);
+      if (!messages.length) {
         sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.text);
-      const data = await requestAgnes("/chat/completions", compactPayload({
-        model,
-        messages: messages.length ? messages : [
-          { role: "system", content: "你是同舟供应链数智化系统中的AI助手，回答要准确、简洁、可执行。" },
-          { role: "user", content: prompt },
-        ],
-        temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
-        max_tokens: Number.isFinite(Number(payload.maxTokens)) ? Number(payload.maxTokens) : undefined,
-        top_p: Number.isFinite(Number(payload.topP)) ? Number(payload.topP) : undefined,
-      }));
+      const data = await requestAgnes("/chat/completions", aiChatPayload(payload, model));
       sendJson(res, 200, {
         ok: true,
         model,
