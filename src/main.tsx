@@ -3398,6 +3398,10 @@ function TongzhouAiPanel({
 
   async function submitText(event: React.FormEvent) {
     event.preventDefault();
+    if (!textPrompt.trim()) {
+      setMessage("请先输入要对话的内容。");
+      return;
+    }
     setBusy("text");
     setMessage("");
     const nextMessages = [...chatMessages, { role: "user" as const, content: textPrompt.trim() }];
@@ -3441,6 +3445,10 @@ function TongzhouAiPanel({
 
   async function submitImage(event: React.FormEvent) {
     event.preventDefault();
+    if (!imagePrompt.trim()) {
+      setMessage("请先输入图片提示词。");
+      return;
+    }
     setBusy("image");
     setMessage("");
     setImages([]);
@@ -3466,6 +3474,10 @@ function TongzhouAiPanel({
 
   async function submitVideo(event: React.FormEvent) {
     event.preventDefault();
+    if (!videoPrompt.trim()) {
+      setMessage("请先输入视频提示词。");
+      return;
+    }
     setBusy("video");
     setMessage("");
     setVideoTask("");
@@ -3640,7 +3652,7 @@ function TongzhouAiPanel({
           </div>
           <div className="ai-action-row">
             <button className="ghost-button" type="button" onClick={() => setChatMessages([])}>清空对话</button>
-          <button className="sync-button" type="submit" disabled={busy === "text" || !textPrompt.trim()}>
+          <button className="sync-button" type="submit" disabled={busy === "text"}>
             {busy === "text" ? "生成中" : "生成文本"}
           </button>
           </div>
@@ -3708,7 +3720,7 @@ function TongzhouAiPanel({
               </div>
             ) : null}
           </label>
-          <button className="sync-button" type="submit" disabled={busy === "image" || !imagePrompt.trim()}>
+          <button className="sync-button" type="submit" disabled={busy === "image"}>
             {busy === "image" ? "生成中" : "生成图片"}
           </button>
           {images.length ? (
@@ -3800,7 +3812,7 @@ function TongzhouAiPanel({
               <input value={videoParams.negativePrompt} onChange={(event) => setVideoParams((current) => ({ ...current, negativePrompt: event.target.value }))} placeholder="避免出现的内容" />
             </label>
           </div>
-          <button className="sync-button" type="submit" disabled={busy === "video" || !videoPrompt.trim()}>
+          <button className="sync-button" type="submit" disabled={busy === "video"}>
             {busy === "video" ? "提交中" : "生成视频"}
           </button>
           {videoTask ? (
