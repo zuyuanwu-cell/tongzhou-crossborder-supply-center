@@ -1433,6 +1433,11 @@ h3 {
   line-height: 1.55;
 }
 
+.ai-tool-card .ai-chat-input {
+  min-height: 96px;
+  max-height: 180px;
+}
+
 .ai-tool-card select,
 .ai-tool-card input,
 .ai-config-form input {
@@ -1532,6 +1537,7 @@ h3 {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  align-items: center;
 }
 
 .ai-chat-window {

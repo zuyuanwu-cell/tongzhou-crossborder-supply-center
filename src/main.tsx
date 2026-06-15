@@ -3331,6 +3331,7 @@ function TongzhouAiPanel({
   const [textPrompt, setTextPrompt] = React.useState("");
   const [chatMessages, setChatMessages] = React.useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const [textParams, setTextParams] = React.useState({ temperature: 0.7, topP: 1, maxTokens: 1200 });
+  const [showTextAdvanced, setShowTextAdvanced] = React.useState(false);
   const [imagePrompt, setImagePrompt] = React.useState("");
   const [imageParams, setImageParams] = React.useState({ size: "1024x1024", n: 1, quality: "standard", style: "natural", seed: "", negativePrompt: "" });
   const [imageReferenceUploads, setImageReferenceUploads] = React.useState<Array<{ name: string; url: string }>>([]);
@@ -3440,6 +3441,13 @@ function TongzhouAiPanel({
       }
     } finally {
       setBusy("");
+    }
+  }
+
+  function handleTextKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
     }
   }
 
@@ -3632,10 +3640,17 @@ function TongzhouAiPanel({
                 <p>{item.content}</p>
               </article>
             )) : (
-              <div className="stockup-empty">开始一轮多轮对话，上下文会连续带入文本模型。</div>
+              <div className="stockup-empty">可以询问产品信息、仓库信息，或让同舟AI基于产品资料撰写卖点文案。系统不会向模型提供价格、成本和库存敏感字段。</div>
             )}
           </div>
-          <textarea value={textPrompt} onChange={(event) => setTextPrompt(event.target.value)} placeholder="输入问题、改写需求、翻译内容或分析任务" />
+          <textarea
+            className="ai-chat-input"
+            value={textPrompt}
+            onChange={(event) => setTextPrompt(event.target.value)}
+            onKeyDown={handleTextKeyDown}
+            placeholder="输入问题、改写需求、翻译内容或分析任务。按 Enter 发送，Shift + Enter 换行。"
+          />
+          {showTextAdvanced ? (
           <div className="ai-parameter-grid">
             <label>
               <span>Temperature</span>
@@ -3650,10 +3665,14 @@ function TongzhouAiPanel({
               <input type="number" min="128" max="8000" step="128" value={textParams.maxTokens} onChange={(event) => setTextParams((current) => ({ ...current, maxTokens: Number(event.target.value) }))} />
             </label>
           </div>
+          ) : null}
           <div className="ai-action-row">
             <button className="ghost-button" type="button" onClick={() => setChatMessages([])}>清空对话</button>
+            <button className="ghost-button" type="button" onClick={() => setShowTextAdvanced((value) => !value)}>
+              {showTextAdvanced ? "隐藏参数" : "高级参数"}
+            </button>
           <button className="sync-button" type="submit" disabled={busy === "text"}>
-            {busy === "text" ? "生成中" : "生成文本"}
+            {busy === "text" ? "发送中" : "发送"}
           </button>
           </div>
         </form>

@@ -338,9 +338,195 @@ function compactPayload(payload) {
   );
 }
 
-function aiMessagesFromPayload(payload) {
+function truncateText(value, maxLength = 180) {
+  const text = String(value || "").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function aiUserQueryFromPayload(payload) {
   const prompt = String(payload.prompt || "").trim();
   const payloadMessages = Array.isArray(payload.messages) ? payload.messages : [];
+  const lastUser = [...payloadMessages].reverse().find((message) => message?.role === "user")?.content || "";
+  return String(lastUser || prompt || "").trim();
+}
+
+function scoreContextItem(query, values) {
+  const normalizedQuery = String(query || "").toLowerCase();
+  if (!normalizedQuery) return 1;
+  let score = 0;
+  for (const value of values) {
+    const text = String(value || "").toLowerCase();
+    if (!text) continue;
+    if (normalizedQuery.includes(text) || text.includes(normalizedQuery)) score += 6;
+    for (const token of normalizedQuery.split(/[\s,，。；;:：/\\|]+/).filter(Boolean)) {
+      if (token.length >= 2 && text.includes(token)) score += 2;
+    }
+  }
+  return score;
+}
+
+function aiProductContext(auth, payload) {
+  if (!canViewPartnerAssets(auth)) return "";
+  const query = aiUserQueryFromPayload(payload);
+  const catalogBySku = new Map();
+  for (const item of cachedProducts.catalog || []) {
+    const key = String(item.sku || item.skuNo || "").toLowerCase();
+    if (!key) continue;
+    if (!catalogBySku.has(key)) catalogBySku.set(key, []);
+    catalogBySku.get(key).push(item);
+  }
+
+  const baseProducts = (cachedProducts.productBase || [])
+    .map((product) => {
+      const catalogItems = catalogBySku.get(String(product.sku || product.skuNo || "").toLowerCase()) || [];
+      const countries = [...new Set(catalogItems.map((item) => item.country).filter(Boolean))].slice(0, 8);
+      return {
+        product,
+        countries,
+        score: scoreContextItem(query, [product.sku, product.skuNo, product.name, product.nameEn, product.category, product.brand, product.sellingPoints, product.publicDescription, ...countries]),
+      };
+    })
+    .sort((left, right) => right.score - left.score)
+    .slice(0, /产品|sku|有哪些|列举|清单|全部|越南|马来|印尼|俄罗斯/i.test(query) ? 60 : 20)
+    .map(({ product, countries }, index) => {
+      const size = [product.length, product.width, product.height].filter(Boolean).join(" x ");
+      return `${index + 1}. SKU:${product.sku || product.skuNo || "未配置"}；中文名:${product.name || "未配置"}；英文名:${product.nameEn || "未配置"}；国家/地区:${countries.join("/") || "未配置"}；品牌:${product.brand || "未配置"}；分类:${product.category || "未分类"}；规格:${product.specification || "未配置"}；重量:${product.weight || "未配置"}；尺寸:${size || "未配置"}；公开文案:${truncateText(product.publicDescription, 160) || "未配置"}；卖点:${truncateText(product.sellingPoints, 180) || "未配置"}`;
+    });
+
+  const warehouseInfo = (cachedWarehouseInfo.warehouseInfo || [])
+    .map((warehouse) => ({
+      warehouse,
+      score: scoreContextItem(query, [warehouse.warehouseName, warehouse.countryRegion, warehouse.warehouseCode, warehouse.shopShippingAddress, warehouse.firstMileReceivingAddress, warehouse.remark]),
+    }))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, /仓库|地址|时区|上班|下班|发货|退货|头程|营业/i.test(query) ? 30 : 10)
+    .map(({ warehouse }, index) => `${index + 1}. 仓库:${warehouse.warehouseName || "未配置"}；国家/地区:${warehouse.countryRegion || "未配置"}；代码:${warehouse.warehouseCode || "未配置"}；发货地址:${truncateText(warehouse.shopShippingAddress, 140) || "未配置"}；退货地址:${truncateText(warehouse.shopReturnAddress, 140) || "未配置"}；头程收货地址:${truncateText(warehouse.firstMileReceivingAddress, 140) || "未配置"}；时区:${warehouse.timezone || "未配置"}；营业时间:${[warehouse.workStartTime, warehouse.workEndTime].filter(Boolean).join(" - ") || "未配置"}；备注:${truncateText(warehouse.remark, 120) || "无"}`);
+
+  return [
+    "【同舟供应链可引用上下文】",
+    "可用范围：产品基础信息、产品公开文案/卖点、规格重量尺寸、品牌分类、仓库地址/时区/营业时间。",
+    "严格禁止：不要输出、推断或引用任何直营价、分销价、销售价、成本、利润、库存数量、供应商底价等价格/成本/库存敏感信息；如果用户询问这些内容，说明当前权限不支持提供。",
+    `产品基础信息：\n${baseProducts.join("\n") || "暂无可引用产品基础信息。"}`,
+    `仓库信息：\n${warehouseInfo.join("\n") || "暂无可引用仓库信息。"}`,
+  ].join("\n");
+}
+
+function aiSystemPrompt(auth, payload) {
+  const context = aiProductContext(auth, payload);
+  return [
+    "你是同舟供应链数智化系统中的AI助手，默认使用中文回答，回答要准确、简洁、可执行。",
+    "你可以根据系统上下文回答产品信息、仓库信息，也可以基于产品资料撰写产品卖点、标题、详情页文案、短视频脚本和平台上架文案。",
+    "如果用户要求列举、查询或总结产品/仓库，请直接使用下方上下文作答；不要先反问用户，除非上下文中确实没有相关信息。",
+    context,
+  ].filter(Boolean).join("\n\n");
+}
+
+function aiShouldDirectLookupAnswer(query) {
+  const text = String(query || "").toLowerCase();
+  if (!text) return false;
+  if (/写|撰写|生成|改写|翻译|分析|总结|卖点|文案|标题|脚本|广告|详情页|营销|邮件|社媒|小红书|tiktok|shopee|lazada/i.test(text)) {
+    return false;
+  }
+  return /产品|sku|仓库|地址|时区|上班|下班|营业|发货|退货|头程|有哪些|列举|查询|信息|资料|名单|清单/i.test(text);
+}
+
+function aiNumberLimitFromQuery(query, fallback = 8) {
+  const text = String(query || "");
+  const match = text.match(/(\d+)\s*(个|条|款|项)?/);
+  if (!match) return fallback;
+  return Math.max(1, Math.min(50, Number(match[1]) || fallback));
+}
+
+function aiProductRowsForQuery(query, limit) {
+  const catalogBySku = new Map();
+  for (const item of cachedProducts.catalog || []) {
+    const key = String(item.sku || item.skuNo || "").toLowerCase();
+    if (!key) continue;
+    if (!catalogBySku.has(key)) catalogBySku.set(key, []);
+    catalogBySku.get(key).push(item);
+  }
+  return (cachedProducts.productBase || [])
+    .map((product) => {
+      const catalogItems = catalogBySku.get(String(product.sku || product.skuNo || "").toLowerCase()) || [];
+      const countries = [...new Set(catalogItems.map((item) => item.country).filter(Boolean))].slice(0, 6);
+      return {
+        product,
+        countries,
+        score: scoreContextItem(query, [product.sku, product.skuNo, product.name, product.nameEn, product.category, product.brand, product.sellingPoints, product.publicDescription, ...countries]),
+      };
+    })
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit);
+}
+
+function aiDirectSafeContextAnswer(payload, auth = { role: "guest" }) {
+  if (!canViewPartnerAssets(auth)) return "";
+  const query = aiUserQueryFromPayload(payload);
+  if (!aiShouldDirectLookupAnswer(query)) return "";
+  const limit = aiNumberLimitFromQuery(query, 8);
+  const wantsWarehouse = /仓库|地址|时区|上班|下班|营业|发货|退货|头程/i.test(query);
+  const wantsProduct = /产品|sku|商品|品名|名称|名单|清单/i.test(query) || !wantsWarehouse;
+
+  const sections = [];
+  if (wantsProduct) {
+    const rows = aiProductRowsForQuery(query, limit);
+    if (rows.length) {
+      sections.push([
+        `根据产品库安全上下文，找到 ${rows.length} 个相关产品：`,
+        ...rows.map(({ product, countries }, index) => {
+          const details = [
+            `SKU：${product.sku || product.skuNo || "未配置"}`,
+            `中文名称：${product.name || "未配置"}`,
+            product.nameEn ? `英文名称：${product.nameEn}` : "",
+            product.brand ? `品牌：${product.brand}` : "",
+            product.category ? `分类：${product.category}` : "",
+            product.specification ? `规格：${product.specification}` : "",
+            countries.length ? `国家/地区：${countries.join("、")}` : "",
+          ].filter(Boolean).join("；");
+          return `${index + 1}. ${details}`;
+        }),
+      ].join("\n"));
+    }
+  }
+
+  if (wantsWarehouse) {
+    const rows = (cachedWarehouseInfo.warehouseInfo || [])
+      .map((warehouse) => ({
+        warehouse,
+        score: scoreContextItem(query, [warehouse.warehouseName, warehouse.countryRegion, warehouse.warehouseCode, warehouse.shopShippingAddress, warehouse.shopReturnAddress, warehouse.firstMileReceivingAddress, warehouse.timezone, warehouse.remark]),
+      }))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
+    if (rows.length) {
+      sections.push([
+        `根据仓库信息，找到 ${rows.length} 个相关仓库：`,
+        ...rows.map(({ warehouse }, index) => {
+          const details = [
+            `仓库：${warehouse.warehouseName || "未配置"}`,
+            `国家/地区：${warehouse.countryRegion || "未配置"}`,
+            warehouse.warehouseCode ? `代码：${warehouse.warehouseCode}` : "",
+            warehouse.timezone ? `时区：${warehouse.timezone}` : "",
+            warehouse.workStartTime || warehouse.workEndTime ? `营业时间：${[warehouse.workStartTime, warehouse.workEndTime].filter(Boolean).join(" - ")}` : "",
+            warehouse.shopShippingAddress ? `发货地址：${truncateText(warehouse.shopShippingAddress, 160)}` : "",
+          ].filter(Boolean).join("；");
+          return `${index + 1}. ${details}`;
+        }),
+      ].join("\n"));
+    }
+  }
+
+  if (!sections.length) return "";
+  return `${sections.join("\n\n")}\n\n注：以上回答已自动排除价格、成本和库存数量等敏感字段。`;
+}
+
+function aiMessagesFromPayload(payload, auth = { role: "guest" }) {
+  const prompt = String(payload.prompt || "").trim();
+  const payloadMessages = Array.isArray(payload.messages) ? payload.messages : [];
+  const systemPrompt = aiSystemPrompt(auth, payload);
+  const inlineContext = aiProductContext(auth, payload);
+  const contextInstruction = inlineContext
+    ? `\n\n【系统已检索到的安全上下文】\n${inlineContext}\n\n【回答要求】请直接基于上面的检索结果回答本轮问题；如果用户要求列举产品或仓库，请直接列举名称/SKU/关键信息；如果用户要求写文案，请直接开始写；不要反问用户需要什么帮助；不要输出任何价格、成本、库存数量。`
+    : "\n\n【回答要求】请直接回答本轮问题；不要输出任何价格、成本、库存数量。";
   const messages = payloadMessages
     .map((message) => ({
       role: ["system", "assistant", "user"].includes(message?.role) ? message.role : "user",
@@ -348,21 +534,27 @@ function aiMessagesFromPayload(payload) {
     }))
         .filter((message) => message.content);
   if (messages.length) {
+    const lastUserIndex = messages.map((message) => message.role).lastIndexOf("user");
+    const strengthenedMessages = messages.map((message, index) => (
+      index === lastUserIndex
+        ? { ...message, content: `${message.content}${contextInstruction}` }
+        : message
+    ));
     return messages.some((message) => message.role === "system")
-      ? messages
-      : [{ role: "system", content: "你是同舟供应链数智化系统中的AI助手，默认使用中文回答，回答要准确、简洁、可执行。" }, ...messages];
+      ? strengthenedMessages.map((message) => message.role === "system" ? { ...message, content: `${systemPrompt}\n\n${message.content}` } : message)
+      : [{ role: "system", content: systemPrompt }, ...strengthenedMessages];
   }
   if (!prompt) return [];
   return [
-    { role: "system", content: "你是同舟供应链数智化系统中的AI助手，默认使用中文回答，回答要准确、简洁、可执行。" },
-    { role: "user", content: prompt },
+    { role: "system", content: systemPrompt },
+    { role: "user", content: `${prompt}${contextInstruction}` },
   ];
 }
 
-function aiChatPayload(payload, model) {
+function aiChatPayload(payload, model, auth = { role: "guest" }) {
   return compactPayload({
     model,
-    messages: aiMessagesFromPayload(payload),
+    messages: aiMessagesFromPayload(payload, auth),
     temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
     max_tokens: Number.isFinite(Number(payload.maxTokens)) ? Number(payload.maxTokens) : undefined,
     top_p: Number.isFinite(Number(payload.topP)) ? Number(payload.topP) : undefined,
@@ -1493,15 +1685,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/text/stream" && req.method === "POST") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canViewPartnerAssets(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
-      if (!aiMessagesFromPayload(payload).length) {
+      if (!aiMessagesFromPayload(payload, auth).length) {
         sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
         return;
       }
+      const directAnswer = aiDirectSafeContextAnswer(payload, auth);
 
       res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -1510,9 +1704,16 @@ const server = http.createServer(async (req, res) => {
         "Access-Control-Allow-Origin": "*",
       });
 
+      if (directAnswer) {
+        sendSse(res, "delta", { delta: directAnswer });
+        sendSse(res, "done", { ok: true, direct: true });
+        res.end();
+        return;
+      }
+
       try {
         const model = String(payload.model || cachedAiConfig.models.text);
-        const upstream = await requestAgnesStream("/chat/completions", aiChatPayload({ ...payload, stream: true }, model));
+        const upstream = await requestAgnesStream("/chat/completions", aiChatPayload({ ...payload, stream: true }, model, auth));
         const upstreamType = upstream.headers.get("content-type") || "";
         if (upstreamType.includes("application/json")) {
           const data = await upstream.json();
@@ -1556,18 +1757,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/text" && req.method === "POST") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canViewPartnerAssets(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
-      const messages = aiMessagesFromPayload(payload);
+      const messages = aiMessagesFromPayload(payload, auth);
       if (!messages.length) {
         sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
         return;
       }
+      const directAnswer = aiDirectSafeContextAnswer(payload, auth);
+      if (directAnswer) {
+        sendJson(res, 200, {
+          ok: true,
+          model: "TZ-Context",
+          answer: directAnswer,
+          direct: true,
+        });
+        return;
+      }
       const model = String(payload.model || cachedAiConfig.models.text);
-      const data = await requestAgnes("/chat/completions", aiChatPayload(payload, model));
+      const data = await requestAgnes("/chat/completions", aiChatPayload(payload, model, auth));
       sendJson(res, 200, {
         ok: true,
         model,
