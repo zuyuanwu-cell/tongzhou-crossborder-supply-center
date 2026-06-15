@@ -149,8 +149,8 @@ button:disabled {
 
 .nav-label-wrap small {
   position: absolute;
-  left: 0;
-  bottom: calc(100% - 1px);
+  left: calc(100% + 4px);
+  top: -8px;
   color: var(--orange);
   font-size: 9px;
   font-weight: 900;
@@ -1328,11 +1328,67 @@ h3 {
   gap: 14px;
 }
 
+.ai-workbench {
+  display: grid;
+  gap: 16px;
+}
+
+.ai-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.ai-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 8px 10px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ai-tabs button.active,
+.ai-tabs button:hover {
+  color: var(--text);
+  border-color: rgba(255, 106, 31, 0.44);
+  background: rgba(255, 106, 31, 0.13);
+}
+
+.ai-tabs button span,
+.ai-tabs button small {
+  display: block;
+  text-align: left;
+}
+
+.ai-tabs button span {
+  font-weight: 900;
+}
+
+.ai-tabs button small {
+  margin-left: auto;
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .ai-tool-card {
   display: grid;
   align-content: start;
   gap: 13px;
   min-height: 520px;
+}
+
+.ai-tool-tab {
+  min-height: 0;
 }
 
 .ai-tool-head {
@@ -1352,8 +1408,15 @@ h3 {
   margin: 2px 0 0;
 }
 
+.ai-tool-head h3 span {
+  margin-left: 8px;
+  color: var(--amber);
+  font-size: 13px;
+}
+
 .ai-tool-card textarea,
 .ai-tool-card select,
+.ai-tool-card input,
 .ai-config-form input {
   width: 100%;
   color: var(--text);
@@ -1371,9 +1434,91 @@ h3 {
 }
 
 .ai-tool-card select,
+.ai-tool-card input,
 .ai-config-form input {
   min-height: 40px;
   padding: 0 11px;
+}
+
+.ai-parameter-grid,
+.ai-frame-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-parameter-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.ai-frame-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ai-parameter-grid label,
+.ai-frame-grid label,
+.ai-wide-field {
+  display: grid;
+  gap: 7px;
+}
+
+.ai-parameter-grid span,
+.ai-frame-grid span,
+.ai-wide-field span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ai-wide-field textarea {
+  min-height: 82px;
+}
+
+.ai-action-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.ai-chat-window {
+  display: grid;
+  gap: 10px;
+  min-height: 230px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.ai-chat-message {
+  display: grid;
+  gap: 6px;
+  max-width: min(760px, 92%);
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.ai-chat-message.user {
+  justify-self: end;
+  border-color: rgba(255, 106, 31, 0.35);
+  background: rgba(255, 106, 31, 0.12);
+}
+
+.ai-chat-message.assistant {
+  justify-self: start;
+}
+
+.ai-chat-message strong {
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.ai-chat-message p {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
 }
 
 .ai-result-text {
@@ -3219,6 +3364,12 @@ h3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .ai-tabs,
+  .ai-parameter-grid,
+  .ai-frame-grid {
+    grid-template-columns: 1fr;
+  }
+
   .warehouse-auth-note {
     grid-column: span 2;
   }
@@ -3386,7 +3537,10 @@ h3 {
   .warehouse-info-detail,
   .warehouse-info-grid,
   .quick-nav-form,
-  .ai-config-form {
+  .ai-config-form,
+  .ai-tabs,
+  .ai-parameter-grid,
+  .ai-frame-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3409,6 +3563,15 @@ h3 {
   .quick-nav-admin-grid,
   .ai-capability-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ai-action-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ai-tabs button small {
+    margin-left: 0;
   }
 
   .warehouse-auth-form form,

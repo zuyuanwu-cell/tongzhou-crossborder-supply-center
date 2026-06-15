@@ -291,6 +291,16 @@ function extractVideoUrl(data) {
     || "";
 }
 
+function compactPayload(payload) {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => {
+      if (value === undefined || value === null || value === "") return false;
+      if (Array.isArray(value)) return value.filter(Boolean).length > 0;
+      return true;
+    }),
+  );
+}
+
 function loadUsersCache() {
   const payload = loadJsonCache(usersCachePath);
   if (payload?.users?.length) return payload;
@@ -1359,19 +1369,28 @@ const server = http.createServer(async (req, res) => {
       }
       const payload = await parseRequestBody(req);
       const prompt = String(payload.prompt || "").trim();
-      if (!prompt) {
+      const payloadMessages = Array.isArray(payload.messages) ? payload.messages : [];
+      const messages = payloadMessages
+        .map((message) => ({
+          role: ["system", "assistant", "user"].includes(message?.role) ? message.role : "user",
+          content: String(message?.content || "").trim(),
+        }))
+        .filter((message) => message.content);
+      if (!messages.length && !prompt) {
         sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.text);
-      const data = await requestAgnes("/chat/completions", {
+      const data = await requestAgnes("/chat/completions", compactPayload({
         model,
-        messages: [
+        messages: messages.length ? messages : [
           { role: "system", content: "你是同舟供应链数智化系统中的AI助手，回答要准确、简洁、可执行。" },
           { role: "user", content: prompt },
         ],
         temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
-      });
+        max_tokens: Number.isFinite(Number(payload.maxTokens)) ? Number(payload.maxTokens) : undefined,
+        top_p: Number.isFinite(Number(payload.topP)) ? Number(payload.topP) : undefined,
+      }));
       sendJson(res, 200, {
         ok: true,
         model,
@@ -1393,12 +1412,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.image);
-      const data = await requestAgnes("/images/generations", {
+      const data = await requestAgnes("/images/generations", compactPayload({
         model,
         prompt,
         size: payload.size || "1024x1024",
         n: Math.max(1, Math.min(4, Number(payload.n) || 1)),
-      });
+        quality: payload.quality,
+        style: payload.style,
+        seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
+        negative_prompt: payload.negativePrompt,
+        reference_images: Array.isArray(payload.referenceImages) ? payload.referenceImages.filter(Boolean) : undefined,
+      }));
       sendJson(res, 200, {
         ok: true,
         model,
@@ -1420,12 +1444,22 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.video);
-      const data = await requestAgnes("/videos", {
+      const referenceImages = Array.isArray(payload.referenceImages) ? payload.referenceImages.filter(Boolean) : [];
+      const data = await requestAgnes("/videos", compactPayload({
         model,
         prompt,
         duration: Number(payload.duration) || 5,
         aspect_ratio: payload.aspectRatio || "16:9",
-      });
+        resolution: payload.resolution,
+        seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
+        image_url: payload.imageUrl,
+        reference_images: referenceImages.length ? referenceImages : undefined,
+        first_frame_url: payload.firstFrameUrl,
+        last_frame_url: payload.lastFrameUrl,
+        negative_prompt: payload.negativePrompt,
+        camera_control: payload.cameraControl,
+        motion_strength: Number.isFinite(Number(payload.motionStrength)) ? Number(payload.motionStrength) : undefined,
+      }));
       sendJson(res, 200, {
         ok: true,
         model,

@@ -712,21 +712,21 @@ export function updateAiConfig(input: { apiKey?: string; baseUrl?: string; model
   });
 }
 
-export function runAiText(input: { prompt: string; model?: string; temperature?: number }) {
+export function runAiText(input: { prompt?: string; messages?: Array<{ role: "user" | "assistant" | "system"; content: string }>; model?: string; temperature?: number; maxTokens?: number; topP?: number }) {
   return requestJson<AiTextResult>("/api/ai/text", {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
-export function runAiImage(input: { prompt: string; model?: string; size?: string; n?: number }) {
+export function runAiImage(input: { prompt: string; model?: string; size?: string; n?: number; quality?: string; style?: string; seed?: number; referenceImages?: string[]; negativePrompt?: string }) {
   return requestJson<AiImageResult>("/api/ai/image", {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
-export function runAiVideo(input: { prompt: string; model?: string; duration?: number; aspectRatio?: string }) {
+export function runAiVideo(input: { prompt: string; model?: string; duration?: number; aspectRatio?: string; resolution?: string; seed?: number; imageUrl?: string; referenceImages?: string[]; firstFrameUrl?: string; lastFrameUrl?: string; negativePrompt?: string; cameraControl?: string; motionStrength?: number }) {
   return requestJson<AiVideoResult>("/api/ai/video", {
     method: "POST",
     body: JSON.stringify(input),

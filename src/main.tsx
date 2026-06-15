@@ -3318,6 +3318,7 @@ function TongzhouAiPanel({
   onRefreshConfig: () => Promise<void>;
 }) {
   const admin = canManage(currentUser);
+  const [activeTab, setActiveTab] = React.useState<"text" | "image" | "video">("text");
   const [configForm, setConfigForm] = React.useState({
     apiKey: "",
     baseUrl: aiConfig?.baseUrl || "https://apihub.agnes-ai.com/v1",
@@ -3326,11 +3327,25 @@ function TongzhouAiPanel({
     videoModel: aiConfig?.models.video || "agnes-video-v2.0",
   });
   const [textPrompt, setTextPrompt] = React.useState("");
-  const [textAnswer, setTextAnswer] = React.useState("");
+  const [chatMessages, setChatMessages] = React.useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [textParams, setTextParams] = React.useState({ temperature: 0.7, topP: 1, maxTokens: 1200 });
   const [imagePrompt, setImagePrompt] = React.useState("");
-  const [imageSize, setImageSize] = React.useState("1024x1024");
+  const [imageParams, setImageParams] = React.useState({ size: "1024x1024", n: 1, quality: "standard", style: "natural", seed: "", negativePrompt: "", referenceImages: "" });
   const [images, setImages] = React.useState<string[]>([]);
   const [videoPrompt, setVideoPrompt] = React.useState("");
+  const [videoParams, setVideoParams] = React.useState({
+    duration: 5,
+    aspectRatio: "16:9",
+    resolution: "720p",
+    seed: "",
+    imageUrl: "",
+    referenceImages: "",
+    firstFrameUrl: "",
+    lastFrameUrl: "",
+    negativePrompt: "",
+    cameraControl: "",
+    motionStrength: 0.5,
+  });
   const [videoTask, setVideoTask] = React.useState("");
   const [videoStatus, setVideoStatus] = React.useState("");
   const [videoUrl, setVideoUrl] = React.useState("");
@@ -3376,10 +3391,18 @@ function TongzhouAiPanel({
     event.preventDefault();
     setBusy("text");
     setMessage("");
-    setTextAnswer("");
     try {
-      const result = await runAiText({ prompt: textPrompt, model: aiConfig?.models.text });
-      setTextAnswer(result.answer || "模型没有返回文本内容。");
+      const nextMessages = [...chatMessages, { role: "user" as const, content: textPrompt.trim() }];
+      setChatMessages(nextMessages);
+      setTextPrompt("");
+      const result = await runAiText({
+        messages: nextMessages,
+        model: aiConfig?.models.text,
+        temperature: textParams.temperature,
+        topP: textParams.topP,
+        maxTokens: textParams.maxTokens,
+      });
+      setChatMessages([...nextMessages, { role: "assistant", content: result.answer || "模型没有返回文本内容。" }]);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "文本生成失败。");
     } finally {
@@ -3393,7 +3416,17 @@ function TongzhouAiPanel({
     setMessage("");
     setImages([]);
     try {
-      const result = await runAiImage({ prompt: imagePrompt, model: aiConfig?.models.image, size: imageSize, n: 1 });
+      const result = await runAiImage({
+        prompt: imagePrompt,
+        model: aiConfig?.models.image,
+        size: imageParams.size,
+        n: imageParams.n,
+        quality: imageParams.quality,
+        style: imageParams.style,
+        seed: imageParams.seed ? Number(imageParams.seed) : undefined,
+        negativePrompt: imageParams.negativePrompt,
+        referenceImages: imageParams.referenceImages.split(/\n|,/).map((item) => item.trim()).filter(Boolean),
+      });
       setImages(result.images || []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "图片生成失败。");
@@ -3410,7 +3443,21 @@ function TongzhouAiPanel({
     setVideoStatus("");
     setVideoUrl("");
     try {
-      const result = await runAiVideo({ prompt: videoPrompt, model: aiConfig?.models.video, duration: 5, aspectRatio: "16:9" });
+      const result = await runAiVideo({
+        prompt: videoPrompt,
+        model: aiConfig?.models.video,
+        duration: videoParams.duration,
+        aspectRatio: videoParams.aspectRatio,
+        resolution: videoParams.resolution,
+        seed: videoParams.seed ? Number(videoParams.seed) : undefined,
+        imageUrl: videoParams.imageUrl,
+        referenceImages: videoParams.referenceImages.split(/\n|,/).map((item) => item.trim()).filter(Boolean),
+        firstFrameUrl: videoParams.firstFrameUrl,
+        lastFrameUrl: videoParams.lastFrameUrl,
+        negativePrompt: videoParams.negativePrompt,
+        cameraControl: videoParams.cameraControl,
+        motionStrength: videoParams.motionStrength,
+      });
       setVideoTask(result.taskId || "");
       setVideoStatus(result.status || "submitted");
       setVideoUrl(result.videoUrl || "");
@@ -3443,6 +3490,12 @@ function TongzhouAiPanel({
     return `data:image/png;base64,${value}`;
   }
 
+  const tabs = [
+    { id: "text" as const, label: "文字模型", model: "TZ-Text Pro", icon: Bot },
+    { id: "image" as const, label: "图片生成模型", model: "TZ-Image Studio", icon: Image },
+    { id: "video" as const, label: "视频生成模型", model: "TZ-Video Motion", icon: Video },
+  ];
+
   return (
     <main className="movement-page ai-page">
       <section className="library-hero ai-hero">
@@ -3458,44 +3511,121 @@ function TongzhouAiPanel({
           </div>
         </div>
         <div className="ai-model-stack">
-          <span><Bot size={15} /> {aiConfig?.models.text || "agnes-2.0-flash"}</span>
-          <span><Image size={15} /> {aiConfig?.models.image || "agnes-image-2.1-flash"}</span>
-          <span><Video size={15} /> {aiConfig?.models.video || "agnes-video-v2.0"}</span>
+          <span><Bot size={15} /> TZ-Text Pro</span>
+          <span><Image size={15} /> TZ-Image Studio</span>
+          <span><Video size={15} /> TZ-Video Motion</span>
         </div>
       </section>
 
       {message ? <div className={`notice ${message.includes("失败") || message.includes("尚未配置") ? "warning" : ""}`}>{message}</div> : null}
 
-      <section className="ai-capability-grid">
-        <form className="panel ai-tool-card" onSubmit={submitText}>
+      <section className="panel ai-workbench">
+        <div className="ai-tabs" role="tablist" aria-label="同舟AI模型切换">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button key={tab.id} type="button" className={activeTab === tab.id ? "active" : ""} onClick={() => setActiveTab(tab.id)}>
+                <Icon size={17} />
+                <span>{tab.label}</span>
+                <small>{tab.model}</small>
+              </button>
+            );
+          })}
+        </div>
+
+        {activeTab === "text" ? (
+        <form className="ai-tool-card ai-tool-tab" onSubmit={submitText}>
           <div className="ai-tool-head">
             <Bot size={20} />
             <div>
               <p className="eyebrow">Text Model</p>
-              <h3>文本模型</h3>
+              <h3>文字模型 <span>TZ-Text Pro</span></h3>
             </div>
           </div>
-          <textarea value={textPrompt} onChange={(event) => setTextPrompt(event.target.value)} placeholder="输入要生成、改写、翻译或分析的内容" />
+          <div className="ai-chat-window">
+            {chatMessages.length ? chatMessages.map((item, index) => (
+              <article key={`${item.role}-${index}`} className={`ai-chat-message ${item.role}`}>
+                <strong>{item.role === "user" ? "你" : "同舟AI"}</strong>
+                <p>{item.content}</p>
+              </article>
+            )) : (
+              <div className="stockup-empty">开始一轮多轮对话，上下文会连续带入文本模型。</div>
+            )}
+          </div>
+          <textarea value={textPrompt} onChange={(event) => setTextPrompt(event.target.value)} placeholder="输入问题、改写需求、翻译内容或分析任务" />
+          <div className="ai-parameter-grid">
+            <label>
+              <span>Temperature</span>
+              <input type="number" min="0" max="2" step="0.1" value={textParams.temperature} onChange={(event) => setTextParams((current) => ({ ...current, temperature: Number(event.target.value) }))} />
+            </label>
+            <label>
+              <span>Top P</span>
+              <input type="number" min="0" max="1" step="0.05" value={textParams.topP} onChange={(event) => setTextParams((current) => ({ ...current, topP: Number(event.target.value) }))} />
+            </label>
+            <label>
+              <span>最大输出</span>
+              <input type="number" min="128" max="8000" step="128" value={textParams.maxTokens} onChange={(event) => setTextParams((current) => ({ ...current, maxTokens: Number(event.target.value) }))} />
+            </label>
+          </div>
+          <div className="ai-action-row">
+            <button className="ghost-button" type="button" onClick={() => setChatMessages([])}>清空对话</button>
           <button className="sync-button" type="submit" disabled={busy === "text" || !textPrompt.trim()}>
             {busy === "text" ? "生成中" : "生成文本"}
           </button>
-          {textAnswer ? <div className="ai-result-text">{textAnswer}</div> : null}
+          </div>
         </form>
+        ) : null}
 
-        <form className="panel ai-tool-card" onSubmit={submitImage}>
+        {activeTab === "image" ? (
+        <form className="ai-tool-card ai-tool-tab" onSubmit={submitImage}>
           <div className="ai-tool-head">
             <Image size={20} />
             <div>
               <p className="eyebrow">Image Model</p>
-              <h3>图片模型</h3>
+              <h3>图片生成模型 <span>TZ-Image Studio</span></h3>
             </div>
           </div>
           <textarea value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} placeholder="描述要生成的图片，例如产品场景图、素材图、社媒配图" />
-          <select value={imageSize} onChange={(event) => setImageSize(event.target.value)}>
-            <option value="1024x1024">1:1 方图</option>
-            <option value="1024x1792">9:16 竖图</option>
-            <option value="1792x1024">16:9 横图</option>
-          </select>
+          <div className="ai-parameter-grid">
+            <label>
+              <span>尺寸</span>
+              <select value={imageParams.size} onChange={(event) => setImageParams((current) => ({ ...current, size: event.target.value }))}>
+                <option value="1024x1024">1:1 方图</option>
+                <option value="1024x1792">9:16 竖图</option>
+                <option value="1792x1024">16:9 横图</option>
+              </select>
+            </label>
+            <label>
+              <span>数量</span>
+              <input type="number" min="1" max="4" value={imageParams.n} onChange={(event) => setImageParams((current) => ({ ...current, n: Number(event.target.value) }))} />
+            </label>
+            <label>
+              <span>质量</span>
+              <select value={imageParams.quality} onChange={(event) => setImageParams((current) => ({ ...current, quality: event.target.value }))}>
+                <option value="standard">Standard</option>
+                <option value="hd">HD</option>
+              </select>
+            </label>
+            <label>
+              <span>风格</span>
+              <select value={imageParams.style} onChange={(event) => setImageParams((current) => ({ ...current, style: event.target.value }))}>
+                <option value="natural">Natural</option>
+                <option value="vivid">Vivid</option>
+              </select>
+            </label>
+            <label>
+              <span>Seed</span>
+              <input value={imageParams.seed} onChange={(event) => setImageParams((current) => ({ ...current, seed: event.target.value }))} placeholder="可选" />
+            </label>
+          </div>
+          <label className="ai-wide-field">
+            <span>负向提示词</span>
+            <input value={imageParams.negativePrompt} onChange={(event) => setImageParams((current) => ({ ...current, negativePrompt: event.target.value }))} placeholder="不希望出现在图片里的内容" />
+          </label>
+          <label className="ai-wide-field">
+            <span>参考图片 URL</span>
+            <textarea value={imageParams.referenceImages} onChange={(event) => setImageParams((current) => ({ ...current, referenceImages: event.target.value }))} placeholder="每行一个图片 URL，用于图片参考或风格参考" />
+          </label>
           <button className="sync-button" type="submit" disabled={busy === "image" || !imagePrompt.trim()}>
             {busy === "image" ? "生成中" : "生成图片"}
           </button>
@@ -3505,16 +3635,75 @@ function TongzhouAiPanel({
             </div>
           ) : null}
         </form>
+        ) : null}
 
-        <form className="panel ai-tool-card" onSubmit={submitVideo}>
+        {activeTab === "video" ? (
+        <form className="ai-tool-card ai-tool-tab" onSubmit={submitVideo}>
           <div className="ai-tool-head">
             <Video size={20} />
             <div>
               <p className="eyebrow">Video Model</p>
-              <h3>视频模型</h3>
+              <h3>视频生成模型 <span>TZ-Video Motion</span></h3>
             </div>
           </div>
           <textarea value={videoPrompt} onChange={(event) => setVideoPrompt(event.target.value)} placeholder="描述要生成的视频，例如产品展示短片、仓库流程动画、广告分镜" />
+          <div className="ai-parameter-grid">
+            <label>
+              <span>时长</span>
+              <input type="number" min="2" max="10" value={videoParams.duration} onChange={(event) => setVideoParams((current) => ({ ...current, duration: Number(event.target.value) }))} />
+            </label>
+            <label>
+              <span>比例</span>
+              <select value={videoParams.aspectRatio} onChange={(event) => setVideoParams((current) => ({ ...current, aspectRatio: event.target.value }))}>
+                <option value="16:9">16:9 横屏</option>
+                <option value="9:16">9:16 竖屏</option>
+                <option value="1:1">1:1 方屏</option>
+              </select>
+            </label>
+            <label>
+              <span>清晰度</span>
+              <select value={videoParams.resolution} onChange={(event) => setVideoParams((current) => ({ ...current, resolution: event.target.value }))}>
+                <option value="720p">720p</option>
+                <option value="1080p">1080p</option>
+              </select>
+            </label>
+            <label>
+              <span>运动强度</span>
+              <input type="number" min="0" max="1" step="0.1" value={videoParams.motionStrength} onChange={(event) => setVideoParams((current) => ({ ...current, motionStrength: Number(event.target.value) }))} />
+            </label>
+            <label>
+              <span>Seed</span>
+              <input value={videoParams.seed} onChange={(event) => setVideoParams((current) => ({ ...current, seed: event.target.value }))} placeholder="可选" />
+            </label>
+          </div>
+          <div className="ai-frame-grid">
+            <label>
+              <span>图片参考</span>
+              <input value={videoParams.imageUrl} onChange={(event) => setVideoParams((current) => ({ ...current, imageUrl: event.target.value }))} placeholder="图片参考 URL" />
+            </label>
+            <label>
+              <span>首帧图片</span>
+              <input value={videoParams.firstFrameUrl} onChange={(event) => setVideoParams((current) => ({ ...current, firstFrameUrl: event.target.value }))} placeholder="首帧 URL" />
+            </label>
+            <label>
+              <span>尾帧图片</span>
+              <input value={videoParams.lastFrameUrl} onChange={(event) => setVideoParams((current) => ({ ...current, lastFrameUrl: event.target.value }))} placeholder="尾帧 URL" />
+            </label>
+          </div>
+          <label className="ai-wide-field">
+            <span>多张参考图 URL</span>
+            <textarea value={videoParams.referenceImages} onChange={(event) => setVideoParams((current) => ({ ...current, referenceImages: event.target.value }))} placeholder="每行一个图片 URL，支持多参考图" />
+          </label>
+          <div className="ai-frame-grid">
+            <label>
+              <span>镜头控制</span>
+              <input value={videoParams.cameraControl} onChange={(event) => setVideoParams((current) => ({ ...current, cameraControl: event.target.value }))} placeholder="例如 push in / pan left" />
+            </label>
+            <label>
+              <span>负向提示词</span>
+              <input value={videoParams.negativePrompt} onChange={(event) => setVideoParams((current) => ({ ...current, negativePrompt: event.target.value }))} placeholder="避免出现的内容" />
+            </label>
+          </div>
           <button className="sync-button" type="submit" disabled={busy === "video" || !videoPrompt.trim()}>
             {busy === "video" ? "提交中" : "生成视频"}
           </button>
@@ -3531,6 +3720,7 @@ function TongzhouAiPanel({
           ) : null}
           {videoUrl ? <video className="ai-video-result" src={videoUrl} controls playsInline /> : null}
         </form>
+        ) : null}
       </section>
 
       {admin ? (
