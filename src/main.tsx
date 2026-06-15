@@ -37,6 +37,7 @@ import {
   MovementPayload,
   ProductBase,
   ProductPayload,
+  QuickNavPayload,
   QualificationPayload,
   QualificationRecord,
   StockupPayload,
@@ -45,7 +46,11 @@ import {
   WarehouseInfoPayload,
   WarehouseInfoRecord,
   createWarehouseConnection,
+  createQuickNavCategory,
+  createQuickNavLink,
   createUser,
+  deleteQuickNavCategory,
+  deleteQuickNavLink,
   captureInventorySnapshot,
   deleteUser,
   deleteWarehouseConnection,
@@ -55,6 +60,7 @@ import {
   fetchInventorySnapshots,
   fetchMovement,
   fetchProducts,
+  fetchQuickNav,
   fetchQualifications,
   fetchStockup,
   fetchUsers,
@@ -212,6 +218,7 @@ const navItems = [
   { label: "资质库", icon: FileText, hash: "#qualifications", childOf: "产品库" },
   { label: "素材库", icon: Boxes, hash: "#assets", childOf: "产品库" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", childOf: "产品库" },
+  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", childOf: "产品库" },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
 ];
@@ -229,7 +236,7 @@ function hashForView(view: string) {
 function visibleNavItems(user: AuthUser) {
   if (canManage(user)) return navItems;
   if (canViewPartnerAssets(user)) {
-    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息"].includes(item.label));
+    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航"].includes(item.label));
   }
   return navItems.filter((item) => item.label === "产品库");
 }
@@ -453,6 +460,7 @@ function App() {
   const [qualificationPayload, setQualificationPayload] = React.useState<QualificationPayload | null>(null);
   const [assetPayload, setAssetPayload] = React.useState<AssetPayload | null>(null);
   const [warehouseInfoPayload, setWarehouseInfoPayload] = React.useState<WarehouseInfoPayload | null>(null);
+  const [quickNavPayload, setQuickNavPayload] = React.useState<QuickNavPayload | null>(null);
   const [userPayload, setUserPayload] = React.useState<UserManagementPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
@@ -489,6 +497,7 @@ function App() {
       loadQualifications();
       loadAssets();
       loadWarehouseInfo();
+      loadQuickNav();
     }
   }, [currentUser.role]);
 
@@ -504,6 +513,7 @@ function App() {
         void loadQualifications();
         void loadAssets();
         void loadWarehouseInfo();
+        void loadQuickNav();
       }
       if (canManage(currentUser)) {
         void loadWarehouses();
@@ -602,6 +612,15 @@ function App() {
     }
   }
 
+  async function loadQuickNav() {
+    try {
+      const data = await fetchQuickNav();
+      setQuickNavPayload(data);
+    } catch {
+      setQuickNavPayload(null);
+    }
+  }
+
   async function loadUsers() {
     try {
       const data = await fetchUsers();
@@ -618,7 +637,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo()]);
+      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -787,7 +806,7 @@ function App() {
     setCurrentUser(result.user);
     await loadProducts();
     if (canViewPartnerAssets(result.user)) {
-      await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo()]);
+      await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav()]);
     }
     if (canManage(result.user)) {
       await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers()]);
@@ -800,6 +819,7 @@ function App() {
     setQualificationPayload(null);
     setAssetPayload(null);
     setWarehouseInfoPayload(null);
+    setQuickNavPayload(null);
     setWarehousePayload(null);
     setInventorySnapshotPayload(null);
     setMovementPayload(null);
@@ -823,7 +843,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -875,6 +895,8 @@ function App() {
           />
         ) : activeView === "仓库信息" ? (
           <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} />
+        ) : activeView === "快捷导航" ? (
+          <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -3022,6 +3044,236 @@ function ProductLibrary({
         <ArrowUp size={18} />
         <span>顶部</span>
       </button>
+    </main>
+  );
+}
+
+function QuickNavPage({
+  quickNavPayload,
+  currentUser,
+  onRefresh,
+}: {
+  quickNavPayload: QuickNavPayload | null;
+  currentUser: AuthUser;
+  onRefresh: () => Promise<void>;
+}) {
+  const [localPayload, setLocalPayload] = React.useState<QuickNavPayload | null>(null);
+  const visiblePayload = localPayload || quickNavPayload;
+  const categories = visiblePayload?.categories ?? [];
+  const admin = canManage(currentUser);
+  const [categoryForm, setCategoryForm] = React.useState({ name: "", description: "", sortOrder: 0 });
+  const [linkForm, setLinkForm] = React.useState({ categoryId: "", title: "", url: "", description: "", sortOrder: 0 });
+  const [saving, setSaving] = React.useState(false);
+  const [actionId, setActionId] = React.useState("");
+  const [message, setMessage] = React.useState("");
+
+  React.useEffect(() => {
+    setLocalPayload(null);
+  }, [quickNavPayload?.updatedAt]);
+
+  React.useEffect(() => {
+    if (!linkForm.categoryId && categories[0]?.id) {
+      setLinkForm((current) => ({ ...current, categoryId: categories[0].id }));
+    }
+  }, [categories, linkForm.categoryId]);
+
+  async function refreshAfterAction(payload: QuickNavPayload) {
+    setLocalPayload(payload);
+    await onRefresh().catch(() => null);
+  }
+
+  async function handleCreateCategory(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setMessage("");
+    try {
+      const result = await createQuickNavCategory(categoryForm);
+      await refreshAfterAction(result);
+      const nextCategory = result.categories.find((category) => category.name === categoryForm.name) || result.categories[0];
+      setCategoryForm({ name: "", description: "", sortOrder: 0 });
+      setLinkForm((current) => ({ ...current, categoryId: nextCategory?.id || current.categoryId }));
+      setMessage("分类已创建。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "创建分类失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCreateLink(event: React.FormEvent) {
+    event.preventDefault();
+    if (!linkForm.categoryId) {
+      setMessage("请先创建或选择一个分类。");
+      return;
+    }
+
+    setSaving(true);
+    setMessage("");
+    try {
+      const result = await createQuickNavLink(linkForm.categoryId, {
+        title: linkForm.title,
+        url: linkForm.url,
+        description: linkForm.description,
+        sortOrder: linkForm.sortOrder,
+      });
+      await refreshAfterAction(result);
+      setLinkForm((current) => ({ ...current, title: "", url: "", description: "", sortOrder: 0 }));
+      setMessage("快捷方式已添加。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "添加快捷方式失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteCategory(categoryId: string) {
+    if (!window.confirm("确认删除这个分类？分类下的快捷方式也会一起删除。")) return;
+    setActionId(categoryId);
+    setMessage("");
+    try {
+      const result = await deleteQuickNavCategory(categoryId);
+      await refreshAfterAction(result);
+      setMessage("分类已删除。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除分类失败。");
+    } finally {
+      setActionId("");
+    }
+  }
+
+  async function handleDeleteLink(categoryId: string, linkId: string) {
+    setActionId(linkId);
+    setMessage("");
+    try {
+      const result = await deleteQuickNavLink(categoryId, linkId);
+      await refreshAfterAction(result);
+      setMessage("快捷方式已删除。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除快捷方式失败。");
+    } finally {
+      setActionId("");
+    }
+  }
+
+  return (
+    <main className="library-page quick-nav-page">
+      <section className="qualification-panel quick-nav-panel">
+        <div className="qualification-head">
+          <div>
+            <p className="eyebrow">Quick Links</p>
+            <h3>快捷导航</h3>
+            <span>
+              已收录 {formatNumber(visiblePayload?.counts.links || 0)} 个网页工具，按 {formatNumber(visiblePayload?.counts.categories || 0)} 个分类归档。
+            </span>
+          </div>
+          <button className="ghost-button" type="button" onClick={onRefresh}>
+            <RefreshCw size={16} />
+            刷新
+          </button>
+        </div>
+
+        {admin ? (
+          <div className="quick-nav-admin-grid">
+            <form className="quick-nav-form" onSubmit={handleCreateCategory}>
+              <div>
+                <p className="eyebrow">Category</p>
+                <h3>创建分类</h3>
+              </div>
+              <label>
+                <span>分类名称</span>
+                <input value={categoryForm.name} onChange={(event) => setCategoryForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：平台后台" />
+              </label>
+              <label>
+                <span>分类说明</span>
+                <input value={categoryForm.description} onChange={(event) => setCategoryForm((current) => ({ ...current, description: event.target.value }))} placeholder="可选" />
+              </label>
+              <label>
+                <span>排序</span>
+                <input type="number" value={categoryForm.sortOrder} onChange={(event) => setCategoryForm((current) => ({ ...current, sortOrder: Number(event.target.value) }))} />
+              </label>
+              <button className="sync-button" type="submit" disabled={saving}>
+                <Settings size={16} />
+                创建分类
+              </button>
+            </form>
+
+            <form className="quick-nav-form" onSubmit={handleCreateLink}>
+              <div>
+                <p className="eyebrow">Shortcut</p>
+                <h3>新增快捷方式</h3>
+              </div>
+              <label>
+                <span>所属分类</span>
+                <select value={linkForm.categoryId} onChange={(event) => setLinkForm((current) => ({ ...current, categoryId: event.target.value }))}>
+                  {categories.length ? categories.map((category) => (
+                    <option key={category.id} value={category.id}>{category.name}</option>
+                  )) : (
+                    <option value="">请先创建分类</option>
+                  )}
+                </select>
+              </label>
+              <label>
+                <span>工具名称</span>
+                <input value={linkForm.title} onChange={(event) => setLinkForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：店铺后台" />
+              </label>
+              <label>
+                <span>网址</span>
+                <input value={linkForm.url} onChange={(event) => setLinkForm((current) => ({ ...current, url: event.target.value }))} placeholder="https://..." />
+              </label>
+              <label>
+                <span>说明</span>
+                <input value={linkForm.description} onChange={(event) => setLinkForm((current) => ({ ...current, description: event.target.value }))} placeholder="可选" />
+              </label>
+              <button className="sync-button" type="submit" disabled={saving || !categories.length}>
+                <ExternalLink size={16} />
+                添加快捷方式
+              </button>
+            </form>
+          </div>
+        ) : null}
+
+        {message ? <div className={`notice ${message.includes("失败") ? "warning" : ""}`}>{message}</div> : null}
+
+        <div className="quick-nav-grid">
+          {categories.length ? categories.map((category) => (
+            <section className="quick-nav-category" key={category.id}>
+              <div className="quick-nav-category-head">
+                <div>
+                  <h3>{category.name}</h3>
+                  {category.description ? <span>{category.description}</span> : null}
+                </div>
+                {admin ? (
+                  <button className="ghost-button danger-button" type="button" disabled={actionId === category.id} onClick={() => handleDeleteCategory(category.id)}>
+                    删除分类
+                  </button>
+                ) : null}
+              </div>
+              <div className="quick-nav-link-list">
+                {category.links.length ? category.links.map((link) => (
+                  <article className="quick-nav-link-card" key={link.id}>
+                    <a href={link.url} target="_blank" rel="noreferrer">
+                      <span>
+                        <strong>{link.title}</strong>
+                        {link.description ? <small>{link.description}</small> : <small>{link.url}</small>}
+                      </span>
+                      <ExternalLink size={17} />
+                    </a>
+                    {admin ? (
+                      <button className="icon-button danger-button" type="button" title="删除快捷方式" disabled={actionId === link.id} onClick={() => handleDeleteLink(category.id, link.id)}>
+                        <X size={15} />
+                      </button>
+                    ) : null}
+                  </article>
+                )) : (
+                  <div className="stockup-empty">这个分类下还没有快捷方式。</div>
+                )}
+              </div>
+            </section>
+          )) : (
+            <div className="stockup-empty">暂无快捷导航。管理员可以先创建分类，再添加常用网页工具。</div>
+          )}
+        </div>
+      </section>
     </main>
   );
 }

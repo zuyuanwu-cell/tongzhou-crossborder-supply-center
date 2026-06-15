@@ -40,6 +40,7 @@ const warehouseConnectionsPath = resolve(cacheDir, "warehouse-connections.json")
 const qualificationCachePath = resolve(cacheDir, "qualifications.json");
 const assetCachePath = resolve(cacheDir, "assets.json");
 const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
+const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
@@ -54,6 +55,7 @@ let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
+let cachedQuickNav = loadJsonCache(quickNavCachePath) || buildQuickNavPayload([]);
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
 const internalAccessCode = process.env.INTERNAL_ACCESS_CODE || "admin123";
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
@@ -127,8 +129,69 @@ function saveWarehouseInfoCache(payload) {
   saveJsonCache(warehouseInfoCachePath, payload);
 }
 
+function saveQuickNavCache() {
+  cachedQuickNav = buildQuickNavPayload(cachedQuickNav.categories || []);
+  saveJsonCache(quickNavCachePath, cachedQuickNav);
+}
+
 function saveOutsourcingOrderCache(payload) {
   saveJsonCache(outsourcingOrderCachePath, payload);
+}
+
+function quickNavId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function buildQuickNavPayload(categories) {
+  const normalizedCategories = (categories || [])
+    .map((category) => ({
+      id: String(category.id || quickNavId("cat")),
+      name: String(category.name || "").trim(),
+      description: String(category.description || "").trim(),
+      sortOrder: numberOrZero(category.sortOrder),
+      createdAt: category.createdAt || new Date().toISOString(),
+      updatedAt: category.updatedAt || category.createdAt || new Date().toISOString(),
+      links: (category.links || [])
+        .map((link) => ({
+          id: String(link.id || quickNavId("link")),
+          categoryId: String(link.categoryId || category.id || ""),
+          title: String(link.title || "").trim(),
+          url: String(link.url || "").trim(),
+          description: String(link.description || "").trim(),
+          sortOrder: numberOrZero(link.sortOrder),
+          createdAt: link.createdAt || new Date().toISOString(),
+          updatedAt: link.updatedAt || link.createdAt || new Date().toISOString(),
+        }))
+        .filter((link) => link.title && link.url)
+        .sort((left, right) => left.sortOrder - right.sortOrder || left.title.localeCompare(right.title, "zh-CN")),
+    }))
+    .filter((category) => category.name)
+    .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, "zh-CN"));
+
+  return {
+    ok: true,
+    source: "local",
+    updatedAt: new Date().toISOString(),
+    counts: {
+      categories: normalizedCategories.length,
+      links: normalizedCategories.reduce((sum, category) => sum + category.links.length, 0),
+    },
+    categories: normalizedCategories,
+  };
+}
+
+function normalizeQuickNavUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  const parsed = new URL(withProtocol);
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("快捷方式仅支持 http 或 https 链接。");
+  return parsed.toString();
 }
 
 function loadUsersCache() {
@@ -1022,6 +1085,144 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/warehouse-info/sync" && req.method === "POST") {
       await handleWarehouseInfoSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/quick-nav" && req.method === "GET") {
+      if (!canViewPartnerAssets(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看快捷导航需要登录。" });
+        return;
+      }
+      sendJson(res, 200, buildQuickNavPayload(cachedQuickNav.categories || []));
+      return;
+    }
+
+    if (url.pathname === "/api/quick-nav/categories" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "创建快捷导航分类需要直营部门登录。" });
+        return;
+      }
+
+      const payload = await parseRequestBody(req);
+      const name = String(payload.name || "").trim();
+      if (!name) {
+        sendJson(res, 400, { ok: false, message: "分类名称不能为空。" });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      cachedQuickNav.categories = [
+        ...(cachedQuickNav.categories || []),
+        {
+          id: quickNavId("cat"),
+          name,
+          description: String(payload.description || "").trim(),
+          sortOrder: numberOrZero(payload.sortOrder),
+          createdAt: now,
+          updatedAt: now,
+          links: [],
+        },
+      ];
+      saveQuickNavCache();
+      sendJson(res, 201, cachedQuickNav);
+      return;
+    }
+
+    const quickNavCategoryMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)$/);
+    if (quickNavCategoryMatch && req.method === "DELETE") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "删除快捷导航分类需要直营部门登录。" });
+        return;
+      }
+
+      const categoryId = decodeURIComponent(quickNavCategoryMatch[1]);
+      const before = (cachedQuickNav.categories || []).length;
+      cachedQuickNav.categories = (cachedQuickNav.categories || []).filter((category) => category.id !== categoryId);
+      if ((cachedQuickNav.categories || []).length === before) {
+        sendJson(res, 404, { ok: false, message: "分类不存在。" });
+        return;
+      }
+      saveQuickNavCache();
+      sendJson(res, 200, cachedQuickNav);
+      return;
+    }
+
+    const quickNavLinksMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)\/links$/);
+    if (quickNavLinksMatch && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "创建快捷方式需要直营部门登录。" });
+        return;
+      }
+
+      const categoryId = decodeURIComponent(quickNavLinksMatch[1]);
+      const category = (cachedQuickNav.categories || []).find((item) => item.id === categoryId);
+      if (!category) {
+        sendJson(res, 404, { ok: false, message: "分类不存在。" });
+        return;
+      }
+
+      const payload = await parseRequestBody(req);
+      const title = String(payload.title || "").trim();
+      if (!title) {
+        sendJson(res, 400, { ok: false, message: "快捷方式名称不能为空。" });
+        return;
+      }
+
+      let safeUrl = "";
+      try {
+        safeUrl = normalizeQuickNavUrl(payload.url);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error.message || "链接格式不正确。" });
+        return;
+      }
+      if (!safeUrl) {
+        sendJson(res, 400, { ok: false, message: "链接不能为空。" });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      category.links = [
+        ...(category.links || []),
+        {
+          id: quickNavId("link"),
+          categoryId,
+          title,
+          url: safeUrl,
+          description: String(payload.description || "").trim(),
+          sortOrder: numberOrZero(payload.sortOrder),
+          createdAt: now,
+          updatedAt: now,
+        },
+      ];
+      category.updatedAt = now;
+      saveQuickNavCache();
+      sendJson(res, 201, cachedQuickNav);
+      return;
+    }
+
+    const quickNavLinkMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)\/links\/([^/]+)$/);
+    if (quickNavLinkMatch && req.method === "DELETE") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "删除快捷方式需要直营部门登录。" });
+        return;
+      }
+
+      const categoryId = decodeURIComponent(quickNavLinkMatch[1]);
+      const linkId = decodeURIComponent(quickNavLinkMatch[2]);
+      const category = (cachedQuickNav.categories || []).find((item) => item.id === categoryId);
+      if (!category) {
+        sendJson(res, 404, { ok: false, message: "分类不存在。" });
+        return;
+      }
+      const before = (category.links || []).length;
+      category.links = (category.links || []).filter((link) => link.id !== linkId);
+      if (category.links.length === before) {
+        sendJson(res, 404, { ok: false, message: "快捷方式不存在。" });
+        return;
+      }
+      category.updatedAt = new Date().toISOString();
+      saveQuickNavCache();
+      sendJson(res, 200, cachedQuickNav);
       return;
     }
 

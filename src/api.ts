@@ -246,6 +246,38 @@ export type WarehouseInfoPayload = {
   warehouseInfo: WarehouseInfoRecord[];
 };
 
+export type QuickNavLink = {
+  id: string;
+  categoryId: string;
+  title: string;
+  url: string;
+  description: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type QuickNavCategory = {
+  id: string;
+  name: string;
+  description: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  links: QuickNavLink[];
+};
+
+export type QuickNavPayload = {
+  ok: boolean;
+  source: "local";
+  updatedAt: string;
+  counts: {
+    categories: number;
+    links: number;
+  };
+  categories: QuickNavCategory[];
+};
+
 export type WmsProvider = {
   id: string;
   name: string;
@@ -600,6 +632,36 @@ export function fetchAssets() {
 
 export function fetchWarehouseInfo() {
   return requestJson<WarehouseInfoPayload>("/api/warehouse-info");
+}
+
+export function fetchQuickNav() {
+  return requestJson<QuickNavPayload>("/api/quick-nav");
+}
+
+export function createQuickNavCategory(input: { name: string; description?: string; sortOrder?: number }) {
+  return requestJson<QuickNavPayload>("/api/quick-nav/categories", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteQuickNavCategory(id: string) {
+  return requestJson<QuickNavPayload>(`/api/quick-nav/categories/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function createQuickNavLink(categoryId: string, input: { title: string; url: string; description?: string; sortOrder?: number }) {
+  return requestJson<QuickNavPayload>(`/api/quick-nav/categories/${encodeURIComponent(categoryId)}/links`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteQuickNavLink(categoryId: string, linkId: string) {
+  return requestJson<QuickNavPayload>(`/api/quick-nav/categories/${encodeURIComponent(categoryId)}/links/${encodeURIComponent(linkId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function fetchUsers() {
