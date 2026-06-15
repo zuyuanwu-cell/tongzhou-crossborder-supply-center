@@ -690,7 +690,7 @@ export type StockupPayload = {
   }>;
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:8787`;
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : `${window.location.protocol}//${window.location.hostname}:8787`);
 
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
 const AUTH_USER_KEY = "tongzhou_auth_user";
