@@ -2202,9 +2202,16 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 401, { ok: false, message: "查看备货中心需要直营部门登录。" });
         return;
       }
+      let outsourcingWarning = "";
+      try {
+        await refreshOutsourcingOrderCache();
+      } catch (error) {
+        outsourcingWarning = error.message || "委外加工单实时同步失败，当前显示上一次缓存数据。";
+      }
       const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
       const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
-      sendJson(res, 200, buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts));
+      const stockupPayload = buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts);
+      sendJson(res, 200, outsourcingWarning ? { ...stockupPayload, warning: outsourcingWarning } : stockupPayload);
       return;
     }
 

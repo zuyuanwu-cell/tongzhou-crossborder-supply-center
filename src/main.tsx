@@ -525,6 +525,12 @@ function App() {
   }, [currentUser.role, activeView]);
 
   React.useEffect(() => {
+    if (!canManage(currentUser)) return;
+    if (hashForView(activeView) !== "#stockup") return;
+    void loadStockup();
+  }, [activeView, currentUser.role]);
+
+  React.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadProducts(true);
       if (canViewPartnerAssets(currentUser)) {
