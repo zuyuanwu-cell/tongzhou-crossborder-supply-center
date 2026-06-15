@@ -5,6 +5,7 @@ import {
   ArrowUp,
   ArrowUpRight,
   BarChart3,
+  BellRing,
   Bot,
   Boxes,
   CalendarDays,
@@ -49,6 +50,10 @@ import {
   QualificationRecord,
   StockupPayload,
   UserManagementPayload,
+  WecomNotificationPayload,
+  WecomRobot,
+  WecomSchedule,
+  WecomSceneConfig,
   WarehousePayload,
   WarehouseInfoPayload,
   WarehouseInfoRecord,
@@ -56,6 +61,8 @@ import {
   createQuickNavCategory,
   createQuickNavLink,
   createUser,
+  deleteWecomRobot,
+  deleteWecomSchedule,
   deleteQuickNavCategory,
   deleteQuickNavLink,
   captureInventorySnapshot,
@@ -72,6 +79,7 @@ import {
   fetchStockup,
   fetchUsers,
   fetchWarehouses,
+  fetchWecomNotifications,
   fetchWarehouseInfo,
   getStoredUser,
   importWarehouseConnections,
@@ -87,8 +95,12 @@ import {
   syncStockupOrders,
   syncWarehouses,
   syncWarehouseInfo,
+  testWecomNotification,
   updateUserStatus,
   updateWarehouseConnection,
+  updateWecomScenes,
+  upsertWecomRobot,
+  upsertWecomSchedule,
   fetchAiConfig,
   fetchAiVideoStatus,
   runAiImage,
@@ -237,6 +249,7 @@ const navItems = [
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", beta: true },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
+  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications" },
 ];
 
 const viewHashMap = Object.fromEntries(navItems.map((item) => [item.hash, item.label]));
@@ -478,6 +491,7 @@ function App() {
   const [warehouseInfoPayload, setWarehouseInfoPayload] = React.useState<WarehouseInfoPayload | null>(null);
   const [quickNavPayload, setQuickNavPayload] = React.useState<QuickNavPayload | null>(null);
   const [aiConfigPayload, setAiConfigPayload] = React.useState<AiConfigPayload | null>(null);
+  const [wecomNotificationPayload, setWecomNotificationPayload] = React.useState<WecomNotificationPayload | null>(null);
   const [userPayload, setUserPayload] = React.useState<UserManagementPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
@@ -509,6 +523,7 @@ function App() {
       loadMovement();
       loadStockup();
       loadUsers();
+      loadWecomNotifications();
     }
     loadQuickNav();
     loadAiConfig();
@@ -546,6 +561,7 @@ function App() {
         void loadMovement();
         void loadStockup();
         void loadUsers();
+        void loadWecomNotifications();
       }
     }, AUTO_SYNC_INTERVAL_MS);
     return () => window.clearInterval(timer);
@@ -655,6 +671,15 @@ function App() {
     }
   }
 
+  async function loadWecomNotifications() {
+    try {
+      const data = await fetchWecomNotifications();
+      setWecomNotificationPayload(data);
+    } catch {
+      setWecomNotificationPayload(null);
+    }
+  }
+
   async function loadUsers() {
     try {
       const data = await fetchUsers();
@@ -671,7 +696,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
+      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -845,7 +870,7 @@ function App() {
       await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
     }
     if (canManage(result.user)) {
-      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers()]);
+      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers(), loadWecomNotifications()]);
     }
   }
 
@@ -862,6 +887,7 @@ function App() {
     setMovementPayload(null);
     setStockupPayload(null);
     setUserPayload(null);
+    setWecomNotificationPayload(null);
   }
 
   function handleViewChange(view: string) {
@@ -880,7 +906,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -957,6 +983,8 @@ function App() {
           <MovementBoard movementPayload={movementPayload} onSyncOrders={handleOrderSync} syncing={syncing} />
         ) : activeView === "备货中心" ? (
           <StockupCenter stockupPayload={stockupPayload} onSyncStockup={handleStockupSync} syncing={syncing} />
+        ) : activeView === "企业微信通知" ? (
+          <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "用户管理" ? (
           <UserManagement userPayload={userPayload} />
         ) : (
@@ -1722,6 +1750,413 @@ function StockupCenter({
           )) : (
             <div className="stockup-empty">暂无 WMS 备货单明细。当前已预留斗仓 / 神牛 SEA WMS 与俄罗斯 YunWMS 接口入口，补齐字段映射后即可同步。</div>
           )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+const defaultWecomScene: WecomSceneConfig = { enabled: false, robotIds: [], linkUrl: "", extraText: "" };
+
+function RobotCheckboxes({
+  robots,
+  selected,
+  onChange,
+}: {
+  robots: WecomRobot[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  if (!robots.length) return <div className="notice warning compact-notice">请先新增至少一个企业微信机器人。</div>;
+  const selectedSet = new Set(selected);
+  return (
+    <div className="wecom-robot-picker">
+      {robots.map((robot) => (
+        <label className="wecom-check" key={robot.id}>
+          <input
+            type="checkbox"
+            checked={selectedSet.has(robot.id)}
+            onChange={(event) => {
+              if (event.target.checked) onChange([...selectedSet, robot.id]);
+              else onChange(selected.filter((id) => id !== robot.id));
+            }}
+          />
+          <span>{robot.name}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotificationPayload | null; onRefresh: () => Promise<void> }) {
+  const [localPayload, setLocalPayload] = React.useState<WecomNotificationPayload | null>(null);
+  const data = localPayload || payload;
+  const robots = data?.robots || [];
+  const schedules = data?.schedules || [];
+  const scenes = data?.scenes || { stockupRecommendation: defaultWecomScene, inventorySnapshot: defaultWecomScene };
+  const [robotForm, setRobotForm] = React.useState({ id: "", name: "", webhookUrl: "", enabled: true });
+  const [scheduleForm, setScheduleForm] = React.useState({
+    id: "",
+    name: "",
+    robotIds: [] as string[],
+    enabled: true,
+    mode: "daily" as "daily" | "interval",
+    time: "09:00",
+    intervalMinutes: 60,
+    text: "",
+    linkUrl: "",
+    linkText: "查看详情",
+  });
+  const [sceneForm, setSceneForm] = React.useState(scenes);
+  const [testForm, setTestForm] = React.useState({ robotIds: [] as string[], text: "这是一条来自同舟供应链数智化系统的测试消息。", linkUrl: "", linkText: "查看详情" });
+  const [message, setMessage] = React.useState("");
+  const [busy, setBusy] = React.useState("");
+
+  React.useEffect(() => {
+    if (data?.scenes) setSceneForm(data.scenes);
+  }, [data?.updatedAt]);
+
+  async function refresh(result?: WecomNotificationPayload) {
+    if (result) setLocalPayload(result);
+    else await onRefresh();
+  }
+
+  async function saveRobot(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("robot");
+    setMessage("");
+    try {
+      const result = await upsertWecomRobot(robotForm);
+      await refresh(result);
+      setRobotForm({ id: "", name: "", webhookUrl: "", enabled: true });
+      setMessage("机器人已保存。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "机器人保存失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function removeRobot(robot: WecomRobot) {
+    if (!window.confirm(`确认删除机器人「${robot.name}」？`)) return;
+    setBusy(robot.id);
+    setMessage("");
+    try {
+      const result = await deleteWecomRobot(robot.id);
+      await refresh(result);
+      setMessage("机器人已删除。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "机器人删除失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function editRobot(robot: WecomRobot) {
+    setRobotForm({ id: robot.id, name: robot.name, webhookUrl: "", enabled: robot.enabled });
+  }
+
+  async function saveSchedule(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("schedule");
+    setMessage("");
+    try {
+      const result = await upsertWecomSchedule(scheduleForm);
+      await refresh(result);
+      setScheduleForm({ id: "", name: "", robotIds: [], enabled: true, mode: "daily", time: "09:00", intervalMinutes: 60, text: "", linkUrl: "", linkText: "查看详情" });
+      setMessage("定时推送已保存。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "定时推送保存失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function removeSchedule(schedule: WecomSchedule) {
+    if (!window.confirm(`确认删除定时推送「${schedule.name}」？`)) return;
+    setBusy(schedule.id);
+    setMessage("");
+    try {
+      const result = await deleteWecomSchedule(schedule.id);
+      await refresh(result);
+      setMessage("定时推送已删除。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "定时推送删除失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function editSchedule(schedule: WecomSchedule) {
+    setScheduleForm({
+      id: schedule.id,
+      name: schedule.name,
+      robotIds: schedule.robotIds || [],
+      enabled: schedule.enabled,
+      mode: schedule.mode,
+      time: schedule.time || "09:00",
+      intervalMinutes: schedule.intervalMinutes || 60,
+      text: schedule.text,
+      linkUrl: schedule.linkUrl || "",
+      linkText: schedule.linkText || "查看详情",
+    });
+  }
+
+  async function saveScenes() {
+    setBusy("scenes");
+    setMessage("");
+    try {
+      const result = await updateWecomScenes(sceneForm);
+      await refresh(result);
+      setMessage("场景推送配置已保存。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "场景推送保存失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function sendTest() {
+    setBusy("test");
+    setMessage("");
+    try {
+      const result = await testWecomNotification(testForm);
+      await refresh(result);
+      const failed = result.results?.filter((item) => !item.ok) || [];
+      setMessage(failed.length ? `测试发送完成，${failed.length} 个机器人失败。` : "测试消息已发送。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "测试发送失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function updateScene(key: keyof WecomNotificationPayload["scenes"], patch: Partial<WecomSceneConfig>) {
+    setSceneForm((current) => ({
+      ...current,
+      [key]: { ...(current[key] || defaultWecomScene), ...patch },
+    }));
+  }
+
+  return (
+    <main className="movement-page">
+      <section className="library-hero movement-hero">
+        <div>
+          <p className="eyebrow">WeCom Robot Center</p>
+          <h2>企业微信机器人通知</h2>
+          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货建议和库存快照产生后的场景化提醒。</p>
+          <div className="source-row">
+            <span className={`status-pill ${robots.length ? "good" : "warning"}`}>{robots.length ? "机器人已配置" : "等待配置机器人"}</span>
+            <span>{data?.updatedAt ? formatDateTime(data.updatedAt) : "暂无配置"}</span>
+          </div>
+        </div>
+        <button className="sync-button" type="button" onClick={onRefresh}>
+          <RefreshCw size={16} />
+          刷新配置
+        </button>
+      </section>
+
+      <section className="metric-strip movement-metrics">
+        <Metric title="机器人" value={formatNumber(robots.length)} note="可配置多个群机器人" icon={BellRing} tone="blue" />
+        <Metric title="定时推送" value={formatNumber(schedules.length)} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
+        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货建议、库存快照" icon={PackageCheck} tone="orange" />
+        <Metric title="最近更新" value={data?.updatedAt ? formatDate(data.updatedAt) : "-"} note="本地通知配置" icon={Settings} tone="red" />
+      </section>
+
+      {message ? <div className={`notice ${message.includes("失败") ? "warning" : ""}`}>{message}</div> : null}
+
+      <section className="wecom-grid">
+        <form className="panel wecom-panel" onSubmit={saveRobot}>
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Robot</p>
+              <h2>{robotForm.id ? "编辑机器人" : "新增机器人"}</h2>
+            </div>
+          </div>
+          <label>
+            <span>机器人名称</span>
+            <input value={robotForm.name} onChange={(event) => setRobotForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：备货通知群" />
+          </label>
+          <label>
+            <span>Webhook 地址</span>
+            <input value={robotForm.webhookUrl} onChange={(event) => setRobotForm((current) => ({ ...current, webhookUrl: event.target.value }))} placeholder={robotForm.id ? "留空则保留原 webhook" : "粘贴企业微信机器人 webhook"} />
+          </label>
+          <label className="wecom-inline-check">
+            <input type="checkbox" checked={robotForm.enabled} onChange={(event) => setRobotForm((current) => ({ ...current, enabled: event.target.checked }))} />
+            <span>启用这个机器人</span>
+          </label>
+          <div className="wecom-actions">
+            <button className="sync-button" type="submit" disabled={busy === "robot"}>{busy === "robot" ? "保存中" : "保存机器人"}</button>
+            {robotForm.id ? <button className="ghost-button" type="button" onClick={() => setRobotForm({ id: "", name: "", webhookUrl: "", enabled: true })}>取消编辑</button> : null}
+          </div>
+        </form>
+
+        <section className="panel wecom-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Robots</p>
+              <h2>机器人列表</h2>
+            </div>
+          </div>
+          <div className="wecom-list">
+            {robots.length ? robots.map((robot) => (
+              <article className="wecom-list-item" key={robot.id}>
+                <div>
+                  <strong>{robot.name}</strong>
+                  <span>{robot.webhookMasked || "Webhook 已保存"}</span>
+                  {robot.lastError ? <small className="wecom-error">{robot.lastError}</small> : <small>最近发送：{robot.lastSentAt ? formatDateTime(robot.lastSentAt) : "暂无"}</small>}
+                </div>
+                <span className={`status-pill ${robot.enabled ? "good" : "muted"}`}>{robot.enabled ? "启用" : "停用"}</span>
+                <button className="ghost-button compact-button" type="button" onClick={() => editRobot(robot)}>编辑</button>
+                <button className="ghost-button compact-button danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除</button>
+              </article>
+            )) : <div className="stockup-empty">暂无机器人。先创建一个企业微信群机器人 webhook。</div>}
+          </div>
+        </section>
+      </section>
+
+      <section className="panel wecom-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Scheduled Push</p>
+            <h2>{scheduleForm.id ? "编辑定时推送" : "新增定时推送"}</h2>
+          </div>
+        </div>
+        <form className="wecom-form-grid" onSubmit={saveSchedule}>
+          <label>
+            <span>推送名称</span>
+            <input value={scheduleForm.name} onChange={(event) => setScheduleForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：每日备货提醒" />
+          </label>
+          <label>
+            <span>模式</span>
+            <select value={scheduleForm.mode} onChange={(event) => setScheduleForm((current) => ({ ...current, mode: event.target.value as "daily" | "interval" }))}>
+              <option value="daily">每天固定时间</option>
+              <option value="interval">按间隔循环</option>
+            </select>
+          </label>
+          {scheduleForm.mode === "daily" ? (
+            <label>
+              <span>推送时间</span>
+              <input type="time" value={scheduleForm.time} onChange={(event) => setScheduleForm((current) => ({ ...current, time: event.target.value }))} />
+            </label>
+          ) : (
+            <label>
+              <span>间隔分钟</span>
+              <input type="number" min={5} max={1440} value={scheduleForm.intervalMinutes} onChange={(event) => setScheduleForm((current) => ({ ...current, intervalMinutes: Number(event.target.value) }))} />
+            </label>
+          )}
+          <label>
+            <span>链接文字</span>
+            <input value={scheduleForm.linkText} onChange={(event) => setScheduleForm((current) => ({ ...current, linkText: event.target.value }))} />
+          </label>
+          <label className="wecom-span-2">
+            <span>推送链接</span>
+            <input value={scheduleForm.linkUrl} onChange={(event) => setScheduleForm((current) => ({ ...current, linkUrl: event.target.value }))} placeholder="可选，例如备货中心链接" />
+          </label>
+          <label className="wecom-span-2">
+            <span>自定义文字</span>
+            <textarea value={scheduleForm.text} onChange={(event) => setScheduleForm((current) => ({ ...current, text: event.target.value }))} placeholder="要定时推送到群里的内容" />
+          </label>
+          <div className="wecom-span-2">
+            <span className="field-label">推送机器人</span>
+            <RobotCheckboxes robots={robots} selected={scheduleForm.robotIds} onChange={(robotIds) => setScheduleForm((current) => ({ ...current, robotIds }))} />
+          </div>
+          <label className="wecom-inline-check">
+            <input type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} />
+            <span>启用定时推送</span>
+          </label>
+          <div className="wecom-actions">
+            <button className="sync-button" type="submit" disabled={busy === "schedule"}>{busy === "schedule" ? "保存中" : "保存定时推送"}</button>
+            {scheduleForm.id ? <button className="ghost-button" type="button" onClick={() => setScheduleForm({ id: "", name: "", robotIds: [], enabled: true, mode: "daily", time: "09:00", intervalMinutes: 60, text: "", linkUrl: "", linkText: "查看详情" })}>取消编辑</button> : null}
+          </div>
+        </form>
+
+        <div className="wecom-list wecom-schedule-list">
+          {schedules.length ? schedules.map((schedule) => (
+            <article className="wecom-list-item" key={schedule.id}>
+              <div>
+                <strong>{schedule.name}</strong>
+                <span>{schedule.mode === "daily" ? `每天 ${schedule.time}` : `每 ${schedule.intervalMinutes} 分钟`} · {schedule.robotIds.length} 个机器人</span>
+                <small>{schedule.lastError ? `错误：${schedule.lastError}` : `最近发送：${schedule.lastSentAt ? formatDateTime(schedule.lastSentAt) : "暂无"}`}</small>
+              </div>
+              <span className={`status-pill ${schedule.enabled ? "good" : "muted"}`}>{schedule.enabled ? "启用" : "停用"}</span>
+              <button className="ghost-button compact-button" type="button" onClick={() => editSchedule(schedule)}>编辑</button>
+              <button className="ghost-button compact-button danger-button" type="button" disabled={busy === schedule.id} onClick={() => removeSchedule(schedule)}>删除</button>
+            </article>
+          )) : <div className="stockup-empty">暂无定时推送。</div>}
+        </div>
+      </section>
+
+      <section className="panel wecom-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Scene Push</p>
+            <h2>场景化推送</h2>
+          </div>
+          <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes"}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
+        </div>
+        <div className="wecom-scene-grid">
+          {([
+            ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
+            ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
+          ] as Array<[keyof WecomNotificationPayload["scenes"], string, string]>).map(([key, title, description]) => {
+            const scene = sceneForm[key] || defaultWecomScene;
+            return (
+              <article className="wecom-scene-card" key={key}>
+                <div className="panel-heading">
+                  <div>
+                    <h3>{title}</h3>
+                    <p>{description}</p>
+                  </div>
+                  <label className="wecom-switch">
+                    <input type="checkbox" checked={scene.enabled} onChange={(event) => updateScene(key, { enabled: event.target.checked })} />
+                    <span>{scene.enabled ? "启用" : "停用"}</span>
+                  </label>
+                </div>
+                <label>
+                  <span>提醒链接</span>
+                  <input value={scene.linkUrl || ""} onChange={(event) => updateScene(key, { linkUrl: event.target.value })} placeholder="可选，例如备货中心/库存快照页面链接" />
+                </label>
+                <label>
+                  <span>附加文字</span>
+                  <textarea value={scene.extraText || ""} onChange={(event) => updateScene(key, { extraText: event.target.value })} placeholder="可选，追加到自动生成的消息后面" />
+                </label>
+                <span className="field-label">推送机器人</span>
+                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds })} />
+                <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="panel wecom-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Test Push</p>
+            <h2>测试发送</h2>
+          </div>
+        </div>
+        <div className="wecom-form-grid">
+          <label className="wecom-span-2">
+            <span>测试文字</span>
+            <textarea value={testForm.text} onChange={(event) => setTestForm((current) => ({ ...current, text: event.target.value }))} />
+          </label>
+          <label>
+            <span>推送链接</span>
+            <input value={testForm.linkUrl} onChange={(event) => setTestForm((current) => ({ ...current, linkUrl: event.target.value }))} placeholder="可选" />
+          </label>
+          <label>
+            <span>链接文字</span>
+            <input value={testForm.linkText} onChange={(event) => setTestForm((current) => ({ ...current, linkText: event.target.value }))} />
+          </label>
+          <div className="wecom-span-2">
+            <span className="field-label">推送机器人</span>
+            <RobotCheckboxes robots={robots} selected={testForm.robotIds} onChange={(robotIds) => setTestForm((current) => ({ ...current, robotIds }))} />
+          </div>
+          <div className="wecom-actions">
+            <button className="sync-button" type="button" onClick={sendTest} disabled={busy === "test" || !testForm.robotIds.length}>{busy === "test" ? "发送中" : "发送测试消息"}</button>
+          </div>
         </div>
       </section>
     </main>

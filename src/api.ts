@@ -278,6 +278,56 @@ export type QuickNavPayload = {
   categories: QuickNavCategory[];
 };
 
+export type WecomRobot = {
+  id: string;
+  name: string;
+  webhookMasked: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastSentAt?: string;
+  lastError?: string;
+};
+
+export type WecomSchedule = {
+  id: string;
+  name: string;
+  robotIds: string[];
+  enabled: boolean;
+  mode: "daily" | "interval";
+  time: string;
+  intervalMinutes: number;
+  text: string;
+  linkUrl: string;
+  linkText: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSentAt?: string;
+  lastRunKey?: string;
+  lastError?: string;
+};
+
+export type WecomSceneConfig = {
+  enabled: boolean;
+  robotIds: string[];
+  linkUrl: string;
+  extraText: string;
+  lastSignature?: string;
+  lastSentAt?: string;
+};
+
+export type WecomNotificationPayload = {
+  ok: boolean;
+  source: "local";
+  updatedAt: string;
+  robots: WecomRobot[];
+  schedules: WecomSchedule[];
+  scenes: {
+    stockupRecommendation: WecomSceneConfig;
+    inventorySnapshot: WecomSceneConfig;
+  };
+};
+
 export type AiConfigPayload = {
   ok: boolean;
   provider: "agnes";
@@ -719,6 +769,61 @@ export function createQuickNavLink(categoryId: string, input: { title: string; u
 export function deleteQuickNavLink(categoryId: string, linkId: string) {
   return requestJson<QuickNavPayload>(`/api/quick-nav/categories/${encodeURIComponent(categoryId)}/links/${encodeURIComponent(linkId)}`, {
     method: "DELETE",
+  });
+}
+
+export function fetchWecomNotifications() {
+  return requestJson<WecomNotificationPayload>("/api/wecom-notifications");
+}
+
+export function upsertWecomRobot(input: { id?: string; name: string; webhookUrl?: string; enabled: boolean }) {
+  return requestJson<WecomNotificationPayload>("/api/wecom-notifications/robots", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteWecomRobot(id: string) {
+  return requestJson<WecomNotificationPayload>(`/api/wecom-notifications/robots/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function upsertWecomSchedule(input: {
+  id?: string;
+  name: string;
+  robotIds: string[];
+  enabled: boolean;
+  mode: "daily" | "interval";
+  time?: string;
+  intervalMinutes?: number;
+  text: string;
+  linkUrl?: string;
+  linkText?: string;
+}) {
+  return requestJson<WecomNotificationPayload>("/api/wecom-notifications/schedules", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteWecomSchedule(id: string) {
+  return requestJson<WecomNotificationPayload>(`/api/wecom-notifications/schedules/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function updateWecomScenes(scenes: Partial<WecomNotificationPayload["scenes"]>) {
+  return requestJson<WecomNotificationPayload>("/api/wecom-notifications/scenes", {
+    method: "POST",
+    body: JSON.stringify({ scenes }),
+  });
+}
+
+export function testWecomNotification(input: { robotIds: string[]; text: string; linkUrl?: string; linkText?: string }) {
+  return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>("/api/wecom-notifications/test", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

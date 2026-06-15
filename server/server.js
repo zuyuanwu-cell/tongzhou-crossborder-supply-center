@@ -42,6 +42,7 @@ const assetCachePath = resolve(cacheDir, "assets.json");
 const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
 const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
 const aiConfigCachePath = resolve(cacheDir, "ai-config.json");
+const wecomNotificationCachePath = resolve(cacheDir, "wecom-notifications.json");
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
@@ -59,6 +60,7 @@ let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
 let cachedQuickNav = loadJsonCache(quickNavCachePath) || buildQuickNavPayload([]);
 let cachedAiConfig = loadJsonCache(aiConfigCachePath) || buildAiConfig({});
+let cachedWecomNotifications = loadJsonCache(wecomNotificationCachePath) || buildWecomNotificationPayload({});
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
 const internalAccessCode = process.env.INTERNAL_ACCESS_CODE || "admin123";
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
@@ -77,6 +79,7 @@ let autoSyncRunning = false;
 let lastAutoSyncAt = "";
 let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
+let wecomScheduleRunning = false;
 
 function loadProductCache() {
   return loadJsonCache(productCachePath);
@@ -137,6 +140,11 @@ function saveQuickNavCache() {
   saveJsonCache(quickNavCachePath, cachedQuickNav);
 }
 
+function saveWecomNotificationCache() {
+  cachedWecomNotifications = buildWecomNotificationPayload(cachedWecomNotifications);
+  saveJsonCache(wecomNotificationCachePath, cachedWecomNotifications);
+}
+
 function saveOutsourcingOrderCache(payload) {
   saveJsonCache(outsourcingOrderCachePath, payload);
 }
@@ -148,6 +156,218 @@ function quickNavId(prefix) {
 function numberOrZero(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function wecomId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeWecomWebhook(value) {
+  const url = String(value || "").trim();
+  if (!url) return "";
+  const parsed = new URL(url);
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error("企业微信机器人地址必须是 http 或 https。");
+  return parsed.toString();
+}
+
+function maskWebhook(url) {
+  const text = String(url || "");
+  if (!text) return "";
+  return text.replace(/key=([^&]{4})[^&]+/i, "key=$1****");
+}
+
+function buildWecomNotificationPayload(input = {}) {
+  const now = new Date().toISOString();
+  const robots = (input.robots || [])
+    .map((robot) => ({
+      id: String(robot.id || wecomId("robot")),
+      name: String(robot.name || "").trim(),
+      webhookUrl: String(robot.webhookUrl || "").trim(),
+      enabled: robot.enabled !== false,
+      createdAt: robot.createdAt || now,
+      updatedAt: robot.updatedAt || robot.createdAt || now,
+      lastSentAt: robot.lastSentAt || "",
+      lastError: robot.lastError || "",
+    }))
+    .filter((robot) => robot.name && robot.webhookUrl);
+  const schedules = (input.schedules || [])
+    .map((schedule) => ({
+      id: String(schedule.id || wecomId("schedule")),
+      name: String(schedule.name || "").trim(),
+      robotIds: Array.isArray(schedule.robotIds) ? schedule.robotIds.map(String).filter(Boolean) : [],
+      enabled: schedule.enabled !== false,
+      mode: schedule.mode === "interval" ? "interval" : "daily",
+      time: String(schedule.time || "09:00").trim(),
+      intervalMinutes: Math.max(5, Math.min(1440, Number(schedule.intervalMinutes) || 60)),
+      text: String(schedule.text || "").trim(),
+      linkUrl: String(schedule.linkUrl || "").trim(),
+      linkText: String(schedule.linkText || "查看详情").trim(),
+      createdAt: schedule.createdAt || now,
+      updatedAt: schedule.updatedAt || schedule.createdAt || now,
+      lastSentAt: schedule.lastSentAt || "",
+      lastRunKey: schedule.lastRunKey || "",
+      lastError: schedule.lastError || "",
+    }))
+    .filter((schedule) => schedule.name && schedule.robotIds.length && schedule.text);
+  const scenes = {
+    stockupRecommendation: {
+      enabled: Boolean(input.scenes?.stockupRecommendation?.enabled),
+      robotIds: Array.isArray(input.scenes?.stockupRecommendation?.robotIds) ? input.scenes.stockupRecommendation.robotIds.map(String).filter(Boolean) : [],
+      linkUrl: String(input.scenes?.stockupRecommendation?.linkUrl || "").trim(),
+      extraText: String(input.scenes?.stockupRecommendation?.extraText || "").trim(),
+      lastSignature: input.scenes?.stockupRecommendation?.lastSignature || "",
+      lastSentAt: input.scenes?.stockupRecommendation?.lastSentAt || "",
+    },
+    inventorySnapshot: {
+      enabled: Boolean(input.scenes?.inventorySnapshot?.enabled),
+      robotIds: Array.isArray(input.scenes?.inventorySnapshot?.robotIds) ? input.scenes.inventorySnapshot.robotIds.map(String).filter(Boolean) : [],
+      linkUrl: String(input.scenes?.inventorySnapshot?.linkUrl || "").trim(),
+      extraText: String(input.scenes?.inventorySnapshot?.extraText || "").trim(),
+      lastSignature: input.scenes?.inventorySnapshot?.lastSignature || "",
+      lastSentAt: input.scenes?.inventorySnapshot?.lastSentAt || "",
+    },
+  };
+  return { ok: true, source: "local", updatedAt: input.updatedAt || now, robots, schedules, scenes };
+}
+
+function publicWecomNotificationPayload() {
+  const payload = buildWecomNotificationPayload(cachedWecomNotifications);
+  return {
+    ...payload,
+    robots: payload.robots.map(({ webhookUrl, ...robot }) => ({ ...robot, webhookMasked: maskWebhook(webhookUrl) })),
+  };
+}
+
+function notificationLinkLine(linkUrl, linkText = "查看详情") {
+  const url = String(linkUrl || "").trim();
+  if (!url) return "";
+  return `\n[${String(linkText || "查看详情").trim()}](${url})`;
+}
+
+async function sendWecomRobot(robot, content) {
+  if (!robot?.enabled) return { robotId: robot?.id, ok: false, skipped: true, message: "机器人已停用" };
+  const response = await fetch(robot.webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      msgtype: "markdown",
+      markdown: { content: String(content || "").slice(0, 4000) },
+    }),
+  });
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+  if (!response.ok || Number(data.errcode || 0) !== 0) {
+    throw new Error(data.errmsg || data.message || text || `企业微信机器人推送失败 ${response.status}`);
+  }
+  return { robotId: robot.id, ok: true };
+}
+
+async function sendWecomNotification(robotIds, content) {
+  const ids = new Set((robotIds || []).map(String).filter(Boolean));
+  const robots = (cachedWecomNotifications.robots || []).filter((robot) => ids.has(robot.id) && robot.enabled);
+  const results = [];
+  for (const robot of robots) {
+    try {
+      const result = await sendWecomRobot(robot, content);
+      robot.lastSentAt = new Date().toISOString();
+      robot.lastError = "";
+      results.push(result);
+    } catch (error) {
+      robot.lastError = error.message || "推送失败";
+      results.push({ robotId: robot.id, ok: false, message: robot.lastError });
+    }
+  }
+  cachedWecomNotifications.updatedAt = new Date().toISOString();
+  saveWecomNotificationCache();
+  return results;
+}
+
+function stockupSignature(payload) {
+  const items = (payload.recommendations || []).map((item) => `${item.sku}:${item.replenishQty}:${item.netReplenishQty}`).sort();
+  return items.join("|");
+}
+
+async function notifyStockupRecommendation(payload, reason = "refresh") {
+  const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
+  if (!scene?.enabled || !scene.robotIds?.length) return;
+  const signature = stockupSignature(payload);
+  if (!signature || scene.lastSignature === signature) return;
+  scene.lastSignature = signature;
+  scene.lastSentAt = new Date().toISOString();
+  const topItems = (payload.recommendations || []).slice(0, 8).map((item, index) => `${index + 1}. ${item.sku} ${item.name || ""}：建议 ${item.replenishQty}${item.unit || ""}，净建议 ${item.netReplenishQty}${item.unit || ""}`).join("\n");
+  const content = [
+    "### 备货建议提醒",
+    `发现 ${payload.counts?.recommendations || 0} 个 SKU 需要关注备货，净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`,
+    scene.extraText,
+    topItems,
+    notificationLinkLine(scene.linkUrl, "查看备货中心"),
+  ].filter(Boolean).join("\n\n");
+  await sendWecomNotification(scene.robotIds, content);
+}
+
+async function notifyInventorySnapshot(snapshot) {
+  const scene = cachedWecomNotifications.scenes?.inventorySnapshot;
+  if (!scene?.enabled || !scene.robotIds?.length || !snapshot) return;
+  const signature = `${snapshot.date}:${snapshot.capturedAt}:${snapshot.rowCount}`;
+  if (scene.lastSignature === signature) return;
+  scene.lastSignature = signature;
+  scene.lastSentAt = new Date().toISOString();
+  const content = [
+    "### 库存快照提醒",
+    `库存快照已生成：${snapshot.date}`,
+    `仓库 ${snapshot.warehouseCount || 0} 个，SKU ${snapshot.skuCount || 0} 个，可售库存 ${snapshot.totals?.availableQty || 0}，总库存 ${snapshot.totals?.totalQty || 0}。`,
+    scene.extraText,
+    notificationLinkLine(scene.linkUrl, "查看库存快照"),
+  ].filter(Boolean).join("\n\n");
+  await sendWecomNotification(scene.robotIds, content);
+}
+
+function scheduleRunKey(schedule, now = new Date()) {
+  const date = dateKeyInTimezone(now);
+  const minute = minutesInTimezone(now);
+  if (schedule.mode === "interval") {
+    return `${date}-${Math.floor(minute / Math.max(5, Number(schedule.intervalMinutes) || 60))}`;
+  }
+  return `${date}-${schedule.time || "09:00"}`;
+}
+
+function shouldRunSchedule(schedule, now = new Date()) {
+  if (!schedule.enabled) return false;
+  const minute = minutesInTimezone(now);
+  if (schedule.mode === "interval") return schedule.lastRunKey !== scheduleRunKey(schedule, now);
+  const [hourText, minuteText] = String(schedule.time || "09:00").split(":");
+  const target = (Number(hourText) || 0) * 60 + (Number(minuteText) || 0);
+  return minute >= target && minute < target + 2 && schedule.lastRunKey !== scheduleRunKey(schedule, now);
+}
+
+async function runWecomSchedules() {
+  if (wecomScheduleRunning) return;
+  wecomScheduleRunning = true;
+  try {
+    const schedules = cachedWecomNotifications.schedules || [];
+    for (const schedule of schedules) {
+      if (!shouldRunSchedule(schedule)) continue;
+      schedule.lastRunKey = scheduleRunKey(schedule);
+      schedule.lastSentAt = new Date().toISOString();
+      const content = [
+        `### ${schedule.name}`,
+        schedule.text,
+        notificationLinkLine(schedule.linkUrl, schedule.linkText),
+      ].filter(Boolean).join("\n\n");
+      const results = await sendWecomNotification(schedule.robotIds, content);
+      const failed = results.filter((item) => !item.ok);
+      schedule.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("; ") : "";
+    }
+    cachedWecomNotifications.updatedAt = new Date().toISOString();
+    saveWecomNotificationCache();
+  } finally {
+    wecomScheduleRunning = false;
+  }
 }
 
 function buildQuickNavPayload(categories) {
@@ -1009,6 +1229,7 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
     snapshots: snapshots.slice(0, 370),
   };
   saveInventorySnapshotCache(cachedInventorySnapshots);
+  void notifyInventorySnapshot(snapshot);
   return snapshot;
 }
 
@@ -1249,9 +1470,15 @@ async function handleStockupSync(req, res) {
   };
   saveStockupCache(cachedStockupSync);
 
+  sendJson(res, 200, buildCurrentStockupPayload({ notify: true, reason: "wms_sync" }));
+}
+
+function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {}) {
   const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
   const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
-  sendJson(res, 200, buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts));
+  const payload = buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts);
+  if (notify) void notifyStockupRecommendation(payload, reason);
+  return payload;
 }
 
 async function handleSync(req, res) {
@@ -1545,6 +1772,160 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/quick-nav" && req.method === "GET") {
       sendJson(res, 200, buildQuickNavPayload(cachedQuickNav.categories || []));
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看企业微信通知配置需要直营部门登录。" });
+        return;
+      }
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/robots" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "配置企业微信机器人需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const now = new Date().toISOString();
+      const id = String(payload.id || "").trim();
+      const existingRobot = (cachedWecomNotifications.robots || []).find((item) => item.id === id);
+      const webhookInput = String(payload.webhookUrl || "").trim();
+      let webhookUrl = existingRobot?.webhookUrl || "";
+      if (webhookInput) {
+        try {
+          webhookUrl = normalizeWecomWebhook(webhookInput);
+        } catch (error) {
+          sendJson(res, 400, { ok: false, message: error.message || "企业微信机器人 webhook 地址格式不正确。" });
+          return;
+        }
+      }
+      const robot = {
+        id: id || wecomId("robot"),
+        name: String(payload.name || "").trim(),
+        webhookUrl,
+        enabled: payload.enabled !== false,
+        createdAt: existingRobot?.createdAt || payload.createdAt || now,
+        updatedAt: now,
+        lastSentAt: existingRobot?.lastSentAt || payload.lastSentAt || "",
+        lastError: existingRobot?.lastError || payload.lastError || "",
+      };
+      if (!robot.name || !robot.webhookUrl) {
+        sendJson(res, 400, { ok: false, message: "机器人名称和 webhook 地址不能为空。" });
+        return;
+      }
+      cachedWecomNotifications.robots = [
+        ...(cachedWecomNotifications.robots || []).filter((item) => item.id !== robot.id),
+        robot,
+      ];
+      cachedWecomNotifications.updatedAt = now;
+      saveWecomNotificationCache();
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    const wecomRobotMatch = url.pathname.match(/^\/api\/wecom-notifications\/robots\/([^/]+)$/);
+    if (wecomRobotMatch && req.method === "DELETE") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "删除企业微信机器人需要直营部门登录。" });
+        return;
+      }
+      const robotId = decodeURIComponent(wecomRobotMatch[1]);
+      cachedWecomNotifications.robots = (cachedWecomNotifications.robots || []).filter((robot) => robot.id !== robotId);
+      cachedWecomNotifications.schedules = (cachedWecomNotifications.schedules || []).map((schedule) => ({ ...schedule, robotIds: schedule.robotIds.filter((id) => id !== robotId) }));
+      for (const scene of Object.values(cachedWecomNotifications.scenes || {})) {
+        scene.robotIds = (scene.robotIds || []).filter((id) => id !== robotId);
+      }
+      cachedWecomNotifications.updatedAt = new Date().toISOString();
+      saveWecomNotificationCache();
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/schedules" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "配置定时通知需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const now = new Date().toISOString();
+      const schedule = {
+        id: String(payload.id || wecomId("schedule")),
+        name: String(payload.name || "").trim(),
+        robotIds: Array.isArray(payload.robotIds) ? payload.robotIds.map(String).filter(Boolean) : [],
+        enabled: payload.enabled !== false,
+        mode: payload.mode === "interval" ? "interval" : "daily",
+        time: String(payload.time || "09:00").trim(),
+        intervalMinutes: Math.max(5, Math.min(1440, Number(payload.intervalMinutes) || 60)),
+        text: String(payload.text || "").trim(),
+        linkUrl: String(payload.linkUrl || "").trim(),
+        linkText: String(payload.linkText || "查看详情").trim(),
+        createdAt: payload.createdAt || now,
+        updatedAt: now,
+        lastSentAt: payload.lastSentAt || "",
+        lastRunKey: payload.lastRunKey || "",
+        lastError: payload.lastError || "",
+      };
+      if (!schedule.name || !schedule.robotIds.length || !schedule.text) {
+        sendJson(res, 400, { ok: false, message: "定时通知名称、机器人和推送文字不能为空。" });
+        return;
+      }
+      cachedWecomNotifications.schedules = [
+        ...(cachedWecomNotifications.schedules || []).filter((item) => item.id !== schedule.id),
+        schedule,
+      ];
+      cachedWecomNotifications.updatedAt = now;
+      saveWecomNotificationCache();
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    const wecomScheduleMatch = url.pathname.match(/^\/api\/wecom-notifications\/schedules\/([^/]+)$/);
+    if (wecomScheduleMatch && req.method === "DELETE") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "删除定时通知需要直营部门登录。" });
+        return;
+      }
+      const scheduleId = decodeURIComponent(wecomScheduleMatch[1]);
+      cachedWecomNotifications.schedules = (cachedWecomNotifications.schedules || []).filter((schedule) => schedule.id !== scheduleId);
+      cachedWecomNotifications.updatedAt = new Date().toISOString();
+      saveWecomNotificationCache();
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/scenes" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "配置场景通知需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      cachedWecomNotifications.scenes = {
+        ...cachedWecomNotifications.scenes,
+        ...(payload.scenes || {}),
+      };
+      cachedWecomNotifications.updatedAt = new Date().toISOString();
+      saveWecomNotificationCache();
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/test" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "测试企业微信通知需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const content = [
+        "### 同舟供应链通知测试",
+        String(payload.text || "这是一条企业微信机器人测试消息。").trim(),
+        notificationLinkLine(payload.linkUrl, payload.linkText || "查看详情"),
+      ].filter(Boolean).join("\n\n");
+      const results = await sendWecomNotification(payload.robotIds || [], content);
+      sendJson(res, 200, { ok: true, results, ...publicWecomNotificationPayload() });
       return;
     }
 
@@ -2236,9 +2617,7 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         outsourcingWarning = error.message || "委外加工单实时同步失败，当前显示上一次缓存数据。";
       }
-      const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
-      const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
-      const stockupPayload = buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts);
+      const stockupPayload = buildCurrentStockupPayload({ notify: true, reason: "page_refresh" });
       sendJson(res, 200, outsourcingWarning ? { ...stockupPayload, warning: outsourcingWarning } : stockupPayload);
       return;
     }
@@ -2359,5 +2738,7 @@ server.listen(port, () => {
     console.log(`[auto-sync] enabled every ${Math.round(autoSyncIntervalMs / 60000)} minutes`);
   }
   setInterval(runScheduledInventorySnapshot, 60 * 1000);
+  setInterval(runWecomSchedules, 60 * 1000);
   runScheduledInventorySnapshot();
+  runWecomSchedules();
 });

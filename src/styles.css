@@ -1290,6 +1290,170 @@ h3 {
   font-size: 12px;
 }
 
+.wecom-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 16px;
+}
+
+.wecom-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.wecom-panel label,
+.wecom-scene-card label {
+  display: grid;
+  gap: 7px;
+}
+
+.wecom-panel label span,
+.wecom-scene-card label span,
+.field-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wecom-panel input,
+.wecom-panel select,
+.wecom-panel textarea,
+.wecom-scene-card input,
+.wecom-scene-card textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 10px 11px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: 0;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.wecom-panel select {
+  background: #1b1c21;
+}
+
+.wecom-panel textarea,
+.wecom-scene-card textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.wecom-actions,
+.wecom-list-item,
+.wecom-inline-check,
+.wecom-switch,
+.wecom-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wecom-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.wecom-inline-check,
+.wecom-switch,
+.wecom-check {
+  color: var(--text);
+}
+
+.wecom-inline-check input,
+.wecom-switch input,
+.wecom-check input {
+  width: auto;
+  min-height: auto;
+}
+
+.wecom-list {
+  display: grid;
+  gap: 10px;
+}
+
+.wecom-list-item {
+  justify-content: space-between;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.wecom-list-item > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.wecom-list-item strong {
+  color: var(--text);
+}
+
+.wecom-list-item span,
+.wecom-list-item small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.wecom-error {
+  color: #ff6b81 !important;
+}
+
+.wecom-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wecom-span-2 {
+  grid-column: 1 / -1;
+}
+
+.wecom-robot-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wecom-check {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.wecom-scene-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.wecom-scene-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.wecom-scene-card h3 {
+  margin: 0;
+}
+
+.wecom-scene-card p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.compact-notice {
+  padding: 10px 12px;
+}
+
 .ai-page {
   display: grid;
   gap: 18px;
