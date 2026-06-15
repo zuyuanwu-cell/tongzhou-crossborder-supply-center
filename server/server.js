@@ -1,6 +1,7 @@
 import http from "node:http";
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
+import { fetch as undiciFetch } from "undici";
 import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
@@ -14,6 +15,10 @@ import { buildMovementPayload } from "./movement-analytics.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseStockupOrders } from "./wms-adapters.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
+
+if (!globalThis.fetch) {
+  globalThis.fetch = undiciFetch;
+}
 
 function loadEnv() {
   const envPath = resolve(process.cwd(), ".env");
