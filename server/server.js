@@ -1522,10 +1522,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/quick-nav" && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看快捷导航需要登录。" });
-        return;
-      }
       sendJson(res, 200, buildQuickNavPayload(cachedQuickNav.categories || []));
       return;
     }
@@ -1660,10 +1656,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/config" && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看同舟AI需要登录。" });
-        return;
-      }
       sendJson(res, 200, publicAiConfigPayload());
       return;
     }

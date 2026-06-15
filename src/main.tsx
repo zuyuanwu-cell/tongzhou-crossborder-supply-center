@@ -254,7 +254,7 @@ function visibleNavItems(user: AuthUser) {
   if (canViewPartnerAssets(user)) {
     return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航", "同舟AI"].includes(item.label));
   }
-  return navItems.filter((item) => item.label === "产品库");
+  return navItems.filter((item) => ["产品库", "快捷导航", "同舟AI"].includes(item.label));
 }
 
 function formatNumber(value: number) {
@@ -510,12 +510,12 @@ function App() {
       loadStockup();
       loadUsers();
     }
+    loadQuickNav();
+    loadAiConfig();
     if (canViewPartnerAssets(currentUser)) {
       loadQualifications();
       loadAssets();
       loadWarehouseInfo();
-      loadQuickNav();
-      loadAiConfig();
     }
   }, [currentUser.role]);
 
@@ -533,12 +533,12 @@ function App() {
   React.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadProducts(true);
+      void loadQuickNav();
+      void loadAiConfig();
       if (canViewPartnerAssets(currentUser)) {
         void loadQualifications();
         void loadAssets();
         void loadWarehouseInfo();
-        void loadQuickNav();
-        void loadAiConfig();
       }
       if (canManage(currentUser)) {
         void loadWarehouses();
@@ -839,6 +839,8 @@ function App() {
     const result = await loginInternal(input);
     setCurrentUser(result.user);
     await loadProducts();
+    void loadQuickNav();
+    void loadAiConfig();
     if (canViewPartnerAssets(result.user)) {
       await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
     }
@@ -3445,6 +3447,7 @@ function TongzhouAiPanel({
   const [message, setMessage] = React.useState("");
   const chatWindowRef = React.useRef<HTMLDivElement | null>(null);
   const textImageInputRef = React.useRef<HTMLInputElement | null>(null);
+  const aiLocked = !canViewPartnerAssets(currentUser);
 
   React.useEffect(() => {
     if (!aiConfig) return;
@@ -3498,6 +3501,10 @@ function TongzhouAiPanel({
 
   async function submitText(event: React.FormEvent) {
     event.preventDefault();
+    if (aiLocked) {
+      setMessage("请先登录或注册账号后再使用同舟AI。");
+      return;
+    }
     if (!textPrompt.trim() && !textAttachments.length) {
       setMessage("请先输入要对话的内容。");
       return;
@@ -3557,6 +3564,10 @@ function TongzhouAiPanel({
   }
 
   async function uploadTextAttachments(files: File[]) {
+    if (aiLocked) {
+      setMessage("请先登录或注册账号后再上传图片。");
+      return;
+    }
     const images = files.filter((file) => file.type.startsWith("image/"));
     if (!images.length) return;
     setBusy("upload");
@@ -3587,6 +3598,10 @@ function TongzhouAiPanel({
 
   async function submitImage(event: React.FormEvent) {
     event.preventDefault();
+    if (aiLocked) {
+      setMessage("请先登录或注册账号后再使用图片生成模型。");
+      return;
+    }
     if (!imagePrompt.trim()) {
       setMessage("请先输入图片提示词。");
       return;
@@ -3616,6 +3631,10 @@ function TongzhouAiPanel({
 
   async function submitVideo(event: React.FormEvent) {
     event.preventDefault();
+    if (aiLocked) {
+      setMessage("请先登录或注册账号后再使用视频生成模型。");
+      return;
+    }
     if (!videoPrompt.trim()) {
       setMessage("请先输入视频提示词。");
       return;
@@ -3666,6 +3685,10 @@ function TongzhouAiPanel({
   }
 
   async function uploadFiles(files: FileList | null, target: "imageRefs" | "videoRefs" | "videoImage" | "videoFirst" | "videoLast") {
+    if (aiLocked) {
+      setMessage("请先登录或注册账号后再上传参考图片。");
+      return;
+    }
     if (!files?.length) return;
     setBusy("upload");
     setMessage("");
@@ -3741,6 +3764,12 @@ function TongzhouAiPanel({
           <span><Video size={15} /> TZ-Video Motion</span>
         </div>
       </section>
+
+      {aiLocked ? (
+        <div className="notice warning ai-login-notice">
+          同舟AI 可预览，但需要登录或注册账号后才能发送消息、上传图片和生成内容。
+        </div>
+      ) : null}
 
       {message ? <div className={`notice ${message.includes("失败") || message.includes("尚未配置") ? "warning" : ""}`}>{message}</div> : null}
 
@@ -3831,7 +3860,7 @@ function TongzhouAiPanel({
               className="ai-hidden-file"
               onChange={(event) => void uploadTextAttachments(Array.from(event.currentTarget.files || []))}
             />
-            <button className="ghost-button" type="button" onClick={() => textImageInputRef.current?.click()} disabled={busy === "upload" || busy === "text"}>
+            <button className="ghost-button" type="button" onClick={() => textImageInputRef.current?.click()} disabled={aiLocked || busy === "upload" || busy === "text"}>
               <Image size={15} />
               {busy === "upload" ? "上传中" : "上传图片"}
             </button>
@@ -3839,7 +3868,7 @@ function TongzhouAiPanel({
             <button className="ghost-button" type="button" onClick={() => setShowTextAdvanced((value) => !value)}>
               {showTextAdvanced ? "隐藏参数" : "高级参数"}
             </button>
-          <button className="sync-button" type="submit" disabled={busy === "text"}>
+          <button className="sync-button" type="submit" disabled={aiLocked || busy === "text"}>
             {busy === "text" ? "发送中" : "发送"}
           </button>
           </div>
@@ -3907,7 +3936,7 @@ function TongzhouAiPanel({
               </div>
             ) : null}
           </label>
-          <button className="sync-button" type="submit" disabled={busy === "image"}>
+          <button className="sync-button" type="submit" disabled={aiLocked || busy === "image"}>
             {busy === "image" ? "生成中" : "生成图片"}
           </button>
           {images.length ? (
@@ -3999,7 +4028,7 @@ function TongzhouAiPanel({
               <input value={videoParams.negativePrompt} onChange={(event) => setVideoParams((current) => ({ ...current, negativePrompt: event.target.value }))} placeholder="避免出现的内容" />
             </label>
           </div>
-          <button className="sync-button" type="submit" disabled={busy === "video"}>
+          <button className="sync-button" type="submit" disabled={aiLocked || busy === "video"}>
             {busy === "video" ? "提交中" : "生成视频"}
           </button>
           {videoTask ? (
@@ -4007,7 +4036,7 @@ function TongzhouAiPanel({
               <span>任务：{videoTask}</span>
               <span>状态：{videoStatus || "处理中"}</span>
               {!videoUrl ? (
-                <button className="ghost-button" type="button" onClick={() => pollVideo()} disabled={busy === "poll"}>
+                <button className="ghost-button" type="button" onClick={() => pollVideo()} disabled={aiLocked || busy === "poll"}>
                   {busy === "poll" ? "查询中" : "查询结果"}
                 </button>
               ) : null}
