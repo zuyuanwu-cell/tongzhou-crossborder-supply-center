@@ -218,7 +218,7 @@ const navItems = [
   { label: "资质库", icon: FileText, hash: "#qualifications", childOf: "产品库" },
   { label: "素材库", icon: Boxes, hash: "#assets", childOf: "产品库" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", childOf: "产品库" },
-  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", childOf: "产品库" },
+  { label: "快捷导航", icon: Globe2, hash: "#quick-nav" },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
 ];
