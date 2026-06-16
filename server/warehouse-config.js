@@ -4,7 +4,7 @@ export const WMS_PROVIDERS = [
     name: "俄罗斯 YunWMS",
     docUrl: "https://fsdd.yunwms.com/api-doc/index.php",
     region: "俄罗斯",
-    authFields: ["baseUrl", "appKey", "appSecret", "warehouseCode"],
+    authFields: ["baseUrl", "appKey", "appToken", "warehouseCode"],
     notes: "同一套系统可新增多个俄罗斯仓库授权，接口域名通常固定，仓库编码区分库存范围。",
   },
   {

@@ -2744,6 +2744,7 @@ function WarehouseAuthForm({
   const editing = Boolean(initialWarehouse);
 
   const selectedProvider = providers.find((provider) => provider.id === form.providerId);
+  const isSeaWms = form.providerId === "sea_wms";
 
   function updateField(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -2807,23 +2808,29 @@ function WarehouseAuthForm({
           <input value={form.warehouseId} onChange={(event) => updateField("warehouseId", event.target.value)} placeholder="不确定时可先留空" />
         </label>
         <label>
-          <span>{form.providerId === "sea_wms" ? "AppKey / ClientId" : "AppKey"}</span>
-          <input value={form.providerId === "sea_wms" ? form.clientId || form.appKey : form.appKey} onChange={(event) => {
+          <span>{isSeaWms ? "AppKey / ClientId" : "AppKey"}</span>
+          <input value={isSeaWms ? form.clientId || form.appKey : form.appKey} onChange={(event) => {
             updateField("appKey", event.target.value);
             updateField("clientId", event.target.value);
           }} placeholder="只保存在服务端" />
         </label>
         <label>
-          <span>{form.providerId === "sea_wms" ? "AppSecret / ClientSecret" : "AppSecret"}</span>
-          <input type="password" value={form.providerId === "sea_wms" ? form.clientSecret || form.appSecret : form.appSecret} onChange={(event) => {
-            updateField("appSecret", event.target.value);
-            updateField("clientSecret", event.target.value);
+          <span>{isSeaWms ? "AppSecret / ClientSecret" : "AppToken"}</span>
+          <input type="password" value={isSeaWms ? form.clientSecret || form.appSecret : form.token || form.appSecret} onChange={(event) => {
+            if (isSeaWms) {
+              updateField("appSecret", event.target.value);
+              updateField("clientSecret", event.target.value);
+            } else {
+              updateField("token", event.target.value);
+            }
           }} placeholder="只保存在服务端" />
         </label>
-        <label>
-          <span>Token（可选）</span>
-          <input type="password" value={form.token} onChange={(event) => updateField("token", event.target.value)} placeholder="如接口需要 token" />
-        </label>
+        {isSeaWms ? (
+          <label>
+            <span>Token（可选）</span>
+            <input type="password" value={form.token} onChange={(event) => updateField("token", event.target.value)} placeholder="如接口需要 token" />
+          </label>
+        ) : null}
         <div className="warehouse-auth-note">
           <strong>{selectedProvider?.name || "WMS"}</strong>
           <span>{selectedProvider?.notes || "授权信息保存后可用于库存、出库日报和商品图片同步。"}</span>
