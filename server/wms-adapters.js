@@ -12,6 +12,11 @@ function getEnv(name) {
   return process.env[name] || "";
 }
 
+function wmsTimeoutMs() {
+  const value = Number(process.env.WMS_REQUEST_TIMEOUT_MS || 25000);
+  return Number.isFinite(value) && value > 1000 ? value : 25000;
+}
+
 function normalizeBaseUrl(baseUrl) {
   return String(baseUrl || "").replace(/\/$/, "");
 }
@@ -32,6 +37,8 @@ function normalizeYunEndpoint(baseUrl) {
 }
 
 async function postJson(url, body, headers = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), wmsTimeoutMs());
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -39,8 +46,14 @@ async function postJson(url, body, headers = {}) {
       ...headers,
     },
     body: compactObject(body),
+    signal: controller.signal,
   });
-  const text = await response.text();
+  let text = "";
+  try {
+    text = await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
   let payload;
   try {
     payload = text ? JSON.parse(text) : {};
@@ -54,12 +67,20 @@ async function postJson(url, body, headers = {}) {
 }
 
 async function postText(url, body, headers = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), wmsTimeoutMs());
   const response = await fetch(url, {
     method: "POST",
     headers,
     body,
+    signal: controller.signal,
   });
-  const text = await response.text();
+  let text = "";
+  try {
+    text = await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
     throw new Error(`WMS request failed ${response.status}: ${text.slice(0, 180)}`);
   }

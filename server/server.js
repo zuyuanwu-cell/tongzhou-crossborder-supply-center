@@ -1395,7 +1395,7 @@ async function handleOrderSync(req, res) {
   const results = [];
   const orders = [];
 
-  for (const connection of warehouseConnections) {
+  const syncResults = await Promise.all(warehouseConnections.map(async (connection) => {
     let result;
     try {
       result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseOrders(target, days));
@@ -1408,6 +1408,10 @@ async function handleOrderSync(req, res) {
         orders: [],
       };
     }
+    return { connection, result };
+  }));
+
+  for (const { connection, result } of syncResults) {
     results.push({
       warehouseId: result.warehouseId,
       ok: result.ok,

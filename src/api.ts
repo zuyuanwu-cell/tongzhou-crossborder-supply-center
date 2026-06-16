@@ -711,7 +711,19 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
   });
-  const payload = await response.json();
+  const text = await response.text();
+  let payload: any = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    const contentType = response.headers.get("content-type") || "";
+    const preview = text.replace(/\s+/g, " ").slice(0, 160);
+    throw new Error(
+      contentType.includes("text/html") || text.trim().startsWith("<")
+        ? `服务器返回了 HTML 页面，可能是接口反代异常或同步超时。HTTP ${response.status}${preview ? `：${preview}` : ""}`
+        : `服务器返回了非 JSON 内容。HTTP ${response.status}${preview ? `：${preview}` : ""}`,
+    );
+  }
   if (!response.ok) {
     throw new Error(payload.message || "请求失败");
   }
