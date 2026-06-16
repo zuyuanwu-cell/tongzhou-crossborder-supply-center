@@ -807,10 +807,10 @@ h3 {
 .movement-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(270px, 1.25fr) 108px 94px repeat(6, 64px) 98px 130px 90px 96px minmax(260px, 1.2fr);
+  grid-template-columns: minmax(270px, 1.25fr) 108px 94px repeat(6, 64px) 98px 130px 90px 96px;
   align-items: center;
   gap: 12px;
-  min-width: 1720px;
+  min-width: 1450px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;

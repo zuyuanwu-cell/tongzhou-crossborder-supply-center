@@ -1575,7 +1575,6 @@ function MovementBoard({
             <span>趋势</span>
             <SortHeader label="可售天数" sortKey="daysCover" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <SortHeader label="状态" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
-            <span>建议</span>
           </div>
           {sortedItems.slice(0, 80).map((item) => (
             <article className="movement-row" key={`${item.country}-${item.sku}-${item.id}`}>
@@ -1602,7 +1601,6 @@ function MovementBoard({
               <Sparkline values={item.trend30} />
               <DaysCoverInsight item={item} />
               <MovementStatusInsight item={item} />
-              <span className="movement-suggestion">{item.suggestion}</span>
             </article>
           ))}
         </div>
