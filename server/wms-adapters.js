@@ -19,6 +19,15 @@ function normalizeBaseUrl(baseUrl) {
 function normalizeYunEndpoint(baseUrl) {
   const normalized = normalizeBaseUrl(baseUrl);
   if (/\/default\/svc\/wsdl$/i.test(normalized)) return normalized.replace(/\/wsdl$/i, "/web-service");
+  if (/\/default\/svc\/web-service$/i.test(normalized)) return normalized;
+  try {
+    const url = new URL(normalized);
+    if (!url.pathname || url.pathname === "/" || /^\/api-doc(?:\/index\.php)?\/?$/i.test(url.pathname)) {
+      return `${url.origin}/default/svc/web-service`;
+    }
+  } catch {
+    // Keep the configured value when it is not a full URL; the request layer will surface the real error.
+  }
   return normalized;
 }
 

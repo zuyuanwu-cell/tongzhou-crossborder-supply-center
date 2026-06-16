@@ -2502,7 +2502,7 @@ const server = http.createServer(async (req, res) => {
           productMissingWarehouseCount: mergedProducts.counts?.productMissingWarehouse || 0,
         },
         nextRequiredSecrets: [
-          "俄罗斯 YunWMS: appKey / appSecret / warehouseCode",
+          "俄罗斯 YunWMS: appKey / appToken / warehouseCode",
           "SEA WMS: 各国家 baseUrl / clientId / clientSecret / warehouseCode",
         ],
       });
