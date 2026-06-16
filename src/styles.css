@@ -770,7 +770,7 @@ h3 {
 
 .movement-filter-panel {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 180px 180px 112px;
+  grid-template-columns: minmax(260px, 1fr) 180px 180px 180px 112px;
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--line);
@@ -807,10 +807,10 @@ h3 {
 .movement-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(270px, 1.25fr) 108px 94px minmax(232px, 0.9fr) 98px 130px 90px 96px minmax(260px, 1.2fr);
+  grid-template-columns: minmax(270px, 1.25fr) 108px 94px repeat(6, 64px) 98px 130px 90px 96px minmax(260px, 1.2fr);
   align-items: center;
   gap: 12px;
-  min-width: 1420px;
+  min-width: 1720px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -994,6 +994,11 @@ h3 {
   justify-items: end;
   color: var(--text);
   line-height: 1.15;
+}
+
+.movement-sales-window {
+  color: var(--text);
+  font-weight: 800;
 }
 
 .movement-daily strong {
@@ -3115,12 +3120,19 @@ h3 {
   gap: 8px;
 }
 
+.qualification-filter-stack {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
 .qualification-picker > span {
   color: var(--muted);
   font-size: 12px;
 }
 
-.qualification-picker select {
+.qualification-picker select,
+.qualification-picker input {
   width: 100%;
   min-height: 44px;
   padding: 0 12px;

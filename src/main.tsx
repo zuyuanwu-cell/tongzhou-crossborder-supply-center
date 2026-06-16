@@ -113,8 +113,9 @@ import {
 import "./styles.css";
 
 type AlertType = "补货" | "断货" | "健康" | "滞销";
-type MovementSortKey = "sku" | "country" | "availableQty" | "avgDaily7" | "sales90" | "daysCover" | "status";
+type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
 type SortDirection = "asc" | "desc";
+const ALL_RECORDS = "__all__";
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 
 type Warehouse = {
@@ -1315,6 +1316,10 @@ function SalesBreakdown({ item }: { item: MovementPayload["items"][number] }) {
   );
 }
 
+function SalesWindowCell({ value }: { value: number }) {
+  return <span className="movement-sales-window">{formatNumber(value)}</span>;
+}
+
 function DaysCoverInsight({ item }: { item: Pick<MovementPayload["items"][number], "availableQty" | "avgDaily7" | "avgDaily30" | "avgDaily90" | "daysCover" | "leadDays" | "targetCoverDays" | "inTransitQty" | "replenishQty"> }) {
   const dailyWeighted = item.avgDaily7 * 0.5 + item.avgDaily30 * 0.3 + item.avgDaily90 * 0.2;
   return (
@@ -1409,6 +1414,11 @@ function movementSortValue(item: MovementPayload["items"][number], key: Movement
   if (key === "country") return item.country || "";
   if (key === "status") return item.status || "";
   if (key === "availableQty") return item.availableQty;
+  if (key === "sales3") return item.sales3;
+  if (key === "sales7") return item.sales7;
+  if (key === "sales15") return item.sales15;
+  if (key === "sales30") return item.sales30;
+  if (key === "sales60") return item.sales60;
   if (key === "avgDaily7") return item.avgDaily7;
   if (key === "sales90") return item.sales90;
   if (key === "daysCover") return item.daysCover ?? Number.POSITIVE_INFINITY;
@@ -1425,6 +1435,7 @@ function MovementBoard({
   syncing: boolean;
 }) {
   const [country, setCountry] = React.useState("全部");
+  const [warehouse, setWarehouse] = React.useState("全部");
   const [status, setStatus] = React.useState("全部");
   const [keywordInput, setKeywordInput] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
@@ -1433,13 +1444,24 @@ function MovementBoard({
 
   const items = movementPayload?.items ?? [];
   const countries = uniqueSorted(items.map((item) => item.country));
+  const warehouses = React.useMemo(() => {
+    const values = new Map<string, string>();
+    for (const item of items) {
+      for (const detail of [...(item.warehouseBreakdown || []), ...(item.salesWarehouseBreakdown || [])]) {
+        const id = detail.warehouseId || detail.warehouseName;
+        if (id) values.set(id, detail.warehouseName || detail.warehouseId);
+      }
+    }
+    return Array.from(values, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }, [items]);
   const statuses = ["全部", "缺货", "补货预警", "滞销", "慢销", "无动销数据", "健康"];
   const failedAuthorizedWarehouses = (movementPayload?.orderSyncResults || []).filter((result) => !result.ok && result.hasCredentials);
   const filteredItems = items.filter((item) => {
     const keywordMatched = !keyword || [item.sku, item.name, item.brand, item.category, item.country].join(" ").toLowerCase().includes(keyword.toLowerCase());
     const countryMatched = country === "全部" || item.country === country;
+    const warehouseMatched = warehouse === "全部" || [...(item.warehouseBreakdown || []), ...(item.salesWarehouseBreakdown || [])].some((detail) => detail.warehouseId === warehouse || detail.warehouseName === warehouse);
     const statusMatched = status === "全部" || item.status === status;
-    return keywordMatched && countryMatched && statusMatched;
+    return keywordMatched && countryMatched && warehouseMatched && statusMatched;
   });
   const sortedItems = React.useMemo(() => {
     const direction = sortDirection === "asc" ? 1 : -1;
@@ -1507,6 +1529,12 @@ function MovementBoard({
             <option key={item} value={item}>{item}</option>
           ))}
         </select>
+        <select value={warehouse} onChange={(event) => setWarehouse(event.target.value)}>
+          <option value="全部">全部仓库</option>
+          {warehouses.map((item) => (
+            <option key={item.id} value={item.id}>{item.name}</option>
+          ))}
+        </select>
         <select value={status} onChange={(event) => setStatus(event.target.value)}>
           {statuses.map((item) => (
             <option key={item} value={item}>{item === "全部" ? "全部状态" : item}</option>
@@ -1537,7 +1565,12 @@ function MovementBoard({
             <SortHeader label="SKU / 产品" sortKey="sku" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <SortHeader label="国家" sortKey="country" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <SortHeader label="库存" sortKey="availableQty" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
-            <SortHeader label="3 / 7 / 15 / 30 / 60 / 90 天" sortKey="sales90" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <SortHeader label="3天" sortKey="sales3" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <SortHeader label="7天" sortKey="sales7" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <SortHeader label="15天" sortKey="sales15" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <SortHeader label="30天" sortKey="sales30" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <SortHeader label="60天" sortKey="sales60" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <SortHeader label="90天" sortKey="sales90" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <SortHeader label="日均销量" sortKey="avgDaily7" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <span>趋势</span>
             <SortHeader label="可售天数" sortKey="daysCover" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
@@ -1556,7 +1589,12 @@ function MovementBoard({
               </div>
               <span>{item.country}</span>
               <InventoryBreakdown item={item} />
-              <SalesBreakdown item={item} />
+              <SalesWindowCell value={item.sales3} />
+              <SalesWindowCell value={item.sales7} />
+              <SalesWindowCell value={item.sales15} />
+              <SalesWindowCell value={item.sales30} />
+              <SalesWindowCell value={item.sales60} />
+              <SalesWindowCell value={item.sales90} />
               <span className="movement-daily">
                 <strong>{formatDecimal(item.avgDaily7)}</strong>
                 <small>30日 {formatDecimal(item.avgDaily30)}</small>
@@ -3192,6 +3230,48 @@ function ProductDetailModal({
   );
 }
 
+function recordMatchesKeyword(values: Array<string | undefined>, keyword: string) {
+  const normalized = keyword.trim().toLowerCase();
+  if (!normalized) return true;
+  return values.join(" ").toLowerCase().includes(normalized);
+}
+
+function filterQualificationRecords(records: QualificationRecord[], keyword: string, category: string, market: string) {
+  return records.filter((item) => {
+    const keywordMatched = recordMatchesKeyword([
+      item.sku,
+      item.productName,
+      item.qualificationName,
+      item.qualificationCategory,
+      item.market,
+      item.issuer,
+      item.remark,
+      ...item.files.map((file) => file.name),
+    ], keyword);
+    const categoryMatched = category === "全部" || item.qualificationCategory === category;
+    const marketMatched = market === "全部" || item.market === market;
+    return keywordMatched && categoryMatched && marketMatched;
+  });
+}
+
+function filterAssetRecords(records: AssetRecord[], keyword: string, assetType: string, category: string) {
+  return records.filter((item) => {
+    const keywordMatched = recordMatchesKeyword([
+      item.sku,
+      item.productName,
+      item.productNameEn,
+      item.assetName,
+      item.assetType,
+      item.category,
+      item.remark,
+      ...item.files.map((file) => file.name),
+    ], keyword);
+    const typeMatched = assetType === "全部" || item.assetType === assetType;
+    const categoryMatched = category === "全部" || item.category === category;
+    return keywordMatched && typeMatched && categoryMatched;
+  });
+}
+
 function QualificationLibrary({
   products,
   qualificationPayload,
@@ -3203,17 +3283,19 @@ function QualificationLibrary({
   onSyncQualifications: () => Promise<void>;
   syncing: boolean;
 }) {
-  const [selectedSku, setSelectedSku] = React.useState(products[0]?.sku || "");
-  const selectedProduct = products.find((product) => product.sku === selectedSku) || products[0];
-  const relatedQualifications = getRelatedQualifications(selectedProduct, qualificationPayload);
+  const [selectedSku, setSelectedSku] = React.useState(ALL_RECORDS);
+  const [keyword, setKeyword] = React.useState("");
+  const [category, setCategory] = React.useState("全部");
+  const [market, setMarket] = React.useState("全部");
+  const selectedProduct = products.find((product) => product.sku === selectedSku);
+  const sourceQualifications = selectedProduct ? getRelatedQualifications(selectedProduct, qualificationPayload) : qualificationPayload?.qualifications || [];
+  const categories = uniqueSorted(sourceQualifications.map((item) => item.qualificationCategory));
+  const markets = uniqueSorted(sourceQualifications.map((item) => item.market));
+  const filteredQualifications = filterQualificationRecords(sourceQualifications, keyword, category, market);
 
   React.useEffect(() => {
-    if (!selectedSku && products[0]?.sku) {
-      setSelectedSku(products[0].sku);
-      return;
-    }
-    if (selectedSku && !products.some((product) => product.sku === selectedSku) && products[0]?.sku) {
-      setSelectedSku(products[0].sku);
+    if (selectedSku !== ALL_RECORDS && !products.some((product) => product.sku === selectedSku)) {
+      setSelectedSku(ALL_RECORDS);
     }
   }, [products, selectedSku]);
 
@@ -3234,17 +3316,43 @@ function QualificationLibrary({
           </button>
         </div>
         <div className="qualification-layout">
-          <label className="qualification-picker">
-            <span>产品</span>
-            <select value={selectedProduct?.sku || ""} onChange={(event) => setSelectedSku(event.target.value)}>
-              {products.map((product) => (
-                <option key={product.id} value={product.sku}>
-                  {product.sku} · {product.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <QualificationCards qualifications={relatedQualifications} />
+          <div className="qualification-filter-stack">
+            <label className="qualification-picker">
+              <span>产品</span>
+              <select value={selectedSku} onChange={(event) => setSelectedSku(event.target.value)}>
+                <option value={ALL_RECORDS}>全部产品</option>
+                {products.map((product) => (
+                  <option key={product.id} value={product.sku}>
+                    {product.sku} · {product.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="qualification-picker">
+              <span>搜索</span>
+              <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 SKU、产品、资质名称、附件" />
+            </label>
+            <label className="qualification-picker">
+              <span>资质类型</span>
+              <select value={category} onChange={(event) => setCategory(event.target.value)}>
+                <option value="全部">全部类型</option>
+                {categories.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </label>
+            <label className="qualification-picker">
+              <span>市场</span>
+              <select value={market} onChange={(event) => setMarket(event.target.value)}>
+                <option value="全部">全部市场</option>
+                {markets.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </label>
+            <span className="filter-result">当前显示 <strong>{formatNumber(filteredQualifications.length)}</strong> 条</span>
+          </div>
+          <QualificationCards qualifications={filteredQualifications} />
         </div>
       </section>
     </main>
@@ -3264,18 +3372,20 @@ function AssetLibrary({
   onSyncAssets: () => Promise<void>;
   syncing: boolean;
 }) {
-  const [selectedSku, setSelectedSku] = React.useState(products[0]?.sku || "");
-  const selectedProduct = products.find((product) => product.sku === selectedSku) || products[0];
+  const [selectedSku, setSelectedSku] = React.useState(ALL_RECORDS);
+  const [keyword, setKeyword] = React.useState("");
+  const [assetType, setAssetType] = React.useState("全部");
+  const [category, setCategory] = React.useState("全部");
+  const selectedProduct = products.find((product) => product.sku === selectedSku);
   const selectedBase = selectedProduct ? findProductBase(selectedProduct, productBase) : undefined;
-  const relatedAssets = getRelatedAssets(selectedProduct, selectedBase, assetPayload);
+  const sourceAssets = selectedProduct ? getRelatedAssets(selectedProduct, selectedBase, assetPayload) : assetPayload?.assets || [];
+  const assetTypes = uniqueSorted(sourceAssets.map((item) => item.assetType));
+  const categories = uniqueSorted(sourceAssets.map((item) => item.category));
+  const filteredAssets = filterAssetRecords(sourceAssets, keyword, assetType, category);
 
   React.useEffect(() => {
-    if (!selectedSku && products[0]?.sku) {
-      setSelectedSku(products[0].sku);
-      return;
-    }
-    if (selectedSku && !products.some((product) => product.sku === selectedSku) && products[0]?.sku) {
-      setSelectedSku(products[0].sku);
+    if (selectedSku !== ALL_RECORDS && !products.some((product) => product.sku === selectedSku)) {
+      setSelectedSku(ALL_RECORDS);
     }
   }, [products, selectedSku]);
 
@@ -3296,17 +3406,43 @@ function AssetLibrary({
           </button>
         </div>
         <div className="qualification-layout">
-          <label className="qualification-picker">
-            <span>产品</span>
-            <select value={selectedProduct?.sku || ""} onChange={(event) => setSelectedSku(event.target.value)}>
-              {products.map((product) => (
-                <option key={product.id} value={product.sku}>
-                  {product.sku} · {product.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <AssetCards assets={relatedAssets} />
+          <div className="qualification-filter-stack">
+            <label className="qualification-picker">
+              <span>产品</span>
+              <select value={selectedSku} onChange={(event) => setSelectedSku(event.target.value)}>
+                <option value={ALL_RECORDS}>全部产品</option>
+                {products.map((product) => (
+                  <option key={product.id} value={product.sku}>
+                    {product.sku} · {product.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="qualification-picker">
+              <span>搜索</span>
+              <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 SKU、产品、素材名称、附件" />
+            </label>
+            <label className="qualification-picker">
+              <span>素材类型</span>
+              <select value={assetType} onChange={(event) => setAssetType(event.target.value)}>
+                <option value="全部">全部类型</option>
+                {assetTypes.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </label>
+            <label className="qualification-picker">
+              <span>分类</span>
+              <select value={category} onChange={(event) => setCategory(event.target.value)}>
+                <option value="全部">全部分类</option>
+                {categories.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </label>
+            <span className="filter-result">当前显示 <strong>{formatNumber(filteredAssets.length)}</strong> 条</span>
+          </div>
+          <AssetCards assets={filteredAssets} />
         </div>
       </section>
     </main>
