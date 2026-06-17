@@ -671,7 +671,7 @@ async function cacheAiVideoUrl(remoteUrl) {
     mkdirSync(aiVideoPublicDir, { recursive: true });
     writeFileSync(filePath, bytes);
   }
-  return `/ai-videos/${encodeURIComponent(fileName)}`;
+  return `/api/ai/videos/${encodeURIComponent(fileName)}`;
 }
 
 function compactPayload(payload) {
@@ -1830,8 +1830,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname.startsWith("/ai-videos/") && req.method === "GET") {
-      const fileName = basename(decodeURIComponent(url.pathname.replace("/ai-videos/", "")));
+    if ((url.pathname.startsWith("/api/ai/videos/") || url.pathname.startsWith("/ai-videos/")) && req.method === "GET") {
+      const fileName = basename(decodeURIComponent(url.pathname.replace(/^\/(?:api\/ai\/videos|ai-videos)\//, "")));
       if (!/^[a-f0-9]{24}\.(mp4|webm|mov|m4v)$/i.test(fileName)) {
         sendJson(res, 400, { ok: false, message: "Invalid video file name." });
         return;
