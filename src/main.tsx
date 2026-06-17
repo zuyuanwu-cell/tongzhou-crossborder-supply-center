@@ -16,10 +16,12 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Grid2X2,
   Globe2,
   Image,
   KeyRound,
   LayoutDashboard,
+  List,
   Lock,
   LogOut,
   Menu,
@@ -3474,6 +3476,8 @@ function ProductLibrary({
   const [keyword, setKeyword] = React.useState("");
   const [detailProduct, setDetailProduct] = React.useState<CatalogProduct | null>(null);
   const [showBackTop, setShowBackTop] = React.useState(false);
+  const [viewMode, setViewMode] = React.useState<"grid" | "list">("grid");
+  const [gridColumns, setGridColumns] = React.useState<4 | 6 | 8>(4);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showPrices = canViewPrices(currentUser);
   const showInventory = canViewInventory(currentUser);
@@ -3576,12 +3580,44 @@ function ProductLibrary({
 
       {loading ? <div className="notice">正在读取产品库...</div> : null}
 
-      <section className="catalog-grid">
+      <section className="catalog-view-toolbar" aria-label="产品库显示方式">
+        <div className="catalog-view-group" role="group" aria-label="视图">
+          <button className={viewMode === "grid" ? "active" : ""} type="button" onClick={() => setViewMode("grid")} title="卡片视图">
+            <Grid2X2 size={16} />
+            <span>卡片</span>
+          </button>
+          <button className={viewMode === "list" ? "active" : ""} type="button" onClick={() => setViewMode("list")} title="列表视图">
+            <List size={16} />
+            <span>列表</span>
+          </button>
+        </div>
+        <div className="catalog-view-group density-group" role="group" aria-label="每行产品数">
+          {([4, 6, 8] as const).map((count) => (
+            <button
+              key={count}
+              className={viewMode === "grid" && gridColumns === count ? "active" : ""}
+              type="button"
+              onClick={() => {
+                setViewMode("grid");
+                setGridColumns(count);
+              }}
+              title={`每行 ${count} 个产品`}
+            >
+              {count}/行
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section
+        className={viewMode === "list" ? "catalog-list" : "catalog-grid"}
+        style={viewMode === "grid" ? ({ "--catalog-columns": gridColumns } as React.CSSProperties) : undefined}
+      >
         {filteredProducts.map((product) => {
           const price = priceFor(product, channel, internal);
           const salesPrice = salesPriceFor(product);
           return (
-            <article className="product-card" key={product.id}>
+            <article className={`product-card ${viewMode === "grid" && gridColumns > 4 ? "dense-card" : ""}`} key={product.id}>
               {product.imageUrl ? (
                 <div className="product-photo">
                   <img src={product.imageUrl} alt={product.name} />
