@@ -364,6 +364,10 @@ export type AiImageResult = {
   ok: boolean;
   model: string;
   images: string[];
+  imageMode?: "generation" | "reference-edit";
+  referenceCount?: number;
+  droppedParams?: string[];
+  warnings?: string[];
   raw?: unknown;
 };
 
@@ -373,6 +377,9 @@ export type AiVideoResult = {
   taskId: string;
   status: string;
   videoUrl: string;
+  remoteVideoUrl?: string;
+  downloadWarning?: string;
+  droppedParams?: string[];
   raw?: unknown;
 };
 

@@ -4020,6 +4020,7 @@ function TongzhouAiPanel({
   const [videoTask, setVideoTask] = React.useState("");
   const [videoStatus, setVideoStatus] = React.useState("");
   const [videoUrl, setVideoUrl] = React.useState("");
+  const [videoDownloadWarning, setVideoDownloadWarning] = React.useState("");
   const [busy, setBusy] = React.useState<"config" | "text" | "image" | "video" | "poll" | "upload" | "">("");
   const [message, setMessage] = React.useState("");
   const chatWindowRef = React.useRef<HTMLDivElement | null>(null);
@@ -4208,6 +4209,10 @@ function TongzhouAiPanel({
         referenceImages: imageReferenceUploads.map((item) => item.url),
       });
       setImages(result.images || []);
+      if (result.referenceCount) {
+        const warningText = result.warnings?.length ? `；编辑接口回退：${result.warnings[0]}` : "";
+        setMessage(`已按参考图模式生成，参考图 ${result.referenceCount} 张${warningText}`);
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "图片生成失败。");
     } finally {
@@ -4230,6 +4235,7 @@ function TongzhouAiPanel({
     setVideoTask("");
     setVideoStatus("");
     setVideoUrl("");
+    setVideoDownloadWarning("");
     try {
       const result = await runAiVideo({
         prompt: videoPrompt,
@@ -4249,6 +4255,7 @@ function TongzhouAiPanel({
       setVideoTask(result.taskId || "");
       setVideoStatus(result.status || "submitted");
       setVideoUrl(result.videoUrl || "");
+      setVideoDownloadWarning(result.downloadWarning || "");
       if (!result.videoUrl && result.taskId) setMessage("视频任务已提交，系统会自动查询生成结果。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "视频生成失败。");
@@ -4311,6 +4318,7 @@ function TongzhouAiPanel({
       const result = await fetchAiVideoStatus(videoTask);
       setVideoStatus(result.status || videoStatus || "处理中");
       setVideoUrl(result.videoUrl || "");
+      setVideoDownloadWarning(result.downloadWarning || "");
       if (result.videoUrl) setMessage("视频已生成。");
     } catch (error) {
       if (!silent) setMessage(error instanceof Error ? error.message : "查询视频状态失败。");
@@ -4658,7 +4666,16 @@ function imageSrc(value: string) {
               ) : null}
             </div>
           ) : null}
-          {videoUrl ? <video className="ai-video-result" src={videoUrl} controls playsInline /> : null}
+          {videoUrl ? (
+            <>
+              <video className="ai-video-result" src={videoUrl} controls playsInline />
+              <a className="ghost-button compact-button" href={videoUrl} download={`tongzhou-ai-video-${videoTask || Date.now()}.mp4`}>
+                <Download size={14} />
+                下载视频
+              </a>
+              {videoDownloadWarning ? <small className="muted-text">视频已生成，但自动下载到本地失败：{videoDownloadWarning}</small> : null}
+            </>
+          ) : null}
         </form>
         ) : null}
       </section>

@@ -2008,6 +2008,11 @@ h3 {
   background: #000;
 }
 
+.muted-text {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .ai-config-panel {
   display: grid;
   gap: 16px;

@@ -1,6 +1,7 @@
 import http from "node:http";
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
-import { extname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, extname, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
 import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
@@ -49,6 +50,7 @@ const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
 const aiConfigCachePath = resolve(cacheDir, "ai-config.json");
 const wecomNotificationCachePath = resolve(cacheDir, "wecom-notifications.json");
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
+const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
@@ -531,10 +533,31 @@ function extractTextAnswer(data) {
 }
 
 function extractImageUrls(data) {
-  const items = data?.data || data?.images || data?.output || [];
-  return (Array.isArray(items) ? items : [items])
-    .map((item) => item?.url || item?.image_url || item?.b64_json || item)
-    .filter(Boolean);
+  const results = [];
+  const visit = (value, key = "") => {
+    if (!value) return;
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (/^https?:\/\//i.test(text) || text.startsWith("data:image/") || key === "b64_json" || /^[A-Za-z0-9+/=]{200,}$/.test(text)) {
+        results.push(text);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key));
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [itemKey, itemValue] of Object.entries(value)) {
+      if (["url", "image_url", "b64_json"].includes(itemKey)) {
+        visit(itemValue, itemKey);
+      } else if (["data", "images", "output", "result", "content"].includes(itemKey)) {
+        visit(itemValue, itemKey);
+      }
+    }
+  };
+  visit(data);
+  return [...new Set(results)];
 }
 
 function extractVideoTask(data) {
@@ -542,15 +565,113 @@ function extractVideoTask(data) {
 }
 
 function extractVideoUrl(data) {
+  const output = Array.isArray(data?.output) ? data.output[0] : data?.output;
+  const result = Array.isArray(data?.result) ? data.result[0] : data?.result;
   return data?.video_url
     || data?.url
     || data?.data?.video_url
     || data?.data?.url
-    || data?.output?.video_url
-    || data?.output?.url
-    || data?.result?.video_url
-    || data?.result?.url
+    || data?.data?.download_url
+    || output?.video_url
+    || output?.url
+    || output?.download_url
+    || result?.video_url
+    || result?.url
+    || result?.download_url
     || "";
+}
+
+function aiUploadDataUrlFromUrl(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/\/api\/ai\/uploads\/([^/?#]+)/);
+  if (!match) return text;
+  const fileName = decodeURIComponent(match[1]);
+  if (!/^[a-z0-9-]+\.(png|jpg|jpeg|webp|gif)$/i.test(fileName)) return text;
+  const filePath = resolve(aiUploadDir, fileName);
+  if (!existsSync(filePath)) return text;
+  const mimeType = mimeFromExtension(fileName);
+  return `data:${mimeType};base64,${readFileSync(filePath).toString("base64")}`;
+}
+
+function normalizeAiReferenceImages(values) {
+  return (Array.isArray(values) ? values : [values])
+    .map((value) => aiUploadDataUrlFromUrl(value))
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function aiImageReferencePayload(referenceImages) {
+  const refs = normalizeAiReferenceImages(referenceImages);
+  if (!refs.length) return {};
+  return {
+    image_url: refs[0],
+    image_urls: refs,
+    image: refs[0],
+    images: refs,
+    reference_image: refs[0],
+    reference_images: refs,
+    input_image: refs[0],
+    input_images: refs,
+  };
+}
+
+function aiReferencedProductPrompt(prompt, referenceCount = 0) {
+  if (!referenceCount) return prompt;
+  return [
+    prompt,
+    "",
+    "Use the uploaded reference image as the exact product source image.",
+    "The generated image must keep the reference product's package shape, label layout, colors, logo/text placement, and visible product identity as close as possible.",
+    "Do not replace it with a generic bottle, box, or different package. Only change the surrounding scene, person, pose, lighting, and background needed by the prompt.",
+  ].join("\n");
+}
+
+function aiImageEditPayload(payload, model, prompt, referenceImages) {
+  return {
+    model,
+    prompt,
+    size: payload.size || "1024x1024",
+    n: 1,
+    quality: payload.quality,
+    seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
+    negative_prompt: payload.negativePrompt,
+    ...aiImageReferencePayload(referenceImages),
+  };
+}
+
+function videoMimeFromExtension(fileName) {
+  const ext = extname(fileName).toLowerCase();
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mov") return "video/quicktime";
+  if (ext === ".m4v") return "video/x-m4v";
+  return "video/mp4";
+}
+
+function videoExtensionFromUrl(value) {
+  try {
+    const ext = extname(new URL(value).pathname).toLowerCase();
+    if ([".mp4", ".webm", ".mov", ".m4v"].includes(ext)) return ext;
+  } catch {
+    // Fall back to mp4 for signed URLs or provider URLs without an extension.
+  }
+  return ".mp4";
+}
+
+async function cacheAiVideoUrl(remoteUrl) {
+  const videoUrl = String(remoteUrl || "").trim();
+  if (!/^https?:\/\//i.test(videoUrl)) return videoUrl;
+  const id = createHash("sha256").update(videoUrl).digest("hex").slice(0, 24);
+  const fileName = `${id}${videoExtensionFromUrl(videoUrl)}`;
+  const filePath = resolve(aiVideoPublicDir, fileName);
+  if (!existsSync(filePath)) {
+    const response = await fetch(videoUrl);
+    if (!response.ok) throw new Error(`AI video download failed: ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length) throw new Error("AI video download was empty.");
+    mkdirSync(aiVideoPublicDir, { recursive: true });
+    writeFileSync(filePath, bytes);
+  }
+  return `/ai-videos/${encodeURIComponent(fileName)}`;
 }
 
 function compactPayload(payload) {
@@ -1709,6 +1830,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname.startsWith("/ai-videos/") && req.method === "GET") {
+      const fileName = basename(decodeURIComponent(url.pathname.replace("/ai-videos/", "")));
+      if (!/^[a-f0-9]{24}\.(mp4|webm|mov|m4v)$/i.test(fileName)) {
+        sendJson(res, 400, { ok: false, message: "Invalid video file name." });
+        return;
+      }
+      const filePath = resolve(aiVideoPublicDir, fileName);
+      if (!existsSync(filePath)) {
+        sendJson(res, 404, { ok: false, message: "Video not found." });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": videoMimeFromExtension(fileName),
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(readFileSync(filePath));
+      return;
+    }
+
     if (url.pathname === "/api/me" && req.method === "GET") {
       sendJson(res, 200, { ok: true, user: publicUser(getAuth(req).user) });
       return;
@@ -2240,25 +2380,51 @@ const server = http.createServer(async (req, res) => {
       }
       const model = String(payload.model || cachedAiConfig.models.image);
       const requestedCount = Math.max(1, Math.min(4, Number(payload.n) || 1));
+      const referenceImages = normalizeAiReferenceImages(payload.referenceImages);
+      const imagePrompt = aiReferencedProductPrompt(prompt, referenceImages.length);
       const imagePayload = {
         model,
-        prompt,
+        prompt: imagePrompt,
         size: payload.size || "1024x1024",
         n: 1,
         quality: payload.quality,
         seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
         negative_prompt: payload.negativePrompt,
-        reference_images: Array.isArray(payload.referenceImages) ? payload.referenceImages.filter(Boolean) : undefined,
+        ...aiImageReferencePayload(referenceImages),
       };
       const images = [];
       const droppedParams = new Set();
       let raw = null;
+      const warnings = [];
       for (let index = 0; index < requestedCount; index += 1) {
         const perImagePayload = {
           ...imagePayload,
           seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) + index : undefined,
         };
-        const { data, dropped } = await requestAgnesWithUnsupportedParamRetry("/images/generations", perImagePayload);
+        let data;
+        let dropped = [];
+        if (referenceImages.length) {
+          try {
+            const editPayload = aiImageEditPayload(
+              payload,
+              model,
+              perImagePayload.prompt,
+              referenceImages,
+            );
+            const editResult = await requestAgnesWithUnsupportedParamRetry("/images/edits", editPayload);
+            data = editResult.data;
+            dropped = editResult.dropped;
+          } catch (error) {
+            warnings.push(error instanceof Error ? error.message : "Image edit request failed.");
+            const generationResult = await requestAgnesWithUnsupportedParamRetry("/images/generations", perImagePayload);
+            data = generationResult.data;
+            dropped = generationResult.dropped;
+          }
+        } else {
+          const generationResult = await requestAgnesWithUnsupportedParamRetry("/images/generations", perImagePayload);
+          data = generationResult.data;
+          dropped = generationResult.dropped;
+        }
         raw = data;
         dropped.forEach((param) => droppedParams.add(param));
         images.push(...extractImageUrls(data));
@@ -2267,7 +2433,10 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         model,
         images: images.slice(0, requestedCount),
+        imageMode: referenceImages.length ? "reference-edit" : "generation",
+        referenceCount: referenceImages.length,
         droppedParams: [...droppedParams],
+        warnings: [...new Set(warnings)].filter(Boolean),
         raw,
       });
       return;
@@ -2285,27 +2454,45 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const model = String(payload.model || cachedAiConfig.models.video);
-      const referenceImages = Array.isArray(payload.referenceImages) ? payload.referenceImages.filter(Boolean) : [];
-      const data = await requestAgnes("/videos", compactPayload({
+      const referenceImages = normalizeAiReferenceImages(payload.referenceImages);
+      const imageReferences = aiImageReferencePayload(referenceImages);
+      const videoPayload = {
         model,
         prompt,
         duration: Number(payload.duration) || 5,
         aspect_ratio: payload.aspectRatio || "16:9",
         resolution: payload.resolution,
         seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
-        image_url: payload.imageUrl,
+        image_url: normalizeAiReferenceImages(payload.imageUrl)[0],
+        image_urls: imageReferences.image_urls,
         reference_images: referenceImages.length ? referenceImages : undefined,
-        first_frame_url: payload.firstFrameUrl,
-        last_frame_url: payload.lastFrameUrl,
+        reference_image: imageReferences.reference_image,
+        input_image: imageReferences.input_image,
+        first_frame_url: normalizeAiReferenceImages(payload.firstFrameUrl)[0],
+        last_frame_url: normalizeAiReferenceImages(payload.lastFrameUrl)[0],
         negative_prompt: payload.negativePrompt,
         camera_control: payload.cameraControl,
         motion_strength: Number.isFinite(Number(payload.motionStrength)) ? Number(payload.motionStrength) : undefined,
-      }));
+      };
+      const { data, dropped } = await requestAgnesWithUnsupportedParamRetry("/videos", videoPayload);
+      const remoteVideoUrl = extractVideoUrl(data);
+      let videoUrl = remoteVideoUrl;
+      let downloadWarning = "";
+      if (remoteVideoUrl) {
+        try {
+          videoUrl = await cacheAiVideoUrl(remoteVideoUrl);
+        } catch (error) {
+          downloadWarning = error instanceof Error ? error.message : "AI video download failed.";
+        }
+      }
       sendJson(res, 200, {
         ok: true,
         model,
         taskId: extractVideoTask(data),
-        videoUrl: extractVideoUrl(data),
+        videoUrl,
+        remoteVideoUrl,
+        downloadWarning,
+        droppedParams: dropped,
         status: data?.status || data?.data?.status || "submitted",
         raw: data,
       });
@@ -2320,10 +2507,22 @@ const server = http.createServer(async (req, res) => {
       }
       const taskId = decodeURIComponent(aiVideoStatusMatch[1]);
       const data = await requestAgnes(`/videos/${encodeURIComponent(taskId)}`, null, { method: "GET" });
+      const remoteVideoUrl = extractVideoUrl(data);
+      let videoUrl = remoteVideoUrl;
+      let downloadWarning = "";
+      if (remoteVideoUrl) {
+        try {
+          videoUrl = await cacheAiVideoUrl(remoteVideoUrl);
+        } catch (error) {
+          downloadWarning = error instanceof Error ? error.message : "AI video download failed.";
+        }
+      }
       sendJson(res, 200, {
         ok: true,
         taskId,
-        videoUrl: extractVideoUrl(data),
+        videoUrl,
+        remoteVideoUrl,
+        downloadWarning,
         status: data?.status || data?.data?.status || data?.result?.status || "",
         raw: data,
       });
