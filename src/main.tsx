@@ -59,6 +59,8 @@ import {
   WarehousePayload,
   WarehouseInfoPayload,
   WarehouseInfoRecord,
+  acceptStockupRecommendation,
+  abandonStockupRecommendation,
   createWarehouseConnection,
   createQuickNavCategory,
   createQuickNavLink,
@@ -108,6 +110,7 @@ import {
   runAiImage,
   runAiText,
   runAiVideo,
+  resolveApiUrl,
   streamAiText,
   updateAiConfig,
   uploadAiImage,
@@ -758,6 +761,20 @@ function App() {
     }
   }
 
+  async function handleStockupDecision(item: StockupPayload["recommendations"][number], action: "accept" | "abandon") {
+    setSyncing(true);
+    setError("");
+    try {
+      const input = { recommendationKey: item.recommendationKey, recommendation: item };
+      const data = action === "accept" ? await acceptStockupRecommendation(input) : await abandonStockupRecommendation(input);
+      setStockupPayload(data);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "更新备货建议状态失败");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function handleQualificationSync() {
     setSyncing(true);
     setError("");
@@ -985,7 +1002,7 @@ function App() {
         ) : activeView === "动销监控" ? (
           <MovementBoard movementPayload={movementPayload} onSyncOrders={handleOrderSync} syncing={syncing} />
         ) : activeView === "备货中心" ? (
-          <StockupCenter stockupPayload={stockupPayload} onSyncStockup={handleStockupSync} syncing={syncing} />
+          <StockupCenter stockupPayload={stockupPayload} onSyncStockup={handleStockupSync} onDecision={handleStockupDecision} syncing={syncing} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "用户管理" ? (
@@ -1614,10 +1631,12 @@ function MovementBoard({
 function StockupCenter({
   stockupPayload,
   onSyncStockup,
+  onDecision,
   syncing,
 }: {
   stockupPayload: StockupPayload | null;
   onSyncStockup: () => void;
+  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon") => void;
   syncing: boolean;
 }) {
   const recommendations = stockupPayload?.recommendations ?? [];
@@ -1723,6 +1742,7 @@ function StockupCenter({
             <span>委外在产</span>
             <span>净建议</span>
             <span>状态</span>
+            <span>操作</span>
           </div>
           {recommendations.length ? recommendations.slice(0, 80).map((item) => (
             <article className="stockup-row" key={`${item.country}-${item.sku}-${item.id}`}>
@@ -1741,6 +1761,14 @@ function StockupCenter({
               <OutsourcingInsight item={item} />
               <strong>{formatNumber(item.netReplenishQty)} {item.unit}</strong>
               <MovementStatusInsight item={item} />
+              <div className="stockup-actions">
+                {item.decisionStatus === "accepted" ? (
+                  <span className="status-pill good">已采纳 · 待创建计划</span>
+                ) : (
+                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "accept")}>采纳</button>
+                )}
+                <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => onDecision(item, "abandon")}>放弃</button>
+              </div>
             </article>
           )) : (
             <div className="stockup-empty">当前没有需要备货的 SKU。先同步仓库库存和近 90 天订单后，动销分析会自动生成建议。</div>
@@ -4076,6 +4104,7 @@ function TongzhouAiPanel({
 
   React.useEffect(() => {
     if (!videoTask || videoUrl) return;
+    void pollVideo(true);
     const timer = window.setInterval(() => {
       void pollVideo(true);
     }, 8000);
@@ -4290,7 +4319,7 @@ function TongzhouAiPanel({
       });
       setVideoTask(result.taskId || "");
       setVideoStatus(result.status || "submitted");
-      setVideoUrl(result.videoUrl || "");
+      setVideoUrl(resolveApiUrl(result.videoUrl || ""));
       setVideoDownloadWarning(result.downloadWarning || "");
       if (!result.videoUrl && result.taskId) setMessage("视频任务已提交，系统会自动查询生成结果。");
     } catch (error) {
@@ -4353,7 +4382,7 @@ function TongzhouAiPanel({
     try {
       const result = await fetchAiVideoStatus(videoTask);
       setVideoStatus(result.status || videoStatus || "处理中");
-      setVideoUrl(result.videoUrl || "");
+      setVideoUrl(resolveApiUrl(result.videoUrl || ""));
       setVideoDownloadWarning(result.downloadWarning || "");
       if (result.videoUrl) setMessage("视频已生成。");
     } catch (error) {

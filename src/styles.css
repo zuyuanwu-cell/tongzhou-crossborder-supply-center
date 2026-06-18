@@ -1069,10 +1069,10 @@ h3 {
 
 .stockup-row {
   display: grid;
-  grid-template-columns: minmax(270px, 1.4fr) 112px 130px 150px 112px 120px 120px 110px 110px;
+  grid-template-columns: minmax(270px, 1.4fr) 112px 130px 150px 112px 120px 120px 110px 110px 170px;
   align-items: center;
   gap: 12px;
-  min-width: 1360px;
+  min-width: 1530px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1095,6 +1095,17 @@ h3 {
 
 .stockup-row > strong {
   color: var(--amber);
+}
+
+.stockup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.stockup-actions .status-pill {
+  min-height: 34px;
 }
 
 .stockup-empty {

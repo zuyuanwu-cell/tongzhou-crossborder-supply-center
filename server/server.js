@@ -1,5 +1,5 @@
 import http from "node:http";
-import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, extname, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
@@ -52,6 +52,7 @@ const wecomNotificationCachePath = resolve(cacheDir, "wecom-notifications.json")
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
 const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
+const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
@@ -61,6 +62,7 @@ let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", p
 let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
+let cachedStockupDecisions = loadJsonCache(stockupDecisionCachePath) || { updatedAt: "", decisions: {} };
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
@@ -126,6 +128,11 @@ function saveStockupCache(payload) {
   saveJsonCache(stockupCachePath, payload);
 }
 
+function saveStockupDecisionCache() {
+  cachedStockupDecisions.updatedAt = new Date().toISOString();
+  saveJsonCache(stockupDecisionCachePath, cachedStockupDecisions);
+}
+
 function saveWarehouseConnections() {
   saveJsonCache(warehouseConnectionsPath, warehouseConnections);
 }
@@ -167,6 +174,45 @@ function numberOrZero(value) {
 
 function wecomId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function stockupRecommendationKey(item) {
+  return [item.country, item.sku || item.countrySku || item.id].map((value) => String(value || "").trim()).filter(Boolean).join("::").toLowerCase();
+}
+
+function stockupDecisionFor(item) {
+  const key = stockupRecommendationKey(item);
+  return key ? cachedStockupDecisions.decisions?.[key] : null;
+}
+
+function recalculateStockupCounts(payload) {
+  const recommendations = payload.recommendations || [];
+  payload.counts = {
+    ...payload.counts,
+    recommendations: recommendations.length,
+    recommendedQty: recommendations.reduce((sum, item) => sum + numberOrZero(item.replenishQty), 0),
+    outsourcingInRecommendationQty: recommendations.reduce((sum, item) => sum + numberOrZero(item.outsourcingInProductionQty), 0),
+    netRecommendedQty: recommendations.reduce((sum, item) => sum + numberOrZero(item.netReplenishQty), 0),
+    acceptedRecommendations: recommendations.filter((item) => item.decisionStatus === "accepted").length,
+    abandonedRecommendations: Object.values(cachedStockupDecisions.decisions || {}).filter((item) => item?.status === "abandoned").length,
+  };
+  return payload;
+}
+
+function applyStockupDecisions(payload) {
+  const recommendations = (payload.recommendations || [])
+    .map((item) => {
+      const decision = stockupDecisionFor(item);
+      return {
+        ...item,
+        recommendationKey: stockupRecommendationKey(item),
+        decisionStatus: decision?.status || "pending",
+        decisionAt: decision?.updatedAt || "",
+        decisionNote: decision?.note || "",
+      };
+    })
+    .filter((item) => item.decisionStatus !== "abandoned");
+  return recalculateStockupCounts({ ...payload, recommendations });
 }
 
 function normalizeWecomWebhook(value) {
@@ -218,11 +264,12 @@ function buildWecomNotificationPayload(input = {}) {
     .filter((schedule) => schedule.name && schedule.robotIds.length && schedule.text);
   const scenes = {
     stockupRecommendation: {
-      enabled: Boolean(input.scenes?.stockupRecommendation?.enabled),
+      enabled: input.scenes?.stockupRecommendation?.enabled !== false,
       robotIds: Array.isArray(input.scenes?.stockupRecommendation?.robotIds) ? input.scenes.stockupRecommendation.robotIds.map(String).filter(Boolean) : [],
       linkUrl: String(input.scenes?.stockupRecommendation?.linkUrl || "").trim(),
       extraText: String(input.scenes?.stockupRecommendation?.extraText || "").trim(),
       lastSignature: input.scenes?.stockupRecommendation?.lastSignature || "",
+      lastItemKeys: Array.isArray(input.scenes?.stockupRecommendation?.lastItemKeys) ? input.scenes.stockupRecommendation.lastItemKeys.map(String).filter(Boolean) : [],
       lastSentAt: input.scenes?.stockupRecommendation?.lastSentAt || "",
     },
     inventorySnapshot: {
@@ -299,7 +346,7 @@ function stockupSignature(payload) {
   return items.join("|");
 }
 
-async function notifyStockupRecommendation(payload, reason = "refresh") {
+async function notifyStockupRecommendationLegacy(payload, reason = "refresh") {
   const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
   if (!scene?.enabled || !scene.robotIds?.length) return;
   const signature = stockupSignature(payload);
@@ -315,6 +362,45 @@ async function notifyStockupRecommendation(payload, reason = "refresh") {
     notificationLinkLine(scene.linkUrl, "查看备货中心"),
   ].filter(Boolean).join("\n\n");
   await sendWecomNotification(scene.robotIds, content);
+}
+
+function stockupMarkdownItem(item, index) {
+  const daysCover = item.daysCover === null || item.daysCover === undefined ? "∞" : `${numberOrZero(item.daysCover).toFixed(1)} 天`;
+  return [
+    `**${index + 1}. ${item.sku || item.countrySku || item.id}｜${item.name || "未命名产品"}**`,
+    `> 国家：${item.country || "-"}｜状态：${item.status || "-"}`,
+    `> 动销：7天 ${numberOrZero(item.sales7)} / 30天 ${numberOrZero(item.sales30)} / 90天 ${numberOrZero(item.sales90)}，30天日均 ${numberOrZero(item.avgDaily30).toFixed(2)}`,
+    `> 库存：可售 ${numberOrZero(item.availableQty)}，在途 ${numberOrZero(item.inTransitQty)}，预估可售 ${daysCover}`,
+    `> 建议备货：${numberOrZero(item.replenishQty)}${item.unit || ""}，净建议 ${numberOrZero(item.netReplenishQty)}${item.unit || ""}`,
+  ].join("\n");
+}
+
+async function notifyStockupRecommendation(payload, reason = "refresh") {
+  const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
+  if (!scene?.enabled) return;
+  const robotIds = scene.robotIds?.length ? scene.robotIds : (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
+  if (!robotIds.length) return;
+  const signature = stockupSignature(payload);
+  if (!signature || scene.lastSignature === signature) return;
+  const currentKeys = (payload.recommendations || []).map((item) => item.recommendationKey || stockupRecommendationKey(item)).filter(Boolean);
+  const previousKeys = new Set(scene.lastItemKeys || []);
+  const newItems = (payload.recommendations || []).filter((item) => !previousKeys.has(item.recommendationKey || stockupRecommendationKey(item)));
+  scene.lastSignature = signature;
+  scene.lastItemKeys = currentKeys;
+  scene.lastSentAt = new Date().toISOString();
+  if (!newItems.length && previousKeys.size) {
+    saveWecomNotificationCache();
+    return;
+  }
+  const visibleItems = (newItems.length ? newItems : payload.recommendations || []).slice(0, 8);
+  const content = [
+    "### 备货建议提醒",
+    `新增 ${newItems.length || visibleItems.length} 个 SKU 需要关注备货，当前净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`,
+    scene.extraText,
+    visibleItems.map(stockupMarkdownItem).join("\n\n"),
+    notificationLinkLine(scene.linkUrl, "查看备货中心"),
+  ].filter(Boolean).join("\n\n");
+  await sendWecomNotification(robotIds, content);
 }
 
 async function notifyInventorySnapshot(snapshot) {
@@ -565,19 +651,59 @@ function extractVideoTask(data) {
 }
 
 function extractVideoUrl(data) {
-  const output = Array.isArray(data?.output) ? data.output[0] : data?.output;
-  const result = Array.isArray(data?.result) ? data.result[0] : data?.result;
-  return data?.video_url
-    || data?.url
-    || data?.data?.video_url
-    || data?.data?.url
-    || data?.data?.download_url
-    || output?.video_url
-    || output?.url
-    || output?.download_url
-    || result?.video_url
-    || result?.url
-    || result?.download_url
+  const candidates = [];
+  const strongKeys = new Set([
+    "video_url",
+    "videoUrl",
+    "video",
+    "download_url",
+    "downloadUrl",
+    "file_url",
+    "fileUrl",
+    "output_url",
+    "outputUrl",
+    "result_url",
+    "resultUrl",
+    "media_url",
+    "mediaUrl",
+    "source_url",
+    "sourceUrl",
+  ]);
+  const containerKeys = new Set(["data", "output", "outputs", "result", "results", "content", "video", "file", "media", "asset"]);
+  const isVideoLikeUrl = (text, key) => {
+    if (!/^https?:\/\//i.test(text) && !text.startsWith("/")) return false;
+    if (/\.(png|jpe?g|webp|gif|svg)(\?|#|$)/i.test(text)) return false;
+    return strongKeys.has(key) || /video|download|file|media|result|output/i.test(key) || /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(text);
+  };
+  const visit = (value, key = "") => {
+    if (!value) return;
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (isVideoLikeUrl(text, key)) candidates.push(text);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key));
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [itemKey, itemValue] of Object.entries(value)) {
+      if (strongKeys.has(itemKey) || containerKeys.has(itemKey) || /video|download|file|media|result|output/i.test(itemKey)) {
+        visit(itemValue, itemKey);
+      }
+    }
+  };
+  visit(data);
+  return candidates[0] || "";
+}
+
+function extractVideoStatus(data) {
+  return data?.status
+    || data?.data?.status
+    || data?.result?.status
+    || data?.output?.status
+    || data?.state
+    || data?.data?.state
     || "";
 }
 
@@ -664,7 +790,9 @@ async function cacheAiVideoUrl(remoteUrl) {
   const fileName = `${id}${videoExtensionFromUrl(videoUrl)}`;
   const filePath = resolve(aiVideoPublicDir, fileName);
   if (!existsSync(filePath)) {
-    const response = await fetch(videoUrl);
+    const response = await fetch(videoUrl, {
+      headers: cachedAiConfig.apiKey ? { Authorization: `Bearer ${cachedAiConfig.apiKey}` } : {},
+    });
     if (!response.ok) throw new Error(`AI video download failed: ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
     if (!bytes.length) throw new Error("AI video download was empty.");
@@ -704,6 +832,34 @@ async function requestAgnesWithUnsupportedParamRetry(path, payload) {
   }
   const data = await requestAgnes(path, nextPayload);
   return { data, dropped };
+}
+
+async function requestAgnesVideoStatus(taskId) {
+  const encodedTaskId = encodeURIComponent(taskId);
+  const paths = [
+    `/videos/${encodedTaskId}`,
+    `/videos/${encodedTaskId}/result`,
+    `/videos/${encodedTaskId}/results`,
+    `/videos/${encodedTaskId}/download`,
+    `/tasks/${encodedTaskId}`,
+  ];
+  let lastData = null;
+  const errors = [];
+  for (const path of paths) {
+    try {
+      const data = await requestAgnes(path, null, { method: "GET" });
+      lastData = data;
+      if (extractVideoUrl(data)) return { data, path, errors };
+      const status = String(extractVideoStatus(data)).toLowerCase();
+      if (status && !["completed", "complete", "succeeded", "success", "done"].includes(status)) {
+        return { data, path, errors };
+      }
+    } catch (error) {
+      errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (lastData) return { data: lastData, path: paths[paths.length - 1], errors };
+  throw new Error(errors[0] || "视频状态查询失败。");
 }
 
 function truncateText(value, maxLength = 180) {
@@ -1606,9 +1762,29 @@ async function handleStockupSync(req, res) {
 function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {}) {
   const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
   const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
-  const payload = buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts);
+  const payload = applyStockupDecisions(buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts));
   if (notify) void notifyStockupRecommendation(payload, reason);
   return payload;
+}
+
+function updateStockupDecision(payload, status) {
+  const item = payload?.recommendation || payload || {};
+  const key = String(payload?.recommendationKey || stockupRecommendationKey(item)).trim();
+  if (!key) throw new Error("缺少备货建议标识。");
+  cachedStockupDecisions.decisions = cachedStockupDecisions.decisions || {};
+  cachedStockupDecisions.decisions[key] = {
+    status,
+    recommendationKey: key,
+    sku: String(item.sku || "").trim(),
+    country: String(item.country || "").trim(),
+    name: String(item.name || "").trim(),
+    replenishQty: numberOrZero(item.replenishQty),
+    netReplenishQty: numberOrZero(item.netReplenishQty),
+    note: String(payload?.note || "").trim(),
+    updatedAt: new Date().toISOString(),
+  };
+  saveStockupDecisionCache();
+  return buildCurrentStockupPayload({ notify: false, reason: `decision_${status}` });
 }
 
 async function handleSync(req, res) {
@@ -1841,11 +2017,36 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { ok: false, message: "Video not found." });
         return;
       }
+      const stat = statSync(filePath);
+      const range = req.headers.range;
+      if (range) {
+        const match = String(range).match(/bytes=(\d*)-(\d*)/);
+        const start = match?.[1] ? Number(match[1]) : 0;
+        const end = match?.[2] ? Number(match[2]) : stat.size - 1;
+        if (start >= stat.size || end >= stat.size || start > end) {
+          res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+          res.end();
+          return;
+        }
+        res.writeHead(206, {
+          "Content-Type": videoMimeFromExtension(fileName),
+          "Content-Length": end - start + 1,
+          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "public, max-age=86400",
+          "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        });
+        createReadStream(filePath, { start, end }).pipe(res);
+        return;
+      }
       res.writeHead(200, {
         "Content-Type": videoMimeFromExtension(fileName),
+        "Content-Length": stat.size,
+        "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=86400",
+        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`,
       });
-      res.end(readFileSync(filePath));
+      createReadStream(filePath).pipe(res);
       return;
     }
 
@@ -2506,7 +2707,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const taskId = decodeURIComponent(aiVideoStatusMatch[1]);
-      const data = await requestAgnes(`/videos/${encodeURIComponent(taskId)}`, null, { method: "GET" });
+      const { data, path: statusPath, errors: statusWarnings } = await requestAgnesVideoStatus(taskId);
       const remoteVideoUrl = extractVideoUrl(data);
       let videoUrl = remoteVideoUrl;
       let downloadWarning = "";
@@ -2523,7 +2724,9 @@ const server = http.createServer(async (req, res) => {
         videoUrl,
         remoteVideoUrl,
         downloadWarning,
-        status: data?.status || data?.data?.status || data?.result?.status || "",
+        status: extractVideoStatus(data),
+        statusPath,
+        statusWarnings,
         raw: data,
       });
       return;
@@ -2832,6 +3035,26 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/sync" && req.method === "POST") {
       await handleStockupSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/recommendations/accept" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "采纳备货建议需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      sendJson(res, 200, updateStockupDecision(payload, "accepted"));
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/recommendations/abandon" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "放弃备货建议需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      sendJson(res, 200, updateStockupDecision(payload, "abandoned"));
       return;
     }
 

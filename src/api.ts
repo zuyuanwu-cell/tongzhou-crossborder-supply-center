@@ -380,6 +380,8 @@ export type AiVideoResult = {
   remoteVideoUrl?: string;
   downloadWarning?: string;
   droppedParams?: string[];
+  statusPath?: string;
+  statusWarnings?: string[];
   raw?: unknown;
 };
 
@@ -594,6 +596,7 @@ export type MovementPayload = {
 
 export type StockupRecommendation = {
   id: string;
+  recommendationKey?: string;
   sku: string;
   countrySku?: string;
   name: string;
@@ -615,6 +618,9 @@ export type StockupRecommendation = {
   replenishQty: number;
   outsourcingInProductionQty: number;
   netReplenishQty: number;
+  decisionStatus?: "pending" | "accepted" | "abandoned";
+  decisionAt?: string;
+  decisionNote?: string;
   outsourcingOrders: Array<{
     id: string;
     tongzhouSku: string;
@@ -664,6 +670,8 @@ export type StockupPayload = {
     outsourcingOutsideRecommendationQty: number;
     outsourcingActiveSku: number;
     netRecommendedQty: number;
+    acceptedRecommendations?: number;
+    abandonedRecommendations?: number;
     inboundOrders: number;
     pendingInboundQty: number;
   };
@@ -735,6 +743,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload.message || "请求失败");
   }
   return payload as T;
+}
+
+export function resolveApiUrl(value: string) {
+  if (!value || /^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
+  if (value.startsWith("/api/")) return `${API_BASE}${value}`;
+  return value;
 }
 
 export function fetchProducts() {
@@ -1019,6 +1033,20 @@ export function fetchStockup() {
 
 export function syncStockupOrders() {
   return requestJson<StockupPayload>("/api/stockup/sync", { method: "POST" });
+}
+
+export function acceptStockupRecommendation(input: { recommendationKey?: string; recommendation: StockupRecommendation; note?: string }) {
+  return requestJson<StockupPayload>("/api/stockup/recommendations/accept", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function abandonStockupRecommendation(input: { recommendationKey?: string; recommendation: StockupRecommendation; note?: string }) {
+  return requestJson<StockupPayload>("/api/stockup/recommendations/abandon", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function syncOutsourcingOrders() {
