@@ -17,6 +17,11 @@ function wmsTimeoutMs() {
   return Number.isFinite(value) && value > 1000 ? value : 25000;
 }
 
+function wmsOrderMaxPages() {
+  const value = Number(process.env.WMS_ORDER_MAX_PAGES || 12);
+  return Number.isFinite(value) && value > 0 ? Math.min(200, Math.floor(value)) : 12;
+}
+
 function normalizeBaseUrl(baseUrl) {
   return String(baseUrl || "").replace(/\/$/, "");
 }
@@ -301,10 +306,10 @@ async function postSea(credentials, endpoint, body) {
   );
 }
 
-async function fetchSeaPageList(credentials, endpoint, body) {
+async function fetchSeaPageList(credentials, endpoint, body, maxPages = 20) {
   const items = [];
   let cursor = "";
-  for (let page = 0; page < 20; page += 1) {
+  for (let page = 0; page < maxPages; page += 1) {
     const payload = await postSea(credentials, endpoint, cursor ? { ...body, cursor } : body);
     if (!isSuccessfulPayload(payload)) {
       throw new Error(`SEA WMS 接口返回异常：${payloadMessage(payload)}`);
@@ -534,7 +539,7 @@ export async function syncYunWmsOrders(connection, days = 90) {
     ship_date_to: `${today} 23:59:59`,
     ...(warehouseCode ? { warehouse_code: warehouseCode } : {}),
   };
-  const rows = await fetchYunPageList(credentials, "getOrderList", params, 500, 200);
+  const rows = await fetchYunPageList(credentials, "getOrderList", params, 500, wmsOrderMaxPages());
   const orders = rows.flatMap((order) => normalizeYunOrderRows(order, connection));
 
   return {
@@ -587,7 +592,7 @@ async function syncSeaOrdersFromApi(connection, days = 90) {
     warehouseId: resolvedWarehouseId,
     gmtModifiedFrom: formatDateTimeForWms(start),
     gmtModifiedTo: `${today} 23:59:59`,
-  });
+  }, wmsOrderMaxPages());
   const orders = orderRows.flatMap((order) => normalizeSeaOrderRows(order, connection, productByGoodsSkuId));
 
   return {

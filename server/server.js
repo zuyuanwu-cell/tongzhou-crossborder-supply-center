@@ -56,6 +56,7 @@ const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
+const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000);
 const inventorySnapshotTimezone = process.env.INVENTORY_SNAPSHOT_TIMEZONE || "Asia/Shanghai";
 let cachedProducts = loadProductCache() || buildProductPayload(sampleProductBaseRecords, sampleCatalogRecords, "sample");
 let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", products: [], inventory: [], results: [] };
@@ -1290,6 +1291,20 @@ async function syncWithSameSystemFallback(connection, syncer) {
   }
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  const ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms < 1000) return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(message || "请求超时");
+      error.code = "SYNC_TIMEOUT";
+      reject(error);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function updateResolvedWarehouseId(connection, result) {
   if (!result?.resolvedWarehouseId) return false;
   if (connection.warehouseId === result.resolvedWarehouseId) return false;
@@ -1669,19 +1684,36 @@ async function handleOrderSync(req, res) {
   }
 
   const days = Math.max(1, Math.min(180, Number(new URL(req.url || "/", `http://${req.headers.host}`).searchParams.get("days") || 90)));
+  const payload = await refreshOrderCache(days);
+  sendJson(res, 200, { ok: true, ...payload, orders: undefined });
+}
+
+async function refreshOrderCache(days = 90) {
+  const normalizedDays = Math.max(1, Math.min(180, Number(days) || 90));
   const results = [];
   const orders = [];
 
   const syncResults = await Promise.all(warehouseConnections.map(async (connection) => {
     let result;
+    const syncPromise = syncWithSameSystemFallback(connection, (target) => syncWarehouseOrders(target, normalizedDays));
     try {
-      result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseOrders(target, days));
+      result = await withTimeout(
+        syncPromise,
+        orderSyncTimeoutMs,
+        `${connection.name || connection.id} 订单同步超过 ${Math.round(orderSyncTimeoutMs / 1000)} 秒，已转入后台继续同步。`,
+      );
     } catch (error) {
+      if (error.code === "SYNC_TIMEOUT") {
+        syncPromise
+          .then((lateResult) => mergeLateOrderSyncResult(connection, lateResult, normalizedDays))
+          .catch((lateError) => console.error(`[orders-sync] background failed ${connection.name || connection.id}`, lateError));
+      }
       result = {
         warehouseId: connection.id,
         ok: false,
         skipped: false,
         message: error.message || "订单同步失败",
+        backgroundRunning: error.code === "SYNC_TIMEOUT",
         orders: [],
       };
     }
@@ -1696,6 +1728,7 @@ async function handleOrderSync(req, res) {
       message: result.message || "",
       orderCount: result.orders.length,
       hasCredentials: hasWarehouseCredentials(connection),
+      backgroundRunning: Boolean(result.backgroundRunning),
     });
     orders.push(...result.orders);
     if (updateResolvedWarehouseId(connection, result)) saveWarehouseConnections();
@@ -1703,12 +1736,40 @@ async function handleOrderSync(req, res) {
 
   cachedOrdersSync = {
     syncedAt: new Date().toISOString(),
-    days,
+    days: normalizedDays,
     orders,
     results,
   };
   saveOrderCache(cachedOrdersSync);
-  sendJson(res, 200, { ok: true, ...cachedOrdersSync, orders: undefined });
+  return cachedOrdersSync;
+}
+
+function mergeLateOrderSyncResult(connection, result, days) {
+  const warehouseId = result.warehouseId || connection.id;
+  const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
+  nextResults.push({
+    warehouseId,
+    ok: result.ok,
+    skipped: result.skipped,
+    message: result.message || "后台同步完成。",
+    orderCount: result.orders?.length || 0,
+    hasCredentials: hasWarehouseCredentials(connection),
+    backgroundCompletedAt: new Date().toISOString(),
+  });
+
+  cachedOrdersSync = {
+    ...cachedOrdersSync,
+    syncedAt: new Date().toISOString(),
+    days,
+    orders: [
+      ...(cachedOrdersSync.orders || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id),
+      ...(result.orders || []),
+    ],
+    results: nextResults,
+  };
+  saveOrderCache(cachedOrdersSync);
+  if (updateResolvedWarehouseId(connection, result)) saveWarehouseConnections();
+  console.log(`[orders-sync] background completed ${connection.name || connection.id}: ${result.orders?.length || 0} orders`);
 }
 
 async function handleStockupSync(req, res) {
@@ -1952,8 +2013,10 @@ async function runAutoSync() {
     await refreshAssetCache();
     await refreshWarehouseInfoCache();
     await refreshOutsourcingOrderCache();
+    const orderPayload = await refreshOrderCache(90);
+    buildCurrentStockupPayload({ notify: true, reason: "auto_order_sync" });
     lastAutoSyncAt = new Date().toISOString();
-    console.log(`[auto-sync] refreshed products, qualifications and assets at ${lastAutoSyncAt}`);
+    console.log(`[auto-sync] refreshed products, qualifications, assets and ${orderPayload.orders.length} movement orders at ${lastAutoSyncAt}`);
   } catch (error) {
     console.error("[auto-sync] failed", error);
   } finally {
@@ -3167,6 +3230,7 @@ server.listen(port, () => {
   if (autoSyncIntervalMs >= 1000) {
     setInterval(runAutoSync, autoSyncIntervalMs);
     console.log(`[auto-sync] enabled every ${Math.round(autoSyncIntervalMs / 60000)} minutes`);
+    runAutoSync();
   }
   setInterval(runScheduledInventorySnapshot, 60 * 1000);
   setInterval(runWecomSchedules, 60 * 1000);

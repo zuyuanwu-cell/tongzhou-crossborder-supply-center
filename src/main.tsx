@@ -11,6 +11,7 @@ import {
   CalendarDays,
   ChevronDown,
   Check,
+  Calculator,
   Copy,
   DatabaseZap,
   Download,
@@ -25,12 +26,15 @@ import {
   Lock,
   LogOut,
   Menu,
+  Minus,
   PackageCheck,
+  Plus,
   RefreshCw,
   Search,
   Settings,
   ShieldCheck,
   ShoppingBag,
+  Trash2,
   Video,
   Truck,
   X,
@@ -120,6 +124,10 @@ import "./styles.css";
 type AlertType = "补货" | "断货" | "健康" | "滞销";
 type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
 type SortDirection = "asc" | "desc";
+type BundleSkuItem = {
+  product: CatalogProduct;
+  quantity: number;
+};
 const ALL_RECORDS = "__all__";
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -477,11 +485,36 @@ function priceFor(product: CatalogProduct, channel: "全部" | "直营" | "分�
 }
 
 function salesPriceFor(product: CatalogProduct) {
+  const fallbackPrice = product.channel === "直营"
+    ? product.directPrice ?? product.distributionPrice ?? 0
+    : product.distributionPrice ?? product.directPrice ?? 0;
   return {
-    price: product.salesPrice ?? 0,
-    currency: product.salesCurrency || product.distributionCurrency,
+    price: product.salesPrice ?? fallbackPrice,
+    currency: product.salesCurrency || (product.channel === "直营" ? product.directCurrency : product.distributionCurrency) || product.distributionCurrency,
     label: "销售价",
   };
+}
+
+function bundleSkuProductCode(product: CatalogProduct) {
+  return product.sku || product.skuNo || product.id;
+}
+
+function bundleSkuCode(items: BundleSkuItem[]) {
+  return items.map((item) => `${bundleSkuProductCode(item.product)}*${Math.max(1, item.quantity)}`).join("+");
+}
+
+function bundleTotals(items: BundleSkuItem[], channel: "全部" | "直营" | "分销", internal: boolean) {
+  const costCurrency = priceFor(items[0]?.product || fallbackCatalog[0], channel, internal).currency;
+  const salesCurrency = salesPriceFor(items[0]?.product || fallbackCatalog[0]).currency;
+  return items.reduce(
+    (totals, item) => {
+      const quantity = Math.max(1, item.quantity);
+      totals.cost += priceFor(item.product, channel, internal).price * quantity;
+      totals.sales += salesPriceFor(item.product).price * quantity;
+      return totals;
+    },
+    { cost: 0, sales: 0, costCurrency, salesCurrency },
+  );
 }
 
 function App() {
@@ -3506,6 +3539,8 @@ function ProductLibrary({
   const [showBackTop, setShowBackTop] = React.useState(false);
   const [viewMode, setViewMode] = React.useState<"grid" | "list">("grid");
   const [gridColumns, setGridColumns] = React.useState<4 | 6 | 8>(4);
+  const [bundleItems, setBundleItems] = React.useState<BundleSkuItem[]>([]);
+  const [bundleOpen, setBundleOpen] = React.useState(false);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showPrices = canViewPrices(currentUser);
   const showInventory = canViewInventory(currentUser);
@@ -3520,6 +3555,25 @@ function ProductLibrary({
   React.useEffect(() => {
     if (!internal) setChannel("分销");
   }, [internal]);
+
+  function addToBundle(product: CatalogProduct) {
+    setBundleItems((items) => {
+      const index = items.findIndex((item) => item.product.id === product.id);
+      if (index >= 0) {
+        return items.map((item, itemIndex) => (itemIndex === index ? { ...item, quantity: Math.min(999, item.quantity + 1) } : item));
+      }
+      return [...items, { product, quantity: 1 }];
+    });
+    setBundleOpen(true);
+  }
+
+  function updateBundleQuantity(productId: string, quantity: number) {
+    setBundleItems((items) => items.map((item) => (item.product.id === productId ? { ...item, quantity: Math.max(1, Math.min(999, quantity || 1)) } : item)));
+  }
+
+  function removeBundleItem(productId: string) {
+    setBundleItems((items) => items.filter((item) => item.product.id !== productId));
+  }
 
   React.useEffect(() => {
     function handleScroll() {
@@ -3663,7 +3717,15 @@ function ProductLibrary({
                     <CopyableSku sku={product.sku} />
                     <h3>{product.name}</h3>
                   </div>
-                  {showInventory ? <span className={`status-pill ${alertClass(product.alert)}`}>{product.alert}</span> : null}
+                  <button
+                    className={`bundle-add-button ${bundleItems.some((item) => item.product.id === product.id) ? "active" : ""}`}
+                    type="button"
+                    title="加入组合 SKU 计算器"
+                    aria-label={`加入组合 SKU 计算器：${product.name}`}
+                    onClick={() => addToBundle(product)}
+                  >
+                    <Plus size={18} />
+                  </button>
                 </div>
                 <div className="product-facts">
                   <span>
@@ -3716,6 +3778,18 @@ function ProductLibrary({
           onClose={() => setDetailProduct(null)}
         />
       ) : null}
+      <BundleSkuCalculator
+        items={bundleItems}
+        open={bundleOpen}
+        channel={channel}
+        internal={internal}
+        showPrices={showPrices}
+        onOpen={() => setBundleOpen(true)}
+        onClose={() => setBundleOpen(false)}
+        onQuantityChange={updateBundleQuantity}
+        onRemove={removeBundleItem}
+        onClear={() => setBundleItems([])}
+      />
       <button
         className={`back-to-top-button ${showBackTop ? "visible" : ""}`}
         type="button"
@@ -3727,6 +3801,151 @@ function ProductLibrary({
         <span>顶部</span>
       </button>
     </main>
+  );
+}
+
+function BundleSkuCalculator({
+  items,
+  open,
+  channel,
+  internal,
+  showPrices,
+  onOpen,
+  onClose,
+  onQuantityChange,
+  onRemove,
+  onClear,
+}: {
+  items: BundleSkuItem[];
+  open: boolean;
+  channel: "全部" | "直营" | "分销";
+  internal: boolean;
+  showPrices: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  onQuantityChange: (productId: string, quantity: number) => void;
+  onRemove: (productId: string) => void;
+  onClear: () => void;
+}) {
+  const [copied, setCopied] = React.useState("");
+  const code = bundleSkuCode(items);
+  const totals = bundleTotals(items, channel, internal);
+  const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
+  const quoteText = [
+    `组合SKU：${code || "未选择产品"}`,
+    `组合成本：${totals.costCurrency} ${formatMoney(totals.cost)}`,
+    `组合售价：${totals.salesCurrency} ${formatMoney(totals.sales)}`,
+    ...items.map((item) => `${bundleSkuProductCode(item.product)} * ${item.quantity} - ${item.product.name}`),
+  ].join("\n");
+
+  async function copyValue(value: string, type: string) {
+    if (!value) return;
+    await copyText(value);
+    setCopied(type);
+    window.setTimeout(() => setCopied(""), 1200);
+  }
+
+  return (
+    <>
+      <button className={`bundle-fab ${items.length ? "has-items" : ""}`} type="button" onClick={onOpen} aria-label="打开组合 SKU 计算器">
+        <Calculator size={20} />
+        <span>组合SKU</span>
+        {items.length ? <strong>{items.length}</strong> : null}
+      </button>
+      {open ? (
+        <div className="modal-backdrop bundle-modal-backdrop" role="presentation" onMouseDown={onClose}>
+          <section className="bundle-calculator-modal" role="dialog" aria-modal="true" aria-label="组合 SKU 计算器" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="bundle-modal-header">
+              <div>
+                <p className="eyebrow">Bundle SKU Calculator</p>
+                <h2>组合 SKU 计算器</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={onClose} aria-label="关闭组合 SKU 计算器">
+                <X size={18} />
+              </button>
+            </header>
+
+            {items.length ? (
+              <>
+                <div className="bundle-code-box">
+                  <small>组合编码</small>
+                  <strong>{code}</strong>
+                  <button className="ghost-button compact-button" type="button" onClick={() => copyValue(code, "sku")}>
+                    <Copy size={15} />
+                    {copied === "sku" ? "已复制" : "复制SKU"}
+                  </button>
+                </div>
+
+                <div className="bundle-items">
+                  {items.map((item) => {
+                    const cost = priceFor(item.product, channel, internal);
+                    const salesPrice = salesPriceFor(item.product);
+                    return (
+                      <article className="bundle-item" key={item.product.id}>
+                        <div>
+                          <strong>{item.product.name}</strong>
+                          <span>{bundleSkuProductCode(item.product)}</span>
+                        </div>
+                        <div className="bundle-qty-control">
+                          <button type="button" onClick={() => onQuantityChange(item.product.id, item.quantity - 1)} aria-label="减少数量">
+                            <Minus size={14} />
+                          </button>
+                          <input
+                            value={item.quantity}
+                            inputMode="numeric"
+                            onChange={(event) => onQuantityChange(item.product.id, Number(event.target.value))}
+                            aria-label={`${item.product.name} 数量`}
+                          />
+                          <button type="button" onClick={() => onQuantityChange(item.product.id, item.quantity + 1)} aria-label="增加数量">
+                            <Plus size={14} />
+                          </button>
+                        </div>
+                        <div className="bundle-line-price">
+                          <span>{cost.currency} {formatMoney(cost.price * item.quantity)}</span>
+                          <small>{salesPrice.currency} {formatMoney(salesPrice.price * item.quantity)}</small>
+                        </div>
+                        <button className="icon-button danger-button" type="button" onClick={() => onRemove(item.product.id)} aria-label="移除单品">
+                          <Trash2 size={15} />
+                        </button>
+                      </article>
+                    );
+                  })}
+                </div>
+
+                <div className="bundle-summary">
+                  <div>
+                    <small>单品数量</small>
+                    <strong>{formatNumber(totalQty)}</strong>
+                  </div>
+                  <div>
+                    <small>组合成本</small>
+                    <strong>{showPrices ? `${totals.costCurrency} ${formatMoney(totals.cost)}` : "登录后可见"}</strong>
+                  </div>
+                  <div>
+                    <small>组合售价</small>
+                    <strong>{showPrices ? `${totals.salesCurrency} ${formatMoney(totals.sales)}` : "登录后可见"}</strong>
+                  </div>
+                </div>
+
+                <footer className="bundle-modal-actions">
+                  <button className="ghost-button" type="button" onClick={onClear}>清空</button>
+                  <button className="sync-button" type="button" onClick={() => copyValue(quoteText, "quote")}>
+                    <Copy size={16} />
+                    {copied === "quote" ? "已复制报价" : "复制报价"}
+                  </button>
+                </footer>
+              </>
+            ) : (
+              <div className="bundle-empty">
+                <Calculator size={34} />
+                <strong>先从产品卡片点击 + 加入单品</strong>
+                <span>适合 2-3 个产品组合上架，系统会自动生成编码并汇总成本和售价。</span>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
