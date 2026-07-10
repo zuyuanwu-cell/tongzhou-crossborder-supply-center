@@ -18,8 +18,8 @@ function wmsTimeoutMs() {
 }
 
 function wmsOrderMaxPages() {
-  const value = Number(process.env.WMS_ORDER_MAX_PAGES || 12);
-  return Number.isFinite(value) && value > 0 ? Math.min(200, Math.floor(value)) : 12;
+  const value = Number(process.env.WMS_ORDER_MAX_PAGES || 200);
+  return Number.isFinite(value) && value > 0 ? Math.min(200, Math.floor(value)) : 200;
 }
 
 function normalizeBaseUrl(baseUrl) {
@@ -153,6 +153,12 @@ function isoDateDaysAgo(days) {
 
 function formatDateTimeForWms(date) {
   return `${date} 00:00:00`;
+}
+
+function normalizeDateOnly(date) {
+  if (!date) return new Date().toISOString().slice(0, 10);
+  if (date instanceof Date) return date.toISOString().slice(0, 10);
+  return String(date).slice(0, 10);
 }
 
 function skuSuffix(sku) {
@@ -307,19 +313,44 @@ async function postSea(credentials, endpoint, body) {
 }
 
 async function fetchSeaPageList(credentials, endpoint, body, maxPages = 20) {
+  return (await fetchSeaPageListWithMeta(credentials, endpoint, body, maxPages)).items;
+}
+
+async function fetchSeaPageListWithMeta(credentials, endpoint, body, maxPages = 20) {
   const items = [];
   let cursor = "";
+  let pagesRead = 0;
+  let apiTotal = 0;
+  let pageSize = firstNumber(body?.pageSize);
+  let reachedPageLimit = false;
   for (let page = 0; page < maxPages; page += 1) {
     const payload = await postSea(credentials, endpoint, cursor ? { ...body, cursor } : body);
     if (!isSuccessfulPayload(payload)) {
       throw new Error(`SEA WMS 接口返回异常：${payloadMessage(payload)}`);
     }
-    items.push(...listFromPayload(payload));
+    const rows = listFromPayload(payload);
+    items.push(...rows);
+    pagesRead = page + 1;
+    apiTotal = Math.max(apiTotal, firstNumber(payload?.data?.total, payload?.data?.totalCount, payload?.total));
+    pageSize = firstNumber(payload?.data?.pageSize, payload?.pageSize, pageSize);
     const nextCursor = firstText(payload?.data?.cursor);
-    if (!nextCursor || nextCursor === cursor) break;
+    if (!nextCursor || nextCursor === cursor || !rows.length) break;
+    if (page === maxPages - 1) {
+      reachedPageLimit = true;
+      cursor = nextCursor;
+      break;
+    }
     cursor = nextCursor;
   }
-  return items;
+  return {
+    items,
+    apiTotal,
+    pageSize,
+    pagesRead,
+    pageLimit: maxPages,
+    reachedPageLimit,
+    cursor,
+  };
 }
 
 async function resolveSeaWarehouseId(credentials, connection) {
@@ -374,6 +405,7 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
       return {
         orderId: firstText(order.orderId, orderNo),
         orderNo,
+        goodsSkuId: firstText(item.goodsSkuId),
         providerId: connection.providerId,
         warehouseId: connection.id,
         warehouseName: connection.name,
@@ -382,13 +414,14 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
         shippedAt,
         createdAt,
         sku,
+        productName: firstText(item.goodsName, item.skuName, item.productName, sku),
         quantity,
         salesAmount: firstNumber(item.discountedPrice) * quantity,
         currency: firstText(order.currency),
         rawProvider: connection.providerId,
       };
     })
-    .filter((item) => item.sku && item.quantity > 0);
+    .filter((item) => item.quantity > 0);
 }
 
 function normalizeSeaStockupRows(order, connection, productByGoodsSkuId = new Map()) {
@@ -513,13 +546,14 @@ function normalizeYunOrderRows(order, connection) {
       shippedAt,
       createdAt: firstText(order.date_create, order.created_at),
       sku: firstText(item.product_sku, item.sku, item.product_barcode),
+      productName: firstText(item.product_title, item.product_name, item.name, item.product_sku, item.sku, item.product_barcode),
       quantity: firstNumber(item.quantity, item.qty, item.product_quantity),
       rawProvider: connection.providerId,
     }))
-    .filter((item) => item.sku && item.quantity > 0);
+    .filter((item) => item.quantity > 0);
 }
 
-export async function syncYunWmsOrders(connection, days = 90) {
+export async function syncYunWmsOrdersRange(connection, dateFrom, dateTo) {
   const credentials = yunCredentials(connection);
   if (!hasYunCredentials(credentials)) {
     return {
@@ -532,11 +566,11 @@ export async function syncYunWmsOrders(connection, days = 90) {
   }
 
   const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
-  const today = new Date().toISOString().slice(0, 10);
-  const start = isoDateDaysAgo(days);
+  const start = normalizeDateOnly(dateFrom);
+  const end = normalizeDateOnly(dateTo);
   const params = {
     ship_date_from: formatDateTimeForWms(start),
-    ship_date_to: `${today} 23:59:59`,
+    ship_date_to: `${end} 23:59:59`,
     ...(warehouseCode ? { warehouse_code: warehouseCode } : {}),
   };
   const rows = await fetchYunPageList(credentials, "getOrderList", params, 500, wmsOrderMaxPages());
@@ -552,6 +586,10 @@ export async function syncYunWmsOrders(connection, days = 90) {
   };
 }
 
+export async function syncYunWmsOrders(connection, days = 90) {
+  return syncYunWmsOrdersRange(connection, isoDateDaysAgo(days), new Date().toISOString().slice(0, 10));
+}
+
 export async function syncSeaOrders(connection) {
   return {
     warehouseId: connection.id,
@@ -562,7 +600,7 @@ export async function syncSeaOrders(connection) {
   };
 }
 
-async function syncSeaOrdersFromApi(connection, days = 90) {
+async function syncSeaOrdersFromApiRange(connection, dateFrom, dateTo) {
   const credentials = seaCredentials(connection);
   if (!hasSeaCredentials(credentials)) {
     return {
@@ -575,8 +613,8 @@ async function syncSeaOrdersFromApi(connection, days = 90) {
   }
 
   const resolvedWarehouseId = await resolveSeaWarehouseId(credentials, connection);
-  const today = new Date().toISOString().slice(0, 10);
-  const start = isoDateDaysAgo(days);
+  const start = normalizeDateOnly(dateFrom);
+  const end = normalizeDateOnly(dateTo);
   const productRows = await fetchSeaPageList(credentials, "/goods/search_goods_sku_page", { pageSize: 100 });
   const productByGoodsSkuId = new Map(
     productRows
@@ -587,22 +625,35 @@ async function syncSeaOrdersFromApi(connection, days = 90) {
       .filter(([goodsSkuId, sku]) => goodsSkuId && sku),
   );
 
-  const orderRows = await fetchSeaPageList(credentials, "/order/search_order_page", {
+  const orderPage = await fetchSeaPageListWithMeta(credentials, "/order/search_order_page", {
     pageSize: 100,
     warehouseId: resolvedWarehouseId,
+    stage: "has_out_storage",
     gmtModifiedFrom: formatDateTimeForWms(start),
-    gmtModifiedTo: `${today} 23:59:59`,
+    gmtModifiedTo: `${end} 23:59:59`,
   }, wmsOrderMaxPages());
+  const orderRows = orderPage.items;
   const orders = orderRows.flatMap((order) => normalizeSeaOrderRows(order, connection, productByGoodsSkuId));
+  const paginationMessage = `SEA WMS 已出库订单读取：接口 total=${orderPage.apiTotal || "未知"}，已读包裹=${orderRows.length}，SKU行=${orders.length}，页数=${orderPage.pagesRead}/${orderPage.pageLimit}${orderPage.reachedPageLimit ? "，已达到页数上限，可能仍有未读取订单" : ""}`;
 
   return {
     warehouseId: connection.id,
     ok: true,
     skipped: false,
-    message: orders.length === 0 ? "SEA WMS 出库单接口成功但没有返回 SKU 明细。" : "",
+    message: orders.length === 0 ? `SEA WMS 出库单接口成功但没有返回 SKU 明细。${paginationMessage}` : paginationMessage,
     resolvedWarehouseId,
+    orderApiTotal: orderPage.apiTotal,
+    orderApiReadRows: orderRows.length,
+    orderApiReadSkuRows: orders.length,
+    orderApiPagesRead: orderPage.pagesRead,
+    orderApiPageLimit: orderPage.pageLimit,
+    orderApiReachedPageLimit: orderPage.reachedPageLimit,
     orders,
   };
+}
+
+async function syncSeaOrdersFromApi(connection, days = 90) {
+  return syncSeaOrdersFromApiRange(connection, isoDateDaysAgo(days), new Date().toISOString().slice(0, 10));
 }
 
 async function syncSeaStockupOrdersFromApi(connection) {
@@ -740,6 +791,18 @@ export async function syncWarehouseOrders(connection, days = 90) {
     ok: false,
     skipped: true,
     message: `未知 WMS provider: ${connection.providerId}`,
+    orders: [],
+  };
+}
+
+export async function syncWarehouseOrdersRange(connection, dateFrom, dateTo) {
+  if (connection.providerId === "yunwms_ru") return syncYunWmsOrdersRange(connection, dateFrom, dateTo);
+  if (connection.providerId === "sea_wms") return syncSeaOrdersFromApiRange(connection, dateFrom, dateTo);
+  return {
+    warehouseId: connection.id,
+    ok: false,
+    skipped: true,
+    message: `鏈煡 WMS provider: ${connection.providerId}`,
     orders: [],
   };
 }

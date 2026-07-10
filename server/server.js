@@ -1,7 +1,7 @@
 import http from "node:http";
 import { createReadStream, mkdirSync, readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, extname, resolve } from "node:path";
+import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
 import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
@@ -12,9 +12,10 @@ import { buildOutsourcingOrderPayload } from "./normalize-outsourcing-orders.js"
 import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js";
 import { JIANYUN_FORMS } from "./field-mapping.js";
 import { WAREHOUSE_CONNECTIONS, WMS_PROVIDERS } from "./warehouse-config.js";
-import { buildMovementPayload } from "./movement-analytics.js";
+import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analytics.js";
+import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildStockupPayload } from "./stockup-center.js";
-import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseStockupOrders } from "./wms-adapters.js";
+import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders } from "./wms-adapters.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
 
 if (!globalThis.fetch) {
@@ -38,10 +39,14 @@ loadEnv();
 
 const port = Number(process.env.API_PORT || 8787);
 const cacheDir = resolve(process.cwd(), ".cache");
+const distDir = resolve(process.cwd(), "dist");
 const productCachePath = resolve(cacheDir, "products.json");
 const warehouseCachePath = resolve(cacheDir, "warehouse-sync.json");
 const inventorySnapshotCachePath = resolve(cacheDir, "inventory-snapshots.json");
+const movementHistoryCachePath = resolve(cacheDir, "movement-history.json");
+const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || resolve(cacheDir, "movement-history.sqlite"));
 const orderCachePath = resolve(cacheDir, "orders-sync.json");
+const orderSyncJobsCachePath = resolve(cacheDir, "order-sync-jobs.json");
 const warehouseConnectionsPath = resolve(cacheDir, "warehouse-connections.json");
 const qualificationCachePath = resolve(cacheDir, "qualifications.json");
 const assetCachePath = resolve(cacheDir, "assets.json");
@@ -49,21 +54,29 @@ const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
 const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
 const aiConfigCachePath = resolve(cacheDir, "ai-config.json");
 const wecomNotificationCachePath = resolve(cacheDir, "wecom-notifications.json");
+const actionLogCachePath = resolve(cacheDir, "action-log.json");
+const distributorApplicationsPath = resolve(cacheDir, "distributor-applications.json");
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
 const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
+const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
 const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000);
+const orderSyncChunkDays = Math.max(1, Math.min(30, Number(process.env.ORDER_SYNC_CHUNK_DAYS || 7)));
 const inventorySnapshotTimezone = process.env.INVENTORY_SNAPSHOT_TIMEZONE || "Asia/Shanghai";
+const movementHistoryTimezone = process.env.MOVEMENT_HISTORY_TIMEZONE || inventorySnapshotTimezone;
 let cachedProducts = loadProductCache() || buildProductPayload(sampleProductBaseRecords, sampleCatalogRecords, "sample");
 let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", products: [], inventory: [], results: [] };
 let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
+let cachedMovementHistory = loadJsonCache(movementHistoryCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
+let cachedOrderSyncJobs = loadJsonCache(orderSyncJobsCachePath) || { updatedAt: "", jobs: [] };
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupDecisions = loadJsonCache(stockupDecisionCachePath) || { updatedAt: "", decisions: {} };
+let cachedStockupPlans = normalizeStockupPlans(loadJsonCache(stockupPlanCachePath));
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
@@ -71,8 +84,15 @@ let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehous
 let cachedQuickNav = loadJsonCache(quickNavCachePath) || buildQuickNavPayload([]);
 let cachedAiConfig = loadJsonCache(aiConfigCachePath) || buildAiConfig({});
 let cachedWecomNotifications = loadJsonCache(wecomNotificationCachePath) || buildWecomNotificationPayload({});
+let cachedActionLog = normalizeActionLog(loadJsonCache(actionLogCachePath));
+let cachedDistributorApplications = normalizeDistributorApplications(loadJsonCache(distributorApplicationsPath));
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
-const internalAccessCode = process.env.INTERNAL_ACCESS_CODE || "admin123";
+const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
+const defaultInternalAccessCode = "admin123";
+const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
+const isProductionRuntime = process.env.NODE_ENV === "production";
+const allowInsecureInternalAccessCode = process.env.ALLOW_INSECURE_INTERNAL_ACCESS_CODE === "true";
+const internalAccessCode = configuredInternalAccessCode || (isProductionRuntime ? "" : defaultInternalAccessCode);
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
 const directAuth = {
   role: "direct",
@@ -84,6 +104,7 @@ const directAuth = {
     roleLabel: "直营部门",
   },
 };
+assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
 let autoSyncRunning = false;
 let lastAutoSyncAt = "";
@@ -121,8 +142,18 @@ function saveInventorySnapshotCache(payload) {
   saveJsonCache(inventorySnapshotCachePath, payload);
 }
 
+function saveMovementHistoryCache(payload) {
+  saveJsonCache(movementHistoryCachePath, payload);
+}
+
 function saveOrderCache(payload) {
   saveJsonCache(orderCachePath, payload);
+}
+
+function saveOrderSyncJobsCache() {
+  cachedOrderSyncJobs.updatedAt = new Date().toISOString();
+  cachedOrderSyncJobs.jobs = (cachedOrderSyncJobs.jobs || []).slice(0, 20);
+  saveJsonCache(orderSyncJobsCachePath, cachedOrderSyncJobs);
 }
 
 function saveStockupCache(payload) {
@@ -132,6 +163,11 @@ function saveStockupCache(payload) {
 function saveStockupDecisionCache() {
   cachedStockupDecisions.updatedAt = new Date().toISOString();
   saveJsonCache(stockupDecisionCachePath, cachedStockupDecisions);
+}
+
+function saveStockupPlanCache() {
+  cachedStockupPlans = normalizeStockupPlans(cachedStockupPlans);
+  saveJsonCache(stockupPlanCachePath, cachedStockupPlans);
 }
 
 function saveWarehouseConnections() {
@@ -160,6 +196,16 @@ function saveWecomNotificationCache() {
   saveJsonCache(wecomNotificationCachePath, cachedWecomNotifications);
 }
 
+function saveActionLogCache() {
+  cachedActionLog = normalizeActionLog(cachedActionLog);
+  saveJsonCache(actionLogCachePath, cachedActionLog);
+}
+
+function saveDistributorApplicationsCache() {
+  cachedDistributorApplications = normalizeDistributorApplications(cachedDistributorApplications);
+  saveJsonCache(distributorApplicationsPath, cachedDistributorApplications);
+}
+
 function saveOutsourcingOrderCache(payload) {
   saveJsonCache(outsourcingOrderCachePath, payload);
 }
@@ -177,6 +223,178 @@ function wecomId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function stockupPlanId(prefix = "plan") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function actionLogId(prefix = "log") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function distributorApplicationId(prefix = "dist-app") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeDistributorApplications(input = {}) {
+  const applications = Array.isArray(input?.applications) ? input.applications : [];
+  return {
+    ok: true,
+    source: "local",
+    updatedAt: input?.updatedAt || "",
+    counts: {
+      applications: applications.length,
+      pending: applications.filter((item) => (item.status || "pending") === "pending").length,
+    },
+    applications: applications
+      .map((item) => ({
+        id: String(item.id || distributorApplicationId()).trim(),
+        companyName: String(item.companyName || "").trim(),
+        contactName: String(item.contactName || "").trim(),
+        phone: String(item.phone || "").trim(),
+        wechat: String(item.wechat || "").trim(),
+        email: String(item.email || "").trim(),
+        market: String(item.market || "").trim(),
+        note: String(item.note || "").trim(),
+        sourceSku: String(item.sourceSku || "").trim(),
+        status: ["pending", "contacted", "approved", "rejected"].includes(item.status) ? item.status : "pending",
+        createdAt: item.createdAt || new Date().toISOString(),
+        updatedAt: item.updatedAt || item.createdAt || new Date().toISOString(),
+      }))
+      .filter((item) => item.id && item.companyName && item.contactName)
+      .slice(0, 500),
+  };
+}
+
+function sanitizeActionLogDetails(value, depth = 0) {
+  if (depth > 3) return undefined;
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => sanitizeActionLogDetails(item, depth + 1));
+  }
+  if (!value || typeof value !== "object") return value;
+  const blocked = /password|secret|token|webhook|credential|authorization|api[-_]?key|app[-_]?key|access[-_]?key/i;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !blocked.test(key))
+      .map(([key, entry]) => [key, sanitizeActionLogDetails(entry, depth + 1)])
+      .filter(([, entry]) => entry !== undefined),
+  );
+}
+
+function normalizeActionLog(input = {}) {
+  const entries = Array.isArray(input?.entries) ? input.entries : [];
+  return {
+    ok: true,
+    source: "local",
+    updatedAt: input?.updatedAt || "",
+    entries: entries
+      .map((entry) => ({
+        id: String(entry.id || actionLogId()),
+        createdAt: entry.createdAt || new Date().toISOString(),
+        action: String(entry.action || "update").trim(),
+        targetType: String(entry.targetType || "system").trim(),
+        targetName: String(entry.targetName || "").trim(),
+        actorId: String(entry.actorId || "").trim(),
+        actorName: String(entry.actorName || "").trim(),
+        actorRole: String(entry.actorRole || "").trim(),
+        details: sanitizeActionLogDetails(entry.details || {}),
+      }))
+      .filter((entry) => entry.action)
+      .slice(0, 300),
+  };
+}
+
+function appendActionLog(auth, action, targetType, targetName, details = {}) {
+  const actor = auth?.user || {};
+  const now = new Date().toISOString();
+  const entry = {
+    id: actionLogId(),
+    createdAt: now,
+    action: String(action || "update").trim(),
+    targetType: String(targetType || "system").trim(),
+    targetName: String(targetName || "").trim(),
+    actorId: String(actor.id || "").trim(),
+    actorName: String(actor.displayName || actor.username || auth?.role || "system").trim(),
+    actorRole: String(actor.roleLabel || auth?.role || actor.role || "").trim(),
+    details: sanitizeActionLogDetails(details),
+  };
+  cachedActionLog = normalizeActionLog({
+    updatedAt: now,
+    entries: [entry, ...(cachedActionLog.entries || [])],
+  });
+  saveActionLogCache();
+  return entry;
+}
+
+function publicActionLog() {
+  return normalizeActionLog(cachedActionLog);
+}
+
+function publicDistributorApplications() {
+  return normalizeDistributorApplications(cachedDistributorApplications);
+}
+
+function createDistributorApplication(payload = {}) {
+  const now = new Date().toISOString();
+  const application = {
+    id: distributorApplicationId(),
+    companyName: String(payload.companyName || "").trim(),
+    contactName: String(payload.contactName || "").trim(),
+    phone: String(payload.phone || "").trim(),
+    wechat: String(payload.wechat || "").trim(),
+    email: String(payload.email || "").trim(),
+    market: String(payload.market || "").trim(),
+    note: String(payload.note || "").trim(),
+    sourceSku: String(payload.sourceSku || "").trim(),
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (!application.companyName) throw new Error("请填写公司或店铺名称。");
+  if (!application.contactName) throw new Error("请填写联系人。");
+  if (!application.phone && !application.wechat && !application.email) throw new Error("请至少填写手机号、微信或邮箱中的一种联系方式。");
+  cachedDistributorApplications = normalizeDistributorApplications({
+    updatedAt: now,
+    applications: [application, ...(cachedDistributorApplications.applications || [])],
+  });
+  saveDistributorApplicationsCache();
+  appendActionLog({ role: "guest", user: { id: "guest", username: "guest", displayName: application.contactName, role: "guest", roleLabel: "外部分销申请" } }, "提交分销账号申请", "distributor_application", application.companyName, {
+    applicationId: application.id,
+    market: application.market,
+    sourceSku: application.sourceSku,
+    hasPhone: Boolean(application.phone),
+    hasWechat: Boolean(application.wechat),
+    hasEmail: Boolean(application.email),
+  });
+  return application;
+}
+
+function updateDistributorApplicationStatus(applicationId, status) {
+  const allowed = new Set(["pending", "contacted", "approved", "rejected"]);
+  const nextStatus = allowed.has(status) ? status : "";
+  if (!nextStatus) throw new Error("无效的申请状态。");
+  const application = (cachedDistributorApplications.applications || []).find((item) => item.id === applicationId);
+  if (!application) throw new Error("分销账号申请不存在。");
+  application.status = nextStatus;
+  application.updatedAt = new Date().toISOString();
+  cachedDistributorApplications.updatedAt = application.updatedAt;
+  saveDistributorApplicationsCache();
+  return application;
+}
+
+function isWeakInternalAccessCode(value) {
+  const code = String(value || "").trim();
+  return !code || code === defaultInternalAccessCode || code === "change-me-to-a-strong-internal-code" || code.length < 12;
+}
+
+function assertSecureRuntimeConfig() {
+  if (isProductionRuntime && isWeakInternalAccessCode(internalAccessCode) && !allowInsecureInternalAccessCode) {
+    throw new Error("Refusing to start in production: set a strong INTERNAL_ACCESS_CODE and AUTH_SESSION_SECRET.");
+  }
+  if (!isProductionRuntime && !configuredInternalAccessCode) {
+    console.warn("[security] INTERNAL_ACCESS_CODE is not set; using the local development fallback. Do not use this in production.");
+  }
+}
+
 function stockupRecommendationKey(item) {
   return [item.country, item.sku || item.countrySku || item.id].map((value) => String(value || "").trim()).filter(Boolean).join("::").toLowerCase();
 }
@@ -186,8 +404,48 @@ function stockupDecisionFor(item) {
   return key ? cachedStockupDecisions.decisions?.[key] : null;
 }
 
+function normalizeStockupPlans(input = {}) {
+  const now = new Date().toISOString();
+  const plans = Array.isArray(input?.plans) ? input.plans : [];
+  return {
+    ok: true,
+    source: "local",
+    updatedAt: input?.updatedAt || "",
+    plans: plans
+      .map((plan) => ({
+        id: String(plan.id || stockupPlanId()).trim(),
+        recommendationKey: String(plan.recommendationKey || "").trim(),
+        sku: String(plan.sku || "").trim(),
+        country: String(plan.country || "").trim(),
+        name: String(plan.name || "").trim(),
+        unit: String(plan.unit || "").trim(),
+        quantity: numberOrZero(plan.quantity),
+        planType: plan.planType === "outsourcing" ? "outsourcing" : "purchase",
+        owner: String(plan.owner || "").trim(),
+        expectedArrivalAt: String(plan.expectedArrivalAt || "").trim(),
+        status: ["draft", "ordered", "in_production", "arrived", "cancelled"].includes(plan.status) ? plan.status : "draft",
+        note: String(plan.note || "").trim(),
+        source: String(plan.source || "stockup").trim(),
+        createdAt: plan.createdAt || now,
+        updatedAt: plan.updatedAt || plan.createdAt || now,
+      }))
+      .filter((plan) => plan.id && plan.recommendationKey && plan.sku)
+      .slice(0, 500),
+  };
+}
+
+function stockupPlanCounts(plans = []) {
+  const active = plans.filter((plan) => !["arrived", "cancelled"].includes(plan.status));
+  return {
+    stockupPlans: plans.length,
+    openStockupPlans: active.length,
+    plannedQty: active.reduce((sum, plan) => sum + numberOrZero(plan.quantity), 0),
+  };
+}
+
 function recalculateStockupCounts(payload) {
   const recommendations = payload.recommendations || [];
+  const plans = cachedStockupPlans.plans || [];
   payload.counts = {
     ...payload.counts,
     recommendations: recommendations.length,
@@ -196,12 +454,14 @@ function recalculateStockupCounts(payload) {
     netRecommendedQty: recommendations.reduce((sum, item) => sum + numberOrZero(item.netReplenishQty), 0),
     acceptedRecommendations: recommendations.filter((item) => item.decisionStatus === "accepted").length,
     abandonedRecommendations: Object.values(cachedStockupDecisions.decisions || {}).filter((item) => item?.status === "abandoned").length,
+    ...stockupPlanCounts(plans),
   };
+  payload.plans = plans;
   return payload;
 }
 
 function applyStockupDecisions(payload) {
-  const recommendations = (payload.recommendations || [])
+  const decorated = (payload.recommendations || [])
     .map((item) => {
       const decision = stockupDecisionFor(item);
       return {
@@ -211,9 +471,12 @@ function applyStockupDecisions(payload) {
         decisionAt: decision?.updatedAt || "",
         decisionNote: decision?.note || "",
       };
-    })
-    .filter((item) => item.decisionStatus !== "abandoned");
-  return recalculateStockupCounts({ ...payload, recommendations });
+    });
+  return recalculateStockupCounts({
+    ...payload,
+    recommendations: decorated.filter((item) => item.decisionStatus !== "abandoned"),
+    abandonedRecommendations: decorated.filter((item) => item.decisionStatus === "abandoned"),
+  });
 }
 
 function normalizeWecomWebhook(value) {
@@ -280,6 +543,14 @@ function buildWecomNotificationPayload(input = {}) {
       extraText: String(input.scenes?.inventorySnapshot?.extraText || "").trim(),
       lastSignature: input.scenes?.inventorySnapshot?.lastSignature || "",
       lastSentAt: input.scenes?.inventorySnapshot?.lastSentAt || "",
+    },
+    qualificationExpiry: {
+      enabled: Boolean(input.scenes?.qualificationExpiry?.enabled),
+      robotIds: Array.isArray(input.scenes?.qualificationExpiry?.robotIds) ? input.scenes.qualificationExpiry.robotIds.map(String).filter(Boolean) : [],
+      linkUrl: String(input.scenes?.qualificationExpiry?.linkUrl || "").trim(),
+      extraText: String(input.scenes?.qualificationExpiry?.extraText || "").trim(),
+      lastSignature: input.scenes?.qualificationExpiry?.lastSignature || "",
+      lastSentAt: input.scenes?.qualificationExpiry?.lastSentAt || "",
     },
   };
   return { ok: true, source: "local", updatedAt: input.updatedAt || now, robots, schedules, scenes };
@@ -419,6 +690,123 @@ async function notifyInventorySnapshot(snapshot) {
     notificationLinkLine(scene.linkUrl, "查看库存快照"),
   ].filter(Boolean).join("\n\n");
   await sendWecomNotification(scene.robotIds, content);
+}
+
+function qualificationExpiryRows(payload, thresholdDays = 30) {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  return (payload?.qualifications || [])
+    .map((item) => {
+      const time = item.expiryDate ? new Date(item.expiryDate).getTime() : NaN;
+      if (!Number.isFinite(time)) return null;
+      const daysLeft = Math.ceil((time - now) / dayMs);
+      if (daysLeft > thresholdDays) return null;
+      return {
+        ...item,
+        daysLeft,
+        urgency: daysLeft < 0 ? "expired" : "expiring",
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+}
+
+function qualificationExpirySignature(rows) {
+  return rows.map((item) => `${item.id}:${item.expiryDate}:${item.daysLeft < 0 ? "expired" : "expiring"}`).join("|");
+}
+
+function qualificationExpiryMarkdownItem(item, index) {
+  const status = item.daysLeft < 0 ? `已过期 ${Math.abs(item.daysLeft)} 天` : `${item.daysLeft} 天后到期`;
+  return [
+    `**${index + 1}. ${item.sku || "-"}｜${item.qualificationName || item.productName || "未命名资质"}**`,
+    `> 市场：${item.market || "-"}｜类别：${item.qualificationCategory || "-"}`,
+    `> 到期日：${item.expiryDate ? item.expiryDate.slice(0, 10) : "-"}｜状态：${status}`,
+  ].join("\n");
+}
+
+async function notifyQualificationExpiry(payload, reason = "refresh") {
+  const scene = cachedWecomNotifications.scenes?.qualificationExpiry;
+  if (!scene?.enabled) return;
+  const robotIds = scene.robotIds?.length ? scene.robotIds : (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
+  if (!robotIds.length) return;
+  const rows = qualificationExpiryRows(payload, 30);
+  if (!rows.length) return;
+  const signature = qualificationExpirySignature(rows);
+  if (!signature || scene.lastSignature === signature) return;
+  scene.lastSignature = signature;
+  scene.lastSentAt = new Date().toISOString();
+  const expiredCount = rows.filter((item) => item.daysLeft < 0).length;
+  const expiringCount = rows.length - expiredCount;
+  const content = [
+    "### 资质过期提醒",
+    `发现 ${expiredCount} 条已过期资质、${expiringCount} 条 30 天内到期资质。`,
+    scene.extraText,
+    rows.slice(0, 10).map(qualificationExpiryMarkdownItem).join("\n\n"),
+    notificationLinkLine(scene.linkUrl, "查看资质库"),
+  ].filter(Boolean).join("\n\n");
+  await sendWecomNotification(robotIds, content);
+}
+
+function wecomNumber(value) {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(numberOrZero(value));
+}
+
+function wecomDateTime(value) {
+  if (!value) return "未同步";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: inventorySnapshotTimezone,
+    hour12: false,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function buildOperatingSummaryMarkdown(options = {}) {
+  const summary = buildDashboardSummary(directAuth);
+  const stockup = buildCurrentStockupPayload({ notify: false, reason: "operating_summary" });
+  const counts = summary.counts || {};
+  const stockupCounts = stockup.counts || {};
+  const failedWarehouses = summary.sync?.failedWarehouses || [];
+  const diagnosticIssues = (summary.movementDiagnostics || []).filter((item) => !item.ok || item.failed || item.running);
+  const acceptedWithoutPlan = Math.max(0, numberOrZero(stockupCounts.acceptedRecommendations) - numberOrZero(stockupCounts.openStockupPlans));
+  const actionLines = [
+    failedWarehouses.length ? `- 订单同步失败：${wecomNumber(failedWarehouses.length)} 个仓库，请先查看动销监控的同步任务。` : "",
+    diagnosticIssues.length ? `- 动销诊断异常：${wecomNumber(diagnosticIssues.length)} 个仓库需要核对订单、库存或 SKU 匹配。` : "",
+    numberOrZero(stockupCounts.recommendations) ? `- 备货建议：${wecomNumber(stockupCounts.recommendations)} 个 SKU，净建议 ${wecomNumber(stockupCounts.netRecommendedQty)}。` : "",
+    acceptedWithoutPlan ? `- 已采纳待建计划：${wecomNumber(acceptedWithoutPlan)} 条，需要补齐采购/委外计划。` : "",
+    numberOrZero(counts.warehouseOnlySku) ? `- 仓库未建档 SKU：${wecomNumber(counts.warehouseOnlySku)} 个，请在 SKU 治理入口补档。` : "",
+  ].filter(Boolean);
+  return [
+    "### 同舟今日经营摘要",
+    `生成时间：${wecomDateTime(new Date().toISOString())}`,
+    String(options.extraText || "").trim(),
+    [
+      "**核心指标**",
+      `- 可售库存：${wecomNumber(counts.totalInventory)}`,
+      `- 今日出库订单：${wecomNumber(counts.todayOrders)}`,
+      `- 90 天出库明细：${wecomNumber(counts.orderCount90)}，销售金额 ${wecomNumber(counts.salesAmount90)}`,
+      `- 动销风险 SKU：${wecomNumber(counts.riskSku)}（缺货 ${wecomNumber(counts.stockout)} / 补货 ${wecomNumber(counts.replenish)} / 慢销 ${wecomNumber(counts.slow)} / 滞销 ${wecomNumber(counts.stagnant)}）`,
+    ].join("\n"),
+    [
+      "**备货与库存**",
+      `- 当前备货建议：${wecomNumber(stockupCounts.recommendations)} 个 SKU，净建议 ${wecomNumber(stockupCounts.netRecommendedQty)}`,
+      `- 未完成备货计划：${wecomNumber(stockupCounts.openStockupPlans)} 个，计划数量 ${wecomNumber(stockupCounts.plannedQty)}`,
+      `- WMS 待入库：${wecomNumber(stockupCounts.inboundOrders)} 单，待入库数量 ${wecomNumber(stockupCounts.pendingInboundQty)}`,
+      `- 仓库有库存但产品未建档：${wecomNumber(counts.warehouseOnlySku)} 个 SKU`,
+    ].join("\n"),
+    [
+      "**同步状态**",
+      `- 产品目录：${wecomDateTime(summary.sync?.productsSyncedAt)}`,
+      `- 仓库库存：${wecomDateTime(summary.sync?.inventorySyncedAt)}`,
+      `- 出库订单：${wecomDateTime(summary.sync?.orderSyncedAt)}`,
+    ].join("\n"),
+    ["**需要处理**", ...(actionLines.length ? actionLines : ["- 暂无阻断项，建议继续巡检备货建议和同步健康度。"])].join("\n"),
+    notificationLinkLine(options.linkUrl || "#dashboard", options.linkText || "查看经营总览"),
+  ].filter(Boolean).join("\n\n");
 }
 
 function scheduleRunKey(schedule, now = new Date()) {
@@ -1155,21 +1543,12 @@ function saveAiUpload(payload, req) {
 function loadUsersCache() {
   const payload = loadJsonCache(usersCachePath);
   if (payload?.users?.length) return payload;
-
-  const admin = createLocalUser({
-    username: process.env.DEFAULT_ADMIN_USERNAME || "admin",
-    password: process.env.DEFAULT_ADMIN_PASSWORD || internalAccessCode || "admin123",
-    displayName: process.env.DEFAULT_ADMIN_NAME || "管理员",
-    role: "direct",
-  });
-  const seeded = {
+  return {
     ok: true,
     source: "local",
-    syncedAt: new Date().toISOString(),
-    users: [admin],
+    syncedAt: "",
+    users: [],
   };
-  saveJsonCache(usersCachePath, seeded);
-  return seeded;
 }
 
 function saveUsersCache() {
@@ -1229,6 +1608,35 @@ async function deleteUserFromJdy(user) {
 
 function activeDirectCount(users) {
   return users.filter((user) => user.role === "direct" && user.status !== "disabled").length;
+}
+
+function setupStatusPayload() {
+  const users = cachedUsers.users || [];
+  return {
+    ok: true,
+    setupRequired: activeDirectCount(users) === 0,
+    counts: userCounts(users),
+  };
+}
+
+function createInitialAdmin(payload = {}) {
+  if (!setupStatusPayload().setupRequired) throw new Error("系统已存在直营管理员，初始化入口已关闭。");
+  const password = String(payload.password || "");
+  if (password.length < 8) throw new Error("首次管理员密码至少需要 8 位。");
+  const user = createLocalUser({
+    username: payload.username,
+    password,
+    displayName: payload.displayName || payload.username,
+    role: "direct",
+  });
+  cachedUsers.users = [user, ...(cachedUsers.users || [])];
+  cachedUsers.syncedAt = new Date().toISOString();
+  saveUsersCache();
+  appendActionLog({ role: "system", user: { id: "setup", username: "setup", displayName: "首次初始化", role: "direct", roleLabel: "系统初始化" } }, "首次初始化管理员", "user", user.displayName || user.username, {
+    userId: user.id,
+    username: user.username,
+  });
+  return user;
 }
 
 function sanitizeWarehouse(connection) {
@@ -1307,6 +1715,7 @@ function withTimeout(promise, timeoutMs, message) {
 
 function updateResolvedWarehouseId(connection, result) {
   if (!result?.resolvedWarehouseId) return false;
+  connection.resolvedWarehouseId = result.resolvedWarehouseId;
   if (connection.warehouseId === result.resolvedWarehouseId) return false;
   connection.warehouseId = result.resolvedWarehouseId;
   return true;
@@ -1340,6 +1749,11 @@ function buildWarehouseConnection(payload, existingConnection = null) {
     warehouseId: payload.warehouseId || payload.warehouseCode || existingConnection?.warehouseId || existingConnection?.warehouseCode || "",
     status: "已授权",
     lastSyncedAt: existingConnection?.lastSyncedAt || "",
+    lastTestAt: existingConnection?.lastTestAt || "",
+    lastTestStatus: existingConnection?.lastTestStatus || "",
+    lastTestMessage: existingConnection?.lastTestMessage || "",
+    resolvedWarehouseId: payload.resolvedWarehouseId || existingConnection?.resolvedWarehouseId || "",
+    orderSyncStrategy: payload.orderSyncStrategy || existingConnection?.orderSyncStrategy || (providerId === "yunwms_ru" ? "date_chunk" : "cursor"),
     skuMatched: existingConnection?.skuMatched || 0,
     syncScope: payload.syncScope?.length ? payload.syncScope : existingConnection?.syncScope || ["库存同步", "订单出库日报", "动销监控"],
     credentials: {
@@ -1347,7 +1761,7 @@ function buildWarehouseConnection(payload, existingConnection = null) {
       appSecret: payload.appSecret || credentials.appSecret || existingConnection?.credentials?.appSecret || "",
       clientId: payload.clientId || credentials.clientId || existingConnection?.credentials?.clientId || "",
       clientSecret: payload.clientSecret || credentials.clientSecret || existingConnection?.credentials?.clientSecret || "",
-      token: payload.token || credentials.token || existingConnection?.credentials?.token || "",
+      token: payload.token || payload.appToken || credentials.token || credentials.appToken || existingConnection?.credentials?.token || "",
     },
   };
 }
@@ -1397,10 +1811,78 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+const staticMimeTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".map": "application/json; charset=utf-8",
+};
+
+function isPathInside(root, target) {
+  const path = relative(root, target);
+  return path === "" || (!path.startsWith("..") && !/^[a-zA-Z]:/.test(path) && !path.startsWith("\\\\"));
+}
+
+function serveFile(req, res, filePath) {
+  const stats = statSync(filePath);
+  if (!stats.isFile()) return false;
+  res.writeHead(200, {
+    "Content-Type": staticMimeTypes[extname(filePath).toLowerCase()] || "application/octet-stream",
+    "Content-Length": stats.size,
+    "Cache-Control": filePath.includes(`${resolve(distDir, "assets")}`) ? "public, max-age=31536000, immutable" : "no-cache",
+    "Access-Control-Allow-Origin": "*",
+  });
+  if (req.method === "HEAD") {
+    res.end();
+    return true;
+  }
+  createReadStream(filePath).pipe(res);
+  return true;
+}
+
+function serveDistFallback(req, res, url) {
+  if (!["GET", "HEAD"].includes(req.method || "")) return false;
+  if (url.pathname.startsWith("/api/")) return false;
+  const indexPath = resolve(distDir, "index.html");
+  if (!existsSync(indexPath)) return false;
+
+  let pathname = "/";
+  try {
+    pathname = decodeURIComponent(url.pathname || "/");
+  } catch {
+    sendJson(res, 400, { ok: false, message: "Bad URL encoding" });
+    return true;
+  }
+
+  const requestedPath = pathname === "/" ? indexPath : resolve(distDir, `.${pathname}`);
+  if (isPathInside(distDir, requestedPath) && existsSync(requestedPath)) {
+    return serveFile(req, res, requestedPath);
+  }
+
+  const acceptsHtml = String(req.headers.accept || "").includes("text/html");
+  const looksLikePageRoute = !extname(pathname);
+  if (pathname === "/" || acceptsHtml || looksLikePageRoute) {
+    return serveFile(req, res, indexPath);
+  }
+  return false;
+}
+
 function getAuth(req) {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
   const sessionUser = verifySessionToken(token, sessionSecret);
   if (sessionUser) {
+    if (sessionUser.id === directAuth.user.id && sessionUser.username === directAuth.user.username) {
+      return { role: directAuth.role, user: publicUser(directAuth.user) };
+    }
     const currentUser = (cachedUsers.users || []).find((user) => user.id === sessionUser.id);
     if (!currentUser || currentUser.status === "disabled") return { role: "guest", user: null };
     return { role: currentUser.role, user: publicUser(currentUser) };
@@ -1461,6 +1943,16 @@ function minutesInTimezone(date = new Date(), timeZone = inventorySnapshotTimezo
   const hour = Number(parts.find((part) => part.type === "hour")?.value || 0);
   const minute = Number(parts.find((part) => part.type === "minute")?.value || 0);
   return hour * 60 + minute;
+}
+
+function safeTimezone(value, fallback = movementHistoryTimezone) {
+  const candidate = String(value || fallback || "Asia/Shanghai").trim();
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return fallback || "Asia/Shanghai";
+  }
 }
 
 function productNameBySku() {
@@ -1581,6 +2073,261 @@ function inventorySnapshotCsv(snapshot) {
   return `\uFEFF${lines.join("\r\n")}`;
 }
 
+function movementStatusForSnapshot({ availableQty, sales7, sales30, sales90, dailyWeighted, daysCover, leadDays }) {
+  if (availableQty <= 0 && (sales7 > 0 || sales30 > 0 || sales90 > 0)) return "缺货";
+  if (dailyWeighted > 0 && daysCover <= leadDays + 10) return "补货预警";
+  if (availableQty > 0 && sales30 === 0) return "滞销";
+  if (availableQty > 0 && sales90 <= 2) return "滞销";
+  if (dailyWeighted > 0 && daysCover > 90) return "慢销";
+  if (sales90 === 0 && availableQty <= 0) return "无动销数据";
+  return "健康";
+}
+
+function movementSuggestionForSnapshot(status, row) {
+  if (status === "缺货") return "立即核查库存，确认是否有在途或可调拨库存。";
+  if (status === "补货预警") return `建议按 ${row.targetCoverDays} 天覆盖量安排补货，参考补货量 ${row.replenishQty}。`;
+  if (status === "慢销") return "库存覆盖过高，建议暂停补货并评估促销或调价。";
+  if (status === "滞销") return "近 30 天动销不足，建议检查渠道曝光、价格和是否清仓。";
+  if (status === "无动销数据") return "暂无订单出库数据，先确认订单接口或 SKU 映射。";
+  return "库存和销量处于可控区间。";
+}
+
+function movementSnapshotRows(movementPayload) {
+  const warehouseById = new Map(warehouseConnections.map((warehouse) => [warehouse.id, warehouse]));
+  const rows = [];
+  for (const item of movementPayload.items || []) {
+    const stockRows = new Map((item.warehouseBreakdown || []).map((row) => [row.warehouseId || row.warehouseName, row]));
+    const salesRows = new Map((item.salesWarehouseBreakdown || []).map((row) => [row.warehouseId || row.warehouseName, row]));
+    const keys = new Set([...stockRows.keys(), ...salesRows.keys()].filter(Boolean));
+    if (!keys.size) keys.add("");
+    for (const key of keys) {
+      const stock = stockRows.get(key) || {};
+      const sales = salesRows.get(key) || {};
+      const warehouseId = stock.warehouseId || sales.warehouseId || "";
+      const warehouse = warehouseById.get(warehouseId) || {};
+      const availableQty = numberOrZero(stock.availableQty ?? item.availableQty);
+      const lockedQty = numberOrZero(stock.lockedQty ?? item.lockedQty);
+      const inTransitQty = numberOrZero(stock.inTransitQty ?? item.inTransitQty);
+      const totalQty = numberOrZero(stock.totalQty ?? item.totalQty);
+      const sales3 = numberOrZero(sales.sales3 ?? item.sales3);
+      const sales7 = numberOrZero(sales.sales7 ?? item.sales7);
+      const sales15 = numberOrZero(sales.sales15 ?? item.sales15);
+      const sales30 = numberOrZero(sales.sales30 ?? item.sales30);
+      const sales60 = numberOrZero(sales.sales60 ?? item.sales60);
+      const sales90 = numberOrZero(sales.sales90 ?? item.sales90);
+      const avgDaily3 = numberOrZero(sales.avgDaily3 ?? sales3 / 3);
+      const avgDaily7 = numberOrZero(sales.avgDaily7 ?? sales7 / 7);
+      const avgDaily30 = numberOrZero(sales.avgDaily30 ?? sales30 / 30);
+      const avgDaily90 = numberOrZero(sales.avgDaily90 ?? sales90 / 90);
+      const dailyWeighted = numberOrZero(sales.dailyWeighted ?? (avgDaily7 * 0.5 + avgDaily30 * 0.3 + avgDaily90 * 0.2));
+      const leadDays = numberOrZero(item.leadDays);
+      const targetCoverDays = numberOrZero(item.targetCoverDays);
+      const daysCover = dailyWeighted > 0 ? Math.round((availableQty / dailyWeighted) * 10) / 10 : null;
+      const replenishQty = Math.max(0, Math.ceil(dailyWeighted * targetCoverDays - availableQty - inTransitQty));
+      const status = movementStatusForSnapshot({
+        availableQty,
+        sales7,
+        sales30,
+        sales90,
+        dailyWeighted,
+        daysCover: daysCover ?? 9999,
+        leadDays,
+      });
+      const row = {
+        sku: item.sku || "",
+        countrySku: item.countrySku || "",
+        productName: item.name || item.sku || "",
+        brand: item.brand || "",
+        category: item.category || "",
+        country: warehouse.country || item.country || "",
+        warehouseId,
+        warehouseName: stock.warehouseName || sales.warehouseName || warehouse.name || "未分仓",
+        availableQty,
+        lockedQty,
+        inTransitQty,
+        totalQty,
+        sales3,
+        sales7,
+        sales15,
+        sales30,
+        sales60,
+        sales90,
+        avgDaily3,
+        avgDaily7,
+        avgDaily30,
+        avgDaily90,
+        dailyWeighted,
+        daysCover,
+        leadDays,
+        targetCoverDays,
+        replenishQty,
+        status,
+        suggestion: "",
+        source: item.source || "",
+        dataGap: item.dataGap || "",
+      };
+      row.suggestion = movementSuggestionForSnapshot(status, row);
+      rows.push(row);
+    }
+  }
+  return rows.sort((a, b) => b.sales30 - a.sales30 || b.availableQty - a.availableQty || a.sku.localeCompare(b.sku));
+}
+
+function movementSnapshotTotals(rows) {
+  const statusCounts = rows.reduce((acc, row) => {
+    acc[row.status] = (acc[row.status] || 0) + 1;
+    return acc;
+  }, {});
+  return {
+    rowCount: rows.length,
+    warehouseCount: new Set(rows.map((row) => row.warehouseId).filter(Boolean)).size,
+    skuCount: new Set(rows.map((row) => row.sku).filter(Boolean)).size,
+    availableQty: rows.reduce((sum, row) => sum + numberOrZero(row.availableQty), 0),
+    totalQty: rows.reduce((sum, row) => sum + numberOrZero(row.totalQty), 0),
+    sales3: rows.reduce((sum, row) => sum + numberOrZero(row.sales3), 0),
+    sales7: rows.reduce((sum, row) => sum + numberOrZero(row.sales7), 0),
+    sales30: rows.reduce((sum, row) => sum + numberOrZero(row.sales30), 0),
+    sales90: rows.reduce((sum, row) => sum + numberOrZero(row.sales90), 0),
+    stockout: statusCounts["缺货"] || 0,
+    replenish: statusCounts["补货预警"] || 0,
+    slow: statusCounts["慢销"] || 0,
+    stagnant: statusCounts["滞销"] || 0,
+    noSalesData: statusCounts["无动销数据"] || 0,
+  };
+}
+
+function upsertMovementSnapshot(date = dateKeyInTimezone(new Date(), movementHistoryTimezone), reason = "manual", timeZone = movementHistoryTimezone) {
+  const resolvedTimezone = safeTimezone(timeZone, movementHistoryTimezone);
+  const movementPayload = movementResponsePayload();
+  const rows = movementSnapshotRows(movementPayload);
+  const snapshot = {
+    date,
+    timezone: resolvedTimezone,
+    capturedAt: new Date().toISOString(),
+    orderSyncedAt: movementPayload.orderSyncedAt || "",
+    inventorySyncedAt: movementPayload.inventorySyncedAt || "",
+    reason,
+    totals: movementSnapshotTotals(rows),
+    rows,
+  };
+  movementHistoryStore.upsertSnapshot(snapshot);
+  return snapshot;
+}
+
+function movementHistoryDateOptions(timezone = movementHistoryTimezone) {
+  return movementHistoryStore.listDates(timezone);
+}
+
+function filterMovementHistoryRows(rows, { warehouseId = "", sku = "" } = {}) {
+  const skuKeyword = String(sku || "").trim().toLowerCase();
+  return (rows || []).filter((row) => {
+    if (warehouseId && row.warehouseId !== warehouseId) return false;
+    if (skuKeyword) {
+      const text = [row.sku, row.countrySku, row.productName, row.brand, row.category].join(" ").toLowerCase();
+      if (!text.includes(skuKeyword)) return false;
+    }
+    return true;
+  });
+}
+
+function movementHistorySnapshotsInRange({ date = "", from = "", to = "", timezone = movementHistoryTimezone } = {}) {
+  const resolvedTimezone = safeTimezone(timezone, movementHistoryTimezone);
+  return movementHistoryStore.getSnapshots({ date, from, to, timezone: resolvedTimezone });
+}
+
+function movementHistoryPayload(params = {}) {
+  const timezone = safeTimezone(params.timezone, movementHistoryTimezone);
+  const dates = movementHistoryDateOptions(timezone);
+  const selectedDate = params.date || dates[0]?.date || "";
+  const snapshots = movementHistorySnapshotsInRange({
+    date: selectedDate,
+    from: params.from,
+    to: params.to,
+    timezone,
+  });
+  const selectedSnapshot = snapshots[0] || null;
+  const rows = selectedSnapshot ? filterMovementHistoryRows(selectedSnapshot.rows || [], params) : [];
+  const filteredSnapshot = selectedSnapshot ? { ...selectedSnapshot, totals: movementSnapshotTotals(rows), rows } : null;
+  const trendSnapshots = movementHistorySnapshotsInRange({
+    from: params.from || dates.at(-1)?.date || "",
+    to: params.to || dates[0]?.date || "",
+    timezone,
+  }).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const trend = trendSnapshots.map((snapshot) => {
+    const trendRows = filterMovementHistoryRows(snapshot.rows || [], params);
+    const totals = movementSnapshotTotals(trendRows);
+    return {
+      date: snapshot.date,
+      capturedAt: snapshot.capturedAt || "",
+      sales7: totals.sales7,
+      sales30: totals.sales30,
+      sales90: totals.sales90,
+      availableQty: totals.availableQty,
+      totalQty: totals.totalQty,
+      riskSku: totals.stockout + totals.replenish + totals.slow + totals.stagnant,
+      rowCount: totals.rowCount,
+    };
+  });
+  const warehouseOptions = Array.from(new Map(
+    (selectedSnapshot?.rows || [])
+      .filter((row) => row.warehouseId)
+      .map((row) => [row.warehouseId, { warehouseId: row.warehouseId, warehouseName: row.warehouseName, country: row.country }]),
+  ).values()).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN"));
+  return {
+    ok: true,
+    updatedAt: movementHistoryStore.getMetadata().updatedAt || "",
+    lastSnapshotAt: movementHistoryStore.getMetadata().lastSnapshotAt || "",
+    databasePath: movementHistoryStore.dbPath,
+    timezone,
+    timezones: Array.from(new Set([movementHistoryTimezone, inventorySnapshotTimezone, "Asia/Shanghai", "Europe/Moscow", "Asia/Jakarta", "Asia/Kuala_Lumpur", "Asia/Ho_Chi_Minh"])).filter(Boolean),
+    dates,
+    selectedDate,
+    snapshot: filteredSnapshot,
+    trend,
+    warehouseOptions,
+  };
+}
+
+function movementHistoryCsv(snapshots, params = {}) {
+  const headers = ["日期", "时区", "仓库", "国家/地区", "SKU", "国家SKU", "产品名称", "品牌", "分类", "可售", "锁定", "在途", "总库存", "3天销量", "7天销量", "15天销量", "30天销量", "60天销量", "90天销量", "30天日均", "加权日均", "可售天数", "状态", "建议补货", "建议", "订单同步时间", "库存同步时间", "快照时间"];
+  const lines = [headers.map(csvCell).join(",")];
+  for (const snapshot of snapshots || []) {
+    for (const row of filterMovementHistoryRows(snapshot.rows || [], params)) {
+      lines.push([
+        snapshot.date,
+        snapshot.timezone,
+        row.warehouseName,
+        row.country,
+        row.sku,
+        row.countrySku,
+        row.productName,
+        row.brand,
+        row.category,
+        row.availableQty,
+        row.lockedQty,
+        row.inTransitQty,
+        row.totalQty,
+        row.sales3,
+        row.sales7,
+        row.sales15,
+        row.sales30,
+        row.sales60,
+        row.sales90,
+        Number(row.avgDaily30 || 0).toFixed(2),
+        Number(row.dailyWeighted || 0).toFixed(2),
+        row.daysCover ?? "",
+        row.status,
+        row.replenishQty,
+        row.suggestion,
+        snapshot.orderSyncedAt,
+        snapshot.inventorySyncedAt,
+        snapshot.capturedAt,
+      ].map(csvCell).join(","));
+    }
+  }
+  return `\uFEFF${lines.join("\r\n")}`;
+}
+
 function filterProductPayload(payload, auth) {
   const mergedPayload = mergeWarehouseDataIntoProducts(payload, cachedWarehouseSync);
   let catalog = mergedPayload.catalog;
@@ -1606,6 +2353,179 @@ function filterProductPayload(payload, auth) {
     },
     productBase: canViewPartnerAssets(auth) ? payload.productBase : [],
     catalog,
+  };
+}
+
+function compactCatalogProduct(product) {
+  const {
+    publicDescription,
+    sellingPoints,
+    sellingPointsEn,
+    qualificationImageUrl,
+    raw,
+    ...compact
+  } = product;
+  return compact;
+}
+
+function compactProductBase(product) {
+  const {
+    publicDescription,
+    sellingPoints,
+    sellingPointsEn,
+    raw,
+    ...compact
+  } = product;
+  return compact;
+}
+
+function productResponsePayload(payload, auth, mode = "list") {
+  const filtered = filterProductPayload(payload, auth);
+  if (mode === "detail") return filtered;
+  return {
+    ...filtered,
+    mode: "list",
+    productBase: [],
+    catalog: (filtered.catalog || []).map(compactCatalogProduct),
+  };
+}
+
+function movementResponsePayload() {
+  const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
+  const payload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
+  const latestJob = latestOrderSyncJob();
+  const warehouseDiagnostics = buildMovementDiagnostics(
+    mergedProducts,
+    cachedWarehouseSync,
+    cachedOrdersSync,
+    warehouseConnections.map((connection) => ({
+      id: connection.id,
+      name: connection.name,
+      country: connection.country,
+      providerId: connection.providerId,
+      hasCredentials: hasWarehouseCredentials(connection),
+    })),
+  ).map((item) => ({
+    ...item,
+    providerName: providerName(item.providerId),
+    latestOrderSyncJob: orderSyncJobWarehouseDigest(latestJob, item.warehouseId),
+  }));
+  const results = cachedOrdersSync.results || [];
+  const backgroundRunningWarehouses = results
+    .filter((result) => result.backgroundRunning)
+    .map((result) => ({
+      warehouseId: result.warehouseId,
+      message: result.message || "",
+      orderCount: result.orderCount || 0,
+    }));
+  if (latestJob && ["queued", "running"].includes(latestJob.status)) {
+    for (const warehouseId of latestJob.warehouseIds || []) {
+      if (backgroundRunningWarehouses.some((item) => item.warehouseId === warehouseId)) continue;
+      backgroundRunningWarehouses.push({
+        warehouseId,
+        message: latestJob.currentWarehouseId === warehouseId
+          ? `Background sync running: ${latestJob.currentChunkLabel || latestJob.message || ""}`
+          : "Queued in background order sync",
+        orderCount: 0,
+      });
+    }
+  }
+  const failedWarehouses = results
+    .filter((result) => !result.ok && !result.skipped && !result.backgroundRunning)
+    .map((result) => ({
+      warehouseId: result.warehouseId,
+      message: result.message || "",
+      orderCount: result.orderCount || 0,
+    }));
+  const warehouseFreshness = warehouseConnections.map((connection) => {
+    const result = results.find((item) => item.warehouseId === connection.id);
+    const running = latestJob && ["queued", "running"].includes(latestJob.status) && (latestJob.warehouseIds || []).includes(connection.id);
+    return {
+      warehouseId: connection.id,
+      warehouseName: connection.name,
+      providerId: connection.providerId,
+      providerName: providerName(connection.providerId),
+      lastCompletedAt: result?.backgroundCompletedAt || cachedOrdersSync.syncedAt || "",
+      orderCount: result?.orderCount || 0,
+      ok: result?.ok ?? false,
+      running: Boolean(running),
+      failed: Boolean(result && !result.ok && !result.skipped),
+      message: running ? (latestJob.currentWarehouseId === connection.id ? latestJob.currentChunkLabel : "Queued") : (result?.message || ""),
+    };
+  });
+  return {
+    ...payload,
+    orderSyncJob: publicOrderSyncJob(latestJob),
+    warehouseFreshness,
+    warehouseDiagnostics,
+    syncState: {
+      usingCachedOrders: Boolean(cachedOrdersSync.syncedAt),
+      lastCompletedAt: cachedOrdersSync.syncedAt || "",
+      backgroundRunningWarehouses,
+      failedWarehouses,
+    },
+  };
+}
+
+function buildDashboardSummary(auth) {
+  const products = productResponsePayload(cachedProducts, auth, "list");
+  const movementPayload = auth.role === "direct" ? movementResponsePayload() : null;
+  const orderResults = cachedOrdersSync.results || [];
+  const warehouseResults = cachedWarehouseSync.results || [];
+  const visibleCatalog = products.catalog || [];
+  const orderCount90 = (cachedOrdersSync.orders || []).length;
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayOrders = (cachedOrdersSync.orders || []).filter((order) => String(order.shippedAt || order.createdAt || "").slice(0, 10) === todayKey);
+  const salesAmount90 = (cachedOrdersSync.orders || []).reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0);
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    internal: auth.role === "direct",
+    user: publicUser(auth.user),
+    counts: {
+      visibleCatalog: visibleCatalog.length,
+      totalInventory: visibleCatalog.reduce((sum, product) => sum + numberOrZero(product.stockQty), 0),
+      todayOrders: todayOrders.length,
+      orderCount90,
+      salesAmount90,
+      riskSku: movementPayload
+        ? numberOrZero(movementPayload.counts.stockout) + numberOrZero(movementPayload.counts.replenish) + numberOrZero(movementPayload.counts.slow) + numberOrZero(movementPayload.counts.stagnant)
+        : visibleCatalog.filter((product) => product.alert !== "健康").length,
+      movementSku: movementPayload?.counts.sku || 0,
+      warehouseOnlySku: movementPayload?.counts.warehouseOnly || 0,
+      stockout: movementPayload?.counts.stockout || 0,
+      replenish: movementPayload?.counts.replenish || 0,
+      slow: movementPayload?.counts.slow || 0,
+      stagnant: movementPayload?.counts.stagnant || 0,
+    },
+    sync: {
+      productsSyncedAt: cachedProducts.syncedAt || "",
+      inventorySyncedAt: cachedWarehouseSync.syncedAt || "",
+      orderSyncedAt: cachedOrdersSync.syncedAt || "",
+      lastAutoSyncAt,
+      autoSyncIntervalMs,
+      backgroundRunningWarehouses: movementPayload?.syncState?.backgroundRunningWarehouses || [],
+      failedWarehouses: movementPayload?.syncState?.failedWarehouses || [],
+    },
+    movementDiagnostics: movementPayload?.warehouseDiagnostics || [],
+    warehouses: warehouseConnections.map((connection) => {
+      const result = warehouseResults.find((item) => item.warehouseId === connection.id);
+      const orderResult = orderResults.find((item) => item.warehouseId === connection.id);
+      return {
+        id: connection.id,
+        name: connection.name,
+        providerId: connection.providerId,
+        providerName: providerName(connection.providerId),
+        country: connection.country,
+        hasCredentials: hasWarehouseCredentials(connection),
+        inventoryOk: result?.ok ?? false,
+        orderOk: orderResult?.ok ?? false,
+        backgroundRunning: Boolean(orderResult?.backgroundRunning),
+        message: orderResult?.message || result?.message || "",
+        inventoryCount: result?.inventoryCount || 0,
+        orderCount: orderResult?.orderCount || 0,
+      };
+    }),
   };
 }
 
@@ -1643,6 +2563,7 @@ async function handleWarehouseSync(req, res) {
   };
   saveWarehouseCache(cachedWarehouseSync);
   upsertInventorySnapshot(dateKeyInTimezone(), "warehouse_sync");
+  upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "warehouse_sync", movementHistoryTimezone);
   sendJson(res, 200, { ok: true, ...cachedWarehouseSync, products: undefined, inventory: undefined });
 }
 
@@ -1677,15 +2598,515 @@ async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_3am"
   return upsertInventorySnapshot(dateKeyInTimezone(), snapshotReason);
 }
 
+function dateOnlyDaysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - Math.max(1, Number(days) || 90));
+  return date.toISOString().slice(0, 10);
+}
+
+function addDateDays(dateText, days) {
+  const date = new Date(`${dateText}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function compareDateText(left, right) {
+  return String(left).localeCompare(String(right));
+}
+
+function orderSyncChunksFor(connection, days) {
+  const end = new Date().toISOString().slice(0, 10);
+  const start = dateOnlyDaysAgo(days);
+  if (!["yunwms_ru", "sea_wms"].includes(connection.providerId)) {
+    return [{ from: start, to: end, label: `${start} ~ ${end}` }];
+  }
+  const chunks = [];
+  let cursor = start;
+  while (compareDateText(cursor, end) <= 0) {
+    const chunkEnd = addDateDays(cursor, orderSyncChunkDays - 1);
+    const to = compareDateText(chunkEnd, end) > 0 ? end : chunkEnd;
+    chunks.push({ from: cursor, to, label: `${cursor} ~ ${to}` });
+    cursor = addDateDays(to, 1);
+  }
+  return chunks;
+}
+
+function latestOrderSyncJob() {
+  return (cachedOrderSyncJobs.jobs || [])[0] || null;
+}
+
+function findOrderSyncJob(jobId) {
+  return (cachedOrderSyncJobs.jobs || []).find((job) => job.id === jobId) || null;
+}
+
+function publicOrderSyncJob(job) {
+  if (!job) return null;
+  return {
+    ...job,
+    progressPercent: job.totalChunks ? Math.round((Number(job.completedChunks || 0) / Number(job.totalChunks || 1)) * 100) : 0,
+  };
+}
+
+function orderSyncJobWarehouseDigest(job, warehouseId) {
+  if (!job || !warehouseId) return null;
+  const chunks = (job.chunks || []).filter((chunk) => chunk.warehouseId === warehouseId);
+  const result = (job.results || []).find((item) => item.warehouseId === warehouseId);
+  const included = (job.warehouseIds || []).includes(warehouseId) || chunks.length || result;
+  if (!included) return null;
+  const failedChunks = chunks.filter((chunk) => chunk.status === "failed");
+  const completedChunks = chunks.filter((chunk) => ["completed", "failed"].includes(chunk.status));
+  const running = ["queued", "running"].includes(job.status) && (job.warehouseIds || []).includes(warehouseId);
+  const current = running && job.currentWarehouseId === warehouseId;
+  const lastChunk = [...chunks].reverse().find((chunk) => chunk.message) || chunks[chunks.length - 1];
+  return {
+    jobId: job.id,
+    status: job.status,
+    days: job.days,
+    running: Boolean(running),
+    current: Boolean(current),
+    currentChunkLabel: current ? job.currentChunkLabel || "" : "",
+    totalChunks: chunks.length,
+    completedChunks: completedChunks.length || (result ? 1 : 0),
+    failedChunks: failedChunks.length || numberOrZero(result?.failedChunks),
+    orderCount: numberOrZero(result?.orderCount) || chunks.reduce((sum, chunk) => sum + numberOrZero(chunk.orderCount), 0),
+    createdAt: job.createdAt || "",
+    startedAt: job.startedAt || "",
+    completedAt: result?.completedAt || job.completedAt || "",
+    lastMessage: result?.message || lastChunk?.message || job.message || "",
+    failedChunkSamples: failedChunks.slice(0, 3).map((chunk) => ({
+      from: chunk.from,
+      to: chunk.to,
+      message: chunk.message || "同步分片失败",
+    })),
+  };
+}
+
+function selectedOrderSyncWarehouses(warehouseIds = [], { includeAllWhenEmpty = true } = {}) {
+  const ids = new Set((Array.isArray(warehouseIds) ? warehouseIds : []).map((id) => String(id || "").trim()).filter(Boolean));
+  const selected = ids.size
+    ? warehouseConnections.filter((connection) => ids.has(connection.id))
+    : (includeAllWhenEmpty ? warehouseConnections : []);
+  return selected;
+}
+
+function unknownOrderSyncWarehouseIds(warehouseIds = []) {
+  const ids = (Array.isArray(warehouseIds) ? warehouseIds : []).map((id) => String(id || "").trim()).filter(Boolean);
+  if (!ids.length) return [];
+  const known = new Set(warehouseConnections.map((connection) => connection.id));
+  return ids.filter((id) => !known.has(id));
+}
+
+function createOrderSyncJob({ days = 90, warehouseIds = [] } = {}) {
+  const normalizedDays = Math.max(1, Math.min(180, Number(days) || 90));
+  const selected = selectedOrderSyncWarehouses(warehouseIds);
+  if (!selected.length) {
+    throw new Error("没有匹配到可同步的仓库。");
+  }
+  const totalChunks = selected.reduce((sum, connection) => sum + orderSyncChunksFor(connection, normalizedDays).length, 0);
+  const job = {
+    id: `order-sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    status: "queued",
+    days: normalizedDays,
+    warehouseIds: selected.map((connection) => connection.id),
+    chunkDays: orderSyncChunkDays,
+    createdAt: new Date().toISOString(),
+    startedAt: "",
+    completedAt: "",
+    currentWarehouseId: "",
+    currentWarehouseName: "",
+    currentChunkLabel: "",
+    totalChunks,
+    completedChunks: 0,
+    totalOrders: 0,
+    failedChunks: 0,
+    results: [],
+    chunks: [],
+    message: "Queued",
+  };
+  cachedOrderSyncJobs.jobs = [job, ...(cachedOrderSyncJobs.jobs || [])].slice(0, 20);
+  saveOrderSyncJobsCache();
+  return job;
+}
+
+function upsertOrderSyncChunk(job, chunk) {
+  const index = (job.chunks || []).findIndex((item) => (
+    item.warehouseId === chunk.warehouseId &&
+    item.from === chunk.from &&
+    item.to === chunk.to
+  ));
+  if (index >= 0) {
+    job.chunks[index] = { ...job.chunks[index], ...chunk };
+  } else {
+    job.chunks = [...(job.chunks || []), chunk];
+  }
+}
+
+function dedupeOrders(orders) {
+  const seen = new Set();
+  const deduped = [];
+  for (const order of orders || []) {
+    const key = [
+      order.warehouseId,
+      order.orderId || order.orderNo,
+      order.sku,
+      order.shippedAt || order.createdAt,
+      order.quantity,
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(order);
+  }
+  return deduped;
+}
+
+function orderSyncMetaFromResult(result = {}) {
+  return {
+    orderApiTotal: numberOrZero(result.orderApiTotal),
+    orderApiReadRows: numberOrZero(result.orderApiReadRows),
+    orderApiReadSkuRows: numberOrZero(result.orderApiReadSkuRows),
+    orderApiPagesRead: numberOrZero(result.orderApiPagesRead),
+    orderApiPageLimit: numberOrZero(result.orderApiPageLimit),
+    orderApiReachedPageLimit: Boolean(result.orderApiReachedPageLimit),
+  };
+}
+
+function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true) {
+  const warehouseId = result.warehouseId || connection.id;
+  const orderMeta = orderSyncMetaFromResult(result);
+  const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
+  nextResults.push({
+    warehouseId,
+    ok: Boolean(result.ok),
+    skipped: Boolean(result.skipped),
+    message: result.message || "",
+    orderCount: result.orders?.length || 0,
+    hasCredentials: hasWarehouseCredentials(connection),
+    backgroundRunning: false,
+    backgroundCompletedAt: new Date().toISOString(),
+    ...orderMeta,
+  });
+
+  cachedOrdersSync = {
+    ...cachedOrdersSync,
+    syncedAt: new Date().toISOString(),
+    days,
+    orders: replaceOrders
+      ? [
+          ...(cachedOrdersSync.orders || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id),
+          ...(result.orders || []),
+        ]
+      : (cachedOrdersSync.orders || []),
+    results: nextResults,
+  };
+  saveOrderCache(cachedOrdersSync);
+}
+
+let activeOrderSyncJobPromise = null;
+
+function startOrderSyncJob(job) {
+  if (activeOrderSyncJobPromise) return;
+  activeOrderSyncJobPromise = runOrderSyncJob(job.id)
+    .catch((error) => {
+      const runningJob = findOrderSyncJob(job.id);
+      if (runningJob) {
+        runningJob.status = "failed";
+        runningJob.completedAt = new Date().toISOString();
+        runningJob.message = error.message || "Order sync job failed";
+        saveOrderSyncJobsCache();
+      }
+      console.error("[orders-sync-job] failed", error);
+    })
+    .finally(() => {
+      activeOrderSyncJobPromise = null;
+    });
+}
+
+async function runOrderSyncJob(jobId) {
+  const job = findOrderSyncJob(jobId);
+  if (!job) return;
+  job.status = "running";
+  job.startedAt = job.startedAt || new Date().toISOString();
+  job.message = "Running";
+  saveOrderSyncJobsCache();
+
+  const selected = selectedOrderSyncWarehouses(job.warehouseIds, { includeAllWhenEmpty: false });
+  if (!selected.length) {
+    job.status = "failed";
+    job.completedAt = new Date().toISOString();
+    job.message = "Order sync job has no target warehouses";
+    saveOrderSyncJobsCache();
+    return;
+  }
+  let hadFailure = false;
+
+  for (const connection of selected) {
+    const chunks = orderSyncChunksFor(connection, job.days);
+    const warehouseOrders = [];
+    let warehouseFailedChunks = 0;
+    let warehouseSkipped = false;
+    let warehouseMessage = "";
+    let resolvedWarehouseId = "";
+    const warehouseOrderMeta = {
+      orderApiTotal: 0,
+      orderApiReadRows: 0,
+      orderApiReadSkuRows: 0,
+      orderApiPagesRead: 0,
+      orderApiPageLimit: 0,
+      orderApiReachedPageLimit: false,
+    };
+
+    for (const chunk of chunks) {
+      job.currentWarehouseId = connection.id;
+      job.currentWarehouseName = connection.name;
+      job.currentChunkLabel = chunk.label;
+      upsertOrderSyncChunk(job, {
+        warehouseId: connection.id,
+        warehouseName: connection.name,
+        from: chunk.from,
+        to: chunk.to,
+        status: "running",
+        orderCount: 0,
+        message: "",
+        startedAt: new Date().toISOString(),
+      });
+      saveOrderSyncJobsCache();
+
+      try {
+        const result = await syncWithSameSystemFallback(
+          connection,
+          (target) => syncWarehouseOrdersRange(target, chunk.from, chunk.to),
+        );
+        const chunkOrders = result.orders || [];
+        warehouseOrders.push(...chunkOrders);
+        warehouseSkipped = warehouseSkipped || Boolean(result.skipped);
+        warehouseMessage = result.message || warehouseMessage;
+        resolvedWarehouseId = result.resolvedWarehouseId || resolvedWarehouseId;
+        const chunkMeta = orderSyncMetaFromResult(result);
+        warehouseOrderMeta.orderApiTotal += chunkMeta.orderApiTotal;
+        warehouseOrderMeta.orderApiReadRows += chunkMeta.orderApiReadRows;
+        warehouseOrderMeta.orderApiReadSkuRows += chunkMeta.orderApiReadSkuRows;
+        warehouseOrderMeta.orderApiPagesRead += chunkMeta.orderApiPagesRead;
+        warehouseOrderMeta.orderApiPageLimit = Math.max(warehouseOrderMeta.orderApiPageLimit, chunkMeta.orderApiPageLimit);
+        warehouseOrderMeta.orderApiReachedPageLimit = warehouseOrderMeta.orderApiReachedPageLimit || chunkMeta.orderApiReachedPageLimit;
+        job.totalOrders += chunkOrders.length;
+        job.completedChunks += 1;
+        upsertOrderSyncChunk(job, {
+          warehouseId: connection.id,
+          warehouseName: connection.name,
+          from: chunk.from,
+          to: chunk.to,
+          status: result.ok ? "completed" : "failed",
+          orderCount: chunkOrders.length,
+          message: result.message || "",
+          completedAt: new Date().toISOString(),
+          ...chunkMeta,
+        });
+        if (!result.ok && !result.skipped) {
+          hadFailure = true;
+          warehouseFailedChunks += 1;
+          job.failedChunks += 1;
+        }
+        if (updateResolvedWarehouseId(connection, result)) saveWarehouseConnections();
+      } catch (error) {
+        hadFailure = true;
+        warehouseFailedChunks += 1;
+        job.failedChunks += 1;
+        job.completedChunks += 1;
+        warehouseMessage = error.message || "Order sync chunk failed";
+        upsertOrderSyncChunk(job, {
+          warehouseId: connection.id,
+          warehouseName: connection.name,
+          from: chunk.from,
+          to: chunk.to,
+          status: "failed",
+          orderCount: 0,
+          message: warehouseMessage,
+          completedAt: new Date().toISOString(),
+        });
+      }
+      saveOrderSyncJobsCache();
+    }
+
+    const dedupedOrders = dedupeOrders(warehouseOrders);
+    const ok = warehouseFailedChunks === 0;
+    const result = {
+      warehouseId: connection.id,
+      resolvedWarehouseId,
+      ok,
+      skipped: warehouseSkipped,
+      message: ok
+        ? (warehouseMessage || "Order sync completed")
+        : `${warehouseFailedChunks} chunk(s) failed; using completed chunks and cached data where available`,
+      ...warehouseOrderMeta,
+      orders: dedupedOrders,
+    };
+    const replaceOrders = ok || dedupedOrders.length > 0;
+    mergeWarehouseOrderCache(connection, result, job.days, replaceOrders);
+    job.results = [
+      ...(job.results || []).filter((item) => item.warehouseId !== connection.id && item.warehouseId !== result.warehouseId),
+      {
+        warehouseId: result.warehouseId || connection.id,
+        warehouseName: connection.name,
+        ok,
+        skipped: warehouseSkipped,
+        message: result.message,
+        orderCount: dedupedOrders.length,
+        failedChunks: warehouseFailedChunks,
+        completedAt: new Date().toISOString(),
+        ...warehouseOrderMeta,
+      },
+    ];
+    saveOrderSyncJobsCache();
+  }
+
+  job.status = hadFailure ? "partial" : "completed";
+  job.completedAt = new Date().toISOString();
+  job.currentWarehouseId = "";
+  job.currentWarehouseName = "";
+  job.currentChunkLabel = "";
+  job.message = hadFailure ? "Completed with partial failures" : "Completed";
+  saveOrderSyncJobsCache();
+  try {
+    upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "order_sync_job", movementHistoryTimezone);
+  } catch (error) {
+    console.error("[movement-history] capture after order sync failed", error);
+  }
+}
+
+function warehouseTestMissingFields(connection) {
+  const missing = [];
+  const credentials = connection.credentials || {};
+  if (!connection.baseUrl || /pending|待配置/i.test(String(connection.baseUrl))) missing.push("baseUrl");
+  if (connection.providerId === "yunwms_ru") {
+    if (!credentials.appKey && !credentials.clientId) missing.push("appKey");
+    if (!credentials.token && !credentials.appSecret && !credentials.clientSecret) missing.push("appToken");
+    if (!connection.warehouseCode && !connection.warehouseId) missing.push("warehouseCode");
+  } else if (connection.providerId === "sea_wms") {
+    if (!credentials.clientId && !credentials.appKey) missing.push("clientId/AppKey");
+    if (!credentials.clientSecret && !credentials.appSecret) missing.push("clientSecret/AppSecret");
+    if (!connection.warehouseCode && !connection.warehouseId) missing.push("warehouseCode/warehouseId");
+  }
+  return missing;
+}
+
+function classifyWarehouseTestError(error, stage) {
+  const message = error.message || "Warehouse connection test failed";
+  if (/token|key|secret|Signature|auth|credential|AppKey|appToken|鉴权|授权/i.test(message)) {
+    return { stage: "auth", message, suggestions: ["检查 AppKey/AppToken 或 ClientSecret 是否复制完整。", "确认该账号有库存和订单接口权限。"] };
+  }
+  if (/warehouse|仓库|code|id/i.test(message)) {
+    return { stage: "warehouse", message, suggestions: ["检查 warehouseCode 和 warehouseId 是否属于当前 baseUrl。", "俄罗斯 YunWMS 优先填仓库代码，SEA WMS 常需要 warehouseId。"] };
+  }
+  if (/timeout|超时|timed out/i.test(message)) {
+    return { stage: `${stage}_timeout`, message, suggestions: ["接口能连通但响应较慢，建议使用后台订单同步。", "俄罗斯大仓可调小 ORDER_SYNC_CHUNK_DAYS。"] };
+  }
+  return { stage, message, suggestions: ["确认 baseUrl 是否能从服务器访问。", "如果是东南亚仓，请确认不同国家是否使用不同 baseUrl。"] };
+}
+
+async function testWarehouseConnectionPayload(payload) {
+  const existing = payload.id ? warehouseConnections.find((connection) => connection.id === payload.id) : null;
+  const connection = buildWarehouseConnection(payload, existing || null);
+  const missing = warehouseTestMissingFields(connection);
+  if (missing.length) {
+    return {
+      ok: false,
+      stage: "validation",
+      providerId: connection.providerId,
+      message: `Missing required fields: ${missing.join(", ")}`,
+      suggestions: ["按当前供应商示例补齐必填字段后再检测。"],
+    };
+  }
+
+  const testTimeoutMs = Math.max(5000, Number(process.env.WAREHOUSE_TEST_TIMEOUT_MS || 20000));
+  let inventoryResult;
+  try {
+    inventoryResult = await withTimeout(
+      syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target)),
+      testTimeoutMs,
+      `${connection.name || connection.id} inventory test timeout`,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      providerId: connection.providerId,
+      resolvedWarehouseId: connection.resolvedWarehouseId || "",
+      inventorySampleCount: 0,
+      orderSampleCount: 0,
+      ...classifyWarehouseTestError(error, "inventory"),
+    };
+  }
+
+  let orderResult;
+  try {
+    orderResult = await withTimeout(
+      syncWithSameSystemFallback(connection, (target) => syncWarehouseOrders(target, 1)),
+      testTimeoutMs,
+      `${connection.name || connection.id} order test timeout`,
+    );
+  } catch (error) {
+    const classified = classifyWarehouseTestError(error, "orders");
+    return {
+      ok: false,
+      providerId: connection.providerId,
+      resolvedWarehouseId: inventoryResult.resolvedWarehouseId || connection.resolvedWarehouseId || "",
+      inventorySampleCount: inventoryResult.inventory?.length || 0,
+      orderSampleCount: 0,
+      ...classified,
+    };
+  }
+
+  return {
+    ok: Boolean(inventoryResult.ok && orderResult.ok),
+    stage: inventoryResult.ok && orderResult.ok ? "completed" : "orders",
+    providerId: connection.providerId,
+    resolvedWarehouseId: orderResult.resolvedWarehouseId || inventoryResult.resolvedWarehouseId || connection.resolvedWarehouseId || "",
+    inventorySampleCount: inventoryResult.inventory?.length || 0,
+    orderSampleCount: orderResult.orders?.length || 0,
+    message: orderResult.message || inventoryResult.message || "Connection test completed",
+    suggestions: inventoryResult.ok && orderResult.ok ? [] : ["接口有返回但未完全通过，请检查仓库编码和接口权限。"],
+  };
+}
+
+async function handleWarehouseTest(req, res) {
+  if (!canManage(getAuth(req))) {
+    sendJson(res, 401, { ok: false, message: "Testing warehouse connections requires direct admin login." });
+    return;
+  }
+  const payload = await parseRequestBody(req);
+  const existingIndex = payload.id ? warehouseConnections.findIndex((connection) => connection.id === payload.id) : -1;
+  const result = await testWarehouseConnectionPayload(payload);
+  if (existingIndex >= 0) {
+    warehouseConnections[existingIndex] = {
+      ...warehouseConnections[existingIndex],
+      lastTestAt: new Date().toISOString(),
+      lastTestStatus: result.ok ? "ok" : result.stage || "failed",
+      lastTestMessage: result.message || "",
+      resolvedWarehouseId: result.resolvedWarehouseId || warehouseConnections[existingIndex].resolvedWarehouseId || "",
+    };
+    saveWarehouseConnections();
+  }
+  sendJson(res, 200, {
+    ...result,
+    warehouses: warehouseConnections.map(sanitizeWarehouse),
+  });
+}
+
 async function handleOrderSync(req, res) {
   if (!canManage(getAuth(req))) {
     sendJson(res, 401, { ok: false, message: "同步订单数据需要内部登录。" });
     return;
   }
 
-  const days = Math.max(1, Math.min(180, Number(new URL(req.url || "/", `http://${req.headers.host}`).searchParams.get("days") || 90)));
-  const payload = await refreshOrderCache(days);
-  sendJson(res, 200, { ok: true, ...payload, orders: undefined });
+  const requestUrl = new URL(req.url || "/", `http://${req.headers.host}`);
+  const days = Math.max(1, Math.min(180, Number(requestUrl.searchParams.get("days") || 90)));
+  const runningJob = latestOrderSyncJob();
+  if (runningJob && ["queued", "running"].includes(runningJob.status)) {
+    sendJson(res, 202, { ok: true, jobId: runningJob.id, job: publicOrderSyncJob(runningJob), reused: true });
+    return;
+  }
+  const job = createOrderSyncJob({ days });
+  startOrderSyncJob(job);
+  sendJson(res, 202, { ok: true, jobId: job.id, job: publicOrderSyncJob(job) });
 }
 
 async function refreshOrderCache(days = 90) {
@@ -1721,16 +3142,21 @@ async function refreshOrderCache(days = 90) {
   }));
 
   for (const { connection, result } of syncResults) {
+    const orderMeta = orderSyncMetaFromResult(result);
+    const warehouseId = result.warehouseId || connection.id;
+    const cachedWarehouseOrders = (cachedOrdersSync.orders || []).filter((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
+    const visibleOrders = result.backgroundRunning ? cachedWarehouseOrders : (result.orders || []);
     results.push({
-      warehouseId: result.warehouseId,
+      warehouseId,
       ok: result.ok,
       skipped: result.skipped,
       message: result.message || "",
-      orderCount: result.orders.length,
+      orderCount: visibleOrders.length,
       hasCredentials: hasWarehouseCredentials(connection),
       backgroundRunning: Boolean(result.backgroundRunning),
+      ...orderMeta,
     });
-    orders.push(...result.orders);
+    orders.push(...visibleOrders);
     if (updateResolvedWarehouseId(connection, result)) saveWarehouseConnections();
   }
 
@@ -1746,6 +3172,7 @@ async function refreshOrderCache(days = 90) {
 
 function mergeLateOrderSyncResult(connection, result, days) {
   const warehouseId = result.warehouseId || connection.id;
+  const orderMeta = orderSyncMetaFromResult(result);
   const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
   nextResults.push({
     warehouseId,
@@ -1755,6 +3182,7 @@ function mergeLateOrderSyncResult(connection, result, days) {
     orderCount: result.orders?.length || 0,
     hasCredentials: hasWarehouseCredentials(connection),
     backgroundCompletedAt: new Date().toISOString(),
+    ...orderMeta,
   });
 
   cachedOrdersSync = {
@@ -1833,6 +3261,11 @@ function updateStockupDecision(payload, status) {
   const key = String(payload?.recommendationKey || stockupRecommendationKey(item)).trim();
   if (!key) throw new Error("缺少备货建议标识。");
   cachedStockupDecisions.decisions = cachedStockupDecisions.decisions || {};
+  if (status === "pending") {
+    delete cachedStockupDecisions.decisions[key];
+    saveStockupDecisionCache();
+    return buildCurrentStockupPayload({ notify: false, reason: "decision_restore" });
+  }
   cachedStockupDecisions.decisions[key] = {
     status,
     recommendationKey: key,
@@ -1846,6 +3279,51 @@ function updateStockupDecision(payload, status) {
   };
   saveStockupDecisionCache();
   return buildCurrentStockupPayload({ notify: false, reason: `decision_${status}` });
+}
+
+function createStockupPlan(payload = {}) {
+  const item = payload.recommendation || payload || {};
+  const recommendationKey = String(payload.recommendationKey || stockupRecommendationKey(item)).trim();
+  if (!recommendationKey) throw new Error("缺少备货建议标识。");
+  const now = new Date().toISOString();
+  const existing = (cachedStockupPlans.plans || []).find((plan) => plan.recommendationKey === recommendationKey && !["arrived", "cancelled"].includes(plan.status));
+  if (existing) throw new Error("该备货建议已有未完成计划。");
+  const plan = {
+    id: stockupPlanId(),
+    recommendationKey,
+    sku: String(item.sku || payload.sku || "").trim(),
+    country: String(item.country || payload.country || "").trim(),
+    name: String(item.name || payload.name || "").trim(),
+    unit: String(item.unit || payload.unit || "").trim(),
+    quantity: Math.max(0, numberOrZero(payload.quantity || item.netReplenishQty || item.replenishQty)),
+    planType: payload.planType === "outsourcing" ? "outsourcing" : "purchase",
+    owner: String(payload.owner || "").trim(),
+    expectedArrivalAt: String(payload.expectedArrivalAt || "").trim(),
+    status: "draft",
+    note: String(payload.note || "").trim(),
+    source: "stockup",
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (!plan.sku || !plan.quantity) throw new Error("创建备货计划需要 SKU 和计划数量。");
+  cachedStockupPlans = normalizeStockupPlans({
+    updatedAt: now,
+    plans: [plan, ...(cachedStockupPlans.plans || [])],
+  });
+  saveStockupPlanCache();
+  return plan;
+}
+
+function updateStockupPlanStatus(planId, status) {
+  const allowed = new Set(["draft", "ordered", "in_production", "arrived", "cancelled"]);
+  const nextStatus = allowed.has(status) ? status : "";
+  if (!nextStatus) throw new Error("计划状态不正确。");
+  const plan = (cachedStockupPlans.plans || []).find((item) => item.id === planId);
+  if (!plan) throw new Error("备货计划不存在。");
+  plan.status = nextStatus;
+  plan.updatedAt = new Date().toISOString();
+  saveStockupPlanCache();
+  return plan;
 }
 
 async function handleSync(req, res) {
@@ -1897,6 +3375,7 @@ async function refreshQualificationCache() {
   const records = await fetchAllJdyQualifications();
   cachedQualifications = buildQualificationPayload(records, "jiandaoyun");
   saveQualificationCache(cachedQualifications);
+  void notifyQualificationExpiry(cachedQualifications, "qualification_sync");
   return cachedQualifications;
 }
 
@@ -2015,6 +3494,7 @@ async function runAutoSync() {
     await refreshOutsourcingOrderCache();
     const orderPayload = await refreshOrderCache(90);
     buildCurrentStockupPayload({ notify: true, reason: "auto_order_sync" });
+    upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "auto_sync", movementHistoryTimezone);
     lastAutoSyncAt = new Date().toISOString();
     console.log(`[auto-sync] refreshed products, qualifications, assets and ${orderPayload.orders.length} movement orders at ${lastAutoSyncAt}`);
   } catch (error) {
@@ -2066,6 +3546,11 @@ const server = http.createServer(async (req, res) => {
         autoSyncIntervalMinutes: autoSyncIntervalMs ? Math.round(autoSyncIntervalMs / 60000) : 0,
         lastAutoSyncAt,
       });
+      return;
+    }
+
+    if (url.pathname === "/api/dashboard-summary" && req.method === "GET") {
+      sendJson(res, 200, buildDashboardSummary(getAuth(req)));
       return;
     }
 
@@ -2125,9 +3610,10 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/products") {
       const auth = getAuth(req);
+      const mode = url.searchParams.get("mode") === "detail" ? "detail" : "list";
       sendJson(res, 200, {
         ok: true,
-        ...filterProductPayload(cachedProducts, auth),
+        ...productResponsePayload(cachedProducts, auth, mode),
       });
       return;
     }
@@ -2188,6 +3674,48 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/action-log" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看操作日志需要直营部门登录。" });
+        return;
+      }
+      sendJson(res, 200, publicActionLog());
+      return;
+    }
+
+    if (url.pathname === "/api/distributor-applications" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看分销账号申请需要直营部门登录。" });
+        return;
+      }
+      sendJson(res, 200, publicDistributorApplications());
+      return;
+    }
+
+    if (url.pathname === "/api/distributor-applications" && req.method === "POST") {
+      const payload = await parseRequestBody(req);
+      const application = createDistributorApplication(payload);
+      sendJson(res, 201, { ok: true, application });
+      return;
+    }
+
+    const distributorApplicationStatusMatch = url.pathname.match(/^\/api\/distributor-applications\/([^/]+)\/status$/);
+    if (distributorApplicationStatusMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "更新分销账号申请需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const application = updateDistributorApplicationStatus(decodeURIComponent(distributorApplicationStatusMatch[1]), String(payload.status || ""));
+      appendActionLog(auth, "更新分销账号申请状态", "distributor_application", application.companyName, {
+        applicationId: application.id,
+        status: application.status,
+      });
+      sendJson(res, 200, { ok: true, application, ...publicDistributorApplications() });
+      return;
+    }
+
     if (url.pathname === "/api/wecom-notifications" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "查看企业微信通知配置需要直营部门登录。" });
@@ -2236,6 +3764,9 @@ const server = http.createServer(async (req, res) => {
       ];
       cachedWecomNotifications.updatedAt = now;
       saveWecomNotificationCache();
+      appendActionLog(getAuth(req), existingRobot ? "更新企业微信机器人" : "新增企业微信机器人", "wecom_robot", robot.name, {
+        enabled: robot.enabled,
+      });
       sendJson(res, 200, publicWecomNotificationPayload());
       return;
     }
@@ -2247,6 +3778,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const robotId = decodeURIComponent(wecomRobotMatch[1]);
+      const deletedRobot = (cachedWecomNotifications.robots || []).find((robot) => robot.id === robotId);
       cachedWecomNotifications.robots = (cachedWecomNotifications.robots || []).filter((robot) => robot.id !== robotId);
       cachedWecomNotifications.schedules = (cachedWecomNotifications.schedules || []).map((schedule) => ({ ...schedule, robotIds: schedule.robotIds.filter((id) => id !== robotId) }));
       for (const scene of Object.values(cachedWecomNotifications.scenes || {})) {
@@ -2254,6 +3786,9 @@ const server = http.createServer(async (req, res) => {
       }
       cachedWecomNotifications.updatedAt = new Date().toISOString();
       saveWecomNotificationCache();
+      appendActionLog(getAuth(req), "删除企业微信机器人", "wecom_robot", deletedRobot?.name || robotId, {
+        robotId,
+      });
       sendJson(res, 200, publicWecomNotificationPayload());
       return;
     }
@@ -2292,6 +3827,11 @@ const server = http.createServer(async (req, res) => {
       ];
       cachedWecomNotifications.updatedAt = now;
       saveWecomNotificationCache();
+      appendActionLog(getAuth(req), payload.id ? "更新定时推送" : "新增定时推送", "wecom_schedule", schedule.name, {
+        enabled: schedule.enabled,
+        mode: schedule.mode,
+        robotCount: schedule.robotIds.length,
+      });
       sendJson(res, 200, publicWecomNotificationPayload());
       return;
     }
@@ -2303,9 +3843,13 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const scheduleId = decodeURIComponent(wecomScheduleMatch[1]);
+      const deletedSchedule = (cachedWecomNotifications.schedules || []).find((schedule) => schedule.id === scheduleId);
       cachedWecomNotifications.schedules = (cachedWecomNotifications.schedules || []).filter((schedule) => schedule.id !== scheduleId);
       cachedWecomNotifications.updatedAt = new Date().toISOString();
       saveWecomNotificationCache();
+      appendActionLog(getAuth(req), "删除定时推送", "wecom_schedule", deletedSchedule?.name || scheduleId, {
+        scheduleId,
+      });
       sendJson(res, 200, publicWecomNotificationPayload());
       return;
     }
@@ -2322,7 +3866,44 @@ const server = http.createServer(async (req, res) => {
       };
       cachedWecomNotifications.updatedAt = new Date().toISOString();
       saveWecomNotificationCache();
+      appendActionLog(getAuth(req), "更新企业微信场景配置", "wecom_scene", "场景推送", {
+        sceneKeys: Object.keys(payload.scenes || {}),
+      });
       sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/operating-summary" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "发送今日经营摘要需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const content = buildOperatingSummaryMarkdown({
+        extraText: payload.extraText,
+        linkUrl: payload.linkUrl,
+        linkText: payload.linkText,
+      });
+      if (payload.dryRun === true) {
+        sendJson(res, 200, { ok: true, content, results: [], ...publicWecomNotificationPayload() });
+        return;
+      }
+      const selectedRobotIds = Array.isArray(payload.robotIds) ? payload.robotIds.map(String).filter(Boolean) : [];
+      const enabledRobotIds = (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
+      const robotIds = selectedRobotIds.length ? selectedRobotIds : enabledRobotIds;
+      const activeRobotIds = robotIds.filter((id) => enabledRobotIds.includes(id));
+      if (!activeRobotIds.length) {
+        sendJson(res, 400, { ok: false, message: "请先选择至少一个已启用的企业微信机器人。" });
+        return;
+      }
+      const results = await sendWecomNotification(activeRobotIds, content);
+      const failed = results.filter((item) => !item.ok);
+      appendActionLog(auth, "发送今日经营摘要", "wecom_summary", "今日经营摘要", {
+        robotCount: activeRobotIds.length,
+        failedCount: failed.length,
+      });
+      sendJson(res, 200, { ok: true, results, ...publicWecomNotificationPayload() });
       return;
     }
 
@@ -2356,19 +3937,23 @@ const server = http.createServer(async (req, res) => {
       }
 
       const now = new Date().toISOString();
+      const category = {
+        id: quickNavId("cat"),
+        name,
+        description: String(payload.description || "").trim(),
+        sortOrder: numberOrZero(payload.sortOrder),
+        createdAt: now,
+        updatedAt: now,
+        links: [],
+      };
       cachedQuickNav.categories = [
         ...(cachedQuickNav.categories || []),
-        {
-          id: quickNavId("cat"),
-          name,
-          description: String(payload.description || "").trim(),
-          sortOrder: numberOrZero(payload.sortOrder),
-          createdAt: now,
-          updatedAt: now,
-          links: [],
-        },
+        category,
       ];
       saveQuickNavCache();
+      appendActionLog(getAuth(req), "新增快捷导航分类", "quick_nav_category", category.name, {
+        categoryId: category.id,
+      });
       sendJson(res, 201, cachedQuickNav);
       return;
     }
@@ -2381,6 +3966,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const categoryId = decodeURIComponent(quickNavCategoryMatch[1]);
+      const deletedCategory = (cachedQuickNav.categories || []).find((category) => category.id === categoryId);
       const before = (cachedQuickNav.categories || []).length;
       cachedQuickNav.categories = (cachedQuickNav.categories || []).filter((category) => category.id !== categoryId);
       if ((cachedQuickNav.categories || []).length === before) {
@@ -2388,6 +3974,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       saveQuickNavCache();
+      appendActionLog(getAuth(req), "删除快捷导航分类", "quick_nav_category", deletedCategory?.name || categoryId, {
+        categoryId,
+        linkCount: deletedCategory?.links?.length || 0,
+      });
       sendJson(res, 200, cachedQuickNav);
       return;
     }
@@ -2426,21 +4016,27 @@ const server = http.createServer(async (req, res) => {
       }
 
       const now = new Date().toISOString();
+      const link = {
+        id: quickNavId("link"),
+        categoryId,
+        title,
+        url: safeUrl,
+        description: String(payload.description || "").trim(),
+        sortOrder: numberOrZero(payload.sortOrder),
+        createdAt: now,
+        updatedAt: now,
+      };
       category.links = [
         ...(category.links || []),
-        {
-          id: quickNavId("link"),
-          categoryId,
-          title,
-          url: safeUrl,
-          description: String(payload.description || "").trim(),
-          sortOrder: numberOrZero(payload.sortOrder),
-          createdAt: now,
-          updatedAt: now,
-        },
+        link,
       ];
       category.updatedAt = now;
       saveQuickNavCache();
+      appendActionLog(getAuth(req), "新增快捷导航链接", "quick_nav_link", link.title, {
+        categoryId,
+        categoryName: category.name,
+        linkId: link.id,
+      });
       sendJson(res, 201, cachedQuickNav);
       return;
     }
@@ -2459,6 +4055,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { ok: false, message: "分类不存在。" });
         return;
       }
+      const deletedLink = (category.links || []).find((link) => link.id === linkId);
       const before = (category.links || []).length;
       category.links = (category.links || []).filter((link) => link.id !== linkId);
       if (category.links.length === before) {
@@ -2467,6 +4064,11 @@ const server = http.createServer(async (req, res) => {
       }
       category.updatedAt = new Date().toISOString();
       saveQuickNavCache();
+      appendActionLog(getAuth(req), "删除快捷导航链接", "quick_nav_link", deletedLink?.title || linkId, {
+        categoryId,
+        categoryName: category.name,
+        linkId,
+      });
       sendJson(res, 200, cachedQuickNav);
       return;
     }
@@ -2833,6 +4435,12 @@ const server = http.createServer(async (req, res) => {
       cachedUsers.users = [user, ...(cachedUsers.users || [])];
       cachedUsers.syncedAt = new Date().toISOString();
       saveUsersCache();
+      appendActionLog(getAuth(req), "创建用户", "user", user.displayName || user.username, {
+        userId: user.id,
+        username: user.username,
+        role: user.role,
+        jdySynced: Boolean(user.jdyDataId),
+      });
 
       sendJson(res, user.jdySyncError ? 202 : 201, {
         ok: true,
@@ -2881,6 +4489,11 @@ const server = http.createServer(async (req, res) => {
 
       cachedUsers.syncedAt = new Date().toISOString();
       saveUsersCache();
+      appendActionLog(auth, nextStatus === "disabled" ? "停用用户" : "启用用户", "user", user.displayName || user.username, {
+        userId: user.id,
+        username: user.username,
+        status: nextStatus,
+      });
       sendJson(res, user.jdySyncError ? 202 : 200, {
         ok: true,
         user: publicUser(user),
@@ -2923,6 +4536,11 @@ const server = http.createServer(async (req, res) => {
         warning = error.message || "同步删除系统账号失败";
       }
       saveUsersCache();
+      appendActionLog(auth, "删除用户", "user", user.displayName || user.username, {
+        userId: user.id,
+        username: user.username,
+        role: user.role,
+      });
       sendJson(res, warning ? 202 : 200, {
         ok: true,
         deletedId: user.id,
@@ -2969,6 +4587,21 @@ const server = http.createServer(async (req, res) => {
           warehouseOnlyInventory: mergedProducts.warehouseOnlyInventory?.slice(0, 50) || [],
           warehouseOnlyCount: mergedProducts.counts?.warehouseOnlyInventory || 0,
           productMissingWarehouseCount: mergedProducts.counts?.productMissingWarehouse || 0,
+          productMissingWarehouseItems: (mergedProducts.catalog || [])
+            .filter((product) => product.dataGap === "warehouse_missing")
+            .slice(0, 100)
+            .map((product) => ({
+              id: product.id,
+              sku: product.sku,
+              countrySku: product.countrySku,
+              name: product.name,
+              country: product.country,
+              channel: product.channel,
+              category: product.category,
+              status: product.status,
+              stockQty: product.stockQty,
+              unit: product.unit,
+            })),
         },
         nextRequiredSecrets: [
           "俄罗斯 YunWMS: appKey / appToken / warehouseCode",
@@ -2980,6 +4613,11 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/warehouses/sync" && req.method === "POST") {
       await handleWarehouseSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/warehouses/test" && req.method === "POST") {
+      await handleWarehouseTest(req, res);
       return;
     }
 
@@ -3027,6 +4665,65 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/movement-history" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看动销历史需要直营部门登录。" });
+        return;
+      }
+      sendJson(res, 200, movementHistoryPayload({
+        date: url.searchParams.get("date") || "",
+        from: url.searchParams.get("from") || "",
+        to: url.searchParams.get("to") || "",
+        warehouseId: url.searchParams.get("warehouseId") || "",
+        sku: url.searchParams.get("sku") || "",
+        timezone: url.searchParams.get("timezone") || "",
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/movement-history/capture" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "生成动销快照需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const timezone = safeTimezone(payload.timezone || url.searchParams.get("timezone") || "", movementHistoryTimezone);
+      const date = String(payload.date || url.searchParams.get("date") || dateKeyInTimezone(new Date(), timezone)).trim();
+      const snapshot = upsertMovementSnapshot(date, "manual", timezone);
+      sendJson(res, 200, { ok: true, snapshot, ...movementHistoryPayload({ date: snapshot.date, timezone }) });
+      return;
+    }
+
+    if (url.pathname === "/api/movement-history/export" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "导出动销历史需要直营部门登录。" });
+        return;
+      }
+      const params = {
+        date: url.searchParams.get("date") || "",
+        from: url.searchParams.get("from") || "",
+        to: url.searchParams.get("to") || "",
+        warehouseId: url.searchParams.get("warehouseId") || "",
+        sku: url.searchParams.get("sku") || "",
+        timezone: url.searchParams.get("timezone") || "",
+      };
+      const snapshots = movementHistorySnapshotsInRange(params);
+      if (!snapshots.length) {
+        sendJson(res, 404, { ok: false, message: "没有找到可导出的动销历史。" });
+        return;
+      }
+      const csv = movementHistoryCsv(snapshots, params);
+      const range = params.date || [params.from, params.to].filter(Boolean).join("_") || "all";
+      const suffix = [params.warehouseId, params.sku].filter(Boolean).join("-");
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`movement-history-${range}${suffix ? `-${suffix}` : ""}.csv`)}`,
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(csv);
+      return;
+    }
+
     if (url.pathname === "/api/warehouses/export" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "导出仓库配置需要内部登录。" });
@@ -3067,6 +4764,9 @@ const server = http.createServer(async (req, res) => {
         importedCount += 1;
       }
       saveWarehouseConnections();
+      appendActionLog(getAuth(req), "导入仓库配置", "warehouse", "仓库配置批量导入", {
+        importedCount,
+      });
       sendJson(res, 200, {
         ok: true,
         importedCount,
@@ -3077,6 +4777,50 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync" && req.method === "POST") {
       await handleOrderSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/orders/sync-jobs" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "Creating order sync jobs requires direct admin login." });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const runningJob = latestOrderSyncJob();
+      if (runningJob && ["queued", "running"].includes(runningJob.status)) {
+        sendJson(res, 202, { ok: true, jobId: runningJob.id, job: publicOrderSyncJob(runningJob), reused: true });
+        return;
+      }
+      const warehouseIds = Array.isArray(payload.warehouseIds) ? payload.warehouseIds : [];
+      const unknownWarehouseIds = unknownOrderSyncWarehouseIds(warehouseIds);
+      if (unknownWarehouseIds.length) {
+        sendJson(res, 400, { ok: false, message: `未找到仓库：${unknownWarehouseIds.join(", ")}` });
+        return;
+      }
+      const job = createOrderSyncJob({
+        days: payload.days || 90,
+        warehouseIds,
+      });
+      startOrderSyncJob(job);
+      const selectedNames = job.warehouseIds
+        .map((id) => warehouseConnections.find((warehouse) => warehouse.id === id)?.name || id)
+        .filter(Boolean);
+      appendActionLog(auth, selectedNames.length === 1 ? "重同步单仓订单" : "重同步订单", "order_sync", selectedNames.length === 1 ? selectedNames[0] : "订单同步任务", {
+        days: job.days,
+        warehouseCount: selectedNames.length,
+        warehouses: selectedNames,
+      });
+      sendJson(res, 202, { ok: true, jobId: job.id, job: publicOrderSyncJob(job) });
+      return;
+    }
+
+    if (url.pathname === "/api/orders/sync-jobs/latest" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "Reading order sync jobs requires direct admin login." });
+        return;
+      }
+      sendJson(res, 200, { ok: true, job: publicOrderSyncJob(latestOrderSyncJob()) });
       return;
     }
 
@@ -3107,7 +4851,15 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      sendJson(res, 200, updateStockupDecision(payload, "accepted"));
+      const result = updateStockupDecision(payload, "accepted");
+      const item = payload?.recommendation || payload || {};
+      appendActionLog(getAuth(req), "采纳备货建议", "stockup_recommendation", String(item.sku || item.countrySku || payload?.recommendationKey || "").trim(), {
+        recommendationKey: payload?.recommendationKey || stockupRecommendationKey(item),
+        country: item.country,
+        replenishQty: item.replenishQty,
+        netReplenishQty: item.netReplenishQty,
+      });
+      sendJson(res, 200, result);
       return;
     }
 
@@ -3117,7 +4869,69 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      sendJson(res, 200, updateStockupDecision(payload, "abandoned"));
+      const result = updateStockupDecision(payload, "abandoned");
+      const item = payload?.recommendation || payload || {};
+      appendActionLog(getAuth(req), "放弃备货建议", "stockup_recommendation", String(item.sku || item.countrySku || payload?.recommendationKey || "").trim(), {
+        recommendationKey: payload?.recommendationKey || stockupRecommendationKey(item),
+        country: item.country,
+        replenishQty: item.replenishQty,
+        netReplenishQty: item.netReplenishQty,
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/recommendations/restore" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "恢复备货建议需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = updateStockupDecision(payload, "pending");
+      const item = payload?.recommendation || payload || {};
+      appendActionLog(getAuth(req), "恢复备货建议", "stockup_recommendation", String(item.sku || item.countrySku || payload?.recommendationKey || "").trim(), {
+        recommendationKey: payload?.recommendationKey || stockupRecommendationKey(item),
+        country: item.country,
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/plans" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "创建备货计划需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const plan = createStockupPlan(payload);
+      appendActionLog(auth, "创建备货计划", "stockup_plan", plan.sku, {
+        planId: plan.id,
+        recommendationKey: plan.recommendationKey,
+        quantity: plan.quantity,
+        planType: plan.planType,
+        owner: plan.owner,
+        expectedArrivalAt: plan.expectedArrivalAt,
+      });
+      sendJson(res, 201, buildCurrentStockupPayload({ notify: false, reason: "plan_create" }));
+      return;
+    }
+
+    const stockupPlanStatusMatch = url.pathname.match(/^\/api\/stockup\/plans\/([^/]+)\/status$/);
+    if (stockupPlanStatusMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "更新备货计划需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const plan = updateStockupPlanStatus(decodeURIComponent(stockupPlanStatusMatch[1]), String(payload.status || ""));
+      appendActionLog(auth, "更新备货计划状态", "stockup_plan", plan.sku, {
+        planId: plan.id,
+        recommendationKey: plan.recommendationKey,
+        status: plan.status,
+      });
+      sendJson(res, 200, buildCurrentStockupPayload({ notify: false, reason: "plan_status" }));
       return;
     }
 
@@ -3126,8 +4940,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 401, { ok: false, message: "查看动销分析需要直营部门登录。" });
         return;
       }
-      const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
-      sendJson(res, 200, buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync));
+      sendJson(res, 200, movementResponsePayload());
       return;
     }
 
@@ -3147,6 +4960,11 @@ const server = http.createServer(async (req, res) => {
       const [deleted] = warehouseConnections.splice(index, 1);
       saveWarehouseConnections();
       pruneWarehouseCaches([deleted.id]);
+      appendActionLog(getAuth(req), "删除仓库授权", "warehouse", deleted.name || deleted.id, {
+        warehouseId: deleted.id,
+        country: deleted.country,
+        providerId: deleted.providerId,
+      });
       sendJson(res, 200, { ok: true, deletedId: deleted.id, warehouses: warehouseConnections.map(sanitizeWarehouse) });
       return;
     }
@@ -3167,6 +4985,11 @@ const server = http.createServer(async (req, res) => {
       const payload = await parseRequestBody(req);
       warehouseConnections[index] = buildWarehouseConnection(payload, warehouseConnections[index]);
       saveWarehouseConnections();
+      appendActionLog(getAuth(req), "更新仓库授权", "warehouse", warehouseConnections[index].name || warehouseConnections[index].id, {
+        warehouseId: warehouseConnections[index].id,
+        country: warehouseConnections[index].country,
+        providerId: warehouseConnections[index].providerId,
+      });
       sendJson(res, 200, { ok: true, warehouse: sanitizeWarehouse(warehouseConnections[index]), warehouses: warehouseConnections.map(sanitizeWarehouse) });
       return;
     }
@@ -3182,7 +5005,37 @@ const server = http.createServer(async (req, res) => {
 
       warehouseConnections = [connection, ...warehouseConnections];
       saveWarehouseConnections();
+      appendActionLog(getAuth(req), "新增仓库授权", "warehouse", connection.name || connection.id, {
+        warehouseId: connection.id,
+        country: connection.country,
+        providerId: connection.providerId,
+      });
       sendJson(res, 201, { ok: true, warehouse: sanitizeWarehouse(connection), warehouses: warehouseConnections.map(sanitizeWarehouse) });
+      return;
+    }
+
+    if (url.pathname === "/api/setup" && req.method === "GET") {
+      sendJson(res, 200, setupStatusPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/setup/admin" && req.method === "POST") {
+      if (!setupStatusPayload().setupRequired) {
+        sendJson(res, 409, { ok: false, message: "系统已存在直营管理员，初始化入口已关闭。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      if ((cachedUsers.users || []).some((user) => String(user.username).toLowerCase() === String(payload.username || "").trim().toLowerCase())) {
+        sendJson(res, 409, { ok: false, message: "账号已存在。" });
+        return;
+      }
+      const user = createInitialAdmin(payload);
+      sendJson(res, 201, {
+        ok: true,
+        token: createSessionToken(user, sessionSecret),
+        user: publicUser(user),
+        setup: setupStatusPayload(),
+      });
       return;
     }
 
@@ -3195,6 +5048,10 @@ const server = http.createServer(async (req, res) => {
           token: createSessionToken(user, sessionSecret),
           user: publicUser(user),
         });
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, "code") && String(payload.code || "").trim()) {
+        sendJson(res, 401, { ok: false, message: "内部访问码不正确。" });
         return;
       }
 
@@ -3219,6 +5076,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (serveDistFallback(req, res, url)) return;
     sendJson(res, 404, { ok: false, message: "Not found" });
   } catch (error) {
     sendJson(res, 500, { ok: false, message: error.message });

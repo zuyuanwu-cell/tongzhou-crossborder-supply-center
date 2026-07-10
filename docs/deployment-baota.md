@@ -47,13 +47,42 @@ location /api/ {
 
 ## 日常更新
 
+如果暂时不使用 Nginx 托管 `dist` 静态目录，也可以在 `npm run build` 后只让 PM2 启动后端服务。后端会在检测到 `dist/index.html` 时为 `/` 和前端路由返回应用首页，`/api/*` 仍保持 API 响应。
+
 ```bash
-cd /www/wwwroot/tongzhou-crossborder
-git pull
-npm install
+cd /www/wwwroot/gyl.tongzhoukuajing.com
+git pull origin main
+npm ci
 npm run build
-pm2 restart tongzhou-supply-api
+pm2 restart tongzhou-supply-api --update-env
+pm2 save
 ```
+
+如果项目目录不是 `/www/wwwroot/gyl.tongzhoukuajing.com`，请替换为宝塔文件管理器里实际站点目录。
+
+## 关键环境变量
+
+生产 `.env` 建议至少确认：
+
+```env
+JIANYUN_API_KEY=
+INTERNAL_ACCESS_CODE=
+AUTH_SESSION_SECRET=
+AUTO_SYNC_INTERVAL_MS=600000
+ORDER_SYNC_TIMEOUT_MS=45000
+ORDER_SYNC_CHUNK_DAYS=7
+ORDER_SYNC_JOB_POLL_MS=5000
+WAREHOUSE_TEST_TIMEOUT_MS=20000
+WMS_REQUEST_TIMEOUT_MS=25000
+WMS_ORDER_MAX_PAGES=200
+INVENTORY_SNAPSHOT_TIMEZONE=Asia/Shanghai
+MOVEMENT_HISTORY_TIMEZONE=Asia/Shanghai
+MOVEMENT_HISTORY_DB_PATH=.cache/movement-history.sqlite
+AGNES_AI_API_KEY=
+AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
+```
+
+修改 `.env` 后必须使用 `pm2 restart tongzhou-supply-api --update-env`，否则 PM2 仍可能沿用旧环境变量。
 
 ## 注意
 

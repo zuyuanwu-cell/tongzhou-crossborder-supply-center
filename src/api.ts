@@ -88,6 +88,7 @@ export type ProductBase = {
 export type ProductPayload = {
   ok: boolean;
   internal: boolean;
+  mode?: "list" | "detail";
   user?: AuthUser;
   source: "sample" | "jiandaoyun";
   syncedAt: string;
@@ -103,6 +104,51 @@ export type ProductPayload = {
   };
   productBase: ProductBase[];
   catalog: CatalogProduct[];
+};
+
+export type DashboardSummaryPayload = {
+  ok: boolean;
+  generatedAt: string;
+  internal: boolean;
+  user?: AuthUser;
+  counts: {
+    visibleCatalog: number;
+    totalInventory: number;
+    todayOrders: number;
+    orderCount90: number;
+    salesAmount90: number;
+    riskSku: number;
+    movementSku?: number;
+    warehouseOnlySku?: number;
+    stockout: number;
+    replenish: number;
+    slow: number;
+    stagnant: number;
+  };
+  sync: {
+    productsSyncedAt: string;
+    inventorySyncedAt: string;
+    orderSyncedAt: string;
+    lastAutoSyncAt: string;
+    autoSyncIntervalMs: number;
+    backgroundRunningWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
+    failedWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
+  };
+  movementDiagnostics?: MovementWarehouseDiagnostic[];
+  warehouses: Array<{
+    id: string;
+    name: string;
+    providerId: string;
+    providerName: string;
+    country: string;
+    hasCredentials: boolean;
+    inventoryOk: boolean;
+    orderOk: boolean;
+    backgroundRunning: boolean;
+    message: string;
+    inventoryCount: number;
+    orderCount: number;
+  }>;
 };
 
 export type UserRole = "guest" | "distributor" | "direct";
@@ -140,6 +186,38 @@ export type UserManagementPayload = {
     jdySyncedAt?: string;
     jdySyncError?: string;
   }>;
+};
+
+export type SetupStatusPayload = {
+  ok: boolean;
+  setupRequired: boolean;
+  counts: UserManagementPayload["counts"];
+};
+
+export type DistributorApplication = {
+  id: string;
+  companyName: string;
+  contactName: string;
+  phone: string;
+  wechat: string;
+  email: string;
+  market: string;
+  note: string;
+  sourceSku: string;
+  status: "pending" | "contacted" | "approved" | "rejected" | string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DistributorApplicationPayload = {
+  ok: boolean;
+  source: "local";
+  updatedAt: string;
+  counts: {
+    applications: number;
+    pending: number;
+  };
+  applications: DistributorApplication[];
 };
 
 export type QualificationFile = {
@@ -325,7 +403,27 @@ export type WecomNotificationPayload = {
   scenes: {
     stockupRecommendation: WecomSceneConfig;
     inventorySnapshot: WecomSceneConfig;
+    qualificationExpiry: WecomSceneConfig;
   };
+};
+
+export type ActionLogEntry = {
+  id: string;
+  createdAt: string;
+  action: string;
+  targetType: string;
+  targetName: string;
+  actorId: string;
+  actorName: string;
+  actorRole: string;
+  details?: Record<string, unknown>;
+};
+
+export type ActionLogPayload = {
+  ok: boolean;
+  source: "local";
+  updatedAt: string;
+  entries: ActionLogEntry[];
 };
 
 export type AiConfigPayload = {
@@ -415,9 +513,26 @@ export type WarehouseConnection = {
   warehouseId?: string;
   status: string;
   lastSyncedAt: string;
+  lastTestAt?: string;
+  lastTestStatus?: string;
+  lastTestMessage?: string;
+  resolvedWarehouseId?: string;
+  orderSyncStrategy?: string;
   skuMatched: number;
   syncScope: string[];
   hasCredentials?: boolean;
+};
+
+export type WarehouseTestResult = {
+  ok: boolean;
+  stage: string;
+  providerId?: string;
+  resolvedWarehouseId?: string;
+  inventorySampleCount?: number;
+  orderSampleCount?: number;
+  message: string;
+  suggestions?: string[];
+  warehouses?: WarehouseConnection[];
 };
 
 export type WarehousePayload = {
@@ -440,6 +555,18 @@ export type WarehousePayload = {
       lockedQty: number;
       inTransitQty: number;
       totalQty: number;
+    }>;
+    productMissingWarehouseItems?: Array<{
+      id: string;
+      sku: string;
+      countrySku: string;
+      name: string;
+      country: string;
+      channel: string;
+      category: string;
+      status: string;
+      stockQty: number;
+      unit: string;
     }>;
     results: Array<{
       warehouseId: string;
@@ -544,7 +671,18 @@ export type MovementItem = {
   salesWarehouseBreakdown: Array<{
     warehouseId: string;
     warehouseName: string;
+    sales3?: number;
+    sales7?: number;
+    sales15?: number;
+    sales30?: number;
+    sales60?: number;
     sales90: number;
+    avgDaily3?: number;
+    avgDaily7?: number;
+    avgDaily30?: number;
+    avgDaily90?: number;
+    dailyWeighted?: number;
+    trend30?: number[];
   }>;
   sales3: number;
   sales7: number;
@@ -566,6 +704,90 @@ export type MovementItem = {
   trend30: number[];
   source: "product" | "warehouse_only" | string;
   dataGap?: string;
+};
+
+export type MovementWarehouseDiagnostic = {
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  providerId: string;
+  providerName?: string;
+  hasCredentials: boolean;
+  inventoryRows: number;
+  inventorySku: number;
+  orderRows: number;
+  recentOrderRows: number;
+  matchedOrderRows: number;
+  skuFallbackMatchedRows: number;
+  unmatchedOrderRows: number;
+  outOfWindowOrderRows: number;
+  missingSkuOrderRows: number;
+  orderSku: number;
+  unmatchedSamples: Array<{ sku: string; country: string; shippedAt: string }>;
+  missingSkuOrders?: Array<{
+    orderId: string;
+    orderNo: string;
+    country: string;
+    productName: string;
+    goodsSkuId: string;
+    quantity: number;
+    shippedAt: string;
+    createdAt: string;
+    status: string;
+  }>;
+  unmatchedSkus?: Array<{
+    sku: string;
+    country: string;
+    orderRows: number;
+    quantity: number;
+    firstShippedAt: string;
+    lastShippedAt: string;
+    sampleShippedAt: string;
+  }>;
+  outOfWindowSkus?: Array<{
+    sku: string;
+    country: string;
+    orderRows: number;
+    quantity: number;
+    firstShippedAt: string;
+    lastShippedAt: string;
+    sampleShippedAt: string;
+    minAgeDays: number | null;
+    maxAgeDays: number | null;
+  }>;
+  ok: boolean;
+  running: boolean;
+  failed: boolean;
+  skipped: boolean;
+  message: string;
+  orderApiTotal?: number;
+  orderApiReadRows?: number;
+  orderApiReadSkuRows?: number;
+  orderApiPagesRead?: number;
+  orderApiPageLimit?: number;
+  orderApiReachedPageLimit?: boolean;
+  reason: string;
+  reasonLabel: string;
+  severity?: "good" | "warning" | "danger" | string;
+  actionTitle?: string;
+  actionItems?: string[];
+  latestOrderSyncJob?: {
+    jobId: string;
+    status: string;
+    days: number;
+    running: boolean;
+    current: boolean;
+    currentChunkLabel: string;
+    totalChunks: number;
+    completedChunks: number;
+    failedChunks: number;
+    orderCount: number;
+    createdAt: string;
+    startedAt: string;
+    completedAt: string;
+    lastMessage: string;
+    failedChunkSamples: Array<{ from: string; to: string; message: string }>;
+  } | null;
 };
 
 export type MovementPayload = {
@@ -591,6 +813,179 @@ export type MovementPayload = {
     message: string;
     orderCount: number;
     hasCredentials?: boolean;
+    backgroundRunning?: boolean;
+    orderApiTotal?: number;
+    orderApiReadRows?: number;
+    orderApiReadSkuRows?: number;
+    orderApiPagesRead?: number;
+    orderApiPageLimit?: number;
+    orderApiReachedPageLimit?: boolean;
+  }>;
+  orderSyncJob?: OrderSyncJob | null;
+  warehouseFreshness?: Array<{
+    warehouseId: string;
+    warehouseName: string;
+    providerId: string;
+    providerName: string;
+    lastCompletedAt: string;
+    orderCount: number;
+    ok: boolean;
+    running: boolean;
+    failed: boolean;
+    message: string;
+  }>;
+  warehouseDiagnostics?: MovementWarehouseDiagnostic[];
+  syncState?: {
+    usingCachedOrders: boolean;
+    lastCompletedAt: string;
+    backgroundRunningWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
+    failedWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
+  };
+};
+
+export type MovementHistoryRow = {
+  sku: string;
+  countrySku?: string;
+  productName: string;
+  brand: string;
+  category: string;
+  country: string;
+  warehouseId: string;
+  warehouseName: string;
+  availableQty: number;
+  lockedQty: number;
+  inTransitQty: number;
+  totalQty: number;
+  sales3: number;
+  sales7: number;
+  sales15: number;
+  sales30: number;
+  sales60: number;
+  sales90: number;
+  avgDaily3: number;
+  avgDaily7: number;
+  avgDaily30: number;
+  avgDaily90: number;
+  dailyWeighted: number;
+  daysCover: number | null;
+  leadDays: number;
+  targetCoverDays: number;
+  replenishQty: number;
+  status: string;
+  suggestion: string;
+  source: string;
+  dataGap?: string;
+};
+
+export type MovementHistorySnapshot = {
+  date: string;
+  timezone: string;
+  capturedAt: string;
+  orderSyncedAt: string;
+  inventorySyncedAt: string;
+  reason: string;
+  totals: {
+    rowCount: number;
+    warehouseCount: number;
+    skuCount: number;
+    availableQty: number;
+    totalQty: number;
+    sales3: number;
+    sales7: number;
+    sales30: number;
+    sales90: number;
+    stockout: number;
+    replenish: number;
+    slow: number;
+    stagnant: number;
+    noSalesData: number;
+  };
+  rows: MovementHistoryRow[];
+};
+
+export type MovementHistoryPayload = {
+  ok: boolean;
+  updatedAt: string;
+  lastSnapshotAt: string;
+  databasePath?: string;
+  timezone: string;
+  timezones: string[];
+  selectedDate: string;
+  dates: Array<{
+    date: string;
+    timezone: string;
+    capturedAt: string;
+    rowCount: number;
+    warehouseCount: number;
+    skuCount: number;
+    sales30: number;
+    sales90: number;
+  }>;
+  snapshot: MovementHistorySnapshot | null;
+  trend: Array<{
+    date: string;
+    capturedAt: string;
+    sales7: number;
+    sales30: number;
+    sales90: number;
+    availableQty: number;
+    totalQty: number;
+    riskSku: number;
+    rowCount: number;
+  }>;
+  warehouseOptions: Array<{ warehouseId: string; warehouseName: string; country: string }>;
+};
+
+export type OrderSyncJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "partial" | "failed" | string;
+  days: number;
+  warehouseIds: string[];
+  chunkDays: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  currentWarehouseId?: string;
+  currentWarehouseName?: string;
+  currentChunkLabel?: string;
+  totalChunks: number;
+  completedChunks: number;
+  totalOrders: number;
+  failedChunks: number;
+  progressPercent?: number;
+  message?: string;
+  results?: Array<{
+    warehouseId: string;
+    warehouseName: string;
+    ok: boolean;
+    skipped: boolean;
+    message: string;
+    orderCount: number;
+    failedChunks: number;
+    completedAt: string;
+    orderApiTotal?: number;
+    orderApiReadRows?: number;
+    orderApiReadSkuRows?: number;
+    orderApiPagesRead?: number;
+    orderApiPageLimit?: number;
+    orderApiReachedPageLimit?: boolean;
+  }>;
+  chunks?: Array<{
+    warehouseId: string;
+    warehouseName: string;
+    from: string;
+    to: string;
+    status: string;
+    orderCount: number;
+    message: string;
+    startedAt?: string;
+    completedAt?: string;
+    orderApiTotal?: number;
+    orderApiReadRows?: number;
+    orderApiReadSkuRows?: number;
+    orderApiPagesRead?: number;
+    orderApiPageLimit?: number;
+    orderApiReachedPageLimit?: boolean;
   }>;
 };
 
@@ -655,6 +1050,24 @@ export type StockupInboundOrder = {
   updatedAt?: string;
 };
 
+export type StockupPlan = {
+  id: string;
+  recommendationKey: string;
+  sku: string;
+  country: string;
+  name: string;
+  unit: string;
+  quantity: number;
+  planType: "purchase" | "outsourcing";
+  owner: string;
+  expectedArrivalAt: string;
+  status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled";
+  note: string;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type StockupPayload = {
   ok: boolean;
   generatedAt: string;
@@ -672,10 +1085,15 @@ export type StockupPayload = {
     netRecommendedQty: number;
     acceptedRecommendations?: number;
     abandonedRecommendations?: number;
+    stockupPlans?: number;
+    openStockupPlans?: number;
+    plannedQty?: number;
     inboundOrders: number;
     pendingInboundQty: number;
   };
   recommendations: StockupRecommendation[];
+  abandonedRecommendations?: StockupRecommendation[];
+  plans?: StockupPlan[];
   outsourcingQueue: Array<{
     id: string;
     sku: string;
@@ -751,8 +1169,12 @@ export function resolveApiUrl(value: string) {
   return value;
 }
 
-export function fetchProducts() {
-  return requestJson<ProductPayload>("/api/products");
+export function fetchDashboardSummary() {
+  return requestJson<DashboardSummaryPayload>("/api/dashboard-summary");
+}
+
+export function fetchProducts(mode: "list" | "detail" = "list") {
+  return requestJson<ProductPayload>(`/api/products?mode=${mode}`);
 }
 
 export function syncProducts() {
@@ -809,6 +1231,10 @@ export function fetchWecomNotifications() {
   return requestJson<WecomNotificationPayload>("/api/wecom-notifications");
 }
 
+export function fetchActionLog() {
+  return requestJson<ActionLogPayload>("/api/action-log");
+}
+
 export function upsertWecomRobot(input: { id?: string; name: string; webhookUrl?: string; enabled: boolean }) {
   return requestJson<WecomNotificationPayload>("/api/wecom-notifications/robots", {
     method: "POST",
@@ -855,6 +1281,13 @@ export function updateWecomScenes(scenes: Partial<WecomNotificationPayload["scen
 
 export function testWecomNotification(input: { robotIds: string[]; text: string; linkUrl?: string; linkText?: string }) {
   return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>("/api/wecom-notifications/test", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function sendWecomOperatingSummary(input: { robotIds: string[]; extraText?: string; linkUrl?: string; linkText?: string }) {
+  return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>("/api/wecom-notifications/operating-summary", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -945,6 +1378,47 @@ export function fetchUsers() {
   return requestJson<UserManagementPayload>("/api/users");
 }
 
+export function fetchSetupStatus() {
+  return requestJson<SetupStatusPayload>("/api/setup");
+}
+
+export async function initializeAdmin(input: { username: string; password: string; displayName?: string }) {
+  const payload = await requestJson<{ ok: boolean; token: string; user: AuthUser; setup: SetupStatusPayload }>("/api/setup/admin", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  localStorage.setItem(AUTH_TOKEN_KEY, payload.token);
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+  return payload;
+}
+
+export function submitDistributorApplication(input: {
+  companyName: string;
+  contactName: string;
+  phone?: string;
+  wechat?: string;
+  email?: string;
+  market?: string;
+  note?: string;
+  sourceSku?: string;
+}) {
+  return requestJson<{ ok: boolean; application: DistributorApplication }>("/api/distributor-applications", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchDistributorApplications() {
+  return requestJson<DistributorApplicationPayload>("/api/distributor-applications");
+}
+
+export function updateDistributorApplicationStatus(id: string, status: DistributorApplication["status"]) {
+  return requestJson<DistributorApplicationPayload & { application: DistributorApplication }>(`/api/distributor-applications/${encodeURIComponent(id)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
 export function createUser(input: { username: string; password: string; displayName: string; role: UserRole }) {
   return requestJson<UserManagementPayload & { user: AuthUser }>("/api/users", {
     method: "POST",
@@ -1020,11 +1494,66 @@ export function fetchMovement() {
   return requestJson<MovementPayload>("/api/movement");
 }
 
+export function fetchMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
+  const params = new URLSearchParams();
+  if (input.date) params.set("date", input.date);
+  if (input.from) params.set("from", input.from);
+  if (input.to) params.set("to", input.to);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.sku) params.set("sku", input.sku);
+  if (input.timezone) params.set("timezone", input.timezone);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<MovementHistoryPayload>(`/api/movement-history${query}`);
+}
+
+export function captureMovementHistory(input: { date?: string; timezone?: string } = {}) {
+  return requestJson<MovementHistoryPayload>("/api/movement-history/capture", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function downloadMovementHistoryCsv(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
+  const params = new URLSearchParams();
+  if (input.date) params.set("date", input.date);
+  if (input.from) params.set("from", input.from);
+  if (input.to) params.set("to", input.to);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.sku) params.set("sku", input.sku);
+  if (input.timezone) params.set("timezone", input.timezone);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(`${API_BASE}/api/movement-history/export${query}`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    let message = "动销历史导出失败";
+    try {
+      const payload = await response.json();
+      message = payload.message || message;
+    } catch {
+      // CSV endpoints return text on success; keep the default message on failure.
+    }
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
 export function syncOrders(days = 90) {
-  return requestJson<{ ok: boolean; syncedAt: string; days: number; results: MovementPayload["orderSyncResults"] }>(
+  return requestJson<{ ok: boolean; jobId: string; job: OrderSyncJob; reused?: boolean }>(
     `/api/orders/sync?days=${days}`,
     { method: "POST" },
   );
+}
+
+export function startOrderSyncJob(input: { days?: number; warehouseIds?: string[] } = {}) {
+  return requestJson<{ ok: boolean; jobId: string; job: OrderSyncJob; reused?: boolean }>("/api/orders/sync-jobs", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchLatestOrderSyncJob() {
+  return requestJson<{ ok: boolean; job: OrderSyncJob | null }>("/api/orders/sync-jobs/latest");
 }
 
 export function fetchStockup() {
@@ -1046,6 +1575,35 @@ export function abandonStockupRecommendation(input: { recommendationKey?: string
   return requestJson<StockupPayload>("/api/stockup/recommendations/abandon", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export function restoreStockupRecommendation(input: { recommendationKey?: string; recommendation: StockupRecommendation; note?: string }) {
+  return requestJson<StockupPayload>("/api/stockup/recommendations/restore", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createStockupPlan(input: {
+  recommendationKey?: string;
+  recommendation: StockupRecommendation;
+  quantity?: number;
+  planType?: "purchase" | "outsourcing";
+  owner?: string;
+  expectedArrivalAt?: string;
+  note?: string;
+}) {
+  return requestJson<StockupPayload>("/api/stockup/plans", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateStockupPlanStatus(id: string, status: StockupPlan["status"]) {
+  return requestJson<StockupPayload>(`/api/stockup/plans/${encodeURIComponent(id)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
   });
 }
 
@@ -1095,6 +1653,13 @@ export function importWarehouseConnections(payload: unknown) {
   return requestJson<{ ok: boolean; importedCount: number; warehouses: WarehouseConnection[] }>("/api/warehouses/import", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function testWarehouseConnection(input: CreateWarehouseInput & { id?: string }) {
+  return requestJson<WarehouseTestResult>("/api/warehouses/test", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

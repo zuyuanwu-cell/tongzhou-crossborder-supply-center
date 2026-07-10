@@ -43,12 +43,17 @@ import {
   AiConfigPayload,
   AiChatAttachment,
   AiChatMessage,
+  ActionLogPayload,
   AssetPayload,
   AssetRecord,
   AuthUser,
   CatalogProduct,
+  DistributorApplicationPayload,
   InventorySnapshotPayload,
+  MovementHistoryPayload,
+  MovementWarehouseDiagnostic,
   MovementPayload,
+  OrderSyncJob,
   ProductBase,
   ProductPayload,
   QuickNavPayload,
@@ -63,8 +68,11 @@ import {
   WarehousePayload,
   WarehouseInfoPayload,
   WarehouseInfoRecord,
+  DashboardSummaryPayload,
   acceptStockupRecommendation,
   abandonStockupRecommendation,
+  restoreStockupRecommendation,
+  createStockupPlan,
   createWarehouseConnection,
   createQuickNavCategory,
   createQuickNavLink,
@@ -74,16 +82,23 @@ import {
   deleteQuickNavCategory,
   deleteQuickNavLink,
   captureInventorySnapshot,
+  captureMovementHistory,
   deleteUser,
   deleteWarehouseConnection,
   exportWarehouseConnections,
   fetchAssets,
+  fetchActionLog,
   fetchCurrentUser,
+  fetchDashboardSummary,
+  fetchDistributorApplications,
   fetchInventorySnapshots,
   fetchMovement,
+  fetchMovementHistory,
+  fetchLatestOrderSyncJob,
   fetchProducts,
   fetchQuickNav,
   fetchQualifications,
+  fetchSetupStatus,
   fetchStockup,
   fetchUsers,
   fetchWarehouses,
@@ -91,19 +106,26 @@ import {
   fetchWarehouseInfo,
   getStoredUser,
   importWarehouseConnections,
+  initializeAdmin,
   downloadInventorySnapshotCsv,
+  downloadMovementHistoryCsv,
   loginInternal,
   logoutInternal,
   qualificationFileDownloadUrl,
   syncAssets,
   syncOutsourcingOrders,
   syncOrders,
+  startOrderSyncJob,
+  submitDistributorApplication,
   syncProducts,
   syncQualifications,
   syncStockupOrders,
   syncWarehouses,
   syncWarehouseInfo,
+  testWarehouseConnection,
   testWecomNotification,
+  updateDistributorApplicationStatus,
+  updateStockupPlanStatus,
   updateUserStatus,
   updateWarehouseConnection,
   updateWecomScenes,
@@ -114,6 +136,7 @@ import {
   runAiImage,
   runAiText,
   runAiVideo,
+  sendWecomOperatingSummary,
   resolveApiUrl,
   streamAiText,
   updateAiConfig,
@@ -124,6 +147,16 @@ import "./styles.css";
 type AlertType = "补货" | "断货" | "健康" | "滞销";
 type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
 type SortDirection = "asc" | "desc";
+type HeatmapPeriod = "day" | "week" | "month";
+type MovementFilterPreset = {
+  id: string;
+  name: string;
+  country: string;
+  warehouse: string;
+  status: string;
+  keyword: string;
+  createdAt: string;
+};
 type BundleSkuItem = {
   product: CatalogProduct;
   quantity: number;
@@ -252,8 +285,8 @@ const navItems = [
   { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard" },
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory" },
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots" },
-  { label: "订单日报", icon: CalendarDays, hash: "#orders" },
   { label: "动销监控", icon: BarChart3, hash: "#movement" },
+  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup" },
   { label: "产品库", icon: ShoppingBag, hash: "#products" },
   { label: "资质库", icon: FileText, hash: "#qualifications", childOf: "产品库" },
@@ -264,9 +297,11 @@ const navItems = [
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications" },
+  { label: "操作日志", icon: List, hash: "#action-log" },
 ];
 
 const viewHashMap = Object.fromEntries(navItems.map((item) => [item.hash, item.label]));
+viewHashMap["#orders"] = "经营总览";
 
 function getInitialView() {
   return viewHashMap[window.location.hash] ?? "经营总览";
@@ -308,6 +343,58 @@ function formatDateTime(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function daysSince(value?: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+}
+
+function syncAgeText(value?: string) {
+  const days = daysSince(value);
+  if (days === null) return "未同步";
+  if (days === 0) return "今日已更新";
+  return `${days} 天前`;
+}
+
+function nextAutoSyncText(lastAutoSyncAt?: string, intervalMs?: number) {
+  if (!intervalMs || intervalMs <= 0) return "未配置";
+  if (!lastAutoSyncAt) return "等待首次自动同步";
+  const last = new Date(lastAutoSyncAt);
+  if (Number.isNaN(last.getTime())) return "等待首次自动同步";
+  const next = new Date(last.getTime() + intervalMs);
+  if (next.getTime() <= Date.now()) return "到点后自动触发";
+  return formatDateTime(next.toISOString());
+}
+
+const MOVEMENT_FILTER_PRESETS_KEY = "tongzhou:movement-filter-presets";
+
+function readMovementFilterPresets(): MovementFilterPreset[] {
+  try {
+    const raw = window.localStorage.getItem(MOVEMENT_FILTER_PRESETS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        id: String(item.id || ""),
+        name: String(item.name || ""),
+        country: String(item.country || "全部"),
+        warehouse: String(item.warehouse || "全部"),
+        status: String(item.status || "全部"),
+        keyword: String(item.keyword || ""),
+        createdAt: String(item.createdAt || ""),
+      }))
+      .filter((item) => item.id && item.name)
+      .slice(0, 12);
+  } catch {
+    return [];
+  }
+}
+
+function saveMovementFilterPresets(presets: MovementFilterPreset[]) {
+  window.localStorage.setItem(MOVEMENT_FILTER_PRESETS_KEY, JSON.stringify(presets.slice(0, 12)));
 }
 
 function parseTimeToMinutes(value?: string) {
@@ -517,13 +604,106 @@ function bundleTotals(items: BundleSkuItem[], channel: "全部" | "直营" | "�
   );
 }
 
+function csvCell(value: string | number | undefined | null) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function bundleQuoteCsv(items: BundleSkuItem[], channel: Parameters<typeof bundleTotals>[1], internal: boolean, showPrices: boolean) {
+  const header = ["SKU", "产品名称", "国家", "数量", "成本币种", "成本单价", "成本小计", "销售币种", "销售单价", "销售小计"];
+  const rows = items.map((item) => {
+    const cost = priceFor(item.product, channel, internal);
+    const sales = salesPriceFor(item.product);
+    const quantity = Math.max(1, item.quantity);
+    return [
+      bundleSkuProductCode(item.product),
+      item.product.name,
+      item.product.country,
+      quantity,
+      showPrices ? cost.currency : "",
+      showPrices ? formatMoney(cost.price) : "",
+      showPrices ? formatMoney(cost.price * quantity) : "",
+      showPrices ? sales.currency : "",
+      showPrices ? formatMoney(sales.price) : "",
+      showPrices ? formatMoney(sales.price * quantity) : "",
+    ];
+  });
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function downloadTextFile(fileName: string, text: string, type = "text/plain;charset=utf-8") {
+  const blob = new Blob(["\uFEFF", text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+type ConfirmOptions = {
+  title: string;
+  body: string;
+  confirmText?: string;
+  cancelText?: string;
+  tone?: "danger" | "warning";
+  details?: string[];
+};
+
+type ConfirmRequest = ConfirmOptions & {
+  resolve: (confirmed: boolean) => void;
+};
+
+const ConfirmContext = React.createContext<(options: ConfirmOptions) => Promise<boolean>>(async () => false);
+
+function useConfirm() {
+  return React.useContext(ConfirmContext);
+}
+
+function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; onClose: (confirmed: boolean) => void }) {
+  if (!request) return null;
+  return (
+    <div className="confirm-layer" role="dialog" aria-modal="true" aria-label={request.title}>
+      <button className="confirm-backdrop" type="button" aria-label="取消操作" onClick={() => onClose(false)} />
+      <section className={`confirm-dialog ${request.tone || "warning"}`}>
+        <div className="confirm-icon">
+          <AlertTriangle size={22} />
+        </div>
+        <div className="confirm-content">
+          <p className="eyebrow">{request.tone === "danger" ? "High Impact Action" : "Confirm Action"}</p>
+          <h2>{request.title}</h2>
+          <p>{request.body}</p>
+          {request.details?.length ? (
+            <ul>
+              {request.details.map((detail) => (
+                <li key={detail}>{detail}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="confirm-actions">
+            <button className="ghost-button" type="button" onClick={() => onClose(false)}>{request.cancelText || "取消"}</button>
+            <button className={`sync-button ${request.tone === "danger" ? "danger-button" : ""}`} type="button" onClick={() => onClose(true)}>{request.confirmText || "确认"}</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [activeView, setActiveView] = React.useState(getInitialView);
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [payload, setPayload] = React.useState<ProductPayload | null>(null);
+  const [dashboardSummary, setDashboardSummary] = React.useState<DashboardSummaryPayload | null>(null);
+  const [productDetailLoaded, setProductDetailLoaded] = React.useState(false);
   const [warehousePayload, setWarehousePayload] = React.useState<WarehousePayload | null>(null);
   const [inventorySnapshotPayload, setInventorySnapshotPayload] = React.useState<InventorySnapshotPayload | null>(null);
   const [movementPayload, setMovementPayload] = React.useState<MovementPayload | null>(null);
+  const [movementHistoryPayload, setMovementHistoryPayload] = React.useState<MovementHistoryPayload | null>(null);
+  const [orderSyncJob, setOrderSyncJob] = React.useState<OrderSyncJob | null>(null);
+  const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
   const [qualificationPayload, setQualificationPayload] = React.useState<QualificationPayload | null>(null);
   const [assetPayload, setAssetPayload] = React.useState<AssetPayload | null>(null);
@@ -531,18 +711,23 @@ function App() {
   const [quickNavPayload, setQuickNavPayload] = React.useState<QuickNavPayload | null>(null);
   const [aiConfigPayload, setAiConfigPayload] = React.useState<AiConfigPayload | null>(null);
   const [wecomNotificationPayload, setWecomNotificationPayload] = React.useState<WecomNotificationPayload | null>(null);
+  const [actionLogPayload, setActionLogPayload] = React.useState<ActionLogPayload | null>(null);
   const [userPayload, setUserPayload] = React.useState<UserManagementPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
   const [error, setError] = React.useState("");
   const [currentUser, setCurrentUser] = React.useState<AuthUser>(getStoredUser);
+  const [blockedView, setBlockedView] = React.useState("");
+  const [globalSearch, setGlobalSearch] = React.useState("");
+  const [productSearchKeyword, setProductSearchKeyword] = React.useState("");
+  const [confirmRequest, setConfirmRequest] = React.useState<ConfirmRequest | null>(null);
   const internal = canManage(currentUser);
 
   const catalog = payload?.catalog?.length ? payload.catalog : fallbackCatalog;
-  const totalInventory = catalog.reduce((sum, product) => sum + product.stockQty, 0);
-  const totalOrders = dailyOrders.reduce((sum, day) => sum + day.orders, 0);
-  const salesAmount = dailyOrders.reduce((sum, day) => sum + day.amount, 0);
-  const riskCount = catalog.filter((product) => product.alert !== "健康").length;
+  const totalInventory = dashboardSummary?.counts.totalInventory ?? catalog.reduce((sum, product) => sum + product.stockQty, 0);
+  const totalOrders = dashboardSummary?.counts.todayOrders ?? 0;
+  const salesAmount = dashboardSummary?.counts.salesAmount90 ?? 0;
+  const riskCount = dashboardSummary?.counts.riskSku ?? catalog.filter((product) => product.alert !== "健康").length;
 
   React.useEffect(() => {
     void loadCurrentUser();
@@ -556,13 +741,17 @@ function App() {
 
   React.useEffect(() => {
     loadProducts();
+    loadDashboardSummary();
     if (canManage(currentUser)) {
       loadWarehouses();
       loadInventorySnapshots();
       loadMovement();
+      loadMovementHistory();
       loadStockup();
+      loadDashboardSummary();
       loadUsers();
       loadWecomNotifications();
+      loadActionLog();
     }
     loadQuickNav();
     loadAiConfig();
@@ -575,7 +764,9 @@ function App() {
 
   React.useEffect(() => {
     const allowed = visibleNavItems(currentUser).some((item) => item.label === activeView);
-    if (!allowed) handleViewChange("产品库");
+    if (allowed) return;
+    if (activeView !== "产品库") setBlockedView(activeView);
+    handleViewChange("产品库", { clearBlocked: false });
   }, [currentUser.role, activeView]);
 
   React.useEffect(() => {
@@ -585,8 +776,21 @@ function App() {
   }, [activeView, currentUser.role]);
 
   React.useEffect(() => {
+    if (!canManage(currentUser)) return;
+    if (hashForView(activeView) !== "#action-log") return;
+    void loadActionLog();
+  }, [activeView, currentUser.role]);
+
+  React.useEffect(() => {
+    if (!["资质库", "素材库", "仓库信息"].includes(activeView)) return;
+    if (!canViewPartnerAssets(currentUser)) return;
+    void loadProductDetails();
+  }, [activeView, currentUser.role, productDetailLoaded]);
+
+  React.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadProducts(true);
+      void loadDashboardSummary();
       void loadQuickNav();
       void loadAiConfig();
       if (canViewPartnerAssets(currentUser)) {
@@ -598,13 +802,28 @@ function App() {
         void loadWarehouses();
         void loadInventorySnapshots();
         void loadMovement();
+        void loadMovementHistory();
         void loadStockup();
+        void loadDashboardSummary();
         void loadUsers();
         void loadWecomNotifications();
+        void loadActionLog();
       }
     }, AUTO_SYNC_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [currentUser.role]);
+
+  React.useEffect(() => {
+    if (!canManage(currentUser)) return;
+    if (!orderSyncJob || !["queued", "running"].includes(orderSyncJob.status)) return;
+    const timer = window.setInterval(async () => {
+      const job = await loadLatestOrderJob();
+      if (job && !["queued", "running"].includes(job.status)) {
+        await Promise.all([loadMovement(), loadMovementHistory(), loadDashboardSummary(), loadStockup()]);
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [currentUser.role, orderSyncJob?.id, orderSyncJob?.status]);
 
   async function loadCurrentUser() {
     try {
@@ -619,13 +838,36 @@ function App() {
     if (!silent) setLoading(true);
     if (!silent) setError("");
     try {
-      const data = await fetchProducts();
+      const data = await fetchProducts(productDetailLoaded ? "detail" : "list");
       setPayload(data);
+      setProductDetailLoaded(data.mode === "detail");
       if (data.user) setCurrentUser(data.user);
     } catch (requestError) {
       if (!silent) setError(requestError instanceof Error ? requestError.message : "产品数据读取失败");
     } finally {
       if (!silent) setLoading(false);
+    }
+  }
+
+  async function loadProductDetails() {
+    if (productDetailLoaded) return;
+    try {
+      const data = await fetchProducts("detail");
+      setPayload(data);
+      setProductDetailLoaded(true);
+      if (data.user) setCurrentUser(data.user);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "产品详情数据读取失败");
+    }
+  }
+
+  async function loadDashboardSummary() {
+    try {
+      const data = await fetchDashboardSummary();
+      setDashboardSummary(data);
+      if (data.user) setCurrentUser(data.user);
+    } catch {
+      setDashboardSummary(null);
     }
   }
 
@@ -651,8 +893,28 @@ function App() {
     try {
       const data = await fetchMovement();
       setMovementPayload(data);
+      if (data.orderSyncJob) setOrderSyncJob(data.orderSyncJob);
     } catch {
       setMovementPayload(null);
+    }
+  }
+
+  async function loadMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
+    try {
+      const data = await fetchMovementHistory(input);
+      setMovementHistoryPayload(data);
+    } catch {
+      setMovementHistoryPayload(null);
+    }
+  }
+
+  async function loadLatestOrderJob() {
+    try {
+      const data = await fetchLatestOrderSyncJob();
+      setOrderSyncJob(data.job);
+      return data.job;
+    } catch {
+      return null;
     }
   }
 
@@ -719,6 +981,15 @@ function App() {
     }
   }
 
+  async function loadActionLog() {
+    try {
+      const data = await fetchActionLog();
+      setActionLogPayload(data);
+    } catch {
+      setActionLogPayload(null);
+    }
+  }
+
   async function loadUsers() {
     try {
       const data = await fetchUsers();
@@ -735,7 +1006,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications()]);
+      await Promise.all([loadDashboardSummary(), loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications(), loadActionLog()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -748,7 +1019,7 @@ function App() {
     setError("");
     try {
       await syncWarehouses();
-      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadStockup()]);
+      await Promise.all([loadDashboardSummary(), loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "仓库同步失败");
     } finally {
@@ -768,12 +1039,13 @@ function App() {
     }
   }
 
-  async function handleOrderSync() {
+  async function handleOrderSync(warehouseIds: string[] = []) {
     setSyncing(true);
     setError("");
     try {
-      await syncOrders(90);
-      await Promise.all([loadMovement(), loadStockup()]);
+      const data = await startOrderSyncJob({ days: 90, warehouseIds });
+      setOrderSyncJob(data.job);
+      await Promise.all([loadDashboardSummary(), loadMovement(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "订单同步失败");
     } finally {
@@ -787,6 +1059,7 @@ function App() {
     try {
       const data = await syncStockupOrders();
       setStockupPayload(data);
+      await loadDashboardSummary();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "备货单明细同步失败");
     } finally {
@@ -794,15 +1067,51 @@ function App() {
     }
   }
 
-  async function handleStockupDecision(item: StockupPayload["recommendations"][number], action: "accept" | "abandon") {
+  async function handleStockupDecision(item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") {
     setSyncing(true);
     setError("");
     try {
       const input = { recommendationKey: item.recommendationKey, recommendation: item };
-      const data = action === "accept" ? await acceptStockupRecommendation(input) : await abandonStockupRecommendation(input);
+      const data = action === "accept"
+        ? await acceptStockupRecommendation(input)
+        : action === "restore"
+          ? await restoreStockupRecommendation(input)
+          : await abandonStockupRecommendation(input);
       setStockupPayload(data);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "更新备货建议状态失败");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleCreateStockupPlan(item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) {
+    setSyncing(true);
+    setError("");
+    try {
+      const data = await createStockupPlan({
+        recommendationKey: item.recommendationKey,
+        recommendation: item,
+        ...input,
+      });
+      setStockupPayload(data);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "创建备货计划失败");
+      throw requestError;
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleUpdateStockupPlanStatus(id: string, status: Parameters<typeof updateStockupPlanStatus>[1]) {
+    setSyncing(true);
+    setError("");
+    try {
+      const data = await updateStockupPlanStatus(id, status);
+      setStockupPayload(data);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "更新备货计划状态失败");
+      throw requestError;
     } finally {
       setSyncing(false);
     }
@@ -869,6 +1178,20 @@ function App() {
     }
   }
 
+  async function handleTestWarehouse(input: Parameters<typeof testWarehouseConnection>[0]) {
+    setError("");
+    try {
+      const result = await testWarehouseConnection(input);
+      if (result.warehouses) {
+        setWarehousePayload((current) => current ? { ...current, warehouses: result.warehouses || current.warehouses } : current);
+      }
+      return result;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "浠撳簱杩炴帴妫€娴嬪け璐?");
+      throw requestError;
+    }
+  }
+
   async function handleDeleteWarehouse(id: string) {
     setError("");
     try {
@@ -913,18 +1236,34 @@ function App() {
     }
   }
 
-  async function handleLogin(input: { username?: string; password?: string; code?: string }) {
-    const result = await loginInternal(input);
-    setCurrentUser(result.user);
+  async function activateLoggedInUser(user: AuthUser, targetView = blockedView) {
+    setCurrentUser(user);
     await loadProducts();
     void loadQuickNav();
     void loadAiConfig();
-    if (canViewPartnerAssets(result.user)) {
+    if (canViewPartnerAssets(user)) {
       await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
     }
-    if (canManage(result.user)) {
-      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers(), loadWecomNotifications()]);
+    if (canManage(user)) {
+      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers(), loadWecomNotifications(), loadActionLog()]);
     }
+    setBlockedView("");
+    if (targetView && visibleNavItems(user).some((item) => item.label === targetView)) {
+      handleViewChange(targetView);
+    } else if (canManage(user)) {
+      handleViewChange("经营总览");
+    }
+  }
+
+  async function handleLogin(input: { username?: string; password?: string; code?: string }) {
+    const targetView = blockedView;
+    const result = await loginInternal(input);
+    await activateLoggedInUser(result.user, targetView);
+  }
+
+  async function handleInitialAdmin(input: { username: string; password: string; displayName?: string }) {
+    const result = await initializeAdmin(input);
+    await activateLoggedInUser(result.user, "经营总览");
   }
 
   function handleLogout() {
@@ -941,31 +1280,54 @@ function App() {
     setStockupPayload(null);
     setUserPayload(null);
     setWecomNotificationPayload(null);
+    setActionLogPayload(null);
+    setBlockedView("");
   }
 
-  function handleViewChange(view: string) {
+  function handleViewChange(view: string, options: { clearBlocked?: boolean } = { clearBlocked: true }) {
+    if (options.clearBlocked !== false) setBlockedView("");
     setActiveView(view);
     window.location.hash = hashForView(view);
     setMobileNavOpen(false);
   }
 
+  function handleGlobalSearch(event: React.FormEvent) {
+    event.preventDefault();
+    const keyword = globalSearch.trim();
+    if (!keyword) return;
+    setProductSearchKeyword(keyword);
+    handleViewChange("产品库");
+  }
+
+  const confirmAction = React.useCallback((options: ConfirmOptions) => new Promise<boolean>((resolve) => {
+    setConfirmRequest({ ...options, resolve });
+  }), []);
+
+  function closeConfirm(confirmed: boolean) {
+    setConfirmRequest((current) => {
+      current?.resolve(confirmed);
+      return null;
+    });
+  }
+
   return (
-    <div className="app-shell">
-      <Sidebar activeView={activeView} currentUser={currentUser} onChange={handleViewChange} onClose={() => setMobileNavOpen(false)} open={mobileNavOpen} />
-      <div className="workspace">
+    <ConfirmContext.Provider value={confirmAction}>
+      <div className="app-shell">
+        <Sidebar activeView={activeView} currentUser={currentUser} onChange={handleViewChange} onClose={() => setMobileNavOpen(false)} open={mobileNavOpen} />
+        <div className="workspace">
         <header className="topbar">
           <button className="icon-button mobile-only" onClick={() => setMobileNavOpen(true)} aria-label="打开导航">
             <Menu size={20} />
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
-            <label className="search-box">
+            <form className="search-box" onSubmit={handleGlobalSearch}>
               <Search size={16} />
-              <input placeholder="搜索 SKU、国家、仓库" />
-            </label>
+              <input value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="搜索 SKU、国家、品牌" />
+            </form>
             {currentUser.role !== "guest" ? (
               <>
                 {canManage(currentUser) ? (
@@ -980,13 +1342,32 @@ function App() {
                 </button>
               </>
             ) : (
-              <LoginButton onLogin={handleLogin} />
+              <LoginButton onLogin={handleLogin} onSetupAdmin={handleInitialAdmin} />
             )}
           </div>
         </header>
 
         {error ? <div className="notice danger">{error}</div> : null}
         {payload?.warning ? <div className="notice warning">{payload.warning}</div> : null}
+        {blockedView ? (
+          <section className="blocked-view-notice" role="status" aria-live="polite">
+            <div className="blocked-view-icon">
+              <Lock size={18} />
+            </div>
+            <div className="blocked-view-copy">
+              <strong>需要登录后访问「{blockedView}」</strong>
+              <span>
+                {currentUser.role === "guest"
+                  ? "该页面包含库存、价格、动销、备货或系统配置数据。请使用内部访问码登录，或联系运营开通分销账号。"
+                  : "当前账号暂时没有该页面权限。如需查看，请联系管理员调整角色或授权范围。"}
+              </span>
+            </div>
+            <div className="blocked-view-actions">
+              {currentUser.role === "guest" ? <LoginButton onLogin={handleLogin} onSetupAdmin={handleInitialAdmin} /> : null}
+              <button className="ghost-button" type="button" onClick={() => setBlockedView("")}>我知道了</button>
+            </div>
+          </section>
+        ) : null}
 
         {activeView === "产品库" ? (
           <ProductLibrary
@@ -998,6 +1379,8 @@ function App() {
             qualificationPayload={qualificationPayload}
             assetPayload={assetPayload}
             productBase={payload?.productBase || []}
+            externalKeyword={productSearchKeyword}
+            onNeedDetails={loadProductDetails}
           />
         ) : activeView === "资质库" ? (
           <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} />
@@ -1031,28 +1414,57 @@ function App() {
             onDelete={handleDeleteWarehouse}
             onExport={handleExportWarehouses}
             onImport={handleImportWarehouses}
+            onTest={handleTestWarehouse}
           />
         ) : activeView === "动销监控" ? (
-          <MovementBoard movementPayload={movementPayload} onSyncOrders={handleOrderSync} syncing={syncing} />
+          <MovementBoard movementPayload={movementPayload} orderSyncJob={orderSyncJob} initialWarehouse={movementWarehouseFilter} onSyncOrders={handleOrderSync} syncing={syncing} />
+        ) : activeView === "动销分析" ? (
+          <MovementAnalysisPage
+            movementHistoryPayload={movementHistoryPayload}
+            onLoadMovementHistory={loadMovementHistory}
+            onCaptureMovementHistory={captureMovementHistory}
+          />
         ) : activeView === "备货中心" ? (
-          <StockupCenter stockupPayload={stockupPayload} onSyncStockup={handleStockupSync} onDecision={handleStockupDecision} syncing={syncing} />
+          <StockupCenter
+            stockupPayload={stockupPayload}
+            onSyncStockup={handleStockupSync}
+            onDecision={handleStockupDecision}
+            onCreatePlan={handleCreateStockupPlan}
+            onUpdatePlanStatus={handleUpdateStockupPlanStatus}
+            syncing={syncing}
+          />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
+        ) : activeView === "操作日志" ? (
+          <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "用户管理" ? (
           <UserManagement userPayload={userPayload} />
         ) : (
           <Dashboard
             products={catalog}
             payload={payload}
+            stockupPayload={stockupPayload}
+            wecomNotificationPayload={wecomNotificationPayload}
             internal={internal}
             totalInventory={totalInventory}
             totalOrders={totalOrders}
             salesAmount={salesAmount}
             riskCount={riskCount}
+            summary={dashboardSummary}
+            onOpenMovement={() => handleViewChange("动销监控")}
+            onOpenStockup={() => handleViewChange("备货中心")}
+            onOpenWecom={() => handleViewChange("企业微信通知")}
+            onOpenMovementWarehouse={(warehouseId) => {
+              setMovementWarehouseFilter(warehouseId);
+              handleViewChange("动销监控");
+            }}
+            onOpenWarehouses={() => handleViewChange("仓库授权")}
           />
         )}
+        </div>
+        <ConfirmDialog request={confirmRequest} onClose={closeConfirm} />
       </div>
-    </div>
+    </ConfirmContext.Provider>
   );
 }
 
@@ -1082,22 +1494,58 @@ function StockFact({ product }: { product: CatalogProduct }) {
   );
 }
 
-function LoginButton({ onLogin }: { onLogin: (input: { username?: string; password?: string; code?: string }) => Promise<void> }) {
+function LoginButton({
+  onLogin,
+  onSetupAdmin,
+}: {
+  onLogin: (input: { username?: string; password?: string; code?: string }) => Promise<void>;
+  onSetupAdmin: (input: { username: string; password: string; displayName?: string }) => Promise<void>;
+}) {
   const [open, setOpen] = React.useState(false);
+  const [mode, setMode] = React.useState<"account" | "code" | "setup">("account");
+  const [setupRequired, setSetupRequired] = React.useState(false);
+  const [setupChecked, setSetupChecked] = React.useState(false);
   const [username, setUsername] = React.useState("");
+  const [displayName, setDisplayName] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [code, setCode] = React.useState("");
   const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setSetupChecked(false);
+    void fetchSetupStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setSetupRequired(status.setupRequired);
+        if (status.setupRequired) setMode("setup");
+        else setMode((current) => (current === "setup" ? "account" : current));
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(requestError instanceof Error ? requestError.message : "初始化状态检查失败");
+      })
+      .finally(() => {
+        if (!cancelled) setSetupChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError("");
     try {
-      await onLogin({ username, password });
+      if (mode === "setup") await onSetupAdmin({ username, password, displayName });
+      else await onLogin(mode === "code" ? { code } : { username, password });
       setOpen(false);
       setUsername("");
+      setDisplayName("");
       setPassword("");
-    } catch {
-      setError("账号或密码不正确");
+      setCode("");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : mode === "setup" ? "初始化管理员失败" : mode === "code" ? "访问码不正确" : "账号或密码不正确");
     }
   }
 
@@ -1109,11 +1557,35 @@ function LoginButton({ onLogin }: { onLogin: (input: { username?: string; passwo
       </button>
       {open ? (
         <form className="login-popover" onSubmit={submit}>
-          <span>使用系统账号密码登录</span>
-          <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" autoComplete="username" />
-          <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码" type="password" autoComplete="current-password" />
+          <span>{mode === "setup" ? "首次使用，请创建直营管理员账号" : mode === "account" ? "使用系统账号密码登录" : "使用内部访问码登录"}</span>
+          <div className="login-tabs">
+            {setupRequired ? (
+              <button className="active" type="button">初始化管理员</button>
+            ) : (
+              <>
+                <button className={mode === "account" ? "active" : ""} type="button" onClick={() => setMode("account")}>账号密码</button>
+                <button className={mode === "code" ? "active" : ""} type="button" onClick={() => setMode("code")}>访问码</button>
+              </>
+            )}
+          </div>
+          {!setupChecked ? <small>正在检查初始化状态...</small> : null}
+          {mode === "setup" ? (
+            <>
+              <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="管理员账号" autoComplete="username" />
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="显示名称" autoComplete="name" />
+              <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="管理员密码，至少 8 位" type="password" autoComplete="new-password" />
+              <small>初始化只在没有启用的直营管理员时开放，创建后入口会自动关闭。</small>
+            </>
+          ) : mode === "account" ? (
+            <>
+              <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" autoComplete="username" />
+              <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码" type="password" autoComplete="current-password" />
+            </>
+          ) : (
+            <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="内部访问码" type="password" autoComplete="one-time-code" />
+          )}
           {error ? <small>{error}</small> : null}
-          <button className="sync-button">登录</button>
+          <button className="sync-button">{mode === "setup" ? "创建并登录" : "登录"}</button>
         </form>
       ) : null}
     </div>
@@ -1172,10 +1644,6 @@ function Sidebar({
           <strong>同舟供应链数智化系统</strong>
           <span>产品 · 仓库 · 备货协同</span>
         </div>
-        <button className="settings-link">
-          <Settings size={17} />
-          字段映射设置
-        </button>
       </aside>
       {open ? <button className="scrim" onClick={onClose} aria-label="关闭导航" /> : null}
     </>
@@ -1185,27 +1653,378 @@ function Sidebar({
 function Dashboard({
   products,
   payload,
+  stockupPayload,
+  wecomNotificationPayload,
   internal,
   totalInventory,
   totalOrders,
   salesAmount,
   riskCount,
+  summary,
+  onOpenMovement,
+  onOpenStockup,
+  onOpenWecom,
+  onOpenMovementWarehouse,
+  onOpenWarehouses,
 }: {
   products: CatalogProduct[];
   payload: ProductPayload | null;
+  stockupPayload: StockupPayload | null;
+  wecomNotificationPayload: WecomNotificationPayload | null;
   internal: boolean;
   totalInventory: number;
   totalOrders: number;
   salesAmount: number;
   riskCount: number;
+  summary: DashboardSummaryPayload | null;
+  onOpenMovement: () => void;
+  onOpenStockup: () => void;
+  onOpenWecom: () => void;
+  onOpenMovementWarehouse: (warehouseId: string) => void;
+  onOpenWarehouses: () => void;
 }) {
+  const [heatmapPeriod, setHeatmapPeriod] = React.useState<HeatmapPeriod>("day");
+  const [attentionCopyMessage, setAttentionCopyMessage] = React.useState("");
+  const staleSources = [
+    { label: "产品", value: summary?.sync.productsSyncedAt },
+    { label: "库存", value: summary?.sync.inventorySyncedAt },
+    { label: "订单", value: summary?.sync.orderSyncedAt },
+  ].filter((item) => {
+    const age = daysSince(item.value);
+    return age === null || age >= 2;
+  });
+  const catalogSkuCount = summary?.counts.visibleCatalog ?? payload?.counts.catalog ?? products.length;
+  const movementSkuCount = summary?.counts.movementSku ?? 0;
+  const warehouseOnlySkuCount = summary?.counts.warehouseOnlySku ?? 0;
+  const productRiskCount = Math.max(0, riskCount - warehouseOnlySkuCount);
+  const failedWarehouses = summary?.sync.failedWarehouses ?? [];
+  const inventoryIssueWarehouses = (summary?.warehouses ?? []).filter((warehouse) => !warehouse.hasCredentials || !warehouse.inventoryOk);
+  const nextAutoSync = nextAutoSyncText(summary?.sync.lastAutoSyncAt, summary?.sync.autoSyncIntervalMs);
+  const todayOrderNote = !summary?.sync.orderSyncedAt
+    ? "订单未同步，不能判断是否真实为 0"
+    : failedWarehouses.length
+      ? `${failedWarehouses.length} 个仓库订单失败，今日订单可能不完整`
+      : totalOrders === 0
+        ? "订单链路已同步，今日暂无出库"
+        : "今日 WMS 出库明细已同步";
+  const syncHealthRows = [
+    {
+      id: "products",
+      label: "产品目录",
+      last: summary?.sync.productsSyncedAt,
+      status: payload?.warning ? "有提醒" : summary?.sync.productsSyncedAt ? "正常" : "待同步",
+      tone: payload?.warning || !summary?.sync.productsSyncedAt ? "warning" : "good",
+      reason: payload?.warning || (summary?.sync.productsSyncedAt ? "产品库缓存可用于当前页面。" : "尚未完成产品目录同步。"),
+    },
+    {
+      id: "inventory",
+      label: "仓库库存",
+      last: summary?.sync.inventorySyncedAt,
+      status: inventoryIssueWarehouses.length ? `${inventoryIssueWarehouses.length} 仓需检查` : summary?.sync.inventorySyncedAt ? "正常" : "待同步",
+      tone: inventoryIssueWarehouses.length || !summary?.sync.inventorySyncedAt ? "warning" : "good",
+      reason: inventoryIssueWarehouses.length
+        ? inventoryIssueWarehouses.slice(0, 3).map((warehouse) => `${warehouse.name}${warehouse.message ? `：${warehouse.message}` : ""}`).join("；")
+        : summary?.sync.inventorySyncedAt ? "库存快照已生成。" : "尚未完成仓库库存同步。",
+    },
+    {
+      id: "orders",
+      label: "订单出库",
+      last: summary?.sync.orderSyncedAt,
+      status: failedWarehouses.length ? `${failedWarehouses.length} 仓失败` : summary?.sync.orderSyncedAt ? "正常" : "待同步",
+      tone: failedWarehouses.length || !summary?.sync.orderSyncedAt ? "warning" : "good",
+      reason: failedWarehouses.length
+        ? failedWarehouses.slice(0, 3).map((warehouse) => `${warehouse.warehouseId}${warehouse.message ? `：${warehouse.message}` : ""}`).join("；")
+        : todayOrderNote,
+    },
+  ];
+  const wecomRobots = wecomNotificationPayload?.robots ?? [];
+  const enabledWecomRobots = wecomRobots.filter((robot) => robot.enabled);
+  const enabledWecomSchedules = (wecomNotificationPayload?.schedules ?? []).filter((schedule) => schedule.enabled);
+  const enabledWecomScenes = Object.entries(wecomNotificationPayload?.scenes ?? {})
+    .filter(([, scene]) => scene.enabled);
+  const wecomErrors = [
+    ...wecomRobots.filter((robot) => robot.lastError).map((robot) => `${robot.name}：${robot.lastError}`),
+    ...(wecomNotificationPayload?.schedules ?? []).filter((schedule) => schedule.lastError).map((schedule) => `${schedule.name}：${schedule.lastError}`),
+  ];
+  const wecomHealthTone = !enabledWecomRobots.length || wecomErrors.length ? "warning" : enabledWecomSchedules.length || enabledWecomScenes.length ? "good" : "warning";
+  const wecomHealthLabel = !wecomRobots.length
+    ? "未配置机器人"
+    : !enabledWecomRobots.length
+      ? "机器人已停用"
+      : wecomErrors.length
+        ? `${wecomErrors.length} 个错误`
+        : enabledWecomSchedules.length || enabledWecomScenes.length
+          ? "通知可用"
+          : "未启用推送";
+  const wecomSceneLabels: Record<string, string> = {
+    stockupRecommendation: "备货建议",
+    inventorySnapshot: "库存快照",
+    qualificationExpiry: "资质过期",
+  };
+  const enabledWecomSceneText = enabledWecomScenes.length
+    ? enabledWecomScenes.map(([key]) => wecomSceneLabels[key] || key).join("、")
+    : "未启用场景推送";
+  const wecomHealthDetail = wecomErrors.length
+    ? wecomErrors.slice(0, 2).join("；")
+    : enabledWecomRobots.length
+      ? `启用机器人 ${formatNumber(enabledWecomRobots.length)} 个，定时 ${formatNumber(enabledWecomSchedules.length)} 个，场景：${enabledWecomSceneText}。`
+      : "企业微信通知尚未形成主动推送能力，备货、库存快照和资质过期仍需要人工进系统查看。";
+  const diagnosticIssues = (summary?.movementDiagnostics ?? [])
+    .filter((item) => item.reason !== "ok" && item.reason !== "ok_with_sku_fallback")
+    .sort((a, b) => Number(b.failed) - Number(a.failed) || Number(!b.hasCredentials) - Number(!a.hasCredentials) || b.unmatchedOrderRows - a.unmatchedOrderRows);
+  const staleDetail = staleSources.map((item) => `${item.label} ${syncAgeText(item.value)}`).join("、");
+  const attentionItems = [
+    ...(staleSources.length ? [{
+      id: "stale-data",
+      tone: "danger" as const,
+      title: "数据新鲜度需确认",
+      metric: `${staleSources.length} 项`,
+      detail: `${staleDetail}。用于备货或经营复盘前建议先完成同步。`,
+      actionLabel: "去同步",
+      onAction: onOpenWarehouses,
+    }] : []),
+    ...(failedWarehouses.length ? [{
+      id: "warehouse-sync-failed",
+      tone: "danger" as const,
+      title: "仓库订单同步失败",
+      metric: `${failedWarehouses.length} 仓`,
+      detail: failedWarehouses.slice(0, 3).map((item) => `${item.warehouseId}${item.message ? `：${item.message}` : ""}`).join("；"),
+      actionLabel: "查仓库",
+      onAction: onOpenWarehouses,
+    }] : []),
+    ...diagnosticIssues.slice(0, 2).map((item) => ({
+      id: `movement-${item.warehouseId}`,
+      tone: item.failed || !item.hasCredentials ? "danger" as const : "warning" as const,
+      title: `${item.warehouseName} 动销诊断`,
+      metric: item.reasonLabel,
+      detail: `库存 SKU ${formatNumber(item.inventorySku)}，近 90 天订单 ${formatNumber(item.recentOrderRows)}，已匹配订单 ${formatNumber(item.matchedOrderRows)}。`,
+      actionLabel: "看动销",
+      onAction: () => onOpenMovementWarehouse(item.warehouseId),
+    })),
+    ...((stockupPayload?.counts.recommendations ?? 0) > 0 ? [{
+      id: "stockup-recommendations",
+      tone: "warning" as const,
+      title: "备货建议待处理",
+      metric: `${formatNumber(stockupPayload?.counts.recommendations ?? 0)} SKU`,
+      detail: `净建议备货 ${formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}，请确认采纳、放弃或创建备货计划。`,
+      actionLabel: "处理备货",
+      onAction: onOpenStockup,
+    }] : []),
+    ...((stockupPayload?.counts.acceptedRecommendations ?? 0) > (stockupPayload?.counts.openStockupPlans ?? 0) ? [{
+      id: "accepted-without-plan",
+      tone: "warning" as const,
+      title: "已采纳建议待建计划",
+      metric: `${formatNumber((stockupPayload?.counts.acceptedRecommendations ?? 0) - (stockupPayload?.counts.openStockupPlans ?? 0))} 条`,
+      detail: "已采纳的备货建议需要继续落到采购或委外计划，避免只停留在页面状态。",
+      actionLabel: "建计划",
+      onAction: onOpenStockup,
+    }] : []),
+    ...(wecomHealthTone === "warning" ? [{
+      id: "wecom-health",
+      tone: "warning" as const,
+      title: "企业微信通知需配置",
+      metric: wecomHealthLabel,
+      detail: wecomHealthDetail,
+      actionLabel: "配通知",
+      onAction: onOpenWecom,
+    }] : []),
+    ...(warehouseOnlySkuCount > 0 ? [{
+      id: "warehouse-only-sku",
+      tone: "warning" as const,
+      title: "仓库孤儿 SKU 待治理",
+      metric: `${formatNumber(warehouseOnlySkuCount)} SKU`,
+      detail: "仓库有库存但产品库未建档，需补齐产品档案或确认 SKU 映射。",
+      actionLabel: "看明细",
+      onAction: onOpenMovement,
+    }] : []),
+  ].slice(0, 6);
+
+  function attentionQueueText() {
+    if (!attentionItems.length) return "今日需要处理：暂无阻断项，继续巡检备货建议、同步健康度和动销风险。";
+    return [
+      `今日需要处理：${formatNumber(attentionItems.length)} 项`,
+      "",
+      ...attentionItems.map((item, index) => [
+        `${index + 1}. ${item.title}｜${item.metric}`,
+        `优先级：${item.tone === "danger" ? "高" : "中"}`,
+        `详情：${item.detail}`,
+        `动作：${item.actionLabel}`,
+      ].join("\n")),
+    ].join("\n");
+  }
+
+  async function copyAttentionQueue() {
+    await copyText(attentionQueueText());
+    setAttentionCopyMessage(`已复制 ${formatNumber(attentionItems.length)} 项首页待办`);
+    window.setTimeout(() => setAttentionCopyMessage(""), 1800);
+  }
+
+  function downloadAttentionQueueCsv() {
+    const rows = [
+      ["标题", "指标", "优先级", "详情", "动作"],
+      ...attentionItems.map((item) => [
+        item.title,
+        item.metric,
+        item.tone === "danger" ? "高" : "中",
+        item.detail,
+        item.actionLabel,
+      ]),
+    ];
+    downloadTextFile(`tongzhou-dashboard-action-queue-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
+    setAttentionCopyMessage("已下载首页待办 CSV");
+    window.setTimeout(() => setAttentionCopyMessage(""), 1800);
+  }
+
   return (
     <main className="dashboard-grid">
+      {staleSources.length ? (
+        <section className="notice danger data-freshness-notice">
+          <strong>数据可能已过期</strong>
+          <span>
+            {staleSources.map((item) => `${item.label} ${syncAgeText(item.value)}`).join("、")}。请先同步后再用于备货、补货或经营复盘判断。
+          </span>
+        </section>
+      ) : null}
+
       <section className="metric-strip">
         <Metric title="可售库存" value={formatNumber(totalInventory)} note={`${products.length} 个可见产品`} icon={Boxes} tone="blue" />
-        <Metric title="今日出库订单" value={formatNumber(totalOrders)} note="WMS 日报演示数据" icon={PackageCheck} tone="green" />
-        <Metric title="日报销售额" value={`$${formatNumber(salesAmount)}`} note="覆盖 4 个国家" icon={BarChart3} tone="orange" />
-        <Metric title="动销风险 SKU" value={String(riskCount)} note="需采购确认" icon={AlertTriangle} tone="red" />
+        <Metric title="今日出库订单" value={formatNumber(totalOrders)} note={todayOrderNote} icon={PackageCheck} tone="green" />
+        <Metric title="90天订单金额" value={formatMoney(salesAmount)} note={`${formatNumber(summary?.counts.orderCount90 ?? 0)} 条出库明细`} icon={BarChart3} tone="orange" />
+        <Metric title="动销风险 SKU" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} / 仓库孤儿 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
+      </section>
+
+      <section className="panel sync-health-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Sync Health</p>
+            <h2>同步健康度</h2>
+          </div>
+          <span className="status-pill muted">下一次：{nextAutoSync}</span>
+        </div>
+        <div className="sync-health-grid">
+          {syncHealthRows.map((row) => (
+            <article className="sync-health-row" key={row.id}>
+              <div className="sync-health-title">
+                <strong>{row.label}</strong>
+                <span className={`status-pill ${row.tone}`}>{row.status}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>最后成功</dt>
+                  <dd>{row.last ? formatDateTime(row.last) : "未同步"}</dd>
+                </div>
+                <div>
+                  <dt>下一次自动</dt>
+                  <dd>{nextAutoSync}</dd>
+                </div>
+              </dl>
+              <p>{row.reason}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel notification-health-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Notification Health</p>
+            <h2>通知配置健康度</h2>
+          </div>
+          <span className={`status-pill ${wecomHealthTone}`}>{wecomHealthLabel}</span>
+        </div>
+        <div className="notification-health-body">
+          <div className="notification-health-icon">
+            <BellRing size={20} />
+          </div>
+          <div>
+            <strong>企业微信主动提醒</strong>
+            <span>{wecomHealthDetail}</span>
+          </div>
+          <button className="ghost-button" type="button" onClick={onOpenWecom}>
+            配置通知
+            <ArrowUpRight size={15} />
+          </button>
+        </div>
+      </section>
+
+      <section className="panel attention-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Action Queue</p>
+            <h2>需要处理</h2>
+          </div>
+          <div className="attention-toolbar">
+            <span className={`status-pill ${attentionItems.length ? "warning" : "good"}`}>
+              {attentionItems.length ? `${attentionItems.length} 项待处理` : "暂无阻断"}
+            </span>
+            <button className="ghost-button compact-button" type="button" onClick={() => void copyAttentionQueue()} disabled={!attentionItems.length}>
+              <Copy size={14} />
+              复制待办
+            </button>
+            <button className="ghost-button compact-button" type="button" onClick={downloadAttentionQueueCsv} disabled={!attentionItems.length}>
+              <Download size={14} />
+              下载CSV
+            </button>
+          </div>
+        </div>
+        {attentionCopyMessage ? <div className="notice good compact-notice">{attentionCopyMessage}</div> : null}
+        {attentionItems.length ? (
+          <div className="attention-list">
+            {attentionItems.map((item) => (
+              <article className={`attention-item ${item.tone}`} key={item.id}>
+                <div className="attention-marker" />
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.detail}</span>
+                </div>
+                <div className="attention-action">
+                  <em>{item.metric}</em>
+                  <button className="ghost-button" type="button" onClick={item.onAction}>
+                    {item.actionLabel}
+                    <ArrowUpRight size={15} />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="attention-empty">
+            <Check size={18} />
+            <span>同步、动销诊断和备货建议当前没有需要优先处理的阻断项。</span>
+          </div>
+        )}
+      </section>
+
+      <section className="panel metric-definition-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Metric Definitions</p>
+            <h2>经营指标口径</h2>
+          </div>
+          <span className="status-pill muted">避免跨集合误读</span>
+        </div>
+        <div className="metric-definition-grid">
+          <div>
+            <strong>{formatNumber(catalogSkuCount)}</strong>
+            <span>产品库 SKU</span>
+            <small>来自产品目录，是当前页面可见商品集合。</small>
+          </div>
+          <div>
+            <strong>{formatNumber(movementSkuCount)}</strong>
+            <span>动销分析 SKU</span>
+            <small>合并产品库、仓库库存和近 90 天订单后的分析集合。</small>
+          </div>
+          <div>
+            <strong>{formatNumber(warehouseOnlySkuCount)}</strong>
+            <span>仓库孤儿 SKU</span>
+            <small>仓库有库存但产品库未建档，需补档或确认 SKU 映射。</small>
+          </div>
+          <div>
+            <strong>{formatNumber(riskCount)}</strong>
+            <span>风险 SKU</span>
+            <small>缺货、补货预警、慢销、滞销与仓库孤儿风险合计。</small>
+          </div>
+        </div>
       </section>
 
       <section className="panel sales-panel">
@@ -1236,15 +2055,7 @@ function Dashboard({
             <span>{internal ? "直营内部" : "直营隐藏"}</span>
           </div>
         </div>
-        <div className="bar-chart compact" aria-label="近 7 天订单日报柱状图">
-          {dailyOrders.map((day) => (
-            <div className="bar-group" key={`${day.date}-${day.country}`}>
-              <span className="bar amount" style={{ height: `${Math.max(18, day.amount / 95)}px` }} />
-              <span className="bar orders" style={{ height: `${Math.max(18, day.orders / 3.6)}px` }} />
-              <small>{day.date}</small>
-            </div>
-          ))}
-        </div>
+        <WarehouseMovementHeatmap summary={summary} period={heatmapPeriod} onPeriodChange={setHeatmapPeriod} onWarehouseClick={onOpenMovementWarehouse} />
       </section>
 
       <section className="panel warehouse-panel">
@@ -1253,22 +2064,33 @@ function Dashboard({
             <p className="eyebrow">WMS Sync</p>
             <h2>仓库连接状态</h2>
           </div>
-          <button className="icon-button" aria-label="新增仓库授权">
+          <button className="icon-button" type="button" aria-label="新增仓库授权" onClick={onOpenWarehouses}>
             <ArrowUpRight size={18} />
           </button>
         </div>
         <div className="warehouse-list">
-          {warehouses.map((warehouse) => (
-            <article key={warehouse.name} className="warehouse-row">
+          {(summary?.warehouses?.length ? summary.warehouses : warehouses).map((warehouse) => (
+            <article key={"id" in warehouse ? warehouse.id : warehouse.name} className="warehouse-row">
               <div>
                 <strong>{warehouse.name}</strong>
                 <span>
-                  {warehouse.provider} · {warehouse.baseUrl}
+                  {"providerName" in warehouse ? `${warehouse.providerName} · ${warehouse.country}` : `${warehouse.provider} · ${warehouse.baseUrl}`}
                 </span>
               </div>
               <div className="warehouse-meta">
-                <span className={`status-pill ${warehouse.status === "正常" ? "good" : "warning"}`}>{warehouse.status}</span>
-                <small>{warehouse.lastSyncedAt}</small>
+                {"orderOk" in warehouse ? (
+                  <>
+                    <span className={`status-pill ${warehouse.backgroundRunning ? "warning" : warehouse.orderOk || warehouse.inventoryOk ? "good" : "warning"}`}>
+                      {warehouse.backgroundRunning ? "后台同步中" : warehouse.orderOk || warehouse.inventoryOk ? "正常" : "待同步"}
+                    </span>
+                    <small>{warehouse.message || `${formatNumber(warehouse.orderCount)} 条订单`}</small>
+                  </>
+                ) : (
+                  <>
+                    <span className={`status-pill ${warehouse.status === "正常" ? "good" : "warning"}`}>{warehouse.status}</span>
+                    <small>{warehouse.lastSyncedAt}</small>
+                  </>
+                )}
               </div>
             </article>
           ))}
@@ -1302,6 +2124,98 @@ function Dashboard({
   );
 }
 
+function periodMultiplier(period: HeatmapPeriod) {
+  if (period === "day") return 1 / 90;
+  if (period === "week") return 7 / 90;
+  return 30 / 90;
+}
+
+function periodLabel(period: HeatmapPeriod) {
+  return { day: "日", week: "周", month: "月" }[period];
+}
+
+function heatLevel(value: number, max: number) {
+  if (!max || value <= 0) return 0;
+  return Math.min(5, Math.max(1, Math.ceil((value / max) * 5)));
+}
+
+function WarehouseMovementHeatmap({
+  summary,
+  period,
+  onPeriodChange,
+  onWarehouseClick,
+}: {
+  summary: DashboardSummaryPayload | null;
+  period: HeatmapPeriod;
+  onPeriodChange: (period: HeatmapPeriod) => void;
+  onWarehouseClick: (warehouseId: string) => void;
+}) {
+  const warehouses = summary?.warehouses ?? [];
+  const multiplier = periodMultiplier(period);
+  const rows = warehouses.map((warehouse) => ({
+    ...warehouse,
+    periodOrders: Math.round((warehouse.orderCount || 0) * multiplier),
+    turnoverScore: warehouse.inventoryCount > 0 ? ((warehouse.orderCount || 0) * multiplier) / warehouse.inventoryCount : 0,
+  }));
+  const maxOrders = Math.max(...rows.map((row) => row.periodOrders), 1);
+  const maxTurnover = Math.max(...rows.map((row) => row.turnoverScore), 0.01);
+  const totalPeriodOrders = rows.reduce((sum, row) => sum + row.periodOrders, 0);
+
+  return (
+    <div className="warehouse-heatmap" aria-label="仓库动销热力图">
+      <div className="heatmap-toolbar">
+        <div>
+          <strong>仓库动销热力图</strong>
+          <span>{periodLabel(period)}维度估算，基于近 90 天出库缓存</span>
+        </div>
+        <div className="heatmap-tabs" role="group" aria-label="热力图周期">
+          {(["day", "week", "month"] as const).map((item) => (
+            <button key={item} className={period === item ? "active" : ""} type="button" onClick={() => onPeriodChange(item)}>
+              {periodLabel(item)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="heatmap-summary">
+        <span>预计{periodLabel(period)}出库 <strong>{formatNumber(totalPeriodOrders)}</strong></span>
+        <span>覆盖仓库 <strong>{formatNumber(rows.length)}</strong></span>
+        <span>最近订单同步 <strong>{summary?.sync.orderSyncedAt ? formatDateTime(summary.sync.orderSyncedAt) : "未同步"}</strong></span>
+      </div>
+      <div className="heatmap-grid">
+        <span className="heatmap-head">仓库</span>
+        <span className="heatmap-head">出库热度</span>
+        <span className="heatmap-head">周转热度</span>
+        <span className="heatmap-head">状态</span>
+        {rows.length ? rows.map((row) => {
+          const orderLevel = heatLevel(row.periodOrders, maxOrders);
+          const turnoverLevel = heatLevel(row.turnoverScore, maxTurnover);
+          return (
+            <React.Fragment key={row.id}>
+              <button className="heatmap-name heatmap-link" type="button" onClick={() => onWarehouseClick(row.id)}>
+                <strong>{row.name}</strong>
+                <small>{row.providerName} · {row.country}</small>
+              </button>
+              <div className={`heat-cell level-${orderLevel}`}>
+                <strong>{formatNumber(row.periodOrders)}</strong>
+                <small>{periodLabel(period)}出库</small>
+              </div>
+              <div className={`heat-cell level-${turnoverLevel}`}>
+                <strong>{row.turnoverScore.toFixed(3)}</strong>
+                <small>出库/库存</small>
+              </div>
+              <span className={`status-pill ${row.backgroundRunning ? "warning" : row.orderOk || row.inventoryOk ? "good" : "muted"}`}>
+                {row.backgroundRunning ? "后台同步中" : row.orderOk || row.inventoryOk ? "正常" : "待同步"}
+              </span>
+            </React.Fragment>
+          );
+        }) : (
+          <div className="heatmap-empty">暂无仓库动销数据，请先完成仓库和订单同步。</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function movementStatusClass(status: string) {
   return {
     缺货: "danger",
@@ -1317,6 +2231,105 @@ function formatDaysCover(value: number | null) {
   if (value === null) return "∞";
   if (value > 999) return "999+";
   return value.toFixed(value < 10 ? 1 : 0);
+}
+
+function movementLeadTimeDays(country: string) {
+  if (/俄罗斯/.test(country)) return 55;
+  if (/印度尼西亚|印尼/.test(country)) return 35;
+  if (/马来西亚|越南/.test(country)) return 30;
+  return 35;
+}
+
+function movementStatusFor(item: Pick<MovementPayload["items"][number], "availableQty" | "sales7" | "sales30" | "sales90" | "dailyWeighted" | "daysCover" | "leadDays">) {
+  const daysCover = item.daysCover ?? 9999;
+  if (item.availableQty <= 0 && (item.sales7 > 0 || item.sales30 > 0 || item.sales90 > 0)) return "缺货";
+  if (item.dailyWeighted > 0 && daysCover <= item.leadDays + 10) return "补货预警";
+  if (item.availableQty > 0 && item.sales30 === 0) return "滞销";
+  if (item.availableQty > 0 && item.sales90 <= 2) return "滞销";
+  if (item.dailyWeighted > 0 && daysCover > 90) return "慢销";
+  if (item.sales90 === 0 && item.availableQty <= 0) return "无动销数据";
+  return "健康";
+}
+
+function movementSuggestionFor(status: string, item: Pick<MovementPayload["items"][number], "targetCoverDays" | "replenishQty">) {
+  if (status === "缺货") return "立即核查库存，确认是否有在途或可调拨库存。";
+  if (status === "补货预警") return `建议按 ${item.targetCoverDays} 天覆盖量安排补货，参考补货量 ${item.replenishQty}。`;
+  if (status === "慢销") return "库存覆盖过高，建议暂停补货并评估促销或调价。";
+  if (status === "滞销") return "近 30 天动销不足，建议检查渠道曝光、价格和是否清仓。";
+  if (status === "无动销数据") return "暂无订单出库数据，先确认订单接口或 SKU 映射。";
+  return "库存和销量处于可控区间。";
+}
+
+function movementDetailMatches(detail: { warehouseId?: string; warehouseName?: string }, warehouse: string) {
+  return detail.warehouseId === warehouse || detail.warehouseName === warehouse;
+}
+
+function sumTrend30(rows: Array<{ trend30?: number[] }>) {
+  return Array.from({ length: 30 }, (_, index) => rows.reduce((sum, row) => sum + (row.trend30?.[index] || 0), 0));
+}
+
+function movementWarehouseScopedItem(
+  item: MovementPayload["items"][number],
+  warehouse: string,
+  warehouseCountry = "",
+) {
+  if (warehouse === "全部") return item;
+  const inventoryRows = (item.warehouseBreakdown || []).filter((detail) => movementDetailMatches(detail, warehouse));
+  const salesRows = (item.salesWarehouseBreakdown || []).filter((detail) => movementDetailMatches(detail, warehouse));
+  if (!inventoryRows.length && !salesRows.length) return null;
+
+  const availableQty = inventoryRows.reduce((sum, detail) => sum + (detail.availableQty || 0), 0);
+  const lockedQty = inventoryRows.reduce((sum, detail) => sum + (detail.lockedQty || 0), 0);
+  const inTransitQty = inventoryRows.reduce((sum, detail) => sum + (detail.inTransitQty || 0), 0);
+  const totalQty = inventoryRows.reduce((sum, detail) => sum + (detail.totalQty || 0), 0);
+  const sales3 = salesRows.reduce((sum, detail) => sum + (detail.sales3 || 0), 0);
+  const sales7 = salesRows.reduce((sum, detail) => sum + (detail.sales7 || 0), 0);
+  const sales15 = salesRows.reduce((sum, detail) => sum + (detail.sales15 || 0), 0);
+  const sales30 = salesRows.reduce((sum, detail) => sum + (detail.sales30 || 0), 0);
+  const sales60 = salesRows.reduce((sum, detail) => sum + (detail.sales60 || 0), 0);
+  const sales90 = salesRows.reduce((sum, detail) => sum + (detail.sales90 || 0), 0);
+  const avgDaily3 = sales3 / 3;
+  const avgDaily7 = sales7 / 7;
+  const avgDaily30 = sales30 / 30;
+  const avgDaily90 = sales90 / 90;
+  const dailyWeighted = avgDaily7 * 0.5 + avgDaily30 * 0.3 + avgDaily90 * 0.2;
+  const country = warehouseCountry || item.country;
+  const leadDays = movementLeadTimeDays(country);
+  const targetCoverDays = leadDays + 20;
+  const daysCover = dailyWeighted > 0 ? Math.round((availableQty / dailyWeighted) * 10) / 10 : null;
+  const replenishQty = Math.max(0, Math.ceil(dailyWeighted * targetCoverDays - availableQty - inTransitQty));
+  const scoped = {
+    ...item,
+    country,
+    availableQty,
+    lockedQty,
+    inTransitQty,
+    totalQty,
+    warehouseBreakdown: inventoryRows,
+    salesWarehouseBreakdown: salesRows,
+    sales3,
+    sales7,
+    sales15,
+    sales30,
+    sales60,
+    sales90,
+    avgDaily3,
+    avgDaily7,
+    avgDaily30,
+    avgDaily90,
+    dailyWeighted,
+    daysCover,
+    leadDays,
+    targetCoverDays,
+    replenishQty,
+    trend30: sumTrend30(salesRows),
+  };
+  const status = movementStatusFor(scoped);
+  return {
+    ...scoped,
+    status,
+    suggestion: movementSuggestionFor(status, scoped),
+  };
 }
 
 function Sparkline({ values }: { values: number[] }) {
@@ -1412,6 +2425,71 @@ function MovementStatusInsight({ item }: { item: Pick<MovementPayload["items"][n
   );
 }
 
+function movementRiskOwner(item: MovementPayload["items"][number]) {
+  if (item.source === "warehouse_only" || item.dataGap === "warehouse_only") return "产品资料 / 仓库";
+  if (item.status === "缺货" || item.status === "补货预警") return "采购 / 运营";
+  if (item.status === "慢销" || item.status === "滞销") return "运营 / 销售";
+  if (item.status === "无动销数据") return "仓库 / WMS";
+  return "运营";
+}
+
+function movementRiskReason(item: MovementPayload["items"][number]) {
+  if (item.source === "warehouse_only" || item.dataGap === "warehouse_only") return "仓库有库存但产品库未建档";
+  if (item.status === "缺货") return `可售 ${formatNumber(item.availableQty)}，近90天销量 ${formatNumber(item.sales90)}`;
+  if (item.status === "补货预警") return `可售天数 ${formatDaysCover(item.daysCover)}，低于补货周期 ${formatNumber(item.leadDays)} + 10 天`;
+  if (item.status === "慢销") return `可售天数 ${formatDaysCover(item.daysCover)}，库存覆盖偏高`;
+  if (item.status === "滞销") return `近30天销量 ${formatNumber(item.sales30)}，近90天销量 ${formatNumber(item.sales90)}`;
+  if (item.status === "无动销数据") return "库存和近90天订单未形成有效动销";
+  return item.suggestion || "当前指标正常";
+}
+
+function movementRiskNextAction(item: MovementPayload["items"][number]) {
+  if (item.source === "warehouse_only" || item.dataGap === "warehouse_only") return "补齐产品档案、国家 SKU 或仓库 SKU 映射后重新同步仓库和订单。";
+  if (item.status === "缺货") return "确认可调拨、在途和供应商交期，优先创建补货或委外计划。";
+  if (item.status === "补货预警") return `按建议备货 ${formatNumber(item.replenishQty)} ${item.unit || ""} 评估采购/委外计划。`;
+  if (item.status === "慢销") return "暂停补货，复核价格、渠道曝光和促销节奏。";
+  if (item.status === "滞销") return "评估清仓、调价或下架，并确认是否存在 SKU 映射问题。";
+  if (item.status === "无动销数据") return "先查看仓库动销诊断，确认订单同步、SKU 映射和统计窗口。";
+  return item.suggestion || "保持观察。";
+}
+
+function movementRiskExecutionCsv(items: MovementPayload["items"]) {
+  const header = ["SKU", "产品", "国家", "状态", "建议负责人", "风险原因", "下一步动作", "可售", "在途", "3天销量", "7天销量", "30天销量", "90天销量", "可售天数", "建议备货"];
+  const rows = items.map((item) => [
+    item.sku,
+    item.name,
+    item.country,
+    item.status,
+    movementRiskOwner(item),
+    movementRiskReason(item),
+    movementRiskNextAction(item),
+    item.availableQty,
+    item.inTransitQty,
+    item.sales3,
+    item.sales7,
+    item.sales30,
+    item.sales90,
+    formatDaysCover(item.daysCover),
+    item.replenishQty,
+  ]);
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function movementRiskExecutionText(items: MovementPayload["items"]) {
+  if (!items.length) return "当前筛选下暂无需要处理的动销风险 SKU。";
+  return [
+    `动销风险执行清单：${formatNumber(items.length)} 个 SKU`,
+    "",
+    ...items.slice(0, 80).map((item, index) => [
+      `${index + 1}. ${item.sku}｜${item.name}｜${item.country}｜${item.status}`,
+      `负责人：${movementRiskOwner(item)}`,
+      `原因：${movementRiskReason(item)}`,
+      `动作：${movementRiskNextAction(item)}`,
+      `指标：可售 ${formatNumber(item.availableQty)}，在途 ${formatNumber(item.inTransitQty)}，7/30/90天销量 ${formatNumber(item.sales7)}/${formatNumber(item.sales30)}/${formatNumber(item.sales90)}，可售天数 ${formatDaysCover(item.daysCover)}`,
+    ].join("\n")),
+  ].join("\n");
+}
+
 function OutsourcingInsight({ item }: { item: StockupPayload["recommendations"][number] }) {
   const orders = item.outsourcingOrders || [];
   return (
@@ -1429,6 +2507,140 @@ function OutsourcingInsight({ item }: { item: StockupPayload["recommendations"][
       </span>
     </span>
   );
+}
+
+function StockupFormulaInsight({ item }: { item: StockupPayload["recommendations"][number] }) {
+  const dailyWeighted = item.avgDaily7 * 0.5 + item.avgDaily30 * 0.3 + item.avgDaily90 * 0.2;
+  const grossFormulaQty = Math.max(0, Math.ceil(dailyWeighted * item.targetCoverDays - item.availableQty - item.inTransitQty));
+  return (
+    <span className="movement-insight stockup-formula-insight has-tooltip">
+      计算口径
+      <span className="movement-tooltip insight-tooltip">
+        <strong>备货建议计算公式</strong>
+        <small>销量窗口：7天 {formatNumber(item.sales7)} / 30天 {formatNumber(item.sales30)} / 90天 {formatNumber(item.sales90)}。</small>
+        <small>
+          加权日均 = 7日均 {formatDecimal(item.avgDaily7)} × 50% + 30日均 {formatDecimal(item.avgDaily30)} × 30% + 90日均 {formatDecimal(item.avgDaily90)} × 20% = {formatDecimal(dailyWeighted)}。
+        </small>
+        <small>
+          可售天数 = 可售 {formatNumber(item.availableQty)} ÷ 加权日均 {formatDecimal(dailyWeighted)} = {formatDaysCover(item.daysCover)} 天。
+        </small>
+        <small>
+          建议备货 = max(0, ceil(加权日均 × 目标覆盖 {formatNumber(item.targetCoverDays)} - 可售 {formatNumber(item.availableQty)} - 在途 {formatNumber(item.inTransitQty)})) = {formatNumber(item.replenishQty)} {item.unit}。
+        </small>
+        {grossFormulaQty !== item.replenishQty ? <small>当前建议量来自服务端口径 {formatNumber(item.replenishQty)}，本页公式复算值 {formatNumber(grossFormulaQty)}，请以服务端结果为准。</small> : null}
+        <small>
+          净建议备货 = max(0, 建议备货 {formatNumber(item.replenishQty)} - 委外在产 {formatNumber(item.outsourcingInProductionQty)}) = {formatNumber(item.netReplenishQty)} {item.unit}。
+        </small>
+      </span>
+    </span>
+  );
+}
+
+function stockupPlanStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    draft: "待下单",
+    ordered: "已下单",
+    in_production: "生产/在途",
+    arrived: "已到仓",
+    cancelled: "已取消",
+  };
+  return labels[status] || status || "待处理";
+}
+
+function stockupPlanTypeLabel(type: string) {
+  return type === "outsourcing" ? "委外排产" : "采购补货";
+}
+
+type StockupPlanItem = NonNullable<StockupPayload["plans"]>[number];
+
+function stockupPlanExecutionRows(plans: StockupPlanItem[]) {
+  return plans.map((plan) => [
+    plan.sku,
+    plan.name || "",
+    plan.country || "",
+    stockupPlanTypeLabel(plan.planType),
+    stockupPlanStatusLabel(plan.status),
+    plan.quantity,
+    plan.unit || "",
+    plan.owner || "",
+    plan.expectedArrivalAt || "",
+    plan.note || "",
+    plan.createdAt ? formatDateTime(plan.createdAt) : "",
+    plan.updatedAt ? formatDateTime(plan.updatedAt) : "",
+  ]);
+}
+
+function stockupPlanExecutionCsv(plans: StockupPlanItem[]) {
+  const header = ["SKU", "产品名称", "国家", "计划类型", "状态", "计划数量", "单位", "负责人", "预计到仓", "备注", "创建时间", "更新时间"];
+  return [header, ...stockupPlanExecutionRows(plans)].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function stockupPlanExecutionText(plans: StockupPlanItem[]) {
+  if (!plans.length) return "暂无未完成备货计划。";
+  const totalQty = plans.reduce((sum, plan) => sum + (Number(plan.quantity) || 0), 0);
+  return [
+    `备货执行清单：${plans.length} 个未完成计划，合计数量 ${formatNumber(totalQty)}`,
+    "",
+    ...plans.map((plan, index) => [
+      `${index + 1}. ${plan.sku}｜${plan.name || "-"}`,
+      `类型：${stockupPlanTypeLabel(plan.planType)}；状态：${stockupPlanStatusLabel(plan.status)}`,
+      `数量：${formatNumber(plan.quantity)} ${plan.unit || ""}；国家：${plan.country || "-"}`,
+      `负责人：${plan.owner || "未指定"}；预计到仓：${plan.expectedArrivalAt || "未设置"}`,
+      plan.note ? `备注：${plan.note}` : "",
+    ].filter(Boolean).join("\n")),
+  ].join("\n");
+}
+
+function dateKeyDiff(from: string, to: string) {
+  const start = new Date(`${from.slice(0, 10)}T00:00:00.000Z`);
+  const end = new Date(`${to.slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return Math.round((end.getTime() - start.getTime()) / 86400000);
+}
+
+function stockupPlanReviewStatus(plan: StockupPlanItem) {
+  const arrivedAt = (plan.updatedAt || "").slice(0, 10);
+  if (!plan.expectedArrivalAt) return "未设置预计到仓";
+  if (!arrivedAt) return "待确认到仓时间";
+  const diff = dateKeyDiff(plan.expectedArrivalAt, arrivedAt);
+  if (diff === null) return "待复核到仓日期";
+  if (diff <= 0) return diff < 0 ? `提前 ${Math.abs(diff)} 天` : "按期到仓";
+  return `延期 ${diff} 天`;
+}
+
+function stockupPlanReviewCsv(plans: StockupPlanItem[]) {
+  const header = ["SKU", "产品名称", "国家", "计划类型", "计划数量", "单位", "负责人", "预计到仓", "标记到仓时间", "复盘结论", "备注", "创建时间", "更新时间"];
+  const rows = plans.map((plan) => [
+    plan.sku,
+    plan.name || "",
+    plan.country || "",
+    stockupPlanTypeLabel(plan.planType),
+    plan.quantity,
+    plan.unit || "",
+    plan.owner || "",
+    plan.expectedArrivalAt || "",
+    (plan.updatedAt || "").slice(0, 10),
+    stockupPlanReviewStatus(plan),
+    plan.note || "",
+    plan.createdAt ? formatDateTime(plan.createdAt) : "",
+    plan.updatedAt ? formatDateTime(plan.updatedAt) : "",
+  ]);
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function stockupPlanReviewText(plans: StockupPlanItem[]) {
+  if (!plans.length) return "暂无已到仓待复盘计划。";
+  return [
+    `已到仓待复盘：${formatNumber(plans.length)} 个计划`,
+    "",
+    ...plans.slice(0, 80).map((plan, index) => [
+      `${index + 1}. ${plan.sku}｜${plan.name || "-"}`,
+      `数量：${formatNumber(plan.quantity)} ${plan.unit || ""}；类型：${stockupPlanTypeLabel(plan.planType)}`,
+      `负责人：${plan.owner || "未指定"}；预计到仓：${plan.expectedArrivalAt || "未设置"}；标记到仓：${plan.updatedAt ? formatDateTime(plan.updatedAt) : "未记录"}`,
+      `复盘结论：${stockupPlanReviewStatus(plan)}`,
+      plan.note ? `备注：${plan.note}` : "",
+    ].filter(Boolean).join("\n")),
+  ].join("\n");
 }
 
 function MovementThumb({ item }: { item: { imageUrl?: string } }) {
@@ -1477,13 +2689,446 @@ function movementSortValue(item: MovementPayload["items"][number], key: Movement
   return 0;
 }
 
+function diagnosticTone(item: MovementWarehouseDiagnostic) {
+  if (item.severity === "good" || item.severity === "warning" || item.severity === "danger") return item.severity;
+  if (item.reason === "ok" || item.reason === "ok_with_sku_fallback") return "good";
+  if (item.reason === "running" || item.reason === "out_of_window" || item.reason === "no_orders") return "warning";
+  if (item.reason === "missing_sku") return "danger";
+  return "danger";
+}
+
+function movementDiagnosticSupportText(item: MovementWarehouseDiagnostic) {
+  const unmatchedRows = movementUnmatchedSkuRows(item);
+  const outOfWindowRows = movementOutOfWindowSkuRows(item);
+  const missingSkuRows = movementMissingSkuOrderRows(item);
+  return [
+    `仓库：${item.warehouseName || item.warehouseId}`,
+    `国家：${item.country || "-"}`,
+    `WMS：${item.providerName || item.providerId || "-"}`,
+    `诊断：${item.reasonLabel || item.reason}`,
+    `授权：${item.hasCredentials ? "已授权" : "未授权"}`,
+    `库存：${formatNumber(item.inventoryRows)} 行 / ${formatNumber(item.inventorySku)} SKU`,
+    `订单：${formatNumber(item.orderRows)} 行；近90天 ${formatNumber(item.recentOrderRows)}；已匹配 ${formatNumber(item.matchedOrderRows)}`,
+    `SKU兜底匹配：${formatNumber(item.skuFallbackMatchedRows)}；未匹配：${formatNumber(item.unmatchedOrderRows)}；窗口外：${formatNumber(item.outOfWindowOrderRows)}；缺SKU：${formatNumber(item.missingSkuOrderRows)}`,
+    item.orderApiTotal || item.orderApiReadRows || item.orderApiReachedPageLimit ? `订单接口分页：total ${formatNumber(item.orderApiTotal || 0)}；已读包裹 ${formatNumber(item.orderApiReadRows || 0)}；SKU行 ${formatNumber(item.orderApiReadSkuRows || 0)}；页数 ${formatNumber(item.orderApiPagesRead || 0)}/${formatNumber(item.orderApiPageLimit || 0)}${item.orderApiReachedPageLimit ? "；已达到页数上限" : ""}` : "",
+    item.latestOrderSyncJob ? `最近订单同步：${item.latestOrderSyncJob.status}；分片 ${formatNumber(item.latestOrderSyncJob.completedChunks)}/${formatNumber(item.latestOrderSyncJob.totalChunks)}；失败 ${formatNumber(item.latestOrderSyncJob.failedChunks)}；订单 ${formatNumber(item.latestOrderSyncJob.orderCount)}；${item.latestOrderSyncJob.lastMessage || ""}` : "",
+    item.latestOrderSyncJob?.failedChunkSamples?.length ? `失败分片：${item.latestOrderSyncJob.failedChunkSamples.map((chunk) => `${chunk.from}~${chunk.to} ${chunk.message}`).join("；")}` : "",
+    missingSkuRows.length ? `缺SKU订单：${missingSkuRows.map((row) => `${row.orderNo || row.orderId || "-"} / ${row.productName || row.goodsSkuId || "-"} / ${formatNumber(row.quantity)} / ${row.shippedAt || row.createdAt || "-"}`).join("；")}` : "",
+    unmatchedRows.length ? `未匹配SKU：${unmatchedRows.map((row) => `${row.sku || "-"} / ${row.country || "-"} / ${formatNumber(row.orderRows)}单 / 最近${row.lastShippedAt || "-"}`).join("；")}` : "",
+    outOfWindowRows.length ? `窗口外SKU：${outOfWindowRows.map((row) => `${row.sku || "-"} / ${row.country || "-"} / ${formatNumber(row.orderRows)}单 / 最近${row.lastShippedAt || "-"} / 距今${row.minAgeDays ?? "-"}天`).join("；")}` : "",
+    item.actionTitle ? `处理建议：${item.actionTitle}` : "",
+    item.actionItems?.length ? `下一步：${item.actionItems.join("；")}` : "",
+    item.message ? `同步消息：${item.message}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+type MovementDiagnosticSkuWindowRow = {
+  sku: string;
+  country: string;
+  orderRows: number;
+  quantity: number;
+  firstShippedAt: string;
+  lastShippedAt: string;
+  sampleShippedAt: string;
+  minAgeDays?: number | null;
+  maxAgeDays?: number | null;
+};
+
+function movementUnmatchedSkuRows(item: MovementWarehouseDiagnostic): MovementDiagnosticSkuWindowRow[] {
+  if (item.unmatchedSkus?.length) {
+    return item.unmatchedSkus.map((row) => ({
+      sku: row.sku,
+      country: row.country,
+      orderRows: row.orderRows,
+      quantity: row.quantity,
+      firstShippedAt: row.firstShippedAt,
+      lastShippedAt: row.lastShippedAt,
+      sampleShippedAt: row.sampleShippedAt,
+    }));
+  }
+  return (item.unmatchedSamples || []).map((sample) => ({
+    sku: sample.sku,
+    country: sample.country,
+    orderRows: 1,
+    quantity: 0,
+    firstShippedAt: sample.shippedAt,
+    lastShippedAt: sample.shippedAt,
+    sampleShippedAt: sample.shippedAt,
+  }));
+}
+
+function movementMissingSkuOrderRows(item: MovementWarehouseDiagnostic) {
+  return item.missingSkuOrders || [];
+}
+
+function movementOutOfWindowSkuRows(item: MovementWarehouseDiagnostic): MovementDiagnosticSkuWindowRow[] {
+  return (item.outOfWindowSkus || []).map((row) => ({
+    sku: row.sku,
+    country: row.country,
+    orderRows: row.orderRows,
+    quantity: row.quantity,
+    firstShippedAt: row.firstShippedAt,
+    lastShippedAt: row.lastShippedAt,
+    sampleShippedAt: row.sampleShippedAt,
+    minAgeDays: row.minAgeDays,
+    maxAgeDays: row.maxAgeDays,
+  }));
+}
+
+function movementMissingSkuOrderText(item: MovementWarehouseDiagnostic) {
+  const rows = movementMissingSkuOrderRows(item);
+  return [
+    `仓库：${item.warehouseName || item.warehouseId}`,
+    `诊断：${item.reasonLabel || item.reason}`,
+    "这些订单行没有 SKU，无法进入动销匹配。请让 WMS/仓库侧补齐商品编码、货品 SKU 或订单明细字段后重新同步订单。",
+    "",
+    ["订单号", "货品ID", "商品名", "国家", "数量", "出库时间", "创建时间", "状态"].join("\t"),
+    ...rows.map((row) => [
+      row.orderNo || row.orderId || "-",
+      row.goodsSkuId || "-",
+      row.productName || "-",
+      row.country || "-",
+      row.quantity,
+      row.shippedAt || "-",
+      row.createdAt || "-",
+      row.status || "-",
+    ].join("\t")),
+  ].join("\n");
+}
+
+function movementUnmatchedSkuGovernanceText(item: MovementWarehouseDiagnostic) {
+  const rows = movementUnmatchedSkuRows(item);
+  return [
+    `仓库：${item.warehouseName || item.warehouseId}`,
+    `诊断：${item.reasonLabel || item.reason}`,
+    "请补齐产品档案、国家 SKU 或仓库 SKU 映射后重新同步订单。",
+    "",
+    ["SKU", "国家", "订单行", "数量", "首次出库", "最近出库"].join("\t"),
+    ...rows.map((row) => [
+      row.sku || "-",
+      row.country || "-",
+      row.orderRows,
+      row.quantity,
+      row.firstShippedAt || "-",
+      row.lastShippedAt || row.sampleShippedAt || "-",
+    ].join("\t")),
+  ].join("\n");
+}
+
+function movementOutOfWindowSkuText(item: MovementWarehouseDiagnostic) {
+  const rows = movementOutOfWindowSkuRows(item);
+  return [
+    `仓库：${item.warehouseName || item.warehouseId}`,
+    `诊断：${item.reasonLabel || item.reason}`,
+    "这些订单未计入当前近 90 天动销窗口。请确认是否需要调整统计窗口、重同步近期订单，或按历史停销处理。",
+    "",
+    ["SKU", "国家", "订单行", "数量", "首次出库", "最近出库", "最近距今天数", "最远距今天数"].join("\t"),
+    ...rows.map((row) => [
+      row.sku || "-",
+      row.country || "-",
+      row.orderRows,
+      row.quantity,
+      row.firstShippedAt || "-",
+      row.lastShippedAt || row.sampleShippedAt || "-",
+      row.minAgeDays ?? "-",
+      row.maxAgeDays ?? "-",
+    ].join("\t")),
+  ].join("\n");
+}
+
+function MovementDiagnosticsPanel({
+  diagnostics,
+  onSelectWarehouse,
+  onSyncWarehouseOrders,
+  syncing,
+}: {
+  diagnostics: MovementWarehouseDiagnostic[];
+  onSelectWarehouse: (warehouseId: string) => void;
+  onSyncWarehouseOrders: (warehouseId: string) => void;
+  syncing: boolean;
+}) {
+  const [copyMessage, setCopyMessage] = React.useState("");
+  if (!diagnostics.length) return null;
+  const problemCount = diagnostics.filter((item) => diagnosticTone(item) !== "good").length;
+  const problemDiagnostics = diagnostics.filter((item) => diagnosticTone(item) !== "good");
+  const diagnosticCsv = [
+    ["仓库", "国家", "WMS", "诊断", "授权", "库存行", "库存SKU", "订单行", "近90天订单", "已匹配订单", "SKU兜底匹配", "未匹配订单", "窗口外订单", "缺SKU订单", "最近同步任务", "失败分片", "缺SKU订单清单", "未匹配SKU治理清单", "窗口外SKU清单", "消息"],
+    ...diagnostics.map((item) => [
+      item.warehouseName,
+      item.country,
+      item.providerName || item.providerId,
+      item.reasonLabel,
+      item.hasCredentials ? "已授权" : "未授权",
+      item.inventoryRows,
+      item.inventorySku,
+      item.orderRows,
+      item.recentOrderRows,
+      item.matchedOrderRows,
+      item.skuFallbackMatchedRows,
+      item.unmatchedOrderRows,
+      item.outOfWindowOrderRows,
+      item.missingSkuOrderRows,
+      item.latestOrderSyncJob ? `${item.latestOrderSyncJob.status}; ${item.latestOrderSyncJob.completedChunks}/${item.latestOrderSyncJob.totalChunks}; failed=${item.latestOrderSyncJob.failedChunks}; orders=${item.latestOrderSyncJob.orderCount}; ${item.latestOrderSyncJob.lastMessage}` : "",
+      item.latestOrderSyncJob?.failedChunkSamples?.map((chunk) => `${chunk.from}~${chunk.to}: ${chunk.message}`).join("; ") || "",
+      movementMissingSkuOrderRows(item).map((row) => `${row.orderNo || row.orderId || "-"}/${row.productName || row.goodsSkuId || "-"}/${row.quantity}/${row.shippedAt || row.createdAt || "-"}`).join("; "),
+      movementUnmatchedSkuRows(item).map((row) => `${row.sku}/${row.country}/${row.orderRows}单/最近${row.lastShippedAt || row.sampleShippedAt}`).join("; "),
+      movementOutOfWindowSkuRows(item).map((row) => `${row.sku}/${row.country}/${row.orderRows}单/最近${row.lastShippedAt || row.sampleShippedAt}/距今${row.minAgeDays ?? "-"}天`).join("; "),
+      [item.actionTitle, ...(item.actionItems || []), item.message].filter(Boolean).join(" | "),
+    ]),
+  ].map((row) => row.map(csvCell).join(",")).join("\n");
+
+  async function copyDiagnosticSummary() {
+    const rows = problemDiagnostics.length ? problemDiagnostics : diagnostics;
+    const text = rows.map((item) => [
+      `${item.warehouseName}：${item.reasonLabel}`,
+      `库存SKU ${formatNumber(item.inventorySku)}`,
+      `近90天订单 ${formatNumber(item.recentOrderRows)}`,
+      `已匹配 ${formatNumber(item.matchedOrderRows)}`,
+      item.unmatchedOrderRows ? `未匹配 ${formatNumber(item.unmatchedOrderRows)}（${item.unmatchedSamples.map((sample) => sample.sku).join("、")}）` : "",
+      item.outOfWindowOrderRows ? `窗口外 ${formatNumber(item.outOfWindowOrderRows)}` : "",
+      item.actionTitle ? `处理建议：${item.actionTitle}` : "",
+      item.actionItems?.length ? `下一步：${item.actionItems.join("；")}` : "",
+      item.message || "",
+    ].filter(Boolean).join("；")).join("\n");
+    await navigator.clipboard.writeText(text);
+    setCopyMessage(`已复制 ${formatNumber(rows.length)} 个仓库诊断摘要`);
+    window.setTimeout(() => setCopyMessage(""), 2200);
+  }
+
+  async function copyWarehouseDiagnostic(item: MovementWarehouseDiagnostic) {
+    await navigator.clipboard.writeText(movementDiagnosticSupportText(item));
+    setCopyMessage(`已复制 ${item.warehouseName || item.warehouseId} 排障单`);
+    window.setTimeout(() => setCopyMessage(""), 2200);
+  }
+
+  async function copyUnmatchedSkuGovernance(item: MovementWarehouseDiagnostic) {
+    await navigator.clipboard.writeText(movementUnmatchedSkuGovernanceText(item));
+    setCopyMessage(`已复制 ${item.warehouseName || item.warehouseId} 未匹配 SKU 治理清单`);
+    window.setTimeout(() => setCopyMessage(""), 2200);
+  }
+
+  async function copyMissingSkuOrders(item: MovementWarehouseDiagnostic) {
+    await copyText(movementMissingSkuOrderText(item));
+    setCopyMessage(`已复制 ${item.warehouseName || item.warehouseId} 缺 SKU 订单清单`);
+    window.setTimeout(() => setCopyMessage(""), 2200);
+  }
+
+  async function copyOutOfWindowSkus(item: MovementWarehouseDiagnostic) {
+    await navigator.clipboard.writeText(movementOutOfWindowSkuText(item));
+    setCopyMessage(`已复制 ${item.warehouseName || item.warehouseId} 超窗订单清单`);
+    window.setTimeout(() => setCopyMessage(""), 2200);
+  }
+
+  function downloadUnmatchedSkuGovernance(item: MovementWarehouseDiagnostic) {
+    const rows = [
+      ["仓库", "仓库ID", "诊断", "SKU", "国家", "订单行", "数量", "首次出库", "最近出库", "建议动作"],
+      ...movementUnmatchedSkuRows(item).map((row) => [
+        item.warehouseName || item.warehouseId,
+        item.warehouseId,
+        item.reasonLabel || item.reason,
+        row.sku,
+        row.country,
+        row.orderRows,
+        row.quantity,
+        row.firstShippedAt,
+        row.lastShippedAt || row.sampleShippedAt,
+        "补齐产品档案/国家SKU/仓库SKU映射后重新同步订单",
+      ]),
+    ];
+    downloadTextFile(`tongzhou-unmatched-sku-${item.warehouseId}-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
+  }
+
+  function downloadMissingSkuOrders(item: MovementWarehouseDiagnostic) {
+    const rows = [
+      ["仓库", "仓库ID", "诊断", "订单号", "订单ID", "货品ID", "商品名", "国家", "数量", "出库时间", "创建时间", "状态", "建议动作"],
+      ...movementMissingSkuOrderRows(item).map((row) => [
+        item.warehouseName || item.warehouseId,
+        item.warehouseId,
+        item.reasonLabel || item.reason,
+        row.orderNo,
+        row.orderId,
+        row.goodsSkuId,
+        row.productName,
+        row.country,
+        row.quantity,
+        row.shippedAt,
+        row.createdAt,
+        row.status,
+        "让WMS/仓库侧补齐订单明细SKU后重新同步订单",
+      ]),
+    ];
+    downloadTextFile(`tongzhou-missing-sku-orders-${item.warehouseId}-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
+  }
+
+  function downloadOutOfWindowSkus(item: MovementWarehouseDiagnostic) {
+    const rows = [
+      ["仓库", "仓库ID", "诊断", "SKU", "国家", "订单行", "数量", "首次出库", "最近出库", "最近距今天数", "最远距今天数", "建议动作"],
+      ...movementOutOfWindowSkuRows(item).map((row) => [
+        item.warehouseName || item.warehouseId,
+        item.warehouseId,
+        item.reasonLabel || item.reason,
+        row.sku,
+        row.country,
+        row.orderRows,
+        row.quantity,
+        row.firstShippedAt,
+        row.lastShippedAt || row.sampleShippedAt,
+        row.minAgeDays ?? "",
+        row.maxAgeDays ?? "",
+        "确认是否调整动销统计窗口/重同步近期订单/按历史停销处理",
+      ]),
+    ];
+    downloadTextFile(`tongzhou-out-of-window-orders-${item.warehouseId}-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
+  }
+
+  function downloadDiagnostics() {
+    downloadTextFile(`tongzhou-movement-diagnostics-${new Date().toISOString().slice(0, 10)}.csv`, diagnosticCsv, "text/csv;charset=utf-8");
+  }
+
+  return (
+    <section className="panel movement-diagnostics-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Warehouse Diagnosis</p>
+          <h2>仓库动销诊断</h2>
+        </div>
+        <div className="diagnostic-actions">
+          <span className={`status-pill ${problemCount ? "warning" : "good"}`}>{problemCount ? `${problemCount} 个需关注` : "全部正常"}</span>
+          <button className="ghost-button compact-button" type="button" onClick={() => void copyDiagnosticSummary()}>复制摘要</button>
+          <button className="ghost-button compact-button" type="button" onClick={downloadDiagnostics}>下载诊断</button>
+        </div>
+      </div>
+      {copyMessage ? <div className="notice good compact-notice">{copyMessage}</div> : null}
+      <div className="movement-diagnostics-grid">
+        {diagnostics.map((item) => (
+          <article
+            key={item.warehouseId}
+            className={`movement-diagnostic-card ${diagnosticTone(item)}`}
+          >
+            <div>
+              <strong>{item.warehouseName}</strong>
+              <span>{item.providerName || item.providerId || "WMS"} · {item.country || "未配置国家"}</span>
+            </div>
+            <span className={`status-pill ${diagnosticTone(item)}`}>{item.reasonLabel}</span>
+            <dl>
+              <div>
+                <dt>库存 SKU</dt>
+                <dd>{formatNumber(item.inventorySku)}</dd>
+              </div>
+              <div>
+                <dt>近90天订单</dt>
+                <dd>{formatNumber(item.recentOrderRows)}</dd>
+              </div>
+              <div>
+                <dt>已匹配订单</dt>
+                <dd>{formatNumber(item.matchedOrderRows)}</dd>
+              </div>
+              <div>
+                <dt>超窗订单</dt>
+                <dd>{formatNumber(item.outOfWindowOrderRows)}</dd>
+              </div>
+            </dl>
+            {item.skuFallbackMatchedRows ? <small>其中 {formatNumber(item.skuFallbackMatchedRows)} 单使用 SKU 唯一兜底匹配。</small> : null}
+            {item.latestOrderSyncJob ? (
+              <div className="movement-diagnostic-action order-sync-diagnostic">
+                <strong>最近订单同步：{item.latestOrderSyncJob.status}</strong>
+                <small>
+                  分片 {formatNumber(item.latestOrderSyncJob.completedChunks)} / {formatNumber(item.latestOrderSyncJob.totalChunks)}
+                  {item.latestOrderSyncJob.failedChunks ? `；失败 ${formatNumber(item.latestOrderSyncJob.failedChunks)}` : ""}
+                  {`；订单 ${formatNumber(item.latestOrderSyncJob.orderCount)}`}
+                </small>
+                {item.latestOrderSyncJob.currentChunkLabel ? <small>当前分片：{item.latestOrderSyncJob.currentChunkLabel}</small> : null}
+                {item.latestOrderSyncJob.lastMessage ? <small>{item.latestOrderSyncJob.lastMessage}</small> : null}
+                {item.latestOrderSyncJob.failedChunkSamples?.length ? (
+                  <small>失败分片：{item.latestOrderSyncJob.failedChunkSamples.map((chunk) => `${chunk.from}~${chunk.to}`).join("、")}</small>
+                ) : null}
+              </div>
+            ) : null}
+            {item.unmatchedOrderRows ? (
+              <small>
+                未匹配 {formatNumber(item.unmatchedOrderRows)} 单：
+                {movementUnmatchedSkuRows(item).slice(0, 5).map((row) => `${row.sku}(${formatNumber(row.orderRows)}单)`).join("、")}
+                {movementUnmatchedSkuRows(item).length > 5 ? ` 等 ${formatNumber(movementUnmatchedSkuRows(item).length)} 个 SKU` : ""}
+              </small>
+            ) : null}
+            {item.outOfWindowOrderRows && movementOutOfWindowSkuRows(item).length ? (
+              <small>
+                超窗 {formatNumber(item.outOfWindowOrderRows)} 单：
+                {movementOutOfWindowSkuRows(item).slice(0, 4).map((row) => `${row.sku}(${row.lastShippedAt || "-"}，距今${row.minAgeDays ?? "-"}天)`).join("、")}
+              </small>
+            ) : null}
+            {item.missingSkuOrderRows && movementMissingSkuOrderRows(item).length ? (
+              <small>
+                缺 SKU {formatNumber(item.missingSkuOrderRows)} 单：
+                {movementMissingSkuOrderRows(item).slice(0, 4).map((row) => `${row.orderNo || row.orderId || "无订单号"}(${row.productName || row.goodsSkuId || "无商品名"})`).join("、")}
+              </small>
+            ) : null}
+            {item.actionTitle ? (
+              <div className="movement-diagnostic-action">
+                <strong>{item.actionTitle}</strong>
+                {(item.actionItems || []).map((action) => <small key={action}>{action}</small>)}
+              </div>
+            ) : null}
+            {item.message ? <small>{item.message}</small> : null}
+            <div className="movement-diagnostic-card-actions">
+              <button className="ghost-button compact-button" type="button" onClick={() => void copyWarehouseDiagnostic(item)}>
+                复制排障单
+              </button>
+              {movementUnmatchedSkuRows(item).length ? (
+                <>
+                  <button className="ghost-button compact-button" type="button" onClick={() => void copyUnmatchedSkuGovernance(item)}>
+                    复制未匹配SKU
+                  </button>
+                  <button className="ghost-button compact-button" type="button" onClick={() => downloadUnmatchedSkuGovernance(item)}>
+                    下载治理清单
+                  </button>
+                </>
+              ) : null}
+              {movementOutOfWindowSkuRows(item).length ? (
+                <>
+                  <button className="ghost-button compact-button" type="button" onClick={() => void copyOutOfWindowSkus(item)}>
+                    复制超窗订单
+                  </button>
+                  <button className="ghost-button compact-button" type="button" onClick={() => downloadOutOfWindowSkus(item)}>
+                    下载超窗清单
+                  </button>
+                </>
+              ) : null}
+              {movementMissingSkuOrderRows(item).length ? (
+                <>
+                  <button className="ghost-button compact-button" type="button" onClick={() => void copyMissingSkuOrders(item)}>
+                    复制缺SKU订单
+                  </button>
+                  <button className="ghost-button compact-button" type="button" onClick={() => downloadMissingSkuOrders(item)}>
+                    下载缺SKU清单
+                  </button>
+                </>
+              ) : null}
+              <button className="ghost-button compact-button" type="button" onClick={() => onSelectWarehouse(item.warehouseId)}>
+                查看该仓 SKU
+              </button>
+              <button className="ghost-button compact-button" type="button" disabled={syncing || item.running || !item.hasCredentials} onClick={() => onSyncWarehouseOrders(item.warehouseId)}>
+                {item.running ? "同步中" : "重同步订单"}
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function MovementBoard({
   movementPayload,
+  orderSyncJob,
+  initialWarehouse,
   onSyncOrders,
   syncing,
 }: {
   movementPayload: MovementPayload | null;
-  onSyncOrders: () => void;
+  orderSyncJob: OrderSyncJob | null;
+  initialWarehouse: string;
+  onSyncOrders: (warehouseIds?: string[]) => void;
   syncing: boolean;
 }) {
   const [country, setCountry] = React.useState("全部");
@@ -1491,11 +3136,17 @@ function MovementBoard({
   const [status, setStatus] = React.useState("全部");
   const [keywordInput, setKeywordInput] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
+  const [filterPresets, setFilterPresets] = React.useState<MovementFilterPreset[]>(readMovementFilterPresets);
+  const [presetName, setPresetName] = React.useState("");
   const [sortKey, setSortKey] = React.useState<MovementSortKey>("sales90");
   const [sortDirection, setSortDirection] = React.useState<SortDirection>("desc");
+  const [riskCopyMessage, setRiskCopyMessage] = React.useState("");
+
+  React.useEffect(() => {
+    if (initialWarehouse) setWarehouse(initialWarehouse);
+  }, [initialWarehouse]);
 
   const items = movementPayload?.items ?? [];
-  const countries = uniqueSorted(items.map((item) => item.country));
   const warehouses = React.useMemo(() => {
     const values = new Map<string, string>();
     for (const item of items) {
@@ -1507,13 +3158,24 @@ function MovementBoard({
     return Array.from(values, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }, [items]);
   const statuses = ["全部", "缺货", "补货预警", "滞销", "慢销", "无动销数据", "健康"];
-  const failedAuthorizedWarehouses = (movementPayload?.orderSyncResults || []).filter((result) => !result.ok && result.hasCredentials);
-  const filteredItems = items.filter((item) => {
+  const backgroundWarehouses = movementPayload?.syncState?.backgroundRunningWarehouses
+    || (movementPayload?.orderSyncResults || []).filter((result) => result.backgroundRunning).map((result) => ({ warehouseId: result.warehouseId, message: result.message, orderCount: result.orderCount }));
+  const failedAuthorizedWarehouses = (movementPayload?.orderSyncResults || []).filter((result) => !result.ok && result.hasCredentials && !result.backgroundRunning);
+  const warehouseDiagnostics = movementPayload?.warehouseDiagnostics || [];
+  const activeJob = orderSyncJob || movementPayload?.orderSyncJob || null;
+  const jobRunning = Boolean(activeJob && ["queued", "running"].includes(activeJob.status));
+  const selectedWarehouseCountry = warehouseDiagnostics.find((item) => item.warehouseId === warehouse || item.warehouseName === warehouse)?.country || "";
+  const scopedItems = React.useMemo(() => (
+    warehouse === "全部"
+      ? items
+      : items.map((item) => movementWarehouseScopedItem(item, warehouse, selectedWarehouseCountry)).filter((item): item is MovementPayload["items"][number] => Boolean(item))
+  ), [items, selectedWarehouseCountry, warehouse]);
+  const countries = uniqueSorted(scopedItems.map((item) => item.country));
+  const filteredItems = scopedItems.filter((item) => {
     const keywordMatched = !keyword || [item.sku, item.name, item.brand, item.category, item.country].join(" ").toLowerCase().includes(keyword.toLowerCase());
     const countryMatched = country === "全部" || item.country === country;
-    const warehouseMatched = warehouse === "全部" || [...(item.warehouseBreakdown || []), ...(item.salesWarehouseBreakdown || [])].some((detail) => detail.warehouseId === warehouse || detail.warehouseName === warehouse);
     const statusMatched = status === "全部" || item.status === status;
-    return keywordMatched && countryMatched && warehouseMatched && statusMatched;
+    return keywordMatched && countryMatched && statusMatched;
   });
   const sortedItems = React.useMemo(() => {
     const direction = sortDirection === "asc" ? 1 : -1;
@@ -1526,6 +3188,7 @@ function MovementBoard({
       return String(aValue).localeCompare(String(bValue), "zh-CN") * direction;
     });
   }, [filteredItems, sortDirection, sortKey]);
+  const riskExecutionItems = sortedItems.filter((item) => item.status !== "健康" || item.source === "warehouse_only" || Boolean(item.dataGap));
   const updateSort = (nextKey: MovementSortKey) => {
     if (nextKey === sortKey) {
       setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
@@ -1534,6 +3197,49 @@ function MovementBoard({
     setSortKey(nextKey);
     setSortDirection(["sku", "country", "status"].includes(nextKey) ? "asc" : "desc");
   };
+  function persistFilterPresets(next: MovementFilterPreset[]) {
+    setFilterPresets(next);
+    saveMovementFilterPresets(next);
+  }
+
+  function saveCurrentFilterPreset() {
+    const name = presetName.trim() || `${country}/${warehouse}/${status}`;
+    const nextPreset: MovementFilterPreset = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name,
+      country,
+      warehouse,
+      status,
+      keyword,
+      createdAt: new Date().toISOString(),
+    };
+    persistFilterPresets([nextPreset, ...filterPresets.filter((item) => item.name !== name)].slice(0, 12));
+    setPresetName("");
+  }
+
+  function applyFilterPreset(preset: MovementFilterPreset) {
+    setCountry(preset.country || "全部");
+    setWarehouse(preset.warehouse || "全部");
+    setStatus(preset.status || "全部");
+    setKeywordInput(preset.keyword || "");
+    setKeyword(preset.keyword || "");
+  }
+
+  function removeFilterPreset(id: string) {
+    persistFilterPresets(filterPresets.filter((item) => item.id !== id));
+  }
+
+  async function copyRiskExecutionList() {
+    await copyText(movementRiskExecutionText(riskExecutionItems));
+    setRiskCopyMessage(`已复制 ${formatNumber(riskExecutionItems.length)} 个风险 SKU 执行清单`);
+    window.setTimeout(() => setRiskCopyMessage(""), 2000);
+  }
+
+  function downloadRiskExecutionCsv() {
+    downloadTextFile(`tongzhou-movement-risk-queue-${new Date().toISOString().slice(0, 10)}.csv`, movementRiskExecutionCsv(riskExecutionItems), "text/csv;charset=utf-8");
+    setRiskCopyMessage("已下载动销风险执行 CSV");
+    window.setTimeout(() => setRiskCopyMessage(""), 2000);
+  }
 
   return (
     <main className="movement-page">
@@ -1549,13 +3255,47 @@ function MovementBoard({
               {movementPayload?.orderSyncedAt ? "订单已同步" : "订单待同步"}
             </span>
             <span>{movementPayload?.orderSyncedAt ? new Date(movementPayload.orderSyncedAt).toLocaleString("zh-CN") : "先同步订单后可看到销量走势"}</span>
+            {movementPayload?.syncState?.usingCachedOrders ? <span>当前使用最近一次成功缓存</span> : null}
           </div>
         </div>
-        <button className="sync-button" onClick={onSyncOrders} disabled={syncing}>
-          <RefreshCw size={16} className={syncing ? "spinning" : ""} />
+        <button className="sync-button" onClick={() => onSyncOrders()} disabled={syncing || jobRunning}>
+          <RefreshCw size={16} className={syncing || jobRunning ? "spinning" : ""} />
           {syncing ? "同步中" : "同步近90天订单"}
         </button>
       </section>
+
+      {activeJob ? (
+        <section className={`order-sync-status ${jobRunning ? "running" : activeJob.status === "completed" ? "good" : "warning"}`}>
+          <div>
+            <strong>订单后台同步：{activeJob.status}</strong>
+            <span>{activeJob.currentWarehouseName || "无当前仓库"} {activeJob.currentChunkLabel ? `· ${activeJob.currentChunkLabel}` : ""}</span>
+          </div>
+          <div className="order-sync-progress">
+            <span>{formatNumber(activeJob.completedChunks || 0)} / {formatNumber(activeJob.totalChunks || 0)} 分片</span>
+            <span>{formatNumber(activeJob.totalOrders || 0)} 条订单</span>
+            <span>{activeJob.completedAt ? formatDateTime(activeJob.completedAt) : activeJob.startedAt ? formatDateTime(activeJob.startedAt) : "等待开始"}</span>
+          </div>
+        </section>
+      ) : null}
+
+      {movementPayload?.warehouseFreshness?.length ? (
+        <section className="warehouse-freshness-strip">
+          {movementPayload.warehouseFreshness.map((item) => (
+            <button key={item.warehouseId} type="button" className={`freshness-chip ${item.running ? "running" : item.failed ? "warning" : item.ok ? "good" : "muted"}`} onClick={() => setWarehouse(item.warehouseId)}>
+              <strong>{item.warehouseName}</strong>
+              <span>{item.running ? "同步中" : item.failed ? "异常" : item.ok ? "已更新" : "无订单"}</span>
+              <small>{formatNumber(item.orderCount)} 单 {item.lastCompletedAt ? formatDateTime(item.lastCompletedAt) : ""}</small>
+            </button>
+          ))}
+        </section>
+      ) : null}
+
+      <MovementDiagnosticsPanel
+        diagnostics={warehouseDiagnostics}
+        onSelectWarehouse={setWarehouse}
+        onSyncWarehouseOrders={(warehouseId) => onSyncOrders([warehouseId])}
+        syncing={syncing || jobRunning}
+      />
 
       <section className="metric-strip movement-metrics">
         <Metric title="缺货 SKU" value={formatNumber(movementPayload?.counts.stockout ?? 0)} note="有销量但可售为 0" icon={AlertTriangle} tone="red" />
@@ -1598,6 +3338,39 @@ function MovementBoard({
         </button>
       </form>
 
+      <section className="movement-filter-presets">
+        <div className="preset-save-row">
+          <label>
+            <span>保存当前筛选</span>
+            <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder={`${country}/${warehouse}/${status}`} />
+          </label>
+          <button className="ghost-button compact-button" type="button" onClick={saveCurrentFilterPreset}>保存预设</button>
+        </div>
+        {filterPresets.length ? (
+          <div className="preset-chip-row" aria-label="已保存的动销筛选">
+            {filterPresets.map((preset) => (
+              <span className="preset-chip" key={preset.id}>
+                <button type="button" onClick={() => applyFilterPreset(preset)}>
+                  {preset.name}
+                  <small>{[preset.country, preset.status, preset.keyword].filter((item) => item && item !== "全部").join(" / ") || "全部条件"}</small>
+                </button>
+                <button type="button" aria-label={`删除筛选预设：${preset.name}`} onClick={() => removeFilterPreset(preset.id)}>
+                  <X size={13} />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="preset-empty">还没有保存的筛选。可把常看的仓库、状态或关键词保存为日常巡检入口。</span>
+        )}
+      </section>
+
+      {backgroundWarehouses.length ? (
+        <section className="notice warning">
+          部分仓库订单正在后台继续同步：{backgroundWarehouses.map((result) => `${result.warehouseId}（${result.message || "后台同步中"}）`).join("、")}。同步完成后刷新本页即可看到补齐数据。
+        </section>
+      ) : null}
+
       {failedAuthorizedWarehouses.length ? (
         <section className="notice warning">
           部分已授权仓库订单未同步成功：{failedAuthorizedWarehouses.map((result) => `${result.warehouseId}（${result.message}）`).join("、")}
@@ -1610,8 +3383,20 @@ function MovementBoard({
             <p className="eyebrow">SKU Risk Queue</p>
             <h2>SKU 动销明细</h2>
           </div>
-          <span className="status-pill muted">{formatNumber(filteredItems.length)} 个 SKU</span>
+          <div className="movement-risk-toolbar">
+            <span className="status-pill muted">{formatNumber(filteredItems.length)} 个 SKU</span>
+            <span className="status-pill warning">{formatNumber(riskExecutionItems.length)} 个风险</span>
+            <button className="ghost-button compact-button" type="button" onClick={() => void copyRiskExecutionList()} disabled={!riskExecutionItems.length}>
+              <Copy size={14} />
+              复制风险清单
+            </button>
+            <button className="ghost-button compact-button" type="button" onClick={downloadRiskExecutionCsv} disabled={!riskExecutionItems.length}>
+              <Download size={14} />
+              下载风险CSV
+            </button>
+          </div>
         </div>
+        {riskCopyMessage ? <div className="notice good compact-notice">{riskCopyMessage}</div> : null}
         <div className="movement-table">
           <div className="movement-row movement-head">
             <SortHeader label="SKU / 产品" sortKey="sku" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
@@ -1665,17 +3450,95 @@ function StockupCenter({
   stockupPayload,
   onSyncStockup,
   onDecision,
+  onCreatePlan,
+  onUpdatePlanStatus,
   syncing,
 }: {
   stockupPayload: StockupPayload | null;
   onSyncStockup: () => void;
-  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon") => void;
+  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") => void;
+  onCreatePlan: (item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) => Promise<void>;
+  onUpdatePlanStatus: (id: string, status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled") => Promise<void>;
   syncing: boolean;
 }) {
   const recommendations = stockupPayload?.recommendations ?? [];
+  const abandonedRecommendations = stockupPayload?.abandonedRecommendations ?? [];
+  const plans = stockupPayload?.plans ?? [];
   const outsourcingQueue = stockupPayload?.outsourcingQueue ?? [];
   const inboundOrders = stockupPayload?.inboundOrders ?? [];
   const syncResults = stockupPayload?.syncResults ?? [];
+  const acceptedRecommendations = recommendations.filter((item) => item.decisionStatus === "accepted");
+  const activePlans = plans.filter((plan) => !["arrived", "cancelled"].includes(plan.status));
+  const arrivedPlans = plans
+    .filter((plan) => plan.status === "arrived")
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  const [planDrafts, setPlanDrafts] = React.useState<Record<string, { open: boolean; quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }>>({});
+  const [planCopyMessage, setPlanCopyMessage] = React.useState("");
+  const [reviewCopyMessage, setReviewCopyMessage] = React.useState("");
+
+  function planFor(item: StockupPayload["recommendations"][number]) {
+    return plans.find((plan) => plan.recommendationKey === item.recommendationKey && !["arrived", "cancelled"].includes(plan.status));
+  }
+
+  function draftFor(item: StockupPayload["recommendations"][number]) {
+    const key = item.recommendationKey || `${item.country}-${item.sku}`;
+    return planDrafts[key] || {
+      open: false,
+      quantity: Math.max(0, item.netReplenishQty || item.replenishQty || 0),
+      planType: item.outsourcingInProductionQty > 0 ? "purchase" : "purchase",
+      owner: "",
+      expectedArrivalAt: "",
+      note: "",
+    };
+  }
+
+  function updatePlanDraft(item: StockupPayload["recommendations"][number], patch: Partial<ReturnType<typeof draftFor>>) {
+    const key = item.recommendationKey || `${item.country}-${item.sku}`;
+    setPlanDrafts((current) => ({ ...current, [key]: { ...draftFor(item), ...patch } }));
+  }
+
+  async function submitPlan(item: StockupPayload["recommendations"][number]) {
+    const draft = draftFor(item);
+    await onCreatePlan(item, {
+      quantity: Number(draft.quantity) || 0,
+      planType: draft.planType,
+      owner: draft.owner,
+      expectedArrivalAt: draft.expectedArrivalAt,
+      note: draft.note,
+    });
+    const key = item.recommendationKey || `${item.country}-${item.sku}`;
+    setPlanDrafts((current) => ({ ...current, [key]: { ...draft, open: false } }));
+  }
+
+  async function copyPlanExecutionSummary(targetPlans = activePlans) {
+    await copyText(stockupPlanExecutionText(targetPlans));
+    setPlanCopyMessage(targetPlans.length === 1 ? "已复制该备货计划下单信息" : `已复制 ${formatNumber(targetPlans.length)} 个未完成备货计划`);
+    window.setTimeout(() => setPlanCopyMessage(""), 1800);
+  }
+
+  function downloadPlanExecutionCsv() {
+    downloadTextFile(`tongzhou-stockup-plans-${new Date().toISOString().slice(0, 10)}.csv`, stockupPlanExecutionCsv(activePlans), "text/csv;charset=utf-8");
+    setPlanCopyMessage("已下载备货计划执行 CSV");
+    window.setTimeout(() => setPlanCopyMessage(""), 1800);
+  }
+
+  async function copyArrivedPlanReviewSummary() {
+    await copyText(stockupPlanReviewText(arrivedPlans));
+    setReviewCopyMessage(`已复制 ${formatNumber(arrivedPlans.length)} 个到仓复盘计划`);
+    window.setTimeout(() => setReviewCopyMessage(""), 1800);
+  }
+
+  async function copyArrivedPlanReviewItem(plan: StockupPlanItem) {
+    await copyText(stockupPlanReviewText([plan]));
+    setReviewCopyMessage(`已复制 ${plan.sku} 到仓复盘`);
+    window.setTimeout(() => setReviewCopyMessage(""), 1800);
+  }
+
+  function downloadArrivedPlanReviewCsv() {
+    downloadTextFile(`tongzhou-stockup-arrived-review-${new Date().toISOString().slice(0, 10)}.csv`, stockupPlanReviewCsv(arrivedPlans), "text/csv;charset=utf-8");
+    setReviewCopyMessage("已下载到仓复盘 CSV");
+    window.setTimeout(() => setReviewCopyMessage(""), 1800);
+  }
 
   return (
     <main className="movement-page stockup-page">
@@ -1702,9 +3565,208 @@ function StockupCenter({
       <section className="metric-strip movement-metrics">
         <Metric title="建议备货 SKU" value={formatNumber(stockupPayload?.counts.recommendations ?? 0)} note="缺货与补货预警 SKU" icon={PackageCheck} tone="orange" />
         <Metric title="净建议备货" value={formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)} note="建议数量扣减委外在产" icon={Boxes} tone="green" />
-        <Metric title="委外在产数量" value={formatNumber(stockupPayload?.counts.outsourcingInProductionQty ?? 0)} note={`${formatNumber(stockupPayload?.counts.outsourcingActiveSku ?? 0)} 个排产 SKU`} icon={Settings} tone="blue" />
+        <Metric title="未完成计划" value={formatNumber(stockupPayload?.counts.openStockupPlans ?? activePlans.length)} note={`计划数量 ${formatNumber(stockupPayload?.counts.plannedQty ?? 0)}`} icon={Settings} tone="blue" />
         <Metric title="WMS 备货单" value={formatNumber(stockupPayload?.counts.inboundOrders ?? 0)} note="来自仓库入库 / 备货单接口" icon={FileText} tone="blue" />
       </section>
+      {acceptedRecommendations.length ? (
+        <section className="panel stockup-panel accepted-stockup-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Accepted Tasks</p>
+              <h2>已采纳待创建计划</h2>
+            </div>
+            <span className="status-pill good">{formatNumber(acceptedRecommendations.length)} 个 SKU</span>
+          </div>
+          <div className="accepted-task-grid">
+            {acceptedRecommendations.slice(0, 8).map((item) => (
+              <article key={item.recommendationKey || `${item.country}-${item.sku}`}>
+                <div>
+                  <strong>{item.sku}</strong>
+                  <span>{item.name}</span>
+                </div>
+                <dl>
+                  <div>
+                    <dt>净建议</dt>
+                    <dd>{formatNumber(item.netReplenishQty)} {item.unit}</dd>
+                  </div>
+                  <div>
+                    <dt>可售天数</dt>
+                    <dd>{formatDaysCover(item.daysCover)} 天</dd>
+                  </div>
+                  <div>
+                    <dt>委外在产</dt>
+                    <dd>{formatNumber(item.outsourcingInProductionQty)} {item.unit}</dd>
+                  </div>
+                </dl>
+                <StockupFormulaInsight item={item} />
+                <small>{item.decisionAt ? `采纳时间：${formatDateTime(item.decisionAt)}` : "已采纳，等待创建备货计划。"}</small>
+                {planFor(item) ? (
+                  <div className="accepted-plan-summary">
+                    <span className="status-pill good">{stockupPlanStatusLabel(planFor(item)?.status || "")}</span>
+                    <small>{stockupPlanTypeLabel(planFor(item)?.planType || "")} · {formatNumber(planFor(item)?.quantity || 0)} {planFor(item)?.unit || item.unit}</small>
+                    <small>负责人：{planFor(item)?.owner || "未指定"} · 预计到仓：{planFor(item)?.expectedArrivalAt || "未设置"}</small>
+                  </div>
+                ) : null}
+                {!planFor(item) && draftFor(item).open ? (
+                  <div className="stockup-plan-form">
+                    <label>
+                      <span>计划数量</span>
+                      <input type="number" min={0} value={draftFor(item).quantity} onChange={(event) => updatePlanDraft(item, { quantity: Number(event.target.value) })} />
+                    </label>
+                    <label>
+                      <span>计划类型</span>
+                      <select value={draftFor(item).planType} onChange={(event) => updatePlanDraft(item, { planType: event.target.value as "purchase" | "outsourcing" })}>
+                        <option value="purchase">采购补货</option>
+                        <option value="outsourcing">委外排产</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>负责人</span>
+                      <input value={draftFor(item).owner} onChange={(event) => updatePlanDraft(item, { owner: event.target.value })} placeholder="采购/跟单负责人" />
+                    </label>
+                    <label>
+                      <span>预计到仓</span>
+                      <input type="date" value={draftFor(item).expectedArrivalAt} onChange={(event) => updatePlanDraft(item, { expectedArrivalAt: event.target.value })} />
+                    </label>
+                    <label className="stockup-plan-note">
+                      <span>备注</span>
+                      <textarea value={draftFor(item).note} onChange={(event) => updatePlanDraft(item, { note: event.target.value })} placeholder="供应商、批次、审批或异常说明" />
+                    </label>
+                    <div className="stockup-plan-actions">
+                      <button className="sync-button compact-button" type="button" disabled={syncing || !draftFor(item).quantity} onClick={() => void submitPlan(item)}>创建计划</button>
+                      <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => updatePlanDraft(item, { open: false })}>取消</button>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="accepted-task-actions">
+                  {planFor(item) ? (
+                    <div className="stockup-plan-actions">
+                      <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(planFor(item)!.id, "ordered")}>已下单</button>
+                      <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(planFor(item)!.id, "in_production")}>生产/在途</button>
+                      <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(planFor(item)!.id, "arrived")}>已到仓</button>
+                    </div>
+                  ) : (
+                    <button className="sync-button compact-button" type="button" disabled={syncing} onClick={() => updatePlanDraft(item, { open: true })}>创建计划</button>
+                  )}
+                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "restore")}>退回提醒</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {activePlans.length ? (
+        <section className="panel stockup-panel stockup-plan-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Plan Tracking</p>
+              <h2>备货计划跟踪</h2>
+            </div>
+            <div className="stockup-plan-toolbar">
+              <span className="status-pill good">{formatNumber(activePlans.length)} 个未完成计划</span>
+              <button className="ghost-button compact-button" type="button" onClick={() => void copyPlanExecutionSummary()}>
+                <Copy size={14} />
+                复制执行摘要
+              </button>
+              <button className="ghost-button compact-button" type="button" onClick={downloadPlanExecutionCsv}>
+                <Download size={14} />
+                下载执行CSV
+              </button>
+            </div>
+          </div>
+          {planCopyMessage ? <div className="notice good compact-notice">{planCopyMessage}</div> : null}
+          <div className="stockup-plan-grid">
+            {activePlans.slice(0, 12).map((plan) => (
+              <article key={plan.id}>
+                <div>
+                  <strong>{plan.sku}</strong>
+                  <span>{plan.name || plan.country}</span>
+                </div>
+                <dl>
+                  <div>
+                    <dt>计划数量</dt>
+                    <dd>{formatNumber(plan.quantity)} {plan.unit}</dd>
+                  </div>
+                  <div>
+                    <dt>类型</dt>
+                    <dd>{stockupPlanTypeLabel(plan.planType)}</dd>
+                  </div>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>{stockupPlanStatusLabel(plan.status)}</dd>
+                  </div>
+                </dl>
+                <small>负责人：{plan.owner || "未指定"} · 预计到仓：{plan.expectedArrivalAt || "未设置"}</small>
+                {plan.note ? <small>{plan.note}</small> : null}
+                <div className="stockup-plan-actions">
+                  <button className="ghost-button compact-button" type="button" onClick={() => void copyPlanExecutionSummary([plan])}>
+                    复制下单信息
+                  </button>
+                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "ordered")}>已下单</button>
+                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "in_production")}>生产/在途</button>
+                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "arrived")}>已到仓</button>
+                  <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "cancelled")}>取消</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {arrivedPlans.length ? (
+        <section className="panel stockup-panel stockup-plan-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Arrival Review</p>
+              <h2>已到仓待复盘</h2>
+            </div>
+            <div className="stockup-plan-toolbar">
+              <span className="status-pill warning">{formatNumber(arrivedPlans.length)} 个到仓计划</span>
+              <button className="ghost-button compact-button" type="button" onClick={() => void copyArrivedPlanReviewSummary()}>
+                <Copy size={14} />
+                复制复盘摘要
+              </button>
+              <button className="ghost-button compact-button" type="button" onClick={downloadArrivedPlanReviewCsv}>
+                <Download size={14} />
+                下载复盘CSV
+              </button>
+            </div>
+          </div>
+          {reviewCopyMessage ? <div className="notice good compact-notice">{reviewCopyMessage}</div> : null}
+          <div className="stockup-plan-grid">
+            {arrivedPlans.slice(0, 12).map((plan) => (
+              <article key={plan.id}>
+                <div>
+                  <strong>{plan.sku}</strong>
+                  <span>{plan.name || plan.country}</span>
+                </div>
+                <dl>
+                  <div>
+                    <dt>计划数量</dt>
+                    <dd>{formatNumber(plan.quantity)} {plan.unit}</dd>
+                  </div>
+                  <div>
+                    <dt>到仓复盘</dt>
+                    <dd>{stockupPlanReviewStatus(plan)}</dd>
+                  </div>
+                  <div>
+                    <dt>类型</dt>
+                    <dd>{stockupPlanTypeLabel(plan.planType)}</dd>
+                  </div>
+                </dl>
+                <small>负责人：{plan.owner || "未指定"} · 预计到仓：{plan.expectedArrivalAt || "未设置"} · 标记到仓：{plan.updatedAt ? formatDateTime(plan.updatedAt) : "未记录"}</small>
+                {plan.note ? <small>{plan.note}</small> : null}
+                <div className="stockup-plan-actions">
+                  <button className="ghost-button compact-button" type="button" onClick={() => void copyArrivedPlanReviewItem(plan)}>
+                    复制单条复盘
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="panel stockup-panel">
         <div className="panel-heading">
@@ -1756,6 +3818,27 @@ function StockupCenter({
         </div>
       </section>
 
+      {abandonedRecommendations.length ? (
+        <section className="panel stockup-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Dismissed Queue</p>
+              <h2>已放弃的备货提醒</h2>
+            </div>
+            <span className="status-pill muted">{formatNumber(abandonedRecommendations.length)} 个 SKU</span>
+          </div>
+          <div className="stockup-sync-results">
+            {abandonedRecommendations.slice(0, 12).map((item) => (
+              <article key={item.recommendationKey || `${item.country}-${item.sku}`}>
+                <strong>{item.sku} · {item.name}</strong>
+                <span>{item.country}，净建议 {formatNumber(item.netReplenishQty)} {item.unit}。放弃后不会进入当前备货提醒。</span>
+                <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "restore")}>恢复提醒</button>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="panel stockup-panel">
         <div className="panel-heading">
           <div>
@@ -1774,6 +3857,7 @@ function StockupCenter({
             <span>建议备货</span>
             <span>委外在产</span>
             <span>净建议</span>
+            <span>计算口径</span>
             <span>状态</span>
             <span>操作</span>
           </div>
@@ -1793,6 +3877,7 @@ function StockupCenter({
               <strong>{formatNumber(item.replenishQty)} {item.unit}</strong>
               <OutsourcingInsight item={item} />
               <strong>{formatNumber(item.netReplenishQty)} {item.unit}</strong>
+              <StockupFormulaInsight item={item} />
               <MovementStatusInsight item={item} />
               <div className="stockup-actions">
                 {item.decisionStatus === "accepted" ? (
@@ -1857,6 +3942,78 @@ function StockupCenter({
 
 const defaultWecomScene: WecomSceneConfig = { enabled: false, robotIds: [], linkUrl: "", extraText: "" };
 
+const wecomNotificationTemplates = [
+  {
+    id: "daily-operating-summary",
+    title: "今日经营摘要",
+    description: "适合每天早会前推送给运营、采购和管理层，先看同步状态、动销风险和备货待办。",
+    name: "今日经营摘要",
+    time: "09:00",
+    mode: "daily" as const,
+    text: "### 今日经营摘要\n请查看经营总览里的同步健康度、需要处理队列、动销风险和备货建议，优先处理影响今日运营判断的异常。",
+    linkText: "查看经营总览",
+    linkUrl: "#dashboard",
+  },
+  {
+    id: "daily-stockup",
+    title: "每日备货提醒",
+    description: "适合每天早会前提醒采购和运营查看缺货、慢销和已采纳建议。",
+    name: "每日备货提醒",
+    time: "09:30",
+    mode: "daily" as const,
+    text: "### 今日备货提醒\n请查看备货中心的缺货、低可售天数和已采纳待创建计划 SKU，优先处理净建议数量大、可售天数低的商品。",
+    linkText: "查看备货中心",
+    linkUrl: "#stockup",
+    scene: "stockupRecommendation" as keyof WecomNotificationPayload["scenes"],
+  },
+  {
+    id: "inventory-snapshot",
+    title: "库存快照日报",
+    description: "适合每天生成库存快照后推给仓储、运营和负责人复核。",
+    name: "库存快照日报",
+    time: "18:00",
+    mode: "daily" as const,
+    text: "### 库存快照已生成\n请关注仓库有库存但产品未建档、产品缺仓库数据、库存沉淀和动销异常的 SKU。",
+    linkText: "查看库存快照",
+    linkUrl: "#inventory-snapshots",
+    scene: "inventorySnapshot" as keyof WecomNotificationPayload["scenes"],
+  },
+  {
+    id: "sync-check",
+    title: "同步异常检查",
+    description: "适合数据同步失败、动销为空或仓库授权调整后人工提醒排查。",
+    name: "同步异常检查",
+    time: "10:00",
+    mode: "daily" as const,
+    text: "### 数据同步检查\n请确认产品、仓库库存、订单同步时间是否正常；如某个仓库动销为空，请先查看动销监控里的仓库诊断。",
+    linkText: "查看动销监控",
+    linkUrl: "#movement",
+  },
+  {
+    id: "qualification-expiry",
+    title: "资质过期提醒",
+    description: "适合提醒运营补证、续期或下架存在合规风险的商品。",
+    name: "资质过期提醒",
+    time: "09:00",
+    mode: "daily" as const,
+    text: "### 资质过期提醒\n请检查已过期和 30 天内到期的资质，优先处理仍在售、分销公开或即将发货的商品。",
+    linkText: "查看资质库",
+    linkUrl: "#qualifications",
+    scene: "qualificationExpiry" as keyof WecomNotificationPayload["scenes"],
+  },
+] satisfies Array<{
+  id: string;
+  title: string;
+  description: string;
+  name: string;
+  time: string;
+  mode: "daily";
+  text: string;
+  linkText: string;
+  linkUrl: string;
+  scene?: keyof WecomNotificationPayload["scenes"];
+}>;
+
 function RobotCheckboxes({
   robots,
   selected,
@@ -1888,11 +4045,12 @@ function RobotCheckboxes({
 }
 
 function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotificationPayload | null; onRefresh: () => Promise<void> }) {
+  const confirm = useConfirm();
   const [localPayload, setLocalPayload] = React.useState<WecomNotificationPayload | null>(null);
   const data = localPayload || payload;
   const robots = data?.robots || [];
   const schedules = data?.schedules || [];
-  const scenes = data?.scenes || { stockupRecommendation: defaultWecomScene, inventorySnapshot: defaultWecomScene };
+  const scenes = data?.scenes || { stockupRecommendation: defaultWecomScene, inventorySnapshot: defaultWecomScene, qualificationExpiry: defaultWecomScene };
   const [robotForm, setRobotForm] = React.useState({ id: "", name: "", webhookUrl: "", enabled: true });
   const [scheduleForm, setScheduleForm] = React.useState({
     id: "",
@@ -1908,8 +4066,51 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
   });
   const [sceneForm, setSceneForm] = React.useState(scenes);
   const [testForm, setTestForm] = React.useState({ robotIds: [] as string[], text: "这是一条来自同舟供应链数智化系统的测试消息。", linkUrl: "", linkText: "查看详情" });
+  const [summaryForm, setSummaryForm] = React.useState({ robotIds: [] as string[], extraText: "", linkUrl: "#dashboard", linkText: "查看经营总览" });
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState("");
+
+  function templateRobotIds(currentIds: string[]) {
+    return currentIds.length ? currentIds : robots.filter((robot) => robot.enabled).map((robot) => robot.id);
+  }
+
+  function applyScheduleTemplate(template: (typeof wecomNotificationTemplates)[number]) {
+    setScheduleForm((current) => ({
+      ...current,
+      name: current.name || template.name,
+      enabled: true,
+      mode: template.mode,
+      time: template.time,
+      intervalMinutes: 60,
+      text: template.text,
+      linkUrl: current.linkUrl || template.linkUrl,
+      linkText: template.linkText,
+      robotIds: templateRobotIds(current.robotIds),
+    }));
+    setMessage(`已填入「${template.title}」定时推送模板。`);
+  }
+
+  function applyTestTemplate(template: (typeof wecomNotificationTemplates)[number]) {
+    setTestForm((current) => ({
+      ...current,
+      text: template.text,
+      linkUrl: current.linkUrl || template.linkUrl,
+      linkText: template.linkText,
+      robotIds: templateRobotIds(current.robotIds),
+    }));
+    setMessage(`已填入「${template.title}」测试消息模板。`);
+  }
+
+  function applySceneTemplate(template: (typeof wecomNotificationTemplates)[number]) {
+    if (!template.scene) return;
+    updateScene(template.scene, {
+      enabled: true,
+      linkUrl: sceneForm[template.scene]?.linkUrl || template.linkUrl,
+      extraText: template.text,
+      robotIds: templateRobotIds(sceneForm[template.scene]?.robotIds || []),
+    });
+    setMessage(`已应用「${template.title}」场景推送模板，请保存场景配置。`);
+  }
 
   React.useEffect(() => {
     if (data?.scenes) setSceneForm(data.scenes);
@@ -1937,7 +4138,14 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
   }
 
   async function removeRobot(robot: WecomRobot) {
-    if (!window.confirm(`确认删除机器人「${robot.name}」？`)) return;
+    const confirmed = await confirm({
+      title: `删除机器人「${robot.name}」`,
+      body: "删除后，依赖这个机器人的定时推送和场景通知将无法继续发送到对应群聊。",
+      confirmText: "删除机器人",
+      tone: "danger",
+      details: ["不会删除已经发送到企业微信群里的历史消息。", "建议先确认没有定时推送仍在使用这个机器人。"],
+    });
+    if (!confirmed) return;
     setBusy(robot.id);
     setMessage("");
     try {
@@ -1972,7 +4180,14 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
   }
 
   async function removeSchedule(schedule: WecomSchedule) {
-    if (!window.confirm(`确认删除定时推送「${schedule.name}」？`)) return;
+    const confirmed = await confirm({
+      title: `删除定时推送「${schedule.name}」`,
+      body: "删除后，这条定时消息不会再自动发送。",
+      confirmText: "删除推送",
+      tone: "danger",
+      details: [`推送模式：${schedule.mode === "daily" ? `每天 ${schedule.time}` : `每 ${schedule.intervalMinutes} 分钟`}`],
+    });
+    if (!confirmed) return;
     setBusy(schedule.id);
     setMessage("");
     try {
@@ -2030,6 +4245,21 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
     }
   }
 
+  async function sendOperatingSummary() {
+    setBusy("operating-summary");
+    setMessage("");
+    try {
+      const result = await sendWecomOperatingSummary(summaryForm);
+      await refresh(result);
+      const failed = result.results?.filter((item) => !item.ok) || [];
+      setMessage(failed.length ? `今日经营摘要已发送，${failed.length} 个机器人失败。` : "今日经营摘要已发送。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "今日经营摘要发送失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   function updateScene(key: keyof WecomNotificationPayload["scenes"], patch: Partial<WecomSceneConfig>) {
     setSceneForm((current) => ({
       ...current,
@@ -2058,11 +4288,37 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
       <section className="metric-strip movement-metrics">
         <Metric title="机器人" value={formatNumber(robots.length)} note="可配置多个群机器人" icon={BellRing} tone="blue" />
         <Metric title="定时推送" value={formatNumber(schedules.length)} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
-        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货建议、库存快照" icon={PackageCheck} tone="orange" />
+        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货、库存、资质" icon={PackageCheck} tone="orange" />
         <Metric title="最近更新" value={data?.updatedAt ? formatDate(data.updatedAt) : "-"} note="本地通知配置" icon={Settings} tone="red" />
       </section>
 
       {message ? <div className={`notice ${message.includes("失败") ? "warning" : ""}`}>{message}</div> : null}
+
+      <section className="panel wecom-panel wecom-template-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Message Templates</p>
+            <h2>常用通知模板</h2>
+          </div>
+          <span className="status-pill muted">{formatNumber(wecomNotificationTemplates.length)} 个模板</span>
+        </div>
+        <div className="wecom-template-grid">
+          {wecomNotificationTemplates.map((template) => (
+            <article className="wecom-template-card" key={template.id}>
+              <div>
+                <strong>{template.title}</strong>
+                <span>{template.description}</span>
+              </div>
+              <small>{template.time} · {template.linkText}</small>
+              <div className="wecom-template-actions">
+                <button className="ghost-button compact-button" type="button" onClick={() => applyScheduleTemplate(template)}>填入定时</button>
+                <button className="ghost-button compact-button" type="button" onClick={() => applyTestTemplate(template)}>填入测试</button>
+                {template.scene ? <button className="ghost-button compact-button" type="button" onClick={() => applySceneTemplate(template)}>应用场景</button> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
 
       <section className="wecom-grid">
         <form className="panel wecom-panel" onSubmit={saveRobot}>
@@ -2198,6 +4454,7 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
           {([
             ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
+            ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
           ] as Array<[keyof WecomNotificationPayload["scenes"], string, string]>).map(([key, title, description]) => {
             const scene = sceneForm[key] || defaultWecomScene;
             return (
@@ -2226,6 +4483,48 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
               </article>
             );
           })}
+        </div>
+      </section>
+
+      <section className="panel wecom-panel wecom-summary-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Daily Brief</p>
+            <h2>一键发送今日经营摘要</h2>
+          </div>
+          <button
+            className="sync-button"
+            type="button"
+            onClick={sendOperatingSummary}
+            disabled={busy === "operating-summary" || !robots.some((robot) => robot.enabled)}
+          >
+            {busy === "operating-summary" ? "发送中" : "发送摘要"}
+          </button>
+        </div>
+        <div className="wecom-summary-body">
+          <div>
+            <strong>摘要会自动包含</strong>
+            <span>核心经营指标、备货建议、同步状态、动销诊断异常和 SKU 治理待办。</span>
+          </div>
+          <div>
+            <span className="field-label">推送机器人</span>
+            <RobotCheckboxes robots={robots} selected={summaryForm.robotIds} onChange={(robotIds) => setSummaryForm((current) => ({ ...current, robotIds }))} />
+            <small>不选择时默认发送到所有已启用机器人。</small>
+          </div>
+          <div className="wecom-form-grid">
+            <label>
+              <span>摘要链接</span>
+              <input value={summaryForm.linkUrl} onChange={(event) => setSummaryForm((current) => ({ ...current, linkUrl: event.target.value }))} placeholder="#dashboard" />
+            </label>
+            <label>
+              <span>链接文字</span>
+              <input value={summaryForm.linkText} onChange={(event) => setSummaryForm((current) => ({ ...current, linkText: event.target.value }))} />
+            </label>
+            <label className="wecom-span-2">
+              <span>补充说明</span>
+              <textarea value={summaryForm.extraText} onChange={(event) => setSummaryForm((current) => ({ ...current, extraText: event.target.value }))} placeholder="可选，例如：今天先处理俄罗斯仓动销异常和已采纳待建计划。" />
+            </label>
+          </div>
         </div>
       </section>
 
@@ -2262,15 +4561,240 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
   );
 }
 
+function actionTargetLabel(type: string) {
+  const labels: Record<string, string> = {
+    user: "用户",
+    warehouse: "仓库",
+    wecom_robot: "企业微信机器人",
+    wecom_schedule: "定时推送",
+    wecom_scene: "场景推送",
+    wecom_summary: "经营摘要",
+    order_sync: "订单同步",
+    distributor_application: "分销申请",
+    quick_nav_category: "导航分类",
+    quick_nav_link: "导航链接",
+    stockup_recommendation: "备货建议",
+    system: "系统",
+  };
+  return labels[type] || type || "对象";
+}
+
+function detailSummary(details?: Record<string, unknown>) {
+  if (!details) return "";
+  return Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => {
+      const text = Array.isArray(value) ? value.join(", ") : typeof value === "object" ? JSON.stringify(value) : String(value);
+      return `${key}: ${text}`;
+    })
+    .join(" · ");
+}
+
+type ActionLogEntryItem = ActionLogPayload["entries"][number];
+
+function actionLogSearchText(entry: ActionLogEntryItem) {
+  return [
+    entry.action,
+    entry.targetType,
+    actionTargetLabel(entry.targetType),
+    entry.targetName,
+    entry.actorName,
+    entry.actorRole,
+    entry.createdAt,
+    detailSummary(entry.details),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function actionLogCsv(entries: ActionLogEntryItem[]) {
+  const header = ["时间", "动作", "对象类型", "对象", "操作者", "角色", "明细"];
+  const rows = entries.map((entry) => [
+    formatDateTime(entry.createdAt),
+    entry.action,
+    actionTargetLabel(entry.targetType),
+    entry.targetName || "未命名对象",
+    entry.actorName || "系统",
+    entry.actorRole || "未知角色",
+    detailSummary(entry.details),
+  ]);
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function actionLogText(entries: ActionLogEntryItem[]) {
+  if (!entries.length) return "当前筛选条件下暂无操作日志。";
+  return entries.map((entry) => [
+    `${formatDateTime(entry.createdAt)}｜${entry.action}`,
+    `对象：${actionTargetLabel(entry.targetType)} · ${entry.targetName || "未命名对象"}`,
+    `操作者：${entry.actorName || "系统"}（${entry.actorRole || "未知角色"}）`,
+    detailSummary(entry.details) ? `明细：${detailSummary(entry.details)}` : "",
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function ActionLogPage({ payload, onRefresh }: { payload: ActionLogPayload | null; onRefresh: () => Promise<void> }) {
+  const entries = payload?.entries || [];
+  const [keyword, setKeyword] = React.useState("");
+  const [targetType, setTargetType] = React.useState("all");
+  const [actorRole, setActorRole] = React.useState("all");
+  const [actionName, setActionName] = React.useState("all");
+  const latest = entries[0];
+  const actorCount = new Set(entries.map((entry) => entry.actorName).filter(Boolean)).size;
+  const targetTypeOptions = React.useMemo(() => uniqueSorted(entries.map((entry) => entry.targetType)), [entries]);
+  const actorRoleOptions = React.useMemo(() => uniqueSorted(entries.map((entry) => entry.actorRole || "未知角色")), [entries]);
+  const actionOptions = React.useMemo(() => uniqueSorted(entries.map((entry) => entry.action)), [entries]);
+  const filteredEntries = React.useMemo(() => {
+    const normalizedKeyword = keyword.trim().toLowerCase();
+    return entries.filter((entry) => {
+      if (targetType !== "all" && entry.targetType !== targetType) return false;
+      if (actorRole !== "all" && (entry.actorRole || "未知角色") !== actorRole) return false;
+      if (actionName !== "all" && entry.action !== actionName) return false;
+      if (normalizedKeyword && !actionLogSearchText(entry).includes(normalizedKeyword)) return false;
+      return true;
+    });
+  }, [actionName, actorRole, entries, keyword, targetType]);
+  const activeFilterCount = [keyword.trim(), targetType !== "all", actorRole !== "all", actionName !== "all"].filter(Boolean).length;
+
+  function resetFilters() {
+    setKeyword("");
+    setTargetType("all");
+    setActorRole("all");
+    setActionName("all");
+  }
+
+  async function copyFilteredLog() {
+    await copyText(actionLogText(filteredEntries));
+  }
+
+  function downloadFilteredLog() {
+    downloadTextFile(`tongzhou-action-log-${new Date().toISOString().slice(0, 10)}.csv`, actionLogCsv(filteredEntries), "text/csv;charset=utf-8");
+  }
+
+  return (
+    <main className="movement-page action-log-page">
+      <section className="library-hero movement-hero">
+        <div>
+          <p className="eyebrow">Operation Trail</p>
+          <h2>操作日志</h2>
+          <p>记录用户、仓库、企业微信、快捷导航和备货建议等关键后台动作，方便排查配置变化和协作责任。</p>
+          <div className="source-row">
+            <span className={`status-pill ${entries.length ? "good" : "warning"}`}>{entries.length ? "已有记录" : "暂无记录"}</span>
+            <span>{payload?.updatedAt ? formatDateTime(payload.updatedAt) : "等待操作产生"}</span>
+          </div>
+        </div>
+        <button className="sync-button" type="button" onClick={onRefresh}>
+          <RefreshCw size={16} />
+          刷新日志
+        </button>
+      </section>
+
+      <section className="metric-strip movement-metrics">
+        <Metric title="最近记录" value={formatNumber(entries.length)} note="最多保留 300 条" icon={List} tone="blue" />
+        <Metric title="操作者" value={formatNumber(actorCount)} note="按显示名去重" icon={Lock} tone="green" />
+        <Metric title="筛选结果" value={formatNumber(filteredEntries.length)} note={activeFilterCount ? `已启用 ${activeFilterCount} 个条件` : "未启用筛选"} icon={Search} tone="orange" />
+        <Metric title="最近动作" value={latest?.action || "-"} note={latest?.createdAt ? formatDateTime(latest.createdAt) : "暂无"} icon={FileText} tone="red" />
+      </section>
+
+      <section className="panel action-log-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Recent Actions</p>
+            <h2>最近后台操作</h2>
+          </div>
+          <div className="action-log-toolbar">
+            <span className="status-pill muted">{formatNumber(filteredEntries.length)} / {formatNumber(entries.length)} 条</span>
+            <button className="ghost-button" type="button" onClick={copyFilteredLog} disabled={!filteredEntries.length}>
+              <Copy size={14} />
+              复制摘要
+            </button>
+            <button className="ghost-button" type="button" onClick={downloadFilteredLog} disabled={!filteredEntries.length}>
+              <Download size={14} />
+              导出 CSV
+            </button>
+          </div>
+        </div>
+        <div className="action-log-filters">
+          <label>
+            <span>关键词</span>
+            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜动作、对象、操作者、明细" />
+          </label>
+          <label>
+            <span>对象类型</span>
+            <select value={targetType} onChange={(event) => setTargetType(event.target.value)}>
+              <option value="all">全部对象</option>
+              {targetTypeOptions.map((value) => <option value={value} key={value}>{actionTargetLabel(value)}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>操作者角色</span>
+            <select value={actorRole} onChange={(event) => setActorRole(event.target.value)}>
+              <option value="all">全部角色</option>
+              {actorRoleOptions.map((value) => <option value={value} key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>动作</span>
+            <select value={actionName} onChange={(event) => setActionName(event.target.value)}>
+              <option value="all">全部动作</option>
+              {actionOptions.map((value) => <option value={value} key={value}>{value}</option>)}
+            </select>
+          </label>
+          <button className="ghost-button" type="button" onClick={resetFilters} disabled={!activeFilterCount}>
+            <X size={14} />
+            清空
+          </button>
+        </div>
+        <div className="action-log-list">
+          {filteredEntries.length ? filteredEntries.map((entry) => (
+            <article className="action-log-item" key={entry.id}>
+              <div className="action-log-main">
+                <strong>{entry.action}</strong>
+                <span>{actionTargetLabel(entry.targetType)} · {entry.targetName || "未命名对象"}</span>
+                {detailSummary(entry.details) ? <small>{detailSummary(entry.details)}</small> : null}
+              </div>
+              <div className="action-log-meta">
+                <span>{entry.actorName || "系统"}</span>
+                <small>{entry.actorRole || "未知角色"}</small>
+                <small>{formatDateTime(entry.createdAt)}</small>
+              </div>
+            </article>
+          )) : (
+            <div className="stockup-empty">{entries.length ? "当前筛选条件下暂无操作日志，可清空条件后查看全部记录。" : "暂无操作日志。创建用户、调整仓库授权、配置企业微信或处理备货建议后会自动记录。"}</div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function UserManagement({ userPayload }: { userPayload: UserManagementPayload | null }) {
+  const confirm = useConfirm();
   const users = userPayload?.users ?? [];
   const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" });
   const [saving, setSaving] = React.useState(false);
   const [actionUserId, setActionUserId] = React.useState("");
+  const [actionApplicationId, setActionApplicationId] = React.useState("");
+  const [sourceApplicationId, setSourceApplicationId] = React.useState("");
   const [localPayload, setLocalPayload] = React.useState<UserManagementPayload | null>(null);
+  const [applicationPayload, setApplicationPayload] = React.useState<DistributorApplicationPayload | null>(null);
   const [message, setMessage] = React.useState("");
   const visiblePayload = localPayload || userPayload;
   const visibleUsers = visiblePayload?.users ?? users;
+  const applications = applicationPayload?.applications ?? [];
+  const pendingApplications = applications.filter((item) => item.status === "pending");
+
+  React.useEffect(() => {
+    void loadApplications();
+  }, []);
+
+  async function loadApplications() {
+    try {
+      const payload = await fetchDistributorApplications();
+      setApplicationPayload(payload);
+    } catch {
+      setApplicationPayload(null);
+    }
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -2279,13 +4803,43 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
     try {
       const result = await createUser(form);
       setLocalPayload(result);
+      let nextMessage = result.warning || "用户已创建，并已同步到同舟供应链数智化系统。";
+      if (sourceApplicationId) {
+        try {
+          const applicationResult = await updateDistributorApplicationStatus(sourceApplicationId, "approved");
+          setApplicationPayload(applicationResult);
+          setSourceApplicationId("");
+          nextMessage = `${nextMessage} 对应分销申请已标记为已通过。`;
+        } catch (statusError) {
+          setSourceApplicationId("");
+          nextMessage = `${nextMessage} 但分销申请状态更新失败：${statusError instanceof Error ? statusError.message : "请稍后手动标记"}`;
+        }
+      }
       setForm({ username: "", password: "", displayName: "", role: "distributor" });
-      setMessage(result.warning || "用户已创建，并已同步到同舟供应链数智化系统。");
+      setMessage(nextMessage);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "创建用户失败。");
     } finally {
       setSaving(false);
     }
+  }
+
+  function usernameFromApplication(application: DistributorApplicationPayload["applications"][number]) {
+    const raw = application.phone || application.wechat || application.email.split("@")[0] || application.contactName || application.companyName;
+    const normalized = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "").slice(0, 32);
+    return normalized || `partner${Date.now().toString(36)}`;
+  }
+
+  function fillUserFromApplication(application: DistributorApplicationPayload["applications"][number]) {
+    setForm({
+      username: usernameFromApplication(application),
+      password: "",
+      displayName: application.companyName || application.contactName,
+      role: "distributor",
+    });
+    setSourceApplicationId(application.id);
+    setMessage("已带入创建账号表单，请填写初始密码后创建。");
+    window.setTimeout(() => document.getElementById("create-user-form")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   async function handleStatusChange(userId: string, status: "active" | "disabled") {
@@ -2303,7 +4857,15 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
   }
 
   async function handleDeleteUser(userId: string) {
-    if (!window.confirm("确认删除这个用户？删除后该账号将无法登录。")) return;
+    const user = visibleUsers.find((item) => item.id === userId);
+    const confirmed = await confirm({
+      title: `删除用户「${user?.displayName || user?.username || userId}」`,
+      body: "删除后该账号将无法登录系统，且会同步到同舟供应链数智化系统。",
+      confirmText: "删除用户",
+      tone: "danger",
+      details: [`账号：${user?.username || userId}`, `角色：${user?.roleLabel || "未识别"}`],
+    });
+    if (!confirmed) return;
     setActionUserId(userId);
     setMessage("");
     try {
@@ -2314,6 +4876,20 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
       setMessage(error instanceof Error ? error.message : "删除用户失败。");
     } finally {
       setActionUserId("");
+    }
+  }
+
+  async function handleApplicationStatus(applicationId: string, status: "pending" | "contacted" | "approved" | "rejected") {
+    setActionApplicationId(applicationId);
+    setMessage("");
+    try {
+      const result = await updateDistributorApplicationStatus(applicationId, status);
+      setApplicationPayload(result);
+      setMessage("分销申请状态已更新。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "分销申请状态更新失败。");
+    } finally {
+      setActionApplicationId("");
     }
   }
 
@@ -2342,12 +4918,52 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
         <Metric title="停用用户" value={formatNumber(visiblePayload?.counts.disabled ?? 0)} note="停用后不可登录" icon={X} tone="red" />
       </section>
 
-      <section className="panel warehouse-auth-form">
+      <section className="panel distributor-application-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Partner Requests</p>
+            <h2>分销账号申请</h2>
+          </div>
+          <span className={`status-pill ${pendingApplications.length ? "warning" : "good"}`}>
+            {pendingApplications.length ? `${formatNumber(pendingApplications.length)} 条待处理` : "暂无待处理"}
+          </span>
+        </div>
+        <div className="distributor-application-list">
+          {applications.length ? applications.map((application) => (
+            <article className="distributor-application-item" key={application.id}>
+              <div>
+                <strong>{application.companyName}</strong>
+                <span>{application.contactName} · {application.market || "未填写市场"}</span>
+                <small>{[application.phone, application.wechat, application.email].filter(Boolean).join(" / ") || "未填写联系方式"}</small>
+                {application.sourceSku ? <small>来源 SKU：{application.sourceSku}</small> : null}
+                {application.note ? <small>{application.note}</small> : null}
+              </div>
+              <span className={`status-pill ${application.status === "pending" ? "warning" : application.status === "approved" ? "good" : application.status === "rejected" ? "danger" : "muted"}`}>
+                {application.status === "pending" ? "待处理" : application.status === "contacted" ? "已联系" : application.status === "approved" ? "已通过" : application.status === "rejected" ? "已拒绝" : application.status}
+              </span>
+              <div className="distributor-application-actions">
+                <button className="sync-button compact-button" type="button" disabled={actionApplicationId === application.id} onClick={() => fillUserFromApplication(application)}>
+                  <Plus size={14} />
+                  带入建账号
+                </button>
+                <button className="ghost-button compact-button" type="button" disabled={actionApplicationId === application.id} onClick={() => handleApplicationStatus(application.id, "contacted")}>已联系</button>
+                <button className="ghost-button compact-button" type="button" disabled={actionApplicationId === application.id} onClick={() => handleApplicationStatus(application.id, "approved")}>通过</button>
+                <button className="ghost-button compact-button danger-button" type="button" disabled={actionApplicationId === application.id} onClick={() => handleApplicationStatus(application.id, "rejected")}>拒绝</button>
+              </div>
+            </article>
+          )) : (
+            <div className="stockup-empty">暂无分销账号申请。游客可从产品库横幅或锁定价格处提交申请。</div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel warehouse-auth-form" id="create-user-form">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Create Account</p>
             <h2>创建用户</h2>
           </div>
+          {sourceApplicationId ? <span className="status-pill warning">来自分销申请</span> : null}
         </div>
         <form onSubmit={submit}>
           <label>
@@ -2440,6 +5056,7 @@ function WarehouseBoard({
   onDelete,
   onExport,
   onImport,
+  onTest,
 }: {
   warehousePayload: WarehousePayload | null;
   onSync: () => void;
@@ -2449,15 +5066,61 @@ function WarehouseBoard({
   onDelete: (id: string) => Promise<void>;
   onExport: () => Promise<void>;
   onImport: (file: File) => Promise<void>;
+  onTest: (input: Parameters<typeof testWarehouseConnection>[0]) => Promise<Awaited<ReturnType<typeof testWarehouseConnection>>>;
 }) {
+  const confirm = useConfirm();
   const providers = warehousePayload?.providers ?? [];
   const connections = warehousePayload?.warehouses ?? [];
   const warehouseOnlyItems = warehousePayload?.lastSync?.warehouseOnlyInventory ?? [];
   const warehouseOnlyCount = warehousePayload?.lastSync?.warehouseOnlyCount ?? warehouseOnlyItems.length;
+  const productMissingWarehouseItems = warehousePayload?.lastSync?.productMissingWarehouseItems ?? [];
   const productMissingWarehouseCount = warehousePayload?.lastSync?.productMissingWarehouseCount ?? 0;
+  const warehouseOnlyCsv = React.useMemo(() => {
+    const header = ["仓库", "国家", "SKU", "国家SKU", "可售", "锁定", "在途", "合计"];
+    const rows = warehouseOnlyItems.map((item) => [
+      item.warehouseName,
+      item.country,
+      item.sku,
+      item.countrySku,
+      item.availableQty,
+      item.lockedQty,
+      item.inTransitQty,
+      item.totalQty,
+    ]);
+    return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+  }, [warehouseOnlyItems]);
+  const productMissingWarehouseCsv = React.useMemo(() => {
+    const header = ["SKU", "国家SKU", "产品名称", "国家", "渠道", "品类", "系统状态", "系统库存", "单位", "建议动作"];
+    const rows = productMissingWarehouseItems.map((item) => [
+      item.sku,
+      item.countrySku,
+      item.name,
+      item.country,
+      item.channel,
+      item.category,
+      item.status,
+      item.stockQty,
+      item.unit,
+      "检查仓库库存同步、仓库SKU映射或是否应下架/补货",
+    ]);
+    return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+  }, [productMissingWarehouseItems]);
+  const warehouseOnlySummary = React.useMemo(() => {
+    const values = new Map<string, { warehouseId: string; warehouseName: string; skuCount: number; totalQty: number }>();
+    for (const item of warehouseOnlyItems) {
+      const key = item.warehouseId || item.warehouseName || "unknown";
+      const current = values.get(key) || { warehouseId: item.warehouseId, warehouseName: item.warehouseName || item.warehouseId || "未识别仓库", skuCount: 0, totalQty: 0 };
+      current.skuCount += 1;
+      current.totalQty += item.totalQty || item.availableQty || 0;
+      values.set(key, current);
+    }
+    return Array.from(values.values()).sort((a, b) => b.skuCount - a.skuCount || b.totalQty - a.totalQty);
+  }, [warehouseOnlyItems]);
+  const [gapCopyMessage, setGapCopyMessage] = React.useState("");
   const [formOpen, setFormOpen] = React.useState(false);
   const [editingWarehouse, setEditingWarehouse] = React.useState<WarehousePayload["warehouses"][number] | null>(null);
   const [deletingId, setDeletingId] = React.useState("");
+  const [testingId, setTestingId] = React.useState("");
   const [importing, setImporting] = React.useState(false);
   const importInputRef = React.useRef<HTMLInputElement | null>(null);
   const authorizedCount = connections.filter((item) => item.status === "已授权").length;
@@ -2477,7 +5140,17 @@ function WarehouseBoard({
   }
 
   async function deleteConnection(warehouse: WarehousePayload["warehouses"][number]) {
-    const confirmed = window.confirm(`确定删除仓库「${warehouse.name}」吗？删除后会同时清理该仓库的本地库存和订单缓存。`);
+    const confirmed = await confirm({
+      title: `删除仓库「${warehouse.name}」`,
+      body: "删除后会移除该仓库授权，并清理该仓库的本地库存与订单缓存。",
+      confirmText: "删除仓库",
+      tone: "danger",
+      details: [
+        `国家/地区：${warehouse.country || "未配置"}`,
+        `WMS：${warehouse.providerName || warehouse.providerId}`,
+        "如只是授权失效，优先使用编辑或检测连接。",
+      ],
+    });
     if (!confirmed) return;
     setDeletingId(warehouse.id);
     try {
@@ -2497,6 +5170,41 @@ function WarehouseBoard({
     } finally {
       setImporting(false);
     }
+  }
+
+  async function testConnection(warehouse: WarehousePayload["warehouses"][number]) {
+    setTestingId(warehouse.id);
+    try {
+      await onTest({ ...warehouse, id: warehouse.id });
+    } finally {
+      setTestingId("");
+    }
+  }
+
+  async function copyWarehouseOnlySkus() {
+    const text = uniqueSorted(warehouseOnlyItems.map((item) => item.sku).filter(Boolean)).join("\n");
+    if (!text) return;
+    await copyText(text);
+    setGapCopyMessage(`已复制 ${formatNumber(text.split("\n").length)} 个待补档 SKU`);
+    window.setTimeout(() => setGapCopyMessage(""), 2200);
+  }
+
+  async function copyProductMissingWarehouseSkus() {
+    const text = uniqueSorted(productMissingWarehouseItems.map((item) => item.sku).filter(Boolean)).join("\n");
+    if (!text) return;
+    await copyText(text);
+    setGapCopyMessage(`已复制 ${formatNumber(text.split("\n").length)} 个待查仓库库存 SKU`);
+    window.setTimeout(() => setGapCopyMessage(""), 2200);
+  }
+
+  function downloadWarehouseOnlyCsv() {
+    if (!warehouseOnlyItems.length) return;
+    downloadTextFile(`tongzhou-warehouse-only-sku-${new Date().toISOString().slice(0, 10)}.csv`, warehouseOnlyCsv, "text/csv;charset=utf-8");
+  }
+
+  function downloadProductMissingWarehouseCsv() {
+    if (!productMissingWarehouseItems.length) return;
+    downloadTextFile(`tongzhou-product-missing-warehouse-sku-${new Date().toISOString().slice(0, 10)}.csv`, productMissingWarehouseCsv, "text/csv;charset=utf-8");
   }
 
   return (
@@ -2539,6 +5247,7 @@ function WarehouseBoard({
           initialWarehouse={editingWarehouse}
           onCreate={onCreate}
           onUpdate={onUpdate}
+          onTest={onTest}
           onClose={closeForm}
         />
       ) : null}
@@ -2554,34 +5263,85 @@ function WarehouseBoard({
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Data Gaps</p>
-            <h2>数据缺口核对</h2>
+            <h2>SKU 治理入口</h2>
           </div>
-          <button className="ghost-button">先确认再同步</button>
+          <div className="gap-toolbar">
+            <button className="ghost-button" type="button" onClick={copyWarehouseOnlySkus} disabled={!warehouseOnlyItems.length}>复制待补档 SKU</button>
+            <button className="ghost-button" type="button" onClick={downloadWarehouseOnlyCsv} disabled={!warehouseOnlyItems.length}>下载补档清单</button>
+            <button className="ghost-button" type="button" onClick={copyProductMissingWarehouseSkus} disabled={!productMissingWarehouseItems.length}>复制待查库存 SKU</button>
+            <button className="ghost-button" type="button" onClick={downloadProductMissingWarehouseCsv} disabled={!productMissingWarehouseItems.length}>下载缺库存清单</button>
+          </div>
         </div>
         <div className="gap-summary">
           <span>仓库有库存但系统未建档：<strong>{formatNumber(warehouseOnlyCount)}</strong></span>
           <span>系统有产品但仓库无库存：<strong>{formatNumber(productMissingWarehouseCount)}</strong></span>
         </div>
-        {warehouseOnlyItems.length ? (
-          <div className="gap-table">
-            {warehouseOnlyItems.slice(0, 8).map((item) => (
-              <article key={`${item.warehouseId}-${item.countrySku}-${item.sku}`} className="gap-row">
-                <div>
-                  <strong>{item.sku}</strong>
-                  <span>{item.country} · {item.warehouseName}</span>
-                </div>
-                <span>可售 {formatNumber(item.availableQty)}</span>
-                <span>在途 {formatNumber(item.inTransitQty)}</span>
-                <div className="gap-actions">
-                  <button className="ghost-button compact-button">同步创建到系统</button>
-                  <button className="ghost-button compact-button">同步创建到仓库</button>
-                </div>
+        {gapCopyMessage ? <div className="notice good compact-notice">{gapCopyMessage}</div> : null}
+        {warehouseOnlySummary.length ? (
+          <div className="gap-governance-grid">
+            {warehouseOnlySummary.slice(0, 4).map((item) => (
+              <article key={item.warehouseId || item.warehouseName}>
+                <strong>{item.warehouseName}</strong>
+                <span>{formatNumber(item.skuCount)} 个 SKU · {formatNumber(item.totalQty)} 件库存</span>
+                <small>优先确认产品档案、国家 SKU 映射和仓库编码。</small>
               </article>
             ))}
           </div>
-        ) : (
-          <div className="notice">当前没有仓库-only SKU。</div>
-        )}
+        ) : null}
+        <div className="gap-split-grid">
+          <section>
+            <div className="gap-list-heading">
+              <strong>仓库有库存，产品库未建档</strong>
+              <span>{formatNumber(warehouseOnlyItems.length)} 条样例</span>
+            </div>
+            {warehouseOnlyItems.length ? (
+              <div className="gap-table">
+                {warehouseOnlyItems.slice(0, 8).map((item) => (
+                  <article key={`${item.warehouseId}-${item.countrySku}-${item.sku}`} className="gap-row">
+                    <div>
+                      <strong>{item.sku}</strong>
+                      <span>{item.country} · {item.warehouseName}</span>
+                    </div>
+                    <span>可售 {formatNumber(item.availableQty)}</span>
+                    <span>在途 {formatNumber(item.inTransitQty)}</span>
+                    <div className="gap-actions">
+                      <span className="status-pill warning">待补产品档案</span>
+                      <small>处理后重新同步仓库，动销会自动并入口径。</small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="notice">当前没有仓库-only SKU。</div>
+            )}
+          </section>
+          <section>
+            <div className="gap-list-heading">
+              <strong>产品库有 SKU，仓库无库存</strong>
+              <span>{formatNumber(productMissingWarehouseItems.length)} 条样例</span>
+            </div>
+            {productMissingWarehouseItems.length ? (
+              <div className="gap-table">
+                {productMissingWarehouseItems.slice(0, 8).map((item) => (
+                  <article key={`${item.id}-${item.countrySku}-${item.sku}`} className="gap-row">
+                    <div>
+                      <strong>{item.sku}</strong>
+                      <span>{item.country} · {item.name}</span>
+                    </div>
+                    <span>{item.channel || "未分渠道"}</span>
+                    <span>系统库存 {formatNumber(item.stockQty)}</span>
+                    <div className="gap-actions">
+                      <span className="status-pill muted">待查仓库库存</span>
+                      <small>检查库存同步、仓库 SKU 映射，或确认该 SKU 是否应下架/补货。</small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="notice">当前没有产品库缺仓库库存 SKU。</div>
+            )}
+          </section>
+        </div>
       </section>
 
       <section className="provider-grid">
@@ -2629,7 +5389,13 @@ function WarehouseBoard({
                 ))}
               </div>
               <span className={`status-pill ${warehouse.status === "已授权" ? "good" : "warning"}`}>{warehouse.status}</span>
+              <span className={`status-pill ${warehouse.lastTestStatus === "ok" ? "good" : warehouse.lastTestStatus ? "warning" : "muted"}`}>
+                {warehouse.lastTestStatus === "ok" ? "检测正常" : warehouse.lastTestStatus ? "待排查" : "未检测"}
+              </span>
               <div className="warehouse-row-actions">
+                <button className="ghost-button compact-button" onClick={() => testConnection(warehouse)} disabled={testingId === warehouse.id}>
+                  {testingId === warehouse.id ? "检测中" : "检测连接"}
+                </button>
                 <button className="ghost-button compact-button" onClick={() => openEditForm(warehouse)}>编辑</button>
                 <button className="ghost-button compact-button danger-button" onClick={() => deleteConnection(warehouse)} disabled={deletingId === warehouse.id}>
                   {deletingId === warehouse.id ? "删除中" : "删除"}
@@ -2813,20 +5579,278 @@ function InventorySnapshotPage({
   );
 }
 
+function MovementAnalysisPage({
+  movementHistoryPayload,
+  onLoadMovementHistory,
+  onCaptureMovementHistory,
+}: {
+  movementHistoryPayload: MovementHistoryPayload | null;
+  onLoadMovementHistory: (input?: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string }) => Promise<void>;
+  onCaptureMovementHistory: (input?: { date?: string; timezone?: string }) => Promise<MovementHistoryPayload>;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [date, setDate] = React.useState("");
+  const [from, setFrom] = React.useState("");
+  const [to, setTo] = React.useState("");
+  const [warehouseId, setWarehouseId] = React.useState("");
+  const [sku, setSku] = React.useState("");
+  const [timezone, setTimezone] = React.useState("Asia/Shanghai");
+  const [pageSize, setPageSize] = React.useState(50);
+  const [page, setPage] = React.useState(1);
+  const snapshot = movementHistoryPayload?.snapshot || null;
+  const rows = snapshot?.rows || [];
+  const totals = snapshot?.totals;
+  const dates = movementHistoryPayload?.dates || [];
+  const timezones = movementHistoryPayload?.timezones?.length ? movementHistoryPayload.timezones : ["Asia/Shanghai"];
+  const warehouses = movementHistoryPayload?.warehouseOptions || [];
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const visibleRows = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const trend = movementHistoryPayload?.trend || [];
+  const maxTrendValue = Math.max(1, ...trend.map((item) => Math.max(item.sales30, item.sales90, item.availableQty)));
+
+  React.useEffect(() => {
+    if (!movementHistoryPayload) return;
+    setTimezone((current) => current || movementHistoryPayload.timezone || "Asia/Shanghai");
+    setDate((current) => current || movementHistoryPayload.selectedDate || "");
+  }, [movementHistoryPayload?.selectedDate, movementHistoryPayload?.timezone]);
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [date, from, to, warehouseId, sku, timezone, pageSize]);
+
+  const currentFilters = React.useMemo(() => ({
+    date,
+    from,
+    to,
+    warehouseId,
+    sku,
+    timezone,
+  }), [date, from, to, warehouseId, sku, timezone]);
+
+  async function applyFilters(next = currentFilters) {
+    setBusy(true);
+    try {
+      await onLoadMovementHistory(next);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function captureSnapshot() {
+    setBusy(true);
+    try {
+      const result = await onCaptureMovementHistory({ date: date || undefined, timezone });
+      setDate(result.selectedDate || result.snapshot?.date || date);
+      await onLoadMovementHistory({ ...currentFilters, date: result.selectedDate || result.snapshot?.date || date });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportCsv() {
+    setBusy(true);
+    try {
+      const blob = await downloadMovementHistoryCsv(currentFilters);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const range = date || [from, to].filter(Boolean).join("_") || "all";
+      link.href = url;
+      link.download = `movement-history-${range}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "动销历史导出失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="movement-page movement-analysis-page">
+      <section className="library-hero movement-hero">
+        <div>
+          <p className="eyebrow">Movement Analytics</p>
+          <h2>动销分析</h2>
+          <p>按日保存 SKU 与仓库维度的动销快照，支持历史查看、趋势对比、时区口径筛选和 CSV 导出。</p>
+          <div className="source-row">
+            <span className={`status-pill ${snapshot ? "good" : "warning"}`}>{snapshot ? "历史快照已生成" : "暂无动销快照"}</span>
+            <span>{snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString("zh-CN") : "可先生成今日动销快照"}</span>
+          </div>
+        </div>
+        <button className="sync-button" type="button" onClick={captureSnapshot} disabled={busy}>
+          <DatabaseZap size={16} />
+          {busy ? "处理中" : "生成今日快照"}
+        </button>
+      </section>
+
+      <section className="panel movement-history-toolbar">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">History Query</p>
+            <h2>历史筛选</h2>
+            <span>日期筛选按所选时区生成日界线；导出会沿用当前筛选条件。</span>
+          </div>
+          <div className="movement-history-actions">
+            <button className="ghost-button" type="button" onClick={() => applyFilters()} disabled={busy}>
+              <Search size={16} />
+              查询
+            </button>
+            <button className="ghost-button" type="button" onClick={exportCsv} disabled={!snapshot || busy}>
+              <Download size={16} />
+              导出 CSV
+            </button>
+          </div>
+        </div>
+        <div className="movement-history-filters">
+          <label>
+            <span>快照日期</span>
+            <select value={date} onChange={(event) => setDate(event.target.value)} disabled={busy || !dates.length}>
+              {dates.length ? dates.map((item) => (
+                <option key={`${item.timezone}-${item.date}`} value={item.date}>{item.date} · {formatNumber(item.rowCount)} 行</option>
+              )) : <option value="">暂无快照</option>}
+            </select>
+          </label>
+          <label>
+            <span>开始日期</span>
+            <input type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
+          </label>
+          <label>
+            <span>结束日期</span>
+            <input type="date" value={to} onChange={(event) => setTo(event.target.value)} />
+          </label>
+          <label>
+            <span>时区</span>
+            <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
+              {timezones.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>仓库</span>
+            <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} disabled={!warehouses.length}>
+              <option value="">全部仓库</option>
+              {warehouses.map((item) => <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>SKU / 产品</span>
+            <input value={sku} onChange={(event) => setSku(event.target.value)} placeholder="搜索 SKU、产品名、品牌" />
+          </label>
+          <label>
+            <span>分页</span>
+            <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+              {[50, 200, 500].map((size) => <option key={size} value={size}>每页 {size} 条</option>)}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="metric-strip movement-metrics">
+        <Metric title="快照行" value={formatNumber(totals?.rowCount || 0)} note={`SKU ${formatNumber(totals?.skuCount || 0)} / 仓库 ${formatNumber(totals?.warehouseCount || 0)}`} icon={List} tone="blue" />
+        <Metric title="30天销量" value={formatNumber(totals?.sales30 || 0)} note={`7天 ${formatNumber(totals?.sales7 || 0)} / 90天 ${formatNumber(totals?.sales90 || 0)}`} icon={BarChart3} tone="orange" />
+        <Metric title="库存" value={formatNumber(totals?.availableQty || 0)} note={`总库存 ${formatNumber(totals?.totalQty || 0)}`} icon={Boxes} tone="green" />
+        <Metric title="风险SKU" value={formatNumber((totals?.stockout || 0) + (totals?.replenish || 0) + (totals?.slow || 0) + (totals?.stagnant || 0))} note={`缺货 ${formatNumber(totals?.stockout || 0)} / 滞销 ${formatNumber(totals?.stagnant || 0)}`} icon={AlertTriangle} tone="red" />
+      </section>
+
+      <section className="panel movement-trend-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Trend</p>
+            <h2>趋势图</h2>
+            <span>{trend.length ? `当前区间 ${formatNumber(trend.length)} 个快照点` : "暂无趋势数据"}</span>
+          </div>
+        </div>
+        <div className="movement-trend-chart">
+          {trend.length ? trend.map((item) => (
+            <div className="movement-trend-day" key={item.date}>
+              <div className="movement-trend-bars" title={`${item.date}：30天销量 ${item.sales30}，90天销量 ${item.sales90}，可售 ${item.availableQty}`}>
+                <span className="bar sales30" style={{ height: `${Math.max(4, (item.sales30 / maxTrendValue) * 100)}%` }} />
+                <span className="bar sales90" style={{ height: `${Math.max(4, (item.sales90 / maxTrendValue) * 100)}%` }} />
+                <span className="bar stock" style={{ height: `${Math.max(4, (item.availableQty / maxTrendValue) * 100)}%` }} />
+              </div>
+              <small>{item.date.slice(5)}</small>
+            </div>
+          )) : <div className="stockup-empty">生成至少一个动销快照后，这里会显示趋势。</div>}
+        </div>
+        <div className="movement-trend-legend">
+          <span><i className="sales30" />30天销量</span>
+          <span><i className="sales90" />90天销量</span>
+          <span><i className="stock" />可售库存</span>
+        </div>
+      </section>
+
+      <section className="panel movement-table-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Daily Snapshot Rows</p>
+            <h2>历史动销明细</h2>
+            <span>当前显示 {formatNumber(visibleRows.length)} / {formatNumber(rows.length)} 条。</span>
+          </div>
+        </div>
+        <div className="movement-history-table">
+          <div className="movement-history-row movement-history-head">
+            <span>SKU / 产品</span>
+            <span>仓库</span>
+            <span>库存</span>
+            <span>7天</span>
+            <span>30天</span>
+            <span>90天</span>
+            <span>日均</span>
+            <span>可售天数</span>
+            <span>状态</span>
+            <span>建议</span>
+          </div>
+          {visibleRows.length ? visibleRows.map((item) => (
+            <article className="movement-history-row" key={`${snapshot?.date}-${item.warehouseId}-${item.countrySku}-${item.sku}`}>
+              <span><strong>{item.sku}</strong><small>{item.productName || item.countrySku}</small></span>
+              <span>{item.warehouseName}<small>{item.country}</small></span>
+              <strong>{formatNumber(item.availableQty)}</strong>
+              <span>{formatNumber(item.sales7)}</span>
+              <span>{formatNumber(item.sales30)}</span>
+              <span>{formatNumber(item.sales90)}</span>
+              <span>{formatDecimal(item.avgDaily30)}</span>
+              <span>{item.daysCover === null ? "999+ 天" : `${formatDecimal(item.daysCover)} 天`}</span>
+              <span className={`status-pill ${item.status === "健康" ? "good" : item.status === "缺货" ? "danger" : "warning"}`}>{item.status}</span>
+              <small>{item.suggestion}</small>
+            </article>
+          )) : (
+            <div className="stockup-empty">暂无历史动销。请先生成今日动销快照，或调整筛选条件。</div>
+          )}
+        </div>
+        <div className="snapshot-pagination">
+          <span>第 {formatNumber(safePage)} / {formatNumber(totalPages)} 页</span>
+          <div>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage(1)} disabled={safePage <= 1}>首页</button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={safePage <= 1}>上一页</button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={safePage >= totalPages}>下一页</button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function WarehouseAuthForm({
   providers,
   initialWarehouse,
   onCreate,
   onUpdate,
+  onTest,
   onClose,
 }: {
   providers: WarehousePayload["providers"];
   initialWarehouse?: WarehousePayload["warehouses"][number] | null;
   onCreate: (input: Parameters<typeof createWarehouseConnection>[0]) => Promise<void>;
   onUpdate: (id: string, input: Parameters<typeof updateWarehouseConnection>[1]) => Promise<void>;
+  onTest: (input: Parameters<typeof testWarehouseConnection>[0]) => Promise<Awaited<ReturnType<typeof testWarehouseConnection>>>;
   onClose: () => void;
 }) {
   const [saving, setSaving] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState<Awaited<ReturnType<typeof testWarehouseConnection>> | null>(null);
   const [form, setForm] = React.useState({
     name: initialWarehouse?.name || "",
     country: initialWarehouse?.country || "",
@@ -2844,6 +5868,40 @@ function WarehouseAuthForm({
 
   const selectedProvider = providers.find((provider) => provider.id === form.providerId);
   const isSeaWms = form.providerId === "sea_wms";
+  const guide = isSeaWms
+    ? {
+        title: "斗仓 / 神牛 SEA WMS 示例",
+        lines: [
+          "baseUrl: https://对应国家的 WMS 域名",
+          "clientId/AppKey: 由 WMS 后台提供",
+          "clientSecret/AppSecret: 由 WMS 后台提供",
+          "warehouseCode + warehouseId: 不同国家可能不同，优先找仓库资料页确认",
+        ],
+        template: {
+          providerId: "sea_wms",
+          baseUrl: "https://sea-wms.example.com",
+          clientId: "your-app-key",
+          clientSecret: "your-app-secret",
+          warehouseCode: "ID-JKT",
+          warehouseId: "12345",
+        },
+      }
+    : {
+        title: "俄罗斯 YunWMS 示例",
+        lines: [
+          "baseUrl: https://fsdd.yunwms.com",
+          "系统会自动补齐 /default/svc/web-service",
+          "appKey + appToken: YunWMS 接口授权",
+          "warehouseCode: 俄罗斯仓库代码，俄罗斯 2 仓订单量大时会按日期分片同步",
+        ],
+        template: {
+          providerId: "yunwms_ru",
+          baseUrl: "https://fsdd.yunwms.com",
+          appKey: "your-app-key",
+          appToken: "your-app-token",
+          warehouseCode: "RU-02",
+        },
+      };
 
   function updateField(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -2864,6 +5922,21 @@ function WarehouseAuthForm({
     }
   }
 
+  async function runTest() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await onTest(initialWarehouse ? { ...form, id: initialWarehouse.id } : form);
+      setTestResult(result);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function copyTemplate() {
+    await navigator.clipboard?.writeText(JSON.stringify(guide.template, null, 2));
+  }
+
   return (
     <section className="panel warehouse-auth-form">
       <div className="panel-heading">
@@ -2873,6 +5946,18 @@ function WarehouseAuthForm({
         </div>
         <button className="icon-button" onClick={onClose} aria-label="关闭表单">
           <X size={17} />
+        </button>
+      </div>
+      <div className="warehouse-provider-guide">
+        <div>
+          <strong>{guide.title}</strong>
+          {guide.lines.map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+        <button className="ghost-button compact-button" type="button" onClick={copyTemplate}>
+          <Copy size={14} />
+          复制模板
         </button>
       </div>
       <form onSubmit={submit}>
@@ -2934,9 +6019,22 @@ function WarehouseAuthForm({
           <strong>{selectedProvider?.name || "WMS"}</strong>
           <span>{selectedProvider?.notes || "授权信息保存后可用于库存、出库日报和商品图片同步。"}</span>
         </div>
+        {testResult ? (
+          <div className={`warehouse-test-result ${testResult.ok ? "good" : "warning"}`}>
+            <strong>{testResult.ok ? "检测通过" : `检测未通过：${testResult.stage}`}</strong>
+            <span>{testResult.message}</span>
+            <small>库存样本 {formatNumber(testResult.inventorySampleCount || 0)}，订单样本 {formatNumber(testResult.orderSampleCount || 0)}，解析仓库 {testResult.resolvedWarehouseId || "未解析"}</small>
+            {testResult.suggestions?.map((suggestion) => (
+              <small key={suggestion}>{suggestion}</small>
+            ))}
+          </div>
+        ) : null}
         <div className="warehouse-auth-actions">
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
+          </button>
+          <button type="button" className="ghost-button" onClick={runTest} disabled={testing || saving}>
+            {testing ? "检测中" : "检测连接"}
           </button>
           <button className="sync-button" disabled={saving}>
             {saving ? "保存中" : editing ? "更新仓库" : "保存仓库"}
@@ -3150,15 +6248,19 @@ function ProductDetailModal({
   productBase,
   qualifications,
   assets,
+  onAddToBundle,
   onClose,
 }: {
   product: CatalogProduct;
   productBase: ProductBase[];
   qualifications: QualificationRecord[];
   assets: AssetRecord[];
+  onAddToBundle: (product: CatalogProduct) => void;
   onClose: () => void;
 }) {
   const [activeTab, setActiveTab] = React.useState<"base" | "qualifications" | "assets">("base");
+  const [copiedSku, setCopiedSku] = React.useState(false);
+  const [copiedAttachments, setCopiedAttachments] = React.useState(false);
   const base = findProductBase(product, productBase);
   const detailRows = [
     ["产品流水号", base?.skuNo || product.skuNo],
@@ -3179,6 +6281,41 @@ function ProductDetailModal({
   ];
   const productImageUrl = base?.imageUrl || product.imageUrl;
   const qualificationImageUrl = base?.qualificationImageUrl || product.qualificationImageUrl;
+  const attachmentLinks = [
+    ...qualifications.flatMap((qualification) => qualification.files.map((file) => ({
+      type: "资质",
+      group: qualification.qualificationName,
+      name: file.name,
+      href: file.url || (file.fileId ? qualificationFileDownloadUrl(file.fileId, file.name) : ""),
+    }))),
+    ...assets.flatMap((asset) => asset.files.map((file) => ({
+      type: "素材",
+      group: asset.assetName,
+      name: file.name,
+      href: file.url || (file.fileId ? qualificationFileDownloadUrl(file.fileId, file.name) : ""),
+    }))),
+  ].filter((item) => item.href);
+
+  async function copySku() {
+    await copyText(product.sku);
+    setCopiedSku(true);
+    window.setTimeout(() => setCopiedSku(false), 1200);
+  }
+
+  async function copyAttachmentLinks() {
+    const text = attachmentLinks.map((item) => `${item.type}｜${item.group}｜${item.name}\n${item.href}`).join("\n\n");
+    await copyText(text);
+    setCopiedAttachments(true);
+    window.setTimeout(() => setCopiedAttachments(false), 1400);
+  }
+
+  function downloadAttachmentList() {
+    const rows = [
+      ["SKU", "产品", "类型", "分组", "文件名", "链接"],
+      ...attachmentLinks.map((item) => [product.sku, product.name, item.type, item.group, item.name, item.href]),
+    ];
+    downloadTextFile(`tongzhou-${product.sku}-attachments-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
+  }
 
   return (
     <div className="modal-layer" role="dialog" aria-modal="true" aria-label="产品关联资料">
@@ -3234,6 +6371,24 @@ function ProductDetailModal({
             <div className="detail-section-head">
               <FileText size={18} />
               <h3>产品基础信息</h3>
+            </div>
+            <div className="product-detail-action-row">
+              <button className="ghost-button compact-button" type="button" onClick={copySku}>
+                {copiedSku ? <Check size={15} /> : <Copy size={15} />}
+                {copiedSku ? "已复制" : "复制 SKU"}
+              </button>
+              <button className="ghost-button compact-button" type="button" onClick={copyAttachmentLinks} disabled={!attachmentLinks.length}>
+                {copiedAttachments ? <Check size={15} /> : <Copy size={15} />}
+                {copiedAttachments ? "已复制附件" : "复制附件链接"}
+              </button>
+              <button className="ghost-button compact-button" type="button" onClick={downloadAttachmentList} disabled={!attachmentLinks.length}>
+                <Download size={15} />
+                下载附件清单
+              </button>
+              <button className="sync-button compact-button" type="button" onClick={() => onAddToBundle(product)}>
+                <Plus size={15} />
+                加入选品清单
+              </button>
             </div>
             <dl className="product-info-grid">
               {detailRows.map(([label, value]) => (
@@ -3519,6 +6674,8 @@ function ProductLibrary({
   qualificationPayload,
   assetPayload,
   productBase,
+  externalKeyword,
+  onNeedDetails,
 }: {
   products: CatalogProduct[];
   internal: boolean;
@@ -3528,6 +6685,8 @@ function ProductLibrary({
   qualificationPayload: QualificationPayload | null;
   assetPayload: AssetPayload | null;
   productBase: ProductBase[];
+  externalKeyword: string;
+  onNeedDetails: () => Promise<void>;
 }) {
   const defaultChannel = internal ? "全部" : "分销";
   const [channel, setChannel] = React.useState<"全部" | "直营" | "分销">(defaultChannel);
@@ -3541,6 +6700,9 @@ function ProductLibrary({
   const [gridColumns, setGridColumns] = React.useState<4 | 6 | 8>(4);
   const [bundleItems, setBundleItems] = React.useState<BundleSkuItem[]>([]);
   const [bundleOpen, setBundleOpen] = React.useState(false);
+  const [partnerCtaVisible, setPartnerCtaVisible] = React.useState(true);
+  const [partnerApplicationSku, setPartnerApplicationSku] = React.useState("");
+  const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showPrices = canViewPrices(currentUser);
   const showInventory = canViewInventory(currentUser);
@@ -3552,9 +6714,16 @@ function ProductLibrary({
     const brandMatched = brand === "全部" || product.brand === brand;
     return channelMatched && countryMatched && brandMatched && includesFuzzy(product, keyword);
   });
+  const activeFilterCount = Number(country !== "全部") + Number(brand !== "全部") + Number(keyword.trim().length > 0);
   React.useEffect(() => {
     if (!internal) setChannel("分销");
   }, [internal]);
+
+  React.useEffect(() => {
+    if (!externalKeyword) return;
+    setKeywordInput(externalKeyword);
+    setKeyword(externalKeyword);
+  }, [externalKeyword]);
 
   function addToBundle(product: CatalogProduct) {
     setBundleItems((items) => {
@@ -3627,16 +6796,30 @@ function ProductLibrary({
         </button>
       </form>
 
-      <section className="catalog-filter-panel">
+      <button
+        className={`catalog-mobile-filter-toggle ${mobileFiltersOpen ? "open" : ""}`}
+        type="button"
+        onClick={() => setMobileFiltersOpen((value) => !value)}
+        aria-expanded={mobileFiltersOpen}
+      >
+        <span>
+          筛选
+          {activeFilterCount ? <small>{activeFilterCount}</small> : null}
+        </span>
+        <strong>{formatNumber(filteredProducts.length)} 个产品</strong>
+        <ChevronDown size={16} />
+      </button>
+
+      <section className={`catalog-filter-panel ${mobileFiltersOpen ? "open" : ""}`}>
         <div className="filter-block country-filter">
           <span>国家</span>
           <div>
-            <button className={country === "全部" ? "active" : ""} onClick={() => setCountry("全部")}>
+            <button type="button" className={country === "全部" ? "active" : ""} onClick={() => setCountry("全部")}>
               <span className="flag-icon flag-global" />
               全部
             </button>
             {countries.map((item) => (
-              <button key={item} className={country === item ? "active" : ""} onClick={() => setCountry(item)}>
+              <button key={item} type="button" className={country === item ? "active" : ""} onClick={() => setCountry(item)}>
                 <span className={`flag-icon flag-${flagCodeForCountry(item)}`} />
                 {item}
               </button>
@@ -3658,7 +6841,37 @@ function ProductLibrary({
           <strong>{formatNumber(filteredProducts.length)}</strong>
           <span>个产品</span>
         </div>
+        <div className="mobile-filter-actions">
+          <button className="ghost-button compact-button" type="button" onClick={() => { setCountry("全部"); setBrand("全部"); setKeyword(""); setKeywordInput(""); }}>
+            清除筛选
+          </button>
+          <button className="sync-button compact-button" type="button" onClick={() => setMobileFiltersOpen(false)}>
+            查看结果
+          </button>
+        </div>
       </section>
+
+      {!showPrices && partnerCtaVisible ? (
+        <section className="partner-access-banner">
+          <div>
+            <strong>需要查看分销价、库存和素材？</strong>
+            <span>当前为外部浏览模式。请联系同舟运营开通分销账号，登录后可查看价格、库存、资质和素材文件。</span>
+          </div>
+          <div>
+            <button className="sync-button compact-button" type="button" onClick={() => setPartnerApplicationSku("catalog")}>
+              <ShoppingBag size={14} />
+              申请分销账号
+            </button>
+            <button className="sync-button compact-button" type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+              <Lock size={14} />
+              去登录
+            </button>
+            <button className="ghost-button compact-button" type="button" onClick={() => setPartnerCtaVisible(false)}>
+              暂不显示
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {loading ? <div className="notice">正在读取产品库...</div> : null}
 
@@ -3758,9 +6971,13 @@ function ProductLibrary({
                     <div className="locked-price">
                       <small>价格与库存</small>
                       <strong>登录后可见</strong>
+                      <button type="button" onClick={() => setPartnerApplicationSku(product.sku)}>申请分销账号后查看</button>
                     </div>
                   )}
-                  <button className="icon-button" type="button" aria-label="查看产品关联资料" onClick={() => setDetailProduct(product)}>
+                  <button className="icon-button" type="button" aria-label="查看产品关联资料" onClick={async () => {
+                    await onNeedDetails();
+                    setDetailProduct(product);
+                  }}>
                     <ExternalLink size={17} />
                   </button>
                 </div>
@@ -3775,7 +6992,14 @@ function ProductLibrary({
           productBase={productBase}
           qualifications={getRelatedQualifications(detailProduct, qualificationPayload)}
           assets={getRelatedAssets(detailProduct, findProductBase(detailProduct, productBase), assetPayload)}
+          onAddToBundle={addToBundle}
           onClose={() => setDetailProduct(null)}
+        />
+      ) : null}
+      {partnerApplicationSku ? (
+        <DistributorApplicationModal
+          sourceSku={partnerApplicationSku === "catalog" ? "" : partnerApplicationSku}
+          onClose={() => setPartnerApplicationSku("")}
         />
       ) : null}
       <BundleSkuCalculator
@@ -3801,6 +7025,89 @@ function ProductLibrary({
         <span>顶部</span>
       </button>
     </main>
+  );
+}
+
+function DistributorApplicationModal({ sourceSku, onClose }: { sourceSku?: string; onClose: () => void }) {
+  const [form, setForm] = React.useState({
+    companyName: "",
+    contactName: "",
+    phone: "",
+    wechat: "",
+    email: "",
+    market: "",
+    note: sourceSku ? `关注 SKU：${sourceSku}` : "",
+  });
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [submitted, setSubmitted] = React.useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await submitDistributorApplication({ ...form, sourceSku });
+      setSubmitted(true);
+      setMessage(`申请已提交，编号：${result.application.id}。运营同事会根据联系方式回访。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "申请提交失败，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="confirm-layer" role="dialog" aria-modal="true" aria-label="申请分销账号">
+      <button className="confirm-backdrop" type="button" aria-label="关闭申请表单" onClick={onClose} />
+      <form className="distributor-application-modal" onSubmit={submit}>
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Partner Access</p>
+            <h2>申请分销账号</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+        <p>提交后会进入同舟运营待处理列表。账号开通后可查看分销价、库存、资质和素材文件。</p>
+        <div className="distributor-application-grid">
+          <label>
+            <span>公司 / 店铺名称</span>
+            <input value={form.companyName} onChange={(event) => setForm((current) => ({ ...current, companyName: event.target.value }))} disabled={submitted} />
+          </label>
+          <label>
+            <span>联系人</span>
+            <input value={form.contactName} onChange={(event) => setForm((current) => ({ ...current, contactName: event.target.value }))} disabled={submitted} />
+          </label>
+          <label>
+            <span>手机号</span>
+            <input value={form.phone} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} disabled={submitted} />
+          </label>
+          <label>
+            <span>微信</span>
+            <input value={form.wechat} onChange={(event) => setForm((current) => ({ ...current, wechat: event.target.value }))} disabled={submitted} />
+          </label>
+          <label>
+            <span>邮箱</span>
+            <input value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} disabled={submitted} />
+          </label>
+          <label>
+            <span>主要市场</span>
+            <input value={form.market} onChange={(event) => setForm((current) => ({ ...current, market: event.target.value }))} placeholder="例如：俄罗斯 / 印尼 / TikTok Shop" disabled={submitted} />
+          </label>
+          <label className="distributor-application-span">
+            <span>需求说明</span>
+            <textarea value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} disabled={submitted} />
+          </label>
+        </div>
+        {message ? <div className={`notice compact-notice ${submitted ? "good" : "warning"}`}>{message}</div> : null}
+        <div className="confirm-actions">
+          <button className="ghost-button" type="button" onClick={onClose}>{submitted ? "关闭" : "取消"}</button>
+          {!submitted ? <button className="sync-button" type="submit" disabled={busy}>{busy ? "提交中" : "提交申请"}</button> : null}
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -3845,13 +7152,23 @@ function BundleSkuCalculator({
     window.setTimeout(() => setCopied(""), 1200);
   }
 
+  function downloadQuote() {
+    if (!items.length) return;
+    const fileName = `tongzhou-quote-${new Date().toISOString().slice(0, 10)}.csv`;
+    downloadTextFile(fileName, bundleQuoteCsv(items, channel, internal, showPrices), "text/csv;charset=utf-8");
+    setCopied("download");
+    window.setTimeout(() => setCopied(""), 1200);
+  }
+
   return (
     <>
-      <button className={`bundle-fab ${items.length ? "has-items" : ""}`} type="button" onClick={onOpen} aria-label="打开组合 SKU 计算器">
-        <Calculator size={20} />
-        <span>组合SKU</span>
-        {items.length ? <strong>{items.length}</strong> : null}
-      </button>
+      {items.length || open ? (
+        <button className={`bundle-fab ${items.length ? "has-items" : ""}`} type="button" onClick={onOpen} aria-label="打开组合 SKU 计算器">
+          <Calculator size={20} />
+          <span>组合SKU</span>
+          {items.length ? <strong>{items.length}</strong> : null}
+        </button>
+      ) : null}
       {open ? (
         <div className="modal-backdrop bundle-modal-backdrop" role="presentation" onMouseDown={onClose}>
           <section className="bundle-calculator-modal" role="dialog" aria-modal="true" aria-label="组合 SKU 计算器" onMouseDown={(event) => event.stopPropagation()}>
@@ -3929,6 +7246,10 @@ function BundleSkuCalculator({
 
                 <footer className="bundle-modal-actions">
                   <button className="ghost-button" type="button" onClick={onClear}>清空</button>
+                  <button className="ghost-button" type="button" onClick={downloadQuote}>
+                    <Download size={16} />
+                    {copied === "download" ? "已下载" : "下载报价单"}
+                  </button>
                   <button className="sync-button" type="button" onClick={() => copyValue(quoteText, "quote")}>
                     <Copy size={16} />
                     {copied === "quote" ? "已复制报价" : "复制报价"}
@@ -3958,6 +7279,7 @@ function QuickNavPage({
   currentUser: AuthUser;
   onRefresh: () => Promise<void>;
 }) {
+  const confirm = useConfirm();
   const [localPayload, setLocalPayload] = React.useState<QuickNavPayload | null>(null);
   const visiblePayload = localPayload || quickNavPayload;
   const categories = visiblePayload?.categories ?? [];
@@ -4028,7 +7350,15 @@ function QuickNavPage({
   }
 
   async function handleDeleteCategory(categoryId: string) {
-    if (!window.confirm("确认删除这个分类？分类下的快捷方式也会一起删除。")) return;
+    const category = categories.find((item) => item.id === categoryId);
+    const confirmed = await confirm({
+      title: `删除分类「${category?.name || categoryId}」`,
+      body: "删除分类会同时删除分类下的所有快捷方式。",
+      confirmText: "删除分类",
+      tone: "danger",
+      details: [`快捷方式数量：${formatNumber(category?.links?.length || 0)}`],
+    });
+    if (!confirmed) return;
     setActionId(categoryId);
     setMessage("");
     try {
@@ -4043,6 +7373,16 @@ function QuickNavPage({
   }
 
   async function handleDeleteLink(categoryId: string, linkId: string) {
+    const category = categories.find((item) => item.id === categoryId);
+    const link = category?.links.find((item) => item.id === linkId);
+    const confirmed = await confirm({
+      title: `删除快捷方式「${link?.title || linkId}」`,
+      body: "删除后，这个入口将不再出现在快捷导航里。",
+      confirmText: "删除快捷方式",
+      tone: "danger",
+      details: [`所属分类：${category?.name || "未识别"}`, link?.url ? `链接：${link.url}` : ""].filter(Boolean),
+    });
+    if (!confirmed) return;
     setActionId(linkId);
     setMessage("");
     try {
