@@ -395,6 +395,9 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
   if (!shippedAt && status !== "has_out_storage") return [];
   const createdAt = firstText(order.gmtSubmit, order.gmtCreate, order.gmtOrderStart);
   const orderNo = firstText(order.platformOrderSn, order.appPackageNo, order.orderId);
+  const platform = firstText(order.platform, order.platformCode, order.platformName);
+  const shopName = firstText(order.shopName, order.storeName, order.platformShop, order.platform_shop, order.shopCode, order.shopId);
+  const projectGroup = /^TZ/i.test(firstText(shopName, orderNo)) ? "同舟跨境项目" : "深六项目";
   const rawItems = Array.isArray(order.items) ? order.items : [];
 
   return rawItems
@@ -413,6 +416,10 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
         status,
         shippedAt,
         createdAt,
+        platform,
+        shopName,
+        shopCode: shopName,
+        projectGroup,
         sku,
         productName: firstText(item.goodsName, item.skuName, item.productName, sku),
         quantity,
@@ -528,6 +535,13 @@ function normalizeYunOrderRows(order, connection) {
   const shippedAt = firstText(order.date_shipping, order.ship_date, order.shipping_date, order.date_release, order.date_create);
   const status = firstText(order.order_status, order.status);
   const orderNo = firstText(order.order_code, order.reference_no, order.order_id);
+  const platform = firstText(order.platform);
+  const shopName = firstText(order.platform_shop, order.shop_name, order.store_name);
+  const sourceAccount = firstText(order.sw_order_number);
+  const externalOrderNo = firstText(order.reference_no);
+  const salesAmount = firstNumber(order.order_sale_amount);
+  const currency = firstText(order.order_sale_currency, order.currency);
+  const projectGroup = /^TZ/i.test(firstText(shopName, sourceAccount, orderNo, externalOrderNo)) ? "同舟跨境项目" : "深六项目";
   const rawItems = Array.isArray(order.items) && order.items.length
     ? order.items
     : Array.isArray(order.order_pack_box)
@@ -545,9 +559,17 @@ function normalizeYunOrderRows(order, connection) {
       status,
       shippedAt,
       createdAt: firstText(order.date_create, order.created_at),
+      platform,
+      shopName,
+      shopCode: shopName,
+      sourceAccount,
+      externalOrderNo,
+      projectGroup,
       sku: firstText(item.product_sku, item.sku, item.product_barcode),
       productName: firstText(item.product_title, item.product_name, item.name, item.product_sku, item.sku, item.product_barcode),
       quantity: firstNumber(item.quantity, item.qty, item.product_quantity),
+      salesAmount,
+      currency,
       rawProvider: connection.providerId,
     }))
     .filter((item) => item.quantity > 0);

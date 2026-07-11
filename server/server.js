@@ -2529,6 +2529,177 @@ function buildDashboardSummary(auth) {
   };
 }
 
+function orderDateKey(order) {
+  return String(order.shippedAt || order.createdAt || "").slice(0, 10);
+}
+
+function orderIdentity(order) {
+  return [
+    order.providerId,
+    order.warehouseId,
+    order.orderId || order.orderNo,
+  ].map((value) => String(value || "").trim()).filter(Boolean).join("::");
+}
+
+function orderOptionRows(values) {
+  return Array.from(values)
+    .filter(Boolean)
+    .sort((a, b) => String(a).localeCompare(String(b), "zh-CN"))
+    .map((value) => ({ value, label: value }));
+}
+
+function inferOrderProjectGroup(order) {
+  const candidates = [
+    order.shopName,
+    order.shopCode,
+    order.sourceAccount,
+    order.orderNo,
+    order.externalOrderNo,
+  ].map((value) => String(value || "").trim().toUpperCase()).filter(Boolean);
+  return candidates.some((value) => value.startsWith("TZ")) ? "同舟跨境项目" : "深六项目";
+}
+
+function buildOrderAnalysisPayload(params = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const dateTo = String(params.dateTo || today).slice(0, 10);
+  const dateFrom = String(params.dateFrom || dateTo).slice(0, 10);
+  const country = String(params.country || "");
+  const warehouseId = String(params.warehouseId || "");
+  const platform = String(params.platform || "");
+  const shopName = String(params.shopName || "");
+  const projectGroup = String(params.projectGroup || "");
+  const providerId = String(params.providerId || "");
+  const keyword = String(params.keyword || "").trim().toLowerCase();
+  const onlyRussia = params.onlyRussia !== false;
+  const allOrders = (cachedOrdersSync.orders || []).map((order) => ({
+    ...order,
+    date: orderDateKey(order),
+    platform: String(order.platform || "").trim(),
+    shopName: String(order.shopName || order.shopCode || "").trim(),
+    projectGroup: String(order.projectGroup || "").trim() || inferOrderProjectGroup(order),
+  }));
+  const selectableOrders = onlyRussia ? allOrders.filter((order) => order.providerId === "yunwms_ru" || order.country === "俄罗斯") : allOrders;
+  const options = {
+    countries: orderOptionRows(new Set(selectableOrders.map((order) => order.country))),
+    warehouses: Array.from(new Map(selectableOrders.map((order) => [order.warehouseId, {
+      warehouseId: order.warehouseId,
+      warehouseName: order.warehouseName || order.warehouseId,
+      country: order.country || "",
+    }])).values()).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN")),
+    platforms: orderOptionRows(new Set(selectableOrders.map((order) => order.platform || "未识别平台"))),
+    shops: orderOptionRows(new Set(selectableOrders.map((order) => order.shopName || "未识别店铺"))),
+    projectGroups: orderOptionRows(new Set(selectableOrders.map((order) => order.projectGroup))),
+  };
+  const filtered = selectableOrders.filter((order) => {
+    const date = order.date;
+    if (!date || date < dateFrom || date > dateTo) return false;
+    if (country && order.country !== country) return false;
+    if (warehouseId && order.warehouseId !== warehouseId) return false;
+    if (platform && (order.platform || "未识别平台") !== platform) return false;
+    if (shopName && (order.shopName || "未识别店铺") !== shopName) return false;
+    if (projectGroup && order.projectGroup !== projectGroup) return false;
+    if (providerId && order.providerId !== providerId) return false;
+    if (keyword) {
+      const haystack = [
+        order.orderNo,
+        order.externalOrderNo,
+        order.sku,
+        order.productName,
+        order.shopName,
+        order.projectGroup,
+        order.platform,
+        order.warehouseName,
+      ].join(" ").toLowerCase();
+      if (!haystack.includes(keyword)) return false;
+    }
+    return true;
+  });
+
+  const orderIds = new Set(filtered.map(orderIdentity).filter(Boolean));
+  const skuSet = new Set(filtered.map((order) => order.sku).filter(Boolean));
+  const quantity = filtered.reduce((sum, order) => sum + numberOrZero(order.quantity), 0);
+  const salesAmount = filtered.reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0);
+  const aggregate = (keyFn) => {
+    const rows = new Map();
+    for (const order of filtered) {
+      const key = keyFn(order);
+      const current = rows.get(key) || { key, orderIds: new Set(), orderLines: 0, quantity: 0, salesAmount: 0, skuSet: new Set() };
+      current.orderIds.add(orderIdentity(order));
+      current.orderLines += 1;
+      current.quantity += numberOrZero(order.quantity);
+      current.salesAmount += numberOrZero(order.salesAmount);
+      if (order.sku) current.skuSet.add(order.sku);
+      rows.set(key, current);
+    }
+    return Array.from(rows.values())
+      .map((row) => ({
+        key: row.key,
+        orderCount: row.orderIds.size,
+        orderLines: row.orderLines,
+        quantity: row.quantity,
+        salesAmount: row.salesAmount,
+        skuCount: row.skuSet.size,
+      }))
+      .sort((a, b) => b.orderCount - a.orderCount || b.quantity - a.quantity);
+  };
+  const daily = aggregate((order) => order.date).sort((a, b) => a.key.localeCompare(b.key));
+  const byShop = aggregate((order) => order.shopName || "未识别店铺");
+  const byProjectGroup = aggregate((order) => order.projectGroup || "未识别项目组");
+  const byPlatform = aggregate((order) => order.platform || "未识别平台");
+  const byWarehouse = aggregate((order) => order.warehouseName || order.warehouseId || "未识别仓库");
+  const byCountry = aggregate((order) => order.country || "未识别国家");
+  const recentOrders = filtered
+    .slice()
+    .sort((a, b) => String(b.shippedAt || b.createdAt || "").localeCompare(String(a.shippedAt || a.createdAt || "")))
+    .slice(0, 200)
+    .map((order) => ({
+      orderId: order.orderId || "",
+      orderNo: order.orderNo || "",
+      externalOrderNo: order.externalOrderNo || "",
+      date: order.date,
+      shippedAt: order.shippedAt || "",
+      createdAt: order.createdAt || "",
+      country: order.country || "",
+      warehouseId: order.warehouseId || "",
+      warehouseName: order.warehouseName || "",
+      platform: order.platform || "未识别平台",
+      shopName: order.shopName || "未识别店铺",
+      projectGroup: order.projectGroup || "未识别项目组",
+      sku: order.sku || "",
+      productName: order.productName || "",
+      quantity: numberOrZero(order.quantity),
+      salesAmount: numberOrZero(order.salesAmount),
+      currency: order.currency || "",
+      status: order.status || "",
+    }));
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    syncedAt: cachedOrdersSync.syncedAt || "",
+    scope: onlyRussia ? "russia" : "all",
+    filters: { dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, providerId, keyword },
+    counts: {
+      orderCount: orderIds.size,
+      orderLines: filtered.length,
+      quantity,
+      skuCount: skuSet.size,
+      salesAmount,
+      shopCount: new Set(filtered.map((order) => order.shopName).filter(Boolean)).size,
+      projectGroupCount: new Set(filtered.map((order) => order.projectGroup).filter(Boolean)).size,
+      platformCount: new Set(filtered.map((order) => order.platform).filter(Boolean)).size,
+      unrecognizedShopRows: filtered.filter((order) => !order.shopName).length,
+    },
+    options,
+    daily,
+    byShop,
+    byProjectGroup,
+    byPlatform,
+    byWarehouse,
+    byCountry,
+    recentOrders,
+  };
+}
+
 async function handleWarehouseSync(req, res) {
   if (!canManage(getAuth(req))) {
     sendJson(res, 401, { ok: false, message: "同步仓库数据需要内部登录。" });
@@ -4777,6 +4948,26 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync" && req.method === "POST") {
       await handleOrderSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/order-analysis" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看订单分析需要直营部门登录。" });
+        return;
+      }
+      sendJson(res, 200, buildOrderAnalysisPayload({
+        dateFrom: url.searchParams.get("dateFrom") || "",
+        dateTo: url.searchParams.get("dateTo") || "",
+        country: url.searchParams.get("country") || "",
+        warehouseId: url.searchParams.get("warehouseId") || "",
+        platform: url.searchParams.get("platform") || "",
+        shopName: url.searchParams.get("shopName") || "",
+        projectGroup: url.searchParams.get("projectGroup") || "",
+        providerId: url.searchParams.get("providerId") || "",
+        keyword: url.searchParams.get("keyword") || "",
+        onlyRussia: url.searchParams.get("scope") !== "all",
+      }));
       return;
     }
 

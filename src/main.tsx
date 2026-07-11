@@ -55,6 +55,7 @@ import {
   MovementHistoryPayload,
   MovementWarehouseDiagnostic,
   MovementPayload,
+  OrderAnalysisPayload,
   OrderSyncJob,
   ProductBase,
   ProductPayload,
@@ -97,6 +98,7 @@ import {
   fetchMovement,
   fetchMovementHistory,
   fetchLatestOrderSyncJob,
+  fetchOrderAnalysis,
   fetchProducts,
   fetchQuickNav,
   fetchQualifications,
@@ -287,6 +289,7 @@ const navItems = [
   { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard" },
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory" },
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots" },
+  { label: "订单分析", icon: FileText, hash: "#order-analysis" },
   { label: "动销监控", icon: BarChart3, hash: "#movement" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup" },
@@ -714,6 +717,7 @@ function App() {
   const [inventorySnapshotPayload, setInventorySnapshotPayload] = React.useState<InventorySnapshotPayload | null>(null);
   const [movementPayload, setMovementPayload] = React.useState<MovementPayload | null>(null);
   const [movementHistoryPayload, setMovementHistoryPayload] = React.useState<MovementHistoryPayload | null>(null);
+  const [orderAnalysisPayload, setOrderAnalysisPayload] = React.useState<OrderAnalysisPayload | null>(null);
   const [orderSyncJob, setOrderSyncJob] = React.useState<OrderSyncJob | null>(null);
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
@@ -765,6 +769,7 @@ function App() {
     if (canManage(currentUser)) {
       loadWarehouses();
       loadInventorySnapshots();
+      loadOrderAnalysis();
       loadMovement();
       loadMovementHistory();
       loadStockup();
@@ -821,6 +826,7 @@ function App() {
       if (canManage(currentUser)) {
         void loadWarehouses();
         void loadInventorySnapshots();
+        void loadOrderAnalysis();
         void loadMovement();
         void loadMovementHistory();
         void loadStockup();
@@ -839,7 +845,7 @@ function App() {
     const timer = window.setInterval(async () => {
       const job = await loadLatestOrderJob();
       if (job && !["queued", "running"].includes(job.status)) {
-        await Promise.all([loadMovement(), loadMovementHistory(), loadDashboardSummary(), loadStockup()]);
+        await Promise.all([loadMovement(), loadMovementHistory(), loadOrderAnalysis(), loadDashboardSummary(), loadStockup()]);
       }
     }, 5000);
     return () => window.clearInterval(timer);
@@ -925,6 +931,15 @@ function App() {
       setMovementHistoryPayload(data);
     } catch {
       setMovementHistoryPayload(null);
+    }
+  }
+
+  async function loadOrderAnalysis(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" } = {}) {
+    try {
+      const data = await fetchOrderAnalysis(input);
+      setOrderAnalysisPayload(data);
+    } catch {
+      setOrderAnalysisPayload(null);
     }
   }
 
@@ -1026,7 +1041,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadDashboardSummary(), loadMovement(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications(), loadActionLog()]);
+      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications(), loadActionLog()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -1039,7 +1054,7 @@ function App() {
     setError("");
     try {
       await syncWarehouses();
-      await Promise.all([loadDashboardSummary(), loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadStockup()]);
+      await Promise.all([loadDashboardSummary(), loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "仓库同步失败");
     } finally {
@@ -1065,7 +1080,7 @@ function App() {
     try {
       const data = await startOrderSyncJob({ days: 90, warehouseIds });
       setOrderSyncJob(data.job);
-      await Promise.all([loadDashboardSummary(), loadMovement(), loadStockup()]);
+      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "订单同步失败");
     } finally {
@@ -1216,7 +1231,7 @@ function App() {
     setError("");
     try {
       await deleteWarehouseConnection(id);
-      await Promise.all([loadWarehouses(), loadProducts(), loadMovement(), loadStockup()]);
+      await Promise.all([loadWarehouses(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "删除仓库失败");
       throw requestError;
@@ -1265,7 +1280,7 @@ function App() {
       await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
     }
     if (canManage(user)) {
-      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadStockup(), loadUsers(), loadWecomNotifications(), loadActionLog()]);
+      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadOrderAnalysis(), loadStockup(), loadUsers(), loadWecomNotifications(), loadActionLog()]);
     }
     setBlockedView("");
     if (targetView && visibleNavItems(user).some((item) => item.label === targetView)) {
@@ -1297,6 +1312,8 @@ function App() {
     setWarehousePayload(null);
     setInventorySnapshotPayload(null);
     setMovementPayload(null);
+    setMovementHistoryPayload(null);
+    setOrderAnalysisPayload(null);
     setStockupPayload(null);
     setUserPayload(null);
     setWecomNotificationPayload(null);
@@ -1431,6 +1448,13 @@ function App() {
             inventorySnapshotPayload={inventorySnapshotPayload}
             onLoadInventorySnapshots={loadInventorySnapshots}
             onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
+          />
+        ) : activeView === "订单分析" ? (
+          <OrderAnalysisPage
+            payload={orderAnalysisPayload}
+            onLoadOrderAnalysis={loadOrderAnalysis}
+            onSyncOrders={handleOrderSync}
+            syncing={syncing}
           />
         ) : activeView === "仓库授权" || activeView === "库存同步" ? (
           <WarehouseBoard
@@ -5616,6 +5640,224 @@ function InventorySnapshotPage({
             <button className="ghost-button compact-button" type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={safePage >= totalPages}>下一页</button>
             <button className="ghost-button compact-button" type="button" onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
           </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function OrderAnalysisPage({
+  payload,
+  onLoadOrderAnalysis,
+  onSyncOrders,
+  syncing,
+}: {
+  payload: OrderAnalysisPayload | null;
+  onLoadOrderAnalysis: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" }) => Promise<void>;
+  onSyncOrders: () => Promise<void>;
+  syncing: boolean;
+}) {
+  const [dateFrom, setDateFrom] = React.useState("");
+  const [dateTo, setDateTo] = React.useState("");
+  const [country, setCountry] = React.useState("");
+  const [warehouseId, setWarehouseId] = React.useState("");
+  const [platform, setPlatform] = React.useState("");
+  const [shopName, setShopName] = React.useState("");
+  const [projectGroup, setProjectGroup] = React.useState("");
+  const [keywordDraft, setKeywordDraft] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const filters = payload?.filters;
+  const counts = payload?.counts;
+  const maxDaily = Math.max(...(payload?.daily || []).map((item) => item.orderCount), 1);
+
+  React.useEffect(() => {
+    if (!filters) return;
+    setDateFrom((current) => current || filters.dateFrom || "");
+    setDateTo((current) => current || filters.dateTo || "");
+    setCountry((current) => current || filters.country || "");
+    setWarehouseId((current) => current || filters.warehouseId || "");
+    setPlatform((current) => current || filters.platform || "");
+    setShopName((current) => current || filters.shopName || "");
+    setProjectGroup((current) => current || filters.projectGroup || "");
+    setKeywordDraft((current) => current || filters.keyword || "");
+  }, [filters?.dateFrom, filters?.dateTo]);
+
+  async function submitFilters(event?: React.FormEvent) {
+    event?.preventDefault();
+    setLoading(true);
+    try {
+      await onLoadOrderAnalysis({ dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, keyword: keywordDraft, scope: "russia" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resetFilters() {
+    setCountry("");
+    setWarehouseId("");
+    setPlatform("");
+    setShopName("");
+    setProjectGroup("");
+    setKeywordDraft("");
+    setLoading(true);
+    try {
+      await onLoadOrderAnalysis({ dateFrom, dateTo, scope: "russia" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="movement-page order-analysis-page">
+      <section className="library-hero movement-hero">
+        <div>
+          <p className="eyebrow">Order Analysis</p>
+          <h2>订单分析中心</h2>
+          <p>优先聚焦俄罗斯 YunWMS 两个仓库，按出库时间查看每日订单量、SKU 件数、店铺和平台表现。</p>
+          <div className="source-row">
+            <span className={`status-pill ${payload?.syncedAt ? "good" : "warning"}`}>{payload?.syncedAt ? "订单缓存已同步" : "等待订单同步"}</span>
+            <span>{payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN") : "先同步订单后可查看分析"}</span>
+          </div>
+        </div>
+        <button className="sync-button" type="button" onClick={onSyncOrders} disabled={syncing}>
+          <RefreshCw size={16} className={syncing ? "spinning" : ""} />
+          {syncing ? "同步中" : "重同步近90天订单"}
+        </button>
+      </section>
+
+      <section className="metric-strip movement-metrics">
+        <Metric title="订单数" value={formatNumber(counts?.orderCount || 0)} note="按订单号去重" icon={FileText} tone="blue" />
+        <Metric title="出库件数" value={formatNumber(counts?.quantity || 0)} note={`${formatNumber(counts?.orderLines || 0)} 条 SKU 行`} icon={PackageCheck} tone="green" />
+        <Metric title="项目组" value={formatNumber(counts?.projectGroupCount || 0)} note={`${formatNumber(counts?.shopCount || 0)} 个店铺`} icon={ShoppingBag} tone="orange" />
+        <Metric title="SKU 数" value={formatNumber(counts?.skuCount || 0)} note={`${formatNumber(counts?.platformCount || 0)} 个平台`} icon={Boxes} tone="red" />
+      </section>
+
+      {(counts?.unrecognizedShopRows || 0) > 0 ? (
+        <div className="notice warning">
+          当前仍有 {formatNumber(counts?.unrecognizedShopRows || 0)} 条俄罗斯订单未识别店铺。新版本已接入 YunWMS 的 platform_shop 字段，重同步俄罗斯订单后会补齐。
+        </div>
+      ) : null}
+
+      <form className="order-analysis-filter panel" onSubmit={submitFilters}>
+        <label>
+          <span>开始日期</span>
+          <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
+        </label>
+        <label>
+          <span>结束日期</span>
+          <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
+        </label>
+        <label>
+          <span>国家</span>
+          <select value={country} onChange={(event) => setCountry(event.target.value)}>
+            <option value="">全部国家</option>
+            {payload?.options.countries.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>仓库</span>
+          <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}>
+            <option value="">全部仓库</option>
+            {payload?.options.warehouses.map((item) => <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>平台</span>
+          <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
+            <option value="">全部平台</option>
+            {payload?.options.platforms.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>项目组</span>
+          <select value={projectGroup} onChange={(event) => setProjectGroup(event.target.value)}>
+            <option value="">全部项目组</option>
+            {payload?.options.projectGroups.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>店铺</span>
+          <select value={shopName} onChange={(event) => setShopName(event.target.value)}>
+            <option value="">全部店铺</option>
+            {payload?.options.shops.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </label>
+        <label className="order-analysis-keyword">
+          <span>搜索</span>
+          <input value={keywordDraft} onChange={(event) => setKeywordDraft(event.target.value)} placeholder="订单号、SKU、商品名" />
+        </label>
+        <div className="order-analysis-actions">
+          <button className="ghost-button" type="button" onClick={resetFilters} disabled={loading}>清空</button>
+          <button className="sync-button" type="submit" disabled={loading}>{loading ? "查询中" : "查询"}</button>
+        </div>
+      </form>
+
+      <section className="order-analysis-grid">
+        <article className="panel order-analysis-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Daily Trend</p>
+              <h2>每日订单量</h2>
+            </div>
+          </div>
+          <div className="order-daily-bars">
+            {(payload?.daily || []).map((item) => (
+              <div key={item.key} title={`${item.key}：${formatNumber(item.orderCount)} 单 / ${formatNumber(item.quantity)} 件`}>
+                <span style={{ height: `${Math.max(8, (item.orderCount / maxDaily) * 120)}px` }} />
+                <small>{item.key.slice(5)}</small>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="panel order-analysis-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Project Ranking</p>
+              <h2>项目组排行</h2>
+            </div>
+          </div>
+          <div className="order-rank-list">
+            {(payload?.byProjectGroup || []).slice(0, 12).map((item) => (
+              <div key={item.key}>
+                <strong>{item.key}</strong>
+                <span>{formatNumber(item.orderCount)} 单 · {formatNumber(item.quantity)} 件 · {formatNumber(item.skuCount)} SKU</span>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      <section className="panel order-analysis-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Order Rows</p>
+            <h2>订单明细</h2>
+          </div>
+          <span className="status-pill muted">{formatNumber(payload?.recentOrders.length || 0)} 条</span>
+        </div>
+        <div className="order-analysis-table">
+          <div className="order-analysis-row order-analysis-head">
+            <span>出库时间</span>
+            <span>项目组</span>
+            <span>店铺 / 平台</span>
+            <span>仓库</span>
+            <span>订单号</span>
+            <span>SKU / 商品</span>
+            <span>数量</span>
+            <span>状态</span>
+          </div>
+          {(payload?.recentOrders || []).map((order) => (
+            <article className="order-analysis-row" key={`${order.warehouseId}-${order.orderId}-${order.orderNo}-${order.sku}`}>
+              <span>{formatDateTime(order.shippedAt || order.createdAt)}</span>
+              <span><strong>{order.projectGroup}</strong></span>
+              <span><strong>{order.shopName}</strong><small>{order.platform}</small></span>
+              <span>{order.warehouseName}</span>
+              <span><strong>{order.orderNo}</strong><small>{order.externalOrderNo}</small></span>
+              <span><strong>{order.sku}</strong><small>{order.productName}</small></span>
+              <strong>{formatNumber(order.quantity)}</strong>
+              <span className="status-pill muted">{order.status}</span>
+            </article>
+          ))}
         </div>
       </section>
     </main>

@@ -122,6 +122,15 @@ async function main() {
   }
   console.log("[ok] /api/me direct session");
 
+  const orderAnalysis = await expectJson("/api/order-analysis", { headers: authHeaders });
+  if (!orderAnalysis.counts || !orderAnalysis.options || !Array.isArray(orderAnalysis.daily) || !Array.isArray(orderAnalysis.recentOrders)) {
+    throw new Error("/api/order-analysis did not return counts, options, daily trend, and recent orders.");
+  }
+  if (!Array.isArray(orderAnalysis.options.projectGroups) || !Array.isArray(orderAnalysis.byProjectGroup)) {
+    throw new Error("/api/order-analysis did not return project group filters and ranking.");
+  }
+  console.log("[ok] /api/order-analysis");
+
   const movement = await expectJson("/api/movement", { headers: authHeaders });
   if ((movement.warehouseDiagnostics || []).some((item) => !item.actionTitle || !Array.isArray(item.actionItems))) {
     throw new Error("/api/movement warehouse diagnostics are missing action guidance fields.");

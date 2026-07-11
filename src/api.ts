@@ -989,6 +989,68 @@ export type OrderSyncJob = {
   }>;
 };
 
+export type OrderAnalysisPayload = {
+  ok: boolean;
+  generatedAt: string;
+  syncedAt: string;
+  scope: "russia" | "all" | string;
+  filters: {
+    dateFrom: string;
+    dateTo: string;
+    country: string;
+    warehouseId: string;
+    platform: string;
+    shopName: string;
+    projectGroup: string;
+    providerId: string;
+    keyword: string;
+  };
+  counts: {
+    orderCount: number;
+    orderLines: number;
+    quantity: number;
+    skuCount: number;
+    salesAmount: number;
+    shopCount: number;
+    projectGroupCount: number;
+    platformCount: number;
+    unrecognizedShopRows: number;
+  };
+  options: {
+    countries: Array<{ value: string; label: string }>;
+    warehouses: Array<{ warehouseId: string; warehouseName: string; country: string }>;
+    platforms: Array<{ value: string; label: string }>;
+    shops: Array<{ value: string; label: string }>;
+    projectGroups: Array<{ value: string; label: string }>;
+  };
+  daily: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  byShop: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  byProjectGroup: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  byPlatform: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  byWarehouse: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  byCountry: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  recentOrders: Array<{
+    orderId: string;
+    orderNo: string;
+    externalOrderNo: string;
+    date: string;
+    shippedAt: string;
+    createdAt: string;
+    country: string;
+    warehouseId: string;
+    warehouseName: string;
+    platform: string;
+    shopName: string;
+    projectGroup: string;
+    sku: string;
+    productName: string;
+    quantity: number;
+    salesAmount: number;
+    currency: string;
+    status: string;
+  }>;
+};
+
 export type StockupRecommendation = {
   id: string;
   recommendationKey?: string;
@@ -1554,6 +1616,21 @@ export function startOrderSyncJob(input: { days?: number; warehouseIds?: string[
 
 export function fetchLatestOrderSyncJob() {
   return requestJson<{ ok: boolean; job: OrderSyncJob | null }>("/api/orders/sync-jobs/latest");
+}
+
+export function fetchOrderAnalysis(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" } = {}) {
+  const params = new URLSearchParams();
+  if (input.dateFrom) params.set("dateFrom", input.dateFrom);
+  if (input.dateTo) params.set("dateTo", input.dateTo);
+  if (input.country) params.set("country", input.country);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.platform) params.set("platform", input.platform);
+  if (input.shopName) params.set("shopName", input.shopName);
+  if (input.projectGroup) params.set("projectGroup", input.projectGroup);
+  if (input.keyword) params.set("keyword", input.keyword);
+  if (input.scope) params.set("scope", input.scope);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<OrderAnalysisPayload>(`/api/order-analysis${query}`);
 }
 
 export function fetchStockup() {
