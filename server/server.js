@@ -2559,6 +2559,34 @@ function inferOrderProjectGroup(order) {
   return candidates.some((value) => value.startsWith("TZ")) ? "同舟跨境项目" : "深六项目";
 }
 
+function orderSkuLookupKeys(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const keys = new Set([text.toLowerCase()]);
+  const tzkjMatch = text.match(/(TZKJ-[A-Z0-9-]+)$/i);
+  if (tzkjMatch) keys.add(tzkjMatch[1].toLowerCase());
+  return Array.from(keys);
+}
+
+function buildOrderProductLookup() {
+  const lookup = new Map();
+  const addProduct = (product) => {
+    const displayName = String(product?.name || product?.nameEn || product?.productName || "").trim();
+    const imageUrl = String(product?.imageUrl || "").trim();
+    if (!displayName && !imageUrl) return;
+    const row = { name: displayName, imageUrl };
+    for (const value of [product?.sku, product?.skuNo, product?.countrySku]) {
+      for (const key of orderSkuLookupKeys(value)) {
+        if (!lookup.has(key)) lookup.set(key, row);
+      }
+    }
+  };
+  for (const product of cachedProducts.productBase || []) addProduct(product);
+  for (const product of cachedProducts.catalog || []) addProduct(product);
+  for (const product of cachedWarehouseSync.products || []) addProduct(product);
+  return lookup;
+}
+
 function buildOrderAnalysisPayload(params = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const dateTo = String(params.dateTo || today).slice(0, 10);
@@ -2571,13 +2599,21 @@ function buildOrderAnalysisPayload(params = {}) {
   const providerId = String(params.providerId || "");
   const keyword = String(params.keyword || "").trim().toLowerCase();
   const onlyRussia = params.onlyRussia !== false;
+  const productLookup = buildOrderProductLookup();
   const allOrders = (cachedOrdersSync.orders || []).map((order) => ({
     ...order,
     date: orderDateKey(order),
     platform: String(order.platform || "").trim(),
     shopName: String(order.shopName || order.shopCode || "").trim(),
     projectGroup: String(order.projectGroup || "").trim() || inferOrderProjectGroup(order),
-  }));
+  })).map((order) => {
+    const product = orderSkuLookupKeys(order.sku).map((key) => productLookup.get(key)).find(Boolean);
+    return {
+      ...order,
+      productDisplayName: product?.name || order.productName || order.sku || "",
+      imageUrl: product?.imageUrl || "",
+    };
+  });
   const selectableOrders = onlyRussia ? allOrders.filter((order) => order.providerId === "yunwms_ru" || order.country === "俄罗斯") : allOrders;
   const options = {
     countries: orderOptionRows(new Set(selectableOrders.map((order) => order.country))),
@@ -2605,6 +2641,7 @@ function buildOrderAnalysisPayload(params = {}) {
         order.externalOrderNo,
         order.sku,
         order.productName,
+        order.productDisplayName,
         order.shopName,
         order.projectGroup,
         order.platform,
@@ -2667,6 +2704,8 @@ function buildOrderAnalysisPayload(params = {}) {
       projectGroup: order.projectGroup || "未识别项目组",
       sku: order.sku || "",
       productName: order.productName || "",
+      productDisplayName: order.productDisplayName || order.productName || order.sku || "",
+      imageUrl: order.imageUrl || "",
       quantity: numberOrZero(order.quantity),
       salesAmount: numberOrZero(order.salesAmount),
       currency: order.currency || "",

@@ -1044,6 +1044,8 @@ export type OrderAnalysisPayload = {
     projectGroup: string;
     sku: string;
     productName: string;
+    productDisplayName: string;
+    imageUrl: string;
     quantity: number;
     salesAmount: number;
     currency: string;

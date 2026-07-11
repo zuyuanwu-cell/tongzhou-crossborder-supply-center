@@ -5669,6 +5669,14 @@ function OrderAnalysisPage({
   const filters = payload?.filters;
   const counts = payload?.counts;
   const maxDaily = Math.max(...(payload?.daily || []).map((item) => item.orderCount), 1);
+  const dailyTrend = payload?.daily || [];
+  const dailyPoints = dailyTrend.map((item, index) => {
+    const x = dailyTrend.length <= 1 ? 50 : (index / (dailyTrend.length - 1)) * 100;
+    const y = 88 - (item.orderCount / maxDaily) * 72;
+    return { ...item, x, y };
+  });
+  const dailyLinePath = dailyPoints.map((item, index) => `${index === 0 ? "M" : "L"} ${item.x.toFixed(2)} ${item.y.toFixed(2)}`).join(" ");
+  const dailyAreaPath = dailyPoints.length ? `${dailyLinePath} L ${dailyPoints[dailyPoints.length - 1].x.toFixed(2)} 96 L ${dailyPoints[0].x.toFixed(2)} 96 Z` : "";
 
   React.useEffect(() => {
     if (!filters) return;
@@ -5793,20 +5801,28 @@ function OrderAnalysisPage({
       </form>
 
       <section className="order-analysis-grid">
-        <article className="panel order-analysis-panel">
+        <article className="panel order-analysis-panel order-trend-panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Daily Trend</p>
               <h2>每日订单量</h2>
             </div>
           </div>
-          <div className="order-daily-bars">
-            {(payload?.daily || []).map((item) => (
-              <div key={item.key} title={`${item.key}：${formatNumber(item.orderCount)} 单 / ${formatNumber(item.quantity)} 件`}>
-                <span style={{ height: `${Math.max(8, (item.orderCount / maxDaily) * 120)}px` }} />
-                <small>{item.key.slice(5)}</small>
-              </div>
-            ))}
+          <div className="order-line-chart">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="每日订单量趋势折线图">
+              {dailyAreaPath ? <path className="order-line-area" d={dailyAreaPath} /> : null}
+              {dailyLinePath ? <path className="order-line-path" d={dailyLinePath} /> : null}
+              {dailyPoints.map((item) => (
+                <circle key={item.key} className="order-line-point" cx={item.x} cy={item.y} r="1.8">
+                  <title>{`${item.key}：${formatNumber(item.orderCount)} 单 / ${formatNumber(item.quantity)} 件`}</title>
+                </circle>
+              ))}
+            </svg>
+            <div className="order-line-axis">
+              {dailyPoints.map((item) => (
+                <span key={item.key}>{item.key.slice(5)}</span>
+              ))}
+            </div>
           </div>
         </article>
         <article className="panel order-analysis-panel">
@@ -5818,6 +5834,22 @@ function OrderAnalysisPage({
           </div>
           <div className="order-rank-list">
             {(payload?.byProjectGroup || []).slice(0, 12).map((item) => (
+              <div key={item.key}>
+                <strong>{item.key}</strong>
+                <span>{formatNumber(item.orderCount)} 单 · {formatNumber(item.quantity)} 件 · {formatNumber(item.skuCount)} SKU</span>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="panel order-analysis-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Shop Ranking</p>
+              <h2>店铺排行</h2>
+            </div>
+          </div>
+          <div className="order-rank-list">
+            {(payload?.byShop || []).slice(0, 12).map((item) => (
               <div key={item.key}>
                 <strong>{item.key}</strong>
                 <span>{formatNumber(item.orderCount)} 单 · {formatNumber(item.quantity)} 件 · {formatNumber(item.skuCount)} SKU</span>
@@ -5842,7 +5874,7 @@ function OrderAnalysisPage({
             <span>店铺 / 平台</span>
             <span>仓库</span>
             <span>订单号</span>
-            <span>SKU / 商品</span>
+            <span>产品</span>
             <span>数量</span>
             <span>状态</span>
           </div>
@@ -5853,7 +5885,10 @@ function OrderAnalysisPage({
               <span><strong>{order.shopName}</strong><small>{order.platform}</small></span>
               <span>{order.warehouseName}</span>
               <span><strong>{order.orderNo}</strong><small>{order.externalOrderNo}</small></span>
-              <span><strong>{order.sku}</strong><small>{order.productName}</small></span>
+              <span className="order-product-cell">
+                <span className="order-product-thumb">{order.imageUrl ? <img src={order.imageUrl} alt="" /> : <PackageCheck size={18} />}</span>
+                <span><strong>{order.productDisplayName || order.productName || order.sku}</strong><small>{order.sku}</small></span>
+              </span>
               <strong>{formatNumber(order.quantity)}</strong>
               <span className="status-pill muted">{order.status}</span>
             </article>
