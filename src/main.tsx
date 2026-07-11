@@ -28,6 +28,8 @@ import {
   Menu,
   Minus,
   PackageCheck,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   RefreshCw,
   Search,
@@ -657,9 +659,18 @@ type ConfirmRequest = ConfirmOptions & {
 };
 
 const ConfirmContext = React.createContext<(options: ConfirmOptions) => Promise<boolean>>(async () => false);
+const sidebarCollapsedStorageKey = "tongzhou_sidebar_collapsed";
 
 function useConfirm() {
   return React.useContext(ConfirmContext);
+}
+
+function getStoredSidebarCollapsed() {
+  try {
+    return localStorage.getItem(sidebarCollapsedStorageKey) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; onClose: (confirmed: boolean) => void }) {
@@ -695,6 +706,7 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; o
 function App() {
   const [activeView, setActiveView] = React.useState(getInitialView);
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(getStoredSidebarCollapsed);
   const [payload, setPayload] = React.useState<ProductPayload | null>(null);
   const [dashboardSummary, setDashboardSummary] = React.useState<DashboardSummaryPayload | null>(null);
   const [productDetailLoaded, setProductDetailLoaded] = React.useState(false);
@@ -728,6 +740,14 @@ function App() {
   const totalOrders = dashboardSummary?.counts.todayOrders ?? 0;
   const salesAmount = dashboardSummary?.counts.salesAmount90 ?? 0;
   const riskCount = dashboardSummary?.counts.riskSku ?? catalog.filter((product) => product.alert !== "健康").length;
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(sidebarCollapsedStorageKey, String(sidebarCollapsed));
+    } catch {
+      // Ignore storage failures so navigation still works in private contexts.
+    }
+  }, [sidebarCollapsed]);
 
   React.useEffect(() => {
     void loadCurrentUser();
@@ -1312,8 +1332,16 @@ function App() {
 
   return (
     <ConfirmContext.Provider value={confirmAction}>
-      <div className="app-shell">
-        <Sidebar activeView={activeView} currentUser={currentUser} onChange={handleViewChange} onClose={() => setMobileNavOpen(false)} open={mobileNavOpen} />
+      <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+        <Sidebar
+          activeView={activeView}
+          currentUser={currentUser}
+          collapsed={sidebarCollapsed}
+          onChange={handleViewChange}
+          onClose={() => setMobileNavOpen(false)}
+          onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
+          open={mobileNavOpen}
+        />
         <div className="workspace">
         <header className="topbar">
           <button className="icon-button mobile-only" onClick={() => setMobileNavOpen(true)} aria-label="打开导航">
@@ -1595,17 +1623,22 @@ function LoginButton({
 function Sidebar({
   activeView,
   currentUser,
+  collapsed,
   onChange,
   onClose,
+  onToggleCollapse,
   open,
 }: {
   activeView: string;
   currentUser: AuthUser;
+  collapsed: boolean;
   onChange: (view: string) => void;
   onClose: () => void;
+  onToggleCollapse: () => void;
   open: boolean;
 }) {
   const items = visibleNavItems(currentUser);
+  const CollapseIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
   return (
     <>
       <aside className={`sidebar ${open ? "open" : ""}`}>
@@ -1620,6 +1653,15 @@ function Sidebar({
           <button className="icon-button close-nav" onClick={onClose} aria-label="关闭导航">
             <X size={18} />
           </button>
+          <button
+            className="icon-button sidebar-collapse-button"
+            type="button"
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? "展开侧边栏" : "折叠侧边栏"}
+            title={collapsed ? "展开侧边栏" : "折叠侧边栏"}
+          >
+            <CollapseIcon size={18} />
+          </button>
         </div>
         <nav>
           {items.map((item) => {
@@ -1629,6 +1671,7 @@ function Sidebar({
                 key={item.label}
                 className={`${activeView === item.label ? "active" : ""} ${item.childOf ? "nav-child" : ""}`}
                 onClick={() => onChange(item.label)}
+                title={collapsed ? item.label : undefined}
               >
                 <Icon size={18} />
                 <span className="nav-label-wrap">

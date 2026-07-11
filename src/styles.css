@@ -50,6 +50,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
+  transition: grid-template-columns 180ms ease;
 }
 
 .sidebar {
@@ -61,6 +62,7 @@ button:disabled {
   border-right: 1px solid var(--line);
   backdrop-filter: blur(24px);
   z-index: 4;
+  transition: padding 180ms ease;
 }
 
 .brand-row {
@@ -68,6 +70,11 @@ button:disabled {
   align-items: center;
   gap: 12px;
   margin-bottom: 34px;
+}
+
+.sidebar-collapse-button {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .brand-mark {
@@ -124,6 +131,7 @@ button:disabled {
   width: 100%;
   padding: 0 12px;
   color: #b9b5ad;
+  white-space: nowrap;
 }
 
 .sidebar nav button.active,
@@ -207,7 +215,72 @@ button:disabled {
 
 .workspace {
   min-width: 0;
+  overflow-x: hidden;
   padding: 26px;
+}
+
+.panel,
+.library-page,
+.movement-page,
+.warehouse-page {
+  min-width: 0;
+}
+
+@media (min-width: 861px) {
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 82px minmax(0, 1fr);
+  }
+
+  .app-shell.sidebar-collapsed .sidebar {
+    padding: 20px 12px;
+  }
+
+  .app-shell.sidebar-collapsed .brand-row {
+    justify-content: center;
+    margin-bottom: 28px;
+  }
+
+  .app-shell.sidebar-collapsed .brand-row > div:not(.brand-mark) {
+    display: none;
+  }
+
+  .app-shell.sidebar-collapsed .brand-mark {
+    width: 42px;
+    height: 42px;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-collapse-button {
+    position: absolute;
+    top: 76px;
+    left: 50%;
+    width: 34px;
+    height: 34px;
+    margin-left: 0;
+    transform: translateX(-50%);
+  }
+
+  .app-shell.sidebar-collapsed .sidebar nav {
+    margin-top: 54px;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar nav button,
+  .app-shell.sidebar-collapsed .sidebar nav button.nav-child {
+    justify-content: center;
+    width: 100%;
+    min-height: 42px;
+    margin-left: 0;
+    padding: 0;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar nav button.nav-child svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .app-shell.sidebar-collapsed .nav-label-wrap,
+  .app-shell.sidebar-collapsed .integration-card {
+    display: none;
+  }
 }
 
 .topbar {
