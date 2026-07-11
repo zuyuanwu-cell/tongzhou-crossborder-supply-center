@@ -129,6 +129,7 @@ import {
   testWarehouseConnection,
   testWecomNotification,
   updateDistributorApplicationStatus,
+  updateOrderShopAlias,
   updateStockupPlanStatus,
   updateUserStatus,
   updateWarehouseConnection,
@@ -1453,6 +1454,20 @@ function App() {
           <OrderAnalysisPage
             payload={orderAnalysisPayload}
             onLoadOrderAnalysis={loadOrderAnalysis}
+            onUpdateShopAlias={async (shopName, alias) => {
+              await updateOrderShopAlias({ shopName, alias });
+              await loadOrderAnalysis(orderAnalysisPayload?.filters ? {
+                dateFrom: orderAnalysisPayload.filters.dateFrom,
+                dateTo: orderAnalysisPayload.filters.dateTo,
+                country: orderAnalysisPayload.filters.country,
+                warehouseId: orderAnalysisPayload.filters.warehouseId,
+                platform: orderAnalysisPayload.filters.platform,
+                shopName: orderAnalysisPayload.filters.shopName,
+                projectGroup: orderAnalysisPayload.filters.projectGroup,
+                keyword: orderAnalysisPayload.filters.keyword,
+                scope: "russia",
+              } : { scope: "russia" });
+            }}
             onSyncOrders={handleOrderSync}
             syncing={syncing}
           />
@@ -5649,11 +5664,13 @@ function InventorySnapshotPage({
 function OrderAnalysisPage({
   payload,
   onLoadOrderAnalysis,
+  onUpdateShopAlias,
   onSyncOrders,
   syncing,
 }: {
   payload: OrderAnalysisPayload | null;
   onLoadOrderAnalysis: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" }) => Promise<void>;
+  onUpdateShopAlias: (shopName: string, alias: string) => Promise<void>;
   onSyncOrders: () => Promise<void>;
   syncing: boolean;
 }) {
@@ -5666,6 +5683,7 @@ function OrderAnalysisPage({
   const [projectGroup, setProjectGroup] = React.useState("");
   const [keywordDraft, setKeywordDraft] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  const [previewImage, setPreviewImage] = React.useState<{ url: string; title: string } | null>(null);
   const filters = payload?.filters;
   const counts = payload?.counts;
   const maxDaily = Math.max(...(payload?.daily || []).map((item) => item.orderCount), 1);
@@ -5710,6 +5728,18 @@ function OrderAnalysisPage({
     setLoading(true);
     try {
       await onLoadOrderAnalysis({ dateFrom, dateTo, scope: "russia" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function editShopAlias(rawShopName: string, currentLabel: string) {
+    if (!rawShopName || rawShopName === "未识别店铺") return;
+    const nextAlias = window.prompt(`设置店铺「${rawShopName}」的别称；留空则恢复原名称。`, currentLabel === rawShopName ? "" : currentLabel);
+    if (nextAlias === null) return;
+    setLoading(true);
+    try {
+      await onUpdateShopAlias(rawShopName, nextAlias.trim());
     } finally {
       setLoading(false);
     }
@@ -5848,13 +5878,19 @@ function OrderAnalysisPage({
               <h2>店铺排行</h2>
             </div>
           </div>
-          <div className="order-rank-list">
-            {(payload?.byShop || []).slice(0, 12).map((item) => (
+          <div className="order-rank-list shop-rank-list">
+            {(payload?.byShop || []).slice(0, 12).map((item) => {
+              const shop = payload?.options.shops.find((row) => row.label === item.key || row.value === item.key);
+              return (
               <div key={item.key}>
-                <strong>{item.key}</strong>
+                <button className="shop-alias-button" type="button" onClick={() => editShopAlias(shop?.rawName || shop?.value || item.key, item.key)} title="设置店铺别称">
+                  <strong>{item.key}</strong>
+                  {shop?.alias ? <small>{shop.rawName}</small> : null}
+                </button>
                 <span>{formatNumber(item.orderCount)} 单 · {formatNumber(item.quantity)} 件 · {formatNumber(item.skuCount)} SKU</span>
               </div>
-            ))}
+              );
+            })}
           </div>
         </article>
       </section>
@@ -5862,39 +5898,55 @@ function OrderAnalysisPage({
       <section className="panel order-analysis-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Order Rows</p>
-            <h2>订单明细</h2>
+            <p className="eyebrow">Product Ranking</p>
+            <h2>产品排行</h2>
           </div>
-          <span className="status-pill muted">{formatNumber(payload?.recentOrders.length || 0)} 条</span>
+          <span className="status-pill muted">{formatNumber(payload?.byProduct.length || 0)} 个产品</span>
         </div>
         <div className="order-analysis-table">
           <div className="order-analysis-row order-analysis-head">
-            <span>出库时间</span>
-            <span>项目组</span>
-            <span>店铺 / 平台</span>
-            <span>仓库</span>
-            <span>订单号</span>
             <span>产品</span>
-            <span>数量</span>
-            <span>状态</span>
+            <span>SKU</span>
+            <span>订单数</span>
+            <span>出库件数</span>
+            <span>SKU 行</span>
+            <span>店铺数</span>
+            <span>平台数</span>
           </div>
-          {(payload?.recentOrders || []).map((order) => (
-            <article className="order-analysis-row" key={`${order.warehouseId}-${order.orderId}-${order.orderNo}-${order.sku}`}>
-              <span>{formatDateTime(order.shippedAt || order.createdAt)}</span>
-              <span><strong>{order.projectGroup}</strong></span>
-              <span><strong>{order.shopName}</strong><small>{order.platform}</small></span>
-              <span>{order.warehouseName}</span>
-              <span><strong>{order.orderNo}</strong><small>{order.externalOrderNo}</small></span>
+          {(payload?.byProduct || []).map((item, index) => (
+            <article className="order-analysis-row" key={item.key}>
               <span className="order-product-cell">
-                <span className="order-product-thumb">{order.imageUrl ? <img src={order.imageUrl} alt="" /> : <PackageCheck size={18} />}</span>
-                <span><strong>{order.productDisplayName || order.productName || order.sku}</strong><small>{order.sku}</small></span>
+                <button
+                  className="order-product-thumb"
+                  type="button"
+                  onClick={() => item.imageUrl && setPreviewImage({ url: item.imageUrl, title: item.productName })}
+                  disabled={!item.imageUrl}
+                  title={item.imageUrl ? "点击查看大图" : "暂无图片"}
+                >
+                  {item.imageUrl ? <img src={item.imageUrl} alt="" /> : <PackageCheck size={18} />}
+                </button>
+                <span><strong>{index + 1}. {item.productName}</strong><small>{item.sku}</small></span>
               </span>
-              <strong>{formatNumber(order.quantity)}</strong>
-              <span className="status-pill muted">{order.status}</span>
+              <span>{item.sku}</span>
+              <strong>{formatNumber(item.orderCount)}</strong>
+              <strong>{formatNumber(item.quantity)}</strong>
+              <span>{formatNumber(item.orderLines)}</span>
+              <span>{formatNumber(item.shopCount)}</span>
+              <span>{formatNumber(item.platformCount)}</span>
             </article>
           ))}
         </div>
       </section>
+      {previewImage ? (
+        <div className="order-image-lightbox" role="dialog" aria-modal="true" aria-label="产品图片预览">
+          <button className="modal-backdrop" type="button" onClick={() => setPreviewImage(null)} aria-label="关闭图片预览" />
+          <figure>
+            <button className="icon-button" type="button" onClick={() => setPreviewImage(null)} aria-label="关闭图片预览"><X size={18} /></button>
+            <img src={previewImage.url} alt={previewImage.title} />
+            <figcaption>{previewImage.title}</figcaption>
+          </figure>
+        </div>
+      ) : null}
     </main>
   );
 }

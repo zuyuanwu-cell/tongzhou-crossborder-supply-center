@@ -1366,6 +1366,22 @@ h3 {
   display: block;
 }
 
+.shop-alias-button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.shop-alias-button:hover strong {
+  color: var(--amber);
+}
+
 .order-analysis-table {
   display: grid;
   gap: 8px;
@@ -1376,10 +1392,10 @@ h3 {
 
 .order-analysis-row {
   display: grid;
-  grid-template-columns: 160px 130px 160px 130px 190px minmax(320px, 1fr) 80px 86px;
+  grid-template-columns: minmax(360px, 1fr) 150px 100px 110px 90px 90px 90px;
   align-items: center;
   gap: 12px;
-  min-width: 1360px;
+  min-width: 1080px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1415,6 +1431,8 @@ h3 {
   border-radius: 8px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+  padding: 0;
 }
 
 .order-product-thumb img {
@@ -1422,6 +1440,53 @@ h3 {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.order-product-thumb:disabled {
+  cursor: default;
+}
+
+.order-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.order-image-lightbox figure {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 12px;
+  width: min(720px, 92vw);
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #15161b;
+  box-shadow: var(--shadow);
+}
+
+.order-image-lightbox .icon-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+.order-image-lightbox img {
+  display: block;
+  width: 100%;
+  max-height: 76vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.order-image-lightbox figcaption {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .order-analysis-head {

@@ -47,6 +47,7 @@ const movementHistoryCachePath = resolve(cacheDir, "movement-history.json");
 const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || resolve(cacheDir, "movement-history.sqlite"));
 const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const orderSyncJobsCachePath = resolve(cacheDir, "order-sync-jobs.json");
+const orderAnalysisSettingsPath = resolve(cacheDir, "order-analysis-settings.json");
 const warehouseConnectionsPath = resolve(cacheDir, "warehouse-connections.json");
 const qualificationCachePath = resolve(cacheDir, "qualifications.json");
 const assetCachePath = resolve(cacheDir, "assets.json");
@@ -74,6 +75,7 @@ let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { up
 let cachedMovementHistory = loadJsonCache(movementHistoryCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedOrderSyncJobs = loadJsonCache(orderSyncJobsCachePath) || { updatedAt: "", jobs: [] };
+let cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(loadJsonCache(orderAnalysisSettingsPath));
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupDecisions = loadJsonCache(stockupDecisionCachePath) || { updatedAt: "", decisions: {} };
 let cachedStockupPlans = normalizeStockupPlans(loadJsonCache(stockupPlanCachePath));
@@ -208,6 +210,22 @@ function saveDistributorApplicationsCache() {
 
 function saveOutsourcingOrderCache(payload) {
   saveJsonCache(outsourcingOrderCachePath, payload);
+}
+
+function normalizeOrderAnalysisSettings(input = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  return {
+    updatedAt: source.updatedAt || "",
+    shopAliases: source.shopAliases && typeof source.shopAliases === "object" ? source.shopAliases : {},
+  };
+}
+
+function saveOrderAnalysisSettings() {
+  cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings({
+    ...cachedOrderAnalysisSettings,
+    updatedAt: new Date().toISOString(),
+  });
+  saveJsonCache(orderAnalysisSettingsPath, cachedOrderAnalysisSettings);
 }
 
 function quickNavId(prefix) {
@@ -2587,6 +2605,12 @@ function buildOrderProductLookup() {
   return lookup;
 }
 
+function orderShopDisplayName(rawShopName) {
+  const raw = String(rawShopName || "").trim();
+  if (!raw) return "未识别店铺";
+  return String(cachedOrderAnalysisSettings.shopAliases?.[raw] || "").trim() || raw;
+}
+
 function buildOrderAnalysisPayload(params = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const dateTo = String(params.dateTo || today).slice(0, 10);
@@ -2604,12 +2628,14 @@ function buildOrderAnalysisPayload(params = {}) {
     ...order,
     date: orderDateKey(order),
     platform: String(order.platform || "").trim(),
-    shopName: String(order.shopName || order.shopCode || "").trim(),
+    rawShopName: String(order.shopName || order.shopCode || "").trim(),
     projectGroup: String(order.projectGroup || "").trim() || inferOrderProjectGroup(order),
   })).map((order) => {
     const product = orderSkuLookupKeys(order.sku).map((key) => productLookup.get(key)).find(Boolean);
     return {
       ...order,
+      shopName: orderShopDisplayName(order.rawShopName),
+      shopAlias: String(cachedOrderAnalysisSettings.shopAliases?.[order.rawShopName] || "").trim(),
       productDisplayName: product?.name || order.productName || order.sku || "",
       imageUrl: product?.imageUrl || "",
     };
@@ -2623,7 +2649,12 @@ function buildOrderAnalysisPayload(params = {}) {
       country: order.country || "",
     }])).values()).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN")),
     platforms: orderOptionRows(new Set(selectableOrders.map((order) => order.platform || "未识别平台"))),
-    shops: orderOptionRows(new Set(selectableOrders.map((order) => order.shopName || "未识别店铺"))),
+    shops: Array.from(new Map(selectableOrders.map((order) => [order.rawShopName || "未识别店铺", {
+      value: order.rawShopName || "未识别店铺",
+      label: order.shopName || order.rawShopName || "未识别店铺",
+      alias: order.shopAlias || "",
+      rawName: order.rawShopName || "",
+    }])).values()).sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
     projectGroups: orderOptionRows(new Set(selectableOrders.map((order) => order.projectGroup))),
   };
   const filtered = selectableOrders.filter((order) => {
@@ -2632,7 +2663,7 @@ function buildOrderAnalysisPayload(params = {}) {
     if (country && order.country !== country) return false;
     if (warehouseId && order.warehouseId !== warehouseId) return false;
     if (platform && (order.platform || "未识别平台") !== platform) return false;
-    if (shopName && (order.shopName || "未识别店铺") !== shopName) return false;
+    if (shopName && (order.rawShopName || "未识别店铺") !== shopName) return false;
     if (projectGroup && order.projectGroup !== projectGroup) return false;
     if (providerId && order.providerId !== providerId) return false;
     if (keyword) {
@@ -2685,6 +2716,44 @@ function buildOrderAnalysisPayload(params = {}) {
   const byPlatform = aggregate((order) => order.platform || "未识别平台");
   const byWarehouse = aggregate((order) => order.warehouseName || order.warehouseId || "未识别仓库");
   const byCountry = aggregate((order) => order.country || "未识别国家");
+  const byProductMap = new Map();
+  for (const order of filtered) {
+    const key = order.sku || order.productDisplayName || order.productName || "未识别产品";
+    const current = byProductMap.get(key) || {
+      key,
+      sku: order.sku || "",
+      productName: order.productDisplayName || order.productName || order.sku || "未识别产品",
+      imageUrl: order.imageUrl || "",
+      orderIds: new Set(),
+      orderLines: 0,
+      quantity: 0,
+      salesAmount: 0,
+      shops: new Set(),
+      platforms: new Set(),
+    };
+    current.orderIds.add(orderIdentity(order));
+    current.orderLines += 1;
+    current.quantity += numberOrZero(order.quantity);
+    current.salesAmount += numberOrZero(order.salesAmount);
+    if (order.shopName) current.shops.add(order.shopName);
+    if (order.platform) current.platforms.add(order.platform);
+    if (!current.imageUrl && order.imageUrl) current.imageUrl = order.imageUrl;
+    byProductMap.set(key, current);
+  }
+  const byProduct = Array.from(byProductMap.values())
+    .map((row) => ({
+      key: row.key,
+      sku: row.sku,
+      productName: row.productName,
+      imageUrl: row.imageUrl,
+      orderCount: row.orderIds.size,
+      orderLines: row.orderLines,
+      quantity: row.quantity,
+      salesAmount: row.salesAmount,
+      shopCount: row.shops.size,
+      platformCount: row.platforms.size,
+    }))
+    .sort((a, b) => b.quantity - a.quantity || b.orderCount - a.orderCount);
   const recentOrders = filtered
     .slice()
     .sort((a, b) => String(b.shippedAt || b.createdAt || "").localeCompare(String(a.shippedAt || a.createdAt || "")))
@@ -2701,6 +2770,8 @@ function buildOrderAnalysisPayload(params = {}) {
       warehouseName: order.warehouseName || "",
       platform: order.platform || "未识别平台",
       shopName: order.shopName || "未识别店铺",
+      rawShopName: order.rawShopName || "",
+      shopAlias: order.shopAlias || "",
       projectGroup: order.projectGroup || "未识别项目组",
       sku: order.sku || "",
       productName: order.productName || "",
@@ -2731,6 +2802,7 @@ function buildOrderAnalysisPayload(params = {}) {
     options,
     daily,
     byShop,
+    byProduct,
     byProjectGroup,
     byPlatform,
     byWarehouse,
@@ -5007,6 +5079,33 @@ const server = http.createServer(async (req, res) => {
         keyword: url.searchParams.get("keyword") || "",
         onlyRussia: url.searchParams.get("scope") !== "all",
       }));
+      return;
+    }
+
+    if (url.pathname === "/api/order-analysis/shop-alias" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "设置店铺别称需要直营部门登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const rawShopName = String(payload.shopName || "").trim();
+      const alias = String(payload.alias || "").trim();
+      if (!rawShopName || rawShopName === "未识别店铺") {
+        sendJson(res, 400, { ok: false, message: "请选择有效店铺后再设置别称。" });
+        return;
+      }
+      cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
+      if (alias) cachedOrderAnalysisSettings.shopAliases[rawShopName] = alias;
+      else delete cachedOrderAnalysisSettings.shopAliases[rawShopName];
+      saveOrderAnalysisSettings();
+      appendActionLog(auth, "设置店铺别称", "order_analysis", rawShopName, { alias });
+      sendJson(res, 200, {
+        ok: true,
+        shopName: rawShopName,
+        alias,
+        settings: cachedOrderAnalysisSettings,
+      });
       return;
     }
 

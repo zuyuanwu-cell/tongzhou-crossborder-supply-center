@@ -1020,11 +1020,12 @@ export type OrderAnalysisPayload = {
     countries: Array<{ value: string; label: string }>;
     warehouses: Array<{ warehouseId: string; warehouseName: string; country: string }>;
     platforms: Array<{ value: string; label: string }>;
-    shops: Array<{ value: string; label: string }>;
+    shops: Array<{ value: string; label: string; alias?: string; rawName?: string }>;
     projectGroups: Array<{ value: string; label: string }>;
   };
   daily: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
   byShop: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
+  byProduct: Array<{ key: string; sku: string; productName: string; imageUrl: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; shopCount: number; platformCount: number }>;
   byProjectGroup: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
   byPlatform: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
   byWarehouse: Array<{ key: string; orderCount: number; orderLines: number; quantity: number; salesAmount: number; skuCount: number }>;
@@ -1041,6 +1042,8 @@ export type OrderAnalysisPayload = {
     warehouseName: string;
     platform: string;
     shopName: string;
+    rawShopName: string;
+    shopAlias: string;
     projectGroup: string;
     sku: string;
     productName: string;
@@ -1633,6 +1636,13 @@ export function fetchOrderAnalysis(input: { dateFrom?: string; dateTo?: string; 
   if (input.scope) params.set("scope", input.scope);
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<OrderAnalysisPayload>(`/api/order-analysis${query}`);
+}
+
+export function updateOrderShopAlias(input: { shopName: string; alias: string }) {
+  return requestJson<{ ok: boolean; shopName: string; alias: string }>("/api/order-analysis/shop-alias", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function fetchStockup() {
