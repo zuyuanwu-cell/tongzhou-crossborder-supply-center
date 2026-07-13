@@ -518,19 +518,23 @@ function uniqueSorted(values: string[]) {
 }
 
 function canManage(user: AuthUser) {
-  return user.role === "direct";
+  return user.role === "admin";
 }
 
 function canViewPartnerAssets(user: AuthUser) {
-  return user.role === "direct" || user.role === "distributor";
+  return user.role === "admin" || user.role === "direct" || user.role === "distributor";
 }
 
 function canViewPrices(user: AuthUser) {
-  return user.role === "direct" || user.role === "distributor";
+  return user.role === "admin" || user.role === "direct" || user.role === "distributor";
 }
 
 function canViewInventory(user: AuthUser) {
-  return user.role === "direct" || user.role === "distributor";
+  return user.role === "admin" || user.role === "direct" || user.role === "distributor";
+}
+
+function canViewInternalCatalog(user: AuthUser) {
+  return user.role === "admin" || user.role === "direct";
 }
 
 function includesFuzzy(product: CatalogProduct, keyword: string) {
@@ -738,7 +742,7 @@ function App() {
   const [globalSearch, setGlobalSearch] = React.useState("");
   const [productSearchKeyword, setProductSearchKeyword] = React.useState("");
   const [confirmRequest, setConfirmRequest] = React.useState<ConfirmRequest | null>(null);
-  const internal = canManage(currentUser);
+  const internal = canViewInternalCatalog(currentUser);
 
   const catalog = payload?.catalog?.length ? payload.catalog : fallbackCatalog;
   const totalInventory = dashboardSummary?.counts.totalInventory ?? catalog.reduce((sum, product) => sum + product.stockQty, 0);
@@ -1288,6 +1292,8 @@ function App() {
       handleViewChange(targetView);
     } else if (canManage(user)) {
       handleViewChange("经营总览");
+    } else {
+      handleViewChange("产品库");
     }
   }
 
@@ -1624,7 +1630,7 @@ function LoginButton({
       </button>
       {open ? (
         <form className="login-popover" onSubmit={submit}>
-          <span>{mode === "setup" ? "首次使用，请创建直营管理员账号" : mode === "account" ? "使用系统账号密码登录" : "使用内部访问码登录"}</span>
+          <span>{mode === "setup" ? "首次使用，请创建管理员账号" : mode === "account" ? "使用系统账号密码登录" : "使用内部访问码登录"}</span>
           <div className="login-tabs">
             {setupRequired ? (
               <button className="active" type="button">初始化管理员</button>
@@ -1641,7 +1647,7 @@ function LoginButton({
               <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="管理员账号" autoComplete="username" />
               <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="显示名称" autoComplete="name" />
               <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="管理员密码，至少 8 位" type="password" autoComplete="new-password" />
-              <small>初始化只在没有启用的直营管理员时开放，创建后入口会自动关闭。</small>
+              <small>初始化只在没有启用的管理员时开放，创建后入口会自动关闭。</small>
             </>
           ) : mode === "account" ? (
             <>
@@ -4852,7 +4858,7 @@ function ActionLogPage({ payload, onRefresh }: { payload: ActionLogPayload | nul
 function UserManagement({ userPayload }: { userPayload: UserManagementPayload | null }) {
   const confirm = useConfirm();
   const users = userPayload?.users ?? [];
-  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" });
+  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "admin" });
   const [saving, setSaving] = React.useState(false);
   const [actionUserId, setActionUserId] = React.useState("");
   const [actionApplicationId, setActionApplicationId] = React.useState("");
@@ -4995,9 +5001,9 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
 
       <section className="metric-strip movement-metrics">
         <Metric title="用户总数" value={formatNumber(visiblePayload?.counts.users ?? 0)} note="本地库为准，创建后同步系统" icon={Lock} tone="blue" />
-        <Metric title="直营部门" value={formatNumber(visiblePayload?.counts.direct ?? 0)} note="可查看全部内容" icon={ShieldCheck} tone="green" />
-        <Metric title="分销商" value={formatNumber(visiblePayload?.counts.distributor ?? 0)} note="仅看产品、分销价、素材和资质" icon={ShoppingBag} tone="orange" />
-        <Metric title="停用用户" value={formatNumber(visiblePayload?.counts.disabled ?? 0)} note="停用后不可登录" icon={X} tone="red" />
+        <Metric title="管理员" value={formatNumber(visiblePayload?.counts.admin ?? 0)} note="可查看订单、动销、备货和用户管理" icon={ShieldCheck} tone="green" />
+        <Metric title="直营运营" value={formatNumber(visiblePayload?.counts.direct ?? 0)} note="看产品、直营价、库存和素材资质" icon={ShoppingBag} tone="orange" />
+        <Metric title="分销商" value={formatNumber(visiblePayload?.counts.distributor ?? 0)} note="仅看产品、分销价、素材和资质" icon={ShoppingBag} tone="red" />
       </section>
 
       <section className="panel distributor-application-panel">
@@ -5062,9 +5068,10 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
           </label>
           <label>
             <span>角色</span>
-            <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as "distributor" | "direct" }))}>
+            <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as "distributor" | "direct" | "admin" }))}>
               <option value="distributor">分销商</option>
-              <option value="direct">直营部门</option>
+              <option value="direct">直营运营</option>
+              <option value="admin">管理员</option>
             </select>
           </label>
           <div className="warehouse-auth-actions">
@@ -5098,9 +5105,9 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
             <article className="stockup-row user-row" key={user.id || user.username}>
               <strong>{user.username}</strong>
               <span>{user.displayName || "-"}</span>
-              <span className={`status-pill ${user.role === "direct" ? "good" : "warning"}`}>{user.roleLabel}</span>
+              <span className={`status-pill ${user.role === "admin" ? "good" : user.role === "direct" ? "warning" : "muted"}`}>{user.roleLabel}</span>
               <span className={`status-pill ${user.status === "disabled" ? "danger" : "good"}`}>{user.statusLabel || (user.status === "disabled" ? "停用" : "启用")}</span>
-              <span>{user.role === "direct" ? "可查看直营价、库存、动销、备货和仓库授权。" : "可查看产品库、分销价格、销售价格、素材库和资质库。"}</span>
+              <span>{user.role === "admin" ? "可查看全部模块，并管理订单、动销、备货、仓库授权和用户。" : user.role === "direct" ? "可查看产品库、直营价格、库存、素材库、资质库和仓库信息。" : "可查看产品库、分销价格、销售价格、素材库和资质库。"}</span>
               <span className="user-actions">
                 <button
                   type="button"

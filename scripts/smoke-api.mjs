@@ -110,17 +110,24 @@ async function main() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code: accessCode }),
   });
-  if (login.user?.role !== "direct" || !login.token) {
-    throw new Error(`/api/login did not return a direct user token: ${JSON.stringify(login).slice(0, 500)}`);
+  if (login.user?.role !== "admin" || !login.token) {
+    throw new Error(`/api/login did not return an admin user token: ${JSON.stringify(login).slice(0, 500)}`);
   }
-  console.log("[ok] Direct login");
+  console.log("[ok] Admin login");
 
   const authHeaders = { Authorization: `Bearer ${login.token}` };
   const me = await expectJson("/api/me", { headers: authHeaders });
-  if (me.user?.role !== "direct") {
-    throw new Error(`/api/me did not preserve direct role: ${JSON.stringify(me).slice(0, 500)}`);
+  if (me.user?.role !== "admin") {
+    throw new Error(`/api/me did not preserve admin role: ${JSON.stringify(me).slice(0, 500)}`);
   }
-  console.log("[ok] /api/me direct session");
+  console.log("[ok] /api/me admin session");
+
+  const actionLog = await expectJson("/api/action-log", { headers: authHeaders });
+  const loginEntry = (actionLog.entries || []).find((entry) => entry.action === "登录系统");
+  if (!loginEntry?.details?.loginIp) {
+    throw new Error(`/api/action-log did not record login IP after login: ${JSON.stringify(actionLog).slice(0, 500)}`);
+  }
+  console.log("[ok] /api/action-log login IP");
 
   const orderAnalysis = await expectJson("/api/order-analysis", { headers: authHeaders });
   if (!orderAnalysis.counts || !orderAnalysis.options || !Array.isArray(orderAnalysis.daily) || !Array.isArray(orderAnalysis.recentOrders)) {

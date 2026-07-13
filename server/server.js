@@ -97,13 +97,13 @@ const allowInsecureInternalAccessCode = process.env.ALLOW_INSECURE_INTERNAL_ACCE
 const internalAccessCode = configuredInternalAccessCode || (isProductionRuntime ? "" : defaultInternalAccessCode);
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
 const directAuth = {
-  role: "direct",
+  role: "admin",
   user: {
     id: "system",
     username: "system",
     displayName: "系统",
-    role: "direct",
-    roleLabel: "直营部门",
+    role: "admin",
+    roleLabel: "管理员",
   },
 };
 assertSecureRuntimeConfig();
@@ -345,6 +345,28 @@ function appendActionLog(auth, action, targetType, targetName, details = {}) {
 
 function publicActionLog() {
   return normalizeActionLog(cachedActionLog);
+}
+
+function requestClientIp(req) {
+  const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const candidate = forwardedFor ||
+    String(req.headers["x-real-ip"] || "").trim() ||
+    String(req.headers["cf-connecting-ip"] || "").trim() ||
+    String(req.socket?.remoteAddress || "").trim();
+  return candidate.replace(/^::ffff:/, "") || "unknown";
+}
+
+function requestUserAgent(req) {
+  return String(req.headers["user-agent"] || "").replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+function appendLoginActionLog(req, user, method) {
+  const safeUser = publicUser(user);
+  appendActionLog({ role: safeUser.role, user: safeUser }, "登录系统", "user", safeUser.displayName || safeUser.username || "未知用户", {
+    loginMethod: method,
+    loginIp: requestClientIp(req),
+    userAgent: requestUserAgent(req),
+  });
 }
 
 function publicDistributorApplications() {
@@ -1581,6 +1603,7 @@ function saveUsersCache() {
 function userCounts(users) {
   return {
     users: users.length,
+    admin: users.filter((user) => user.role === "admin").length,
     direct: users.filter((user) => user.role === "direct").length,
     distributor: users.filter((user) => user.role === "distributor").length,
     active: users.filter((user) => user.status !== "disabled").length,
@@ -1624,33 +1647,33 @@ async function deleteUserFromJdy(user) {
   await deleteJdyData(JIANYUN_FORMS.userAccounts, user.jdyDataId);
 }
 
-function activeDirectCount(users) {
-  return users.filter((user) => user.role === "direct" && user.status !== "disabled").length;
+function activeAdminCount(users) {
+  return users.filter((user) => user.role === "admin" && user.status !== "disabled").length;
 }
 
 function setupStatusPayload() {
   const users = cachedUsers.users || [];
   return {
     ok: true,
-    setupRequired: activeDirectCount(users) === 0,
+    setupRequired: activeAdminCount(users) === 0,
     counts: userCounts(users),
   };
 }
 
 function createInitialAdmin(payload = {}) {
-  if (!setupStatusPayload().setupRequired) throw new Error("系统已存在直营管理员，初始化入口已关闭。");
+  if (!setupStatusPayload().setupRequired) throw new Error("系统已存在管理员，初始化入口已关闭。");
   const password = String(payload.password || "");
   if (password.length < 8) throw new Error("首次管理员密码至少需要 8 位。");
   const user = createLocalUser({
     username: payload.username,
     password,
     displayName: payload.displayName || payload.username,
-    role: "direct",
+    role: "admin",
   });
   cachedUsers.users = [user, ...(cachedUsers.users || [])];
   cachedUsers.syncedAt = new Date().toISOString();
   saveUsersCache();
-  appendActionLog({ role: "system", user: { id: "setup", username: "setup", displayName: "首次初始化", role: "direct", roleLabel: "系统初始化" } }, "首次初始化管理员", "user", user.displayName || user.username, {
+  appendActionLog({ role: "system", user: { id: "setup", username: "setup", displayName: "首次初始化", role: "admin", roleLabel: "系统初始化" } }, "首次初始化管理员", "user", user.displayName || user.username, {
     userId: user.id,
     username: user.username,
   });
@@ -1907,13 +1930,13 @@ function getAuth(req) {
   }
   if (internalAccessCode && token === internalAccessCode) {
     return {
-      role: "direct",
+      role: "admin",
       user: {
         id: "legacy-internal",
         username: "internal",
         displayName: "内部访问",
-        role: "direct",
-        roleLabel: "直营部门",
+        role: "admin",
+        roleLabel: "管理员",
       },
     };
   }
@@ -1921,11 +1944,15 @@ function getAuth(req) {
 }
 
 function canViewPartnerAssets(auth) {
-  return auth.role === "direct" || auth.role === "distributor";
+  return auth.role === "admin" || auth.role === "direct" || auth.role === "distributor";
 }
 
 function canManage(auth) {
-  return auth.role === "direct";
+  return auth.role === "admin";
+}
+
+function canViewInternalCatalog(auth) {
+  return auth.role === "admin" || auth.role === "direct";
 }
 
 function stripInventory(product) {
@@ -2363,7 +2390,7 @@ function filterProductPayload(payload, auth) {
 
   return {
     ...mergedPayload,
-    internal: auth.role === "direct",
+    internal: canViewInternalCatalog(auth),
     user: publicUser(auth.user),
     counts: {
       ...mergedPayload.counts,
@@ -2487,18 +2514,19 @@ function movementResponsePayload() {
 
 function buildDashboardSummary(auth) {
   const products = productResponsePayload(cachedProducts, auth, "list");
-  const movementPayload = auth.role === "direct" ? movementResponsePayload() : null;
+  const canViewOperations = canManage(auth);
+  const movementPayload = canViewOperations ? movementResponsePayload() : null;
   const orderResults = cachedOrdersSync.results || [];
   const warehouseResults = cachedWarehouseSync.results || [];
   const visibleCatalog = products.catalog || [];
-  const orderCount90 = (cachedOrdersSync.orders || []).length;
+  const orderCount90 = canViewOperations ? (cachedOrdersSync.orders || []).length : 0;
   const todayKey = new Date().toISOString().slice(0, 10);
-  const todayOrders = (cachedOrdersSync.orders || []).filter((order) => String(order.shippedAt || order.createdAt || "").slice(0, 10) === todayKey);
-  const salesAmount90 = (cachedOrdersSync.orders || []).reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0);
+  const todayOrders = canViewOperations ? (cachedOrdersSync.orders || []).filter((order) => String(order.shippedAt || order.createdAt || "").slice(0, 10) === todayKey) : [];
+  const salesAmount90 = canViewOperations ? (cachedOrdersSync.orders || []).reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0) : 0;
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    internal: auth.role === "direct",
+    internal: canViewInternalCatalog(auth),
     user: publicUser(auth.user),
     counts: {
       visibleCatalog: visibleCatalog.length,
@@ -2528,7 +2556,7 @@ function buildDashboardSummary(auth) {
     movementDiagnostics: movementPayload?.warehouseDiagnostics || [],
     warehouses: warehouseConnections.map((connection) => {
       const result = warehouseResults.find((item) => item.warehouseId === connection.id);
-      const orderResult = orderResults.find((item) => item.warehouseId === connection.id);
+      const orderResult = canViewOperations ? orderResults.find((item) => item.warehouseId === connection.id) : null;
       return {
         id: connection.id,
         name: connection.name,
@@ -2537,11 +2565,11 @@ function buildDashboardSummary(auth) {
         country: connection.country,
         hasCredentials: hasWarehouseCredentials(connection),
         inventoryOk: result?.ok ?? false,
-        orderOk: orderResult?.ok ?? false,
-        backgroundRunning: Boolean(orderResult?.backgroundRunning),
-        message: orderResult?.message || result?.message || "",
+        orderOk: canViewOperations ? (orderResult?.ok ?? false) : false,
+        backgroundRunning: canViewOperations ? Boolean(orderResult?.backgroundRunning) : false,
+        message: canViewOperations ? (orderResult?.message || result?.message || "") : (result?.message || ""),
         inventoryCount: result?.inventoryCount || 0,
-        orderCount: orderResult?.orderCount || 0,
+        orderCount: canViewOperations ? (orderResult?.orderCount || 0) : 0,
       };
     }),
   };
@@ -3351,7 +3379,7 @@ async function testWarehouseConnectionPayload(payload) {
 
 async function handleWarehouseTest(req, res) {
   if (!canManage(getAuth(req))) {
-    sendJson(res, 401, { ok: false, message: "Testing warehouse connections requires direct admin login." });
+    sendJson(res, 401, { ok: false, message: "Testing warehouse connections requires admin login." });
     return;
   }
   const payload = await parseRequestBody(req);
@@ -3689,7 +3717,7 @@ async function refreshAssetCache() {
 
 async function handleWarehouseInfoSync(req, res) {
   if (!canManage(getAuth(req))) {
-    sendJson(res, 401, { ok: false, message: "同步仓库信息需要直营部门登录。" });
+    sendJson(res, 401, { ok: false, message: "同步仓库信息需要管理员登录。" });
     return;
   }
 
@@ -3958,7 +3986,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/action-log" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看操作日志需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看操作日志需要管理员登录。" });
         return;
       }
       sendJson(res, 200, publicActionLog());
@@ -3967,7 +3995,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/distributor-applications" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看分销账号申请需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看分销账号申请需要管理员登录。" });
         return;
       }
       sendJson(res, 200, publicDistributorApplications());
@@ -3985,7 +4013,7 @@ const server = http.createServer(async (req, res) => {
     if (distributorApplicationStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "更新分销账号申请需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "更新分销账号申请需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4000,7 +4028,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/wecom-notifications" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看企业微信通知配置需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看企业微信通知配置需要管理员登录。" });
         return;
       }
       sendJson(res, 200, publicWecomNotificationPayload());
@@ -4009,7 +4037,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/wecom-notifications/robots" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "配置企业微信机器人需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "配置企业微信机器人需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4056,7 +4084,7 @@ const server = http.createServer(async (req, res) => {
     const wecomRobotMatch = url.pathname.match(/^\/api\/wecom-notifications\/robots\/([^/]+)$/);
     if (wecomRobotMatch && req.method === "DELETE") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "删除企业微信机器人需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "删除企业微信机器人需要管理员登录。" });
         return;
       }
       const robotId = decodeURIComponent(wecomRobotMatch[1]);
@@ -4077,7 +4105,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/wecom-notifications/schedules" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "配置定时通知需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "配置定时通知需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4121,7 +4149,7 @@ const server = http.createServer(async (req, res) => {
     const wecomScheduleMatch = url.pathname.match(/^\/api\/wecom-notifications\/schedules\/([^/]+)$/);
     if (wecomScheduleMatch && req.method === "DELETE") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "删除定时通知需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "删除定时通知需要管理员登录。" });
         return;
       }
       const scheduleId = decodeURIComponent(wecomScheduleMatch[1]);
@@ -4138,7 +4166,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/wecom-notifications/scenes" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "配置场景通知需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "配置场景通知需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4158,7 +4186,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/wecom-notifications/operating-summary" && req.method === "POST") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "发送今日经营摘要需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "发送今日经营摘要需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4191,7 +4219,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/wecom-notifications/test" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "测试企业微信通知需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "测试企业微信通知需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4207,7 +4235,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/quick-nav/categories" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "创建快捷导航分类需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "创建快捷导航分类需要管理员登录。" });
         return;
       }
 
@@ -4243,7 +4271,7 @@ const server = http.createServer(async (req, res) => {
     const quickNavCategoryMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)$/);
     if (quickNavCategoryMatch && req.method === "DELETE") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "删除快捷导航分类需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "删除快捷导航分类需要管理员登录。" });
         return;
       }
 
@@ -4267,7 +4295,7 @@ const server = http.createServer(async (req, res) => {
     const quickNavLinksMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)\/links$/);
     if (quickNavLinksMatch && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "创建快捷方式需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "创建快捷方式需要管理员登录。" });
         return;
       }
 
@@ -4326,7 +4354,7 @@ const server = http.createServer(async (req, res) => {
     const quickNavLinkMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)\/links\/([^/]+)$/);
     if (quickNavLinkMatch && req.method === "DELETE") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "删除快捷方式需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "删除快捷方式需要管理员登录。" });
         return;
       }
 
@@ -4362,7 +4390,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/ai/config" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "配置同舟AI需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "配置同舟AI需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4681,7 +4709,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/users" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看用户管理需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看用户管理需要管理员登录。" });
         return;
       }
       sendJson(res, 200, publicUsersPayload());
@@ -4690,7 +4718,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/users" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "创建用户需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "创建用户需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4737,7 +4765,7 @@ const server = http.createServer(async (req, res) => {
     if (userStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "停用或启用用户需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "停用或启用用户需要管理员登录。" });
         return;
       }
 
@@ -4754,8 +4782,8 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, message: "不能停用当前登录账号。" });
         return;
       }
-      if (user.role === "direct" && user.status !== "disabled" && nextStatus === "disabled" && activeDirectCount(users) <= 1) {
-        sendJson(res, 400, { ok: false, message: "至少需要保留一个启用的直营部门账号。" });
+      if (user.role === "admin" && user.status !== "disabled" && nextStatus === "disabled" && activeAdminCount(users) <= 1) {
+        sendJson(res, 400, { ok: false, message: "至少需要保留一个启用的管理员账号。" });
         return;
       }
 
@@ -4789,7 +4817,7 @@ const server = http.createServer(async (req, res) => {
     if (userDeleteMatch && req.method === "DELETE") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "删除用户需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "删除用户需要管理员登录。" });
         return;
       }
 
@@ -4804,8 +4832,8 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, message: "不能删除当前登录账号。" });
         return;
       }
-      if (user.role === "direct" && user.status !== "disabled" && activeDirectCount(users) <= 1) {
-        sendJson(res, 400, { ok: false, message: "至少需要保留一个启用的直营部门账号。" });
+      if (user.role === "admin" && user.status !== "disabled" && activeAdminCount(users) <= 1) {
+        sendJson(res, 400, { ok: false, message: "至少需要保留一个启用的管理员账号。" });
         return;
       }
 
@@ -4834,7 +4862,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/outsourcing-orders" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看委外加工单需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看委外加工单需要管理员登录。" });
         return;
       }
       sendJson(res, 200, cachedOutsourcingOrders);
@@ -4853,7 +4881,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/warehouses" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看仓库授权需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看仓库授权需要管理员登录。" });
         return;
       }
       const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
@@ -4905,7 +4933,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/inventory-snapshots" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看库存快照需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看库存快照需要管理员登录。" });
         return;
       }
       sendJson(res, 200, inventorySnapshotPayload(url.searchParams.get("date") || ""));
@@ -4914,7 +4942,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/inventory-snapshots/capture" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "生成库存快照需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "生成库存快照需要管理员登录。" });
         return;
       }
       const snapshot = upsertInventorySnapshot(dateKeyInTimezone(), "manual");
@@ -4924,7 +4952,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/inventory-snapshots/export" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "导出库存快照需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "导出库存快照需要管理员登录。" });
         return;
       }
       const payload = inventorySnapshotPayload(url.searchParams.get("date") || "");
@@ -4949,7 +4977,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/movement-history" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看动销历史需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看动销历史需要管理员登录。" });
         return;
       }
       sendJson(res, 200, movementHistoryPayload({
@@ -4965,7 +4993,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/movement-history/capture" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "生成动销快照需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "生成动销快照需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -4978,7 +5006,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/movement-history/export" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "导出动销历史需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "导出动销历史需要管理员登录。" });
         return;
       }
       const params = {
@@ -5064,7 +5092,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/order-analysis" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看订单分析需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看订单分析需要管理员登录。" });
         return;
       }
       sendJson(res, 200, buildOrderAnalysisPayload({
@@ -5085,7 +5113,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/order-analysis/shop-alias" && req.method === "POST") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "设置店铺别称需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "设置店铺别称需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5112,7 +5140,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/orders/sync-jobs" && req.method === "POST") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "Creating order sync jobs requires direct admin login." });
+        sendJson(res, 401, { ok: false, message: "Creating order sync jobs requires admin login." });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5146,7 +5174,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync-jobs/latest" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "Reading order sync jobs requires direct admin login." });
+        sendJson(res, 401, { ok: false, message: "Reading order sync jobs requires admin login." });
         return;
       }
       sendJson(res, 200, { ok: true, job: publicOrderSyncJob(latestOrderSyncJob()) });
@@ -5155,7 +5183,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看备货中心需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看备货中心需要管理员登录。" });
         return;
       }
       let outsourcingWarning = "";
@@ -5176,7 +5204,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/recommendations/accept" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "采纳备货建议需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "采纳备货建议需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5194,7 +5222,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/recommendations/abandon" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "放弃备货建议需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "放弃备货建议需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5212,7 +5240,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/recommendations/restore" && req.method === "POST") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "恢复备货建议需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "恢复备货建议需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5229,7 +5257,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/stockup/plans" && req.method === "POST") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "创建备货计划需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "创建备货计划需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5250,7 +5278,7 @@ const server = http.createServer(async (req, res) => {
     if (stockupPlanStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "更新备货计划需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "更新备货计划需要管理员登录。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5266,7 +5294,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/movement" && req.method === "GET") {
       if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看动销分析需要直营部门登录。" });
+        sendJson(res, 401, { ok: false, message: "查看动销分析需要管理员登录。" });
         return;
       }
       sendJson(res, 200, movementResponsePayload());
@@ -5350,7 +5378,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/setup/admin" && req.method === "POST") {
       if (!setupStatusPayload().setupRequired) {
-        sendJson(res, 409, { ok: false, message: "系统已存在直营管理员，初始化入口已关闭。" });
+        sendJson(res, 409, { ok: false, message: "系统已存在管理员，初始化入口已关闭。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -5359,6 +5387,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const user = createInitialAdmin(payload);
+      appendLoginActionLog(req, user, "setup_admin");
       sendJson(res, 201, {
         ok: true,
         token: createSessionToken(user, sessionSecret),
@@ -5372,6 +5401,7 @@ const server = http.createServer(async (req, res) => {
       const payload = await parseRequestBody(req);
       if (payload.code && internalAccessCode && payload.code === internalAccessCode) {
         const user = directAuth.user;
+        appendLoginActionLog(req, user, "internal_code");
         sendJson(res, 200, {
           ok: true,
           token: createSessionToken(user, sessionSecret),
@@ -5397,6 +5427,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      appendLoginActionLog(req, user, "account_password");
       sendJson(res, 200, {
         ok: true,
         token: createSessionToken(user, sessionSecret),

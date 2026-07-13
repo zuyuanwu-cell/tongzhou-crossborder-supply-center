@@ -45,13 +45,15 @@ export function verifyPassword(password, encoded) {
 
 export function normalizeRole(value) {
   const role = text(value).toLowerCase();
-  if (/admin|管理员|直营|内部|direct|owner/.test(role)) return "direct";
+  if (/admin|管理员|系统管理员|超级管理员|owner|super/.test(role)) return "admin";
+  if (/直营|直营运营|内部运营|direct|operator|operations/.test(role)) return "direct";
   if (/分销|经销|代理|distribution|distributor|dealer/.test(role)) return "distributor";
   return "guest";
 }
 
 export function roleLabel(role) {
-  if (role === "direct") return "直营部门";
+  if (role === "admin") return "管理员";
+  if (role === "direct") return "直营运营";
   if (role === "distributor") return "分销商";
   return "游客";
 }
@@ -117,9 +119,11 @@ export function createLocalUser({ username, password, displayName, role }) {
 export function publicUser(user) {
   if (!user) return { role: "guest", roleLabel: "游客", permissions: ["product_view"] };
   const role = normalizeRole(user.role);
-  const permissions = role === "direct"
-    ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai", "operations", "users"]
-    : ["product_view", "distribution_price", "sales_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai"];
+  const permissions = role === "admin"
+    ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai", "operations", "users", "order_analysis", "movement", "stockup", "warehouses", "notifications", "action_log"]
+    : role === "direct"
+      ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai"]
+      : ["product_view", "distribution_price", "sales_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai"];
   return {
     id: user.id,
     username: user.username,

@@ -151,7 +151,7 @@ export type DashboardSummaryPayload = {
   }>;
 };
 
-export type UserRole = "guest" | "distributor" | "direct";
+export type UserRole = "guest" | "distributor" | "direct" | "admin";
 export type UserStatus = "active" | "disabled";
 
 export type AuthUser = {
@@ -170,6 +170,7 @@ export type UserManagementPayload = {
   warning?: string;
   counts: {
     users: number;
+    admin: number;
     direct: number;
     distributor: number;
     active?: number;
