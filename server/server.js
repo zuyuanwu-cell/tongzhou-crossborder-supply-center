@@ -1582,13 +1582,43 @@ function saveAiUpload(payload, req) {
 
 function loadUsersCache() {
   const payload = loadJsonCache(usersCachePath);
-  if (payload?.users?.length) return payload;
+  if (payload?.users?.length) return migrateLegacyAdminUser(payload);
   return {
     ok: true,
     source: "local",
     syncedAt: "",
     users: [],
   };
+}
+
+function migrateLegacyAdminUser(payload) {
+  const users = Array.isArray(payload?.users) ? payload.users : [];
+  const hasActiveAdmin = users.some((user) => user.role === "admin" && user.status !== "disabled");
+  if (hasActiveAdmin) return payload;
+
+  const activeUsers = users.filter((user) => user.status !== "disabled");
+  const legacyAdmin = activeUsers.find((user) => String(user.username || "").trim().toLowerCase() === "admin") ||
+    activeUsers.find((user) => /管理员|admin|管理/.test([user.roleLabel, user.displayName, user.username].filter(Boolean).join(" "))) ||
+    activeUsers.find((user) => user.role === "direct");
+  if (!legacyAdmin) return payload;
+
+  legacyAdmin.role = "admin";
+  legacyAdmin.roleLabel = "管理员";
+  legacyAdmin.updatedAt = new Date().toISOString();
+  payload.syncedAt = legacyAdmin.updatedAt;
+  saveJsonCache(usersCachePath, {
+    ok: true,
+    source: "local",
+    syncedAt: payload.syncedAt,
+    users,
+    migration: {
+      name: "legacy-direct-admin-to-admin",
+      migratedAt: payload.syncedAt,
+      userId: legacyAdmin.id,
+      username: legacyAdmin.username,
+    },
+  });
+  return payload;
 }
 
 function saveUsersCache() {
