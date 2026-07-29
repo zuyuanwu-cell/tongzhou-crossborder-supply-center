@@ -163,6 +163,25 @@ export type AuthUser = {
   permissions: string[];
 };
 
+export type AgentApiKey = {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  scope: "agent:read";
+  status: "active" | "expired" | "revoked";
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string;
+  revokedAt: string;
+};
+
+export type AgentApiKeyPayload = {
+  ok: boolean;
+  scope: "agent:read";
+  maxActiveKeys: number;
+  keys: AgentApiKey[];
+};
+
 export type UserManagementPayload = {
   ok: boolean;
   source: "local";
@@ -1444,6 +1463,23 @@ export function fetchAiVideoStatus(taskId: string) {
 
 export function fetchUsers() {
   return requestJson<UserManagementPayload>("/api/users");
+}
+
+export function fetchAgentApiKeys() {
+  return requestJson<AgentApiKeyPayload>("/api/agent-keys");
+}
+
+export function createAgentApiKey(input: { name: string; expiresInDays: number }) {
+  return requestJson<{ ok: boolean; apiKey: string; key: AgentApiKey; message: string }>("/api/agent-keys", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function revokeAgentApiKey(id: string) {
+  return requestJson<{ ok: boolean; key: AgentApiKey }>(`/api/agent-keys/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 export function fetchSetupStatus() {

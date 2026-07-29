@@ -17,12 +17,15 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders } from "./wms-adapters.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
+import { createAgentIndexLayer } from "./agent-index.js";
+import { createAgentApiKeyStore } from "./agent-api-keys.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
 }
 
 function loadEnv() {
+  if (process.env.SKIP_ENV_FILE === "true") return;
   const envPath = resolve(process.cwd(), ".env");
   if (!existsSync(envPath)) return;
   const content = readFileSync(envPath, "utf8");
@@ -38,7 +41,7 @@ function loadEnv() {
 loadEnv();
 
 const port = Number(process.env.API_PORT || 8787);
-const cacheDir = resolve(process.cwd(), ".cache");
+const cacheDir = resolve(process.env.CACHE_DIR || resolve(process.cwd(), ".cache"));
 const distDir = resolve(process.cwd(), "dist");
 const productCachePath = resolve(cacheDir, "products.json");
 const warehouseCachePath = resolve(cacheDir, "warehouse-sync.json");
@@ -108,6 +111,7 @@ const directAuth = {
 };
 assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
+const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
 let autoSyncRunning = false;
 let lastAutoSyncAt = "";
 let lastScheduledInventorySnapshotDate = "";
@@ -1947,8 +1951,12 @@ function serveDistFallback(req, res, url) {
   return false;
 }
 
+function bearerToken(req) {
+  return req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
+}
+
 function getAuth(req) {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
+  const token = bearerToken(req);
   const sessionUser = verifySessionToken(token, sessionSecret);
   if (sessionUser) {
     if (sessionUser.id === directAuth.user.id && sessionUser.username === directAuth.user.username) {
@@ -1971,6 +1979,31 @@ function getAuth(req) {
     };
   }
   return { role: "guest", user: null };
+}
+
+function getAgentAuth(req) {
+  const sessionAuth = getAuth(req);
+  if (sessionAuth.role !== "guest") return sessionAuth;
+
+  const apiKey = agentApiKeyStore.authenticate(bearerToken(req));
+  if (!apiKey || apiKey.scope !== "agent:read") return sessionAuth;
+  if ([directAuth.user.id, "legacy-internal"].includes(apiKey.userId)) {
+    return {
+      role: directAuth.role,
+      user: publicUser(directAuth.user),
+      credentialType: "agent_api_key",
+      apiKeyId: apiKey.id,
+    };
+  }
+
+  const currentUser = (cachedUsers.users || []).find((user) => user.id === apiKey.userId);
+  if (!currentUser || currentUser.status === "disabled" || currentUser.role === "guest") return sessionAuth;
+  return {
+    role: currentUser.role,
+    user: publicUser(currentUser),
+    credentialType: "agent_api_key",
+    apiKeyId: apiKey.id,
+  };
 }
 
 function canViewPartnerAssets(auth) {
@@ -3862,6 +3895,142 @@ async function runScheduledInventorySnapshot() {
   }
 }
 
+function agentSourceForType(type, auth) {
+  const now = new Date().toISOString();
+  if (type === "product_base" || type === "product_catalog") {
+    const products = productResponsePayload(cachedProducts, auth, "detail");
+    return {
+      records: type === "product_base" ? products.productBase || [] : products.catalog || [],
+      syncedAt: cachedProducts.syncedAt || "",
+      sourceSystem: cachedProducts.source === "sample" ? "sample" : "jiandaoyun",
+      complete: true,
+      warning: cachedProducts.source === "sample" ? "当前使用样例产品数据。" : "",
+    };
+  }
+  if (type === "qualification") {
+    return { records: cachedQualifications.qualifications || [], syncedAt: cachedQualifications.syncedAt || "", sourceSystem: cachedQualifications.source || "jiandaoyun" };
+  }
+  if (type === "asset") {
+    return { records: cachedAssets.assets || [], syncedAt: cachedAssets.syncedAt || "", sourceSystem: cachedAssets.source || "jiandaoyun" };
+  }
+  if (type === "warehouse_info") {
+    return { records: cachedWarehouseInfo.warehouseInfo || [], syncedAt: cachedWarehouseInfo.syncedAt || "", sourceSystem: cachedWarehouseInfo.source || "jiandaoyun" };
+  }
+  if (type === "wms_product") {
+    return { records: cachedWarehouseSync.products || [], syncedAt: cachedWarehouseSync.syncedAt || "", sourceSystem: "wms" };
+  }
+  if (type === "inventory_position") {
+    return { records: cachedWarehouseSync.inventory || [], syncedAt: cachedWarehouseSync.syncedAt || "", sourceSystem: "wms" };
+  }
+  if (type === "order_line") {
+    const truncated = (cachedOrdersSync.results || []).some((result) => result.orderApiReachedPageLimit);
+    return {
+      records: cachedOrdersSync.orders || [],
+      syncedAt: cachedOrdersSync.syncedAt || "",
+      sourceSystem: "wms",
+      complete: !truncated,
+      warning: truncated ? "至少一个 WMS 订单接口达到分页上限。" : "",
+    };
+  }
+  if (type === "inventory_snapshot") {
+    return { records: cachedInventorySnapshots.snapshots || [], updatedAt: cachedInventorySnapshots.updatedAt || cachedInventorySnapshots.lastSnapshotAt || "", sourceSystem: "local" };
+  }
+  if (type === "movement_snapshot") {
+    return {
+      records: movementHistoryStore.getSnapshots({}, { includeRows: true }),
+      updatedAt: movementHistoryStore.getMetadata().updatedAt || movementHistoryStore.getMetadata().lastSnapshotAt || "",
+      sourceSystem: "sqlite",
+    };
+  }
+  if (type === "movement_item") {
+    const movement = movementResponsePayload();
+    return { records: movement.items || [], updatedAt: movement.generatedAt || now, sourceSystem: "derived" };
+  }
+  if (["stockup_recommendation", "stockup_plan"].includes(type)) {
+    const stockup = buildCurrentStockupPayload({ notify: false, reason: "agent_index" });
+    return {
+      records: type === "stockup_recommendation"
+        ? [...(stockup.recommendations || []), ...(stockup.abandonedRecommendations || [])]
+        : stockup.plans || [],
+      updatedAt: stockup.generatedAt || cachedStockupPlans.updatedAt || now,
+      sourceSystem: type === "stockup_plan" ? "local" : "derived",
+    };
+  }
+  if (type === "stockup_decision") {
+    return {
+      records: Object.entries(cachedStockupDecisions.decisions || {}).map(([key, decision]) => ({
+        recommendationKey: key,
+        ...decision,
+      })),
+      updatedAt: cachedStockupDecisions.updatedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  if (type === "stockup_order") {
+    return { records: cachedStockupSync.orders || [], syncedAt: cachedStockupSync.syncedAt || "", sourceSystem: "wms" };
+  }
+  if (type === "outsourcing_order") {
+    return { records: cachedOutsourcingOrders.orders || [], syncedAt: cachedOutsourcingOrders.syncedAt || "", sourceSystem: cachedOutsourcingOrders.source || "jiandaoyun" };
+  }
+  if (type === "user") {
+    return {
+      records: (cachedUsers.users || []).map((user) => ({
+        ...publicUser(user),
+        createdAt: user.createdAt || "",
+        updatedAt: user.updatedAt || "",
+      })),
+      updatedAt: cachedUsers.syncedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  if (type === "distributor_application") {
+    const applications = publicDistributorApplications();
+    return { records: applications.applications || [], updatedAt: applications.updatedAt || "", sourceSystem: "local" };
+  }
+  if (type === "warehouse_connection") {
+    return { records: warehouseConnections.map(sanitizeWarehouse), updatedAt: cachedWarehouseSync.syncedAt || "", sourceSystem: "local" };
+  }
+  if (type === "quick_nav_category") {
+    return { records: cachedQuickNav.categories || [], updatedAt: cachedQuickNav.updatedAt || "", sourceSystem: "local" };
+  }
+  if (type === "quick_nav_link") {
+    return {
+      records: (cachedQuickNav.categories || []).flatMap((category) =>
+        (category.links || []).map((link) => ({ ...link, categoryId: category.id, categoryName: category.name }))),
+      updatedAt: cachedQuickNav.updatedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  if (type === "action_log") {
+    const actionLog = publicActionLog();
+    return { records: actionLog.entries || [], updatedAt: actionLog.updatedAt || "", sourceSystem: "local" };
+  }
+  if (type === "order_sync_job") {
+    return {
+      records: (cachedOrderSyncJobs.jobs || []).map(publicOrderSyncJob).filter(Boolean),
+      updatedAt: cachedOrderSyncJobs.updatedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  if (type === "notification_robot" || type === "notification_schedule") {
+    const notifications = publicWecomNotificationPayload();
+    return {
+      records: type === "notification_robot" ? notifications.robots || [] : notifications.schedules || [],
+      updatedAt: notifications.updatedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  return { records: [], updatedAt: "", observedAt: now };
+}
+
+const agentIndexLayer = createAgentIndexLayer({
+  cacheDir,
+  rootDir: process.cwd(),
+  getAuth: getAgentAuth,
+  getSource: agentSourceForType,
+  sendJson,
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "OPTIONS") {
@@ -3870,6 +4039,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    if (await agentIndexLayer.handle(req, res, url)) return;
 
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {
@@ -3940,6 +4111,75 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/me" && req.method === "GET") {
       sendJson(res, 200, { ok: true, user: publicUser(getAuth(req).user) });
+      return;
+    }
+
+    if (url.pathname === "/api/agent-keys" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (auth.role === "guest" || !auth.user?.id) {
+        sendJson(res, 401, { ok: false, message: "查看 Agent API Key 需要先登录。" });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        scope: "agent:read",
+        maxActiveKeys: 5,
+        keys: agentApiKeyStore.listForUser(auth.user.id),
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/agent-keys" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (auth.role === "guest" || !auth.user?.id) {
+        sendJson(res, 401, { ok: false, message: "创建 Agent API Key 需要先登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      let created;
+      try {
+        created = agentApiKeyStore.create({
+          userId: auth.user.id,
+          name: payload.name,
+          expiresInDays: payload.expiresInDays,
+        });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error.message || "创建 Agent API Key 失败。" });
+        return;
+      }
+      appendActionLog(auth, "创建 Agent API Key", "agent_api_key", created.key.name, {
+        keyId: created.key.id,
+        keyPrefix: created.key.keyPrefix,
+        expiresAt: created.key.expiresAt,
+        scope: created.key.scope,
+      });
+      sendJson(res, 201, {
+        ok: true,
+        apiKey: created.apiKey,
+        key: created.key,
+        message: "请立即复制此 API Key；关闭后无法再次查看完整内容。",
+      });
+      return;
+    }
+
+    const agentApiKeyMatch = url.pathname.match(/^\/api\/agent-keys\/([^/]+)$/);
+    if (agentApiKeyMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (auth.role === "guest" || !auth.user?.id) {
+        sendJson(res, 401, { ok: false, message: "撤销 Agent API Key 需要先登录。" });
+        return;
+      }
+      const keyId = decodeURIComponent(agentApiKeyMatch[1]);
+      const revoked = agentApiKeyStore.revoke({ userId: auth.user.id, id: keyId });
+      if (!revoked) {
+        sendJson(res, 404, { ok: false, message: "Agent API Key 不存在。" });
+        return;
+      }
+      appendActionLog(auth, "撤销 Agent API Key", "agent_api_key", revoked.name, {
+        keyId: revoked.id,
+        keyPrefix: revoked.keyPrefix,
+      });
+      sendJson(res, 200, { ok: true, key: revoked });
       return;
     }
 
@@ -4129,6 +4369,12 @@ const server = http.createServer(async (req, res) => {
       appendActionLog(getAuth(req), "删除企业微信机器人", "wecom_robot", deletedRobot?.name || robotId, {
         robotId,
       });
+      if (deletedRobot) {
+        agentIndexLayer.recordDeletion({
+          type: "notification_robot",
+          nativeId: robotId,
+        });
+      }
       sendJson(res, 200, publicWecomNotificationPayload());
       return;
     }
@@ -4190,6 +4436,12 @@ const server = http.createServer(async (req, res) => {
       appendActionLog(getAuth(req), "删除定时推送", "wecom_schedule", deletedSchedule?.name || scheduleId, {
         scheduleId,
       });
+      if (deletedSchedule) {
+        agentIndexLayer.recordDeletion({
+          type: "notification_schedule",
+          nativeId: scheduleId,
+        });
+      }
       sendJson(res, 200, publicWecomNotificationPayload());
       return;
     }
@@ -4318,6 +4570,16 @@ const server = http.createServer(async (req, res) => {
         categoryId,
         linkCount: deletedCategory?.links?.length || 0,
       });
+      agentIndexLayer.recordDeletion({
+        type: "quick_nav_category",
+        nativeId: categoryId,
+      });
+      for (const link of deletedCategory?.links || []) {
+        agentIndexLayer.recordDeletion({
+          type: "quick_nav_link",
+          nativeId: link.id,
+        });
+      }
       sendJson(res, 200, cachedQuickNav);
       return;
     }
@@ -4408,6 +4670,10 @@ const server = http.createServer(async (req, res) => {
         categoryId,
         categoryName: category.name,
         linkId,
+      });
+      agentIndexLayer.recordDeletion({
+        type: "quick_nav_link",
+        nativeId: linkId,
       });
       sendJson(res, 200, cachedQuickNav);
       return;
@@ -4881,6 +5147,11 @@ const server = http.createServer(async (req, res) => {
         username: user.username,
         role: user.role,
       });
+      agentIndexLayer.recordDeletion({
+        type: "user",
+        nativeId: user.id,
+      });
+      agentApiKeyStore.revokeAllForUser(user.id);
       sendJson(res, warning ? 202 : 200, {
         ok: true,
         deletedId: user.id,
@@ -5280,6 +5551,11 @@ const server = http.createServer(async (req, res) => {
         recommendationKey: payload?.recommendationKey || stockupRecommendationKey(item),
         country: item.country,
       });
+      agentIndexLayer.recordDeletion({
+        type: "stockup_decision",
+        nativeId: payload?.recommendationKey || stockupRecommendationKey(item),
+        reason: "restored_to_pending",
+      });
       sendJson(res, 200, result);
       return;
     }
@@ -5351,6 +5627,10 @@ const server = http.createServer(async (req, res) => {
         warehouseId: deleted.id,
         country: deleted.country,
         providerId: deleted.providerId,
+      });
+      agentIndexLayer.recordDeletion({
+        type: "warehouse_connection",
+        nativeId: deleted.id,
       });
       sendJson(res, 200, { ok: true, deletedId: deleted.id, warehouses: warehouseConnections.map(sanitizeWarehouse) });
       return;

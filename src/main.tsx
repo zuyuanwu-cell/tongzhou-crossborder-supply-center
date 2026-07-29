@@ -46,6 +46,7 @@ import {
   AiChatAttachment,
   AiChatMessage,
   ActionLogPayload,
+  AgentApiKey,
   AssetPayload,
   AssetRecord,
   AuthUser,
@@ -79,6 +80,7 @@ import {
   createWarehouseConnection,
   createQuickNavCategory,
   createQuickNavLink,
+  createAgentApiKey,
   createUser,
   deleteWecomRobot,
   deleteWecomSchedule,
@@ -91,6 +93,7 @@ import {
   exportWarehouseConnections,
   fetchAssets,
   fetchActionLog,
+  fetchAgentApiKeys,
   fetchCurrentUser,
   fetchDashboardSummary,
   fetchDistributorApplications,
@@ -116,6 +119,7 @@ import {
   loginInternal,
   logoutInternal,
   qualificationFileDownloadUrl,
+  revokeAgentApiKey,
   syncAssets,
   syncOutsourcingOrders,
   syncOrders,
@@ -300,6 +304,7 @@ const navItems = [
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", childOf: "产品库" },
   { label: "快捷导航", icon: Globe2, hash: "#quick-nav" },
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", beta: true },
+  { label: "API 接入", icon: KeyRound, hash: "#api-access" },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
   { label: "用户管理", icon: Lock, hash: "#users" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications" },
@@ -320,9 +325,9 @@ function hashForView(view: string) {
 function visibleNavItems(user: AuthUser) {
   if (canManage(user)) return navItems;
   if (canViewPartnerAssets(user)) {
-    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航", "同舟AI"].includes(item.label));
+    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航", "同舟AI", "API 接入"].includes(item.label));
   }
-  return navItems.filter((item) => ["产品库", "快捷导航", "同舟AI"].includes(item.label));
+  return navItems.filter((item) => ["产品库", "快捷导航", "同舟AI", ...(user.role === "guest" ? [] : ["API 接入"])].includes(item.label));
 }
 
 function formatNumber(value: number) {
@@ -1373,7 +1378,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "API 接入" ? "API 接入" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <form className="search-box" onSubmit={handleGlobalSearch}>
@@ -1450,6 +1455,8 @@ function App() {
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
         ) : activeView === "同舟AI" ? (
           <TongzhouAiPanel aiConfig={aiConfigPayload} currentUser={currentUser} onRefreshConfig={loadAiConfig} />
+        ) : activeView === "API 接入" ? (
+          <AgentApiAccessPage currentUser={currentUser} />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -4849,6 +4856,232 @@ function ActionLogPage({ payload, onRefresh }: { payload: ActionLogPayload | nul
           )) : (
             <div className="stockup-empty">{entries.length ? "当前筛选条件下暂无操作日志，可清空条件后查看全部记录。" : "暂无操作日志。创建用户、调整仓库授权、配置企业微信或处理备货建议后会自动记录。"}</div>
           )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
+  const confirm = useConfirm();
+  const [keys, setKeys] = React.useState<AgentApiKey[]>([]);
+  const [loadingKeys, setLoadingKeys] = React.useState(true);
+  const [creating, setCreating] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [notice, setNotice] = React.useState("");
+  const [name, setName] = React.useState("我的 Agent");
+  const [expiresInDays, setExpiresInDays] = React.useState(90);
+  const [newApiKey, setNewApiKey] = React.useState("");
+  const manifestUrl = new URL(resolveApiUrl("/api/agent/manifest"), window.location.href).toString();
+  const openApiUrl = new URL(resolveApiUrl("/api/agent/openapi.json"), window.location.href).toString();
+  const apiBaseUrl = manifestUrl.replace(/\/api\/agent\/manifest$/, "");
+  const agentConfig = `TONGZHOU_AGENT_BASE_URL=${apiBaseUrl}\nTONGZHOU_AGENT_TOKEN=<YOUR_API_KEY>`;
+  const curlExample = `curl "${apiBaseUrl}/api/agent/search?q=SKU&types=product_catalog" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
+
+  const loadKeys = React.useCallback(async () => {
+    setLoadingKeys(true);
+    setError("");
+    try {
+      const payload = await fetchAgentApiKeys();
+      setKeys(payload.keys || []);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "读取 Agent API Key 失败。");
+    } finally {
+      setLoadingKeys(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (currentUser.role === "guest") {
+      setLoadingKeys(false);
+      return;
+    }
+    void loadKeys();
+  }, [currentUser.role, loadKeys]);
+
+  async function handleCreate(event: React.FormEvent) {
+    event.preventDefault();
+    setCreating(true);
+    setError("");
+    setNotice("");
+    try {
+      const payload = await createAgentApiKey({ name, expiresInDays });
+      setNewApiKey(payload.apiKey);
+      setNotice("API Key 已创建。完整密钥只显示这一次，请立即复制到 Agent 配置中。");
+      await loadKeys();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "创建 Agent API Key 失败。");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleRevoke(key: AgentApiKey) {
+    const confirmed = await confirm({
+      title: "撤销 Agent API Key",
+      body: `撤销“${key.name}”后，使用该 Key 的 Agent 会立即失去访问权限。`,
+      confirmText: "确认撤销",
+      tone: "danger",
+      details: [`Key：${key.keyPrefix}`, `权限：${key.scope}`],
+    });
+    if (!confirmed) return;
+    setError("");
+    try {
+      await revokeAgentApiKey(key.id);
+      if (newApiKey.startsWith(key.keyPrefix.replace("…", ""))) setNewApiKey("");
+      setNotice(`已撤销“${key.name}”。`);
+      await loadKeys();
+    } catch (revokeError) {
+      setError(revokeError instanceof Error ? revokeError.message : "撤销 Agent API Key 失败。");
+    }
+  }
+
+  async function handleCopy(value: string, message: string) {
+    await copyText(value);
+    setNotice(message);
+  }
+
+  return (
+    <main className="movement-page agent-api-page">
+      <section className="panel agent-api-hero">
+        <div>
+          <p className="eyebrow">Agent Developer Access</p>
+          <h2>让你的 Agent 安全读取同舟数据</h2>
+          <p>API Key 只允许调用只读 Agent 索引接口，并实时继承当前账号“{currentUser.displayName || currentUser.username}”的角色和停用状态。</p>
+        </div>
+        <div className="agent-api-hero-actions">
+          <a className="ghost-button" href={openApiUrl} target="_blank" rel="noreferrer">
+            <FileText size={16} />
+            打开 OpenAPI
+          </a>
+          <button className="sync-button" type="button" onClick={() => void handleCopy(agentConfig, "Agent 环境变量已复制。")}>
+            <Copy size={16} />
+            复制接入配置
+          </button>
+        </div>
+      </section>
+
+      {error ? <div className="notice danger">{error}</div> : null}
+      {notice ? <div className="notice good">{notice}</div> : null}
+
+      <section className="agent-api-layout">
+        <div className="panel agent-api-key-panel">
+          <div className="section-title-row">
+            <div>
+              <p className="eyebrow">Personal Credential</p>
+              <h3>我的 Agent API Key</h3>
+            </div>
+            <span className="agent-scope-badge">只读 · agent:read</span>
+          </div>
+
+          <form className="agent-key-form" onSubmit={handleCreate}>
+            <label>
+              <span>Key 名称</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} maxLength={60} placeholder="例如：采购助手" />
+            </label>
+            <label>
+              <span>有效期</span>
+              <select value={expiresInDays} onChange={(event) => setExpiresInDays(Number(event.target.value))}>
+                <option value={30}>30 天</option>
+                <option value={90}>90 天</option>
+                <option value={180}>180 天</option>
+                <option value={365}>365 天</option>
+              </select>
+            </label>
+            <button className="sync-button" type="submit" disabled={creating || !name.trim()}>
+              <KeyRound size={16} />
+              {creating ? "创建中" : "创建 API Key"}
+            </button>
+          </form>
+
+          {newApiKey ? (
+            <div className="agent-secret-card" role="status">
+              <div>
+                <strong>仅显示一次</strong>
+                <span>不要截图、不要发到群聊，也不要提交到代码仓库。</span>
+              </div>
+              <code>{newApiKey}</code>
+              <div className="agent-secret-actions">
+                <button className="sync-button" type="button" onClick={() => void handleCopy(newApiKey, "完整 API Key 已复制。")}>
+                  <Copy size={16} />
+                  复制完整 Key
+                </button>
+                <button className="ghost-button" type="button" onClick={() => setNewApiKey("")}>我已保存</button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="agent-key-list">
+            {loadingKeys ? <p className="empty-text">正在读取 API Key…</p> : null}
+            {!loadingKeys && !keys.length ? <p className="empty-text">还没有 API Key。创建后即可连接内部 Agent。</p> : null}
+            {keys.map((key) => (
+              <article className="agent-key-item" key={key.id}>
+                <div className="agent-key-main">
+                  <div>
+                    <strong>{key.name}</strong>
+                    <code>{key.keyPrefix}</code>
+                  </div>
+                  <span className={`agent-key-status ${key.status}`}>
+                    {key.status === "active" ? "有效" : key.status === "expired" ? "已过期" : "已撤销"}
+                  </span>
+                </div>
+                <div className="agent-key-meta">
+                  <span>创建：{formatDateTime(key.createdAt)}</span>
+                  <span>到期：{formatDateTime(key.expiresAt)}</span>
+                  <span>最近使用：{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : "尚未使用"}</span>
+                </div>
+                {key.status === "active" ? (
+                  <button className="ghost-button danger-button compact-button" type="button" onClick={() => void handleRevoke(key)}>
+                    <Trash2 size={15} />
+                    撤销
+                  </button>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="agent-api-docs">
+          <section className="panel">
+            <p className="eyebrow">Quick Start</p>
+            <h3>三步接入</h3>
+            <ol className="agent-step-list">
+              <li><span>1</span><div><strong>创建并复制 Key</strong><small>完整 Key 只显示一次。</small></div></li>
+              <li><span>2</span><div><strong>导入 OpenAPI</strong><small>{openApiUrl}</small></div></li>
+              <li><span>3</span><div><strong>设置 Bearer 认证</strong><small>Authorization: Bearer tzai_...</small></div></li>
+            </ol>
+          </section>
+
+          <section className="panel">
+            <div className="section-title-row">
+              <div>
+                <p className="eyebrow">Example</p>
+                <h3>最小调用示例</h3>
+              </div>
+              <button className="ghost-button compact-button" type="button" onClick={() => void handleCopy(curlExample, "curl 示例已复制。")}>
+                <Copy size={15} />
+                复制
+              </button>
+            </div>
+            <pre className="agent-code-block"><code>{curlExample}</code></pre>
+          </section>
+
+          <section className="panel agent-endpoint-list">
+            <p className="eyebrow">Endpoints</p>
+            <h3>Agent 会用到的接口</h3>
+            {[
+              ["发现", "/.well-known/agent-index.json"],
+              ["搜索", "/api/agent/search"],
+              ["按 ID 获取", "/api/agent/resources/{type}/{id}"],
+              ["增量更新", "/api/agent/updated_since"],
+              ["删除同步", "/api/agent/deleted_since"],
+            ].map(([label, endpoint]) => (
+              <div key={endpoint}>
+                <span>{label}</span>
+                <code>{endpoint}</code>
+              </div>
+            ))}
+          </section>
         </div>
       </section>
     </main>

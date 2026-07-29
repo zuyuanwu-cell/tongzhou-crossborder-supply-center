@@ -1,5 +1,6 @@
-import { existsSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
@@ -9,7 +10,8 @@ const port = String(22000 + Math.floor(Math.random() * 10000));
 const baseUrl = `http://127.0.0.1:${port}`;
 const accessCode = "smoke-internal-code";
 const timeoutMs = 30000;
-const movementHistoryDbPath = resolve(repoRoot, ".cache", `smoke-movement-history-${port}.sqlite`);
+const smokeCacheDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-"));
+const movementHistoryDbPath = resolve(smokeCacheDir, "movement-history.sqlite");
 
 if (!existsSync(distIndexPath)) {
   console.error("dist/index.html is missing. Run `npm run build` before `npm run smoke:api`.");
@@ -29,6 +31,8 @@ const child = spawn(process.execPath, ["server/server.js"], {
     WAREHOUSE_TEST_TIMEOUT_MS: "2000",
     WMS_REQUEST_TIMEOUT_MS: "2000",
     MOVEMENT_HISTORY_DB_PATH: movementHistoryDbPath,
+    CACHE_DIR: smokeCacheDir,
+    SKIP_ENV_FILE: "true",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -221,5 +225,5 @@ try {
 } finally {
   clearTimeout(timer);
   child.kill();
-  rmSync(movementHistoryDbPath, { force: true });
+  rmSync(smokeCacheDir, { recursive: true, force: true });
 }
