@@ -188,6 +188,27 @@ async function main() {
   if (!String(movementHistory.databasePath || "").endsWith(".sqlite")) {
     throw new Error("/api/movement-history did not report a SQLite database path.");
   }
+  const [snapshotYear, snapshotMonth] = movementHistoryCapture.snapshot.date.split("-").map(Number);
+  const previousMonthDate = new Date(Date.UTC(snapshotYear, snapshotMonth - 2, 15)).toISOString().slice(0, 10);
+  await expectJson("/api/movement-history/capture", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ date: previousMonthDate, timezone: "Asia/Shanghai" }),
+  });
+  const unauthorizedComparison = await fetch(`${baseUrl}/api/movement-history/compare?period=month&anchorDate=${movementHistoryCapture.snapshot.date}`);
+  if (unauthorizedComparison.status !== 401) {
+    throw new Error(`/api/movement-history/compare did not enforce admin authentication: ${unauthorizedComparison.status}`);
+  }
+  const movementComparison = await expectJson(`/api/movement-history/compare?period=month&anchorDate=${movementHistoryCapture.snapshot.date}&timezone=Asia%2FShanghai`, { headers: authHeaders });
+  if (!movementComparison.currentSnapshot?.date || !movementComparison.previousSnapshot?.date) {
+    throw new Error(`/api/movement-history/compare did not return current and previous snapshots: ${JSON.stringify(movementComparison).slice(0, 500)}`);
+  }
+  if (!Array.isArray(movementComparison.rows) || !movementComparison.summary || !movementComparison.inventorySummary || !movementComparison.thresholds) {
+    throw new Error("/api/movement-history/compare did not return comparison rows, summary, inventory reconciliation, and thresholds.");
+  }
+  if ((movementComparison.rows || []).some((row) => !("changeType" in row) || !("inventoryVarianceQty" in row) || !("orderCoverage" in row))) {
+    throw new Error("/api/movement-history/compare rows are missing status change or inventory reconciliation fields.");
+  }
   const movementHistoryExport = await fetch(`${baseUrl}/api/movement-history/export?date=${encodeURIComponent(movementHistoryCapture.snapshot.date)}&timezone=Asia%2FShanghai`, {
     headers: authHeaders,
   });
@@ -196,6 +217,7 @@ async function main() {
     throw new Error(`/api/movement-history/export did not return the expected CSV: ${movementHistoryCsv.slice(0, 200)}`);
   }
   console.log("[ok] /api/movement-history");
+  console.log("[ok] /api/movement-history/compare permissions and payload");
 
   await expectJson("/api/stockup", { headers: authHeaders });
   console.log("[ok] /api/stockup");

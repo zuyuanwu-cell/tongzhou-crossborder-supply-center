@@ -20,6 +20,7 @@ npm run api       # 启动后端
 npm run dev:all   # 同时启动前后端
 npm run build     # 构建前端
 npm run smoke:api # 构建后冒烟检查根路径、登录态和核心内部 API
+npm run test:movement-comparison # 校验动销状态与库存消耗对比口径
 ```
 
 构建后也可以只启动后端：`npm run build && npm run api`。当 `dist/index.html` 存在时，后端会为 `/` 和前端路由返回应用首页，API 仍然走 `/api/*`。
@@ -64,6 +65,8 @@ AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
 - `INVENTORY_SNAPSHOT_TIMEZONE` / `MOVEMENT_HISTORY_TIMEZONE`：库存快照与动销历史默认日期时区，页面筛选也支持手动选择时区。
 - `MOVEMENT_HISTORY_DB_PATH`：动销历史 SQLite 数据库文件路径，默认 `.cache/movement-history.sqlite`；备份这个文件即可保留历史动销。
 - `AGNES_AI_API_KEY` / `AGNES_AI_BASE_URL`：同舟AI 生成能力配置。
+
+动销分析中的周期状态变化和库存消耗对账口径见 [docs/movement-comparison.md](docs/movement-comparison.md)。
 
 ## 部署
 

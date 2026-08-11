@@ -10,6 +10,7 @@
     "dev:all": "concurrently \"npm run api\" \"npm run dev\"",
     "build": "tsc -b && vite build",
     "smoke:api": "node scripts/smoke-api.mjs",
+    "test:movement-comparison": "node scripts/movement-comparison-test.mjs",
     "test:agent": "node scripts/agent-index-test.mjs",
     "check:agent-coverage": "node scripts/check-agent-coverage.mjs",
     "preview": "vite preview --host 0.0.0.0"

@@ -956,6 +956,100 @@ export type MovementHistoryPayload = {
   warehouseOptions: Array<{ warehouseId: string; warehouseName: string; country: string }>;
 };
 
+export type MovementComparisonPeriod = "week" | "month" | "quarter" | "year" | "custom";
+
+export type MovementComparisonRow = {
+  id: string;
+  sku: string;
+  countrySku: string;
+  productName: string;
+  brand: string;
+  category: string;
+  country: string;
+  warehouseId: string;
+  warehouseName: string;
+  previousStatus: string;
+  currentStatus: string;
+  previousMovementClass: string;
+  currentMovementClass: string;
+  previousAvailableQty: number | null;
+  currentAvailableQty: number | null;
+  previousSales30: number | null;
+  currentSales30: number | null;
+  previousDaysCover: number | null;
+  currentDaysCover: number | null;
+  previousSnapshotDate: string;
+  currentSnapshotDate: string;
+  statusChanged: boolean;
+  changeType: "worsened" | "improved" | "changed" | "unchanged" | "added" | "removed" | "unavailable" | string;
+  changeLabel: string;
+  openingOnHandQty: number | null;
+  closingOnHandQty: number | null;
+  outboundQty: number;
+  expectedClosingQty: number | null;
+  inventoryVarianceQty: number | null;
+  inventoryVarianceRate: number | null;
+  inventoryAnomaly: boolean;
+  inventorySeverity: "danger" | "warning" | "uncertain" | "normal" | "unavailable" | string;
+  inventoryReliable: boolean;
+  inventoryExplanation: string;
+  orderCoverage: {
+    complete: boolean;
+    coverageDays: number;
+    coverageFrom: string;
+    coverageTo: string;
+    requestedFrom: string;
+    requestedTo: string;
+  };
+};
+
+export type MovementComparisonPayload = {
+  ok: boolean;
+  timezone: string;
+  ranges: {
+    period: MovementComparisonPeriod;
+    anchorDate: string;
+    current: { from: string; to: string; label: string };
+    previous: { from: string; to: string; label: string };
+  };
+  filters: { warehouseId: string; sku: string };
+  thresholds: { quantity: number; rate: number };
+  currentSnapshot: { date: string; timezone: string; capturedAt: string; orderSyncedAt: string; inventorySyncedAt: string } | null;
+  previousSnapshot: { date: string; timezone: string; capturedAt: string; orderSyncedAt: string; inventorySyncedAt: string } | null;
+  comparisonAvailable: boolean;
+  baselineAvailable: boolean;
+  summary: {
+    currentSku: number;
+    previousSku: number;
+    normal: number;
+    slow: number;
+    stagnant: number;
+    supplyRisk: number;
+    noData: number;
+    changed: number;
+    unchanged: number;
+    improved: number;
+    worsened: number;
+    added: number;
+    removed: number;
+    inventoryAnomaly: number;
+    inventoryUncertain: number;
+  };
+  inventorySummary: {
+    openingOnHandQty: number;
+    closingOnHandQty: number;
+    outboundQty: number;
+    expectedClosingQty: number;
+    varianceQty: number;
+    matchedOrderRows: number;
+    unmatchedOrderRows: number;
+    unmatchedOutboundQty: number;
+    orderCoverageComplete: boolean;
+    ordersSyncedAt: string;
+  };
+  rows: MovementComparisonRow[];
+};
+
 export type OrderSyncJob = {
   id: string;
   status: "queued" | "running" | "completed" | "partial" | "failed" | string;
@@ -1608,6 +1702,31 @@ export function fetchMovementHistory(input: { date?: string; from?: string; to?:
   if (input.timezone) params.set("timezone", input.timezone);
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<MovementHistoryPayload>(`/api/movement-history${query}`);
+}
+
+export function fetchMovementComparison(input: {
+  period?: MovementComparisonPeriod;
+  anchorDate?: string;
+  from?: string;
+  to?: string;
+  compareFrom?: string;
+  compareTo?: string;
+  warehouseId?: string;
+  sku?: string;
+  timezone?: string;
+} = {}) {
+  const params = new URLSearchParams();
+  if (input.period) params.set("period", input.period);
+  if (input.anchorDate) params.set("anchorDate", input.anchorDate);
+  if (input.from) params.set("from", input.from);
+  if (input.to) params.set("to", input.to);
+  if (input.compareFrom) params.set("compareFrom", input.compareFrom);
+  if (input.compareTo) params.set("compareTo", input.compareTo);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.sku) params.set("sku", input.sku);
+  if (input.timezone) params.set("timezone", input.timezone);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<MovementComparisonPayload>(`/api/movement-history/compare${query}`);
 }
 
 export function captureMovementHistory(input: { date?: string; timezone?: string } = {}) {

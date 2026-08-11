@@ -53,6 +53,8 @@ import {
   CatalogProduct,
   DistributorApplicationPayload,
   InventorySnapshotPayload,
+  MovementComparisonPayload,
+  MovementComparisonPeriod,
   MovementHistoryPayload,
   MovementWarehouseDiagnostic,
   MovementPayload,
@@ -99,6 +101,7 @@ import {
   fetchDistributorApplications,
   fetchInventorySnapshots,
   fetchMovement,
+  fetchMovementComparison,
   fetchMovementHistory,
   fetchLatestOrderSyncJob,
   fetchOrderAnalysis,
@@ -3657,6 +3660,7 @@ function StockupCenter({
         </button>
       </section>
 
+
       <section className="metric-strip movement-metrics">
         <Metric title="建议备货 SKU" value={formatNumber(stockupPayload?.counts.recommendations ?? 0)} note="缺货与补货预警 SKU" icon={PackageCheck} tone="orange" />
         <Metric title="净建议备货" value={formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)} note="建议数量扣减委外在产" icon={Boxes} tone="green" />
@@ -6191,6 +6195,30 @@ function OrderAnalysisPage({
   );
 }
 
+function movementComparisonStatusTone(status: string) {
+  if (status === "健康" || status === "正常") return "good";
+  if (status === "缺货" || status === "滞销") return "danger";
+  if (status === "无记录" || status === "无动销数据") return "muted";
+  return "warning";
+}
+
+function movementComparisonChangeTone(changeType: string) {
+  if (changeType === "improved") return "good";
+  if (changeType === "worsened") return "danger";
+  if (changeType === "unchanged") return "muted";
+  return "warning";
+}
+
+function formatComparisonQty(value: number | null) {
+  return value === null ? "—" : formatNumber(value);
+}
+
+function formatSignedComparisonQty(value: number | null) {
+  if (value === null) return "—";
+  if (value > 0) return `+${formatNumber(value)}`;
+  return formatNumber(value);
+}
+
 function MovementAnalysisPage({
   movementHistoryPayload,
   onLoadMovementHistory,
@@ -6209,6 +6237,18 @@ function MovementAnalysisPage({
   const [timezone, setTimezone] = React.useState("Asia/Shanghai");
   const [pageSize, setPageSize] = React.useState(50);
   const [page, setPage] = React.useState(1);
+  const [comparisonBusy, setComparisonBusy] = React.useState(false);
+  const [comparisonPeriod, setComparisonPeriod] = React.useState<MovementComparisonPeriod>("month");
+  const [comparisonAnchorDate, setComparisonAnchorDate] = React.useState("");
+  const [comparisonFrom, setComparisonFrom] = React.useState("");
+  const [comparisonTo, setComparisonTo] = React.useState("");
+  const [comparisonWarehouseId, setComparisonWarehouseId] = React.useState("");
+  const [comparisonSku, setComparisonSku] = React.useState("");
+  const [comparisonView, setComparisonView] = React.useState("all");
+  const [comparisonPayload, setComparisonPayload] = React.useState<MovementComparisonPayload | null>(null);
+  const [comparisonMessage, setComparisonMessage] = React.useState("");
+  const [comparisonPage, setComparisonPage] = React.useState(1);
+  const comparisonAutoLoaded = React.useRef(false);
   const snapshot = movementHistoryPayload?.snapshot || null;
   const rows = snapshot?.rows || [];
   const totals = snapshot?.totals;
@@ -6220,6 +6260,20 @@ function MovementAnalysisPage({
   const visibleRows = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
   const trend = movementHistoryPayload?.trend || [];
   const maxTrendValue = Math.max(1, ...trend.map((item) => Math.max(item.sales30, item.sales90, item.availableQty)));
+  const comparisonRows = React.useMemo(() => {
+    const source = comparisonPayload?.rows || [];
+    if (comparisonView === "changed") return source.filter((item) => item.changeType !== "unchanged");
+    if (comparisonView === "worsened") return source.filter((item) => item.changeType === "worsened");
+    if (comparisonView === "inventory_anomaly") return source.filter((item) => item.inventoryAnomaly);
+    if (comparisonView === "slow") return source.filter((item) => item.currentMovementClass === "慢销");
+    if (comparisonView === "stagnant") return source.filter((item) => item.currentMovementClass === "滞销");
+    if (comparisonView === "normal") return source.filter((item) => item.currentMovementClass === "正常");
+    return source;
+  }, [comparisonPayload, comparisonView]);
+  const comparisonPageSize = 50;
+  const comparisonTotalPages = Math.max(1, Math.ceil(comparisonRows.length / comparisonPageSize));
+  const safeComparisonPage = Math.min(comparisonPage, comparisonTotalPages);
+  const visibleComparisonRows = comparisonRows.slice((safeComparisonPage - 1) * comparisonPageSize, safeComparisonPage * comparisonPageSize);
 
   React.useEffect(() => {
     if (!movementHistoryPayload) return;
@@ -6231,6 +6285,10 @@ function MovementAnalysisPage({
     setPage(1);
   }, [date, from, to, warehouseId, sku, timezone, pageSize]);
 
+  React.useEffect(() => {
+    setComparisonPage(1);
+  }, [comparisonView, comparisonPayload]);
+
   const currentFilters = React.useMemo(() => ({
     date,
     from,
@@ -6239,6 +6297,55 @@ function MovementAnalysisPage({
     sku,
     timezone,
   }), [date, from, to, warehouseId, sku, timezone]);
+
+  async function loadComparison(overrides: Partial<{
+    period: MovementComparisonPeriod;
+    anchorDate: string;
+    from: string;
+    to: string;
+    warehouseId: string;
+    sku: string;
+    timezone: string;
+  }> = {}) {
+    const selectedPeriod = overrides.period || comparisonPeriod;
+    const selectedAnchorDate = overrides.anchorDate || comparisonAnchorDate || movementHistoryPayload?.selectedDate || new Date().toISOString().slice(0, 10);
+    const selectedFrom = overrides.from ?? comparisonFrom;
+    const selectedTo = overrides.to ?? comparisonTo;
+    if (selectedPeriod === "custom" && (!selectedFrom || !selectedTo)) {
+      setComparisonMessage("自定义周期需要选择开始日期和结束日期。");
+      return;
+    }
+    setComparisonBusy(true);
+    setComparisonMessage("");
+    try {
+      const result = await fetchMovementComparison({
+        period: selectedPeriod,
+        anchorDate: selectedPeriod === "custom" ? undefined : selectedAnchorDate,
+        from: selectedPeriod === "custom" ? selectedFrom : undefined,
+        to: selectedPeriod === "custom" ? selectedTo : undefined,
+        warehouseId: overrides.warehouseId ?? comparisonWarehouseId,
+        sku: overrides.sku ?? comparisonSku,
+        timezone: overrides.timezone || timezone,
+      });
+      setComparisonPayload(result);
+      setComparisonPage(1);
+      setComparisonMessage(result.baselineAvailable
+        ? `已对比 ${result.ranges.current.label} 与 ${result.ranges.previous.label}`
+        : "当前区间有快照，但没有找到上期基准快照。");
+    } catch (error) {
+      setComparisonMessage(error instanceof Error ? error.message : "动销与库存对比加载失败");
+    } finally {
+      setComparisonBusy(false);
+    }
+  }
+
+  React.useEffect(() => {
+    const anchorDate = movementHistoryPayload?.selectedDate || "";
+    if (!anchorDate || comparisonAutoLoaded.current) return;
+    comparisonAutoLoaded.current = true;
+    setComparisonAnchorDate(anchorDate);
+    void loadComparison({ anchorDate, period: "month", timezone: movementHistoryPayload?.timezone || timezone });
+  }, [movementHistoryPayload?.selectedDate]);
 
   async function applyFilters(next = currentFilters) {
     setBusy(true);
@@ -6278,6 +6385,35 @@ function MovementAnalysisPage({
     } finally {
       setBusy(false);
     }
+  }
+
+  function exportComparisonCsv() {
+    if (!comparisonPayload || !comparisonRows.length) return;
+    const header = ["本期", "基期", "仓库", "SKU", "产品", "基期状态", "本期状态", "状态变化", "期初在库", "期间出库", "理论期末", "实际期末", "库存差异", "差异率", "订单覆盖完整", "排查提示"];
+    const data = comparisonRows.map((item) => [
+      comparisonPayload.currentSnapshot?.date || comparisonPayload.ranges.current.label,
+      comparisonPayload.previousSnapshot?.date || comparisonPayload.ranges.previous.label,
+      item.warehouseName,
+      item.sku,
+      item.productName,
+      item.previousStatus,
+      item.currentStatus,
+      item.changeLabel,
+      item.openingOnHandQty,
+      item.outboundQty,
+      item.expectedClosingQty,
+      item.closingOnHandQty,
+      item.inventoryVarianceQty,
+      item.inventoryVarianceRate === null ? "" : `${(item.inventoryVarianceRate * 100).toFixed(1)}%`,
+      item.orderCoverage.complete ? "是" : "否",
+      item.inventoryExplanation,
+    ]);
+    downloadTextFile(
+      `tongzhou-movement-inventory-comparison-${comparisonPayload.ranges.current.from}-${comparisonPayload.ranges.current.to}.csv`,
+      [header, ...data].map((row) => row.map(csvCell).join(",")).join("\n"),
+      "text/csv;charset=utf-8",
+    );
+    setComparisonMessage(`已导出 ${formatNumber(comparisonRows.length)} 条动销与库存对比记录。`);
   }
 
   return (
@@ -6357,6 +6493,162 @@ function MovementAnalysisPage({
             </select>
           </label>
         </div>
+      </section>
+
+      <section className="panel movement-comparison-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Period Comparison</p>
+            <h2>动销与库存对比</h2>
+            <span>按期末快照比较 SKU 状态，并用“期初在库－期间出库”推算理论期末库存，定位仓库库存差异。</span>
+          </div>
+          <div className="movement-history-actions">
+            <button className="ghost-button" type="button" onClick={() => loadComparison()} disabled={comparisonBusy}>
+              <RefreshCw size={16} />
+              {comparisonBusy ? "计算中" : "生成对比"}
+            </button>
+            <button className="ghost-button" type="button" onClick={exportComparisonCsv} disabled={!comparisonRows.length || comparisonBusy}>
+              <Download size={16} />
+              导出对账 CSV
+            </button>
+          </div>
+        </div>
+
+        <div className="movement-comparison-filters">
+          <label>
+            <span>对比周期</span>
+            <select value={comparisonPeriod} onChange={(event) => setComparisonPeriod(event.target.value as MovementComparisonPeriod)}>
+              <option value="week">按周</option>
+              <option value="month">按月</option>
+              <option value="quarter">按季度</option>
+              <option value="year">按年</option>
+              <option value="custom">指定时间段</option>
+            </select>
+          </label>
+          {comparisonPeriod === "custom" ? (
+            <>
+              <label>
+                <span>本期开始</span>
+                <input type="date" value={comparisonFrom} onChange={(event) => setComparisonFrom(event.target.value)} />
+              </label>
+              <label>
+                <span>本期结束</span>
+                <input type="date" value={comparisonTo} onChange={(event) => setComparisonTo(event.target.value)} />
+              </label>
+            </>
+          ) : (
+            <label>
+              <span>所属日期</span>
+              <input type="date" value={comparisonAnchorDate} onChange={(event) => setComparisonAnchorDate(event.target.value)} />
+            </label>
+          )}
+          <label>
+            <span>仓库</span>
+            <select value={comparisonWarehouseId} onChange={(event) => setComparisonWarehouseId(event.target.value)} disabled={!warehouses.length}>
+              <option value="">全部仓库</option>
+              {warehouses.map((item) => <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>)}
+            </select>
+          </label>
+          <label className="comparison-keyword-field">
+            <span>SKU / 产品</span>
+            <input value={comparisonSku} onChange={(event) => setComparisonSku(event.target.value)} placeholder="按 SKU、产品名或品牌筛选" />
+          </label>
+          <label>
+            <span>结果筛选</span>
+            <select value={comparisonView} onChange={(event) => setComparisonView(event.target.value)}>
+              <option value="all">全部 SKU</option>
+              <option value="changed">状态有变化</option>
+              <option value="worsened">动销恶化</option>
+              <option value="inventory_anomaly">库存有差异</option>
+              <option value="slow">本期慢销</option>
+              <option value="stagnant">本期滞销</option>
+              <option value="normal">本期正常</option>
+            </select>
+          </label>
+        </div>
+
+        {comparisonMessage ? <div className={`comparison-message ${comparisonPayload?.baselineAvailable ? "good" : "warning"}`}>{comparisonMessage}</div> : null}
+
+        {comparisonPayload ? (
+          <>
+            <div className="comparison-range-strip">
+              <span><small>基期</small><strong>{comparisonPayload.ranges.previous.label}</strong><em>{comparisonPayload.previousSnapshot?.date || "无快照"}</em></span>
+              <ArrowUpRight size={18} />
+              <span><small>本期</small><strong>{comparisonPayload.ranges.current.label}</strong><em>{comparisonPayload.currentSnapshot?.date || "无快照"}</em></span>
+              <span className={`status-pill ${comparisonPayload.inventorySummary.orderCoverageComplete ? "good" : "warning"}`}>
+                {comparisonPayload.inventorySummary.orderCoverageComplete ? "订单覆盖完整" : "订单覆盖不足"}
+              </span>
+            </div>
+
+            <div className="comparison-kpi-grid">
+              <article><span>正常 SKU</span><strong>{formatNumber(comparisonPayload.summary.normal)}</strong><small>本期期末状态正常</small></article>
+              <article><span>慢销 / 滞销</span><strong>{formatNumber(comparisonPayload.summary.slow + comparisonPayload.summary.stagnant)}</strong><small>慢销 {formatNumber(comparisonPayload.summary.slow)} / 滞销 {formatNumber(comparisonPayload.summary.stagnant)}</small></article>
+              <article><span>状态变化</span><strong>{formatNumber(comparisonPayload.summary.changed)}</strong><small>改善 {formatNumber(comparisonPayload.summary.improved)} / 恶化 {formatNumber(comparisonPayload.summary.worsened)}</small></article>
+              <article><span>库存异常 SKU</span><strong>{formatNumber(comparisonPayload.summary.inventoryAnomaly)}</strong><small>阈值：差异至少 {formatNumber(comparisonPayload.thresholds.quantity)} 件且达到 {(comparisonPayload.thresholds.rate * 100).toFixed(0)}%</small></article>
+            </div>
+
+            <div className={`inventory-reconciliation-card ${comparisonPayload.inventorySummary.orderCoverageComplete ? "" : "uncertain"}`}>
+              <div>
+                <p className="eyebrow">Inventory Reconciliation</p>
+                <h3>库存消耗对账</h3>
+                <small>在库口径为“可售 + 锁定”，不包含在途；差异中可能包含入库、退货、盘点和库存调整。</small>
+              </div>
+              <div className="inventory-equation">
+                <span><small>期初在库</small><strong>{formatNumber(comparisonPayload.inventorySummary.openingOnHandQty)}</strong></span>
+                <b>－</b>
+                <span><small>期间出库</small><strong>{formatNumber(comparisonPayload.inventorySummary.outboundQty)}</strong></span>
+                <b>＝</b>
+                <span><small>理论期末</small><strong>{formatNumber(comparisonPayload.inventorySummary.expectedClosingQty)}</strong></span>
+                <b>对比</b>
+                <span><small>实际期末</small><strong>{formatNumber(comparisonPayload.inventorySummary.closingOnHandQty)}</strong></span>
+                <span className={`inventory-variance-total ${comparisonPayload.inventorySummary.varianceQty === 0 ? "balanced" : "warning"}`}>
+                  <small>总差异</small><strong>{formatSignedComparisonQty(comparisonPayload.inventorySummary.varianceQty)}</strong>
+                </span>
+              </div>
+              <div className="comparison-data-quality">
+                <span>匹配订单行 {formatNumber(comparisonPayload.inventorySummary.matchedOrderRows)}</span>
+                <span>未匹配订单行 {formatNumber(comparisonPayload.inventorySummary.unmatchedOrderRows)}</span>
+                <span>未匹配出库 {formatNumber(comparisonPayload.inventorySummary.unmatchedOutboundQty)}</span>
+                <span>订单同步 {comparisonPayload.inventorySummary.ordersSyncedAt ? new Date(comparisonPayload.inventorySummary.ordersSyncedAt).toLocaleString("zh-CN") : "暂无"}</span>
+              </div>
+            </div>
+
+            <div className="movement-comparison-table">
+              <div className="movement-comparison-row movement-comparison-head">
+                <span>SKU / 产品</span><span>仓库</span><span>上期 → 本期</span><span>是否有变</span><span>库存对账</span><span>库存差异</span><span>排查提示</span>
+              </div>
+              {visibleComparisonRows.length ? visibleComparisonRows.map((item) => (
+                <article className={`movement-comparison-row ${item.inventoryAnomaly ? "has-anomaly" : ""}`} key={item.id}>
+                  <span><strong>{item.sku}</strong><small>{item.productName || item.countrySku}</small></span>
+                  <span><strong>{item.warehouseName}</strong><small>{item.country}</small></span>
+                  <span className="comparison-status-pair">
+                    <i className={`status-pill ${movementComparisonStatusTone(item.previousStatus)}`}>{item.previousStatus}</i>
+                    <ArrowUpRight size={14} />
+                    <i className={`status-pill ${movementComparisonStatusTone(item.currentStatus)}`}>{item.currentStatus}</i>
+                  </span>
+                  <span className={`status-pill ${movementComparisonChangeTone(item.changeType)}`}>{item.changeLabel}</span>
+                  <span className="comparison-inventory-flow">
+                    <small>期初 {formatComparisonQty(item.openingOnHandQty)} － 出库 {formatNumber(item.outboundQty)} ＝ 理论 {formatComparisonQty(item.expectedClosingQty)}</small>
+                    <strong>实际期末 {formatComparisonQty(item.closingOnHandQty)}</strong>
+                  </span>
+                  <span className={`inventory-variance ${item.inventorySeverity}`}>
+                    <strong>{formatSignedComparisonQty(item.inventoryVarianceQty)}</strong>
+                    <small>{item.inventoryVarianceRate === null ? "—" : `${(item.inventoryVarianceRate * 100).toFixed(1)}%`}</small>
+                  </span>
+                  <small>{item.inventoryExplanation}</small>
+                </article>
+              )) : <div className="stockup-empty">当前筛选下没有动销或库存对比记录。</div>}
+            </div>
+
+            <div className="snapshot-pagination">
+              <span>当前显示 {formatNumber(visibleComparisonRows.length)} / {formatNumber(comparisonRows.length)} 条，第 {formatNumber(safeComparisonPage)} / {formatNumber(comparisonTotalPages)} 页</span>
+              <div>
+                <button className="ghost-button compact-button" type="button" onClick={() => setComparisonPage((current) => Math.max(1, current - 1))} disabled={safeComparisonPage <= 1}>上一页</button>
+                <button className="ghost-button compact-button" type="button" onClick={() => setComparisonPage((current) => Math.min(comparisonTotalPages, current + 1))} disabled={safeComparisonPage >= comparisonTotalPages}>下一页</button>
+              </div>
+            </div>
+          </>
+        ) : <div className="stockup-empty">选择周期和仓库后生成对比；系统会默认尝试加载最近月份。</div>}
       </section>
 
       <section className="metric-strip movement-metrics">

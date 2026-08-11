@@ -14,6 +14,7 @@ import { JIANYUN_FORMS } from "./field-mapping.js";
 import { WAREHOUSE_CONNECTIONS, WMS_PROVIDERS } from "./warehouse-config.js";
 import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analytics.js";
 import { initMovementHistoryStore } from "./movement-history-db.js";
+import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders } from "./wms-adapters.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
@@ -2393,6 +2394,45 @@ function movementHistoryPayload(params = {}) {
     snapshot: filteredSnapshot,
     trend,
     warehouseOptions,
+  };
+}
+
+function movementOrderCoverageDaysByWarehouse() {
+  const coverage = {};
+  for (const job of cachedOrderSyncJobs.jobs || []) {
+    if (!["completed", "partial"].includes(job.status)) continue;
+    for (const warehouseId of job.warehouseIds || []) {
+      if (!coverage[warehouseId]) coverage[warehouseId] = Math.max(1, numberOrZero(job.days) || 90);
+    }
+  }
+  return coverage;
+}
+
+function movementComparisonPayload(params = {}) {
+  const timezone = safeTimezone(params.timezone, movementHistoryTimezone);
+  const anchorDate = params.anchorDate || dateKeyInTimezone(new Date(), timezone);
+  const ranges = resolveMovementComparisonRanges({
+    period: params.period || "month",
+    anchorDate,
+    from: params.from || "",
+    to: params.to || "",
+    compareFrom: params.compareFrom || "",
+    compareTo: params.compareTo || "",
+  });
+  const rangeFrom = [ranges.previous.from, ranges.current.from].sort()[0];
+  const rangeTo = [ranges.previous.to, ranges.current.to].sort().at(-1);
+  const snapshots = movementHistoryStore.getSnapshots({ from: rangeFrom, to: rangeTo, timezone });
+  return {
+    timezone,
+    ...buildMovementComparison({
+      snapshots,
+      orders: cachedOrdersSync.orders || [],
+      ranges,
+      warehouseId: params.warehouseId || "",
+      sku: params.sku || "",
+      ordersSyncedAt: cachedOrdersSync.syncedAt || "",
+      orderCoverageDaysByWarehouse: movementOrderCoverageDaysByWarehouse(),
+    }),
   };
 }
 
@@ -5289,6 +5329,29 @@ const server = http.createServer(async (req, res) => {
         sku: url.searchParams.get("sku") || "",
         timezone: url.searchParams.get("timezone") || "",
       }));
+      return;
+    }
+
+    if (url.pathname === "/api/movement-history/compare" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看动销与库存对比需要管理员登录。" });
+        return;
+      }
+      try {
+        sendJson(res, 200, movementComparisonPayload({
+          period: url.searchParams.get("period") || "month",
+          anchorDate: url.searchParams.get("anchorDate") || "",
+          from: url.searchParams.get("from") || "",
+          to: url.searchParams.get("to") || "",
+          compareFrom: url.searchParams.get("compareFrom") || "",
+          compareTo: url.searchParams.get("compareTo") || "",
+          warehouseId: url.searchParams.get("warehouseId") || "",
+          sku: url.searchParams.get("sku") || "",
+          timezone: url.searchParams.get("timezone") || "",
+        }));
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error.message || "动销对比参数无效。" });
+      }
       return;
     }
 
