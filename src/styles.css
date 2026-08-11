@@ -56,8 +56,11 @@ button:disabled {
 .sidebar {
   position: sticky;
   top: 0;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   padding: 24px 18px;
+  overflow: hidden;
   background: rgba(12, 13, 16, 0.78);
   border-right: 1px solid var(--line);
   backdrop-filter: blur(24px);
@@ -66,10 +69,11 @@ button:disabled {
 }
 
 .brand-row {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 34px;
+  margin-bottom: 14px;
 }
 
 .sidebar-collapse-button {
@@ -105,9 +109,48 @@ button:disabled {
   margin-top: 2px;
 }
 
+.sidebar-scroll-region {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-right: -8px;
+  padding: 8px 8px 28px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-width: thin;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll-region::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.sidebar-scroll-region:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+}
+
 .sidebar nav {
   display: grid;
-  gap: 6px;
+  gap: 12px;
+}
+
+.sidebar-nav-section,
+.sidebar-nav-items {
+  display: grid;
+  gap: 4px;
+}
+
+.sidebar-nav-items.is-collapsed {
+  display: none;
 }
 
 .sidebar nav button,
@@ -132,6 +175,41 @@ button:disabled {
   padding: 0 12px;
   color: #b9b5ad;
   white-space: nowrap;
+}
+
+.sidebar nav .nav-section-toggle {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  color: #77746d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.sidebar nav .nav-section-toggle:hover {
+  color: #aaa69d;
+  background: transparent;
+  border-color: transparent;
+}
+
+.nav-section-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: #5f5c56;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.nav-section-meta svg {
+  transition: transform 160ms ease;
+}
+
+.nav-section-meta svg.section-collapsed {
+  transform: rotate(-90deg);
 }
 
 .sidebar nav button.active,
@@ -178,7 +256,7 @@ button:disabled {
 }
 
 .integration-card {
-  margin-top: 42px;
+  margin-top: 20px;
   padding: 18px;
   border: 1px solid rgba(255, 106, 31, 0.28);
   border-radius: 8px;
@@ -237,7 +315,7 @@ button:disabled {
 
   .app-shell.sidebar-collapsed .brand-row {
     justify-content: center;
-    margin-bottom: 28px;
+    margin-bottom: 12px;
   }
 
   .app-shell.sidebar-collapsed .brand-row > div:not(.brand-mark) {
@@ -259,8 +337,25 @@ button:disabled {
     transform: translateX(-50%);
   }
 
+  .app-shell.sidebar-collapsed .sidebar-scroll-region {
+    margin-right: -6px;
+    padding-right: 6px;
+  }
+
   .app-shell.sidebar-collapsed .sidebar nav {
-    margin-top: 54px;
+    gap: 6px;
+    margin-top: 46px;
+  }
+
+  .app-shell.sidebar-collapsed .nav-section-toggle {
+    display: none;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar-nav-section,
+  .app-shell.sidebar-collapsed .sidebar-nav-items,
+  .app-shell.sidebar-collapsed .sidebar-nav-items.is-collapsed {
+    display: grid;
+    gap: 6px;
   }
 
   .app-shell.sidebar-collapsed .sidebar nav button,
@@ -7040,6 +7135,13 @@ h3 {
   color: #e9e2d8;
   background: rgba(0, 0, 0, 0.28);
   white-space: pre-wrap;
+}
+
+.agent-operation-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .agent-endpoint-list {

@@ -10,7 +10,15 @@
 - 鉴权：登录后在站内“API 接入”页面创建个人 Key，并发送 `Authorization: Bearer <tzai_...>`
 - 权限语义：同一个接口在不同令牌下只声明、枚举和返回该角色可见的资源。
 
-建议 Agent 每次任务先读取 manifest，只调用其中 `accessible: true` 的资源。每个用户应创建自己的 Agent API Key，不应共享管理员 Key。Key 只允许读取 `/api/agent/*`，不能调用普通业务管理接口；账号停用、删除或角色变化会立即影响 Key 权限。
+建议 Agent 每次任务先读取 manifest，只调用其中 `accessible: true` 的资源和 `operations`。每个用户应创建自己的 Agent API Key，不应共享管理员 Key。Key 只允许读取 `/api/agent/*` 以及 manifest 明确声明的只读业务计算接口，不能调用任何业务管理写接口；账号停用、删除或角色变化会立即影响 Key 权限。
+
+管理员 Agent Key 额外支持只读库存差异计算：
+
+```text
+GET /api/movement-history/compare?period=month&warehouseId=<warehouse-id>&timezone=Asia%2FShanghai
+```
+
+该操作返回动销状态变化、理论期末库存、实际期末库存和 SKU 差异，OpenAPI `operationId` 为 `compareMovementAndInventory`。非管理员 Key 返回 `401`。
 
 完整 Key 仅在创建时显示一次，服务端只保存哈希。默认有效期 90 天，每个用户最多保留 5 个有效 Key，可随时在页面撤销。
 

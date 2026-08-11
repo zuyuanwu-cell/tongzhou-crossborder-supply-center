@@ -5333,8 +5333,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/movement-history/compare" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看动销与库存对比需要管理员登录。" });
+      if (!canManage(getAgentAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看动销与库存对比需要管理员身份或管理员 Agent API Key。" });
         return;
       }
       try {

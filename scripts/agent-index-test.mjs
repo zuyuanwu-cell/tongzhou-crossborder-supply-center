@@ -150,13 +150,16 @@ async function main() {
   assert.ok(discovery.record_schema.required.includes("updated_at"));
   assert.ok(discovery.resources.some((resource) => resource.type === "product_catalog" && resource.accessible));
   assert.ok(discovery.resources.some((resource) => resource.type === "user" && !resource.accessible));
+  assert.ok(discovery.operations.some((operation) => operation.id === "movement_inventory_comparison" && !operation.accessible));
   console.log("[ok] manifest discovery and resource enumeration");
 
   const openApi = await request("/api/agent/openapi.json");
   assert.equal(openApi.openapi, "3.1.0");
   assert.ok(openApi.paths["/api/agent/search"]);
+  assert.equal(openApi.paths["/api/movement-history/compare"].get.operationId, "compareMovementAndInventory");
   assert.equal(openApi.components.securitySchemes.agentBearer.scheme, "bearer");
   assert.ok(openApi.components.schemas.AgentRecord.required.includes("updated_at"));
+  assert.ok(openApi.components.schemas.MovementInventoryComparison.required.includes("inventorySummary"));
   console.log("[ok] OpenAPI document");
 
   const firstPage = await request("/api/agent/resources/product_catalog?page=1&limit=1");
@@ -211,6 +214,11 @@ async function main() {
     token: createdKey.apiKey,
     expectedStatus: 401,
   });
+  const comparison = await request("/api/movement-history/compare?period=month", {
+    token: createdKey.apiKey,
+  });
+  assert.ok(comparison.inventorySummary);
+  assert.ok(Array.isArray(comparison.rows));
   const persistedKeyStore = readFileSync(resolve(testCacheDir, "agent-api-keys.json"), "utf8");
   assert.ok(!persistedKeyStore.includes(createdKey.apiKey), "The API key must never be stored in plaintext.");
   assert.ok(persistedKeyStore.includes("keyHash"), "The API key store should contain only a key hash.");
@@ -240,6 +248,10 @@ async function main() {
   });
   await request("/api/agent/resources/qualification?page=1&limit=10", {
     token: userKey.apiKey,
+  });
+  await request("/api/movement-history/compare?period=month", {
+    token: userKey.apiKey,
+    expectedStatus: 401,
   });
   await request(`/api/users/${encodeURIComponent(createdUser.user.id)}/status`, {
     token,
@@ -332,6 +344,10 @@ async function main() {
     method: "DELETE",
   });
   await request("/api/agent/resources/qualification?page=1&limit=10", {
+    token: createdKey.apiKey,
+    expectedStatus: 401,
+  });
+  await request("/api/movement-history/compare?period=month", {
     token: createdKey.apiKey,
     expectedStatus: 401,
   });

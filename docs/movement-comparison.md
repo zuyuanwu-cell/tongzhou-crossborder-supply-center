@@ -19,11 +19,19 @@
 
 ## API
 
-管理员会话可调用：
+管理员会话或管理员在“API 接入”页面创建的 `tzai_` Agent API Key 可调用：
 
 ```http
 GET /api/movement-history/compare?period=month&anchorDate=2026-08-11&warehouseId=<warehouse-id>&timezone=Asia/Shanghai
 ```
+
+Agent Key 使用标准 Bearer 认证：
+
+```http
+Authorization: Bearer tzai_<YOUR_API_KEY>
+```
+
+该接口为只读计算能力，实时复用当前账号权限。只有管理员 Key 可以调用；直营、分销、游客或已停用账号均返回 `401`。接口已声明在 `/api/agent/openapi.json` 和 `/api/agent/manifest` 的 `operations` 中。
 
 `period` 支持 `week`、`month`、`quarter`、`year` 和 `custom`。自定义周期使用 `from`、`to`；系统默认选择紧邻且天数相同的前一段作为基期。
 

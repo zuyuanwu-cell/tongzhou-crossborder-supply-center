@@ -293,25 +293,32 @@ const dailyOrders: DailyOrder[] = [
   { date: "06-11", country: "印尼", orders: 264, amount: 8010, exceptions: 3 },
 ];
 
+const navSections = [
+  { id: "operations", label: "运营分析" },
+  { id: "supply", label: "商品与协同" },
+  { id: "intelligence", label: "智能与开放" },
+  { id: "governance", label: "系统管理" },
+];
+
 const navItems = [
-  { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard" },
-  { label: "库存同步", icon: DatabaseZap, hash: "#inventory" },
-  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots" },
-  { label: "订单分析", icon: FileText, hash: "#order-analysis" },
-  { label: "动销监控", icon: BarChart3, hash: "#movement" },
-  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis" },
-  { label: "备货中心", icon: PackageCheck, hash: "#stockup" },
-  { label: "产品库", icon: ShoppingBag, hash: "#products" },
-  { label: "资质库", icon: FileText, hash: "#qualifications", childOf: "产品库" },
-  { label: "素材库", icon: Boxes, hash: "#assets", childOf: "产品库" },
-  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", childOf: "产品库" },
-  { label: "快捷导航", icon: Globe2, hash: "#quick-nav" },
-  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", beta: true },
-  { label: "API 接入", icon: KeyRound, hash: "#api-access" },
-  { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses" },
-  { label: "用户管理", icon: Lock, hash: "#users" },
-  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications" },
-  { label: "操作日志", icon: List, hash: "#action-log" },
+  { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "operations" },
+  { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "operations" },
+  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "operations" },
+  { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "operations" },
+  { label: "动销监控", icon: BarChart3, hash: "#movement", section: "operations" },
+  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "operations" },
+  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "supply" },
+  { label: "产品库", icon: ShoppingBag, hash: "#products", section: "supply" },
+  { label: "资质库", icon: FileText, hash: "#qualifications", section: "supply", childOf: "产品库" },
+  { label: "素材库", icon: Boxes, hash: "#assets", section: "supply", childOf: "产品库" },
+  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "supply", childOf: "产品库" },
+  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "intelligence" },
+  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "intelligence", beta: true },
+  { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "intelligence" },
+  { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "governance" },
+  { label: "用户管理", icon: Lock, hash: "#users", section: "governance" },
+  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "governance" },
+  { label: "操作日志", icon: List, hash: "#action-log", section: "governance" },
 ];
 
 const viewHashMap = Object.fromEntries(navItems.map((item) => [item.hash, item.label]));
@@ -1694,6 +1701,22 @@ function Sidebar({
 }) {
   const items = visibleNavItems(currentUser);
   const CollapseIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
+  const activeItemRef = React.useRef<HTMLButtonElement | null>(null);
+  const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(() => new Set());
+
+  React.useEffect(() => {
+    activeItemRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeView, open]);
+
+  function toggleSection(sectionId: string) {
+    setCollapsedSections((current) => {
+      const next = new Set(current);
+      if (next.has(sectionId)) next.delete(sectionId);
+      else next.add(sectionId);
+      return next;
+    });
+  }
+
   return (
     <>
       <aside className={`sidebar ${open ? "open" : ""}`}>
@@ -1718,29 +1741,56 @@ function Sidebar({
             <CollapseIcon size={18} />
           </button>
         </div>
-        <nav>
-          {items.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.label}
-                className={`${activeView === item.label ? "active" : ""} ${item.childOf ? "nav-child" : ""}`}
-                onClick={() => onChange(item.label)}
-                title={collapsed ? item.label : undefined}
-              >
-                <Icon size={18} />
-                <span className="nav-label-wrap">
-                  {item.beta ? <small>Beta</small> : null}
-                  <span>{item.label}</span>
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-        <div className="integration-card">
-          <p>同舟供应链</p>
-          <strong>同舟供应链数智化系统</strong>
-          <span>产品 · 仓库 · 备货协同</span>
+        <div className="sidebar-scroll-region">
+          <nav aria-label="主导航">
+            {navSections.map((section) => {
+              const sectionItems = items.filter((item) => item.section === section.id);
+              if (!sectionItems.length) return null;
+              const sectionCollapsed = collapsedSections.has(section.id);
+              return (
+                <section className="sidebar-nav-section" key={section.id}>
+                  <button
+                    className="nav-section-toggle"
+                    type="button"
+                    onClick={() => toggleSection(section.id)}
+                    aria-expanded={!sectionCollapsed}
+                  >
+                    <span>{section.label}</span>
+                    <span className="nav-section-meta">
+                      {sectionItems.length}
+                      <ChevronDown size={13} className={sectionCollapsed ? "section-collapsed" : ""} />
+                    </span>
+                  </button>
+                  <div className={`sidebar-nav-items ${sectionCollapsed ? "is-collapsed" : ""}`}>
+                    {sectionItems.map((item) => {
+                      const Icon = item.icon;
+                      const active = activeView === item.label;
+                      return (
+                        <button
+                          key={item.label}
+                          ref={active ? activeItemRef : undefined}
+                          className={`${active ? "active" : ""} ${item.childOf ? "nav-child" : ""}`}
+                          onClick={() => onChange(item.label)}
+                          title={collapsed ? item.label : undefined}
+                        >
+                          <Icon size={18} />
+                          <span className="nav-label-wrap">
+                            {item.beta ? <small>Beta</small> : null}
+                            <span>{item.label}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
+          </nav>
+          <div className="integration-card">
+            <p>同舟供应链</p>
+            <strong>同舟供应链数智化系统</strong>
+            <span>产品 · 仓库 · 备货协同</span>
+          </div>
         </div>
       </aside>
       {open ? <button className="scrim" onClick={onClose} aria-label="关闭导航" /> : null}
@@ -4881,6 +4931,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   const apiBaseUrl = manifestUrl.replace(/\/api\/agent\/manifest$/, "");
   const agentConfig = `TONGZHOU_AGENT_BASE_URL=${apiBaseUrl}\nTONGZHOU_AGENT_TOKEN=<YOUR_API_KEY>`;
   const curlExample = `curl "${apiBaseUrl}/api/agent/search?q=SKU&types=product_catalog" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
+  const comparisonCurlExample = `curl "${apiBaseUrl}/api/movement-history/compare?period=month&warehouseId=<WAREHOUSE_ID>&timezone=Asia%2FShanghai" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
 
   const loadKeys = React.useCallback(async () => {
     setLoadingKeys(true);
@@ -4951,7 +5002,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
         <div>
           <p className="eyebrow">Agent Developer Access</p>
           <h2>让你的 Agent 安全读取同舟数据</h2>
-          <p>API Key 只允许调用只读 Agent 索引接口，并实时继承当前账号“{currentUser.displayName || currentUser.username}”的角色和停用状态。</p>
+          <p>API Key 只允许调用只读 Agent 索引及明确声明的分析接口，并实时继承当前账号“{currentUser.displayName || currentUser.username}”的角色和停用状态。</p>
         </div>
         <div className="agent-api-hero-actions">
           <a className="ghost-button" href={openApiUrl} target="_blank" rel="noreferrer">
@@ -5070,6 +5121,23 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
             <pre className="agent-code-block"><code>{curlExample}</code></pre>
           </section>
 
+          {currentUser.role === "admin" ? (
+            <section className="panel">
+              <div className="section-title-row">
+                <div>
+                  <p className="eyebrow">Inventory Reconciliation</p>
+                  <h3>库存差异计算 API</h3>
+                </div>
+                <button className="ghost-button compact-button" type="button" onClick={() => void handleCopy(comparisonCurlExample, "库存差异计算 curl 示例已复制。")}>
+                  <Copy size={15} />
+                  复制
+                </button>
+              </div>
+              <p className="agent-operation-note">按周、月、季度、年或指定时间段返回 SKU 状态变化、理论期末库存、实际期末库存和差异；只允许管理员 Key 调用。</p>
+              <pre className="agent-code-block"><code>{comparisonCurlExample}</code></pre>
+            </section>
+          ) : null}
+
           <section className="panel agent-endpoint-list">
             <p className="eyebrow">Endpoints</p>
             <h3>Agent 会用到的接口</h3>
@@ -5079,6 +5147,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
               ["按 ID 获取", "/api/agent/resources/{type}/{id}"],
               ["增量更新", "/api/agent/updated_since"],
               ["删除同步", "/api/agent/deleted_since"],
+              ...(currentUser.role === "admin" ? [["库存差异计算", "/api/movement-history/compare"]] : []),
             ].map(([label, endpoint]) => (
               <div key={endpoint}>
                 <span>{label}</span>

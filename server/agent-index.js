@@ -846,6 +846,7 @@ function openApiDocument() {
       { name: "Discovery", description: "资源发现与 Schema" },
       { name: "Resources", description: "按类型读取业务记录" },
       { name: "Sync", description: "全量、增量和删除同步" },
+      { name: "Analytics", description: "权限感知的只读业务计算能力" },
     ],
     paths: {
       "/.well-known/agent-index.json": {
@@ -946,6 +947,33 @@ function openApiDocument() {
           responses: { 200: { description: "源记录与可枚举记录覆盖率" } },
         },
       },
+      "/api/movement-history/compare": {
+        get: {
+          tags: ["Analytics"],
+          operationId: "compareMovementAndInventory",
+          summary: "计算动销状态变化与库存差异",
+          description: "仅管理员可调用。管理员 Agent API Key 与管理员登录会话权限一致，不提供权限旁路。",
+          parameters: [
+            { name: "period", in: "query", schema: { type: "string", enum: ["week", "month", "quarter", "year", "custom"], default: "month" } },
+            { name: "anchorDate", in: "query", schema: { type: "string", format: "date" } },
+            { name: "from", in: "query", schema: { type: "string", format: "date", description: "自定义本期开始日期" } },
+            { name: "to", in: "query", schema: { type: "string", format: "date", description: "自定义本期结束日期" } },
+            { name: "compareFrom", in: "query", schema: { type: "string", format: "date", description: "可选的自定义基期开始日期" } },
+            { name: "compareTo", in: "query", schema: { type: "string", format: "date", description: "可选的自定义基期结束日期" } },
+            { name: "warehouseId", in: "query", schema: { type: "string" } },
+            { name: "sku", in: "query", schema: { type: "string" } },
+            { name: "timezone", in: "query", schema: { type: "string", default: "Asia/Shanghai" } },
+          ],
+          responses: {
+            200: {
+              description: "动销状态对比和库存消耗对账结果",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/MovementInventoryComparison" } } },
+            },
+            400: { description: "日期、周期或时区参数无效" },
+            401: { description: "需要管理员身份或管理员 Agent API Key" },
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -958,6 +986,93 @@ function openApiDocument() {
       },
       schemas: {
         AgentRecord: canonicalRecordSchema(),
+        MovementComparisonRow: {
+          type: "object",
+          required: ["id", "sku", "warehouseId", "previousStatus", "currentStatus", "changeType", "inventoryVarianceQty", "inventoryAnomaly", "orderCoverage"],
+          properties: {
+            id: { type: "string" },
+            sku: { type: "string" },
+            countrySku: { type: "string" },
+            productName: { type: "string" },
+            country: { type: "string" },
+            warehouseId: { type: "string" },
+            warehouseName: { type: "string" },
+            previousStatus: { type: "string" },
+            currentStatus: { type: "string" },
+            statusChanged: { type: "boolean" },
+            changeType: { type: "string", enum: ["worsened", "improved", "changed", "unchanged", "added", "removed", "unavailable"] },
+            changeLabel: { type: "string" },
+            openingOnHandQty: { type: ["number", "null"] },
+            closingOnHandQty: { type: ["number", "null"] },
+            outboundQty: { type: "number" },
+            expectedClosingQty: { type: ["number", "null"] },
+            inventoryVarianceQty: { type: ["number", "null"], description: "实际期末库存减理论期末库存" },
+            inventoryVarianceRate: { type: ["number", "null"] },
+            inventoryAnomaly: { type: "boolean" },
+            inventorySeverity: { type: "string" },
+            inventoryReliable: { type: "boolean" },
+            inventoryExplanation: { type: "string" },
+            orderCoverage: {
+              type: "object",
+              properties: {
+                complete: { type: "boolean" },
+                coverageDays: { type: "integer" },
+                coverageFrom: { type: "string", format: "date" },
+                coverageTo: { type: "string", format: "date" },
+                requestedFrom: { type: "string", format: "date" },
+                requestedTo: { type: "string", format: "date" },
+              },
+            },
+          },
+        },
+        MovementInventoryComparison: {
+          type: "object",
+          required: ["ok", "timezone", "ranges", "summary", "inventorySummary", "rows"],
+          properties: {
+            ok: { type: "boolean" },
+            timezone: { type: "string" },
+            ranges: {
+              type: "object",
+              properties: {
+                period: { type: "string", enum: ["week", "month", "quarter", "year", "custom"] },
+                anchorDate: { type: "string", format: "date" },
+                current: { type: "object", properties: { from: { type: "string", format: "date" }, to: { type: "string", format: "date" }, label: { type: "string" } } },
+                previous: { type: "object", properties: { from: { type: "string", format: "date" }, to: { type: "string", format: "date" }, label: { type: "string" } } },
+              },
+            },
+            filters: { type: "object", properties: { warehouseId: { type: "string" }, sku: { type: "string" } } },
+            thresholds: { type: "object", properties: { quantity: { type: "number" }, rate: { type: "number" } } },
+            currentSnapshot: { type: ["object", "null"] },
+            previousSnapshot: { type: ["object", "null"] },
+            comparisonAvailable: { type: "boolean" },
+            baselineAvailable: { type: "boolean" },
+            summary: {
+              type: "object",
+              properties: {
+                currentSku: { type: "integer" }, previousSku: { type: "integer" }, normal: { type: "integer" }, slow: { type: "integer" }, stagnant: { type: "integer" },
+                changed: { type: "integer" }, unchanged: { type: "integer" }, improved: { type: "integer" }, worsened: { type: "integer" },
+                inventoryAnomaly: { type: "integer" }, inventoryUncertain: { type: "integer" },
+              },
+            },
+            inventorySummary: {
+              type: "object",
+              required: ["openingOnHandQty", "closingOnHandQty", "outboundQty", "expectedClosingQty", "varianceQty", "orderCoverageComplete"],
+              properties: {
+                openingOnHandQty: { type: "number" },
+                closingOnHandQty: { type: "number" },
+                outboundQty: { type: "number" },
+                expectedClosingQty: { type: "number" },
+                varianceQty: { type: "number" },
+                matchedOrderRows: { type: "integer" },
+                unmatchedOrderRows: { type: "integer" },
+                unmatchedOutboundQty: { type: "number" },
+                orderCoverageComplete: { type: "boolean" },
+                ordersSyncedAt: { type: "string", format: "date-time" },
+              },
+            },
+            rows: { type: "array", items: { $ref: "#/components/schemas/MovementComparisonRow" } },
+          },
+        },
       },
     },
   };
@@ -1114,7 +1229,7 @@ export function createAgentIndexLayer({
       authentication: {
         type: "http",
         scheme: "bearer",
-        description: "复用当前系统 Bearer token；资源可见性按当前用户角色实时计算。",
+        description: "使用当前登录 Bearer token 或站内创建的 tzai_ Agent API Key；资源和只读能力按当前用户角色实时计算。",
       },
       endpoints: {
         manifest: "/api/agent/manifest",
@@ -1126,6 +1241,19 @@ export function createAgentIndexLayer({
         deleted_since: "/api/agent/deleted_since?since={iso8601}&types={type1,type2}",
         coverage: "/api/agent/coverage",
       },
+      operations: [
+        {
+          id: "movement_inventory_comparison",
+          label: "动销与库存差异计算",
+          method: "GET",
+          endpoint: "/api/movement-history/compare",
+          accessible: auth?.role === "admin",
+          allowed_roles: ["admin"],
+          read_only: true,
+          description: "按周、月、季度、年或自定义区间计算 SKU 动销状态变化、理论库存、实际库存和差异。",
+          openapi_operation_id: "compareMovementAndInventory",
+        },
+      ],
       incremental: {
         updated_since_field: "updated_at",
         deleted_since_support: "local_mutations_only",
