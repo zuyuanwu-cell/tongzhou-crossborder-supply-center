@@ -1304,6 +1304,245 @@ export type StockupPayload = {
   }>;
 };
 
+export type StockupWorkflowShipmentLine = {
+  id: string;
+  stockupLineRecordId: string;
+  demandRecordId: string;
+  productRecordId: string;
+  temporaryProductNo: string;
+  sku: string;
+  productName: string;
+  shippedQty: number;
+  receivedQty: number;
+  damagedQty: number;
+  totalWeightKg: number;
+  totalVolumeM3: number;
+  baseUnitCostCny: number;
+  baseCostTotalCny: number;
+  receiptWriteoffStatus: string;
+};
+
+export type StockupWorkflowShipment = {
+  id: string;
+  shipmentNo: string;
+  stockupOrderRecordId: string;
+  demandRecordIds: string[];
+  project: string;
+  carrier: string;
+  trackingNo: string;
+  transportMode: string;
+  destinationCountry: string;
+  destinationWarehouseRecordId: string;
+  destinationWarehouseName: string;
+  status: string;
+  actualWeightKg: number;
+  chargeableWeightKg: number;
+  actualVolumeM3: number;
+  defaultAllocationMethod: "weight" | "volume" | "quantity" | "value" | "manual";
+  feeConfirmationStatus: string;
+  costingStatus: string;
+  currentCostVersion: number;
+  wmsInboundNo: string;
+  shippedAt: string;
+  lines: StockupWorkflowShipmentLine[];
+};
+
+export type ShipmentFeeAllocation = {
+  shipmentLineId: string;
+  costBatchRecordId?: string;
+  productRecordId: string;
+  sku: string;
+  productName: string;
+  basis: number;
+  totalBasis: number;
+  ratio: number;
+  theoreticalAmount: number;
+  roundingAdjustment: number;
+  finalAmount: number;
+  costingQty: number;
+  unitAllocationAmount: number;
+  exceptionReason: string;
+};
+
+export type StockupWorkflowFee = {
+  id: string;
+  feeNo: string;
+  shipmentRecordId: string;
+  shipmentNo: string;
+  feeStage: string;
+  feeType: string;
+  feeName: string;
+  vendor: string;
+  invoiceNo: string;
+  occurredAt: string;
+  originalAmount: number;
+  currency: string;
+  exchangeRate: number;
+  amountCny: number;
+  includedInLandedCost: boolean;
+  allocationMethod: "weight" | "volume" | "quantity" | "value" | "manual";
+  allocationStatus: string;
+  costVersion: number;
+  dataSource: string;
+  description: string;
+  allocations: ShipmentFeeAllocation[];
+};
+
+export type ShipmentCostBatch = {
+  id?: string;
+  costBatchNo?: string;
+  uniqueKey: string;
+  costType: string;
+  version: number;
+  formulaVersion: string;
+  shipmentRecordId: string;
+  shipmentNo: string;
+  shipmentLineId: string;
+  productRecordId: string;
+  temporaryProductNo: string;
+  sku: string;
+  productName: string;
+  shippedQty: number;
+  receivedQty: number;
+  costingQty: number;
+  totalWeightKg: number;
+  totalVolumeM3: number;
+  baseCostTotalCny: number;
+  includedFeeTotal: number;
+  excludedFeeTotal: number;
+  actualCostTotalCny: number;
+  unitLogisticsCostCny: number;
+  landedUnitCostCny: number;
+  status: string;
+  isCurrent?: boolean;
+  exceptionCode: number;
+  exceptionReason: string;
+  calculatedAt?: string;
+  lockedAt?: string;
+};
+
+export type StockupCostPreview = {
+  ok: boolean;
+  formulaVersion: string;
+  shipment: StockupWorkflowShipment;
+  costType: string;
+  version: number;
+  riskRate: number;
+  totals: {
+    baseCostCny: number;
+    includedFeesCny: number;
+    excludedFeesCny: number;
+    landedCostCny: number;
+    allocationDifferenceCny: number;
+  };
+  errors: string[];
+  feeResults: Array<StockupWorkflowFee & { allocationMethodLabel: string; bucket: string; allocationDifferenceCny: number }>;
+  costBatches: ShipmentCostBatch[];
+};
+
+export type StockupWorkflowPayload = {
+  ok: boolean;
+  source: string;
+  syncedAt: string;
+  warnings: string[];
+  counts: {
+    demands: number;
+    pendingDemands: number;
+    stockupOrders: number;
+    stockupLines: number;
+    shipments: number;
+    shipmentLines: number;
+    fees: number;
+    feeAmountCny: number;
+    costBatches: number;
+    lockedCostBatches: number;
+    codingQueue: number;
+  };
+  demands: Array<{
+    id: string;
+    demandBatchNo: string;
+    demandLineNo: string;
+    productSourceType: string;
+    productRecordId: string;
+    temporaryProductNo: string;
+    skuCodingStatus: string;
+    sku: string;
+    productName: string;
+    project: string;
+    platform: string;
+    destinationCountry: string;
+    destinationWarehouseName: string;
+    stockupMethod: string;
+    priority: string;
+    businessStatus: string;
+    supplyOwner: string;
+    requestedQty: number;
+    plannedQty: number;
+    shippedQty: number;
+    receivedQty: number;
+    submittedAt: string;
+    expectedArrivalAt: string;
+    reason: string;
+  }>;
+  stockupOrders: Array<{
+    id: string;
+    orderNo: string;
+    demandBatchNo: string;
+    executionMode: string;
+    destinationCountry: string;
+    destinationWarehouseName: string;
+    project: string;
+    status: string;
+    plannedQty: number;
+    orderedQty: number;
+    completedQty: number;
+    shippedQty: number;
+    receivedQty: number;
+    expectedCompletedAt: string;
+    actualCompletedAt?: string;
+    dataVersion?: number;
+  }>;
+  stockupLines: Array<{
+    id: string;
+    legacyOrderNo?: string;
+    orderRecordId: string;
+    demandRecordId: string;
+    productRecordId: string;
+    temporaryProductNo: string;
+    sku: string;
+    productName: string;
+    supplyMode: string;
+    plannedQty: number;
+    orderedQty: number;
+    completedQty: number;
+    qualifiedQty: number;
+    shippedQty: number;
+    receivedQty: number;
+    cancelledQty?: number;
+    baseCurrency: string;
+    baseExchangeRate: number;
+    actualBaseUnitCost: number;
+    actualReadyAt?: string;
+    status: string;
+  }>;
+  shipments: StockupWorkflowShipment[];
+  fees: StockupWorkflowFee[];
+  costBatches: ShipmentCostBatch[];
+  productCodingQueue: Array<{
+    id: string;
+    temporaryProductNo: string;
+    officialSku: string;
+    skuCodingStatus: string;
+    archiveStatus: string;
+    productName: string;
+    sourceDemandRecordId: string;
+    sourceDemandBatchNo: string;
+    codingAppliedAt: string;
+    codingCompletedAt: string;
+  }>;
+  productOptions?: Array<{ id: string; sku: string; productName: string }>;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : `${window.location.protocol}//${window.location.hostname}:8787`);
 
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
@@ -1803,6 +2042,104 @@ export function updateOrderShopAlias(input: { shopName: string; alias: string })
 
 export function fetchStockup() {
   return requestJson<StockupPayload>("/api/stockup");
+}
+
+export function fetchStockupWorkflow() {
+  return requestJson<StockupWorkflowPayload>("/api/stockup/workflow");
+}
+
+export function createWorkflowDemand(input: {
+  productSourceType: "已有产品" | "外采新品";
+  productRecordId?: string;
+  sku?: string;
+  productName: string;
+  requestedQty: number;
+  unit?: string;
+  specification?: string;
+  project?: string;
+  platform?: string;
+  destinationCountry?: string;
+  destinationWarehouseRecordId?: string;
+  destinationWarehouseName?: string;
+  stockupMethod?: string;
+  priority?: string;
+  expectedArrivalAt?: string;
+  reason?: string;
+  dryRun?: boolean;
+}) {
+  return requestJson<{ ok: boolean; dryRun: boolean; demandRecordId?: string; productRecordId?: string; demandBatchNo: string; temporaryProductNo: string; warning?: string }>("/api/stockup/workflow/demands", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function createWorkflowExecution(input: { demandRecordId: string; plannedQty: number; executionMode: string; supplyMode?: string; expectedCompletedAt?: string; baseCurrency?: string; baseExchangeRate?: number; baseUnitCost?: number; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; orderNo: string; orderRecordId?: string; lineRecordId?: string }>("/api/stockup/workflow/executions", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateWorkflowExecutionLine(input: { stockupLineRecordId: string; orderedQty: number; completedQty: number; qualifiedQty: number; actualBaseUnitCost: number; status?: string; exceptionReason?: string; actualReadyAt?: string; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; stockupLineRecordId?: string; stockupOrderRecordId?: string; status: string; orderStatus: string; totals: { orderedQty: number; completedQty: number; shippedQty: number; receivedQty: number; allReady: boolean } }>("/api/stockup/workflow/execution-lines", { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function createWorkflowShipment(input: { stockupOrderRecordId: string; carrier?: string; trackingNo?: string; transportMode?: string; destinationWarehouseName?: string; shippedAt?: string; defaultAllocationMethod?: string; lines: Array<{ stockupLineRecordId: string; shippedQty: number; totalWeightKg: number; totalVolumeM3: number; baseUnitCostCny?: number }>; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId?: string; lineCount?: number }>("/api/stockup/workflow/shipments", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function completeWorkflowProductCoding(input: { productRecordId: string; sku: string; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; productRecordId?: string; demandRecordId?: string; sku?: string }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function previewStockupCost(input: {
+  shipmentRecordId?: string;
+  shipment?: StockupWorkflowShipment;
+  fees?: Array<Partial<StockupWorkflowFee>>;
+  costType?: "预估" | "正式" | "调整";
+  version?: number;
+  riskRate?: number;
+}) {
+  return requestJson<StockupCostPreview>("/api/stockup/workflow/cost-preview", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createShipmentFee(input: {
+  shipmentRecordId: string;
+  feeStage: "预估" | "实际" | "调整";
+  feeType: string;
+  feeName?: string;
+  vendor?: string;
+  invoiceNo?: string;
+  occurredAt?: string;
+  originalAmount: number;
+  currency: string;
+  exchangeRate: number;
+  includedInLandedCost: boolean;
+  allocationMethod: "weight" | "volume" | "quantity" | "value" | "manual";
+  description?: string;
+  dryRun?: boolean;
+}) {
+  return requestJson<{ ok: boolean; dryRun: boolean; dataId?: string; preview: StockupCostPreview }>("/api/stockup/workflow/fees", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createStockupCostBatches(input: {
+  shipmentRecordId: string;
+  costType: "预估" | "正式" | "调整";
+  riskRate?: number;
+  note?: string;
+  dryRun?: boolean;
+}) {
+  return requestJson<{ ok: boolean; dryRun: boolean; version: number; created?: Array<{ shipmentLineId: string; dataId: string }>; preview: StockupCostPreview }>("/api/stockup/workflow/cost-batches", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function lockStockupCostVersion(input: { shipmentRecordId: string; version: number; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId: string; version: number; lockedCount?: number }>("/api/stockup/workflow/cost-batches/lock", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function syncStockupOrders() {

@@ -16,6 +16,7 @@ import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analy
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
+import { calculateShipmentCosts, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, updateStockupExecutionLine } from "./stockup-workflow.js";
 import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders } from "./wms-adapters.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
 import { createAgentIndexLayer } from "./agent-index.js";
@@ -5558,6 +5559,170 @@ const server = http.createServer(async (req, res) => {
       }
       const stockupPayload = buildCurrentStockupPayload({ notify: true, reason: "page_refresh" });
       sendJson(res, 200, outsourcingWarning ? { ...stockupPayload, warning: outsourcingWarning } : stockupPayload);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow" && req.method === "GET") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "查看备货业务链路需要管理员登录。" });
+        return;
+      }
+      const workflow = await loadStockupWorkflow();
+      sendJson(res, 200, workflow);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/demands" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "创建备货需求需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = await createStockupDemand(payload);
+      if (!payload.dryRun) appendActionLog(auth, "创建备货需求", "stockup_demand", result.demandBatchNo, { productName: payload.productName, requestedQty: payload.requestedQty, productSourceType: payload.productSourceType });
+      sendJson(res, payload.dryRun ? 200 : 201, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/executions" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "创建备货执行单需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await createStockupExecution(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "需求转备货执行", "stockup_execution", result.orderNo, { demandRecordId: payload.demandRecordId, plannedQty: payload.plannedQty, executionMode: payload.executionMode });
+      sendJson(res, payload.dryRun ? 200 : 201, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/execution-lines" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "更新备货执行进度需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await updateStockupExecutionLine(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "更新备货执行进度", "stockup_execution_line", result.stockupLineRecordId, { status: result.status, orderStatus: result.orderStatus, totals: result.totals });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/shipments" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "登记发货需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await createWorkflowShipment(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "登记发货", "shipment", result.shipmentRecordId, { stockupOrderRecordId: payload.stockupOrderRecordId, lineCount: result.lineCount });
+      sendJson(res, payload.dryRun ? 200 : 201, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "完成新品编码需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await completeProductCoding(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "完成新品编码", "product_coding", result.sku, { productRecordId: result.productRecordId, demandRecordId: result.demandRecordId });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/cost-preview" && req.method === "POST") {
+      if (!canManage(getAuth(req))) {
+        sendJson(res, 401, { ok: false, message: "预览到仓成本需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      let shipment = payload.shipment;
+      let fees = Array.isArray(payload.fees) ? payload.fees : [];
+      if (!shipment && payload.shipmentRecordId) {
+        const workflow = await loadStockupWorkflow();
+        shipment = workflow.shipments.find((item) => item.id === String(payload.shipmentRecordId));
+        if (!fees.length) fees = workflow.fees.filter((item) => item.shipmentRecordId === shipment?.id);
+      }
+      const preview = calculateShipmentCosts({
+        shipment,
+        fees,
+        costType: payload.costType || "预估",
+        version: Number(payload.version || 1),
+        riskRate: Number(payload.riskRate || 0),
+      });
+      sendJson(res, 200, preview);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/fees" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "登记发货费用需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await createShipmentFee(payload, workflow);
+      if (!payload.dryRun) {
+        appendActionLog(auth, "登记发货费用", "shipment_fee", payload.shipmentRecordId, {
+          feeType: payload.feeType,
+          originalAmount: Number(payload.originalAmount || 0),
+          currency: payload.currency || "CNY",
+          allocationMethod: payload.allocationMethod,
+        });
+      }
+      sendJson(res, payload.dryRun ? 200 : 201, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/cost-batches" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "生成到仓成本批次需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await persistShipmentCostBatches(payload, workflow);
+      if (!payload.dryRun) {
+        appendActionLog(auth, "生成到仓成本批次", "shipment_cost_batch", payload.shipmentRecordId, {
+          costType: payload.costType || "预估",
+          riskRate: Number(payload.riskRate || 0),
+          version: result.version,
+          count: result.created?.length || 0,
+        });
+      }
+      sendJson(res, payload.dryRun ? 200 : 201, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/cost-batches/lock" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "锁定正式到仓成本需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await lockShipmentCostVersion(payload, workflow);
+      if (!payload.dryRun) {
+        appendActionLog(auth, "锁定到仓成本", "shipment_cost_batch", payload.shipmentRecordId, {
+          version: Number(payload.version || 0),
+          count: result.lockedCount || 0,
+        });
+      }
+      sendJson(res, 200, result);
       return;
     }
 
