@@ -2080,6 +2080,10 @@ h3 {
 }
 
 @media (max-width: 1180px) {
+  .stockup-task-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .workflow-stage-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2893,6 +2897,137 @@ h3 {
   gap: 14px;
 }
 
+.stockup-ops-page {
+  --workflow-accent: #ff6b22;
+  --workflow-accent-soft: rgba(255, 107, 34, 0.11);
+  --paper: #17181d;
+  --soft: rgba(255, 255, 255, 0.055);
+  --ink: #f4f0e8;
+  gap: 14px;
+}
+
+.stockup-command-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 26px;
+  border: 1px solid rgba(255, 107, 34, 0.24);
+  border-radius: 18px;
+  background:
+    linear-gradient(110deg, rgba(255, 107, 34, 0.16), transparent 42%),
+    #17181d;
+  box-shadow: 0 18px 48px rgba(13, 18, 16, 0.08);
+}
+
+.stockup-command-bar > div:first-child {
+  min-width: 0;
+}
+
+.stockup-command-bar h2 {
+  margin: 4px 0 7px;
+  font-size: clamp(25px, 2.4vw, 36px);
+  line-height: 1.06;
+}
+
+.stockup-command-bar p:last-child {
+  max-width: 720px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.stockup-command-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.stockup-task-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.stockup-task-strip button {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 15px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+.stockup-task-strip button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 107, 34, .42);
+  box-shadow: 0 10px 26px rgba(13, 18, 16, .08);
+}
+
+.stockup-task-strip button strong {
+  grid-row: span 2;
+  font-size: 26px;
+  color: var(--workflow-accent);
+}
+
+.stockup-task-strip button small {
+  color: var(--muted);
+}
+
+.workflow-scope-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(32, 124, 91, .08);
+  color: var(--green);
+  font-size: 12px;
+}
+
+.stockup-legacy-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+}
+
+.stockup-legacy-tools > div:first-child {
+  display: grid;
+  gap: 3px;
+  margin-right: auto;
+}
+
+.stockup-legacy-tools strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.stockup-legacy-tools span {
+  font-size: 12px;
+}
+
+.stockup-legacy-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+  font-size: 13px;
+}
+
 .stockup-workflow-tabs {
   display: flex;
   align-items: center;
@@ -2900,12 +3035,13 @@ h3 {
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.88);
+  background: #17181d;
   box-shadow: 0 12px 30px rgba(42, 61, 55, 0.07);
   overflow-x: auto;
 }
 
 .stockup-workflow-tabs button {
+  flex: 1 0 auto;
   min-height: 42px;
   display: inline-flex;
   align-items: center;
@@ -2930,8 +3066,9 @@ h3 {
 }
 
 .stockup-workflow-tabs button.active {
-  background: var(--ink);
+  background: var(--workflow-accent);
   color: #fff;
+  box-shadow: 0 8px 18px rgba(255, 107, 34, .22);
 }
 
 .stockup-workflow-tabs button.active strong {
@@ -2965,7 +3102,7 @@ h3 {
   padding: 18px;
   border: 1px solid rgba(32, 124, 91, 0.13);
   border-radius: 16px;
-  background: linear-gradient(145deg, rgba(241, 249, 245, 0.96), rgba(255, 255, 255, 0.98));
+  background: var(--paper);
 }
 
 .workflow-stage-grid article:not(:last-child)::after {
@@ -2999,6 +3136,14 @@ h3 {
   font-size: 28px;
   line-height: 1;
   color: var(--ink);
+}
+
+.workflow-stage-grid em {
+  margin-top: auto;
+  color: var(--green);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .workflow-guidance {
@@ -3046,6 +3191,44 @@ h3 {
 .execution-workbench {
   display: grid;
   gap: 14px;
+}
+
+.execution-guide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.execution-guide > div {
+  position: relative;
+  min-height: 88px;
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-content: center;
+  gap: 3px 10px;
+  padding: 15px;
+  border: 1px solid rgba(255, 107, 34, .22);
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--workflow-accent-soft), var(--paper) 54%);
+}
+
+.execution-guide > div > span {
+  grid-row: span 2;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--workflow-accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+.execution-guide small,
+.workflow-panel .panel-heading small,
+.form-action-hint {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .workflow-heading-actions,
@@ -3110,7 +3293,11 @@ h3 {
 
 .workflow-form-actions {
   grid-column: 1 / -1;
-  justify-content: flex-end;
+  justify-content: space-between;
+}
+
+.workflow-form-actions .form-action-hint {
+  margin-right: auto;
 }
 
 .shipment-entry-lines {
@@ -3152,6 +3339,23 @@ h3 {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
+}
+
+.execution-next-action {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--workflow-accent-soft);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.execution-next-action span {
+  color: var(--workflow-accent);
+  font-weight: 800;
 }
 
 .workflow-card-list article > div:first-child,
@@ -6813,6 +7017,17 @@ h3 {
 }
 
 @media (max-width: 860px) {
+  .stockup-command-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .stockup-command-actions {
+    justify-content: flex-start;
+  }
+
+  .stockup-task-strip,
+  .execution-guide,
   .workflow-stage-grid,
   .workflow-two-column,
   .cost-workbench-grid,

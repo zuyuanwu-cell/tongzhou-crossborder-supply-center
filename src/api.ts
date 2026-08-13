@@ -1443,6 +1443,8 @@ export type StockupCostPreview = {
 export type StockupWorkflowPayload = {
   ok: boolean;
   source: string;
+  scope?: string;
+  historyHidden?: boolean;
   syncedAt: string;
   warnings: string[];
   counts: {
@@ -2071,7 +2073,7 @@ export function createWorkflowDemand(input: {
 }
 
 export function createWorkflowExecution(input: { demandRecordId: string; plannedQty: number; executionMode: string; supplyMode?: string; expectedCompletedAt?: string; baseCurrency?: string; baseExchangeRate?: number; baseUnitCost?: number; dryRun?: boolean }) {
-  return requestJson<{ ok: boolean; dryRun: boolean; orderNo: string; orderRecordId?: string; lineRecordId?: string }>("/api/stockup/workflow/executions", { method: "POST", body: JSON.stringify(input) });
+  return requestJson<{ ok: boolean; dryRun: boolean; orderNo: string; orderRecordId?: string; lineRecordId?: string; detailLinked?: boolean }>("/api/stockup/workflow/executions", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function updateWorkflowExecutionLine(input: { stockupLineRecordId: string; orderedQty: number; completedQty: number; qualifiedQty: number; actualBaseUnitCost: number; status?: string; exceptionReason?: string; actualReadyAt?: string; dryRun?: boolean }) {

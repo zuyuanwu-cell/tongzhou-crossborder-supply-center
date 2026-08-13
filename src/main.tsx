@@ -3656,6 +3656,16 @@ function StockupCenter({
   const [planCopyMessage, setPlanCopyMessage] = React.useState("");
   const [reviewCopyMessage, setReviewCopyMessage] = React.useState("");
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "coding">("overview");
+  const [showPlanningTools, setShowPlanningTools] = React.useState(false);
+
+  const currentCounts = workflowPayload?.counts;
+  const actionQueue = [
+    { tab: "coding" as const, label: "给外采新品分配 SKU", count: currentCounts?.codingQueue ?? 0, hint: "编码完成后才能进入正式执行" },
+    { tab: "demands" as const, label: "受理并检查备货需求", count: currentCounts?.pendingDemands ?? 0, hint: "核对产品、数量、目的仓和备货方式" },
+    { tab: "execution" as const, label: "推进采购 / 生产", count: currentCounts?.stockupLines ?? 0, hint: "更新下单、完工、合格数量并登记发货" },
+    { tab: "costs" as const, label: "登记运费并生成到仓成本", count: Math.max(0, (currentCounts?.shipments ?? 0) - (currentCounts?.costBatches ?? 0)), hint: "选择重量或体积分摊，再确认成本版本" },
+  ].filter((item) => item.count > 0);
+  const nextAction = actionQueue[0];
 
   function planFor(item: StockupPayload["recommendations"][number]) {
     return plans.find((plan) => plan.recommendationKey === item.recommendationKey && !["arrived", "cancelled"].includes(plan.status));
@@ -3730,25 +3740,27 @@ function StockupCenter({
   ] as const;
 
   return (
-    <main className="movement-page stockup-page">
-      <section className="library-hero movement-hero">
+    <main className="movement-page stockup-page stockup-ops-page">
+      <section className="stockup-command-bar">
         <div>
-          <p className="eyebrow">Stockup Center</p>
-          <h2>备货中心</h2>
-          <p>
-            将动销分析里需要补货的 SKU 汇总成备货建议，后续可一键生成同舟供应链备货计划；同时预留 WMS 备货单 / 入库单明细同步，用于核对在途和已创建单据。
-          </p>
-          <div className="source-row">
-            <span className={`status-pill ${stockupPayload?.stockupSyncedAt ? "good" : "warning"}`}>
-              {stockupPayload?.stockupSyncedAt ? "WMS 明细已同步" : "WMS 明细待同步"}
-            </span>
-            <span>{stockupPayload?.stockupSyncedAt ? new Date(stockupPayload.stockupSyncedAt).toLocaleString("zh-CN") : "建议备货来自动销分析实时计算"}</span>
-          </div>
+          <p className="eyebrow">今日备货工作台</p>
+          <h2>{nextAction ? nextAction.label : "当前测试链路没有待办"}</h2>
+          <p>{nextAction ? nextAction.hint : "可以从“备货需求”新建一条测试需求，系统会引导你完成后续步骤。"}</p>
         </div>
-        <button className="sync-button" onClick={onSyncStockup} disabled={syncing}>
-          <RefreshCw size={16} className={syncing ? "spinning" : ""} />
-          {syncing ? "同步中" : "同步 WMS 备货单"}
-        </button>
+        <div className="stockup-command-actions">
+          <span className="status-pill good"><Check size={14} />仅显示中台新流程数据</span>
+          {nextAction ? <button className="sync-button" type="button" onClick={() => setWorkflowTab(nextAction.tab)}>处理 {nextAction.count} 项</button> : <button className="sync-button" type="button" onClick={() => setWorkflowTab("demands")}><Plus size={16} />新建测试需求</button>}
+          <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()} title="重新读取简道云业务数据"><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新</button>
+        </div>
+      </section>
+
+      <section className="stockup-task-strip" aria-label="备货待办">
+        {[
+          ["demands", "需求", currentCounts?.pendingDemands ?? 0, "录入 / 受理"],
+          ["coding", "编码", currentCounts?.codingQueue ?? 0, "新品分配 SKU"],
+          ["execution", "执行", currentCounts?.stockupLines ?? 0, "采购生产与发货"],
+          ["costs", "成本", currentCounts?.shipments ?? 0, "运费分摊与锁定"],
+        ].map(([tab, label, count, note]) => <button type="button" key={String(tab)} onClick={() => setWorkflowTab(tab as typeof workflowTab)}><span>{label}</span><strong>{formatNumber(Number(count))}</strong><small>{note}</small></button>)}
       </section>
 
       <section className="stockup-workflow-shell">
@@ -3759,10 +3771,8 @@ function StockupCenter({
               <strong>{formatNumber(count)}</strong>
             </button>
           ))}
-          <button className="workflow-refresh-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()} title="重新读取简道云业务数据">
-            <RefreshCw size={15} />
-          </button>
         </div>
+        {workflowPayload?.historyHidden ? <div className="workflow-scope-note"><Check size={15} /><span>历史备货单已隐藏，本页只用于本轮中台链路测试；原数据仍安全保留在简道云。</span></div> : null}
         {workflowPayload?.warnings?.length ? (
           <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div>
         ) : null}
@@ -3772,15 +3782,8 @@ function StockupCenter({
         {workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
         {workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
       </section>
-
-
-      <section className="metric-strip movement-metrics">
-        <Metric title="建议备货 SKU" value={formatNumber(stockupPayload?.counts.recommendations ?? 0)} note="缺货与补货预警 SKU" icon={PackageCheck} tone="orange" />
-        <Metric title="净建议备货" value={formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)} note="建议数量扣减委外在产" icon={Boxes} tone="green" />
-        <Metric title="未完成计划" value={formatNumber(stockupPayload?.counts.openStockupPlans ?? activePlans.length)} note={`计划数量 ${formatNumber(stockupPayload?.counts.plannedQty ?? 0)}`} icon={Settings} tone="blue" />
-        <Metric title="WMS 备货单" value={formatNumber(stockupPayload?.counts.inboundOrders ?? 0)} note="来自仓库入库 / 备货单接口" icon={FileText} tone="blue" />
-      </section>
-      {acceptedRecommendations.length ? (
+      {workflowTab === "overview" ? <div className="stockup-legacy-tools"><div><strong>动销建议与 WMS 工具</strong><span>{showPlanningTools ? "已展开旧备货分析工具" : "默认收起，不影响本轮新流程测试"}</span></div><button className="ghost-button compact-button" type="button" onClick={() => setShowPlanningTools((current) => !current)}>{showPlanningTools ? "收起工具" : "展开工具"}</button>{showPlanningTools ? <div className="stockup-legacy-actions"><span>建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span><span>净建议数量 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span><button className="ghost-button compact-button" onClick={onSyncStockup} disabled={syncing}>{syncing ? "同步中" : "同步 WMS 备货单"}</button></div> : null}</div> : null}
+      {workflowTab === "overview" && showPlanningTools && acceptedRecommendations.length ? (
         <section className="panel stockup-panel accepted-stockup-panel">
           <div className="panel-heading">
             <div>
@@ -3868,7 +3871,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {activePlans.length ? (
+      {workflowTab === "overview" && showPlanningTools && activePlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel">
           <div className="panel-heading">
             <div>
@@ -3926,7 +3929,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {arrivedPlans.length ? (
+      {workflowTab === "overview" && showPlanningTools && arrivedPlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel">
           <div className="panel-heading">
             <div>
@@ -3980,7 +3983,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      <section className="panel stockup-panel">
+      {workflowTab === "overview" && showPlanningTools ? <section className="panel stockup-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Outsourcing Production</p>
@@ -4028,9 +4031,9 @@ function StockupCenter({
             <div className="stockup-empty">暂无进行中的委外排产 SKU。</div>
           )}
         </div>
-      </section>
+      </section> : null}
 
-      {abandonedRecommendations.length ? (
+      {workflowTab === "overview" && showPlanningTools && abandonedRecommendations.length ? (
         <section className="panel stockup-panel">
           <div className="panel-heading">
             <div>
@@ -4051,7 +4054,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      <section className="panel stockup-panel">
+      {workflowTab === "overview" && showPlanningTools ? <section className="panel stockup-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Replenishment Queue</p>
@@ -4104,9 +4107,9 @@ function StockupCenter({
             <div className="stockup-empty">当前没有需要备货的 SKU。先同步仓库库存和近 90 天订单后，动销分析会自动生成建议。</div>
           )}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel stockup-panel">
+      {workflowTab === "overview" && showPlanningTools ? <section className="panel stockup-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">WMS Inbound Orders</p>
@@ -4147,7 +4150,7 @@ function StockupCenter({
             <div className="stockup-empty">暂无 WMS 备货单明细。当前已预留斗仓 / 神牛 SEA WMS 与俄罗斯 YunWMS 接口入口，补齐字段映射后即可同步。</div>
           )}
         </div>
-      </section>
+      </section> : null}
     </main>
   );
 }
@@ -4159,11 +4162,11 @@ function moneyCny(value: number) {
 function StockupWorkflowOverview({ payload }: { payload: StockupWorkflowPayload | null }) {
   const counts = payload?.counts;
   const stages = [
-    { label: "运营提需求", value: counts?.demands ?? 0, note: `待处理 ${counts?.pendingDemands ?? 0}` },
-    { label: "采购 / 生产", value: counts?.stockupOrders ?? 0, note: `${counts?.stockupLines ?? 0} 条 SKU 明细` },
-    { label: "登记发货", value: counts?.shipments ?? 0, note: `${counts?.shipmentLines ?? 0} 条发货明细` },
-    { label: "费用分摊", value: counts?.fees ?? 0, note: moneyCny(counts?.feeAmountCny ?? 0) },
-    { label: "成本批次", value: counts?.costBatches ?? 0, note: `已锁定 ${counts?.lockedCostBatches ?? 0}` },
+    { label: "提出需求", value: counts?.demands ?? 0, note: "运营录产品、数量与目的仓", action: `待处理 ${counts?.pendingDemands ?? 0}` },
+    { label: "采购 / 生产", value: counts?.stockupOrders ?? 0, note: "供应链建执行单并跟进到货", action: `${counts?.stockupLines ?? 0} 条明细` },
+    { label: "登记发货", value: counts?.shipments ?? 0, note: "录实际数量、重量和体积", action: `${counts?.shipmentLines ?? 0} 条明细` },
+    { label: "分摊费用", value: counts?.fees ?? 0, note: "按重量 / 体积 / 数量 / 货值", action: moneyCny(counts?.feeAmountCny ?? 0) },
+    { label: "锁定成本", value: counts?.costBatches ?? 0, note: "确认 SKU 到仓单价后锁定", action: `已锁定 ${counts?.lockedCostBatches ?? 0}` },
   ];
   return (
     <section className="panel workflow-panel">
@@ -4178,6 +4181,7 @@ function StockupWorkflowOverview({ payload }: { payload: StockupWorkflowPayload 
             <strong>{stage.label}</strong>
             <b>{formatNumber(stage.value)}</b>
             <span>{stage.note}</span>
+            <em>{stage.action}</em>
           </article>
         ))}
       </div>
@@ -4258,7 +4262,7 @@ function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
 function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
   const orders = payload?.stockupOrders ?? [];
   const lines = payload?.stockupLines ?? [];
-  const candidateDemands = (payload?.demands ?? []).filter((item) => item.sku && !/已完成|已取消/.test(item.businessStatus));
+  const candidateDemands = (payload?.demands ?? []).filter((item) => item.sku && !/已完成|已取消/.test(item.businessStatus) && Math.max(0, item.requestedQty - item.plannedQty) > 0);
   const [executionForm, setExecutionForm] = React.useState({ demandRecordId: "", plannedQty: 0, executionMode: "外采成品", expectedCompletedAt: "", baseUnitCost: 0, baseCurrency: "CNY", baseExchangeRate: 1 });
   const [shipmentOrderId, setShipmentOrderId] = React.useState("");
   const [shipmentLines, setShipmentLines] = React.useState<Record<string, { shippedQty: number; totalWeightKg: number; totalVolumeM3: number }>>({});
@@ -4301,21 +4305,26 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
   }
   return (
     <section className="execution-workbench">
+      <div className="execution-guide">
+        <div><span>1</span><strong>先建执行单</strong><small>选择需求，确认数量和执行方式</small></div>
+        <div><span>2</span><strong>再更新供应进度</strong><small>录已下单、已完工、检验合格和单价</small></div>
+        <div><span>3</span><strong>有合格数量后发货</strong><small>录实际发货量、总重量与总体积</small></div>
+      </div>
       {message ? <div className="notice compact-notice">{message}</div> : null}
       <div className="workflow-two-column">
         <div className="panel workflow-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Demand to Execution</p><h2>需求转采购 / 生产</h2></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">步骤 1</p><h2>创建采购 / 生产执行单</h2><small>只显示尚有未计划数量的正式 SKU 需求</small></div></div>
           <div className="workflow-create-form">
             <label className="wide-field"><span>选择需求</span><select value={executionForm.demandRecordId} onChange={(event) => { const demand = candidateDemands.find((item) => item.id === event.target.value); setExecutionForm({ ...executionForm, demandRecordId: event.target.value, plannedQty: Math.max(0, (demand?.requestedQty || 0) - (demand?.plannedQty || 0)), executionMode: demand?.stockupMethod || "外采成品" }); }}><option value="">请选择</option>{candidateDemands.map((item) => <option value={item.id} key={item.id}>{item.demandBatchNo} · {item.sku} · {item.productName}</option>)}</select></label>
             <label><span>计划数量</span><input type="number" min="0" value={executionForm.plannedQty || ""} onChange={(event) => setExecutionForm({ ...executionForm, plannedQty: Number(event.target.value) })} /></label>
             <label><span>执行方式</span><select value={executionForm.executionMode} onChange={(event) => setExecutionForm({ ...executionForm, executionMode: event.target.value })}><option>外采成品</option><option>委外生产</option><option>自有成品</option></select></label>
             <label><span>基础成本单价</span><input type="number" min="0" step="0.01" value={executionForm.baseUnitCost || ""} onChange={(event) => setExecutionForm({ ...executionForm, baseUnitCost: Number(event.target.value) })} /></label>
             <label><span>预计完成</span><input type="date" value={executionForm.expectedCompletedAt} onChange={(event) => setExecutionForm({ ...executionForm, expectedCompletedAt: event.target.value })} /></label>
-            <div className="workflow-form-actions"><button className="sync-button" type="button" disabled={busy || !executionForm.demandRecordId || !executionForm.plannedQty} onClick={() => void createExecution()}>创建执行单</button></div>
+            <div className="workflow-form-actions"><span className="form-action-hint">创建后会同时写入备货主表和关联明细</span><button className="sync-button" type="button" disabled={busy || !executionForm.demandRecordId || !executionForm.plannedQty} onClick={() => void createExecution()}>创建并进入跟单</button></div>
           </div>
         </div>
         <div className="panel workflow-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Shipment Entry</p><h2>登记实际发货</h2></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">步骤 3</p><h2>登记实际发货</h2><small>只有“检验合格数量”大于“已发货数量”的 SKU 才能发货</small></div></div>
           <div className="workflow-create-form">
             <label className="wide-field"><span>备货执行单</span><select value={shipmentOrderId} onChange={(event) => { setShipmentOrderId(event.target.value); setShipmentLines({}); }}><option value="">请选择</option>{orders.map((item) => <option value={item.id} key={item.id}>{item.orderNo} · {item.project || item.destinationCountry}</option>)}</select></label>
             <label><span>承运商</span><input value={shipmentMeta.carrier} onChange={(event) => setShipmentMeta({ ...shipmentMeta, carrier: event.target.value })} /></label>
@@ -4324,24 +4333,25 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
             <label><span>默认分摊</span><select value={shipmentMeta.defaultAllocationMethod} onChange={(event) => setShipmentMeta({ ...shipmentMeta, defaultAllocationMethod: event.target.value })}>{allocationMethods.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
           {selectedOrder ? <div className="shipment-entry-lines">{selectableLines.map((item) => { const draft = shipmentLines[item.id] || { shippedQty: 0, totalWeightKg: 0, totalVolumeM3: 0 }; return <article key={item.id}><strong>{item.sku} · {item.productName}</strong><small>可发 {formatNumber(Math.max(0, item.qualifiedQty - item.shippedQty))}</small><input type="number" min="0" placeholder="发货数量" value={draft.shippedQty || ""} onChange={(event) => setShipmentLines({ ...shipmentLines, [item.id]: { ...draft, shippedQty: Number(event.target.value) } })} /><input type="number" min="0" step="0.001" placeholder="总重量kg" value={draft.totalWeightKg || ""} onChange={(event) => setShipmentLines({ ...shipmentLines, [item.id]: { ...draft, totalWeightKg: Number(event.target.value) } })} /><input type="number" min="0" step="0.000001" placeholder="总体积m³" value={draft.totalVolumeM3 || ""} onChange={(event) => setShipmentLines({ ...shipmentLines, [item.id]: { ...draft, totalVolumeM3: Number(event.target.value) } })} /></article>; })}{!selectableLines.length ? <div className="stockup-empty">该执行单暂无“合格可发货数量”大于已发货数量的明细。</div> : null}</div> : null}
-          <div className="workflow-form-actions"><button className="sync-button" type="button" disabled={busy || !shipmentOrderId || !Object.values(shipmentLines).some((item) => item.shippedQty > 0)} onClick={() => void saveShipment()}>确认登记发货</button></div>
+          <div className="workflow-form-actions"><span className="form-action-hint">重量和体积均保留，后续费用可任选口径分摊</span><button className="sync-button" type="button" disabled={busy || !shipmentOrderId || !Object.values(shipmentLines).some((item) => item.shippedQty > 0)} onClick={() => void saveShipment()}>保存发货并去算成本</button></div>
         </div>
       </div>
       <div className="workflow-two-column execution-lists">
       <div className="panel workflow-panel">
-        <div className="panel-heading"><div><p className="eyebrow">Execution Orders</p><h2>备货执行单</h2></div><span className="status-pill muted">{formatNumber(orders.length)} 单</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">执行单</p><h2>我正在跟进的单据</h2></div><span className="status-pill muted">{formatNumber(orders.length)} 单</span></div>
         <div className="workflow-card-list">
           {orders.length ? orders.slice(0, 50).map((item) => (
             <article key={item.id}>
               <div><strong>{item.orderNo || item.id.slice(-8)}</strong><span>{item.project || item.destinationCountry || "未归属项目"}</span></div>
               <span className="status-pill muted">{item.status || "待执行"}</span>
               <dl><div><dt>计划</dt><dd>{formatNumber(item.plannedQty)}</dd></div><div><dt>完工</dt><dd>{formatNumber(item.completedQty)}</dd></div><div><dt>发货</dt><dd>{formatNumber(item.shippedQty)}</dd></div><div><dt>到仓</dt><dd>{formatNumber(item.receivedQty)}</dd></div></dl>
+              <div className="execution-next-action"><span>下一步</span><strong>{item.completedQty <= 0 ? "在右侧 SKU 明细录入下单 / 完工进度" : item.shippedQty < item.completedQty ? "确认检验合格数量后登记发货" : "到发货与成本页登记费用"}</strong></div>
             </article>
           )) : <div className="stockup-empty">暂无备货执行单。</div>}
         </div>
       </div>
       <div className="panel workflow-panel">
-        <div className="panel-heading"><div><p className="eyebrow">SKU Execution</p><h2>逐 SKU 进度</h2></div><span className="status-pill muted">{formatNumber(lines.length)} 行</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">步骤 2</p><h2>逐 SKU 更新供应进度</h2><small>每次状态变化只修改这一行，然后保存</small></div><span className="status-pill muted">{formatNumber(lines.length)} 行</span></div>
         <div className="workflow-card-list compact">
           {lines.length ? lines.slice(0, 80).map((item) => {
             const draft = lineDraft(item);

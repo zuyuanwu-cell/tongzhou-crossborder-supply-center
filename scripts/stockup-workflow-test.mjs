@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { calculateShipmentCosts, completeProductCoding, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowShipmentJdyData } from "../server/stockup-workflow.js";
+import { buildStockupWorkflowPayload, calculateShipmentCosts, completeProductCoding, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowShipmentJdyData } from "../server/stockup-workflow.js";
 import { JIANYUN_FORMS } from "../server/field-mapping.js";
 
 function shipment(lines) {
@@ -113,6 +113,22 @@ const demand = {
 const executionPrepared = stockupExecutionJdyData({ plannedQty: 100, baseUnitCost: 5 }, demand);
 assert.equal(executionPrepared.plannedQty, 100);
 assert.equal(executionPrepared.lineData[JIANYUN_FORMS.stockupOrderLines.fields.officialSku].value, "SKU-A");
+
+assert.equal(findStockupOrderLinkField([
+  { type: "text", widgetName: "text-field", label: "备货单记录ID" },
+  { type: "linkdata", widgetName: "_widget_link_field", label: "关联备货单", targetEntryId: JIANYUN_FORMS.stockupOrders.entryId },
+]), "_widget_link_field");
+assert.equal(findStockupOrderLinkField([{ type: "text", widgetName: "text-field", label: "备货单记录ID" }]), "");
+
+const scopedPayload = buildStockupWorkflowPayload({
+  demandRecords: [
+    { data_id: "new-demand", [JIANYUN_FORMS.stockupDemands.fields.demandBatchNo]: { value: "XQ-TEST-001" }, [JIANYUN_FORMS.stockupDemands.fields.requestedQty]: { value: 10 } },
+    { data_id: "old-demand", [JIANYUN_FORMS.stockupDemands.fields.demandBatchNo]: { value: "LEGACY-001" }, [JIANYUN_FORMS.stockupDemands.fields.requestedQty]: { value: 20 } },
+  ],
+  orderRecords: [], lineRecords: [], shipmentRecords: [], feeRecords: [], costRecords: [], productRecords: [], warnings: [],
+});
+assert.equal(scopedPayload.historyHidden, true);
+assert.deepEqual(scopedPayload.demands.map((item) => item.id), ["new-demand"]);
 
 const workflow = {
   demands: [demand],

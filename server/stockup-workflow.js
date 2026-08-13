@@ -1,5 +1,5 @@
 import { JIANYUN_FORMS } from "./field-mapping.js";
-import { createJdyData, fetchJdyDataList, updateJdyData } from "./jiandaoyun-client.js";
+import { createJdyData, fetchJdyDataList, fetchJdyFormFields, updateJdyData } from "./jiandaoyun-client.js";
 
 export const LANDED_COST_FORMULA_VERSION = "landed-cost-v1";
 
@@ -53,6 +53,10 @@ function dateValue(value) {
 
 function recordId(record) {
   return String(record?.data_id || record?._id || record?.id || "");
+}
+
+function recordCreatedAt(record) {
+  return dateValue(record?.createTime || record?.create_time || record?.createdAt || record?.created_at);
 }
 
 function round(value, decimals = 2) {
@@ -133,6 +137,7 @@ function normalizeDemand(record) {
   const fields = JIANYUN_FORMS.stockupDemands.fields;
   return {
     id: recordId(record),
+    createdAt: recordCreatedAt(record),
     demandBatchNo: readText(record, fields.demandBatchNo),
     demandLineNo: readText(record, fields.demandLineNo),
     productSourceType: readText(record, fields.productSourceType),
@@ -166,6 +171,7 @@ function normalizeStockupOrder(record) {
   const fields = JIANYUN_FORMS.stockupOrders.fields;
   return {
     id: recordId(record),
+    createdAt: recordCreatedAt(record),
     orderNo: readText(record, fields.orderNo, readText(record, fields.serialNo)),
     demandBatchNo: readText(record, fields.demandBatchNo),
     demandRecordIds: readText(record, fields.demandRecordIds).split(/[,，\s]+/).filter(Boolean),
@@ -191,6 +197,7 @@ function normalizeStockupLine(record) {
   const fields = JIANYUN_FORMS.stockupOrderLines.fields;
   return {
     id: recordId(record),
+    createdAt: recordCreatedAt(record),
     legacyOrderNo: readText(record, fields.legacyOrderNo),
     orderRecordId: readText(record, fields.orderRecordId),
     demandRecordId: readText(record, fields.demandRecordId),
@@ -419,13 +426,35 @@ export async function fetchStockupWorkflowRecords() {
 }
 
 export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
-  const demands = (records.demandRecords || []).map(normalizeDemand);
-  const orders = (records.orderRecords || []).map(normalizeStockupOrder);
-  const orderLines = (records.lineRecords || []).map(normalizeStockupLine);
-  const shipments = (records.shipmentRecords || []).map(normalizeShipment);
-  const fees = (records.feeRecords || []).map(normalizeShipmentFee);
-  const costBatches = (records.costRecords || []).map(normalizeCostBatch);
+  const allDemands = (records.demandRecords || []).map(normalizeDemand);
+  const allOrders = (records.orderRecords || []).map(normalizeStockupOrder);
+  const allOrderLines = (records.lineRecords || []).map(normalizeStockupLine);
+  const allShipments = (records.shipmentRecords || []).map(normalizeShipment);
+  const allFees = (records.feeRecords || []).map(normalizeShipmentFee);
+  const allCostBatches = (records.costRecords || []).map(normalizeCostBatch);
   const products = (records.productRecords || []).map(normalizeCodingProduct);
+
+  // 新工作台只呈现由中台新流程产生的数据。旧备货/WMS 历史仍保留在简道云，
+  // 但不再进入前端 payload，避免测试口径混杂并显著减少渲染量。
+  const demands = allDemands.filter((item) => /^XQ-/i.test(item.demandBatchNo) || /^TMP-/i.test(item.temporaryProductNo));
+  const demandIds = new Set(demands.map((item) => item.id).filter(Boolean));
+  const orders = allOrders.filter((item) => (
+    item.dataVersion > 0
+    || /^BHD-/i.test(item.orderNo)
+    || /^XQ-/i.test(item.demandBatchNo)
+    || item.demandRecordIds.some((id) => demandIds.has(id))
+  ));
+  const orderIds = new Set(orders.map((item) => item.id).filter(Boolean));
+  const orderNos = new Set(orders.map((item) => item.orderNo).filter(Boolean));
+  const orderLines = allOrderLines.filter((item) => (
+    orderIds.has(item.orderRecordId)
+    || orderNos.has(item.legacyOrderNo)
+    || demandIds.has(item.demandRecordId)
+  ));
+  const shipments = allShipments.filter((item) => orderIds.has(item.stockupOrderRecordId));
+  const shipmentIds = new Set(shipments.map((item) => item.id).filter(Boolean));
+  const fees = allFees.filter((item) => shipmentIds.has(item.shipmentRecordId));
+  const costBatches = allCostBatches.filter((item) => shipmentIds.has(item.shipmentRecordId));
   const orderByNo = new Map(orders.filter((item) => item.orderNo).map((item) => [item.orderNo, item]));
   for (const line of orderLines) {
     if (!line.orderRecordId && line.legacyOrderNo) line.orderRecordId = orderByNo.get(line.legacyOrderNo)?.id || "";
@@ -440,7 +469,7 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
       line.productRecordId = productBySku.get(line.sku)?.id || "";
     }
   }
-  const productCodingQueue = products.filter((product) => (
+  const productCodingQueue = products.filter((product) => demandIds.has(product.sourceDemandRecordId) && (
     product.temporaryProductNo || (!product.officialSku && /待|编码|临时/.test(product.skuCodingStatus || product.archiveStatus))
   ) && !product.codingCompletedAt);
 
@@ -465,11 +494,13 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
   return {
     ok: true,
     source,
+    scope: "current-workflow",
+    historyHidden: true,
     syncedAt: new Date().toISOString(),
     warnings,
     counts: {
       demands: demands.length,
-      pendingDemands: demands.filter((item) => !/已完成|已取消|关闭/.test(item.businessStatus)).length,
+      pendingDemands: demands.filter((item) => !/已完成|已取消|关闭/.test(item.businessStatus) && Math.max(0, item.requestedQty - item.plannedQty) > 0).length,
       stockupOrders: orders.length,
       stockupLines: orderLines.length,
       shipments: shipments.length,
@@ -489,6 +520,42 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
     productCodingQueue,
     productOptions: products.filter((item) => item.officialSku).map((item) => ({ id: item.id, sku: item.officialSku, productName: item.productName })),
   };
+}
+
+function widgetTargetEntryId(widget) {
+  return textValue(
+    widget?.targetEntryId
+    || widget?.target_entry_id
+    || widget?.entryId
+    || widget?.entry_id
+    || widget?.target?.entryId
+    || widget?.target?.entry_id
+    || widget?.dataSource?.entryId
+    || widget?.dataSource?.entry_id,
+  );
+}
+
+export function findStockupOrderLinkField(widgets = []) {
+  const candidates = widgets.filter((widget) => /linkdata|关联数据/i.test(`${widget?.type || ""} ${widget?.widgetType || ""}`));
+  const exact = candidates.find((widget) => widgetTargetEntryId(widget) === JIANYUN_FORMS.stockupOrders.entryId);
+  const named = candidates.find((widget) => /备货单|stockup/i.test(`${widget?.label || ""} ${widget?.name || ""}`));
+  const selected = exact || named;
+  const fieldId = textValue(selected?.widgetName || selected?.name);
+  return /^_widget_/i.test(fieldId) ? fieldId : "";
+}
+
+let stockupOrderLinkFieldPromise;
+
+async function resolveStockupOrderLinkField() {
+  if (!stockupOrderLinkFieldPromise) {
+    stockupOrderLinkFieldPromise = fetchJdyFormFields(JIANYUN_FORMS.stockupOrderLines)
+      .then(findStockupOrderLinkField)
+      .catch((error) => {
+        stockupOrderLinkFieldPromise = undefined;
+        throw error;
+      });
+  }
+  return stockupOrderLinkFieldPromise;
 }
 
 export async function loadStockupWorkflow() {
@@ -1108,16 +1175,24 @@ export async function createStockupExecution(input, workflow) {
   const remainingQty = Math.max(0, demand.requestedQty - demand.plannedQty);
   if (prepared.plannedQty > remainingQty + 0.0001) throw new Error(`计划数量不能超过需求剩余数量 ${remainingQty}。`);
   if (input.dryRun) return { ok: true, dryRun: true, ...prepared };
+  const orderLinkFieldId = await resolveStockupOrderLinkField();
+  if (!orderLinkFieldId) {
+    throw new Error("备货单明细表缺少指向“同舟备货单”的关联数据字段，无法建立关联子表关系。请在简道云明细表中检查关联字段配置。");
+  }
   const orderRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.stockupOrders, prepared.orderData));
   const lineFields = JIANYUN_FORMS.stockupOrderLines.fields;
-  const lineData = { ...prepared.lineData, [lineFields.orderRecordId]: jdyField(orderRecordId) };
+  const lineData = {
+    ...prepared.lineData,
+    [lineFields.orderRecordId]: jdyField(orderRecordId),
+    [orderLinkFieldId]: jdyField(orderRecordId),
+  };
   const lineRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.stockupOrderLines, lineData));
   const demandFields = JIANYUN_FORMS.stockupDemands.fields;
   await updateJdyData(JIANYUN_FORMS.stockupDemands, demand.id, {
     [demandFields.plannedQty]: jdyField(round(demand.plannedQty + prepared.plannedQty, 4)),
     [demandFields.businessStatus]: jdyField("已转执行"),
   });
-  return { ok: true, dryRun: false, orderNo: prepared.orderNo, orderRecordId, lineRecordId };
+  return { ok: true, dryRun: false, orderNo: prepared.orderNo, orderRecordId, lineRecordId, detailLinked: true };
 }
 
 export async function updateStockupExecutionLine(input, workflow) {

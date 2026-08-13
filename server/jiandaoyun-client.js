@@ -24,6 +24,40 @@ export function hasJdyCredentials() {
   return Boolean(getEnv("JIANYUN_API_KEY"));
 }
 
+export async function fetchJdyFormFields(formConfig) {
+  const apiKey = getEnv("JIANYUN_API_KEY");
+  if (!apiKey) {
+    throw new Error("缺少系统同步 API Key，当前无法读取简道云表单字段。");
+  }
+
+  const host = getEnv("JIANYUN_API_HOST", DEFAULT_HOST).replace(/\/$/, "");
+  const endpoint = `${host}/api/v5/app/entry/widget/list`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ app_id: formConfig.appId, entry_id: formConfig.entryId }),
+  });
+
+  const text = await response.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`简道云表单字段读取失败 ${response.status}: ${text.slice(0, 240)}`);
+  }
+
+  if (Array.isArray(payload?.widgets)) return payload.widgets;
+  if (Array.isArray(payload?.data?.widgets)) return payload.data.widgets;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+}
+
 export async function fetchJdyDataList(formConfig, options = {}) {
   const apiKey = getEnv("JIANYUN_API_KEY");
   if (!apiKey) {
