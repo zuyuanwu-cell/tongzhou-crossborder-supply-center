@@ -798,7 +798,7 @@ function widgetTargetEntryId(widget) {
 }
 
 export function findStockupOrderLinkField(widgets = []) {
-  const candidates = widgets.filter((widget) => /linkdata|关联数据/i.test(`${widget?.type || ""} ${widget?.widgetType || ""}`));
+  const candidates = widgets.filter((widget) => /linkdata|lookup|关联数据|关联查询/i.test(`${widget?.type || ""} ${widget?.widgetType || ""}`));
   const exact = candidates.find((widget) => widgetTargetEntryId(widget) === JIANYUN_FORMS.stockupOrders.entryId);
   const named = candidates.find((widget) => /备货单|stockup/i.test(`${widget?.label || ""} ${widget?.name || ""}`));
   const selected = exact || named;

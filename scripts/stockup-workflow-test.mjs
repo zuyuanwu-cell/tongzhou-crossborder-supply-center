@@ -118,6 +118,12 @@ assert.equal(findStockupOrderLinkField([
   { type: "text", widgetName: "text-field", label: "备货单记录ID" },
   { type: "linkdata", widgetName: "_widget_link_field", label: "关联备货单", targetEntryId: JIANYUN_FORMS.stockupOrders.entryId },
 ]), "_widget_link_field");
+assert.equal(findStockupOrderLinkField([
+  { type: "lookup", widgetName: "_widget_1755006573958", label: "所属备货单" },
+]), "_widget_1755006573958");
+assert.equal(findStockupOrderLinkField([
+  { type: "lookup", widgetName: "_widget_unrelated_lookup", label: "所属供应商" },
+]), "");
 assert.equal(findStockupOrderLinkField([{ type: "text", widgetName: "text-field", label: "备货单记录ID" }]), "");
 
 const scopedPayload = buildStockupWorkflowPayload({
