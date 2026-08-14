@@ -86,8 +86,11 @@ import {
   createWorkflowDemand,
   createWorkflowExecution,
   createWorkflowShipment,
+  cancelWorkflowExecution,
   completeWorkflowProductCoding,
+  rollbackWorkflowExecutionLine,
   updateWorkflowExecutionLine,
+  voidWorkflowShipment,
   createWarehouseConnection,
   createQuickNavCategory,
   createQuickNavLink,
@@ -4270,10 +4273,11 @@ function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
 
 type ExecutionProgressDraft = { orderedQty: number; completedQty: number; qualifiedQty: number; actualBaseUnitCost: number };
 
-const ExecutionProgressCard = React.memo(function ExecutionProgressCard({ item, busy, onSave }: {
+const ExecutionProgressCard = React.memo(function ExecutionProgressCard({ item, busy, onSave, onRollback }: {
   item: StockupWorkflowPayload["stockupLines"][number];
   busy: boolean;
   onSave: (item: StockupWorkflowPayload["stockupLines"][number], draft: ExecutionProgressDraft) => Promise<void>;
+  onRollback: (item: StockupWorkflowPayload["stockupLines"][number]) => Promise<void>;
 }) {
   const initialDraft = React.useCallback((): ExecutionProgressDraft => ({
     orderedQty: item.orderedQty,
@@ -4283,6 +4287,7 @@ const ExecutionProgressCard = React.memo(function ExecutionProgressCard({ item, 
   }), [item.actualBaseUnitCost, item.completedQty, item.orderedQty, item.qualifiedQty]);
   const [draft, setDraft] = React.useState<ExecutionProgressDraft>(initialDraft);
   React.useEffect(() => setDraft(initialDraft()), [initialDraft]);
+  const canRollback = item.qualifiedQty > item.shippedQty || item.completedQty > item.qualifiedQty || item.orderedQty > item.completedQty;
   return (
     <article>
       <div><strong>{item.sku || item.temporaryProductNo || "待编码"}</strong><span>{item.productName}</span></div>
@@ -4293,7 +4298,10 @@ const ExecutionProgressCard = React.memo(function ExecutionProgressCard({ item, 
         <label><span>已完工</span><input type="number" min="0" value={draft.completedQty || ""} onChange={(event) => setDraft((current) => ({ ...current, completedQty: Number(event.target.value) }))} /></label>
         <label><span>检验合格</span><input type="number" min="0" value={draft.qualifiedQty || ""} onChange={(event) => setDraft((current) => ({ ...current, qualifiedQty: Number(event.target.value) }))} /></label>
         <label><span>基础成本/件</span><input type="number" min="0" step="0.01" value={draft.actualBaseUnitCost || ""} onChange={(event) => setDraft((current) => ({ ...current, actualBaseUnitCost: Number(event.target.value) }))} /></label>
-        <button className="ghost-button compact-button" type="button" disabled={busy} onClick={() => void onSave(item, draft)}>保存进度</button>
+        <div className="execution-progress-actions">
+          <button className="ghost-button compact-button" type="button" disabled={busy || !canRollback} onClick={() => void onRollback(item)}>退回一步</button>
+          <button className="sync-button compact-button" type="button" disabled={busy} onClick={() => void onSave(item, draft)}>保存进度</button>
+        </div>
       </div>
     </article>
   );
@@ -4322,36 +4330,58 @@ const ShipmentEntryLine = React.memo(function ShipmentEntryLine({ item, onChange
   );
 });
 
+type ExecutionWorkbenchStep = "create" | "progress" | "shipment";
+
 function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
+  const confirm = useConfirm();
   const allOrders = payload?.stockupOrders ?? [];
   const allLines = payload?.stockupLines ?? [];
-  const activeLines = allLines.filter((item) => {
-    const targetQty = Math.max(0, item.plannedQty - (item.cancelledQty || 0));
-    return !/已完成|已取消|关闭/.test(item.status) && targetQty > item.shippedQty;
-  });
-  const progressLines = activeLines.filter((item) => item.qualifiedQty < Math.max(0, item.plannedQty - (item.cancelledQty || 0)));
-  const shipmentReadyLines = activeLines.filter((item) => item.qualifiedQty >= Math.max(0, item.plannedQty - (item.cancelledQty || 0)));
+  const lineTargetQty = React.useCallback((item: StockupWorkflowPayload["stockupLines"][number]) => Math.max(0, item.plannedQty - (item.cancelledQty || 0)), []);
+  const lineAvailableQty = React.useCallback((item: StockupWorkflowPayload["stockupLines"][number]) => Math.max(0, item.qualifiedQty - item.shippedQty), []);
+  const activeLines = allLines.filter((item) => !/已完成|已取消|已作废|关闭/.test(item.status) && lineTargetQty(item) > item.shippedQty);
+  const progressLines = activeLines.filter((item) => item.qualifiedQty < lineTargetQty(item));
+  const executionOnlyLines = activeLines.filter((item) => lineAvailableQty(item) <= 0 && item.qualifiedQty < lineTargetQty(item));
+  const shipmentReadyLines = activeLines.filter((item) => lineAvailableQty(item) > 0);
   const activeOrderIds = new Set(activeLines.map((item) => item.orderRecordId));
-  const shipmentOrderIds = new Set(shipmentReadyLines.map((item) => item.orderRecordId));
   const orders = allOrders.filter((item) => activeOrderIds.has(item.id));
-  const shipmentOrders = allOrders.filter((item) => shipmentOrderIds.has(item.id));
-  const lines = progressLines;
   const candidateDemands = (payload?.demands ?? []).filter((item) => item.sku && !/已完成|已取消/.test(item.businessStatus) && Math.max(0, item.requestedQty - item.plannedQty) > 0);
+  const [activeStep, setActiveStep] = React.useState<ExecutionWorkbenchStep>("create");
+  const autoSelectedStep = React.useRef(false);
   const [executionForm, setExecutionForm] = React.useState({ demandRecordId: "", plannedQty: 0, executionMode: "外采成品", expectedCompletedAt: "", baseUnitCost: 0, baseCurrency: "CNY", baseExchangeRate: 1 });
   const [shipmentOrderId, setShipmentOrderId] = React.useState("");
   const shipmentLinesRef = React.useRef<Record<string, ShipmentEntryDraft>>({});
   const [hasShipmentQuantity, setHasShipmentQuantity] = React.useState(false);
   const [shipmentFormVersion, setShipmentFormVersion] = React.useState(0);
   const [shipmentMeta, setShipmentMeta] = React.useState({ carrier: "", trackingNo: "", transportMode: "海运", defaultAllocationMethod: "weight" });
+  const [cancellationDraft, setCancellationDraft] = React.useState<{ orderId: string; orderNo: string; reason: string } | null>(null);
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const selectedOrder = shipmentOrders.find((item) => item.id === shipmentOrderId);
-  const selectableLines = shipmentReadyLines.filter((item) => item.orderRecordId === selectedOrder?.id && item.qualifiedQty - item.shippedQty > 0);
+  const selectedOrder = orders.find((item) => item.id === shipmentOrderId);
+  const selectableLines = shipmentReadyLines.filter((item) => item.orderRecordId === selectedOrder?.id);
+  const selectedOrderLines = activeLines.filter((item) => item.orderRecordId === selectedOrder?.id);
+  const selectedOrderAvailableQty = selectedOrderLines.reduce((sum, item) => sum + lineAvailableQty(item), 0);
+  const orderAvailableQty = React.useCallback((orderId: string) => activeLines.filter((item) => item.orderRecordId === orderId).reduce((sum, item) => sum + lineAvailableQty(item), 0), [activeLines, lineAvailableQty]);
+
+  React.useEffect(() => {
+    if (autoSelectedStep.current || !payload) return;
+    autoSelectedStep.current = true;
+    setActiveStep(shipmentReadyLines.length ? "shipment" : progressLines.length ? "progress" : "create");
+  }, [payload, progressLines.length, shipmentReadyLines.length]);
+
+  React.useEffect(() => {
+    if (shipmentOrderId && !orders.some((item) => item.id === shipmentOrderId)) setShipmentOrderId("");
+  }, [orders, shipmentOrderId]);
+
   const updateShipmentLine = React.useCallback((id: string, draft: ShipmentEntryDraft) => {
     shipmentLinesRef.current[id] = draft;
     const hasQuantity = Object.values(shipmentLinesRef.current).some((item) => item.shippedQty > 0);
     setHasShipmentQuantity((current) => current === hasQuantity ? current : hasQuantity);
   }, []);
+
+  function selectStep(step: ExecutionWorkbenchStep) {
+    setActiveStep(step);
+    setMessage("");
+  }
 
   function resetShipmentForm() {
     shipmentLinesRef.current = {};
@@ -4361,8 +4391,15 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
 
   async function createExecution() {
     setBusy(true); setMessage("");
-    try { const result = await createWorkflowExecution(executionForm); await onRefresh(); setMessage(`备货执行单 ${result.orderNo} 已创建。`); setExecutionForm({ ...executionForm, demandRecordId: "", plannedQty: 0, baseUnitCost: 0 }); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "执行单创建失败"); } finally { setBusy(false); }
+    try {
+      const result = await createWorkflowExecution(executionForm);
+      await onRefresh();
+      setShipmentOrderId(result.orderRecordId || "");
+      setActiveStep("progress");
+      setMessage(`备货执行单 ${result.orderNo} 已创建。现在请更新下单、完工和合格数量。`);
+      setExecutionForm({ ...executionForm, demandRecordId: "", plannedQty: 0, baseUnitCost: 0 });
+    } catch (error) { setMessage(error instanceof Error ? error.message : "执行单创建失败"); }
+    finally { setBusy(false); }
   }
 
   async function saveShipment() {
@@ -4370,8 +4407,11 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
     try {
       const selected = Object.entries(shipmentLinesRef.current).filter(([, item]) => item.shippedQty > 0).map(([stockupLineRecordId, item]) => ({ stockupLineRecordId, ...item }));
       const result = await createWorkflowShipment({ stockupOrderRecordId: shipmentOrderId, ...shipmentMeta, lines: selected });
-      await onRefresh(); setMessage(`发货已登记，共 ${result.lineCount || 0} 条 SKU。`); resetShipmentForm();
-    } catch (error) { setMessage(error instanceof Error ? error.message : "发货登记失败"); } finally { setBusy(false); }
+      await onRefresh();
+      setMessage(`发货已登记，共 ${result.lineCount || 0} 条 SKU。下一步到“发货与成本”登记费用。`);
+      resetShipmentForm();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "发货登记失败"); }
+    finally { setBusy(false); }
   }
 
   const saveLineProgress = React.useCallback(async (item: StockupWorkflowPayload["stockupLines"][number], draft: ExecutionProgressDraft) => {
@@ -4379,66 +4419,150 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
     try {
       const result = await updateWorkflowExecutionLine({ stockupLineRecordId: item.id, ...draft });
       await onRefresh();
-      setMessage(`${item.sku || item.productName} 进度已更新为“${result.status}”。`);
+      if (draft.qualifiedQty > item.shippedQty) {
+        setShipmentOrderId(item.orderRecordId);
+        setActiveStep("shipment");
+        setMessage(`${item.sku || item.productName} 已有 ${formatNumber(draft.qualifiedQty - item.shippedQty)} 件可发，已进入步骤 3。`);
+      } else {
+        setMessage(`${item.sku || item.productName} 进度已更新为“${result.status}”。`);
+      }
     } catch (error) { setMessage(error instanceof Error ? error.message : "进度更新失败"); }
     finally { setBusy(false); }
   }, [onRefresh]);
+
+  const rollbackLine = React.useCallback(async (item: StockupWorkflowPayload["stockupLines"][number]) => {
+    const confirmed = await confirm({
+      title: `退回 ${item.sku || item.productName} 的进度`,
+      body: "系统只退回最近一个已完成节点，且不会把数量退到已发货数量以下。",
+      confirmText: "确认退回一步",
+      details: [`已下单 ${formatNumber(item.orderedQty)}`, `已完工 ${formatNumber(item.completedQty)}`, `检验合格 ${formatNumber(item.qualifiedQty)}`, `已发货 ${formatNumber(item.shippedQty)}`],
+    });
+    if (!confirmed) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await rollbackWorkflowExecutionLine({ stockupLineRecordId: item.id, reason: "中台用户确认退回上一步" });
+      await onRefresh();
+      setActiveStep("progress");
+      setMessage(`${item.sku || item.productName} 已退回“${result.rollbackStage}”节点，当前状态为“${result.status}”。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "进度退回失败"); }
+    finally { setBusy(false); }
+  }, [confirm, onRefresh]);
+
+  async function submitCancellation() {
+    if (!cancellationDraft?.reason.trim()) return;
+    const confirmed = await confirm({
+      title: `取消 ${cancellationDraft.orderNo} 的剩余数量`,
+      body: "未发货剩余数量会退回需求池；已经发货的数量不会改变，原执行单和操作记录会保留。",
+      confirmText: "确认取消剩余",
+      tone: "danger",
+      details: [`取消原因：${cancellationDraft.reason.trim()}`],
+    });
+    if (!confirmed) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await cancelWorkflowExecution({ stockupOrderRecordId: cancellationDraft.orderId, reason: cancellationDraft.reason.trim() });
+      await onRefresh();
+      setCancellationDraft(null);
+      setActiveStep("create");
+      setMessage(`${cancellationDraft.orderNo} 已取消剩余 ${formatNumber(result.cancelledQty)}，相关需求已重新开放。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "取消执行单失败"); }
+    finally { setBusy(false); }
+  }
+
+  const stepItems: Array<{ id: ExecutionWorkbenchStep; number: string; title: string; hint: string; count: number }> = [
+    { id: "create", number: "01", title: "创建执行单", hint: "选择正式需求并确认执行方式", count: candidateDemands.length },
+    { id: "progress", number: "02", title: "跟进供应进度", hint: "下单、完工、质检合格", count: executionOnlyLines.length },
+    { id: "shipment", number: "03", title: "登记实际发货", hint: "部分合格也可以先发货", count: shipmentReadyLines.length },
+  ];
+
   return (
     <section className="execution-workbench">
-      <div className="execution-guide">
-        <div><span>1</span><strong>先建执行单</strong><small>选择需求，确认数量和执行方式</small></div>
-        <div><span>2</span><strong>再更新供应进度</strong><small>录已下单、已完工、检验合格和单价</small></div>
-        <div><span>3</span><strong>有合格数量后发货</strong><small>录实际发货量、总重量与总体积</small></div>
-      </div>
+      <nav className="execution-step-switcher" aria-label="供应执行步骤">
+        {stepItems.map((step) => (
+          <button className={activeStep === step.id ? "active" : ""} type="button" onClick={() => selectStep(step.id)} key={step.id}>
+            <span>{step.number}</span>
+            <strong>{step.title}</strong>
+            <small>{step.hint}</small>
+            <em>{step.count > 0 ? step.count : "—"}</em>
+          </button>
+        ))}
+      </nav>
       {message ? <div className="notice compact-notice">{message}</div> : null}
-      <div className="workflow-two-column">
-        <div className="panel workflow-panel">
-          <div className="panel-heading"><div><p className="eyebrow">步骤 1</p><h2>创建采购 / 生产执行单</h2><small>只显示尚有未计划数量的正式 SKU 需求</small></div></div>
+
+      {activeStep === "create" ? (
+        <div className="panel workflow-panel execution-current-panel">
+          <div className="panel-heading"><div><p className="eyebrow">Current Task · 01</p><h2>创建采购 / 生产执行单</h2><small>只显示尚有未计划数量的正式 SKU 需求；创建后自动进入跟单。</small></div><span className="status-pill warning">{candidateDemands.length || "—"} 个待处理</span></div>
           <div className="workflow-create-form">
             <label className="wide-field"><span>选择需求</span><select value={executionForm.demandRecordId} onChange={(event) => { const demand = candidateDemands.find((item) => item.id === event.target.value); setExecutionForm({ ...executionForm, demandRecordId: event.target.value, plannedQty: Math.max(0, (demand?.requestedQty || 0) - (demand?.plannedQty || 0)), executionMode: demand?.stockupMethod || "外采成品" }); }}><option value="">请选择</option>{candidateDemands.map((item) => <option value={item.id} key={item.id}>{item.demandBatchNo} · {item.sku} · {item.productName}</option>)}</select></label>
             <label><span>计划数量</span><input type="number" min="0" value={executionForm.plannedQty || ""} onChange={(event) => setExecutionForm({ ...executionForm, plannedQty: Number(event.target.value) })} /></label>
             <label><span>执行方式</span><select value={executionForm.executionMode} onChange={(event) => setExecutionForm({ ...executionForm, executionMode: event.target.value })}><option>外采成品</option><option>委外生产</option><option>自有成品</option></select></label>
             <label><span>基础成本单价</span><input type="number" min="0" step="0.01" value={executionForm.baseUnitCost || ""} onChange={(event) => setExecutionForm({ ...executionForm, baseUnitCost: Number(event.target.value) })} /></label>
             <label><span>预计完成</span><input type="date" value={executionForm.expectedCompletedAt} onChange={(event) => setExecutionForm({ ...executionForm, expectedCompletedAt: event.target.value })} /></label>
-            <div className="workflow-form-actions"><span className="form-action-hint">创建后会同时写入备货主表和关联明细</span><button className="sync-button" type="button" disabled={busy || !executionForm.demandRecordId || !executionForm.plannedQty} onClick={() => void createExecution()}>创建并进入跟单</button></div>
+            <div className="workflow-form-actions"><span className="form-action-hint">创建后同时写入备货主表与关联明细，不会直接进入发货。</span><button className="sync-button" type="button" disabled={busy || !executionForm.demandRecordId || !executionForm.plannedQty} onClick={() => void createExecution()}>创建并进入步骤 2</button></div>
+          </div>
+          {!candidateDemands.length ? <div className="stockup-empty">当前没有待转执行的需求。已创建的单据请进入步骤 2 跟进。</div> : null}
+        </div>
+      ) : null}
+
+      {activeStep === "progress" ? (
+        <div className="execution-step-content">
+          {cancellationDraft ? (
+            <div className="workflow-action-editor">
+              <div><p className="eyebrow">Cancel Remaining</p><strong>取消 {cancellationDraft.orderNo} 的未发货剩余数量</strong><small>填写原因后确认；相关数量会重新回到步骤 1 的需求池。</small></div>
+              <input value={cancellationDraft.reason} onChange={(event) => setCancellationDraft({ ...cancellationDraft, reason: event.target.value })} placeholder="必填：供应商缺货、计划调整等" autoFocus />
+              <button className="ghost-button" type="button" disabled={busy} onClick={() => setCancellationDraft(null)}>放弃操作</button>
+              <button className="sync-button danger-button" type="button" disabled={busy || !cancellationDraft.reason.trim()} onClick={() => void submitCancellation()}>确认取消剩余</button>
+            </div>
+          ) : null}
+          <div className="panel workflow-panel">
+            <div className="panel-heading"><div><p className="eyebrow">Current Task · 02</p><h2>我正在跟进的执行单</h2><small>执行单创建后始终显示；不能发货时会明确显示缺少哪个前置条件。</small></div><span className="status-pill muted">{orders.length || "—"} 单</span></div>
+            <div className="workflow-card-list execution-order-list">
+              {orders.length ? orders.slice(0, 50).map((item) => {
+                const availableQty = orderAvailableQty(item.id);
+                return (
+                  <article key={item.id}>
+                    <div><strong>{item.orderNo || item.id.slice(-8)}</strong><span>{item.project || item.destinationCountry || "未归属项目"}</span></div>
+                    <span className={`status-pill ${availableQty > 0 ? "good" : "warning"}`}>{availableQty > 0 ? `可发 ${formatNumber(availableQty)}` : item.status || "待执行"}</span>
+                    <dl><div><dt>计划</dt><dd>{formatNumber(item.plannedQty)}</dd></div><div><dt>完工</dt><dd>{formatNumber(item.completedQty)}</dd></div><div><dt>发货</dt><dd>{formatNumber(item.shippedQty)}</dd></div><div><dt>到仓</dt><dd>{formatNumber(item.receivedQty)}</dd></div></dl>
+                    <div className="execution-next-action"><span>下一步</span><strong>{availableQty > 0 ? "已有合格可发数量，可以进入步骤 3" : item.completedQty > 0 ? "录入检验合格数量后即可发货" : "先在下方录入已下单和完工数量"}</strong></div>
+                    <div className="execution-order-actions">
+                      <button className="ghost-button compact-button" type="button" onClick={() => setActiveStep("progress")}>更新进度</button>
+                      <button className="ghost-button compact-button" type="button" disabled={availableQty <= 0} onClick={() => { setShipmentOrderId(item.id); resetShipmentForm(); setActiveStep("shipment"); }}>去发货</button>
+                      <button className="ghost-button compact-button danger-button" type="button" disabled={busy} onClick={() => setCancellationDraft({ orderId: item.id, orderNo: item.orderNo || item.id.slice(-8), reason: "" })}>取消剩余</button>
+                    </div>
+                  </article>
+                );
+              }) : <div className="stockup-empty">暂无进行中的备货执行单。需要创建时返回步骤 1。</div>}
+            </div>
+          </div>
+          <div className="panel workflow-panel">
+            <div className="panel-heading"><div><p className="eyebrow">SKU Progress</p><h2>逐 SKU 更新供应进度</h2><small>录错时使用“退回一步”；系统不会把任何数量退到已发货数量以下。</small></div><span className="status-pill muted">{progressLines.length || "—"} 行</span></div>
+            <div className="workflow-card-list compact">
+              {progressLines.length ? progressLines.slice(0, 80).map((item) => <ExecutionProgressCard item={item} busy={busy} onSave={saveLineProgress} onRollback={rollbackLine} key={item.id} />) : <div className="stockup-empty">当前没有待更新的采购 / 生产进度；有合格可发数量的单据请进入步骤 3。</div>}
+            </div>
           </div>
         </div>
-        <div className="panel workflow-panel">
-          <div className="panel-heading"><div><p className="eyebrow">步骤 3</p><h2>登记实际发货</h2><small>只有“检验合格数量”大于“已发货数量”的 SKU 才能发货</small></div></div>
+      ) : null}
+
+      {activeStep === "shipment" ? (
+        <div className="panel workflow-panel execution-current-panel">
+          <div className="panel-heading"><div><p className="eyebrow">Current Task · 03</p><h2>登记实际发货</h2><small>所有进行中的执行单都会显示；只有合格数量大于已发数量的 SKU 才能填写发货。</small></div><span className="status-pill good">{shipmentReadyLines.length || "—"} 行可发</span></div>
           <div className="workflow-create-form">
-            <label className="wide-field"><span>备货执行单</span><select value={shipmentOrderId} onChange={(event) => { setShipmentOrderId(event.target.value); resetShipmentForm(); }}><option value="">请选择</option>{shipmentOrders.map((item) => <option value={item.id} key={item.id}>{item.orderNo} · {item.project || item.destinationCountry}</option>)}</select></label>
+            <label className="wide-field"><span>备货执行单</span><select value={shipmentOrderId} onChange={(event) => { setShipmentOrderId(event.target.value); resetShipmentForm(); }}><option value="">请选择</option>{orders.map((item) => { const availableQty = orderAvailableQty(item.id); return <option value={item.id} key={item.id}>{item.orderNo} · {item.project || item.destinationCountry || "未指定项目"} · {availableQty > 0 ? `可发 ${formatNumber(availableQty)}` : "待检验合格"}</option>; })}</select></label>
             <label><span>承运商</span><input value={shipmentMeta.carrier} onChange={(event) => setShipmentMeta({ ...shipmentMeta, carrier: event.target.value })} /></label>
             <label><span>物流单号</span><input value={shipmentMeta.trackingNo} onChange={(event) => setShipmentMeta({ ...shipmentMeta, trackingNo: event.target.value })} /></label>
             <label><span>运输方式</span><select value={shipmentMeta.transportMode} onChange={(event) => setShipmentMeta({ ...shipmentMeta, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label>
             <label><span>默认分摊</span><select value={shipmentMeta.defaultAllocationMethod} onChange={(event) => setShipmentMeta({ ...shipmentMeta, defaultAllocationMethod: event.target.value })}>{allocationMethods.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
-          {selectedOrder ? <div className="shipment-entry-lines">{selectableLines.map((item) => <ShipmentEntryLine item={item} onChange={updateShipmentLine} key={`${shipmentOrderId}:${shipmentFormVersion}:${item.id}`} />)}{!selectableLines.length ? <div className="stockup-empty">该执行单暂无“合格可发货数量”大于已发货数量的明细。</div> : null}</div> : null}
-          <div className="workflow-form-actions"><span className="form-action-hint">重量和体积均保留，后续费用可任选口径分摊</span><button className="sync-button" type="button" disabled={busy || !shipmentOrderId || !hasShipmentQuantity} onClick={() => void saveShipment()}>保存发货并去算成本</button></div>
+          {selectedOrder ? (
+            <>
+              <div className={`shipment-readiness ${selectedOrderAvailableQty > 0 ? "ready" : "blocked"}`}><strong>{selectedOrderAvailableQty > 0 ? `当前可发 ${formatNumber(selectedOrderAvailableQty)}` : "当前不能发货"}</strong><span>{selectedOrderAvailableQty > 0 ? "可只发本次实际数量，剩余合格数量保留到下次。" : "请回到步骤 2，先录入完工数量和检验合格数量。执行单不会消失。"}</span></div>
+              <div className="shipment-entry-lines">{selectableLines.map((item) => <ShipmentEntryLine item={item} onChange={updateShipmentLine} key={`${shipmentOrderId}:${shipmentFormVersion}:${item.id}`} />)}{!selectableLines.length ? <div className="stockup-empty">该执行单暂无可发 SKU，但仍保留在列表中供你查看状态。</div> : null}</div>
+            </>
+          ) : <div className="stockup-empty">先选择一张执行单。列表同时显示“可发数量”或“待检验合格”。</div>}
+          <div className="workflow-form-actions"><span className="form-action-hint">重量和体积都保留，后续费用可任选口径分摊。</span><button className="sync-button" type="button" disabled={busy || !shipmentOrderId || !hasShipmentQuantity} onClick={() => void saveShipment()}>保存发货并进入成本</button></div>
         </div>
-      </div>
-      <div className="workflow-two-column execution-lists">
-      <div className="panel workflow-panel">
-        <div className="panel-heading"><div><p className="eyebrow">执行单</p><h2>我正在跟进的单据</h2></div><span className="status-pill muted">{formatNumber(orders.length)} 单</span></div>
-        <div className="workflow-card-list">
-          {orders.length ? orders.slice(0, 50).map((item) => (
-            <article key={item.id}>
-              <div><strong>{item.orderNo || item.id.slice(-8)}</strong><span>{item.project || item.destinationCountry || "未归属项目"}</span></div>
-              <span className="status-pill muted">{item.status || "待执行"}</span>
-              <dl><div><dt>计划</dt><dd>{formatNumber(item.plannedQty)}</dd></div><div><dt>完工</dt><dd>{formatNumber(item.completedQty)}</dd></div><div><dt>发货</dt><dd>{formatNumber(item.shippedQty)}</dd></div><div><dt>到仓</dt><dd>{formatNumber(item.receivedQty)}</dd></div></dl>
-              <div className="execution-next-action"><span>下一步</span><strong>{item.completedQty <= 0 ? "在右侧 SKU 明细录入下单 / 完工进度" : item.shippedQty < item.completedQty ? "确认检验合格数量后登记发货" : "到发货与成本页登记费用"}</strong></div>
-            </article>
-          )) : <div className="stockup-empty">暂无备货执行单。</div>}
-        </div>
-      </div>
-      <div className="panel workflow-panel">
-        <div className="panel-heading"><div><p className="eyebrow">步骤 2</p><h2>逐 SKU 更新供应进度</h2><small>每次状态变化只修改这一行，然后保存</small></div><span className="status-pill muted">{formatNumber(lines.length)} 行</span></div>
-        <div className="workflow-card-list compact">
-          {lines.length ? lines.slice(0, 80).map((item) => (
-            <ExecutionProgressCard item={item} busy={busy} onSave={saveLineProgress} key={item.id} />
-          )) : <div className="stockup-empty">当前没有待采购 / 生产的 SKU；合格数量达到计划后会自动转入“登记发货”。</div>}
-        </div>
-      </div>
-      </div>
+      ) : null}
     </section>
   );
 }
@@ -4449,9 +4573,10 @@ const allocationMethods = [
 ] as const;
 
 function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
+  const confirm = useConfirm();
   const allCostBatches = payload?.costBatches ?? [];
   const shipments = (payload?.shipments ?? []).filter((shipment) => (
-    !(shipment.lines.length > 0 && shipment.lines.every((line) => allCostBatches.some((batch) => (
+    !/已作废/.test(shipment.status) && !(shipment.lines.length > 0 && shipment.lines.every((line) => allCostBatches.some((batch) => (
       batch.isCurrent !== false
       && batch.shipmentRecordId === shipment.id
       && batch.shipmentLineId === line.id
@@ -4463,12 +4588,14 @@ function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflow
   const [costType, setCostType] = React.useState<"预估" | "正式" | "调整">("预估");
   const [riskRate, setRiskRate] = React.useState(0);
   const [preview, setPreview] = React.useState<StockupCostPreview | null>(null);
+  const [voidReason, setVoidReason] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
   const selectedShipment = shipments.find((item) => item.id === shipmentId) || shipments[0];
   const selectedFees = (payload?.fees ?? []).filter((item) => item.shipmentRecordId === selectedShipment?.id);
   const selectedBatches = (payload?.costBatches ?? []).filter((item) => item.shipmentRecordId === selectedShipment?.id);
+  const selectedShipmentLocked = selectedBatches.some((item) => /已锁定/.test(item.status));
   const versions = [...new Set(selectedBatches.map((item) => item.version))].sort((a, b) => b - a);
 
   React.useEffect(() => {
@@ -4525,6 +4652,28 @@ function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflow
     finally { setBusy(false); }
   }
 
+  async function voidSelectedShipment() {
+    if (!selectedShipment || !voidReason.trim()) return;
+    const confirmed = await confirm({
+      title: `作废发货单 ${selectedShipment.shipmentNo || selectedShipment.id}`,
+      body: "系统会按其他未作废发货单重新汇总已发数量，并同步反冲执行单和需求；原发货记录会保留为已作废。",
+      confirmText: "确认作废并反冲",
+      tone: "danger",
+      details: [`作废原因：${voidReason.trim()}`, `SKU 行数：${selectedShipment.lines.length}`],
+    });
+    if (!confirmed) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const result = await voidWorkflowShipment({ shipmentRecordId: selectedShipment.id, reason: voidReason.trim() });
+      await onRefresh();
+      setShipmentId("");
+      setVoidReason("");
+      setPreview(null);
+      setMessage(`${result.shipmentNo || "发货单"} 已作废，并反冲 ${result.reversedLineCount} 条 SKU 数量。`);
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "发货单作废失败"); }
+    finally { setBusy(false); }
+  }
+
   return (
     <section className="cost-workbench-grid">
       <div className="panel workflow-panel shipment-picker-panel">
@@ -4541,6 +4690,7 @@ function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflow
           </div>
         ) : <div className="stockup-empty">简道云“同舟发货单”暂无数据。先登记实际发货和 SKU 明细，再录费用。</div>}
         {selectedShipment ? <div className="shipment-line-mini-list">{selectedShipment.lines.slice(0, 8).map((line) => <span key={line.id}><strong>{line.sku || line.temporaryProductNo || "待编码"}</strong><small>{formatNumber(line.shippedQty)} 件 · {formatDecimal(line.totalWeightKg)} kg · {formatDecimal(line.totalVolumeM3)} m³</small></span>)}</div> : null}
+        {selectedShipment ? <div className="shipment-void-control"><input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} placeholder={selectedShipmentLocked ? "成本已锁定，不能直接作废" : "作废原因（必填）"} disabled={selectedShipmentLocked || busy} /><button className="ghost-button compact-button danger-button" type="button" disabled={selectedShipmentLocked || busy || !voidReason.trim()} onClick={() => void voidSelectedShipment()}>作废并反冲</button></div> : null}
       </div>
 
       <div className="panel workflow-panel fee-entry-panel">

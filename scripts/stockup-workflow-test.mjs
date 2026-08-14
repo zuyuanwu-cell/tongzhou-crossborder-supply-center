@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildStockupWorkflowPayload, buildWorkflowStageCounts, calculateShipmentCosts, completeProductCoding, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowShipmentJdyData } from "../server/stockup-workflow.js";
+import { buildExecutionCancellationPlan, buildExecutionDemandReconciliationPlan, buildExecutionLineRollbackPlan, buildShipmentVoidPlan, buildStockupWorkflowPayload, buildWorkflowStageCounts, calculateShipmentCosts, completeProductCoding, deriveExecutionLineStatus, deriveExecutionOrderStatus, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowLineAvailableToShip, workflowShipmentJdyData } from "../server/stockup-workflow.js";
 import { JIANYUN_FORMS } from "../server/field-mapping.js";
 
 function shipment(lines) {
@@ -137,7 +137,7 @@ const stageCounts = buildWorkflowStageCounts({
     { id: "demand-coding", requestedQty: 10, plannedQty: 0, businessStatus: "待编码" },
   ],
   orderLines: [
-    { id: "line-execution", plannedQty: 10, cancelledQty: 0, qualifiedQty: 5, shippedQty: 0, status: "生产中" },
+    { id: "line-execution", plannedQty: 10, cancelledQty: 0, qualifiedQty: 0, shippedQty: 0, status: "生产中" },
     { id: "line-shipment", plannedQty: 10, cancelledQty: 0, qualifiedQty: 10, shippedQty: 0, status: "待发货" },
     { id: "line-complete", plannedQty: 10, cancelledQty: 0, qualifiedQty: 10, shippedQty: 10, status: "已发货" },
   ],
@@ -162,20 +162,79 @@ assert.deepEqual(stageCounts, {
   activeWorkItems: 6,
 });
 
+assert.equal(workflowLineAvailableToShip({ qualifiedQty: 5, shippedQty: 2 }), 3);
+assert.equal(deriveExecutionLineStatus({ plannedQty: 10, qualifiedQty: 5, shippedQty: 2 }), "部分发货");
+assert.equal(deriveExecutionOrderStatus([{ plannedQty: 10, qualifiedQty: 5, shippedQty: 2 }]), "部分发货");
+assert.equal(deriveExecutionOrderStatus([{ plannedQty: 10, cancelledQty: 4, qualifiedQty: 6, shippedQty: 6 }]), "部分取消");
+const partialShipmentCounts = buildWorkflowStageCounts({
+  demands: [],
+  orderLines: [{ id: "partial-ready", plannedQty: 10, cancelledQty: 0, qualifiedQty: 5, shippedQty: 0, status: "部分合格" }],
+  shipments: [],
+  costBatches: [],
+  productCodingQueue: [],
+});
+assert.equal(partialShipmentCounts.pendingExecutionLines, 0);
+assert.equal(partialShipmentCounts.pendingShipmentLines, 1);
+
 const workflow = {
   demands: [demand],
   stockupOrders: [{ id: "order-1", orderNo: "BHD-001", project: "SHOPEE 印尼", destinationCountry: "印度尼西亚", destinationWarehouseRecordId: "wh-1", destinationWarehouseName: "神牛仓", status: "执行中", orderedQty: 0, completedQty: 0, shippedQty: 0, receivedQty: 0, dataVersion: 1 }],
   stockupLines: [{ id: "stock-line-1", orderRecordId: "order-1", demandRecordId: "demand-1", productRecordId: "p-a", temporaryProductNo: "", sku: "SKU-A", productName: "A", plannedQty: 100, orderedQty: 0, completedQty: 0, qualifiedQty: 0, shippedQty: 0, receivedQty: 0, baseCurrency: "CNY", baseExchangeRate: 1, actualBaseUnitCost: 5, status: "待下单" }],
 };
+const reconciliationPlan = buildExecutionDemandReconciliationPlan({ ...demand, plannedQty: 0 }, workflow);
+assert.equal(reconciliationPlan.plannedQty, 100);
+assert.equal(reconciliationPlan.latestLine.id, "stock-line-1");
+assert.equal(buildExecutionDemandReconciliationPlan({ ...demand, plannedQty: 100 }, workflow), null);
 const progressDryRun = await updateStockupExecutionLine({ stockupLineRecordId: "stock-line-1", orderedQty: 100, completedQty: 100, qualifiedQty: 95, actualBaseUnitCost: 5.2, dryRun: true }, workflow);
 assert.equal(progressDryRun.status, "部分合格");
 assert.equal(progressDryRun.totals.orderedQty, 100);
+assert.equal(progressDryRun.totals.allReady, false);
 
 const readyWorkflow = { ...workflow, stockupLines: [{ ...workflow.stockupLines[0], orderedQty: 100, completedQty: 100, qualifiedQty: 95, actualBaseUnitCost: 5.2, status: "部分合格" }] };
 const shipmentPrepared = workflowShipmentJdyData({ stockupOrderRecordId: "order-1", lines: [{ stockupLineRecordId: "stock-line-1", shippedQty: 90, totalWeightKg: 45, totalVolumeM3: 0.4 }] }, readyWorkflow);
 assert.equal(shipmentPrepared.normalizedLines.length, 1);
 assert.equal(shipmentPrepared.data[JIANYUN_FORMS.shipments.fields.actualWeightKg].value, 45);
 assert.throws(() => workflowShipmentJdyData({ stockupOrderRecordId: "order-1", lines: [{ stockupLineRecordId: "stock-line-1", shippedQty: 96, totalWeightKg: 45, totalVolumeM3: 0.4 }] }, readyWorkflow), /不能超过合格可发数量/);
+
+const rollbackPlan = buildExecutionLineRollbackPlan({ stockupLineRecordId: "stock-line-1", reason: "质检结果修正" }, {
+  ...readyWorkflow,
+  stockupLines: [{ ...readyWorkflow.stockupLines[0], shippedQty: 20 }],
+});
+assert.equal(rollbackPlan.rollbackStage, "检验合格");
+assert.equal(rollbackPlan.next.qualifiedQty, 20);
+assert.equal(rollbackPlan.next.completedQty, 100);
+
+const cancellationPlan = buildExecutionCancellationPlan({ stockupOrderRecordId: "order-1", reason: "供应商缺货" }, {
+  ...workflow,
+  demands: [{ ...demand, plannedQty: 100, shippedQty: 20 }],
+  stockupLines: [{ ...workflow.stockupLines[0], shippedQty: 20 }],
+});
+assert.equal(cancellationPlan.cancelledQty, 80);
+assert.equal(cancellationPlan.lineUpdates[0].cancelledQty, 80);
+assert.equal(cancellationPlan.demandUpdates[0].plannedQty, 20);
+assert.equal(cancellationPlan.orderStatus, "部分取消");
+
+const voidWorkflow = {
+  demands: [{ ...demand, plannedQty: 100, shippedQty: 50 }],
+  stockupOrders: [{ ...workflow.stockupOrders[0], shippedQty: 50 }],
+  stockupLines: [{ ...workflow.stockupLines[0], qualifiedQty: 100, shippedQty: 50, status: "部分发货" }],
+  shipments: [
+    { id: "shipment-void", stockupOrderRecordId: "order-1", status: "已发货", lines: [{ id: "shipment-void:SKU-A", stockupLineRecordId: "stock-line-1", demandRecordId: "demand-1", shippedQty: 40 }] },
+    { id: "shipment-keep", stockupOrderRecordId: "order-1", status: "已发货", lines: [{ id: "shipment-keep:SKU-A", stockupLineRecordId: "stock-line-1", demandRecordId: "demand-1", shippedQty: 10 }] },
+  ],
+  fees: [{ id: "fee-void", shipmentRecordId: "shipment-void", allocationStatus: "已分摊" }],
+  costBatches: [{ id: "cost-void", shipmentRecordId: "shipment-void", status: "待确认", isCurrent: false }],
+};
+const voidPlan = buildShipmentVoidPlan({ shipmentRecordId: "shipment-void", reason: "重复登记" }, voidWorkflow);
+assert.equal(voidPlan.lineUpdates[0].shippedQty, 10);
+assert.equal(voidPlan.orderUpdates[0].shippedQty, 10);
+assert.equal(voidPlan.demandUpdates[0].shippedQty, 10);
+assert.deepEqual(voidPlan.feeIds, ["fee-void"]);
+assert.deepEqual(voidPlan.costBatchIds, ["cost-void"]);
+assert.throws(() => buildShipmentVoidPlan({ shipmentRecordId: "shipment-void", reason: "重复登记" }, {
+  ...voidWorkflow,
+  costBatches: [{ id: "cost-locked", shipmentRecordId: "shipment-void", status: "已锁定", isCurrent: true }],
+}), /成本已经锁定/);
 
 const codingDryRun = await completeProductCoding({ productRecordId: "demand:demand-1", sku: "NEW-SKU-001", dryRun: true }, {
   demands: [{ ...demand, sku: "", temporaryProductNo: "" }],

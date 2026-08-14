@@ -426,7 +426,209 @@ export async function fetchStockupWorkflowRecords() {
 }
 
 function workflowItemClosed(status) {
-  return /已完成|已取消|关闭|已关闭/.test(textValue(status));
+  return /已完成|已取消|已作废|关闭|已关闭/.test(textValue(status));
+}
+
+export function workflowLineTargetQty(line) {
+  return Math.max(0, numberValue(line?.plannedQty) - numberValue(line?.cancelledQty));
+}
+
+export function workflowLineAvailableToShip(line) {
+  return Math.max(0, numberValue(line?.qualifiedQty) - numberValue(line?.shippedQty));
+}
+
+export function deriveExecutionLineStatus(line) {
+  const targetQty = workflowLineTargetQty(line);
+  const shippedQty = numberValue(line?.shippedQty);
+  const qualifiedQty = numberValue(line?.qualifiedQty);
+  const completedQty = numberValue(line?.completedQty);
+  const orderedQty = numberValue(line?.orderedQty);
+  const cancelledQty = numberValue(line?.cancelledQty);
+  if (targetQty <= 0 && shippedQty <= 0) return "已取消";
+  if (cancelledQty > 0 && shippedQty >= targetQty) return shippedQty > 0 ? "部分取消" : "已取消";
+  if (targetQty > 0 && shippedQty >= targetQty) return "已发货";
+  if (shippedQty > 0) return "部分发货";
+  if (targetQty > 0 && qualifiedQty >= targetQty) return "已备妥";
+  if (qualifiedQty > 0) return "部分合格";
+  if (completedQty > 0) return "部分完工";
+  if (orderedQty > 0) return "已下单";
+  return "待下单";
+}
+
+export function deriveExecutionOrderStatus(lines = []) {
+  const active = lines.filter((line) => workflowLineTargetQty(line) > 0);
+  const targetQty = active.reduce((sum, line) => sum + workflowLineTargetQty(line), 0);
+  const shippedQty = active.reduce((sum, line) => sum + numberValue(line.shippedQty), 0);
+  const receivedQty = active.reduce((sum, line) => sum + numberValue(line.receivedQty), 0);
+  const hasCancellation = lines.some((line) => numberValue(line.cancelledQty) > 0);
+  if (!active.length) return lines.some((line) => numberValue(line.shippedQty) > 0) ? "部分取消" : "已取消";
+  if (receivedQty > 0 && receivedQty >= targetQty) return "已到仓";
+  if (receivedQty > 0) return "到仓中";
+  if (shippedQty >= targetQty && targetQty > 0) return hasCancellation ? "部分取消" : "已发货";
+  if (shippedQty > 0) return "部分发货";
+  if (active.every((line) => numberValue(line.qualifiedQty) >= workflowLineTargetQty(line))) return "已备妥";
+  if (active.some((line) => numberValue(line.orderedQty) > 0 || numberValue(line.completedQty) > 0 || numberValue(line.qualifiedQty) > 0)) return "执行中";
+  return "待执行";
+}
+
+function deriveDemandStatus(demand, plannedQty, shippedQty) {
+  const requestedQty = numberValue(demand?.requestedQty);
+  if (requestedQty > 0 && shippedQty >= requestedQty) return "已发货";
+  if (shippedQty > 0) return "部分发货";
+  if (plannedQty > 0 && plannedQty >= requestedQty) return "已转执行";
+  return "待受理";
+}
+
+export function buildExecutionDemandReconciliationPlan(demand, workflow) {
+  const lines = (workflow?.stockupLines || []).filter((line) => line.demandRecordId === demand?.id);
+  const effectivePlannedQty = round(lines.reduce((sum, line) => sum + workflowLineTargetQty(line), 0), 4);
+  const currentPlannedQty = round(numberValue(demand?.plannedQty), 4);
+  if (!demand || effectivePlannedQty <= currentPlannedQty + 0.0001) return null;
+  const latestLine = [...lines].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0];
+  const order = workflow?.stockupOrders?.find((item) => item.id === latestLine?.orderRecordId);
+  return {
+    demand,
+    latestLine,
+    order,
+    plannedQty: effectivePlannedQty,
+    businessStatus: effectivePlannedQty > 0 ? "已转执行" : demand.businessStatus,
+  };
+}
+
+export function buildExecutionLineRollbackPlan(input, workflow) {
+  const line = workflow?.stockupLines?.find((item) => item.id === input.stockupLineRecordId);
+  if (!line) throw new Error("未找到要退回的备货明细，请刷新后重试。");
+  const order = workflow?.stockupOrders?.find((item) => item.id === line.orderRecordId);
+  if (!order) throw new Error("未找到该明细所属的备货执行单。");
+  const shippedQty = numberValue(line.shippedQty);
+  const next = {
+    orderedQty: numberValue(line.orderedQty),
+    completedQty: numberValue(line.completedQty),
+    qualifiedQty: numberValue(line.qualifiedQty),
+    actualBaseUnitCost: numberValue(line.actualBaseUnitCost),
+  };
+  let rollbackStage = "";
+  if (next.qualifiedQty > shippedQty) {
+    next.qualifiedQty = shippedQty;
+    rollbackStage = "检验合格";
+  } else if (next.completedQty > next.qualifiedQty) {
+    next.completedQty = next.qualifiedQty;
+    rollbackStage = "完工";
+  } else if (next.orderedQty > next.completedQty) {
+    next.orderedQty = next.completedQty;
+    rollbackStage = "下单";
+  } else {
+    throw new Error("当前明细已经在最早可退回状态。");
+  }
+  const status = deriveExecutionLineStatus({ ...line, ...next });
+  return {
+    line,
+    order,
+    rollbackStage,
+    reason: textValue(input.reason, `退回${rollbackStage}状态`),
+    next: { ...next, status },
+  };
+}
+
+export function buildExecutionCancellationPlan(input, workflow) {
+  const order = workflow?.stockupOrders?.find((item) => item.id === input.stockupOrderRecordId);
+  if (!order) throw new Error("未找到要取消的备货执行单，请刷新后重试。");
+  const orderLines = (workflow?.stockupLines || []).filter((item) => item.orderRecordId === order.id);
+  if (!orderLines.length) throw new Error("该执行单没有可取消的 SKU 明细。");
+  const reason = textValue(input.reason, "中台取消剩余计划");
+  const lineUpdates = orderLines.map((line) => {
+    const targetQty = workflowLineTargetQty(line);
+    const shippedQty = numberValue(line.shippedQty);
+    const cancelDelta = Math.max(0, targetQty - shippedQty);
+    const cancelledQty = round(numberValue(line.cancelledQty) + cancelDelta, 4);
+    return {
+      id: line.id,
+      demandRecordId: line.demandRecordId,
+      cancelDelta,
+      cancelledQty,
+      status: deriveExecutionLineStatus({ ...line, cancelledQty }),
+      exceptionReason: reason,
+    };
+  }).filter((item) => item.cancelDelta > 0);
+  const cancelledQty = round(lineUpdates.reduce((sum, item) => sum + item.cancelDelta, 0), 4);
+  if (cancelledQty <= 0) throw new Error("该执行单没有尚未发货的剩余数量可取消。");
+
+  const cancelledByDemand = new Map();
+  for (const line of lineUpdates) {
+    if (!line.demandRecordId) continue;
+    cancelledByDemand.set(line.demandRecordId, round((cancelledByDemand.get(line.demandRecordId) || 0) + line.cancelDelta, 4));
+  }
+  const demandUpdates = [...cancelledByDemand.entries()].map(([demandRecordId, returnedQty]) => {
+    const demand = workflow.demands.find((item) => item.id === demandRecordId);
+    if (!demand) return null;
+    const plannedQty = Math.max(numberValue(demand.shippedQty), round(numberValue(demand.plannedQty) - returnedQty, 4));
+    return {
+      id: demand.id,
+      returnedQty,
+      plannedQty,
+      businessStatus: deriveDemandStatus(demand, plannedQty, numberValue(demand.shippedQty)),
+      cancellationReason: reason,
+    };
+  }).filter(Boolean);
+  const orderStatus = orderLines.some((line) => numberValue(line.shippedQty) > 0) ? "部分取消" : "已取消";
+  return { order, reason, lineUpdates, demandUpdates, cancelledQty, orderStatus };
+}
+
+export function buildShipmentVoidPlan(input, workflow) {
+  const shipment = workflow?.shipments?.find((item) => item.id === input.shipmentRecordId);
+  if (!shipment) throw new Error("未找到要作废的发货单，请刷新后重试。");
+  if (/已作废/.test(shipment.status)) throw new Error("该发货单已经作废。");
+  if ((workflow.costBatches || []).some((item) => item.shipmentRecordId === shipment.id && /已锁定/.test(item.status))) {
+    throw new Error("该发货单的成本已经锁定，不能直接作废；请建立调整版本。");
+  }
+  const reason = textValue(input.reason, "中台作废发货单");
+  const remainingShipments = (workflow.shipments || []).filter((item) => item.id !== shipment.id && !/已作废/.test(item.status));
+  const shippedByLine = new Map();
+  const shippedByDemand = new Map();
+  for (const item of remainingShipments) {
+    for (const line of item.lines || []) {
+      if (line.stockupLineRecordId) shippedByLine.set(line.stockupLineRecordId, round((shippedByLine.get(line.stockupLineRecordId) || 0) + numberValue(line.shippedQty), 4));
+      if (line.demandRecordId) shippedByDemand.set(line.demandRecordId, round((shippedByDemand.get(line.demandRecordId) || 0) + numberValue(line.shippedQty), 4));
+    }
+  }
+  const affectedLineIds = new Set((shipment.lines || []).map((line) => line.stockupLineRecordId).filter(Boolean));
+  if (!affectedLineIds.size) throw new Error("发货单缺少备货明细关联，不能自动反冲数量。");
+  const lineUpdates = [...affectedLineIds].map((lineId) => {
+    const line = workflow.stockupLines.find((item) => item.id === lineId);
+    if (!line) throw new Error(`未找到发货明细对应的备货行 ${lineId}。`);
+    const shippedQty = shippedByLine.get(lineId) || 0;
+    return { id: line.id, shippedQty, status: deriveExecutionLineStatus({ ...line, shippedQty }) };
+  });
+  const lineUpdateById = new Map(lineUpdates.map((item) => [item.id, item]));
+  const affectedOrderIds = new Set(lineUpdates.map((item) => workflow.stockupLines.find((line) => line.id === item.id)?.orderRecordId).filter(Boolean));
+  const orderUpdates = [...affectedOrderIds].map((orderId) => {
+    const orderLines = workflow.stockupLines.filter((line) => line.orderRecordId === orderId).map((line) => ({ ...line, ...(lineUpdateById.get(line.id) || {}) }));
+    return {
+      id: orderId,
+      shippedQty: round(orderLines.reduce((sum, line) => sum + numberValue(line.shippedQty), 0), 4),
+      status: deriveExecutionOrderStatus(orderLines),
+    };
+  });
+  const affectedDemandIds = new Set((shipment.lines || []).map((line) => line.demandRecordId).filter(Boolean));
+  const demandUpdates = [...affectedDemandIds].map((demandId) => {
+    const demand = workflow.demands.find((item) => item.id === demandId);
+    if (!demand) return null;
+    const shippedQty = shippedByDemand.get(demandId) || 0;
+    return {
+      id: demand.id,
+      shippedQty,
+      businessStatus: deriveDemandStatus(demand, numberValue(demand.plannedQty), shippedQty),
+    };
+  }).filter(Boolean);
+  return {
+    shipment,
+    reason,
+    lineUpdates,
+    orderUpdates,
+    demandUpdates,
+    feeIds: (workflow.fees || []).filter((item) => item.shipmentRecordId === shipment.id).map((item) => item.id),
+    costBatchIds: (workflow.costBatches || []).filter((item) => item.shipmentRecordId === shipment.id).map((item) => item.id),
+  };
 }
 
 export function buildWorkflowStageCounts({ demands = [], orderLines = [], shipments = [], costBatches = [], productCodingQueue = [] } = {}) {
@@ -442,12 +644,9 @@ export function buildWorkflowStageCounts({ demands = [], orderLines = [], shipme
   });
   const pendingExecutionLines = activeLines.filter((item) => {
     const targetQty = Math.max(0, numberValue(item.plannedQty) - numberValue(item.cancelledQty));
-    return numberValue(item.qualifiedQty) < targetQty;
+    return workflowLineAvailableToShip(item) <= 0 && numberValue(item.qualifiedQty) < targetQty;
   });
-  const pendingShipmentLines = activeLines.filter((item) => {
-    const targetQty = Math.max(0, numberValue(item.plannedQty) - numberValue(item.cancelledQty));
-    return numberValue(item.qualifiedQty) >= targetQty;
-  });
+  const pendingShipmentLines = activeLines.filter((item) => workflowLineAvailableToShip(item) > 0);
 
   const currentBatches = costBatches.filter((item) => item.isCurrent !== false);
   const batchesByShipment = new Map();
@@ -467,8 +666,9 @@ export function buildWorkflowStageCounts({ demands = [], orderLines = [], shipme
     if (allLinesCosted) return "lock";
     return "cost";
   }
-  const pendingCostShipments = shipments.filter((item) => shipmentCostStage(item) === "cost");
-  const pendingLockShipments = shipments.filter((item) => shipmentCostStage(item) === "lock");
+  const activeShipments = shipments.filter((item) => !/已作废/.test(item.status));
+  const pendingCostShipments = activeShipments.filter((item) => shipmentCostStage(item) === "cost");
+  const pendingLockShipments = activeShipments.filter((item) => shipmentCostStage(item) === "lock");
 
   return {
     pendingDemands: pendingDemands.length,
@@ -1232,6 +1432,25 @@ export function stockupExecutionJdyData(input, demand) {
 export async function createStockupExecution(input, workflow) {
   const demand = workflow.demands.find((item) => item.id === input.demandRecordId);
   if (!demand) throw new Error("未找到备货需求，请刷新后重试。");
+  const reconciliation = buildExecutionDemandReconciliationPlan(demand, workflow);
+  if (reconciliation) {
+    const reconciliationResult = {
+      ok: true,
+      reused: true,
+      reconciled: true,
+      orderNo: reconciliation.order?.orderNo || "",
+      orderRecordId: reconciliation.order?.id || "",
+      lineRecordId: reconciliation.latestLine?.id || "",
+      plannedQty: reconciliation.plannedQty,
+    };
+    if (input.dryRun) return { ...reconciliationResult, dryRun: true };
+    const demandFields = JIANYUN_FORMS.stockupDemands.fields;
+    await updateJdyData(JIANYUN_FORMS.stockupDemands, demand.id, {
+      [demandFields.plannedQty]: jdyField(reconciliation.plannedQty),
+      [demandFields.businessStatus]: jdyField(reconciliation.businessStatus),
+    });
+    return { ...reconciliationResult, dryRun: false };
+  }
   const prepared = stockupExecutionJdyData(input, demand);
   if (prepared.plannedQty <= 0) throw new Error("计划数量必须大于 0。");
   const remainingQty = Math.max(0, demand.requestedQty - demand.plannedQty);
@@ -1242,18 +1461,40 @@ export async function createStockupExecution(input, workflow) {
     throw new Error("备货单明细表缺少指向“同舟备货单”的关联数据字段，无法建立关联子表关系。请在简道云明细表中检查关联字段配置。");
   }
   const orderRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.stockupOrders, prepared.orderData));
+  if (!orderRecordId) throw new Error("备货执行单表头写入后没有返回记录 ID，请刷新简道云数据后再重试。");
   const lineFields = JIANYUN_FORMS.stockupOrderLines.fields;
   const lineData = {
     ...prepared.lineData,
     [lineFields.orderRecordId]: jdyField(orderRecordId),
     [orderLinkFieldId]: jdyField(orderRecordId),
   };
-  const lineRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.stockupOrderLines, lineData));
+  let lineRecordId = "";
+  try {
+    lineRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.stockupOrderLines, lineData));
+    if (!lineRecordId) throw new Error("简道云没有返回明细记录 ID");
+  } catch (error) {
+    const orderFields = JIANYUN_FORMS.stockupOrders.fields;
+    try {
+      await updateJdyData(JIANYUN_FORMS.stockupOrders, orderRecordId, compactJdyData({
+        [orderFields.status]: jdyField("已取消"),
+        [orderFields.plannedQtyTotal]: jdyField(0),
+        [orderFields.dataVersion]: jdyField(2),
+        [orderFields.lastSyncedAt]: jdyField(new Date().toISOString()),
+      }));
+    } catch {
+      // 保留原始异常；孤立表头仍可在简道云数据日志中追溯。
+    }
+    throw new Error(`执行单明细写入失败，已将新建表头标记为取消，请重试：${error.message || String(error)}`);
+  }
   const demandFields = JIANYUN_FORMS.stockupDemands.fields;
-  await updateJdyData(JIANYUN_FORMS.stockupDemands, demand.id, {
-    [demandFields.plannedQty]: jdyField(round(demand.plannedQty + prepared.plannedQty, 4)),
-    [demandFields.businessStatus]: jdyField("已转执行"),
-  });
+  try {
+    await updateJdyData(JIANYUN_FORMS.stockupDemands, demand.id, {
+      [demandFields.plannedQty]: jdyField(round(demand.plannedQty + prepared.plannedQty, 4)),
+      [demandFields.businessStatus]: jdyField("已转执行"),
+    });
+  } catch (error) {
+    throw new Error(`执行单与明细已创建，但需求状态同步失败；请刷新后重试，系统会自动对账而不会重复建单：${error.message || String(error)}`);
+  }
   return { ok: true, dryRun: false, orderNo: prepared.orderNo, orderRecordId, lineRecordId, detailLinked: true };
 }
 
@@ -1274,15 +1515,7 @@ export async function updateStockupExecutionLine(input, workflow) {
   if (qualifiedQty > completedQty + 0.0001) throw new Error("合格数量不能大于完工数量。");
   if (qualifiedQty + 0.0001 < line.shippedQty) throw new Error(`合格数量不能小于已发数量 ${line.shippedQty}。`);
 
-  const inferredStatus = qualifiedQty >= line.plannedQty && line.plannedQty > 0
-    ? "已备妥"
-    : qualifiedQty > 0
-      ? "部分合格"
-      : completedQty > 0
-        ? "部分完工"
-        : orderedQty > 0
-          ? "已下单"
-          : "待下单";
+  const inferredStatus = deriveExecutionLineStatus({ ...line, orderedQty, completedQty, qualifiedQty });
   const status = textValue(input.status, inferredStatus);
   const actualReadyAt = textValue(input.actualReadyAt, qualifiedQty > 0 ? new Date().toISOString() : line.actualReadyAt || "");
   const lineFields = JIANYUN_FORMS.stockupOrderLines.fields;
@@ -1304,17 +1537,11 @@ export async function updateStockupExecutionLine(input, workflow) {
     completedQty: result.completedQty + item.completedQty,
     shippedQty: result.shippedQty + item.shippedQty,
     receivedQty: result.receivedQty + item.receivedQty,
-    allReady: result.allReady && item.plannedQty > 0 && item.qualifiedQty >= item.plannedQty,
-  }), { orderedQty: 0, completedQty: 0, shippedQty: 0, receivedQty: 0, allReady: true });
-  const orderStatus = totals.receivedQty > 0
-    ? "到仓中"
-    : totals.shippedQty > 0
-      ? "已发货"
-      : totals.allReady
-        ? "已备妥"
-        : totals.orderedQty > 0 || totals.completedQty > 0
-          ? "执行中"
-          : "待执行";
+  }), { orderedQty: 0, completedQty: 0, shippedQty: 0, receivedQty: 0 });
+  const activePatchedLines = patchedLines.filter((item) => workflowLineTargetQty(item) > 0);
+  totals.allReady = activePatchedLines.length > 0
+    && activePatchedLines.every((item) => numberValue(item.qualifiedQty) >= workflowLineTargetQty(item));
+  const orderStatus = deriveExecutionOrderStatus(patchedLines);
   const orderFields = JIANYUN_FORMS.stockupOrders.fields;
   const orderData = compactJdyData({
     [orderFields.orderedQtyTotal]: jdyField(round(totals.orderedQty, 4)),
@@ -1331,6 +1558,56 @@ export async function updateStockupExecutionLine(input, workflow) {
   await updateJdyData(JIANYUN_FORMS.stockupOrderLines, line.id, lineData);
   await updateJdyData(JIANYUN_FORMS.stockupOrders, order.id, orderData);
   return { ok: true, dryRun: false, stockupLineRecordId: line.id, stockupOrderRecordId: order.id, status, orderStatus, totals };
+}
+
+export async function rollbackStockupExecutionLine(input, workflow) {
+  const plan = buildExecutionLineRollbackPlan(input, workflow);
+  const updateInput = {
+    stockupLineRecordId: plan.line.id,
+    ...plan.next,
+    exceptionReason: plan.reason,
+    dryRun: input.dryRun,
+  };
+  if (input.dryRun) return { ok: true, dryRun: true, ...plan, updateInput };
+  const result = await updateStockupExecutionLine(updateInput, workflow);
+  return { ...result, rollbackStage: plan.rollbackStage, reason: plan.reason };
+}
+
+export async function cancelStockupExecution(input, workflow) {
+  const plan = buildExecutionCancellationPlan(input, workflow);
+  if (input.dryRun) return { ok: true, dryRun: true, ...plan };
+  const lineFields = JIANYUN_FORMS.stockupOrderLines.fields;
+  for (const line of plan.lineUpdates) {
+    await updateJdyData(JIANYUN_FORMS.stockupOrderLines, line.id, compactJdyData({
+      [lineFields.cancelledQty]: jdyField(line.cancelledQty),
+      [lineFields.status]: jdyField(line.status),
+      [lineFields.exceptionReason]: jdyField(line.exceptionReason),
+    }));
+  }
+  const demandFields = JIANYUN_FORMS.stockupDemands.fields;
+  for (const demand of plan.demandUpdates) {
+    await updateJdyData(JIANYUN_FORMS.stockupDemands, demand.id, compactJdyData({
+      [demandFields.plannedQty]: jdyField(demand.plannedQty),
+      [demandFields.businessStatus]: jdyField(demand.businessStatus),
+      [demandFields.cancellationReason]: jdyField(demand.cancellationReason),
+    }));
+  }
+  const orderFields = JIANYUN_FORMS.stockupOrders.fields;
+  await updateJdyData(JIANYUN_FORMS.stockupOrders, plan.order.id, compactJdyData({
+    [orderFields.status]: jdyField(plan.orderStatus),
+    [orderFields.dataVersion]: jdyField(numberValue(plan.order.dataVersion) + 1),
+    [orderFields.lastSyncedAt]: jdyField(new Date().toISOString()),
+  }));
+  return {
+    ok: true,
+    dryRun: false,
+    stockupOrderRecordId: plan.order.id,
+    orderNo: plan.order.orderNo,
+    orderStatus: plan.orderStatus,
+    cancelledQty: plan.cancelledQty,
+    reopenedDemandCount: plan.demandUpdates.length,
+    reason: plan.reason,
+  };
 }
 
 export function workflowShipmentJdyData(input, workflow) {
@@ -1415,18 +1692,30 @@ export async function createWorkflowShipment(input, workflow) {
   }
   if (input.dryRun) return { ok: true, dryRun: true, data: prepared.data };
   const shipmentRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.shipments, prepared.data));
+  const shippedDeltaByLine = new Map();
+  for (const item of prepared.normalizedLines) {
+    shippedDeltaByLine.set(item.source.id, round(numberValue(shippedDeltaByLine.get(item.source.id)) + item.shippedQty, 4));
+  }
+  const patchedOrderLines = workflow.stockupLines
+    .filter((item) => item.orderRecordId === prepared.order.id)
+    .map((line) => {
+      const shippedQty = round(numberValue(line.shippedQty) + numberValue(shippedDeltaByLine.get(line.id)), 4);
+      return { ...line, shippedQty, status: deriveExecutionLineStatus({ ...line, shippedQty }) };
+    });
+  const patchedLineById = new Map(patchedOrderLines.map((line) => [line.id, line]));
   const lineFields = JIANYUN_FORMS.stockupOrderLines.fields;
   for (const item of prepared.normalizedLines) {
+    const patchedLine = patchedLineById.get(item.source.id);
     await updateJdyData(JIANYUN_FORMS.stockupOrderLines, item.source.id, {
-      [lineFields.shippedQty]: jdyField(round(item.source.shippedQty + item.shippedQty, 4)),
-      [lineFields.status]: jdyField("已发货"),
+      [lineFields.shippedQty]: jdyField(patchedLine?.shippedQty || round(item.source.shippedQty + item.shippedQty, 4)),
+      [lineFields.status]: jdyField(patchedLine?.status || "部分发货"),
     });
   }
   const orderFields = JIANYUN_FORMS.stockupOrders.fields;
-  const shippedTotal = round(prepared.order.shippedQty + prepared.normalizedLines.reduce((sum, item) => sum + item.shippedQty, 0), 4);
+  const shippedTotal = round(patchedOrderLines.reduce((sum, item) => sum + item.shippedQty, 0), 4);
   await updateJdyData(JIANYUN_FORMS.stockupOrders, prepared.order.id, {
     [orderFields.shippedQtyTotal]: jdyField(shippedTotal),
-    [orderFields.status]: jdyField("已发货"),
+    [orderFields.status]: jdyField(deriveExecutionOrderStatus(patchedOrderLines)),
     [orderFields.shippedAt]: jdyField(input.shippedAt || new Date().toISOString()),
     [orderFields.lastSyncedAt]: jdyField(new Date().toISOString()),
   });
@@ -1446,6 +1735,69 @@ export async function createWorkflowShipment(input, workflow) {
     });
   }
   return { ok: true, dryRun: false, shipmentRecordId, lineCount: prepared.normalizedLines.length };
+}
+
+export async function voidWorkflowShipment(input, workflow) {
+  const plan = buildShipmentVoidPlan(input, workflow);
+  if (input.dryRun) return { ok: true, dryRun: true, ...plan };
+  const lineFields = JIANYUN_FORMS.stockupOrderLines.fields;
+  for (const line of plan.lineUpdates) {
+    await updateJdyData(JIANYUN_FORMS.stockupOrderLines, line.id, compactJdyData({
+      [lineFields.shippedQty]: jdyField(line.shippedQty),
+      [lineFields.status]: jdyField(line.status),
+      [lineFields.exceptionReason]: jdyField(plan.reason),
+    }));
+  }
+  const orderFields = JIANYUN_FORMS.stockupOrders.fields;
+  for (const order of plan.orderUpdates) {
+    const current = workflow.stockupOrders.find((item) => item.id === order.id);
+    await updateJdyData(JIANYUN_FORMS.stockupOrders, order.id, compactJdyData({
+      [orderFields.shippedQtyTotal]: jdyField(order.shippedQty),
+      [orderFields.status]: jdyField(order.status),
+      [orderFields.dataVersion]: jdyField(numberValue(current?.dataVersion) + 1),
+      [orderFields.lastSyncedAt]: jdyField(new Date().toISOString()),
+    }));
+  }
+  const demandFields = JIANYUN_FORMS.stockupDemands.fields;
+  for (const demand of plan.demandUpdates) {
+    await updateJdyData(JIANYUN_FORMS.stockupDemands, demand.id, compactJdyData({
+      [demandFields.shippedQty]: jdyField(demand.shippedQty),
+      [demandFields.businessStatus]: jdyField(demand.businessStatus),
+      [demandFields.cancellationReason]: jdyField(plan.reason),
+    }));
+  }
+  const feeFields = JIANYUN_FORMS.shipmentFees.fields;
+  for (const feeId of plan.feeIds) {
+    await updateJdyData(JIANYUN_FORMS.shipmentFees, feeId, compactJdyData({
+      [feeFields.allocationStatus]: jdyField("已作废"),
+      [feeFields.description]: jdyField(plan.reason),
+    }));
+  }
+  const costFields = JIANYUN_FORMS.shipmentCostBatches.fields;
+  for (const costBatchId of plan.costBatchIds) {
+    await updateJdyData(JIANYUN_FORMS.shipmentCostBatches, costBatchId, compactJdyData({
+      [costFields.status]: jdyField("已作废"),
+      [costFields.isCurrent]: jdyField("否"),
+      [costFields.note]: jdyField(plan.reason),
+    }));
+  }
+  const shipmentFields = JIANYUN_FORMS.shipments.fields;
+  await updateJdyData(JIANYUN_FORMS.shipments, plan.shipment.id, compactJdyData({
+    [shipmentFields.status]: jdyField("已作废"),
+    [shipmentFields.feeConfirmationStatus]: jdyField("已作废"),
+    [shipmentFields.costingStatus]: jdyField("已作废"),
+    [shipmentFields.dataVersion]: jdyField(numberValue(plan.shipment.dataVersion) + 1),
+    [shipmentFields.lastSyncedAt]: jdyField(new Date().toISOString()),
+  }));
+  return {
+    ok: true,
+    dryRun: false,
+    shipmentRecordId: plan.shipment.id,
+    shipmentNo: plan.shipment.shipmentNo,
+    status: "已作废",
+    reversedLineCount: plan.lineUpdates.length,
+    reason: plan.reason,
+  };
 }
 
 export async function completeProductCoding(input, workflow) {

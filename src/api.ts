@@ -2083,12 +2083,24 @@ export function createWorkflowExecution(input: { demandRecordId: string; planned
   return requestJson<{ ok: boolean; dryRun: boolean; orderNo: string; orderRecordId?: string; lineRecordId?: string; detailLinked?: boolean }>("/api/stockup/workflow/executions", { method: "POST", body: JSON.stringify(input) });
 }
 
+export function cancelWorkflowExecution(input: { stockupOrderRecordId: string; reason?: string; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; stockupOrderRecordId: string; orderNo?: string; orderStatus: string; cancelledQty: number; reopenedDemandCount: number; reason: string }>("/api/stockup/workflow/executions/cancel", { method: "POST", body: JSON.stringify(input) });
+}
+
 export function updateWorkflowExecutionLine(input: { stockupLineRecordId: string; orderedQty: number; completedQty: number; qualifiedQty: number; actualBaseUnitCost: number; status?: string; exceptionReason?: string; actualReadyAt?: string; dryRun?: boolean }) {
   return requestJson<{ ok: boolean; dryRun: boolean; stockupLineRecordId?: string; stockupOrderRecordId?: string; status: string; orderStatus: string; totals: { orderedQty: number; completedQty: number; shippedQty: number; receivedQty: number; allReady: boolean } }>("/api/stockup/workflow/execution-lines", { method: "PATCH", body: JSON.stringify(input) });
 }
 
+export function rollbackWorkflowExecutionLine(input: { stockupLineRecordId: string; reason?: string; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; stockupLineRecordId?: string; stockupOrderRecordId?: string; rollbackStage: string; status: string; orderStatus: string; reason: string }>("/api/stockup/workflow/execution-lines/rollback", { method: "POST", body: JSON.stringify(input) });
+}
+
 export function createWorkflowShipment(input: { stockupOrderRecordId: string; carrier?: string; trackingNo?: string; transportMode?: string; destinationWarehouseName?: string; shippedAt?: string; defaultAllocationMethod?: string; lines: Array<{ stockupLineRecordId: string; shippedQty: number; totalWeightKg: number; totalVolumeM3: number; baseUnitCostCny?: number }>; dryRun?: boolean }) {
   return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId?: string; lineCount?: number }>("/api/stockup/workflow/shipments", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function voidWorkflowShipment(input: { shipmentRecordId: string; reason?: string; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId: string; shipmentNo?: string; status: string; reversedLineCount: number; reason: string }>("/api/stockup/workflow/shipments/void", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function completeWorkflowProductCoding(input: { productRecordId: string; sku: string; dryRun?: boolean }) {

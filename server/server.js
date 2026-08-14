@@ -16,7 +16,7 @@ import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analy
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
-import { calculateShipmentCosts, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, updateStockupExecutionLine } from "./stockup-workflow.js";
+import { calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders } from "./wms-adapters.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
 import { createAgentIndexLayer } from "./agent-index.js";
@@ -5655,6 +5655,20 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/stockup/workflow/executions/cancel" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "取消备货执行单需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await cancelStockupExecution(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "取消备货执行剩余数量", "stockup_execution", result.orderNo || result.stockupOrderRecordId, { cancelledQty: result.cancelledQty, reopenedDemandCount: result.reopenedDemandCount, reason: result.reason });
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (url.pathname === "/api/stockup/workflow/execution-lines" && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!canManage(auth)) {
@@ -5665,6 +5679,20 @@ const server = http.createServer(async (req, res) => {
       const workflow = await loadStockupWorkflow();
       const result = await updateStockupExecutionLine(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "更新备货执行进度", "stockup_execution_line", result.stockupLineRecordId, { status: result.status, orderStatus: result.orderStatus, totals: result.totals });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/execution-lines/rollback" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "退回备货执行进度需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await rollbackStockupExecutionLine(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "退回备货执行进度", "stockup_execution_line", result.stockupLineRecordId, { rollbackStage: result.rollbackStage, status: result.status, orderStatus: result.orderStatus, reason: result.reason });
       sendJson(res, 200, result);
       return;
     }
@@ -5680,6 +5708,20 @@ const server = http.createServer(async (req, res) => {
       const result = await createWorkflowShipment(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "登记发货", "shipment", result.shipmentRecordId, { stockupOrderRecordId: payload.stockupOrderRecordId, lineCount: result.lineCount });
       sendJson(res, payload.dryRun ? 200 : 201, result);
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/shipments/void" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "作废发货单需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await loadStockupWorkflow();
+      const result = await voidWorkflowShipment(payload, workflow);
+      if (!payload.dryRun) appendActionLog(auth, "作废发货单", "shipment", result.shipmentNo || result.shipmentRecordId, { reversedLineCount: result.reversedLineCount, reason: result.reason });
+      sendJson(res, 200, result);
       return;
     }
 
