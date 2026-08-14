@@ -1651,27 +1651,33 @@ export function workflowShipmentJdyData(input, workflow) {
   if (!normalizedLines.length) throw new Error("请至少选择一条发货明细。");
   const fields = JIANYUN_FORMS.shipments.fields;
   const now = new Date().toISOString();
+  const shipmentNo = String(input.shipmentNo || businessNo("FH")).trim();
+  const destinationWarehouseName = String(input.destinationWarehouseName || order.destinationWarehouseName || "").trim();
+  const destinationWarehouseRecordId = String(input.destinationWarehouseRecordId || order.destinationWarehouseRecordId || "").trim();
+  const destinationCountry = String(input.destinationCountry || order.destinationCountry || "").trim();
   return {
     order,
+    shipmentNo,
     normalizedLines,
     data: compactJdyData({
       [fields.legacyOrderNo]: jdyField(order.orderNo || ""),
       [fields.stockupDate]: jdyField(now),
       [fields.project]: jdyField(order.project || ""),
-      [fields.warehouse]: jdyField(input.destinationWarehouseName || order.destinationWarehouseName || ""),
+      [fields.warehouse]: jdyField(destinationWarehouseName),
       [fields.firstMileCarrier]: jdyField(input.carrier || ""),
       [fields.firstMileTrackingNo]: jdyField(input.trackingNo || ""),
       [fields.shippedAt]: jdyField(input.shippedAt || now),
       [fields.legacyTotalWeight]: jdyField(round(normalizedLines.reduce((sum, item) => sum + item.totalWeightKg, 0), 8)),
       [fields.legacyTotalVolume]: jdyField(round(normalizedLines.reduce((sum, item) => sum + item.totalVolumeM3, 0), 8)),
       [fields.shipmentLines]: jdyField(normalizedLines.map((item) => item.row)),
+      [fields.shipmentBatchNo]: jdyField(shipmentNo),
       [fields.stockupOrderRecordId]: jdyField(order.id),
       [fields.demandRecordIds]: jdyField([...new Set(normalizedLines.map((item) => item.source.demandRecordId).filter(Boolean))].join(",")),
       [fields.carrier]: jdyField(input.carrier || ""),
       [fields.transportMode]: jdyField(input.transportMode || "海运"),
-      [fields.destinationCountry]: jdyField(order.destinationCountry || ""),
-      [fields.destinationWarehouseRecordId]: jdyField(order.destinationWarehouseRecordId || ""),
-      [fields.destinationWarehouseName]: jdyField(input.destinationWarehouseName || order.destinationWarehouseName || ""),
+      [fields.destinationCountry]: jdyField(destinationCountry),
+      [fields.destinationWarehouseRecordId]: jdyField(destinationWarehouseRecordId),
+      [fields.destinationWarehouseName]: jdyField(destinationWarehouseName),
       [fields.status]: jdyField("已发货"),
       [fields.actualWeightKg]: jdyField(round(normalizedLines.reduce((sum, item) => sum + item.totalWeightKg, 0), 8)),
       [fields.actualVolumeM3]: jdyField(round(normalizedLines.reduce((sum, item) => sum + item.totalVolumeM3, 0), 8)),
@@ -1734,7 +1740,7 @@ export async function createWorkflowShipment(input, workflow) {
       [demandFields.businessStatus]: jdyField(nextShippedQty >= demand.requestedQty ? "已发货" : "部分发货"),
     });
   }
-  return { ok: true, dryRun: false, shipmentRecordId, lineCount: prepared.normalizedLines.length };
+  return { ok: true, dryRun: false, shipmentRecordId, shipmentNo: prepared.shipmentNo, lineCount: prepared.normalizedLines.length };
 }
 
 export async function voidWorkflowShipment(input, workflow) {

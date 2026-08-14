@@ -195,7 +195,7 @@ function seaCredentials(connection) {
     baseUrl: normalizeBaseUrl(getEnv(`${prefix}_BASE_URL`) || connection.baseUrl),
     appKey: getEnv(`${prefix}_APP_KEY`) || connection.credentials?.appKey || connection.credentials?.clientId || getEnv("WMS_SEA_APP_KEY"),
     appSecret: getEnv(`${prefix}_APP_SECRET`) || connection.credentials?.appSecret || connection.credentials?.clientSecret || getEnv("WMS_SEA_APP_SECRET"),
-    warehouseCode: getEnv(`${prefix}_WAREHOUSE_CODE`) || connection.warehouseCode,
+    warehouseCode: getEnv(`${prefix}_WAREHOUSE_CODE`) || connection.warehouseCode || connection.warehouseId || connection.resolvedWarehouseId,
     warehouseId: getEnv(`${prefix}_WAREHOUSE_ID`) || connection.warehouseId || connection.warehouseCode,
   };
 }
@@ -210,12 +210,46 @@ function yunCredentials(connection) {
     baseUrl: normalizeYunEndpoint(getEnv(`${prefix}_BASE_URL`) || connection.baseUrl),
     appKey: getEnv(`${prefix}_APP_KEY`) || connection.credentials?.appKey || connection.credentials?.clientId,
     appToken: getEnv(`${prefix}_APP_TOKEN`) || connection.credentials?.token || connection.credentials?.appSecret || connection.credentials?.clientSecret,
-    warehouseCode: getEnv(`${prefix}_WAREHOUSE_CODE`) || connection.warehouseCode,
+    warehouseCode: getEnv(`${prefix}_WAREHOUSE_CODE`) || connection.warehouseCode || connection.warehouseId || connection.resolvedWarehouseId,
   };
 }
 
 function hasYunCredentials(credentials) {
   return Boolean(credentials.baseUrl && credentials.appKey && credentials.appToken);
+}
+
+function configuredText(value) {
+  const normalized = firstText(value);
+  return normalized && !/^(待配置|待授权|未配置|undefined|null)$/i.test(normalized) ? normalized : "";
+}
+
+export function warehouseStockupCreateCapability(connection) {
+  if (connection?.providerId === "sea_wms") {
+    const credentials = seaCredentials(connection);
+    const configured = hasSeaCredentials(credentials) && Boolean(configuredText(credentials.warehouseId || credentials.warehouseCode));
+    return {
+      supported: true,
+      configured,
+      createMode: "草稿备货单",
+      message: configured ? "确认后将在 SEA WMS 创建草稿备货单。" : "需要先配置 SEA WMS 授权及仓库 ID。",
+    };
+  }
+  if (connection?.providerId === "yunwms_ru") {
+    const credentials = yunCredentials(connection);
+    const configured = hasYunCredentials(credentials);
+    return {
+      supported: true,
+      configured,
+      createMode: "未审核入库单",
+      message: configured ? "确认后将在 YunWMS 创建未审核入库单。" : "需要先配置 YunWMS 授权。",
+    };
+  }
+  return {
+    supported: false,
+    configured: false,
+    createMode: "",
+    message: `当前 WMS 类型 ${connection?.providerId || "未知"} 尚未接入创建接口。`,
+  };
 }
 
 function yunEnvelope(credentials, service, params = {}) {
@@ -485,6 +519,114 @@ async function resolveYunWarehouseCode(credentials, connection) {
     );
   });
   return firstText(matched?.warehouse_code, matched?.warehouseCode);
+}
+
+function validateCreateLines(input) {
+  const lines = Array.isArray(input?.lines) ? input.lines : [];
+  if (!lines.length) throw new Error("WMS 建单至少需要一条 SKU 明细。");
+  return lines.map((line, index) => {
+    const sku = firstText(line.sku);
+    const quantity = firstNumber(line.quantity);
+    if (!sku) throw new Error(`WMS 建单第 ${index + 1} 行缺少 SKU。`);
+    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error(`${sku} 的 WMS 入库数量必须是大于 0 的整数。`);
+    return {
+      sku,
+      quantity,
+      purchasePrice: Math.max(0, firstNumber(line.purchasePrice)),
+      purchasePriceCurrency: firstText(line.purchasePriceCurrency, "CNY") || "CNY",
+      boxSequence: Math.max(1, Math.floor(firstNumber(line.boxSequence, index + 1))),
+    };
+  });
+}
+
+async function createSeaStockupOrder(connection, input) {
+  const credentials = seaCredentials(connection);
+  if (!hasSeaCredentials(credentials)) throw new Error("缺少 SEA WMS baseUrl / AppKey / AppSecret，不能创建备货单。");
+  const warehouseId = await resolveSeaWarehouseId(credentials, connection);
+  if (!configuredText(warehouseId)) throw new Error("未解析到 SEA WMS 仓库 ID，不能创建备货单。");
+  const lines = validateCreateLines(input);
+  const carrier = firstText(input.carrier);
+  const trackingNo = firstText(input.trackingNo);
+  const payload = await postSea(credentials, "/warehouse_stock_order/add", {
+    warehouseId,
+    isDraft: 1,
+    thirdOrderSn: firstText(input.referenceNo).slice(0, 50),
+    customerNote: firstText(input.customerNote).slice(0, 200),
+    ...(carrier && trackingNo ? { logisticsCompany: carrier, trackingNo } : {}),
+    goodsSkuList: lines.map((line) => ({
+      goodsSkuOuterId: line.sku,
+      boxSn: line.boxSequence,
+      quantity: line.quantity,
+      purchasePrice: line.purchasePrice,
+      purchasePriceCurrency: line.purchasePriceCurrency,
+    })),
+  });
+  if (!isSuccessfulPayload(payload) || payload?.success === false) {
+    throw new Error(`SEA WMS 创建草稿备货单失败：${payloadMessage(payload)}`);
+  }
+  const orderNo = firstText(
+    payload?.data?.warehouseStockOrderNo,
+    payload?.data?.warehouseStockOrderId,
+    payload?.warehouseStockOrderNo,
+    payload?.warehouseStockOrderId,
+  );
+  if (!orderNo) throw new Error("SEA WMS 返回成功但缺少备货单 ID，请在 WMS 核实后再重试，避免重复建单。");
+  return {
+    ok: true,
+    providerId: connection.providerId,
+    createMode: "draft",
+    warehouseId,
+    orderNo,
+    raw: payload,
+  };
+}
+
+async function createYunAsn(connection, input) {
+  const credentials = yunCredentials(connection);
+  if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能创建入库单。");
+  const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
+  if (!configuredText(warehouseCode)) throw new Error("未解析到 YunWMS 仓库编码，不能创建入库单。");
+  const lines = validateCreateLines(input);
+  const payload = await postYun(credentials, "createAsn", {
+    reference_no: firstText(input.referenceNo).slice(0, 50),
+    warehouse_code: warehouseCode,
+    verify: 0,
+    income_type: 0,
+    receiving_type: "D",
+    ...(firstText(input.trackingNo) ? { tracking_number: firstText(input.trackingNo) } : {}),
+    ...(firstText(input.carrier) ? { shipping_method: firstText(input.carrier) } : {}),
+    ...(firstText(input.customerNote) ? { receiving_desc: firstText(input.customerNote).slice(0, 200) } : {}),
+    items: lines.map((line) => ({
+      product_sku: line.sku,
+      quantity: line.quantity,
+      box_no: String(line.boxSequence),
+      product_price: line.purchasePrice,
+      currency_code: line.purchasePriceCurrency,
+    })),
+  });
+  if (String(payload?.ask || "").toLowerCase() !== "success") {
+    throw new Error(`YunWMS 创建未审核入库单失败：${firstText(payload?.message, payload?.error) || "未知错误"}`);
+  }
+  const orderNo = firstText(payload?.data?.receiving_code, payload?.data?.receivingCode, payload?.receiving_code);
+  if (!orderNo) throw new Error("YunWMS 返回成功但缺少入库单号，请在 WMS 核实后再重试，避免重复建单。");
+  return {
+    ok: true,
+    providerId: connection.providerId,
+    createMode: "unverified",
+    warehouseId: warehouseCode,
+    orderNo,
+    raw: payload,
+  };
+}
+
+export async function createWarehouseStockupOrder(connection, input) {
+  const capability = warehouseStockupCreateCapability(connection);
+  if (!capability.supported) throw new Error(capability.message);
+  if (!capability.configured) throw new Error(capability.message);
+  if (!firstText(input?.referenceNo)) throw new Error("缺少外部参考号，不能安全创建 WMS 单据。");
+  if (connection.providerId === "sea_wms") return createSeaStockupOrder(connection, input);
+  if (connection.providerId === "yunwms_ru") return createYunAsn(connection, input);
+  throw new Error(capability.message);
 }
 
 function normalizeYunProduct(item, connection) {

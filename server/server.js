@@ -17,7 +17,8 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders } from "./wms-adapters.js";
+import { createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
@@ -67,6 +68,7 @@ const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
+const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
@@ -84,6 +86,7 @@ let cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(loadJsonCache(o
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupDecisions = loadJsonCache(stockupDecisionCachePath) || { updatedAt: "", decisions: {} };
 let cachedStockupPlans = normalizeStockupPlans(loadJsonCache(stockupPlanCachePath));
+let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
@@ -176,6 +179,12 @@ function saveStockupDecisionCache() {
 function saveStockupPlanCache() {
   cachedStockupPlans = normalizeStockupPlans(cachedStockupPlans);
   saveJsonCache(stockupPlanCachePath, cachedStockupPlans);
+}
+
+function saveWmsStockupPushCache() {
+  cachedWmsStockupPushes = normalizeWmsPushStore(cachedWmsStockupPushes);
+  cachedWmsStockupPushes.updatedAt = new Date().toISOString();
+  saveJsonCache(wmsStockupPushCachePath, cachedWmsStockupPushes);
 }
 
 function saveWarehouseConnections() {
@@ -1756,6 +1765,132 @@ function sameSystemCredentialFallback(connection) {
     normalizedConnectionBaseUrl(candidate) === baseUrl &&
     hasWarehouseCredentials(candidate)
   ));
+}
+
+function effectiveWarehouseCreateConnection(connection) {
+  if (warehouseStockupCreateCapability(connection).configured) return connection;
+  const fallback = sameSystemCredentialFallback(connection);
+  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+}
+
+function currentWmsWarehouseOptions() {
+  return buildWmsWarehouseOptions(
+    warehouseConnections,
+    cachedWarehouseInfo.warehouseInfo || [],
+    (connection) => warehouseStockupCreateCapability(effectiveWarehouseCreateConnection(connection)),
+  );
+}
+
+function workflowWithWmsState(workflow) {
+  const warehouseOptions = currentWmsWarehouseOptions();
+  return {
+    ...workflow,
+    warehouseOptions,
+    wmsPushTasks: publicWmsPushTasks(cachedWmsStockupPushes, warehouseOptions),
+  };
+}
+
+function selectedShipmentWarehouse(payload) {
+  const connectionId = String(payload?.destinationWarehouseConnectionId || "").trim();
+  if (!connectionId) throw new Error("请选择发往仓库；保存后系统会建立一条待确认的 WMS 推送任务。");
+  const option = currentWmsWarehouseOptions().find((item) => item.connectionId === connectionId);
+  if (!option) throw new Error("所选仓库连接已不存在，请刷新页面后重新选择。");
+  if (!option.createSupported) throw new Error(option.createMessage || "该仓库尚未接入 WMS 创建接口。");
+  return option;
+}
+
+function createPendingWmsPushTask({ payload, result, workflow, warehouseOption, auth }) {
+  const lineById = new Map((workflow.stockupLines || []).map((line) => [line.id, line]));
+  const lines = (Array.isArray(payload.lines) ? payload.lines : []).filter((line) => Number(line.shippedQty) > 0).map((line, index) => {
+    const source = lineById.get(line.stockupLineRecordId);
+    return {
+      sku: source?.sku || source?.temporaryProductNo || "",
+      productName: source?.productName || "",
+      quantity: Number(line.shippedQty || 0),
+      purchasePrice: Number(line.baseUnitCostCny ?? (Number(source?.actualBaseUnitCost || 0) * Number(source?.baseExchangeRate || 1))),
+      purchasePriceCurrency: "CNY",
+      boxSequence: index + 1,
+    };
+  });
+  const task = buildWmsPushTask({
+    shipmentRecordId: result.shipmentRecordId,
+    shipmentNo: result.shipmentNo,
+    stockupOrderRecordId: payload.stockupOrderRecordId,
+    warehouseOption,
+    carrier: payload.carrier,
+    trackingNo: payload.trackingNo,
+    lines,
+    createdBy: auth?.user?.displayName || auth?.user?.username || "",
+  });
+  const upserted = upsertWmsPushTask(cachedWmsStockupPushes, task);
+  cachedWmsStockupPushes = upserted.store;
+  if (upserted.created) saveWmsStockupPushCache();
+  return publicWmsPushTasks({ tasks: [upserted.task] }, currentWmsWarehouseOptions())[0];
+}
+
+async function confirmWmsStockupPush(taskId, auth) {
+  const task = (cachedWmsStockupPushes.tasks || []).find((item) => item.id === String(taskId || ""));
+  if (!task) throw new Error("未找到 WMS 待推送任务，请刷新页面后重试。");
+  if (task.status === "pushed") {
+    return { ok: true, alreadyPushed: true, task: publicWmsPushTasks({ tasks: [task] }, currentWmsWarehouseOptions())[0] };
+  }
+  if (task.status === "pushing") throw new Error("该任务正在推送，请勿重复点击。");
+  if (task.status === "needs_manual_check") throw new Error("WMS 返回结果不明确，请先到 WMS 按外部参考号核实，不能自动重试。");
+  const connection = warehouseConnections.find((item) => item.id === task.warehouseConnectionId);
+  if (!connection) throw new Error("任务对应的 WMS 仓库连接已不存在。");
+  const effectiveConnection = effectiveWarehouseCreateConnection(connection);
+  const capability = warehouseStockupCreateCapability(effectiveConnection);
+  if (!capability.configured) throw new Error(capability.message);
+
+  task.status = "pushing";
+  task.attempts = Number(task.attempts || 0) + 1;
+  task.confirmedAt = new Date().toISOString();
+  task.confirmedBy = auth?.user?.displayName || auth?.user?.username || "";
+  task.lastError = "";
+  saveWmsStockupPushCache();
+  let created;
+  try {
+    created = await createWarehouseStockupOrder(effectiveConnection, task.payloadSnapshot);
+  } catch (error) {
+    task.status = /避免重复建单|核实后再重试|fetch failed|abort|timeout|timed out|socket|network|ECONN|UND_ERR/i.test(error.message || "") ? "needs_manual_check" : "failed";
+    task.lastError = error.message || "WMS 推送失败";
+    saveWmsStockupPushCache();
+    throw error;
+  }
+
+  task.status = "pushed";
+  task.wmsOrderNo = created.orderNo;
+  task.pushedAt = new Date().toISOString();
+  task.lastError = "";
+  saveWmsStockupPushCache();
+
+  let writebackWarning = "";
+  try {
+    await updateJdyData(JIANYUN_FORMS.shipments, task.shipmentRecordId, {
+      [JIANYUN_FORMS.shipments.fields.wmsInboundNo]: { value: created.orderNo },
+      [JIANYUN_FORMS.shipments.fields.lastSyncedAt]: { value: new Date().toISOString() },
+    });
+  } catch (error) {
+    writebackWarning = `WMS 已建单，但简道云回写失败：${error.message || "未知错误"}`;
+    task.writebackWarning = writebackWarning;
+    saveWmsStockupPushCache();
+  }
+  try {
+    appendActionLog(auth, "确认推送 WMS 备货单", "wms_stockup_push", created.orderNo, {
+      shipmentRecordId: task.shipmentRecordId,
+      warehouseName: task.warehouseName,
+      providerId: task.providerId,
+      createMode: capability.createMode,
+    });
+  } catch (error) {
+    writebackWarning = writebackWarning || `WMS 已建单，但操作日志写入失败：${error.message || "未知错误"}`;
+  }
+  return {
+    ok: true,
+    alreadyPushed: false,
+    writebackWarning,
+    task: publicWmsPushTasks({ tasks: [task] }, currentWmsWarehouseOptions())[0],
+  };
 }
 
 async function syncWithSameSystemFallback(connection, syncer) {
@@ -5624,7 +5759,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const workflow = await loadStockupWorkflow();
-      sendJson(res, 200, workflow);
+      sendJson(res, 200, workflowWithWmsState(workflow));
       return;
     }
 
@@ -5705,9 +5840,43 @@ const server = http.createServer(async (req, res) => {
       }
       const payload = await parseRequestBody(req);
       const workflow = await loadStockupWorkflow();
-      const result = await createWorkflowShipment(payload, workflow);
-      if (!payload.dryRun) appendActionLog(auth, "登记发货", "shipment", result.shipmentRecordId, { stockupOrderRecordId: payload.stockupOrderRecordId, lineCount: result.lineCount });
-      sendJson(res, payload.dryRun ? 200 : 201, result);
+      const warehouseOption = selectedShipmentWarehouse(payload);
+      const shipmentPayload = {
+        ...payload,
+        destinationWarehouseRecordId: warehouseOption.warehouseRecordId,
+        destinationWarehouseName: warehouseOption.warehouseName,
+        destinationCountry: warehouseOption.country,
+      };
+      const result = await createWorkflowShipment(shipmentPayload, workflow);
+      let wmsPushTask = null;
+      let wmsTaskWarning = "";
+      if (!payload.dryRun) {
+        try {
+          wmsPushTask = createPendingWmsPushTask({ payload: shipmentPayload, result, workflow, warehouseOption, auth });
+        } catch (error) {
+          wmsTaskWarning = `发货已经登记，但 WMS 待确认任务生成失败：${error.message || "未知错误"}。请勿重复登记发货，联系管理员补建任务。`;
+        }
+      }
+      if (!payload.dryRun) {
+        try {
+          appendActionLog(auth, "登记发货", "shipment", result.shipmentRecordId, { stockupOrderRecordId: payload.stockupOrderRecordId, lineCount: result.lineCount, warehouseName: warehouseOption.warehouseName, wmsPushStatus: wmsPushTask ? "pending_confirmation" : "task_creation_failed" });
+        } catch (error) {
+          wmsTaskWarning = wmsTaskWarning || `发货和 WMS 待确认任务已保存，但操作日志写入失败：${error.message || "未知错误"}。`;
+        }
+      }
+      sendJson(res, payload.dryRun ? 200 : 201, { ...result, wmsPushTask, wmsTaskWarning });
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/wms-pushes/confirm" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "确认推送 WMS 备货单需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = await confirmWmsStockupPush(payload.taskId, auth);
+      sendJson(res, 200, result);
       return;
     }
 
@@ -5718,8 +5887,21 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
+      const linkedWmsTasks = (cachedWmsStockupPushes.tasks || []).filter((item) => item.shipmentRecordId === String(payload.shipmentRecordId || ""));
+      const externallyStarted = linkedWmsTasks.find((item) => ["pushing", "pushed", "needs_manual_check"].includes(item.status));
+      if (externallyStarted) {
+        throw new Error(`该发货单的 WMS 任务状态为“${externallyStarted.status}”，请先在 WMS 核实/取消外部单据，再联系管理员处理，系统不会直接作废。`);
+      }
       const workflow = await loadStockupWorkflow();
       const result = await voidWorkflowShipment(payload, workflow);
+      if (!payload.dryRun && linkedWmsTasks.length) {
+        for (const task of linkedWmsTasks) {
+          task.status = "cancelled";
+          task.cancelledAt = new Date().toISOString();
+          task.lastError = "发货单已在中台作废，WMS 推送任务同步取消。";
+        }
+        saveWmsStockupPushCache();
+      }
       if (!payload.dryRun) appendActionLog(auth, "作废发货单", "shipment", result.shipmentNo || result.shipmentRecordId, { reversedLineCount: result.reversedLineCount, reason: result.reason });
       sendJson(res, 200, result);
       return;

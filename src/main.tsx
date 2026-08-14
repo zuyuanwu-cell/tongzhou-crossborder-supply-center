@@ -86,6 +86,7 @@ import {
   createWorkflowDemand,
   createWorkflowExecution,
   createWorkflowShipment,
+  confirmWorkflowWmsPush,
   cancelWorkflowExecution,
   completeWorkflowProductCoding,
   rollbackWorkflowExecutionLine,
@@ -4344,6 +4345,8 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
   const shipmentReadyLines = activeLines.filter((item) => lineAvailableQty(item) > 0);
   const activeOrderIds = new Set(activeLines.map((item) => item.orderRecordId));
   const orders = allOrders.filter((item) => activeOrderIds.has(item.id));
+  const warehouseOptions = payload?.warehouseOptions ?? [];
+  const pendingWmsPushTasks = (payload?.wmsPushTasks ?? []).filter((item) => item.status !== "pushed" && item.status !== "cancelled");
   const candidateDemands = (payload?.demands ?? []).filter((item) => item.sku && !/已完成|已取消/.test(item.businessStatus) && Math.max(0, item.requestedQty - item.plannedQty) > 0);
   const [activeStep, setActiveStep] = React.useState<ExecutionWorkbenchStep>("create");
   const autoSelectedStep = React.useRef(false);
@@ -4352,7 +4355,7 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
   const shipmentLinesRef = React.useRef<Record<string, ShipmentEntryDraft>>({});
   const [hasShipmentQuantity, setHasShipmentQuantity] = React.useState(false);
   const [shipmentFormVersion, setShipmentFormVersion] = React.useState(0);
-  const [shipmentMeta, setShipmentMeta] = React.useState({ carrier: "", trackingNo: "", transportMode: "海运", defaultAllocationMethod: "weight" });
+  const [shipmentMeta, setShipmentMeta] = React.useState({ carrier: "", trackingNo: "", transportMode: "海运", defaultAllocationMethod: "weight", destinationWarehouseConnectionId: "" });
   const [cancellationDraft, setCancellationDraft] = React.useState<{ orderId: string; orderNo: string; reason: string } | null>(null);
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -4360,13 +4363,14 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
   const selectableLines = shipmentReadyLines.filter((item) => item.orderRecordId === selectedOrder?.id);
   const selectedOrderLines = activeLines.filter((item) => item.orderRecordId === selectedOrder?.id);
   const selectedOrderAvailableQty = selectedOrderLines.reduce((sum, item) => sum + lineAvailableQty(item), 0);
+  const selectedWarehouse = warehouseOptions.find((item) => item.connectionId === shipmentMeta.destinationWarehouseConnectionId);
   const orderAvailableQty = React.useCallback((orderId: string) => activeLines.filter((item) => item.orderRecordId === orderId).reduce((sum, item) => sum + lineAvailableQty(item), 0), [activeLines, lineAvailableQty]);
 
   React.useEffect(() => {
     if (autoSelectedStep.current || !payload) return;
     autoSelectedStep.current = true;
-    setActiveStep(shipmentReadyLines.length ? "shipment" : progressLines.length ? "progress" : "create");
-  }, [payload, progressLines.length, shipmentReadyLines.length]);
+    setActiveStep(shipmentReadyLines.length || pendingWmsPushTasks.length ? "shipment" : progressLines.length ? "progress" : "create");
+  }, [payload, pendingWmsPushTasks.length, progressLines.length, shipmentReadyLines.length]);
 
   React.useEffect(() => {
     if (shipmentOrderId && !orders.some((item) => item.id === shipmentOrderId)) setShipmentOrderId("");
@@ -4389,6 +4393,19 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
     setShipmentFormVersion((current) => current + 1);
   }
 
+  function selectShipmentOrder(orderId: string) {
+    const order = orders.find((item) => item.id === orderId);
+    const exactWarehouse = warehouseOptions.find((item) => item.warehouseName === order?.destinationWarehouseName || item.connectionName === order?.destinationWarehouseName);
+    const countryWarehouse = warehouseOptions.find((item) => item.country === order?.destinationCountry);
+    const matchedWarehouse = exactWarehouse || countryWarehouse;
+    setShipmentOrderId(orderId);
+    setShipmentMeta((current) => ({
+      ...current,
+      destinationWarehouseConnectionId: matchedWarehouse?.connectionId || current.destinationWarehouseConnectionId,
+    }));
+    resetShipmentForm();
+  }
+
   async function createExecution() {
     setBusy(true); setMessage("");
     try {
@@ -4408,9 +4425,26 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
       const selected = Object.entries(shipmentLinesRef.current).filter(([, item]) => item.shippedQty > 0).map(([stockupLineRecordId, item]) => ({ stockupLineRecordId, ...item }));
       const result = await createWorkflowShipment({ stockupOrderRecordId: shipmentOrderId, ...shipmentMeta, lines: selected });
       await onRefresh();
-      setMessage(`发货已登记，共 ${result.lineCount || 0} 条 SKU。下一步到“发货与成本”登记费用。`);
+      setMessage(result.wmsTaskWarning || `发货已登记，共 ${result.lineCount || 0} 条 SKU；已生成“${result.wmsPushTask?.createMode || "WMS 建单"}”待确认任务，尚未向 WMS 推送。`);
       resetShipmentForm();
     } catch (error) { setMessage(error instanceof Error ? error.message : "发货登记失败"); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmWmsPush(task: NonNullable<StockupWorkflowPayload["wmsPushTasks"]>[number]) {
+    const confirmed = await confirm({
+      title: `确认推送到 ${task.warehouseName}`,
+      body: `本次只会在 ${task.providerName || "WMS"} 创建${task.createMode || "草稿单"}，不会自动审核或入库。`,
+      confirmText: `确认创建${task.createMode || "草稿单"}`,
+      details: [`发货单：${task.shipmentNo || task.shipmentRecordId}`, `外部参考号：${task.externalReferenceNo}`, `SKU 明细：${task.lineCount} 行`, "重复点击会由中台拦截"],
+    });
+    if (!confirmed) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await confirmWorkflowWmsPush(task.id);
+      await onRefresh();
+      setMessage(`${task.warehouseName} 已创建${task.createMode || "WMS 草稿单"}：${result.task.wmsOrderNo}${result.writebackWarning ? `。${result.writebackWarning}` : ""}`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "WMS 推送失败"); }
     finally { setBusy(false); }
   }
 
@@ -4472,7 +4506,7 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
   const stepItems: Array<{ id: ExecutionWorkbenchStep; number: string; title: string; hint: string; count: number }> = [
     { id: "create", number: "01", title: "创建执行单", hint: "选择正式需求并确认执行方式", count: candidateDemands.length },
     { id: "progress", number: "02", title: "跟进供应进度", hint: "下单、完工、质检合格", count: executionOnlyLines.length },
-    { id: "shipment", number: "03", title: "登记实际发货", hint: "部分合格也可以先发货", count: shipmentReadyLines.length },
+    { id: "shipment", number: "03", title: "发货与 WMS 确认", hint: "登记发货后人工确认推送", count: shipmentReadyLines.length + pendingWmsPushTasks.length },
   ];
 
   return (
@@ -4527,7 +4561,7 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
                     <div className="execution-next-action"><span>下一步</span><strong>{availableQty > 0 ? "已有合格可发数量，可以进入步骤 3" : item.completedQty > 0 ? "录入检验合格数量后即可发货" : "先在下方录入已下单和完工数量"}</strong></div>
                     <div className="execution-order-actions">
                       <button className="ghost-button compact-button" type="button" onClick={() => setActiveStep("progress")}>更新进度</button>
-                      <button className="ghost-button compact-button" type="button" disabled={availableQty <= 0} onClick={() => { setShipmentOrderId(item.id); resetShipmentForm(); setActiveStep("shipment"); }}>去发货</button>
+                      <button className="ghost-button compact-button" type="button" disabled={availableQty <= 0} onClick={() => { selectShipmentOrder(item.id); setActiveStep("shipment"); }}>去发货</button>
                       <button className="ghost-button compact-button danger-button" type="button" disabled={busy} onClick={() => setCancellationDraft({ orderId: item.id, orderNo: item.orderNo || item.id.slice(-8), reason: "" })}>取消剩余</button>
                     </div>
                   </article>
@@ -4546,21 +4580,39 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
 
       {activeStep === "shipment" ? (
         <div className="panel workflow-panel execution-current-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Current Task · 03</p><h2>登记实际发货</h2><small>所有进行中的执行单都会显示；只有合格数量大于已发数量的 SKU 才能填写发货。</small></div><span className="status-pill good">{shipmentReadyLines.length || "—"} 行可发</span></div>
+          <div className="panel-heading"><div><p className="eyebrow">Current Task · 03</p><h2>登记实际发货并确认 WMS</h2><small>先登记本次实际发货；系统只生成待确认任务，确认后才向目标仓创建草稿 / 未审核单。</small></div><span className="status-pill good">{shipmentReadyLines.length ? `${shipmentReadyLines.length} 行可发` : pendingWmsPushTasks.length ? `${pendingWmsPushTasks.length} 个待确认` : "—"}</span></div>
           <div className="workflow-create-form">
-            <label className="wide-field"><span>备货执行单</span><select value={shipmentOrderId} onChange={(event) => { setShipmentOrderId(event.target.value); resetShipmentForm(); }}><option value="">请选择</option>{orders.map((item) => { const availableQty = orderAvailableQty(item.id); return <option value={item.id} key={item.id}>{item.orderNo} · {item.project || item.destinationCountry || "未指定项目"} · {availableQty > 0 ? `可发 ${formatNumber(availableQty)}` : "待检验合格"}</option>; })}</select></label>
+            <label className="wide-field"><span>备货执行单</span><select value={shipmentOrderId} onChange={(event) => selectShipmentOrder(event.target.value)}><option value="">请选择</option>{orders.map((item) => { const availableQty = orderAvailableQty(item.id); return <option value={item.id} key={item.id}>{item.orderNo} · {item.project || item.destinationCountry || "未指定项目"} · {availableQty > 0 ? `可发 ${formatNumber(availableQty)}` : "待检验合格"}</option>; })}</select></label>
+            <label className="wide-field"><span>发往仓库（必选）</span><select value={shipmentMeta.destinationWarehouseConnectionId} onChange={(event) => setShipmentMeta({ ...shipmentMeta, destinationWarehouseConnectionId: event.target.value })}><option value="">请选择已建档仓库</option>{warehouseOptions.map((item) => <option value={item.connectionId} key={item.connectionId}>{item.warehouseName} · {item.country} · {item.providerName}{item.createConfigured ? "" : "（授权未完成）"}</option>)}</select></label>
             <label><span>承运商</span><input value={shipmentMeta.carrier} onChange={(event) => setShipmentMeta({ ...shipmentMeta, carrier: event.target.value })} /></label>
             <label><span>物流单号</span><input value={shipmentMeta.trackingNo} onChange={(event) => setShipmentMeta({ ...shipmentMeta, trackingNo: event.target.value })} /></label>
             <label><span>运输方式</span><select value={shipmentMeta.transportMode} onChange={(event) => setShipmentMeta({ ...shipmentMeta, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label>
             <label><span>默认分摊</span><select value={shipmentMeta.defaultAllocationMethod} onChange={(event) => setShipmentMeta({ ...shipmentMeta, defaultAllocationMethod: event.target.value })}>{allocationMethods.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
+          {selectedWarehouse ? <div className={`shipment-readiness ${selectedWarehouse.createConfigured ? "ready" : "blocked"}`}><strong>{selectedWarehouse.warehouseName} · {selectedWarehouse.createMode}</strong><span>{selectedWarehouse.createMessage}{selectedWarehouse.receivingAddress ? ` 收货地址：${selectedWarehouse.receivingAddress}` : ""} 保存发货时只建立待确认任务，不会立即推送。</span></div> : null}
           {selectedOrder ? (
             <>
               <div className={`shipment-readiness ${selectedOrderAvailableQty > 0 ? "ready" : "blocked"}`}><strong>{selectedOrderAvailableQty > 0 ? `当前可发 ${formatNumber(selectedOrderAvailableQty)}` : "当前不能发货"}</strong><span>{selectedOrderAvailableQty > 0 ? "可只发本次实际数量，剩余合格数量保留到下次。" : "请回到步骤 2，先录入完工数量和检验合格数量。执行单不会消失。"}</span></div>
               <div className="shipment-entry-lines">{selectableLines.map((item) => <ShipmentEntryLine item={item} onChange={updateShipmentLine} key={`${shipmentOrderId}:${shipmentFormVersion}:${item.id}`} />)}{!selectableLines.length ? <div className="stockup-empty">该执行单暂无可发 SKU，但仍保留在列表中供你查看状态。</div> : null}</div>
             </>
           ) : <div className="stockup-empty">先选择一张执行单。列表同时显示“可发数量”或“待检验合格”。</div>}
-          <div className="workflow-form-actions"><span className="form-action-hint">重量和体积都保留，后续费用可任选口径分摊。</span><button className="sync-button" type="button" disabled={busy || !shipmentOrderId || !hasShipmentQuantity} onClick={() => void saveShipment()}>保存发货并进入成本</button></div>
+          <div className="workflow-form-actions"><span className="form-action-hint">重量和体积都保留；保存后先进入待确认，不会自动向 WMS 建单。</span><button className="sync-button" type="button" disabled={busy || !shipmentOrderId || !hasShipmentQuantity || !shipmentMeta.destinationWarehouseConnectionId} onClick={() => void saveShipment()}>保存发货并生成待确认任务</button></div>
+          {pendingWmsPushTasks.length ? (
+            <div className="panel workflow-panel">
+              <div className="panel-heading"><div><p className="eyebrow">WMS Confirmation</p><h2>待确认推送 WMS</h2><small>只有点击确认后才会在目标仓创建草稿 / 未审核单。</small></div><span className="status-pill warning">{pendingWmsPushTasks.length} 个待处理</span></div>
+              <div className="workflow-card-list compact">
+                {pendingWmsPushTasks.map((task) => (
+                  <article key={task.id}>
+                    <div><strong>{task.shipmentNo || task.externalReferenceNo}</strong><span>{task.warehouseName} · {task.providerName}</span></div>
+                    <span className={`status-pill ${task.status === "failed" || task.status === "needs_manual_check" ? "warning" : "muted"}`}>{task.status === "pending_confirmation" ? "待确认" : task.status === "pushing" ? "推送中" : task.status === "failed" ? "可重试" : "需人工核实"}</span>
+                    <dl><div><dt>创建方式</dt><dd>{task.createMode || "草稿"}</dd></div><div><dt>SKU</dt><dd>{task.lineCount}</dd></div><div><dt>尝试次数</dt><dd>{task.attempts}</dd></div><div><dt>参考号</dt><dd>{task.externalReferenceNo}</dd></div></dl>
+                    {task.lastError ? <div className="execution-next-action"><span>上次结果</span><strong>{task.lastError}</strong></div> : null}
+                    <div className="execution-order-actions"><button className="sync-button compact-button" type="button" disabled={busy || !task.canPush} onClick={() => void confirmWmsPush(task)}>{task.status === "failed" ? "确认重试" : `确认创建${task.createMode || "草稿单"}`}</button></div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>

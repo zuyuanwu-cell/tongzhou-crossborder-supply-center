@@ -1441,6 +1441,48 @@ export type StockupCostPreview = {
   costBatches: ShipmentCostBatch[];
 };
 
+export type StockupWmsWarehouseOption = {
+  connectionId: string;
+  warehouseRecordId: string;
+  warehouseName: string;
+  connectionName: string;
+  warehouseCode: string;
+  warehouseId: string;
+  country: string;
+  providerId: string;
+  providerName: string;
+  receivingAddress: string;
+  createSupported: boolean;
+  createConfigured: boolean;
+  createMode: string;
+  createMessage: string;
+};
+
+export type StockupWmsPushTask = {
+  id: string;
+  shipmentRecordId: string;
+  shipmentNo: string;
+  stockupOrderRecordId: string;
+  warehouseConnectionId: string;
+  warehouseName: string;
+  warehouseCode: string;
+  country: string;
+  providerId: string;
+  providerName: string;
+  externalReferenceNo: string;
+  status: "pending_confirmation" | "pushing" | "pushed" | "failed" | "needs_manual_check" | "cancelled";
+  attempts: number;
+  lastError: string;
+  wmsOrderNo: string;
+  createdAt: string;
+  confirmedAt: string;
+  pushedAt: string;
+  lineCount: number;
+  canPush: boolean;
+  createMode: string;
+  createMessage: string;
+};
+
 export type StockupWorkflowPayload = {
   ok: boolean;
   source: string;
@@ -1550,6 +1592,8 @@ export type StockupWorkflowPayload = {
     codingCompletedAt: string;
   }>;
   productOptions?: Array<{ id: string; sku: string; productName: string }>;
+  warehouseOptions?: StockupWmsWarehouseOption[];
+  wmsPushTasks?: StockupWmsPushTask[];
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : `${window.location.protocol}//${window.location.hostname}:8787`);
@@ -2095,8 +2139,15 @@ export function rollbackWorkflowExecutionLine(input: { stockupLineRecordId: stri
   return requestJson<{ ok: boolean; dryRun: boolean; stockupLineRecordId?: string; stockupOrderRecordId?: string; rollbackStage: string; status: string; orderStatus: string; reason: string }>("/api/stockup/workflow/execution-lines/rollback", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function createWorkflowShipment(input: { stockupOrderRecordId: string; carrier?: string; trackingNo?: string; transportMode?: string; destinationWarehouseName?: string; shippedAt?: string; defaultAllocationMethod?: string; lines: Array<{ stockupLineRecordId: string; shippedQty: number; totalWeightKg: number; totalVolumeM3: number; baseUnitCostCny?: number }>; dryRun?: boolean }) {
-  return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId?: string; lineCount?: number }>("/api/stockup/workflow/shipments", { method: "POST", body: JSON.stringify(input) });
+export function createWorkflowShipment(input: { stockupOrderRecordId: string; carrier?: string; trackingNo?: string; transportMode?: string; destinationWarehouseConnectionId: string; destinationWarehouseRecordId?: string; destinationWarehouseName?: string; destinationCountry?: string; shippedAt?: string; defaultAllocationMethod?: string; lines: Array<{ stockupLineRecordId: string; shippedQty: number; totalWeightKg: number; totalVolumeM3: number; baseUnitCostCny?: number }>; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId?: string; shipmentNo?: string; lineCount?: number; wmsPushTask?: StockupWmsPushTask | null; wmsTaskWarning?: string }>("/api/stockup/workflow/shipments", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function confirmWorkflowWmsPush(taskId: string) {
+  return requestJson<{ ok: boolean; alreadyPushed: boolean; writebackWarning?: string; task: StockupWmsPushTask }>("/api/stockup/workflow/wms-pushes/confirm", {
+    method: "POST",
+    body: JSON.stringify({ taskId }),
+  });
 }
 
 export function voidWorkflowShipment(input: { shipmentRecordId: string; reason?: string; dryRun?: boolean }) {

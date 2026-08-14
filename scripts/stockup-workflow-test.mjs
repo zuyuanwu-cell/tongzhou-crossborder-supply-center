@@ -197,9 +197,13 @@ assert.equal(progressDryRun.totals.orderedQty, 100);
 assert.equal(progressDryRun.totals.allReady, false);
 
 const readyWorkflow = { ...workflow, stockupLines: [{ ...workflow.stockupLines[0], orderedQty: 100, completedQty: 100, qualifiedQty: 95, actualBaseUnitCost: 5.2, status: "部分合格" }] };
-const shipmentPrepared = workflowShipmentJdyData({ stockupOrderRecordId: "order-1", lines: [{ stockupLineRecordId: "stock-line-1", shippedQty: 90, totalWeightKg: 45, totalVolumeM3: 0.4 }] }, readyWorkflow);
+const shipmentPrepared = workflowShipmentJdyData({ stockupOrderRecordId: "order-1", destinationWarehouseRecordId: "wh-selected", destinationWarehouseName: "神牛印尼仓", destinationCountry: "印度尼西亚", lines: [{ stockupLineRecordId: "stock-line-1", shippedQty: 90, totalWeightKg: 45, totalVolumeM3: 0.4 }] }, readyWorkflow);
 assert.equal(shipmentPrepared.normalizedLines.length, 1);
 assert.equal(shipmentPrepared.data[JIANYUN_FORMS.shipments.fields.actualWeightKg].value, 45);
+assert.match(shipmentPrepared.shipmentNo, /^FH-/);
+assert.equal(shipmentPrepared.data[JIANYUN_FORMS.shipments.fields.shipmentBatchNo].value, shipmentPrepared.shipmentNo);
+assert.equal(shipmentPrepared.data[JIANYUN_FORMS.shipments.fields.destinationWarehouseRecordId].value, "wh-selected");
+assert.equal(shipmentPrepared.data[JIANYUN_FORMS.shipments.fields.destinationWarehouseName].value, "神牛印尼仓");
 assert.throws(() => workflowShipmentJdyData({ stockupOrderRecordId: "order-1", lines: [{ stockupLineRecordId: "stock-line-1", shippedQty: 96, totalWeightKg: 45, totalVolumeM3: 0.4 }] }, readyWorkflow), /不能超过合格可发数量/);
 
 const rollbackPlan = buildExecutionLineRollbackPlan({ stockupLineRecordId: "stock-line-1", reason: "质检结果修正" }, {
