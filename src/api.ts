@@ -1197,6 +1197,7 @@ export type StockupRecommendation = {
   decisionStatus?: "pending" | "accepted" | "abandoned";
   decisionAt?: string;
   decisionNote?: string;
+  workflowDemandRecordId?: string;
   outsourcingOrders: Array<{
     id: string;
     tongzhouSku: string;
@@ -1450,6 +1451,12 @@ export type StockupWorkflowPayload = {
   counts: {
     demands: number;
     pendingDemands: number;
+    pendingExecutionLines: number;
+    pendingShipmentLines: number;
+    pendingCostShipments: number;
+    pendingLockShipments: number;
+    activeExecutionLines: number;
+    activeWorkItems: number;
     stockupOrders: number;
     stockupLines: number;
     shipments: number;

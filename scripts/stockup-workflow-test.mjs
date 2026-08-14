@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildStockupWorkflowPayload, calculateShipmentCosts, completeProductCoding, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowShipmentJdyData } from "../server/stockup-workflow.js";
+import { buildStockupWorkflowPayload, buildWorkflowStageCounts, calculateShipmentCosts, completeProductCoding, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowShipmentJdyData } from "../server/stockup-workflow.js";
 import { JIANYUN_FORMS } from "../server/field-mapping.js";
 
 function shipment(lines) {
@@ -129,6 +129,38 @@ const scopedPayload = buildStockupWorkflowPayload({
 });
 assert.equal(scopedPayload.historyHidden, true);
 assert.deepEqual(scopedPayload.demands.map((item) => item.id), ["new-demand"]);
+
+const stageCounts = buildWorkflowStageCounts({
+  demands: [
+    { id: "demand-pending", requestedQty: 10, plannedQty: 0, businessStatus: "待受理" },
+    { id: "demand-moved", requestedQty: 10, plannedQty: 10, businessStatus: "执行中" },
+    { id: "demand-coding", requestedQty: 10, plannedQty: 0, businessStatus: "待编码" },
+  ],
+  orderLines: [
+    { id: "line-execution", plannedQty: 10, cancelledQty: 0, qualifiedQty: 5, shippedQty: 0, status: "生产中" },
+    { id: "line-shipment", plannedQty: 10, cancelledQty: 0, qualifiedQty: 10, shippedQty: 0, status: "待发货" },
+    { id: "line-complete", plannedQty: 10, cancelledQty: 0, qualifiedQty: 10, shippedQty: 10, status: "已发货" },
+  ],
+  shipments: [
+    { id: "shipment-cost", lines: [{ id: "shipment-cost-line" }] },
+    { id: "shipment-lock", lines: [{ id: "shipment-lock-line" }] },
+    { id: "shipment-complete", lines: [{ id: "shipment-complete-line" }] },
+  ],
+  costBatches: [
+    { shipmentRecordId: "shipment-lock", shipmentLineId: "shipment-lock-line", status: "待锁定", isCurrent: true },
+    { shipmentRecordId: "shipment-complete", shipmentLineId: "shipment-complete-line", status: "已锁定", isCurrent: true },
+  ],
+  productCodingQueue: [{ id: "coding-1", sourceDemandRecordId: "demand-coding" }],
+});
+assert.deepEqual(stageCounts, {
+  pendingDemands: 1,
+  pendingExecutionLines: 1,
+  pendingShipmentLines: 1,
+  pendingCostShipments: 1,
+  pendingLockShipments: 1,
+  activeExecutionLines: 2,
+  activeWorkItems: 6,
+});
 
 const workflow = {
   demands: [demand],

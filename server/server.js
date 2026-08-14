@@ -516,6 +516,7 @@ function applyStockupDecisions(payload) {
         decisionStatus: decision?.status || "pending",
         decisionAt: decision?.updatedAt || "",
         decisionNote: decision?.note || "",
+        workflowDemandRecordId: decision?.workflowDemandRecordId || "",
       };
     });
   return recalculateStockupCounts({
@@ -3680,7 +3681,9 @@ function updateStockupDecision(payload, status) {
     saveStockupDecisionCache();
     return buildCurrentStockupPayload({ notify: false, reason: "decision_restore" });
   }
+  const previous = cachedStockupDecisions.decisions[key] || {};
   cachedStockupDecisions.decisions[key] = {
+    ...previous,
     status,
     recommendationKey: key,
     sku: String(item.sku || "").trim(),
@@ -3693,6 +3696,59 @@ function updateStockupDecision(payload, status) {
   };
   saveStockupDecisionCache();
   return buildCurrentStockupPayload({ notify: false, reason: `decision_${status}` });
+}
+
+async function ensureRecommendationWorkflowDemand(payload = {}) {
+  const item = payload.recommendation || payload || {};
+  const recommendationKey = String(payload.recommendationKey || stockupRecommendationKey(item)).trim();
+  if (!recommendationKey) throw new Error("缺少备货建议标识。");
+  const decision = cachedStockupDecisions.decisions?.[recommendationKey] || {};
+  const workflow = await loadStockupWorkflow();
+  const marker = `中台动销建议:${recommendationKey}`;
+  const linkedDemand = workflow.demands.find((demand) => (
+    (decision.workflowDemandRecordId && demand.id === decision.workflowDemandRecordId)
+    || String(demand.reason || "").includes(marker)
+  ));
+  if (linkedDemand) {
+    cachedStockupDecisions.decisions[recommendationKey] = {
+      ...decision,
+      workflowDemandRecordId: linkedDemand.id,
+      workflowTransferredAt: decision.workflowTransferredAt || new Date().toISOString(),
+    };
+    saveStockupDecisionCache();
+    return { demandRecordId: linkedDemand.id, created: false };
+  }
+
+  const sku = String(item.sku || item.countrySku || "").trim();
+  const product = (workflow.productOptions || []).find((candidate) => (
+    String(candidate.sku || "").trim().toLowerCase() === sku.toLowerCase()
+  ));
+  if (!product) throw new Error(`SKU ${sku || "未填写"} 尚未在产品库找到正式档案，请先核对产品库后重试。`);
+  const requestedQty = Math.max(0, numberOrZero(item.netReplenishQty || item.replenishQty));
+  const result = await createStockupDemand({
+    productSourceType: "已有产品",
+    productRecordId: product.id,
+    sku: product.sku,
+    productName: String(item.name || product.productName || product.sku).trim(),
+    requestedQty,
+    unit: String(item.unit || "件").trim(),
+    project: "备货中心自动转入",
+    platform: "中台动销建议",
+    destinationCountry: String(item.country || "").trim(),
+    destinationWarehouseName: "",
+    stockupMethod: "外采成品",
+    priority: item.daysCover != null && numberOrZero(item.daysCover) <= 7 ? "紧急" : "普通",
+    expectedArrivalAt: "",
+    demandSource: "中台动销建议",
+    reason: `${marker}｜采纳后自动转入正式供应链路`,
+  });
+  cachedStockupDecisions.decisions[recommendationKey] = {
+    ...decision,
+    workflowDemandRecordId: result.demandRecordId,
+    workflowTransferredAt: new Date().toISOString(),
+  };
+  saveStockupDecisionCache();
+  return { demandRecordId: result.demandRecordId, created: true };
 }
 
 function createStockupPlan(payload = {}) {
@@ -5737,15 +5793,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      const result = updateStockupDecision(payload, "accepted");
+      updateStockupDecision(payload, "accepted");
+      const transfer = await ensureRecommendationWorkflowDemand(payload);
       const item = payload?.recommendation || payload || {};
       appendActionLog(getAuth(req), "采纳备货建议", "stockup_recommendation", String(item.sku || item.countrySku || payload?.recommendationKey || "").trim(), {
         recommendationKey: payload?.recommendationKey || stockupRecommendationKey(item),
         country: item.country,
         replenishQty: item.replenishQty,
         netReplenishQty: item.netReplenishQty,
+        workflowDemandRecordId: transfer.demandRecordId,
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, buildCurrentStockupPayload({ notify: false, reason: "decision_accepted" }));
       return;
     }
 

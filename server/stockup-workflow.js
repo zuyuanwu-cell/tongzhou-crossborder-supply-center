@@ -425,6 +425,67 @@ export async function fetchStockupWorkflowRecords() {
   return { demandRecords, orderRecords, lineRecords, shipmentRecords, feeRecords, costRecords, productRecords, warnings };
 }
 
+function workflowItemClosed(status) {
+  return /已完成|已取消|关闭|已关闭/.test(textValue(status));
+}
+
+export function buildWorkflowStageCounts({ demands = [], orderLines = [], shipments = [], costBatches = [], productCodingQueue = [] } = {}) {
+  const codingDemandIds = new Set(productCodingQueue.map((item) => item.sourceDemandRecordId).filter(Boolean));
+  const pendingDemands = demands.filter((item) => (
+    !workflowItemClosed(item.businessStatus)
+    && !codingDemandIds.has(item.id)
+    && Math.max(0, numberValue(item.requestedQty) - numberValue(item.plannedQty)) > 0
+  ));
+  const activeLines = orderLines.filter((item) => {
+    const targetQty = Math.max(0, numberValue(item.plannedQty) - numberValue(item.cancelledQty));
+    return !workflowItemClosed(item.status) && targetQty > numberValue(item.shippedQty);
+  });
+  const pendingExecutionLines = activeLines.filter((item) => {
+    const targetQty = Math.max(0, numberValue(item.plannedQty) - numberValue(item.cancelledQty));
+    return numberValue(item.qualifiedQty) < targetQty;
+  });
+  const pendingShipmentLines = activeLines.filter((item) => {
+    const targetQty = Math.max(0, numberValue(item.plannedQty) - numberValue(item.cancelledQty));
+    return numberValue(item.qualifiedQty) >= targetQty;
+  });
+
+  const currentBatches = costBatches.filter((item) => item.isCurrent !== false);
+  const batchesByShipment = new Map();
+  for (const batch of currentBatches) {
+    const rows = batchesByShipment.get(batch.shipmentRecordId) || [];
+    rows.push(batch);
+    batchesByShipment.set(batch.shipmentRecordId, rows);
+  }
+  function shipmentCostStage(shipment) {
+    const batches = batchesByShipment.get(shipment.id) || [];
+    const shipmentLineIds = (shipment.lines || []).map((item) => item.id).filter(Boolean);
+    const allLinesCosted = shipmentLineIds.length > 0
+      && shipmentLineIds.every((lineId) => batches.some((batch) => batch.shipmentLineId === lineId));
+    const allLinesLocked = allLinesCosted
+      && shipmentLineIds.every((lineId) => batches.some((batch) => batch.shipmentLineId === lineId && /已锁定/.test(batch.status)));
+    if (allLinesLocked) return "complete";
+    if (allLinesCosted) return "lock";
+    return "cost";
+  }
+  const pendingCostShipments = shipments.filter((item) => shipmentCostStage(item) === "cost");
+  const pendingLockShipments = shipments.filter((item) => shipmentCostStage(item) === "lock");
+
+  return {
+    pendingDemands: pendingDemands.length,
+    pendingExecutionLines: pendingExecutionLines.length,
+    pendingShipmentLines: pendingShipmentLines.length,
+    pendingCostShipments: pendingCostShipments.length,
+    pendingLockShipments: pendingLockShipments.length,
+    activeExecutionLines: pendingExecutionLines.length + pendingShipmentLines.length,
+    activeWorkItems: pendingDemands.length
+      + pendingExecutionLines.length
+      + pendingShipmentLines.length
+      + pendingCostShipments.length
+      + pendingLockShipments.length
+      + productCodingQueue.length,
+  };
+}
+
 export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
   const allDemands = (records.demandRecords || []).map(normalizeDemand);
   const allOrders = (records.orderRecords || []).map(normalizeStockupOrder);
@@ -491,6 +552,7 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
   }
 
   const warnings = records.warnings || [];
+  const stageCounts = buildWorkflowStageCounts({ demands, orderLines, shipments, costBatches, productCodingQueue });
   return {
     ok: true,
     source,
@@ -500,7 +562,7 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
     warnings,
     counts: {
       demands: demands.length,
-      pendingDemands: demands.filter((item) => !/已完成|已取消|关闭/.test(item.businessStatus) && Math.max(0, item.requestedQty - item.plannedQty) > 0).length,
+      ...stageCounts,
       stockupOrders: orders.length,
       stockupLines: orderLines.length,
       shipments: shipments.length,
