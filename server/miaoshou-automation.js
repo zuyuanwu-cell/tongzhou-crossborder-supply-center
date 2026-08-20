@@ -174,10 +174,58 @@ function maskKey(value) {
   return `${source.slice(0, 4)}****${source.slice(-4)}`;
 }
 
+function normalizePackageRow(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+  const items = [
+    ...(Array.isArray(row.items) ? row.items : []),
+    ...(Array.isArray(row.giftItems) ? row.giftItems : []),
+  ];
+  const packageItem = items.find((item) => item?.opOrderPackageId !== undefined || item?.op_order_package_id !== undefined);
+  const opOrderPackageId = row.opOrderPackageId ?? row.op_order_package_id
+    ?? packageItem?.opOrderPackageId ?? packageItem?.op_order_package_id;
+  if (opOrderPackageId === undefined || opOrderPackageId === null || !text(opOrderPackageId)) return null;
+
+  const orderInfo = row.orderInfo && typeof row.orderInfo === "object" ? row.orderInfo : {};
+  const logisticsInfo = row.logisticsAgentProductInfo && typeof row.logisticsAgentProductInfo === "object"
+    ? row.logisticsAgentProductInfo
+    : {};
+  const lastMileInfo = row.opOrderPackageToPlatformLastMile && typeof row.opOrderPackageToPlatformLastMile === "object"
+    ? row.opOrderPackageToPlatformLastMile
+    : {};
+  const logisticsNo = [row.logisticsNo, logisticsInfo.logisticsNo, lastMileInfo.logisticsNo]
+    .find((value) => text(value));
+
+  return {
+    ...row,
+    opOrderPackageId,
+    shopId: row.shopId ?? orderInfo.shopId,
+    platform: row.platform ?? orderInfo.platform,
+    site: row.site ?? orderInfo.site,
+    platformOrderSn: row.platformOrderSn ?? orderInfo.platformOrderSn,
+    logisticsNo: logisticsNo ?? "",
+  };
+}
+
 function extractPackageRows(value, output = [], visited = new Set()) {
   if (!value || typeof value !== "object" || visited.has(value)) return output;
   visited.add(value);
-  if (!Array.isArray(value) && (value.opOrderPackageId !== undefined || value.op_order_package_id !== undefined)) output.push(value);
+
+  if (!Array.isArray(value) && Array.isArray(value.orderPackageList)) {
+    value.orderPackageList.forEach((row) => {
+      const normalized = normalizePackageRow(row);
+      if (normalized) output.push(normalized);
+    });
+    return output;
+  }
+
+  const normalized = normalizePackageRow(value);
+  const looksLikePackage = !Array.isArray(value)
+    && (value.shopId !== undefined || value.appPackageNo !== undefined || value.orderInfo !== undefined || value.items !== undefined);
+  if (normalized && looksLikePackage) {
+    output.push(normalized);
+    return output;
+  }
+
   if (Array.isArray(value)) value.forEach((entry) => extractPackageRows(entry, output, visited));
   else Object.values(value).forEach((entry) => extractPackageRows(entry, output, visited));
   return output;
@@ -469,7 +517,6 @@ export async function initMiaoshouAutomation({
             pageSize: MIAOSHOU_PAGE_SIZE,
             shopIds: shopBatch,
             appPackageStatus: "wait_seller_send",
-            appPackageTab: "waitShip",
           }),
           { retryRateLimit: true },
         );

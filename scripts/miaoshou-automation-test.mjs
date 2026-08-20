@@ -54,13 +54,23 @@ async function fetchMock(url, init) {
       code: "200",
       data: [{
         orderPackageList: [{
-          opOrderPackageId: 123456,
           shopId: "SHOP-1",
           shopName: "测试店铺",
           platform: "shopee",
           site: "ID",
           appPackageNo: "PKG-001",
-          platformOrderSn: "ORDER-001",
+          orderInfo: {
+            shopId: "SHOP-1",
+            platform: "shopee",
+            site: "ID",
+            platformOrderSn: "ORDER-001",
+          },
+          items: [{
+            opOrderPackageId: 123456,
+            opOrderPackageItemId: 789,
+            title: "测试商品",
+            quantity: 1,
+          }],
           appPackageStatus: "wait_seller_send",
           logisticsNo: "",
         }],
@@ -132,8 +142,13 @@ try {
   assert.equal(firstPayload.tasks[0].trackingNo, "TRACK-001");
   assert.equal(firstPayload.tasks[0].waybillUrl, "https://labels.example/PKG-001.pdf");
   assert.equal(firstPayload.tasks[0].shopName, "TEST");
+  assert.equal(firstPayload.tasks[0].platformOrderSn, "ORDER-001");
   assert.equal(firstPayload.tasks[0].packageSnapshot, undefined, "前端载荷不应暴露原始包裹快照");
-  assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.packages).every((call) => call.body.pageSize === 50));
+  assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.packages).every((call) => (
+    call.body.pageSize === 50
+    && call.body.appPackageStatus === "wait_seller_send"
+    && call.body.appPackageTab === undefined
+  )));
 
   const secondRun = await automation.runAutomation({ force: true });
   assert.equal(secondRun.attempted, 0, "同一包裹不能重复申请");
