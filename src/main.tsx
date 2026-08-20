@@ -36,6 +36,7 @@ import {
   Settings,
   ShieldCheck,
   ShoppingBag,
+  Store,
   Trash2,
   Video,
   Truck,
@@ -58,6 +59,8 @@ import {
   MovementHistoryPayload,
   MovementWarehouseDiagnostic,
   MovementPayload,
+  MiaoshouPayload,
+  MiaoshouScope,
   OrderAnalysisPayload,
   OrderSyncJob,
   ProductBase,
@@ -117,8 +120,10 @@ import {
   fetchMovementComparison,
   fetchMovementHistory,
   fetchLatestOrderSyncJob,
+  fetchMiaoshou,
   fetchOrderAnalysis,
   fetchProducts,
+  fetchMiaoshouWaybill,
   fetchQuickNav,
   fetchQualifications,
   fetchSetupStatus,
@@ -150,12 +155,18 @@ import {
   syncWarehouses,
   syncWarehouseInfo,
   testWarehouseConnection,
+  testMiaoshouConnection,
   testWecomNotification,
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
   updateStockupPlanStatus,
   updateUserStatus,
   updateWarehouseConnection,
+  updateMiaoshouConfig,
+  updateMiaoshouShop,
+  syncMiaoshouShops,
+  runMiaoshouAutomation,
+  retryMiaoshouTask,
   updateWecomScenes,
   upsertWecomRobot,
   upsertWecomSchedule,
@@ -331,6 +342,7 @@ const navItems = [
   { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "intelligence" },
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "intelligence", beta: true },
   { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "intelligence" },
+  { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "intelligence" },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "governance" },
   { label: "用户管理", icon: Lock, hash: "#users", section: "governance" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "governance" },
@@ -1419,7 +1431,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "API 接入" ? "API 接入" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "API 接入" ? "API 接入" : activeView === "妙手 ERP" ? "妙手 ERP" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <form className="search-box" onSubmit={handleGlobalSearch}>
@@ -1498,6 +1510,8 @@ function App() {
           <TongzhouAiPanel aiConfig={aiConfigPayload} currentUser={currentUser} onRefreshConfig={loadAiConfig} />
         ) : activeView === "API 接入" ? (
           <AgentApiAccessPage currentUser={currentUser} />
+        ) : activeView === "妙手 ERP" ? (
+          <MiaoshouPage />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -7534,6 +7548,262 @@ function MovementAnalysisPage({
             <button className="ghost-button compact-button" type="button" onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
           </div>
         </div>
+      </section>
+    </main>
+  );
+}
+
+function miaoshouTaskLabel(status: string) {
+  if (status === "pending") return "待申请";
+  if (status === "running") return "申请中";
+  if (status === "succeeded") return "已成功";
+  if (status === "retry_wait") return "等待重试";
+  if (status === "manual_check") return "需要核实";
+  return status || "未知";
+}
+
+function miaoshouTaskTone(status: string) {
+  if (status === "succeeded") return "good";
+  if (status === "manual_check") return "danger";
+  return "warning";
+}
+
+function MiaoshouPage() {
+  const confirm = useConfirm();
+  const [payload, setPayload] = React.useState<MiaoshouPayload | null>(null);
+  const [busy, setBusy] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [shopKeyword, setShopKeyword] = React.useState("");
+  const [form, setForm] = React.useState({
+    appKey: "",
+    appSecret: "",
+    automationEnabled: false,
+    autoFetchWaybillDefault: true,
+    pollIntervalMinutes: 3,
+    maxPackagesPerRun: 50,
+    scopes: [{ platform: "shopee", site: "ID" }] as MiaoshouScope[],
+  });
+
+  React.useEffect(() => {
+    void load();
+  }, []);
+
+  React.useEffect(() => {
+    if (!payload) return;
+    setForm((current) => ({
+      ...current,
+      automationEnabled: payload.config.automationEnabled,
+      autoFetchWaybillDefault: payload.config.autoFetchWaybillDefault,
+      pollIntervalMinutes: payload.config.pollIntervalMinutes,
+      maxPackagesPerRun: payload.config.maxPackagesPerRun,
+      scopes: payload.config.scopes.length ? payload.config.scopes : [{ platform: "shopee", site: "ID" }],
+      appKey: "",
+      appSecret: "",
+    }));
+  }, [payload?.config.updatedAt, payload?.config.lastConnectionTestAt]);
+
+  async function load(silent = false) {
+    if (!silent) setBusy("load");
+    if (!silent) setError("");
+    try {
+      setPayload(await fetchMiaoshou());
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "妙手配置读取失败");
+    } finally {
+      if (!silent) setBusy("");
+    }
+  }
+
+  async function perform(key: string, action: () => Promise<MiaoshouPayload>, success: string) {
+    setBusy(key);
+    setError("");
+    setMessage("");
+    try {
+      const next = await action();
+      setPayload(next);
+      setMessage(success);
+      return next;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "操作失败");
+      return null;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function updateScope(index: number, field: keyof MiaoshouScope, value: string) {
+    setForm((current) => ({
+      ...current,
+      scopes: current.scopes.map((scope, scopeIndex) => scopeIndex === index ? { ...scope, [field]: field === "site" ? value.toUpperCase() : value } : scope),
+    }));
+  }
+
+  async function saveConfig() {
+    if (form.automationEnabled && !payload?.config.automationEnabled) {
+      const accepted = await confirm({
+        title: "开启自动申请运单号？",
+        body: "开启后，中台将按所选店铺定时读取待打单包裹，并向妙手申请运单号。",
+        confirmText: "确认开启",
+        details: ["只处理已单独开启的店铺", "不会调用妙手“包裹发货”接口", "超时或结果不明确时会停止并要求人工核实"],
+      });
+      if (!accepted) return;
+    }
+    await perform("save", () => updateMiaoshouConfig(form), "配置已保存。新凭据只保存在服务端，不会回传到浏览器。");
+  }
+
+  async function toggleShop(shop: MiaoshouPayload["shops"][number]) {
+    const nextEnabled = !shop.autoApplyTrackingNo;
+    if (nextEnabled) {
+      const accepted = await confirm({
+        title: `为“${shop.platformShopName || shop.shopNick || shop.shopId}”开启自动申请？`,
+        body: "该店铺的待打单包裹将进入中台自动申请队列。",
+        confirmText: "开启该店铺",
+        details: [`平台/站点：${shop.platform} / ${shop.site}`, "包裹需已在妙手配置线上物流", "本功能不会自动发货"],
+      });
+      if (!accepted) return;
+    }
+    await perform(`shop:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoApplyTrackingNo: nextEnabled, autoFetchWaybill: shop.autoFetchWaybill }), nextEnabled ? "该店铺已加入自动申请队列。" : "该店铺已停止自动申请，不影响已经成功的运单。");
+  }
+
+  async function runNow() {
+    const accepted = await confirm({
+      title: "立即检查已启用店铺？",
+      body: "系统会读取待打单包裹，并立即为符合条件且没有运单号的包裹申请运单号。",
+      confirmText: "立即检查",
+      details: ["不会重复处理已成功包裹", "不会自动发货", "失败结果会进入任务日志"],
+    });
+    if (!accepted) return;
+    const next = await perform("run", () => runMiaoshouAutomation(), "检查完成。");
+    if (next?.runSummary) {
+      const summary = next.runSummary;
+      setMessage(summary.skipped ? summary.message || "本次未执行。" : `检查完成：申请 ${summary.attempted || 0} 个，成功 ${summary.succeeded || 0} 个，需处理 ${summary.failed || 0} 个。`);
+    }
+  }
+
+  async function retryTask(task: MiaoshouPayload["tasks"][number]) {
+    const accepted = await confirm({
+      title: "确认重新申请运单号？",
+      body: `包裹 ${task.appPackageNo || task.opOrderPackageId} 将再次调用妙手申请接口。`,
+      confirmText: "确认重试",
+      details: ["请先在妙手后台确认该包裹目前仍无运单号", task.errorMessage || "上次失败原因未返回"],
+    });
+    if (!accepted) return;
+    await perform(`retry:${task.id}`, () => retryMiaoshouTask(task.id), "重试完成，请查看最新状态。");
+  }
+
+  async function getWaybill(task: MiaoshouPayload["tasks"][number]) {
+    if (task.waybillUrl) {
+      window.open(task.waybillUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const next = await perform(`waybill:${task.id}`, () => fetchMiaoshouWaybill(task.id), "面单链接已获取。");
+    const updatedTask = next?.tasks.find((item) => item.id === task.id);
+    if (updatedTask?.waybillUrl) window.open(updatedTask.waybillUrl, "_blank", "noopener,noreferrer");
+  }
+
+  const config = payload?.config;
+  const visibleShops = (payload?.shops || []).filter((shop) => {
+    const keyword = shopKeyword.trim().toLowerCase();
+    return !keyword || [shop.shopId, shop.platformShopName, shop.shopNick, shop.platform, shop.site].some((value) => value.toLowerCase().includes(keyword));
+  });
+  const platformOptions = payload?.platformOptions || [];
+
+  return (
+    <main className="miaoshou-page">
+      <section className="panel miaoshou-hero">
+        <div>
+          <p className="eyebrow">Miaoshou Fulfillment</p>
+          <h2>店铺自动申请运单号</h2>
+          <p>同步妙手店铺，逐店开启自动申请。系统只申请运单号并获取面单，不会自动提交平台发货。</p>
+        </div>
+        <div className="miaoshou-hero-actions">
+          <span className={`status-pill ${config?.automationEnabled ? "good" : "warning"}`}>{config?.automationEnabled ? "自动任务已开启" : "自动任务未开启"}</span>
+          <button className="ghost-button" type="button" onClick={() => void load()} disabled={Boolean(busy)}><RefreshCw size={15} className={busy === "load" ? "spinning" : ""} />刷新</button>
+          <button className="sync-button" type="button" onClick={() => void runNow()} disabled={Boolean(busy) || !payload?.counts.enabledShops}><RefreshCw size={15} className={busy === "run" ? "spinning" : ""} />立即检查</button>
+        </div>
+      </section>
+
+      {error ? <div className="notice danger">{error}</div> : null}
+      {message ? <div className="notice success">{message}</div> : null}
+
+      <section className="miaoshou-metrics">
+        <article><small>授权状态</small><strong>{config?.hasCredentials ? "已配置" : "待配置"}</strong><span>{config?.appKeyMasked || "填写 AppKey / AppSecret"}</span></article>
+        <article><small>已同步店铺</small><strong>{formatNumber(payload?.counts.shops || 0)}</strong><span>自动申请 {formatNumber(payload?.counts.enabledShops || 0)} 家</span></article>
+        <article><small>申请成功</small><strong>{formatNumber(payload?.counts.succeeded || 0)}</strong><span>待申请 {formatNumber((payload?.counts.pending || 0) + (payload?.counts.running || 0))}</span></article>
+        <article><small>需要处理</small><strong>{formatNumber((payload?.counts.retryWait || 0) + (payload?.counts.manualCheck || 0))}</strong><span>人工核实 {formatNumber(payload?.counts.manualCheck || 0)}</span></article>
+      </section>
+
+      <section className="miaoshou-flow">
+        <article className={config?.hasCredentials ? "done" : "active"}><b>01</b><div><strong>配置授权</strong><span>保存并检测 AppKey</span></div></article>
+        <article className={payload?.counts.shops ? "done" : config?.hasCredentials ? "active" : ""}><b>02</b><div><strong>同步并选择店铺</strong><span>逐店开启自动申请</span></div></article>
+        <article className={config?.automationEnabled ? "active" : ""}><b>03</b><div><strong>定时申请</strong><span>失败停留，绝不自动发货</span></div></article>
+      </section>
+
+      <section className="panel miaoshou-config-panel">
+        <div className="panel-heading">
+          <div><p className="eyebrow">Connection & Scheduler</p><h2>授权与自动任务</h2><span>{config?.lastConnectionTestMessage || "先保存授权，再检测连接并同步店铺。"}</span></div>
+          <span className={`status-pill ${config?.lastConnectionTestStatus === "success" ? "good" : "warning"}`}>{config?.lastConnectionTestStatus === "success" ? "连接正常" : "尚未验证"}</span>
+        </div>
+        <div className="miaoshou-config-grid">
+          <label><span>AppKey</span><input value={form.appKey} onChange={(event) => setForm((current) => ({ ...current, appKey: event.target.value }))} placeholder={config?.appKeyMasked || "妙手开放平台 AppKey"} autoComplete="off" /></label>
+          <label><span>AppSecret</span><input type="password" value={form.appSecret} onChange={(event) => setForm((current) => ({ ...current, appSecret: event.target.value }))} placeholder={config?.hasCredentials ? "已保存；留空表示不修改" : "妙手开放平台 AppSecret"} autoComplete="new-password" /></label>
+          <label><span>轮询间隔（分钟）</span><input type="number" min="1" max="60" value={form.pollIntervalMinutes} onChange={(event) => setForm((current) => ({ ...current, pollIntervalMinutes: Number(event.target.value) }))} /></label>
+          <label><span>单次最多处理</span><input type="number" min="1" max="200" value={form.maxPackagesPerRun} onChange={(event) => setForm((current) => ({ ...current, maxPackagesPerRun: Number(event.target.value) }))} /></label>
+        </div>
+        <div className="miaoshou-scope-head"><div><strong>店铺同步范围</strong><span>妙手店铺接口要求同时指定平台和站点，可添加多个范围。</span></div><button className="ghost-button compact-button" type="button" onClick={() => setForm((current) => ({ ...current, scopes: [...current.scopes, { platform: "shopee", site: "ID" }] }))}><Plus size={14} />添加范围</button></div>
+        <div className="miaoshou-scopes">
+          {form.scopes.map((scope, index) => (
+            <div className="miaoshou-scope-row" key={`${index}-${scope.platform}-${scope.site}`}>
+              <label><span>平台</span><select value={scope.platform} onChange={(event) => updateScope(index, "platform", event.target.value)}>{platformOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+              <label><span>站点代码</span><input value={scope.site} onChange={(event) => updateScope(index, "site", event.target.value)} placeholder="例如 ID、MY、OZON" /></label>
+              <button className="icon-button" type="button" aria-label="删除同步范围" disabled={form.scopes.length <= 1} onClick={() => setForm((current) => ({ ...current, scopes: current.scopes.filter((_, scopeIndex) => scopeIndex !== index) }))}><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+        <div className="miaoshou-settings-row">
+          <label className="toggle-line"><input type="checkbox" checked={form.automationEnabled} onChange={(event) => setForm((current) => ({ ...current, automationEnabled: event.target.checked }))} /><span><strong>自动任务总开关</strong><small>仅处理下方已启用店铺</small></span></label>
+          <label className="toggle-line"><input type="checkbox" checked={form.autoFetchWaybillDefault} onChange={(event) => setForm((current) => ({ ...current, autoFetchWaybillDefault: event.target.checked }))} /><span><strong>成功后获取面单</strong><small>作为新同步店铺的默认设置</small></span></label>
+        </div>
+        <div className="miaoshou-config-actions">
+          <span>AppSecret 不回传浏览器；若服务器环境变量已配置，页面只显示掩码。</span>
+          <button className="ghost-button" type="button" disabled={Boolean(busy) || !config?.hasCredentials} onClick={() => void perform("test", testMiaoshouConnection, "妙手授权检测通过。")}>{busy === "test" ? "检测中" : "检测连接"}</button>
+          <button className="ghost-button" type="button" disabled={Boolean(busy) || !config?.hasCredentials} onClick={() => void perform("sync", syncMiaoshouShops, "店铺同步完成。")}>{busy === "sync" ? "同步中" : "同步店铺"}</button>
+          <button className="sync-button" type="button" disabled={Boolean(busy)} onClick={() => void saveConfig()}>{busy === "save" ? "保存中" : "保存配置"}</button>
+        </div>
+      </section>
+
+      <section className="panel miaoshou-shop-panel">
+        <div className="panel-heading">
+          <div><p className="eyebrow">Shop Automation</p><h2>选择自动申请店铺</h2><span>包裹必须已在妙手配置线上物流；每家店可以单独控制是否自动获取面单。</span></div>
+          <label className="compact-search"><Search size={15} /><input value={shopKeyword} onChange={(event) => setShopKeyword(event.target.value)} placeholder="搜索店铺、平台、站点" /></label>
+        </div>
+        {visibleShops.length ? <div className="miaoshou-shop-list">
+          {visibleShops.map((shop) => (
+            <article className={shop.autoApplyTrackingNo ? "enabled" : ""} key={shop.shopId}>
+              <div className="miaoshou-shop-main"><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.platformShopName || shop.shopNick || shop.shopId}</strong><span>{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
+              <div className="miaoshou-shop-auth"><span>授权状态：{shop.status || "未返回"}</span><small>{shop.gmtExpire ? `到期 ${formatDateTime(shop.gmtExpire)}` : `最近同步 ${formatDateTime(shop.lastSeenAt)}`}</small></div>
+              <label className="toggle-line compact"><input type="checkbox" checked={shop.autoFetchWaybill} disabled={Boolean(busy)} onChange={(event) => void perform(`label:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoFetchWaybill: event.target.checked }), event.target.checked ? "该店铺会自动获取面单。" : "该店铺仅申请运单号。")}/><span><strong>获取面单</strong><small>成功后自动保存链接</small></span></label>
+              <button className={shop.autoApplyTrackingNo ? "ghost-button" : "sync-button"} type="button" disabled={Boolean(busy)} onClick={() => void toggleShop(shop)}>{busy === `shop:${shop.shopId}` ? "处理中" : shop.autoApplyTrackingNo ? "停止自动申请" : "开启自动申请"}</button>
+            </article>
+          ))}
+        </div> : <div className="stockup-empty">{payload?.counts.shops ? "当前搜索条件下没有店铺。" : "尚未同步店铺。先保存授权和平台站点范围，再点击“同步店铺”。"}</div>}
+      </section>
+
+      <section className="panel miaoshou-task-panel">
+        <div className="panel-heading"><div><p className="eyebrow">Tracking Tasks</p><h2>运单申请记录</h2><span>{config?.lastRunMessage || "开启店铺后，待打单包裹会出现在这里。"}</span></div><span className="status-pill warning">{formatNumber(payload?.counts.total || 0)} 条</span></div>
+        {payload?.tasks.length ? <div className="miaoshou-task-list">
+          <div className="miaoshou-task-row head"><span>包裹 / 店铺</span><span>状态</span><span>运单号</span><span>最近处理</span><span>操作</span></div>
+          {payload.tasks.map((task) => (
+            <article className="miaoshou-task-row" key={task.id}>
+              <span><strong>{task.appPackageNo || task.opOrderPackageId}</strong><small>{task.shopName || task.shopId} · {task.platform}/{task.site}</small></span>
+              <span><i className={`status-pill ${miaoshouTaskTone(task.status)}`}>{miaoshouTaskLabel(task.status)}</i>{task.errorMessage ? <small className="miaoshou-task-error">{task.errorMessage}</small> : null}</span>
+              <span><strong>{task.trackingNo || task.headTrackingNo || "—"}</strong><small>{task.logisticsType || `尝试 ${task.attempts} 次`}</small></span>
+              <span>{formatDateTime(task.updatedAt)}<small>{task.errorCode || task.platformOrderSn || ""}</small></span>
+              <span className="miaoshou-task-actions">{task.status === "succeeded" ? <button className="ghost-button compact-button" type="button" disabled={Boolean(busy)} onClick={() => void getWaybill(task)}>{busy === `waybill:${task.id}` ? "获取中" : task.waybillUrl ? "打开面单" : "获取面单"}</button> : null}{["manual_check", "retry_wait"].includes(task.status) ? <button className="ghost-button compact-button" type="button" disabled={Boolean(busy)} onClick={() => void retryTask(task)}>{busy === `retry:${task.id}` ? "重试中" : "核实后重试"}</button> : null}</span>
+            </article>
+          ))}
+        </div> : <div className="stockup-empty">暂无运单任务。本页不会展示妙手历史包裹，只记录启用本功能后由中台发现的待处理包裹。</div>}
       </section>
     </main>
   );

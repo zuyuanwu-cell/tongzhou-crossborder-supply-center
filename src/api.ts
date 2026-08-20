@@ -600,6 +600,109 @@ export type WarehousePayload = {
   nextRequiredSecrets: string[];
 };
 
+export type MiaoshouScope = {
+  platform: string;
+  site: string;
+};
+
+export type MiaoshouShop = {
+  shopId: string;
+  platform: string;
+  site: string;
+  siteName: string;
+  platformShopName: string;
+  shopNick: string;
+  parentShopId: string;
+  status: string;
+  gmtExpire: string;
+  gmtLastAuth: string;
+  autoApplyTrackingNo: boolean;
+  autoFetchWaybill: boolean;
+  enabledAt: string;
+  enabledBy: string;
+  lastSeenAt: string;
+  updatedAt: string;
+};
+
+export type MiaoshouTask = {
+  id: string;
+  opOrderPackageId: string;
+  shopId: string;
+  shopName: string;
+  platform: string;
+  site: string;
+  appPackageNo: string;
+  platformOrderSn: string;
+  status: "pending" | "running" | "succeeded" | "retry_wait" | "manual_check" | string;
+  trackingNo: string;
+  headTrackingNo: string;
+  logisticsType: string;
+  waybillUrl: string;
+  errorCode: string;
+  errorMessage: string;
+  attempts: number;
+  firstSeenAt: string;
+  lastAttemptAt: string;
+  completedAt: string;
+  updatedAt: string;
+};
+
+export type MiaoshouPayload = {
+  ok: boolean;
+  provider: "miaoshou";
+  config: {
+    hasCredentials: boolean;
+    credentialsSource: "environment" | "server" | string;
+    appKeyMasked: string;
+    automationEnabled: boolean;
+    autoFetchWaybillDefault: boolean;
+    pollIntervalMinutes: number;
+    maxPackagesPerRun: number;
+    scopes: MiaoshouScope[];
+    updatedAt: string;
+    updatedBy: string;
+    lastConnectionTestAt: string;
+    lastConnectionTestStatus: string;
+    lastConnectionTestMessage: string;
+    lastRunAt: string;
+    lastRunStatus: string;
+    lastRunMessage: string;
+  };
+  platformOptions: Array<{ value: string; label: string }>;
+  shopsSyncedAt: string;
+  counts: {
+    shops: number;
+    enabledShops: number;
+    total: number;
+    pending: number;
+    running: number;
+    succeeded: number;
+    retryWait: number;
+    manualCheck: number;
+  };
+  shops: MiaoshouShop[];
+  tasks: MiaoshouTask[];
+  events: Array<{
+    id: string;
+    taskId: string;
+    type: string;
+    status: string;
+    message: string;
+    code: string;
+    createdAt: string;
+  }>;
+  schedulerRunning: boolean;
+  syncedCount?: number;
+  runSummary?: {
+    skipped?: boolean;
+    message?: string;
+    discovered?: number;
+    attempted?: number;
+    succeeded?: number;
+    failed?: number;
+  };
+};
+
 export type InventorySnapshotRow = {
   warehouseId: string;
   warehouseName: string;
@@ -2315,6 +2418,55 @@ export function testWarehouseConnection(input: CreateWarehouseInput & { id?: str
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function fetchMiaoshou() {
+  return requestJson<MiaoshouPayload>("/api/miaoshou");
+}
+
+export function updateMiaoshouConfig(input: {
+  appKey?: string;
+  appSecret?: string;
+  automationEnabled?: boolean;
+  autoFetchWaybillDefault?: boolean;
+  pollIntervalMinutes?: number;
+  maxPackagesPerRun?: number;
+  scopes?: MiaoshouScope[];
+}) {
+  return requestJson<MiaoshouPayload>("/api/miaoshou/config", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function testMiaoshouConnection() {
+  return requestJson<MiaoshouPayload>("/api/miaoshou/test", { method: "POST" });
+}
+
+export function syncMiaoshouShops() {
+  return requestJson<MiaoshouPayload>("/api/miaoshou/shops/sync", { method: "POST" });
+}
+
+export function updateMiaoshouShop(shopId: string, input: { autoApplyTrackingNo?: boolean; autoFetchWaybill?: boolean }) {
+  return requestJson<MiaoshouPayload>(`/api/miaoshou/shops/${encodeURIComponent(shopId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function runMiaoshouAutomation(shopIds: string[] = []) {
+  return requestJson<MiaoshouPayload>("/api/miaoshou/run", {
+    method: "POST",
+    body: JSON.stringify({ shopIds }),
+  });
+}
+
+export function retryMiaoshouTask(taskId: string) {
+  return requestJson<MiaoshouPayload>(`/api/miaoshou/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+}
+
+export function fetchMiaoshouWaybill(taskId: string) {
+  return requestJson<MiaoshouPayload>(`/api/miaoshou/tasks/${encodeURIComponent(taskId)}/waybill`, { method: "POST" });
 }
 
 export function fetchCurrentUser() {

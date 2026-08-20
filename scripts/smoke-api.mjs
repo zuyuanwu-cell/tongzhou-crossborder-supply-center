@@ -228,6 +228,29 @@ async function main() {
   }
   console.log("[ok] /api/warehouses");
 
+  const unauthorizedMiaoshou = await fetch(`${baseUrl}/api/miaoshou`);
+  if (unauthorizedMiaoshou.status !== 401) {
+    throw new Error(`/api/miaoshou did not enforce admin authentication: ${unauthorizedMiaoshou.status}`);
+  }
+  const miaoshou = await expectJson("/api/miaoshou", { headers: authHeaders });
+  if (!Array.isArray(miaoshou.shops) || !Array.isArray(miaoshou.tasks) || !Array.isArray(miaoshou.config?.scopes)) {
+    throw new Error("/api/miaoshou did not return configuration, shops, and tasks.");
+  }
+  const miaoshouConfigured = await expectJson("/api/miaoshou/config", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      appKey: "smoke-app-key",
+      appSecret: "smoke-app-secret",
+      automationEnabled: false,
+      scopes: [{ platform: "shopee", site: "ID" }],
+    }),
+  });
+  if (!miaoshouConfigured.config?.hasCredentials || JSON.stringify(miaoshouConfigured).includes("smoke-app-secret")) {
+    throw new Error("/api/miaoshou/config did not save credentials safely or exposed AppSecret in its response.");
+  }
+  console.log("[ok] /api/miaoshou permissions and safe configuration");
+
   await expectJson("/api/distributor-applications", { headers: authHeaders });
   console.log("[ok] /api/distributor-applications");
 

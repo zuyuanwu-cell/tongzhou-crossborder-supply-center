@@ -8096,3 +8096,411 @@ h3 {
     grid-template-columns: 1fr;
   }
 }
+/* Miaoshou ERP fulfillment */
+.miaoshou-page {
+  display: grid;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.miaoshou-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 150px;
+  padding: 26px;
+  background: radial-gradient(circle at 12% 0%, rgba(255, 99, 27, .2), transparent 40%), #15171b;
+  border-color: rgba(255, 99, 27, .35);
+}
+
+.miaoshou-hero h2 {
+  margin: 4px 0 8px;
+  font-size: clamp(28px, 3vw, 42px);
+}
+
+.miaoshou-hero p:not(.eyebrow) {
+  max-width: 720px;
+  margin: 0;
+  color: #b8bbc2;
+  line-height: 1.7;
+}
+
+.miaoshou-hero-actions,
+.miaoshou-config-actions,
+.miaoshou-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.miaoshou-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.miaoshou-metrics article {
+  display: grid;
+  gap: 7px;
+  min-height: 118px;
+  padding: 18px 20px;
+  background: #17191e;
+  border: 1px solid #30333a;
+  border-radius: 14px;
+}
+
+.miaoshou-metrics small,
+.miaoshou-metrics span,
+.miaoshou-config-panel label > span,
+.miaoshou-scope-head span,
+.miaoshou-shop-auth,
+.miaoshou-task-row small {
+  color: #9da1aa;
+}
+
+.miaoshou-metrics strong {
+  font-size: 26px;
+  color: #f7f7f4;
+}
+
+.miaoshou-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.miaoshou-flow article {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 80px;
+  padding: 16px 18px;
+  background: #14161a;
+  border: 1px solid #2d3037;
+  border-radius: 13px;
+}
+
+.miaoshou-flow article.active {
+  border-color: #ff641b;
+  box-shadow: inset 3px 0 #ff641b;
+}
+
+.miaoshou-flow article.done b {
+  color: #5de49b;
+}
+
+.miaoshou-flow b {
+  color: #ff7b38;
+  font-size: 13px;
+}
+
+.miaoshou-flow div {
+  display: grid;
+  gap: 4px;
+}
+
+.miaoshou-flow span {
+  color: #969aa3;
+  font-size: 13px;
+}
+
+.miaoshou-config-panel,
+.miaoshou-shop-panel,
+.miaoshou-task-panel {
+  padding: 22px;
+}
+
+.miaoshou-config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.miaoshou-config-grid label,
+.miaoshou-scope-row label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.miaoshou-page input:not([type="checkbox"]),
+.miaoshou-page select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  color: #f8f8f5;
+  background: #0d0f12;
+  border: 1px solid #3b3f48;
+  border-radius: 9px;
+  outline: none;
+}
+
+.miaoshou-page input::placeholder {
+  color: #777c86;
+}
+
+.miaoshou-page input:focus,
+.miaoshou-page select:focus {
+  border-color: #ff6a21;
+  box-shadow: 0 0 0 3px rgba(255, 106, 33, .15);
+}
+
+.miaoshou-scope-head,
+.miaoshou-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.miaoshou-scope-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.miaoshou-scopes {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.miaoshou-scope-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(170px, .7fr) 40px;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  background: #111317;
+  border: 1px solid #2c2f36;
+  border-radius: 10px;
+}
+
+.miaoshou-settings-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 62px;
+  padding: 11px 14px;
+  background: #111317;
+  border: 1px solid #30333a;
+  border-radius: 10px;
+}
+
+.toggle-line input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #ff681f;
+}
+
+.toggle-line > span {
+  display: grid;
+  gap: 3px;
+}
+
+.toggle-line small {
+  color: #8f949e;
+}
+
+.toggle-line.compact {
+  min-height: 52px;
+  padding: 8px 10px;
+}
+
+.miaoshou-config-actions {
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid #2c2f36;
+}
+
+.miaoshou-config-actions > span {
+  margin-right: auto;
+  color: #8f949d;
+  font-size: 13px;
+}
+
+.compact-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 270px;
+  padding-left: 11px;
+  background: #0d0f12;
+  border: 1px solid #3b3f48;
+  border-radius: 9px;
+}
+
+.compact-search input {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.miaoshou-shop-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.miaoshou-shop-list article {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.2fr) minmax(180px, .7fr) minmax(180px, .75fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 14px;
+  background: #111317;
+  border: 1px solid #30333a;
+  border-radius: 11px;
+}
+
+.miaoshou-shop-list article.enabled {
+  background: linear-gradient(90deg, rgba(44, 197, 118, .09), #111317 42%);
+  border-color: rgba(73, 207, 137, .38);
+}
+
+.miaoshou-shop-main {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.miaoshou-shop-main > div,
+.miaoshou-shop-auth {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.miaoshou-shop-main strong,
+.miaoshou-shop-main span,
+.miaoshou-task-row strong,
+.miaoshou-task-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.miaoshou-shop-main span {
+  color: #969ba5;
+  font-size: 12px;
+}
+
+.miaoshou-shop-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  color: #ff7a36;
+  background: rgba(255, 105, 31, .12);
+  border-radius: 9px;
+}
+
+.miaoshou-task-list {
+  display: grid;
+  margin-top: 14px;
+  border: 1px solid #30333a;
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+.miaoshou-task-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.25fr) minmax(170px, .8fr) minmax(170px, .8fr) minmax(170px, .8fr) minmax(130px, .65fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 66px;
+  padding: 10px 14px;
+  background: #111317;
+  border-top: 1px solid #292c32;
+}
+
+.miaoshou-task-row.head {
+  min-height: 42px;
+  color: #969ba5;
+  background: #191b20;
+  border-top: 0;
+  font-size: 12px;
+}
+
+.miaoshou-task-row > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.miaoshou-task-row i {
+  width: max-content;
+  font-style: normal;
+}
+
+.miaoshou-task-error {
+  color: #ff9890 !important;
+}
+
+.notice.success {
+  color: #8ff0ba;
+  background: rgba(30, 154, 91, .14);
+  border-color: rgba(69, 205, 134, .32);
+}
+
+@media (max-width: 1180px) {
+  .miaoshou-config-grid,
+  .miaoshou-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .miaoshou-shop-list article {
+    grid-template-columns: minmax(260px, 1fr) minmax(180px, .7fr) auto;
+  }
+
+  .miaoshou-shop-list article .toggle-line {
+    grid-column: 1 / 3;
+  }
+
+  .miaoshou-task-list {
+    overflow-x: auto;
+  }
+
+  .miaoshou-task-row {
+    min-width: 980px;
+  }
+}
+
+@media (max-width: 760px) {
+  .miaoshou-hero,
+  .miaoshou-scope-head,
+  .miaoshou-config-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .miaoshou-metrics,
+  .miaoshou-flow,
+  .miaoshou-config-grid,
+  .miaoshou-settings-row {
+    grid-template-columns: 1fr;
+  }
+
+  .miaoshou-scope-row,
+  .miaoshou-shop-list article {
+    grid-template-columns: 1fr;
+  }
+
+  .miaoshou-shop-list article .toggle-line {
+    grid-column: auto;
+  }
+
+  .compact-search {
+    width: 100%;
+    min-width: 0;
+  }
+}

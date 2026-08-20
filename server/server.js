@@ -22,6 +22,7 @@ import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publ
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
+import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -71,6 +72,7 @@ const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
+const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
 const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000);
 const orderSyncChunkDays = Math.max(1, Math.min(30, Number(process.env.ORDER_SYNC_CHUNK_DAYS || 7)));
@@ -98,6 +100,7 @@ let cachedActionLog = normalizeActionLog(loadJsonCache(actionLogCachePath));
 let cachedDistributorApplications = normalizeDistributorApplications(loadJsonCache(distributorApplicationsPath));
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
+const miaoshouAutomation = await initMiaoshouAutomation({ cacheDir, dbPath: miaoshouTaskDbPath });
 const defaultInternalAccessCode = "admin123";
 const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
 const isProductionRuntime = process.env.NODE_ENV === "production";
@@ -4394,6 +4397,125 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/miaoshou" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "查看妙手 ERP 配置需要管理员登录。" });
+        return;
+      }
+      sendJson(res, 200, miaoshouAutomation.publicPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/config" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "配置妙手 ERP 需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = miaoshouAutomation.updateConfig(payload, auth.user?.displayName || auth.user?.username || "管理员");
+      appendActionLog(auth, "更新妙手 ERP 配置", "miaoshou_config", "妙手开放平台", {
+        automationEnabled: result.config.automationEnabled,
+        pollIntervalMinutes: result.config.pollIntervalMinutes,
+        scopeCount: result.config.scopes.length,
+        credentialsUpdated: Boolean(payload.appKey || payload.appSecret),
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/test" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "检测妙手授权需要管理员登录。" });
+        return;
+      }
+      const result = await miaoshouAutomation.testConnection();
+      appendActionLog(auth, "检测妙手 ERP 授权", "miaoshou_connection", "妙手开放平台", { status: "success" });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/shops/sync" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "同步妙手店铺需要管理员登录。" });
+        return;
+      }
+      const result = await miaoshouAutomation.syncShops();
+      appendActionLog(auth, "同步妙手店铺", "miaoshou_shop", "妙手店铺", { syncedCount: result.syncedCount || 0 });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const miaoshouShopMatch = url.pathname.match(/^\/api\/miaoshou\/shops\/([^/]+)$/);
+    if (miaoshouShopMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "调整妙手店铺自动化需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const shopId = decodeURIComponent(miaoshouShopMatch[1]);
+      const result = miaoshouAutomation.updateShop(shopId, payload, auth.user?.displayName || auth.user?.username || "管理员");
+      const shop = result.shops.find((item) => item.shopId === shopId);
+      appendActionLog(auth, shop?.autoApplyTrackingNo ? "开启店铺自动申请运单号" : "关闭店铺自动申请运单号", "miaoshou_shop", shop?.platformShopName || shop?.shopNick || shopId, {
+        shopId,
+        autoApplyTrackingNo: Boolean(shop?.autoApplyTrackingNo),
+        autoFetchWaybill: Boolean(shop?.autoFetchWaybill),
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/run" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "运行妙手运单任务需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const summary = await miaoshouAutomation.runAutomation({ force: true, shopIds: payload.shopIds || [] });
+      appendActionLog(auth, "手动运行妙手运单任务", "miaoshou_tracking_task", "自动申请运单号", {
+        discovered: summary.discovered || 0,
+        attempted: summary.attempted || 0,
+        succeeded: summary.succeeded || 0,
+        failed: summary.failed || 0,
+      });
+      sendJson(res, 200, { ...miaoshouAutomation.publicPayload(), runSummary: summary });
+      return;
+    }
+
+    const miaoshouTaskRetryMatch = url.pathname.match(/^\/api\/miaoshou\/tasks\/([^/]+)\/retry$/);
+    if (miaoshouTaskRetryMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "重试妙手运单任务需要管理员登录。" });
+        return;
+      }
+      const task = await miaoshouAutomation.retryTask(decodeURIComponent(miaoshouTaskRetryMatch[1]));
+      appendActionLog(auth, "确认重试妙手运单任务", "miaoshou_tracking_task", task.appPackageNo || task.opOrderPackageId, {
+        taskId: task.id,
+        status: task.status,
+      });
+      sendJson(res, 200, { ...miaoshouAutomation.publicPayload(), task });
+      return;
+    }
+
+    const miaoshouTaskWaybillMatch = url.pathname.match(/^\/api\/miaoshou\/tasks\/([^/]+)\/waybill$/);
+    if (miaoshouTaskWaybillMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth)) {
+        sendJson(res, 401, { ok: false, message: "获取妙手面单需要管理员登录。" });
+        return;
+      }
+      const task = await miaoshouAutomation.getWaybill(decodeURIComponent(miaoshouTaskWaybillMatch[1]));
+      appendActionLog(auth, "获取妙手运单面单", "miaoshou_waybill", task.appPackageNo || task.opOrderPackageId, { taskId: task.id });
+      sendJson(res, 200, { ...miaoshouAutomation.publicPayload(), task });
+      return;
+    }
+
     const agentApiKeyMatch = url.pathname.match(/^\/api\/agent-keys\/([^/]+)$/);
     if (agentApiKeyMatch && req.method === "DELETE") {
       const auth = getAuth(req);
@@ -6272,6 +6394,8 @@ server.listen(port, () => {
   }
   setInterval(runScheduledInventorySnapshot, 60 * 1000);
   setInterval(runWecomSchedules, 60 * 1000);
+  setInterval(() => { void miaoshouAutomation.runScheduled(); }, 60 * 1000);
   runScheduledInventorySnapshot();
   runWecomSchedules();
+  void miaoshouAutomation.runScheduled();
 });

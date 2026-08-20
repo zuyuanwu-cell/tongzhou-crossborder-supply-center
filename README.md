@@ -21,6 +21,7 @@ npm run dev:all   # 同时启动前后端
 npm run build     # 构建前端
 npm run smoke:api # 构建后冒烟检查根路径、登录态和核心内部 API
 npm run test:movement-comparison # 校验动销状态与库存消耗对比口径
+npm run test:miaoshou # 使用模拟妙手接口校验店铺同步、申请运单号、面单与幂等逻辑
 ```
 
 构建后也可以只启动后端：`npm run build && npm run api`。当 `dist/index.html` 存在时，后端会为 `/` 和前端路由返回应用首页，API 仍然走 `/api/*`。
@@ -48,6 +49,11 @@ WMS_ORDER_MAX_PAGES=200
 INVENTORY_SNAPSHOT_TIMEZONE=Asia/Shanghai
 MOVEMENT_HISTORY_TIMEZONE=Asia/Shanghai
 MOVEMENT_HISTORY_DB_PATH=.cache/movement-history.sqlite
+MIAOSHOU_APP_KEY=
+MIAOSHOU_APP_SECRET=
+MIAOSHOU_API_BASE_URL=https://openapi-erp.91miaoshou.com
+MIAOSHOU_REQUEST_TIMEOUT_MS=25000
+MIAOSHOU_TASK_DB_PATH=.cache/miaoshou-tasks.sqlite
 AGNES_AI_API_KEY=
 AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
 ```
@@ -64,7 +70,21 @@ AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
 - `WMS_ORDER_MAX_PAGES`：订单同步单分片最多分页数；SEA WMS 印尼/马来订单量较大，建议保持 200，避免出库单被截断。
 - `INVENTORY_SNAPSHOT_TIMEZONE` / `MOVEMENT_HISTORY_TIMEZONE`：库存快照与动销历史默认日期时区，页面筛选也支持手动选择时区。
 - `MOVEMENT_HISTORY_DB_PATH`：动销历史 SQLite 数据库文件路径，默认 `.cache/movement-history.sqlite`；备份这个文件即可保留历史动销。
+- `MIAOSHOU_APP_KEY` / `MIAOSHOU_APP_SECRET`：妙手开放平台授权；也可以由管理员在“妙手 ERP”页面录入。环境变量优先级更高，密钥不会返回前端。
+- `MIAOSHOU_REQUEST_TIMEOUT_MS`：妙手单次接口超时时间；请求结果不明确时任务进入人工核实，不会盲目重试。
+- `MIAOSHOU_TASK_DB_PATH`：运单申请任务与事件 SQLite 文件，默认 `.cache/miaoshou-tasks.sqlite`。
 - `AGNES_AI_API_KEY` / `AGNES_AI_BASE_URL`：同舟AI 生成能力配置。
+
+## 妙手 ERP 自动申请运单号
+
+管理员进入“智能与开放 → 妙手 ERP”，按以下顺序操作：
+
+1. 保存 AppKey、AppSecret 和需要同步的平台/站点范围。
+2. 检测连接并同步店铺。
+3. 逐店开启“自动申请运单号”，确认是否成功后自动获取面单。
+4. 开启自动任务总开关，或先使用“立即检查”验证少量包裹。
+
+该任务只读取“待打单发货”包裹并调用申请运单号、获取面单接口，不调用妙手“包裹发货”接口。包裹必须已经在妙手配置线上物流。接口超时、返回成功但缺少运单号等不明确结果会停在“需要核实”，由管理员确认妙手后台状态后手动重试。
 
 动销分析中的周期状态变化和库存消耗对账口径见 [docs/movement-comparison.md](docs/movement-comparison.md)。
 
