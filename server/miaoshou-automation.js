@@ -15,6 +15,57 @@ const PLATFORM_OPTIONS = [
   { value: "mercadolibre", label: "Mercado Libre" },
 ];
 
+const SITE_OPTIONS = {
+  shopee: [
+    { value: "ID", label: "印度尼西亚" },
+    { value: "TW", label: "台湾" },
+    { value: "VN", label: "越南" },
+    { value: "TH", label: "泰国" },
+    { value: "MY", label: "马来西亚" },
+    { value: "SG", label: "新加坡" },
+    { value: "PH", label: "菲律宾" },
+    { value: "BR", label: "巴西" },
+    { value: "MX", label: "墨西哥" },
+    { value: "CL", label: "智利" },
+    { value: "CO", label: "哥伦比亚" },
+    { value: "PL", label: "波兰" },
+    { value: "ES", label: "西班牙" },
+    { value: "FR", label: "法国" },
+    { value: "AR", label: "阿根廷" },
+  ],
+  shopeeGlobal: [{ value: "SHOPEEGLOBAL", label: "全球" }],
+  tiktok: [
+    { value: "ID", label: "印度尼西亚" },
+    { value: "VN", label: "越南" },
+    { value: "TH", label: "泰国" },
+    { value: "MY", label: "马来西亚" },
+    { value: "PH", label: "菲律宾" },
+    { value: "BR", label: "巴西" },
+    { value: "MX", label: "墨西哥" },
+    { value: "ES", label: "西班牙" },
+    { value: "FR", label: "法国" },
+    { value: "GB", label: "英国" },
+    { value: "US", label: "美国" },
+    { value: "DE", label: "德国" },
+    { value: "IT", label: "意大利" },
+    { value: "JP", label: "日本" },
+  ],
+  tiktokGlobal: [
+    { value: "TIKTOKGLOBAL", label: "全球" },
+    { value: "TIKTOKGLOBALUS", label: "全球 - 美国" },
+    { value: "TIKTOKGLOBALEU", label: "欧盟" },
+  ],
+  pddkj: [{ value: "PDDKJ", label: "TEMU 全托管" }],
+  pddkjChoice: [{ value: "PDDKJCHOICE", label: "TEMU 半托管" }],
+  ozon: [{ value: "OZON", label: "Ozon" }],
+  mercadolibre: [
+    { value: "CBT", label: "传统模式" },
+    { value: "UP", label: "新 UP 发品模式" },
+  ],
+};
+
+const MIAOSHOU_PAGE_SIZE = 50;
+
 function loadJson(path, fallback) {
   if (!existsSync(path)) return fallback;
   try {
@@ -50,6 +101,16 @@ function normalizeScopes(input) {
       return true;
     })
     .slice(0, 50);
+}
+
+function validateScopes(scopes) {
+  for (const scope of scopes) {
+    const sites = SITE_OPTIONS[scope.platform];
+    if (!sites) throw new Error(`不支持的妙手平台：${scope.platform}`);
+    if (!sites.some((site) => site.value === scope.site)) {
+      throw new Error(`站点代码与平台不匹配：${scope.platform}/${scope.site}`);
+    }
+  }
 }
 
 function normalizeConfig(input = {}) {
@@ -96,7 +157,7 @@ function normalizeShop(row = {}, existing = {}) {
 }
 
 function shopDisplayName(shop) {
-  return shop.platformShopName || shop.shopNick || shop.shopId;
+  return shop.shopNick || shop.platformShopName || shop.shopId;
 }
 
 function maskKey(value) {
@@ -240,6 +301,7 @@ export async function initMiaoshouAutomation({
         lastRunMessage: config.lastRunMessage,
       },
       platformOptions: PLATFORM_OPTIONS,
+      siteOptions: SITE_OPTIONS,
       shopsSyncedAt: shopState.syncedAt,
       counts: {
         shops: shops.length,
@@ -256,6 +318,7 @@ export async function initMiaoshouAutomation({
   function updateConfig(input = {}, actorName = "") {
     const nextScopes = input.scopes === undefined ? config.scopes : normalizeScopes(input.scopes);
     if (!nextScopes.length) throw new Error("请至少配置一个店铺平台与站点范围");
+    validateScopes(nextScopes);
     const next = normalizeConfig({
       ...config,
       ...input,
@@ -305,7 +368,7 @@ export async function initMiaoshouAutomation({
     const received = [];
     for (const scope of config.scopes) {
       for (let pageNo = 1; pageNo <= 20; pageNo += 1) {
-        const response = await api.getShops({ ...scope, pageNo, pageSize: 100 });
+        const response = await api.getShops({ ...scope, pageNo, pageSize: MIAOSHOU_PAGE_SIZE });
         const rows = Array.isArray(response?.data?.shopList) ? response.data.shopList : [];
         rows.forEach((row) => {
           const id = text(row.shopId);
@@ -317,7 +380,7 @@ export async function initMiaoshouAutomation({
           existing.set(id, normalized);
           received.push(normalized);
         });
-        if (rows.length < 100) break;
+        if (rows.length < MIAOSHOU_PAGE_SIZE) break;
       }
     }
     shopState = {
@@ -349,7 +412,7 @@ export async function initMiaoshouAutomation({
       for (let page = 1; page <= 20 && packageMap.size < config.maxPackagesPerRun; page += 1) {
         const response = await api.searchPackages({
           page,
-          pageSize: 100,
+          pageSize: MIAOSHOU_PAGE_SIZE,
           shopIds: shopBatch,
           appPackageStatus: "wait_seller_send",
           appPackageTab: "waitShip",
@@ -359,7 +422,7 @@ export async function initMiaoshouAutomation({
           const id = text(row.opOrderPackageId ?? row.op_order_package_id);
           if (id && !packageMap.has(id)) packageMap.set(id, row);
         });
-        if (rows.length < 100) break;
+        if (rows.length < MIAOSHOU_PAGE_SIZE) break;
       }
     }
     return Array.from(packageMap.values()).slice(0, config.maxPackagesPerRun);

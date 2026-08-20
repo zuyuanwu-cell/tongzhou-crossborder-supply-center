@@ -669,6 +669,7 @@ export type MiaoshouPayload = {
     lastRunMessage: string;
   };
   platformOptions: Array<{ value: string; label: string }>;
+  siteOptions: Record<string, Array<{ value: string; label: string }>>;
   shopsSyncedAt: string;
   counts: {
     shops: number;

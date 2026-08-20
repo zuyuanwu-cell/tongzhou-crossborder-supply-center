@@ -193,7 +193,7 @@ export async function initMiaoshouTaskStore(dbPath) {
         id,
         opOrderPackageId,
         packageField(packageRow, "shopId") || String(shop.shopId || ""),
-        packageField(packageRow, "shopName", "shopNick") || String(shop.shopName || shop.platformShopName || ""),
+        String(shop.shopNick || shop.platformShopName || shop.shopName || packageField(packageRow, "shopName", "shopNick") || ""),
         packageField(packageRow, "platform") || String(shop.platform || ""),
         packageField(packageRow, "site") || String(shop.site || ""),
         packageField(packageRow, "appPackageNo", "platformPackageNo"),

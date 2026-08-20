@@ -7635,7 +7635,17 @@ function MiaoshouPage() {
   function updateScope(index: number, field: keyof MiaoshouScope, value: string) {
     setForm((current) => ({
       ...current,
-      scopes: current.scopes.map((scope, scopeIndex) => scopeIndex === index ? { ...scope, [field]: field === "site" ? value.toUpperCase() : value } : scope),
+      scopes: current.scopes.map((scope, scopeIndex) => {
+        if (scopeIndex !== index) return scope;
+        if (field === "platform") {
+          return {
+            ...scope,
+            platform: value,
+            site: payload?.siteOptions?.[value]?.[0]?.value || "",
+          };
+        }
+        return { ...scope, site: value.toUpperCase() };
+      }),
     }));
   }
 
@@ -7656,7 +7666,7 @@ function MiaoshouPage() {
     const nextEnabled = !shop.autoApplyTrackingNo;
     if (nextEnabled) {
       const accepted = await confirm({
-        title: `为“${shop.platformShopName || shop.shopNick || shop.shopId}”开启自动申请？`,
+        title: `为“${shop.shopNick || shop.platformShopName || shop.shopId}”开启自动申请？`,
         body: "该店铺的待打单包裹将进入中台自动申请队列。",
         confirmText: "开启该店铺",
         details: [`平台/站点：${shop.platform} / ${shop.site}`, "包裹需已在妙手配置线上物流", "本功能不会自动发货"],
@@ -7708,6 +7718,7 @@ function MiaoshouPage() {
     return !keyword || [shop.shopId, shop.platformShopName, shop.shopNick, shop.platform, shop.site].some((value) => value.toLowerCase().includes(keyword));
   });
   const platformOptions = payload?.platformOptions || [];
+  const siteOptions = payload?.siteOptions || {};
 
   return (
     <main className="miaoshou-page">
@@ -7753,13 +7764,17 @@ function MiaoshouPage() {
         </div>
         <div className="miaoshou-scope-head"><div><strong>店铺同步范围</strong><span>妙手店铺接口要求同时指定平台和站点，可添加多个范围。</span></div><button className="ghost-button compact-button" type="button" onClick={() => setForm((current) => ({ ...current, scopes: [...current.scopes, { platform: "shopee", site: "ID" }] }))}><Plus size={14} />添加范围</button></div>
         <div className="miaoshou-scopes">
-          {form.scopes.map((scope, index) => (
-            <div className="miaoshou-scope-row" key={`${index}-${scope.platform}-${scope.site}`}>
-              <label><span>平台</span><select value={scope.platform} onChange={(event) => updateScope(index, "platform", event.target.value)}>{platformOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-              <label><span>站点代码</span><input value={scope.site} onChange={(event) => updateScope(index, "site", event.target.value)} placeholder="例如 ID、MY、OZON" /></label>
-              <button className="icon-button" type="button" aria-label="删除同步范围" disabled={form.scopes.length <= 1} onClick={() => setForm((current) => ({ ...current, scopes: current.scopes.filter((_, scopeIndex) => scopeIndex !== index) }))}><Trash2 size={15} /></button>
-            </div>
-          ))}
+          {form.scopes.map((scope, index) => {
+            const scopeSiteOptions = siteOptions[scope.platform] || [];
+            const hasCurrentSite = scopeSiteOptions.some((option) => option.value === scope.site);
+            return (
+              <div className="miaoshou-scope-row" key={`${index}-${scope.platform}-${scope.site}`}>
+                <label><span>平台</span><select value={scope.platform} onChange={(event) => updateScope(index, "platform", event.target.value)}>{platformOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                <label><span>站点</span><select value={scope.site} onChange={(event) => updateScope(index, "site", event.target.value)}>{!hasCurrentSite && scope.site ? <option value={scope.site}>{scope.site}（旧配置，请重新选择）</option> : null}{scopeSiteOptions.map((option) => <option key={option.value} value={option.value}>{option.label}（{option.value}）</option>)}</select></label>
+                <button className="icon-button" type="button" aria-label="删除同步范围" disabled={form.scopes.length <= 1} onClick={() => setForm((current) => ({ ...current, scopes: current.scopes.filter((_, scopeIndex) => scopeIndex !== index) }))}><Trash2 size={15} /></button>
+              </div>
+            );
+          })}
         </div>
         <div className="miaoshou-settings-row">
           <label className="toggle-line"><input type="checkbox" checked={form.automationEnabled} onChange={(event) => setForm((current) => ({ ...current, automationEnabled: event.target.checked }))} /><span><strong>自动任务总开关</strong><small>仅处理下方已启用店铺</small></span></label>
@@ -7781,7 +7796,7 @@ function MiaoshouPage() {
         {visibleShops.length ? <div className="miaoshou-shop-list">
           {visibleShops.map((shop) => (
             <article className={shop.autoApplyTrackingNo ? "enabled" : ""} key={shop.shopId}>
-              <div className="miaoshou-shop-main"><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.platformShopName || shop.shopNick || shop.shopId}</strong><span>{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
+              <div className="miaoshou-shop-main"><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.shopNick || shop.platformShopName || shop.shopId}</strong><span>{shop.shopNick && shop.platformShopName ? `${shop.platformShopName} · ` : ""}{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
               <div className="miaoshou-shop-auth"><span>授权状态：{shop.status || "未返回"}</span><small>{shop.gmtExpire ? `到期 ${formatDateTime(shop.gmtExpire)}` : `最近同步 ${formatDateTime(shop.lastSeenAt)}`}</small></div>
               <label className="toggle-line compact"><input type="checkbox" checked={shop.autoFetchWaybill} disabled={Boolean(busy)} onChange={(event) => void perform(`label:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoFetchWaybill: event.target.checked }), event.target.checked ? "该店铺会自动获取面单。" : "该店铺仅申请运单号。")}/><span><strong>获取面单</strong><small>成功后自动保存链接</small></span></label>
               <button className={shop.autoApplyTrackingNo ? "ghost-button" : "sync-button"} type="button" disabled={Boolean(busy)} onClick={() => void toggleShop(shop)}>{busy === `shop:${shop.shopId}` ? "处理中" : shop.autoApplyTrackingNo ? "停止自动申请" : "开启自动申请"}</button>

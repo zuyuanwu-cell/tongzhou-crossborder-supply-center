@@ -97,6 +97,9 @@ try {
   await automation.testConnection();
   const synced = await automation.syncShops();
   assert.equal(synced.counts.shops, 1);
+  assert.equal(synced.shops[0].shopNick, "TEST");
+  assert.equal(synced.siteOptions.tiktok.find((option) => option.value === "VN")?.label, "越南");
+  assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.shops && call.body.pageSize !== 1).every((call) => call.body.pageSize === 50));
   automation.updateShop("SHOP-1", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
 
   const firstRun = await automation.runAutomation({ force: true });
@@ -106,7 +109,9 @@ try {
   assert.equal(firstPayload.counts.succeeded, 1);
   assert.equal(firstPayload.tasks[0].trackingNo, "TRACK-001");
   assert.equal(firstPayload.tasks[0].waybillUrl, "https://labels.example/PKG-001.pdf");
+  assert.equal(firstPayload.tasks[0].shopName, "TEST");
   assert.equal(firstPayload.tasks[0].packageSnapshot, undefined, "前端载荷不应暴露原始包裹快照");
+  assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.packages).every((call) => call.body.pageSize === 50));
 
   const secondRun = await automation.runAutomation({ force: true });
   assert.equal(secondRun.attempted, 0, "同一包裹不能重复申请");
