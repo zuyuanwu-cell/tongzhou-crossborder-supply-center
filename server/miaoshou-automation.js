@@ -65,6 +65,13 @@ const SITE_OPTIONS = {
 };
 
 const MIAOSHOU_PAGE_SIZE = 50;
+const DEFAULT_REQUEST_INTERVAL_MS = 1_100;
+const DEFAULT_RATE_LIMIT_RETRIES = 3;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1_500;
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
 
 function loadJson(path, fallback) {
   if (!existsSync(path)) return fallback;
@@ -236,6 +243,10 @@ export async function initMiaoshouAutomation({
   fetchImpl = globalThis.fetch,
   env = process.env,
   requestTimeoutMs = Number(process.env.MIAOSHOU_REQUEST_TIMEOUT_MS || 25_000),
+  requestIntervalMs = Number(process.env.MIAOSHOU_REQUEST_INTERVAL_MS || DEFAULT_REQUEST_INTERVAL_MS),
+  rateLimitRetries = Number(process.env.MIAOSHOU_RATE_LIMIT_RETRIES || DEFAULT_RATE_LIMIT_RETRIES),
+  rateLimitRetryDelayMs = Number(process.env.MIAOSHOU_RATE_LIMIT_RETRY_DELAY_MS || DEFAULT_RATE_LIMIT_RETRY_DELAY_MS),
+  sleepImpl = sleep,
 } = {}) {
   const configPath = resolve(cacheDir, "miaoshou-config.json");
   const shopsPath = resolve(cacheDir, "miaoshou-shops.json");
@@ -247,6 +258,42 @@ export async function initMiaoshouAutomation({
   };
   const taskStore = await initMiaoshouTaskStore(dbPath);
   let running = false;
+  let requestQueue = Promise.resolve();
+  let lastRequestStartedAt = 0;
+  const safeRequestIntervalMs = clampNumber(requestIntervalMs, 0, 60_000, DEFAULT_REQUEST_INTERVAL_MS);
+  const safeRateLimitRetries = clampNumber(rateLimitRetries, 0, 10, DEFAULT_RATE_LIMIT_RETRIES);
+  const safeRateLimitRetryDelayMs = clampNumber(rateLimitRetryDelayMs, 0, 60_000, DEFAULT_RATE_LIMIT_RETRY_DELAY_MS);
+
+  function enqueueApiRequest(operation) {
+    const queued = requestQueue.then(async () => {
+      const waitMs = Math.max(0, safeRequestIntervalMs - (Date.now() - lastRequestStartedAt));
+      if (waitMs > 0) await sleepImpl(waitMs);
+      lastRequestStartedAt = Date.now();
+      return operation();
+    });
+    requestQueue = queued.catch(() => undefined);
+    return queued;
+  }
+
+  function isRateLimitError(error) {
+    return error instanceof MiaoshouApiError
+      && error.retryable
+      && !error.ambiguous
+      && (error.status === 429 || /频率|限流/.test(error.message));
+  }
+
+  async function callApi(operation, { retryRateLimit = false } = {}) {
+    const maxRetries = retryRateLimit ? safeRateLimitRetries : 0;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await enqueueApiRequest(operation);
+      } catch (error) {
+        if (!isRateLimitError(error) || attempt >= maxRetries) throw error;
+        const retryDelayMs = safeRateLimitRetryDelayMs * (attempt + 1);
+        if (retryDelayMs > 0) await sleepImpl(retryDelayMs);
+      }
+    }
+  }
 
   function effectiveConfig() {
     return {
@@ -345,7 +392,10 @@ export async function initMiaoshouAutomation({
     const scope = config.scopes[0];
     const testedAt = new Date().toISOString();
     try {
-      const response = await client().getShops({ ...scope, pageNo: 1, pageSize: 1 });
+      const response = await callApi(
+        () => client().getShops({ ...scope, pageNo: 1, pageSize: 1 }),
+        { retryRateLimit: true },
+      );
       const shopList = Array.isArray(response?.data?.shopList) ? response.data.shopList : [];
       config.lastConnectionTestAt = testedAt;
       config.lastConnectionTestStatus = "success";
@@ -368,7 +418,10 @@ export async function initMiaoshouAutomation({
     const received = [];
     for (const scope of config.scopes) {
       for (let pageNo = 1; pageNo <= 20; pageNo += 1) {
-        const response = await api.getShops({ ...scope, pageNo, pageSize: MIAOSHOU_PAGE_SIZE });
+        const response = await callApi(
+          () => api.getShops({ ...scope, pageNo, pageSize: MIAOSHOU_PAGE_SIZE }),
+          { retryRateLimit: true },
+        );
         const rows = Array.isArray(response?.data?.shopList) ? response.data.shopList : [];
         rows.forEach((row) => {
           const id = text(row.shopId);
@@ -410,13 +463,16 @@ export async function initMiaoshouAutomation({
     const packageMap = new Map();
     for (const shopBatch of chunk(enabledShops.map((shop) => shop.shopId), 100)) {
       for (let page = 1; page <= 20 && packageMap.size < config.maxPackagesPerRun; page += 1) {
-        const response = await api.searchPackages({
-          page,
-          pageSize: MIAOSHOU_PAGE_SIZE,
-          shopIds: shopBatch,
-          appPackageStatus: "wait_seller_send",
-          appPackageTab: "waitShip",
-        });
+        const response = await callApi(
+          () => api.searchPackages({
+            page,
+            pageSize: MIAOSHOU_PAGE_SIZE,
+            shopIds: shopBatch,
+            appPackageStatus: "wait_seller_send",
+            appPackageTab: "waitShip",
+          }),
+          { retryRateLimit: true },
+        );
         const rows = uniquePackages(response);
         rows.forEach((row) => {
           const id = text(row.opOrderPackageId ?? row.op_order_package_id);
@@ -429,7 +485,10 @@ export async function initMiaoshouAutomation({
   }
 
   async function fetchWaybillForTask(task, api = client()) {
-    const response = await api.getWaybill(task.opOrderPackageId);
+    const response = await callApi(
+      () => api.getWaybill(task.opOrderPackageId),
+      { retryRateLimit: true },
+    );
     const url = waybillResult(response);
     if (!url) throw new Error("妙手返回成功但没有面单链接，请稍后重试获取面单");
     return taskStore.markWaybill(task.id, url);
@@ -438,7 +497,7 @@ export async function initMiaoshouAutomation({
   async function applyTask(task, shop, api = client()) {
     taskStore.markRunning(task.id);
     try {
-      const response = await api.applyTrackingNo(task.opOrderPackageId);
+      const response = await callApi(() => api.applyTrackingNo(task.opOrderPackageId));
       const result = applyResult(response);
       if (!result.trackingNo && !result.headTrackingNo) {
         return taskStore.markFailure(task.id, {

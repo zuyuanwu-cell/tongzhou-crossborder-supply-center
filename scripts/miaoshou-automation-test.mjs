@@ -16,23 +16,33 @@ function jsonResponse(payload, status = 200) {
 }
 
 const calls = [];
+let injectedRateLimitFailures = 0;
 async function fetchMock(url, init) {
   const path = new URL(url).pathname;
   const body = JSON.parse(init.body || "{}");
   calls.push({ path, body, headers: init.headers });
   if (path === MIAOSHOU_PATHS.shops) {
+    if (body.pageSize !== 1 && body.site === "VN" && injectedRateLimitFailures === 0) {
+      injectedRateLimitFailures += 1;
+      return jsonResponse({
+        result: "fail",
+        code: "rate_limit",
+        message: "账户接口每秒请求频率超限",
+      });
+    }
+    const vietnamShop = body.site === "VN";
     return jsonResponse({
       result: "success",
       code: "200",
       message: "success",
       data: {
         shopList: body.pageSize === 1 ? [{ shopId: "SHOP-1" }] : [{
-          shopId: "SHOP-1",
-          platform: "shopee",
-          site: "ID",
-          siteName: "印度尼西亚",
-          platformShopName: "测试店铺",
-          shopNick: "TEST",
+          shopId: vietnamShop ? "SHOP-VN" : "SHOP-1",
+          platform: vietnamShop ? "tiktok" : "shopee",
+          site: vietnamShop ? "VN" : "ID",
+          siteName: vietnamShop ? "越南" : "印度尼西亚",
+          platformShopName: vietnamShop ? "Vietnam Store" : "测试店铺",
+          shopNick: vietnamShop ? "VN ALIAS" : "TEST",
           status: "active",
         }],
       },
@@ -85,19 +95,31 @@ assert.equal(signature, "8ef5cf5ba685472fc4e5b6f1fd4efe8a5b6c0c16628713b3022c0c7
 
 const cacheDir = mkdtempSync(join(tmpdir(), "tongzhou-miaoshou-test-"));
 try {
-  const automation = await initMiaoshouAutomation({ cacheDir, fetchImpl: fetchMock, env: {} });
+  const automation = await initMiaoshouAutomation({
+    cacheDir,
+    fetchImpl: fetchMock,
+    env: {},
+    requestIntervalMs: 0,
+    rateLimitRetryDelayMs: 0,
+  });
   automation.updateConfig({
     appKey: "app-key",
     appSecret: "secret",
     automationEnabled: true,
-    scopes: [{ platform: "shopee", site: "ID" }],
+    scopes: [
+      { platform: "shopee", site: "ID" },
+      { platform: "tiktok", site: "VN" },
+    ],
     pollIntervalMinutes: 1,
     maxPackagesPerRun: 10,
   }, "测试管理员");
   await automation.testConnection();
   const synced = await automation.syncShops();
-  assert.equal(synced.counts.shops, 1);
-  assert.equal(synced.shops[0].shopNick, "TEST");
+  assert.equal(synced.counts.shops, 2);
+  assert.equal(synced.shops.find((shop) => shop.shopId === "SHOP-1")?.shopNick, "TEST");
+  assert.equal(synced.shops.find((shop) => shop.shopId === "SHOP-VN")?.shopNick, "VN ALIAS");
+  assert.equal(injectedRateLimitFailures, 1);
+  assert.equal(calls.filter((call) => call.path === MIAOSHOU_PATHS.shops && call.body.site === "VN").length, 2);
   assert.equal(synced.siteOptions.tiktok.find((option) => option.value === "VN")?.label, "越南");
   assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.shops && call.body.pageSize !== 1).every((call) => call.body.pageSize === 50));
   automation.updateShop("SHOP-1", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
