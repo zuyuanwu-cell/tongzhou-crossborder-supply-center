@@ -591,24 +591,38 @@ export async function initMiaoshouAutomation({
     let attempted = 0;
     let succeeded = 0;
     let failed = 0;
+    let existingTracking = 0;
     try {
       const packages = await fetchEligiblePackages(enabledShops);
       const shopMap = new Map(enabledShops.map((shop) => [shop.shopId, shop]));
       const api = client();
       for (const packageRow of packages) {
-        if (text(packageRow.logisticsNo)) {
-          const existingTask = taskStore.getByPackageId(text(packageRow.opOrderPackageId ?? packageRow.op_order_package_id));
-          if (existingTask && existingTask.status !== "succeeded") {
-            taskStore.markSuccess(existingTask.id, {
-              trackingNo: text(packageRow.logisticsNo),
+        const shop = shopMap.get(text(packageRow.shopId));
+        if (!shop) continue;
+        const observedTrackingNo = text(packageRow.logisticsNo);
+        if (observedTrackingNo) {
+          existingTracking += 1;
+          let existingTask = taskStore.getByPackageId(text(packageRow.opOrderPackageId ?? packageRow.op_order_package_id));
+          if (!existingTask) {
+            existingTask = taskStore.upsertPending(packageRow, shop, {
+              discoveryType: "discovered_existing_tracking",
+              discoveryMessage: "发现妙手已有运单号包裹",
+            });
+          }
+          if (
+            existingTask.status !== "succeeded"
+            || existingTask.trackingNo !== observedTrackingNo
+            || existingTask.headTrackingNo !== text(packageRow.headLogisticsNo)
+            || existingTask.logisticsType !== text(packageRow.logisticsType)
+          ) {
+            taskStore.markObservedTracking(existingTask.id, {
+              trackingNo: observedTrackingNo,
               headTrackingNo: text(packageRow.headLogisticsNo),
               logisticsType: text(packageRow.logisticsType),
             });
           }
           continue;
         }
-        const shop = shopMap.get(text(packageRow.shopId));
-        if (!shop) continue;
         const task = taskStore.upsertPending(packageRow, shop);
         if (task.attempts === 0) discovered += 1;
         if (!retryDue(task) || attempted >= config.maxPackagesPerRun) continue;
@@ -619,9 +633,9 @@ export async function initMiaoshouAutomation({
       }
       config.lastRunAt = new Date().toISOString();
       config.lastRunStatus = failed ? "partial" : "success";
-      config.lastRunMessage = `读取 ${packages.length} 个待打单包裹，申请 ${attempted} 个，成功 ${succeeded} 个，需处理 ${failed} 个`;
+      config.lastRunMessage = `读取 ${packages.length} 个待发货包裹，已有运单 ${existingTracking} 个，申请 ${attempted} 个，成功 ${succeeded} 个，需处理 ${failed} 个`;
       saveConfig();
-      return { skipped: false, startedAt, discovered, attempted, succeeded, failed, payload: publicPayload() };
+      return { skipped: false, startedAt, discovered, existingTracking, attempted, succeeded, failed, payload: publicPayload() };
     } catch (error) {
       config.lastRunAt = new Date().toISOString();
       config.lastRunStatus = "failed";

@@ -167,7 +167,10 @@ export async function initMiaoshouTaskStore(dbPath) {
     return taskFromRow(first(db, "SELECT * FROM miaoshou_tasks WHERE op_order_package_id = ?", [String(opOrderPackageId || "")]));
   }
 
-  function upsertPending(packageRow, shop = {}) {
+  function upsertPending(packageRow, shop = {}, {
+    discoveryType = "discovered",
+    discoveryMessage = "发现待申请运单号包裹",
+  } = {}) {
     const opOrderPackageId = packageId(packageRow);
     if (!opOrderPackageId) throw new Error("妙手包裹缺少 opOrderPackageId");
     const existing = getByPackageId(opOrderPackageId);
@@ -203,7 +206,7 @@ export async function initMiaoshouTaskStore(dbPath) {
         JSON.stringify(safePackageSnapshot(packageRow)),
       ],
     );
-    if (!existing) addEvent(id, "discovered", "pending", "发现待申请运单号包裹", "", {}, { shouldPersist: false });
+    if (!existing) addEvent(id, discoveryType, "pending", discoveryMessage, "", {}, { shouldPersist: false });
     persist();
     return getTask(id);
   }
@@ -228,6 +231,31 @@ export async function initMiaoshouTaskStore(dbPath) {
       [result.trackingNo || "", result.headTrackingNo || "", result.logisticsType || "", now, now, id],
     );
     addEvent(id, "apply_succeeded", "succeeded", `运单号申请成功${result.trackingNo ? `：${result.trackingNo}` : ""}`, "", result, { shouldPersist: false });
+    persist();
+    return getTask(id);
+  }
+
+  function markObservedTracking(id, result = {}) {
+    const existing = getTask(id);
+    if (!existing) throw new Error("妙手运单任务不存在");
+    const now = new Date().toISOString();
+    const trackingNo = result.trackingNo || existing.trackingNo || "";
+    const headTrackingNo = result.headTrackingNo || existing.headTrackingNo || "";
+    const logisticsType = result.logisticsType || existing.logisticsType || "";
+    db.run(
+      `UPDATE miaoshou_tasks SET status = 'succeeded', tracking_no = ?, head_tracking_no = ?,
+       logistics_type = ?, error_code = '', error_message = '', completed_at = ?, updated_at = ? WHERE id = ?`,
+      [trackingNo, headTrackingNo, logisticsType, now, now, id],
+    );
+    addEvent(
+      id,
+      "tracking_observed",
+      "succeeded",
+      `检测到妙手已有运单号${trackingNo ? `：${trackingNo}` : ""}`,
+      "",
+      { ...result, trackingNo, headTrackingNo, logisticsType },
+      { shouldPersist: false },
+    );
     persist();
     return getTask(id);
   }
@@ -315,6 +343,7 @@ export async function initMiaoshouTaskStore(dbPath) {
     listEvents,
     listTasks,
     markFailure,
+    markObservedTracking,
     markRunning,
     markSuccess,
     markWaybill,

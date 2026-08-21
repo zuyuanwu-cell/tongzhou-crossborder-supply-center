@@ -7553,10 +7553,10 @@ function MovementAnalysisPage({
   );
 }
 
-function miaoshouTaskLabel(status: string) {
+function miaoshouTaskLabel(status: string, attempts = 0) {
   if (status === "pending") return "待申请";
   if (status === "running") return "申请中";
-  if (status === "succeeded") return "已成功";
+  if (status === "succeeded") return attempts === 0 ? "已有运单" : "申请成功";
   if (status === "retry_wait") return "等待重试";
   if (status === "manual_check") return "需要核实";
   return status || "未知";
@@ -7687,7 +7687,7 @@ function MiaoshouPage() {
     const next = await perform("run", () => runMiaoshouAutomation(), "检查完成。");
     if (next?.runSummary) {
       const summary = next.runSummary;
-      setMessage(summary.skipped ? summary.message || "本次未执行。" : `检查完成：申请 ${summary.attempted || 0} 个，成功 ${summary.succeeded || 0} 个，需处理 ${summary.failed || 0} 个。`);
+      setMessage(summary.skipped ? summary.message || "本次未执行。" : `检查完成：已有运单 ${summary.existingTracking || 0} 个，新申请 ${summary.attempted || 0} 个，成功 ${summary.succeeded || 0} 个，需处理 ${summary.failed || 0} 个。`);
     }
   }
 
@@ -7741,7 +7741,7 @@ function MiaoshouPage() {
       <section className="miaoshou-metrics">
         <article><small>授权状态</small><strong>{config?.hasCredentials ? "已配置" : "待配置"}</strong><span>{config?.appKeyMasked || "填写 AppKey / AppSecret"}</span></article>
         <article><small>已同步店铺</small><strong>{formatNumber(payload?.counts.shops || 0)}</strong><span>自动申请 {formatNumber(payload?.counts.enabledShops || 0)} 家</span></article>
-        <article><small>申请成功</small><strong>{formatNumber(payload?.counts.succeeded || 0)}</strong><span>待申请 {formatNumber((payload?.counts.pending || 0) + (payload?.counts.running || 0))}</span></article>
+        <article><small>已取得运单</small><strong>{formatNumber(payload?.counts.succeeded || 0)}</strong><span>待申请 {formatNumber((payload?.counts.pending || 0) + (payload?.counts.running || 0))}</span></article>
         <article><small>需要处理</small><strong>{formatNumber((payload?.counts.retryWait || 0) + (payload?.counts.manualCheck || 0))}</strong><span>人工核实 {formatNumber(payload?.counts.manualCheck || 0)}</span></article>
       </section>
 
@@ -7812,7 +7812,7 @@ function MiaoshouPage() {
           {payload.tasks.map((task) => (
             <article className="miaoshou-task-row" key={task.id}>
               <span><strong>{task.appPackageNo || task.opOrderPackageId}</strong><small>{task.shopName || task.shopId} · {task.platform}/{task.site}</small></span>
-              <span><i className={`status-pill ${miaoshouTaskTone(task.status)}`}>{miaoshouTaskLabel(task.status)}</i>{task.errorMessage ? <small className="miaoshou-task-error">{task.errorMessage}</small> : null}</span>
+              <span><i className={`status-pill ${miaoshouTaskTone(task.status)}`}>{miaoshouTaskLabel(task.status, task.attempts)}</i>{task.errorMessage ? <small className="miaoshou-task-error">{task.errorMessage}</small> : null}</span>
               <span><strong>{task.trackingNo || task.headTrackingNo || "—"}</strong><small>{task.logisticsType || `尝试 ${task.attempts} 次`}</small></span>
               <span>{formatDateTime(task.updatedAt)}<small>{task.errorCode || task.platformOrderSn || ""}</small></span>
               <span className="miaoshou-task-actions">{task.status === "succeeded" ? <button className="ghost-button compact-button" type="button" disabled={Boolean(busy)} onClick={() => void getWaybill(task)}>{busy === `waybill:${task.id}` ? "获取中" : task.waybillUrl ? "打开面单" : "获取面单"}</button> : null}{["manual_check", "retry_wait"].includes(task.status) ? <button className="ghost-button compact-button" type="button" disabled={Boolean(busy)} onClick={() => void retryTask(task)}>{busy === `retry:${task.id}` ? "重试中" : "核实后重试"}</button> : null}</span>

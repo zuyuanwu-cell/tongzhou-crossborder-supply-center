@@ -698,6 +698,7 @@ export type MiaoshouPayload = {
     skipped?: boolean;
     message?: string;
     discovered?: number;
+    existingTracking?: number;
     attempted?: number;
     succeeded?: number;
     failed?: number;

@@ -73,6 +73,27 @@ async function fetchMock(url, init) {
           }],
           appPackageStatus: "wait_seller_send",
           logisticsNo: "",
+        }, {
+          shopId: "SHOP-1",
+          shopName: "测试店铺",
+          platform: "shopee",
+          site: "ID",
+          appPackageNo: "PKG-EXISTING",
+          orderInfo: {
+            shopId: "SHOP-1",
+            platform: "shopee",
+            site: "ID",
+            platformOrderSn: "ORDER-EXISTING",
+          },
+          items: [{
+            opOrderPackageId: 654321,
+            opOrderPackageItemId: 987,
+            title: "已有运单商品",
+            quantity: 1,
+          }],
+          appPackageStatus: "wait_seller_send",
+          logisticsNo: "TRACK-EXISTING",
+          logisticsType: "online",
         }],
       }],
     });
@@ -137,13 +158,20 @@ try {
   const firstRun = await automation.runAutomation({ force: true });
   assert.equal(firstRun.attempted, 1);
   assert.equal(firstRun.succeeded, 1);
+  assert.equal(firstRun.existingTracking, 1);
   const firstPayload = automation.publicPayload();
-  assert.equal(firstPayload.counts.succeeded, 1);
-  assert.equal(firstPayload.tasks[0].trackingNo, "TRACK-001");
-  assert.equal(firstPayload.tasks[0].waybillUrl, "https://labels.example/PKG-001.pdf");
-  assert.equal(firstPayload.tasks[0].shopName, "TEST");
-  assert.equal(firstPayload.tasks[0].platformOrderSn, "ORDER-001");
-  assert.equal(firstPayload.tasks[0].packageSnapshot, undefined, "前端载荷不应暴露原始包裹快照");
+  assert.equal(firstPayload.counts.succeeded, 2);
+  const appliedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-001");
+  const observedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-EXISTING");
+  assert.equal(appliedTask?.waybillUrl, "https://labels.example/PKG-001.pdf");
+  assert.equal(appliedTask?.shopName, "TEST");
+  assert.equal(appliedTask?.platformOrderSn, "ORDER-001");
+  assert.equal(appliedTask?.attempts, 1);
+  assert.equal(observedTask?.status, "succeeded");
+  assert.equal(observedTask?.attempts, 0);
+  assert.equal(observedTask?.platformOrderSn, "ORDER-EXISTING");
+  assert.ok(firstPayload.events.some((event) => event.type === "tracking_observed"));
+  assert.equal(appliedTask?.packageSnapshot, undefined, "前端载荷不应暴露原始包裹快照");
   assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.packages).every((call) => (
     call.body.pageSize === 50
     && call.body.appPackageStatus === "wait_seller_send"
@@ -152,6 +180,7 @@ try {
 
   const secondRun = await automation.runAutomation({ force: true });
   assert.equal(secondRun.attempted, 0, "同一包裹不能重复申请");
+  assert.equal(secondRun.existingTracking, 1);
   assert.equal(calls.filter((call) => call.path === MIAOSHOU_PATHS.applyTrackingNo).length, 1);
 
   const signedRequest = calls.find((call) => call.path === MIAOSHOU_PATHS.shops);
@@ -162,8 +191,8 @@ try {
     ok: true,
     shops: firstPayload.counts.shops,
     succeeded: firstPayload.counts.succeeded,
-    trackingNo: firstPayload.tasks[0].trackingNo,
-    waybillUrl: firstPayload.tasks[0].waybillUrl,
+    trackingNo: appliedTask?.trackingNo,
+    waybillUrl: appliedTask?.waybillUrl,
     applyCalls: calls.filter((call) => call.path === MIAOSHOU_PATHS.applyTrackingNo).length,
   }, null, 2));
 } finally {
