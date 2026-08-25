@@ -160,6 +160,7 @@ import {
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
   updateStockupPlanStatus,
+  updateUserPermissions,
   updateUserStatus,
   updateWarehouseConnection,
   updateMiaoshouConfig,
@@ -234,8 +235,6 @@ const fallbackCatalog: CatalogProduct[] = [
     brand: "同舟",
     distributionPrice: 11.8,
     distributionCurrency: "USD",
-    directPrice: 10.2,
-    directCurrency: "USD",
     stockQty: 1840,
     status: "在售",
     alert: "补货",
@@ -254,8 +253,6 @@ const fallbackCatalog: CatalogProduct[] = [
     brand: "同舟",
     distributionPrice: 29.8,
     distributionCurrency: "USD",
-    directPrice: 26.5,
-    directCurrency: "USD",
     stockQty: 426,
     status: "预警",
     alert: "断货",
@@ -274,8 +271,6 @@ const fallbackCatalog: CatalogProduct[] = [
     brand: "同舟",
     distributionPrice: 8.9,
     distributionCurrency: "USD",
-    directPrice: 7.6,
-    directCurrency: "USD",
     stockQty: 3860,
     status: "在售",
     alert: "滞销",
@@ -294,8 +289,6 @@ const fallbackCatalog: CatalogProduct[] = [
     brand: "同舟",
     distributionPrice: 15.4,
     distributionCurrency: "USD",
-    directPrice: 13.2,
-    directCurrency: "USD",
     stockQty: 2260,
     status: "在售",
     alert: "健康",
@@ -328,25 +321,25 @@ const navSections = [
 ];
 
 const navItems = [
-  { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "operations" },
-  { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "operations" },
-  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "operations" },
-  { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "operations" },
-  { label: "动销监控", icon: BarChart3, hash: "#movement", section: "operations" },
-  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "operations" },
-  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "supply" },
-  { label: "产品库", icon: ShoppingBag, hash: "#products", section: "supply" },
-  { label: "资质库", icon: FileText, hash: "#qualifications", section: "supply", childOf: "产品库" },
-  { label: "素材库", icon: Boxes, hash: "#assets", section: "supply", childOf: "产品库" },
-  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "supply", childOf: "产品库" },
-  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "intelligence" },
-  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "intelligence", beta: true },
-  { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "intelligence" },
-  { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "intelligence" },
-  { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "governance" },
-  { label: "用户管理", icon: Lock, hash: "#users", section: "governance" },
-  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "governance" },
-  { label: "操作日志", icon: List, hash: "#action-log", section: "governance" },
+  { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "operations", permission: "dashboard" },
+  { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "operations", permission: "inventory_sync" },
+  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "operations", permission: "inventory_snapshots" },
+  { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "operations", permission: "order_analysis" },
+  { label: "动销监控", icon: BarChart3, hash: "#movement", section: "operations", permission: "movement" },
+  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "operations", permission: "movement_analysis" },
+  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "supply", permission: "stockup" },
+  { label: "产品库", icon: ShoppingBag, hash: "#products", section: "supply", permission: "product_view" },
+  { label: "资质库", icon: FileText, hash: "#qualifications", section: "supply", childOf: "产品库", permission: "qualifications" },
+  { label: "素材库", icon: Boxes, hash: "#assets", section: "supply", childOf: "产品库", permission: "assets" },
+  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "supply", childOf: "产品库", permission: "warehouse_info" },
+  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "intelligence", permission: "quick_nav" },
+  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "intelligence", beta: true, permission: "tongzhou_ai" },
+  { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "intelligence", permission: "api_access" },
+  { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "intelligence", permission: "miaoshou" },
+  { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "governance", permission: "warehouses" },
+  { label: "用户管理", icon: Lock, hash: "#users", section: "governance", permission: "users" },
+  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "governance", permission: "notifications" },
+  { label: "操作日志", icon: List, hash: "#action-log", section: "governance", permission: "action_log" },
 ];
 
 const viewHashMap = Object.fromEntries(navItems.map((item) => [item.hash, item.label]));
@@ -361,11 +354,7 @@ function hashForView(view: string) {
 }
 
 function visibleNavItems(user: AuthUser) {
-  if (canManage(user)) return navItems;
-  if (canViewPartnerAssets(user)) {
-    return navItems.filter((item) => ["产品库", "资质库", "素材库", "仓库信息", "快捷导航", "同舟AI", "API 接入"].includes(item.label));
-  }
-  return navItems.filter((item) => ["产品库", "快捷导航", "同舟AI", ...(user.role === "guest" ? [] : ["API 接入"])].includes(item.label));
+  return navItems.filter((item) => hasUserPermission(user, item.permission));
 }
 
 function formatNumber(value: number) {
@@ -561,23 +550,23 @@ function uniqueSorted(values: string[]) {
 }
 
 function canManage(user: AuthUser) {
-  return user.role === "admin";
+  return hasUserPermission(user, "operations");
 }
 
 function canViewPartnerAssets(user: AuthUser) {
-  return user.role === "admin" || user.role === "direct" || user.role === "distributor";
-}
-
-function canViewPrices(user: AuthUser) {
-  return user.role === "admin" || user.role === "direct" || user.role === "distributor";
+  return ["qualifications", "assets", "warehouse_info"].some((permission) => hasUserPermission(user, permission));
 }
 
 function canViewInventory(user: AuthUser) {
-  return user.role === "admin" || user.role === "direct" || user.role === "distributor";
+  return hasUserPermission(user, "inventory");
 }
 
 function canViewInternalCatalog(user: AuthUser) {
-  return user.role === "admin" || user.role === "direct";
+  return hasUserPermission(user, "direct_price");
+}
+
+function hasUserPermission(user: AuthUser, permission: string) {
+  return Boolean(user.permissions?.includes(permission));
 }
 
 function includesFuzzy(product: CatalogProduct, keyword: string) {
@@ -610,7 +599,7 @@ function alertClass(alert: AlertType | string) {
 }
 
 function priceFor(product: CatalogProduct, channel: "全部" | "直营" | "分销", internal: boolean) {
-  if (internal && channel === "直营") {
+  if (internal && (channel === "直营" || (channel === "全部" && product.channel === "直营"))) {
     return {
       price: product.directCostPrice ?? product.directPrice ?? 0,
       currency: product.directCostCurrency || product.directCurrency || product.distributionCurrency,
@@ -622,6 +611,11 @@ function priceFor(product: CatalogProduct, channel: "全部" | "直营" | "分�
     currency: product.distributionCostCurrency || product.distributionCurrency,
     label: "分销成本价",
   };
+}
+
+function canShowCostPrice(product: CatalogProduct, channel: "全部" | "直营" | "分销", showDistributionPrice: boolean, showDirectPrice: boolean) {
+  const directChannel = channel === "直营" || (channel === "全部" && product.channel === "直营");
+  return directChannel ? showDirectPrice : showDistributionPrice;
 }
 
 function salesPriceFor(product: CatalogProduct) {
@@ -662,23 +656,29 @@ function csvCell(value: string | number | undefined | null) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function bundleQuoteCsv(items: BundleSkuItem[], channel: Parameters<typeof bundleTotals>[1], internal: boolean, showPrices: boolean) {
+function bundleQuoteCsv(
+  items: BundleSkuItem[],
+  channel: Parameters<typeof bundleTotals>[1],
+  internal: boolean,
+  visibility: { showDistributionPrice: boolean; showDirectPrice: boolean; showSalesPrice: boolean },
+) {
   const header = ["SKU", "产品名称", "国家", "数量", "成本币种", "成本单价", "成本小计", "销售币种", "销售单价", "销售小计"];
   const rows = items.map((item) => {
     const cost = priceFor(item.product, channel, internal);
     const sales = salesPriceFor(item.product);
     const quantity = Math.max(1, item.quantity);
+    const showCost = canShowCostPrice(item.product, channel, visibility.showDistributionPrice, visibility.showDirectPrice);
     return [
       bundleSkuProductCode(item.product),
       item.product.name,
       item.product.country,
       quantity,
-      showPrices ? cost.currency : "",
-      showPrices ? formatMoney(cost.price) : "",
-      showPrices ? formatMoney(cost.price * quantity) : "",
-      showPrices ? sales.currency : "",
-      showPrices ? formatMoney(sales.price) : "",
-      showPrices ? formatMoney(sales.price * quantity) : "",
+      showCost ? cost.currency : "",
+      showCost ? formatMoney(cost.price) : "",
+      showCost ? formatMoney(cost.price * quantity) : "",
+      visibility.showSalesPrice ? sales.currency : "",
+      visibility.showSalesPrice ? formatMoney(sales.price) : "",
+      visibility.showSalesPrice ? formatMoney(sales.price * quantity) : "",
     ];
   });
   return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
@@ -782,14 +782,16 @@ function App() {
   const [syncing, setSyncing] = React.useState(false);
   const [error, setError] = React.useState("");
   const [currentUser, setCurrentUser] = React.useState<AuthUser>(getStoredUser);
+  const [authReady, setAuthReady] = React.useState(false);
   const [blockedView, setBlockedView] = React.useState("");
   const [globalSearch, setGlobalSearch] = React.useState("");
   const [productSearchKeyword, setProductSearchKeyword] = React.useState("");
   const [confirmRequest, setConfirmRequest] = React.useState<ConfirmRequest | null>(null);
   const internal = canViewInternalCatalog(currentUser);
+  const permissionSignature = [...(currentUser.permissions || [])].sort().join("|");
 
   const catalog = payload?.catalog?.length ? payload.catalog : fallbackCatalog;
-  const totalInventory = dashboardSummary?.counts.totalInventory ?? catalog.reduce((sum, product) => sum + product.stockQty, 0);
+  const totalInventory = dashboardSummary?.counts.totalInventory ?? catalog.reduce((sum, product) => sum + (product.stockQty || 0), 0);
   const totalOrders = dashboardSummary?.counts.todayOrders ?? 0;
   const salesAmount = dashboardSummary?.counts.salesAmount90 ?? 0;
   const riskCount = dashboardSummary?.counts.riskSku ?? catalog.filter((product) => product.alert !== "健康").length;
@@ -813,84 +815,77 @@ function App() {
   }, []);
 
   React.useEffect(() => {
-    loadProducts();
-    loadDashboardSummary();
-    if (canManage(currentUser)) {
-      loadWarehouses();
-      loadInventorySnapshots();
-      loadOrderAnalysis();
-      loadMovement();
-      loadMovementHistory();
-      loadStockup();
-      loadDashboardSummary();
-      loadUsers();
-      loadWecomNotifications();
-      loadActionLog();
-    }
-    loadQuickNav();
-    loadAiConfig();
-    if (canViewPartnerAssets(currentUser)) {
-      loadQualifications();
-      loadAssets();
-      loadWarehouseInfo();
-    }
-  }, [currentUser.role]);
+    if (hasUserPermission(currentUser, "product_view")) loadProducts();
+    if (hasUserPermission(currentUser, "dashboard")) loadDashboardSummary();
+    if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) loadWarehouses();
+    if (hasUserPermission(currentUser, "inventory_snapshots")) loadInventorySnapshots();
+    if (hasUserPermission(currentUser, "order_analysis")) loadOrderAnalysis();
+    if (hasUserPermission(currentUser, "movement")) loadMovement();
+    if (hasUserPermission(currentUser, "movement_analysis")) loadMovementHistory();
+    if (hasUserPermission(currentUser, "stockup")) loadStockup();
+    if (hasUserPermission(currentUser, "users")) loadUsers();
+    if (hasUserPermission(currentUser, "notifications")) loadWecomNotifications();
+    if (hasUserPermission(currentUser, "action_log")) loadActionLog();
+    if (hasUserPermission(currentUser, "quick_nav")) loadQuickNav();
+    if (hasUserPermission(currentUser, "tongzhou_ai")) loadAiConfig();
+    if (hasUserPermission(currentUser, "qualifications")) loadQualifications();
+    if (hasUserPermission(currentUser, "assets")) loadAssets();
+    if (hasUserPermission(currentUser, "warehouse_info")) loadWarehouseInfo();
+  }, [permissionSignature]);
 
   React.useEffect(() => {
-    const allowed = visibleNavItems(currentUser).some((item) => item.label === activeView);
+    if (!authReady) return;
+    const allowedItems = visibleNavItems(currentUser);
+    const allowed = allowedItems.some((item) => item.label === activeView);
     if (allowed) return;
-    if (activeView !== "产品库") setBlockedView(activeView);
-    handleViewChange("产品库", { clearBlocked: false });
-  }, [currentUser.role, activeView]);
+    const fallbackView = allowedItems[0]?.label || "产品库";
+    if (activeView !== fallbackView) setBlockedView(activeView);
+    handleViewChange(fallbackView, { clearBlocked: false });
+  }, [authReady, permissionSignature, activeView]);
 
   React.useEffect(() => {
-    if (!canManage(currentUser)) return;
+    if (!hasUserPermission(currentUser, "stockup")) return;
     if (hashForView(activeView) !== "#stockup") return;
     void loadStockup();
     void loadStockupWorkflow();
-  }, [activeView, currentUser.role]);
+  }, [activeView, permissionSignature]);
 
   React.useEffect(() => {
-    if (!canManage(currentUser)) return;
+    if (!hasUserPermission(currentUser, "action_log")) return;
     if (hashForView(activeView) !== "#action-log") return;
     void loadActionLog();
-  }, [activeView, currentUser.role]);
+  }, [activeView, permissionSignature]);
 
   React.useEffect(() => {
     if (!["资质库", "素材库", "仓库信息"].includes(activeView)) return;
     if (!canViewPartnerAssets(currentUser)) return;
     void loadProductDetails();
-  }, [activeView, currentUser.role, productDetailLoaded]);
+  }, [activeView, permissionSignature, productDetailLoaded]);
 
   React.useEffect(() => {
     const timer = window.setInterval(() => {
-      void loadProducts(true);
-      void loadDashboardSummary();
-      void loadQuickNav();
-      void loadAiConfig();
-      if (canViewPartnerAssets(currentUser)) {
-        void loadQualifications();
-        void loadAssets();
-        void loadWarehouseInfo();
-      }
-      if (canManage(currentUser)) {
-        void loadWarehouses();
-        void loadInventorySnapshots();
-        void loadOrderAnalysis();
-        void loadMovement();
-        void loadMovementHistory();
-        void loadStockup();
-        void loadDashboardSummary();
-        void loadUsers();
-        void loadWecomNotifications();
-        void loadActionLog();
-      }
+      if (hasUserPermission(currentUser, "product_view")) void loadProducts(true);
+      if (hasUserPermission(currentUser, "dashboard")) void loadDashboardSummary();
+      if (hasUserPermission(currentUser, "quick_nav")) void loadQuickNav();
+      if (hasUserPermission(currentUser, "tongzhou_ai")) void loadAiConfig();
+      if (hasUserPermission(currentUser, "qualifications")) void loadQualifications();
+      if (hasUserPermission(currentUser, "assets")) void loadAssets();
+      if (hasUserPermission(currentUser, "warehouse_info")) void loadWarehouseInfo();
+      if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
+      if (hasUserPermission(currentUser, "inventory_snapshots")) void loadInventorySnapshots();
+      if (hasUserPermission(currentUser, "order_analysis")) void loadOrderAnalysis();
+      if (hasUserPermission(currentUser, "movement")) void loadMovement();
+      if (hasUserPermission(currentUser, "movement_analysis")) void loadMovementHistory();
+      if (hasUserPermission(currentUser, "stockup")) void loadStockup();
+      if (hasUserPermission(currentUser, "users")) void loadUsers();
+      if (hasUserPermission(currentUser, "notifications")) void loadWecomNotifications();
+      if (hasUserPermission(currentUser, "action_log")) void loadActionLog();
     }, AUTO_SYNC_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [currentUser.role]);
+  }, [permissionSignature]);
 
   React.useEffect(() => {
-    if (!canManage(currentUser)) return;
+    if (!hasUserPermission(currentUser, "movement_sync")) return;
     if (!orderSyncJob || !["queued", "running"].includes(orderSyncJob.status)) return;
     const timer = window.setInterval(async () => {
       const job = await loadLatestOrderJob();
@@ -899,7 +894,7 @@ function App() {
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [currentUser.role, orderSyncJob?.id, orderSyncJob?.status]);
+  }, [permissionSignature, orderSyncJob?.id, orderSyncJob?.status]);
 
   async function loadCurrentUser() {
     try {
@@ -907,6 +902,8 @@ function App() {
       setCurrentUser(data.user);
     } catch {
       setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"] });
+    } finally {
+      setAuthReady(true);
     }
   }
 
@@ -1335,22 +1332,29 @@ function App() {
 
   async function activateLoggedInUser(user: AuthUser, targetView = blockedView) {
     setCurrentUser(user);
-    await loadProducts();
-    void loadQuickNav();
-    void loadAiConfig();
-    if (canViewPartnerAssets(user)) {
-      await Promise.all([loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig()]);
-    }
-    if (canManage(user)) {
-      await Promise.all([loadWarehouses(), loadInventorySnapshots(), loadMovement(), loadOrderAnalysis(), loadStockup(), loadUsers(), loadWecomNotifications(), loadActionLog()]);
-    }
+    const loaders: Array<Promise<unknown>> = [];
+    if (hasUserPermission(user, "product_view")) loaders.push(loadProducts());
+    if (hasUserPermission(user, "quick_nav")) loaders.push(loadQuickNav());
+    if (hasUserPermission(user, "tongzhou_ai")) loaders.push(loadAiConfig());
+    if (hasUserPermission(user, "qualifications")) loaders.push(loadQualifications());
+    if (hasUserPermission(user, "assets")) loaders.push(loadAssets());
+    if (hasUserPermission(user, "warehouse_info")) loaders.push(loadWarehouseInfo());
+    if (hasUserPermission(user, "warehouses") || hasUserPermission(user, "inventory_sync")) loaders.push(loadWarehouses());
+    if (hasUserPermission(user, "inventory_snapshots")) loaders.push(loadInventorySnapshots());
+    if (hasUserPermission(user, "movement")) loaders.push(loadMovement());
+    if (hasUserPermission(user, "movement_analysis")) loaders.push(loadMovementHistory());
+    if (hasUserPermission(user, "order_analysis")) loaders.push(loadOrderAnalysis());
+    if (hasUserPermission(user, "stockup")) loaders.push(loadStockup());
+    if (hasUserPermission(user, "users")) loaders.push(loadUsers());
+    if (hasUserPermission(user, "notifications")) loaders.push(loadWecomNotifications());
+    if (hasUserPermission(user, "action_log")) loaders.push(loadActionLog());
+    await Promise.all(loaders);
     setBlockedView("");
-    if (targetView && visibleNavItems(user).some((item) => item.label === targetView)) {
+    const allowedItems = visibleNavItems(user);
+    if (targetView && allowedItems.some((item) => item.label === targetView)) {
       handleViewChange(targetView);
-    } else if (canManage(user)) {
-      handleViewChange("经营总览");
     } else {
-      handleViewChange("产品库");
+      handleViewChange(allowedItems[0]?.label || "产品库");
     }
   }
 
@@ -1517,6 +1521,7 @@ function App() {
             inventorySnapshotPayload={inventorySnapshotPayload}
             onLoadInventorySnapshots={loadInventorySnapshots}
             onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
+            canManageActions={canManage(currentUser)}
           />
         ) : activeView === "订单分析" ? (
           <OrderAnalysisPage
@@ -1538,6 +1543,8 @@ function App() {
             }}
             onSyncOrders={handleOrderSync}
             syncing={syncing}
+            canSync={hasUserPermission(currentUser, "movement_sync")}
+            canManageSettings={canManage(currentUser)}
           />
         ) : activeView === "仓库授权" || activeView === "库存同步" ? (
           <WarehouseBoard
@@ -1550,14 +1557,26 @@ function App() {
             onExport={handleExportWarehouses}
             onImport={handleImportWarehouses}
             onTest={handleTestWarehouse}
+            canConfigure={canManage(currentUser) && hasUserPermission(currentUser, "warehouses")}
+            canSync={canManage(currentUser) && hasUserPermission(currentUser, "inventory_sync")}
           />
         ) : activeView === "动销监控" ? (
-          <MovementBoard movementPayload={movementPayload} orderSyncJob={orderSyncJob} initialWarehouse={movementWarehouseFilter} onSyncOrders={handleOrderSync} syncing={syncing} />
+          <MovementBoard
+            movementPayload={movementPayload}
+            orderSyncJob={orderSyncJob}
+            initialWarehouse={movementWarehouseFilter}
+            onSyncOrders={handleOrderSync}
+            syncing={syncing}
+            canSync={hasUserPermission(currentUser, "movement_sync")}
+          />
         ) : activeView === "动销分析" ? (
           <MovementAnalysisPage
             movementHistoryPayload={movementHistoryPayload}
             onLoadMovementHistory={loadMovementHistory}
             onCaptureMovementHistory={captureMovementHistory}
+            canCapture={hasUserPermission(currentUser, "movement_sync")}
+            canExport={hasUserPermission(currentUser, "movement_export")}
+            canCompare={hasUserPermission(currentUser, "movement_inventory")}
           />
         ) : activeView === "备货中心" ? (
           <StockupCenter
@@ -1606,7 +1625,7 @@ function App() {
 }
 
 function stockLabel(product: CatalogProduct) {
-  if (product.stockQty > 0) return `${formatNumber(product.stockQty)} ${product.unit}`;
+  if ((product.stockQty || 0) > 0) return `${formatNumber(product.stockQty || 0)} ${product.unit}`;
   if (product.dataGap === "warehouse_missing") return "仓库缺失";
   return "待 WMS";
 }
@@ -3319,12 +3338,14 @@ function MovementBoard({
   initialWarehouse,
   onSyncOrders,
   syncing,
+  canSync,
 }: {
   movementPayload: MovementPayload | null;
   orderSyncJob: OrderSyncJob | null;
   initialWarehouse: string;
   onSyncOrders: (warehouseIds?: string[]) => void;
   syncing: boolean;
+  canSync: boolean;
 }) {
   const [country, setCountry] = React.useState("全部");
   const [warehouse, setWarehouse] = React.useState("全部");
@@ -3453,10 +3474,12 @@ function MovementBoard({
             {movementPayload?.syncState?.usingCachedOrders ? <span>当前使用最近一次成功缓存</span> : null}
           </div>
         </div>
-        <button className="sync-button" onClick={() => onSyncOrders()} disabled={syncing || jobRunning}>
-          <RefreshCw size={16} className={syncing || jobRunning ? "spinning" : ""} />
-          {syncing ? "同步中" : "同步近90天订单"}
-        </button>
+        {canSync ? (
+          <button className="sync-button" onClick={() => onSyncOrders()} disabled={syncing || jobRunning}>
+            <RefreshCw size={16} className={syncing || jobRunning ? "spinning" : ""} />
+            {syncing ? "同步中" : "同步近90天订单"}
+          </button>
+        ) : <span className="status-pill muted">只读动销</span>}
       </section>
 
       {activeJob ? (
@@ -3489,7 +3512,7 @@ function MovementBoard({
         diagnostics={warehouseDiagnostics}
         onSelectWarehouse={setWarehouse}
         onSyncWarehouseOrders={(warehouseId) => onSyncOrders([warehouseId])}
-        syncing={syncing || jobRunning}
+        syncing={!canSync || syncing || jobRunning}
       />
 
       <section className="metric-strip movement-metrics">
@@ -5919,8 +5942,16 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
   const [localPayload, setLocalPayload] = React.useState<UserManagementPayload | null>(null);
   const [applicationPayload, setApplicationPayload] = React.useState<DistributorApplicationPayload | null>(null);
   const [message, setMessage] = React.useState("");
+  const [editingUserId, setEditingUserId] = React.useState("");
+  const [permissionDraft, setPermissionDraft] = React.useState({
+    enabled: [] as string[],
+    countries: "",
+    warehouseIds: "",
+    skus: "",
+  });
   const visiblePayload = localPayload || userPayload;
   const visibleUsers = visiblePayload?.users ?? users;
+  const permissionCatalog = visiblePayload?.permissionCatalog ?? [];
   const applications = applicationPayload?.applications ?? [];
   const pendingApplications = applications.filter((item) => item.status === "pending");
 
@@ -5992,6 +6023,73 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
       setMessage(result.warning || (status === "disabled" ? "用户已停用，并已同步到同舟供应链数智化系统。" : "用户已启用，并已同步到同舟供应链数智化系统。"));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "更新用户状态失败。");
+    } finally {
+      setActionUserId("");
+    }
+  }
+
+  function openPermissionEditor(user: UserManagementPayload["users"][number]) {
+    if (editingUserId === user.id) {
+      setEditingUserId("");
+      return;
+    }
+    setEditingUserId(user.id);
+    setPermissionDraft({
+      enabled: [...(user.permissions || [])],
+      countries: (user.dataScopes?.countries || []).join(", "),
+      warehouseIds: (user.dataScopes?.warehouseIds || []).join(", "),
+      skus: (user.dataScopes?.skus || []).join(", "),
+    });
+    setMessage("");
+  }
+
+  function togglePermission(permission: string) {
+    setPermissionDraft((current) => ({
+      ...current,
+      enabled: current.enabled.includes(permission)
+        ? current.enabled.filter((item) => item !== permission)
+        : [...current.enabled, permission],
+    }));
+  }
+
+  function parseScopeInput(value: string) {
+    return Array.from(new Set(value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean)));
+  }
+
+  async function savePermissionEditor(user: UserManagementPayload["users"][number]) {
+    const defaults = visiblePayload?.roleDefaults?.[user.role] || [];
+    const required = user.role === "admin" ? (visiblePayload?.hardRules?.adminRequired || []) : [];
+    const denied = user.role === "direct"
+      ? (visiblePayload?.hardRules?.directDenied || [])
+      : user.role === "distributor"
+        ? (visiblePayload?.hardRules?.distributorDenied || [])
+        : user.role === "guest"
+          ? (visiblePayload?.hardRules?.guestDenied || [])
+          : [];
+    const enabled = permissionDraft.enabled.filter((permission) => !denied.includes(permission));
+    for (const permission of required) {
+      if (!enabled.includes(permission)) enabled.push(permission);
+    }
+    const permissionOverrides = {
+      allow: enabled.filter((permission) => !defaults.includes(permission)),
+      deny: defaults.filter((permission) => !enabled.includes(permission)),
+    };
+    setActionUserId(user.id);
+    setMessage("");
+    try {
+      const result = await updateUserPermissions(user.id, {
+        permissionOverrides,
+        dataScopes: {
+          countries: parseScopeInput(permissionDraft.countries),
+          warehouseIds: parseScopeInput(permissionDraft.warehouseIds),
+          skus: parseScopeInput(permissionDraft.skus),
+        },
+      });
+      setLocalPayload(result);
+      setEditingUserId("");
+      setMessage(`已保存 ${user.displayName || user.username} 的权限；新请求立即生效。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存用户权限失败。");
     } finally {
       setActionUserId("");
     }
@@ -6155,31 +6253,117 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
             <span>操作</span>
           </div>
           {visibleUsers.length ? visibleUsers.map((user) => (
-            <article className="stockup-row user-row" key={user.id || user.username}>
-              <strong>{user.username}</strong>
-              <span>{user.displayName || "-"}</span>
-              <span className={`status-pill ${user.role === "admin" ? "good" : user.role === "direct" ? "warning" : "muted"}`}>{user.roleLabel}</span>
-              <span className={`status-pill ${user.status === "disabled" ? "danger" : "good"}`}>{user.statusLabel || (user.status === "disabled" ? "停用" : "启用")}</span>
-              <span>{user.role === "admin" ? "可查看全部模块，并管理订单、动销、备货、仓库授权和用户。" : user.role === "direct" ? "可查看产品库、直营价格、库存、素材库、资质库和仓库信息。" : "可查看产品库、分销价格、销售价格、素材库和资质库。"}</span>
-              <span className="user-actions">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  disabled={actionUserId === user.id}
-                  onClick={() => handleStatusChange(user.id, user.status === "disabled" ? "active" : "disabled")}
-                >
-                  {user.status === "disabled" ? "启用" : "停用"}
-                </button>
-                <button
-                  type="button"
-                  className="ghost-button danger-button"
-                  disabled={actionUserId === user.id}
-                  onClick={() => handleDeleteUser(user.id)}
-                >
-                  删除
-                </button>
-              </span>
-            </article>
+            <React.Fragment key={user.id || user.username}>
+              <article className={`stockup-row user-row ${editingUserId === user.id ? "editing" : ""}`}>
+                <strong>{user.username}</strong>
+                <span>{user.displayName || "-"}</span>
+                <span className={`status-pill ${user.role === "admin" ? "good" : user.role === "direct" ? "warning" : "muted"}`}>{user.roleLabel}</span>
+                <span className={`status-pill ${user.status === "disabled" ? "danger" : "good"}`}>{user.statusLabel || (user.status === "disabled" ? "停用" : "启用")}</span>
+                <span className="user-permission-summary">
+                  <strong>{user.permissions?.length || 0} 项有效权限</strong>
+                  <small>
+                    {user.dataScopes?.countries?.length || user.dataScopes?.warehouseIds?.length || user.dataScopes?.skus?.length
+                      ? "已限制数据范围"
+                      : "数据范围：全部"}
+                  </small>
+                </span>
+                <span className="user-actions">
+                  <button type="button" className="sync-button compact-button" disabled={actionUserId === user.id} onClick={() => openPermissionEditor(user)}>
+                    <ShieldCheck size={14} />
+                    {editingUserId === user.id ? "收起" : "配置权限"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={actionUserId === user.id}
+                    onClick={() => handleStatusChange(user.id, user.status === "disabled" ? "active" : "disabled")}
+                  >
+                    {user.status === "disabled" ? "启用" : "停用"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button danger-button"
+                    disabled={actionUserId === user.id}
+                    onClick={() => handleDeleteUser(user.id)}
+                  >
+                    删除
+                  </button>
+                </span>
+              </article>
+              {editingUserId === user.id ? (
+                <section className="permission-editor" aria-label={`配置 ${user.displayName || user.username} 的权限`}>
+                  <div className="permission-editor-heading">
+                    <div>
+                      <p className="eyebrow">Access Control</p>
+                      <h3>{user.displayName || user.username} · 权限控制台</h3>
+                      <span>以“{user.roleLabel}”模板为基础，只保存该账号的差异项。</span>
+                    </div>
+                    <span className="status-pill warning">当前选择 {permissionDraft.enabled.length} 项</span>
+                  </div>
+
+                  <div className="permission-groups">
+                    {Array.from(new Set(permissionCatalog.map((item) => item.group))).map((group) => (
+                      <fieldset className="permission-group" key={group}>
+                        <legend>{group}</legend>
+                        {permissionCatalog.filter((item) => item.group === group).map((permission) => {
+                          const hardDenied = (
+                            user.role === "direct" ? (visiblePayload?.hardRules?.directDenied || [])
+                              : user.role === "distributor" ? (visiblePayload?.hardRules?.distributorDenied || [])
+                                : user.role === "guest" ? (visiblePayload?.hardRules?.guestDenied || [])
+                                  : []
+                          ).includes(permission.key);
+                          const required = user.role === "admin" && (visiblePayload?.hardRules?.adminRequired || []).includes(permission.key);
+                          const checked = required || (!hardDenied && permissionDraft.enabled.includes(permission.key));
+                          return (
+                            <label className={`permission-toggle ${hardDenied ? "locked" : ""}`} key={permission.key}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={hardDenied || required}
+                                onChange={() => togglePermission(permission.key)}
+                              />
+                              <span>
+                                <strong>{permission.label}</strong>
+                                <small>{hardDenied
+                                  ? permission.key === "direct_price" ? "分销商系统禁区" : permission.key === "users" ? "仅管理员可用" : "系统禁区"
+                                  : required ? "管理员必需" : checked ? "已允许" : "未允许"}</small>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </fieldset>
+                    ))}
+                  </div>
+
+                  <div className="permission-scope-grid">
+                    <label>
+                      <span>国家范围</span>
+                      <textarea value={permissionDraft.countries} onChange={(event) => setPermissionDraft((current) => ({ ...current, countries: event.target.value }))} placeholder="留空代表全部；多个用逗号分隔，如：印度尼西亚, 马来西亚" />
+                    </label>
+                    <label>
+                      <span>仓库 ID 范围</span>
+                      <textarea value={permissionDraft.warehouseIds} onChange={(event) => setPermissionDraft((current) => ({ ...current, warehouseIds: event.target.value }))} placeholder="留空代表全部；填写中台仓库 ID" />
+                    </label>
+                    <label>
+                      <span>SKU 范围</span>
+                      <textarea value={permissionDraft.skus} onChange={(event) => setPermissionDraft((current) => ({ ...current, skus: event.target.value }))} placeholder="留空代表全部；多个 SKU 用逗号或换行分隔" />
+                    </label>
+                  </div>
+
+                  <div className="permission-guardrail">
+                    <ShieldCheck size={18} />
+                    <span>分销商的直营价、非管理员的用户权限管理均由后端永久锁定；关闭权限会同时隐藏菜单并拒绝接口访问。</span>
+                  </div>
+                  <div className="permission-editor-actions">
+                    <button className="ghost-button" type="button" onClick={() => setEditingUserId("")}>取消</button>
+                    <button className="sync-button" type="button" disabled={actionUserId === user.id} onClick={() => savePermissionEditor(user)}>
+                      <ShieldCheck size={15} />
+                      {actionUserId === user.id ? "保存中" : "保存并立即生效"}
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+            </React.Fragment>
           )) : (
             <div className="stockup-empty">暂无可显示用户。请确认系统账号数据可读取。</div>
           )}
@@ -6199,6 +6383,8 @@ function WarehouseBoard({
   onExport,
   onImport,
   onTest,
+  canConfigure,
+  canSync,
 }: {
   warehousePayload: WarehousePayload | null;
   onSync: () => void;
@@ -6209,6 +6395,8 @@ function WarehouseBoard({
   onExport: () => Promise<void>;
   onImport: (file: File) => Promise<void>;
   onTest: (input: Parameters<typeof testWarehouseConnection>[0]) => Promise<Awaited<ReturnType<typeof testWarehouseConnection>>>;
+  canConfigure: boolean;
+  canSync: boolean;
 }) {
   const confirm = useConfirm();
   const providers = warehousePayload?.providers ?? [];
@@ -6364,26 +6552,28 @@ function WarehouseBoard({
             <span>{authorizedCount} / {connections.length} 个仓库已授权</span>
           </div>
         </div>
-        <button className="ghost-button" onClick={onExport}>
+        {canConfigure ? <button className="ghost-button" onClick={onExport}>
           <ExternalLink size={16} />
           导出配置
-        </button>
-        <button className="ghost-button" onClick={() => importInputRef.current?.click()} disabled={importing}>
+        </button> : null}
+        {canConfigure ? <button className="ghost-button" onClick={() => importInputRef.current?.click()} disabled={importing}>
           <DatabaseZap size={16} />
           {importing ? "导入中" : "导入配置"}
-        </button>
+        </button> : null}
         <input ref={importInputRef} className="hidden-file-input" type="file" accept="application/json,.json" onChange={importConfig} />
-        <button className="ghost-button" onClick={openCreateForm}>
+        {canConfigure ? <button className="ghost-button" onClick={openCreateForm}>
           <ShieldCheck size={16} />
           {formOpen && !editingWarehouse ? "收起表单" : "新增仓库"}
-        </button>
-        <button className="sync-button" onClick={onSync} disabled={syncing}>
+        </button> : null}
+        {canSync ? <button className="sync-button" onClick={onSync} disabled={syncing}>
           <RefreshCw size={16} className={syncing ? "spinning" : ""} />
           {syncing ? "同步中" : "同步仓库"}
-        </button>
+        </button> : null}
       </section>
 
-      {formOpen ? (
+      {!canConfigure && !canSync ? <div className="notice">当前账号为只读访问；仓库授权和同步操作需要额外的管理操作权限。</div> : null}
+
+      {formOpen && canConfigure ? (
         <WarehouseAuthForm
           providers={providers}
           initialWarehouse={editingWarehouse}
@@ -6534,7 +6724,7 @@ function WarehouseBoard({
               <span className={`status-pill ${warehouse.lastTestStatus === "ok" ? "good" : warehouse.lastTestStatus ? "warning" : "muted"}`}>
                 {warehouse.lastTestStatus === "ok" ? "检测正常" : warehouse.lastTestStatus ? "待排查" : "未检测"}
               </span>
-              <div className="warehouse-row-actions">
+              {canConfigure ? <div className="warehouse-row-actions">
                 <button className="ghost-button compact-button" onClick={() => testConnection(warehouse)} disabled={testingId === warehouse.id}>
                   {testingId === warehouse.id ? "检测中" : "检测连接"}
                 </button>
@@ -6542,7 +6732,7 @@ function WarehouseBoard({
                 <button className="ghost-button compact-button danger-button" onClick={() => deleteConnection(warehouse)} disabled={deletingId === warehouse.id}>
                   {deletingId === warehouse.id ? "删除中" : "删除"}
                 </button>
-              </div>
+              </div> : <span className="status-pill muted">只读</span>}
             </article>
           ))}
         </div>
@@ -6555,10 +6745,12 @@ function InventorySnapshotPage({
   inventorySnapshotPayload,
   onLoadInventorySnapshots,
   onCaptureInventorySnapshot,
+  canManageActions,
 }: {
   inventorySnapshotPayload: InventorySnapshotPayload | null;
   onLoadInventorySnapshots: (date?: string) => Promise<void>;
   onCaptureInventorySnapshot: () => Promise<InventorySnapshotPayload>;
+  canManageActions: boolean;
 }) {
   const [snapshotBusy, setSnapshotBusy] = React.useState(false);
   const [warehouseId, setWarehouseId] = React.useState("全部");
@@ -6639,10 +6831,10 @@ function InventorySnapshotPage({
             <span>{snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString("zh-CN") : "等待生成库存快照"}</span>
           </div>
         </div>
-        <button className="sync-button" type="button" onClick={captureSnapshot} disabled={snapshotBusy}>
+        {canManageActions ? <button className="sync-button" type="button" onClick={captureSnapshot} disabled={snapshotBusy}>
           <DatabaseZap size={16} />
           {snapshotBusy ? "处理中" : "生成今日快照"}
-        </button>
+        </button> : <span className="status-pill muted">只读</span>}
       </section>
 
       <section className="panel inventory-snapshot-panel">
@@ -6669,10 +6861,10 @@ function InventorySnapshotPage({
                 <option key={size} value={size}>每页 {size} 条</option>
               ))}
             </select>
-            <button className="ghost-button" type="button" onClick={exportSnapshotCsv} disabled={!snapshot || snapshotBusy}>
+            {canManageActions ? <button className="ghost-button" type="button" onClick={exportSnapshotCsv} disabled={!snapshot || snapshotBusy}>
               <Download size={16} />
               导出 CSV
-            </button>
+            </button> : null}
           </div>
         </div>
 
@@ -6727,12 +6919,16 @@ function OrderAnalysisPage({
   onUpdateShopAlias,
   onSyncOrders,
   syncing,
+  canSync,
+  canManageSettings,
 }: {
   payload: OrderAnalysisPayload | null;
   onLoadOrderAnalysis: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" }) => Promise<void>;
   onUpdateShopAlias: (shopName: string, alias: string) => Promise<void>;
   onSyncOrders: () => Promise<void>;
   syncing: boolean;
+  canSync: boolean;
+  canManageSettings: boolean;
 }) {
   const [dateFrom, setDateFrom] = React.useState("");
   const [dateTo, setDateTo] = React.useState("");
@@ -6817,10 +7013,12 @@ function OrderAnalysisPage({
             <span>{payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN") : "先同步订单后可查看分析"}</span>
           </div>
         </div>
-        <button className="sync-button" type="button" onClick={onSyncOrders} disabled={syncing}>
-          <RefreshCw size={16} className={syncing ? "spinning" : ""} />
-          {syncing ? "同步中" : "重同步近90天订单"}
-        </button>
+        {canSync ? (
+          <button className="sync-button" type="button" onClick={onSyncOrders} disabled={syncing}>
+            <RefreshCw size={16} className={syncing ? "spinning" : ""} />
+            {syncing ? "同步中" : "重同步近90天订单"}
+          </button>
+        ) : <span className="status-pill muted">只读分析</span>}
       </section>
 
       <section className="metric-strip movement-metrics">
@@ -6943,7 +7141,13 @@ function OrderAnalysisPage({
               const shop = payload?.options.shops.find((row) => row.label === item.key || row.value === item.key);
               return (
               <div key={item.key}>
-                <button className="shop-alias-button" type="button" onClick={() => editShopAlias(shop?.rawName || shop?.value || item.key, item.key)} title="设置店铺别称">
+                <button
+                  className="shop-alias-button"
+                  type="button"
+                  onClick={() => canManageSettings && editShopAlias(shop?.rawName || shop?.value || item.key, item.key)}
+                  title={canManageSettings ? "设置店铺别称" : "当前账号仅可查看"}
+                  disabled={!canManageSettings}
+                >
                   <strong>{item.key}</strong>
                   {shop?.alias ? <small>{shop.rawName}</small> : null}
                 </button>
@@ -7039,10 +7243,16 @@ function MovementAnalysisPage({
   movementHistoryPayload,
   onLoadMovementHistory,
   onCaptureMovementHistory,
+  canCapture,
+  canExport,
+  canCompare,
 }: {
   movementHistoryPayload: MovementHistoryPayload | null;
   onLoadMovementHistory: (input?: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string }) => Promise<void>;
   onCaptureMovementHistory: (input?: { date?: string; timezone?: string }) => Promise<MovementHistoryPayload>;
+  canCapture: boolean;
+  canExport: boolean;
+  canCompare: boolean;
 }) {
   const [busy, setBusy] = React.useState(false);
   const [date, setDate] = React.useState("");
@@ -7244,10 +7454,12 @@ function MovementAnalysisPage({
             <span>{snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString("zh-CN") : "可先生成今日动销快照"}</span>
           </div>
         </div>
-        <button className="sync-button" type="button" onClick={captureSnapshot} disabled={busy}>
-          <DatabaseZap size={16} />
-          {busy ? "处理中" : "生成今日快照"}
-        </button>
+        {canCapture ? (
+          <button className="sync-button" type="button" onClick={captureSnapshot} disabled={busy}>
+            <DatabaseZap size={16} />
+            {busy ? "处理中" : "生成今日快照"}
+          </button>
+        ) : <span className="status-pill muted">只读分析</span>}
       </section>
 
       <section className="panel movement-history-toolbar">
@@ -7262,10 +7474,12 @@ function MovementAnalysisPage({
               <Search size={16} />
               查询
             </button>
-            <button className="ghost-button" type="button" onClick={exportCsv} disabled={!snapshot || busy}>
-              <Download size={16} />
-              导出 CSV
-            </button>
+            {canExport ? (
+              <button className="ghost-button" type="button" onClick={exportCsv} disabled={!snapshot || busy}>
+                <Download size={16} />
+                导出 CSV
+              </button>
+            ) : null}
           </div>
         </div>
         <div className="movement-history-filters">
@@ -7311,7 +7525,7 @@ function MovementAnalysisPage({
         </div>
       </section>
 
-      <section className="panel movement-comparison-panel">
+      {canCompare ? <section className="panel movement-comparison-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Period Comparison</p>
@@ -7465,7 +7679,15 @@ function MovementAnalysisPage({
             </div>
           </>
         ) : <div className="stockup-empty">选择周期和仓库后生成对比；系统会默认尝试加载最近月份。</div>}
-      </section>
+      </section> : (
+        <section className="panel movement-comparison-panel permission-readonly-card">
+          <div>
+            <p className="eyebrow">Period Comparison</p>
+            <h2>动销与库存对比未开放</h2>
+            <span>当前账号可查看销量趋势，但无库存数据权限，因此不会返回库存余额或库存差异。</span>
+          </div>
+        </section>
+      )}
 
       <section className="metric-strip movement-metrics">
         <Metric title="快照行" value={formatNumber(totals?.rowCount || 0)} note={`SKU ${formatNumber(totals?.skuCount || 0)} / 仓库 ${formatNumber(totals?.warehouseCount || 0)}`} icon={List} tone="blue" />
@@ -8695,7 +8917,10 @@ function ProductLibrary({
   const [partnerApplicationSku, setPartnerApplicationSku] = React.useState("");
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
-  const showPrices = canViewPrices(currentUser);
+  const showDistributionPrice = hasUserPermission(currentUser, "distribution_price");
+  const showDirectPrice = hasUserPermission(currentUser, "direct_price");
+  const showSalesPrice = hasUserPermission(currentUser, "sales_price");
+  const showPrices = showDistributionPrice || showDirectPrice || showSalesPrice;
   const showInventory = canViewInventory(currentUser);
   const countries = uniqueSorted(products.map((product) => product.country));
   const brands = uniqueSorted(products.map((product) => product.brand));
@@ -8902,6 +9127,8 @@ function ProductLibrary({
         {filteredProducts.map((product) => {
           const price = priceFor(product, channel, internal);
           const salesPrice = salesPriceFor(product);
+          const showProductCost = canShowCostPrice(product, channel, showDistributionPrice, showDirectPrice);
+          const showProductPrices = showProductCost || showSalesPrice;
           return (
             <article className={`product-card ${viewMode === "grid" && gridColumns > 4 ? "dense-card" : ""}`} key={product.id}>
               {product.imageUrl ? (
@@ -8943,20 +9170,20 @@ function ProductLibrary({
                   </span>
                 </div>
                 <div className="price-row">
-                  {showPrices ? (
+                  {showProductPrices ? (
                     <>
-                      <div>
+                      {showProductCost ? <div>
                         <small>{price.label}</small>
                         <strong>
                           {price.currency} {formatMoney(price.price)}
                         </strong>
-                      </div>
-                      <div className="sales-price">
+                      </div> : null}
+                      {showSalesPrice ? <div className="sales-price">
                         <small>{salesPrice.label}</small>
                         <strong>
                           {salesPrice.currency} {formatMoney(salesPrice.price)}
                         </strong>
-                      </div>
+                      </div> : null}
                     </>
                   ) : (
                     <div className="locked-price">
@@ -8998,7 +9225,9 @@ function ProductLibrary({
         open={bundleOpen}
         channel={channel}
         internal={internal}
-        showPrices={showPrices}
+        showDistributionPrice={showDistributionPrice}
+        showDirectPrice={showDirectPrice}
+        showSalesPrice={showSalesPrice}
         onOpen={() => setBundleOpen(true)}
         onClose={() => setBundleOpen(false)}
         onQuantityChange={updateBundleQuantity}
@@ -9107,7 +9336,9 @@ function BundleSkuCalculator({
   open,
   channel,
   internal,
-  showPrices,
+  showDistributionPrice,
+  showDirectPrice,
+  showSalesPrice,
   onOpen,
   onClose,
   onQuantityChange,
@@ -9118,7 +9349,9 @@ function BundleSkuCalculator({
   open: boolean;
   channel: "全部" | "直营" | "分销";
   internal: boolean;
-  showPrices: boolean;
+  showDistributionPrice: boolean;
+  showDirectPrice: boolean;
+  showSalesPrice: boolean;
   onOpen: () => void;
   onClose: () => void;
   onQuantityChange: (productId: string, quantity: number) => void;
@@ -9128,11 +9361,12 @@ function BundleSkuCalculator({
   const [copied, setCopied] = React.useState("");
   const code = bundleSkuCode(items);
   const totals = bundleTotals(items, channel, internal);
+  const showCostTotal = items.length > 0 && items.every((item) => canShowCostPrice(item.product, channel, showDistributionPrice, showDirectPrice));
   const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
   const quoteText = [
     `组合SKU：${code || "未选择产品"}`,
-    `组合成本：${totals.costCurrency} ${formatMoney(totals.cost)}`,
-    `组合售价：${totals.salesCurrency} ${formatMoney(totals.sales)}`,
+    `组合成本：${showCostTotal ? `${totals.costCurrency} ${formatMoney(totals.cost)}` : "无查看权限"}`,
+    `组合售价：${showSalesPrice ? `${totals.salesCurrency} ${formatMoney(totals.sales)}` : "无查看权限"}`,
     ...items.map((item) => `${bundleSkuProductCode(item.product)} * ${item.quantity} - ${item.product.name}`),
   ].join("\n");
 
@@ -9146,7 +9380,7 @@ function BundleSkuCalculator({
   function downloadQuote() {
     if (!items.length) return;
     const fileName = `tongzhou-quote-${new Date().toISOString().slice(0, 10)}.csv`;
-    downloadTextFile(fileName, bundleQuoteCsv(items, channel, internal, showPrices), "text/csv;charset=utf-8");
+    downloadTextFile(fileName, bundleQuoteCsv(items, channel, internal, { showDistributionPrice, showDirectPrice, showSalesPrice }), "text/csv;charset=utf-8");
     setCopied("download");
     window.setTimeout(() => setCopied(""), 1200);
   }
@@ -9188,6 +9422,7 @@ function BundleSkuCalculator({
                   {items.map((item) => {
                     const cost = priceFor(item.product, channel, internal);
                     const salesPrice = salesPriceFor(item.product);
+                    const showCost = canShowCostPrice(item.product, channel, showDistributionPrice, showDirectPrice);
                     return (
                       <article className="bundle-item" key={item.product.id}>
                         <div>
@@ -9209,8 +9444,8 @@ function BundleSkuCalculator({
                           </button>
                         </div>
                         <div className="bundle-line-price">
-                          <span>{cost.currency} {formatMoney(cost.price * item.quantity)}</span>
-                          <small>{salesPrice.currency} {formatMoney(salesPrice.price * item.quantity)}</small>
+                          <span>{showCost ? `${cost.currency} ${formatMoney(cost.price * item.quantity)}` : "成本不可见"}</span>
+                          <small>{showSalesPrice ? `${salesPrice.currency} ${formatMoney(salesPrice.price * item.quantity)}` : "售价不可见"}</small>
                         </div>
                         <button className="icon-button danger-button" type="button" onClick={() => onRemove(item.product.id)} aria-label="移除单品">
                           <Trash2 size={15} />
@@ -9227,11 +9462,11 @@ function BundleSkuCalculator({
                   </div>
                   <div>
                     <small>组合成本</small>
-                    <strong>{showPrices ? `${totals.costCurrency} ${formatMoney(totals.cost)}` : "登录后可见"}</strong>
+                    <strong>{showCostTotal ? `${totals.costCurrency} ${formatMoney(totals.cost)}` : "无查看权限"}</strong>
                   </div>
                   <div>
                     <small>组合售价</small>
-                    <strong>{showPrices ? `${totals.salesCurrency} ${formatMoney(totals.sales)}` : "登录后可见"}</strong>
+                    <strong>{showSalesPrice ? `${totals.salesCurrency} ${formatMoney(totals.sales)}` : "无查看权限"}</strong>
                   </div>
                 </div>
 
@@ -9639,7 +9874,7 @@ function TongzhouAiPanel({
   const [message, setMessage] = React.useState("");
   const chatWindowRef = React.useRef<HTMLDivElement | null>(null);
   const textImageInputRef = React.useRef<HTMLInputElement | null>(null);
-  const aiLocked = !canViewPartnerAssets(currentUser);
+  const aiLocked = currentUser.role === "guest" || !hasUserPermission(currentUser, "tongzhou_ai");
 
   React.useEffect(() => {
     if (!aiConfig) return;

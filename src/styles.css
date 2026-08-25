@@ -3741,15 +3741,194 @@ h3 {
 }
 
 .user-row {
-  grid-template-columns: minmax(170px, 0.8fr) minmax(150px, 0.75fr) 130px 110px minmax(300px, 1fr) 170px;
-  min-width: 1120px;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(140px, 0.7fr) 110px 90px minmax(190px, 0.9fr) minmax(300px, 1.25fr);
+  min-width: 1180px;
+}
+
+.user-row.editing {
+  border-color: rgba(255, 107, 31, 0.58);
+  background: linear-gradient(90deg, rgba(255, 107, 31, 0.1), rgba(255, 255, 255, 0.04));
 }
 
 .user-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
   align-items: center;
+}
+
+.user-permission-summary {
+  display: grid;
+  gap: 3px;
+}
+
+.user-permission-summary strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.user-permission-summary small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.permission-editor {
+  min-width: 1180px;
+  padding: 20px;
+  border: 1px solid rgba(255, 107, 31, 0.44);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 107, 31, 0.08), transparent 34%),
+    #121419;
+  box-shadow: inset 3px 0 0 #ff6b1f;
+}
+
+.permission-editor-heading,
+.permission-editor-actions,
+.permission-guardrail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.permission-editor-heading h3 {
+  margin: 3px 0 5px;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.permission-editor-heading > div > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.permission-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.permission-group {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.permission-group legend {
+  padding: 0 7px;
+  color: #ff8a49;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.permission-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 47px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.permission-toggle:has(input:checked) {
+  border-color: rgba(94, 220, 144, 0.3);
+  background: rgba(94, 220, 144, 0.075);
+}
+
+.permission-toggle.locked {
+  cursor: not-allowed;
+  border-color: rgba(255, 87, 87, 0.22);
+  background: rgba(255, 87, 87, 0.055);
+}
+
+.permission-toggle input {
+  width: 17px;
+  height: 17px;
+  accent-color: #ff6b1f;
+}
+
+.permission-toggle span {
+  display: grid;
+  gap: 2px;
+}
+
+.permission-toggle strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.permission-toggle small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.permission-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.permission-scope-grid label {
+  display: grid;
+  gap: 7px;
+}
+
+.permission-scope-grid label > span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.permission-scope-grid textarea {
+  width: 100%;
+  min-height: 78px;
+  resize: vertical;
+  padding: 11px 12px;
+  border: 1px solid #3a3d46;
+  border-radius: 8px;
+  outline: 0;
+  color: #f7f7f8;
+  background: #0d0f13;
+  line-height: 1.5;
+}
+
+.permission-scope-grid textarea:focus {
+  border-color: #ff6b1f;
+  box-shadow: 0 0 0 3px rgba(255, 107, 31, 0.12);
+}
+
+.permission-scope-grid textarea::placeholder {
+  color: #747984;
+}
+
+.permission-guardrail {
+  justify-content: flex-start;
+  margin-top: 14px;
+  padding: 11px 13px;
+  border: 1px solid rgba(94, 220, 144, 0.24);
+  border-radius: 8px;
+  color: #b9e8cb;
+  background: rgba(94, 220, 144, 0.06);
+  font-size: 12px;
+}
+
+.permission-editor-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
 }
 
 .quick-nav-panel {

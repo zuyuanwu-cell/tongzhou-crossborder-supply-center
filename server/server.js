@@ -13,13 +13,15 @@ import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js
 import { JIANYUN_FORMS } from "./field-mapping.js";
 import { WAREHOUSE_CONNECTIONS, WMS_PROVIDERS } from "./warehouse-config.js";
 import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analytics.js";
+import { projectMovementPayload, scopeMovementSources } from "./movement-access.js";
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
-import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, publicUser, verifySessionToken } from "./user-auth.js";
+import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
+import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
@@ -1362,15 +1364,17 @@ function scoreContextItem(query, values) {
 function aiProductContext(auth, payload) {
   if (!canViewPartnerAssets(auth)) return "";
   const query = aiUserQueryFromPayload(payload);
+  const visibleProducts = productResponsePayload(cachedProducts, auth, "detail");
+  const visibleWarehouseInfo = scopedPartnerPayload(cachedWarehouseInfo, "warehouseInfo", auth);
   const catalogBySku = new Map();
-  for (const item of cachedProducts.catalog || []) {
+  for (const item of visibleProducts.catalog || []) {
     const key = String(item.sku || item.skuNo || "").toLowerCase();
     if (!key) continue;
     if (!catalogBySku.has(key)) catalogBySku.set(key, []);
     catalogBySku.get(key).push(item);
   }
 
-  const baseProducts = (cachedProducts.productBase || [])
+  const baseProducts = (visibleProducts.productBase || [])
     .map((product) => {
       const catalogItems = catalogBySku.get(String(product.sku || product.skuNo || "").toLowerCase()) || [];
       const countries = [...new Set(catalogItems.map((item) => item.country).filter(Boolean))].slice(0, 8);
@@ -1387,7 +1391,7 @@ function aiProductContext(auth, payload) {
       return `${index + 1}. SKU:${product.sku || product.skuNo || "未配置"}；中文名:${product.name || "未配置"}；英文名:${product.nameEn || "未配置"}；国家/地区:${countries.join("/") || "未配置"}；品牌:${product.brand || "未配置"}；分类:${product.category || "未分类"}；规格:${product.specification || "未配置"}；重量:${product.weight || "未配置"}；尺寸:${size || "未配置"}；公开文案:${truncateText(product.publicDescription, 160) || "未配置"}；卖点:${truncateText(product.sellingPoints, 180) || "未配置"}`;
     });
 
-  const warehouseInfo = (cachedWarehouseInfo.warehouseInfo || [])
+  const warehouseInfo = (visibleWarehouseInfo.warehouseInfo || [])
     .map((warehouse) => ({
       warehouse,
       score: scoreContextItem(query, [warehouse.warehouseName, warehouse.countryRegion, warehouse.warehouseCode, warehouse.shopShippingAddress, warehouse.firstMileReceivingAddress, warehouse.remark]),
@@ -1431,15 +1435,16 @@ function aiNumberLimitFromQuery(query, fallback = 8) {
   return Math.max(1, Math.min(50, Number(match[1]) || fallback));
 }
 
-function aiProductRowsForQuery(query, limit) {
+function aiProductRowsForQuery(query, limit, auth) {
+  const visibleProducts = productResponsePayload(cachedProducts, auth, "detail");
   const catalogBySku = new Map();
-  for (const item of cachedProducts.catalog || []) {
+  for (const item of visibleProducts.catalog || []) {
     const key = String(item.sku || item.skuNo || "").toLowerCase();
     if (!key) continue;
     if (!catalogBySku.has(key)) catalogBySku.set(key, []);
     catalogBySku.get(key).push(item);
   }
-  return (cachedProducts.productBase || [])
+  return (visibleProducts.productBase || [])
     .map((product) => {
       const catalogItems = catalogBySku.get(String(product.sku || product.skuNo || "").toLowerCase()) || [];
       const countries = [...new Set(catalogItems.map((item) => item.country).filter(Boolean))].slice(0, 6);
@@ -1466,7 +1471,7 @@ function aiDirectSafeContextAnswer(payload, auth = { role: "guest" }) {
 
   const sections = [];
   if (wantsProduct) {
-    const rows = aiProductRowsForQuery(query, limit);
+    const rows = aiProductRowsForQuery(query, limit, auth);
     if (rows.length) {
       sections.push([
         `根据产品库安全上下文，找到 ${rows.length} 个相关产品：`,
@@ -1487,7 +1492,7 @@ function aiDirectSafeContextAnswer(payload, auth = { role: "guest" }) {
   }
 
   if (wantsWarehouse) {
-    const rows = (cachedWarehouseInfo.warehouseInfo || [])
+    const rows = (scopedPartnerPayload(cachedWarehouseInfo, "warehouseInfo", auth).warehouseInfo || [])
       .map((warehouse) => ({
         warehouse,
         score: scoreContextItem(query, [warehouse.warehouseName, warehouse.countryRegion, warehouse.warehouseCode, warehouse.shopShippingAddress, warehouse.shopReturnAddress, warehouse.firstMileReceivingAddress, warehouse.timezone, warehouse.remark]),
@@ -1601,7 +1606,13 @@ function saveAiUpload(payload, req) {
 
 function loadUsersCache() {
   const payload = loadJsonCache(usersCachePath);
-  if (payload?.users?.length) return migrateLegacyAdminUser(payload);
+  if (payload?.users?.length) {
+    const migrated = migrateLegacyAdminUser(payload);
+    return {
+      ...migrated,
+      users: (migrated.users || []).map(normalizeStoredUser).filter(Boolean),
+    };
+  }
   return {
     ok: true,
     source: "local",
@@ -1668,6 +1679,7 @@ function publicUsersPayload() {
     syncedAt: cachedUsers.syncedAt || "",
     counts: userCounts(users),
     users,
+    ...userPermissionConfiguration(),
   };
 }
 
@@ -2148,27 +2160,23 @@ function getAgentAuth(req) {
 }
 
 function canViewPartnerAssets(auth) {
-  return auth.role === "admin" || auth.role === "direct" || auth.role === "distributor";
+  return hasPermission(auth, "assets") || hasPermission(auth, "qualifications") || hasPermission(auth, "warehouse_info");
 }
 
 function canManage(auth) {
-  return auth.role === "admin";
+  return hasPermission(auth, "operations");
+}
+
+function canManageModule(auth, permission) {
+  return canManage(auth) && hasPermission(auth, permission);
 }
 
 function canViewInternalCatalog(auth) {
-  return auth.role === "admin" || auth.role === "direct";
+  return hasPermission(auth, "direct_price");
 }
 
-function stripInventory(product) {
-  return {
-    ...product,
-    stockQty: 0,
-    lockedQty: 0,
-    inTransitQty: 0,
-    warehouseTotalQty: 0,
-    warehouseBreakdown: [],
-    dataGap: product.dataGap ? "restricted" : "",
-  };
+function canUseTongzhouAi(auth) {
+  return auth.role !== "guest" && hasPermission(auth, "tongzhou_ai");
 }
 
 function dateKeyInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
@@ -2237,15 +2245,19 @@ function buildInventorySnapshotRows() {
   }));
 }
 
+function inventorySnapshotTotals(rows) {
+  return rows.reduce((sum, item) => ({
+    availableQty: sum.availableQty + numberOrZero(item.availableQty),
+    lockedQty: sum.lockedQty + numberOrZero(item.lockedQty),
+    waitInQty: sum.waitInQty + numberOrZero(item.waitInQty),
+    inTransitQty: sum.inTransitQty + numberOrZero(item.inTransitQty),
+    totalQty: sum.totalQty + numberOrZero(item.totalQty),
+  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, totalQty: 0 });
+}
+
 function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") {
   const rows = buildInventorySnapshotRows();
-  const totals = rows.reduce((sum, item) => ({
-    availableQty: sum.availableQty + item.availableQty,
-    lockedQty: sum.lockedQty + item.lockedQty,
-    waitInQty: sum.waitInQty + item.waitInQty,
-    inTransitQty: sum.inTransitQty + item.inTransitQty,
-    totalQty: sum.totalQty + item.totalQty,
-  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, totalQty: 0 });
+  const totals = inventorySnapshotTotals(rows);
   const snapshot = {
     date,
     capturedAt: new Date().toISOString(),
@@ -2271,15 +2283,32 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
   return snapshot;
 }
 
-function inventorySnapshotPayload(date) {
+function inventorySnapshotPayload(date, auth = directAuth) {
   const snapshots = cachedInventorySnapshots.snapshots || [];
   const selectedDate = date || snapshots[0]?.date || "";
   const selectedSnapshot = snapshots.find((item) => item.date === selectedDate) || null;
+  const user = auth?.user || directAuth.user;
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const projectSnapshot = (snapshot) => {
+    if (!snapshot) return null;
+    const rows = (snapshot.rows || []).filter((row) => {
+      if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(row.warehouseId || ""))) return false;
+      return isWithinDataScope(row, scopes);
+    });
+    return {
+      ...snapshot,
+      rows,
+      rowCount: rows.length,
+      warehouseCount: new Set(rows.map((item) => item.warehouseId).filter(Boolean)).size,
+      skuCount: new Set(rows.map((item) => item.sku).filter(Boolean)).size,
+      totals: inventorySnapshotTotals(rows),
+    };
+  };
   return {
     ok: true,
     updatedAt: cachedInventorySnapshots.updatedAt || "",
     lastSnapshotAt: cachedInventorySnapshots.lastSnapshotAt || "",
-    dates: snapshots.map((item) => ({
+    dates: snapshots.map(projectSnapshot).map((item) => ({
       date: item.date,
       capturedAt: item.capturedAt,
       rowCount: item.rowCount || 0,
@@ -2288,7 +2317,7 @@ function inventorySnapshotPayload(date) {
       totals: item.totals || {},
     })),
     selectedDate,
-    snapshot: selectedSnapshot,
+    snapshot: projectSnapshot(selectedSnapshot),
   };
 }
 
@@ -2467,10 +2496,13 @@ function movementHistoryDateOptions(timezone = movementHistoryTimezone) {
   return movementHistoryStore.listDates(timezone);
 }
 
-function filterMovementHistoryRows(rows, { warehouseId = "", sku = "" } = {}) {
+function filterMovementHistoryRows(rows, { warehouseId = "", sku = "" } = {}, user = directAuth.user) {
   const skuKeyword = String(sku || "").trim().toLowerCase();
+  const scopes = normalizeDataScopes(user?.dataScopes);
   return (rows || []).filter((row) => {
     if (warehouseId && row.warehouseId !== warehouseId) return false;
+    if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(row.warehouseId || ""))) return false;
+    if (!isWithinDataScope(row, scopes)) return false;
     if (skuKeyword) {
       const text = [row.sku, row.countrySku, row.productName, row.brand, row.category].join(" ").toLowerCase();
       if (!text.includes(skuKeyword)) return false;
@@ -2484,9 +2516,16 @@ function movementHistorySnapshotsInRange({ date = "", from = "", to = "", timezo
   return movementHistoryStore.getSnapshots({ date, from, to, timezone: resolvedTimezone });
 }
 
-function movementHistoryPayload(params = {}) {
+function movementHistoryPayload(params = {}, auth = directAuth) {
+  const user = auth?.user || directAuth.user;
   const timezone = safeTimezone(params.timezone, movementHistoryTimezone);
-  const dates = movementHistoryDateOptions(timezone);
+  const dates = movementHistoryDateOptions(timezone).map((item) => {
+    const snapshot = movementHistoryStore.getSnapshots({ date: item.date, timezone })[0];
+    const visibleRows = projectMovementPayload({
+      items: filterMovementHistoryRows(snapshot?.rows || [], {}, user),
+    }, user).items;
+    return { ...item, rowCount: visibleRows.length };
+  });
   const selectedDate = params.date || dates[0]?.date || "";
   const snapshots = movementHistorySnapshotsInRange({
     date: selectedDate,
@@ -2495,7 +2534,8 @@ function movementHistoryPayload(params = {}) {
     timezone,
   });
   const selectedSnapshot = snapshots[0] || null;
-  const rows = selectedSnapshot ? filterMovementHistoryRows(selectedSnapshot.rows || [], params) : [];
+  const scopedRows = selectedSnapshot ? filterMovementHistoryRows(selectedSnapshot.rows || [], params, user) : [];
+  const rows = projectMovementPayload({ items: scopedRows }, user).items;
   const filteredSnapshot = selectedSnapshot ? { ...selectedSnapshot, totals: movementSnapshotTotals(rows), rows } : null;
   const trendSnapshots = movementHistorySnapshotsInRange({
     from: params.from || dates.at(-1)?.date || "",
@@ -2503,7 +2543,7 @@ function movementHistoryPayload(params = {}) {
     timezone,
   }).sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const trend = trendSnapshots.map((snapshot) => {
-    const trendRows = filterMovementHistoryRows(snapshot.rows || [], params);
+    const trendRows = projectMovementPayload({ items: filterMovementHistoryRows(snapshot.rows || [], params, user) }, user).items;
     const totals = movementSnapshotTotals(trendRows);
     return {
       date: snapshot.date,
@@ -2518,7 +2558,7 @@ function movementHistoryPayload(params = {}) {
     };
   });
   const warehouseOptions = Array.from(new Map(
-    (selectedSnapshot?.rows || [])
+    filterMovementHistoryRows(selectedSnapshot?.rows || [], {}, user)
       .filter((row) => row.warehouseId)
       .map((row) => [row.warehouseId, { warehouseId: row.warehouseId, warehouseName: row.warehouseName, country: row.country }]),
   ).values()).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN"));
@@ -2526,7 +2566,7 @@ function movementHistoryPayload(params = {}) {
     ok: true,
     updatedAt: movementHistoryStore.getMetadata().updatedAt || "",
     lastSnapshotAt: movementHistoryStore.getMetadata().lastSnapshotAt || "",
-    databasePath: movementHistoryStore.dbPath,
+    ...(canManage(auth) ? { databasePath: movementHistoryStore.dbPath } : {}),
     timezone,
     timezones: Array.from(new Set([movementHistoryTimezone, inventorySnapshotTimezone, "Asia/Shanghai", "Europe/Moscow", "Asia/Jakarta", "Asia/Kuala_Lumpur", "Asia/Ho_Chi_Minh"])).filter(Boolean),
     dates,
@@ -2548,7 +2588,8 @@ function movementOrderCoverageDaysByWarehouse() {
   return coverage;
 }
 
-function movementComparisonPayload(params = {}) {
+function movementComparisonPayload(params = {}, auth = directAuth) {
+  const user = auth?.user || directAuth.user;
   const timezone = safeTimezone(params.timezone, movementHistoryTimezone);
   const anchorDate = params.anchorDate || dateKeyInTimezone(new Date(), timezone);
   const ranges = resolveMovementComparisonRanges({
@@ -2561,12 +2602,18 @@ function movementComparisonPayload(params = {}) {
   });
   const rangeFrom = [ranges.previous.from, ranges.current.from].sort()[0];
   const rangeTo = [ranges.previous.to, ranges.current.to].sort().at(-1);
-  const snapshots = movementHistoryStore.getSnapshots({ from: rangeFrom, to: rangeTo, timezone });
+  const snapshots = movementHistoryStore.getSnapshots({ from: rangeFrom, to: rangeTo, timezone })
+    .map((snapshot) => ({ ...snapshot, rows: filterMovementHistoryRows(snapshot.rows || [], {}, user) }));
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const orders = (cachedOrdersSync.orders || []).filter((order) => {
+    if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
+    return isWithinDataScope(order, scopes);
+  });
   return {
     timezone,
     ...buildMovementComparison({
       snapshots,
-      orders: cachedOrdersSync.orders || [],
+      orders,
       ranges,
       warehouseId: params.warehouseId || "",
       sku: params.sku || "",
@@ -2617,31 +2664,84 @@ function movementHistoryCsv(snapshots, params = {}) {
 }
 
 function filterProductPayload(payload, auth) {
-  const mergedPayload = mergeWarehouseDataIntoProducts(payload, cachedWarehouseSync);
-  let catalog = mergedPayload.catalog;
-  if (auth.role === "guest") {
-    catalog = catalog
-      .filter((product) => product.channel === "分销")
-      .map(({ directPrice, directCurrency, directCostPrice, directCostCurrency, distributionPrice, distributionCurrency, distributionCost, distributionCostPrice, distributionCostCurrency, salesPrice, salesCurrency, raw, ...product }) => stripInventory(product));
-  } else if (auth.role === "distributor") {
-    catalog = catalog
-      .filter((product) => product.channel === "分销")
-      .map(({ directPrice, directCurrency, directCostPrice, directCostCurrency, raw, ...product }) => product);
-  } else {
-    catalog = catalog.map(({ raw, ...product }) => product);
-  }
+  const user = auth.user || { role: auth.role || "guest" };
+  const dataScopes = normalizeDataScopes(user.dataScopes);
+  const scopedSources = scopeMovementSources({
+    products: payload,
+    warehouse: cachedWarehouseSync,
+    orders: { orders: [], results: [] },
+    connections: warehouseConnections,
+  }, user);
+  const mergedPayload = mergeWarehouseDataIntoProducts(scopedSources.products, scopedSources.warehouse);
+  const partnerCatalogOnly = auth.role === "guest" || auth.role === "distributor";
+  const catalog = (mergedPayload.catalog || [])
+    .filter((product) => !partnerCatalogOnly || product.channel === "分销")
+    .filter((product) => isWithinDataScope(product, dataScopes))
+    .map((product) => projectCatalogProduct(product, user));
+  const visibleSkuSet = new Set(catalog.flatMap((product) => [product.sku, product.skuNo]).filter(Boolean).map((value) => String(value).toUpperCase()));
+  const restrictBaseToVisibleCatalog = dataScopes.countries.length > 0 || dataScopes.skus.length > 0;
+  const productBase = canViewPartnerAssets(auth)
+    ? (scopedSources.products.productBase || [])
+      .filter((product) => !restrictBaseToVisibleCatalog || [product.sku, product.skuNo].some((value) => visibleSkuSet.has(String(value || "").toUpperCase())))
+      .map(projectProductBase)
+    : [];
+  const {
+    directCatalog,
+    distributionCatalog,
+    warehouseImages,
+    stockSynced,
+    warehouseOnlyInventory,
+    productMissingWarehouse,
+    ...publicCounts
+  } = mergedPayload.counts || {};
+  const { warehouseOnlyInventory: _warehouseOnlyInventory, ...safeMergedPayload } = mergedPayload;
 
   return {
-    ...mergedPayload,
+    ...safeMergedPayload,
     internal: canViewInternalCatalog(auth),
     user: publicUser(auth.user),
     counts: {
-      ...mergedPayload.counts,
+      ...publicCounts,
+      ...(hasPermission(auth, "direct_price") ? { directCatalog } : {}),
+      ...(hasPermission(auth, "distribution_price") ? { distributionCatalog } : {}),
+      ...(hasPermission(auth, "inventory") ? { warehouseImages, stockSynced, warehouseOnlyInventory, productMissingWarehouse } : {}),
       visibleCatalog: catalog.length,
     },
-    productBase: canViewPartnerAssets(auth) ? payload.productBase : [],
+    productBase,
     catalog,
   };
+}
+
+function scopedPartnerPayload(payload, recordKey, auth) {
+  const user = auth?.user || { role: auth?.role || "guest" };
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const records = (payload?.[recordKey] || [])
+    .filter((record) => {
+      if (recordKey === "warehouseInfo") {
+        if (scopes.countries.length && !scopes.countries.includes(String(record.countryRegion || record.country || ""))) return false;
+        if (scopes.warehouseIds.length) {
+          const values = [record.id, record.warehouseCode, record.warehouseName].map((value) => String(value || ""));
+          if (!values.some((value) => scopes.warehouseIds.includes(value))) return false;
+        }
+        return true;
+      }
+      return isWithinDataScope({ ...record, country: record.country || record.market || "" }, { ...scopes, warehouseIds: [] });
+    })
+    .map(({ raw, ...record }) => record);
+  const counts = recordKey === "qualifications"
+    ? {
+      qualifications: records.length,
+      withFiles: records.filter((item) => item.files?.length > 0).length,
+      expired: records.filter((item) => item.expiryDate && new Date(item.expiryDate).getTime() < Date.now()).length,
+    }
+    : recordKey === "assets"
+      ? { assets: records.length, withFiles: records.filter((item) => item.files?.length > 0).length }
+      : {
+        records: records.length,
+        warehouses: new Set(records.map((item) => item.warehouseName).filter(Boolean)).size,
+        countries: new Set(records.map((item) => item.countryRegion).filter(Boolean)).size,
+      };
+  return { ...payload, counts, [recordKey]: records };
 }
 
 function compactCatalogProduct(product) {
@@ -2678,15 +2778,34 @@ function productResponsePayload(payload, auth, mode = "list") {
   };
 }
 
-function movementResponsePayload() {
+function scopeOrderSyncJob(job, scoped) {
+  if (!job) return null;
+  if (!scoped.scopes.warehouseIds.length && !scoped.scopes.countries.length) return job;
+  const allowedWarehouseIds = new Set(scoped.connections.map((connection) => connection.id));
+  return {
+    ...job,
+    warehouseIds: (job.warehouseIds || []).filter((warehouseId) => allowedWarehouseIds.has(warehouseId)),
+    currentWarehouseId: allowedWarehouseIds.has(job.currentWarehouseId) ? job.currentWarehouseId : "",
+    failedChunks: (job.failedChunks || []).filter((chunk) => allowedWarehouseIds.has(chunk.warehouseId)),
+  };
+}
+
+function movementResponsePayload(auth = directAuth) {
+  const user = auth?.user || directAuth.user;
   const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
-  const payload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
-  const latestJob = latestOrderSyncJob();
+  const scoped = scopeMovementSources({
+    products: mergedProducts,
+    warehouse: cachedWarehouseSync,
+    orders: cachedOrdersSync,
+    connections: warehouseConnections,
+  }, user);
+  const payload = buildMovementPayload(scoped.products, scoped.warehouse, scoped.orders);
+  const latestJob = scopeOrderSyncJob(latestOrderSyncJob(), scoped);
   const warehouseDiagnostics = buildMovementDiagnostics(
-    mergedProducts,
-    cachedWarehouseSync,
-    cachedOrdersSync,
-    warehouseConnections.map((connection) => ({
+    scoped.products,
+    scoped.warehouse,
+    scoped.orders,
+    scoped.connections.map((connection) => ({
       id: connection.id,
       name: connection.name,
       country: connection.country,
@@ -2698,7 +2817,7 @@ function movementResponsePayload() {
     providerName: providerName(item.providerId),
     latestOrderSyncJob: orderSyncJobWarehouseDigest(latestJob, item.warehouseId),
   }));
-  const results = cachedOrdersSync.results || [];
+  const results = scoped.orders.results || [];
   const backgroundRunningWarehouses = results
     .filter((result) => result.backgroundRunning)
     .map((result) => ({
@@ -2725,7 +2844,7 @@ function movementResponsePayload() {
       message: result.message || "",
       orderCount: result.orderCount || 0,
     }));
-  const warehouseFreshness = warehouseConnections.map((connection) => {
+  const warehouseFreshness = scoped.connections.map((connection) => {
     const result = results.find((item) => item.warehouseId === connection.id);
     const running = latestJob && ["queued", "running"].includes(latestJob.status) && (latestJob.warehouseIds || []).includes(connection.id);
     return {
@@ -2741,7 +2860,7 @@ function movementResponsePayload() {
       message: running ? (latestJob.currentWarehouseId === connection.id ? latestJob.currentChunkLabel : "Queued") : (result?.message || ""),
     };
   });
-  return {
+  return projectMovementPayload({
     ...payload,
     orderSyncJob: publicOrderSyncJob(latestJob),
     warehouseFreshness,
@@ -2752,20 +2871,29 @@ function movementResponsePayload() {
       backgroundRunningWarehouses,
       failedWarehouses,
     },
-  };
+  }, user);
 }
 
 function buildDashboardSummary(auth) {
   const products = productResponsePayload(cachedProducts, auth, "list");
-  const canViewOperations = canManage(auth);
-  const movementPayload = canViewOperations ? movementResponsePayload() : null;
-  const orderResults = cachedOrdersSync.results || [];
-  const warehouseResults = cachedWarehouseSync.results || [];
+  const canViewOperations = hasPermission(auth, "dashboard");
+  const canViewSync = hasPermission(auth, "movement_sync");
+  const canViewInventory = hasPermission(auth, "inventory");
+  const movementPayload = hasPermission(auth, "movement") ? movementResponsePayload(auth) : null;
+  const scoped = scopeMovementSources({
+    products: cachedProducts,
+    warehouse: cachedWarehouseSync,
+    orders: cachedOrdersSync,
+    connections: warehouseConnections,
+  }, auth.user || directAuth.user);
+  const orderResults = scoped.orders.results || [];
+  const warehouseResults = scoped.warehouse.results || [];
+  const visibleOrders = scoped.orders.orders || [];
   const visibleCatalog = products.catalog || [];
-  const orderCount90 = canViewOperations ? (cachedOrdersSync.orders || []).length : 0;
+  const orderCount90 = canViewOperations ? visibleOrders.length : 0;
   const todayKey = new Date().toISOString().slice(0, 10);
-  const todayOrders = canViewOperations ? (cachedOrdersSync.orders || []).filter((order) => String(order.shippedAt || order.createdAt || "").slice(0, 10) === todayKey) : [];
-  const salesAmount90 = canViewOperations ? (cachedOrdersSync.orders || []).reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0) : 0;
+  const todayOrders = canViewOperations ? visibleOrders.filter((order) => String(order.shippedAt || order.createdAt || "").slice(0, 10) === todayKey) : [];
+  const salesAmount90 = canViewOperations ? visibleOrders.reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0) : 0;
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -2773,7 +2901,7 @@ function buildDashboardSummary(auth) {
     user: publicUser(auth.user),
     counts: {
       visibleCatalog: visibleCatalog.length,
-      totalInventory: visibleCatalog.reduce((sum, product) => sum + numberOrZero(product.stockQty), 0),
+      totalInventory: canViewInventory ? visibleCatalog.reduce((sum, product) => sum + numberOrZero(product.stockQty), 0) : 0,
       todayOrders: todayOrders.length,
       orderCount90,
       salesAmount90,
@@ -2796,8 +2924,8 @@ function buildDashboardSummary(auth) {
       backgroundRunningWarehouses: movementPayload?.syncState?.backgroundRunningWarehouses || [],
       failedWarehouses: movementPayload?.syncState?.failedWarehouses || [],
     },
-    movementDiagnostics: movementPayload?.warehouseDiagnostics || [],
-    warehouses: warehouseConnections.map((connection) => {
+    movementDiagnostics: canViewSync ? (movementPayload?.warehouseDiagnostics || []) : [],
+    warehouses: scoped.connections.map((connection) => {
       const result = warehouseResults.find((item) => item.warehouseId === connection.id);
       const orderResult = canViewOperations ? orderResults.find((item) => item.warehouseId === connection.id) : null;
       return {
@@ -2806,12 +2934,12 @@ function buildDashboardSummary(auth) {
         providerId: connection.providerId,
         providerName: providerName(connection.providerId),
         country: connection.country,
-        hasCredentials: hasWarehouseCredentials(connection),
-        inventoryOk: result?.ok ?? false,
+        hasCredentials: canViewSync ? hasWarehouseCredentials(connection) : false,
+        inventoryOk: canViewInventory ? (result?.ok ?? false) : false,
         orderOk: canViewOperations ? (orderResult?.ok ?? false) : false,
         backgroundRunning: canViewOperations ? Boolean(orderResult?.backgroundRunning) : false,
-        message: canViewOperations ? (orderResult?.message || result?.message || "") : (result?.message || ""),
-        inventoryCount: result?.inventoryCount || 0,
+        message: canViewOperations ? (orderResult?.message || (canViewInventory ? result?.message : "") || "") : (canViewInventory ? result?.message || "" : ""),
+        inventoryCount: canViewInventory ? (result?.inventoryCount || 0) : 0,
         orderCount: canViewOperations ? (orderResult?.orderCount || 0) : 0,
       };
     }),
@@ -2882,7 +3010,7 @@ function orderShopDisplayName(rawShopName) {
   return String(cachedOrderAnalysisSettings.shopAliases?.[raw] || "").trim() || raw;
 }
 
-function buildOrderAnalysisPayload(params = {}) {
+function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
   const today = new Date().toISOString().slice(0, 10);
   const dateTo = String(params.dateTo || today).slice(0, 10);
   const dateFrom = String(params.dateFrom || dateTo).slice(0, 10);
@@ -2895,7 +3023,12 @@ function buildOrderAnalysisPayload(params = {}) {
   const keyword = String(params.keyword || "").trim().toLowerCase();
   const onlyRussia = params.onlyRussia !== false;
   const productLookup = buildOrderProductLookup();
-  const allOrders = (cachedOrdersSync.orders || []).map((order) => ({
+  const user = auth?.user || directAuth.user;
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const allOrders = (cachedOrdersSync.orders || []).filter((order) => {
+    if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
+    return isWithinDataScope(order, scopes);
+  }).map((order) => ({
     ...order,
     date: orderDateKey(order),
     platform: String(order.platform || "").trim(),
@@ -3083,7 +3216,7 @@ function buildOrderAnalysisPayload(params = {}) {
 }
 
 async function handleWarehouseSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "inventory_sync")) {
     sendJson(res, 401, { ok: false, message: "同步仓库数据需要内部登录。" });
     return;
   }
@@ -3621,7 +3754,7 @@ async function testWarehouseConnectionPayload(payload) {
 }
 
 async function handleWarehouseTest(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "warehouses")) {
     sendJson(res, 401, { ok: false, message: "Testing warehouse connections requires admin login." });
     return;
   }
@@ -3645,7 +3778,7 @@ async function handleWarehouseTest(req, res) {
 }
 
 async function handleOrderSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "movement_sync")) {
     sendJson(res, 401, { ok: false, message: "同步订单数据需要内部登录。" });
     return;
   }
@@ -3754,7 +3887,7 @@ function mergeLateOrderSyncResult(connection, result, days) {
 }
 
 async function handleStockupSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "stockup")) {
     sendJson(res, 401, { ok: false, message: "同步备货单明细需要内部登录。" });
     return;
   }
@@ -3935,7 +4068,7 @@ function updateStockupPlanStatus(planId, status) {
 }
 
 async function handleSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "product_view")) {
     sendJson(res, 401, { ok: false, message: "同步产品数据需要内部登录。" });
     return;
   }
@@ -3961,7 +4094,7 @@ async function refreshProductCache() {
 }
 
 async function handleQualificationSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "qualifications")) {
     sendJson(res, 401, { ok: false, message: "同步资质库需要内部登录。" });
     return;
   }
@@ -3988,7 +4121,7 @@ async function refreshQualificationCache() {
 }
 
 async function handleAssetSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "assets")) {
     sendJson(res, 401, { ok: false, message: "同步素材库需要内部登录。" });
     return;
   }
@@ -4014,7 +4147,7 @@ async function refreshAssetCache() {
 }
 
 async function handleWarehouseInfoSync(req, res) {
-  if (!canManage(getAuth(req))) {
+  if (!canManageModule(getAuth(req), "warehouse_info")) {
     sendJson(res, 401, { ok: false, message: "同步仓库信息需要管理员登录。" });
     return;
   }
@@ -4143,13 +4276,16 @@ function agentSourceForType(type, auth) {
     };
   }
   if (type === "qualification") {
-    return { records: cachedQualifications.qualifications || [], syncedAt: cachedQualifications.syncedAt || "", sourceSystem: cachedQualifications.source || "jiandaoyun" };
+    const qualifications = scopedPartnerPayload(cachedQualifications, "qualifications", auth);
+    return { records: qualifications.qualifications || [], syncedAt: cachedQualifications.syncedAt || "", sourceSystem: cachedQualifications.source || "jiandaoyun" };
   }
   if (type === "asset") {
-    return { records: cachedAssets.assets || [], syncedAt: cachedAssets.syncedAt || "", sourceSystem: cachedAssets.source || "jiandaoyun" };
+    const assets = scopedPartnerPayload(cachedAssets, "assets", auth);
+    return { records: assets.assets || [], syncedAt: cachedAssets.syncedAt || "", sourceSystem: cachedAssets.source || "jiandaoyun" };
   }
   if (type === "warehouse_info") {
-    return { records: cachedWarehouseInfo.warehouseInfo || [], syncedAt: cachedWarehouseInfo.syncedAt || "", sourceSystem: cachedWarehouseInfo.source || "jiandaoyun" };
+    const warehouseInfo = scopedPartnerPayload(cachedWarehouseInfo, "warehouseInfo", auth);
+    return { records: warehouseInfo.warehouseInfo || [], syncedAt: cachedWarehouseInfo.syncedAt || "", sourceSystem: cachedWarehouseInfo.source || "jiandaoyun" };
   }
   if (type === "wms_product") {
     return { records: cachedWarehouseSync.products || [], syncedAt: cachedWarehouseSync.syncedAt || "", sourceSystem: "wms" };
@@ -4178,7 +4314,7 @@ function agentSourceForType(type, auth) {
     };
   }
   if (type === "movement_item") {
-    const movement = movementResponsePayload();
+    const movement = movementResponsePayload(auth);
     return { records: movement.items || [], updatedAt: movement.generatedAt || now, sourceSystem: "derived" };
   }
   if (["stockup_recommendation", "stockup_plan"].includes(type)) {
@@ -4296,7 +4432,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/dashboard-summary" && req.method === "GET") {
-      sendJson(res, 200, buildDashboardSummary(getAuth(req)));
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "dashboard")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有经营总览权限。" });
+        return;
+      }
+      sendJson(res, 200, buildDashboardSummary(auth));
       return;
     }
 
@@ -4351,7 +4492,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/agent-keys" && req.method === "GET") {
       const auth = getAuth(req);
-      if (auth.role === "guest" || !auth.user?.id) {
+      if (auth.role === "guest" || !auth.user?.id || !hasPermission(auth, "api_access")) {
         sendJson(res, 401, { ok: false, message: "查看 Agent API Key 需要先登录。" });
         return;
       }
@@ -4366,7 +4507,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/agent-keys" && req.method === "POST") {
       const auth = getAuth(req);
-      if (auth.role === "guest" || !auth.user?.id) {
+      if (auth.role === "guest" || !auth.user?.id || !hasPermission(auth, "api_access")) {
         sendJson(res, 401, { ok: false, message: "创建 Agent API Key 需要先登录。" });
         return;
       }
@@ -4399,8 +4540,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "查看妙手 ERP 配置需要管理员登录。" });
+      if (!hasPermission(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "当前账号没有妙手 ERP 权限。" });
         return;
       }
       sendJson(res, 200, miaoshouAutomation.publicPayload());
@@ -4409,7 +4550,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/config" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "配置妙手 ERP 需要管理员登录。" });
         return;
       }
@@ -4427,7 +4568,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/test" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "检测妙手授权需要管理员登录。" });
         return;
       }
@@ -4439,7 +4580,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/shops/sync" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "同步妙手店铺需要管理员登录。" });
         return;
       }
@@ -4452,7 +4593,7 @@ const server = http.createServer(async (req, res) => {
     const miaoshouShopMatch = url.pathname.match(/^\/api\/miaoshou\/shops\/([^/]+)$/);
     if (miaoshouShopMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "调整妙手店铺自动化需要管理员登录。" });
         return;
       }
@@ -4471,7 +4612,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/run" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "运行妙手运单任务需要管理员登录。" });
         return;
       }
@@ -4490,7 +4631,7 @@ const server = http.createServer(async (req, res) => {
     const miaoshouTaskRetryMatch = url.pathname.match(/^\/api\/miaoshou\/tasks\/([^/]+)\/retry$/);
     if (miaoshouTaskRetryMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "重试妙手运单任务需要管理员登录。" });
         return;
       }
@@ -4506,7 +4647,7 @@ const server = http.createServer(async (req, res) => {
     const miaoshouTaskWaybillMatch = url.pathname.match(/^\/api\/miaoshou\/tasks\/([^/]+)\/waybill$/);
     if (miaoshouTaskWaybillMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "miaoshou")) {
         sendJson(res, 401, { ok: false, message: "获取妙手面单需要管理员登录。" });
         return;
       }
@@ -4519,7 +4660,7 @@ const server = http.createServer(async (req, res) => {
     const agentApiKeyMatch = url.pathname.match(/^\/api\/agent-keys\/([^/]+)$/);
     if (agentApiKeyMatch && req.method === "DELETE") {
       const auth = getAuth(req);
-      if (auth.role === "guest" || !auth.user?.id) {
+      if (auth.role === "guest" || !auth.user?.id || !hasPermission(auth, "api_access")) {
         sendJson(res, 401, { ok: false, message: "撤销 Agent API Key 需要先登录。" });
         return;
       }
@@ -4544,6 +4685,10 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/products") {
       const auth = getAuth(req);
+      if (!hasPermission(auth, "product_view")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有产品库权限。" });
+        return;
+      }
       const mode = url.searchParams.get("mode") === "detail" ? "detail" : "list";
       sendJson(res, 200, {
         ok: true,
@@ -4553,11 +4698,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/qualifications" && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!hasPermission(getAuth(req), "qualifications")) {
         sendJson(res, 401, { ok: false, message: "查看资质库需要登录。" });
         return;
       }
-      sendJson(res, 200, cachedQualifications);
+      sendJson(res, 200, scopedPartnerPayload(cachedQualifications, "qualifications", getAuth(req)));
       return;
     }
 
@@ -4567,7 +4712,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith("/api/qualifications/files/") && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!hasPermission(getAuth(req), "qualifications")) {
         sendJson(res, 401, { ok: false, message: "下载资质附件需要登录。" });
         return;
       }
@@ -4576,11 +4721,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/assets" && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!hasPermission(getAuth(req), "assets")) {
         sendJson(res, 401, { ok: false, message: "查看素材库需要登录。" });
         return;
       }
-      sendJson(res, 200, cachedAssets);
+      sendJson(res, 200, scopedPartnerPayload(cachedAssets, "assets", getAuth(req)));
       return;
     }
 
@@ -4590,11 +4735,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/warehouse-info" && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!hasPermission(getAuth(req), "warehouse_info")) {
         sendJson(res, 401, { ok: false, message: "查看仓库信息需要登录。" });
         return;
       }
-      sendJson(res, 200, cachedWarehouseInfo);
+      sendJson(res, 200, scopedPartnerPayload(cachedWarehouseInfo, "warehouseInfo", getAuth(req)));
       return;
     }
 
@@ -4604,13 +4749,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/quick-nav" && req.method === "GET") {
+      if (!hasPermission(getAuth(req), "quick_nav")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有快捷导航权限。" });
+        return;
+      }
       sendJson(res, 200, buildQuickNavPayload(cachedQuickNav.categories || []));
       return;
     }
 
     if (url.pathname === "/api/action-log" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看操作日志需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "action_log")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有操作日志权限。" });
         return;
       }
       sendJson(res, 200, publicActionLog());
@@ -4618,8 +4767,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/distributor-applications" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看分销账号申请需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "users")) {
+        sendJson(res, 401, { ok: false, message: "当前账号没有用户管理权限。" });
         return;
       }
       sendJson(res, 200, publicDistributorApplications());
@@ -4636,7 +4785,7 @@ const server = http.createServer(async (req, res) => {
     const distributorApplicationStatusMatch = url.pathname.match(/^\/api\/distributor-applications\/([^/]+)\/status$/);
     if (distributorApplicationStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!hasPermission(auth, "users")) {
         sendJson(res, 401, { ok: false, message: "更新分销账号申请需要管理员登录。" });
         return;
       }
@@ -4651,8 +4800,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/wecom-notifications" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看企业微信通知配置需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "notifications")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有企业微信通知权限。" });
         return;
       }
       sendJson(res, 200, publicWecomNotificationPayload());
@@ -4660,7 +4809,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/wecom-notifications/robots" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "notifications")) {
         sendJson(res, 401, { ok: false, message: "配置企业微信机器人需要管理员登录。" });
         return;
       }
@@ -4707,7 +4856,7 @@ const server = http.createServer(async (req, res) => {
 
     const wecomRobotMatch = url.pathname.match(/^\/api\/wecom-notifications\/robots\/([^/]+)$/);
     if (wecomRobotMatch && req.method === "DELETE") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "notifications")) {
         sendJson(res, 401, { ok: false, message: "删除企业微信机器人需要管理员登录。" });
         return;
       }
@@ -4734,7 +4883,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/wecom-notifications/schedules" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "notifications")) {
         sendJson(res, 401, { ok: false, message: "配置定时通知需要管理员登录。" });
         return;
       }
@@ -4778,7 +4927,7 @@ const server = http.createServer(async (req, res) => {
 
     const wecomScheduleMatch = url.pathname.match(/^\/api\/wecom-notifications\/schedules\/([^/]+)$/);
     if (wecomScheduleMatch && req.method === "DELETE") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "notifications")) {
         sendJson(res, 401, { ok: false, message: "删除定时通知需要管理员登录。" });
         return;
       }
@@ -4801,7 +4950,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/wecom-notifications/scenes" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "notifications")) {
         sendJson(res, 401, { ok: false, message: "配置场景通知需要管理员登录。" });
         return;
       }
@@ -4821,7 +4970,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/wecom-notifications/operating-summary" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "notifications")) {
         sendJson(res, 401, { ok: false, message: "发送今日经营摘要需要管理员登录。" });
         return;
       }
@@ -4854,7 +5003,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/wecom-notifications/test" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "notifications")) {
         sendJson(res, 401, { ok: false, message: "测试企业微信通知需要管理员登录。" });
         return;
       }
@@ -4870,7 +5019,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/quick-nav/categories" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "quick_nav")) {
         sendJson(res, 401, { ok: false, message: "创建快捷导航分类需要管理员登录。" });
         return;
       }
@@ -4906,7 +5055,7 @@ const server = http.createServer(async (req, res) => {
 
     const quickNavCategoryMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)$/);
     if (quickNavCategoryMatch && req.method === "DELETE") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "quick_nav")) {
         sendJson(res, 401, { ok: false, message: "删除快捷导航分类需要管理员登录。" });
         return;
       }
@@ -4940,7 +5089,7 @@ const server = http.createServer(async (req, res) => {
 
     const quickNavLinksMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)\/links$/);
     if (quickNavLinksMatch && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "quick_nav")) {
         sendJson(res, 401, { ok: false, message: "创建快捷方式需要管理员登录。" });
         return;
       }
@@ -4999,7 +5148,7 @@ const server = http.createServer(async (req, res) => {
 
     const quickNavLinkMatch = url.pathname.match(/^\/api\/quick-nav\/categories\/([^/]+)\/links\/([^/]+)$/);
     if (quickNavLinkMatch && req.method === "DELETE") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "quick_nav")) {
         sendJson(res, 401, { ok: false, message: "删除快捷方式需要管理员登录。" });
         return;
       }
@@ -5039,7 +5188,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/config" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "tongzhou_ai")) {
         sendJson(res, 401, { ok: false, message: "配置同舟AI需要管理员登录。" });
         return;
       }
@@ -5078,7 +5227,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/uploads" && req.method === "POST") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!canUseTongzhouAi(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "上传同舟AI参考图需要登录。" });
         return;
       }
@@ -5090,7 +5239,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/ai/text/stream" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canViewPartnerAssets(auth)) {
+      if (!canUseTongzhouAi(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -5162,7 +5311,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/ai/text" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canViewPartnerAssets(auth)) {
+      if (!canUseTongzhouAi(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -5194,7 +5343,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/image" && req.method === "POST") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!canUseTongzhouAi(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -5269,7 +5418,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/video" && req.method === "POST") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!canUseTongzhouAi(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -5327,7 +5476,7 @@ const server = http.createServer(async (req, res) => {
 
     const aiVideoStatusMatch = url.pathname.match(/^\/api\/ai\/video\/([^/]+)$/);
     if (aiVideoStatusMatch && req.method === "GET") {
-      if (!canViewPartnerAssets(getAuth(req))) {
+      if (!canUseTongzhouAi(getAuth(req))) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -5358,8 +5507,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/users" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看用户管理需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "users")) {
+        sendJson(res, 401, { ok: false, message: "当前账号没有用户管理权限。" });
         return;
       }
       sendJson(res, 200, publicUsersPayload());
@@ -5367,7 +5516,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/users" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!hasPermission(getAuth(req), "users")) {
         sendJson(res, 401, { ok: false, message: "创建用户需要管理员登录。" });
         return;
       }
@@ -5383,6 +5532,8 @@ const server = http.createServer(async (req, res) => {
         password: payload.password,
         displayName: payload.displayName,
         role: payload.role,
+        permissionOverrides: payload.permissionOverrides,
+        dataScopes: payload.dataScopes,
       });
 
       try {
@@ -5411,10 +5562,53 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const userPermissionMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/permissions$/);
+    if (userPermissionMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "users")) {
+        sendJson(res, 401, { ok: false, message: "调整用户权限需要管理员登录。" });
+        return;
+      }
+
+      const userId = decodeURIComponent(userPermissionMatch[1]);
+      const user = (cachedUsers.users || []).find((item) => item.id === userId);
+      if (!user) {
+        sendJson(res, 404, { ok: false, message: "用户不存在。" });
+        return;
+      }
+
+      const payload = await parseRequestBody(req);
+      const hasExplicitPermissionOverrides = Object.prototype.hasOwnProperty.call(payload, "permissionOverrides")
+        || Object.prototype.hasOwnProperty.call(payload, "allow")
+        || Object.prototype.hasOwnProperty.call(payload, "deny");
+      if (hasExplicitPermissionOverrides) {
+        user.permissionOverrides = sanitizePermissionUpdate(user.role, payload.permissionOverrides || payload);
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, "dataScopes")) {
+        user.dataScopes = normalizeDataScopes(payload.dataScopes);
+      }
+      user.updatedAt = new Date().toISOString();
+      cachedUsers.syncedAt = user.updatedAt;
+      saveUsersCache();
+      appendActionLog(auth, "更新用户权限", "user", user.displayName || user.username, {
+        userId: user.id,
+        username: user.username,
+        role: user.role,
+        permissionOverrides: user.permissionOverrides,
+        dataScopes: user.dataScopes,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        user: publicUser(user),
+        ...publicUsersPayload(),
+      });
+      return;
+    }
+
     const userStatusMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/status$/);
     if (userStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!hasPermission(auth, "users")) {
         sendJson(res, 401, { ok: false, message: "停用或启用用户需要管理员登录。" });
         return;
       }
@@ -5466,7 +5660,7 @@ const server = http.createServer(async (req, res) => {
     const userDeleteMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
     if (userDeleteMatch && req.method === "DELETE") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!hasPermission(auth, "users")) {
         sendJson(res, 401, { ok: false, message: "删除用户需要管理员登录。" });
         return;
       }
@@ -5516,8 +5710,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/outsourcing-orders" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看委外加工单需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
       sendJson(res, 200, cachedOutsourcingOrders);
@@ -5525,7 +5719,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/outsourcing-orders/sync" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "stockup")) {
         sendJson(res, 401, { ok: false, message: "同步委外加工单需要内部登录。" });
         return;
       }
@@ -5535,20 +5729,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/warehouses" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看仓库授权需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "warehouses") && !hasPermission(auth, "inventory_sync")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库授权权限。" });
         return;
       }
-      const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
+      const scoped = scopeMovementSources({ products: cachedProducts, warehouse: cachedWarehouseSync, orders: cachedOrdersSync, connections: warehouseConnections }, auth.user || directAuth.user);
+      const mergedProducts = mergeWarehouseDataIntoProducts(scoped.products, scoped.warehouse);
       sendJson(res, 200, {
         ok: true,
         providers: WMS_PROVIDERS,
-        warehouses: warehouseConnections.map(sanitizeWarehouse),
+        warehouses: scoped.connections.map(sanitizeWarehouse),
         lastSync: {
           syncedAt: cachedWarehouseSync.syncedAt,
-          results: cachedWarehouseSync.results,
-          imageCount: cachedWarehouseSync.products.filter((item) => item.imageUrl).length,
-          inventoryCount: cachedWarehouseSync.inventory.length,
+          results: scoped.warehouse.results,
+          imageCount: scoped.warehouse.products.filter((item) => item.imageUrl).length,
+          inventoryCount: scoped.warehouse.inventory.length,
           warehouseOnlyInventory: mergedProducts.warehouseOnlyInventory?.slice(0, 50) || [],
           warehouseOnlyCount: mergedProducts.counts?.warehouseOnlyInventory || 0,
           productMissingWarehouseCount: mergedProducts.counts?.productMissingWarehouse || 0,
@@ -5587,30 +5783,33 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/inventory-snapshots" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看库存快照需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "inventory_snapshots")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有库存快照权限。" });
         return;
       }
-      sendJson(res, 200, inventorySnapshotPayload(url.searchParams.get("date") || ""));
+      sendJson(res, 200, inventorySnapshotPayload(url.searchParams.get("date") || "", auth));
       return;
     }
 
     if (url.pathname === "/api/inventory-snapshots/capture" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "inventory_snapshots")) {
         sendJson(res, 401, { ok: false, message: "生成库存快照需要管理员登录。" });
         return;
       }
       const snapshot = upsertInventorySnapshot(dateKeyInTimezone(), "manual");
-      sendJson(res, 200, { ok: true, snapshot, ...inventorySnapshotPayload(snapshot.date) });
+      sendJson(res, 200, { ok: true, snapshot, ...inventorySnapshotPayload(snapshot.date, auth) });
       return;
     }
 
     if (url.pathname === "/api/inventory-snapshots/export" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "inventory_snapshots")) {
         sendJson(res, 401, { ok: false, message: "导出库存快照需要管理员登录。" });
         return;
       }
-      const payload = inventorySnapshotPayload(url.searchParams.get("date") || "");
+      const payload = inventorySnapshotPayload(url.searchParams.get("date") || "", auth);
       if (!payload.snapshot) {
         sendJson(res, 404, { ok: false, message: "没有找到该日期的库存快照。" });
         return;
@@ -5631,8 +5830,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/movement-history" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看动销历史需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "movement_analysis")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有动销分析权限。" });
         return;
       }
       sendJson(res, 200, movementHistoryPayload({
@@ -5642,13 +5842,14 @@ const server = http.createServer(async (req, res) => {
         warehouseId: url.searchParams.get("warehouseId") || "",
         sku: url.searchParams.get("sku") || "",
         timezone: url.searchParams.get("timezone") || "",
-      }));
+      }, auth));
       return;
     }
 
     if (url.pathname === "/api/movement-history/compare" && req.method === "GET") {
-      if (!canManage(getAgentAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看动销与库存对比需要管理员身份或管理员 Agent API Key。" });
+      const auth = getAgentAuth(req);
+      if (!hasPermission(auth, "movement_analysis") || !hasPermission(auth, "movement_inventory")) {
+        sendJson(res, 401, { ok: false, message: "动销与库存对比需要动销分析和动销库存数据权限。" });
         return;
       }
       try {
@@ -5662,7 +5863,7 @@ const server = http.createServer(async (req, res) => {
           warehouseId: url.searchParams.get("warehouseId") || "",
           sku: url.searchParams.get("sku") || "",
           timezone: url.searchParams.get("timezone") || "",
-        }));
+        }, auth));
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error.message || "动销对比参数无效。" });
       }
@@ -5670,21 +5871,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/movement-history/capture" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "生成动销快照需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "movement_sync")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有生成动销快照权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
       const timezone = safeTimezone(payload.timezone || url.searchParams.get("timezone") || "", movementHistoryTimezone);
       const date = String(payload.date || url.searchParams.get("date") || dateKeyInTimezone(new Date(), timezone)).trim();
       const snapshot = upsertMovementSnapshot(date, "manual", timezone);
-      sendJson(res, 200, { ok: true, snapshot, ...movementHistoryPayload({ date: snapshot.date, timezone }) });
+      sendJson(res, 200, { ok: true, ...movementHistoryPayload({ date: snapshot.date, timezone }, auth) });
       return;
     }
 
     if (url.pathname === "/api/movement-history/export" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "导出动销历史需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "movement_export") || !hasPermission(auth, "movement_analysis")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有动销导出权限。" });
         return;
       }
       const params = {
@@ -5695,7 +5898,11 @@ const server = http.createServer(async (req, res) => {
         sku: url.searchParams.get("sku") || "",
         timezone: url.searchParams.get("timezone") || "",
       };
-      const snapshots = movementHistorySnapshotsInRange(params);
+      const user = auth.user || directAuth.user;
+      const snapshots = movementHistorySnapshotsInRange(params).map((snapshot) => ({
+        ...snapshot,
+        rows: projectMovementPayload({ items: filterMovementHistoryRows(snapshot.rows || [], params, user) }, user).items,
+      }));
       if (!snapshots.length) {
         sendJson(res, 404, { ok: false, message: "没有找到可导出的动销历史。" });
         return;
@@ -5713,7 +5920,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/warehouses/export" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "warehouses")) {
         sendJson(res, 401, { ok: false, message: "导出仓库配置需要内部登录。" });
         return;
       }
@@ -5728,7 +5935,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/warehouses/import" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "warehouses")) {
         sendJson(res, 401, { ok: false, message: "导入仓库配置需要内部登录。" });
         return;
       }
@@ -5769,8 +5976,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/order-analysis" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看订单分析需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "order_analysis")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有订单分析权限。" });
         return;
       }
       sendJson(res, 200, buildOrderAnalysisPayload({
@@ -5784,13 +5992,13 @@ const server = http.createServer(async (req, res) => {
         providerId: url.searchParams.get("providerId") || "",
         keyword: url.searchParams.get("keyword") || "",
         onlyRussia: url.searchParams.get("scope") !== "all",
-      }));
+      }, auth));
       return;
     }
 
     if (url.pathname === "/api/order-analysis/shop-alias" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "order_analysis")) {
         sendJson(res, 401, { ok: false, message: "设置店铺别称需要管理员登录。" });
         return;
       }
@@ -5817,17 +6025,29 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync-jobs" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
-        sendJson(res, 401, { ok: false, message: "Creating order sync jobs requires admin login." });
+      if (!hasPermission(auth, "movement_sync")) {
+        sendJson(res, 401, { ok: false, message: "当前账号没有动销同步权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
+      const scoped = scopeMovementSources({ products: cachedProducts, warehouse: cachedWarehouseSync, orders: cachedOrdersSync, connections: warehouseConnections }, auth.user || directAuth.user);
+      const allowedWarehouseIds = new Set(scoped.connections.map((connection) => connection.id));
       const runningJob = latestOrderSyncJob();
       if (runningJob && ["queued", "running"].includes(runningJob.status)) {
-        sendJson(res, 202, { ok: true, jobId: runningJob.id, job: publicOrderSyncJob(runningJob), reused: true });
+        sendJson(res, 202, { ok: true, jobId: runningJob.id, job: publicOrderSyncJob(scopeOrderSyncJob(runningJob, scoped)), reused: true });
         return;
       }
-      const warehouseIds = Array.isArray(payload.warehouseIds) ? payload.warehouseIds : [];
+      const requestedWarehouseIds = Array.isArray(payload.warehouseIds) ? payload.warehouseIds.map((id) => String(id || "").trim()).filter(Boolean) : [];
+      const forbiddenWarehouseIds = requestedWarehouseIds.filter((id) => !allowedWarehouseIds.has(id));
+      if (forbiddenWarehouseIds.length) {
+        sendJson(res, 403, { ok: false, message: `当前账号无权同步仓库：${forbiddenWarehouseIds.join(", ")}` });
+        return;
+      }
+      const warehouseIds = requestedWarehouseIds.length ? requestedWarehouseIds : Array.from(allowedWarehouseIds);
+      if (!warehouseIds.length) {
+        sendJson(res, 403, { ok: false, message: "当前账号的数据范围内没有可同步仓库。" });
+        return;
+      }
       const unknownWarehouseIds = unknownOrderSyncWarehouseIds(warehouseIds);
       if (unknownWarehouseIds.length) {
         sendJson(res, 400, { ok: false, message: `未找到仓库：${unknownWarehouseIds.join(", ")}` });
@@ -5851,17 +6071,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/orders/sync-jobs/latest" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "Reading order sync jobs requires admin login." });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "movement_sync")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有动销同步任务权限。" });
         return;
       }
-      sendJson(res, 200, { ok: true, job: publicOrderSyncJob(latestOrderSyncJob()) });
+      const scoped = scopeMovementSources({ products: cachedProducts, warehouse: cachedWarehouseSync, orders: cachedOrdersSync, connections: warehouseConnections }, auth.user || directAuth.user);
+      sendJson(res, 200, { ok: true, job: publicOrderSyncJob(scopeOrderSyncJob(latestOrderSyncJob(), scoped)) });
       return;
     }
 
     if (url.pathname === "/api/stockup" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看备货中心需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
       let outsourcingWarning = "";
@@ -5876,8 +6098,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/workflow" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看备货业务链路需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
         return;
       }
       const workflow = await loadStockupWorkflow();
@@ -5887,7 +6109,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/demands" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "创建备货需求需要管理员登录。" });
         return;
       }
@@ -5900,7 +6122,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/executions" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "创建备货执行单需要管理员登录。" });
         return;
       }
@@ -5914,7 +6136,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/executions/cancel" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "取消备货执行单需要管理员登录。" });
         return;
       }
@@ -5928,7 +6150,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/execution-lines" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "更新备货执行进度需要管理员登录。" });
         return;
       }
@@ -5942,7 +6164,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/execution-lines/rollback" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "退回备货执行进度需要管理员登录。" });
         return;
       }
@@ -5956,7 +6178,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/shipments" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "登记发货需要管理员登录。" });
         return;
       }
@@ -5992,7 +6214,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/wms-pushes/confirm" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "确认推送 WMS 备货单需要管理员登录。" });
         return;
       }
@@ -6004,7 +6226,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/shipments/void" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "作废发货单需要管理员登录。" });
         return;
       }
@@ -6031,7 +6253,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "完成新品编码需要管理员登录。" });
         return;
       }
@@ -6044,7 +6266,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/workflow/cost-preview" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "stockup")) {
         sendJson(res, 401, { ok: false, message: "预览到仓成本需要管理员登录。" });
         return;
       }
@@ -6069,7 +6291,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/fees" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "登记发货费用需要管理员登录。" });
         return;
       }
@@ -6090,7 +6312,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/cost-batches" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "生成到仓成本批次需要管理员登录。" });
         return;
       }
@@ -6111,7 +6333,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/cost-batches/lock" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "锁定正式到仓成本需要管理员登录。" });
         return;
       }
@@ -6134,7 +6356,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/recommendations/accept" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "stockup")) {
         sendJson(res, 401, { ok: false, message: "采纳备货建议需要管理员登录。" });
         return;
       }
@@ -6154,7 +6376,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/recommendations/abandon" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "stockup")) {
         sendJson(res, 401, { ok: false, message: "放弃备货建议需要管理员登录。" });
         return;
       }
@@ -6172,7 +6394,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/recommendations/restore" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "stockup")) {
         sendJson(res, 401, { ok: false, message: "恢复备货建议需要管理员登录。" });
         return;
       }
@@ -6194,7 +6416,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/plans" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "创建备货计划需要管理员登录。" });
         return;
       }
@@ -6215,7 +6437,7 @@ const server = http.createServer(async (req, res) => {
     const stockupPlanStatusMatch = url.pathname.match(/^\/api\/stockup\/plans\/([^/]+)\/status$/);
     if (stockupPlanStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth)) {
+      if (!canManageModule(auth, "stockup")) {
         sendJson(res, 401, { ok: false, message: "更新备货计划需要管理员登录。" });
         return;
       }
@@ -6231,16 +6453,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/movement" && req.method === "GET") {
-      if (!canManage(getAuth(req))) {
-        sendJson(res, 401, { ok: false, message: "查看动销分析需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "movement")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有动销监控权限。" });
         return;
       }
-      sendJson(res, 200, movementResponsePayload());
+      sendJson(res, 200, movementResponsePayload(auth));
       return;
     }
 
     if (url.pathname.startsWith("/api/warehouses/") && req.method === "DELETE") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "warehouses")) {
         sendJson(res, 401, { ok: false, message: "删除仓库需要内部登录。" });
         return;
       }
@@ -6269,7 +6492,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith("/api/warehouses/") && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "warehouses")) {
         sendJson(res, 401, { ok: false, message: "更新仓库需要内部登录。" });
         return;
       }
@@ -6294,7 +6517,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/warehouses" && req.method === "POST") {
-      if (!canManage(getAuth(req))) {
+      if (!canManageModule(getAuth(req), "warehouses")) {
         sendJson(res, 401, { ok: false, message: "新增仓库需要内部登录。" });
         return;
       }

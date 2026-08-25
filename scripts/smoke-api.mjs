@@ -96,6 +96,12 @@ async function expectHtmlRoot() {
   }
 }
 
+function containsObjectKey(value, targetKey) {
+  if (!value || typeof value !== "object") return false;
+  if (Object.prototype.hasOwnProperty.call(value, targetKey)) return true;
+  return Object.values(value).some((child) => containsObjectKey(child, targetKey));
+}
+
 async function main() {
   await waitForHealth();
   console.log("[ok] API health");
@@ -253,6 +259,76 @@ async function main() {
 
   await expectJson("/api/distributor-applications", { headers: authHeaders });
   console.log("[ok] /api/distributor-applications");
+
+  const distributorPassword = "smoke-partner-password";
+  const createdDistributor = await expectJson("/api/users", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "smoke-partner", password: distributorPassword, displayName: "Smoke Partner", role: "distributor" }),
+  });
+  const distributorId = createdDistributor.user?.id;
+  if (!distributorId) throw new Error("/api/users did not create the smoke distributor.");
+  await expectJson(`/api/users/${encodeURIComponent(distributorId)}/permissions`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      permissionOverrides: { allow: ["movement", "direct_price"], deny: [] },
+      dataScopes: { countries: [], warehouseIds: [], skus: [] },
+    }),
+  });
+  const distributorLogin = await expectJson("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "smoke-partner", password: distributorPassword }),
+  });
+  if (!distributorLogin.user?.permissions?.includes("movement") || distributorLogin.user?.permissions?.includes("direct_price")) {
+    throw new Error("Distributor effective permissions did not grant movement while enforcing the direct-price hard deny.");
+  }
+  const distributorHeaders = { Authorization: `Bearer ${distributorLogin.token}` };
+  const initialDistributorProducts = await expectJson("/api/products?mode=detail", { headers: distributorHeaders });
+  const scopedProduct = initialDistributorProducts.catalog?.[0];
+  if (!scopedProduct?.sku || !scopedProduct?.country) throw new Error("Distributor sample catalog did not provide a SKU and country for data-scope testing.");
+  await expectJson(`/api/users/${encodeURIComponent(distributorId)}/permissions`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ dataScopes: { countries: [scopedProduct.country], warehouseIds: [], skus: [scopedProduct.sku] } }),
+  });
+  await expectJson(`/api/users/${encodeURIComponent(distributorId)}/permissions`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ permissionOverrides: { allow: ["movement", "direct_price"], deny: ["inventory"] } }),
+  });
+  const refreshedDistributor = await expectJson("/api/me", { headers: distributorHeaders });
+  if (!refreshedDistributor.user?.permissions?.includes("movement") || refreshedDistributor.user?.permissions?.includes("direct_price") || refreshedDistributor.user?.permissions?.includes("inventory")) {
+    throw new Error("Updated distributor permissions were not applied to the active session immediately.");
+  }
+  if (refreshedDistributor.user?.dataScopes?.skus?.[0] !== scopedProduct.sku.toUpperCase()) {
+    throw new Error("Partial permission updates did not preserve distributor data scopes.");
+  }
+  const distributorProducts = await expectJson("/api/products?mode=detail", { headers: distributorHeaders });
+  for (const forbiddenKey of ["directPrice", "directCostPrice", "directCurrency", "directCostCurrency", "raw"]) {
+    if (containsObjectKey(distributorProducts, forbiddenKey)) {
+      throw new Error(`/api/products leaked forbidden distributor field: ${forbiddenKey}`);
+    }
+  }
+  for (const forbiddenInventoryKey of ["stockQty", "lockedQty", "inTransitQty", "warehouseTotalQty", "warehouseOnlyInventory"]) {
+    if (containsObjectKey(distributorProducts, forbiddenInventoryKey)) {
+      throw new Error(`/api/products leaked inventory field after inventory permission was denied: ${forbiddenInventoryKey}`);
+    }
+  }
+  if ((distributorProducts.catalog || []).some((item) => item.country !== scopedProduct.country || ![item.sku, item.skuNo, item.countrySku].map((value) => String(value || "").toUpperCase()).includes(scopedProduct.sku.toUpperCase()))) {
+    throw new Error("Distributor product data scope returned a catalog row outside its country/SKU limits.");
+  }
+  const distributorMovement = await expectJson("/api/movement", { headers: distributorHeaders });
+  if ((distributorMovement.items || []).some((item) => "availableQty" in item || "warehouseBreakdown" in item)) {
+    throw new Error("Sales-only movement permission leaked inventory fields.");
+  }
+  const unauthorizedUsers = await fetch(`${baseUrl}/api/users`, { headers: distributorHeaders });
+  if (unauthorizedUsers.status !== 401) {
+    throw new Error(`Non-admin distributor unexpectedly accessed user administration: ${unauthorizedUsers.status}`);
+  }
+  await expectJson(`/api/users/${encodeURIComponent(distributorId)}`, { method: "DELETE", headers: authHeaders });
+  console.log("[ok] configurable distributor permissions and direct-price non-penetration");
 
   const operatingSummary = await expectJson("/api/wecom-notifications/operating-summary", {
     method: "POST",

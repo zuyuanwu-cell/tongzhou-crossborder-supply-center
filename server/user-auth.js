@@ -1,5 +1,6 @@
 import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { JIANYUN_FORMS } from "./field-mapping.js";
+import { effectivePermissions, normalizeDataScopes, normalizePermissionOverrides, permissionConfiguration, sanitizePermissionUpdate } from "./access-control.js";
 
 function valueOf(record, fieldId) {
   if (!fieldId) return undefined;
@@ -93,7 +94,7 @@ export function authenticateLocalUser(users, username, password) {
   return publicUser(user);
 }
 
-export function createLocalUser({ username, password, displayName, role }) {
+export function createLocalUser({ username, password, displayName, role, permissionOverrides, dataScopes }) {
   const safeUsername = text(username);
   const safeDisplayName = text(displayName, safeUsername);
   const safeRole = normalizeRole(role);
@@ -106,6 +107,8 @@ export function createLocalUser({ username, password, displayName, role }) {
     displayName: safeDisplayName,
     role: safeRole,
     roleLabel: roleLabel(safeRole),
+    permissionOverrides: sanitizePermissionUpdate(safeRole, permissionOverrides),
+    dataScopes: normalizeDataScopes(dataScopes),
     passwordHash: hashPassword(password),
     status: "active",
     createdAt: new Date().toISOString(),
@@ -116,14 +119,28 @@ export function createLocalUser({ username, password, displayName, role }) {
   };
 }
 
-export function publicUser(user) {
-  if (!user) return { role: "guest", roleLabel: "游客", permissions: ["product_view"] };
+export function normalizeStoredUser(user) {
+  if (!user || typeof user !== "object") return null;
   const role = normalizeRole(user.role);
-  const permissions = role === "admin"
-    ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai", "operations", "users", "order_analysis", "movement", "stockup", "warehouses", "notifications", "action_log"]
-    : role === "direct"
-      ? ["product_view", "distribution_price", "sales_price", "direct_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai"]
-      : ["product_view", "distribution_price", "sales_price", "inventory", "assets", "qualifications", "quick_nav", "tongzhou_ai"];
+  return {
+    ...user,
+    role,
+    roleLabel: roleLabel(role),
+    status: user.status === "disabled" ? "disabled" : "active",
+    permissionOverrides: sanitizePermissionUpdate(role, normalizePermissionOverrides(user.permissionOverrides)),
+    dataScopes: normalizeDataScopes(user.dataScopes),
+  };
+}
+
+export function publicUser(user) {
+  if (!user) {
+    const guest = { role: "guest", roleLabel: "游客", permissionOverrides: { allow: [], deny: [] }, dataScopes: normalizeDataScopes() };
+    return { ...guest, permissions: effectivePermissions(guest) };
+  }
+  const role = normalizeRole(user.role);
+  const permissionOverrides = sanitizePermissionUpdate(role, user.permissionOverrides);
+  const dataScopes = normalizeDataScopes(user.dataScopes);
+  const permissions = effectivePermissions({ ...user, role, permissionOverrides });
   return {
     id: user.id,
     username: user.username,
@@ -133,9 +150,15 @@ export function publicUser(user) {
     status: user.status === "disabled" ? "disabled" : "active",
     statusLabel: userStatusLabel(user.status),
     permissions,
+    permissionOverrides,
+    dataScopes,
     jdySyncedAt: user.jdySyncedAt || "",
     jdySyncError: user.jdySyncError || "",
   };
+}
+
+export function userPermissionConfiguration() {
+  return permissionConfiguration();
 }
 
 export function createSessionToken(user, secret, ttlMs = 7 * 24 * 60 * 60 * 1000) {

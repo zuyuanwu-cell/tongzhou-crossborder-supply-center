@@ -9,8 +9,8 @@ export type CatalogProduct = {
   category: string;
   unit: string;
   brand: string;
-  distributionPrice: number;
-  distributionCurrency: string;
+  distributionPrice?: number;
+  distributionCurrency?: string;
   directPrice?: number;
   directCurrency?: string;
   directCostPrice?: number;
@@ -20,7 +20,7 @@ export type CatalogProduct = {
   distributionCostCurrency?: string;
   salesPrice?: number;
   salesCurrency?: string;
-  stockQty: number;
+  stockQty?: number;
   lockedQty?: number;
   inTransitQty?: number;
   warehouseTotalQty?: number;
@@ -96,7 +96,7 @@ export type ProductPayload = {
   counts: {
     productBase: number;
     catalog: number;
-    directCatalog: number;
+    directCatalog?: number;
     distributionCatalog: number;
     visibleCatalog: number;
     warehouseOnlyInventory?: number;
@@ -154,6 +154,23 @@ export type DashboardSummaryPayload = {
 export type UserRole = "guest" | "distributor" | "direct" | "admin";
 export type UserStatus = "active" | "disabled";
 
+export type PermissionOverrides = {
+  allow: string[];
+  deny: string[];
+};
+
+export type UserDataScopes = {
+  countries: string[];
+  warehouseIds: string[];
+  skus: string[];
+};
+
+export type PermissionDefinition = {
+  key: string;
+  label: string;
+  group: string;
+};
+
 export type AuthUser = {
   id?: string;
   username?: string;
@@ -161,6 +178,10 @@ export type AuthUser = {
   role: UserRole;
   roleLabel: string;
   permissions: string[];
+  permissionOverrides?: PermissionOverrides;
+  dataScopes?: UserDataScopes;
+  status?: UserStatus;
+  statusLabel?: string;
 };
 
 export type AgentApiKey = {
@@ -195,17 +216,21 @@ export type UserManagementPayload = {
     active?: number;
     disabled?: number;
   };
-  users: Array<{
+  users: Array<AuthUser & {
     id: string;
     username: string;
     displayName: string;
-    role: UserRole;
-    roleLabel: string;
-    status?: UserStatus;
-    statusLabel?: string;
     jdySyncedAt?: string;
     jdySyncError?: string;
   }>;
+  permissionCatalog: PermissionDefinition[];
+  roleDefaults: Record<UserRole, string[]>;
+  hardRules: {
+    directDenied: string[];
+    distributorDenied: string[];
+    guestDenied: string[];
+    adminRequired: string[];
+  };
 };
 
 export type SetupStatusPayload = {
@@ -2014,9 +2039,16 @@ export function updateDistributorApplicationStatus(id: string, status: Distribut
   });
 }
 
-export function createUser(input: { username: string; password: string; displayName: string; role: UserRole }) {
+export function createUser(input: { username: string; password: string; displayName: string; role: UserRole; permissionOverrides?: PermissionOverrides; dataScopes?: UserDataScopes }) {
   return requestJson<UserManagementPayload & { user: AuthUser }>("/api/users", {
     method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateUserPermissions(id: string, input: { permissionOverrides: PermissionOverrides; dataScopes: UserDataScopes }) {
+  return requestJson<UserManagementPayload & { user: AuthUser }>(`/api/users/${encodeURIComponent(id)}/permissions`, {
+    method: "PATCH",
     body: JSON.stringify(input),
   });
 }
