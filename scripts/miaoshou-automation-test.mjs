@@ -49,6 +49,13 @@ async function fetchMock(url, init) {
     });
   }
   if (path === MIAOSHOU_PATHS.packages) {
+    if (body.shopIds?.includes("SHOP-VN")) {
+      return jsonResponse({
+        result: "fail",
+        code: "invalid_shop",
+        message: "存在已解绑或不存在店铺，请调整店铺参数",
+      });
+    }
     return jsonResponse({
       result: "success",
       code: "200",
@@ -154,13 +161,22 @@ try {
   assert.equal(synced.siteOptions.tiktok.find((option) => option.value === "VN")?.label, "越南");
   assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.shops && call.body.pageSize !== 1).every((call) => call.body.pageSize === 50));
   automation.updateShop("SHOP-1", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
+  automation.updateShop("SHOP-VN", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
 
   const firstRun = await automation.runAutomation({ force: true });
   assert.equal(firstRun.attempted, 1);
   assert.equal(firstRun.succeeded, 1);
   assert.equal(firstRun.existingTracking, 1);
+  assert.equal(firstRun.invalidShops.length, 1);
+  assert.equal(firstRun.invalidShops[0].shopId, "SHOP-VN");
   const firstPayload = automation.publicPayload();
   assert.equal(firstPayload.counts.succeeded, 2);
+  assert.equal(firstPayload.counts.enabledShops, 1);
+  assert.equal(firstPayload.counts.invalidShops, 1);
+  const invalidShop = firstPayload.shops.find((shop) => shop.shopId === "SHOP-VN");
+  assert.equal(invalidShop?.connectionStatus, "invalid");
+  assert.equal(invalidShop?.autoApplyTrackingNo, false);
+  assert.match(invalidShop?.connectionError || "", /已解绑|不存在店铺/);
   const appliedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-001");
   const observedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-EXISTING");
   assert.equal(appliedTask?.waybillUrl, "https://labels.example/PKG-001.pdf");
@@ -182,6 +198,12 @@ try {
   assert.equal(secondRun.attempted, 0, "同一包裹不能重复申请");
   assert.equal(secondRun.existingTracking, 1);
   assert.equal(calls.filter((call) => call.path === MIAOSHOU_PATHS.applyTrackingNo).length, 1);
+
+  const recovered = await automation.syncShops();
+  const recoveredShop = recovered.shops.find((shop) => shop.shopId === "SHOP-VN");
+  assert.equal(recoveredShop?.connectionStatus, "active");
+  assert.equal(recoveredShop?.autoApplyTrackingNo, false, "重新绑定并同步后不能自动恢复开关");
+  assert.equal(recovered.counts.invalidShops, 0);
 
   const signedRequest = calls.find((call) => call.path === MIAOSHOU_PATHS.shops);
   assert.ok(signedRequest.headers["x-app-key"]);

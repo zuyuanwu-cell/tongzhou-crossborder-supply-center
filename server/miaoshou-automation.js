@@ -68,6 +68,7 @@ const MIAOSHOU_PAGE_SIZE = 50;
 const DEFAULT_REQUEST_INTERVAL_MS = 1_100;
 const DEFAULT_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1_500;
+const INVALID_SHOP_ERROR_PATTERN = /已解绑|不存在店铺|店铺[^，。]*不存在|店铺参数|shop[^，。]*(?:unbind|not\s*exist|invalid)/i;
 
 function sleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -143,6 +144,7 @@ function normalizeConfig(input = {}) {
 
 function normalizeShop(row = {}, existing = {}) {
   const now = new Date().toISOString();
+  const connectionStatus = text(existing.connectionStatus) === "invalid" ? "invalid" : "active";
   return {
     shopId: text(row.shopId || existing.shopId),
     platform: text(row.platform || existing.platform),
@@ -158,13 +160,20 @@ function normalizeShop(row = {}, existing = {}) {
     autoFetchWaybill: existing.autoFetchWaybill !== false,
     enabledAt: text(existing.enabledAt),
     enabledBy: text(existing.enabledBy),
-    lastSeenAt: now,
+    connectionStatus,
+    connectionError: text(existing.connectionError),
+    invalidAt: text(existing.invalidAt),
+    lastSeenAt: text(row.lastSeenAt || existing.lastSeenAt) || now,
     updatedAt: text(existing.updatedAt) || now,
   };
 }
 
 function shopDisplayName(shop) {
   return shop.shopNick || shop.platformShopName || shop.shopId;
+}
+
+function isInvalidShopError(error) {
+  return INVALID_SHOP_ERROR_PATTERN.test(`${text(error?.code)} ${text(error?.message)}`);
 }
 
 function maskKey(value) {
@@ -371,9 +380,24 @@ export async function initMiaoshouAutomation({
     saveJson(shopsPath, shopState);
   }
 
+  function markShopInvalid(shopId, reason) {
+    const shop = shopState.shops.find((candidate) => candidate.shopId === text(shopId));
+    if (!shop) return null;
+    const now = new Date().toISOString();
+    shop.connectionStatus = "invalid";
+    shop.connectionError = text(reason) || "妙手返回店铺已解绑或不存在，已忽略自动申请。";
+    shop.invalidAt = shop.invalidAt || now;
+    shop.autoApplyTrackingNo = false;
+    shop.enabledAt = "";
+    shop.enabledBy = "";
+    shop.updatedAt = now;
+    saveShops();
+    return shop;
+  }
+
   function publicPayload({ taskLimit = 100, eventLimit = 80 } = {}) {
     const current = effectiveConfig();
-    const shops = [...shopState.shops].sort((left, right) => Number(right.autoApplyTrackingNo) - Number(left.autoApplyTrackingNo) || shopDisplayName(left).localeCompare(shopDisplayName(right), "zh-CN"));
+    const shops = [...shopState.shops].sort((left, right) => Number(right.connectionStatus === "invalid") - Number(left.connectionStatus === "invalid") || Number(right.autoApplyTrackingNo) - Number(left.autoApplyTrackingNo) || shopDisplayName(left).localeCompare(shopDisplayName(right), "zh-CN"));
     return {
       ok: true,
       provider: "miaoshou",
@@ -401,6 +425,7 @@ export async function initMiaoshouAutomation({
       counts: {
         shops: shops.length,
         enabledShops: shops.filter((shop) => shop.autoApplyTrackingNo).length,
+        invalidShops: shops.filter((shop) => shop.connectionStatus === "invalid").length,
         ...taskStore.counts(),
       },
       shops,
@@ -478,16 +503,33 @@ export async function initMiaoshouAutomation({
             { ...row, platform: row.platform || scope.platform, site: row.site || scope.site },
             existing.get(id) || { autoFetchWaybill: config.autoFetchWaybillDefault },
           );
+          normalized.connectionStatus = "active";
+          normalized.connectionError = "";
+          normalized.invalidAt = "";
+          normalized.lastSeenAt = new Date().toISOString();
           existing.set(id, normalized);
           received.push(normalized);
         });
         if (rows.length < MIAOSHOU_PAGE_SIZE) break;
       }
     }
-    shopState = {
-      syncedAt: new Date().toISOString(),
-      shops: Array.from(existing.values()),
-    };
+    const syncedAt = new Date().toISOString();
+    const receivedIds = new Set(received.map((shop) => shop.shopId));
+    const scopeKeys = new Set(config.scopes.map((scope) => `${scope.platform}:${scope.site}`));
+    const shops = Array.from(existing.values()).map((shop) => {
+      if (receivedIds.has(shop.shopId) || !scopeKeys.has(`${shop.platform}:${shop.site}`)) return shop;
+      return {
+        ...shop,
+        connectionStatus: "invalid",
+        connectionError: "妙手本次同步未返回该店铺，可能已解绑或不存在；已忽略自动申请。",
+        invalidAt: shop.invalidAt || syncedAt,
+        autoApplyTrackingNo: false,
+        enabledAt: "",
+        enabledBy: "",
+        updatedAt: syncedAt,
+      };
+    });
+    shopState = { syncedAt, shops };
     saveShops();
     return { ...publicPayload(), syncedCount: new Set(received.map((shop) => shop.shopId)).size };
   }
@@ -496,6 +538,9 @@ export async function initMiaoshouAutomation({
     const shop = shopState.shops.find((candidate) => candidate.shopId === text(shopId));
     if (!shop) throw new Error("未找到该妙手店铺，请先同步店铺");
     const enabling = input.autoApplyTrackingNo === true;
+    if (enabling && shop.connectionStatus === "invalid") {
+      throw new Error("该店铺已解绑或不存在，请在妙手重新绑定后同步店铺再开启。");
+    }
     if (enabling && !hasCredentials(effectiveConfig())) throw new Error("请先配置妙手授权后再启用自动申请");
     shop.autoApplyTrackingNo = input.autoApplyTrackingNo === undefined ? shop.autoApplyTrackingNo : Boolean(input.autoApplyTrackingNo);
     shop.autoFetchWaybill = input.autoFetchWaybill === undefined ? shop.autoFetchWaybill : Boolean(input.autoFetchWaybill);
@@ -509,26 +554,52 @@ export async function initMiaoshouAutomation({
   async function fetchEligiblePackages(enabledShops) {
     const api = client();
     const packageMap = new Map();
-    for (const shopBatch of chunk(enabledShops.map((shop) => shop.shopId), 100)) {
-      for (let page = 1; page <= 20 && packageMap.size < config.maxPackagesPerRun; page += 1) {
-        const response = await callApi(
-          () => api.searchPackages({
-            page,
-            pageSize: MIAOSHOU_PAGE_SIZE,
-            shopIds: shopBatch,
-            appPackageStatus: "wait_seller_send",
-          }),
-          { retryRateLimit: true },
-        );
-        const rows = uniquePackages(response);
-        rows.forEach((row) => {
-          const id = text(row.opOrderPackageId ?? row.op_order_package_id);
-          if (id && !packageMap.has(id)) packageMap.set(id, row);
-        });
-        if (rows.length < MIAOSHOU_PAGE_SIZE) break;
+    const invalidShops = [];
+    async function fetchBatch(shopBatch) {
+      try {
+        for (let page = 1; page <= 20; page += 1) {
+          if (page > 1 && packageMap.size >= config.maxPackagesPerRun) break;
+          const response = await callApi(
+            () => api.searchPackages({
+              page,
+              pageSize: MIAOSHOU_PAGE_SIZE,
+              shopIds: shopBatch,
+              appPackageStatus: "wait_seller_send",
+            }),
+            { retryRateLimit: true },
+          );
+          const rows = uniquePackages(response);
+          rows.forEach((row) => {
+            const id = text(row.opOrderPackageId ?? row.op_order_package_id);
+            if (id && !packageMap.has(id)) packageMap.set(id, row);
+          });
+          if (rows.length < MIAOSHOU_PAGE_SIZE || packageMap.size >= config.maxPackagesPerRun) break;
+        }
+      } catch (error) {
+        if (!isInvalidShopError(error)) throw error;
+        if (shopBatch.length > 1) {
+          const middle = Math.ceil(shopBatch.length / 2);
+          await fetchBatch(shopBatch.slice(0, middle));
+          await fetchBatch(shopBatch.slice(middle));
+          return;
+        }
+        const invalidShop = markShopInvalid(shopBatch[0], error?.message);
+        if (invalidShop) {
+          invalidShops.push({
+            shopId: invalidShop.shopId,
+            shopName: shopDisplayName(invalidShop),
+            reason: invalidShop.connectionError,
+          });
+        }
       }
     }
-    return Array.from(packageMap.values()).slice(0, config.maxPackagesPerRun);
+    for (const shopBatch of chunk(enabledShops.map((shop) => shop.shopId), 100)) {
+      await fetchBatch(shopBatch);
+    }
+    return {
+      packages: Array.from(packageMap.values()).slice(0, config.maxPackagesPerRun),
+      invalidShops,
+    };
   }
 
   async function fetchWaybillForTask(task, api = client()) {
@@ -593,7 +664,7 @@ export async function initMiaoshouAutomation({
     let failed = 0;
     let existingTracking = 0;
     try {
-      const packages = await fetchEligiblePackages(enabledShops);
+      const { packages, invalidShops } = await fetchEligiblePackages(enabledShops);
       const shopMap = new Map(enabledShops.map((shop) => [shop.shopId, shop]));
       const api = client();
       for (const packageRow of packages) {
@@ -632,10 +703,10 @@ export async function initMiaoshouAutomation({
         else failed += 1;
       }
       config.lastRunAt = new Date().toISOString();
-      config.lastRunStatus = failed ? "partial" : "success";
-      config.lastRunMessage = `读取 ${packages.length} 个待发货包裹，已有运单 ${existingTracking} 个，申请 ${attempted} 个，成功 ${succeeded} 个，需处理 ${failed} 个`;
+      config.lastRunStatus = failed || invalidShops.length ? "partial" : "success";
+      config.lastRunMessage = `读取 ${packages.length} 个待发货包裹，已有运单 ${existingTracking} 个，申请 ${attempted} 个，成功 ${succeeded} 个，需处理 ${failed} 个${invalidShops.length ? `，已识别并跳过失效店铺 ${invalidShops.length} 家` : ""}`;
       saveConfig();
-      return { skipped: false, startedAt, discovered, existingTracking, attempted, succeeded, failed, payload: publicPayload() };
+      return { skipped: false, startedAt, discovered, existingTracking, attempted, succeeded, failed, invalidShops, payload: publicPayload() };
     } catch (error) {
       config.lastRunAt = new Date().toISOString();
       config.lastRunStatus = "failed";

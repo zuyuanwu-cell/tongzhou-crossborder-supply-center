@@ -645,6 +645,9 @@ export type MiaoshouShop = {
   autoFetchWaybill: boolean;
   enabledAt: string;
   enabledBy: string;
+  connectionStatus: "active" | "invalid" | string;
+  connectionError: string;
+  invalidAt: string;
   lastSeenAt: string;
   updatedAt: string;
 };
@@ -699,6 +702,7 @@ export type MiaoshouPayload = {
   counts: {
     shops: number;
     enabledShops: number;
+    invalidShops: number;
     total: number;
     pending: number;
     running: number;
@@ -727,6 +731,11 @@ export type MiaoshouPayload = {
     attempted?: number;
     succeeded?: number;
     failed?: number;
+    invalidShops?: Array<{
+      shopId: string;
+      shopName: string;
+      reason: string;
+    }>;
   };
 };
 
