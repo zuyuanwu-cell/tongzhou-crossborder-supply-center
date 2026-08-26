@@ -17,6 +17,7 @@ function jsonResponse(payload, status = 200) {
 
 const calls = [];
 let injectedRateLimitFailures = 0;
+let denyAllPackageRequests = false;
 async function fetchMock(url, init) {
   const path = new URL(url).pathname;
   const body = JSON.parse(init.body || "{}");
@@ -49,11 +50,11 @@ async function fetchMock(url, init) {
     });
   }
   if (path === MIAOSHOU_PATHS.packages) {
-    if (body.shopIds?.includes("SHOP-VN")) {
+    if (denyAllPackageRequests || body.shopIds?.includes("SHOP-VN")) {
       return jsonResponse({
         result: "fail",
-        code: "invalid_shop",
-        message: "存在已解绑或不存在店铺，请调整店铺参数",
+        code: "permission_denied",
+        message: "越权操作",
       });
     }
     return jsonResponse({
@@ -176,7 +177,7 @@ try {
   const invalidShop = firstPayload.shops.find((shop) => shop.shopId === "SHOP-VN");
   assert.equal(invalidShop?.connectionStatus, "invalid");
   assert.equal(invalidShop?.autoApplyTrackingNo, false);
-  assert.match(invalidShop?.connectionError || "", /已解绑|不存在店铺/);
+  assert.match(invalidShop?.connectionError || "", /越权操作/);
   const appliedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-001");
   const observedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-EXISTING");
   assert.equal(appliedTask?.waybillUrl, "https://labels.example/PKG-001.pdf");
@@ -204,6 +205,17 @@ try {
   assert.equal(recoveredShop?.connectionStatus, "active");
   assert.equal(recoveredShop?.autoApplyTrackingNo, false, "重新绑定并同步后不能自动恢复开关");
   assert.equal(recovered.counts.invalidShops, 0);
+
+  automation.updateShop("SHOP-VN", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
+  denyAllPackageRequests = true;
+  await assert.rejects(
+    automation.runAutomation({ force: true }),
+    /全部已启用店铺返回“越权操作”/,
+  );
+  const globallyDeniedPayload = automation.publicPayload();
+  assert.equal(globallyDeniedPayload.counts.invalidShops, 0, "全局越权不能误判为全部店铺解绑");
+  assert.equal(globallyDeniedPayload.counts.enabledShops, 2, "全局越权不能关闭任何店铺");
+  assert.ok(globallyDeniedPayload.shops.every((shop) => shop.connectionStatus === "active"));
 
   const signedRequest = calls.find((call) => call.path === MIAOSHOU_PATHS.shops);
   assert.ok(signedRequest.headers["x-app-key"]);
