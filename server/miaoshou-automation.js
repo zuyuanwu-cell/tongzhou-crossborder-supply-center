@@ -68,7 +68,8 @@ const MIAOSHOU_PAGE_SIZE = 50;
 const DEFAULT_REQUEST_INTERVAL_MS = 1_100;
 const DEFAULT_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1_500;
-const INVALID_SHOP_ERROR_PATTERN = /已解绑|不存在店铺|店铺[^，。]*不存在|店铺参数|shop[^，。]*(?:unbind|not\s*exist|invalid)/i;
+const EXPLICIT_INVALID_SHOP_ERROR_PATTERN = /已解绑|不存在店铺|店铺[^，。]*不存在|店铺参数|shop[^，。]*(?:unbind|not\s*exist|invalid)/i;
+const SHOP_SCOPE_ERROR_PATTERN = /越权操作|无权操作|无权限[^，。]*店铺/i;
 
 function sleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -173,7 +174,13 @@ function shopDisplayName(shop) {
 }
 
 function isInvalidShopError(error) {
-  return INVALID_SHOP_ERROR_PATTERN.test(`${text(error?.code)} ${text(error?.message)}`);
+  const details = `${text(error?.code)} ${text(error?.message)}`;
+  return EXPLICIT_INVALID_SHOP_ERROR_PATTERN.test(details) || SHOP_SCOPE_ERROR_PATTERN.test(details);
+}
+
+function isGenericShopScopeError(error) {
+  const details = `${text(error?.code)} ${text(error?.message)}`;
+  return SHOP_SCOPE_ERROR_PATTERN.test(details) && !EXPLICIT_INVALID_SHOP_ERROR_PATTERN.test(details);
 }
 
 function maskKey(value) {
@@ -554,7 +561,7 @@ export async function initMiaoshouAutomation({
   async function fetchEligiblePackages(enabledShops) {
     const api = client();
     const packageMap = new Map();
-    const invalidShops = [];
+    const invalidCandidates = [];
     async function fetchBatch(shopBatch) {
       try {
         for (let page = 1; page <= 20; page += 1) {
@@ -583,19 +590,29 @@ export async function initMiaoshouAutomation({
           await fetchBatch(shopBatch.slice(middle));
           return;
         }
-        const invalidShop = markShopInvalid(shopBatch[0], error?.message);
-        if (invalidShop) {
-          invalidShops.push({
-            shopId: invalidShop.shopId,
-            shopName: shopDisplayName(invalidShop),
-            reason: invalidShop.connectionError,
-          });
-        }
+        invalidCandidates.push({
+          shopId: shopBatch[0],
+          reason: text(error?.message),
+          genericScopeError: isGenericShopScopeError(error),
+        });
       }
     }
     for (const shopBatch of chunk(enabledShops.map((shop) => shop.shopId), 100)) {
       await fetchBatch(shopBatch);
     }
+    if (invalidCandidates.length === enabledShops.length && invalidCandidates.every((shop) => shop.genericScopeError)) {
+      throw new MiaoshouApiError("妙手包裹接口对全部已启用店铺返回“越权操作”，请检查开放平台包裹权限；本次未停用任何店铺。", {
+        code: "package_permission_denied",
+      });
+    }
+    const invalidShops = invalidCandidates.map((candidate) => {
+      const invalidShop = markShopInvalid(candidate.shopId, candidate.reason);
+      return invalidShop ? {
+        shopId: invalidShop.shopId,
+        shopName: shopDisplayName(invalidShop),
+        reason: invalidShop.connectionError,
+      } : null;
+    }).filter(Boolean);
     return {
       packages: Array.from(packageMap.values()).slice(0, config.maxPackagesPerRun),
       invalidShops,
