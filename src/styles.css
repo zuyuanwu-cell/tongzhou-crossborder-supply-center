@@ -8544,6 +8544,16 @@ h3 {
   border-color: rgba(73, 207, 137, .38);
 }
 
+.miaoshou-shop-list article.invalid {
+  background: linear-gradient(90deg, rgba(231, 76, 60, .13), #111317 46%);
+  border-color: rgba(255, 112, 101, .55);
+}
+
+.miaoshou-shop-list article.invalid .miaoshou-shop-icon {
+  color: #ff8e85;
+  background: rgba(231, 76, 60, .16);
+}
+
 .miaoshou-shop-main {
   display: flex;
   align-items: center;
@@ -8570,6 +8580,12 @@ h3 {
 .miaoshou-shop-main span {
   color: #969ba5;
   font-size: 12px;
+}
+
+.miaoshou-shop-error {
+  color: #ff9890;
+  line-height: 1.45;
+  white-space: normal;
 }
 
 .miaoshou-shop-icon {

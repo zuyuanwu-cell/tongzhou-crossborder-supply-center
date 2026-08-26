@@ -7909,7 +7909,7 @@ function MiaoshouPage() {
     const next = await perform("run", () => runMiaoshouAutomation(), "检查完成。");
     if (next?.runSummary) {
       const summary = next.runSummary;
-      setMessage(summary.skipped ? summary.message || "本次未执行。" : `检查完成：已有运单 ${summary.existingTracking || 0} 个，新申请 ${summary.attempted || 0} 个，成功 ${summary.succeeded || 0} 个，需处理 ${summary.failed || 0} 个。`);
+      setMessage(summary.skipped ? summary.message || "本次未执行。" : `检查完成：已有运单 ${summary.existingTracking || 0} 个，新申请 ${summary.attempted || 0} 个，成功 ${summary.succeeded || 0} 个，需处理 ${summary.failed || 0} 个${summary.invalidShops?.length ? `，失效店铺 ${summary.invalidShops.length} 家已自动忽略` : ""}。`);
     }
   }
 
@@ -7937,7 +7937,7 @@ function MiaoshouPage() {
   const config = payload?.config;
   const visibleShops = (payload?.shops || []).filter((shop) => {
     const keyword = shopKeyword.trim().toLowerCase();
-    return !keyword || [shop.shopId, shop.platformShopName, shop.shopNick, shop.platform, shop.site].some((value) => value.toLowerCase().includes(keyword));
+    return !keyword || [shop.shopId, shop.platformShopName, shop.shopNick, shop.platform, shop.site, shop.connectionError].some((value) => value.toLowerCase().includes(keyword));
   });
   const platformOptions = payload?.platformOptions || [];
   const siteOptions = payload?.siteOptions || {};
@@ -7959,10 +7959,11 @@ function MiaoshouPage() {
 
       {error ? <div className="notice danger">{error}</div> : null}
       {message ? <div className="notice success">{message}</div> : null}
+      {payload?.counts.invalidShops ? <div className="notice warning">检测到 {formatNumber(payload.counts.invalidShops)} 家店铺已解绑或不存在，系统已关闭这些店铺的自动申请并继续处理其他店铺。请在下方店铺列表查看具体店铺和原因。</div> : null}
 
       <section className="miaoshou-metrics">
         <article><small>授权状态</small><strong>{config?.hasCredentials ? "已配置" : "待配置"}</strong><span>{config?.appKeyMasked || "填写 AppKey / AppSecret"}</span></article>
-        <article><small>已同步店铺</small><strong>{formatNumber(payload?.counts.shops || 0)}</strong><span>自动申请 {formatNumber(payload?.counts.enabledShops || 0)} 家</span></article>
+        <article><small>已同步店铺</small><strong>{formatNumber(payload?.counts.shops || 0)}</strong><span>自动申请 {formatNumber(payload?.counts.enabledShops || 0)} 家 · 失效 {formatNumber(payload?.counts.invalidShops || 0)} 家</span></article>
         <article><small>已取得运单</small><strong>{formatNumber(payload?.counts.succeeded || 0)}</strong><span>待申请 {formatNumber((payload?.counts.pending || 0) + (payload?.counts.running || 0))}</span></article>
         <article><small>需要处理</small><strong>{formatNumber((payload?.counts.retryWait || 0) + (payload?.counts.manualCheck || 0))}</strong><span>人工核实 {formatNumber(payload?.counts.manualCheck || 0)}</span></article>
       </section>
@@ -8016,14 +8017,17 @@ function MiaoshouPage() {
           <label className="compact-search"><Search size={15} /><input value={shopKeyword} onChange={(event) => setShopKeyword(event.target.value)} placeholder="搜索店铺、平台、站点" /></label>
         </div>
         {visibleShops.length ? <div className="miaoshou-shop-list">
-          {visibleShops.map((shop) => (
-            <article className={shop.autoApplyTrackingNo ? "enabled" : ""} key={shop.shopId}>
-              <div className="miaoshou-shop-main"><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.shopNick || shop.platformShopName || shop.shopId}</strong><span>{shop.shopNick && shop.platformShopName ? `${shop.platformShopName} · ` : ""}{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
-              <div className="miaoshou-shop-auth"><span>授权状态：{shop.status || "未返回"}</span><small>{shop.gmtExpire ? `到期 ${formatDateTime(shop.gmtExpire)}` : `最近同步 ${formatDateTime(shop.lastSeenAt)}`}</small></div>
-              <label className="toggle-line compact"><input type="checkbox" checked={shop.autoFetchWaybill} disabled={Boolean(busy)} onChange={(event) => void perform(`label:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoFetchWaybill: event.target.checked }), event.target.checked ? "该店铺会自动获取面单。" : "该店铺仅申请运单号。")}/><span><strong>获取面单</strong><small>成功后自动保存链接</small></span></label>
-              <button className={shop.autoApplyTrackingNo ? "ghost-button" : "sync-button"} type="button" disabled={Boolean(busy)} onClick={() => void toggleShop(shop)}>{busy === `shop:${shop.shopId}` ? "处理中" : shop.autoApplyTrackingNo ? "停止自动申请" : "开启自动申请"}</button>
-            </article>
-          ))}
+          {visibleShops.map((shop) => {
+            const invalid = shop.connectionStatus === "invalid";
+            return (
+              <article className={invalid ? "invalid" : shop.autoApplyTrackingNo ? "enabled" : ""} key={shop.shopId}>
+                <div className="miaoshou-shop-main"><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.shopNick || shop.platformShopName || shop.shopId}</strong><span>{shop.shopNick && shop.platformShopName ? `${shop.platformShopName} · ` : ""}{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
+                <div className="miaoshou-shop-auth">{invalid ? <span className="status-pill danger">已解绑 / 不存在</span> : <span>授权状态：{shop.status || "未返回"}</span>}<small className={invalid ? "miaoshou-shop-error" : ""} title={invalid ? shop.connectionError : undefined}>{invalid ? shop.connectionError || "妙手已不再返回该店铺" : shop.gmtExpire ? `到期 ${formatDateTime(shop.gmtExpire)}` : `最近同步 ${formatDateTime(shop.lastSeenAt)}`}</small></div>
+                <label className="toggle-line compact"><input type="checkbox" checked={shop.autoFetchWaybill} disabled={Boolean(busy) || invalid} onChange={(event) => void perform(`label:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoFetchWaybill: event.target.checked }), event.target.checked ? "该店铺会自动获取面单。" : "该店铺仅申请运单号。")}/><span><strong>获取面单</strong><small>{invalid ? "失效店铺已忽略" : "成功后自动保存链接"}</small></span></label>
+                <button className={shop.autoApplyTrackingNo ? "ghost-button" : "sync-button"} type="button" disabled={Boolean(busy) || invalid} onClick={() => void toggleShop(shop)}>{invalid ? "已忽略，等待重新绑定" : busy === `shop:${shop.shopId}` ? "处理中" : shop.autoApplyTrackingNo ? "停止自动申请" : "开启自动申请"}</button>
+              </article>
+            );
+          })}
         </div> : <div className="stockup-empty">{payload?.counts.shops ? "当前搜索条件下没有店铺。" : "尚未同步店铺。先保存授权和平台站点范围，再点击“同步店铺”。"}</div>}
       </section>
 
