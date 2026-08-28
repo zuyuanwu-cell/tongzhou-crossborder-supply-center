@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { allocateOrderSalesAmount } from "../server/wms-adapters.js";
+import { buildPerformanceAnalyticsPayload } from "../server/performance-analytics.js";
+import { initPerformanceAnalyticsStore, legacyCorrectedOrders } from "../server/performance-analytics-db.js";
+
+const allocations = allocateOrderSalesAmount([
+  { quantity: 1 },
+  { quantity: 3 },
+], 80);
+assert.deepEqual(allocations, [20, 60]);
+assert.equal(allocations.reduce((sum, value) => sum + value, 0), 80);
+
+const corrected = legacyCorrectedOrders([
+  { providerId: "yunwms_ru", warehouseId: "ru", orderId: "O1", sku: "A", quantity: 1, salesAmount: 80 },
+  { providerId: "yunwms_ru", warehouseId: "ru", orderId: "O1", sku: "B", quantity: 3, salesAmount: 80 },
+]);
+assert.deepEqual(corrected.map((row) => row.salesAmount), [20, 60]);
+assert.ok(corrected.every((row) => row.salesAmountScope === "legacy_order_allocated"));
+
+const products = {
+  productBase: [
+    { sku: "A", skuNo: "001", name: "产品 A", brand: "品牌甲", category: "个护", latestLandedUnitCostCny: 1, latestCostEffectiveAt: "2026-01-01" },
+    { sku: "B", skuNo: "002", name: "产品 B", brand: "品牌乙", category: "家居" },
+  ],
+  catalog: [],
+};
+const facts = [
+  { id: "1", sourceSystem: "sea_wms", sourceOrderId: "O1", orderNo: "O1", orderDate: "2026-08-01", warehouseId: "id", warehouseName: "印尼仓", country: "印尼", platform: "TikTok", shopName: "店铺A", projectGroup: "同舟", sku: "A", productName: "A", quantity: 2, salesAmount: 10000, currency: "IDR", salesAmountScope: "line" },
+  { id: "2", sourceSystem: "yunwms_ru", sourceOrderId: "O2", orderNo: "O2", orderDate: "2026-08-01", warehouseId: "ru", warehouseName: "俄罗斯仓", country: "俄罗斯", platform: "Ozon", shopName: "店铺B", projectGroup: "同舟", sku: "B", productName: "B", quantity: 1, salesAmount: 100, currency: "CNY", salesAmountScope: "order_allocated" },
+  { id: "3", sourceSystem: "sea_wms", sourceOrderId: "O3", orderNo: "O3", orderDate: "2026-08-01", warehouseId: "id", warehouseName: "印尼仓", country: "印尼", platform: "TikTok", shopName: "店铺A", projectGroup: "同舟", sku: "UNKNOWN", productName: "未建档", quantity: 1, salesAmount: 10, currency: "USD", salesAmountScope: "line" },
+];
+const payload = buildPerformanceAnalyticsPayload({
+  facts,
+  products,
+  exchangeRates: [
+    { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+    { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+    { currency: "USD", effectiveDate: "2026-01-01", rateToCny: 7.1 },
+  ],
+  filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+});
+assert.equal(payload.totals.salesCny, 175.5);
+assert.equal(payload.totals.cogsCny, 2);
+assert.equal(payload.totals.estimatedProfitCny, 2.5);
+assert.equal(payload.quality.unmatchedProductLines, 1);
+assert.equal(payload.quality.missingCostLines, 2);
+assert.equal(payload.products.find((row) => row.sku === "A")?.brand, "品牌甲");
+
+const temporaryDirectory = mkdtempSync(join(tmpdir(), "tongzhou-performance-"));
+try {
+  const store = await initPerformanceAnalyticsStore(join(temporaryDirectory, "analytics.sqlite"));
+  store.replaceSalesFacts([
+    { providerId: "yunwms_ru", warehouseId: "ru", warehouseName: "俄罗斯仓", country: "俄罗斯", orderId: "O1", orderNo: "O1", shippedAt: "2026-08-01", sku: "A", quantity: 1, salesAmount: 80, currency: "CNY" },
+    { providerId: "yunwms_ru", warehouseId: "ru", warehouseName: "俄罗斯仓", country: "俄罗斯", orderId: "O1", orderNo: "O1", shippedAt: "2026-08-01", sku: "B", quantity: 3, salesAmount: 80, currency: "CNY" },
+  ], "2026-08-01T00:00:00.000Z");
+  const stored = store.listSalesFacts({ dateFrom: "2026-08-01", dateTo: "2026-08-01" });
+  assert.equal(stored.length, 2);
+  assert.equal(stored.reduce((sum, row) => sum + row.salesAmount, 0), 80);
+  store.upsertExchangeRates([{ currency: "IDR", effectiveDate: "2026-08-01", rateToCny: 0.00045 }]);
+  assert.equal(store.listExchangeRates().find((row) => row.currency === "IDR")?.rateToCny, 0.00045);
+  store.upsertExchangeRates([{ currency: "IDR", effectiveDate: "2026-08-01", rateToCny: 0.0004 }], "auto:frankfurter", { preserveOverrides: true });
+  assert.equal(store.listExchangeRates().find((row) => row.currency === "IDR")?.rateToCny, 0.00045, "manual rates must win over same-day automatic rates");
+  store.setExchangeRateSyncState({ lastSuccessAt: "2026-08-01T01:00:00.000Z", currencies: ["IDR"] });
+  assert.deepEqual(store.getExchangeRateSyncState().currencies, ["IDR"]);
+} finally {
+  rmSync(temporaryDirectory, { recursive: true, force: true });
+}
+
+console.log("performance analytics tests passed");

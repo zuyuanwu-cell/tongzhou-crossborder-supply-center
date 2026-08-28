@@ -3,6 +3,10 @@ const permissionDefinitions = [
   ["inventory_sync", "库存同步看板", "运营分析"],
   ["inventory_snapshots", "库存快照", "运营分析"],
   ["order_analysis", "订单分析", "运营分析"],
+  ["performance_analysis", "经营贡献分析", "运营分析"],
+  ["performance_revenue", "经营销售金额", "经营分析字段"],
+  ["performance_cost", "经营成本", "经营分析字段"],
+  ["performance_profit", "经营预估利润", "经营分析字段"],
   ["movement", "动销监控", "动销"],
   ["movement_analysis", "动销分析", "动销"],
   ["movement_inventory", "动销库存数据", "动销"],
@@ -65,6 +69,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
 
 const REQUIRED_ADMIN_PERMISSIONS = new Set(["operations", "users"]);
 const DIRECT_PRICE_DENIED_ROLES = new Set(["distributor", "guest"]);
+const PERFORMANCE_COST_DENIED_ROLES = new Set(["distributor", "guest"]);
 const USER_MANAGEMENT_DENIED_ROLES = new Set(["direct", "distributor", "guest"]);
 
 function roleOf(user) {
@@ -99,6 +104,10 @@ export function effectivePermissions(user) {
   for (const permission of overrides.deny) effective.delete(permission);
 
   if (DIRECT_PRICE_DENIED_ROLES.has(role)) effective.delete("direct_price");
+  if (PERFORMANCE_COST_DENIED_ROLES.has(role)) {
+    effective.delete("performance_cost");
+    effective.delete("performance_profit");
+  }
   if (USER_MANAGEMENT_DENIED_ROLES.has(role)) effective.delete("users");
   if (role === "admin") {
     for (const permission of REQUIRED_ADMIN_PERMISSIONS) effective.add(permission);
@@ -118,8 +127,8 @@ export function permissionConfiguration() {
     roleDefaults: ROLE_DEFAULT_PERMISSIONS,
     hardRules: {
       directDenied: ["users"],
-      distributorDenied: ["direct_price", "users"],
-      guestDenied: ["direct_price", "users"],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "users"],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "users"],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -129,6 +138,9 @@ export function sanitizePermissionUpdate(role, input) {
   const overrides = normalizePermissionOverrides(input);
   if (DIRECT_PRICE_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "direct_price");
+  }
+  if (PERFORMANCE_COST_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => !["performance_cost", "performance_profit"].includes(key));
   }
   if (USER_MANAGEMENT_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "users");
@@ -170,6 +182,8 @@ export function projectCatalogProduct(product, user) {
   return result;
 }
 
-export function projectProductBase(product) {
-  return omitFields(product, ["raw"]);
+export function projectProductBase(product, user) {
+  const sensitiveCostFields = ["latestCostBatchId", "latestLandedUnitCostCny", "latestCostEffectiveAt"];
+  const projected = omitFields(product, ["raw"]);
+  return hasPermission(user, "performance_cost") ? projected : omitFields(projected, sensitiveCostFields);
 }

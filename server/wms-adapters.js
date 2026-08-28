@@ -145,6 +145,52 @@ function firstNumber(...values) {
   return 0;
 }
 
+function roundMoney(value, digits = 6) {
+  const factor = 10 ** digits;
+  return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
+}
+
+export function allocateOrderSalesAmount(items = [], orderAmount = 0) {
+  const safeItems = Array.isArray(items) ? items : [];
+  if (!safeItems.length) return [];
+  const total = Math.max(0, Number(orderAmount) || 0);
+  const explicitWeights = safeItems.map((item) => {
+    const explicitLineTotal = firstNumber(
+      item.order_sale_amount,
+      item.line_sale_amount,
+      item.line_amount,
+      item.product_total_amount,
+      item.total_price,
+      item.sale_amount,
+    );
+    if (explicitLineTotal > 0) return explicitLineTotal;
+    const quantity = firstNumber(item.quantity, item.qty, item.product_quantity);
+    const unitPrice = firstNumber(item.unit_price, item.product_price, item.sale_price, item.price);
+    return quantity > 0 && unitPrice > 0 ? quantity * unitPrice : 0;
+  });
+  const explicitTotal = explicitWeights.reduce((sum, value) => sum + value, 0);
+  const quantityWeights = safeItems.map((item) => Math.max(0, firstNumber(item.quantity, item.qty, item.product_quantity)));
+  const quantityTotal = quantityWeights.reduce((sum, value) => sum + value, 0);
+  const weights = explicitTotal > 0 ? explicitWeights : quantityWeights;
+  const weightTotal = explicitTotal > 0 ? explicitTotal : quantityTotal;
+
+  if (total <= 0) return weights.map((value) => roundMoney(value));
+  if (weightTotal <= 0) {
+    const evenShare = total / safeItems.length;
+    return safeItems.map((_, index) => index === safeItems.length - 1
+      ? roundMoney(total - roundMoney(evenShare) * (safeItems.length - 1))
+      : roundMoney(evenShare));
+  }
+
+  let allocated = 0;
+  return weights.map((weight, index) => {
+    if (index === safeItems.length - 1) return roundMoney(total - allocated);
+    const value = roundMoney(total * (weight / weightTotal));
+    allocated = roundMoney(allocated + value);
+    return value;
+  });
+}
+
 function isoDateDaysAgo(days) {
   const date = new Date();
   date.setDate(date.getDate() - days);
@@ -435,13 +481,14 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
   const rawItems = Array.isArray(order.items) ? order.items : [];
 
   return rawItems
-    .map((item) => {
+    .map((item, index) => {
       const productSku = productByGoodsSkuId.get(firstText(item.goodsSkuId));
       const sku = firstText(item.goodsSkuOuterId, productSku, item.sku, item.goodsSkuCode);
       const quantity = firstNumber(item.quantity, item.qty);
       return {
         orderId: firstText(order.orderId, orderNo),
         orderNo,
+        lineId: firstText(item.id, item.orderItemId, item.goodsSkuId, `${orderNo}-${sku}-${index}`),
         goodsSkuId: firstText(item.goodsSkuId),
         providerId: connection.providerId,
         warehouseId: connection.id,
@@ -458,6 +505,7 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
         productName: firstText(item.goodsName, item.skuName, item.productName, sku),
         quantity,
         salesAmount: firstNumber(item.discountedPrice) * quantity,
+        salesAmountScope: "line",
         currency: firstText(order.currency),
         rawProvider: connection.providerId,
       };
@@ -689,11 +737,13 @@ function normalizeYunOrderRows(order, connection) {
     : Array.isArray(order.order_pack_box)
       ? order.order_pack_box.flatMap((box) => Array.isArray(box.product_details) ? box.product_details : [])
       : [];
+  const allocatedSalesAmounts = allocateOrderSalesAmount(rawItems, salesAmount);
 
   return rawItems
-    .map((item) => ({
+    .map((item, index) => ({
       orderId: firstText(order.order_id, orderNo),
       orderNo,
+      lineId: firstText(item.order_item_id, item.product_id, item.product_sku, `${orderNo}-${index}`),
       providerId: connection.providerId,
       warehouseId: connection.id,
       warehouseName: firstText(order.warehouse_desc, order.warehouse_name, connection.name),
@@ -710,7 +760,8 @@ function normalizeYunOrderRows(order, connection) {
       sku: firstText(item.product_sku, item.sku, item.product_barcode),
       productName: firstText(item.product_title, item.product_name, item.name, item.product_sku, item.sku, item.product_barcode),
       quantity: firstNumber(item.quantity, item.qty, item.product_quantity),
-      salesAmount,
+      salesAmount: allocatedSalesAmounts[index] || 0,
+      salesAmountScope: "order_allocated",
       currency,
       rawProvider: connection.providerId,
     }))

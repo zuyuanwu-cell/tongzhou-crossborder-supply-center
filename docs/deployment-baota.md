@@ -78,11 +78,18 @@ WMS_ORDER_MAX_PAGES=200
 INVENTORY_SNAPSHOT_TIMEZONE=Asia/Shanghai
 MOVEMENT_HISTORY_TIMEZONE=Asia/Shanghai
 MOVEMENT_HISTORY_DB_PATH=.cache/movement-history.sqlite
+PERFORMANCE_ANALYTICS_DB_PATH=.cache/performance-analytics.sqlite
+PERFORMANCE_FX_AUTO_SYNC=true
+PERFORMANCE_FX_SYNC_INTERVAL_MS=86400000
+PERFORMANCE_FX_BACKFILL_DAYS=120
+PERFORMANCE_FX_ENDPOINT=https://api.frankfurter.dev/v2/rates
 AGNES_AI_API_KEY=
 AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
 ```
 
 修改 `.env` 后必须使用 `pm2 restart tongzhou-supply-api --update-env`，否则 PM2 仍可能沿用旧环境变量。
+
+汇率同步默认不需要 API Key，但服务器必须可以通过 HTTPS 访问 `api.frankfurter.dev`。`.cache/performance-analytics.sqlite` 保存订单事实与历史汇率，部署备份时应与其他 `.cache` 业务数据库一起保留。
 
 ## 注意
 
