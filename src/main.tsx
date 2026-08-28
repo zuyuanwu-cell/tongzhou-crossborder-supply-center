@@ -164,6 +164,7 @@ import {
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
   updatePerformanceExchangeRates,
+  updateShopProjectGroup,
   updateStockupPlanStatus,
   updateUserPermissions,
   updateUserStatus,
@@ -1561,6 +1562,21 @@ function App() {
               return result.sync;
             }}
             onSyncOrders={handleOrderSync}
+            onAssignProjectGroup={async (shopKeys, projectGroup) => {
+              await updateShopProjectGroup({ shopKeys, projectGroup });
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+              await loadOrderAnalysis(orderAnalysisPayload?.filters ? {
+                dateFrom: orderAnalysisPayload.filters.dateFrom,
+                dateTo: orderAnalysisPayload.filters.dateTo,
+                country: orderAnalysisPayload.filters.country,
+                warehouseId: orderAnalysisPayload.filters.warehouseId,
+                platform: orderAnalysisPayload.filters.platform,
+                shopName: orderAnalysisPayload.filters.shopName,
+                projectGroup: orderAnalysisPayload.filters.projectGroup,
+                keyword: orderAnalysisPayload.filters.keyword,
+                scope: "all",
+              } : { scope: "all" });
+            }}
             syncing={syncing}
             canSync={hasUserPermission(currentUser, "movement_sync")}
           />
@@ -6995,6 +7011,7 @@ function PerformanceAnalysisPage({
   onSaveRates,
   onSyncRates,
   onSyncOrders,
+  onAssignProjectGroup,
   syncing,
   canSync,
 }: {
@@ -7003,11 +7020,12 @@ function PerformanceAnalysisPage({
   onSaveRates: (rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) => Promise<void>;
   onSyncRates: () => Promise<{ message?: string; lastUpdatedCount?: number; lastRateDate?: string }>;
   onSyncOrders: () => Promise<void>;
+  onAssignProjectGroup: (shopKeys: string[], projectGroup: string) => Promise<void>;
   syncing: boolean;
   canSync: boolean;
 }) {
   const defaults = performanceDefaultRange();
-  const [tab, setTab] = React.useState<"products" | "brands" | "quality">("products");
+  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "shops">("products");
   const [busy, setBusy] = React.useState(false);
   const [dateFrom, setDateFrom] = React.useState(payload?.filters.dateFrom || defaults.dateFrom);
   const [dateTo, setDateTo] = React.useState(payload?.filters.dateTo || defaults.dateTo);
@@ -7020,6 +7038,9 @@ function PerformanceAnalysisPage({
   const [keyword, setKeyword] = React.useState(payload?.filters.keyword || "");
   const [rateDrafts, setRateDrafts] = React.useState<Record<string, string>>({});
   const [rateMessage, setRateMessage] = React.useState("");
+  const [selectedShopKeys, setSelectedShopKeys] = React.useState<Set<string>>(new Set());
+  const [projectGroupDraft, setProjectGroupDraft] = React.useState("");
+  const [shopMessage, setShopMessage] = React.useState("");
   const totals = payload?.totals;
   const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false };
   const latestRates = React.useMemo(() => {
@@ -7115,10 +7136,49 @@ function PerformanceAnalysisPage({
     }
   }
 
+  function toggleShopSelection(shopKey: string, checked: boolean) {
+    setSelectedShopKeys((current) => {
+      const next = new Set(current);
+      if (checked) next.add(shopKey);
+      else next.delete(shopKey);
+      return next;
+    });
+  }
+
+  async function assignProjectGroup() {
+    const group = projectGroupDraft.trim();
+    if (!selectedShopKeys.size) {
+      setShopMessage("请先勾选需要归组的店铺。");
+      return;
+    }
+    if (!group) {
+      setShopMessage("请输入或选择主项目组。");
+      return;
+    }
+    setBusy(true);
+    setShopMessage("");
+    try {
+      await onAssignProjectGroup([...selectedShopKeys], group);
+      setShopMessage(`已将 ${selectedShopKeys.size} 个店铺设置为“${group}”。`);
+      setSelectedShopKeys(new Set());
+    } catch (requestError) {
+      setShopMessage(requestError instanceof Error ? requestError.message : "项目组保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const hasOriginalRevenue = (payload?.currencySummary || []).some((item) => Number(item.amount || 0) > 0);
-  const revenueReady = !hasOriginalRevenue || Number(payload?.quality.revenueCoverageRate || 0) > 0;
-  const costReady = Number(payload?.quality.costCoverageRate || 0) > 0;
-  const profitReady = Number(payload?.quality.profitCoverageRate || 0) > 0;
+  const revenueCoverage = Number(payload?.quality.revenueCoverageRate || 0);
+  const costCoverage = Number(payload?.quality.costCoverageRate || 0);
+  const profitCoverage = Number(payload?.quality.profitCoverageRate || 0);
+  const revenueReady = !hasOriginalRevenue || revenueCoverage > 0;
+  const costReady = costCoverage > 0;
+  const profitReady = profitCoverage > 0;
+  const revenueComplete = revenueCoverage >= 0.95;
+  const costComplete = costCoverage >= 0.95;
+  const profitComplete = profitCoverage >= 0.95;
+  const pipelineReconciled = Boolean(payload?.reconciliation.rowCountMatched && payload?.reconciliation.syncedAtMatched);
   const useRevenueMetric = permissions.revenue && revenueReady;
   const trendRows = (payload?.daily || []).slice(-30);
   const trendMax = Math.max(1, ...trendRows.map((row) => useRevenueMetric ? (row.salesCny || 0) : row.quantity));
@@ -7149,9 +7209,22 @@ function PerformanceAnalysisPage({
         </div>
       </section>
 
+      <section className={`performance-health ${pipelineReconciled && revenueComplete && costComplete ? "good" : "warning"}`}>
+        <div>
+          <ShieldCheck size={18} />
+          <span><strong>{pipelineReconciled ? "WMS 明细入库对账一致" : "WMS 明细与分析事实待重新对账"}</strong><small>源明细 {formatNumber(payload?.reconciliation.sourceRowCount || 0)} 行 · 分析事实 {formatNumber(payload?.reconciliation.factRowCount || 0)} 行</small></span>
+        </div>
+        <div className="performance-health-rates">
+          <span className={revenueComplete ? "good" : "warning"}>销售额覆盖 {formatPercentValue(revenueCoverage)}</span>
+          <span className={costComplete ? "good" : "danger"}>成本覆盖 {formatPercentValue(costCoverage)}</span>
+          <span className={profitComplete ? "good" : "danger"}>利润覆盖 {formatPercentValue(profitCoverage)}</span>
+        </div>
+        {!profitComplete ? <p>当前利润仅代表“同时有销售额与到仓成本”的覆盖范围，不能作为全部货盘利润结论。</p> : null}
+      </section>
+
       <section className="performance-kpis">
         <article className="performance-kpi primary">
-          <span>人民币销售额</span>
+          <span>{revenueComplete ? "人民币销售额" : "覆盖范围销售额"}</span>
           <strong>{permissions.revenue ? (revenueReady ? formatCny(totals?.salesCny) : "待配置汇率") : "未授权"}</strong>
           <small>{permissions.revenue ? (revenueReady ? `金额覆盖 ${formatPercentValue(payload?.quality.revenueCoverageRate)}` : "原币金额已保留，尚未折算人民币") : "需要经营销售金额权限"}</small>
         </article>
@@ -7161,12 +7234,12 @@ function PerformanceAnalysisPage({
           <small>{formatNumber(totals?.quantity || 0)} 件 · {formatNumber(totals?.skuCount || 0)} SKU</small>
         </article>
         <article className="performance-kpi">
-          <span>已匹配销售成本</span>
+          <span>{costComplete ? "销售成本" : "覆盖范围销售成本"}</span>
           <strong>{permissions.cost ? (costReady ? formatCny(totals?.cogsCny) : "待匹配成本") : "未授权"}</strong>
           <small>{permissions.cost ? `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}` : "成本字段已由后端隔离"}</small>
         </article>
         <article className="performance-kpi profit">
-          <span>覆盖范围预估毛利</span>
+          <span>{profitComplete ? "预估毛利" : "覆盖范围预估毛利"}</span>
           <strong>{permissions.profit ? (profitReady ? formatCny(totals?.estimatedProfitCny) : "待汇率与成本") : "未授权"}</strong>
           <small>{permissions.profit ? `毛利率 ${formatPercentValue(totals?.grossMargin)} · 覆盖 ${formatPercentValue(payload?.quality.profitCoverageRate)}` : "需要成本与利润权限"}</small>
         </article>
@@ -7190,7 +7263,7 @@ function PerformanceAnalysisPage({
         <label><span>国家</span><select value={country} onChange={(event) => setCountry(event.target.value)}><option value="">全部国家</option>{payload?.options.countries.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <label><span>仓库</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">全部仓库</option>{payload?.options.warehouses.map((item) => <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>)}</select></label>
         <label><span>平台</span><select value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="">全部平台</option>{payload?.options.platforms.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-        <label><span>店铺</span><select value={shopName} onChange={(event) => setShopName(event.target.value)}><option value="">全部店铺</option>{payload?.options.shops.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label><span>店铺</span><select value={shopName} onChange={(event) => setShopName(event.target.value)}><option value="">全部店铺</option>{payload?.options.shops.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
         <label><span>项目组</span><select value={projectGroup} onChange={(event) => setProjectGroup(event.target.value)}><option value="">全部项目组</option>{payload?.options.projectGroups.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <label><span>品牌</span><select value={brand} onChange={(event) => setBrand(event.target.value)}><option value="">全部品牌</option>{payload?.options.brands.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <label className="performance-search"><span>搜索</span><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="SKU、产品、品牌、订单" /></label>
@@ -7226,6 +7299,7 @@ function PerformanceAnalysisPage({
           <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.products.length || 0)}</span></button>
           <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.brands.length || 0)}</span></button>
           <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber((payload?.quality.unmatchedProductLines || 0) + (payload?.quality.missingExchangeRateLines || 0) + (payload?.quality.missingCostLines || 0))}</span></button>
+          <button className={tab === "shops" ? "active" : ""} type="button" onClick={() => setTab("shops")}>店铺归属 <span>{formatNumber(payload?.shopDirectory.shops.length || 0)}</span></button>
         </div>
 
         {tab === "products" ? (
@@ -7255,7 +7329,7 @@ function PerformanceAnalysisPage({
               </article>
             ))}
           </div>
-        ) : (
+        ) : tab === "quality" ? (
           <div className="performance-quality-layout">
             <div className="performance-quality-grid">
               {qualityRows.map((item) => <article key={item.label} className={item.tone}><span>{item.label}</span><strong>{formatNumber(item.value)}</strong><small>{item.note}</small></article>)}
@@ -7276,6 +7350,34 @@ function PerformanceAnalysisPage({
                 <div className="performance-rate-actions"><span>{rateMessage}</span><button className="sync-button" type="button" onClick={saveRates} disabled={busy || !relevantCurrencies.length}>保存手工覆盖并重算</button></div>
               </section>
             ) : null}
+          </div>
+        ) : (
+          <div className="shop-directory-panel">
+            <div className="shop-directory-summary">
+              <div><p className="eyebrow">Shop Directory</p><h3>店铺别称与主项目组</h3><p>业绩仍以 WMS 已出库订单为准；妙手只提供店铺别称。一个店铺只能归属一个主项目组。</p></div>
+              <div><span><strong>{formatNumber(payload?.shopDirectory.matchedShopCount || 0)}</strong>已匹配妙手别称</span><span><strong>{formatNumber(payload?.shopDirectory.unmatchedShopCount || 0)}</strong>待匹配店铺</span><span><strong>{formatNumber(payload?.shopDirectory.projectGroups.length || 0)}</strong>主项目组</span></div>
+            </div>
+            {payload?.shopDirectory.canManage ? (
+              <div className="shop-directory-actions">
+                <label><span>主项目组</span><input list="performance-project-groups" value={projectGroupDraft} onChange={(event) => setProjectGroupDraft(event.target.value)} placeholder="选择已有项目组或输入新名称" /></label>
+                <datalist id="performance-project-groups">{payload.shopDirectory.projectGroups.map((item) => <option key={item} value={item} />)}</datalist>
+                <button className="sync-button" type="button" onClick={assignProjectGroup} disabled={busy || !selectedShopKeys.size}>保存 {selectedShopKeys.size ? `${selectedShopKeys.size} 个店铺` : "项目组"}</button>
+                <span>{shopMessage}</span>
+              </div>
+            ) : <div className="notice">当前账号可以查看店铺归属，但没有修改权限。</div>}
+            <div className="shop-directory-list">
+              <div className="shop-directory-row head">
+                <label><input type="checkbox" checked={Boolean(payload?.shopDirectory.shops.length) && payload!.shopDirectory.shops.every((shop) => selectedShopKeys.has(shop.key))} onChange={(event) => setSelectedShopKeys(event.target.checked ? new Set(payload?.shopDirectory.shops.map((shop) => shop.key) || []) : new Set())} disabled={!payload?.shopDirectory.canManage} /><span>店铺 / WMS 原名</span></label><span>平台 / 国家</span><span>妙手关联</span><span>主项目组</span>
+              </div>
+              {(payload?.shopDirectory.shops || []).map((shop) => (
+                <article className="shop-directory-row" key={shop.key}>
+                  <label><input type="checkbox" checked={selectedShopKeys.has(shop.key)} onChange={(event) => toggleShopSelection(shop.key, event.target.checked)} disabled={!payload?.shopDirectory.canManage} /><span><strong>{shop.displayName}</strong><small>{shop.displayName !== shop.rawName ? `WMS：${shop.rawName}` : `WMS 原名 · ${formatNumber(shop.orderLines)} 行`}</small></span></label>
+                  <span><strong>{shop.platform || "未识别平台"}</strong><small>{shop.country || "未识别国家"}</small></span>
+                  <span><i className={`status-pill ${shop.miaoshouMatched ? "good" : "warning"}`}>{shop.miaoshouMatched ? "已匹配" : "未匹配"}</i><small>{shop.miaoshouAlias || shop.miaoshouShopName || "使用 WMS 原名"}</small></span>
+                  <span><strong>{shop.projectGroup || "未设置"}</strong><small>{shop.projectGroupSource === "manual" ? "人工设置" : "沿用历史推断"}</small></span>
+                </article>
+              ))}
+            </div>
           </div>
         )}
       </section>

@@ -1349,6 +1349,35 @@ export type PerformanceContributionRow = {
   date?: string;
 };
 
+export type ShopDirectoryProfile = {
+  key: string;
+  rawName: string;
+  displayName: string;
+  alias: string;
+  aliasSource: "manual" | "miaoshou" | "wms" | string;
+  platform: string;
+  country: string;
+  warehouseIds: string[];
+  orderLines: number;
+  latestOrderAt: string;
+  projectGroup: string;
+  projectGroupSource: "manual" | "inferred" | "unassigned" | string;
+  miaoshouShopId: string;
+  miaoshouShopName: string;
+  miaoshouAlias: string;
+  miaoshouMatched: boolean;
+};
+
+export type ShopDirectoryPayload = {
+  shops: ShopDirectoryProfile[];
+  projectGroups: string[];
+  miaoshouShopCount: number;
+  matchedShopCount: number;
+  unmatchedShopCount: number;
+  miaoshouSyncedAt: string;
+  canManage: boolean;
+};
+
 export type PerformanceAnalyticsPayload = {
   ok: boolean;
   generatedAt: string;
@@ -1365,6 +1394,15 @@ export type PerformanceAnalyticsPayload = {
     rebuiltAt: string;
     rowCount: number;
   };
+  reconciliation: {
+    sourceRowCount: number;
+    factRowCount: number;
+    sourceSyncedAt: string;
+    factSourceSyncedAt: string;
+    rowCountMatched: boolean;
+    syncedAtMatched: boolean;
+  };
+  shopDirectory: ShopDirectoryPayload;
   filters: {
     dateFrom: string;
     dateTo: string;
@@ -1426,6 +1464,9 @@ export type PerformanceAnalyticsPayload = {
     id: string;
     orderDate: string;
     orderNo: string;
+    shopKey?: string;
+    shopName?: string;
+    projectGroup?: string;
     sku: string;
     productName: string;
     brand: string;
@@ -1444,7 +1485,14 @@ export type PerformanceAnalyticsPayload = {
     countries: string[];
     warehouses: Array<{ warehouseId: string; warehouseName: string; country: string }>;
     platforms: string[];
-    shops: string[];
+    shops: Array<{
+      value: string;
+      label: string;
+      rawName: string;
+      alias: string;
+      projectGroup: string;
+      miaoshouMatched: boolean;
+    }>;
     projectGroups: string[];
     brands: string[];
   };
@@ -2395,6 +2443,18 @@ export function syncPerformanceExchangeRates() {
     sync: NonNullable<PerformanceAnalyticsPayload["exchangeRateSync"]> & { skipped?: boolean; message?: string };
     exchangeRates: PerformanceAnalyticsPayload["exchangeRates"];
   }>("/api/performance-analytics/exchange-rates/sync", { method: "POST" });
+}
+
+export function updateShopProjectGroup(input: { shopKeys: string[]; projectGroup: string }) {
+  return requestJson<{
+    ok: boolean;
+    updatedCount: number;
+    projectGroup: string;
+    shopDirectory: ShopDirectoryPayload;
+  }>("/api/shop-directory/project-group", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
 }
 
 export function updateOrderShopAlias(input: { shopName: string; alias: string }) {

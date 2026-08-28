@@ -214,7 +214,7 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     if (text(filters.country) && text(source.country) !== text(filters.country)) continue;
     if (text(filters.warehouseId) && text(source.warehouseId) !== text(filters.warehouseId)) continue;
     if (text(filters.platform) && text(source.platform) !== text(filters.platform)) continue;
-    if (text(filters.shopName) && text(source.shopName) !== text(filters.shopName)) continue;
+    if (text(filters.shopName) && text(source.shopKey || source.shopName) !== text(filters.shopName)) continue;
     if (text(filters.projectGroup) && text(source.projectGroup) !== text(filters.projectGroup)) continue;
     if (brandFilter && brand !== brandFilter) continue;
     if (keyword && ![source.orderNo, source.sourceOrderId, source.sku, source.productName, productName, brand, source.shopName]
@@ -346,6 +346,9 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       id: fact.id,
       orderDate: fact.orderDate,
       orderNo: fact.orderNo,
+      shopKey: fact.shopKey || "",
+      shopName: fact.shopName || "",
+      projectGroup: fact.projectGroup || "",
       sku: fact.sku,
       productName: fact.productName,
       brand: fact.brand,
@@ -364,7 +367,14 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       countries: [...new Set(optionFacts.map((fact) => fact.country).filter(Boolean))].sort(),
       warehouses: [...new Map(optionFacts.map((fact) => [fact.warehouseId, { warehouseId: fact.warehouseId, warehouseName: fact.warehouseName || fact.warehouseId, country: fact.country }])).values()].filter((item) => item.warehouseId).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN")),
       platforms: [...new Set(optionFacts.map((fact) => fact.platform).filter(Boolean))].sort(),
-      shops: [...new Set(optionFacts.map((fact) => fact.shopName).filter(Boolean))].sort(),
+      shops: [...new Map(optionFacts.filter((fact) => fact.shopName).map((fact) => [fact.shopKey || fact.shopName, {
+        value: fact.shopKey || fact.shopName,
+        label: fact.shopName,
+        rawName: fact.rawShopName || fact.shopName,
+        alias: fact.shopAlias || "",
+        projectGroup: fact.projectGroup || "",
+        miaoshouMatched: Boolean(fact.miaoshouMatched),
+      }])).values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
       projectGroups: [...new Set(optionFacts.map((fact) => fact.projectGroup).filter(Boolean))].sort(),
       brands: [...new Set(optionFacts.map((fact) => fact.brand).filter(Boolean))].sort(),
     },

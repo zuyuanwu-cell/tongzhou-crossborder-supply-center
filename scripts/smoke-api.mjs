@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,34 @@ const accessCode = "smoke-internal-code";
 const timeoutMs = 30000;
 const smokeCacheDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-"));
 const movementHistoryDbPath = resolve(smokeCacheDir, "movement-history.sqlite");
+
+writeFileSync(resolve(smokeCacheDir, "orders-sync.json"), JSON.stringify({
+  syncedAt: "2026-08-28T00:00:00.000Z",
+  results: [],
+  orders: [{
+    providerId: "sea_wms",
+    warehouseId: "id-warehouse",
+    warehouseName: "印尼仓",
+    country: "印度尼西亚",
+    orderId: "ORDER-1",
+    orderNo: "ORDER-1",
+    lineId: "LINE-1",
+    shippedAt: "2026-08-28 10:00:00",
+    platform: "tiktok",
+    shopName: "Beauty Store",
+    projectGroup: "旧项目",
+    sku: "TZKJ-SJJ001",
+    productName: "测试产品",
+    quantity: 2,
+    salesAmount: 10000,
+    currency: "IDR",
+    salesAmountScope: "line",
+  }],
+}), "utf8");
+writeFileSync(resolve(smokeCacheDir, "miaoshou-shops.json"), JSON.stringify({
+  syncedAt: "2026-08-28T00:05:00.000Z",
+  shops: [{ shopId: "MS-ID-1", platform: "tiktok", site: "ID", platformShopName: "Beauty Store", shopNick: "印尼测试别称" }],
+}), "utf8");
 
 if (!existsSync(distIndexPath)) {
   console.error("dist/index.html is missing. Run `npm run build` before `npm run smoke:api`.");
@@ -147,6 +175,28 @@ async function main() {
     throw new Error("/api/order-analysis did not return project group filters and ranking.");
   }
   console.log("[ok] /api/order-analysis");
+
+  const performance = await expectJson("/api/performance-analytics?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
+  if (!performance.reconciliation?.rowCountMatched || performance.shopDirectory?.matchedShopCount !== 1) {
+    throw new Error(`/api/performance-analytics did not reconcile WMS facts or match the Miaoshou alias: ${JSON.stringify(performance).slice(0, 800)}`);
+  }
+  const shop = performance.shopDirectory.shops[0];
+  if (shop.displayName !== "印尼测试别称" || !shop.key) {
+    throw new Error(`/api/performance-analytics did not expose the Miaoshou shop alias: ${JSON.stringify(shop)}`);
+  }
+  const assigned = await expectJson("/api/shop-directory/project-group", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ shopKeys: [shop.key], projectGroup: "东南亚项目" }),
+  });
+  if (assigned.updatedCount !== 1 || assigned.shopDirectory.shops[0]?.projectGroup !== "东南亚项目") {
+    throw new Error(`/api/shop-directory/project-group did not apply the one-shop-one-project rule: ${JSON.stringify(assigned).slice(0, 800)}`);
+  }
+  const assignedPerformance = await expectJson("/api/performance-analytics?dateFrom=2026-08-28&dateTo=2026-08-28&projectGroup=%E4%B8%9C%E5%8D%97%E4%BA%9A%E9%A1%B9%E7%9B%AE", { headers: authHeaders });
+  if (assignedPerformance.totals?.orderLines !== 1) {
+    throw new Error("performance analytics did not filter by the configured main project group.");
+  }
+  console.log("[ok] shop alias, reconciliation, and main project group assignment");
 
   const movement = await expectJson("/api/movement", { headers: authHeaders });
   if ((movement.warehouseDiagnostics || []).some((item) => !item.actionTitle || !Array.isArray(item.actionItems))) {

@@ -28,6 +28,7 @@ import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
+import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -259,11 +260,7 @@ function saveOutsourcingOrderCache(payload) {
 }
 
 function normalizeOrderAnalysisSettings(input = {}) {
-  const source = input && typeof input === "object" ? input : {};
-  return {
-    updatedAt: source.updatedAt || "",
-    shopAliases: source.shopAliases && typeof source.shopAliases === "object" ? source.shopAliases : {},
-  };
+  return normalizeShopDirectorySettings(input);
 }
 
 function saveOrderAnalysisSettings() {
@@ -3030,10 +3027,28 @@ function buildOrderProductLookup() {
   return lookup;
 }
 
-function orderShopDisplayName(rawShopName) {
-  const raw = String(rawShopName || "").trim();
-  if (!raw) return "未识别店铺";
-  return String(cachedOrderAnalysisSettings.shopAliases?.[raw] || "").trim() || raw;
+function shopDirectoryForOrders(orders = []) {
+  const miaoshouPayload = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+  return {
+    ...buildShopDirectory({
+      orders,
+      miaoshouShops: miaoshouPayload.shops || [],
+      settings: cachedOrderAnalysisSettings,
+    }),
+    miaoshouSyncedAt: miaoshouPayload.shopsSyncedAt || "",
+  };
+}
+
+function publicShopDirectory(directory, auth = directAuth) {
+  return {
+    shops: directory.shops || [],
+    projectGroups: directory.projectGroups || [],
+    miaoshouShopCount: directory.miaoshouShopCount || 0,
+    matchedShopCount: directory.matchedShopCount || 0,
+    unmatchedShopCount: directory.unmatchedShopCount || 0,
+    miaoshouSyncedAt: directory.miaoshouSyncedAt || "",
+    canManage: canManageModule(auth, "performance_analysis"),
+  };
 }
 
 function performanceDateRange(params = {}) {
@@ -3116,26 +3131,43 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   };
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
+  const scopedOrders = (cachedOrdersSync.orders || []).filter((order) => {
+    if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
+    return isWithinDataScope(order, scopes);
+  });
+  const shopDirectory = shopDirectoryForOrders(scopedOrders);
   const facts = performanceAnalyticsStore.listSalesFacts({
     dateFrom: filters.dateFrom,
     dateTo: filters.dateTo,
     country: filters.country,
     warehouseId: filters.warehouseId,
     platform: filters.platform,
-    shopName: filters.shopName,
-    projectGroup: filters.projectGroup,
   })
     .filter((fact) => {
       if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(fact.warehouseId || ""))) return false;
       return isWithinDataScope(fact, scopes);
-    });
+    })
+    .map((fact) => applyShopDirectoryProfile(fact, shopDirectory));
   const payload = buildPerformanceAnalyticsPayload({
     facts,
     products: cachedProducts,
     exchangeRates: performanceAnalyticsStore.listExchangeRates(),
     filters,
   });
-  return projectPerformanceAnalyticsPayload({ ...payload, syncedAt: cachedOrdersSync.syncedAt || "" }, auth);
+  const metadata = performanceAnalyticsStore.getMetadata();
+  return projectPerformanceAnalyticsPayload({
+    ...payload,
+    syncedAt: cachedOrdersSync.syncedAt || "",
+    shopDirectory: publicShopDirectory(shopDirectory, auth),
+    reconciliation: {
+      sourceRowCount: (cachedOrdersSync.orders || []).length,
+      factRowCount: metadata.rowCount,
+      sourceSyncedAt: cachedOrdersSync.syncedAt || "",
+      factSourceSyncedAt: metadata.sourceSyncedAt || "",
+      rowCountMatched: (cachedOrdersSync.orders || []).length === metadata.rowCount,
+      syncedAtMatched: Boolean(cachedOrdersSync.syncedAt) && cachedOrdersSync.syncedAt === metadata.sourceSyncedAt,
+    },
+  }, auth);
 }
 
 function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
@@ -3153,10 +3185,12 @@ function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
   const productLookup = buildOrderProductLookup();
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
-  const allOrders = (cachedOrdersSync.orders || []).filter((order) => {
+  const scopedOrders = (cachedOrdersSync.orders || []).filter((order) => {
     if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
     return isWithinDataScope(order, scopes);
-  }).map((order) => ({
+  });
+  const shopDirectory = shopDirectoryForOrders(scopedOrders);
+  const allOrders = scopedOrders.map((order) => ({
     ...order,
     date: orderDateKey(order),
     platform: String(order.platform || "").trim(),
@@ -3164,13 +3198,11 @@ function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
     projectGroup: String(order.projectGroup || "").trim() || inferOrderProjectGroup(order),
   })).map((order) => {
     const product = orderSkuLookupKeys(order.sku).map((key) => productLookup.get(key)).find(Boolean);
-    return {
+    return applyShopDirectoryProfile({
       ...order,
-      shopName: orderShopDisplayName(order.rawShopName),
-      shopAlias: String(cachedOrderAnalysisSettings.shopAliases?.[order.rawShopName] || "").trim(),
       productDisplayName: product?.name || order.productName || order.sku || "",
       imageUrl: product?.imageUrl || "",
-    };
+    }, shopDirectory);
   });
   const selectableOrders = onlyRussia ? allOrders.filter((order) => order.providerId === "yunwms_ru" || order.country === "俄罗斯") : allOrders;
   const options = {
@@ -3187,7 +3219,7 @@ function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
       alias: order.shopAlias || "",
       rawName: order.rawShopName || "",
     }])).values()).sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
-    projectGroups: orderOptionRows(new Set(selectableOrders.map((order) => order.projectGroup))),
+    projectGroups: orderOptionRows(new Set([...shopDirectory.projectGroups, ...selectableOrders.map((order) => order.projectGroup)])),
   };
   const filtered = selectableOrders.filter((order) => {
     const date = order.date;
@@ -3339,6 +3371,7 @@ function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
     byPlatform,
     byWarehouse,
     byCountry,
+    shopDirectory: publicShopDirectory(shopDirectory, auth),
     recentOrders,
   };
 }
@@ -6150,6 +6183,59 @@ const server = http.createServer(async (req, res) => {
       const exchangeRates = performanceAnalyticsStore.upsertExchangeRates(rates, `manual:${auth.user?.username || auth.user?.id || "admin"}`);
       appendActionLog(auth, "更新经营分析汇率", "performance_analytics", rates.map((rate) => String(rate.currency || "").toUpperCase()).join(","), { count: rates.length });
       sendJson(res, 200, { ok: true, exchangeRates, updatedAt: new Date().toISOString() });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-directory/project-group" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "performance_analysis")) {
+        sendJson(res, 403, { ok: false, message: "设置店铺项目组需要经营贡献管理权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const shopKeys = [...new Set((Array.isArray(body.shopKeys) ? body.shopKeys : []).map((value) => String(value || "").trim()).filter(Boolean))];
+      const projectGroup = String(body.projectGroup || "").trim();
+      if (!shopKeys.length || shopKeys.length > 500) {
+        sendJson(res, 400, { ok: false, message: "请选择 1 至 500 个店铺。" });
+        return;
+      }
+      if (!projectGroup || projectGroup.length > 80) {
+        sendJson(res, 400, { ok: false, message: "主项目组名称不能为空，且不能超过 80 个字符。" });
+        return;
+      }
+      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      const knownKeys = new Set(directory.shops.map((shop) => shop.key));
+      const unknownKeys = shopKeys.filter((key) => !knownKeys.has(key));
+      if (unknownKeys.length) {
+        sendJson(res, 400, { ok: false, message: `有 ${unknownKeys.length} 个店铺身份已变化，请刷新页面后重新选择。` });
+        return;
+      }
+      cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
+      const now = new Date().toISOString();
+      const actor = auth.user?.displayName || auth.user?.username || "管理员";
+      for (const key of shopKeys) {
+        cachedOrderAnalysisSettings.shopAssignments[key] = {
+          projectGroup,
+          updatedAt: now,
+          updatedBy: actor,
+        };
+      }
+      cachedOrderAnalysisSettings.projectGroups = [...new Set([
+        ...cachedOrderAnalysisSettings.projectGroups,
+        projectGroup,
+      ])].sort((left, right) => left.localeCompare(right, "zh-CN"));
+      saveOrderAnalysisSettings();
+      appendActionLog(auth, "批量设置店铺主项目组", "shop_directory", projectGroup, {
+        shopCount: shopKeys.length,
+        shopKeys,
+      });
+      const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      sendJson(res, 200, {
+        ok: true,
+        updatedCount: shopKeys.length,
+        projectGroup,
+        shopDirectory: publicShopDirectory(updatedDirectory, auth),
+      });
       return;
     }
 
