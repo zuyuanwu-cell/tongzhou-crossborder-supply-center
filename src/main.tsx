@@ -63,6 +63,8 @@ import {
   MiaoshouScope,
   OrderAnalysisPayload,
   OrderSyncJob,
+  PerformanceAnalyticsPayload,
+  PerformanceContributionRow,
   ProductBase,
   ProductPayload,
   QuickNavPayload,
@@ -122,6 +124,7 @@ import {
   fetchLatestOrderSyncJob,
   fetchMiaoshou,
   fetchOrderAnalysis,
+  fetchPerformanceAnalytics,
   fetchProducts,
   fetchMiaoshouWaybill,
   fetchQuickNav,
@@ -147,6 +150,7 @@ import {
   syncAssets,
   syncOutsourcingOrders,
   syncOrders,
+  syncPerformanceExchangeRates,
   startOrderSyncJob,
   submitDistributorApplication,
   syncProducts,
@@ -159,6 +163,7 @@ import {
   testWecomNotification,
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
+  updatePerformanceExchangeRates,
   updateStockupPlanStatus,
   updateUserPermissions,
   updateUserStatus,
@@ -325,6 +330,7 @@ const navItems = [
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "operations", permission: "inventory_sync" },
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "operations", permission: "inventory_snapshots" },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "operations", permission: "order_analysis" },
+  { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "operations", permission: "performance_analysis" },
   { label: "动销监控", icon: BarChart3, hash: "#movement", section: "operations", permission: "movement" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "operations", permission: "movement_analysis" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "supply", permission: "stockup" },
@@ -766,6 +772,7 @@ function App() {
   const [movementPayload, setMovementPayload] = React.useState<MovementPayload | null>(null);
   const [movementHistoryPayload, setMovementHistoryPayload] = React.useState<MovementHistoryPayload | null>(null);
   const [orderAnalysisPayload, setOrderAnalysisPayload] = React.useState<OrderAnalysisPayload | null>(null);
+  const [performanceAnalyticsPayload, setPerformanceAnalyticsPayload] = React.useState<PerformanceAnalyticsPayload | null>(null);
   const [orderSyncJob, setOrderSyncJob] = React.useState<OrderSyncJob | null>(null);
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
@@ -851,6 +858,12 @@ function App() {
   }, [activeView, permissionSignature]);
 
   React.useEffect(() => {
+    if (!hasUserPermission(currentUser, "performance_analysis")) return;
+    if (hashForView(activeView) !== "#performance") return;
+    void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+  }, [activeView, permissionSignature]);
+
+  React.useEffect(() => {
     if (!hasUserPermission(currentUser, "action_log")) return;
     if (hashForView(activeView) !== "#action-log") return;
     void loadActionLog();
@@ -874,6 +887,7 @@ function App() {
       if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
       if (hasUserPermission(currentUser, "inventory_snapshots")) void loadInventorySnapshots();
       if (hasUserPermission(currentUser, "order_analysis")) void loadOrderAnalysis();
+      if (hasUserPermission(currentUser, "performance_analysis") && hashForView(activeView) === "#performance") void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
       if (hasUserPermission(currentUser, "movement")) void loadMovement();
       if (hasUserPermission(currentUser, "movement_analysis")) void loadMovementHistory();
       if (hasUserPermission(currentUser, "stockup")) void loadStockup();
@@ -882,7 +896,7 @@ function App() {
       if (hasUserPermission(currentUser, "action_log")) void loadActionLog();
     }, AUTO_SYNC_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [permissionSignature]);
+  }, [permissionSignature, activeView]);
 
   React.useEffect(() => {
     if (!hasUserPermission(currentUser, "movement_sync")) return;
@@ -890,7 +904,7 @@ function App() {
     const timer = window.setInterval(async () => {
       const job = await loadLatestOrderJob();
       if (job && !["queued", "running"].includes(job.status)) {
-        await Promise.all([loadMovement(), loadMovementHistory(), loadOrderAnalysis(), loadDashboardSummary(), loadStockup()]);
+        await Promise.all([loadMovement(), loadMovementHistory(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadDashboardSummary(), loadStockup()]);
       }
     }, 5000);
     return () => window.clearInterval(timer);
@@ -987,6 +1001,15 @@ function App() {
       setOrderAnalysisPayload(data);
     } catch {
       setOrderAnalysisPayload(null);
+    }
+  }
+
+  async function loadPerformanceAnalytics(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string } = {}) {
+    try {
+      const data = await fetchPerformanceAnalytics(input);
+      setPerformanceAnalyticsPayload(data);
+    } catch {
+      setPerformanceAnalyticsPayload(null);
     }
   }
 
@@ -1099,7 +1122,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications(), loadActionLog()]);
+      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications(), loadActionLog()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -1112,7 +1135,7 @@ function App() {
     setError("");
     try {
       await syncWarehouses();
-      await Promise.all([loadDashboardSummary(), loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadStockup()]);
+      await Promise.all([loadDashboardSummary(), loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "仓库同步失败");
     } finally {
@@ -1138,7 +1161,7 @@ function App() {
     try {
       const data = await startOrderSyncJob({ days: 90, warehouseIds });
       setOrderSyncJob(data.job);
-      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadStockup()]);
+      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "订单同步失败");
     } finally {
@@ -1290,7 +1313,7 @@ function App() {
     setError("");
     try {
       await deleteWarehouseConnection(id);
-      await Promise.all([loadWarehouses(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadStockup()]);
+      await Promise.all([loadWarehouses(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "删除仓库失败");
       throw requestError;
@@ -1382,6 +1405,7 @@ function App() {
     setMovementPayload(null);
     setMovementHistoryPayload(null);
     setOrderAnalysisPayload(null);
+    setPerformanceAnalyticsPayload(null);
     setStockupPayload(null);
     setStockupWorkflowPayload(null);
     setUserPayload(null);
@@ -1522,6 +1546,23 @@ function App() {
             onLoadInventorySnapshots={loadInventorySnapshots}
             onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
             canManageActions={canManage(currentUser)}
+          />
+        ) : activeView === "经营贡献" ? (
+          <PerformanceAnalysisPage
+            payload={performanceAnalyticsPayload}
+            onLoad={loadPerformanceAnalytics}
+            onSaveRates={async (rates) => {
+              await updatePerformanceExchangeRates(rates);
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+            }}
+            onSyncRates={async () => {
+              const result = await syncPerformanceExchangeRates();
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+              return result.sync;
+            }}
+            onSyncOrders={handleOrderSync}
+            syncing={syncing}
+            canSync={hasUserPermission(currentUser, "movement_sync")}
           />
         ) : activeView === "订单分析" ? (
           <OrderAnalysisPage
@@ -6908,6 +6949,335 @@ function InventorySnapshotPage({
             <button className="ghost-button compact-button" type="button" onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
           </div>
         </div>
+      </section>
+    </main>
+  );
+}
+
+function formatCny(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatOriginalAmount(amount?: number, currency = "") {
+  if (typeof amount !== "number" || !Number.isFinite(amount)) return "—";
+  const digits = ["IDR", "VND"].includes(currency) ? 0 : 2;
+  return `${currency || "—"} ${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: digits }).format(amount)}`;
+}
+
+function performanceRowHasOriginalRevenue(row?: PerformanceContributionRow | null) {
+  return (row?.amountsByCurrency || []).some((item) => Number(item.amount || 0) > 0);
+}
+
+function performanceRowRevenueReady(row?: PerformanceContributionRow | null) {
+  return !performanceRowHasOriginalRevenue(row) || Number(row?.revenueCoverageRate || 0) > 0;
+}
+
+function formatPercentValue(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function performanceDefaultRange() {
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - 89);
+  return { dateFrom: from.toISOString().slice(0, 10), dateTo: to.toISOString().slice(0, 10) };
+}
+
+function PerformanceAnalysisPage({
+  payload,
+  onLoad,
+  onSaveRates,
+  onSyncRates,
+  onSyncOrders,
+  syncing,
+  canSync,
+}: {
+  payload: PerformanceAnalyticsPayload | null;
+  onLoad: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string }) => Promise<void>;
+  onSaveRates: (rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) => Promise<void>;
+  onSyncRates: () => Promise<{ message?: string; lastUpdatedCount?: number; lastRateDate?: string }>;
+  onSyncOrders: () => Promise<void>;
+  syncing: boolean;
+  canSync: boolean;
+}) {
+  const defaults = performanceDefaultRange();
+  const [tab, setTab] = React.useState<"products" | "brands" | "quality">("products");
+  const [busy, setBusy] = React.useState(false);
+  const [dateFrom, setDateFrom] = React.useState(payload?.filters.dateFrom || defaults.dateFrom);
+  const [dateTo, setDateTo] = React.useState(payload?.filters.dateTo || defaults.dateTo);
+  const [country, setCountry] = React.useState(payload?.filters.country || "");
+  const [warehouseId, setWarehouseId] = React.useState(payload?.filters.warehouseId || "");
+  const [platform, setPlatform] = React.useState(payload?.filters.platform || "");
+  const [shopName, setShopName] = React.useState(payload?.filters.shopName || "");
+  const [projectGroup, setProjectGroup] = React.useState(payload?.filters.projectGroup || "");
+  const [brand, setBrand] = React.useState(payload?.filters.brand || "");
+  const [keyword, setKeyword] = React.useState(payload?.filters.keyword || "");
+  const [rateDrafts, setRateDrafts] = React.useState<Record<string, string>>({});
+  const [rateMessage, setRateMessage] = React.useState("");
+  const totals = payload?.totals;
+  const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false };
+  const latestRates = React.useMemo(() => {
+    const values = new Map<string, number>();
+    for (const row of payload?.exchangeRates || []) if (!values.has(row.currency)) values.set(row.currency, row.rateToCny);
+    return values;
+  }, [payload?.exchangeRates]);
+  const relevantCurrencies = React.useMemo(() => Array.from(new Set([
+    ...(payload?.currencySummary || []).map((item) => item.currency),
+    ...Array.from(latestRates.keys()),
+  ])).filter((currencyCode) => currencyCode && !["CNY", "RMB"].includes(currencyCode)).sort(), [payload?.currencySummary, latestRates]);
+
+  React.useEffect(() => {
+    if (!payload) return;
+    setDateFrom(payload.filters.dateFrom || defaults.dateFrom);
+    setDateTo(payload.filters.dateTo || defaults.dateTo);
+    setCountry(payload.filters.country || "");
+    setWarehouseId(payload.filters.warehouseId || "");
+    setPlatform(payload.filters.platform || "");
+    setShopName(payload.filters.shopName || "");
+    setProjectGroup(payload.filters.projectGroup || "");
+    setBrand(payload.filters.brand || "");
+    setKeyword(payload.filters.keyword || "");
+  }, [payload?.generatedAt]);
+
+  React.useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const currencyCode of relevantCurrencies) next[currencyCode] = latestRates.get(currencyCode)?.toString() || "";
+    setRateDrafts(next);
+  }, [relevantCurrencies.join("|"), payload?.exchangeRates]);
+
+  async function submitFilters(event?: React.FormEvent) {
+    event?.preventDefault();
+    setBusy(true);
+    try {
+      await onLoad({ dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, brand, keyword });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetFilters() {
+    const range = performanceDefaultRange();
+    setDateFrom(range.dateFrom);
+    setDateTo(range.dateTo);
+    setCountry("");
+    setWarehouseId("");
+    setPlatform("");
+    setShopName("");
+    setProjectGroup("");
+    setBrand("");
+    setKeyword("");
+    setBusy(true);
+    try {
+      await onLoad(range);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRates() {
+    const rates = relevantCurrencies.map((currencyCode) => ({
+      currency: currencyCode,
+      rateToCny: Number(rateDrafts[currencyCode]),
+      effectiveDate: dateTo || new Date().toISOString().slice(0, 10),
+    })).filter((item) => Number.isFinite(item.rateToCny) && item.rateToCny > 0);
+    if (!rates.length) {
+      setRateMessage("请至少填写一个有效汇率。");
+      return;
+    }
+    setBusy(true);
+    setRateMessage("");
+    try {
+      await onSaveRates(rates);
+      setRateMessage(`已保存 ${rates.length} 个币种汇率，并重新计算人民币金额。`);
+    } catch (requestError) {
+      setRateMessage(requestError instanceof Error ? requestError.message : "汇率保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function syncRatesNow() {
+    setBusy(true);
+    setRateMessage("");
+    try {
+      const result = await onSyncRates();
+      setRateMessage(`${result.message || "汇率同步成功。"}${result.lastRateDate ? ` 数据日期 ${result.lastRateDate}` : ""}${result.lastUpdatedCount ? `，更新 ${formatNumber(result.lastUpdatedCount)} 条日汇率` : ""}`);
+    } catch (requestError) {
+      setRateMessage(requestError instanceof Error ? requestError.message : "自动汇率同步失败，已保留上次有效值。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const hasOriginalRevenue = (payload?.currencySummary || []).some((item) => Number(item.amount || 0) > 0);
+  const revenueReady = !hasOriginalRevenue || Number(payload?.quality.revenueCoverageRate || 0) > 0;
+  const costReady = Number(payload?.quality.costCoverageRate || 0) > 0;
+  const profitReady = Number(payload?.quality.profitCoverageRate || 0) > 0;
+  const useRevenueMetric = permissions.revenue && revenueReady;
+  const trendRows = (payload?.daily || []).slice(-30);
+  const trendMax = Math.max(1, ...trendRows.map((row) => useRevenueMetric ? (row.salesCny || 0) : row.quantity));
+  const qualityRows = [
+    { label: "SKU 未匹配产品", value: payload?.quality.unmatchedProductLines || 0, note: "无法归属产品、品牌和成本", tone: "danger" },
+    { label: "品牌未建档", value: payload?.quality.missingBrandLines || 0, note: "归入未建档品牌", tone: "warning" },
+    ...(permissions.revenue ? [{ label: "汇率缺失", value: payload?.quality.missingExchangeRateLines || 0, note: "暂不计入人民币销售额", tone: "warning" }] : []),
+    ...(permissions.cost ? [{ label: "成本缺失", value: payload?.quality.missingCostLines || 0, note: "暂不计入预估毛利", tone: "danger" }] : []),
+    { label: "历史金额已纠正", value: payload?.quality.legacyAllocatedLines || 0, note: "YunWMS 多 SKU 订单已重新分摊", tone: "good" },
+  ];
+
+  return (
+    <main className="performance-page">
+      <section className="performance-hero">
+        <div>
+          <p className="eyebrow">Portfolio Performance</p>
+          <h2>货盘经营贡献</h2>
+          <p>默认查看近 90 天 WMS 已出库订单；外币分别保留，并按已配置汇率折算人民币。利润为已匹配到仓成本范围内的预估毛利。</p>
+          <div className="source-row">
+            <span className={`status-pill ${payload?.syncedAt ? "good" : "warning"}`}>{payload?.syncedAt ? "订单事实层已更新" : "等待订单同步"}</span>
+            <span>{payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
+            <span>{formatNumber(payload?.metadata.rowCount || 0)} 条订单行</span>
+          </div>
+        </div>
+        <div className="performance-hero-actions">
+          <button className="ghost-button" type="button" onClick={() => submitFilters()} disabled={busy}><RefreshCw size={16} className={busy ? "spinning" : ""} />刷新分析</button>
+          {canSync ? <button className="sync-button" type="button" onClick={onSyncOrders} disabled={syncing}><DatabaseZap size={16} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步订单"}</button> : null}
+        </div>
+      </section>
+
+      <section className="performance-kpis">
+        <article className="performance-kpi primary">
+          <span>人民币销售额</span>
+          <strong>{permissions.revenue ? (revenueReady ? formatCny(totals?.salesCny) : "待配置汇率") : "未授权"}</strong>
+          <small>{permissions.revenue ? (revenueReady ? `金额覆盖 ${formatPercentValue(payload?.quality.revenueCoverageRate)}` : "原币金额已保留，尚未折算人民币") : "需要经营销售金额权限"}</small>
+        </article>
+        <article className="performance-kpi">
+          <span>出库订单 / 件数</span>
+          <strong>{formatNumber(totals?.orderCount || 0)} <i>单</i></strong>
+          <small>{formatNumber(totals?.quantity || 0)} 件 · {formatNumber(totals?.skuCount || 0)} SKU</small>
+        </article>
+        <article className="performance-kpi">
+          <span>已匹配销售成本</span>
+          <strong>{permissions.cost ? (costReady ? formatCny(totals?.cogsCny) : "待匹配成本") : "未授权"}</strong>
+          <small>{permissions.cost ? `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}` : "成本字段已由后端隔离"}</small>
+        </article>
+        <article className="performance-kpi profit">
+          <span>覆盖范围预估毛利</span>
+          <strong>{permissions.profit ? (profitReady ? formatCny(totals?.estimatedProfitCny) : "待汇率与成本") : "未授权"}</strong>
+          <small>{permissions.profit ? `毛利率 ${formatPercentValue(totals?.grossMargin)} · 覆盖 ${formatPercentValue(payload?.quality.profitCoverageRate)}` : "需要成本与利润权限"}</small>
+        </article>
+      </section>
+
+      {permissions.revenue ? (
+        <section className="performance-currency-strip">
+          <span>原币销售额</span>
+          {(payload?.currencySummary || []).map((item) => (
+            <div key={item.currency} className={!item.rateToCny ? "missing-rate" : ""}>
+              <strong>{formatOriginalAmount(item.amount, item.currency)}</strong>
+              <small>{item.rateToCny ? `1 ${item.currency} = ${item.rateToCny} CNY` : "缺少人民币汇率"}</small>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      <form className="performance-filter" onSubmit={submitFilters}>
+        <label><span>开始日期</span><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
+        <label><span>结束日期</span><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
+        <label><span>国家</span><select value={country} onChange={(event) => setCountry(event.target.value)}><option value="">全部国家</option>{payload?.options.countries.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label><span>仓库</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">全部仓库</option>{payload?.options.warehouses.map((item) => <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>)}</select></label>
+        <label><span>平台</span><select value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="">全部平台</option>{payload?.options.platforms.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label><span>店铺</span><select value={shopName} onChange={(event) => setShopName(event.target.value)}><option value="">全部店铺</option>{payload?.options.shops.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label><span>项目组</span><select value={projectGroup} onChange={(event) => setProjectGroup(event.target.value)}><option value="">全部项目组</option>{payload?.options.projectGroups.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label><span>品牌</span><select value={brand} onChange={(event) => setBrand(event.target.value)}><option value="">全部品牌</option>{payload?.options.brands.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label className="performance-search"><span>搜索</span><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="SKU、产品、品牌、订单" /></label>
+        <div className="performance-filter-actions"><button className="ghost-button" type="button" onClick={resetFilters} disabled={busy}>重置</button><button className="sync-button" type="submit" disabled={busy}>{busy ? "计算中" : "应用筛选"}</button></div>
+      </form>
+
+      <section className="performance-leaders">
+        <article>
+          <p className="eyebrow">Top Product</p>
+          <span>业绩贡献最高产品</span>
+          <h3>{payload?.topProduct?.productName || "暂无可分析产品"}</h3>
+          <div><strong>{useRevenueMetric ? formatCny(payload?.topProduct?.salesCny) : `${formatNumber(payload?.topProduct?.quantity || 0)} 件`}</strong><small>{payload?.topProduct?.sku || "SKU 未匹配"} · {useRevenueMetric ? `${formatPercentValue(payload?.topProduct?.contributionRate)} 贡献` : "人民币贡献待汇率"}</small></div>
+        </article>
+        <article>
+          <p className="eyebrow">Top Brand</p>
+          <span>业绩贡献最高品牌</span>
+          <h3>{payload?.topBrand?.brand || "暂无品牌数据"}</h3>
+          <div><strong>{useRevenueMetric ? formatCny(payload?.topBrand?.salesCny) : `${formatNumber(payload?.topBrand?.quantity || 0)} 件`}</strong><small>{formatNumber(payload?.topBrand?.skuCount || 0)} SKU · {useRevenueMetric ? `${formatPercentValue(payload?.topBrand?.contributionRate)} 贡献` : "人民币贡献待汇率"}</small></div>
+        </article>
+        <article className="performance-trend-card">
+          <div><p className="eyebrow">30 Day Pulse</p><span>最近30天趋势</span></div>
+          <div className="performance-bars" aria-label="最近30天业绩趋势">
+            {trendRows.map((row) => {
+              const value = useRevenueMetric ? (row.salesCny || 0) : row.quantity;
+              return <i key={row.date} style={{ height: `${Math.max(5, (value / trendMax) * 100)}%` }} title={`${row.date} · ${useRevenueMetric ? formatCny(row.salesCny) : `${formatNumber(row.quantity)} 件`}`} />;
+            })}
+          </div>
+        </article>
+      </section>
+
+      <section className="performance-workspace">
+        <div className="performance-tabs">
+          <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.products.length || 0)}</span></button>
+          <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.brands.length || 0)}</span></button>
+          <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber((payload?.quality.unmatchedProductLines || 0) + (payload?.quality.missingExchangeRateLines || 0) + (payload?.quality.missingCostLines || 0))}</span></button>
+        </div>
+
+        {tab === "products" ? (
+          <div className="performance-table-wrap">
+            <div className="performance-contribution-row head">
+              <span>产品 / 品牌</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>销售成本</span> : null}{permissions.profit ? <><span>预估毛利</span><span>毛利率</span></> : null}<span>覆盖</span>
+            </div>
+            {(payload?.products || []).slice(0, 100).map((row, index) => (
+              <article className="performance-contribution-row" key={row.key}>
+                <span className="performance-name-cell"><b>{String(index + 1).padStart(2, "0")}</b>{row.imageUrl ? <img src={row.imageUrl} alt="" /> : <span className="performance-product-placeholder"><Boxes size={17} /></span>}<span><strong>{row.productName}</strong><small>{row.sku} · {row.brand}</small></span></span>
+                <strong>{formatNumber(row.quantity)}</strong>
+                {permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}<small>{(row.amountsByCurrency || []).map((item) => formatOriginalAmount(item.amount, item.currency)).join(" · ")}</small></strong> : null}
+                <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>
+                {permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}<small>{row.futureCostFallback ? "使用最新成本估算" : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
+                {permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
+                <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.profitCoverageRate ?? row.revenueCoverageRate) : "待汇率"}</span>
+              </article>
+            ))}
+          </div>
+        ) : tab === "brands" ? (
+          <div className="performance-table-wrap">
+            <div className="performance-contribution-row brand-row-table head"><span>品牌</span><span>SKU</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>销售成本</span> : null}{permissions.profit ? <><span>预估毛利</span><span>毛利率</span></> : null}</div>
+            {(payload?.brands || []).map((row, index) => (
+              <article className="performance-contribution-row brand-row-table" key={row.key}>
+                <span className="performance-brand-cell"><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{row.brand}</strong><small>{formatNumber(row.orderCount)} 单 · {formatNumber(row.warehouseCount)} 仓</small></span></span>
+                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>{permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}</span> : null}{permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="performance-quality-layout">
+            <div className="performance-quality-grid">
+              {qualityRows.map((item) => <article key={item.label} className={item.tone}><span>{item.label}</span><strong>{formatNumber(item.value)}</strong><small>{item.note}</small></article>)}
+            </div>
+            {permissions.manageRates ? (
+              <section className="performance-rate-panel">
+                <div><p className="eyebrow">Exchange Rates</p><h3>人民币汇率维护</h3><p>系统每天自动同步并保存历史日汇率；订单使用销售日期当天或之前最近一个工作日汇率。手工录入可覆盖同日自动值，CNY/RMB 固定为 1。</p></div>
+                <div className={`performance-rate-sync-status ${payload?.exchangeRateSync?.lastError ? "warning" : "good"}`}>
+                  <span className={`status-pill ${payload?.exchangeRateSync?.enabled ? "good" : "warning"}`}>{payload?.exchangeRateSync?.enabled ? "自动同步已开启" : "自动同步已关闭"}</span>
+                  <strong>{payload?.exchangeRateSync?.lastSuccessAt ? `最近成功 ${formatDateTime(payload.exchangeRateSync.lastSuccessAt)}` : "等待首次自动同步"}</strong>
+                  <small>{payload?.exchangeRateSync?.lastError ? `最近异常：${payload.exchangeRateSync.lastError}；旧汇率仍然有效。` : payload?.exchangeRateSync?.lastRateDate ? `已同步至 ${payload.exchangeRateSync.lastRateDate}，每 ${payload.exchangeRateSync.intervalHours} 小时检查一次。` : `首次同步会补齐近 ${payload?.exchangeRateSync?.backfillDays || 120} 天历史汇率。`}</small>
+                  <a href={payload?.exchangeRateSync?.providerUrl || "https://frankfurter.dev/"} target="_blank" rel="noreferrer">来源：{payload?.exchangeRateSync?.provider || "Frankfurter"} <ExternalLink size={13} /></a>
+                  <button className="ghost-button" type="button" onClick={syncRatesNow} disabled={busy}>{busy ? "同步中" : "立即同步"}</button>
+                </div>
+                <div className="performance-rate-grid">
+                  {relevantCurrencies.length ? relevantCurrencies.map((currencyCode) => <label key={currencyCode}><span>{currencyCode} → CNY</span><input type="number" min="0" step="0.00000001" value={rateDrafts[currencyCode] || ""} onChange={(event) => setRateDrafts((current) => ({ ...current, [currencyCode]: event.target.value }))} placeholder="请输入 1 单位外币对应人民币" /></label>) : <div className="notice">当前筛选范围没有需要配置的外币。</div>}
+                </div>
+                <div className="performance-rate-actions"><span>{rateMessage}</span><button className="sync-button" type="button" onClick={saveRates} disabled={busy || !relevantCurrencies.length}>保存手工覆盖并重算</button></div>
+              </section>
+            ) : null}
+          </div>
+        )}
       </section>
     </main>
   );

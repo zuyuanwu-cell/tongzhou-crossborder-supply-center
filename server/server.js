@@ -25,6 +25,9 @@ import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogPr
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
+import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
+import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
+import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -54,6 +57,12 @@ const warehouseCachePath = resolve(cacheDir, "warehouse-sync.json");
 const inventorySnapshotCachePath = resolve(cacheDir, "inventory-snapshots.json");
 const movementHistoryCachePath = resolve(cacheDir, "movement-history.json");
 const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || resolve(cacheDir, "movement-history.sqlite"));
+const performanceAnalyticsDbPath = resolve(process.env.PERFORMANCE_ANALYTICS_DB_PATH || resolve(cacheDir, "performance-analytics.sqlite"));
+const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "false";
+const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
+const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
+const performanceFxEndpoint = String(process.env.PERFORMANCE_FX_ENDPOINT || "").trim() || undefined;
+const performanceFxConfiguredCurrencies = String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean);
 const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const orderSyncJobsCachePath = resolve(cacheDir, "order-sync-jobs.json");
 const orderAnalysisSettingsPath = resolve(cacheDir, "order-analysis-settings.json");
@@ -102,6 +111,22 @@ let cachedActionLog = normalizeActionLog(loadJsonCache(actionLogCachePath));
 let cachedDistributorApplications = normalizeDistributorApplications(loadJsonCache(distributorApplicationsPath));
 let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
+const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
+performanceAnalyticsStore.replaceSalesFacts(cachedOrdersSync.orders || [], cachedOrdersSync.syncedAt || "");
+try {
+  const environmentRates = JSON.parse(process.env.PERFORMANCE_FX_RATES || "[]");
+  if (Array.isArray(environmentRates) && environmentRates.length) performanceAnalyticsStore.upsertExchangeRates(environmentRates, "environment");
+} catch {
+  console.warn("[performance-analytics] PERFORMANCE_FX_RATES 不是有效的 JSON，已忽略环境汇率。");
+}
+const performanceExchangeRateSync = createExchangeRateSyncService({
+  store: performanceAnalyticsStore,
+  enabled: performanceFxAutoSyncEnabled,
+  endpoint: performanceFxEndpoint,
+  intervalMs: performanceFxSyncIntervalMs,
+  backfillDays: performanceFxBackfillDays,
+  configuredCurrencies: performanceFxConfiguredCurrencies,
+});
 const miaoshouAutomation = await initMiaoshouAutomation({ cacheDir, dbPath: miaoshouTaskDbPath });
 const defaultInternalAccessCode = "admin123";
 const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
@@ -164,6 +189,7 @@ function saveMovementHistoryCache(payload) {
 
 function saveOrderCache(payload) {
   saveJsonCache(orderCachePath, payload);
+  performanceAnalyticsStore.replaceSalesFacts(payload?.orders || [], payload?.syncedAt || "", { force: true });
 }
 
 function saveOrderSyncJobsCache() {
@@ -2683,7 +2709,7 @@ function filterProductPayload(payload, auth) {
   const productBase = canViewPartnerAssets(auth)
     ? (scopedSources.products.productBase || [])
       .filter((product) => !restrictBaseToVisibleCatalog || [product.sku, product.skuNo].some((value) => visibleSkuSet.has(String(value || "").toUpperCase())))
-      .map(projectProductBase)
+      .map((product) => projectProductBase(product, user))
     : [];
   const {
     directCatalog,
@@ -3008,6 +3034,108 @@ function orderShopDisplayName(rawShopName) {
   const raw = String(rawShopName || "").trim();
   if (!raw) return "未识别店铺";
   return String(cachedOrderAnalysisSettings.shopAliases?.[raw] || "").trim() || raw;
+}
+
+function performanceDateRange(params = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    dateFrom: String(params.dateFrom || dateOnlyDaysAgo(89)).slice(0, 10),
+    dateTo: String(params.dateTo || today).slice(0, 10),
+  };
+}
+
+function omitPerformanceFields(row, { revenue, cost, profit }) {
+  if (!row || typeof row !== "object") return row;
+  const projected = { ...row };
+  if (!revenue) {
+    for (const field of ["amountsByCurrency", "salesCny", "contributionRate", "revenueCoverageRate", "rateToCny", "rateEffectiveDate", "salesAmount", "currency"]) delete projected[field];
+  }
+  if (!cost) {
+    for (const field of ["unitCostCny", "costBatchId", "costEffectiveAt", "futureCostFallback", "cogsCny", "costCoverageRate", "costCovered"]) delete projected[field];
+  }
+  if (!profit) {
+    for (const field of ["profitSalesCny", "estimatedProfitCny", "grossMargin", "profitCoverageRate", "profitCovered"]) delete projected[field];
+  }
+  return projected;
+}
+
+function projectPerformanceAnalyticsPayload(payload, auth) {
+  const revenue = hasPermission(auth, "performance_revenue");
+  const cost = hasPermission(auth, "performance_cost");
+  const profit = revenue && cost && hasPermission(auth, "performance_profit");
+  const projection = { revenue, cost, profit };
+  let products = (payload.products || []).map((row) => omitPerformanceFields(row, projection));
+  let brands = (payload.brands || []).map((row) => omitPerformanceFields(row, projection));
+  if (!revenue) {
+    products = products.sort((a, b) => numberOrZero(b.quantity) - numberOrZero(a.quantity));
+    brands = brands.sort((a, b) => numberOrZero(b.quantity) - numberOrZero(a.quantity));
+  }
+  const quality = { ...payload.quality };
+  if (!revenue) {
+    delete quality.missingCurrencyLines;
+    delete quality.missingExchangeRateLines;
+    delete quality.zeroSalesAmountLines;
+    delete quality.revenueCoverageRate;
+  }
+  if (!cost) {
+    delete quality.missingCostLines;
+    delete quality.futureCostFallbackLines;
+    delete quality.costCoverageRate;
+  }
+  if (!profit) delete quality.profitCoverageRate;
+  const { dbPath: _privateDbPath, ...safeMetadata } = performanceAnalyticsStore.getMetadata();
+  return {
+    ...payload,
+    permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue },
+    metadata: safeMetadata,
+    totals: omitPerformanceFields(payload.totals, projection),
+    quality,
+    currencySummary: revenue ? payload.currencySummary : [],
+    exchangeRates: revenue ? performanceAnalyticsStore.listExchangeRates() : [],
+    exchangeRateSync: revenue ? performanceExchangeRateSync.status() : null,
+    topProduct: products[0] || null,
+    topBrand: brands[0] || null,
+    products,
+    brands,
+    daily: (payload.daily || []).map((row) => omitPerformanceFields(row, projection)),
+    recentFacts: (payload.recentFacts || []).map((row) => omitPerformanceFields(row, projection)),
+  };
+}
+
+function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
+  const range = performanceDateRange(params);
+  const filters = {
+    ...range,
+    country: String(params.country || ""),
+    warehouseId: String(params.warehouseId || ""),
+    platform: String(params.platform || ""),
+    shopName: String(params.shopName || ""),
+    projectGroup: String(params.projectGroup || ""),
+    brand: String(params.brand || ""),
+    keyword: String(params.keyword || ""),
+  };
+  const user = auth?.user || directAuth.user;
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const facts = performanceAnalyticsStore.listSalesFacts({
+    dateFrom: filters.dateFrom,
+    dateTo: filters.dateTo,
+    country: filters.country,
+    warehouseId: filters.warehouseId,
+    platform: filters.platform,
+    shopName: filters.shopName,
+    projectGroup: filters.projectGroup,
+  })
+    .filter((fact) => {
+      if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(fact.warehouseId || ""))) return false;
+      return isWithinDataScope(fact, scopes);
+    });
+  const payload = buildPerformanceAnalyticsPayload({
+    facts,
+    products: cachedProducts,
+    exchangeRates: performanceAnalyticsStore.listExchangeRates(),
+    filters,
+  });
+  return projectPerformanceAnalyticsPayload({ ...payload, syncedAt: cachedOrdersSync.syncedAt || "" }, auth);
 }
 
 function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
@@ -4242,6 +4370,17 @@ async function runAutoSync() {
     console.error("[auto-sync] failed", error);
   } finally {
     autoSyncRunning = false;
+  }
+}
+
+async function runAutomaticExchangeRateSync(reason = "scheduled") {
+  try {
+    const result = await performanceExchangeRateSync.run({ reason });
+    if (!result.skipped) console.log(`[fx-sync] ${result.message} ${result.lastUpdatedCount || 0} rates through ${result.lastRateDate || "unknown date"}`);
+    return result;
+  } catch (error) {
+    console.error("[fx-sync] failed; previous valid rates were retained", error);
+    return performanceExchangeRateSync.status();
   }
 }
 
@@ -5975,6 +6114,61 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/performance-analytics" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_analysis")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有经营贡献分析权限。" });
+        return;
+      }
+      sendJson(res, 200, buildPerformanceAnalyticsResponse({
+        dateFrom: url.searchParams.get("dateFrom") || "",
+        dateTo: url.searchParams.get("dateTo") || "",
+        country: url.searchParams.get("country") || "",
+        warehouseId: url.searchParams.get("warehouseId") || "",
+        platform: url.searchParams.get("platform") || "",
+        shopName: url.searchParams.get("shopName") || "",
+        projectGroup: url.searchParams.get("projectGroup") || "",
+        brand: url.searchParams.get("brand") || "",
+        keyword: url.searchParams.get("keyword") || "",
+      }, auth));
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/exchange-rates" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "维护经营汇率需要管理员及经营销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const rates = Array.isArray(body.rates) ? body.rates : [];
+      const invalid = rates.find((rate) => !/^[A-Z]{3}$/i.test(String(rate?.currency || "").trim()) || numberOrZero(rate?.rateToCny) <= 0);
+      if (!rates.length || invalid) {
+        sendJson(res, 400, { ok: false, message: "请提供有效的三位币种代码和大于 0 的人民币汇率。" });
+        return;
+      }
+      const exchangeRates = performanceAnalyticsStore.upsertExchangeRates(rates, `manual:${auth.user?.username || auth.user?.id || "admin"}`);
+      appendActionLog(auth, "更新经营分析汇率", "performance_analytics", rates.map((rate) => String(rate.currency || "").toUpperCase()).join(","), { count: rates.length });
+      sendJson(res, 200, { ok: true, exchangeRates, updatedAt: new Date().toISOString() });
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/exchange-rates/sync" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "立即同步汇率需要管理员及经营销售金额权限。" });
+        return;
+      }
+      const sync = await performanceExchangeRateSync.run({ force: true, reason: `manual:${auth.user?.username || auth.user?.id || "admin"}` });
+      appendActionLog(auth, "立即同步经营汇率", "performance_exchange_rate", sync.provider || "Frankfurter", {
+        updatedCount: sync.lastUpdatedCount || 0,
+        rateDate: sync.lastRateDate || "",
+        missingCurrencies: sync.missingCurrencies || [],
+      });
+      sendJson(res, 200, { ok: true, sync, exchangeRates: performanceAnalyticsStore.listExchangeRates() });
+      return;
+    }
+
     if (url.pathname === "/api/order-analysis" && req.method === "GET") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "order_analysis")) {
@@ -6618,6 +6812,11 @@ server.listen(port, () => {
   setInterval(runScheduledInventorySnapshot, 60 * 1000);
   setInterval(runWecomSchedules, 60 * 1000);
   setInterval(() => { void miaoshouAutomation.runScheduled(); }, 60 * 1000);
+  if (performanceFxAutoSyncEnabled) {
+    setInterval(() => { void runAutomaticExchangeRateSync("scheduled"); }, Math.min(performanceFxSyncIntervalMs, 60 * 60 * 1000));
+    void runAutomaticExchangeRateSync("startup");
+    console.log(`[fx-sync] enabled every ${Math.round(performanceFxSyncIntervalMs / 3_600_000)} hours with ${performanceFxBackfillDays}-day initial backfill`);
+  }
   runScheduledInventorySnapshot();
   runWecomSchedules();
   void miaoshouAutomation.runScheduled();

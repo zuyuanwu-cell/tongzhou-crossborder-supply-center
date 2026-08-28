@@ -84,6 +84,9 @@ export function normalizeProductBase(records) {
     publicDescription: text(valueOf(record, fields.publicDescription)),
     sellingPoints: text(valueOf(record, fields.sellingPoints)),
     sellingPointsEn: text(valueOf(record, fields.sellingPointsEn)),
+    latestCostBatchId: text(valueOf(record, fields.latestCostBatchId)),
+    latestLandedUnitCostCny: number(valueOf(record, fields.latestLandedUnitCostCny)),
+    latestCostEffectiveAt: text(valueOf(record, fields.latestCostEffectiveAt)),
     raw: record,
   }));
 }

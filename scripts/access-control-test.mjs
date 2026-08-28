@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { effectivePermissions, projectCatalogProduct } from "../server/access-control.js";
+import { effectivePermissions, projectCatalogProduct, projectProductBase } from "../server/access-control.js";
 import { projectMovementPayload, scopeMovementSources } from "../server/movement-access.js";
 import { publicUser } from "../server/user-auth.js";
 
@@ -15,6 +15,18 @@ const distributorPermissions = effectivePermissions(distributor);
 assert.equal(distributorPermissions.includes("movement"), true, "a distributor can be granted movement access");
 assert.equal(distributorPermissions.includes("direct_price"), false, "a distributor can never be granted direct price access");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["users"], deny: [] } }).includes("users"), false, "non-admin roles cannot grant themselves user administration");
+
+const distributorPerformancePermissions = effectivePermissions({
+  role: "distributor",
+  permissionOverrides: {
+    allow: ["performance_analysis", "performance_revenue", "performance_cost", "performance_profit"],
+    deny: [],
+  },
+});
+assert.equal(distributorPerformancePermissions.includes("performance_analysis"), true, "a distributor can be granted performance analysis");
+assert.equal(distributorPerformancePermissions.includes("performance_revenue"), true, "a distributor can be granted performance revenue");
+assert.equal(distributorPerformancePermissions.includes("performance_cost"), false, "a distributor can never be granted performance cost");
+assert.equal(distributorPerformancePermissions.includes("performance_profit"), false, "a distributor can never be granted performance profit");
 
 const projectedProduct = projectCatalogProduct({
   id: "p-1",
@@ -34,6 +46,27 @@ assert.equal(projectedProduct.distributionPrice, 10);
 assert.equal("directPrice" in projectedProduct, false);
 assert.equal("directCostPrice" in projectedProduct, false);
 assert.equal("raw" in projectedProduct, false);
+
+const hiddenCostProduct = projectProductBase({
+  sku: "SKU-A",
+  latestCostBatchId: "CB-1",
+  latestLandedUnitCostCny: 12.5,
+  latestCostEffectiveAt: "2026-08-20",
+}, distributor);
+assert.equal("latestCostBatchId" in hiddenCostProduct, false);
+assert.equal("latestLandedUnitCostCny" in hiddenCostProduct, false);
+assert.equal("latestCostEffectiveAt" in hiddenCostProduct, false);
+
+const visibleCostProduct = projectProductBase({
+  sku: "SKU-A",
+  latestCostBatchId: "CB-1",
+  latestLandedUnitCostCny: 12.5,
+  latestCostEffectiveAt: "2026-08-20",
+}, {
+  role: "direct",
+  permissionOverrides: { allow: ["performance_cost"], deny: [] },
+});
+assert.equal(visibleCostProduct.latestLandedUnitCostCny, 12.5);
 
 const inventoryDeniedProduct = projectCatalogProduct({ stockQty: 5, status: "在售", alert: "健康" }, {
   role: "distributor",

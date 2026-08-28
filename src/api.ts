@@ -83,6 +83,9 @@ export type ProductBase = {
   publicDescription?: string;
   sellingPoints?: string;
   sellingPointsEn?: string;
+  latestCostBatchId?: string;
+  latestLandedUnitCostCny?: number;
+  latestCostEffectiveAt?: string;
 };
 
 export type ProductPayload = {
@@ -1309,6 +1312,144 @@ export type OrderAnalysisPayload = {
   }>;
 };
 
+export type PerformanceAmount = {
+  currency: string;
+  amount: number;
+  rateToCny?: number;
+  rateEffectiveDate?: string;
+};
+
+export type PerformanceContributionRow = {
+  key: string;
+  sku?: string;
+  productName?: string;
+  brand?: string;
+  category?: string;
+  imageUrl?: string;
+  orderCount: number;
+  orderLines: number;
+  quantity: number;
+  amountsByCurrency?: PerformanceAmount[];
+  salesCny?: number;
+  profitSalesCny?: number;
+  cogsCny?: number;
+  estimatedProfitCny?: number;
+  grossMargin?: number;
+  contributionRate?: number;
+  revenueCoverageRate?: number;
+  costCoverageRate?: number;
+  profitCoverageRate?: number;
+  shopCount: number;
+  platformCount: number;
+  warehouseCount: number;
+  skuCount: number;
+  unitCostCny?: number;
+  costEffectiveAt?: string;
+  futureCostFallback?: boolean;
+  date?: string;
+};
+
+export type PerformanceAnalyticsPayload = {
+  ok: boolean;
+  generatedAt: string;
+  syncedAt: string;
+  basis: "wms_outbound" | string;
+  permissions: {
+    revenue: boolean;
+    cost: boolean;
+    profit: boolean;
+    manageRates: boolean;
+  };
+  metadata: {
+    sourceSyncedAt: string;
+    rebuiltAt: string;
+    rowCount: number;
+  };
+  filters: {
+    dateFrom: string;
+    dateTo: string;
+    country: string;
+    warehouseId: string;
+    platform: string;
+    shopName: string;
+    projectGroup: string;
+    brand: string;
+    keyword: string;
+  };
+  totals: PerformanceContributionRow;
+  quality: {
+    totalLines: number;
+    missingSkuLines: number;
+    unmatchedProductLines: number;
+    missingBrandLines: number;
+    missingCurrencyLines?: number;
+    missingExchangeRateLines?: number;
+    zeroSalesAmountLines?: number;
+    missingCostLines?: number;
+    futureCostFallbackLines?: number;
+    legacyAllocatedLines: number;
+    revenueCoverageRate?: number;
+    costCoverageRate?: number;
+    profitCoverageRate?: number;
+  };
+  currencySummary: PerformanceAmount[];
+  exchangeRates: Array<{
+    currency: string;
+    effectiveDate: string;
+    rateToCny: number;
+    source: string;
+    updatedAt: string;
+  }>;
+  exchangeRateSync: {
+    enabled: boolean;
+    running: boolean;
+    provider: string;
+    providerUrl: string;
+    intervalHours: number;
+    backfillDays: number;
+    lastAttemptAt: string;
+    lastSuccessAt: string;
+    lastRateDate: string;
+    lastError: string;
+    lastReason: string;
+    lastUpdatedCount: number;
+    currencies: string[];
+    missingCurrencies: string[];
+    nextSyncAt: string;
+  } | null;
+  topProduct: PerformanceContributionRow | null;
+  topBrand: PerformanceContributionRow | null;
+  products: PerformanceContributionRow[];
+  brands: PerformanceContributionRow[];
+  daily: PerformanceContributionRow[];
+  recentFacts: Array<{
+    id: string;
+    orderDate: string;
+    orderNo: string;
+    sku: string;
+    productName: string;
+    brand: string;
+    quantity: number;
+    salesAmount?: number;
+    currency?: string;
+    salesCny?: number;
+    unitCostCny?: number;
+    cogsCny?: number;
+    estimatedProfitCny?: number;
+    revenueCovered?: boolean;
+    costCovered?: boolean;
+    profitCovered?: boolean;
+  }>;
+  options: {
+    countries: string[];
+    warehouses: Array<{ warehouseId: string; warehouseName: string; country: string }>;
+    platforms: string[];
+    shops: string[];
+    projectGroups: string[];
+    brands: string[];
+  };
+};
+
 export type StockupRecommendation = {
   id: string;
   recommendationKey?: string;
@@ -2230,6 +2371,30 @@ export function fetchOrderAnalysis(input: { dateFrom?: string; dateTo?: string; 
   if (input.scope) params.set("scope", input.scope);
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<OrderAnalysisPayload>(`/api/order-analysis${query}`);
+}
+
+export function fetchPerformanceAnalytics(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string } = {}) {
+  const params = new URLSearchParams();
+  Object.entries(input).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<PerformanceAnalyticsPayload>(`/api/performance-analytics${query}`);
+}
+
+export function updatePerformanceExchangeRates(rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) {
+  return requestJson<{ ok: boolean; exchangeRates: PerformanceAnalyticsPayload["exchangeRates"]; updatedAt: string }>("/api/performance-analytics/exchange-rates", {
+    method: "PATCH",
+    body: JSON.stringify({ rates }),
+  });
+}
+
+export function syncPerformanceExchangeRates() {
+  return requestJson<{
+    ok: boolean;
+    sync: NonNullable<PerformanceAnalyticsPayload["exchangeRateSync"]> & { skipped?: boolean; message?: string };
+    exchangeRates: PerformanceAnalyticsPayload["exchangeRates"];
+  }>("/api/performance-analytics/exchange-rates/sync", { method: "POST" });
 }
 
 export function updateOrderShopAlias(input: { shopName: string; alias: string }) {
