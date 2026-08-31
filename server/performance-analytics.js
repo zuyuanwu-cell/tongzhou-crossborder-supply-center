@@ -39,6 +39,20 @@ function normalizedSkuKeys(value) {
   return [...keys];
 }
 
+function normalizedCountryKey(value) {
+  const token = text(value)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}_]+/gu, "");
+  if (["id", "印度尼西亚", "印尼", "indonesia"].includes(token)) return "ID";
+  if (["my", "马来西亚", "马来", "malaysia"].includes(token)) return "MY";
+  if (["vn", "越南", "vietnam"].includes(token)) return "VN";
+  if (["ru", "俄罗斯", "俄罗斯联邦", "russia"].includes(token)) return "RU";
+  if (["ph", "菲律宾", "philippines"].includes(token)) return "PH";
+  if (["th", "泰国", "thailand"].includes(token)) return "TH";
+  return token.toUpperCase();
+}
+
 function productIdentity(product, base = null) {
   const fields = JIANYUN_FORMS.productBase.fields;
   const latestLandedUnitCostCny = number(
@@ -57,6 +71,10 @@ function productIdentity(product, base = null) {
     brand: text(product?.brand || base?.brand, "未建档品牌"),
     category: text(product?.category || base?.category, "未分类"),
     imageUrl: text(product?.imageUrl || base?.imageUrl),
+    country: text(product?.country),
+    countryKey: normalizedCountryKey(product?.country),
+    directCostPrice: number(product?.directCostPrice ?? product?.directPrice),
+    directCostCurrency: text(product?.directCostCurrency || product?.directCurrency).toUpperCase(),
     latestCostBatchId: text(base?.latestCostBatchId ?? rawFieldValue(base, fields.latestCostBatchId)),
     latestLandedUnitCostCny,
     latestCostEffectiveAt,
@@ -71,11 +89,15 @@ export function buildPerformanceProductLookup(products = {}) {
       for (const key of normalizedSkuKeys(value)) if (!baseByKey.has(key)) baseByKey.set(key, base);
     }
   }
-  const add = (product, base = null, prefer = false) => {
+  const add = (product, base = null) => {
     const row = productIdentity(product, base);
     for (const value of [row.sku, row.skuNo, row.countrySku]) {
       for (const key of normalizedSkuKeys(value)) {
-        if (prefer || !lookup.has(key)) lookup.set(key, row);
+        const candidates = lookup.get(key) || [];
+        if (!candidates.some((candidate) => candidate.countryKey === row.countryKey && candidate.sku === row.sku && candidate.skuNo === row.skuNo)) {
+          candidates.push(row);
+          lookup.set(key, candidates);
+        }
       }
     }
   };
@@ -85,9 +107,20 @@ export function buildPerformanceProductLookup(products = {}) {
       .flatMap(normalizedSkuKeys)
       .map((key) => baseByKey.get(key))
       .find(Boolean) || null;
-    add(product, base, true);
+    add(product, base);
   }
   return lookup;
+}
+
+function productForCountry(lookup, sku, country) {
+  const candidates = normalizedSkuKeys(sku)
+    .flatMap((key) => lookup.get(key) || []);
+  const countryKey = normalizedCountryKey(country);
+  if (countryKey) {
+    const exact = candidates.filter((candidate) => candidate.countryKey === countryKey);
+    if (exact.length) return exact.find((candidate) => candidate.directCostPrice > 0) || exact[0];
+  }
+  return candidates.find((candidate) => !candidate.countryKey) || null;
 }
 
 function buildRateLookup(exchangeRates = []) {
@@ -191,8 +224,17 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
   const rateLookup = buildRateLookup(exchangeRates);
   const brandFilter = text(filters.brand);
   const keyword = text(filters.keyword).toLowerCase();
-  const enriched = [];
-  const optionFacts = [];
+  const optionCountries = new Set();
+  const optionWarehouses = new Map();
+  const optionPlatforms = new Set();
+  const optionShops = new Map();
+  const optionProjectGroups = new Set();
+  const optionBrands = new Set();
+  const recentFacts = [];
+  const total = aggregateTemplate("total");
+  const productMap = new Map();
+  const brandMap = new Map();
+  const dailyMap = new Map();
   const quality = {
     totalLines: 0,
     missingSkuLines: 0,
@@ -207,11 +249,27 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
   };
 
   for (const source of facts) {
-    const product = normalizedSkuKeys(source.sku).map((key) => productLookup.get(key)).find(Boolean) || null;
+    const product = productForCountry(productLookup, source.sku, source.country);
     const productName = text(product?.productName || source.productName || source.sku, "未建档产品");
     const brand = text(product?.brand, "未建档品牌");
-    optionFacts.push({ ...source, brand });
-    if (text(filters.country) && text(source.country) !== text(filters.country)) continue;
+    if (source.country) optionCountries.add(source.country);
+    if (source.warehouseId) optionWarehouses.set(source.warehouseId, {
+      warehouseId: source.warehouseId,
+      warehouseName: source.warehouseName || source.warehouseId,
+      country: source.country,
+    });
+    if (source.platform) optionPlatforms.add(source.platform);
+    if (source.shopName) optionShops.set(source.shopKey || source.shopName, {
+      value: source.shopKey || source.shopName,
+      label: source.shopName,
+      rawName: source.rawShopName || source.shopName,
+      alias: source.shopAlias || "",
+      projectGroup: source.projectGroup || "",
+      miaoshouMatched: Boolean(source.miaoshouMatched),
+    });
+    if (source.projectGroup) optionProjectGroups.add(source.projectGroup);
+    if (brand) optionBrands.add(brand);
+    if (text(filters.country) && normalizedCountryKey(source.country) !== normalizedCountryKey(filters.country)) continue;
     if (text(filters.warehouseId) && text(source.warehouseId) !== text(filters.warehouseId)) continue;
     if (text(filters.platform) && text(source.platform) !== text(filters.platform)) continue;
     if (text(filters.shopName) && text(source.shopKey || source.shopName) !== text(filters.shopName)) continue;
@@ -226,9 +284,12 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     const rate = rateFor(rateLookup, currency, orderDate);
     const revenueCovered = Boolean(currency && rate && salesAmount > 0);
     const salesCny = revenueCovered ? round(salesAmount * rate.rateToCny, 6) : 0;
-    const unitCostCny = Math.max(0, number(product?.latestLandedUnitCostCny));
-    const costEffectiveAt = dateKey(product?.latestCostEffectiveAt);
-    const futureCostFallback = Boolean(unitCostCny > 0 && costEffectiveAt && orderDate && costEffectiveAt > orderDate);
+    const unitCostOriginal = Math.max(0, number(product?.directCostPrice));
+    const costCurrency = text(product?.directCostCurrency).toUpperCase();
+    const costRate = unitCostOriginal > 0 && costCurrency ? rateFor(rateLookup, costCurrency, orderDate) : null;
+    const unitCostCny = costRate ? round(unitCostOriginal * costRate.rateToCny, 6) : 0;
+    const costEffectiveAt = "";
+    const futureCostFallback = false;
     const costCovered = unitCostCny > 0 && quantity > 0;
     const cogsCny = costCovered ? round(quantity * unitCostCny, 6) : 0;
     const profitCovered = revenueCovered && costCovered;
@@ -250,7 +311,13 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       revenueCovered,
       salesCny,
       unitCostCny,
-      costBatchId: text(product?.latestCostBatchId),
+      unitCostOriginal,
+      costCurrency,
+      costRateToCny: costRate?.rateToCny || 0,
+      costRateEffectiveDate: costRate?.effectiveDate || "",
+      costSource: costCovered ? "product_catalog_direct" : "",
+      costCountry: text(product?.country),
+      costBatchId: "",
       costEffectiveAt,
       costCovered,
       futureCostFallback,
@@ -258,7 +325,6 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       profitCovered,
       estimatedProfitCny,
     };
-    enriched.push(row);
     quality.totalLines += 1;
     if (!text(source.sku)) quality.missingSkuLines += 1;
     if (!product) quality.unmatchedProductLines += 1;
@@ -269,34 +335,48 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     if (!costCovered) quality.missingCostLines += 1;
     if (futureCostFallback) quality.futureCostFallbackLines += 1;
     if (source.salesAmountScope === "legacy_order_allocated") quality.legacyAllocatedLines += 1;
-  }
-
-  const total = aggregateTemplate("total");
-  const productMap = new Map();
-  const brandMap = new Map();
-  const dailyMap = new Map();
-  for (const fact of enriched) {
-    addFact(total, fact);
-    const productKey = fact.sku || fact.productName;
+    addFact(total, row);
+    const productKey = row.sku || row.productName;
     const productRow = productMap.get(productKey) || aggregateTemplate(productKey, {
-      sku: fact.sku || "",
-      productName: fact.productName,
-      brand: fact.brand,
-      category: fact.category,
-      imageUrl: fact.imageUrl,
-      unitCostCny: fact.unitCostCny,
-      costEffectiveAt: fact.costEffectiveAt,
-      futureCostFallback: fact.futureCostFallback,
+      sku: row.sku || "",
+      productName: row.productName,
+      brand: row.brand,
+      category: row.category,
+      imageUrl: row.imageUrl,
+      unitCostCny: row.unitCostCny,
+      costEffectiveAt: row.costEffectiveAt,
+      futureCostFallback: row.futureCostFallback,
     });
-    addFact(productRow, fact);
-    productRow.futureCostFallback ||= fact.futureCostFallback;
+    addFact(productRow, row);
+    productRow.futureCostFallback ||= row.futureCostFallback;
     productMap.set(productKey, productRow);
-    const brandRow = brandMap.get(fact.brand) || aggregateTemplate(fact.brand, { brand: fact.brand });
-    addFact(brandRow, fact);
-    brandMap.set(fact.brand, brandRow);
-    const dailyRow = dailyMap.get(fact.orderDate) || aggregateTemplate(fact.orderDate, { date: fact.orderDate });
-    addFact(dailyRow, fact);
-    dailyMap.set(fact.orderDate, dailyRow);
+    const brandRow = brandMap.get(row.brand) || aggregateTemplate(row.brand, { brand: row.brand });
+    addFact(brandRow, row);
+    brandMap.set(row.brand, brandRow);
+    const dailyRow = dailyMap.get(row.orderDate) || aggregateTemplate(row.orderDate, { date: row.orderDate });
+    addFact(dailyRow, row);
+    dailyMap.set(row.orderDate, dailyRow);
+    if (recentFacts.length < 100) recentFacts.push({
+      id: row.id,
+      orderDate: row.orderDate,
+      orderNo: row.orderNo,
+      shopKey: row.shopKey || "",
+      shopName: row.shopName || "",
+      projectGroup: row.projectGroup || "",
+      sku: row.sku,
+      productName: row.productName,
+      brand: row.brand,
+      quantity: row.quantity,
+      salesAmount: row.salesAmount,
+      currency: row.currency,
+      salesCny: round(row.salesCny),
+      unitCostCny: round(row.unitCostCny, 4),
+      cogsCny: round(row.cogsCny),
+      estimatedProfitCny: round(row.estimatedProfitCny),
+      revenueCovered: row.revenueCovered,
+      costCovered: row.costCovered,
+      profitCovered: row.profitCovered,
+    });
   }
   const totalPublic = publicAggregate(total, total.salesCny);
   const productsResult = [...productMap.values()].map((row) => publicAggregate(row, total.salesCny))
@@ -342,41 +422,14 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     products: productsResult,
     brands: brandsResult,
     daily,
-    recentFacts: enriched.slice(0, 100).map((fact) => ({
-      id: fact.id,
-      orderDate: fact.orderDate,
-      orderNo: fact.orderNo,
-      shopKey: fact.shopKey || "",
-      shopName: fact.shopName || "",
-      projectGroup: fact.projectGroup || "",
-      sku: fact.sku,
-      productName: fact.productName,
-      brand: fact.brand,
-      quantity: fact.quantity,
-      salesAmount: fact.salesAmount,
-      currency: fact.currency,
-      salesCny: round(fact.salesCny),
-      unitCostCny: round(fact.unitCostCny, 4),
-      cogsCny: round(fact.cogsCny),
-      estimatedProfitCny: round(fact.estimatedProfitCny),
-      revenueCovered: fact.revenueCovered,
-      costCovered: fact.costCovered,
-      profitCovered: fact.profitCovered,
-    })),
+    recentFacts,
     options: {
-      countries: [...new Set(optionFacts.map((fact) => fact.country).filter(Boolean))].sort(),
-      warehouses: [...new Map(optionFacts.map((fact) => [fact.warehouseId, { warehouseId: fact.warehouseId, warehouseName: fact.warehouseName || fact.warehouseId, country: fact.country }])).values()].filter((item) => item.warehouseId).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN")),
-      platforms: [...new Set(optionFacts.map((fact) => fact.platform).filter(Boolean))].sort(),
-      shops: [...new Map(optionFacts.filter((fact) => fact.shopName).map((fact) => [fact.shopKey || fact.shopName, {
-        value: fact.shopKey || fact.shopName,
-        label: fact.shopName,
-        rawName: fact.rawShopName || fact.shopName,
-        alias: fact.shopAlias || "",
-        projectGroup: fact.projectGroup || "",
-        miaoshouMatched: Boolean(fact.miaoshouMatched),
-      }])).values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
-      projectGroups: [...new Set(optionFacts.map((fact) => fact.projectGroup).filter(Boolean))].sort(),
-      brands: [...new Set(optionFacts.map((fact) => fact.brand).filter(Boolean))].sort(),
+      countries: [...optionCountries].sort(),
+      warehouses: [...optionWarehouses.values()].sort((a, b) => a.warehouseName.localeCompare(b.warehouseName, "zh-CN")),
+      platforms: [...optionPlatforms].sort(),
+      shops: [...optionShops.values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
+      projectGroups: [...optionProjectGroups].sort(),
+      brands: [...optionBrands].sort(),
     },
   };
 }

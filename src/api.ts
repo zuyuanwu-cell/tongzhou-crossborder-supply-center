@@ -1344,6 +1344,12 @@ export type PerformanceContributionRow = {
   warehouseCount: number;
   skuCount: number;
   unitCostCny?: number;
+  unitCostOriginal?: number;
+  costCurrency?: string;
+  costRateToCny?: number;
+  costRateEffectiveDate?: string;
+  costSource?: string;
+  costCountry?: string;
   costEffectiveAt?: string;
   futureCostFallback?: boolean;
   date?: string;

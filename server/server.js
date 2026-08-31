@@ -153,6 +153,33 @@ let lastAutoSyncAt = "";
 let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
 let wecomScheduleRunning = false;
+const performanceAnalyticsResponseCache = new Map();
+const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
+const performanceAnalyticsResponseCacheLimit = 24;
+
+function clearPerformanceAnalyticsResponseCache() {
+  performanceAnalyticsResponseCache.clear();
+}
+
+function cachedPerformanceAnalyticsResponse(key) {
+  const entry = performanceAnalyticsResponseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > performanceAnalyticsResponseCacheTtlMs) {
+    performanceAnalyticsResponseCache.delete(key);
+    return null;
+  }
+  performanceAnalyticsResponseCache.delete(key);
+  performanceAnalyticsResponseCache.set(key, entry);
+  return entry.payload;
+}
+
+function cachePerformanceAnalyticsResponse(key, payload) {
+  performanceAnalyticsResponseCache.set(key, { createdAt: Date.now(), payload });
+  while (performanceAnalyticsResponseCache.size > performanceAnalyticsResponseCacheLimit) {
+    performanceAnalyticsResponseCache.delete(performanceAnalyticsResponseCache.keys().next().value);
+  }
+  return payload;
+}
 
 function loadProductCache() {
   return loadJsonCache(productCachePath);
@@ -174,6 +201,7 @@ function saveJsonCache(path, payload) {
 
 function saveProductCache(payload) {
   saveJsonCache(productCachePath, payload);
+  clearPerformanceAnalyticsResponseCache();
 }
 
 function saveWarehouseCache(payload) {
@@ -188,9 +216,12 @@ function saveMovementHistoryCache(payload) {
   saveJsonCache(movementHistoryCachePath, payload);
 }
 
-function saveOrderCache(payload) {
+function saveOrderCache(payload, { rebuildPerformance = true } = {}) {
   saveJsonCache(orderCachePath, payload);
-  performanceAnalyticsStore.replaceSalesFacts(payload?.orders || [], payload?.syncedAt || "", { force: true });
+  if (rebuildPerformance) {
+    performanceAnalyticsStore.replaceSalesFacts(payload?.orders || [], payload?.syncedAt || "", { force: true });
+  }
+  clearPerformanceAnalyticsResponseCache();
 }
 
 function saveOrderSyncJobsCache() {
@@ -269,6 +300,7 @@ function saveOrderAnalysisSettings() {
     updatedAt: new Date().toISOString(),
   });
   saveJsonCache(orderAnalysisSettingsPath, cachedOrderAnalysisSettings);
+  clearPerformanceAnalyticsResponseCache();
 }
 
 function quickNavId(prefix) {
@@ -3066,7 +3098,7 @@ function omitPerformanceFields(row, { revenue, cost, profit }) {
     for (const field of ["amountsByCurrency", "salesCny", "contributionRate", "revenueCoverageRate", "rateToCny", "rateEffectiveDate", "salesAmount", "currency"]) delete projected[field];
   }
   if (!cost) {
-    for (const field of ["unitCostCny", "costBatchId", "costEffectiveAt", "futureCostFallback", "cogsCny", "costCoverageRate", "costCovered"]) delete projected[field];
+    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "cogsCny", "costCoverageRate", "costCovered"]) delete projected[field];
   }
   if (!profit) {
     for (const field of ["profitSalesCny", "estimatedProfitCny", "grossMargin", "profitCoverageRate", "profitCovered"]) delete projected[field];
@@ -3074,7 +3106,7 @@ function omitPerformanceFields(row, { revenue, cost, profit }) {
   return projected;
 }
 
-function projectPerformanceAnalyticsPayload(payload, auth) {
+function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
   const revenue = hasPermission(auth, "performance_revenue");
   const cost = hasPermission(auth, "performance_cost");
   const profit = revenue && cost && hasPermission(auth, "performance_profit");
@@ -3106,7 +3138,7 @@ function projectPerformanceAnalyticsPayload(payload, auth) {
     totals: omitPerformanceFields(payload.totals, projection),
     quality,
     currencySummary: revenue ? payload.currencySummary : [],
-    exchangeRates: revenue ? performanceAnalyticsStore.listExchangeRates() : [],
+    exchangeRates: revenue ? exchangeRates : [],
     exchangeRateSync: revenue ? performanceExchangeRateSync.status() : null,
     topProduct: products[0] || null,
     topBrand: brands[0] || null,
@@ -3131,6 +3163,23 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   };
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
+  const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+  const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+  const cacheKey = JSON.stringify({
+    orderSource: cachedOrdersSync.syncedAt || "",
+    productSource: cachedProducts.syncedAt || "",
+    shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
+    miaoshouShops: miaoshouShopState.shopsSyncedAt || "",
+    exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.updatedAt]),
+    filters,
+    user: user.id || user.username || auth.role || "anonymous",
+    role: auth.role || user.role || "",
+    permissions: ["performance_revenue", "performance_cost", "performance_profit"]
+      .map((permission) => [permission, hasPermission(auth, permission)]),
+    scopes,
+  });
+  const cachedResponse = cachedPerformanceAnalyticsResponse(cacheKey);
+  if (cachedResponse) return cachedResponse;
   const scopedOrders = (cachedOrdersSync.orders || []).filter((order) => {
     if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
     return isWithinDataScope(order, scopes);
@@ -3151,11 +3200,11 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   const payload = buildPerformanceAnalyticsPayload({
     facts,
     products: cachedProducts,
-    exchangeRates: performanceAnalyticsStore.listExchangeRates(),
+    exchangeRates,
     filters,
   });
   const metadata = performanceAnalyticsStore.getMetadata();
-  return projectPerformanceAnalyticsPayload({
+  return cachePerformanceAnalyticsResponse(cacheKey, projectPerformanceAnalyticsPayload({
     ...payload,
     syncedAt: cachedOrdersSync.syncedAt || "",
     shopDirectory: publicShopDirectory(shopDirectory, auth),
@@ -3167,7 +3216,7 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
       rowCountMatched: (cachedOrdersSync.orders || []).length === metadata.rowCount,
       syncedAtMatched: Boolean(cachedOrdersSync.syncedAt) && cachedOrdersSync.syncedAt === metadata.sourceSyncedAt,
     },
-  }, auth);
+  }, auth, exchangeRates));
 }
 
 function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
@@ -3617,7 +3666,7 @@ function orderSyncMetaFromResult(result = {}) {
   };
 }
 
-function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true) {
+function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true, { rebuildPerformance = true } = {}) {
   const warehouseId = result.warehouseId || connection.id;
   const orderMeta = orderSyncMetaFromResult(result);
   const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
@@ -3645,7 +3694,7 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
       : (cachedOrdersSync.orders || []),
     results: nextResults,
   };
-  saveOrderCache(cachedOrdersSync);
+  saveOrderCache(cachedOrdersSync, { rebuildPerformance });
 }
 
 let activeOrderSyncJobPromise = null;
@@ -3788,7 +3837,7 @@ async function runOrderSyncJob(jobId) {
       orders: dedupedOrders,
     };
     const replaceOrders = ok || dedupedOrders.length > 0;
-    mergeWarehouseOrderCache(connection, result, job.days, replaceOrders);
+    mergeWarehouseOrderCache(connection, result, job.days, replaceOrders, { rebuildPerformance: false });
     job.results = [
       ...(job.results || []).filter((item) => item.warehouseId !== connection.id && item.warehouseId !== result.warehouseId),
       {
@@ -3813,6 +3862,8 @@ async function runOrderSyncJob(jobId) {
   job.currentChunkLabel = "";
   job.message = hadFailure ? "Completed with partial failures" : "Completed";
   saveOrderSyncJobsCache();
+  performanceAnalyticsStore.replaceSalesFacts(cachedOrdersSync.orders || [], cachedOrdersSync.syncedAt || "", { force: true });
+  clearPerformanceAnalyticsResponseCache();
   try {
     upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "order_sync_job", movementHistoryTimezone);
   } catch (error) {

@@ -22,10 +22,13 @@ assert.ok(corrected.every((row) => row.salesAmountScope === "legacy_order_alloca
 
 const products = {
   productBase: [
-    { sku: "A", skuNo: "001", name: "产品 A", brand: "品牌甲", category: "个护", latestLandedUnitCostCny: 1, latestCostEffectiveAt: "2026-01-01" },
+    { sku: "A", skuNo: "001", name: "产品 A", brand: "品牌甲", category: "个护", latestLandedUnitCostCny: 999, latestCostEffectiveAt: "2026-01-01" },
     { sku: "B", skuNo: "002", name: "产品 B", brand: "品牌乙", category: "家居" },
   ],
-  catalog: [],
+  catalog: [
+    { sku: "A", skuNo: "001", country: "印度尼西亚", directCostPrice: 2, directCostCurrency: "USD" },
+    { sku: "A", skuNo: "001", country: "俄罗斯", directCostPrice: 50, directCostCurrency: "CNY" },
+  ],
 };
 const facts = [
   { id: "1", sourceSystem: "sea_wms", sourceOrderId: "O1", orderNo: "O1", orderDate: "2026-08-01", warehouseId: "id", warehouseName: "印尼仓", country: "印尼", platform: "TikTok", shopName: "店铺A", projectGroup: "同舟", sku: "A", productName: "A", quantity: 2, salesAmount: 10000, currency: "IDR", salesAmountScope: "line" },
@@ -43,11 +46,25 @@ const payload = buildPerformanceAnalyticsPayload({
   filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
 });
 assert.equal(payload.totals.salesCny, 175.5);
-assert.equal(payload.totals.cogsCny, 2);
-assert.equal(payload.totals.estimatedProfitCny, 2.5);
+assert.equal(payload.totals.cogsCny, 28.4);
+assert.equal(payload.totals.estimatedProfitCny, -23.9);
 assert.equal(payload.quality.unmatchedProductLines, 1);
 assert.equal(payload.quality.missingCostLines, 2);
 assert.equal(payload.products.find((row) => row.sku === "A")?.brand, "品牌甲");
+assert.equal(payload.products.find((row) => row.sku === "A")?.unitCostCny, 14.2);
+assert.equal(payload.recentFacts.find((row) => row.sku === "A")?.costCovered, true);
+
+const russianCostPayload = buildPerformanceAnalyticsPayload({
+  facts: [{ ...facts[0], id: "ru-cost", country: "俄罗斯", salesAmount: 100, currency: "CNY", quantity: 1 }],
+  products,
+  exchangeRates: [
+    { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+    { currency: "USD", effectiveDate: "2026-01-01", rateToCny: 7.1 },
+  ],
+  filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+});
+assert.equal(russianCostPayload.products[0].unitCostCny, 50, "俄罗斯订单必须匹配俄罗斯直营成本价");
+assert.equal(russianCostPayload.totals.cogsCny, 50);
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "tongzhou-performance-"));
 try {

@@ -774,6 +774,7 @@ function App() {
   const [movementHistoryPayload, setMovementHistoryPayload] = React.useState<MovementHistoryPayload | null>(null);
   const [orderAnalysisPayload, setOrderAnalysisPayload] = React.useState<OrderAnalysisPayload | null>(null);
   const [performanceAnalyticsPayload, setPerformanceAnalyticsPayload] = React.useState<PerformanceAnalyticsPayload | null>(null);
+  const [performanceAnalyticsLoading, setPerformanceAnalyticsLoading] = React.useState(false);
   const [orderSyncJob, setOrderSyncJob] = React.useState<OrderSyncJob | null>(null);
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
@@ -1006,11 +1007,16 @@ function App() {
   }
 
   async function loadPerformanceAnalytics(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string } = {}) {
+    setPerformanceAnalyticsLoading(true);
+    setError("");
     try {
       const data = await fetchPerformanceAnalytics(input);
       setPerformanceAnalyticsPayload(data);
-    } catch {
+    } catch (requestError) {
       setPerformanceAnalyticsPayload(null);
+      setError(requestError instanceof Error ? requestError.message : "经营贡献数据读取失败");
+    } finally {
+      setPerformanceAnalyticsLoading(false);
     }
   }
 
@@ -1160,9 +1166,9 @@ function App() {
     setSyncing(true);
     setError("");
     try {
-      const data = await startOrderSyncJob({ days: 90, warehouseIds });
+      const selectedWarehouseIds = Array.isArray(warehouseIds) ? warehouseIds : [];
+      const data = await startOrderSyncJob({ days: 90, warehouseIds: selectedWarehouseIds });
       setOrderSyncJob(data.job);
-      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "订单同步失败");
     } finally {
@@ -1551,6 +1557,8 @@ function App() {
         ) : activeView === "经营贡献" ? (
           <PerformanceAnalysisPage
             payload={performanceAnalyticsPayload}
+            loading={performanceAnalyticsLoading}
+            orderSyncJob={orderSyncJob}
             onLoad={loadPerformanceAnalytics}
             onSaveRates={async (rates) => {
               await updatePerformanceExchangeRates(rates);
@@ -1561,7 +1569,7 @@ function App() {
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
               return result.sync;
             }}
-            onSyncOrders={handleOrderSync}
+            onSyncOrders={() => handleOrderSync()}
             onAssignProjectGroup={async (shopKeys, projectGroup) => {
               await updateShopProjectGroup({ shopKeys, projectGroup });
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
@@ -7007,6 +7015,8 @@ function performanceDefaultRange() {
 
 function PerformanceAnalysisPage({
   payload,
+  loading,
+  orderSyncJob,
   onLoad,
   onSaveRates,
   onSyncRates,
@@ -7016,6 +7026,8 @@ function PerformanceAnalysisPage({
   canSync,
 }: {
   payload: PerformanceAnalyticsPayload | null;
+  loading: boolean;
+  orderSyncJob: OrderSyncJob | null;
   onLoad: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string }) => Promise<void>;
   onSaveRates: (rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) => Promise<void>;
   onSyncRates: () => Promise<{ message?: string; lastUpdatedCount?: number; lastRateDate?: string }>;
@@ -7043,6 +7055,7 @@ function PerformanceAnalysisPage({
   const [shopMessage, setShopMessage] = React.useState("");
   const totals = payload?.totals;
   const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false };
+  const orderJobRunning = Boolean(orderSyncJob && ["queued", "running"].includes(orderSyncJob.status));
   const latestRates = React.useMemo(() => {
     const values = new Map<string, number>();
     for (const row of payload?.exchangeRates || []) if (!values.has(row.currency)) values.set(row.currency, row.rateToCny);
@@ -7198,14 +7211,14 @@ function PerformanceAnalysisPage({
           <h2>货盘经营贡献</h2>
           <p>默认查看近 90 天 WMS 已出库订单；外币分别保留，并按已配置汇率折算人民币。利润为已匹配到仓成本范围内的预估毛利。</p>
           <div className="source-row">
-            <span className={`status-pill ${payload?.syncedAt ? "good" : "warning"}`}>{payload?.syncedAt ? "订单事实层已更新" : "等待订单同步"}</span>
-            <span>{payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
+            <span className={`status-pill ${payload?.syncedAt && !loading ? "good" : "warning"}`}>{loading ? "正在计算分析" : orderJobRunning ? "WMS 订单同步中" : payload?.syncedAt ? "订单事实层已更新" : "等待订单同步"}</span>
+            <span>{loading ? "正在读取订单事实与国家成本，请稍候" : orderJobRunning ? "同步完成后会自动刷新分析" : payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
             <span>{formatNumber(payload?.metadata.rowCount || 0)} 条订单行</span>
           </div>
         </div>
         <div className="performance-hero-actions">
-          <button className="ghost-button" type="button" onClick={() => submitFilters()} disabled={busy}><RefreshCw size={16} className={busy ? "spinning" : ""} />刷新分析</button>
-          {canSync ? <button className="sync-button" type="button" onClick={onSyncOrders} disabled={syncing}><DatabaseZap size={16} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步订单"}</button> : null}
+          <button className="ghost-button" type="button" onClick={() => submitFilters()} disabled={busy || loading}><RefreshCw size={16} className={busy || loading ? "spinning" : ""} />{loading ? "计算中" : "刷新分析"}</button>
+          {canSync ? <button className="sync-button" type="button" onClick={() => onSyncOrders()} disabled={syncing || orderJobRunning}><DatabaseZap size={16} className={syncing || orderJobRunning ? "spinning" : ""} />{syncing || orderJobRunning ? "订单同步中" : "同步订单"}</button> : null}
         </div>
       </section>
 
@@ -7486,7 +7499,7 @@ function OrderAnalysisPage({
           </div>
         </div>
         {canSync ? (
-          <button className="sync-button" type="button" onClick={onSyncOrders} disabled={syncing}>
+          <button className="sync-button" type="button" onClick={() => onSyncOrders()} disabled={syncing}>
             <RefreshCw size={16} className={syncing ? "spinning" : ""} />
             {syncing ? "同步中" : "重同步近90天订单"}
           </button>
