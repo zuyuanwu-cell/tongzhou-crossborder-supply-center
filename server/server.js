@@ -26,7 +26,7 @@ import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
-import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
+import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 
@@ -3098,7 +3098,7 @@ function omitPerformanceFields(row, { revenue, cost, profit }) {
     for (const field of ["amountsByCurrency", "salesCny", "contributionRate", "revenueCoverageRate", "rateToCny", "rateEffectiveDate", "salesAmount", "currency"]) delete projected[field];
   }
   if (!cost) {
-    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "cogsCny", "costCoverageRate", "costCovered"]) delete projected[field];
+    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "productCostCny", "packagingFeeOrderCny", "packagingFeeCny", "packagingRuleConfigured", "packagingRuleApplied", "cogsCny", "costCoverageRate", "costCovered"]) delete projected[field];
   }
   if (!profit) {
     for (const field of ["profitSalesCny", "estimatedProfitCny", "grossMargin", "profitCoverageRate", "profitCovered"]) delete projected[field];
@@ -3127,16 +3127,18 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
   if (!cost) {
     delete quality.missingCostLines;
     delete quality.futureCostFallbackLines;
+    delete quality.missingPackagingRuleLines;
     delete quality.costCoverageRate;
   }
   if (!profit) delete quality.profitCoverageRate;
   const { dbPath: _privateDbPath, ...safeMetadata } = performanceAnalyticsStore.getMetadata();
   return {
     ...payload,
-    permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue },
+    permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue, manageCosts: canManage(auth) && cost },
     metadata: safeMetadata,
     totals: omitPerformanceFields(payload.totals, projection),
     quality,
+    packagingFeeRules: cost ? payload.packagingFeeRules : [],
     currencySummary: revenue ? payload.currencySummary : [],
     exchangeRates: revenue ? exchangeRates : [],
     exchangeRateSync: revenue ? performanceExchangeRateSync.status() : null,
@@ -3164,6 +3166,8 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
   const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+  const performanceSettings = performanceAnalyticsStore.getPerformanceSettings();
+  const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
   const cacheKey = JSON.stringify({
     orderSource: cachedOrdersSync.syncedAt || "",
@@ -3171,6 +3175,7 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
     shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
     miaoshouShops: miaoshouShopState.shopsSyncedAt || "",
     exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.updatedAt]),
+    packagingFeeRules,
     filters,
     user: user.id || user.username || auth.role || "anonymous",
     role: auth.role || user.role || "",
@@ -3201,6 +3206,7 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
     facts,
     products: cachedProducts,
     exchangeRates,
+    packagingFeeRules,
     filters,
   });
   const metadata = performanceAnalyticsStore.getMetadata();
@@ -6215,6 +6221,41 @@ const server = http.createServer(async (req, res) => {
         brand: url.searchParams.get("brand") || "",
         keyword: url.searchParams.get("keyword") || "",
       }, auth));
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/packaging-fees" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth) || !hasPermission(auth, "performance_cost")) {
+        sendJson(res, 403, { ok: false, message: "维护打包费规则需要管理员及经营成本权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const rules = Array.isArray(body.rules) ? body.rules : [];
+      const invalid = rules.find((rule) => {
+        const countryKey = normalizedCountryKey(rule?.countryKey || rule?.countryName || rule?.country);
+        const mode = String(rule?.mode || "");
+        const baseFeeCny = Number(rule?.baseFeeCny);
+        const includedQuantity = Number(rule?.includedQuantity);
+        const additionalFeePerItemCny = Number(rule?.additionalFeePerItemCny);
+        if (!/^[A-Z]{2}$/.test(countryKey) || !["flat", "tiered"].includes(mode)) return true;
+        if (!Number.isFinite(baseFeeCny) || baseFeeCny < 0) return true;
+        if (mode === "tiered" && (!Number.isInteger(includedQuantity) || includedQuantity < 0 || !Number.isFinite(additionalFeePerItemCny) || additionalFeePerItemCny < 0)) return true;
+        return false;
+      });
+      const countryKeys = rules.map((rule) => normalizedCountryKey(rule?.countryKey || rule?.countryName || rule?.country));
+      if (!rules.length || rules.length > 30 || invalid || new Set(countryKeys).size !== countryKeys.length) {
+        sendJson(res, 400, { ok: false, message: "请提供 1 至 30 条不重复的有效国家打包费规则，金额不能小于 0。" });
+        return;
+      }
+      const packagingFeeRules = normalizePackagingFeeRules(rules);
+      const settings = performanceAnalyticsStore.setPerformanceSettings({
+        packagingFeeRules,
+        updatedBy: auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员",
+      });
+      clearPerformanceAnalyticsResponseCache();
+      appendActionLog(auth, "更新经营分析打包费规则", "performance_packaging_fee", countryKeys.join(","), { count: packagingFeeRules.length });
+      sendJson(res, 200, { ok: true, packagingFeeRules, updatedAt: settings.updatedAt || new Date().toISOString() });
       return;
     }
 

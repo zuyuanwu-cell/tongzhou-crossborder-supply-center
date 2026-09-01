@@ -1332,6 +1332,8 @@ export type PerformanceContributionRow = {
   amountsByCurrency?: PerformanceAmount[];
   salesCny?: number;
   profitSalesCny?: number;
+  productCostCny?: number;
+  packagingFeeCny?: number;
   cogsCny?: number;
   estimatedProfitCny?: number;
   grossMargin?: number;
@@ -1384,6 +1386,16 @@ export type ShopDirectoryPayload = {
   canManage: boolean;
 };
 
+export type PerformancePackagingFeeRule = {
+  countryKey: string;
+  countryName: string;
+  mode: "tiered" | "flat";
+  baseFeeCny: number;
+  includedQuantity: number;
+  additionalFeePerItemCny: number;
+  enabled: boolean;
+};
+
 export type PerformanceAnalyticsPayload = {
   ok: boolean;
   generatedAt: string;
@@ -1394,6 +1406,7 @@ export type PerformanceAnalyticsPayload = {
     cost: boolean;
     profit: boolean;
     manageRates: boolean;
+    manageCosts: boolean;
   };
   metadata: {
     sourceSyncedAt: string;
@@ -1430,12 +1443,14 @@ export type PerformanceAnalyticsPayload = {
     missingExchangeRateLines?: number;
     zeroSalesAmountLines?: number;
     missingCostLines?: number;
+    missingPackagingRuleLines?: number;
     futureCostFallbackLines?: number;
     legacyAllocatedLines: number;
     revenueCoverageRate?: number;
     costCoverageRate?: number;
     profitCoverageRate?: number;
   };
+  packagingFeeRules: PerformancePackagingFeeRule[];
   currencySummary: PerformanceAmount[];
   exchangeRates: Array<{
     currency: string;
@@ -1481,6 +1496,8 @@ export type PerformanceAnalyticsPayload = {
     currency?: string;
     salesCny?: number;
     unitCostCny?: number;
+    productCostCny?: number;
+    packagingFeeCny?: number;
     cogsCny?: number;
     estimatedProfitCny?: number;
     revenueCovered?: boolean;
@@ -2440,6 +2457,13 @@ export function updatePerformanceExchangeRates(rates: Array<{ currency: string; 
   return requestJson<{ ok: boolean; exchangeRates: PerformanceAnalyticsPayload["exchangeRates"]; updatedAt: string }>("/api/performance-analytics/exchange-rates", {
     method: "PATCH",
     body: JSON.stringify({ rates }),
+  });
+}
+
+export function updatePerformancePackagingFeeRules(rules: PerformancePackagingFeeRule[]) {
+  return requestJson<{ ok: boolean; packagingFeeRules: PerformancePackagingFeeRule[]; updatedAt: string }>("/api/performance-analytics/packaging-fees", {
+    method: "PATCH",
+    body: JSON.stringify({ rules }),
   });
 }
 

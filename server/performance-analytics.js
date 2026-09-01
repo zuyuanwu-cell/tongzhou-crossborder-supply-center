@@ -39,7 +39,7 @@ function normalizedSkuKeys(value) {
   return [...keys];
 }
 
-function normalizedCountryKey(value) {
+export function normalizedCountryKey(value) {
   const token = text(value)
     .normalize("NFKC")
     .toLowerCase()
@@ -51,6 +51,46 @@ function normalizedCountryKey(value) {
   if (["ph", "菲律宾", "philippines"].includes(token)) return "PH";
   if (["th", "泰国", "thailand"].includes(token)) return "TH";
   return token.toUpperCase();
+}
+
+export const DEFAULT_PACKAGING_FEE_RULES = Object.freeze([
+  Object.freeze({ countryKey: "ID", countryName: "印度尼西亚", mode: "tiered", baseFeeCny: 1.9, includedQuantity: 4, additionalFeePerItemCny: 0.2, enabled: true }),
+  Object.freeze({ countryKey: "MY", countryName: "马来西亚", mode: "tiered", baseFeeCny: 1.9, includedQuantity: 4, additionalFeePerItemCny: 0.2, enabled: true }),
+  Object.freeze({ countryKey: "VN", countryName: "越南", mode: "tiered", baseFeeCny: 1.9, includedQuantity: 4, additionalFeePerItemCny: 0.2, enabled: true }),
+  Object.freeze({ countryKey: "RU", countryName: "俄罗斯", mode: "flat", baseFeeCny: 6, includedQuantity: 0, additionalFeePerItemCny: 0, enabled: true }),
+]);
+
+export function normalizePackagingFeeRules(rules = DEFAULT_PACKAGING_FEE_RULES) {
+  const input = Array.isArray(rules) && rules.length ? rules : DEFAULT_PACKAGING_FEE_RULES;
+  const normalized = new Map();
+  for (const source of input) {
+    const countryKey = normalizedCountryKey(source?.countryKey || source?.countryName || source?.country);
+    if (!/^[A-Z]{2}$/.test(countryKey)) continue;
+    const mode = source?.mode === "flat" ? "flat" : "tiered";
+    normalized.set(countryKey, {
+      countryKey,
+      countryName: text(source?.countryName || source?.country, countryKey),
+      mode,
+      baseFeeCny: Math.max(0, round(source?.baseFeeCny, 4)),
+      includedQuantity: mode === "flat" ? 0 : Math.max(0, Math.floor(number(source?.includedQuantity))),
+      additionalFeePerItemCny: mode === "flat" ? 0 : Math.max(0, round(source?.additionalFeePerItemCny, 4)),
+      enabled: source?.enabled !== false,
+    });
+  }
+  return [...normalized.values()].sort((left, right) => left.countryKey.localeCompare(right.countryKey));
+}
+
+export function calculatePackagingFeeCny(country, quantity, rules = DEFAULT_PACKAGING_FEE_RULES) {
+  const countryKey = normalizedCountryKey(country);
+  const rule = normalizePackagingFeeRules(rules).find((item) => item.countryKey === countryKey && item.enabled);
+  const orderQuantity = Math.max(0, number(quantity));
+  if (!rule || orderQuantity <= 0) return 0;
+  if (rule.mode === "flat") return round(rule.baseFeeCny, 4);
+  return round(rule.baseFeeCny + Math.max(0, orderQuantity - rule.includedQuantity) * rule.additionalFeePerItemCny, 4);
+}
+
+function performanceOrderIdentity(source) {
+  return [source?.sourceSystem, source?.warehouseId, source?.sourceOrderId || source?.orderNo || source?.id].map(text).join("|");
 }
 
 function productIdentity(product, base = null) {
@@ -156,6 +196,8 @@ function aggregateTemplate(key, extra = {}) {
     quantity: 0,
     salesCny: 0,
     profitSalesCny: 0,
+    productCostCny: 0,
+    packagingFeeCny: 0,
     cogsCny: 0,
     estimatedProfitCny: 0,
     revenueCoveredLines: 0,
@@ -180,6 +222,8 @@ function addFact(target, fact) {
   }
   if (fact.profitCovered) {
     target.profitSalesCny += fact.salesCny;
+    target.productCostCny += fact.productCostCny;
+    target.packagingFeeCny += fact.packagingFeeCny;
     target.cogsCny += fact.cogsCny;
     target.estimatedProfitCny += fact.estimatedProfitCny;
     target.profitCoveredLines += 1;
@@ -205,6 +249,8 @@ function publicAggregate(row, totalSalesCny) {
       .sort((a, b) => a.currency.localeCompare(b.currency)),
     salesCny: round(row.salesCny),
     profitSalesCny: round(row.profitSalesCny),
+    productCostCny: round(row.productCostCny),
+    packagingFeeCny: round(row.packagingFeeCny),
     cogsCny: round(row.cogsCny),
     estimatedProfitCny,
     grossMargin: ratio(estimatedProfitCny, row.profitSalesCny),
@@ -219,9 +265,18 @@ function publicAggregate(row, totalSalesCny) {
   };
 }
 
-export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, exchangeRates = [], filters = {} } = {}) {
+export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, filters = {} } = {}) {
   const productLookup = buildPerformanceProductLookup(products);
   const rateLookup = buildRateLookup(exchangeRates);
+  const normalizedPackagingFeeRules = normalizePackagingFeeRules(packagingFeeRules);
+  const packagingRuleByCountry = new Map(normalizedPackagingFeeRules.filter((rule) => rule.enabled).map((rule) => [rule.countryKey, rule]));
+  const configuredPackagingCountries = new Set(normalizedPackagingFeeRules.map((rule) => rule.countryKey));
+  const activePackagingCountries = new Set(normalizedPackagingFeeRules.filter((rule) => rule.enabled).map((rule) => rule.countryKey));
+  const orderQuantities = new Map();
+  for (const source of facts) {
+    const orderIdentity = performanceOrderIdentity(source);
+    orderQuantities.set(orderIdentity, (orderQuantities.get(orderIdentity) || 0) + Math.max(0, number(source?.quantity)));
+  }
   const brandFilter = text(filters.brand);
   const keyword = text(filters.keyword).toLowerCase();
   const optionCountries = new Set();
@@ -244,6 +299,7 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     missingExchangeRateLines: 0,
     zeroSalesAmountLines: 0,
     missingCostLines: 0,
+    missingPackagingRuleLines: 0,
     futureCostFallbackLines: 0,
     legacyAllocatedLines: 0,
   };
@@ -291,10 +347,24 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     const costEffectiveAt = "";
     const futureCostFallback = false;
     const costCovered = unitCostCny > 0 && quantity > 0;
-    const cogsCny = costCovered ? round(quantity * unitCostCny, 6) : 0;
+    const productCostCny = costCovered ? round(quantity * unitCostCny, 6) : 0;
+    const orderIdentity = performanceOrderIdentity(source);
+    const orderQuantity = orderQuantities.get(orderIdentity) || quantity;
+    const packagingCountryKey = normalizedCountryKey(source.country);
+    const packagingRule = packagingRuleByCountry.get(packagingCountryKey);
+    const packagingFeeOrderCny = packagingRule
+      ? packagingRule.mode === "flat"
+        ? round(packagingRule.baseFeeCny, 4)
+        : round(packagingRule.baseFeeCny + Math.max(0, orderQuantity - packagingRule.includedQuantity) * packagingRule.additionalFeePerItemCny, 4)
+      : 0;
+    const packagingRuleConfigured = configuredPackagingCountries.has(packagingCountryKey);
+    const packagingRuleApplied = activePackagingCountries.has(packagingCountryKey);
+    const packagingFeeCny = packagingRuleApplied && orderQuantity > 0
+      ? round(packagingFeeOrderCny * quantity / orderQuantity, 6)
+      : 0;
+    const cogsCny = costCovered ? round(productCostCny + packagingFeeCny, 6) : 0;
     const profitCovered = revenueCovered && costCovered;
     const estimatedProfitCny = profitCovered ? round(salesCny - cogsCny, 6) : 0;
-    const orderIdentity = [source.sourceSystem, source.warehouseId, source.sourceOrderId || source.orderNo].map(text).join("|");
     const row = {
       ...source,
       orderIdentity,
@@ -321,6 +391,11 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       costEffectiveAt,
       costCovered,
       futureCostFallback,
+      productCostCny,
+      packagingFeeOrderCny,
+      packagingFeeCny,
+      packagingRuleConfigured,
+      packagingRuleApplied,
       cogsCny,
       profitCovered,
       estimatedProfitCny,
@@ -333,6 +408,7 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
     if (currency && !rate) quality.missingExchangeRateLines += 1;
     if (salesAmount <= 0) quality.zeroSalesAmountLines += 1;
     if (!costCovered) quality.missingCostLines += 1;
+    if (!packagingRuleConfigured) quality.missingPackagingRuleLines += 1;
     if (futureCostFallback) quality.futureCostFallbackLines += 1;
     if (source.salesAmountScope === "legacy_order_allocated") quality.legacyAllocatedLines += 1;
     addFact(total, row);
@@ -371,6 +447,8 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       currency: row.currency,
       salesCny: round(row.salesCny),
       unitCostCny: round(row.unitCostCny, 4),
+      productCostCny: round(row.productCostCny),
+      packagingFeeCny: round(row.packagingFeeCny),
       cogsCny: round(row.cogsCny),
       estimatedProfitCny: round(row.estimatedProfitCny),
       revenueCovered: row.revenueCovered,
@@ -416,6 +494,7 @@ export function buildPerformanceAnalyticsPayload({ facts = [], products = {}, ex
       costCoverageRate: ratio(total.costMatchedQty, quantity),
       profitCoverageRate: ratio(profitCoveredLines, totalLines),
     },
+    packagingFeeRules: normalizedPackagingFeeRules,
     currencySummary,
     topProduct: productsResult[0] || null,
     topBrand: brandsResult[0] || null,

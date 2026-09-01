@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { allocateOrderSalesAmount } from "../server/wms-adapters.js";
-import { buildPerformanceAnalyticsPayload } from "../server/performance-analytics.js";
+import {
+  DEFAULT_PACKAGING_FEE_RULES,
+  buildPerformanceAnalyticsPayload,
+  calculatePackagingFeeCny,
+} from "../server/performance-analytics.js";
 import { initPerformanceAnalyticsStore, legacyCorrectedOrders } from "../server/performance-analytics-db.js";
 
 const allocations = allocateOrderSalesAmount([
@@ -19,6 +23,16 @@ const corrected = legacyCorrectedOrders([
 ]);
 assert.deepEqual(corrected.map((row) => row.salesAmount), [20, 60]);
 assert.ok(corrected.every((row) => row.salesAmountScope === "legacy_order_allocated"));
+
+assert.equal(calculatePackagingFeeCny("ID", 1), 1.9);
+assert.equal(calculatePackagingFeeCny("ID", 4), 1.9);
+assert.equal(calculatePackagingFeeCny("ID", 5), 2.1);
+assert.equal(calculatePackagingFeeCny("MY", 8), 2.7);
+assert.equal(calculatePackagingFeeCny("VN", 0), 0);
+assert.equal(calculatePackagingFeeCny("RU", 1), 6);
+assert.equal(calculatePackagingFeeCny("RU", 20), 6);
+assert.equal(calculatePackagingFeeCny("PH", 3), 0);
+assert.equal(calculatePackagingFeeCny("ID", 3, [{ ...DEFAULT_PACKAGING_FEE_RULES[0], enabled: false }]), 0);
 
 const products = {
   productBase: [
@@ -46,8 +60,10 @@ const payload = buildPerformanceAnalyticsPayload({
   filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
 });
 assert.equal(payload.totals.salesCny, 175.5);
-assert.equal(payload.totals.cogsCny, 28.4);
-assert.equal(payload.totals.estimatedProfitCny, -23.9);
+assert.equal(payload.totals.productCostCny, 28.4);
+assert.equal(payload.totals.packagingFeeCny, 1.9);
+assert.equal(payload.totals.cogsCny, 30.3);
+assert.equal(payload.totals.estimatedProfitCny, -25.8);
 assert.equal(payload.quality.unmatchedProductLines, 1);
 assert.equal(payload.quality.missingCostLines, 2);
 assert.equal(payload.products.find((row) => row.sku === "A")?.brand, "品牌甲");
@@ -64,7 +80,44 @@ const russianCostPayload = buildPerformanceAnalyticsPayload({
   filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
 });
 assert.equal(russianCostPayload.products[0].unitCostCny, 50, "俄罗斯订单必须匹配俄罗斯直营成本价");
-assert.equal(russianCostPayload.totals.cogsCny, 50);
+assert.equal(russianCostPayload.totals.productCostCny, 50);
+assert.equal(russianCostPayload.totals.packagingFeeCny, 6);
+assert.equal(russianCostPayload.totals.cogsCny, 56);
+
+const multiLineOrderPayload = buildPerformanceAnalyticsPayload({
+  facts: [
+    { ...facts[0], id: "multi-1", sourceOrderId: "MULTI", orderNo: "MULTI", quantity: 3, salesAmount: 30, currency: "CNY" },
+    { ...facts[0], id: "multi-2", sourceOrderId: "MULTI", orderNo: "MULTI", quantity: 2, salesAmount: 20, currency: "CNY" },
+  ],
+  products,
+  exchangeRates: [
+    { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+    { currency: "USD", effectiveDate: "2026-01-01", rateToCny: 7.1 },
+  ],
+  packagingFeeRules: DEFAULT_PACKAGING_FEE_RULES,
+  filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+});
+assert.equal(multiLineOrderPayload.totals.quantity, 5);
+assert.equal(multiLineOrderPayload.totals.productCostCny, 71);
+assert.equal(multiLineOrderPayload.totals.packagingFeeCny, 2.1);
+assert.equal(multiLineOrderPayload.totals.cogsCny, 73.1);
+assert.deepEqual(
+  multiLineOrderPayload.recentFacts.map((row) => row.packagingFeeCny).sort((left, right) => left - right),
+  [0.84, 1.26],
+);
+
+const disabledPackagingPayload = buildPerformanceAnalyticsPayload({
+  facts: [facts[0]],
+  products,
+  exchangeRates: [
+    { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+    { currency: "USD", effectiveDate: "2026-01-01", rateToCny: 7.1 },
+  ],
+  packagingFeeRules: [{ ...DEFAULT_PACKAGING_FEE_RULES[0], enabled: false }],
+  filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+});
+assert.equal(disabledPackagingPayload.totals.packagingFeeCny, 0);
+assert.equal(disabledPackagingPayload.quality.missingPackagingRuleLines, 0, "an intentionally disabled country rule is configured, not missing");
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "tongzhou-performance-"));
 try {
@@ -82,6 +135,15 @@ try {
   assert.equal(store.listExchangeRates().find((row) => row.currency === "IDR")?.rateToCny, 0.00045, "manual rates must win over same-day automatic rates");
   store.setExchangeRateSyncState({ lastSuccessAt: "2026-08-01T01:00:00.000Z", currencies: ["IDR"] });
   assert.deepEqual(store.getExchangeRateSyncState().currencies, ["IDR"]);
+  store.setPerformanceSettings({
+    packagingFeeRules: [
+      { countryKey: "ID", countryName: "Indonesia", mode: "tiered", baseFeeCny: 2.2, includedQuantity: 3, additionalFeePerItemCny: 0.3, enabled: true },
+    ],
+    updatedBy: "test-admin",
+  });
+  const reopenedStore = await initPerformanceAnalyticsStore(join(temporaryDirectory, "analytics.sqlite"));
+  assert.equal(reopenedStore.getPerformanceSettings().packagingFeeRules[0].baseFeeCny, 2.2);
+  assert.equal(reopenedStore.getPerformanceSettings().updatedBy, "test-admin");
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

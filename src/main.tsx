@@ -65,6 +65,7 @@ import {
   OrderSyncJob,
   PerformanceAnalyticsPayload,
   PerformanceContributionRow,
+  PerformancePackagingFeeRule,
   ProductBase,
   ProductPayload,
   QuickNavPayload,
@@ -164,6 +165,7 @@ import {
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
   updatePerformanceExchangeRates,
+  updatePerformancePackagingFeeRules,
   updateShopProjectGroup,
   updateStockupPlanStatus,
   updateUserPermissions,
@@ -1562,6 +1564,10 @@ function App() {
             onLoad={loadPerformanceAnalytics}
             onSaveRates={async (rates) => {
               await updatePerformanceExchangeRates(rates);
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+            }}
+            onSavePackagingRules={async (rules) => {
+              await updatePerformancePackagingFeeRules(rules);
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
             }}
             onSyncRates={async () => {
@@ -7019,6 +7025,7 @@ function PerformanceAnalysisPage({
   orderSyncJob,
   onLoad,
   onSaveRates,
+  onSavePackagingRules,
   onSyncRates,
   onSyncOrders,
   onAssignProjectGroup,
@@ -7030,6 +7037,7 @@ function PerformanceAnalysisPage({
   orderSyncJob: OrderSyncJob | null;
   onLoad: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string }) => Promise<void>;
   onSaveRates: (rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) => Promise<void>;
+  onSavePackagingRules: (rules: PerformancePackagingFeeRule[]) => Promise<void>;
   onSyncRates: () => Promise<{ message?: string; lastUpdatedCount?: number; lastRateDate?: string }>;
   onSyncOrders: () => Promise<void>;
   onAssignProjectGroup: (shopKeys: string[], projectGroup: string) => Promise<void>;
@@ -7037,7 +7045,7 @@ function PerformanceAnalysisPage({
   canSync: boolean;
 }) {
   const defaults = performanceDefaultRange();
-  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "shops">("products");
+  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "costs" | "shops">("products");
   const [busy, setBusy] = React.useState(false);
   const [dateFrom, setDateFrom] = React.useState(payload?.filters.dateFrom || defaults.dateFrom);
   const [dateTo, setDateTo] = React.useState(payload?.filters.dateTo || defaults.dateTo);
@@ -7050,11 +7058,13 @@ function PerformanceAnalysisPage({
   const [keyword, setKeyword] = React.useState(payload?.filters.keyword || "");
   const [rateDrafts, setRateDrafts] = React.useState<Record<string, string>>({});
   const [rateMessage, setRateMessage] = React.useState("");
+  const [packagingRuleDrafts, setPackagingRuleDrafts] = React.useState<PerformancePackagingFeeRule[]>(payload?.packagingFeeRules || []);
+  const [packagingMessage, setPackagingMessage] = React.useState("");
   const [selectedShopKeys, setSelectedShopKeys] = React.useState<Set<string>>(new Set());
   const [projectGroupDraft, setProjectGroupDraft] = React.useState("");
   const [shopMessage, setShopMessage] = React.useState("");
   const totals = payload?.totals;
-  const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false };
+  const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false, manageCosts: false };
   const orderJobRunning = Boolean(orderSyncJob && ["queued", "running"].includes(orderSyncJob.status));
   const latestRates = React.useMemo(() => {
     const values = new Map<string, number>();
@@ -7077,6 +7087,7 @@ function PerformanceAnalysisPage({
     setProjectGroup(payload.filters.projectGroup || "");
     setBrand(payload.filters.brand || "");
     setKeyword(payload.filters.keyword || "");
+    setPackagingRuleDrafts((payload.packagingFeeRules || []).map((rule) => ({ ...rule })));
   }, [payload?.generatedAt]);
 
   React.useEffect(() => {
@@ -7149,6 +7160,27 @@ function PerformanceAnalysisPage({
     }
   }
 
+  function updatePackagingRule(countryKey: string, changes: Partial<PerformancePackagingFeeRule>) {
+    setPackagingRuleDrafts((current) => current.map((rule) => rule.countryKey === countryKey ? { ...rule, ...changes } : rule));
+  }
+
+  async function savePackagingRules() {
+    if (!packagingRuleDrafts.length) {
+      setPackagingMessage("当前没有可保存的国家规则。");
+      return;
+    }
+    setBusy(true);
+    setPackagingMessage("");
+    try {
+      await onSavePackagingRules(packagingRuleDrafts);
+      setPackagingMessage("打包费规则已保存，并已重新计算销售成本和预估毛利。");
+    } catch (requestError) {
+      setPackagingMessage(requestError instanceof Error ? requestError.message : "打包费规则保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function toggleShopSelection(shopKey: string, checked: boolean) {
     setSelectedShopKeys((current) => {
       const next = new Set(current);
@@ -7200,6 +7232,7 @@ function PerformanceAnalysisPage({
     { label: "品牌未建档", value: payload?.quality.missingBrandLines || 0, note: "归入未建档品牌", tone: "warning" },
     ...(permissions.revenue ? [{ label: "汇率缺失", value: payload?.quality.missingExchangeRateLines || 0, note: "暂不计入人民币销售额", tone: "warning" }] : []),
     ...(permissions.cost ? [{ label: "成本缺失", value: payload?.quality.missingCostLines || 0, note: "暂不计入预估毛利", tone: "danger" }] : []),
+    ...(permissions.cost ? [{ label: "打包费规则缺失", value: payload?.quality.missingPackagingRuleLines || 0, note: "对应国家暂按 0 元打包费", tone: "warning" }] : []),
     { label: "历史金额已纠正", value: payload?.quality.legacyAllocatedLines || 0, note: "YunWMS 多 SKU 订单已重新分摊", tone: "good" },
   ];
 
@@ -7209,7 +7242,7 @@ function PerformanceAnalysisPage({
         <div>
           <p className="eyebrow">Portfolio Performance</p>
           <h2>货盘经营贡献</h2>
-          <p>默认查看近 90 天 WMS 已出库订单；外币分别保留，并按已配置汇率折算人民币。利润为已匹配到仓成本范围内的预估毛利。</p>
+          <p>默认查看近 90 天 WMS 已出库订单；外币按汇率折算人民币，销售成本包含对应国家直营成本和订单打包费。</p>
           <div className="source-row">
             <span className={`status-pill ${payload?.syncedAt && !loading ? "good" : "warning"}`}>{loading ? "正在计算分析" : orderJobRunning ? "WMS 订单同步中" : payload?.syncedAt ? "订单事实层已更新" : "等待订单同步"}</span>
             <span>{loading ? "正在读取订单事实与国家成本，请稍候" : orderJobRunning ? "同步完成后会自动刷新分析" : payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
@@ -7249,7 +7282,7 @@ function PerformanceAnalysisPage({
         <article className="performance-kpi">
           <span>{costComplete ? "销售成本" : "覆盖范围销售成本"}</span>
           <strong>{permissions.cost ? (costReady ? formatCny(totals?.cogsCny) : "待匹配成本") : "未授权"}</strong>
-          <small>{permissions.cost ? `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}` : "成本字段已由后端隔离"}</small>
+          <small>{permissions.cost ? (costReady ? `产品 ${formatCny(totals?.productCostCny)} · 打包 ${formatCny(totals?.packagingFeeCny)}` : `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}`) : "成本字段已由后端隔离"}</small>
         </article>
         <article className="performance-kpi profit">
           <span>{profitComplete ? "预估毛利" : "覆盖范围预估毛利"}</span>
@@ -7311,7 +7344,8 @@ function PerformanceAnalysisPage({
         <div className="performance-tabs">
           <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.products.length || 0)}</span></button>
           <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.brands.length || 0)}</span></button>
-          <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber((payload?.quality.unmatchedProductLines || 0) + (payload?.quality.missingExchangeRateLines || 0) + (payload?.quality.missingCostLines || 0))}</span></button>
+          <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber((payload?.quality.unmatchedProductLines || 0) + (payload?.quality.missingExchangeRateLines || 0) + (payload?.quality.missingCostLines || 0) + (payload?.quality.missingPackagingRuleLines || 0))}</span></button>
+          {permissions.cost ? <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}><Settings size={15} />成本规则 <span>{formatNumber(payload?.packagingFeeRules.length || 0)}</span></button> : null}
           <button className={tab === "shops" ? "active" : ""} type="button" onClick={() => setTab("shops")}>店铺归属 <span>{formatNumber(payload?.shopDirectory.shops.length || 0)}</span></button>
         </div>
 
@@ -7326,7 +7360,7 @@ function PerformanceAnalysisPage({
                 <strong>{formatNumber(row.quantity)}</strong>
                 {permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}<small>{(row.amountsByCurrency || []).map((item) => formatOriginalAmount(item.amount, item.currency)).join(" · ")}</small></strong> : null}
                 <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>
-                {permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}<small>{row.futureCostFallback ? "使用最新成本估算" : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
+                {permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? `产品 ${formatCny(row.productCostCny)} · 打包 ${formatCny(row.packagingFeeCny)}` : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
                 {permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
                 <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.profitCoverageRate ?? row.revenueCoverageRate) : "待汇率"}</span>
               </article>
@@ -7338,7 +7372,7 @@ function PerformanceAnalysisPage({
             {(payload?.brands || []).map((row, index) => (
               <article className="performance-contribution-row brand-row-table" key={row.key}>
                 <span className="performance-brand-cell"><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{row.brand}</strong><small>{formatNumber(row.orderCount)} 单 · {formatNumber(row.warehouseCount)} 仓</small></span></span>
-                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>{permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}</span> : null}{permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
+                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>{permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? `含打包费 ${formatCny(row.packagingFeeCny)}` : ""}</small></span> : null}{permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
               </article>
             ))}
           </div>
@@ -7364,6 +7398,33 @@ function PerformanceAnalysisPage({
               </section>
             ) : null}
           </div>
+        ) : tab === "costs" ? (
+          <section className="performance-cost-rule-panel">
+            <div className="performance-cost-rule-heading">
+              <div><p className="eyebrow">Packaging Cost</p><h3>国家打包费规则</h3><p>打包费先按整张订单总件数计算，再按各 SKU 件数比例分摊。所有金额均为人民币，并计入销售成本和预估毛利。</p></div>
+              <span className={`status-pill ${permissions.manageCosts ? "good" : "warning"}`}>{permissions.manageCosts ? "可编辑" : "仅查看"}</span>
+            </div>
+            <div className="performance-cost-rule-grid">
+              {packagingRuleDrafts.map((rule) => (
+                <article key={rule.countryKey} className={!rule.enabled ? "disabled" : ""}>
+                  <header>
+                    <span><strong>{rule.countryName}</strong><small>{rule.countryKey}</small></span>
+                    <label className="performance-rule-switch"><input type="checkbox" checked={rule.enabled} onChange={(event) => updatePackagingRule(rule.countryKey, { enabled: event.target.checked })} disabled={!permissions.manageCosts} /><span>{rule.enabled ? "已启用" : "已停用"}</span></label>
+                  </header>
+                  <div className="performance-cost-rule-fields">
+                    <label><span>计费方式</span><select value={rule.mode} onChange={(event) => updatePackagingRule(rule.countryKey, { mode: event.target.value as "tiered" | "flat" })} disabled={!permissions.manageCosts}><option value="tiered">按件数阶梯</option><option value="flat">每单固定</option></select></label>
+                    <label><span>{rule.mode === "flat" ? "每单费用（元）" : "基础费用（元）"}</span><input type="number" min="0" step="0.01" value={rule.baseFeeCny} onChange={(event) => updatePackagingRule(rule.countryKey, { baseFeeCny: Number(event.target.value) })} disabled={!permissions.manageCosts} /></label>
+                    {rule.mode === "tiered" ? <>
+                      <label><span>基础费包含件数</span><input type="number" min="0" step="1" value={rule.includedQuantity} onChange={(event) => updatePackagingRule(rule.countryKey, { includedQuantity: Math.max(0, Math.floor(Number(event.target.value))) })} disabled={!permissions.manageCosts} /></label>
+                      <label><span>超出每件加收（元）</span><input type="number" min="0" step="0.01" value={rule.additionalFeePerItemCny} onChange={(event) => updatePackagingRule(rule.countryKey, { additionalFeePerItemCny: Number(event.target.value) })} disabled={!permissions.manageCosts} /></label>
+                    </> : null}
+                  </div>
+                  <p>{rule.enabled ? (rule.mode === "flat" ? `每张订单固定 ${formatCny(rule.baseFeeCny)}` : `1–${formatNumber(rule.includedQuantity)} 件 ${formatCny(rule.baseFeeCny)}，超出后每件 +${formatCny(rule.additionalFeePerItemCny)}`) : "该国家暂不计入打包费"}</p>
+                </article>
+              ))}
+            </div>
+            <div className="performance-rate-actions"><span>{packagingMessage || (permissions.manageCosts ? "修改后保存，将立即清除分析缓存并重算。" : "只有管理员且拥有经营成本权限的账号可以修改。")}</span>{permissions.manageCosts ? <button className="sync-button" type="button" onClick={savePackagingRules} disabled={busy || !packagingRuleDrafts.length}>{busy ? "保存中" : "保存规则并重算"}</button> : null}</div>
+          </section>
         ) : (
           <div className="shop-directory-panel">
             <div className="shop-directory-summary">

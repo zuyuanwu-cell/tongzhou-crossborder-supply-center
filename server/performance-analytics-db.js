@@ -334,6 +334,27 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return getExchangeRateSyncState();
   }
 
+  function getPerformanceSettings() {
+    try {
+      const value = JSON.parse(getMeta("performanceSettings") || "{}");
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function setPerformanceSettings(settings = {}) {
+    const current = getPerformanceSettings();
+    const next = {
+      ...current,
+      ...(settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    setMeta("performanceSettings", JSON.stringify(next));
+    persist();
+    return getPerformanceSettings();
+  }
+
   upsertExchangeRates([
     { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1, source: "system" },
     { currency: "RMB", effectiveDate: "2000-01-01", rateToCny: 1, source: "system" },
@@ -342,6 +363,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
 
   return {
     dbPath,
+    getPerformanceSettings,
     getMetadata,
     getExchangeRateSyncState,
     listExchangeRates,
@@ -350,6 +372,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     persist,
     replaceSalesFacts,
     setExchangeRateSyncState,
+    setPerformanceSettings,
     upsertExchangeRates,
   };
 }
