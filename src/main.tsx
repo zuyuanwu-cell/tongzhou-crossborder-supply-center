@@ -151,6 +151,7 @@ import {
   syncAssets,
   syncOutsourcingOrders,
   syncOrders,
+  syncMiaoshouPerformance,
   syncPerformanceExchangeRates,
   startOrderSyncJob,
   submitDistributorApplication,
@@ -166,6 +167,7 @@ import {
   updateOrderShopAlias,
   updatePerformanceExchangeRates,
   updatePerformancePackagingFeeRules,
+  updatePerformanceRevenueSource,
   updateShopProjectGroup,
   updateStockupPlanStatus,
   updateUserPermissions,
@@ -777,6 +779,8 @@ function App() {
   const [orderAnalysisPayload, setOrderAnalysisPayload] = React.useState<OrderAnalysisPayload | null>(null);
   const [performanceAnalyticsPayload, setPerformanceAnalyticsPayload] = React.useState<PerformanceAnalyticsPayload | null>(null);
   const [performanceAnalyticsLoading, setPerformanceAnalyticsLoading] = React.useState(false);
+  const performanceAnalyticsAbortRef = React.useRef<AbortController | null>(null);
+  const performanceAnalyticsRequestRef = React.useRef(0);
   const [orderSyncJob, setOrderSyncJob] = React.useState<OrderSyncJob | null>(null);
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
@@ -1009,16 +1013,26 @@ function App() {
   }
 
   async function loadPerformanceAnalytics(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string } = {}) {
+    performanceAnalyticsAbortRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = performanceAnalyticsRequestRef.current + 1;
+    performanceAnalyticsAbortRef.current = controller;
+    performanceAnalyticsRequestRef.current = requestId;
     setPerformanceAnalyticsLoading(true);
     setError("");
     try {
-      const data = await fetchPerformanceAnalytics(input);
-      setPerformanceAnalyticsPayload(data);
+      const data = await fetchPerformanceAnalytics(input, controller.signal);
+      if (performanceAnalyticsRequestRef.current === requestId) setPerformanceAnalyticsPayload(data);
     } catch (requestError) {
-      setPerformanceAnalyticsPayload(null);
+      if (controller.signal.aborted || performanceAnalyticsRequestRef.current !== requestId) return;
+      // Keep the last successful result visible so a transient query failure does
+      // not turn the entire analysis page into an empty state.
       setError(requestError instanceof Error ? requestError.message : "经营贡献数据读取失败");
     } finally {
-      setPerformanceAnalyticsLoading(false);
+      if (performanceAnalyticsRequestRef.current === requestId) {
+        setPerformanceAnalyticsLoading(false);
+        performanceAnalyticsAbortRef.current = null;
+      }
     }
   }
 
@@ -1574,6 +1588,15 @@ function App() {
               const result = await syncPerformanceExchangeRates();
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
               return result.sync;
+            }}
+            onSyncMiaoshou={async (range) => {
+              const result = await syncMiaoshouPerformance(range);
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+              return result.sync;
+            }}
+            onChangeRevenueSource={async (source) => {
+              await updatePerformanceRevenueSource(source);
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
             }}
             onSyncOrders={() => handleOrderSync()}
             onAssignProjectGroup={async (shopKeys, projectGroup) => {
@@ -7004,7 +7027,23 @@ function performanceRowHasOriginalRevenue(row?: PerformanceContributionRow | nul
 }
 
 function performanceRowRevenueReady(row?: PerformanceContributionRow | null) {
-  return !performanceRowHasOriginalRevenue(row) || Number(row?.revenueCoverageRate || 0) > 0;
+  return Number(row?.revenueCoverageRate || 0) > 0;
+}
+
+function performanceRowRevenuePendingLabel(row?: PerformanceContributionRow | null) {
+  return performanceRowHasOriginalRevenue(row) ? "待汇率" : "待核验";
+}
+
+function performanceRowProfitValue(row?: PerformanceContributionRow | null) {
+  return Number(row?.contributionCoverageRate || 0) > 0 ? row?.contributionProfitCny : row?.estimatedProfitCny;
+}
+
+function performanceRowProfitMargin(row?: PerformanceContributionRow | null) {
+  return Number(row?.contributionCoverageRate || 0) > 0 ? row?.contributionMargin : row?.grossMargin;
+}
+
+function performanceRowProfitCoverage(row?: PerformanceContributionRow | null) {
+  return Number(row?.contributionCoverageRate || 0) > 0 ? row?.contributionCoverageRate : row?.profitCoverageRate;
 }
 
 function formatPercentValue(value?: number) {
@@ -7027,6 +7066,8 @@ function PerformanceAnalysisPage({
   onSaveRates,
   onSavePackagingRules,
   onSyncRates,
+  onSyncMiaoshou,
+  onChangeRevenueSource,
   onSyncOrders,
   onAssignProjectGroup,
   syncing,
@@ -7039,13 +7080,15 @@ function PerformanceAnalysisPage({
   onSaveRates: (rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) => Promise<void>;
   onSavePackagingRules: (rules: PerformancePackagingFeeRule[]) => Promise<void>;
   onSyncRates: () => Promise<{ message?: string; lastUpdatedCount?: number; lastRateDate?: string }>;
+  onSyncMiaoshou: (input: { dateFrom?: string; dateTo?: string; days?: number }) => Promise<{ message?: string; status?: string; orderCount?: number; warningCount?: number }>;
+  onChangeRevenueSource: (source: "wms" | "shadow" | "miaoshou") => Promise<void>;
   onSyncOrders: () => Promise<void>;
   onAssignProjectGroup: (shopKeys: string[], projectGroup: string) => Promise<void>;
   syncing: boolean;
   canSync: boolean;
 }) {
   const defaults = performanceDefaultRange();
-  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "costs" | "shops">("products");
+  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "sources" | "costs" | "shops">("products");
   const [busy, setBusy] = React.useState(false);
   const [dateFrom, setDateFrom] = React.useState(payload?.filters.dateFrom || defaults.dateFrom);
   const [dateTo, setDateTo] = React.useState(payload?.filters.dateTo || defaults.dateTo);
@@ -7063,8 +7106,9 @@ function PerformanceAnalysisPage({
   const [selectedShopKeys, setSelectedShopKeys] = React.useState<Set<string>>(new Set());
   const [projectGroupDraft, setProjectGroupDraft] = React.useState("");
   const [shopMessage, setShopMessage] = React.useState("");
+  const [transactionMessage, setTransactionMessage] = React.useState("");
   const totals = payload?.totals;
-  const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false, manageCosts: false };
+  const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false, manageCosts: false, manageTransactionSource: false };
   const orderJobRunning = Boolean(orderSyncJob && ["queued", "running"].includes(orderSyncJob.status));
   const latestRates = React.useMemo(() => {
     const values = new Map<string, number>();
@@ -7160,6 +7204,32 @@ function PerformanceAnalysisPage({
     }
   }
 
+  async function syncMiaoshouNow() {
+    setBusy(true);
+    setTransactionMessage("");
+    try {
+      const result = await onSyncMiaoshou({ dateFrom, dateTo });
+      setTransactionMessage(result.message || "妙手交易同步已启动，请稍后刷新查看对账结果。");
+    } catch (requestError) {
+      setTransactionMessage(requestError instanceof Error ? requestError.message : "妙手交易同步启动失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeRevenueSource(source: "wms" | "shadow" | "miaoshou") {
+    setBusy(true);
+    setTransactionMessage("");
+    try {
+      await onChangeRevenueSource(source);
+      setTransactionMessage(source === "miaoshou" ? "已通过质量门禁，妙手净销售额成为正式收入口径。" : source === "shadow" ? "已进入影子核对，正式收入仍使用 WMS。" : "已固定使用 WMS 收入口径。");
+    } catch (requestError) {
+      setTransactionMessage(requestError instanceof Error ? requestError.message : "收入来源切换失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function updatePackagingRule(countryKey: string, changes: Partial<PerformancePackagingFeeRule>) {
     setPackagingRuleDrafts((current) => current.map((rule) => rule.countryKey === countryKey ? { ...rule, ...changes } : rule));
   }
@@ -7213,21 +7283,36 @@ function PerformanceAnalysisPage({
     }
   }
 
-  const hasOriginalRevenue = (payload?.currencySummary || []).some((item) => Number(item.amount || 0) > 0);
   const revenueCoverage = Number(payload?.quality.revenueCoverageRate || 0);
   const costCoverage = Number(payload?.quality.costCoverageRate || 0);
   const profitCoverage = Number(payload?.quality.profitCoverageRate || 0);
-  const revenueReady = !hasOriginalRevenue || revenueCoverage > 0;
+  const invalidSalesAmountLines = Number(payload?.quality.invalidSalesAmountLines || 0);
+  const revenueReady = revenueCoverage > 0;
+  const revenuePendingLabel = invalidSalesAmountLines > 0 ? "销售金额待核验" : "待配置汇率";
+  const revenueContributionPendingLabel = invalidSalesAmountLines > 0 ? "销售额贡献待核验" : "人民币贡献待配置汇率";
   const costReady = costCoverage > 0;
   const profitReady = profitCoverage > 0;
   const revenueComplete = revenueCoverage >= 0.95;
   const costComplete = costCoverage >= 0.95;
   const profitComplete = profitCoverage >= 0.95;
   const pipelineReconciled = Boolean(payload?.reconciliation.rowCountMatched && payload?.reconciliation.syncedAtMatched);
+  const officialData = pipelineReconciled && payload?.sourceQuality?.status === "official";
+  const transactionSource = payload?.transactionSource;
+  const transactionSyncing = transactionSource?.sync.running || transactionSource?.sync.status === "running";
+  React.useEffect(() => {
+    if (tab !== "sources" || !transactionSyncing) return undefined;
+    const timer = window.setInterval(() => {
+      void onLoad({ dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, brand, keyword });
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [tab, transactionSyncing, dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, brand, keyword]);
+  const contributionActive = transactionSource?.effective === "miaoshou" && Number(payload?.quality.contributionCoverageRate || 0) > 0;
   const useRevenueMetric = permissions.revenue && revenueReady;
   const trendRows = (payload?.daily || []).slice(-30);
   const trendMax = Math.max(1, ...trendRows.map((row) => useRevenueMetric ? (row.salesCny || 0) : row.quantity));
   const qualityRows = [
+    ...(permissions.revenue ? [{ label: "销售金额待核验", value: payload?.quality.invalidSalesAmountLines || 0, note: "未进入正式销售额、排名和利润", tone: "danger" }] : []),
+    ...(permissions.revenue ? [{ label: "订单金额分摊不平", value: payload?.quality.allocationMismatchLines || 0, note: "订单与明细误差超过 0.01 原币", tone: "danger" }] : []),
     { label: "SKU 未匹配产品", value: payload?.quality.unmatchedProductLines || 0, note: "无法归属产品、品牌和成本", tone: "danger" },
     { label: "品牌未建档", value: payload?.quality.missingBrandLines || 0, note: "归入未建档品牌", tone: "warning" },
     ...(permissions.revenue ? [{ label: "汇率缺失", value: payload?.quality.missingExchangeRateLines || 0, note: "暂不计入人民币销售额", tone: "warning" }] : []),
@@ -7235,6 +7320,14 @@ function PerformanceAnalysisPage({
     ...(permissions.cost ? [{ label: "打包费规则缺失", value: payload?.quality.missingPackagingRuleLines || 0, note: "对应国家暂按 0 元打包费", tone: "warning" }] : []),
     { label: "历史金额已纠正", value: payload?.quality.legacyAllocatedLines || 0, note: "YunWMS 多 SKU 订单已重新分摊", tone: "good" },
   ];
+  const qualityIssueTypeCount = [
+    payload?.quality.invalidSalesAmountLines,
+    payload?.quality.allocationMismatchLines,
+    payload?.quality.unmatchedProductLines,
+    payload?.quality.missingExchangeRateLines,
+    payload?.quality.missingCostLines,
+    payload?.quality.missingPackagingRuleLines,
+  ].filter((value) => Number(value || 0) > 0).length;
 
   return (
     <main className="performance-page">
@@ -7244,9 +7337,11 @@ function PerformanceAnalysisPage({
           <h2>货盘经营贡献</h2>
           <p>默认查看近 90 天 WMS 已出库订单；外币按汇率折算人民币，销售成本包含对应国家直营成本和订单打包费。</p>
           <div className="source-row">
-            <span className={`status-pill ${payload?.syncedAt && !loading ? "good" : "warning"}`}>{loading ? "正在计算分析" : orderJobRunning ? "WMS 订单同步中" : payload?.syncedAt ? "订单事实层已更新" : "等待订单同步"}</span>
+            <span className={`status-pill ${officialData && !loading ? "good" : "warning"}`}>{loading ? "正在读取汇总" : orderJobRunning ? "WMS 订单同步中" : officialData ? "正式数据" : payload?.syncedAt ? "暂估数据" : "等待订单同步"}</span>
             <span>{loading ? "正在读取订单事实与国家成本，请稍候" : orderJobRunning ? "同步完成后会自动刷新分析" : payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
             <span>{formatNumber(payload?.metadata.rowCount || 0)} 条订单行</span>
+            {permissions.revenue && transactionSource ? <span>收入：{transactionSource.effective === "miaoshou" ? "妙手净销售额" : transactionSource.requested === "shadow" ? "WMS 正式 · 妙手影子" : "WMS"}</span> : null}
+            {payload?.queryDurationMs !== undefined ? <span>筛选 {formatNumber(payload.queryDurationMs)} ms · 版本 {payload.dataVersion || "—"}</span> : null}
           </div>
         </div>
         <div className="performance-hero-actions">
@@ -7255,24 +7350,25 @@ function PerformanceAnalysisPage({
         </div>
       </section>
 
-      <section className={`performance-health ${pipelineReconciled && revenueComplete && costComplete ? "good" : "warning"}`}>
+      <section className={`performance-health ${officialData && revenueComplete && costComplete ? "good" : "warning"}`}>
         <div>
           <ShieldCheck size={18} />
-          <span><strong>{pipelineReconciled ? "WMS 明细入库对账一致" : "WMS 明细与分析事实待重新对账"}</strong><small>源明细 {formatNumber(payload?.reconciliation.sourceRowCount || 0)} 行 · 分析事实 {formatNumber(payload?.reconciliation.factRowCount || 0)} 行</small></span>
+          <span><strong>{officialData ? "WMS 完整性与分析事实对账通过" : pipelineReconciled ? "当前为暂估数据，存在未完成仓库快照" : "WMS 明细与分析事实待重新对账"}</strong><small>源明细 {formatNumber(payload?.reconciliation.sourceRowCount || 0)} 行 · 分析事实 {formatNumber(payload?.reconciliation.factRowCount || 0)} 行</small></span>
         </div>
         <div className="performance-health-rates">
           <span className={revenueComplete ? "good" : "warning"}>销售额覆盖 {formatPercentValue(revenueCoverage)}</span>
           <span className={costComplete ? "good" : "danger"}>成本覆盖 {formatPercentValue(costCoverage)}</span>
           <span className={profitComplete ? "good" : "danger"}>利润覆盖 {formatPercentValue(profitCoverage)}</span>
         </div>
-        {!profitComplete ? <p>当前利润仅代表“同时有销售额与到仓成本”的覆盖范围，不能作为全部货盘利润结论。</p> : null}
+        {!officialData && payload?.sourceQuality?.incompleteWarehouses?.length ? <p>未完成仓库：{payload.sourceQuality.incompleteWarehouses.map((item) => item.warehouseId || "未识别仓库").join("、")}。系统已保留上一份完整快照，本批次不会覆盖正式数据。</p> : null}
+        {!profitComplete ? <p>当前利润仅代表“同时有销售额与完整成本”的覆盖范围，不能作为全部货盘利润结论。</p> : null}
       </section>
 
       <section className="performance-kpis">
         <article className="performance-kpi primary">
           <span>{revenueComplete ? "人民币销售额" : "覆盖范围销售额"}</span>
-          <strong>{permissions.revenue ? (revenueReady ? formatCny(totals?.salesCny) : "待配置汇率") : "未授权"}</strong>
-          <small>{permissions.revenue ? (revenueReady ? `金额覆盖 ${formatPercentValue(payload?.quality.revenueCoverageRate)}` : "原币金额已保留，尚未折算人民币") : "需要经营销售金额权限"}</small>
+          <strong>{permissions.revenue ? (revenueReady ? formatCny(totals?.salesCny) : revenuePendingLabel) : "未授权"}</strong>
+          <small>{permissions.revenue ? (revenueReady ? `金额覆盖 ${formatPercentValue(payload?.quality.revenueCoverageRate)}` : invalidSalesAmountLines > 0 ? `${formatNumber(invalidSalesAmountLines)} 行缺少已核验订单实付金额，已排除` : "有效原币金额尚未配置人民币汇率") : "需要经营销售金额权限"}</small>
         </article>
         <article className="performance-kpi">
           <span>出库订单 / 件数</span>
@@ -7285,13 +7381,13 @@ function PerformanceAnalysisPage({
           <small>{permissions.cost ? (costReady ? `产品 ${formatCny(totals?.productCostCny)} · 打包 ${formatCny(totals?.packagingFeeCny)}` : `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}`) : "成本字段已由后端隔离"}</small>
         </article>
         <article className="performance-kpi profit">
-          <span>{profitComplete ? "预估毛利" : "覆盖范围预估毛利"}</span>
-          <strong>{permissions.profit ? (profitReady ? formatCny(totals?.estimatedProfitCny) : "待汇率与成本") : "未授权"}</strong>
-          <small>{permissions.profit ? `毛利率 ${formatPercentValue(totals?.grossMargin)} · 覆盖 ${formatPercentValue(payload?.quality.profitCoverageRate)}` : "需要成本与利润权限"}</small>
+          <span>{contributionActive ? "贡献利润" : profitComplete ? "预估毛利" : "覆盖范围预估毛利"}</span>
+          <strong>{permissions.profit ? (profitReady ? formatCny(contributionActive ? totals?.contributionProfitCny : totals?.estimatedProfitCny) : "待收入与成本") : "未授权"}</strong>
+          <small>{permissions.profit ? (contributionActive ? `已扣产品、打包、佣金与物流 · 覆盖 ${formatPercentValue(payload?.quality.contributionCoverageRate)}` : `毛利率 ${formatPercentValue(totals?.grossMargin)} · 覆盖 ${formatPercentValue(payload?.quality.profitCoverageRate)}`) : "需要成本与利润权限"}</small>
         </article>
       </section>
 
-      {permissions.revenue ? (
+      {permissions.revenue && (payload?.currencySummary.length || 0) > 0 ? (
         <section className="performance-currency-strip">
           <span>原币销售额</span>
           {(payload?.currencySummary || []).map((item) => (
@@ -7321,13 +7417,13 @@ function PerformanceAnalysisPage({
           <p className="eyebrow">Top Product</p>
           <span>业绩贡献最高产品</span>
           <h3>{payload?.topProduct?.productName || "暂无可分析产品"}</h3>
-          <div><strong>{useRevenueMetric ? formatCny(payload?.topProduct?.salesCny) : `${formatNumber(payload?.topProduct?.quantity || 0)} 件`}</strong><small>{payload?.topProduct?.sku || "SKU 未匹配"} · {useRevenueMetric ? `${formatPercentValue(payload?.topProduct?.contributionRate)} 贡献` : "人民币贡献待汇率"}</small></div>
+          <div><strong>{useRevenueMetric ? formatCny(payload?.topProduct?.salesCny) : `${formatNumber(payload?.topProduct?.quantity || 0)} 件`}</strong><small>{payload?.topProduct?.sku || "SKU 未匹配"} · {useRevenueMetric ? `${formatPercentValue(payload?.topProduct?.contributionRate)} 贡献` : revenueContributionPendingLabel}</small></div>
         </article>
         <article>
           <p className="eyebrow">Top Brand</p>
           <span>业绩贡献最高品牌</span>
           <h3>{payload?.topBrand?.brand || "暂无品牌数据"}</h3>
-          <div><strong>{useRevenueMetric ? formatCny(payload?.topBrand?.salesCny) : `${formatNumber(payload?.topBrand?.quantity || 0)} 件`}</strong><small>{formatNumber(payload?.topBrand?.skuCount || 0)} SKU · {useRevenueMetric ? `${formatPercentValue(payload?.topBrand?.contributionRate)} 贡献` : "人民币贡献待汇率"}</small></div>
+          <div><strong>{useRevenueMetric ? formatCny(payload?.topBrand?.salesCny) : `${formatNumber(payload?.topBrand?.quantity || 0)} 件`}</strong><small>{formatNumber(payload?.topBrand?.skuCount || 0)} SKU · {useRevenueMetric ? `${formatPercentValue(payload?.topBrand?.contributionRate)} 贡献` : revenueContributionPendingLabel}</small></div>
         </article>
         <article className="performance-trend-card">
           <div><p className="eyebrow">30 Day Pulse</p><span>最近30天趋势</span></div>
@@ -7344,7 +7440,8 @@ function PerformanceAnalysisPage({
         <div className="performance-tabs">
           <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.products.length || 0)}</span></button>
           <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.brands.length || 0)}</span></button>
-          <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber((payload?.quality.unmatchedProductLines || 0) + (payload?.quality.missingExchangeRateLines || 0) + (payload?.quality.missingCostLines || 0) + (payload?.quality.missingPackagingRuleLines || 0))}</span></button>
+          <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber(qualityIssueTypeCount)} 项</span></button>
+          {permissions.revenue ? <button className={tab === "sources" ? "active" : ""} type="button" onClick={() => setTab("sources")}><DatabaseZap size={15} />交易对账 <span>{formatPercentValue(transactionSource?.reconciliation.orderMatchRate)}</span></button> : null}
           {permissions.cost ? <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}><Settings size={15} />成本规则 <span>{formatNumber(payload?.packagingFeeRules.length || 0)}</span></button> : null}
           <button className={tab === "shops" ? "active" : ""} type="button" onClick={() => setTab("shops")}>店铺归属 <span>{formatNumber(payload?.shopDirectory.shops.length || 0)}</span></button>
         </div>
@@ -7352,27 +7449,27 @@ function PerformanceAnalysisPage({
         {tab === "products" ? (
           <div className="performance-table-wrap">
             <div className="performance-contribution-row head">
-              <span>产品 / 品牌</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>销售成本</span> : null}{permissions.profit ? <><span>预估毛利</span><span>毛利率</span></> : null}<span>覆盖</span>
+              <span>产品 / 品牌</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "经营成本" : "销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}<span>覆盖</span>
             </div>
             {(payload?.products || []).slice(0, 100).map((row, index) => (
               <article className="performance-contribution-row" key={row.key}>
                 <span className="performance-name-cell"><b>{String(index + 1).padStart(2, "0")}</b>{row.imageUrl ? <img src={row.imageUrl} alt="" /> : <span className="performance-product-placeholder"><Boxes size={17} /></span>}<span><strong>{row.productName}</strong><small>{row.sku} · {row.brand}</small></span></span>
                 <strong>{formatNumber(row.quantity)}</strong>
-                {permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}<small>{(row.amountsByCurrency || []).map((item) => formatOriginalAmount(item.amount, item.currency)).join(" · ")}</small></strong> : null}
-                <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>
-                {permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? `产品 ${formatCny(row.productCostCny)} · 打包 ${formatCny(row.packagingFeeCny)}` : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
-                {permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
-                <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.profitCoverageRate ?? row.revenueCoverageRate) : "待汇率"}</span>
+                {permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : performanceRowRevenuePendingLabel(row)}<small>{(row.amountsByCurrency || []).map((item) => formatOriginalAmount(item.amount, item.currency)).join(" · ")}</small></strong> : null}
+                <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : performanceRowRevenuePendingLabel(row)}</span>
+                {permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(contributionActive ? row.operatingCostCny : row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? (contributionActive ? `产品+打包 ${formatCny(row.cogsCny)} · 佣金 ${formatCny(row.commissionFeeCny)} · 物流 ${formatCny(row.logisticsFeeCny)}` : `产品 ${formatCny(row.productCostCny)} · 打包 ${formatCny(row.packagingFeeCny)}`) : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
+                {permissions.profit ? <><strong className={(performanceRowProfitValue(row) || 0) < 0 ? "negative" : "positive"}>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(performanceRowProfitValue(row)) : "待计算"}</strong><span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatPercentValue(performanceRowProfitMargin(row)) : "—"}</span></> : null}
+                <span>{performanceRowRevenueReady(row) ? formatPercentValue(performanceRowProfitCoverage(row) ?? row.revenueCoverageRate) : performanceRowRevenuePendingLabel(row)}</span>
               </article>
             ))}
           </div>
         ) : tab === "brands" ? (
           <div className="performance-table-wrap">
-            <div className="performance-contribution-row brand-row-table head"><span>品牌</span><span>SKU</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>销售成本</span> : null}{permissions.profit ? <><span>预估毛利</span><span>毛利率</span></> : null}</div>
+            <div className="performance-contribution-row brand-row-table head"><span>品牌</span><span>SKU</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "经营成本" : "销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}</div>
             {(payload?.brands || []).map((row, index) => (
               <article className="performance-contribution-row brand-row-table" key={row.key}>
                 <span className="performance-brand-cell"><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{row.brand}</strong><small>{formatNumber(row.orderCount)} 单 · {formatNumber(row.warehouseCount)} 仓</small></span></span>
-                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : "待汇率"}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : "待汇率"}</span>{permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? `含打包费 ${formatCny(row.packagingFeeCny)}` : ""}</small></span> : null}{permissions.profit ? <><strong className={(row.estimatedProfitCny || 0) < 0 ? "negative" : "positive"}>{Number(row.profitCoverageRate || 0) > 0 ? formatCny(row.estimatedProfitCny) : "待计算"}</strong><span>{Number(row.profitCoverageRate || 0) > 0 ? formatPercentValue(row.grossMargin) : "—"}</span></> : null}
+                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : performanceRowRevenuePendingLabel(row)}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : performanceRowRevenuePendingLabel(row)}</span>{permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(contributionActive ? row.operatingCostCny : row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? (contributionActive ? `佣金 ${formatCny(row.commissionFeeCny)} · 物流 ${formatCny(row.logisticsFeeCny)}` : `含打包费 ${formatCny(row.packagingFeeCny)}`) : ""}</small></span> : null}{permissions.profit ? <><strong className={(performanceRowProfitValue(row) || 0) < 0 ? "negative" : "positive"}>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(performanceRowProfitValue(row)) : "待计算"}</strong><span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatPercentValue(performanceRowProfitMargin(row)) : "—"}</span></> : null}
               </article>
             ))}
           </div>
@@ -7398,6 +7495,40 @@ function PerformanceAnalysisPage({
               </section>
             ) : null}
           </div>
+        ) : tab === "sources" ? (
+          <section className="performance-transaction-panel">
+            <div className="performance-transaction-heading">
+              <div>
+                <p className="eyebrow">Transaction Reconciliation</p>
+                <h3>妙手交易 × WMS 履约影子核对</h3>
+                <p>妙手提供订单实付与售后，WMS 提供真实出库和仓库归属。拆包按平台订单去重；未达到质量门槛时，系统不会自动替换正式收入。</p>
+              </div>
+              <span className={`status-pill ${transactionSource?.activationEligible ? "good" : "warning"}`}>{transactionSource?.activationEligible ? "达到切换标准" : "影子核对中"}</span>
+            </div>
+            <div className="performance-source-flow">
+              <article><span>交易 / 退款</span><strong>妙手 ERP</strong><small>{transactionSource?.sync.lastSuccessAt ? `最近完整同步 ${formatDateTime(transactionSource.sync.lastSuccessAt)}` : transactionSource?.sync.lastCompletedAt ? `最近部分同步 ${formatDateTime(transactionSource.sync.lastCompletedAt)}` : "等待首次同步"}</small></article>
+              <article><span>出库 / 仓库</span><strong>WMS</strong><small>{payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "等待同步"}</small></article>
+              <article><span>国家直营成本</span><strong>产品库</strong><small>按 SKU 与订单国家匹配</small></article>
+              <article><span>正式收入口径</span><strong>{transactionSource?.effective === "miaoshou" ? "妙手净销售额" : "WMS 销售额"}</strong><small>请求模式：{transactionSource?.requested === "miaoshou" ? "妙手正式" : transactionSource?.requested === "shadow" ? "影子核对" : "固定 WMS"}</small></article>
+            </div>
+            <div className="performance-reconciliation-grid">
+              <article className={(transactionSource?.reconciliation.orderMatchRate || 0) >= 0.98 ? "good" : "warning"}><span>订单匹配率</span><strong>{formatPercentValue(transactionSource?.reconciliation.orderMatchRate)}</strong><small>{formatNumber(transactionSource?.reconciliation.matchedOrderCount || 0)} / {formatNumber(transactionSource?.reconciliation.eligibleOrderCount || 0)} 单</small></article>
+              <article className={(transactionSource?.reconciliation.quantityVarianceRate || 0) <= 0.005 ? "good" : "warning"}><span>数量差异率</span><strong>{formatPercentValue(transactionSource?.reconciliation.quantityVarianceRate)}</strong><small>门槛 ≤ 0.5%</small></article>
+              <article className={(transactionSource?.reconciliation.comparableAmountOrders || 0) > 0 && (transactionSource?.reconciliation.amountVarianceRate || 0) <= 0.01 ? "good" : "warning"}><span>金额差异率</span><strong>{(transactionSource?.reconciliation.comparableAmountOrders || 0) > 0 ? formatPercentValue(transactionSource?.reconciliation.amountVarianceRate) : "暂无可比"}</strong><small>{formatNumber(transactionSource?.reconciliation.comparableAmountOrders || 0)} 单可比 · 门槛 ≤ 1%</small></article>
+              <article className={(transactionSource?.reconciliation.refundCount || 0) === 0 || (transactionSource?.reconciliation.refundFinalizationRate || 0) >= 0.99 ? "good" : "warning"}><span>退款终态识别</span><strong>{(transactionSource?.reconciliation.refundCount || 0) > 0 ? formatPercentValue(transactionSource?.reconciliation.refundFinalizationRate) : "暂无退款"}</strong><small>{formatNumber(transactionSource?.reconciliation.finalizedRefundCount || 0)} / {formatNumber(transactionSource?.reconciliation.refundCount || 0)} 笔</small></article>
+            </div>
+            {transactionSource?.reconciliation.blockers.length ? <div className="performance-source-blockers"><strong>当前不能切换妙手正式口径</strong>{transactionSource.reconciliation.blockers.map((item) => <span key={item}>{item}</span>)}</div> : <div className="notice success">双源对账已达到门槛，管理员可将妙手净销售额切为正式收入口径。</div>}
+            {transactionSource?.sync.lastError ? <div className="notice danger">最近同步失败：{transactionSource.sync.lastError}</div> : null}
+            {(transactionSource?.sync.warnings || []).length ? <div className="notice warning">售后同步警告：{transactionSource!.sync.warnings!.slice(0, 3).join("；")}</div> : null}
+            <div className="performance-transaction-actions">
+              <span>{transactionMessage || (!transactionSource?.sync.enabled ? "请先在“妙手 ERP”完成 AppKey 授权并同步店铺，再开始交易对账。" : transactionSyncing ? "妙手交易正在后台同步，本页会自动刷新对账结果。" : "首次同步 90 天；每 15 分钟增量回看 3 天，并每日复扫 90 天售后状态。")}</span>
+              {permissions.manageTransactionSource ? <>
+                <button className="ghost-button" type="button" onClick={syncMiaoshouNow} disabled={busy || transactionSyncing || !transactionSource?.sync.enabled}><RefreshCw size={15} className={transactionSyncing ? "spinning" : ""} />{transactionSyncing ? "后台同步中" : "同步当前日期范围"}</button>
+                <button className="ghost-button" type="button" onClick={() => changeRevenueSource("shadow")} disabled={busy || transactionSource?.requested === "shadow"}>保持影子核对</button>
+                <button className="sync-button" type="button" onClick={() => changeRevenueSource("miaoshou")} disabled={busy || !transactionSource?.activationEligible || transactionSource?.effective === "miaoshou"}>启用妙手正式口径</button>
+              </> : null}
+            </div>
+          </section>
         ) : tab === "costs" ? (
           <section className="performance-cost-rule-panel">
             <div className="performance-cost-rule-heading">
@@ -11301,7 +11432,13 @@ function WarehouseWorkScene({ record }: { record: WarehouseInfoRecord }) {
   );
 }
 
-createRoot(document.getElementById("root")!).render(
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("应用根节点不存在");
+const browserRuntime = globalThis as typeof globalThis & { __tongzhouSupplyChainRoot?: ReturnType<typeof createRoot> };
+const appRoot = browserRuntime.__tongzhouSupplyChainRoot || createRoot(rootElement);
+browserRuntime.__tongzhouSupplyChainRoot = appRoot;
+
+appRoot.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,

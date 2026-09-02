@@ -15,7 +15,7 @@ const movementHistoryDbPath = resolve(smokeCacheDir, "movement-history.sqlite");
 
 writeFileSync(resolve(smokeCacheDir, "orders-sync.json"), JSON.stringify({
   syncedAt: "2026-08-28T00:00:00.000Z",
-  results: [],
+  results: [{ warehouseId: "id-warehouse", ok: true, orderApiComplete: true, orderApiTotal: 1, orderApiReadRows: 1 }],
   orders: [{
     providerId: "sea_wms",
     warehouseId: "id-warehouse",
@@ -33,7 +33,11 @@ writeFileSync(resolve(smokeCacheDir, "orders-sync.json"), JSON.stringify({
     quantity: 2,
     salesAmount: 10000,
     currency: "IDR",
-    salesAmountScope: "line",
+    salesAmountScope: "order_allocated",
+    salesAmountSource: "order.orderAmount",
+    salesAmountOrderTotal: 10000,
+    salesAmountAllocationResidual: 0,
+    salesAmountValid: true,
   }],
 }), "utf8");
 writeFileSync(resolve(smokeCacheDir, "miaoshou-shops.json"), JSON.stringify({
@@ -55,6 +59,7 @@ const child = spawn(process.execPath, ["server/server.js"], {
     INTERNAL_ACCESS_CODE: accessCode,
     AUTH_SESSION_SECRET: "smoke-session-secret",
     AUTO_SYNC_INTERVAL_MS: "0",
+    PERFORMANCE_FX_AUTO_SYNC: "false",
     ORDER_SYNC_TIMEOUT_MS: "1000",
     WAREHOUSE_TEST_TIMEOUT_MS: "2000",
     WMS_REQUEST_TIMEOUT_MS: "2000",
@@ -179,6 +184,20 @@ async function main() {
   const performance = await expectJson("/api/performance-analytics?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
   if (!performance.reconciliation?.rowCountMatched || performance.shopDirectory?.matchedShopCount !== 1) {
     throw new Error(`/api/performance-analytics did not reconcile WMS facts or match the Miaoshou alias: ${JSON.stringify(performance).slice(0, 800)}`);
+  }
+  if (!performance.dataVersion || performance.sourceQuality?.status !== "official" || !Number.isFinite(performance.queryDurationMs)) {
+    throw new Error(`/api/performance-analytics did not expose a versioned official snapshot: ${JSON.stringify(performance).slice(0, 800)}`);
+  }
+  if (performance.transactionSource?.requested !== "shadow" || performance.transactionSource?.effective !== "wms" || performance.transactionSource?.activationEligible) {
+    throw new Error(`/api/performance-analytics did not default to the safe Miaoshou shadow mode: ${JSON.stringify(performance.transactionSource).slice(0, 800)}`);
+  }
+  const unsafeSourceSwitch = await fetch(`${baseUrl}/api/performance-analytics/revenue-source`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ revenueSource: "miaoshou" }),
+  });
+  if (unsafeSourceSwitch.status !== 409) {
+    throw new Error(`unsafe Miaoshou revenue activation was not blocked: ${unsafeSourceSwitch.status}`);
   }
   const shop = performance.shopDirectory.shops[0];
   if (shop.displayName !== "印尼测试别称" || !shop.key) {

@@ -750,6 +750,39 @@ export async function initMiaoshouAutomation({
     return fetchWaybillForTask(task);
   }
 
+  function performanceContext() {
+    const current = effectiveConfig();
+    return {
+      hasCredentials: hasCredentials(current),
+      scopes: config.scopes.map((scope) => ({ ...scope })),
+      shops: shopState.shops
+        .filter((shop) => shop.connectionStatus !== "invalid" && text(shop.shopId))
+        .map((shop) => ({
+          shopId: shop.shopId,
+          platform: shop.platform,
+          site: shop.site,
+          shopNick: shop.shopNick,
+          platformShopName: shop.platformShopName,
+        })),
+      shopsSyncedAt: shopState.syncedAt,
+    };
+  }
+
+  async function searchPerformancePackages(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().searchPackages(input), { retryRateLimit: true });
+  }
+
+  async function searchPerformanceReturns(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().searchReturns(input), { retryRateLimit: true });
+  }
+
+  async function searchPerformanceCancellations(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().searchCancellations(input), { retryRateLimit: true });
+  }
+
   async function runScheduled() {
     if (running || !config.automationEnabled || !hasCredentials(effectiveConfig())) return null;
     const lastRun = Date.parse(config.lastRunAt || "");
@@ -765,10 +798,14 @@ export async function initMiaoshouAutomation({
 
   return {
     getWaybill,
+    performanceContext,
     publicPayload,
     retryTask,
     runAutomation,
     runScheduled,
+    searchPerformanceCancellations,
+    searchPerformancePackages,
+    searchPerformanceReturns,
     syncShops,
     testConnection,
     updateConfig,

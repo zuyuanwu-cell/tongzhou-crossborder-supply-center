@@ -103,6 +103,98 @@ function factFromDb(row) {
     salesAmount: number(row.sales_amount),
     currency: text(row.currency).toUpperCase(),
     salesAmountScope: text(row.sales_amount_scope),
+    salesAmountSource: text(row.sales_amount_source),
+    salesAmountOrderTotal: number(row.sales_amount_order_total),
+    salesAmountAllocationResidual: number(row.sales_amount_allocation_residual),
+    salesAmountValid: number(row.sales_amount_valid) === 1,
+  };
+}
+
+function miaoshouOrderFromDb(row) {
+  return {
+    identity: text(row.identity),
+    opOrderId: text(row.op_order_id),
+    platform: text(row.platform),
+    shopId: text(row.shop_id),
+    platformOrderSn: text(row.platform_order_sn),
+    site: text(row.site),
+    currency: text(row.currency).toUpperCase(),
+    productAmount: number(row.product_amount),
+    orderAmount: number(row.order_amount),
+    payAmount: number(row.pay_amount),
+    estimatedShippingFee: number(row.estimated_shipping_fee),
+    actualShippingCost: number(row.actual_shipping_cost),
+    commissionFee: number(row.commission_fee),
+    escrowAmount: number(row.escrow_amount),
+    discountAmount: number(row.discount_amount),
+    exchangeRate: number(row.exchange_rate),
+    paymentMethod: text(row.payment_method),
+    platformOrderStatus: text(row.platform_order_status),
+    appOrderStatus: text(row.app_order_status),
+    appOrderStatusText: text(row.app_order_status_text),
+    orderStartedAt: text(row.order_started_at),
+    orderModifiedAt: text(row.order_modified_at),
+    paidAt: text(row.paid_at),
+    deliveredAt: text(row.delivered_at),
+    refundedAt: text(row.refunded_at),
+    settledAt: text(row.settled_at),
+    finishedAt: text(row.finished_at),
+  };
+}
+
+function miaoshouItemFromDb(row) {
+  return {
+    identity: text(row.identity),
+    orderIdentity: text(row.order_identity),
+    opOrderItemId: text(row.op_order_item_id),
+    opOrderPackageItemId: text(row.op_order_package_item_id),
+    platformSkuId: text(row.platform_sku_id),
+    platformOuterSkuId: text(row.platform_outer_sku_id),
+    quantity: number(row.quantity),
+    originalPrice: number(row.original_price),
+    discountedPrice: number(row.discounted_price),
+    gift: number(row.gift) === 1,
+  };
+}
+
+function miaoshouReturnFromDb(row) {
+  return {
+    identity: text(row.identity),
+    orderIdentity: text(row.order_identity),
+    opOrderId: text(row.op_order_id),
+    platform: text(row.platform),
+    shopId: text(row.shop_id),
+    platformOrderSn: text(row.platform_order_sn),
+    platformReturnSn: text(row.platform_return_sn),
+    currency: text(row.currency).toUpperCase(),
+    refundAmount: number(row.refund_amount),
+    status: text(row.status),
+    platformReturnStatus: text(row.platform_return_status),
+    appReturnStatus: text(row.app_return_status),
+    appReturnStatusText: text(row.app_return_status_text),
+    reverseType: text(row.reverse_type),
+    createdAt: text(row.created_at),
+    modifiedAt: text(row.modified_at),
+    finishedAt: text(row.finished_at),
+    finalized: number(row.finalized) === 1,
+  };
+}
+
+function miaoshouCancellationFromDb(row) {
+  return {
+    identity: text(row.identity),
+    orderIdentity: text(row.order_identity),
+    opOrderId: text(row.op_order_id),
+    platform: text(row.platform),
+    shopId: text(row.shop_id),
+    platformOrderSn: text(row.platform_order_sn),
+    status: text(row.status),
+    appCancelStatus: text(row.app_cancel_status),
+    appCancelStatusText: text(row.app_cancel_status_text),
+    reason: text(row.reason),
+    createdAt: text(row.created_at),
+    modifiedAt: text(row.modified_at),
+    finalized: number(row.finalized) === 1,
   };
 }
 
@@ -111,7 +203,6 @@ export async function initPerformanceAnalyticsStore(dbPath) {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
   db.run(`
-    PRAGMA user_version = 1;
     CREATE TABLE IF NOT EXISTS performance_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -139,6 +230,10 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       sales_amount REAL NOT NULL DEFAULT 0,
       currency TEXT,
       sales_amount_scope TEXT,
+      sales_amount_source TEXT,
+      sales_amount_order_total REAL NOT NULL DEFAULT 0,
+      sales_amount_allocation_residual REAL NOT NULL DEFAULT 0,
+      sales_amount_valid INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_performance_fact_date ON performance_sales_facts (order_date);
@@ -152,7 +247,108 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (currency, effective_date)
     );
+    CREATE TABLE IF NOT EXISTS miaoshou_performance_orders (
+      identity TEXT PRIMARY KEY,
+      op_order_id TEXT,
+      platform TEXT,
+      shop_id TEXT,
+      platform_order_sn TEXT,
+      site TEXT,
+      currency TEXT,
+      product_amount REAL NOT NULL DEFAULT 0,
+      order_amount REAL NOT NULL DEFAULT 0,
+      pay_amount REAL NOT NULL DEFAULT 0,
+      estimated_shipping_fee REAL NOT NULL DEFAULT 0,
+      actual_shipping_cost REAL NOT NULL DEFAULT 0,
+      commission_fee REAL NOT NULL DEFAULT 0,
+      escrow_amount REAL NOT NULL DEFAULT 0,
+      discount_amount REAL NOT NULL DEFAULT 0,
+      exchange_rate REAL NOT NULL DEFAULT 0,
+      payment_method TEXT,
+      platform_order_status TEXT,
+      app_order_status TEXT,
+      app_order_status_text TEXT,
+      order_started_at TEXT,
+      order_modified_at TEXT,
+      paid_at TEXT,
+      delivered_at TEXT,
+      refunded_at TEXT,
+      settled_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_miaoshou_performance_order_no
+      ON miaoshou_performance_orders (platform, shop_id, platform_order_sn);
+    CREATE INDEX IF NOT EXISTS idx_miaoshou_performance_order_date
+      ON miaoshou_performance_orders (order_started_at, order_modified_at);
+    CREATE TABLE IF NOT EXISTS miaoshou_performance_items (
+      identity TEXT PRIMARY KEY,
+      order_identity TEXT NOT NULL,
+      op_order_item_id TEXT,
+      op_order_package_item_id TEXT,
+      platform_sku_id TEXT,
+      platform_outer_sku_id TEXT,
+      quantity REAL NOT NULL DEFAULT 0,
+      original_price REAL NOT NULL DEFAULT 0,
+      discounted_price REAL NOT NULL DEFAULT 0,
+      gift INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_miaoshou_performance_item_order
+      ON miaoshou_performance_items (order_identity);
+    CREATE TABLE IF NOT EXISTS miaoshou_performance_returns (
+      identity TEXT PRIMARY KEY,
+      order_identity TEXT NOT NULL,
+      op_order_id TEXT,
+      platform TEXT,
+      shop_id TEXT,
+      platform_order_sn TEXT,
+      platform_return_sn TEXT,
+      currency TEXT,
+      refund_amount REAL NOT NULL DEFAULT 0,
+      status TEXT,
+      platform_return_status TEXT,
+      app_return_status TEXT,
+      app_return_status_text TEXT,
+      reverse_type TEXT,
+      created_at TEXT,
+      modified_at TEXT,
+      finished_at TEXT,
+      finalized INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_miaoshou_performance_return_order
+      ON miaoshou_performance_returns (order_identity);
+    CREATE TABLE IF NOT EXISTS miaoshou_performance_cancellations (
+      identity TEXT PRIMARY KEY,
+      order_identity TEXT NOT NULL,
+      op_order_id TEXT,
+      platform TEXT,
+      shop_id TEXT,
+      platform_order_sn TEXT,
+      status TEXT,
+      app_cancel_status TEXT,
+      app_cancel_status_text TEXT,
+      reason TEXT,
+      created_at TEXT,
+      modified_at TEXT,
+      finalized INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_miaoshou_performance_cancel_order
+      ON miaoshou_performance_cancellations (order_identity);
   `);
+  const factColumns = new Set(all(db, "PRAGMA table_info(performance_sales_facts)").map((row) => text(row.name)));
+  const factMigrations = [
+    ["sales_amount_source", "TEXT"],
+    ["sales_amount_order_total", "REAL NOT NULL DEFAULT 0"],
+    ["sales_amount_allocation_residual", "REAL NOT NULL DEFAULT 0"],
+    ["sales_amount_valid", "INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [column, definition] of factMigrations) {
+    if (!factColumns.has(column)) db.run(`ALTER TABLE performance_sales_facts ADD COLUMN ${column} ${definition}`);
+  }
+  db.run("PRAGMA user_version = 3");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));
@@ -171,6 +367,9 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       sourceSyncedAt: getMeta("sourceSyncedAt"),
       rebuiltAt: getMeta("rebuiltAt"),
       rowCount: number(first(db, "SELECT COUNT(*) AS count FROM performance_sales_facts")?.count),
+      miaoshouOrderCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_orders")?.count),
+      miaoshouItemCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_items")?.count),
+      miaoshouReturnCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_returns")?.count),
       dbPath,
     };
   }
@@ -189,8 +388,9 @@ export async function initPerformanceAnalyticsStore(dbPath) {
         INSERT INTO performance_sales_facts (
           id, source_system, source_order_id, source_line_id, order_no, order_date, shipped_at, created_at,
           warehouse_id, warehouse_name, country, status, platform, shop_name, shop_code, project_group,
-          sku, product_name, quantity, sales_amount, currency, sales_amount_scope, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sku, product_name, quantity, sales_amount, currency, sales_amount_scope, sales_amount_source,
+          sales_amount_order_total, sales_amount_allocation_residual, sales_amount_valid, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       try {
         for (const order of corrected) {
@@ -223,6 +423,10 @@ export async function initPerformanceAnalyticsStore(dbPath) {
             number(order.salesAmount),
             text(order.currency).toUpperCase(),
             text(order.salesAmountScope),
+            text(order.salesAmountSource),
+            number(order.salesAmountOrderTotal),
+            number(order.salesAmountAllocationResidual),
+            order.salesAmountValid === true ? 1 : 0,
             now,
           ]);
         }
@@ -270,6 +474,111 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     return all(db, `SELECT * FROM performance_sales_facts ${where} ORDER BY order_date DESC, id ASC`, params).map(factFromDb);
+  }
+
+  function getMiaoshouPerformanceSyncState() {
+    try {
+      const value = JSON.parse(getMeta("miaoshouPerformanceSyncState") || "{}");
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function setMiaoshouPerformanceSyncState(state = {}) {
+    setMeta("miaoshouPerformanceSyncState", JSON.stringify(state && typeof state === "object" ? state : {}));
+    persist();
+    return getMiaoshouPerformanceSyncState();
+  }
+
+  function upsertMiaoshouPerformance({ orders = [], items = [], returns = [], cancellations = [] } = {}, syncState = null) {
+    const now = new Date().toISOString();
+    db.run("BEGIN TRANSACTION");
+    try {
+      const orderStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_orders (
+        identity, op_order_id, platform, shop_id, platform_order_sn, site, currency,
+        product_amount, order_amount, pay_amount, estimated_shipping_fee, actual_shipping_cost,
+        commission_fee, escrow_amount, discount_amount, exchange_rate, payment_method,
+        platform_order_status, app_order_status, app_order_status_text, order_started_at,
+        order_modified_at, paid_at, delivered_at, refunded_at, settled_at, finished_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      try {
+        for (const row of Array.isArray(orders) ? orders : []) orderStatement.run([
+          text(row.identity), text(row.opOrderId), text(row.platform), text(row.shopId), text(row.platformOrderSn),
+          text(row.site), text(row.currency).toUpperCase(), number(row.productAmount), number(row.orderAmount),
+          number(row.payAmount), number(row.estimatedShippingFee), number(row.actualShippingCost), number(row.commissionFee),
+          number(row.escrowAmount), number(row.discountAmount), number(row.exchangeRate), text(row.paymentMethod),
+          text(row.platformOrderStatus), text(row.appOrderStatus), text(row.appOrderStatusText), text(row.orderStartedAt),
+          text(row.orderModifiedAt), text(row.paidAt), text(row.deliveredAt), text(row.refundedAt), text(row.settledAt),
+          text(row.finishedAt), now,
+        ]);
+      } finally {
+        orderStatement.free();
+      }
+      // Package composition can change after split/merge. Replace the complete
+      // item set for every order seen in this sync so stale package items do not
+      // remain in the transaction snapshot.
+      for (const identity of new Set((Array.isArray(orders) ? orders : []).map((row) => text(row.identity)).filter(Boolean))) {
+        db.run("DELETE FROM miaoshou_performance_items WHERE order_identity = ?", [identity]);
+      }
+      const itemStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_items (
+        identity, order_identity, op_order_item_id, op_order_package_item_id, platform_sku_id,
+        platform_outer_sku_id, quantity, original_price, discounted_price, gift, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      try {
+        for (const row of Array.isArray(items) ? items : []) itemStatement.run([
+          text(row.identity), text(row.orderIdentity), text(row.opOrderItemId), text(row.opOrderPackageItemId),
+          text(row.platformSkuId), text(row.platformOuterSkuId), number(row.quantity), number(row.originalPrice),
+          number(row.discountedPrice), row.gift === true ? 1 : 0, now,
+        ]);
+      } finally {
+        itemStatement.free();
+      }
+      const returnStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_returns (
+        identity, order_identity, op_order_id, platform, shop_id, platform_order_sn, platform_return_sn,
+        currency, refund_amount, status, platform_return_status, app_return_status, app_return_status_text,
+        reverse_type, created_at, modified_at, finished_at, finalized, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      try {
+        for (const row of Array.isArray(returns) ? returns : []) returnStatement.run([
+          text(row.identity), text(row.orderIdentity), text(row.opOrderId), text(row.platform), text(row.shopId),
+          text(row.platformOrderSn), text(row.platformReturnSn), text(row.currency).toUpperCase(), number(row.refundAmount),
+          text(row.status), text(row.platformReturnStatus), text(row.appReturnStatus), text(row.appReturnStatusText),
+          text(row.reverseType), text(row.createdAt), text(row.modifiedAt), text(row.finishedAt), row.finalized === true ? 1 : 0, now,
+        ]);
+      } finally {
+        returnStatement.free();
+      }
+      const cancellationStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_cancellations (
+        identity, order_identity, op_order_id, platform, shop_id, platform_order_sn, status,
+        app_cancel_status, app_cancel_status_text, reason, created_at, modified_at, finalized, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      try {
+        for (const row of Array.isArray(cancellations) ? cancellations : []) cancellationStatement.run([
+          text(row.identity), text(row.orderIdentity), text(row.opOrderId), text(row.platform), text(row.shopId),
+          text(row.platformOrderSn), text(row.status), text(row.appCancelStatus), text(row.appCancelStatusText),
+          text(row.reason), text(row.createdAt), text(row.modifiedAt), row.finalized === true ? 1 : 0, now,
+        ]);
+      } finally {
+        cancellationStatement.free();
+      }
+      if (syncState) setMeta("miaoshouPerformanceSyncState", JSON.stringify(syncState));
+      db.run("COMMIT");
+      persist();
+      return getMetadata();
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  function listMiaoshouPerformance() {
+    return {
+      orders: all(db, "SELECT * FROM miaoshou_performance_orders ORDER BY order_started_at DESC, identity ASC").map(miaoshouOrderFromDb),
+      items: all(db, "SELECT * FROM miaoshou_performance_items ORDER BY order_identity ASC, identity ASC").map(miaoshouItemFromDb),
+      returns: all(db, "SELECT * FROM miaoshou_performance_returns ORDER BY created_at DESC, identity ASC").map(miaoshouReturnFromDb),
+      cancellations: all(db, "SELECT * FROM miaoshou_performance_cancellations ORDER BY created_at DESC, identity ASC").map(miaoshouCancellationFromDb),
+    };
   }
 
   function upsertExchangeRates(rates = [], source = "manual", { preserveOverrides = false } = {}) {
@@ -363,17 +672,21 @@ export async function initPerformanceAnalyticsStore(dbPath) {
 
   return {
     dbPath,
+    getMiaoshouPerformanceSyncState,
     getPerformanceSettings,
     getMetadata,
     getExchangeRateSyncState,
     listExchangeRates,
     listSalesCurrencies,
     listSalesFacts,
+    listMiaoshouPerformance,
     persist,
     replaceSalesFacts,
     setExchangeRateSyncState,
+    setMiaoshouPerformanceSyncState,
     setPerformanceSettings,
     upsertExchangeRates,
+    upsertMiaoshouPerformance,
   };
 }
 

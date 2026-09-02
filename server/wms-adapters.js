@@ -145,6 +145,14 @@ function firstNumber(...values) {
   return 0;
 }
 
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  }
+  return 0;
+}
+
 function roundMoney(value, digits = 6) {
   const factor = 10 ** digits;
   return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
@@ -155,7 +163,7 @@ export function allocateOrderSalesAmount(items = [], orderAmount = 0) {
   if (!safeItems.length) return [];
   const total = Math.max(0, Number(orderAmount) || 0);
   const explicitWeights = safeItems.map((item) => {
-    const explicitLineTotal = firstNumber(
+    const explicitLineTotal = firstPositiveNumber(
       item.order_sale_amount,
       item.line_sale_amount,
       item.line_amount,
@@ -165,7 +173,7 @@ export function allocateOrderSalesAmount(items = [], orderAmount = 0) {
     );
     if (explicitLineTotal > 0) return explicitLineTotal;
     const quantity = firstNumber(item.quantity, item.qty, item.product_quantity);
-    const unitPrice = firstNumber(item.unit_price, item.product_price, item.sale_price, item.price);
+    const unitPrice = firstPositiveNumber(item.unit_price, item.product_price, item.sale_price, item.price);
     return quantity > 0 && unitPrice > 0 ? quantity * unitPrice : 0;
   });
   const explicitTotal = explicitWeights.reduce((sum, value) => sum + value, 0);
@@ -174,7 +182,10 @@ export function allocateOrderSalesAmount(items = [], orderAmount = 0) {
   const weights = explicitTotal > 0 ? explicitWeights : quantityWeights;
   const weightTotal = explicitTotal > 0 ? explicitTotal : quantityTotal;
 
-  if (total <= 0) return weights.map((value) => roundMoney(value));
+  // A missing order total must never fall back to item/unit prices. Several WMS
+  // payloads expose catalogue or declared prices on the item, which are not the
+  // amount actually paid by the customer. Keep those values as weights only.
+  if (total <= 0) return safeItems.map(() => 0);
   if (weightTotal <= 0) {
     const evenShare = total / safeItems.length;
     return safeItems.map((_, index) => index === safeItems.length - 1
@@ -469,7 +480,7 @@ function alignInventorySkuWithProducts(inventory, products, connection) {
   });
 }
 
-function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map()) {
+export function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map()) {
   const status = firstText(order.stage, order.status);
   const shippedAt = firstText(order.gmtOutStorage);
   if (!shippedAt && status !== "has_out_storage") return [];
@@ -479,6 +490,31 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
   const shopName = firstText(order.shopName, order.storeName, order.platformShop, order.platform_shop, order.shopCode, order.shopId);
   const projectGroup = /^TZ/i.test(firstText(shopName, orderNo)) ? "同舟跨境项目" : "深六项目";
   const rawItems = Array.isArray(order.items) ? order.items : [];
+  const orderSalesAmount = firstPositiveNumber(
+    order.orderAmount,
+    order.actualPayAmount,
+    order.paidAmount,
+    order.paymentAmount,
+    order.totalAmount,
+  );
+  const allocatedSalesAmounts = allocateOrderSalesAmount(
+    rawItems.map((item) => ({
+      ...item,
+      // SEA WMS discountedPrice is a reported line amount for affected stores;
+      // multiplying it by quantity was the source of the overstatement.
+      line_sale_amount: firstPositiveNumber(
+        item.lineAmount,
+        item.lineTotal,
+        item.totalPrice,
+        item.discountedPrice,
+      ),
+    })),
+    orderSalesAmount,
+  );
+  const allocatedTotal = allocatedSalesAmounts.reduce((sum, value) => sum + value, 0);
+  const allocationResidual = roundMoney(orderSalesAmount - allocatedTotal);
+  const currency = firstText(order.currency);
+  const salesAmountValid = orderSalesAmount > 0 && Boolean(currency) && Math.abs(allocationResidual) <= 0.01;
 
   return rawItems
     .map((item, index) => {
@@ -504,9 +540,13 @@ function normalizeSeaOrderRows(order, connection, productByGoodsSkuId = new Map(
         sku,
         productName: firstText(item.goodsName, item.skuName, item.productName, sku),
         quantity,
-        salesAmount: firstNumber(item.discountedPrice) * quantity,
-        salesAmountScope: "line",
-        currency: firstText(order.currency),
+        salesAmount: salesAmountValid ? allocatedSalesAmounts[index] || 0 : 0,
+        salesAmountScope: salesAmountValid ? "order_allocated" : "missing_order_amount",
+        salesAmountSource: salesAmountValid ? "order.orderAmount" : "",
+        salesAmountOrderTotal: orderSalesAmount,
+        salesAmountAllocationResidual: allocationResidual,
+        salesAmountValid,
+        currency: salesAmountValid ? currency : "",
         rawProvider: connection.providerId,
       };
     })
@@ -721,7 +761,7 @@ function normalizeYunInventory(item, connection) {
   };
 }
 
-function normalizeYunOrderRows(order, connection) {
+export function normalizeYunOrderRows(order, connection) {
   const shippedAt = firstText(order.date_shipping, order.ship_date, order.shipping_date, order.date_release, order.date_create);
   const status = firstText(order.order_status, order.status);
   const orderNo = firstText(order.order_code, order.reference_no, order.order_id);
@@ -738,6 +778,9 @@ function normalizeYunOrderRows(order, connection) {
       ? order.order_pack_box.flatMap((box) => Array.isArray(box.product_details) ? box.product_details : [])
       : [];
   const allocatedSalesAmounts = allocateOrderSalesAmount(rawItems, salesAmount);
+  const allocatedTotal = allocatedSalesAmounts.reduce((sum, value) => sum + value, 0);
+  const allocationResidual = roundMoney(salesAmount - allocatedTotal);
+  const salesAmountValid = salesAmount > 0 && Boolean(currency) && Math.abs(allocationResidual) <= 0.01;
 
   return rawItems
     .map((item, index) => ({
@@ -760,9 +803,13 @@ function normalizeYunOrderRows(order, connection) {
       sku: firstText(item.product_sku, item.sku, item.product_barcode),
       productName: firstText(item.product_title, item.product_name, item.name, item.product_sku, item.sku, item.product_barcode),
       quantity: firstNumber(item.quantity, item.qty, item.product_quantity),
-      salesAmount: allocatedSalesAmounts[index] || 0,
-      salesAmountScope: "order_allocated",
-      currency,
+      salesAmount: salesAmountValid ? allocatedSalesAmounts[index] || 0 : 0,
+      salesAmountScope: salesAmountValid ? "order_allocated" : "missing_order_amount",
+      salesAmountSource: salesAmountValid ? "order.order_sale_amount" : "",
+      salesAmountOrderTotal: salesAmount,
+      salesAmountAllocationResidual: allocationResidual,
+      salesAmountValid,
+      currency: salesAmountValid ? currency : "",
       rawProvider: connection.providerId,
     }))
     .filter((item) => item.quantity > 0);
@@ -849,6 +896,8 @@ async function syncSeaOrdersFromApiRange(connection, dateFrom, dateTo) {
   }, wmsOrderMaxPages());
   const orderRows = orderPage.items;
   const orders = orderRows.flatMap((order) => normalizeSeaOrderRows(order, connection, productByGoodsSkuId));
+  const orderApiComplete = !orderPage.reachedPageLimit
+    && (orderPage.apiTotal <= 0 || orderRows.length >= orderPage.apiTotal);
   const paginationMessage = `SEA WMS 已出库订单读取：接口 total=${orderPage.apiTotal || "未知"}，已读包裹=${orderRows.length}，SKU行=${orders.length}，页数=${orderPage.pagesRead}/${orderPage.pageLimit}${orderPage.reachedPageLimit ? "，已达到页数上限，可能仍有未读取订单" : ""}`;
 
   return {
@@ -863,6 +912,7 @@ async function syncSeaOrdersFromApiRange(connection, dateFrom, dateTo) {
     orderApiPagesRead: orderPage.pagesRead,
     orderApiPageLimit: orderPage.pageLimit,
     orderApiReachedPageLimit: orderPage.reachedPageLimit,
+    orderApiComplete,
     orders,
   };
 }

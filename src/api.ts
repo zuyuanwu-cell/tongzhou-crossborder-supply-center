@@ -1335,12 +1335,20 @@ export type PerformanceContributionRow = {
   productCostCny?: number;
   packagingFeeCny?: number;
   cogsCny?: number;
+  commissionFeeCny?: number;
+  logisticsFeeCny?: number;
+  operatingCostCny?: number;
   estimatedProfitCny?: number;
+  contributionProfitCny?: number;
   grossMargin?: number;
+  contributionMargin?: number;
   contributionRate?: number;
   revenueCoverageRate?: number;
   costCoverageRate?: number;
+  productCostCoverageRate?: number;
+  packagingCoverageRate?: number;
   profitCoverageRate?: number;
+  contributionCoverageRate?: number;
   shopCount: number;
   platformCount: number;
   warehouseCount: number;
@@ -1400,6 +1408,10 @@ export type PerformanceAnalyticsPayload = {
   ok: boolean;
   generatedAt: string;
   syncedAt: string;
+  dataVersion?: string;
+  materializedAt?: string;
+  materializationDurationMs?: number;
+  queryDurationMs?: number;
   basis: "wms_outbound" | string;
   permissions: {
     revenue: boolean;
@@ -1407,11 +1419,15 @@ export type PerformanceAnalyticsPayload = {
     profit: boolean;
     manageRates: boolean;
     manageCosts: boolean;
+    manageTransactionSource: boolean;
   };
   metadata: {
     sourceSyncedAt: string;
     rebuiltAt: string;
     rowCount: number;
+    miaoshouOrderCount?: number;
+    miaoshouItemCount?: number;
+    miaoshouReturnCount?: number;
   };
   reconciliation: {
     sourceRowCount: number;
@@ -1421,6 +1437,70 @@ export type PerformanceAnalyticsPayload = {
     rowCountMatched: boolean;
     syncedAtMatched: boolean;
   };
+  sourceQuality?: {
+    status: "official" | "provisional" | string;
+    warehouseCount: number;
+    completeWarehouseCount: number;
+    incompleteWarehouses: Array<{ warehouseId: string; message: string; apiTotal: number; readRows: number }>;
+  };
+  transactionSource: {
+    requested: "wms" | "shadow" | "miaoshou" | string;
+    effective: "wms" | "miaoshou" | string;
+    activationEligible: boolean;
+    roles: {
+      revenue: string;
+      refunds: string;
+      fulfillment: string;
+      productCost: string;
+      packaging: string;
+    };
+    sync: {
+      enabled: boolean;
+      running: boolean;
+      status?: "running" | "success" | "partial" | "failed" | string;
+      intervalMinutes: number;
+      initialBackfillDays: number;
+      incrementalLookbackDays: number;
+      lastAttemptAt?: string;
+      lastSuccessAt?: string;
+      lastCompletedAt?: string;
+      lastError?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      orderCount?: number;
+      itemCount?: number;
+      returnCount?: number;
+      cancellationCount?: number;
+      warningCount?: number;
+      warnings?: string[];
+    };
+    reconciliation: {
+      requestedSource: string;
+      effectiveSource: string;
+      activationEligible: boolean;
+      blockers: string[];
+      thresholds: {
+        orderMatchRate: number;
+        quantityVarianceRate: number;
+        amountVarianceRate: number;
+        refundFinalizationRate: number;
+      };
+      eligibleOrderCount: number;
+      matchedOrderCount: number;
+      unmatchedOrderCount: number;
+      matchedLineCount: number;
+      orderMatchRate: number;
+      wmsQuantity: number;
+      miaoshouQuantity: number;
+      quantityVarianceRate: number;
+      comparableAmountOrders: number;
+      amountVarianceRate: number;
+      refundCount: number;
+      finalizedRefundCount: number;
+      refundFinalizationRate: number;
+      cancelledOutboundOrders: number;
+    };
+  } | null;
   shopDirectory: ShopDirectoryPayload;
   filters: {
     dateFrom: string;
@@ -1444,11 +1524,16 @@ export type PerformanceAnalyticsPayload = {
     zeroSalesAmountLines?: number;
     missingCostLines?: number;
     missingPackagingRuleLines?: number;
+    invalidSalesAmountLines?: number;
+    allocationMismatchLines?: number;
     futureCostFallbackLines?: number;
     legacyAllocatedLines: number;
     revenueCoverageRate?: number;
     costCoverageRate?: number;
+    productCostCoverageRate?: number;
+    packagingCoverageRate?: number;
     profitCoverageRate?: number;
+    contributionCoverageRate?: number;
   };
   packagingFeeRules: PerformancePackagingFeeRule[];
   currencySummary: PerformanceAmount[];
@@ -1499,10 +1584,17 @@ export type PerformanceAnalyticsPayload = {
     productCostCny?: number;
     packagingFeeCny?: number;
     cogsCny?: number;
+    commissionFeeCny?: number;
+    logisticsFeeCny?: number;
+    operatingCostCny?: number;
     estimatedProfitCny?: number;
+    contributionProfitCny?: number;
     revenueCovered?: boolean;
     costCovered?: boolean;
+    productCostCovered?: boolean;
+    packagingCostCovered?: boolean;
     profitCovered?: boolean;
+    contributionCovered?: boolean;
   }>;
   options: {
     countries: string[];
@@ -2444,13 +2536,13 @@ export function fetchOrderAnalysis(input: { dateFrom?: string; dateTo?: string; 
   return requestJson<OrderAnalysisPayload>(`/api/order-analysis${query}`);
 }
 
-export function fetchPerformanceAnalytics(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string } = {}) {
+export function fetchPerformanceAnalytics(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string } = {}, signal?: AbortSignal) {
   const params = new URLSearchParams();
   Object.entries(input).forEach(([key, value]) => {
     if (value) params.set(key, value);
   });
   const query = params.toString() ? `?${params.toString()}` : "";
-  return requestJson<PerformanceAnalyticsPayload>(`/api/performance-analytics${query}`);
+  return requestJson<PerformanceAnalyticsPayload>(`/api/performance-analytics${query}`, { signal });
 }
 
 export function updatePerformanceExchangeRates(rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) {
@@ -2473,6 +2565,23 @@ export function syncPerformanceExchangeRates() {
     sync: NonNullable<PerformanceAnalyticsPayload["exchangeRateSync"]> & { skipped?: boolean; message?: string };
     exchangeRates: PerformanceAnalyticsPayload["exchangeRates"];
   }>("/api/performance-analytics/exchange-rates/sync", { method: "POST" });
+}
+
+export function syncMiaoshouPerformance(input: { dateFrom?: string; dateTo?: string; days?: number } = {}) {
+  return requestJson<{
+    ok: boolean;
+    sync: NonNullable<PerformanceAnalyticsPayload["transactionSource"]>["sync"] & { skipped?: boolean; message?: string };
+  }>("/api/performance-analytics/miaoshou/sync", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updatePerformanceRevenueSource(revenueSource: "wms" | "shadow" | "miaoshou") {
+  return requestJson<{ ok: boolean; revenueSource: string; updatedAt: string }>("/api/performance-analytics/revenue-source", {
+    method: "PATCH",
+    body: JSON.stringify({ revenueSource }),
+  });
 }
 
 export function updateShopProjectGroup(input: { shopKeys: string[]; projectGroup: string }) {

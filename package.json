@@ -14,6 +14,7 @@
     "test:stockup-workflow": "node scripts/stockup-workflow-test.mjs",
     "test:wms-stockup-push": "node scripts/wms-stockup-push-test.mjs",
     "test:miaoshou": "node scripts/miaoshou-automation-test.mjs",
+    "test:miaoshou-performance": "node scripts/miaoshou-performance-test.mjs",
     "test:agent": "node scripts/agent-index-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",

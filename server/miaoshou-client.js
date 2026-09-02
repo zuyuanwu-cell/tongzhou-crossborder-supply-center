@@ -5,6 +5,8 @@ export const MIAOSHOU_BASE_URL = "https://openapi-erp.91miaoshou.com";
 export const MIAOSHOU_PATHS = {
   shops: "/open/v1/product/shop/shop/get_shop_list",
   packages: "/open/v1/order/package/fetch/search_package_list",
+  returns: "/open/v1/order/after_sales/fetch/order_return_list",
+  cancellations: "/open/v1/order/after_sales/fetch/order_cancel_list",
   applyTrackingNo: "/open/v1/order/package/logistics/tracking_no/apply",
   waybill: "/open/v1/order/package/logistics/waybill/get_waybill",
 };
@@ -126,6 +128,12 @@ export function createMiaoshouClient({
     },
     searchPackages(input) {
       return request(MIAOSHOU_PATHS.packages, input);
+    },
+    searchReturns(input) {
+      return request(MIAOSHOU_PATHS.returns, input);
+    },
+    searchCancellations(input) {
+      return request(MIAOSHOU_PATHS.cancellations, input);
     },
     applyTrackingNo(opOrderPackageId) {
       return request(MIAOSHOU_PATHS.applyTrackingNo, { opOrderPackageId: Number(opOrderPackageId) });

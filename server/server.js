@@ -25,8 +25,10 @@ import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogPr
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
+import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
+import { reconcileMiaoshouPerformance } from "./miaoshou-performance.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
-import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
+import { buildPerformanceAnalyticsPayload, materializePerformanceFacts, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 
@@ -64,6 +66,10 @@ const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
 const performanceFxEndpoint = String(process.env.PERFORMANCE_FX_ENDPOINT || "").trim() || undefined;
 const performanceFxConfiguredCurrencies = String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean);
+const performanceMiaoshouAutoSyncEnabled = process.env.MIAOSHOU_PERFORMANCE_AUTO_SYNC !== "false";
+const performanceMiaoshouSyncIntervalMs = Math.max(5 * 60 * 1000, Number(process.env.MIAOSHOU_PERFORMANCE_SYNC_INTERVAL_MS || 15 * 60 * 1000));
+const performanceMiaoshouBackfillDays = Math.max(7, Math.min(365, Number(process.env.MIAOSHOU_PERFORMANCE_BACKFILL_DAYS || 90)));
+const performanceMiaoshouLookbackDays = Math.max(1, Math.min(14, Number(process.env.MIAOSHOU_PERFORMANCE_LOOKBACK_DAYS || 3)));
 const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const orderSyncJobsCachePath = resolve(cacheDir, "order-sync-jobs.json");
 const orderAnalysisSettingsPath = resolve(cacheDir, "order-analysis-settings.json");
@@ -129,6 +135,13 @@ const performanceExchangeRateSync = createExchangeRateSyncService({
   configuredCurrencies: performanceFxConfiguredCurrencies,
 });
 const miaoshouAutomation = await initMiaoshouAutomation({ cacheDir, dbPath: miaoshouTaskDbPath });
+const performanceMiaoshouSync = createMiaoshouPerformanceSyncService({
+  connector: miaoshouAutomation,
+  store: performanceAnalyticsStore,
+  intervalMs: performanceMiaoshouSyncIntervalMs,
+  incrementalLookbackDays: performanceMiaoshouLookbackDays,
+  initialBackfillDays: performanceMiaoshouBackfillDays,
+});
 const defaultInternalAccessCode = "admin123";
 const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
 const isProductionRuntime = process.env.NODE_ENV === "production";
@@ -156,9 +169,11 @@ let wecomScheduleRunning = false;
 const performanceAnalyticsResponseCache = new Map();
 const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
 const performanceAnalyticsResponseCacheLimit = 24;
+let performanceAnalyticsMaterializedCache = null;
 
 function clearPerformanceAnalyticsResponseCache() {
   performanceAnalyticsResponseCache.clear();
+  performanceAnalyticsMaterializedCache = null;
 }
 
 function cachedPerformanceAnalyticsResponse(key) {
@@ -3091,6 +3106,76 @@ function performanceDateRange(params = {}) {
   };
 }
 
+function requestedPerformanceRevenueSource(settings = {}) {
+  const configured = String(settings.revenueSource || process.env.PERFORMANCE_REVENUE_SOURCE || "shadow").trim().toLowerCase();
+  return ["wms", "shadow", "miaoshou"].includes(configured) ? configured : "shadow";
+}
+
+function performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}) {
+  const metadata = performanceAnalyticsStore.getMetadata();
+  const miaoshouSyncState = performanceAnalyticsStore.getMiaoshouPerformanceSyncState();
+  const sourceSignature = JSON.stringify({
+    orders: cachedOrdersSync.syncedAt || "",
+    orderRows: (cachedOrdersSync.orders || []).length,
+    products: cachedProducts.syncedAt || "",
+    shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
+    miaoshouShops: miaoshouShopState.shopsSyncedAt || "",
+    miaoshouPerformance: [
+      metadata.miaoshouOrderCount,
+      metadata.miaoshouItemCount,
+      metadata.miaoshouReturnCount,
+      miaoshouSyncState.lastCompletedAt || "",
+      miaoshouSyncState.status || "",
+    ],
+    revenueSource: requestedPerformanceRevenueSource(settings),
+    exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.updatedAt, rate.rateToCny]),
+    packagingFeeRules,
+  });
+  const dataVersion = createHash("sha1").update(sourceSignature).digest("hex").slice(0, 16);
+  if (performanceAnalyticsMaterializedCache?.dataVersion === dataVersion) return performanceAnalyticsMaterializedCache;
+
+  const startedAt = Date.now();
+  const shopDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+  const profiledFacts = performanceAnalyticsStore.listSalesFacts()
+    .map((fact) => applyShopDirectoryProfile(fact, shopDirectory));
+  const miaoshouSnapshot = performanceAnalyticsStore.listMiaoshouPerformance();
+  const hybrid = reconcileMiaoshouPerformance({
+    facts: profiledFacts,
+    ...miaoshouSnapshot,
+    requestedSource: requestedPerformanceRevenueSource(settings),
+    syncState: miaoshouSyncState,
+  });
+  const facts = materializePerformanceFacts({
+    facts: hybrid.facts,
+    products: cachedProducts,
+    exchangeRates,
+    packagingFeeRules,
+  });
+  performanceAnalyticsMaterializedCache = {
+    dataVersion,
+    materializedAt: new Date().toISOString(),
+    materializationDurationMs: Date.now() - startedAt,
+    shopDirectory,
+    facts,
+    transactionReconciliation: hybrid.reconciliation,
+    transactionSync: performanceMiaoshouSync.status(),
+  };
+  return performanceAnalyticsMaterializedCache;
+}
+
+function warmPerformanceAnalyticsMaterialization() {
+  try {
+    const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+    const settings = performanceAnalyticsStore.getPerformanceSettings();
+    const packagingFeeRules = normalizePackagingFeeRules(settings.packagingFeeRules);
+    const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+    const materialization = performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+    console.log(`[performance] materialized ${materialization.facts.length} rows in ${materialization.materializationDurationMs}ms (${materialization.dataVersion})`);
+  } catch (error) {
+    console.error("[performance] materialization failed", error);
+  }
+}
+
 function omitPerformanceFields(row, { revenue, cost, profit }) {
   if (!row || typeof row !== "object") return row;
   const projected = { ...row };
@@ -3098,10 +3183,10 @@ function omitPerformanceFields(row, { revenue, cost, profit }) {
     for (const field of ["amountsByCurrency", "salesCny", "contributionRate", "revenueCoverageRate", "rateToCny", "rateEffectiveDate", "salesAmount", "currency"]) delete projected[field];
   }
   if (!cost) {
-    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "productCostCny", "packagingFeeOrderCny", "packagingFeeCny", "packagingRuleConfigured", "packagingRuleApplied", "cogsCny", "costCoverageRate", "costCovered"]) delete projected[field];
+    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "productCostCny", "packagingFeeOrderCny", "packagingFeeCny", "packagingRuleConfigured", "packagingRuleApplied", "cogsCny", "commissionFeeCny", "logisticsFeeCny", "operatingCostCny", "costCoverageRate", "productCostCoverageRate", "packagingCoverageRate", "costCovered", "productCostCovered", "packagingCostCovered", "transactionCostCovered"]) delete projected[field];
   }
   if (!profit) {
-    for (const field of ["profitSalesCny", "estimatedProfitCny", "grossMargin", "profitCoverageRate", "profitCovered"]) delete projected[field];
+    for (const field of ["profitSalesCny", "estimatedProfitCny", "contributionProfitCny", "grossMargin", "contributionMargin", "profitCoverageRate", "contributionCoverageRate", "profitCovered", "contributionCovered"]) delete projected[field];
   }
   return projected;
 }
@@ -3122,6 +3207,8 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
     delete quality.missingCurrencyLines;
     delete quality.missingExchangeRateLines;
     delete quality.zeroSalesAmountLines;
+    delete quality.invalidSalesAmountLines;
+    delete quality.allocationMismatchLines;
     delete quality.revenueCoverageRate;
   }
   if (!cost) {
@@ -3129,12 +3216,17 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
     delete quality.futureCostFallbackLines;
     delete quality.missingPackagingRuleLines;
     delete quality.costCoverageRate;
+    delete quality.productCostCoverageRate;
+    delete quality.packagingCoverageRate;
   }
-  if (!profit) delete quality.profitCoverageRate;
+  if (!profit) {
+    delete quality.profitCoverageRate;
+    delete quality.contributionCoverageRate;
+  }
   const { dbPath: _privateDbPath, ...safeMetadata } = performanceAnalyticsStore.getMetadata();
   return {
     ...payload,
-    permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue, manageCosts: canManage(auth) && cost },
+    permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue, manageCosts: canManage(auth) && cost, manageTransactionSource: canManage(auth) && revenue },
     metadata: safeMetadata,
     totals: omitPerformanceFields(payload.totals, projection),
     quality,
@@ -3142,6 +3234,7 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
     currencySummary: revenue ? payload.currencySummary : [],
     exchangeRates: revenue ? exchangeRates : [],
     exchangeRateSync: revenue ? performanceExchangeRateSync.status() : null,
+    transactionSource: revenue ? payload.transactionSource : null,
     topProduct: products[0] || null,
     topBrand: brands[0] || null,
     products,
@@ -3152,6 +3245,7 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
 }
 
 function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
+  const queryStartedAt = Date.now();
   const range = performanceDateRange(params);
   const filters = {
     ...range,
@@ -3169,13 +3263,9 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   const performanceSettings = performanceAnalyticsStore.getPerformanceSettings();
   const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+  const materialization = performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
   const cacheKey = JSON.stringify({
-    orderSource: cachedOrdersSync.syncedAt || "",
-    productSource: cachedProducts.syncedAt || "",
-    shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
-    miaoshouShops: miaoshouShopState.shopsSyncedAt || "",
-    exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.updatedAt]),
-    packagingFeeRules,
+    dataVersion: materialization.dataVersion,
     filters,
     user: user.id || user.username || auth.role || "anonymous",
     role: auth.role || user.role || "",
@@ -3185,35 +3275,71 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   });
   const cachedResponse = cachedPerformanceAnalyticsResponse(cacheKey);
   if (cachedResponse) return cachedResponse;
-  const scopedOrders = (cachedOrdersSync.orders || []).filter((order) => {
-    if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
-    return isWithinDataScope(order, scopes);
-  });
-  const shopDirectory = shopDirectoryForOrders(scopedOrders);
-  const facts = performanceAnalyticsStore.listSalesFacts({
-    dateFrom: filters.dateFrom,
-    dateTo: filters.dateTo,
-    country: filters.country,
-    warehouseId: filters.warehouseId,
-    platform: filters.platform,
-  })
-    .filter((fact) => {
+  const scopedFacts = materialization.facts.filter((fact) => {
       if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(fact.warehouseId || ""))) return false;
       return isWithinDataScope(fact, scopes);
-    })
-    .map((fact) => applyShopDirectoryProfile(fact, shopDirectory));
+    });
+  const facts = scopedFacts.filter((fact) => {
+    if (filters.dateFrom && fact.orderDate < filters.dateFrom) return false;
+    if (filters.dateTo && fact.orderDate > filters.dateTo) return false;
+    return true;
+  });
+  const visibleShopKeys = new Set(scopedFacts
+    .map((fact) => fact.shopKey)
+    .filter(Boolean));
+  const visibleDirectoryShops = (materialization.shopDirectory.shops || [])
+    .filter((shop) => visibleShopKeys.has(shop.key));
+  const scopedShopDirectory = {
+    ...materialization.shopDirectory,
+    shops: visibleDirectoryShops,
+    projectGroups: [...new Set(visibleDirectoryShops.map((shop) => shop.projectGroup).filter(Boolean))].sort(),
+    matchedShopCount: visibleDirectoryShops.filter((shop) => shop.miaoshouMatched).length,
+    unmatchedShopCount: visibleDirectoryShops.filter((shop) => !shop.miaoshouMatched).length,
+  };
   const payload = buildPerformanceAnalyticsPayload({
-    facts,
-    products: cachedProducts,
+    materializedFacts: facts,
     exchangeRates,
     packagingFeeRules,
     filters,
   });
   const metadata = performanceAnalyticsStore.getMetadata();
+  const sourceResults = cachedOrdersSync.results || [];
+  const incompleteWarehouses = sourceResults
+    .filter((result) => result.orderApiReachedPageLimit || result.orderApiComplete === false || result.ok === false)
+    .map((result) => ({
+      warehouseId: result.warehouseId || "",
+      message: result.message || "WMS order snapshot is incomplete",
+      apiTotal: numberOrZero(result.orderApiTotal),
+      readRows: numberOrZero(result.orderApiReadRows),
+    }));
   return cachePerformanceAnalyticsResponse(cacheKey, projectPerformanceAnalyticsPayload({
     ...payload,
     syncedAt: cachedOrdersSync.syncedAt || "",
-    shopDirectory: publicShopDirectory(shopDirectory, auth),
+    dataVersion: materialization.dataVersion,
+    materializedAt: materialization.materializedAt,
+    materializationDurationMs: materialization.materializationDurationMs,
+    queryDurationMs: Date.now() - queryStartedAt,
+    sourceQuality: {
+      status: sourceResults.length && !incompleteWarehouses.length ? "official" : "provisional",
+      warehouseCount: sourceResults.length,
+      completeWarehouseCount: Math.max(0, sourceResults.length - incompleteWarehouses.length),
+      incompleteWarehouses,
+    },
+    transactionSource: {
+      requested: materialization.transactionReconciliation.requestedSource,
+      effective: materialization.transactionReconciliation.effectiveSource,
+      activationEligible: materialization.transactionReconciliation.activationEligible,
+      roles: {
+        revenue: materialization.transactionReconciliation.effectiveSource === "miaoshou" ? "miaoshou" : "wms",
+        refunds: "miaoshou",
+        fulfillment: "wms",
+        productCost: "product_catalog_country_direct",
+        packaging: "central_rules",
+      },
+      sync: materialization.transactionSync,
+      reconciliation: materialization.transactionReconciliation,
+    },
+    shopDirectory: publicShopDirectory(scopedShopDirectory, auth),
     reconciliation: {
       sourceRowCount: (cachedOrdersSync.orders || []).length,
       factRowCount: metadata.rowCount,
@@ -3648,11 +3774,10 @@ function dedupeOrders(orders) {
   const deduped = [];
   for (const order of orders || []) {
     const key = [
+      order.providerId || order.rawProvider,
       order.warehouseId,
       order.orderId || order.orderNo,
-      order.sku,
-      order.shippedAt || order.createdAt,
-      order.quantity,
+      order.lineId || order.goodsSkuId || `${order.sku}|${order.shippedAt || order.createdAt}|${order.quantity}`,
     ].join("|");
     if (seen.has(key)) continue;
     seen.add(key);
@@ -3662,13 +3787,56 @@ function dedupeOrders(orders) {
 }
 
 function orderSyncMetaFromResult(result = {}) {
+  const orderApiTotal = numberOrZero(result.orderApiTotal);
+  const orderApiReadRows = numberOrZero(result.orderApiReadRows);
+  const orderApiReachedPageLimit = Boolean(result.orderApiReachedPageLimit);
   return {
-    orderApiTotal: numberOrZero(result.orderApiTotal),
-    orderApiReadRows: numberOrZero(result.orderApiReadRows),
+    orderApiTotal,
+    orderApiReadRows,
     orderApiReadSkuRows: numberOrZero(result.orderApiReadSkuRows),
     orderApiPagesRead: numberOrZero(result.orderApiPagesRead),
     orderApiPageLimit: numberOrZero(result.orderApiPageLimit),
-    orderApiReachedPageLimit: Boolean(result.orderApiReachedPageLimit),
+    orderApiReachedPageLimit,
+    orderApiComplete: typeof result.orderApiComplete === "boolean"
+      ? result.orderApiComplete
+      : Boolean(result.ok) && !orderApiReachedPageLimit && (orderApiTotal <= 0 || orderApiReadRows >= orderApiTotal),
+  };
+}
+
+async function syncCompleteOrderRange(connection, from, to) {
+  const runRange = (rangeFrom, rangeTo) => syncWithSameSystemFallback(
+    connection,
+    (target) => syncWarehouseOrdersRange(target, rangeFrom, rangeTo),
+  );
+  const initial = await runRange(from, to);
+  const initialMeta = orderSyncMetaFromResult(initial);
+  if (initialMeta.orderApiComplete || connection.providerId !== "sea_wms" || from >= to) return initial;
+
+  // A broad SEA range can hit the provider's cursor/page ceiling. Retry as
+  // single-day partitions and only expose the combined result when every day is
+  // complete. This prevents operators from having to tune page limits manually.
+  const dailyResults = [];
+  for (let cursor = from; cursor <= to; cursor = addDateDays(cursor, 1)) {
+    dailyResults.push(await runRange(cursor, cursor));
+  }
+  const dailyMeta = dailyResults.map(orderSyncMetaFromResult);
+  const complete = dailyResults.every((result, index) => Boolean(result.ok) && !result.skipped && dailyMeta[index].orderApiComplete);
+  return {
+    ...initial,
+    ok: complete,
+    skipped: dailyResults.some((result) => result.skipped),
+    message: complete
+      ? `Broad range reached the WMS page limit and was recovered with ${dailyResults.length} complete daily partitions.`
+      : "WMS range remained incomplete after automatic daily partition retries.",
+    resolvedWarehouseId: dailyResults.find((result) => result.resolvedWarehouseId)?.resolvedWarehouseId || initial.resolvedWarehouseId,
+    orderApiTotal: dailyMeta.reduce((sum, meta) => sum + meta.orderApiTotal, 0),
+    orderApiReadRows: dailyMeta.reduce((sum, meta) => sum + meta.orderApiReadRows, 0),
+    orderApiReadSkuRows: dailyMeta.reduce((sum, meta) => sum + meta.orderApiReadSkuRows, 0),
+    orderApiPagesRead: dailyMeta.reduce((sum, meta) => sum + meta.orderApiPagesRead, 0),
+    orderApiPageLimit: Math.max(0, ...dailyMeta.map((meta) => meta.orderApiPageLimit)),
+    orderApiReachedPageLimit: dailyMeta.some((meta) => meta.orderApiReachedPageLimit),
+    orderApiComplete: complete,
+    orders: complete ? dailyResults.flatMap((result) => result.orders || []) : [],
   };
 }
 
@@ -3682,6 +3850,7 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
     skipped: Boolean(result.skipped),
     message: result.message || "",
     orderCount: result.orders?.length || 0,
+    published: Boolean(replaceOrders),
     hasCredentials: hasWarehouseCredentials(connection),
     backgroundRunning: false,
     backgroundCompletedAt: new Date().toISOString(),
@@ -3690,7 +3859,7 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
 
   cachedOrdersSync = {
     ...cachedOrdersSync,
-    syncedAt: new Date().toISOString(),
+    syncedAt: replaceOrders ? new Date().toISOString() : cachedOrdersSync.syncedAt,
     days,
     orders: replaceOrders
       ? [
@@ -3755,6 +3924,7 @@ async function runOrderSyncJob(jobId) {
       orderApiPagesRead: 0,
       orderApiPageLimit: 0,
       orderApiReachedPageLimit: false,
+      orderApiComplete: true,
     };
 
     for (const chunk of chunks) {
@@ -3774,12 +3944,8 @@ async function runOrderSyncJob(jobId) {
       saveOrderSyncJobsCache();
 
       try {
-        const result = await syncWithSameSystemFallback(
-          connection,
-          (target) => syncWarehouseOrdersRange(target, chunk.from, chunk.to),
-        );
+        const result = await syncCompleteOrderRange(connection, chunk.from, chunk.to);
         const chunkOrders = result.orders || [];
-        warehouseOrders.push(...chunkOrders);
         warehouseSkipped = warehouseSkipped || Boolean(result.skipped);
         warehouseMessage = result.message || warehouseMessage;
         resolvedWarehouseId = result.resolvedWarehouseId || resolvedWarehouseId;
@@ -3790,20 +3956,27 @@ async function runOrderSyncJob(jobId) {
         warehouseOrderMeta.orderApiPagesRead += chunkMeta.orderApiPagesRead;
         warehouseOrderMeta.orderApiPageLimit = Math.max(warehouseOrderMeta.orderApiPageLimit, chunkMeta.orderApiPageLimit);
         warehouseOrderMeta.orderApiReachedPageLimit = warehouseOrderMeta.orderApiReachedPageLimit || chunkMeta.orderApiReachedPageLimit;
-        job.totalOrders += chunkOrders.length;
+        warehouseOrderMeta.orderApiComplete = warehouseOrderMeta.orderApiComplete && chunkMeta.orderApiComplete;
+        const chunkAccepted = Boolean(result.ok) && !result.skipped && chunkMeta.orderApiComplete;
+        if (chunkAccepted) {
+          warehouseOrders.push(...chunkOrders);
+          job.totalOrders += chunkOrders.length;
+        }
         job.completedChunks += 1;
         upsertOrderSyncChunk(job, {
           warehouseId: connection.id,
           warehouseName: connection.name,
           from: chunk.from,
           to: chunk.to,
-          status: result.ok ? "completed" : "failed",
-          orderCount: chunkOrders.length,
-          message: result.message || "",
+          status: result.skipped ? "skipped" : chunkAccepted ? "completed" : "failed",
+          orderCount: chunkAccepted ? chunkOrders.length : 0,
+          message: chunkAccepted
+            ? (result.message || "")
+            : `${result.message || "Order sync chunk failed"}; incomplete data was not published`,
           completedAt: new Date().toISOString(),
           ...chunkMeta,
         });
-        if (!result.ok && !result.skipped) {
+        if (!chunkAccepted && !result.skipped) {
           hadFailure = true;
           warehouseFailedChunks += 1;
           job.failedChunks += 1;
@@ -3830,7 +4003,8 @@ async function runOrderSyncJob(jobId) {
     }
 
     const dedupedOrders = dedupeOrders(warehouseOrders);
-    const ok = warehouseFailedChunks === 0;
+    const ok = warehouseFailedChunks === 0 && !warehouseSkipped && warehouseOrderMeta.orderApiComplete;
+    if (!ok) hadFailure = true;
     const result = {
       warehouseId: connection.id,
       resolvedWarehouseId,
@@ -3842,7 +4016,9 @@ async function runOrderSyncJob(jobId) {
       ...warehouseOrderMeta,
       orders: dedupedOrders,
     };
-    const replaceOrders = ok || dedupedOrders.length > 0;
+    // Publish atomically per warehouse. A partial date range must never replace
+    // the previous complete snapshot, even when some chunks succeeded.
+    const replaceOrders = ok;
     mergeWarehouseOrderCache(connection, result, job.days, replaceOrders, { rebuildPerformance: false });
     job.results = [
       ...(job.results || []).filter((item) => item.warehouseId !== connection.id && item.warehouseId !== result.warehouseId),
@@ -3853,6 +4029,7 @@ async function runOrderSyncJob(jobId) {
         skipped: warehouseSkipped,
         message: result.message,
         orderCount: dedupedOrders.length,
+        published: replaceOrders,
         failedChunks: warehouseFailedChunks,
         completedAt: new Date().toISOString(),
         ...warehouseOrderMeta,
@@ -4523,13 +4700,15 @@ function agentSourceForType(type, auth) {
     return { records: cachedWarehouseSync.inventory || [], syncedAt: cachedWarehouseSync.syncedAt || "", sourceSystem: "wms" };
   }
   if (type === "order_line") {
-    const truncated = (cachedOrdersSync.results || []).some((result) => result.orderApiReachedPageLimit);
+    const incomplete = (cachedOrdersSync.results || []).some((result) => (
+      result.orderApiReachedPageLimit || result.orderApiComplete === false || result.ok === false
+    ));
     return {
       records: cachedOrdersSync.orders || [],
       syncedAt: cachedOrdersSync.syncedAt || "",
       sourceSystem: "wms",
-      complete: !truncated,
-      warning: truncated ? "至少一个 WMS 订单接口达到分页上限。" : "",
+      complete: !incomplete,
+      warning: incomplete ? "至少一个 WMS 订单快照不完整；正式数据仍保留上一份已发布版本。" : "",
     };
   }
   if (type === "inventory_snapshot") {
@@ -6224,6 +6403,81 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/performance-analytics/miaoshou/sync" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "同步妙手交易数据需要管理员及经营销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const job = performanceMiaoshouSync.start({
+        dateFrom: String(body.dateFrom || ""),
+        dateTo: String(body.dateTo || ""),
+        days: Math.max(0, Math.min(365, Number(body.days || 0))),
+        reason: `manual:${auth.user?.username || auth.user?.id || "admin"}`,
+        force: true,
+      });
+      if (job.completion) job.completion.then((sync) => {
+        clearPerformanceAnalyticsResponseCache();
+        appendActionLog(auth, "同步妙手经营交易", "performance_miaoshou", `${sync.dateFrom || ""}~${sync.dateTo || ""}`, {
+          status: sync.status,
+          orderCount: sync.orderCount || 0,
+          itemCount: sync.itemCount || 0,
+          returnCount: sync.returnCount || 0,
+          warningCount: sync.warningCount || 0,
+        });
+        warmPerformanceAnalyticsMaterialization();
+      }).catch((error) => console.error("[miaoshou-performance] manual sync failed", error));
+      sendJson(res, job.started ? 202 : 200, {
+        ok: true,
+        sync: {
+          ...job.state,
+          skipped: !job.started,
+          message: job.started ? "妙手交易同步已在后台启动，可继续使用中台。" : "妙手交易同步正在运行。",
+        },
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/revenue-source" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "切换经营收入来源需要管理员及经营销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const revenueSource = String(body.revenueSource || "").trim().toLowerCase();
+      if (!["wms", "shadow", "miaoshou"].includes(revenueSource)) {
+        sendJson(res, 400, { ok: false, message: "收入来源只支持 WMS、影子核对或妙手。" });
+        return;
+      }
+      if (revenueSource === "miaoshou") {
+        const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+        const currentSettings = performanceAnalyticsStore.getPerformanceSettings();
+        const shopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+        const current = performanceMaterialization(exchangeRates, normalizePackagingFeeRules(currentSettings.packagingFeeRules), shopState, {
+          ...currentSettings,
+          revenueSource: "shadow",
+        });
+        if (!current.transactionReconciliation.activationEligible) {
+          sendJson(res, 409, {
+            ok: false,
+            message: "双源对账尚未达到切换标准，已继续保持 WMS 正式口径。",
+            blockers: current.transactionReconciliation.blockers,
+          });
+          return;
+        }
+      }
+      performanceAnalyticsStore.setPerformanceSettings({
+        revenueSource,
+        revenueSourceUpdatedBy: auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员",
+      });
+      clearPerformanceAnalyticsResponseCache();
+      appendActionLog(auth, "切换经营收入来源", "performance_revenue_source", revenueSource, {});
+      sendJson(res, 200, { ok: true, revenueSource, updatedAt: new Date().toISOString() });
+      return;
+    }
+
     if (url.pathname === "/api/performance-analytics/packaging-fees" && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!canManage(auth) || !hasPermission(auth, "performance_cost")) {
@@ -6990,6 +7244,11 @@ server.listen(port, () => {
   setInterval(runScheduledInventorySnapshot, 60 * 1000);
   setInterval(runWecomSchedules, 60 * 1000);
   setInterval(() => { void miaoshouAutomation.runScheduled(); }, 60 * 1000);
+  if (performanceMiaoshouAutoSyncEnabled) {
+    setInterval(() => { void performanceMiaoshouSync.runScheduled(); }, 60 * 1000);
+    void performanceMiaoshouSync.runScheduled();
+    console.log(`[miaoshou-performance] enabled every ${Math.round(performanceMiaoshouSyncIntervalMs / 60_000)} minutes with ${performanceMiaoshouBackfillDays}-day initial backfill`);
+  }
   if (performanceFxAutoSyncEnabled) {
     setInterval(() => { void runAutomaticExchangeRateSync("scheduled"); }, Math.min(performanceFxSyncIntervalMs, 60 * 60 * 1000));
     void runAutomaticExchangeRateSync("startup");
@@ -6998,4 +7257,5 @@ server.listen(port, () => {
   runScheduledInventorySnapshot();
   runWecomSchedules();
   void miaoshouAutomation.runScheduled();
+  setTimeout(warmPerformanceAnalyticsMaterialization, 0);
 });
