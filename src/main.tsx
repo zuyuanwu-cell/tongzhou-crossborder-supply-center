@@ -7341,6 +7341,7 @@ function PerformanceAnalysisPage({
             <span>{loading ? "正在读取订单事实与国家成本，请稍候" : orderJobRunning ? "同步完成后会自动刷新分析" : payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
             <span>{formatNumber(payload?.metadata.rowCount || 0)} 条订单行</span>
             {permissions.revenue && transactionSource ? <span>收入：{transactionSource.effective === "miaoshou" ? "妙手净销售额" : transactionSource.requested === "shadow" ? "WMS 正式 · 妙手影子" : "WMS"}</span> : null}
+            {payload?.materializationStale ? <span className="status-pill warning">后台更新中 · 当前展示上一版快照</span> : null}
             {payload?.queryDurationMs !== undefined ? <span>筛选 {formatNumber(payload.queryDurationMs)} ms · 版本 {payload.dataVersion || "—"}</span> : null}
           </div>
         </div>

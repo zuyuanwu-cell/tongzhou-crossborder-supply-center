@@ -1409,8 +1409,11 @@ export type PerformanceAnalyticsPayload = {
   generatedAt: string;
   syncedAt: string;
   dataVersion?: string;
+  targetDataVersion?: string;
   materializedAt?: string;
   materializationDurationMs?: number;
+  materializationStale?: boolean;
+  materializationRefreshStartedAt?: string;
   queryDurationMs?: number;
   basis: "wms_outbound" | string;
   permissions: {

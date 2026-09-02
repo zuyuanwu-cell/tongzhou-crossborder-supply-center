@@ -1,5 +1,7 @@
 import http from "node:http";
+import { Worker } from "node:worker_threads";
 import { createReadStream, mkdirSync, readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
@@ -26,9 +28,8 @@ import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
-import { reconcileMiaoshouPerformance } from "./miaoshou-performance.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
-import { buildPerformanceAnalyticsPayload, materializePerformanceFacts, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
+import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 
@@ -91,6 +92,7 @@ const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
+const performanceMaterializationCachePath = resolve(cacheDir, "performance-analytics-materialized.json.gz");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
 const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000);
 const orderSyncChunkDays = Math.max(1, Math.min(30, Number(process.env.ORDER_SYNC_CHUNK_DAYS || 7)));
@@ -169,11 +171,12 @@ let wecomScheduleRunning = false;
 const performanceAnalyticsResponseCache = new Map();
 const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
 const performanceAnalyticsResponseCacheLimit = 24;
-let performanceAnalyticsMaterializedCache = null;
+let performanceAnalyticsMaterializedCache = loadPerformanceMaterializationCache(performanceMaterializationCachePath);
+let performanceAnalyticsMaterializationJob = null;
+let performanceAnalyticsRefreshQueued = false;
 
 function clearPerformanceAnalyticsResponseCache() {
   performanceAnalyticsResponseCache.clear();
-  performanceAnalyticsMaterializedCache = null;
 }
 
 function cachedPerformanceAnalyticsResponse(key) {
@@ -204,6 +207,15 @@ function loadJsonCache(path) {
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function loadPerformanceMaterializationCache(path) {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(gunzipSync(readFileSync(path)).toString("utf8"));
   } catch {
     return null;
   }
@@ -3111,7 +3123,7 @@ function requestedPerformanceRevenueSource(settings = {}) {
   return ["wms", "shadow", "miaoshou"].includes(configured) ? configured : "shadow";
 }
 
-function performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}) {
+function performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}) {
   const metadata = performanceAnalyticsStore.getMetadata();
   const miaoshouSyncState = performanceAnalyticsStore.getMiaoshouPerformanceSyncState();
   const sourceSignature = JSON.stringify({
@@ -3132,44 +3144,123 @@ function performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouSh
     packagingFeeRules,
   });
   const dataVersion = createHash("sha1").update(sourceSignature).digest("hex").slice(0, 16);
-  if (performanceAnalyticsMaterializedCache?.dataVersion === dataVersion) return performanceAnalyticsMaterializedCache;
+  return { dataVersion, miaoshouSyncState };
+}
+
+function runPerformanceMaterializationWorker(workerData) {
+  return new Promise((resolveWorker, rejectWorker) => {
+    const worker = new Worker(new URL("./performance-materialization-worker.js", import.meta.url), { workerData });
+    let settled = false;
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      resolveWorker(value);
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      rejectWorker(error);
+    };
+    worker.once("message", (result) => {
+      if (!result?.ok) {
+        rejectOnce(new Error(result?.message || "经营分析后台物化失败"));
+        return;
+      }
+      resolveOnce(result);
+    });
+    worker.once("error", rejectOnce);
+    worker.once("exit", (code) => {
+      if (code !== 0) rejectOnce(new Error(`经营分析后台线程异常退出：${code}`));
+    });
+  });
+}
+
+function startPerformanceMaterialization(context, exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}) {
+  if (performanceAnalyticsMaterializationJob?.dataVersion === context.dataVersion) return performanceAnalyticsMaterializationJob;
+  if (performanceAnalyticsMaterializationJob) return null;
 
   const startedAt = Date.now();
   const shopDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
-  const profiledFacts = performanceAnalyticsStore.listSalesFacts()
-    .map((fact) => applyShopDirectoryProfile(fact, shopDirectory));
-  const miaoshouSnapshot = performanceAnalyticsStore.listMiaoshouPerformance();
-  const hybrid = reconcileMiaoshouPerformance({
-    facts: profiledFacts,
-    ...miaoshouSnapshot,
-    requestedSource: requestedPerformanceRevenueSource(settings),
-    syncState: miaoshouSyncState,
-  });
-  const facts = materializePerformanceFacts({
-    facts: hybrid.facts,
+  const job = {
+    dataVersion: context.dataVersion,
+    startedAt: new Date().toISOString(),
+    promise: null,
+  };
+  job.promise = runPerformanceMaterializationWorker({
+    dbPath: performanceAnalyticsDbPath,
+    shopDirectory,
     products: cachedProducts,
     exchangeRates,
     packagingFeeRules,
-  });
-  performanceAnalyticsMaterializedCache = {
-    dataVersion,
-    materializedAt: new Date().toISOString(),
-    materializationDurationMs: Date.now() - startedAt,
-    shopDirectory,
-    facts,
-    transactionReconciliation: hybrid.reconciliation,
+    cachePath: performanceMaterializationCachePath,
+    cacheMaxAgeMs: 6 * 60 * 60 * 1000,
+    dataVersion: context.dataVersion,
+    requestedSource: requestedPerformanceRevenueSource(settings),
+    syncState: context.miaoshouSyncState,
     transactionSync: performanceMiaoshouSync.status(),
-  };
-  return performanceAnalyticsMaterializedCache;
+  }).then((result) => {
+    performanceAnalyticsMaterializedCache = {
+      dataVersion: context.dataVersion,
+      materializedAt: result.materializedAt || new Date().toISOString(),
+      materializationDurationMs: result.durationMs || Date.now() - startedAt,
+      shopDirectory,
+      facts: result.facts,
+      transactionReconciliation: result.reconciliation,
+      transactionSync: performanceMiaoshouSync.status(),
+      stale: false,
+      targetDataVersion: context.dataVersion,
+    };
+    performanceAnalyticsResponseCache.clear();
+    return performanceAnalyticsMaterializedCache;
+  }).finally(() => {
+    if (performanceAnalyticsMaterializationJob === job) performanceAnalyticsMaterializationJob = null;
+  });
+  performanceAnalyticsMaterializationJob = job;
+  return job;
 }
 
-function warmPerformanceAnalyticsMaterialization() {
+async function performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, { waitForFresh = false } = {}) {
+  const context = performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+  if (performanceAnalyticsMaterializedCache?.dataVersion === context.dataVersion) return performanceAnalyticsMaterializedCache;
+  let job = startPerformanceMaterialization(context, exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+  if (!job) {
+    if (performanceAnalyticsMaterializedCache && !waitForFresh) {
+      if (!performanceAnalyticsRefreshQueued) {
+        performanceAnalyticsRefreshQueued = true;
+        performanceAnalyticsMaterializationJob.promise.finally(() => {
+          performanceAnalyticsRefreshQueued = false;
+          setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
+        }).catch(() => {});
+      }
+      return {
+        ...performanceAnalyticsMaterializedCache,
+        stale: true,
+        targetDataVersion: context.dataVersion,
+        refreshStartedAt: performanceAnalyticsMaterializationJob.startedAt,
+      };
+    }
+    await performanceAnalyticsMaterializationJob.promise;
+    return performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings, { waitForFresh });
+  }
+  if (performanceAnalyticsMaterializedCache && !waitForFresh) {
+    void job.promise.catch((error) => console.error("[performance] background materialization failed", error));
+    return {
+      ...performanceAnalyticsMaterializedCache,
+      stale: true,
+      targetDataVersion: context.dataVersion,
+      refreshStartedAt: job.startedAt,
+    };
+  }
+  return job.promise;
+}
+
+async function warmPerformanceAnalyticsMaterialization() {
   try {
     const exchangeRates = performanceAnalyticsStore.listExchangeRates();
     const settings = performanceAnalyticsStore.getPerformanceSettings();
     const packagingFeeRules = normalizePackagingFeeRules(settings.packagingFeeRules);
     const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
-    const materialization = performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+    const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings, { waitForFresh: true });
     console.log(`[performance] materialized ${materialization.facts.length} rows in ${materialization.materializationDurationMs}ms (${materialization.dataVersion})`);
   } catch (error) {
     console.error("[performance] materialization failed", error);
@@ -3244,7 +3335,7 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
   };
 }
 
-function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
+async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   const queryStartedAt = Date.now();
   const range = performanceDateRange(params);
   const filters = {
@@ -3263,7 +3354,7 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
   const performanceSettings = performanceAnalyticsStore.getPerformanceSettings();
   const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
-  const materialization = performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
+  const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
   const cacheKey = JSON.stringify({
     dataVersion: materialization.dataVersion,
     filters,
@@ -3316,8 +3407,11 @@ function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth) {
     ...payload,
     syncedAt: cachedOrdersSync.syncedAt || "",
     dataVersion: materialization.dataVersion,
+    targetDataVersion: materialization.targetDataVersion || materialization.dataVersion,
     materializedAt: materialization.materializedAt,
     materializationDurationMs: materialization.materializationDurationMs,
+    materializationStale: Boolean(materialization.stale),
+    materializationRefreshStartedAt: materialization.refreshStartedAt || "",
     queryDurationMs: Date.now() - queryStartedAt,
     sourceQuality: {
       status: sourceResults.length && !incompleteWarehouses.length ? "official" : "provisional",
@@ -4631,6 +4725,7 @@ async function runAutoSync() {
     const orderPayload = await refreshOrderCache(90);
     buildCurrentStockupPayload({ notify: true, reason: "auto_order_sync" });
     upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "auto_sync", movementHistoryTimezone);
+    void warmPerformanceAnalyticsMaterialization();
     lastAutoSyncAt = new Date().toISOString();
     console.log(`[auto-sync] refreshed products, qualifications, assets and ${orderPayload.orders.length} movement orders at ${lastAutoSyncAt}`);
   } catch (error) {
@@ -6389,7 +6484,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有经营贡献分析权限。" });
         return;
       }
-      sendJson(res, 200, buildPerformanceAnalyticsResponse({
+      sendJson(res, 200, await buildPerformanceAnalyticsResponse({
         dateFrom: url.searchParams.get("dateFrom") || "",
         dateTo: url.searchParams.get("dateTo") || "",
         country: url.searchParams.get("country") || "",
@@ -6426,7 +6521,7 @@ const server = http.createServer(async (req, res) => {
           returnCount: sync.returnCount || 0,
           warningCount: sync.warningCount || 0,
         });
-        warmPerformanceAnalyticsMaterialization();
+        void warmPerformanceAnalyticsMaterialization();
       }).catch((error) => console.error("[miaoshou-performance] manual sync failed", error));
       sendJson(res, job.started ? 202 : 200, {
         ok: true,
@@ -6455,7 +6550,7 @@ const server = http.createServer(async (req, res) => {
         const exchangeRates = performanceAnalyticsStore.listExchangeRates();
         const currentSettings = performanceAnalyticsStore.getPerformanceSettings();
         const shopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
-        const current = performanceMaterialization(exchangeRates, normalizePackagingFeeRules(currentSettings.packagingFeeRules), shopState, {
+        const current = await performanceMaterialization(exchangeRates, normalizePackagingFeeRules(currentSettings.packagingFeeRules), shopState, {
           ...currentSettings,
           revenueSource: "shadow",
         });
@@ -6473,6 +6568,7 @@ const server = http.createServer(async (req, res) => {
         revenueSourceUpdatedBy: auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员",
       });
       clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "切换经营收入来源", "performance_revenue_source", revenueSource, {});
       sendJson(res, 200, { ok: true, revenueSource, updatedAt: new Date().toISOString() });
       return;
@@ -6508,6 +6604,7 @@ const server = http.createServer(async (req, res) => {
         updatedBy: auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员",
       });
       clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "更新经营分析打包费规则", "performance_packaging_fee", countryKeys.join(","), { count: packagingFeeRules.length });
       sendJson(res, 200, { ok: true, packagingFeeRules, updatedAt: settings.updatedAt || new Date().toISOString() });
       return;
@@ -6527,6 +6624,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const exchangeRates = performanceAnalyticsStore.upsertExchangeRates(rates, `manual:${auth.user?.username || auth.user?.id || "admin"}`);
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "更新经营分析汇率", "performance_analytics", rates.map((rate) => String(rate.currency || "").toUpperCase()).join(","), { count: rates.length });
       sendJson(res, 200, { ok: true, exchangeRates, updatedAt: new Date().toISOString() });
       return;
@@ -6576,6 +6675,14 @@ const server = http.createServer(async (req, res) => {
         shopKeys,
       });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      if (performanceAnalyticsMaterializedCache) {
+        performanceAnalyticsMaterializedCache = {
+          ...performanceAnalyticsMaterializedCache,
+          shopDirectory: updatedDirectory,
+          facts: performanceAnalyticsMaterializedCache.facts.map((fact) => applyShopDirectoryProfile(fact, updatedDirectory)),
+        };
+      }
+      void warmPerformanceAnalyticsMaterialization();
       sendJson(res, 200, {
         ok: true,
         updatedCount: shopKeys.length,
@@ -6592,6 +6699,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const sync = await performanceExchangeRateSync.run({ force: true, reason: `manual:${auth.user?.username || auth.user?.id || "admin"}` });
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "立即同步经营汇率", "performance_exchange_rate", sync.provider || "Frankfurter", {
         updatedCount: sync.lastUpdatedCount || 0,
         rateDate: sync.lastRateDate || "",
@@ -7257,5 +7366,5 @@ server.listen(port, () => {
   runScheduledInventorySnapshot();
   runWecomSchedules();
   void miaoshouAutomation.runScheduled();
-  setTimeout(warmPerformanceAnalyticsMaterialization, 0);
+  setTimeout(() => { void warmPerformanceAnalyticsMaterialization(); }, 0);
 });
