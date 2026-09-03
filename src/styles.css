@@ -112,8 +112,10 @@ body {
 .performance-kpi {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(40px, 1fr) auto;
+  grid-template-rows: 18px 38px auto;
   align-items: start;
+  align-content: start;
+  row-gap: 6px;
   min-height: 136px;
   padding: 18px 20px 17px;
   overflow: hidden;
@@ -152,7 +154,7 @@ body {
 .performance-kpi > strong {
   display: block;
   align-self: center;
-  margin: 8px 0;
+  margin: 0;
   color: #f7f1e8;
   font-family: inherit;
   font-size: 26px;
