@@ -111,8 +111,11 @@ body {
 
 .performance-kpi {
   position: relative;
-  min-height: 150px;
-  padding: 22px;
+  display: grid;
+  grid-template-rows: auto minmax(40px, 1fr) auto;
+  align-items: start;
+  min-height: 136px;
+  padding: 18px 20px 17px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -142,22 +145,30 @@ body {
   display: block;
   color: #918e87;
   font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
 }
 
 .performance-kpi > strong {
   display: block;
-  margin: 17px 0 12px;
+  align-self: center;
+  margin: 8px 0;
   color: #f7f1e8;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(24px, 2.5vw, 37px);
-  line-height: 1;
+  font-family: inherit;
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
 }
 
 .performance-kpi > strong i {
   color: #96928a;
-  font-family: "Aptos", "Microsoft YaHei UI", sans-serif;
-  font-size: 13px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
   font-style: normal;
+  letter-spacing: 0;
 }
 
 .performance-currency-strip {
