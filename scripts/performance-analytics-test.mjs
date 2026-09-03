@@ -184,6 +184,35 @@ assert.equal(russianCostPayload.totals.productCostCny, 50);
 assert.equal(russianCostPayload.totals.packagingFeeCny, 6);
 assert.equal(russianCostPayload.totals.cogsCny, 56);
 
+const supplementalCostFacts = materializePerformanceFacts({
+  facts: [
+    { ...facts[1], id: "supplement-b", sku: "B", orderDate: "2026-08-01", quantity: 2 },
+    { ...facts[1], id: "catalog-wins", sku: "A", orderDate: "2026-08-01", quantity: 1 },
+    { ...facts[2], id: "supplement-unknown", country: "印尼", orderDate: "2026-08-01", quantity: 3 },
+  ],
+  products,
+  exchangeRates: [{ currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 }],
+  supplementalProductCosts: [
+    { sku: "B", countryKey: "RU", countryName: "俄罗斯", unitCostCny: 30, effectiveDate: "2026-07-01", enabled: true },
+    { sku: "B", countryKey: "RU", countryName: "俄罗斯", unitCostCny: 40, effectiveDate: "2026-09-01", enabled: true },
+    { sku: "A", countryKey: "RU", countryName: "俄罗斯", unitCostCny: 999, effectiveDate: "2026-01-01", enabled: true },
+    { sku: "UNKNOWN", countryKey: "ID", countryName: "印度尼西亚", unitCostCny: 8, effectiveDate: "2026-01-01", enabled: true },
+  ],
+});
+assert.equal(supplementalCostFacts.find((row) => row.id === "supplement-b")?.unitCostCny, 30, "order date must use the latest already-effective supplemental cost");
+assert.equal(supplementalCostFacts.find((row) => row.id === "supplement-b")?.costSource, "supplemental_manual");
+assert.equal(supplementalCostFacts.find((row) => row.id === "catalog-wins")?.unitCostCny, 50, "catalog country direct cost must win over supplemental cost");
+assert.equal(supplementalCostFacts.find((row) => row.id === "catalog-wins")?.costSource, "product_catalog_direct");
+assert.equal(supplementalCostFacts.find((row) => row.id === "supplement-unknown")?.unitCostCny, 8, "supplemental cost must cover SKUs missing from the product catalog");
+assert.equal(supplementalCostFacts.find((row) => row.id === "supplement-unknown")?.productMatched, false, "cost supplementation must not pretend that a product master record exists");
+const disabledSupplementalFact = materializePerformanceFacts({
+  facts: [{ ...facts[1], id: "disabled-supplement", sku: "B", orderDate: "2026-08-01" }],
+  products,
+  exchangeRates: [{ currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 }],
+  supplementalProductCosts: [{ sku: "B", countryKey: "RU", unitCostCny: 30, effectiveDate: "2026-07-01", enabled: false }],
+})[0];
+assert.equal(disabledSupplementalFact.unitCostCny, 0, "a disabled latest supplemental version must stop applying that manual cost");
+
 const missingRevenueCostPayload = buildPerformanceAnalyticsPayload({
   facts: [{ ...facts[0], id: "cost-only", salesAmount: 0, currency: "", salesAmountValid: false }],
   products,
@@ -256,9 +285,21 @@ try {
     ],
     updatedBy: "test-admin",
   });
+  store.upsertSupplementalProductCosts([
+    { sku: "SKU-MISSING", countryKey: "ID", countryName: "印度尼西亚", productName: "未建档产品", unitCostCny: 6.25, effectiveDate: "2026-08-01", enabled: true, note: "首次导入" },
+  ], "test-admin");
+  assert.equal(store.listSupplementalProductCosts().length, 1);
+  assert.equal(store.getMetadata().enabledSupplementalCostCount, 1);
+  store.upsertSupplementalProductCosts([
+    { sku: "SKU-MISSING", countryKey: "ID", countryName: "印度尼西亚", productName: "未建档产品", unitCostCny: 6.5, effectiveDate: "2026-08-01", enabled: false, note: "停用版本" },
+  ], "test-reviewer");
+  assert.equal(store.listSupplementalProductCosts().length, 1, "same SKU, country and effective date must update instead of duplicate");
+  assert.equal(store.listSupplementalProductCosts()[0].unitCostCny, 6.5);
+  assert.equal(store.listSupplementalProductCosts()[0].enabled, false);
   const reopenedStore = await initPerformanceAnalyticsStore(join(temporaryDirectory, "analytics.sqlite"));
   assert.equal(reopenedStore.getPerformanceSettings().packagingFeeRules[0].baseFeeCny, 2.2);
   assert.equal(reopenedStore.getPerformanceSettings().updatedBy, "test-admin");
+  assert.equal(reopenedStore.listSupplementalProductCosts()[0].updatedBy, "test-reviewer");
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

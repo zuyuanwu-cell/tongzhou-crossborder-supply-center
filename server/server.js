@@ -3129,7 +3129,7 @@ function requestedPerformanceRevenueSource(settings = {}) {
   return ["wms", "shadow", "miaoshou"].includes(configured) ? configured : "shadow";
 }
 
-function performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}) {
+function performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, supplementalProductCosts = []) {
   const metadata = performanceAnalyticsStore.getMetadata();
   const miaoshouSyncState = performanceAnalyticsStore.getMiaoshouPerformanceSyncState();
   const sourceSignature = JSON.stringify({
@@ -3148,6 +3148,7 @@ function performanceMaterializationContext(exchangeRates, packagingFeeRules, mia
     revenueSource: requestedPerformanceRevenueSource(settings),
     exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.updatedAt, rate.rateToCny]),
     packagingFeeRules,
+    supplementalProductCosts: supplementalProductCosts.map((row) => [row.sku, row.countryKey, row.effectiveDate, row.unitCostCny, row.enabled, row.updatedAt]),
   });
   const dataVersion = createHash("sha1").update(sourceSignature).digest("hex").slice(0, 16);
   return { dataVersion, miaoshouSyncState };
@@ -3181,7 +3182,7 @@ function runPerformanceMaterializationWorker(workerData) {
   });
 }
 
-function startPerformanceMaterialization(context, exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}) {
+function startPerformanceMaterialization(context, exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, supplementalProductCosts = []) {
   if (performanceAnalyticsMaterializationJob?.dataVersion === context.dataVersion) return performanceAnalyticsMaterializationJob;
   if (performanceAnalyticsMaterializationJob) return null;
 
@@ -3198,6 +3199,7 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
     products: cachedProducts,
     exchangeRates,
     packagingFeeRules,
+    supplementalProductCosts,
     cachePath: performanceMaterializationCachePath,
     cacheMaxAgeMs: 6 * 60 * 60 * 1000,
     dataVersion: context.dataVersion,
@@ -3226,9 +3228,10 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
 }
 
 async function performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, { waitForFresh = false } = {}) {
-  const context = performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+  const supplementalProductCosts = performanceAnalyticsStore.listSupplementalProductCosts();
+  const context = performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings, supplementalProductCosts);
   if (performanceAnalyticsMaterializedCache?.dataVersion === context.dataVersion) return performanceAnalyticsMaterializedCache;
-  let job = startPerformanceMaterialization(context, exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+  let job = startPerformanceMaterialization(context, exchangeRates, packagingFeeRules, miaoshouShopState, settings, supplementalProductCosts);
   if (!job) {
     if (performanceAnalyticsMaterializedCache && !waitForFresh) {
       if (!performanceAnalyticsRefreshQueued) {
@@ -3321,6 +3324,10 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
     delete quality.contributionCoverageRate;
   }
   const { dbPath: _privateDbPath, ...safeMetadata } = performanceAnalyticsStore.getMetadata();
+  if (!cost) {
+    delete safeMetadata.supplementalCostCount;
+    delete safeMetadata.enabledSupplementalCostCount;
+  }
   return {
     ...payload,
     permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue, manageCosts: canManage(auth) && cost, manageTransactionSource: canManage(auth) && revenue },
@@ -3328,6 +3335,7 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
     totals: omitPerformanceFields(payload.totals, projection),
     quality,
     packagingFeeRules: cost ? payload.packagingFeeRules : [],
+    supplementalProductCosts: cost ? payload.supplementalProductCosts || [] : [],
     currencySummary: revenue ? payload.currencySummary : [],
     exchangeRates: revenue ? exchangeRates : [],
     exchangeRateSync: revenue ? performanceExchangeRateSync.status() : null,
@@ -3359,6 +3367,7 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
   const exchangeRates = performanceAnalyticsStore.listExchangeRates();
   const performanceSettings = performanceAnalyticsStore.getPerformanceSettings();
   const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
+  const supplementalProductCosts = performanceAnalyticsStore.listSupplementalProductCosts();
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
   const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
   const cacheKey = JSON.stringify({
@@ -3454,6 +3463,7 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
       completeWarehouseCount: Math.max(0, sourceResults.length - incompleteWarehouses.length),
       incompleteWarehouses,
     },
+    supplementalProductCosts,
     transactionSource: {
       requested: materialization.transactionReconciliation.requestedSource,
       effective: materialization.transactionReconciliation.effectiveSource,
@@ -3462,7 +3472,7 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
         revenue: materialization.transactionReconciliation.effectiveSource === "miaoshou" ? "miaoshou" : "wms",
         refunds: "miaoshou",
         fulfillment: "wms",
-        productCost: "product_catalog_country_direct",
+        productCost: "product_catalog_country_direct_then_supplemental",
         packaging: "central_rules",
       },
       sync: materialization.transactionSync,
@@ -6642,6 +6652,73 @@ const server = http.createServer(async (req, res) => {
       void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "更新经营分析打包费规则", "performance_packaging_fee", countryKeys.join(","), { count: packagingFeeRules.length });
       sendJson(res, 200, { ok: true, packagingFeeRules, updatedAt: settings.updatedAt || new Date().toISOString() });
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/supplemental-costs" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManage(auth) || !hasPermission(auth, "performance_cost")) {
+        sendJson(res, 403, { ok: false, message: "维护经营补录成本需要管理员及经营成本权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const rows = Array.isArray(body.rows) ? body.rows : [];
+      if (!rows.length || rows.length > 5000) {
+        sendJson(res, 400, { ok: false, message: "每次请导入 1 至 5000 条产品成本。" });
+        return;
+      }
+      const countryNames = { ID: "印度尼西亚", MY: "马来西亚", VN: "越南", RU: "俄罗斯", PH: "菲律宾", TH: "泰国" };
+      const normalizedRows = [];
+      const errors = [];
+      const identities = new Set();
+      rows.forEach((row, index) => {
+        const rowNumber = index + 2;
+        const sku = String(row?.sku || "").trim().toUpperCase();
+        const countryKey = normalizedCountryKey(row?.countryKey || row?.countryName || row?.country);
+        const unitCostCny = Number(row?.unitCostCny);
+        const effectiveDate = String(row?.effectiveDate || "").trim().slice(0, 10);
+        const effectiveTimestamp = Date.parse(`${effectiveDate}T00:00:00.000Z`);
+        const validDate = /^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)
+          && Number.isFinite(effectiveTimestamp)
+          && new Date(effectiveTimestamp).toISOString().slice(0, 10) === effectiveDate;
+        const productName = String(row?.productName || "").trim();
+        const note = String(row?.note || "").trim();
+        const identity = `${sku}|${countryKey}|${effectiveDate}`;
+        const rowErrors = [];
+        if (!sku || sku.length > 120) rowErrors.push("SKU 不能为空且不能超过 120 个字符");
+        if (!/^[A-Z]{2}$/.test(countryKey)) rowErrors.push("国家必须是支持识别的国家名称或两位代码");
+        if (!Number.isFinite(unitCostCny) || unitCostCny <= 0 || unitCostCny > 10000000) rowErrors.push("人民币单位成本必须大于 0 且不超过 10000000");
+        if (!validDate) rowErrors.push("生效日期必须为 YYYY-MM-DD 的有效日期");
+        if (productName.length > 200) rowErrors.push("产品名称不能超过 200 个字符");
+        if (note.length > 500) rowErrors.push("备注不能超过 500 个字符");
+        if (identities.has(identity)) rowErrors.push("同一文件内 SKU、国家和生效日期不能重复");
+        identities.add(identity);
+        if (rowErrors.length) {
+          errors.push({ row: rowNumber, sku, message: rowErrors.join("；") });
+          return;
+        }
+        normalizedRows.push({
+          sku,
+          countryKey,
+          countryName: String(countryNames[countryKey] || row?.countryName || row?.country || countryKey).trim(),
+          productName,
+          unitCostCny,
+          effectiveDate,
+          enabled: row?.enabled !== false,
+          note,
+          source: "csv_manual",
+        });
+      });
+      if (errors.length) {
+        sendJson(res, 400, { ok: false, message: `CSV 有 ${errors.length} 行未通过校验，未写入任何数据。`, errors: errors.slice(0, 50) });
+        return;
+      }
+      const actor = auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员";
+      const supplementalProductCosts = performanceAnalyticsStore.upsertSupplementalProductCosts(normalizedRows, actor);
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
+      appendActionLog(auth, "导入经营补录成本", "performance_supplemental_cost", normalizedRows.map((row) => `${row.sku}/${row.countryKey}`).join(",").slice(0, 1000), { count: normalizedRows.length });
+      sendJson(res, 200, { ok: true, importedCount: normalizedRows.length, supplementalProductCosts, updatedAt: new Date().toISOString() });
       return;
     }
 

@@ -1409,6 +1409,21 @@ export type PerformancePackagingFeeRule = {
   enabled: boolean;
 };
 
+export type PerformanceSupplementalProductCost = {
+  sku: string;
+  countryKey: string;
+  countryName: string;
+  productName?: string;
+  unitCostCny: number;
+  effectiveDate: string;
+  enabled: boolean;
+  note?: string;
+  source?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+};
+
 export type PerformanceAnalyticsPayload = {
   ok: boolean;
   generatedAt: string;
@@ -1438,6 +1453,8 @@ export type PerformanceAnalyticsPayload = {
     miaoshouOrderCount?: number;
     miaoshouItemCount?: number;
     miaoshouReturnCount?: number;
+    supplementalCostCount?: number;
+    enabledSupplementalCostCount?: number;
   };
   reconciliation: {
     sourceRowCount: number;
@@ -1546,6 +1563,7 @@ export type PerformanceAnalyticsPayload = {
     contributionCoverageRate?: number;
   };
   packagingFeeRules: PerformancePackagingFeeRule[];
+  supplementalProductCosts: PerformanceSupplementalProductCost[];
   currencySummary: PerformanceAmount[];
   exchangeRates: Array<{
     currency: string;
@@ -2607,6 +2625,19 @@ export function updatePerformancePackagingFeeRules(rules: PerformancePackagingFe
   return requestJson<{ ok: boolean; packagingFeeRules: PerformancePackagingFeeRule[]; updatedAt: string }>("/api/performance-analytics/packaging-fees", {
     method: "PATCH",
     body: JSON.stringify({ rules }),
+  });
+}
+
+export function importPerformanceSupplementalProductCosts(rows: Array<Pick<PerformanceSupplementalProductCost, "sku" | "countryKey" | "countryName" | "productName" | "unitCostCny" | "effectiveDate" | "enabled" | "note">>) {
+  return requestJson<{
+    ok: boolean;
+    importedCount: number;
+    supplementalProductCosts: PerformanceSupplementalProductCost[];
+    updatedAt: string;
+    errors?: Array<{ row: number; sku?: string; message: string }>;
+  }>("/api/performance-analytics/supplemental-costs", {
+    method: "PATCH",
+    body: JSON.stringify({ rows }),
   });
 }
 

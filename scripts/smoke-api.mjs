@@ -194,6 +194,18 @@ async function main() {
   if (!performance.resultCounts || performance.products.length > 100 || performance.recentFacts.length > 50) {
     throw new Error(`/api/performance-analytics did not return a bounded result payload: ${JSON.stringify(performance).slice(0, 800)}`);
   }
+  if (!Array.isArray(performance.supplementalProductCosts)) {
+    throw new Error("/api/performance-analytics did not expose the supplemental product cost ledger.");
+  }
+  const invalidSupplementalCostImport = await fetch(`${baseUrl}/api/performance-analytics/supplemental-costs`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ rows: [{ sku: "SMOKE-INVALID", country: "ID", unitCostCny: 0, effectiveDate: "2026-99-99" }] }),
+  });
+  if (invalidSupplementalCostImport.status !== 400) {
+    throw new Error(`invalid supplemental product cost import was not rejected atomically: ${invalidSupplementalCostImport.status}`);
+  }
+  console.log("[ok] performance supplemental cost ledger and atomic validation");
   if (performance.totals?.profitCoverageRate > 0) {
     const reconciledProfit = Number(performance.totals.profitSalesCny || 0) - Number(performance.totals.profitCogsCny || 0);
     if (Math.abs(reconciledProfit - Number(performance.totals.estimatedProfitCny || 0)) > 0.01) {

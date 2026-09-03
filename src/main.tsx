@@ -40,6 +40,7 @@ import {
   Trash2,
   Video,
   Truck,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -66,6 +67,7 @@ import {
   PerformanceAnalyticsPayload,
   PerformanceContributionRow,
   PerformancePackagingFeeRule,
+  PerformanceSupplementalProductCost,
   ProductBase,
   ProductPayload,
   QuickNavPayload,
@@ -167,6 +169,7 @@ import {
   updateOrderShopAlias,
   updatePerformanceExchangeRates,
   updatePerformancePackagingFeeRules,
+  importPerformanceSupplementalProductCosts,
   updatePerformanceRevenueSource,
   updateShopProjectGroup,
   updateStockupPlanStatus,
@@ -665,6 +668,108 @@ function bundleTotals(items: BundleSkuItem[], channel: "全部" | "直营" | "�
 function csvCell(value: string | number | undefined | null) {
   const text = String(value ?? "");
   return `"${text.replace(/"/g, '""')}"`;
+}
+
+function parseCsvGrid(source: string) {
+  const input = source.replace(/^\uFEFF/, "");
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (quoted) {
+      if (character === '"' && input[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else if (character === '"') quoted = false;
+      else value += character;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === ",") {
+      row.push(value.trim());
+      value = "";
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && input[index + 1] === "\n") index += 1;
+      row.push(value.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      value = "";
+    } else value += character;
+  }
+  if (quoted) throw new Error("CSV 存在未闭合的双引号，请检查文件格式。");
+  row.push(value.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+}
+
+function supplementalCostCsv(rows: PerformanceSupplementalProductCost[]) {
+  const header = ["SKU", "国家", "人民币单位成本", "生效日期", "启用", "产品名称", "备注", "更新人", "更新时间"];
+  const body = rows.map((row) => [row.sku, row.countryName || row.countryKey, row.unitCostCny, row.effectiveDate, row.enabled ? "是" : "否", row.productName || "", row.note || "", row.updatedBy || "", row.updatedAt || ""]);
+  return `\uFEFF${[header, ...body].map((cells) => cells.map(csvCell).join(",")).join("\r\n")}`;
+}
+
+function parseSupplementalCostCsv(source: string) {
+  if (source.includes("�")) throw new Error("CSV 编码无法识别，请下载系统模板并用 UTF-8 CSV 格式保存。");
+  const grid = parseCsvGrid(source);
+  if (grid.length < 2) throw new Error("CSV 只有表头，没有可导入的成本数据。");
+  const headers = grid[0].map((value) => value.replace(/[\s()（）_\-]/g, "").toLowerCase());
+  const indexOf = (...aliases: string[]) => headers.findIndex((header) => aliases.map((alias) => alias.replace(/[\s()（）_\-]/g, "").toLowerCase()).includes(header));
+  const indexes = {
+    sku: indexOf("SKU", "商品SKU", "产品SKU"),
+    country: indexOf("国家", "国家代码", "country", "countrykey"),
+    cost: indexOf("人民币单位成本", "单位成本CNY", "成本CNY", "unitcostcny"),
+    effectiveDate: indexOf("生效日期", "成本生效日期", "effectivedate"),
+    enabled: indexOf("启用", "状态", "enabled"),
+    productName: indexOf("产品名称", "商品名称", "productname"),
+    note: indexOf("备注", "说明", "note"),
+  };
+  const missingHeaders = [
+    [indexes.sku, "SKU"],
+    [indexes.country, "国家"],
+    [indexes.cost, "人民币单位成本"],
+    [indexes.effectiveDate, "生效日期"],
+  ].filter(([index]) => Number(index) < 0).map(([, label]) => label);
+  if (missingHeaders.length) throw new Error(`CSV 缺少必填列：${missingHeaders.join("、")}。请使用系统模板。`);
+  const errors: string[] = [];
+  const identities = new Set<string>();
+  const rows: PerformanceSupplementalProductCost[] = [];
+  grid.slice(1).forEach((cells, rowIndex) => {
+    const rowNumber = rowIndex + 2;
+    const sku = String(cells[indexes.sku] || "").trim().toUpperCase();
+    const country = String(cells[indexes.country] || "").trim();
+    const unitCostCny = Number(String(cells[indexes.cost] || "").replace(/,/g, ""));
+    const effectiveDate = String(cells[indexes.effectiveDate] || "").trim();
+    const enabledValue = indexes.enabled >= 0 ? String(cells[indexes.enabled] || "").trim().toLowerCase() : "是";
+    const enabled = !["否", "0", "false", "停用", "禁用", "disabled"].includes(enabledValue);
+    const identity = `${sku}|${country.toLowerCase()}|${effectiveDate}`;
+    const rowErrors: string[] = [];
+    if (!sku) rowErrors.push("SKU 为空");
+    if (!country) rowErrors.push("国家为空");
+    if (!Number.isFinite(unitCostCny) || unitCostCny <= 0) rowErrors.push("人民币单位成本必须大于 0");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) rowErrors.push("生效日期应为 YYYY-MM-DD");
+    if (identities.has(identity)) rowErrors.push("SKU、国家和生效日期重复");
+    identities.add(identity);
+    if (rowErrors.length) {
+      errors.push(`第 ${rowNumber} 行：${rowErrors.join("；")}`);
+      return;
+    }
+    rows.push({
+      sku,
+      countryKey: country,
+      countryName: country,
+      productName: indexes.productName >= 0 ? String(cells[indexes.productName] || "").trim() : "",
+      unitCostCny,
+      effectiveDate,
+      enabled,
+      note: indexes.note >= 0 ? String(cells[indexes.note] || "").trim() : "",
+    });
+  });
+  if (errors.length) throw new Error(`${errors.slice(0, 8).join("；")}。共 ${errors.length} 行错误，未导入任何数据。`);
+  if (!rows.length) throw new Error("CSV 没有可导入的有效数据行。");
+  if (rows.length > 5000) throw new Error("单次最多导入 5000 条产品成本。");
+  return rows;
 }
 
 function bundleQuoteCsv(
@@ -1583,6 +1688,11 @@ function App() {
             onSavePackagingRules={async (rules) => {
               await updatePerformancePackagingFeeRules(rules);
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+            }}
+            onImportSupplementalCosts={async (rows) => {
+              const result = await importPerformanceSupplementalProductCosts(rows);
+              await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+              return result;
             }}
             onSyncRates={async () => {
               const result = await syncPerformanceExchangeRates();
@@ -7252,6 +7362,7 @@ function PerformanceAnalysisPage({
   onLoad,
   onSaveRates,
   onSavePackagingRules,
+  onImportSupplementalCosts,
   onSyncRates,
   onSyncMiaoshou,
   onChangeRevenueSource,
@@ -7266,6 +7377,7 @@ function PerformanceAnalysisPage({
   onLoad: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; brand?: string; keyword?: string }) => Promise<void>;
   onSaveRates: (rates: Array<{ currency: string; rateToCny: number; effectiveDate?: string }>) => Promise<void>;
   onSavePackagingRules: (rules: PerformancePackagingFeeRule[]) => Promise<void>;
+  onImportSupplementalCosts: (rows: PerformanceSupplementalProductCost[]) => Promise<{ importedCount: number }>;
   onSyncRates: () => Promise<{ message?: string; lastUpdatedCount?: number; lastRateDate?: string }>;
   onSyncMiaoshou: (input: { dateFrom?: string; dateTo?: string; days?: number }) => Promise<{ message?: string; status?: string; orderCount?: number; warningCount?: number }>;
   onChangeRevenueSource: (source: "wms" | "shadow" | "miaoshou") => Promise<void>;
@@ -7290,6 +7402,9 @@ function PerformanceAnalysisPage({
   const [rateMessage, setRateMessage] = React.useState("");
   const [packagingRuleDrafts, setPackagingRuleDrafts] = React.useState<PerformancePackagingFeeRule[]>(payload?.packagingFeeRules || []);
   const [packagingMessage, setPackagingMessage] = React.useState("");
+  const [supplementalCostMessage, setSupplementalCostMessage] = React.useState("");
+  const [supplementalCostSearch, setSupplementalCostSearch] = React.useState("");
+  const supplementalCostFileRef = React.useRef<HTMLInputElement | null>(null);
   const [selectedShopKeys, setSelectedShopKeys] = React.useState<Set<string>>(new Set());
   const [projectGroupDraft, setProjectGroupDraft] = React.useState("");
   const [shopMessage, setShopMessage] = React.useState("");
@@ -7306,6 +7421,13 @@ function PerformanceAnalysisPage({
     ...(payload?.currencySummary || []).map((item) => item.currency),
     ...Array.from(latestRates.keys()),
   ])).filter((currencyCode) => currencyCode && !["CNY", "RMB"].includes(currencyCode)).sort(), [payload?.currencySummary, latestRates]);
+  const supplementalCosts = payload?.supplementalProductCosts || [];
+  const filteredSupplementalCosts = React.useMemo(() => {
+    const term = supplementalCostSearch.trim().toLowerCase();
+    if (!term) return supplementalCosts;
+    return supplementalCosts.filter((row) => [row.sku, row.productName, row.countryName, row.countryKey, row.note]
+      .some((value) => String(value || "").toLowerCase().includes(term)));
+  }, [supplementalCosts, supplementalCostSearch]);
 
   React.useEffect(() => {
     if (!payload) return;
@@ -7438,6 +7560,35 @@ function PerformanceAnalysisPage({
     }
   }
 
+  function downloadSupplementalCostTemplate() {
+    const header = ["SKU", "国家", "人民币单位成本", "生效日期", "启用", "产品名称", "备注"];
+    downloadTextFile("tongzhou-product-cost-import-template.csv", `\uFEFF${header.map(csvCell).join(",")}\r\n`, "text/csv;charset=utf-8");
+    setSupplementalCostMessage("模板已下载。国家可填写印度尼西亚/ID、马来西亚/MY、越南/VN、俄罗斯/RU。生效日期格式为 YYYY-MM-DD。");
+  }
+
+  function exportSupplementalCosts() {
+    downloadTextFile(`tongzhou-supplemental-product-costs-${new Date().toISOString().slice(0, 10)}.csv`, supplementalCostCsv(supplementalCosts), "text/csv;charset=utf-8");
+    setSupplementalCostMessage(`已导出 ${supplementalCosts.length} 条补录成本。导出的文件可以修改后重新导入。`);
+  }
+
+  async function importSupplementalCostFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setSupplementalCostMessage("");
+    setBusy(true);
+    try {
+      const source = await file.text();
+      const rows = parseSupplementalCostCsv(source);
+      const result = await onImportSupplementalCosts(rows);
+      setSupplementalCostMessage(`导入成功：${result.importedCount} 条成本已写入，经营贡献正在按新成本版本重算。`);
+    } catch (requestError) {
+      setSupplementalCostMessage(requestError instanceof Error ? requestError.message : "成本 CSV 导入失败，未写入任何数据。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function toggleShopSelection(shopKey: string, checked: boolean) {
     setSelectedShopKeys((current) => {
       const next = new Set(current);
@@ -7493,6 +7644,13 @@ function PerformanceAnalysisPage({
     }, 5_000);
     return () => window.clearInterval(timer);
   }, [tab, transactionSyncing, dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, brand, keyword]);
+  React.useEffect(() => {
+    if (!payload?.materializationStale || loading) return undefined;
+    const timer = window.setTimeout(() => {
+      void onLoad({ dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, brand, keyword });
+    }, 3_000);
+    return () => window.clearTimeout(timer);
+  }, [payload?.materializationStale, payload?.targetDataVersion, payload?.generatedAt, loading, dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, brand, keyword]);
   const contributionActive = transactionSource?.effective === "miaoshou" && Number(payload?.quality.contributionCoverageRate || 0) > 0;
   const useRevenueMetric = permissions.revenue && revenueReady;
   const trendRows = (payload?.daily || []).slice(-30);
@@ -7630,7 +7788,7 @@ function PerformanceAnalysisPage({
           <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.resultCounts?.brands ?? payload?.brands.length ?? 0)}</span></button>
           <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber(qualityIssueTypeCount)} 项</span></button>
           {permissions.revenue ? <button className={tab === "sources" ? "active" : ""} type="button" onClick={() => setTab("sources")}><DatabaseZap size={15} />交易对账 <span>{formatPercentValue(transactionSource?.reconciliation.orderMatchRate)}</span></button> : null}
-          {permissions.cost ? <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}><Settings size={15} />成本规则 <span>{formatNumber(payload?.packagingFeeRules.length || 0)}</span></button> : null}
+          {permissions.cost ? <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}><Settings size={15} />成本维护 <span>{formatNumber((payload?.packagingFeeRules.length || 0) + (payload?.metadata.enabledSupplementalCostCount || 0))}</span></button> : null}
           <button className={tab === "shops" ? "active" : ""} type="button" onClick={() => setTab("shops")}>店铺归属 <span>{formatNumber(payload?.shopDirectory.shops.length || 0)}</span></button>
         </div>
 
@@ -7696,7 +7854,7 @@ function PerformanceAnalysisPage({
             <div className="performance-source-flow">
               <article><span>交易 / 退款</span><strong>妙手 ERP</strong><small>{transactionSource?.sync.lastSuccessAt ? `最近完整同步 ${formatDateTime(transactionSource.sync.lastSuccessAt)}` : transactionSource?.sync.lastCompletedAt ? `最近部分同步 ${formatDateTime(transactionSource.sync.lastCompletedAt)}` : "等待首次同步"}</small></article>
               <article><span>出库 / 仓库</span><strong>WMS</strong><small>{payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "等待同步"}</small></article>
-              <article><span>国家直营成本</span><strong>产品库</strong><small>按 SKU 与订单国家匹配</small></article>
+              <article><span>国家直营成本</span><strong>产品库 + 补录台账</strong><small>按 SKU、国家和订单日期匹配；产品库优先</small></article>
               <article><span>正式收入口径</span><strong>{transactionSource?.effective === "miaoshou" ? "妙手净销售额" : "WMS 销售额"}</strong><small>请求模式：{transactionSource?.requested === "miaoshou" ? "妙手正式" : transactionSource?.requested === "shadow" ? "影子核对" : "固定 WMS"}</small></article>
             </div>
             <div className="performance-reconciliation-grid">
@@ -7718,6 +7876,48 @@ function PerformanceAnalysisPage({
             </div>
           </section>
         ) : tab === "costs" ? (
+          <div className="performance-cost-workspace">
+          <section className="performance-supplemental-cost-panel">
+            <div className="performance-supplemental-cost-heading">
+              <div><p className="eyebrow">Supplemental Cost Ledger</p><h3>缺失产品成本补录</h3><p>用于补齐产品库没有对应国家直营成本的 SKU。产品库成本始终优先；补录成本按订单日期匹配最近已生效版本，不会反向覆盖产品库。</p></div>
+              <div className="performance-supplemental-cost-metrics">
+                <span><strong>{formatNumber(supplementalCosts.filter((row) => row.enabled).length)}</strong>启用版本</span>
+                <span><strong>{formatNumber(new Set(supplementalCosts.map((row) => row.sku)).size)}</strong>补录 SKU</span>
+              </div>
+            </div>
+            <div className="performance-supplemental-cost-toolbar">
+              <label><Search size={15} /><input value={supplementalCostSearch} onChange={(event) => setSupplementalCostSearch(event.target.value)} placeholder="搜索 SKU、产品、国家或备注" /></label>
+              <div>
+                <button className="ghost-button" type="button" onClick={downloadSupplementalCostTemplate}><FileText size={15} />下载导入模板</button>
+                <button className="ghost-button" type="button" onClick={exportSupplementalCosts} disabled={!supplementalCosts.length}><Download size={15} />导出现有成本</button>
+                {permissions.manageCosts ? <>
+                  <input ref={supplementalCostFileRef} className="visually-hidden" type="file" accept=".csv,text/csv" onChange={importSupplementalCostFile} />
+                  <button className="sync-button" type="button" onClick={() => supplementalCostFileRef.current?.click()} disabled={busy}><Upload size={15} />{busy ? "处理中" : "导入 CSV"}</button>
+                </> : null}
+              </div>
+            </div>
+            <div className={`performance-supplemental-cost-message ${/失败|错误|缺少|为空|必须|重复|无法/.test(supplementalCostMessage) ? "danger" : ""}`}>
+              <ShieldCheck size={15} />
+              <span>{supplementalCostMessage || (permissions.manageCosts ? "导入采用整批校验：任意一行有误，整份文件都不会写入。相同 SKU、国家和生效日期会安全更新。" : "当前账号仅可查看；导入维护需要管理员及经营成本权限。")}</span>
+            </div>
+            <div className="performance-supplemental-cost-table-wrap">
+              <div className="performance-supplemental-cost-table">
+                <div className="performance-supplemental-cost-row head"><span>SKU / 产品</span><span>国家</span><span>人民币单位成本</span><span>生效日期</span><span>状态</span><span>更新记录</span></div>
+                {filteredSupplementalCosts.slice(0, 500).map((row) => (
+                  <article className={`performance-supplemental-cost-row ${row.enabled ? "" : "disabled"}`} key={`${row.sku}|${row.countryKey}|${row.effectiveDate}`}>
+                    <span><strong>{row.sku}</strong><small>{row.productName || "产品库未建档 / 未填写名称"}</small></span>
+                    <span><strong>{row.countryName || row.countryKey}</strong><small>{row.countryKey}</small></span>
+                    <strong>{formatCny(row.unitCostCny)}</strong>
+                    <span><strong>{row.effectiveDate}</strong><small>按订单日期取最近版本</small></span>
+                    <span><i className={`status-pill ${row.enabled ? "good" : "muted"}`}>{row.enabled ? "已启用" : "已停用"}</i><small>{row.note || "无备注"}</small></span>
+                    <span><strong>{row.updatedBy || "管理员"}</strong><small>{row.updatedAt ? formatDateTime(row.updatedAt) : "时间未记录"}</small></span>
+                  </article>
+                ))}
+                {!filteredSupplementalCosts.length ? <div className="performance-supplemental-cost-empty"><DatabaseZap size={25} /><strong>{supplementalCosts.length ? "没有符合搜索条件的成本" : "尚未补录产品成本"}</strong><span>{supplementalCosts.length ? "清空搜索后查看全部记录。" : "先下载模板，填写后导入；系统只会用于产品库成本缺失的订单行。"}</span></div> : null}
+              </div>
+            </div>
+            {filteredSupplementalCosts.length > 500 ? <small className="performance-supplemental-cost-limit">当前仅展示前 500 条，请通过搜索定位或导出完整台账。</small> : null}
+          </section>
           <section className="performance-cost-rule-panel">
             <div className="performance-cost-rule-heading">
               <div><p className="eyebrow">Packaging Cost</p><h3>国家打包费规则</h3><p>打包费先按整张订单总件数计算，再按各 SKU 件数比例分摊。所有金额均为人民币，并计入销售成本和预估毛利。</p></div>
@@ -7744,6 +7944,7 @@ function PerformanceAnalysisPage({
             </div>
             <div className="performance-rate-actions"><span>{packagingMessage || (permissions.manageCosts ? "修改后保存，将立即清除分析缓存并重算。" : "只有管理员且拥有经营成本权限的账号可以修改。")}</span>{permissions.manageCosts ? <button className="sync-button" type="button" onClick={savePackagingRules} disabled={busy || !packagingRuleDrafts.length}>{busy ? "保存中" : "保存规则并重算"}</button> : null}</div>
           </section>
+          </div>
         ) : (
           <div className="shop-directory-panel">
             <div className="shop-directory-summary">

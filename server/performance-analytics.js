@@ -163,6 +163,53 @@ function productForCountry(lookup, sku, country) {
   return candidates.find((candidate) => !candidate.countryKey) || null;
 }
 
+export function normalizeSupplementalProductCosts(rows = []) {
+  const normalized = [];
+  for (const source of Array.isArray(rows) ? rows : []) {
+    const sku = text(source?.sku).toUpperCase();
+    const countryKey = normalizedCountryKey(source?.countryKey || source?.countryName || source?.country);
+    const unitCostCny = Math.max(0, number(source?.unitCostCny));
+    const effectiveDate = dateKey(source?.effectiveDate);
+    if (!sku || !/^[A-Z]{2}$/.test(countryKey) || unitCostCny <= 0 || !effectiveDate) continue;
+    normalized.push({
+      ...source,
+      sku,
+      countryKey,
+      countryName: text(source?.countryName || source?.country, countryKey),
+      productName: text(source?.productName),
+      unitCostCny: round(unitCostCny, 6),
+      effectiveDate,
+      enabled: source?.enabled !== false,
+    });
+  }
+  return normalized.sort((left, right) => left.effectiveDate.localeCompare(right.effectiveDate));
+}
+
+function buildSupplementalCostLookup(rows = []) {
+  const lookup = new Map();
+  for (const row of normalizeSupplementalProductCosts(rows)) {
+    for (const skuKey of normalizedSkuKeys(row.sku)) {
+      const key = `${skuKey}|${row.countryKey}`;
+      const versions = lookup.get(key) || [];
+      versions.push(row);
+      lookup.set(key, versions);
+    }
+  }
+  for (const versions of lookup.values()) versions.sort((left, right) => left.effectiveDate.localeCompare(right.effectiveDate));
+  return lookup;
+}
+
+function supplementalCostFor(lookup, sku, country, orderDate) {
+  const countryKey = normalizedCountryKey(country);
+  if (!countryKey) return null;
+  const versions = normalizedSkuKeys(sku).flatMap((skuKey) => lookup.get(`${skuKey}|${countryKey}`) || []);
+  let matched = null;
+  for (const row of versions) {
+    if ((!orderDate || row.effectiveDate <= orderDate) && (!matched || row.effectiveDate > matched.effectiveDate)) matched = row;
+  }
+  return matched?.enabled ? matched : null;
+}
+
 function buildRateLookup(exchangeRates = []) {
   const lookup = new Map();
   for (const row of exchangeRates) {
@@ -318,8 +365,9 @@ function resultLimit(value, fallback) {
   return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
 }
 
-function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, filters = {}, limits = {}, onMaterializedFact = null } = {}) {
+function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, supplementalProductCosts = [], filters = {}, limits = {}, onMaterializedFact = null } = {}) {
   const productLookup = buildPerformanceProductLookup(products);
+  const supplementalCostLookup = buildSupplementalCostLookup(supplementalProductCosts);
   const rateLookup = buildRateLookup(exchangeRates);
   const normalizedPackagingFeeRules = normalizePackagingFeeRules(packagingFeeRules);
   const packagingRuleByCountry = new Map(normalizedPackagingFeeRules.filter((rule) => rule.enabled).map((rule) => [rule.countryKey, rule]));
@@ -396,11 +444,15 @@ function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exc
     const salesAmountValid = source.salesAmountValid === true;
     const revenueCovered = Boolean(salesAmountValid && currency && rate && salesAmount > 0);
     const salesCny = revenueCovered ? round(salesAmount * rate.rateToCny, 6) : 0;
-    const unitCostOriginal = Math.max(0, number(product?.directCostPrice));
-    const costCurrency = text(product?.directCostCurrency).toUpperCase();
-    const costRate = unitCostOriginal > 0 && costCurrency ? rateFor(rateLookup, costCurrency, orderDate) : null;
-    const unitCostCny = costRate ? round(unitCostOriginal * costRate.rateToCny, 6) : 0;
-    const costEffectiveAt = "";
+    const catalogUnitCostOriginal = Math.max(0, number(product?.directCostPrice));
+    const catalogCostCurrency = text(product?.directCostCurrency).toUpperCase();
+    const catalogCostRate = catalogUnitCostOriginal > 0 && catalogCostCurrency ? rateFor(rateLookup, catalogCostCurrency, orderDate) : null;
+    const supplementalCost = catalogUnitCostOriginal <= 0 ? supplementalCostFor(supplementalCostLookup, source.sku, source.country, orderDate) : null;
+    const unitCostOriginal = supplementalCost ? supplementalCost.unitCostCny : catalogUnitCostOriginal;
+    const costCurrency = supplementalCost ? "CNY" : catalogCostCurrency;
+    const costRate = supplementalCost ? { rateToCny: 1, effectiveDate: supplementalCost.effectiveDate } : catalogCostRate;
+    const unitCostCny = supplementalCost ? supplementalCost.unitCostCny : costRate ? round(unitCostOriginal * costRate.rateToCny, 6) : 0;
+    const costEffectiveAt = supplementalCost?.effectiveDate || "";
     const futureCostFallback = false;
     const productCostCovered = unitCostCny > 0 && quantity > 0;
     const productCostCny = productCostCovered ? round(quantity * unitCostCny, 6) : 0;
@@ -454,9 +506,9 @@ function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exc
       costCurrency,
       costRateToCny: costRate?.rateToCny || 0,
       costRateEffectiveDate: costRate?.effectiveDate || "",
-      costSource: productCostCovered ? "product_catalog_direct" : "",
-      costCountry: text(product?.country),
-      costBatchId: "",
+      costSource: productCostCovered ? supplementalCost ? "supplemental_manual" : "product_catalog_direct" : "",
+      costCountry: supplementalCost?.countryName || text(product?.country),
+      costBatchId: supplementalCost ? `${supplementalCost.sku}|${supplementalCost.countryKey}|${supplementalCost.effectiveDate}` : "",
       costEffectiveAt,
       costCovered,
       productCostCovered,
@@ -604,13 +656,14 @@ function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exc
   };
 }
 
-export function materializePerformanceFacts({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES } = {}) {
+export function materializePerformanceFacts({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, supplementalProductCosts = [] } = {}) {
   const rows = [];
   buildPerformanceAnalyticsPayloadLegacy({
     facts,
     products,
     exchangeRates,
     packagingFeeRules,
+    supplementalProductCosts,
     filters: {},
     onMaterializedFact: (row) => rows.push(row),
   });

@@ -23,6 +23,7 @@ async function run() {
     products: workerData.products || {},
     exchangeRates: workerData.exchangeRates || [],
     packagingFeeRules: workerData.packagingFeeRules || [],
+    supplementalProductCosts: workerData.supplementalProductCosts || [],
   });
   const materializedAt = new Date().toISOString();
   const durationMs = Date.now() - startedAt;

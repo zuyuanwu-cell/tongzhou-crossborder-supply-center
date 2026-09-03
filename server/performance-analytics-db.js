@@ -247,6 +247,23 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (currency, effective_date)
     );
+    CREATE TABLE IF NOT EXISTS performance_supplemental_costs (
+      sku TEXT NOT NULL,
+      country_key TEXT NOT NULL,
+      country_name TEXT NOT NULL,
+      product_name TEXT,
+      unit_cost_cny REAL NOT NULL,
+      effective_date TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      note TEXT,
+      source TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT,
+      PRIMARY KEY (sku, country_key, effective_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_performance_supplemental_cost_lookup
+      ON performance_supplemental_costs (sku, country_key, enabled, effective_date);
     CREATE TABLE IF NOT EXISTS miaoshou_performance_orders (
       identity TEXT PRIMARY KEY,
       op_order_id TEXT,
@@ -348,7 +365,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
   for (const [column, definition] of factMigrations) {
     if (!factColumns.has(column)) db.run(`ALTER TABLE performance_sales_facts ADD COLUMN ${column} ${definition}`);
   }
-  db.run("PRAGMA user_version = 3");
+  db.run("PRAGMA user_version = 4");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));
@@ -370,6 +387,8 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       miaoshouOrderCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_orders")?.count),
       miaoshouItemCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_items")?.count),
       miaoshouReturnCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_returns")?.count),
+      supplementalCostCount: number(first(db, "SELECT COUNT(*) AS count FROM performance_supplemental_costs")?.count),
+      enabledSupplementalCostCount: number(first(db, "SELECT COUNT(*) AS count FROM performance_supplemental_costs WHERE enabled = 1")?.count),
       dbPath,
     };
   }
@@ -629,6 +648,67 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       .filter(Boolean);
   }
 
+  function listSupplementalProductCosts() {
+    return all(db, `SELECT * FROM performance_supplemental_costs
+      ORDER BY sku ASC, country_key ASC, effective_date DESC`).map((row) => ({
+      sku: text(row.sku),
+      countryKey: text(row.country_key),
+      countryName: text(row.country_name),
+      productName: text(row.product_name),
+      unitCostCny: number(row.unit_cost_cny),
+      effectiveDate: text(row.effective_date),
+      enabled: number(row.enabled) === 1,
+      note: text(row.note),
+      source: text(row.source),
+      createdAt: text(row.created_at),
+      updatedAt: text(row.updated_at),
+      updatedBy: text(row.updated_by),
+    }));
+  }
+
+  function upsertSupplementalProductCosts(rows = [], actor = "管理员") {
+    const now = new Date().toISOString();
+    db.run("BEGIN");
+    try {
+      for (const row of rows) {
+        db.run(
+          `INSERT INTO performance_supplemental_costs
+            (sku, country_key, country_name, product_name, unit_cost_cny, effective_date, enabled, note, source, created_at, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(sku, country_key, effective_date) DO UPDATE SET
+             country_name = excluded.country_name,
+             product_name = excluded.product_name,
+             unit_cost_cny = excluded.unit_cost_cny,
+             enabled = excluded.enabled,
+             note = excluded.note,
+             source = excluded.source,
+             updated_at = excluded.updated_at,
+             updated_by = excluded.updated_by`,
+          [
+            text(row.sku).toUpperCase(),
+            text(row.countryKey).toUpperCase(),
+            text(row.countryName || row.countryKey),
+            text(row.productName),
+            number(row.unitCostCny),
+            dateKey(row.effectiveDate),
+            row.enabled === false ? 0 : 1,
+            text(row.note),
+            text(row.source || "csv_manual"),
+            now,
+            now,
+            text(actor),
+          ],
+        );
+      }
+      db.run("COMMIT");
+      persist();
+      return listSupplementalProductCosts();
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
   function getExchangeRateSyncState() {
     try {
       return JSON.parse(getMeta("exchangeRateSyncState") || "{}");
@@ -679,6 +759,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     listExchangeRates,
     listSalesCurrencies,
     listSalesFacts,
+    listSupplementalProductCosts,
     listMiaoshouPerformance,
     persist,
     replaceSalesFacts,
@@ -686,6 +767,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     setMiaoshouPerformanceSyncState,
     setPerformanceSettings,
     upsertExchangeRates,
+    upsertSupplementalProductCosts,
     upsertMiaoshouPerformance,
   };
 }
