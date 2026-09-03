@@ -10,6 +10,7 @@ import {
   materializePerformanceFacts,
 } from "../server/performance-analytics.js";
 import { initPerformanceAnalyticsStore, legacyCorrectedOrders } from "../server/performance-analytics-db.js";
+import { createPerformanceAnalyticsQueryService } from "../server/performance-query-service.js";
 
 const allocations = allocateOrderSalesAmount([
   { quantity: 1 },
@@ -112,12 +113,62 @@ assert.equal(payload.totals.salesCny, 175.5);
 assert.equal(payload.totals.productCostCny, 28.4);
 assert.equal(payload.totals.packagingFeeCny, 9.8);
 assert.equal(payload.totals.cogsCny, 38.2);
+assert.equal(payload.totals.profitSalesCny, 4.5);
+assert.equal(payload.totals.profitCogsCny, 30.3);
+assert.equal(payload.totals.profitProductCostCny, 28.4);
+assert.equal(payload.totals.profitPackagingFeeCny, 1.9);
 assert.equal(payload.totals.estimatedProfitCny, -25.8);
+assert.equal(payload.totals.profitSalesCny - payload.totals.profitCogsCny, payload.totals.estimatedProfitCny);
 assert.equal(payload.quality.unmatchedProductLines, 1);
 assert.equal(payload.quality.missingCostLines, 2);
 assert.equal(payload.products.find((row) => row.sku === "A")?.brand, "品牌甲");
 assert.equal(payload.products.find((row) => row.sku === "A")?.unitCostCny, 14.2);
 assert.equal(payload.recentFacts.find((row) => row.sku === "A")?.costCovered, true);
+
+const queryService = createPerformanceAnalyticsQueryService();
+try {
+  const workerResult = await queryService.query({
+    dataVersion: "test-v1",
+    materializedFacts: materializePerformanceFacts({
+      facts,
+      products,
+      exchangeRates: [
+        { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+        { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+        { currency: "USD", effectiveDate: "2026-01-01", rateToCny: 7.1 },
+      ],
+    }),
+    exchangeRates: [
+      { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+      { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+      { currency: "USD", effectiveDate: "2026-01-01", rateToCny: 7.1 },
+    ],
+    packagingFeeRules: DEFAULT_PACKAGING_FEE_RULES,
+    filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01", country: "印尼" },
+    scopes: { warehouseIds: ["id"], countries: [], skus: [] },
+    limits: { products: 1, recentFacts: 1 },
+  });
+  assert.equal(workerResult.payload.totals.orderLines, 2);
+  assert.equal(workerResult.payload.resultCounts.products, 2);
+  assert.equal(workerResult.payload.products.length, 1);
+  assert.equal(workerResult.payload.recentFacts.length, 1);
+  assert.deepEqual(workerResult.visibleShopKeys, []);
+  assert.equal(workerResult.scannedFactCount, 2);
+
+  const unrestrictedWorkerResult = await queryService.query({
+    dataVersion: "test-v1",
+    materializedFacts: [],
+    exchangeRates: [],
+    packagingFeeRules: [],
+    filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+    scopes: { warehouseIds: [], countries: [], skus: [] },
+    limits: { products: 1, recentFacts: 1 },
+  });
+  assert.equal(unrestrictedWorkerResult.visibleShopKeys, null);
+  assert.equal(unrestrictedWorkerResult.scannedFactCount, 3);
+} finally {
+  await queryService.close();
+}
 
 const russianCostPayload = buildPerformanceAnalyticsPayload({
   facts: [{ ...facts[0], id: "ru-cost", country: "俄罗斯", salesAmount: 100, currency: "CNY", quantity: 1 }],
@@ -143,6 +194,8 @@ assert.equal(missingRevenueCostPayload.totals.salesCny, 0);
 assert.equal(missingRevenueCostPayload.totals.productCostCny, 28.4);
 assert.equal(missingRevenueCostPayload.totals.packagingFeeCny, 1.9);
 assert.equal(missingRevenueCostPayload.totals.cogsCny, 30.3);
+assert.equal(missingRevenueCostPayload.totals.profitSalesCny, 0);
+assert.equal(missingRevenueCostPayload.totals.profitCogsCny, 0);
 assert.equal(missingRevenueCostPayload.totals.estimatedProfitCny, 0);
 assert.equal(missingRevenueCostPayload.quality.invalidSalesAmountLines, 1);
 

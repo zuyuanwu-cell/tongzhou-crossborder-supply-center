@@ -140,6 +140,9 @@ const approvedPayload = buildPerformanceAnalyticsPayload({
 assert.equal(approvedPayload.totals.commissionFeeCny, 5);
 assert.equal(approvedPayload.totals.logisticsFeeCny, 3);
 assert.equal(approvedPayload.totals.contributionProfitCny, 74.9);
+assert.equal(approvedPayload.totals.contributionSalesCny, 90);
+assert.equal(approvedPayload.totals.contributionOperatingCostCny, 15.1);
+assert.equal(approvedPayload.totals.contributionSalesCny - approvedPayload.totals.contributionOperatingCostCny, approvedPayload.totals.contributionProfitCny);
 assert.equal(approvedPayload.quality.contributionCoverageRate, 1);
 
 const active = reconcileMiaoshouPerformance({
@@ -189,22 +192,26 @@ try {
   assert.equal(reopened.getMiaoshouPerformanceSyncState().status, "success");
 
   const calls = { packages: 0, returns: 0, cancellations: 0 };
+  const inputs = { packages: [], returns: [], cancellations: [] };
   const connector = {
     performanceContext: () => ({
       hasCredentials: true,
       shopsSyncedAt: "2026-08-01T00:00:00.000Z",
       shops: [{ shopId: "200", platform: "tiktok", site: "ID" }],
     }),
-    searchPerformancePackages: async () => {
+    searchPerformancePackages: async (input) => {
       calls.packages += 1;
+      inputs.packages.push(input);
       return packagePayload;
     },
-    searchPerformanceReturns: async () => {
+    searchPerformanceReturns: async (input) => {
       calls.returns += 1;
+      inputs.returns.push(input);
       return { data: { orderReturnList: [] } };
     },
-    searchPerformanceCancellations: async () => {
+    searchPerformanceCancellations: async (input) => {
       calls.cancellations += 1;
+      inputs.cancellations.push(input);
       return { data: { orderCancelList: [] } };
     },
   };
@@ -217,6 +224,8 @@ try {
   assert.equal(syncResult.status, "success");
   assert.equal(syncResult.orderCount, 1);
   assert.deepEqual(calls, { packages: 1, returns: 1, cancellations: 1 });
+  assert.equal(inputs.packages.at(-1).gmtModifiedTo, "2026-08-01 23:59:59");
+  assert.equal(inputs.returns.at(-1).gmtStartTo, "2026-08-01 23:59:59");
 
   calls.packages = 0;
   calls.returns = 0;
@@ -226,6 +235,8 @@ try {
   assert.equal(fullSweep.afterSalesDateFrom, "2026-05-08");
   assert.equal(fullSweep.lastAfterSalesFullSweepAt, "2026-08-05T00:00:00.000Z");
   assert.deepEqual(calls, { packages: 1, returns: 13, cancellations: 13 });
+  assert.equal(inputs.packages.at(-1).gmtModifiedTo, "2026-08-05 08:00:00");
+  assert.equal(inputs.returns.at(-1).gmtStartTo, "2026-08-05 08:00:00");
 
   calls.packages = 0;
   calls.returns = 0;
@@ -233,6 +244,10 @@ try {
   const incrementalSweep = await syncService.run({ reason: "scheduled", force: true });
   assert.equal(incrementalSweep.afterSalesDateFrom, "2026-08-03");
   assert.deepEqual(calls, { packages: 1, returns: 1, cancellations: 1 });
+
+  const futureDateResult = await syncService.run({ dateFrom: "2026-08-05", dateTo: "2026-08-07", force: true });
+  assert.equal(futureDateResult.dateTo, "2026-08-05", "future end dates must be clamped to the current business date");
+  assert.equal(inputs.packages.at(-1).gmtModifiedTo, "2026-08-05 08:00:00");
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

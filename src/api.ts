@@ -1332,6 +1332,9 @@ export type PerformanceContributionRow = {
   amountsByCurrency?: PerformanceAmount[];
   salesCny?: number;
   profitSalesCny?: number;
+  profitProductCostCny?: number;
+  profitPackagingFeeCny?: number;
+  profitCogsCny?: number;
   productCostCny?: number;
   packagingFeeCny?: number;
   cogsCny?: number;
@@ -1339,6 +1342,8 @@ export type PerformanceContributionRow = {
   logisticsFeeCny?: number;
   operatingCostCny?: number;
   estimatedProfitCny?: number;
+  contributionSalesCny?: number;
+  contributionOperatingCostCny?: number;
   contributionProfitCny?: number;
   grossMargin?: number;
   contributionMargin?: number;
@@ -1415,6 +1420,8 @@ export type PerformanceAnalyticsPayload = {
   materializationStale?: boolean;
   materializationRefreshStartedAt?: string;
   queryDurationMs?: number;
+  workerQueryDurationMs?: number;
+  scannedFactCount?: number;
   basis: "wms_outbound" | string;
   permissions: {
     revenue: boolean;
@@ -1564,6 +1571,10 @@ export type PerformanceAnalyticsPayload = {
     missingCurrencies: string[];
     nextSyncAt: string;
   } | null;
+  resultCounts?: {
+    products: number;
+    brands: number;
+  };
   topProduct: PerformanceContributionRow | null;
   topBrand: PerformanceContributionRow | null;
   products: PerformanceContributionRow[];

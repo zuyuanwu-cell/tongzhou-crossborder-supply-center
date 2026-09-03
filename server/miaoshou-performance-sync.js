@@ -55,10 +55,36 @@ function dedupe(rows, key = "identity") {
   return [...map.values()];
 }
 
-function rangeInput(range) {
+function zonedDateTimeParts(value, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(value);
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+}
+
+function zonedDateTime(value, timeZone) {
+  const parts = zonedDateTimeParts(value, timeZone);
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    dateTime: `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`,
+  };
+}
+
+function rangeEndDateTime(date, currentClock) {
+  return date === currentClock.date ? currentClock.dateTime : `${date} 23:59:59`;
+}
+
+function rangeInput(range, currentClock) {
   return {
     gmtStartFrom: `${range.dateFrom} 00:00:00`,
-    gmtStartTo: `${range.dateTo} 23:59:59`,
+    gmtStartTo: rangeEndDateTime(range.dateTo, currentClock),
   };
 }
 
@@ -69,6 +95,7 @@ export function createMiaoshouPerformanceSyncService({
   incrementalLookbackDays = 3,
   initialBackfillDays = 90,
   chunkDays = 7,
+  timeZone = "Asia/Shanghai",
   now = () => new Date(),
 } = {}) {
   if (!connector || !store) throw new Error("妙手经营同步缺少 connector 或 store");
@@ -125,13 +152,16 @@ export function createMiaoshouPerformanceSyncService({
       if (Number.isFinite(elapsed) && elapsed < intervalMs) return { ...current, skipped: true, message: "尚未到妙手经营数据同步时间" };
     }
 
-    const today = now().toISOString().slice(0, 10);
+    const runNow = now();
+    const currentClock = zonedDateTime(runNow, timeZone);
+    const today = currentClock.date;
     const fallbackDays = (current.lastSuccessAt || current.lastCompletedAt) ? incrementalLookbackDays : initialBackfillDays;
     const requestedDays = Number(days) > 0 ? clamp(days, 1, 365, fallbackDays) : fallbackDays;
-    const safeDateTo = dateKey(dateTo) || today;
+    const requestedDateTo = dateKey(dateTo) || today;
+    const safeDateTo = requestedDateTo > today ? today : requestedDateTo;
     const safeDateFrom = dateKey(dateFrom) || addDays(safeDateTo, -(requestedDays - 1));
     if (safeDateFrom > safeDateTo) throw new Error("妙手经营数据同步开始日期不能晚于结束日期");
-    const startedAt = now().toISOString();
+    const startedAt = runNow.toISOString();
     running = true;
     store.setMiaoshouPerformanceSyncState({
       ...current,
@@ -168,7 +198,7 @@ export function createMiaoshouPerformanceSyncService({
               platform,
               shopIds: shopBatch,
               gmtModifiedFrom: `${range.dateFrom} 00:00:00`,
-              gmtModifiedTo: `${range.dateTo} 23:59:59`,
+              gmtModifiedTo: rangeEndDateTime(range.dateTo, currentClock),
             });
             orders.push(...result.orders);
             items.push(...result.items);
@@ -193,13 +223,13 @@ export function createMiaoshouPerformanceSyncService({
       for (const range of afterSalesWindows) {
         for (const [platform] of shopGroups) {
           try {
-            returns.push(...await fetchAfterSalesPages("return", { platform, ...rangeInput(range) }));
+            returns.push(...await fetchAfterSalesPages("return", { platform, ...rangeInput(range, currentClock) }));
           } catch (error) {
             afterSalesWarningCount += 1;
             warnings.push(`${platform} 退款同步失败：${error?.message || error}`);
           }
           try {
-            cancellations.push(...await fetchAfterSalesPages("cancellation", { platform, ...rangeInput(range) }));
+            cancellations.push(...await fetchAfterSalesPages("cancellation", { platform, ...rangeInput(range, currentClock) }));
           } catch (error) {
             afterSalesWarningCount += 1;
             warnings.push(`${platform} 取消单同步失败：${error?.message || error}`);

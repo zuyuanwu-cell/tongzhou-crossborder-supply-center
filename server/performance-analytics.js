@@ -196,6 +196,9 @@ function aggregateTemplate(key, extra = {}) {
     quantity: 0,
     salesCny: 0,
     profitSalesCny: 0,
+    profitProductCostCny: 0,
+    profitPackagingFeeCny: 0,
+    profitCogsCny: 0,
     productCostCny: 0,
     packagingFeeCny: 0,
     cogsCny: 0,
@@ -203,6 +206,8 @@ function aggregateTemplate(key, extra = {}) {
     logisticsFeeCny: 0,
     operatingCostCny: 0,
     estimatedProfitCny: 0,
+    contributionSalesCny: 0,
+    contributionOperatingCostCny: 0,
     contributionProfitCny: 0,
     revenueCoveredLines: 0,
     costCoveredLines: 0,
@@ -246,10 +251,15 @@ function addFact(target, fact) {
   }
   if (fact.profitCovered) {
     target.profitSalesCny += fact.salesCny;
+    target.profitProductCostCny += fact.productCostCny;
+    target.profitPackagingFeeCny += fact.packagingFeeCny;
+    target.profitCogsCny += fact.cogsCny;
     target.estimatedProfitCny += fact.estimatedProfitCny;
     target.profitCoveredLines += 1;
   }
   if (fact.contributionCovered) {
+    target.contributionSalesCny += fact.salesCny;
+    target.contributionOperatingCostCny += fact.operatingCostCny;
     target.contributionProfitCny += fact.contributionProfitCny;
     target.contributionCoveredLines += 1;
   }
@@ -274,6 +284,9 @@ function publicAggregate(row, totalSalesCny) {
       .sort((a, b) => a.currency.localeCompare(b.currency)),
     salesCny: round(row.salesCny),
     profitSalesCny: round(row.profitSalesCny),
+    profitProductCostCny: round(row.profitProductCostCny),
+    profitPackagingFeeCny: round(row.profitPackagingFeeCny),
+    profitCogsCny: round(row.profitCogsCny),
     productCostCny: round(row.productCostCny),
     packagingFeeCny: round(row.packagingFeeCny),
     cogsCny: round(row.cogsCny),
@@ -281,9 +294,11 @@ function publicAggregate(row, totalSalesCny) {
     logisticsFeeCny: round(row.logisticsFeeCny),
     operatingCostCny: round(row.operatingCostCny),
     estimatedProfitCny,
+    contributionSalesCny: round(row.contributionSalesCny),
+    contributionOperatingCostCny: round(row.contributionOperatingCostCny),
     contributionProfitCny,
     grossMargin: ratio(estimatedProfitCny, row.profitSalesCny),
-    contributionMargin: ratio(contributionProfitCny, row.profitSalesCny),
+    contributionMargin: ratio(contributionProfitCny, row.contributionSalesCny),
     contributionRate: ratio(row.salesCny, totalSalesCny),
     revenueCoverageRate: ratio(row.revenueCoveredLines, orderLines),
     profitCoverageRate: ratio(row.profitCoveredLines, orderLines),
@@ -298,7 +313,12 @@ function publicAggregate(row, totalSalesCny) {
   };
 }
 
-function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, filters = {}, onMaterializedFact = null } = {}) {
+function resultLimit(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
+}
+
+function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, filters = {}, limits = {}, onMaterializedFact = null } = {}) {
   const productLookup = buildPerformanceProductLookup(products);
   const rateLookup = buildRateLookup(exchangeRates);
   const normalizedPackagingFeeRules = normalizePackagingFeeRules(packagingFeeRules);
@@ -492,7 +512,7 @@ function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exc
     const dailyRow = dailyMap.get(row.orderDate) || aggregateTemplate(row.orderDate, { date: row.orderDate });
     addFact(dailyRow, row);
     dailyMap.set(row.orderDate, dailyRow);
-    if (recentFacts.length < 100) recentFacts.push({
+    if (recentFacts.length < resultLimit(limits.recentFacts, 100)) recentFacts.push({
       id: row.id,
       orderDate: row.orderDate,
       orderNo: row.orderNo,
@@ -566,9 +586,10 @@ function buildPerformanceAnalyticsPayloadLegacy({ facts = [], products = {}, exc
     },
     packagingFeeRules: normalizedPackagingFeeRules,
     currencySummary,
+    resultCounts: { products: productsResult.length, brands: brandsResult.length },
     topProduct: productsResult[0] || null,
     topBrand: brandsResult[0] || null,
-    products: productsResult,
+    products: productsResult.slice(0, resultLimit(limits.products, productsResult.length)),
     brands: brandsResult,
     daily,
     recentFacts,
@@ -629,7 +650,7 @@ function materializedRecentFact(row) {
   };
 }
 
-function buildPerformanceAnalyticsPayloadFromMaterialized({ materializedFacts = [], exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, filters = {} } = {}) {
+function buildPerformanceAnalyticsPayloadFromMaterialized({ materializedFacts = [], exchangeRates = [], packagingFeeRules = DEFAULT_PACKAGING_FEE_RULES, filters = {}, limits = {} } = {}) {
   const rateLookup = buildRateLookup(exchangeRates);
   const normalizedPackagingFeeRules = normalizePackagingFeeRules(packagingFeeRules);
   const brandFilter = text(filters.brand);
@@ -723,7 +744,7 @@ function buildPerformanceAnalyticsPayloadFromMaterialized({ materializedFacts = 
     const dailyRow = dailyMap.get(row.orderDate) || aggregateTemplate(row.orderDate, { date: row.orderDate });
     addFact(dailyRow, row);
     dailyMap.set(row.orderDate, dailyRow);
-    if (recentFacts.length < 100) recentFacts.push(materializedRecentFact(row));
+    if (recentFacts.length < resultLimit(limits.recentFacts, 100)) recentFacts.push(materializedRecentFact(row));
   }
 
   const totalPublic = publicAggregate(total, total.salesCny);
@@ -766,9 +787,10 @@ function buildPerformanceAnalyticsPayloadFromMaterialized({ materializedFacts = 
     },
     packagingFeeRules: normalizedPackagingFeeRules,
     currencySummary,
+    resultCounts: { products: productsResult.length, brands: brandsResult.length },
     topProduct: productsResult[0] || null,
     topBrand: brandsResult[0] || null,
-    products: productsResult,
+    products: productsResult.slice(0, resultLimit(limits.products, productsResult.length)),
     brands: brandsResult,
     daily,
     recentFacts,

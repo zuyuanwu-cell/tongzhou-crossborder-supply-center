@@ -7052,10 +7052,15 @@ function formatPercentValue(value?: number) {
 }
 
 function performanceDefaultRange() {
+  const localDateKey = (value: Date) => [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, "0"),
+    String(value.getDate()).padStart(2, "0"),
+  ].join("-");
   const to = new Date();
   const from = new Date(to);
   from.setDate(from.getDate() - 89);
-  return { dateFrom: from.toISOString().slice(0, 10), dateTo: to.toISOString().slice(0, 10) };
+  return { dateFrom: localDateKey(from), dateTo: localDateKey(to) };
 }
 
 function PerformanceAnalysisPage({
@@ -7377,14 +7382,14 @@ function PerformanceAnalysisPage({
           <small>{formatNumber(totals?.quantity || 0)} 件 · {formatNumber(totals?.skuCount || 0)} SKU</small>
         </article>
         <article className="performance-kpi">
-          <span>{costComplete ? "销售成本" : "覆盖范围销售成本"}</span>
+          <span>{costComplete ? "销售成本" : "已识别成本（非同口径）"}</span>
           <strong>{permissions.cost ? (costReady ? formatCny(totals?.cogsCny) : "待匹配成本") : "未授权"}</strong>
-          <small>{permissions.cost ? (costReady ? `产品 ${formatCny(totals?.productCostCny)} · 打包 ${formatCny(totals?.packagingFeeCny)}` : `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}`) : "成本字段已由后端隔离"}</small>
+          <small>{permissions.cost ? (costReady ? (profitReady ? `毛利同口径成本 ${formatCny(totals?.profitCogsCny)} · 已识别成本覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}` : `产品 ${formatCny(totals?.productCostCny)} · 打包 ${formatCny(totals?.packagingFeeCny)}`) : `数量覆盖 ${formatPercentValue(payload?.quality.costCoverageRate)}`) : "成本字段已由后端隔离"}</small>
         </article>
         <article className="performance-kpi profit">
           <span>{contributionActive ? "贡献利润" : profitComplete ? "预估毛利" : "覆盖范围预估毛利"}</span>
           <strong>{permissions.profit ? (profitReady ? formatCny(contributionActive ? totals?.contributionProfitCny : totals?.estimatedProfitCny) : "待收入与成本") : "未授权"}</strong>
-          <small>{permissions.profit ? (contributionActive ? `已扣产品、打包、佣金与物流 · 覆盖 ${formatPercentValue(payload?.quality.contributionCoverageRate)}` : `毛利率 ${formatPercentValue(totals?.grossMargin)} · 覆盖 ${formatPercentValue(payload?.quality.profitCoverageRate)}`) : "需要成本与利润权限"}</small>
+          <small>{permissions.profit ? (contributionActive ? `同口径收入 ${formatCny(totals?.contributionSalesCny)} · 成本 ${formatCny(totals?.contributionOperatingCostCny)} · 覆盖 ${formatPercentValue(payload?.quality.contributionCoverageRate)}` : `同口径收入 ${formatCny(totals?.profitSalesCny)} · 成本 ${formatCny(totals?.profitCogsCny)} · 毛利率 ${formatPercentValue(totals?.grossMargin)} · 覆盖 ${formatPercentValue(payload?.quality.profitCoverageRate)}`) : "需要成本与利润权限"}</small>
         </article>
       </section>
 
@@ -7439,8 +7444,8 @@ function PerformanceAnalysisPage({
 
       <section className="performance-workspace">
         <div className="performance-tabs">
-          <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.products.length || 0)}</span></button>
-          <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.brands.length || 0)}</span></button>
+          <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.resultCounts?.products ?? payload?.products.length ?? 0)}</span></button>
+          <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.resultCounts?.brands ?? payload?.brands.length ?? 0)}</span></button>
           <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber(qualityIssueTypeCount)} 项</span></button>
           {permissions.revenue ? <button className={tab === "sources" ? "active" : ""} type="button" onClick={() => setTab("sources")}><DatabaseZap size={15} />交易对账 <span>{formatPercentValue(transactionSource?.reconciliation.orderMatchRate)}</span></button> : null}
           {permissions.cost ? <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}><Settings size={15} />成本规则 <span>{formatNumber(payload?.packagingFeeRules.length || 0)}</span></button> : null}
@@ -7450,7 +7455,7 @@ function PerformanceAnalysisPage({
         {tab === "products" ? (
           <div className="performance-table-wrap">
             <div className="performance-contribution-row head">
-              <span>产品 / 品牌</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "经营成本" : "销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}<span>覆盖</span>
+              <span>产品 / 品牌</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "同口径经营成本" : "同口径销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}<span>覆盖</span>
             </div>
             {(payload?.products || []).slice(0, 100).map((row, index) => (
               <article className="performance-contribution-row" key={row.key}>
@@ -7458,7 +7463,7 @@ function PerformanceAnalysisPage({
                 <strong>{formatNumber(row.quantity)}</strong>
                 {permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : performanceRowRevenuePendingLabel(row)}<small>{(row.amountsByCurrency || []).map((item) => formatOriginalAmount(item.amount, item.currency)).join(" · ")}</small></strong> : null}
                 <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : performanceRowRevenuePendingLabel(row)}</span>
-                {permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(contributionActive ? row.operatingCostCny : row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? (contributionActive ? `产品+打包 ${formatCny(row.cogsCny)} · 佣金 ${formatCny(row.commissionFeeCny)} · 物流 ${formatCny(row.logisticsFeeCny)}` : `产品 ${formatCny(row.productCostCny)} · 打包 ${formatCny(row.packagingFeeCny)}`) : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
+                {permissions.cost ? <span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(contributionActive ? row.contributionOperatingCostCny : row.profitCogsCny) : "待同口径"}<small>{Number(row.costCoverageRate || 0) > 0 ? `已识别 ${formatCny(contributionActive ? row.operatingCostCny : row.cogsCny)} · 覆盖 ${formatPercentValue(row.costCoverageRate)}` : `成本覆盖 ${formatPercentValue(row.costCoverageRate)}`}</small></span> : null}
                 {permissions.profit ? <><strong className={(performanceRowProfitValue(row) || 0) < 0 ? "negative" : "positive"}>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(performanceRowProfitValue(row)) : "待计算"}</strong><span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatPercentValue(performanceRowProfitMargin(row)) : "—"}</span></> : null}
                 <span>{performanceRowRevenueReady(row) ? formatPercentValue(performanceRowProfitCoverage(row) ?? row.revenueCoverageRate) : performanceRowRevenuePendingLabel(row)}</span>
               </article>
@@ -7466,11 +7471,11 @@ function PerformanceAnalysisPage({
           </div>
         ) : tab === "brands" ? (
           <div className="performance-table-wrap">
-            <div className="performance-contribution-row brand-row-table head"><span>品牌</span><span>SKU</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "经营成本" : "销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}</div>
+            <div className="performance-contribution-row brand-row-table head"><span>品牌</span><span>SKU</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "同口径经营成本" : "同口径销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}</div>
             {(payload?.brands || []).map((row, index) => (
               <article className="performance-contribution-row brand-row-table" key={row.key}>
                 <span className="performance-brand-cell"><b>{String(index + 1).padStart(2, "0")}</b><span><strong>{row.brand}</strong><small>{formatNumber(row.orderCount)} 单 · {formatNumber(row.warehouseCount)} 仓</small></span></span>
-                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : performanceRowRevenuePendingLabel(row)}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : performanceRowRevenuePendingLabel(row)}</span>{permissions.cost ? <span>{Number(row.costCoverageRate || 0) > 0 ? formatCny(contributionActive ? row.operatingCostCny : row.cogsCny) : "待成本"}<small>{Number(row.costCoverageRate || 0) > 0 ? (contributionActive ? `佣金 ${formatCny(row.commissionFeeCny)} · 物流 ${formatCny(row.logisticsFeeCny)}` : `含打包费 ${formatCny(row.packagingFeeCny)}`) : ""}</small></span> : null}{permissions.profit ? <><strong className={(performanceRowProfitValue(row) || 0) < 0 ? "negative" : "positive"}>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(performanceRowProfitValue(row)) : "待计算"}</strong><span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatPercentValue(performanceRowProfitMargin(row)) : "—"}</span></> : null}
+                <strong>{formatNumber(row.skuCount)}</strong><strong>{formatNumber(row.quantity)}</strong>{permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : performanceRowRevenuePendingLabel(row)}</strong> : null}<span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : performanceRowRevenuePendingLabel(row)}</span>{permissions.cost ? <span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(contributionActive ? row.contributionOperatingCostCny : row.profitCogsCny) : "待同口径"}<small>{Number(row.costCoverageRate || 0) > 0 ? `已识别 ${formatCny(contributionActive ? row.operatingCostCny : row.cogsCny)} · 覆盖 ${formatPercentValue(row.costCoverageRate)}` : ""}</small></span> : null}{permissions.profit ? <><strong className={(performanceRowProfitValue(row) || 0) < 0 ? "negative" : "positive"}>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatCny(performanceRowProfitValue(row)) : "待计算"}</strong><span>{Number(performanceRowProfitCoverage(row) || 0) > 0 ? formatPercentValue(performanceRowProfitMargin(row)) : "—"}</span></> : null}
               </article>
             ))}
           </div>

@@ -188,6 +188,18 @@ async function main() {
   if (!performance.dataVersion || performance.sourceQuality?.status !== "official" || !Number.isFinite(performance.queryDurationMs)) {
     throw new Error(`/api/performance-analytics did not expose a versioned official snapshot: ${JSON.stringify(performance).slice(0, 800)}`);
   }
+  if (!Number.isFinite(performance.workerQueryDurationMs) || performance.scannedFactCount !== 1) {
+    throw new Error(`/api/performance-analytics did not expose the bounded worker query diagnostics: ${JSON.stringify(performance).slice(0, 800)}`);
+  }
+  if (!performance.resultCounts || performance.products.length > 100 || performance.recentFacts.length > 50) {
+    throw new Error(`/api/performance-analytics did not return a bounded result payload: ${JSON.stringify(performance).slice(0, 800)}`);
+  }
+  if (performance.totals?.profitCoverageRate > 0) {
+    const reconciledProfit = Number(performance.totals.profitSalesCny || 0) - Number(performance.totals.profitCogsCny || 0);
+    if (Math.abs(reconciledProfit - Number(performance.totals.estimatedProfitCny || 0)) > 0.01) {
+      throw new Error(`/api/performance-analytics mixed revenue and cost cohorts: ${JSON.stringify(performance.totals).slice(0, 800)}`);
+    }
+  }
   if (performance.transactionSource?.requested !== "shadow" || performance.transactionSource?.effective !== "wms" || performance.transactionSource?.activationEligible) {
     throw new Error(`/api/performance-analytics did not default to the safe Miaoshou shadow mode: ${JSON.stringify(performance.transactionSource).slice(0, 800)}`);
   }

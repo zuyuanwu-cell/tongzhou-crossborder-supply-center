@@ -30,6 +30,7 @@ import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
+import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 
@@ -71,6 +72,7 @@ const performanceMiaoshouAutoSyncEnabled = process.env.MIAOSHOU_PERFORMANCE_AUTO
 const performanceMiaoshouSyncIntervalMs = Math.max(5 * 60 * 1000, Number(process.env.MIAOSHOU_PERFORMANCE_SYNC_INTERVAL_MS || 15 * 60 * 1000));
 const performanceMiaoshouBackfillDays = Math.max(7, Math.min(365, Number(process.env.MIAOSHOU_PERFORMANCE_BACKFILL_DAYS || 90)));
 const performanceMiaoshouLookbackDays = Math.max(1, Math.min(14, Number(process.env.MIAOSHOU_PERFORMANCE_LOOKBACK_DAYS || 3)));
+const performanceMiaoshouTimezone = String(process.env.MIAOSHOU_PERFORMANCE_TIMEZONE || "Asia/Shanghai").trim() || "Asia/Shanghai";
 const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const orderSyncJobsCachePath = resolve(cacheDir, "order-sync-jobs.json");
 const orderAnalysisSettingsPath = resolve(cacheDir, "order-analysis-settings.json");
@@ -143,6 +145,7 @@ const performanceMiaoshouSync = createMiaoshouPerformanceSyncService({
   intervalMs: performanceMiaoshouSyncIntervalMs,
   incrementalLookbackDays: performanceMiaoshouLookbackDays,
   initialBackfillDays: performanceMiaoshouBackfillDays,
+  timeZone: performanceMiaoshouTimezone,
 });
 const defaultInternalAccessCode = "admin123";
 const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
@@ -174,6 +177,7 @@ const performanceAnalyticsResponseCacheLimit = 24;
 let performanceAnalyticsMaterializedCache = loadPerformanceMaterializationCache(performanceMaterializationCachePath);
 let performanceAnalyticsMaterializationJob = null;
 let performanceAnalyticsRefreshQueued = false;
+const performanceAnalyticsQueryService = createPerformanceAnalyticsQueryService();
 
 function clearPerformanceAnalyticsResponseCache() {
   performanceAnalyticsResponseCache.clear();
@@ -3111,9 +3115,11 @@ function publicShopDirectory(directory, auth = directAuth) {
 }
 
 function performanceDateRange(params = {}) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateKeyInTimezone(new Date(), performanceMiaoshouTimezone);
+  const defaultFrom = new Date(`${today}T00:00:00.000Z`);
+  defaultFrom.setUTCDate(defaultFrom.getUTCDate() - 89);
   return {
-    dateFrom: String(params.dateFrom || dateOnlyDaysAgo(89)).slice(0, 10),
+    dateFrom: String(params.dateFrom || defaultFrom.toISOString().slice(0, 10)).slice(0, 10),
     dateTo: String(params.dateTo || today).slice(0, 10),
   };
 }
@@ -3274,10 +3280,10 @@ function omitPerformanceFields(row, { revenue, cost, profit }) {
     for (const field of ["amountsByCurrency", "salesCny", "contributionRate", "revenueCoverageRate", "rateToCny", "rateEffectiveDate", "salesAmount", "currency"]) delete projected[field];
   }
   if (!cost) {
-    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "productCostCny", "packagingFeeOrderCny", "packagingFeeCny", "packagingRuleConfigured", "packagingRuleApplied", "cogsCny", "commissionFeeCny", "logisticsFeeCny", "operatingCostCny", "costCoverageRate", "productCostCoverageRate", "packagingCoverageRate", "costCovered", "productCostCovered", "packagingCostCovered", "transactionCostCovered"]) delete projected[field];
+    for (const field of ["unitCostCny", "unitCostOriginal", "costCurrency", "costRateToCny", "costRateEffectiveDate", "costSource", "costCountry", "costBatchId", "costEffectiveAt", "futureCostFallback", "productCostCny", "packagingFeeOrderCny", "packagingFeeCny", "cogsCny", "profitProductCostCny", "profitPackagingFeeCny", "profitCogsCny", "packagingRuleConfigured", "packagingRuleApplied", "commissionFeeCny", "logisticsFeeCny", "operatingCostCny", "contributionOperatingCostCny", "costCoverageRate", "productCostCoverageRate", "packagingCoverageRate", "costCovered", "productCostCovered", "packagingCostCovered", "transactionCostCovered"]) delete projected[field];
   }
   if (!profit) {
-    for (const field of ["profitSalesCny", "estimatedProfitCny", "contributionProfitCny", "grossMargin", "contributionMargin", "profitCoverageRate", "contributionCoverageRate", "profitCovered", "contributionCovered"]) delete projected[field];
+    for (const field of ["profitSalesCny", "estimatedProfitCny", "contributionSalesCny", "contributionProfitCny", "grossMargin", "contributionMargin", "profitCoverageRate", "contributionCoverageRate", "profitCovered", "contributionCovered"]) delete projected[field];
   }
   return projected;
 }
@@ -3366,20 +3372,53 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
   });
   const cachedResponse = cachedPerformanceAnalyticsResponse(cacheKey);
   if (cachedResponse) return cachedResponse;
-  const scopedFacts = materialization.facts.filter((fact) => {
+  let queryResult;
+  try {
+    queryResult = await performanceAnalyticsQueryService.query({
+      dataVersion: materialization.dataVersion,
+      materializedFacts: materialization.facts,
+      exchangeRates,
+      packagingFeeRules,
+      filters,
+      scopes,
+      limits: { products: 100, recentFacts: 50 },
+    });
+  } catch (error) {
+    console.error("[performance] query worker failed; using inline fallback", error);
+    const scopedFacts = materialization.facts.filter((fact) => {
       if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(fact.warehouseId || ""))) return false;
       return isWithinDataScope(fact, scopes);
     });
-  const facts = scopedFacts.filter((fact) => {
-    if (filters.dateFrom && fact.orderDate < filters.dateFrom) return false;
-    if (filters.dateTo && fact.orderDate > filters.dateTo) return false;
-    return true;
-  });
-  const visibleShopKeys = new Set(scopedFacts
-    .map((fact) => fact.shopKey)
-    .filter(Boolean));
-  const visibleDirectoryShops = (materialization.shopDirectory.shops || [])
-    .filter((shop) => visibleShopKeys.has(shop.key));
+    const facts = scopedFacts.filter((fact) => {
+      if (filters.dateFrom && fact.orderDate < filters.dateFrom) return false;
+      if (filters.dateTo && fact.orderDate > filters.dateTo) return false;
+      return true;
+    });
+    const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
+      .some((values) => Array.isArray(values) && values.length > 0);
+    queryResult = {
+      payload: buildPerformanceAnalyticsPayload({
+        materializedFacts: facts,
+        exchangeRates,
+        packagingFeeRules,
+        filters,
+        limits: { products: 100, recentFacts: 50 },
+      }),
+      visibleShopKeys: hasDataScope
+        ? [...new Set(scopedFacts.map((fact) => fact.shopKey).filter(Boolean))]
+        : null,
+      workerQueryDurationMs: 0,
+      scannedFactCount: facts.length,
+    };
+  }
+  const payload = queryResult.payload;
+  const visibleShopKeys = queryResult.visibleShopKeys === null
+    ? null
+    : new Set(queryResult.visibleShopKeys || []);
+  const visibleDirectoryShops = visibleShopKeys === null
+    ? (materialization.shopDirectory.shops || [])
+    : (materialization.shopDirectory.shops || [])
+      .filter((shop) => visibleShopKeys.has(shop.key));
   const scopedShopDirectory = {
     ...materialization.shopDirectory,
     shops: visibleDirectoryShops,
@@ -3387,12 +3426,6 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
     matchedShopCount: visibleDirectoryShops.filter((shop) => shop.miaoshouMatched).length,
     unmatchedShopCount: visibleDirectoryShops.filter((shop) => !shop.miaoshouMatched).length,
   };
-  const payload = buildPerformanceAnalyticsPayload({
-    materializedFacts: facts,
-    exchangeRates,
-    packagingFeeRules,
-    filters,
-  });
   const metadata = performanceAnalyticsStore.getMetadata();
   const sourceResults = cachedOrdersSync.results || [];
   const incompleteWarehouses = sourceResults
@@ -3413,6 +3446,8 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
     materializationStale: Boolean(materialization.stale),
     materializationRefreshStartedAt: materialization.refreshStartedAt || "",
     queryDurationMs: Date.now() - queryStartedAt,
+    workerQueryDurationMs: queryResult.workerQueryDurationMs,
+    scannedFactCount: queryResult.scannedFactCount,
     sourceQuality: {
       status: sourceResults.length && !incompleteWarehouses.length ? "official" : "provisional",
       warehouseCount: sourceResults.length,
@@ -6682,6 +6717,7 @@ const server = http.createServer(async (req, res) => {
           facts: performanceAnalyticsMaterializedCache.facts.map((fact) => applyShopDirectoryProfile(fact, updatedDirectory)),
         };
       }
+      await performanceAnalyticsQueryService.close();
       void warmPerformanceAnalyticsMaterialization();
       sendJson(res, 200, {
         ok: true,
