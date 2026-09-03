@@ -12,10 +12,12 @@ import {
   ChevronDown,
   Check,
   Calculator,
+  ClipboardList,
   Copy,
   DatabaseZap,
   Download,
   ExternalLink,
+  Factory,
   FileText,
   Grid2X2,
   Globe2,
@@ -342,6 +344,8 @@ const navItems = [
   { label: "动销监控", icon: BarChart3, hash: "#movement", section: "operations", permission: "movement" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "operations", permission: "movement_analysis" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "supply", permission: "stockup" },
+  { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "supply", childOf: "备货中心", permission: "stockup" },
+  { label: "生产中心", icon: Factory, hash: "#production", section: "supply", childOf: "备货中心", permission: "stockup" },
   { label: "产品库", icon: ShoppingBag, hash: "#products", section: "supply", permission: "product_view" },
   { label: "资质库", icon: FileText, hash: "#qualifications", section: "supply", childOf: "产品库", permission: "qualifications" },
   { label: "素材库", icon: Boxes, hash: "#assets", section: "supply", childOf: "产品库", permission: "assets" },
@@ -965,7 +969,7 @@ function App() {
 
   React.useEffect(() => {
     if (!hasUserPermission(currentUser, "stockup")) return;
-    if (hashForView(activeView) !== "#stockup") return;
+    if (!["#stockup", "#stockup-recommendations", "#production"].includes(hashForView(activeView))) return;
     void loadStockup();
     void loadStockupWorkflow();
   }, [activeView, permissionSignature]);
@@ -1587,7 +1591,7 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "API 接入" ? "API 接入" : activeView === "妙手 ERP" ? "妙手 ERP" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
+            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "API 接入" ? "API 接入" : activeView === "妙手 ERP" ? "妙手 ERP" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "备货建议" ? "备货建议" : activeView === "生产中心" ? "生产中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
           </div>
           <div className="topbar-actions">
             <form className="search-box" onSubmit={handleGlobalSearch}>
@@ -1793,6 +1797,20 @@ function App() {
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
             syncing={syncing}
           />
+        ) : activeView === "备货建议" ? (
+          <StockupCenter
+            pageMode="recommendations"
+            stockupPayload={stockupPayload}
+            workflowPayload={stockupWorkflowPayload}
+            onRefreshWorkflow={loadStockupWorkflow}
+            onSyncStockup={handleStockupSync}
+            onDecision={handleStockupDecision}
+            onCreatePlan={handleCreateStockupPlan}
+            onUpdatePlanStatus={handleUpdateStockupPlanStatus}
+            syncing={syncing}
+          />
+        ) : activeView === "生产中心" ? (
+          <ProductionCenter stockupPayload={stockupPayload} workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
@@ -2035,11 +2053,12 @@ function Sidebar({
                     {sectionItems.map((item) => {
                       const Icon = item.icon;
                       const active = activeView === item.label;
+                      const childActive = !item.childOf && sectionItems.some((candidate) => candidate.childOf === item.label && candidate.label === activeView);
                       return (
                         <button
                           key={item.label}
                           ref={active ? activeItemRef : undefined}
-                          className={`${active ? "active" : ""} ${item.childOf ? "nav-child" : ""}`}
+                          className={`${active ? "active" : childActive ? "parent-active" : ""} ${item.childOf ? "nav-child" : ""}`}
                           onClick={() => onChange(item.label)}
                           title={collapsed ? item.label : undefined}
                         >
@@ -3869,6 +3888,7 @@ function MovementBoard({
 }
 
 function StockupCenter({
+  pageMode = "workflow",
   stockupPayload,
   workflowPayload,
   onRefreshWorkflow,
@@ -3878,6 +3898,7 @@ function StockupCenter({
   onUpdatePlanStatus,
   syncing,
 }: {
+  pageMode?: "workflow" | "recommendations";
   stockupPayload: StockupPayload | null;
   workflowPayload: StockupWorkflowPayload | null;
   onRefreshWorkflow: () => Promise<StockupWorkflowPayload>;
@@ -3890,7 +3911,6 @@ function StockupCenter({
   const recommendations = stockupPayload?.recommendations ?? [];
   const abandonedRecommendations = stockupPayload?.abandonedRecommendations ?? [];
   const plans = stockupPayload?.plans ?? [];
-  const outsourcingQueue = stockupPayload?.outsourcingQueue ?? [];
   const inboundOrders = stockupPayload?.inboundOrders ?? [];
   const syncResults = stockupPayload?.syncResults ?? [];
   const acceptedRecommendations = recommendations.filter((item) => item.decisionStatus === "accepted" && !item.workflowDemandRecordId);
@@ -3902,7 +3922,7 @@ function StockupCenter({
   const [planCopyMessage, setPlanCopyMessage] = React.useState("");
   const [reviewCopyMessage, setReviewCopyMessage] = React.useState("");
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
-  const [showPlanningTools, setShowPlanningTools] = React.useState(false);
+  const isRecommendationPage = pageMode === "recommendations";
 
   const currentCounts = workflowPayload?.counts;
   const actionQueue = [
@@ -3990,6 +4010,20 @@ function StockupCenter({
 
   return (
     <main className="movement-page stockup-page stockup-ops-page">
+      {isRecommendationPage ? (
+        <section className="stockup-command-bar">
+          <div>
+            <p className="eyebrow">Replenishment Planning</p>
+            <h2>备货建议</h2>
+            <p>根据库存、销量、在途和委外在产数量生成建议；采纳后送入正式备货需求与供应执行流程。</p>
+          </div>
+          <div className="stockup-command-actions">
+            <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
+            <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
+            <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 数据"}</button>
+          </div>
+        </section>
+      ) : <>
       <section className="stockup-command-bar">
         <div>
           <p className="eyebrow">今日备货工作台</p>
@@ -4032,8 +4066,8 @@ function StockupCenter({
         {workflowTab === "ledger" ? <StockupCostLedger payload={workflowPayload} /> : null}
         {workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
       </section>
-      {workflowTab === "overview" ? <div className="stockup-legacy-tools"><div><strong>动销建议与 WMS 工具</strong><span>{showPlanningTools ? "已展开旧备货分析工具" : "默认收起，不影响本轮新流程测试"}</span></div><button className="ghost-button compact-button" type="button" onClick={() => setShowPlanningTools((current) => !current)}>{showPlanningTools ? "收起工具" : "展开工具"}</button>{showPlanningTools ? <div className="stockup-legacy-actions"><span>建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span><span>净建议数量 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span><button className="ghost-button compact-button" onClick={onSyncStockup} disabled={syncing}>{syncing ? "同步中" : "同步 WMS 备货单"}</button></div> : null}</div> : null}
-      {workflowTab === "overview" && acceptedRecommendations.length ? (
+      </>}
+      {isRecommendationPage && acceptedRecommendations.length ? (
         <section className="panel stockup-panel accepted-stockup-panel">
           <div className="panel-heading">
             <div>
@@ -4122,7 +4156,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {workflowTab === "overview" && showPlanningTools && activePlans.length ? (
+      {isRecommendationPage && activePlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel">
           <div className="panel-heading">
             <div>
@@ -4180,7 +4214,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {workflowTab === "overview" && showPlanningTools && arrivedPlans.length ? (
+      {isRecommendationPage && arrivedPlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel">
           <div className="panel-heading">
             <div>
@@ -4234,57 +4268,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {workflowTab === "overview" && showPlanningTools ? <section className="panel stockup-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Outsourcing Production</p>
-            <h2>委外排产清单</h2>
-          </div>
-          <span className="status-pill muted">{formatNumber(outsourcingQueue.length)} 个 SKU</span>
-        </div>
-        <div className="stockup-table">
-          <div className="stockup-row stockup-head outsourcing-queue-head">
-            <span>SKU / 产品</span>
-            <span>委外在产</span>
-            <span>加工单</span>
-            <span>开单时间</span>
-            <span>跟单备注</span>
-            <span>是否在备货建议</span>
-            <span>说明</span>
-          </div>
-          {outsourcingQueue.length ? outsourcingQueue.map((item) => (
-            <article className="stockup-row outsourcing-queue-row" key={item.id}>
-              <div className="movement-product">
-                <MovementThumb item={item} />
-                <div>
-                  <strong>{item.sku}</strong>
-                  <span>{item.name}</span>
-                </div>
-              </div>
-              <strong>{formatNumber(item.inProductionQty)} {item.unit}</strong>
-              <span>{formatNumber(item.orderCount)} 张</span>
-              <span>{formatDateTime(item.createdAt)}</span>
-              <span className="movement-insight outsourcing-remark has-tooltip">
-                {item.remark || "无"}
-                <span className="movement-tooltip insight-tooltip">
-                  <strong>跟单备注</strong>
-                  {item.remarks?.length ? item.remarks.slice(0, 8).map((remark, index) => (
-                    <small key={`${item.id}-remark-${index}`}>{remark}</small>
-                  )) : <small>暂无跟单备注。</small>}
-                </span>
-              </span>
-              <span className={`status-pill ${item.inRecommendation ? "good" : "warning"}`}>
-                {item.inRecommendation ? "在备货建议内" : "不在备货建议内"}
-              </span>
-              <span className="movement-suggestion">{item.note}</span>
-            </article>
-          )) : (
-            <div className="stockup-empty">暂无进行中的委外排产 SKU。</div>
-          )}
-        </div>
-      </section> : null}
-
-      {workflowTab === "overview" && showPlanningTools && abandonedRecommendations.length ? (
+      {isRecommendationPage && abandonedRecommendations.length ? (
         <section className="panel stockup-panel">
           <div className="panel-heading">
             <div>
@@ -4305,7 +4289,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {workflowTab === "overview" && showPlanningTools ? <section className="panel stockup-panel">
+      {isRecommendationPage ? <section className="panel stockup-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Replenishment Queue</p>
@@ -4360,7 +4344,7 @@ function StockupCenter({
         </div>
       </section> : null}
 
-      {workflowTab === "overview" && showPlanningTools ? <section className="panel stockup-panel">
+      {isRecommendationPage ? <section className="panel stockup-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">WMS Inbound Orders</p>
@@ -4403,6 +4387,101 @@ function StockupCenter({
         </div>
       </section> : null}
     </main>
+  );
+}
+
+function isProductionExecution(value?: string) {
+  return /委外生产|生产/.test(String(value || ""));
+}
+
+function isActiveStockupLine(item: StockupWorkflowPayload["stockupLines"][number]) {
+  const targetQty = Math.max(0, item.plannedQty - (item.cancelledQty || 0));
+  return !/已完成|已取消|已作废|关闭/.test(item.status) && targetQty > item.shippedQty;
+}
+
+function ProductionCenter({ stockupPayload, workflowPayload, onRefreshWorkflow, syncing }: {
+  stockupPayload: StockupPayload | null;
+  workflowPayload: StockupWorkflowPayload | null;
+  onRefreshWorkflow: () => Promise<StockupWorkflowPayload>;
+  syncing: boolean;
+}) {
+  const orders = workflowPayload?.stockupOrders ?? [];
+  const orderById = new Map(orders.map((item) => [item.id, item]));
+  const productionLines = (workflowPayload?.stockupLines ?? []).filter((item) => (
+    isActiveStockupLine(item)
+    && (isProductionExecution(item.supplyMode) || isProductionExecution(orderById.get(item.orderRecordId)?.executionMode))
+  ));
+  const activeOrderIds = new Set(productionLines.map((item) => item.orderRecordId));
+  const productionOrders = orders.filter((item) => activeOrderIds.has(item.id));
+  const pendingDemands = (workflowPayload?.demands ?? []).filter((item) => (
+    item.sku
+    && isProductionExecution(item.stockupMethod)
+    && !/已完成|已取消|关闭/.test(item.businessStatus)
+    && Math.max(0, item.requestedQty - item.plannedQty) > 0
+  ));
+  const waitingForProgress = productionLines.filter((item) => (
+    item.completedQty < Math.max(0, item.plannedQty - (item.cancelledQty || 0))
+    || item.completedQty > item.qualifiedQty
+  )).length;
+  const readyToShip = productionLines.filter((item) => item.qualifiedQty > item.shippedQty).length;
+  const outsourcingQueue = stockupPayload?.outsourcingQueue ?? [];
+
+  return (
+    <main className="movement-page stockup-page stockup-ops-page production-center-page">
+      <section className="stockup-command-bar">
+        <div>
+          <p className="eyebrow">Production Operations</p>
+          <h2>生产中心</h2>
+          <p>只展示委外生产且仍在执行中的产品；外采成品、自有成品和已完成 / 已取消记录不会出现在本页。</p>
+        </div>
+        <div className="stockup-command-actions">
+          <span className="status-pill good"><Factory size={14} />{formatNumber(productionOrders.length)} 张生产单</span>
+          <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新</button>
+        </div>
+      </section>
+
+      <section className="production-summary-strip" aria-label="生产中心待办概览">
+        <article><span>待建生产单</span><strong>{pendingDemands.length > 0 ? formatNumber(pendingDemands.length) : "—"}</strong><small>委外生产需求</small></article>
+        <article><span>生产中 SKU</span><strong>{productionLines.length > 0 ? formatNumber(productionLines.length) : "—"}</strong><small>排除所有终态</small></article>
+        <article><span>待完工 / 质检</span><strong>{waitingForProgress > 0 ? formatNumber(waitingForProgress) : "—"}</strong><small>需要更新进度</small></article>
+        <article><span>合格待发</span><strong>{readyToShip > 0 ? formatNumber(readyToShip) : "—"}</strong><small>可进入发货</small></article>
+      </section>
+
+      {workflowPayload?.warnings?.length ? <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div> : null}
+      <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} scope="production" />
+      <OutsourcingProductionQueue items={outsourcingQueue} />
+    </main>
+  );
+}
+
+function OutsourcingProductionQueue({ items }: { items: StockupPayload["outsourcingQueue"] }) {
+  return (
+    <section className="panel stockup-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Outsourcing Production</p>
+          <h2>委外加工单同步</h2>
+          <small>来自既有委外加工单的在产数据，用于校验正式生产执行单是否已经真实开工。</small>
+        </div>
+        <span className="status-pill muted">{formatNumber(items.length)} 个 SKU</span>
+      </div>
+      <div className="stockup-table">
+        <div className="stockup-row stockup-head outsourcing-queue-head">
+          <span>SKU / 产品</span><span>委外在产</span><span>加工单</span><span>开单时间</span><span>跟单备注</span><span>备货建议</span><span>说明</span>
+        </div>
+        {items.length ? items.map((item) => (
+          <article className="stockup-row outsourcing-queue-row" key={item.id}>
+            <div className="movement-product"><MovementThumb item={item} /><div><strong>{item.sku}</strong><span>{item.name}</span></div></div>
+            <strong>{formatNumber(item.inProductionQty)} {item.unit}</strong>
+            <span>{formatNumber(item.orderCount)} 张</span>
+            <span>{formatDateTime(item.createdAt)}</span>
+            <span className="movement-insight outsourcing-remark has-tooltip">{item.remark || "无"}<span className="movement-tooltip insight-tooltip"><strong>跟单备注</strong>{item.remarks?.length ? item.remarks.slice(0, 8).map((remark, index) => <small key={`${item.id}-remark-${index}`}>{remark}</small>) : <small>暂无跟单备注。</small>}</span></span>
+            <span className={`status-pill ${item.inRecommendation ? "good" : "warning"}`}>{item.inRecommendation ? "建议内" : "建议外"}</span>
+            <span className="movement-suggestion">{item.note}</span>
+          </article>
+        )) : <div className="stockup-empty">暂无进行中的委外加工 SKU。</div>}
+      </div>
+    </section>
   );
 }
 
@@ -4575,25 +4654,42 @@ const ShipmentEntryLine = React.memo(function ShipmentEntryLine({ item, onChange
 });
 
 type ExecutionWorkbenchStep = "create" | "progress" | "shipment";
+type ExecutionWorkbenchScope = "all" | "production";
 
-function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
+function StockupExecutionWorkbench({ payload, onRefresh, scope = "all" }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload>; scope?: ExecutionWorkbenchScope }) {
   const confirm = useConfirm();
   const allOrders = payload?.stockupOrders ?? [];
-  const allLines = payload?.stockupLines ?? [];
+  const sourceLines = payload?.stockupLines ?? [];
+  const productionOrderIds = new Set(allOrders.filter((item) => isProductionExecution(item.executionMode)).map((item) => item.id));
+  sourceLines.forEach((item) => {
+    if (isProductionExecution(item.supplyMode)) productionOrderIds.add(item.orderRecordId);
+  });
+  const allLines = scope === "production"
+    ? sourceLines.filter((item) => productionOrderIds.has(item.orderRecordId) || isProductionExecution(item.supplyMode))
+    : sourceLines;
   const lineTargetQty = React.useCallback((item: StockupWorkflowPayload["stockupLines"][number]) => Math.max(0, item.plannedQty - (item.cancelledQty || 0)), []);
   const lineAvailableQty = React.useCallback((item: StockupWorkflowPayload["stockupLines"][number]) => Math.max(0, item.qualifiedQty - item.shippedQty), []);
-  const activeLines = allLines.filter((item) => !/已完成|已取消|已作废|关闭/.test(item.status) && lineTargetQty(item) > item.shippedQty);
+  const activeLines = allLines.filter(isActiveStockupLine);
   const progressLines = activeLines.filter((item) => item.qualifiedQty < lineTargetQty(item));
   const executionOnlyLines = activeLines.filter((item) => lineAvailableQty(item) <= 0 && item.qualifiedQty < lineTargetQty(item));
   const shipmentReadyLines = activeLines.filter((item) => lineAvailableQty(item) > 0);
   const activeOrderIds = new Set(activeLines.map((item) => item.orderRecordId));
   const orders = allOrders.filter((item) => activeOrderIds.has(item.id));
   const warehouseOptions = payload?.warehouseOptions ?? [];
-  const pendingWmsPushTasks = (payload?.wmsPushTasks ?? []).filter((item) => item.status !== "pushed" && item.status !== "cancelled");
-  const candidateDemands = (payload?.demands ?? []).filter((item) => item.sku && !/已完成|已取消/.test(item.businessStatus) && Math.max(0, item.requestedQty - item.plannedQty) > 0);
+  const pendingWmsPushTasks = (payload?.wmsPushTasks ?? []).filter((item) => (
+    item.status !== "pushed"
+    && item.status !== "cancelled"
+    && (scope !== "production" || productionOrderIds.has(item.stockupOrderRecordId))
+  ));
+  const candidateDemands = (payload?.demands ?? []).filter((item) => (
+    item.sku
+    && !/已完成|已取消/.test(item.businessStatus)
+    && Math.max(0, item.requestedQty - item.plannedQty) > 0
+    && (scope !== "production" || isProductionExecution(item.stockupMethod))
+  ));
   const [activeStep, setActiveStep] = React.useState<ExecutionWorkbenchStep>("create");
   const autoSelectedStep = React.useRef(false);
-  const [executionForm, setExecutionForm] = React.useState({ demandRecordId: "", plannedQty: 0, executionMode: "外采成品", expectedCompletedAt: "", baseUnitCost: 0, baseCurrency: "CNY", baseExchangeRate: 1 });
+  const [executionForm, setExecutionForm] = React.useState({ demandRecordId: "", plannedQty: 0, executionMode: scope === "production" ? "委外生产" : "外采成品", expectedCompletedAt: "", baseUnitCost: 0, baseCurrency: "CNY", baseExchangeRate: 1 });
   const [shipmentOrderId, setShipmentOrderId] = React.useState("");
   const shipmentLinesRef = React.useRef<Record<string, ShipmentEntryDraft>>({});
   const [hasShipmentQuantity, setHasShipmentQuantity] = React.useState(false);
@@ -4747,8 +4843,8 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
   }
 
   const stepItems: Array<{ id: ExecutionWorkbenchStep; number: string; title: string; hint: string; count: number }> = [
-    { id: "create", number: "01", title: "创建执行单", hint: "选择正式需求并确认执行方式", count: candidateDemands.length },
-    { id: "progress", number: "02", title: "跟进供应进度", hint: "下单、完工、质检合格", count: executionOnlyLines.length },
+    { id: "create", number: "01", title: scope === "production" ? "创建生产单" : "创建执行单", hint: scope === "production" ? "选择委外生产需求" : "选择正式需求并确认执行方式", count: candidateDemands.length },
+    { id: "progress", number: "02", title: scope === "production" ? "跟进生产进度" : "跟进供应进度", hint: "下单、完工、质检合格", count: executionOnlyLines.length },
     { id: "shipment", number: "03", title: "发货与 WMS 确认", hint: "登记发货后人工确认推送", count: shipmentReadyLines.length + pendingWmsPushTasks.length },
   ];
 
@@ -4768,16 +4864,16 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
 
       {activeStep === "create" ? (
         <div className="panel workflow-panel execution-current-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Current Task · 01</p><h2>创建采购 / 生产执行单</h2><small>只显示尚有未计划数量的正式 SKU 需求；创建后自动进入跟单。</small></div><span className="status-pill warning">{candidateDemands.length || "—"} 个待处理</span></div>
+          <div className="panel-heading"><div><p className="eyebrow">Current Task · 01</p><h2>{scope === "production" ? "创建委外生产执行单" : "创建采购 / 生产执行单"}</h2><small>{scope === "production" ? "只显示备货方式为委外生产且尚有未计划数量的正式 SKU 需求。" : "只显示尚有未计划数量的正式 SKU 需求；创建后自动进入跟单。"}</small></div><span className="status-pill warning">{candidateDemands.length || "—"} 个待处理</span></div>
           <div className="workflow-create-form">
-            <label className="wide-field"><span>选择需求</span><select value={executionForm.demandRecordId} onChange={(event) => { const demand = candidateDemands.find((item) => item.id === event.target.value); setExecutionForm({ ...executionForm, demandRecordId: event.target.value, plannedQty: Math.max(0, (demand?.requestedQty || 0) - (demand?.plannedQty || 0)), executionMode: demand?.stockupMethod || "外采成品" }); }}><option value="">请选择</option>{candidateDemands.map((item) => <option value={item.id} key={item.id}>{item.demandBatchNo} · {item.sku} · {item.productName}</option>)}</select></label>
+            <label className="wide-field"><span>选择需求</span><select value={executionForm.demandRecordId} onChange={(event) => { const demand = candidateDemands.find((item) => item.id === event.target.value); setExecutionForm({ ...executionForm, demandRecordId: event.target.value, plannedQty: Math.max(0, (demand?.requestedQty || 0) - (demand?.plannedQty || 0)), executionMode: scope === "production" ? "委外生产" : demand?.stockupMethod || "外采成品" }); }}><option value="">请选择</option>{candidateDemands.map((item) => <option value={item.id} key={item.id}>{item.demandBatchNo} · {item.sku} · {item.productName}</option>)}</select></label>
             <label><span>计划数量</span><input type="number" min="0" value={executionForm.plannedQty || ""} onChange={(event) => setExecutionForm({ ...executionForm, plannedQty: Number(event.target.value) })} /></label>
-            <label><span>执行方式</span><select value={executionForm.executionMode} onChange={(event) => setExecutionForm({ ...executionForm, executionMode: event.target.value })}><option>外采成品</option><option>委外生产</option><option>自有成品</option></select></label>
+            <label><span>执行方式</span><select value={executionForm.executionMode} disabled={scope === "production"} onChange={(event) => setExecutionForm({ ...executionForm, executionMode: event.target.value })}>{scope === "production" ? <option>委外生产</option> : <><option>外采成品</option><option>委外生产</option><option>自有成品</option></>}</select></label>
             <label><span>基础成本单价</span><input type="number" min="0" step="0.01" value={executionForm.baseUnitCost || ""} onChange={(event) => setExecutionForm({ ...executionForm, baseUnitCost: Number(event.target.value) })} /></label>
             <label><span>预计完成</span><input type="date" value={executionForm.expectedCompletedAt} onChange={(event) => setExecutionForm({ ...executionForm, expectedCompletedAt: event.target.value })} /></label>
             <div className="workflow-form-actions"><span className="form-action-hint">创建后同时写入备货主表与关联明细，不会直接进入发货。</span><button className="sync-button" type="button" disabled={busy || !executionForm.demandRecordId || !executionForm.plannedQty} onClick={() => void createExecution()}>创建并进入步骤 2</button></div>
           </div>
-          {!candidateDemands.length ? <div className="stockup-empty">当前没有待转执行的需求。已创建的单据请进入步骤 2 跟进。</div> : null}
+          {!candidateDemands.length ? <div className="stockup-empty">{scope === "production" ? "当前没有待转生产的委外需求。外采成品不会显示在生产中心。" : "当前没有待转执行的需求。已创建的单据请进入步骤 2 跟进。"}</div> : null}
         </div>
       ) : null}
 
@@ -4792,7 +4888,7 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
             </div>
           ) : null}
           <div className="panel workflow-panel">
-            <div className="panel-heading"><div><p className="eyebrow">Current Task · 02</p><h2>我正在跟进的执行单</h2><small>执行单创建后始终显示；不能发货时会明确显示缺少哪个前置条件。</small></div><span className="status-pill muted">{orders.length || "—"} 单</span></div>
+            <div className="panel-heading"><div><p className="eyebrow">Current Task · 02</p><h2>{scope === "production" ? "正在生产的执行单" : "我正在跟进的执行单"}</h2><small>{scope === "production" ? "仅包含委外生产的非终态单据；完工、质检和发货进度可在这里连续更新。" : "执行单创建后始终显示；不能发货时会明确显示缺少哪个前置条件。"}</small></div><span className="status-pill muted">{orders.length || "—"} 单</span></div>
             <div className="workflow-card-list execution-order-list">
               {orders.length ? orders.slice(0, 50).map((item) => {
                 const availableQty = orderAvailableQty(item.id);
@@ -4809,13 +4905,13 @@ function StockupExecutionWorkbench({ payload, onRefresh }: { payload: StockupWor
                     </div>
                   </article>
                 );
-              }) : <div className="stockup-empty">暂无进行中的备货执行单。需要创建时返回步骤 1。</div>}
+              }) : <div className="stockup-empty">{scope === "production" ? "暂无进行中的委外生产单。外采成品和已完成生产单不会显示。" : "暂无进行中的备货执行单。需要创建时返回步骤 1。"}</div>}
             </div>
           </div>
           <div className="panel workflow-panel">
             <div className="panel-heading"><div><p className="eyebrow">SKU Progress</p><h2>逐 SKU 更新供应进度</h2><small>录错时使用“退回一步”；系统不会把任何数量退到已发货数量以下。</small></div><span className="status-pill muted">{progressLines.length || "—"} 行</span></div>
             <div className="workflow-card-list compact">
-              {progressLines.length ? progressLines.slice(0, 80).map((item) => <ExecutionProgressCard item={item} busy={busy} onSave={saveLineProgress} onRollback={rollbackLine} key={item.id} />) : <div className="stockup-empty">当前没有待更新的采购 / 生产进度；有合格可发数量的单据请进入步骤 3。</div>}
+              {progressLines.length ? progressLines.slice(0, 80).map((item) => <ExecutionProgressCard item={item} busy={busy} onSave={saveLineProgress} onRollback={rollbackLine} key={item.id} />) : <div className="stockup-empty">{scope === "production" ? "当前没有待更新的生产进度；有合格可发数量的生产单请进入步骤 3。" : "当前没有待更新的采购 / 生产进度；有合格可发数量的单据请进入步骤 3。"}</div>}
             </div>
           </div>
         </div>

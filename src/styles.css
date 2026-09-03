@@ -1516,6 +1516,12 @@ button:disabled {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+.sidebar nav button.parent-active {
+  color: var(--text);
+  background: rgba(255, 107, 34, 0.07);
+  border-color: rgba(255, 107, 34, 0.16);
+}
+
 .sidebar nav button.nav-child {
   width: calc(100% - 18px);
   margin-left: 18px;
@@ -3377,7 +3383,8 @@ h3 {
 }
 
 @media (max-width: 1180px) {
-  .stockup-task-strip {
+  .stockup-task-strip,
+  .production-summary-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -4287,6 +4294,34 @@ h3 {
 }
 
 .stockup-task-strip button small {
+  color: var(--muted);
+}
+
+.production-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.production-summary-strip article {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+}
+
+.production-summary-strip strong {
+  grid-row: span 2;
+  color: var(--workflow-accent);
+  font-size: 26px;
+}
+
+.production-summary-strip small {
   color: var(--muted);
 }
 
@@ -8939,6 +8974,7 @@ h3 {
   }
 
   .stockup-task-strip,
+  .production-summary-strip,
   .execution-guide,
   .execution-step-switcher,
   .workflow-stage-grid,
