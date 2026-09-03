@@ -136,6 +136,69 @@ const scopedPayload = buildStockupWorkflowPayload({
 assert.equal(scopedPayload.historyHidden, true);
 assert.deepEqual(scopedPayload.demands.map((item) => item.id), ["new-demand"]);
 
+const costFields = JIANYUN_FORMS.shipmentCostBatches.fields;
+const shipmentFields = JIANYUN_FORMS.shipments.fields;
+const ledgerPayload = buildStockupWorkflowPayload({
+  demandRecords: [],
+  orderRecords: [{ data_id: "ledger-order", [JIANYUN_FORMS.stockupOrders.fields.orderNo]: { value: "BHD-LEDGER-001" } }],
+  lineRecords: [],
+  shipmentRecords: [{
+    data_id: "ledger-shipment",
+    [shipmentFields.stockupOrderRecordId]: { value: "ledger-order" },
+    [shipmentFields.shipmentBatchNo]: { value: "FH-LEDGER-001" },
+  }],
+  feeRecords: [],
+  costRecords: [
+    {
+      data_id: "ledger-current",
+      creator: { name: "核算员" },
+      updater: { name: "锁定员" },
+      updateTime: "2026-09-02T10:34:41.000Z",
+      [costFields.serialNo]: { value: "CB-LEDGER-001" },
+      [costFields.shipmentRecordId]: { value: "ledger-shipment" },
+      [costFields.shipmentNo]: { value: "FH-LEDGER-001" },
+      [costFields.sku]: { value: "SKU-LEDGER" },
+      [costFields.productName]: { value: "台账产品" },
+      [costFields.destinationCountry]: { value: "印度尼西亚" },
+      [costFields.destinationWarehouseName]: { value: "神牛印尼仓" },
+      [costFields.costingQty]: { value: 100 },
+      [costFields.baseUnitCostCny]: { value: 5 },
+      [costFields.baseCostTotalCny]: { value: 500 },
+      [costFields.firstMileFreight]: { value: 200 },
+      [costFields.includedFeeTotal]: { value: 200 },
+      [costFields.actualCostTotalCny]: { value: 700 },
+      [costFields.unitLogisticsCostCny]: { value: 2 },
+      [costFields.landedUnitCostCny]: { value: 7 },
+      [costFields.status]: { value: "已锁定" },
+      [costFields.isCurrent]: { value: "是" },
+      [costFields.version]: { value: 1 },
+    },
+    {
+      data_id: "ledger-previous",
+      [costFields.serialNo]: { value: "CB-LEDGER-OLD" },
+      [costFields.shipmentRecordId]: { value: "legacy-shipment" },
+      [costFields.sku]: { value: "SKU-OLD" },
+      [costFields.status]: { value: "已锁定" },
+      [costFields.isCurrent]: { value: "否" },
+    },
+    {
+      data_id: "ledger-unlocked",
+      [costFields.shipmentRecordId]: { value: "ledger-shipment" },
+      [costFields.status]: { value: "待确认" },
+      [costFields.isCurrent]: { value: "否" },
+    },
+  ],
+  productRecords: [],
+  warnings: [],
+});
+assert.equal(ledgerPayload.costBatches.length, 2, "operational batches remain scoped to current workflow shipments");
+assert.deepEqual(ledgerPayload.costLedger.map((item) => item.id), ["ledger-current", "ledger-previous"]);
+assert.equal(ledgerPayload.counts.lockedCostBatches, 1);
+assert.equal(ledgerPayload.costLedger[0].destinationWarehouseName, "神牛印尼仓");
+assert.equal(ledgerPayload.costLedger[0].firstMileFreight, 200);
+assert.equal(ledgerPayload.costLedger[0].lockedBy, "锁定员");
+assert.equal(ledgerPayload.costLedger[0].lockedAt, "2026-09-02T10:34:41.000Z");
+
 const stageCounts = buildWorkflowStageCounts({
   demands: [
     { id: "demand-pending", requestedQty: 10, plannedQty: 0, businessStatus: "待受理" },

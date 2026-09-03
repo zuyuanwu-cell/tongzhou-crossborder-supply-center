@@ -353,8 +353,12 @@ function normalizeShipmentFee(record) {
 
 function normalizeCostBatch(record) {
   const fields = JIANYUN_FORMS.shipmentCostBatches.fields;
+  const creatorName = textValue(record?.creator);
+  const updaterName = textValue(record?.updater, creatorName);
   return {
     id: recordId(record),
+    createdAt: recordCreatedAt(record),
+    updatedAt: dateValue(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at),
     costBatchNo: readText(record, fields.serialNo, recordId(record)),
     uniqueKey: readText(record, fields.uniqueKey),
     costType: readText(record, fields.costType),
@@ -363,23 +367,61 @@ function normalizeCostBatch(record) {
     shipmentRecordId: readText(record, fields.shipmentRecordId),
     shipmentNo: readText(record, fields.shipmentNo),
     shipmentLineId: readText(record, fields.shipmentLineId),
+    stockupOrderRecordId: readText(record, fields.stockupOrderRecordId),
+    stockupLineRecordId: readText(record, fields.stockupLineRecordId),
+    demandRecordId: readText(record, fields.demandRecordId),
     productRecordId: readText(record, fields.productRecordId),
     temporaryProductNo: readText(record, fields.temporaryProductNo),
     sku: readText(record, fields.sku),
     productName: readText(record, fields.productName),
+    project: readText(record, fields.project),
+    platform: readText(record, fields.platform),
+    destinationCountry: readText(record, fields.destinationCountry),
+    destinationWarehouseRecordId: readText(record, fields.destinationWarehouseRecordId),
+    destinationWarehouseName: readText(record, fields.destinationWarehouseName),
+    shippedQty: readNumber(record, fields.shippedQty),
+    receivedQty: readNumber(record, fields.receivedQty),
+    damagedQty: readNumber(record, fields.damagedQty),
+    cancelledQty: readNumber(record, fields.cancelledQty),
     costingQty: readNumber(record, fields.costingQty),
+    totalWeightKg: readNumber(record, fields.totalWeightKg),
+    totalVolumeM3: readNumber(record, fields.totalVolumeM3),
+    goodsValueCny: readNumber(record, fields.goodsValueCny),
+    baseCostSource: readText(record, fields.baseCostSource),
+    baseCurrency: readText(record, fields.baseCurrency, "CNY"),
+    baseExchangeRate: readNumber(record, fields.baseExchangeRate, 1),
+    baseOriginalUnitCost: readNumber(record, fields.baseOriginalUnitCost),
+    baseUnitCostCny: readNumber(record, fields.baseUnitCostCny),
     baseCostTotalCny: readNumber(record, fields.baseCostTotalCny),
+    domesticFreight: readNumber(record, fields.domesticFreight),
+    firstMileFreight: readNumber(record, fields.firstMileFreight),
+    pickupFee: readNumber(record, fields.pickupFee),
+    customsTaxes: readNumber(record, fields.customsTaxes),
+    insuranceFee: readNumber(record, fields.insuranceFee),
+    warehouseFee: readNumber(record, fields.warehouseFee),
+    laborPackagingFee: readNumber(record, fields.laborPackagingFee),
+    inspectionFee: readNumber(record, fields.inspectionFee),
+    otherFee: readNumber(record, fields.otherFee),
     includedFeeTotal: readNumber(record, fields.includedFeeTotal),
     excludedFeeTotal: readNumber(record, fields.excludedFeeTotal),
     actualCostTotalCny: readNumber(record, fields.actualCostTotalCny),
     unitLogisticsCostCny: readNumber(record, fields.unitLogisticsCostCny),
     landedUnitCostCny: readNumber(record, fields.landedUnitCostCny),
+    riskRate: readNumber(record, fields.riskRate),
+    landedUnitCostWithRiskCny: readNumber(record, fields.landedUnitCostWithRiskCny),
     status: readText(record, fields.status),
     isCurrent: truthyChoice(rawValue(record, fields.isCurrent), false),
+    allocationDifferenceCny: readNumber(record, fields.allocationDifferenceCny),
+    quantityDifference: readNumber(record, fields.quantityDifference),
     exceptionCode: readNumber(record, fields.exceptionCode),
     exceptionReason: readText(record, fields.exceptionReason),
     calculatedAt: readDate(record, fields.calculatedAt),
-    lockedAt: readDate(record, fields.lockedAt),
+    calculatedBy: readText(record, fields.calculatedBy, creatorName),
+    confirmedAt: readDate(record, fields.confirmedAt),
+    confirmedBy: readText(record, fields.confirmedBy),
+    lockedAt: readDate(record, fields.lockedAt) || dateValue(record?.updateTime || record?.update_time),
+    lockedBy: readText(record, fields.lockedBy, updaterName),
+    note: readText(record, fields.note),
   };
 }
 
@@ -716,6 +758,9 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
   const shipmentIds = new Set(shipments.map((item) => item.id).filter(Boolean));
   const fees = allFees.filter((item) => shipmentIds.has(item.shipmentRecordId));
   const costBatches = allCostBatches.filter((item) => shipmentIds.has(item.shipmentRecordId));
+  const costLedger = allCostBatches
+    .filter((item) => /已锁定/.test(item.status))
+    .sort((left, right) => String(right.lockedAt || right.updatedAt || "").localeCompare(String(left.lockedAt || left.updatedAt || "")));
   const orderByNo = new Map(orders.filter((item) => item.orderNo).map((item) => [item.orderNo, item]));
   for (const line of orderLines) {
     if (!line.orderRecordId && line.legacyOrderNo) line.orderRecordId = orderByNo.get(line.legacyOrderNo)?.id || "";
@@ -770,7 +815,7 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
       fees: fees.length,
       feeAmountCny: round(fees.reduce((sum, item) => sum + item.amountCny, 0), 2),
       costBatches: costBatches.length,
-      lockedCostBatches: costBatches.filter((item) => /已锁定/.test(item.status)).length,
+      lockedCostBatches: costLedger.filter((item) => item.isCurrent !== false).length,
       codingQueue: productCodingQueue.length,
     },
     demands,
@@ -779,6 +824,7 @@ export function buildStockupWorkflowPayload(records, source = "jiandaoyun") {
     shipments,
     fees,
     costBatches,
+    costLedger,
     productCodingQueue,
     productOptions: products.filter((item) => item.officialSku).map((item) => ({ id: item.id, sku: item.officialSku, productName: item.productName })),
   };

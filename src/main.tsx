@@ -3791,7 +3791,7 @@ function StockupCenter({
   const [planDrafts, setPlanDrafts] = React.useState<Record<string, { open: boolean; quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }>>({});
   const [planCopyMessage, setPlanCopyMessage] = React.useState("");
   const [reviewCopyMessage, setReviewCopyMessage] = React.useState("");
-  const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "coding">("overview");
+  const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
   const [showPlanningTools, setShowPlanningTools] = React.useState(false);
 
   const currentCounts = workflowPayload?.counts;
@@ -3874,6 +3874,7 @@ function StockupCenter({
     ["demands", "备货需求", workflowPayload?.counts.pendingDemands ?? 0],
     ["execution", "供应执行", workflowPayload?.counts.activeExecutionLines ?? 0],
     ["costs", "发货与成本", (workflowPayload?.counts.pendingCostShipments ?? 0) + (workflowPayload?.counts.pendingLockShipments ?? 0)],
+    ["ledger", "到仓成本台账", 0],
     ["coding", "新品编码", workflowPayload?.counts.codingQueue ?? 0],
   ] as const;
 
@@ -3917,7 +3918,8 @@ function StockupCenter({
         {workflowTab === "overview" ? <StockupWorkflowOverview payload={workflowPayload} /> : null}
         {workflowTab === "demands" ? <StockupDemandWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
         {workflowTab === "execution" ? <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
-        {workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
+        {workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} onLocked={() => setWorkflowTab("ledger")} /> : null}
+        {workflowTab === "ledger" ? <StockupCostLedger payload={workflowPayload} /> : null}
         {workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
       </section>
       {workflowTab === "overview" ? <div className="stockup-legacy-tools"><div><strong>动销建议与 WMS 工具</strong><span>{showPlanningTools ? "已展开旧备货分析工具" : "默认收起，不影响本轮新流程测试"}</span></div><button className="ghost-button compact-button" type="button" onClick={() => setShowPlanningTools((current) => !current)}>{showPlanningTools ? "收起工具" : "展开工具"}</button>{showPlanningTools ? <div className="stockup-legacy-actions"><span>建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span><span>净建议数量 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span><button className="ghost-button compact-button" onClick={onSyncStockup} disabled={syncing}>{syncing ? "同步中" : "同步 WMS 备货单"}</button></div> : null}</div> : null}
@@ -4755,7 +4757,7 @@ const allocationMethods = [
   ["weight", "按重量"], ["volume", "按体积"], ["quantity", "按数量"], ["value", "按货值"],
 ] as const;
 
-function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
+function StockupCostWorkbench({ payload, onRefresh, onLocked }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload>; onLocked?: () => void }) {
   const confirm = useConfirm();
   const allCostBatches = payload?.costBatches ?? [];
   const shipments = (payload?.shipments ?? []).filter((shipment) => (
@@ -4831,6 +4833,7 @@ function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflow
       const result = await lockStockupCostVersion({ shipmentRecordId: selectedShipment.id, version });
       await onRefresh();
       setMessage(`成本版本 V${version} 已锁定，共 ${result.lockedCount || 0} 条 SKU 生效。`);
+      onLocked?.();
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "成本锁定失败"); }
     finally { setBusy(false); }
   }
@@ -4926,6 +4929,185 @@ function StockupCostWorkbench({ payload, onRefresh }: { payload: StockupWorkflow
             const locked = items.some((item) => /已锁定/.test(item.status));
             return <article key={version}><div><strong>V{version} · {items[0]?.costType || "成本"}</strong><span>{items.length} 条 SKU · {moneyCny(items.reduce((sum, item) => sum + item.actualCostTotalCny, 0))}</span></div><span className={`status-pill ${locked ? "good" : "warning"}`}>{locked ? "已锁定" : items[0]?.status || "待确认"}</span>{!locked ? <button className="ghost-button compact-button" disabled={busy || items.some((item) => item.exceptionCode)} type="button" onClick={() => void lockVersion(version)}><Lock size={14} />确认并锁定</button> : null}</article>;
           }) : <div className="stockup-empty">尚未生成成本版本。</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function stockupCostLedgerDateKey(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+}
+
+function stockupCostLedgerCsv(rows: StockupWorkflowPayload["costLedger"]) {
+  const header = ["成本批次", "发货批次", "SKU", "产品名称", "项目", "国家", "目的仓", "成本类型", "版本", "核算数量", "基础单价(CNY)", "基础成本(CNY)", "国内运费(CNY)", "头程运费(CNY)", "提货费(CNY)", "报关清关关税(CNY)", "保险费(CNY)", "仓储费(CNY)", "人工包装费(CNY)", "检测费(CNY)", "其他费用(CNY)", "计入费用(CNY)", "不计入费用(CNY)", "单件物流成本(CNY)", "到仓单价(CNY)", "含风险到仓单价(CNY)", "到仓成本合计(CNY)", "锁定人", "锁定时间", "是否当前版本"];
+  const body = rows.map((item) => [
+    item.costBatchNo || item.id || "",
+    item.shipmentNo,
+    item.sku || item.temporaryProductNo,
+    item.productName,
+    item.project || "",
+    item.destinationCountry || "",
+    item.destinationWarehouseName || "",
+    item.costType,
+    item.version,
+    item.costingQty,
+    item.baseUnitCostCny || 0,
+    item.baseCostTotalCny,
+    item.domesticFreight || 0,
+    item.firstMileFreight || 0,
+    item.pickupFee || 0,
+    item.customsTaxes || 0,
+    item.insuranceFee || 0,
+    item.warehouseFee || 0,
+    item.laborPackagingFee || 0,
+    item.inspectionFee || 0,
+    item.otherFee || 0,
+    item.includedFeeTotal,
+    item.excludedFeeTotal,
+    item.unitLogisticsCostCny,
+    item.landedUnitCostCny,
+    item.landedUnitCostWithRiskCny || item.landedUnitCostCny,
+    item.actualCostTotalCny,
+    item.lockedBy || "",
+    item.lockedAt || "",
+    item.isCurrent !== false ? "是" : "否",
+  ]);
+  return `\uFEFF${[header, ...body].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+}
+
+function stockupCostLedgerFeeSummary(item: StockupWorkflowPayload["costLedger"][number]) {
+  const feeParts: Array<[string, number]> = [
+    ["国内", Number(item.domesticFreight || 0)],
+    ["头程", Number(item.firstMileFreight || 0)],
+    ["提货", Number(item.pickupFee || 0)],
+    ["报关税费", Number(item.customsTaxes || 0)],
+    ["保险", Number(item.insuranceFee || 0)],
+    ["仓储", Number(item.warehouseFee || 0)],
+    ["人工包装", Number(item.laborPackagingFee || 0)],
+    ["检测", Number(item.inspectionFee || 0)],
+    ["其他", Number(item.otherFee || 0)],
+  ];
+  return feeParts.filter(([, amount]) => Math.abs(amount) > 0.000001).map(([label, amount]) => `${label} ${moneyCny(amount)}`).join(" · ");
+}
+
+function StockupCostLedger({ payload }: { payload: StockupWorkflowPayload | null }) {
+  const rows = payload?.costLedger ?? [];
+  const [keyword, setKeyword] = React.useState("");
+  const [country, setCountry] = React.useState("");
+  const [warehouse, setWarehouse] = React.useState("");
+  const [costType, setCostType] = React.useState("");
+  const [dateFrom, setDateFrom] = React.useState("");
+  const [dateTo, setDateTo] = React.useState("");
+  const [includePrevious, setIncludePrevious] = React.useState(false);
+
+  const countries = React.useMemo(() => [...new Set(rows.map((item) => item.destinationCountry).filter(Boolean))].sort(), [rows]);
+  const warehouses = React.useMemo(() => [...new Set(rows.map((item) => item.destinationWarehouseName).filter(Boolean))].sort(), [rows]);
+  const costTypes = React.useMemo(() => [...new Set(rows.map((item) => item.costType).filter(Boolean))].sort(), [rows]);
+  const filteredRows = React.useMemo(() => {
+    const normalizedKeyword = keyword.trim().toLowerCase();
+    return rows.filter((item) => {
+      if (!includePrevious && item.isCurrent === false) return false;
+      if (country && item.destinationCountry !== country) return false;
+      if (warehouse && item.destinationWarehouseName !== warehouse) return false;
+      if (costType && item.costType !== costType) return false;
+      const lockedDate = stockupCostLedgerDateKey(item.lockedAt || item.updatedAt);
+      if (dateFrom && lockedDate < dateFrom) return false;
+      if (dateTo && lockedDate > dateTo) return false;
+      if (normalizedKeyword && ![
+        item.costBatchNo,
+        item.shipmentNo,
+        item.sku,
+        item.temporaryProductNo,
+        item.productName,
+        item.project,
+        item.destinationCountry,
+        item.destinationWarehouseName,
+        item.lockedBy,
+      ].some((value) => String(value || "").toLowerCase().includes(normalizedKeyword))) return false;
+      return true;
+    });
+  }, [rows, includePrevious, country, warehouse, costType, dateFrom, dateTo, keyword]);
+
+  const totals = React.useMemo(() => ({
+    shipments: new Set(filteredRows.map((item) => item.shipmentRecordId || item.shipmentNo).filter(Boolean)).size,
+    skus: new Set(filteredRows.map((item) => item.sku || item.temporaryProductNo).filter(Boolean)).size,
+    quantity: filteredRows.reduce((sum, item) => sum + Number(item.costingQty || 0), 0),
+    fees: filteredRows.reduce((sum, item) => sum + Number(item.includedFeeTotal || 0), 0),
+    landed: filteredRows.reduce((sum, item) => sum + Number(item.actualCostTotalCny || 0), 0),
+  }), [filteredRows]);
+
+  function clearFilters() {
+    setKeyword("");
+    setCountry("");
+    setWarehouse("");
+    setCostType("");
+    setDateFrom("");
+    setDateTo("");
+  }
+
+  function exportRows() {
+    downloadTextFile(`tongzhou-landed-cost-ledger-${stockupCostLedgerDateKey(new Date().toISOString())}.csv`, stockupCostLedgerCsv(filteredRows), "text/csv;charset=utf-8");
+  }
+
+  return (
+    <section className="cost-ledger-shell">
+      <header className="cost-ledger-hero">
+        <div>
+          <p className="eyebrow">Landed Cost Ledger</p>
+          <h2>到仓成本台账</h2>
+          <p>成本锁定后从操作待办移入这里。默认只展示当前有效版本，数据实时读取简道云“发货 SKU 成本批次”。</p>
+        </div>
+        <div className="cost-ledger-actions">
+          <div className="cost-ledger-version-toggle" role="group" aria-label="成本版本范围">
+            <button className={!includePrevious ? "active" : ""} type="button" onClick={() => setIncludePrevious(false)}>当前有效</button>
+            <button className={includePrevious ? "active" : ""} type="button" onClick={() => setIncludePrevious(true)}>含旧版本</button>
+          </div>
+          <button className="ghost-button" type="button" disabled={!filteredRows.length} onClick={exportRows}><Download size={15} />导出当前结果</button>
+        </div>
+      </header>
+
+      <div className="cost-ledger-metrics">
+        <article><span>已锁定批次</span><strong>{formatNumber(totals.shipments)}</strong><small>{formatNumber(filteredRows.length)} 条 SKU 成本记录</small></article>
+        <article><span>核算数量</span><strong>{formatNumber(totals.quantity)}</strong><small>{formatNumber(totals.skus)} 个 SKU</small></article>
+        <article><span>计入费用</span><strong>{moneyCny(totals.fees)}</strong><small>已分摊并计入到仓成本</small></article>
+        <article className="landed"><span>到仓成本合计</span><strong>{moneyCny(totals.landed)}</strong><small>加权单件 {moneyCny(totals.quantity > 0 ? totals.landed / totals.quantity : 0)}</small></article>
+      </div>
+
+      <div className="cost-ledger-filter-panel">
+        <label className="cost-ledger-search"><span>搜索批次 / SKU / 产品</span><div><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入发货批次、SKU、产品或项目" /></div></label>
+        <label><span>国家</span><select value={country} onChange={(event) => setCountry(event.target.value)}><option value="">全部国家</option>{countries.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label><span>目的仓</span><select value={warehouse} onChange={(event) => setWarehouse(event.target.value)}><option value="">全部仓库</option>{warehouses.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label><span>成本类型</span><select value={costType} onChange={(event) => setCostType(event.target.value)}><option value="">全部类型</option>{costTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label><span>锁定开始</span><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
+        <label><span>锁定结束</span><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
+        <button className="ghost-button compact-button" type="button" onClick={clearFilters}>清空筛选</button>
+      </div>
+
+      <div className="cost-ledger-result-bar">
+        <span><Lock size={14} />当前结果 {formatNumber(filteredRows.length)} 条；已锁定记录只读，调整请生成新成本版本。</span>
+        <small>{payload?.syncedAt ? `数据读取于 ${formatDateTime(payload.syncedAt)}` : "等待读取简道云"}</small>
+      </div>
+
+      <div className="cost-ledger-table-wrap">
+        <div className="cost-ledger-table">
+          <div className="cost-ledger-row head"><span>SKU / 成本批次</span><span>发货批次 / 锁定</span><span>国家 / 目的仓</span><span>核算数量</span><span>基础成本</span><span>计入费用</span><span>到仓单价</span><span>版本状态</span></div>
+          {filteredRows.map((item) => (
+            <article className={`cost-ledger-row ${item.isCurrent === false ? "historical" : ""}`} key={item.id || item.uniqueKey}>
+              <span className="cost-ledger-product"><strong>{item.sku || item.temporaryProductNo || "待编码"}</strong><small>{item.productName || "未填写产品名称"}</small><em>{item.costBatchNo || item.id || "无批次号"}</em></span>
+              <span><strong>{item.shipmentNo || "未关联发货批次"}</strong><small>{item.lockedAt ? formatDateTime(item.lockedAt) : "锁定时间未记录"} · V{item.version || 1}</small></span>
+              <span><strong>{item.destinationWarehouseName || "未指定目的仓"}</strong><small>{[item.destinationCountry, item.project].filter(Boolean).join(" · ") || "国家/项目未记录"}</small></span>
+              <span className="cost-ledger-number"><strong>{formatNumber(item.costingQty)}</strong><small>发出 {formatNumber(item.shippedQty || 0)}</small></span>
+              <span className="cost-ledger-number"><strong>{moneyCny(item.baseCostTotalCny)}</strong><small>单件 {moneyCny(item.baseUnitCostCny || 0)}</small></span>
+              <span className="cost-ledger-number"><strong>{moneyCny(item.includedFeeTotal)}</strong><small title={stockupCostLedgerFeeSummary(item)}>单件 {moneyCny(item.unitLogisticsCostCny)} · {stockupCostLedgerFeeSummary(item) || "费用已汇总"}</small></span>
+              <span className="cost-ledger-number landed-value"><strong>{moneyCny(item.landedUnitCostCny)}</strong><small>合计 {moneyCny(item.actualCostTotalCny)}</small></span>
+              <span className="cost-ledger-status"><b className={`status-pill ${item.isCurrent === false ? "muted" : "good"}`}>{item.isCurrent === false ? "历史版本" : "当前有效"}</b><small>{item.costType || "成本"} · {item.lockedBy || "锁定人未记录"}</small></span>
+            </article>
+          ))}
+          {!filteredRows.length ? <div className="cost-ledger-empty"><DatabaseZap size={28} /><strong>{rows.length ? "没有符合筛选条件的成本记录" : "暂时没有已锁定成本"}</strong><span>{rows.length ? "清空筛选后可查看全部当前有效版本。" : "完成费用分摊并锁定成本后，记录会自动出现在这里。"}</span></div> : null}
         </div>
       </div>
     </section>

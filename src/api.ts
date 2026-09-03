@@ -1848,6 +1848,8 @@ export type StockupWorkflowFee = {
 
 export type ShipmentCostBatch = {
   id?: string;
+  createdAt?: string;
+  updatedAt?: string;
   costBatchNo?: string;
   uniqueKey: string;
   costType: string;
@@ -1856,27 +1858,61 @@ export type ShipmentCostBatch = {
   shipmentRecordId: string;
   shipmentNo: string;
   shipmentLineId: string;
+  stockupOrderRecordId?: string;
+  stockupLineRecordId?: string;
+  demandRecordId?: string;
   productRecordId: string;
   temporaryProductNo: string;
   sku: string;
   productName: string;
+  project?: string;
+  platform?: string;
+  destinationCountry?: string;
+  destinationWarehouseRecordId?: string;
+  destinationWarehouseName?: string;
   shippedQty: number;
   receivedQty: number;
+  damagedQty?: number;
+  cancelledQty?: number;
   costingQty: number;
   totalWeightKg: number;
   totalVolumeM3: number;
+  goodsValueCny?: number;
+  baseCostSource?: string;
+  baseCurrency?: string;
+  baseExchangeRate?: number;
+  baseOriginalUnitCost?: number;
+  baseUnitCostCny?: number;
   baseCostTotalCny: number;
+  domesticFreight?: number;
+  firstMileFreight?: number;
+  pickupFee?: number;
+  customsTaxes?: number;
+  insuranceFee?: number;
+  warehouseFee?: number;
+  laborPackagingFee?: number;
+  inspectionFee?: number;
+  otherFee?: number;
   includedFeeTotal: number;
   excludedFeeTotal: number;
   actualCostTotalCny: number;
   unitLogisticsCostCny: number;
   landedUnitCostCny: number;
+  riskRate?: number;
+  landedUnitCostWithRiskCny?: number;
   status: string;
   isCurrent?: boolean;
+  allocationDifferenceCny?: number;
+  quantityDifference?: number;
   exceptionCode: number;
   exceptionReason: string;
   calculatedAt?: string;
+  calculatedBy?: string;
+  confirmedAt?: string;
+  confirmedBy?: string;
   lockedAt?: string;
+  lockedBy?: string;
+  note?: string;
 };
 
 export type StockupCostPreview = {
@@ -2036,6 +2072,7 @@ export type StockupWorkflowPayload = {
   shipments: StockupWorkflowShipment[];
   fees: StockupWorkflowFee[];
   costBatches: ShipmentCostBatch[];
+  costLedger: ShipmentCostBatch[];
   productCodingQueue: Array<{
     id: string;
     temporaryProductNo: string;
