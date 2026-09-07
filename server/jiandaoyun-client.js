@@ -113,6 +113,40 @@ export async function fetchJdyDataList(formConfig, options = {}) {
   return allRecords;
 }
 
+function uniqueTextValues(values) {
+  return [...new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function mergeJdyRecords(records) {
+  const merged = new Map();
+  for (const record of records) {
+    const id = record?._id || record?.data_id || record?.id || JSON.stringify(record);
+    merged.set(id, record);
+  }
+  return [...merged.values()];
+}
+
+export async function fetchJdyDataByValues(formConfig, field, values, options = {}) {
+  const uniqueValues = uniqueTextValues(values);
+  if (!field || uniqueValues.length === 0) return [];
+  const chunkSize = Math.min(Math.max(Number(options.chunkSize || 20), 1), 20);
+  const records = [];
+
+  for (let index = 0; index < uniqueValues.length; index += chunkSize) {
+    const chunk = uniqueValues.slice(index, index + chunkSize);
+    const filter = {
+      rel: "and",
+      cond: [{ field, method: chunk.length === 1 ? "eq" : "in", value: chunk }],
+    };
+    records.push(...await fetchJdyDataList(formConfig, {
+      filter,
+      maxPages: Number(options.maxPages || 20),
+    }));
+  }
+
+  return mergeJdyRecords(records);
+}
+
 export async function createJdyData(formConfig, data) {
   const apiKey = getEnv("JIANYUN_API_KEY");
   if (!apiKey) {
@@ -268,10 +302,25 @@ export async function fetchAllJdyOutsourcingOrders() {
     fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders),
     fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders, { filter: inProductionFilter, maxPages: 10 }),
   ]);
-  const merged = new Map();
-  for (const record of [...defaultRecords, ...inProductionRecords]) {
-    const id = record?._id || record?.data_id || record?.id || JSON.stringify(record);
-    merged.set(id, record);
-  }
-  return [...merged.values()];
+  return mergeJdyRecords([...defaultRecords, ...inProductionRecords]);
+}
+
+export async function fetchAllJdyProductionMaterials(outsourcingOrderNos = []) {
+  const purchaseRecords = await fetchJdyDataByValues(
+    JIANYUN_FORMS.purchaseOrders,
+    JIANYUN_FORMS.purchaseOrders.fields.outsourcingOrderNo,
+    outsourcingOrderNos,
+    { chunkSize: 20, maxPages: 20 },
+  );
+  const purchaseOrderNos = purchaseRecords.map((record) => {
+    const field = record?.[JIANYUN_FORMS.purchaseOrders.fields.orderNo];
+    return field && typeof field === "object" && "value" in field ? field.value : field;
+  });
+  const inboundRecords = await fetchJdyDataByValues(
+    JIANYUN_FORMS.purchaseInboundOrders,
+    JIANYUN_FORMS.purchaseInboundOrders.fields.purchaseOrderNo,
+    purchaseOrderNos,
+    { chunkSize: 20, maxPages: 20 },
+  );
+  return { purchaseRecords, inboundRecords };
 }

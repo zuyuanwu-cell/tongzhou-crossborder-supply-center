@@ -1,4 +1,5 @@
 import { JIANYUN_FORMS } from "./field-mapping.js";
+import { buildSupplierRedactionEntries, redactSupplierText, supplierAlias } from "./supplier-privacy.js";
 
 function valueOf(record, fieldId) {
   if (!fieldId) return undefined;
@@ -48,6 +49,10 @@ export function normalizeOutsourcingOrderRecords(records) {
       const isInProduction = /进行中|生产中|加工中|排产中/.test(status);
       const productionRegion = text(valueOf(record, fields.productionRegion));
       const productionType = text(valueOf(record, fields.productionType));
+      const maskedSupplier = supplierAlias(
+        valueOf(record, fields.factoryId),
+        valueOf(record, fields.factoryFullName) || valueOf(record, fields.supplier),
+      );
 
       return {
         id: record.data_id || record._id || record.id || `${tongzhouSku || productSku}-${text(valueOf(record, fields.orderNo))}`,
@@ -55,7 +60,8 @@ export function normalizeOutsourcingOrderRecords(records) {
         productSku,
         orderNo: text(valueOf(record, fields.orderNo)),
         productName: text(valueOf(record, fields.productName)),
-        supplier: text(valueOf(record, fields.supplier)),
+        supplier: maskedSupplier,
+        supplierAlias: maskedSupplier,
         status,
         isInProduction,
         productionRegion,
@@ -83,9 +89,82 @@ export function normalizeOutsourcingOrderRecords(records) {
         outerPackTest: text(valueOf(record, fields.outerPackTest)),
         preProductionSampleConfirmed: text(valueOf(record, fields.preProductionSampleConfirmed)),
         remark: text(valueOf(record, fields.remark)),
-        raw: record,
       };
     });
+}
+
+function sanitizeCachedOrder(order, materialProgressByOrderNo = {}) {
+  const fields = JIANYUN_FORMS.outsourcingOrders.fields;
+  const detailFields = JIANYUN_FORMS.outsourcingOrders.detailFields;
+  const raw = order?.raw;
+  const currentSupplier = text(order?.supplierAlias || order?.supplier);
+  const maskedSupplier = /^供应商\s+[A-Z0-9]{4}$/.test(currentSupplier)
+    ? currentSupplier
+    : supplierAlias(
+      valueOf(raw, fields.factoryId),
+      valueOf(raw, fields.factoryFullName) || valueOf(raw, fields.supplier) || currentSupplier,
+    );
+  const { raw: _discardedRaw, ...safeOrder } = order || {};
+  const rawDetails = valueOf(raw, fields.details);
+  const cachedRedactionEntries = raw ? buildSupplierRedactionEntries([
+    { id: valueOf(raw, fields.factoryId), name: valueOf(raw, fields.factoryFullName) || valueOf(raw, fields.supplier) },
+    ...(Array.isArray(rawDetails) ? rawDetails.map((detail) => ({
+      id: valueOf(detail, detailFields.supplierId),
+      name: valueOf(detail, detailFields.supplier),
+    })) : []),
+  ], [safeOrder.deliveryStatus, safeOrder.progressSummary, safeOrder.remark]) : [];
+  return {
+    ...safeOrder,
+    supplier: maskedSupplier,
+    supplierAlias: maskedSupplier,
+    deliveryStatus: redactSupplierText(safeOrder.deliveryStatus, cachedRedactionEntries),
+    progressSummary: redactSupplierText(safeOrder.progressSummary, cachedRedactionEntries),
+    remark: redactSupplierText(safeOrder.remark, cachedRedactionEntries),
+    ...(materialProgressByOrderNo[safeOrder.orderNo]
+      ? { materialProgress: materialProgressByOrderNo[safeOrder.orderNo] }
+      : safeOrder.materialProgress ? { materialProgress: safeOrder.materialProgress } : {}),
+  };
+}
+
+export function attachProductionMaterialProgress(payload, materialPayload = {}) {
+  const materialProgressByOrderNo = materialPayload?.byOrderNo || {};
+  const orders = (payload?.orders || []).map((order) => sanitizeCachedOrder(order, materialProgressByOrderNo));
+  const domesticCustomizationOrders = (payload?.domesticCustomizationOrders || [])
+    .map((order) => sanitizeCachedOrder(order, materialProgressByOrderNo));
+  const uniqueProductionOrders = new Map();
+  for (const order of [...orders, ...domesticCustomizationOrders]) {
+    if (order.isInProduction && order.orderNo) uniqueProductionOrders.set(order.orderNo, order);
+  }
+  const materialProgresses = [...uniqueProductionOrders.values()]
+    .map((order) => order.materialProgress)
+    .filter(Boolean);
+  return {
+    ...payload,
+    counts: {
+      ...(payload?.counts || {}),
+      materialReadyOrders: materialProgresses.filter((item) => item.status === "ready").length,
+      materialPartialOrders: materialProgresses.filter((item) => item.status === "partial").length,
+      materialPendingOrders: materialProgresses.filter((item) => item.status === "pending").length,
+      materialReviewOrders: materialProgresses.filter((item) => item.status === "review").length,
+    },
+    materialSyncedAt: materialPayload?.syncedAt || payload?.materialSyncedAt || "",
+    orders,
+    domesticCustomizationOrders,
+  };
+}
+
+export function redactOutsourcingSupplierMentions(payload, redactionEntries = []) {
+  const sanitizeOrder = (order) => ({
+    ...order,
+    deliveryStatus: redactSupplierText(order.deliveryStatus, redactionEntries),
+    progressSummary: redactSupplierText(order.progressSummary, redactionEntries),
+    remark: redactSupplierText(order.remark, redactionEntries),
+  });
+  return {
+    ...payload,
+    orders: (payload?.orders || []).map(sanitizeOrder),
+    domesticCustomizationOrders: (payload?.domesticCustomizationOrders || []).map(sanitizeOrder),
+  };
 }
 
 export function normalizeOutsourcingOrders(records) {

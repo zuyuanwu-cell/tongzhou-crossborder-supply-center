@@ -1696,6 +1696,7 @@ export type OutsourcingProductionOrder = {
   orderNo: string;
   productName: string;
   supplier: string;
+  supplierAlias?: string;
   status: string;
   isInProduction?: boolean;
   productionRegion?: string;
@@ -1723,6 +1724,39 @@ export type OutsourcingProductionOrder = {
   outerPackTest?: string;
   preProductionSampleConfirmed?: string;
   remark?: string;
+  materialProgress?: {
+    orderNo: string;
+    status: "review" | "pending" | "partial" | "ready";
+    statusLabel: string;
+    materialReady: boolean;
+    totalMaterials: number;
+    readyMaterials: number;
+    pendingMaterials: number;
+    progressPercent: number;
+    packaging: { total: number; ready: number; pending: number };
+    exceptionalInner: { total: number; ready: number; pending: number };
+    purchaseOrderCount: number;
+    inboundDocumentCount: number;
+    lastPurchaseAt: string;
+    lastInboundAt: string;
+    readyAt: string;
+    message: string;
+    source: string;
+    materials: Array<{
+      id: string;
+      sku: string;
+      name: string;
+      category: string;
+      kind: "packaging" | "inner";
+      unit: string;
+      requiredQty: number;
+      arrivedQty: number;
+      latestInboundAt: string;
+      supplierAlias: string;
+      status: "pending" | "partial" | "ready";
+      statusLabel: string;
+    }>;
+  };
 };
 
 export type StockupRecommendation = {

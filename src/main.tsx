@@ -4743,6 +4743,63 @@ function productionDeadline(expectedAt?: string, completedAt?: string) {
   return { text: `距预计完成 ${diff} 天`, tone: diff <= 3 ? "warning" : "good" };
 }
 
+type OutsourcingOrder = StockupPayload["outsourcingQueue"][number]["orders"][number];
+
+function materialSummaryForOrders(orders: OutsourcingOrder[]) {
+  const progresses = orders.map((order) => order.materialProgress).filter(Boolean) as NonNullable<OutsourcingOrder["materialProgress"]>[];
+  const total = progresses.reduce((sum, item) => sum + item.totalMaterials, 0);
+  const ready = progresses.reduce((sum, item) => sum + item.readyMaterials, 0);
+  if (!progresses.length || progresses.some((item) => item.status === "review")) {
+    return { status: "review", label: "数据待核查", detail: total ? `${ready}/${total} 项 · 含待核查单` : "未识别包材" };
+  }
+  if (progresses.every((item) => item.status === "ready")) return { status: "ready", label: "物料到齐", detail: `${ready}/${total} 项` };
+  if (progresses.some((item) => item.status === "partial" || item.status === "ready")) return { status: "partial", label: "部分到齐", detail: `${ready}/${total} 项` };
+  return { status: "pending", label: "待到货", detail: `${ready}/${total} 项` };
+}
+
+function ProductionMaterialDetail({ orders }: { orders: OutsourcingOrder[] }) {
+  return (
+    <section className="production-material-panel" aria-label="物料采购与到货明细">
+      <div className="production-material-panel-heading">
+        <div><strong>物料采购与到货</strong><span>包材必须全部到齐；内料仅在供应商与加工方不同时纳入。</span></div>
+        <small>供应商信息已脱敏</small>
+      </div>
+      <div className="production-material-orders">
+        {orders.map((order) => {
+          const progress = order.materialProgress;
+          if (!progress) return <article className="production-material-order review" key={order.id}><div className="production-material-order-heading"><strong>{order.orderNo || "委外加工单"}</strong><span className="production-material-status review">等待同步</span></div><p>采购与入库明细尚未完成同步。</p></article>;
+          return (
+            <article className={`production-material-order ${progress.status}`} key={order.id}>
+              <div className="production-material-order-heading">
+                <div><strong>{order.orderNo || "委外加工单"}</strong><span>{progress.message}</span></div>
+                <span className={`production-material-status ${progress.status}`}>{progress.statusLabel}</span>
+              </div>
+              <div className="production-material-progress" aria-label={`${progress.statusLabel}，完成 ${progress.progressPercent}%`}>
+                <span style={{ width: `${Math.max(0, Math.min(100, progress.progressPercent))}%` }} />
+              </div>
+              <div className="production-material-metrics">
+                <span>包材 <strong>{progress.packaging.ready}/{progress.packaging.total}</strong></span>
+                <span>异厂内料 <strong>{progress.exceptionalInner.ready}/{progress.exceptionalInner.total}</strong></span>
+                <span>采购单 <strong>{progress.purchaseOrderCount}</strong></span>
+                <span>入库单 <strong>{progress.inboundDocumentCount}</strong></span>
+              </div>
+              {progress.materials.length ? <div className="production-material-list">
+                {progress.materials.map((material) => (
+                  <div className="production-material-line" key={material.id}>
+                    <div><strong>{material.name}</strong><small>{material.sku} · {material.category} · {material.supplierAlias}</small></div>
+                    <span>{formatNumber(material.arrivedQty)} / {formatNumber(material.requiredQty)} {material.unit}</span>
+                    <em className={material.status}>{material.statusLabel}</em>
+                  </div>
+                ))}
+              </div> : <p>未识别到包材采购明细，请检查采购订单是否已关联当前生产单。</p>}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function fallbackProductionTimeline(
   order: StockupWorkflowPayload["stockupOrders"][number],
   lines: StockupWorkflowPayload["stockupLines"],
@@ -4848,6 +4905,8 @@ function ProductionCenter({ stockupPayload, onRefresh, syncing }: {
     const lastActivity = validTime(order.lastFollowedAt || order.updatedAt || order.createdAt);
     return lastActivity > 0 && Date.now() - lastActivity >= 7 * 86400000;
   }).length;
+  const materialReadyOrders = orders.filter((order) => order.materialProgress?.status === "ready").length;
+  const materialAttentionOrders = orders.filter((order) => order.materialProgress && order.materialProgress.status !== "ready").length;
   const currentLabel = activeTab === "tongzhou" ? "同舟供应链生产单" : "国内定制";
 
   return (
@@ -4876,8 +4935,9 @@ function ProductionCenter({ stockupPayload, onRefresh, syncing }: {
       <section className="production-summary-strip" aria-label="生产中心待办概览">
         <article><span>在产 SKU</span><strong>{items.length ? formatNumber(items.length) : "—"}</strong><small>{currentLabel}</small></article>
         <article><span>加工单</span><strong>{orders.length ? formatNumber(orders.length) : "—"}</strong><small>仅统计进行中</small></article>
-        <article><span>在产数量</span><strong>{inProductionQty ? formatNumber(inProductionQty) : "—"}</strong><small>按加工单单位汇总</small></article>
-        <article><span>逾期 / 待跟进</span><strong>{overdueOrders || followUpDue ? `${formatNumber(overdueOrders)} / ${formatNumber(followUpDue)}` : "—"}</strong><small>交期已过 / 7 天未更新</small></article>
+        <article><span>在产总量</span><strong>{inProductionQty ? formatNumber(inProductionQty) : "—"}</strong><small>按加工单单位汇总</small></article>
+        <article><span>物料到齐</span><strong>{orders.length ? `${formatNumber(materialReadyOrders)} / ${formatNumber(orders.length)}` : "—"}</strong><small>{materialAttentionOrders ? `${formatNumber(materialAttentionOrders)} 张需跟进或核查` : "采购与入库进度"}</small></article>
+        <article><span>交期风险</span><strong>{overdueOrders || followUpDue ? `${formatNumber(overdueOrders)} / ${formatNumber(followUpDue)}` : "—"}</strong><small>逾期 / 7 天未更新</small></article>
       </section>
 
       <div id="production-panel" role="tabpanel" aria-labelledby={activeTab === "tongzhou" ? "production-tab-tongzhou" : "production-tab-domestic"}>
@@ -4920,7 +4980,8 @@ function OutsourcingProductionQueue({ items, syncedAt, loading, title, scope }: 
         actorName: "",
         tone: "done",
       });
-      if (order.actualMaterialReadyAt) events.push({
+      const materialProgress = order.materialProgress;
+      if (order.actualMaterialReadyAt && materialProgress?.status !== "ready") events.push({
         id: `outsourcing-material-ready:${order.id}`,
         occurredAt: order.actualMaterialReadyAt,
         type: "material_ready",
@@ -4928,6 +4989,20 @@ function OutsourcingProductionQueue({ items, syncedAt, loading, title, scope }: 
         description: order.materialReady ? `物料状态：${order.materialReady}` : "已记录包材到齐日期",
         actorName: "来源：简道云委外加工单",
         tone: "done",
+      });
+      const materialEventAt = materialProgress?.readyAt || materialProgress?.lastInboundAt || materialProgress?.lastPurchaseAt || order.updatedAt || syncedAt || "";
+      if (materialProgress && materialEventAt) events.push({
+        id: `outsourcing-material-progress:${order.id}`,
+        occurredAt: materialEventAt,
+        type: "material_progress",
+        title: `${orderLabel} ${materialProgress.statusLabel}`,
+        description: [
+          `包材 ${materialProgress.packaging.ready}/${materialProgress.packaging.total}`,
+          materialProgress.exceptionalInner.total > 0 ? `异厂内料 ${materialProgress.exceptionalInner.ready}/${materialProgress.exceptionalInner.total}` : "",
+          `${materialProgress.readyMaterials}/${materialProgress.totalMaterials} 项完成`,
+        ].filter(Boolean).join(" · "),
+        actorName: "来源：采购订单 / 采购入库单",
+        tone: materialProgress.status === "ready" ? "done" : materialProgress.status === "partial" ? "current" : "warning",
       });
       const followedAt = order.lastFollowedAt || (order.updatedAt !== order.createdAt ? order.updatedAt : "");
       if (followedAt) {
@@ -5012,10 +5087,10 @@ function OutsourcingProductionQueue({ items, syncedAt, loading, title, scope }: 
         </div>
         <div className="production-panel-meta"><span className="status-pill muted">{formatNumber(items.length)} 个 SKU</span><small>{syncedAt ? `更新于 ${formatDateTime(syncedAt)}` : "等待首次同步"}</small></div>
       </div>
-      <div className="stockup-table">
-        <div className="stockup-row stockup-head outsourcing-queue-head">
-          <span>SKU / 产品</span><span>在产数量</span><span>加工单</span><span>生产时长</span><span>最近跟进</span><span>交期状态</span><span>跟进轨迹</span>
-        </div>
+        <div className="stockup-table">
+          <div className="stockup-row stockup-head outsourcing-queue-head">
+          <span>SKU / 产品</span><span>在产数量</span><span>加工单</span><span>生产时长</span><span>物料进度</span><span>最近跟进</span><span>交期状态</span><span>跟进轨迹</span>
+          </div>
         {items.length ? items.map((item) => {
           const timeline = timelineFor(item);
           const expanded = expandedItems.has(item.id);
@@ -5023,17 +5098,22 @@ function OutsourcingProductionQueue({ items, syncedAt, loading, title, scope }: 
           const latestFollowOrder = [...item.orders].sort((left, right) => validTime(right.lastFollowedAt || right.updatedAt) - validTime(left.lastFollowedAt || left.updatedAt))[0];
           const latestFollowedAt = latestFollowOrder?.lastFollowedAt || latestFollowOrder?.updatedAt || "";
           const latestFollowText = latestFollowOrder?.remark || latestFollowOrder?.progressSummary || latestFollowOrder?.deliveryStatus || "暂无跟单备注";
+          const materialSummary = materialSummaryForOrders(item.orders);
           return (
             <article className={`stockup-row outsourcing-queue-row ${expanded ? "expanded" : ""}`} key={item.id}>
               <div className="movement-product"><MovementThumb item={item} /><div><strong>{item.sku}</strong><span>{item.name}</span></div></div>
               <strong>{formatNumber(item.inProductionQty)} {item.unit}</strong>
               <span>{formatNumber(item.orderCount)} 张</span>
               <div className="outsourcing-age-cell"><strong>{elapsedProductionText(timeline.openedAt)}</strong><small>{timeline.openedAt ? `${formatDate(timeline.openedAt)} 开单` : "未记录开单日期"}</small></div>
+              <div className="production-material-cell"><span className={`production-material-status ${materialSummary.status}`}>{materialSummary.label}</span><small>{materialSummary.detail}</small></div>
               <div className="production-follow-cell"><strong>{latestFollowedAt ? formatDate(latestFollowedAt) : "待跟进"}</strong><span title={latestFollowText}>{latestFollowText}</span></div>
               <span className={`production-deadline-pill ${deadline.tone}`}>{deadline.text}</span>
               <button className="production-timeline-toggle compact" type="button" aria-expanded={expanded} onClick={() => toggleItem(item.id)}>{expanded ? "收起轨迹" : "查看轨迹"}<em>{timeline.events.length}</em><ChevronDown size={15} /></button>
-              {expanded ? <div className="production-timeline outsourcing-production-timeline" aria-label={`${item.sku} 跟进记录时间线`}>
-                {timeline.events.map((event) => <div className={`production-timeline-event ${event.tone}`} key={event.id}><span className="production-timeline-marker" /><time>{formatDateTime(event.occurredAt)}</time><div><strong>{event.title}</strong>{event.description ? <span>{event.description}</span> : null}{event.actorName ? <small>{event.actorName}</small> : null}</div></div>)}
+              {expanded ? <div className="production-expanded-detail">
+                <ProductionMaterialDetail orders={item.orders} />
+                <div className="production-timeline outsourcing-production-timeline" aria-label={`${item.sku} 跟进记录时间线`}>
+                  {timeline.events.map((event) => <div className={`production-timeline-event ${event.tone}`} key={event.id}><span className="production-timeline-marker" /><time>{formatDateTime(event.occurredAt)}</time><div><strong>{event.title}</strong>{event.description ? <span>{event.description}</span> : null}{event.actorName ? <small>{event.actorName}</small> : null}</div></div>)}
+                </div>
               </div> : null}
             </article>
           );

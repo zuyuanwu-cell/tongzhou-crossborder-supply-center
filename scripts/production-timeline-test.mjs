@@ -103,6 +103,8 @@ const outsourcingPayload = buildOutsourcingOrderPayload([
     _widget_1753770713537: { value: "TZKJ-NK017" },
     _widget_1689415936715: { value: "CD-TZ-001" },
     _widget_1666513866235: { value: "同舟生产商品" },
+    _widget_1666521891102: { value: "需要脱敏的加工厂" },
+    _widget_1741698535338: { value: "factory-sensitive-id" },
     _widget_1690015838240: { value: "进行中" },
     _widget_1742792727818: { value: "国内" },
     _widget_1743431393378: { value: "定制" },
@@ -139,6 +141,9 @@ assert.deepEqual(outsourcingPayload.orders.map((order) => order.id), ["tongzhou-
 assert.deepEqual(outsourcingPayload.domesticCustomizationOrders.map((order) => order.id), ["tongzhou-active", "domestic-active"], "国内定制视角只展示进行中记录");
 assert.equal(outsourcingPayload.domesticCustomizationOrders[1].productSku, "CD26063717");
 assert.equal(outsourcingPayload.domesticCustomizationOrders[0].lastFollowedAt, "2026-08-08T00:00:00.000Z");
+assert.match(outsourcingPayload.orders[0].supplier, /^供应商 [A-Z0-9]{4}$/);
+assert.equal("raw" in outsourcingPayload.orders[0], false, "生产接口不应返回简道云原始记录");
+assert.equal(JSON.stringify(outsourcingPayload).includes("需要脱敏的加工厂"), false, "生产接口不应暴露加工方原名");
 
 const stockupPayload = buildStockupPayload({ generatedAt: "", items: [{
   id: "CD26063717",

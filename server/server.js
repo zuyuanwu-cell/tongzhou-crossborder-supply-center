@@ -5,12 +5,14 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
-import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
 import { buildWarehouseInfoPayload } from "./normalize-warehouse-info.js";
-import { buildOutsourcingOrderPayload } from "./normalize-outsourcing-orders.js";
+import { attachProductionMaterialProgress, buildOutsourcingOrderPayload, redactOutsourcingSupplierMentions } from "./normalize-outsourcing-orders.js";
+import { buildProductionMaterialProgress, emptyProductionMaterialPayload } from "./production-materials.js";
+import { buildSupplierRedactionEntries } from "./supplier-privacy.js";
 import { buildProductionTimelines } from "./production-timeline.js";
 import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js";
 import { JIANYUN_FORMS } from "./field-mapping.js";
@@ -95,6 +97,7 @@ const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
+const productionMaterialCachePath = resolve(cacheDir, "production-materials.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
 const performanceMaterializationCachePath = resolve(cacheDir, "performance-analytics-materialized.json.gz");
@@ -123,7 +126,11 @@ let cachedAiConfig = loadJsonCache(aiConfigCachePath) || buildAiConfig({});
 let cachedWecomNotifications = loadJsonCache(wecomNotificationCachePath) || buildWecomNotificationPayload({});
 let cachedActionLog = normalizeActionLog(loadJsonCache(actionLogCachePath));
 let cachedDistributorApplications = normalizeDistributorApplications(loadJsonCache(distributorApplicationsPath));
-let cachedOutsourcingOrders = loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty");
+let cachedProductionMaterials = loadJsonCache(productionMaterialCachePath) || emptyProductionMaterialPayload("empty");
+let cachedOutsourcingOrders = attachProductionMaterialProgress(
+  loadJsonCache(outsourcingOrderCachePath) || buildOutsourcingOrderPayload([], "empty"),
+  cachedProductionMaterials,
+);
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 performanceAnalyticsStore.replaceSalesFacts(cachedOrdersSync.orders || [], cachedOrdersSync.syncedAt || "");
@@ -322,6 +329,10 @@ function saveDistributorApplicationsCache() {
 
 function saveOutsourcingOrderCache(payload) {
   saveJsonCache(outsourcingOrderCachePath, payload);
+}
+
+function saveProductionMaterialCache(payload) {
+  saveJsonCache(productionMaterialCachePath, payload);
 }
 
 function normalizeOrderAnalysisSettings(input = {}) {
@@ -4769,7 +4780,12 @@ async function refreshWarehouseInfoCache() {
 
 async function refreshOutsourcingOrderCache() {
   if (!hasJdyCredentials()) {
-    cachedOutsourcingOrders = buildOutsourcingOrderPayload([], "empty");
+    cachedProductionMaterials = emptyProductionMaterialPayload("empty");
+    cachedOutsourcingOrders = attachProductionMaterialProgress(
+      buildOutsourcingOrderPayload([], "empty"),
+      cachedProductionMaterials,
+    );
+    saveProductionMaterialCache(cachedProductionMaterials);
     saveOutsourcingOrderCache(cachedOutsourcingOrders);
     return {
       ...cachedOutsourcingOrders,
@@ -4778,9 +4794,63 @@ async function refreshOutsourcingOrderCache() {
   }
 
   const records = await fetchAllJdyOutsourcingOrders();
-  cachedOutsourcingOrders = buildOutsourcingOrderPayload(records, "jiandaoyun");
+  const basePayload = buildOutsourcingOrderPayload(records, "jiandaoyun");
+  const activeOrderNos = new Set(
+    [...(basePayload.orders || []), ...(basePayload.domesticCustomizationOrders || [])]
+      .filter((order) => order.isInProduction && order.orderNo)
+      .map((order) => order.orderNo),
+  );
+  const orderNoField = JIANYUN_FORMS.outsourcingOrders.fields.orderNo;
+  const activeRecords = records.filter((record) => {
+    const field = record?.[orderNoField];
+    const orderNo = String(field && typeof field === "object" && "value" in field ? field.value : field || "").trim();
+    return activeOrderNos.has(orderNo);
+  });
+  const outsourcingFields = JIANYUN_FORMS.outsourcingOrders.fields;
+  const outsourcingDetailFields = JIANYUN_FORMS.outsourcingOrders.detailFields;
+  const supplierTextSamples = [...(basePayload.orders || []), ...(basePayload.domesticCustomizationOrders || [])]
+    .flatMap((order) => [order.remark, order.progressSummary, order.deliveryStatus])
+    .filter(Boolean);
+  const supplierRedactionSources = activeRecords.flatMap((record) => {
+    const detailsField = record?.[outsourcingFields.details];
+    const detailsValue = detailsField && typeof detailsField === "object" && "value" in detailsField ? detailsField.value : detailsField;
+    const details = Array.isArray(detailsValue) ? detailsValue : [];
+    return [
+      {
+        id: record?.[outsourcingFields.factoryId]?.value ?? record?.[outsourcingFields.factoryId],
+        name: record?.[outsourcingFields.factoryFullName]?.value ?? record?.[outsourcingFields.factoryFullName],
+      },
+      {
+        id: record?.[outsourcingFields.factoryId]?.value ?? record?.[outsourcingFields.factoryId],
+        name: record?.[outsourcingFields.supplier]?.value ?? record?.[outsourcingFields.supplier],
+      },
+      ...details.map((detail) => ({
+        id: detail?.[outsourcingDetailFields.supplierId]?.value ?? detail?.[outsourcingDetailFields.supplierId],
+        name: detail?.[outsourcingDetailFields.supplier]?.value ?? detail?.[outsourcingDetailFields.supplier],
+      })),
+    ];
+  });
+  let supplierRedactionEntries = buildSupplierRedactionEntries(supplierRedactionSources, supplierTextSamples);
+  let materialWarning = "";
+  try {
+    const { purchaseRecords, inboundRecords } = await fetchAllJdyProductionMaterials([...activeOrderNos]);
+    const purchaseFields = JIANYUN_FORMS.purchaseOrders.fields;
+    supplierRedactionEntries = buildSupplierRedactionEntries([
+      ...supplierRedactionSources,
+      ...purchaseRecords.map((record) => ({
+        id: record?.[purchaseFields.supplierId]?.value ?? record?.[purchaseFields.supplierId],
+        name: record?.[purchaseFields.supplier]?.value ?? record?.[purchaseFields.supplier],
+      })),
+    ], supplierTextSamples);
+    cachedProductionMaterials = buildProductionMaterialProgress(activeRecords, purchaseRecords, inboundRecords, "jiandaoyun");
+    saveProductionMaterialCache(cachedProductionMaterials);
+  } catch (error) {
+    materialWarning = `物料采购与入库进度同步失败，当前保留上一次结果：${error.message || "未知错误"}`;
+  }
+  const safeBasePayload = redactOutsourcingSupplierMentions(basePayload, supplierRedactionEntries);
+  cachedOutsourcingOrders = attachProductionMaterialProgress(safeBasePayload, cachedProductionMaterials);
   saveOutsourcingOrderCache(cachedOutsourcingOrders);
-  return cachedOutsourcingOrders;
+  return materialWarning ? { ...cachedOutsourcingOrders, warning: materialWarning } : cachedOutsourcingOrders;
 }
 
 async function handleQualificationFile(req, res, url) {
