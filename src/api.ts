@@ -1729,6 +1729,7 @@ export type StockupRecommendation = {
     producedQty: number;
     inProductionQty: number;
     createdAt?: string;
+    updatedAt?: string;
     expectedFinishedAt?: string;
     remark?: string;
   }>;
@@ -1844,6 +1845,8 @@ export type StockupWorkflowShipmentLine = {
 
 export type StockupWorkflowShipment = {
   id: string;
+  createdAt?: string;
+  updatedAt?: string;
   shipmentNo: string;
   stockupOrderRecordId: string;
   demandRecordIds: string[];
@@ -2092,6 +2095,8 @@ export type StockupWorkflowPayload = {
   }>;
   stockupOrders: Array<{
     id: string;
+    createdAt?: string;
+    updatedAt?: string;
     orderNo: string;
     demandBatchNo: string;
     executionMode: string;
@@ -2104,12 +2109,15 @@ export type StockupWorkflowPayload = {
     completedQty: number;
     shippedQty: number;
     receivedQty: number;
+    stockupDate?: string;
     expectedCompletedAt: string;
     actualCompletedAt?: string;
     dataVersion?: number;
   }>;
   stockupLines: Array<{
     id: string;
+    createdAt?: string;
+    updatedAt?: string;
     legacyOrderNo?: string;
     orderRecordId: string;
     demandRecordId: string;
@@ -2128,8 +2136,25 @@ export type StockupWorkflowPayload = {
     baseCurrency: string;
     baseExchangeRate: number;
     actualBaseUnitCost: number;
+    expectedReadyAt?: string;
     actualReadyAt?: string;
     status: string;
+    exceptionReason?: string;
+  }>;
+  productionTimelines?: Array<{
+    orderRecordId: string;
+    openedAt: string;
+    updatedAt: string;
+    expectedCompletedAt: string;
+    events: Array<{
+      id: string;
+      occurredAt: string;
+      type: string;
+      title: string;
+      description: string;
+      actorName: string;
+      tone: "done" | "current" | "warning" | "planned" | string;
+    }>;
   }>;
   shipments: StockupWorkflowShipment[];
   fees: StockupWorkflowFee[];

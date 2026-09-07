@@ -27,6 +27,14 @@ function normalizeDate(value) {
   return date.toISOString();
 }
 
+function recordDate(record, keys) {
+  for (const key of keys) {
+    const value = normalizeDate(record?.[key]);
+    if (value) return value;
+  }
+  return "";
+}
+
 export function normalizeOutsourcingOrders(records) {
   const fields = JIANYUN_FORMS.outsourcingOrders.fields;
   return records
@@ -49,7 +57,8 @@ export function normalizeOutsourcingOrders(records) {
         plannedQty,
         producedQty,
         inProductionQty: isInProduction ? Math.max(0, directInProductionQty) : 0,
-        createdAt: normalizeDate(valueOf(record, fields.createdAt)),
+        createdAt: normalizeDate(valueOf(record, fields.createdAt)) || recordDate(record, ["createTime", "create_time", "createdAt", "created_at"]),
+        updatedAt: recordDate(record, ["updateTime", "update_time", "updatedAt", "updated_at"]),
         expectedFinishedAt: normalizeDate(valueOf(record, fields.expectedFinishedAt)),
         remark: text(valueOf(record, fields.remark)),
         raw: record,

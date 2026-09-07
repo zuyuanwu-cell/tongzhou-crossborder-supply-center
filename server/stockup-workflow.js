@@ -59,6 +59,10 @@ function recordCreatedAt(record) {
   return dateValue(record?.createTime || record?.create_time || record?.createdAt || record?.created_at);
 }
 
+function recordUpdatedAt(record) {
+  return dateValue(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at);
+}
+
 function round(value, decimals = 2) {
   const factor = 10 ** decimals;
   return Math.round((Number(value) + Number.EPSILON) * factor) / factor;
@@ -172,6 +176,7 @@ function normalizeStockupOrder(record) {
   return {
     id: recordId(record),
     createdAt: recordCreatedAt(record),
+    updatedAt: recordUpdatedAt(record),
     orderNo: readText(record, fields.orderNo, readText(record, fields.serialNo)),
     demandBatchNo: readText(record, fields.demandBatchNo),
     demandRecordIds: readText(record, fields.demandRecordIds).split(/[,，\s]+/).filter(Boolean),
@@ -198,6 +203,7 @@ function normalizeStockupLine(record) {
   return {
     id: recordId(record),
     createdAt: recordCreatedAt(record),
+    updatedAt: recordUpdatedAt(record),
     legacyOrderNo: readText(record, fields.legacyOrderNo),
     orderRecordId: readText(record, fields.orderRecordId),
     demandRecordId: readText(record, fields.demandRecordId),
@@ -276,6 +282,8 @@ function normalizeShipment(record) {
   const lines = aggregateShipmentLines(rawLines, id);
   return {
     id,
+    createdAt: recordCreatedAt(record),
+    updatedAt: recordUpdatedAt(record),
     legacyOrderNo: readText(record, fields.legacyOrderNo),
     shipmentNo: readText(record, fields.shipmentBatchNo, readText(record, fields.legacyOrderNo, id)),
     stockupOrderRecordId: readText(record, fields.stockupOrderRecordId),

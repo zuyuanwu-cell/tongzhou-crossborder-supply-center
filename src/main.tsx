@@ -4708,6 +4708,89 @@ function isActiveStockupLine(item: StockupWorkflowPayload["stockupLines"][number
   return !/已完成|已取消|已作废|关闭/.test(item.status) && targetQty > item.shippedQty;
 }
 
+type ProductionTimeline = NonNullable<StockupWorkflowPayload["productionTimelines"]>[number];
+type ProductionTimelineEvent = ProductionTimeline["events"][number];
+
+function validTime(value?: string) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function elapsedDaysFrom(value?: string) {
+  const time = validTime(value);
+  return time ? Math.max(0, Math.floor((Date.now() - time) / 86400000)) : null;
+}
+
+function elapsedProductionText(value?: string) {
+  const days = elapsedDaysFrom(value);
+  if (days === null) return "时长待补充";
+  return days === 0 ? "今天开单" : `已进行 ${days} 天`;
+}
+
+function productionDeadline(expectedAt?: string, completedAt?: string) {
+  if (completedAt) return { text: `已于 ${formatDate(completedAt)} 完成`, tone: "done" };
+  const expectedTime = validTime(expectedAt);
+  if (!expectedTime) return { text: "未配置预计完成", tone: "muted" };
+  const diff = Math.ceil((expectedTime - Date.now()) / 86400000);
+  if (diff < 0) return { text: `已逾期 ${Math.abs(diff)} 天`, tone: "overdue" };
+  if (diff === 0) return { text: "预计今天完成", tone: "warning" };
+  return { text: `距预计完成 ${diff} 天`, tone: diff <= 3 ? "warning" : "good" };
+}
+
+function fallbackProductionTimeline(
+  order: StockupWorkflowPayload["stockupOrders"][number],
+  lines: StockupWorkflowPayload["stockupLines"],
+  shipments: StockupWorkflowPayload["shipments"],
+): ProductionTimeline {
+  const orderLines = lines.filter((line) => line.orderRecordId === order.id);
+  const openedAt = order.createdAt || orderLines.map((line) => line.createdAt || "").filter(Boolean).sort()[0] || order.stockupDate || "";
+  const updatedAt = [order.updatedAt, ...orderLines.map((line) => line.updatedAt)].filter(Boolean).sort().at(-1) || openedAt;
+  const events: ProductionTimelineEvent[] = [];
+  if (openedAt) events.push({ id: `opened:${order.id}`, occurredAt: openedAt, type: "opened", title: "生产单已开立", description: `${order.orderNo || "生产单"} · 计划 ${formatNumber(order.plannedQty)}`, actorName: "", tone: "done" });
+  if (updatedAt && updatedAt !== openedAt) events.push({ id: `snapshot:${order.id}`, occurredAt: updatedAt, type: "snapshot", title: "当前生产状态", description: `${order.status || "执行中"} · 完工 ${formatNumber(order.completedQty)} · 发货 ${formatNumber(order.shippedQty)}`, actorName: "", tone: "current" });
+  shipments.filter((shipment) => shipment.stockupOrderRecordId === order.id && shipment.shippedAt).forEach((shipment) => events.push({ id: `shipment:${shipment.id}`, occurredAt: shipment.shippedAt, type: "shipment", title: "已登记发货", description: [shipment.shipmentNo, shipment.destinationWarehouseName].filter(Boolean).join(" · "), actorName: "", tone: "done" }));
+  if (order.expectedCompletedAt) events.push({ id: `expected:${order.id}`, occurredAt: order.expectedCompletedAt, type: "expected", title: "预计完成", description: "计划节点，实际进度以最新跟进为准", actorName: "", tone: "planned" });
+  events.sort((left, right) => validTime(left.occurredAt) - validTime(right.occurredAt));
+  return { orderRecordId: order.id, openedAt, updatedAt, expectedCompletedAt: order.expectedCompletedAt || "", events };
+}
+
+function ProductionJourney({ timeline, completedAt, expanded, onToggle, label = "跟进记录" }: {
+  timeline: ProductionTimeline;
+  completedAt?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  label?: string;
+}) {
+  const deadline = productionDeadline(timeline.expectedCompletedAt, completedAt);
+  return (
+    <>
+      <div className="production-time-summary">
+        <div className="production-age-block">
+          <span>开单至今</span>
+          <strong>{elapsedProductionText(timeline.openedAt)}</strong>
+          <small>{timeline.openedAt ? formatDate(timeline.openedAt) : "缺少开单时间"}</small>
+        </div>
+        <span className={`production-deadline-pill ${deadline.tone}`}>{deadline.text}</span>
+        <button className="production-timeline-toggle" type="button" aria-expanded={expanded} onClick={onToggle}>
+          {expanded ? `收起${label}` : `展开${label}`}<em>{timeline.events.length}</em><ChevronDown size={16} />
+        </button>
+      </div>
+      {expanded ? (
+        <div className="production-timeline" aria-label={`${label}时间线`}>
+          {timeline.events.length ? timeline.events.map((event) => (
+            <div className={`production-timeline-event ${event.tone}`} key={event.id}>
+              <span className="production-timeline-marker" />
+              <time>{formatDateTime(event.occurredAt)}</time>
+              <div><strong>{event.title}</strong>{event.description ? <span>{event.description}</span> : null}{event.actorName ? <small>操作人：{event.actorName}</small> : null}</div>
+            </div>
+          )) : <div className="production-timeline-empty">暂无历史跟进记录，后续更新生产进度后会自动沉淀。</div>}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function ProductionCenter({ stockupPayload, workflowPayload, onRefreshWorkflow, syncing }: {
   stockupPayload: StockupPayload | null;
   workflowPayload: StockupWorkflowPayload | null;
@@ -4758,12 +4841,71 @@ function ProductionCenter({ stockupPayload, workflowPayload, onRefreshWorkflow, 
 
       {workflowPayload?.warnings?.length ? <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div> : null}
       <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} scope="production" />
-      <OutsourcingProductionQueue items={outsourcingQueue} />
+      <OutsourcingProductionQueue items={outsourcingQueue} syncedAt={stockupPayload?.outsourcingSyncedAt} />
     </main>
   );
 }
 
-function OutsourcingProductionQueue({ items }: { items: StockupPayload["outsourcingQueue"] }) {
+function OutsourcingProductionQueue({ items, syncedAt }: { items: StockupPayload["outsourcingQueue"]; syncedAt?: string }) {
+  const [expandedItems, setExpandedItems] = React.useState<Set<string>>(() => new Set());
+
+  function toggleItem(id: string) {
+    setExpandedItems((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function timelineFor(item: StockupPayload["outsourcingQueue"][number]): ProductionTimeline {
+    const events: ProductionTimelineEvent[] = [];
+    const orders = [...item.orders].sort((left, right) => validTime(left.createdAt) - validTime(right.createdAt));
+    const openedAt = orders.map((order) => order.createdAt || "").filter(Boolean).sort()[0] || item.createdAt || "";
+    orders.forEach((order) => {
+      if (order.createdAt) events.push({
+        id: `outsourcing-opened:${order.id}`,
+        occurredAt: order.createdAt,
+        type: "opened",
+        title: `${order.orderNo || "委外加工单"} 已开单`,
+        description: [order.supplier, `计划 ${formatNumber(order.plannedQty)} ${order.unit || item.unit}`].filter(Boolean).join(" · "),
+        actorName: "",
+        tone: "done",
+      });
+      if (order.updatedAt && order.updatedAt !== order.createdAt) events.push({
+        id: `outsourcing-updated:${order.id}`,
+        occurredAt: order.updatedAt,
+        type: "snapshot",
+        title: `最新跟进：${order.status || "生产中"}`,
+        description: [order.producedQty > 0 ? `已生产 ${formatNumber(order.producedQty)} ${order.unit || item.unit}` : "", order.remark].filter(Boolean).join(" · "),
+        actorName: "来源：委外加工单",
+        tone: "current",
+      });
+      if (order.expectedFinishedAt) events.push({
+        id: `outsourcing-expected:${order.id}`,
+        occurredAt: order.expectedFinishedAt,
+        type: "expected",
+        title: `${order.orderNo || "委外加工单"} 预计完成`,
+        description: "计划节点，实际完成时间以跟单更新为准",
+        actorName: "",
+        tone: "planned",
+      });
+    });
+    if (!events.some((event) => event.type === "snapshot") && syncedAt) events.push({
+      id: `outsourcing-current:${item.id}`,
+      occurredAt: syncedAt,
+      type: "snapshot",
+      title: "当前同步状态",
+      description: [item.orders[0]?.status || "生产中", item.remark].filter(Boolean).join(" · "),
+      actorName: "来源：委外加工单同步",
+      tone: "current",
+    });
+    events.sort((left, right) => validTime(left.occurredAt) - validTime(right.occurredAt));
+    const expectedCompletedAt = orders.map((order) => order.expectedFinishedAt || "").filter(Boolean).sort()[0] || "";
+    const actualEvents = events.filter((event) => event.tone !== "planned");
+    return { orderRecordId: item.id, openedAt, updatedAt: actualEvents.at(-1)?.occurredAt || openedAt, expectedCompletedAt, events };
+  }
+
   return (
     <section className="panel stockup-panel">
       <div className="panel-heading">
@@ -4776,19 +4918,27 @@ function OutsourcingProductionQueue({ items }: { items: StockupPayload["outsourc
       </div>
       <div className="stockup-table">
         <div className="stockup-row stockup-head outsourcing-queue-head">
-          <span>SKU / 产品</span><span>委外在产</span><span>加工单</span><span>开单时间</span><span>跟单备注</span><span>备货建议</span><span>说明</span>
+          <span>SKU / 产品</span><span>委外在产</span><span>加工单</span><span>开单时长</span><span>跟进记录</span><span>备货建议</span><span>说明</span>
         </div>
-        {items.length ? items.map((item) => (
-          <article className="stockup-row outsourcing-queue-row" key={item.id}>
-            <div className="movement-product"><MovementThumb item={item} /><div><strong>{item.sku}</strong><span>{item.name}</span></div></div>
-            <strong>{formatNumber(item.inProductionQty)} {item.unit}</strong>
-            <span>{formatNumber(item.orderCount)} 张</span>
-            <span>{formatDateTime(item.createdAt)}</span>
-            <span className="movement-insight outsourcing-remark has-tooltip">{item.remark || "无"}<span className="movement-tooltip insight-tooltip"><strong>跟单备注</strong>{item.remarks?.length ? item.remarks.slice(0, 8).map((remark, index) => <small key={`${item.id}-remark-${index}`}>{remark}</small>) : <small>暂无跟单备注。</small>}</span></span>
-            <span className={`status-pill ${item.inRecommendation ? "good" : "warning"}`}>{item.inRecommendation ? "建议内" : "建议外"}</span>
-            <span className="movement-suggestion">{item.note}</span>
-          </article>
-        )) : <div className="stockup-empty">暂无进行中的委外加工 SKU。</div>}
+        {items.length ? items.map((item) => {
+          const timeline = timelineFor(item);
+          const expanded = expandedItems.has(item.id);
+          const deadline = productionDeadline(timeline.expectedCompletedAt);
+          return (
+            <article className={`stockup-row outsourcing-queue-row ${expanded ? "expanded" : ""}`} key={item.id}>
+              <div className="movement-product"><MovementThumb item={item} /><div><strong>{item.sku}</strong><span>{item.name}</span></div></div>
+              <strong>{formatNumber(item.inProductionQty)} {item.unit}</strong>
+              <span>{formatNumber(item.orderCount)} 张</span>
+              <div className="outsourcing-age-cell"><strong>{elapsedProductionText(timeline.openedAt)}</strong><small>{timeline.openedAt ? formatDate(timeline.openedAt) : "未记录开单日期"}</small><em className={deadline.tone}>{deadline.text}</em></div>
+              <button className="production-timeline-toggle compact" type="button" aria-expanded={expanded} onClick={() => toggleItem(item.id)}>{expanded ? "收起轨迹" : "查看轨迹"}<em>{timeline.events.length}</em><ChevronDown size={15} /></button>
+              <span className={`status-pill ${item.inRecommendation ? "good" : "warning"}`}>{item.inRecommendation ? "建议内" : "建议外"}</span>
+              <span className="movement-suggestion">{item.note}</span>
+              {expanded ? <div className="production-timeline outsourcing-production-timeline" aria-label={`${item.sku} 跟进记录时间线`}>
+                {timeline.events.map((event) => <div className={`production-timeline-event ${event.tone}`} key={event.id}><span className="production-timeline-marker" /><time>{formatDateTime(event.occurredAt)}</time><div><strong>{event.title}</strong>{event.description ? <span>{event.description}</span> : null}{event.actorName ? <small>{event.actorName}</small> : null}</div></div>)}
+              </div> : null}
+            </article>
+          );
+        }) : <div className="stockup-empty">暂无进行中的委外加工 SKU。</div>}
       </div>
     </section>
   );
@@ -5097,6 +5247,7 @@ function StockupExecutionWorkbench({ payload, onRefresh, scope = "all" }: { payl
   const [shipmentFormVersion, setShipmentFormVersion] = React.useState(0);
   const [shipmentMeta, setShipmentMeta] = React.useState({ carrier: "", trackingNo: "", transportMode: "海运", defaultAllocationMethod: "weight", destinationWarehouseConnectionId: "" });
   const [cancellationDraft, setCancellationDraft] = React.useState<{ orderId: string; orderNo: string; reason: string } | null>(null);
+  const [expandedTimelineIds, setExpandedTimelineIds] = React.useState<Set<string>>(() => new Set());
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const selectedOrder = orders.find((item) => item.id === shipmentOrderId);
@@ -5105,6 +5256,16 @@ function StockupExecutionWorkbench({ payload, onRefresh, scope = "all" }: { payl
   const selectedOrderAvailableQty = selectedOrderLines.reduce((sum, item) => sum + lineAvailableQty(item), 0);
   const selectedWarehouse = warehouseOptions.find((item) => item.connectionId === shipmentMeta.destinationWarehouseConnectionId);
   const orderAvailableQty = React.useCallback((orderId: string) => activeLines.filter((item) => item.orderRecordId === orderId).reduce((sum, item) => sum + lineAvailableQty(item), 0), [activeLines, lineAvailableQty]);
+  const timelineByOrderId = new Map((payload?.productionTimelines ?? []).map((timeline) => [timeline.orderRecordId, timeline]));
+
+  function toggleTimeline(orderId: string) {
+    setExpandedTimelineIds((current) => {
+      const next = new Set(current);
+      if (next.has(orderId)) next.delete(orderId);
+      else next.add(orderId);
+      return next;
+    });
+  }
 
   React.useEffect(() => {
     if (autoSelectedStep.current || !payload) return;
@@ -5293,11 +5454,13 @@ function StockupExecutionWorkbench({ payload, onRefresh, scope = "all" }: { payl
             <div className="workflow-card-list execution-order-list">
               {orders.length ? orders.slice(0, 50).map((item) => {
                 const availableQty = orderAvailableQty(item.id);
+                const timeline = timelineByOrderId.get(item.id) || fallbackProductionTimeline(item, allLines, payload?.shipments ?? []);
                 return (
-                  <article key={item.id}>
+                  <article className="execution-order-card" key={item.id}>
                     <div><strong>{item.orderNo || item.id.slice(-8)}</strong><span>{item.project || item.destinationCountry || "未归属项目"}</span></div>
                     <span className={`status-pill ${availableQty > 0 ? "good" : "warning"}`}>{availableQty > 0 ? `可发 ${formatNumber(availableQty)}` : item.status || "待执行"}</span>
                     <dl><div><dt>计划</dt><dd>{formatNumber(item.plannedQty)}</dd></div><div><dt>完工</dt><dd>{formatNumber(item.completedQty)}</dd></div><div><dt>发货</dt><dd>{formatNumber(item.shippedQty)}</dd></div><div><dt>到仓</dt><dd>{formatNumber(item.receivedQty)}</dd></div></dl>
+                    {scope === "production" ? <ProductionJourney timeline={timeline} completedAt={item.actualCompletedAt} expanded={expandedTimelineIds.has(item.id)} onToggle={() => toggleTimeline(item.id)} /> : null}
                     <div className="execution-next-action"><span>下一步</span><strong>{availableQty > 0 ? "已有合格可发数量，可以进入步骤 3" : item.completedQty > 0 ? "录入检验合格数量后即可发货" : "先在下方录入已下单和完工数量"}</strong></div>
                     <div className="execution-order-actions">
                       <button className="ghost-button compact-button" type="button" onClick={() => setActiveStep("progress")}>更新进度</button>

@@ -11,6 +11,7 @@ import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
 import { buildWarehouseInfoPayload } from "./normalize-warehouse-info.js";
 import { buildOutsourcingOrderPayload } from "./normalize-outsourcing-orders.js";
+import { buildProductionTimelines } from "./production-timeline.js";
 import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js";
 import { JIANYUN_FORMS } from "./field-mapping.js";
 import { WAREHOUSE_CONNECTIONS, WMS_PROVIDERS } from "./warehouse-config.js";
@@ -1886,10 +1887,12 @@ function currentWmsWarehouseOptions() {
 
 function workflowWithWmsState(workflow) {
   const warehouseOptions = currentWmsWarehouseOptions();
+  const wmsPushTasks = publicWmsPushTasks(cachedWmsStockupPushes, warehouseOptions);
   return {
     ...workflow,
     warehouseOptions,
-    wmsPushTasks: publicWmsPushTasks(cachedWmsStockupPushes, warehouseOptions),
+    wmsPushTasks,
+    productionTimelines: buildProductionTimelines(workflow, cachedActionLog, wmsPushTasks),
   };
 }
 
