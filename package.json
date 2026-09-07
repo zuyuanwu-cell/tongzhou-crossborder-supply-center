@@ -19,6 +19,7 @@
     "test:access-control": "node scripts/access-control-test.mjs",
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",
+    "test:order-cache-policy": "node scripts/order-cache-policy-test.mjs",
     "test:movement-explainability": "node scripts/movement-explainability-test.mjs",
     "test:shop-directory": "node scripts/shop-directory-test.mjs",
     "test:exchange-rate-sync": "node scripts/exchange-rate-sync-test.mjs",

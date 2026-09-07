@@ -973,6 +973,10 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [activeView]);
+
+  React.useEffect(() => {
     if (hasUserPermission(currentUser, "product_view")) loadProducts();
     if (hasUserPermission(currentUser, "dashboard")) loadDashboardSummary();
     if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) loadWarehouses();
@@ -1637,7 +1641,7 @@ function App() {
                 {canManage(currentUser) ? (
                   <button className="sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
-                    {syncing ? "同步中" : "同步"}
+                    {syncing ? "同步中" : "同步全部数据"}
                   </button>
                 ) : null}
                 <button className="ghost-button" onClick={handleLogout}>
@@ -3819,6 +3823,24 @@ function MovementBoard({
   const backgroundWarehouses = movementPayload?.syncState?.backgroundRunningWarehouses
     || (movementPayload?.orderSyncResults || []).filter((result) => result.backgroundRunning).map((result) => ({ warehouseId: result.warehouseId, message: result.message, orderCount: result.orderCount }));
   const failedAuthorizedWarehouses = (movementPayload?.orderSyncResults || []).filter((result) => !result.ok && result.hasCredentials && !result.backgroundRunning);
+  const retainedWarehouseResults = (movementPayload?.orderSyncResults || []).filter((result) => result.usingPreviousSuccessfulData);
+  const hasUsableOrderData = Boolean(movementPayload?.orderSyncedAt)
+    && (movementPayload?.orderSyncResults || []).some((result) => Number(result.orderCount || 0) > 0);
+  const riskMetricsReady = Boolean(movementPayload && hasUsableOrderData);
+  const orderStatusLabel = !movementPayload
+    ? "正在读取订单数据"
+    : !movementPayload.orderSyncedAt
+      ? "订单待同步"
+    : !hasUsableOrderData
+      ? "订单数据不可用"
+      : retainedWarehouseResults.length
+        ? "部分仓库沿用历史数据"
+        : "订单已同步";
+  const orderStatusTone = !movementPayload?.orderSyncedAt || retainedWarehouseResults.length
+    ? "warning"
+    : hasUsableOrderData
+      ? "good"
+      : "danger";
   const warehouseDiagnostics = movementPayload?.warehouseDiagnostics || [];
   const activeJob = orderSyncJob || movementPayload?.orderSyncJob || null;
   const jobRunning = Boolean(activeJob && ["queued", "running"].includes(activeJob.status));
@@ -3909,10 +3931,10 @@ function MovementBoard({
             先定位需要处理的风险 SKU，再查看计算依据并直接创建备货草稿。技术同步诊断已收纳到下方详情中。
           </p>
           <div className="source-row">
-            <span className={`status-pill ${movementPayload?.orderSyncedAt ? "good" : "warning"}`}>
-              {movementPayload?.orderSyncedAt ? "订单已同步" : "订单待同步"}
+            <span className={`status-pill ${orderStatusTone}`}>
+              {orderStatusLabel}
             </span>
-            <span>{movementPayload?.orderSyncedAt ? new Date(movementPayload.orderSyncedAt).toLocaleString("zh-CN") : "先同步订单后可看到销量走势"}</span>
+            <span>{!movementPayload ? "正在加载库存与订单缓存" : movementPayload.orderSyncedAt ? new Date(movementPayload.orderSyncedAt).toLocaleString("zh-CN") : "先同步订单后可看到销量走势"}</span>
             {movementPayload?.syncState?.usingCachedOrders ? <span>当前使用最近一次成功缓存</span> : null}
           </div>
         </div>
@@ -3941,9 +3963,9 @@ function MovementBoard({
       {movementPayload?.warehouseFreshness?.length ? (
         <section className="warehouse-freshness-strip">
           {movementPayload.warehouseFreshness.map((item) => (
-            <button key={item.warehouseId} type="button" className={`freshness-chip ${item.running ? "running" : item.failed ? "warning" : item.ok ? "good" : "muted"}`} onClick={() => setWarehouse(item.warehouseId)}>
+            <button key={item.warehouseId} type="button" className={`freshness-chip ${item.running ? "running" : item.usingPreviousSuccessfulData || item.failed ? "warning" : item.ok ? "good" : "muted"}`} onClick={() => setWarehouse(item.warehouseId)}>
               <strong>{item.warehouseName}</strong>
-              <span>{item.running ? "同步中" : item.failed ? "异常" : item.ok ? "已更新" : "无订单"}</span>
+              <span>{item.running ? "同步中" : item.usingPreviousSuccessfulData ? "沿用上次" : item.failed ? "异常" : item.ok ? "已更新" : "无订单"}</span>
               <small>{formatNumber(item.orderCount)} 单 {item.lastCompletedAt ? formatDateTime(item.lastCompletedAt) : ""}</small>
             </button>
           ))}
@@ -3951,10 +3973,10 @@ function MovementBoard({
       ) : null}
 
       <section className="metric-strip movement-metrics">
-        <Metric title="缺货 SKU" value={formatNumber(movementPayload?.counts.stockout ?? 0)} note="有销量但可售为 0" icon={AlertTriangle} tone="red" />
-        <Metric title="补货预警" value={formatNumber(movementPayload?.counts.replenish ?? 0)} note="可售天数低于补货周期" icon={PackageCheck} tone="orange" />
-        <Metric title="慢销 / 滞销" value={formatNumber((movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0))} note="库存覆盖过高或无销量" icon={BarChart3} tone="blue" />
-        <Metric title="仓库未建档" value={formatNumber(movementPayload?.counts.warehouseOnly ?? 0)} note="仓库有库存但产品库缺失" icon={Boxes} tone="green" />
+        <Metric title="缺货 SKU" value={riskMetricsReady ? formatNumber(movementPayload?.counts.stockout ?? 0) : "—"} note={riskMetricsReady ? "有销量但可售为 0" : "等待可用订单数据"} icon={AlertTriangle} tone="red" />
+        <Metric title="补货预警" value={riskMetricsReady ? formatNumber(movementPayload?.counts.replenish ?? 0) : "—"} note={riskMetricsReady ? "可售天数低于补货周期" : "等待可用订单数据"} icon={PackageCheck} tone="orange" />
+        <Metric title="慢销 / 滞销" value={riskMetricsReady ? formatNumber((movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0)) : "—"} note={riskMetricsReady ? "库存覆盖过高或无销量" : "等待可用订单数据"} icon={BarChart3} tone="blue" />
+        <Metric title="仓库未建档" value={riskMetricsReady ? formatNumber(movementPayload?.counts.warehouseOnly ?? 0) : "—"} note={riskMetricsReady ? "仓库有库存但产品库缺失" : "等待可用订单数据"} icon={Boxes} tone="green" />
       </section>
 
       <form
@@ -4026,7 +4048,8 @@ function MovementBoard({
 
       {failedAuthorizedWarehouses.length ? (
         <section className="notice warning">
-          部分已授权仓库订单未同步成功：{failedAuthorizedWarehouses.map((result) => `${result.warehouseId}（${result.message}）`).join("、")}
+          部分已授权仓库订单未同步成功：{failedAuthorizedWarehouses.map((result) => `${result.warehouseId}（${result.message}）`).join("、")}。
+          {retainedWarehouseResults.length ? "这些仓库继续使用最近一次成功数据，本页结论为暂估。" : "当前没有可沿用的数据时，系统不会生成风险结论。"}
         </section>
       ) : null}
 
@@ -4050,7 +4073,13 @@ function MovementBoard({
           </div>
         </div>
         {riskCopyMessage ? <div className="notice good compact-notice">{riskCopyMessage}</div> : null}
-        <div className="movement-table">
+        {!riskMetricsReady ? (
+          <div className="stockup-empty movement-data-unavailable" role="status">
+            <DatabaseZap size={24} />
+            <strong>订单数据尚不足以计算库存风险</strong>
+            <span>完成至少一个仓库的订单同步后，系统才会展示缺货、补货和滞销结论。</span>
+          </div>
+        ) : <div className="movement-table">
           <div className="movement-row movement-head">
             <SortHeader label="SKU / 产品" sortKey="sku" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <SortHeader label="国家" sortKey="country" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
@@ -4097,7 +4126,7 @@ function MovementBoard({
               </button>
             </article>
           ))}
-        </div>
+        </div>}
       </section>
 
       <details className="panel movement-diagnostics-disclosure">
@@ -4148,7 +4177,7 @@ function MovementBoard({
             </section>
             <footer>
               <button className="ghost-button" type="button" onClick={() => setSelectedRiskItem(null)}>暂不处理</button>
-              <button className="sync-button" type="button" onClick={() => onCreateStockupDraft(selectedRiskItem)} disabled={selectedRiskItem.source === "warehouse_only" || selectedRiskItem.replenishQty <= 0}>
+              <button className="sync-button" type="button" onClick={() => onCreateStockupDraft(selectedRiskItem)} disabled={!riskMetricsReady || selectedRiskItem.source === "warehouse_only" || selectedRiskItem.replenishQty <= 0}>
                 <PackageCheck size={16} />创建备货草稿
               </button>
             </footer>
@@ -4289,7 +4318,7 @@ function StockupCenter({
   ] as const;
 
   return (
-    <main className="movement-page stockup-page stockup-ops-page">
+    <main className={`movement-page stockup-page stockup-ops-page ${isRecommendationPage ? "stockup-recommendation-page" : ""}`}>
       {isRecommendationPage ? (
         <section className="stockup-command-bar">
           <div>
@@ -4300,7 +4329,7 @@ function StockupCenter({
           <div className="stockup-command-actions">
             <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
             <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
-            <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 数据"}</button>
+            <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button>
           </div>
         </section>
       ) : <>
@@ -4437,7 +4466,7 @@ function StockupCenter({
       ) : null}
 
       {isRecommendationPage && activePlans.length ? (
-        <section className="panel stockup-panel stockup-plan-panel">
+        <section className="panel stockup-panel stockup-plan-panel active-plan-panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Plan Tracking</p>
@@ -4495,7 +4524,7 @@ function StockupCenter({
       ) : null}
 
       {isRecommendationPage && arrivedPlans.length ? (
-        <section className="panel stockup-panel stockup-plan-panel">
+        <section className="panel stockup-panel stockup-plan-panel arrived-review-panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Arrival Review</p>
@@ -4549,7 +4578,7 @@ function StockupCenter({
       ) : null}
 
       {isRecommendationPage && abandonedRecommendations.length ? (
-        <section className="panel stockup-panel">
+        <section className="panel stockup-panel dismissed-queue-panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Dismissed Queue</p>
@@ -4569,7 +4598,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage ? <section className="panel stockup-panel">
+      {isRecommendationPage ? <section className="panel stockup-panel recommendation-queue-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Replenishment Queue</p>
@@ -4624,7 +4653,7 @@ function StockupCenter({
         </div>
       </section> : null}
 
-      {isRecommendationPage ? <section className="panel stockup-panel">
+      {isRecommendationPage ? <section className="panel stockup-panel stockup-wms-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">WMS Inbound Orders</p>
@@ -7607,6 +7636,7 @@ function InventorySnapshotPage({
   canManageActions: boolean;
 }) {
   const [snapshotBusy, setSnapshotBusy] = React.useState(false);
+  const [snapshotMessage, setSnapshotMessage] = React.useState("");
   const [warehouseId, setWarehouseId] = React.useState("全部");
   const [pageSize, setPageSize] = React.useState(50);
   const [page, setPage] = React.useState(1);
@@ -7655,6 +7685,7 @@ function InventorySnapshotPage({
   async function exportSnapshotCsv() {
     if (!selectedSnapshotDate) return;
     setSnapshotBusy(true);
+    setSnapshotMessage("");
     try {
       const selectedWarehouseId = warehouseId === "全部" ? "" : warehouseId;
       const blob = await downloadInventorySnapshotCsv(selectedSnapshotDate, selectedWarehouseId);
@@ -7666,8 +7697,9 @@ function InventorySnapshotPage({
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+      setSnapshotMessage("库存快照 CSV 已下载。");
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "库存快照导出失败");
+      setSnapshotMessage(error instanceof Error ? error.message : "库存快照导出失败");
     } finally {
       setSnapshotBusy(false);
     }
@@ -7690,6 +7722,8 @@ function InventorySnapshotPage({
           {snapshotBusy ? "处理中" : "生成今日快照"}
         </button> : <span className="status-pill muted">只读</span>}
       </section>
+
+      {snapshotMessage ? <div className="notice warning compact-notice" role="status">{snapshotMessage}</div> : null}
 
       <section className="panel inventory-snapshot-panel">
         <div className="panel-heading">
@@ -8447,6 +8481,24 @@ function PerformanceAnalysisPage({
   );
 }
 
+function browserDateInput(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function recentBrowserDateRange(days: number) {
+  const to = new Date();
+  const from = new Date(to);
+  from.setUTCDate(from.getUTCDate() - Math.max(0, days - 1));
+  return { dateFrom: browserDateInput(from), dateTo: browserDateInput(to) };
+}
+
 function OrderAnalysisPage({
   payload,
   onLoadOrderAnalysis,
@@ -8474,6 +8526,8 @@ function OrderAnalysisPage({
   const [keywordDraft, setKeywordDraft] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [previewImage, setPreviewImage] = React.useState<{ url: string; title: string } | null>(null);
+  const [aliasEditor, setAliasEditor] = React.useState<{ rawShopName: string; currentLabel: string; value: string } | null>(null);
+  const [aliasMessage, setAliasMessage] = React.useState("");
   const filters = payload?.filters;
   const counts = payload?.counts;
   const maxDaily = Math.max(...(payload?.daily || []).map((item) => item.orderCount), 1);
@@ -8485,6 +8539,7 @@ function OrderAnalysisPage({
   });
   const dailyLinePath = dailyPoints.map((item, index) => `${index === 0 ? "M" : "L"} ${item.x.toFixed(2)} ${item.y.toFixed(2)}`).join(" ");
   const dailyAreaPath = dailyPoints.length ? `${dailyLinePath} L ${dailyPoints[dailyPoints.length - 1].x.toFixed(2)} 96 L ${dailyPoints[0].x.toFixed(2)} 96 Z` : "";
+  const orderAnalysisReady = Boolean(payload && filters);
 
   React.useEffect(() => {
     if (!filters) return;
@@ -8498,6 +8553,15 @@ function OrderAnalysisPage({
     setKeywordDraft((current) => current || filters.keyword || "");
   }, [filters?.dateFrom, filters?.dateTo]);
 
+  React.useEffect(() => {
+    if (!aliasEditor) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !loading) setAliasEditor(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [aliasEditor, loading]);
+
   async function submitFilters(event?: React.FormEvent) {
     event?.preventDefault();
     setLoading(true);
@@ -8509,6 +8573,9 @@ function OrderAnalysisPage({
   }
 
   async function resetFilters() {
+    const range = recentBrowserDateRange(90);
+    setDateFrom(range.dateFrom);
+    setDateTo(range.dateTo);
     setCountry("");
     setWarehouseId("");
     setPlatform("");
@@ -8517,19 +8584,39 @@ function OrderAnalysisPage({
     setKeywordDraft("");
     setLoading(true);
     try {
-      await onLoadOrderAnalysis({ dateFrom, dateTo, scope: "russia" });
+      await onLoadOrderAnalysis({ ...range, scope: "russia" });
     } finally {
       setLoading(false);
     }
   }
 
-  async function editShopAlias(rawShopName: string, currentLabel: string) {
-    if (!rawShopName || rawShopName === "未识别店铺") return;
-    const nextAlias = window.prompt(`设置店铺「${rawShopName}」的别称；留空则恢复原名称。`, currentLabel === rawShopName ? "" : currentLabel);
-    if (nextAlias === null) return;
+  async function applyRecentRange(days: number) {
+    const range = recentBrowserDateRange(days);
+    setDateFrom(range.dateFrom);
+    setDateTo(range.dateTo);
     setLoading(true);
     try {
-      await onUpdateShopAlias(rawShopName, nextAlias.trim());
+      await onLoadOrderAnalysis({ ...range, country, warehouseId, platform, shopName, projectGroup, keyword: keywordDraft, scope: "russia" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function editShopAlias(rawShopName: string, currentLabel: string) {
+    if (!rawShopName || rawShopName === "未识别店铺") return;
+    setAliasMessage("");
+    setAliasEditor({ rawShopName, currentLabel, value: currentLabel === rawShopName ? "" : currentLabel });
+  }
+
+  async function saveShopAlias() {
+    if (!aliasEditor) return;
+    setLoading(true);
+    try {
+      await onUpdateShopAlias(aliasEditor.rawShopName, aliasEditor.value.trim());
+      setAliasMessage(aliasEditor.value.trim() ? "店铺别称已保存。" : "已恢复店铺原名称。");
+      setAliasEditor(null);
+    } catch (error) {
+      setAliasMessage(error instanceof Error ? error.message : "店铺别称保存失败");
     } finally {
       setLoading(false);
     }
@@ -8556,10 +8643,10 @@ function OrderAnalysisPage({
       </section>
 
       <section className="metric-strip movement-metrics">
-        <Metric title="订单数" value={formatNumber(counts?.orderCount || 0)} note="按订单号去重" icon={FileText} tone="blue" />
-        <Metric title="出库件数" value={formatNumber(counts?.quantity || 0)} note={`${formatNumber(counts?.orderLines || 0)} 条 SKU 行`} icon={PackageCheck} tone="green" />
-        <Metric title="项目组" value={formatNumber(counts?.projectGroupCount || 0)} note={`${formatNumber(counts?.shopCount || 0)} 个店铺`} icon={ShoppingBag} tone="orange" />
-        <Metric title="SKU 数" value={formatNumber(counts?.skuCount || 0)} note={`${formatNumber(counts?.platformCount || 0)} 个平台`} icon={Boxes} tone="red" />
+        <Metric title="订单数" value={orderAnalysisReady ? formatNumber(counts?.orderCount || 0) : "—"} note={orderAnalysisReady ? "按订单号去重" : "正在读取近90天订单"} icon={FileText} tone="blue" />
+        <Metric title="出库件数" value={orderAnalysisReady ? formatNumber(counts?.quantity || 0) : "—"} note={orderAnalysisReady ? `${formatNumber(counts?.orderLines || 0)} 条 SKU 行` : "等待订单数据"} icon={PackageCheck} tone="green" />
+        <Metric title="项目组" value={orderAnalysisReady ? formatNumber(counts?.projectGroupCount || 0) : "—"} note={orderAnalysisReady ? `${formatNumber(counts?.shopCount || 0)} 个店铺` : "等待订单数据"} icon={ShoppingBag} tone="orange" />
+        <Metric title="SKU 数" value={orderAnalysisReady ? formatNumber(counts?.skuCount || 0) : "—"} note={orderAnalysisReady ? `${formatNumber(counts?.platformCount || 0)} 个平台` : "等待订单数据"} icon={Boxes} tone="red" />
       </section>
 
       {(counts?.unrecognizedShopRows || 0) > 0 ? (
@@ -8569,6 +8656,14 @@ function OrderAnalysisPage({
       ) : null}
 
       <form className="order-analysis-filter panel" onSubmit={submitFilters}>
+        <div className="order-analysis-date-presets" role="group" aria-label="快捷时间范围">
+          <span>快捷范围</span>
+          {[7, 30, 90].map((days) => (
+            <button className="ghost-button compact-button" type="button" key={days} onClick={() => void applyRecentRange(days)} disabled={loading}>
+              近 {days} 天
+            </button>
+          ))}
+        </div>
         <label>
           <span>开始日期</span>
           <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
@@ -8735,6 +8830,27 @@ function OrderAnalysisPage({
           ))}
         </div>
       </section>
+      {aliasMessage ? <div className="notice good compact-notice" role="status">{aliasMessage}</div> : null}
+      {aliasEditor ? (
+        <div className="shop-alias-modal" role="dialog" aria-modal="true" aria-labelledby="shop-alias-title">
+          <button className="modal-backdrop" type="button" onClick={() => setAliasEditor(null)} aria-label="关闭店铺别称编辑" />
+          <form className="shop-alias-dialog" onSubmit={(event) => { event.preventDefault(); void saveShopAlias(); }}>
+            <div>
+              <p className="eyebrow">Shop Alias</p>
+              <h3 id="shop-alias-title">设置店铺别称</h3>
+              <span>原名称：{aliasEditor.rawShopName}</span>
+            </div>
+            <label>
+              <span>店铺别称</span>
+              <input autoFocus value={aliasEditor.value} onChange={(event) => setAliasEditor((current) => current ? { ...current, value: event.target.value } : current)} placeholder="留空则恢复原名称" />
+            </label>
+            <div className="shop-alias-actions">
+              <button className="ghost-button" type="button" onClick={() => setAliasEditor(null)} disabled={loading}>取消</button>
+              <button className="sync-button" type="submit" disabled={loading}>{loading ? "保存中" : "保存"}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
       {previewImage ? (
         <div className="order-image-lightbox" role="dialog" aria-modal="true" aria-label="产品图片预览">
           <button className="modal-backdrop" type="button" onClick={() => setPreviewImage(null)} aria-label="关闭图片预览" />
@@ -8807,6 +8923,7 @@ function MovementAnalysisPage({
   const [comparisonView, setComparisonView] = React.useState("all");
   const [comparisonPayload, setComparisonPayload] = React.useState<MovementComparisonPayload | null>(null);
   const [comparisonMessage, setComparisonMessage] = React.useState("");
+  const [historyExportMessage, setHistoryExportMessage] = React.useState("");
   const [comparisonPage, setComparisonPage] = React.useState(1);
   const comparisonAutoLoaded = React.useRef(false);
   const snapshot = movementHistoryPayload?.snapshot || null;
@@ -8929,6 +9046,7 @@ function MovementAnalysisPage({
 
   async function exportCsv() {
     setBusy(true);
+    setHistoryExportMessage("");
     try {
       const blob = await downloadMovementHistoryCsv(currentFilters);
       const url = URL.createObjectURL(blob);
@@ -8940,8 +9058,9 @@ function MovementAnalysisPage({
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+      setHistoryExportMessage("动销历史 CSV 已下载。");
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "动销历史导出失败");
+      setHistoryExportMessage(error instanceof Error ? error.message : "动销历史导出失败");
     } finally {
       setBusy(false);
     }
@@ -8995,6 +9114,8 @@ function MovementAnalysisPage({
           </button>
         ) : <span className="status-pill muted">只读分析</span>}
       </section>
+
+      {historyExportMessage ? <div className="notice warning compact-notice" role="status">{historyExportMessage}</div> : null}
 
       <section className="panel movement-history-toolbar">
         <div className="panel-heading">
@@ -10012,6 +10133,9 @@ function ProductDetailModal({
   const [activeTab, setActiveTab] = React.useState<"base" | "qualifications" | "assets">("base");
   const [copiedSku, setCopiedSku] = React.useState(false);
   const [copiedAttachments, setCopiedAttachments] = React.useState(false);
+  const dialogRef = React.useRef<HTMLElement | null>(null);
+  const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const dialogId = React.useId();
   const base = findProductBase(product, productBase);
   const detailRows = [
     ["产品流水号", base?.skuNo || product.skuNo],
@@ -10047,6 +10171,38 @@ function ProductDetailModal({
     }))),
   ].filter((item) => item.href);
 
+  React.useEffect(() => {
+    const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    return () => restoreFocus?.focus();
+  }, []);
+
+  function handleDialogKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ) || []).filter((element) => element.getAttribute("aria-hidden") !== "true");
+    if (!focusable.length) {
+      event.preventDefault();
+      dialogRef.current?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   async function copySku() {
     await copyText(product.sku);
     setCopiedSku(true);
@@ -10069,16 +10225,16 @@ function ProductDetailModal({
   }
 
   return (
-    <div className="modal-layer" role="dialog" aria-modal="true" aria-label="产品关联资料">
+    <div className="modal-layer" role="presentation">
       <button className="modal-backdrop" type="button" onClick={onClose} aria-label="关闭弹窗" />
-      <section className="product-detail-modal">
+      <section ref={dialogRef} className="product-detail-modal" role="dialog" aria-modal="true" aria-labelledby={`${dialogId}-title`} tabIndex={-1} onKeyDown={handleDialogKeyDown}>
         <div className="modal-head">
           <div>
             <p className="eyebrow">Linked Product Assets</p>
-            <h2>{product.name}</h2>
+            <h2 id={`${dialogId}-title`}>{product.name}</h2>
             <span>{product.sku}</span>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭弹窗">
+          <button ref={closeButtonRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭弹窗">
             <X size={18} />
           </button>
         </div>
@@ -10086,7 +10242,10 @@ function ProductDetailModal({
           <button
             type="button"
             role="tab"
+            id={`${dialogId}-base-tab`}
+            aria-controls={`${dialogId}-base-panel`}
             aria-selected={activeTab === "base"}
+            tabIndex={activeTab === "base" ? 0 : -1}
             className={activeTab === "base" ? "active" : ""}
             onClick={() => setActiveTab("base")}
           >
@@ -10096,7 +10255,10 @@ function ProductDetailModal({
           <button
             type="button"
             role="tab"
+            id={`${dialogId}-qualifications-tab`}
+            aria-controls={`${dialogId}-qualifications-panel`}
             aria-selected={activeTab === "qualifications"}
+            tabIndex={activeTab === "qualifications" ? 0 : -1}
             className={activeTab === "qualifications" ? "active" : ""}
             onClick={() => setActiveTab("qualifications")}
           >
@@ -10107,7 +10269,10 @@ function ProductDetailModal({
           <button
             type="button"
             role="tab"
+            id={`${dialogId}-assets-tab`}
+            aria-controls={`${dialogId}-assets-panel`}
             aria-selected={activeTab === "assets"}
+            tabIndex={activeTab === "assets" ? 0 : -1}
             className={activeTab === "assets" ? "active" : ""}
             onClick={() => setActiveTab("assets")}
           >
@@ -10118,7 +10283,7 @@ function ProductDetailModal({
         </div>
         <div className="modal-content">
           {activeTab === "base" ? (
-          <section className="detail-section">
+          <section className="detail-section" role="tabpanel" id={`${dialogId}-base-panel`} aria-labelledby={`${dialogId}-base-tab`}>
             <div className="detail-section-head">
               <FileText size={18} />
               <h3>产品基础信息</h3>
@@ -10174,7 +10339,7 @@ function ProductDetailModal({
           </section>
           ) : null}
           {activeTab === "qualifications" ? (
-          <section className="detail-section">
+          <section className="detail-section" role="tabpanel" id={`${dialogId}-qualifications-panel`} aria-labelledby={`${dialogId}-qualifications-tab`}>
             <div className="detail-section-head">
               <PackageCheck size={18} />
               <h3>资质库</h3>
@@ -10183,7 +10348,7 @@ function ProductDetailModal({
           </section>
           ) : null}
           {activeTab === "assets" ? (
-          <section className="detail-section">
+          <section className="detail-section" role="tabpanel" id={`${dialogId}-assets-panel`} aria-labelledby={`${dialogId}-assets-tab`}>
             <div className="detail-section-head">
               <Boxes size={18} />
               <h3>素材库</h3>
@@ -10454,20 +10619,31 @@ function ProductLibrary({
   const [partnerCtaVisible, setPartnerCtaVisible] = React.useState(true);
   const [partnerApplicationSku, setPartnerApplicationSku] = React.useState("");
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
+  const [visibleProductCount, setVisibleProductCount] = React.useState(24);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showDistributionPrice = hasUserPermission(currentUser, "distribution_price");
   const showDirectPrice = hasUserPermission(currentUser, "direct_price");
   const showSalesPrice = hasUserPermission(currentUser, "sales_price");
   const showPrices = showDistributionPrice || showDirectPrice || showSalesPrice;
   const showInventory = canViewInventory(currentUser);
-  const countries = uniqueSorted(products.map((product) => product.country));
-  const brands = uniqueSorted(products.map((product) => product.brand));
-  const filteredProducts = products.filter((product) => {
+  const countries = React.useMemo(() => uniqueSorted(products.map((product) => product.country)), [products]);
+  const brands = React.useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const product of products) {
+      const label = String(product.brand || "").trim();
+      if (!label || /^[-—]+$/.test(label)) continue;
+      const key = label.toLocaleLowerCase();
+      if (!labels.has(key)) labels.set(key, label);
+    }
+    return Array.from(labels.values()).sort((left, right) => left.localeCompare(right, "zh-CN"));
+  }, [products]);
+  const filteredProducts = React.useMemo(() => products.filter((product) => {
     const channelMatched = channel === "全部" || channel === "直营" || product.channel === channel;
     const countryMatched = country === "全部" || product.country === country;
-    const brandMatched = brand === "全部" || product.brand === brand;
+    const brandMatched = brand === "全部" || String(product.brand || "").trim().toLocaleLowerCase() === brand.toLocaleLowerCase();
     return channelMatched && countryMatched && brandMatched && includesFuzzy(product, keyword);
-  });
+  }), [brand, channel, country, keyword, products]);
+  const visibleProducts = filteredProducts.slice(0, visibleProductCount);
   const activeFilterCount = Number(country !== "全部") + Number(brand !== "全部") + Number(keyword.trim().length > 0);
   React.useEffect(() => {
     if (!internal) setChannel("分销");
@@ -10478,6 +10654,10 @@ function ProductLibrary({
     setKeywordInput(externalKeyword);
     setKeyword(externalKeyword);
   }, [externalKeyword]);
+
+  React.useEffect(() => {
+    setVisibleProductCount(24);
+  }, [brand, channel, country, keyword]);
 
   function addToBundle(product: CatalogProduct) {
     setBundleItems((items) => {
@@ -10662,7 +10842,7 @@ function ProductLibrary({
         className={viewMode === "list" ? "catalog-list" : "catalog-grid"}
         style={viewMode === "grid" ? ({ "--catalog-columns": gridColumns } as React.CSSProperties) : undefined}
       >
-        {filteredProducts.map((product) => {
+        {visibleProducts.map((product) => {
           const price = priceFor(product, channel, internal);
           const salesPrice = salesPriceFor(product);
           const showProductCost = canShowCostPrice(product, channel, showDistributionPrice, showDirectPrice);
@@ -10671,7 +10851,7 @@ function ProductLibrary({
             <article className={`product-card ${viewMode === "grid" && gridColumns > 4 ? "dense-card" : ""}`} key={product.id}>
               {product.imageUrl ? (
                 <div className="product-photo">
-                  <img src={product.imageUrl} alt={product.name} />
+                  <img src={product.imageUrl} alt={product.name} loading="lazy" decoding="async" />
                   <span>{product.imageSource === "wms" ? "仓库图片" : "产品图片"}</span>
                 </div>
               ) : (
@@ -10741,6 +10921,14 @@ function ProductLibrary({
             </article>
           );
         })}
+      </section>
+      <section className="catalog-load-more" aria-live="polite">
+        <span>已显示 <strong>{formatNumber(visibleProducts.length)}</strong> / {formatNumber(filteredProducts.length)} 个产品</span>
+        {visibleProducts.length < filteredProducts.length ? (
+          <button className="ghost-button" type="button" onClick={() => setVisibleProductCount((count) => Math.min(filteredProducts.length, count + 24))}>
+            再加载 24 个
+          </button>
+        ) : null}
       </section>
       {detailProduct ? (
         <ProductDetailModal

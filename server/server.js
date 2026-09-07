@@ -34,6 +34,7 @@ import { createPerformanceAnalyticsQueryService } from "./performance-query-serv
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
+import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -2934,16 +2935,20 @@ function movementResponsePayload(auth = directAuth) {
   const warehouseFreshness = scoped.connections.map((connection) => {
     const result = results.find((item) => item.warehouseId === connection.id);
     const running = latestJob && ["queued", "running"].includes(latestJob.status) && (latestJob.warehouseIds || []).includes(connection.id);
+    const usingPreviousSuccessfulData = Boolean(result?.usingPreviousSuccessfulData);
     return {
       warehouseId: connection.id,
       warehouseName: connection.name,
       providerId: connection.providerId,
       providerName: providerName(connection.providerId),
-      lastCompletedAt: result?.backgroundCompletedAt || cachedOrdersSync.syncedAt || "",
+      lastCompletedAt: usingPreviousSuccessfulData
+        ? result?.lastSuccessfulAt || cachedOrdersSync.syncedAt || ""
+        : result?.backgroundCompletedAt || cachedOrdersSync.syncedAt || "",
       orderCount: result?.orderCount || 0,
       ok: result?.ok ?? false,
       running: Boolean(running),
       failed: Boolean(result && !result.ok && !result.skipped),
+      usingPreviousSuccessfulData,
       message: running ? (latestJob.currentWarehouseId === connection.id ? latestJob.currentChunkLabel : "Queued") : (result?.message || ""),
     };
   });
@@ -2953,7 +2958,7 @@ function movementResponsePayload(auth = directAuth) {
     warehouseFreshness,
     warehouseDiagnostics,
     syncState: {
-      usingCachedOrders: Boolean(cachedOrdersSync.syncedAt),
+      usingCachedOrders: results.some((result) => result.usingPreviousSuccessfulData),
       lastCompletedAt: cachedOrdersSync.syncedAt || "",
       backgroundRunningWarehouses,
       failedWarehouses,
@@ -3508,9 +3513,9 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
 }
 
 function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateKeyInTimezone(new Date(), performanceMiaoshouTimezone);
   const dateTo = String(params.dateTo || today).slice(0, 10);
-  const dateFrom = String(params.dateFrom || dateTo).slice(0, 10);
+  const dateFrom = String(params.dateFrom || addDateDays(dateTo, -89)).slice(0, 10);
   const country = String(params.country || "");
   const warehouseId = String(params.warehouseId || "");
   const platform = String(params.platform || "");
@@ -3999,30 +4004,39 @@ async function syncCompleteOrderRange(connection, from, to) {
 function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true, { rebuildPerformance = true } = {}) {
   const warehouseId = result.warehouseId || connection.id;
   const orderMeta = orderSyncMetaFromResult(result);
+  const previousResult = (cachedOrdersSync.results || []).find((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
+  const warehouseIds = [warehouseId, connection.id, result.resolvedWarehouseId].filter(Boolean);
+  const cachedWarehouseOrders = (cachedOrdersSync.orders || []).filter((item) => warehouseIds.includes(item.warehouseId));
+  const snapshot = selectWarehouseOrderSnapshot({
+    result,
+    cachedWarehouseOrders,
+    publishable: Boolean(replaceOrders),
+  });
+  const completedAt = new Date().toISOString();
   const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
   nextResults.push({
     warehouseId,
     ok: Boolean(result.ok),
     skipped: Boolean(result.skipped),
     message: result.message || "",
-    orderCount: result.orders?.length || 0,
-    published: Boolean(replaceOrders),
+    orderCount: snapshot.orderCount,
+    liveOrderCount: snapshot.liveOrderCount,
+    published: snapshot.published,
+    usingPreviousSuccessfulData: snapshot.usingPreviousSuccessfulData,
     hasCredentials: hasWarehouseCredentials(connection),
     backgroundRunning: false,
-    backgroundCompletedAt: new Date().toISOString(),
+    backgroundCompletedAt: completedAt,
+    lastSuccessfulAt: snapshot.published
+      ? completedAt
+      : previousResult?.lastSuccessfulAt || previousResult?.backgroundCompletedAt || cachedOrdersSync.syncedAt || "",
     ...orderMeta,
   });
 
   cachedOrdersSync = {
     ...cachedOrdersSync,
-    syncedAt: replaceOrders ? new Date().toISOString() : cachedOrdersSync.syncedAt,
+    syncedAt: snapshot.published ? completedAt : cachedOrdersSync.syncedAt,
     days,
-    orders: replaceOrders
-      ? [
-          ...(cachedOrdersSync.orders || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id),
-          ...(result.orders || []),
-        ]
-      : (cachedOrdersSync.orders || []),
+    orders: replaceWarehouseOrderRows(cachedOrdersSync.orders || [], warehouseIds, snapshot.orders),
     results: nextResults,
   };
   saveOrderCache(cachedOrdersSync, { rebuildPerformance });
@@ -4381,19 +4395,33 @@ async function refreshOrderCache(days = 90) {
   for (const { connection, result } of syncResults) {
     const orderMeta = orderSyncMetaFromResult(result);
     const warehouseId = result.warehouseId || connection.id;
-    const cachedWarehouseOrders = (cachedOrdersSync.orders || []).filter((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
-    const visibleOrders = result.backgroundRunning ? cachedWarehouseOrders : (result.orders || []);
+    const warehouseIds = [warehouseId, connection.id, result.resolvedWarehouseId].filter(Boolean);
+    const previousResult = (cachedOrdersSync.results || []).find((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
+    const cachedWarehouseOrders = (cachedOrdersSync.orders || []).filter((item) => warehouseIds.includes(item.warehouseId));
+    const snapshot = selectWarehouseOrderSnapshot({
+      result,
+      cachedWarehouseOrders,
+      publishable: Boolean(result.ok) && !result.skipped && !result.backgroundRunning && orderMeta.orderApiComplete,
+    });
+    const completedAt = new Date().toISOString();
     results.push({
       warehouseId,
       ok: result.ok,
       skipped: result.skipped,
       message: result.message || "",
-      orderCount: visibleOrders.length,
+      orderCount: snapshot.orderCount,
+      liveOrderCount: snapshot.liveOrderCount,
+      published: snapshot.published,
+      usingPreviousSuccessfulData: snapshot.usingPreviousSuccessfulData,
       hasCredentials: hasWarehouseCredentials(connection),
       backgroundRunning: Boolean(result.backgroundRunning),
+      backgroundCompletedAt: completedAt,
+      lastSuccessfulAt: snapshot.published
+        ? completedAt
+        : previousResult?.lastSuccessfulAt || previousResult?.backgroundCompletedAt || cachedOrdersSync.syncedAt || "",
       ...orderMeta,
     });
-    orders.push(...visibleOrders);
+    orders.push(...snapshot.orders);
     if (updateResolvedWarehouseId(connection, result)) saveWarehouseConnections();
   }
 
@@ -4410,31 +4438,44 @@ async function refreshOrderCache(days = 90) {
 function mergeLateOrderSyncResult(connection, result, days) {
   const warehouseId = result.warehouseId || connection.id;
   const orderMeta = orderSyncMetaFromResult(result);
+  const warehouseIds = [warehouseId, connection.id, result.resolvedWarehouseId].filter(Boolean);
+  const previousResult = (cachedOrdersSync.results || []).find((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
+  const cachedWarehouseOrders = (cachedOrdersSync.orders || []).filter((item) => warehouseIds.includes(item.warehouseId));
+  const snapshot = selectWarehouseOrderSnapshot({
+    result,
+    cachedWarehouseOrders,
+    publishable: Boolean(result.ok) && !result.skipped && orderMeta.orderApiComplete,
+  });
+  const completedAt = new Date().toISOString();
   const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
   nextResults.push({
     warehouseId,
     ok: result.ok,
     skipped: result.skipped,
     message: result.message || "后台同步完成。",
-    orderCount: result.orders?.length || 0,
+    orderCount: snapshot.orderCount,
+    liveOrderCount: snapshot.liveOrderCount,
+    published: snapshot.published,
+    usingPreviousSuccessfulData: snapshot.usingPreviousSuccessfulData,
     hasCredentials: hasWarehouseCredentials(connection),
-    backgroundCompletedAt: new Date().toISOString(),
+    backgroundRunning: false,
+    backgroundCompletedAt: completedAt,
+    lastSuccessfulAt: snapshot.published
+      ? completedAt
+      : previousResult?.lastSuccessfulAt || previousResult?.backgroundCompletedAt || cachedOrdersSync.syncedAt || "",
     ...orderMeta,
   });
 
   cachedOrdersSync = {
     ...cachedOrdersSync,
-    syncedAt: new Date().toISOString(),
+    syncedAt: snapshot.published ? completedAt : cachedOrdersSync.syncedAt,
     days,
-    orders: [
-      ...(cachedOrdersSync.orders || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id),
-      ...(result.orders || []),
-    ],
+    orders: replaceWarehouseOrderRows(cachedOrdersSync.orders || [], warehouseIds, snapshot.orders),
     results: nextResults,
   };
   saveOrderCache(cachedOrdersSync);
   if (updateResolvedWarehouseId(connection, result)) saveWarehouseConnections();
-  console.log(`[orders-sync] background completed ${connection.name || connection.id}: ${result.orders?.length || 0} orders`);
+  console.log(`[orders-sync] background completed ${connection.name || connection.id}: ${snapshot.orderCount} visible orders${snapshot.usingPreviousSuccessfulData ? " (retained previous snapshot)" : ""}`);
 }
 
 async function handleStockupSync(req, res) {

@@ -1015,6 +1015,10 @@ export type MovementPayload = {
     orderCount: number;
     hasCredentials?: boolean;
     backgroundRunning?: boolean;
+    published?: boolean;
+    usingPreviousSuccessfulData?: boolean;
+    liveOrderCount?: number;
+    lastSuccessfulAt?: string;
     orderApiTotal?: number;
     orderApiReadRows?: number;
     orderApiReadSkuRows?: number;
@@ -1033,6 +1037,7 @@ export type MovementPayload = {
     ok: boolean;
     running: boolean;
     failed: boolean;
+    usingPreviousSuccessfulData?: boolean;
     message: string;
   }>;
   warehouseDiagnostics?: MovementWarehouseDiagnostic[];
