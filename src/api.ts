@@ -120,6 +120,14 @@ export type DashboardSummaryPayload = {
     todayOrders: number;
     orderCount90: number;
     salesAmount90: number;
+    salesAmount90Display?: {
+      amountsByCurrency: Array<{ currency: string; amount: number }>;
+      currencyCount: number;
+      excludedLines: number;
+      displayMode: "single" | "multiple" | "unavailable";
+      displayCurrency: string;
+      displayValue: number | null;
+    };
     riskSku: number;
     movementSku?: number;
     warehouseOnlySku?: number;
@@ -136,6 +144,17 @@ export type DashboardSummaryPayload = {
     autoSyncIntervalMs: number;
     backgroundRunningWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
     failedWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
+    dataHealth?: {
+      code: "failed" | "partial" | "syncing" | "waiting" | "complete";
+      label: string;
+      complete: boolean;
+      warehouseCount: number;
+      completeCount: number;
+      incompleteCount: number;
+      failedCount: number;
+      partialCount: number;
+      syncingCount: number;
+    };
   };
   movementDiagnostics?: MovementWarehouseDiagnostic[];
   warehouses: Array<{
@@ -151,6 +170,16 @@ export type DashboardSummaryPayload = {
     message: string;
     inventoryCount: number;
     orderCount: number;
+    dataState?: {
+      connection: "connected" | "unconfigured";
+      task: "running" | "completed" | "failed" | "waiting";
+      completeness: "unconfigured" | "failed" | "partial" | "syncing" | "complete" | "waiting";
+      completenessLabel: string;
+      complete: boolean;
+      truncated: boolean;
+      inventory: { code: string; label: string; complete: boolean };
+      orders: { code: string; label: string; complete: boolean };
+    };
   }>;
 };
 
@@ -863,6 +892,16 @@ export type MovementItem = {
   replenishQty: number;
   status: "缺货" | "补货预警" | "慢销" | "滞销" | "无动销数据" | "健康" | string;
   suggestion: string;
+  identityScope?: string;
+  dataCompleteness?: "complete" | "partial" | "waiting" | "incomplete" | string;
+  estimatedStockoutDate?: string;
+  calculation?: {
+    ruleVersion: string;
+    window: string;
+    dailySalesBasis: number;
+    formula: string;
+    includesInTransit: boolean;
+  };
   trend30: number[];
   source: "product" | "warehouse_only" | string;
   dataGap?: string;

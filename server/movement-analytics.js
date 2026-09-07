@@ -38,6 +38,13 @@ function localDateKey(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+function dateAfterDays(dateText, days) {
+  if (!dateText || !Number.isFinite(Number(days))) return "";
+  const date = new Date(`${dateText}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + Math.max(0, Math.ceil(Number(days))));
+  return date.toISOString().slice(0, 10);
+}
+
 function daysBetween(from, to) {
   const start = new Date(`${from}T00:00:00.000Z`);
   const end = new Date(`${to}T00:00:00.000Z`);
@@ -325,6 +332,23 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
     const targetCoverDays = leadDays + 20;
     const replenishQty = Math.max(0, Math.ceil(dailyWeighted * targetCoverDays - item.availableQty - item.inTransitQty));
     const status = statusFor({ ...windows, availableQty: item.availableQty, dailyWeighted, daysCover: daysCover ?? 9999, leadDays });
+    const relatedWarehouseIds = new Set([
+      ...(item.warehouseBreakdown || []).map((row) => firstText(row.warehouseId, row.warehouseName)),
+      ...(item.salesWarehouseBreakdown || []).map((row) => firstText(row.warehouseId, row.warehouseName)),
+    ].filter(Boolean));
+    const relatedResults = (ordersPayload.results || []).filter((result) => relatedWarehouseIds.has(firstText(result.warehouseId)));
+    const partialOrders = relatedResults.some((result) => (
+      result.orderApiReachedPageLimit
+      || (firstNumber(result.orderApiTotal) > 0 && firstNumber(result.orderApiReadRows, result.orderApiReadSkuRows) < firstNumber(result.orderApiTotal))
+      || (!result.ok && !result.backgroundRunning && !result.skipped)
+    ));
+    const dataCompleteness = item.dataGap
+      ? "incomplete"
+      : !ordersPayload.syncedAt
+        ? "waiting"
+        : partialOrders
+          ? "partial"
+          : "complete";
     return {
       ...item,
       ...windows,
@@ -339,6 +363,16 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
       replenishQty,
       status,
       suggestion: suggestionFor(status, { ...item, targetCoverDays, replenishQty }),
+      identityScope: "SKU×国家",
+      dataCompleteness,
+      estimatedStockoutDate: dailyWeighted > 0 && item.availableQty > 0 ? dateAfterDays(todayKey, daysCover) : "",
+      calculation: {
+        ruleVersion: "movement-v2",
+        window: "3/7/30/90天",
+        dailySalesBasis: dailyWeighted,
+        formula: "7日均销×50% + 30日均销×30% + 90日均销×20%",
+        includesInTransit: false,
+      },
       trend30: sparklineFromDaily(item.dailySales, todayKey),
       salesWarehouseBreakdown: item.salesWarehouseBreakdown
         .map((row) => {

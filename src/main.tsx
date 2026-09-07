@@ -198,6 +198,7 @@ import {
   uploadAiImage,
 } from "./api";
 import "./styles.css";
+import "./theme-refresh.css";
 
 type AlertType = "补货" | "断货" | "健康" | "滞销";
 type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
@@ -212,12 +213,23 @@ type MovementFilterPreset = {
   keyword: string;
   createdAt: string;
 };
+type StockupDraftSeed = {
+  sku: string;
+  productName: string;
+  country: string;
+  warehouseName: string;
+  requestedQty: number;
+  unit: string;
+  reason: string;
+  snapshotAt: string;
+};
 type BundleSkuItem = {
   product: CatalogProduct;
   quantity: number;
 };
 const ALL_RECORDS = "__all__";
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const STOCKUP_DEMAND_DRAFT_KEY = "tongzhou:stockup-demand-draft:v2";
 
 type Warehouse = {
   name: string;
@@ -329,36 +341,49 @@ const dailyOrders: DailyOrder[] = [
 ];
 
 const navSections = [
-  { id: "operations", label: "运营分析" },
-  { id: "supply", label: "商品与协同" },
-  { id: "intelligence", label: "智能与开放" },
-  { id: "governance", label: "系统管理" },
+  { id: "workbench", label: "工作台" },
+  { id: "catalog", label: "商品资料" },
+  { id: "inventory", label: "库存与履约" },
+  { id: "stockup", label: "备货协同" },
+  { id: "analysis", label: "经营分析" },
+  { id: "settings", label: "工具与设置" },
 ];
 
 const navItems = [
-  { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "operations", permission: "dashboard" },
-  { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "operations", permission: "inventory_sync" },
-  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "operations", permission: "inventory_snapshots" },
-  { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "operations", permission: "order_analysis" },
-  { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "operations", permission: "performance_analysis" },
-  { label: "动销监控", icon: BarChart3, hash: "#movement", section: "operations", permission: "movement" },
-  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "operations", permission: "movement_analysis" },
-  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "supply", permission: "stockup" },
-  { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "supply", childOf: "备货中心", permission: "stockup" },
-  { label: "生产中心", icon: Factory, hash: "#production", section: "supply", childOf: "备货中心", permission: "stockup" },
-  { label: "产品库", icon: ShoppingBag, hash: "#products", section: "supply", permission: "product_view" },
-  { label: "资质库", icon: FileText, hash: "#qualifications", section: "supply", childOf: "产品库", permission: "qualifications" },
-  { label: "素材库", icon: Boxes, hash: "#assets", section: "supply", childOf: "产品库", permission: "assets" },
-  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "supply", childOf: "产品库", permission: "warehouse_info" },
-  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "intelligence", permission: "quick_nav" },
-  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "intelligence", beta: true, permission: "tongzhou_ai" },
-  { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "intelligence", permission: "api_access" },
-  { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "intelligence", permission: "miaoshou" },
-  { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "governance", permission: "warehouses" },
-  { label: "用户管理", icon: Lock, hash: "#users", section: "governance", permission: "users" },
-  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "governance", permission: "notifications" },
-  { label: "操作日志", icon: List, hash: "#action-log", section: "governance", permission: "action_log" },
+  { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "workbench", permission: "dashboard" },
+  { label: "产品库", icon: ShoppingBag, hash: "#products", section: "catalog", permission: "product_view" },
+  { label: "资质库", icon: FileText, hash: "#qualifications", section: "catalog", childOf: "产品库", permission: "qualifications" },
+  { label: "素材库", icon: Boxes, hash: "#assets", section: "catalog", childOf: "产品库", permission: "assets" },
+  { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "inventory", permission: "inventory_sync" },
+  { label: "动销监控", icon: BarChart3, hash: "#movement", section: "inventory", permission: "movement" },
+  { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
+  { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
+  { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
+  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup" },
+  { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup" },
+  { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "stockup" },
+  { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
+  { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
+  { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "settings", beta: true, permission: "tongzhou_ai" },
+  { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "settings", permission: "quick_nav" },
+  { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "settings", permission: "miaoshou" },
+  { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
+  { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
+  { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
+  { label: "操作日志", icon: List, hash: "#action-log", section: "settings", permission: "action_log" },
+  { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "settings", permission: "api_access" },
 ];
+
+const navigationDisplayLabels: Record<string, string> = {
+  经营总览: "经营工作台",
+  动销监控: "库存风险",
+  动销分析: "动销趋势与对账",
+  库存同步: "库存同步",
+};
+
+function navigationDisplayLabel(view: string) {
+  return navigationDisplayLabels[view] || view;
+}
 
 const viewHashMap = Object.fromEntries(navItems.map((item) => [item.hash, item.label]));
 viewHashMap["#orders"] = "经营总览";
@@ -385,6 +410,10 @@ function formatDecimal(value: number) {
 
 function formatMoney(value?: number) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "0.00";
+}
+
+function formatCurrencyAmount(value: number, currency: string) {
+  return `${currency || "未标币种"} ${new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0))}`;
 }
 
 function formatDate(value?: string) {
@@ -610,9 +639,13 @@ function includesFuzzy(product: CatalogProduct, keyword: string) {
 function alertClass(alert: AlertType | string) {
   return {
     补货: "warning",
+    补货预警: "warning",
     断货: "danger",
+    缺货: "danger",
     健康: "good",
     滞销: "muted",
+    慢销: "warning",
+    无动销数据: "muted",
   }[alert] || "muted";
 }
 
@@ -892,6 +925,7 @@ function App() {
   const performanceAnalyticsRequestRef = React.useRef(0);
   const [orderSyncJob, setOrderSyncJob] = React.useState<OrderSyncJob | null>(null);
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
+  const [stockupDraftSeed, setStockupDraftSeed] = React.useState<StockupDraftSeed | null>(null);
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
   const [stockupWorkflowPayload, setStockupWorkflowPayload] = React.useState<StockupWorkflowPayload | null>(null);
   const [qualificationPayload, setQualificationPayload] = React.useState<QualificationPayload | null>(null);
@@ -1591,12 +1625,12 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{activeView === "产品库" ? "产品中心" : activeView === "资质库" ? "资质库" : activeView === "素材库" ? "素材库" : activeView === "仓库信息" ? "仓库信息" : activeView === "快捷导航" ? "快捷导航" : activeView === "同舟AI" ? "同舟AI" : activeView === "API 接入" ? "API 接入" : activeView === "妙手 ERP" ? "妙手 ERP" : activeView === "企业微信通知" ? "企业微信通知" : activeView === "备货中心" ? "备货中心" : activeView === "备货建议" ? "备货建议" : activeView === "生产中心" ? "生产中心" : activeView === "用户管理" ? "用户管理" : activeView === "操作日志" ? "操作日志" : "同舟供应链中台"}</h1>
+            <h1>{navigationDisplayLabel(activeView)}</h1>
           </div>
           <div className="topbar-actions">
             <form className="search-box" onSubmit={handleGlobalSearch}>
               <Search size={16} />
-              <input value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="搜索 SKU、国家、品牌" />
+              <input aria-label="全局搜索商品或 SKU" value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="全局搜索商品 / SKU" />
             </form>
             {currentUser.role !== "guest" ? (
               <>
@@ -1776,6 +1810,19 @@ function App() {
             onSyncOrders={handleOrderSync}
             syncing={syncing}
             canSync={hasUserPermission(currentUser, "movement_sync")}
+            onCreateStockupDraft={(item) => {
+              setStockupDraftSeed({
+                sku: item.sku,
+                productName: item.name,
+                country: item.country,
+                warehouseName: item.warehouseBreakdown?.[0]?.warehouseName || "",
+                requestedQty: Math.max(0, item.replenishQty || 0),
+                unit: item.unit || "件",
+                reason: `${item.status}：${item.suggestion}`,
+                snapshotAt: movementPayload?.generatedAt || "",
+              });
+              handleViewChange("备货中心");
+            }}
           />
         ) : activeView === "动销分析" ? (
           <MovementAnalysisPage
@@ -1808,6 +1855,8 @@ function App() {
             onCreatePlan={handleCreateStockupPlan}
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
             syncing={syncing}
+            draftSeed={stockupDraftSeed}
+            onDraftSeedConsumed={() => setStockupDraftSeed(null)}
           />
         ) : activeView === "生产中心" ? (
           <ProductionCenter stockupPayload={stockupPayload} workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} />
@@ -1888,6 +1937,9 @@ function LoginButton({
   const [password, setPassword] = React.useState("");
   const [code, setCode] = React.useState("");
   const [error, setError] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const firstFieldRef = React.useRef<HTMLInputElement>(null);
+  const loginTriggerRef = React.useRef<HTMLButtonElement>(null);
 
   React.useEffect(() => {
     if (!open) return;
@@ -1911,9 +1963,28 @@ function LoginButton({
     };
   }, [open]);
 
+  React.useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) setOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, submitting]);
+
+  React.useEffect(() => {
+    if (open && setupChecked) firstFieldRef.current?.focus();
+  }, [open, setupChecked, mode]);
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError("");
+    setSubmitting(true);
     try {
       if (mode === "setup") await onSetupAdmin({ username, password, displayName });
       else await onLogin(mode === "code" ? { code } : { username, password });
@@ -1924,47 +1995,168 @@ function LoginButton({
       setCode("");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : mode === "setup" ? "初始化管理员失败" : mode === "code" ? "访问码不正确" : "账号或密码不正确");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const canSubmit = setupChecked && !submitting && (mode === "code"
+    ? Boolean(code.trim())
+    : mode === "setup"
+      ? Boolean(username.trim() && password)
+      : Boolean(username.trim() && password));
+
+  function handleLoginPageKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+    )).filter((element) => element.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   }
 
   return (
     <div className="login-wrap">
-      <button className="ghost-button" onClick={() => setOpen((value) => !value)}>
+      <button ref={loginTriggerRef} className="ghost-button" onClick={() => setOpen((value) => !value)}>
         <Lock size={16} />
         登录
       </button>
       {open ? (
-        <form className="login-popover" onSubmit={submit}>
-          <span>{mode === "setup" ? "首次使用，请创建管理员账号" : mode === "account" ? "使用系统账号密码登录" : "使用内部访问码登录"}</span>
-          <div className="login-tabs">
-            {setupRequired ? (
-              <button className="active" type="button">初始化管理员</button>
-            ) : (
-              <>
-                <button className={mode === "account" ? "active" : ""} type="button" onClick={() => setMode("account")}>账号密码</button>
-                <button className={mode === "code" ? "active" : ""} type="button" onClick={() => setMode("code")}>访问码</button>
-              </>
-            )}
+        <section className="login-screen" role="dialog" aria-modal="true" aria-labelledby="login-page-title" onKeyDown={handleLoginPageKeyDown}>
+          <div className="login-voyage" aria-label="同舟航行主题画面">
+            <div className="login-voyage-grid" aria-hidden="true" />
+            <div className="login-brand-mark">
+              <img src="/tongzhou-logo.png" alt="同舟供应链" />
+              <div>
+                <strong>同舟供应链</strong>
+                <span>TONGZHOU SUPPLY CENTER</span>
+              </div>
+            </div>
+
+            <div className="login-voyage-copy">
+              <p><span /> VOYAGE · 2026</p>
+              <h2>我们是<br /><em>同一艘船上的人</em></h2>
+              <blockquote>目标同向，信息同频，行动同行。</blockquote>
+            </div>
+
+            <div className="login-sailing-scene" aria-hidden="true">
+              <div className="login-orbit orbit-one" />
+              <div className="login-orbit orbit-two" />
+              <svg viewBox="0 0 920 560" role="presentation">
+                <defs>
+                  <linearGradient id="loginSea" x1="0" x2="1">
+                    <stop offset="0" stopColor="#0a3970" />
+                    <stop offset="0.55" stopColor="#116bb3" />
+                    <stop offset="1" stopColor="#12a7cb" />
+                  </linearGradient>
+                  <linearGradient id="loginSail" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stopColor="#ffffff" />
+                    <stop offset="1" stopColor="#bfe9ff" />
+                  </linearGradient>
+                  <filter id="loginGlow">
+                    <feGaussianBlur stdDeviation="5" result="blur" />
+                    <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                  </filter>
+                </defs>
+                <path className="login-route-line" d="M90 330 C250 206 393 292 512 202 C630 113 751 158 847 82" />
+                <g className="login-route-beacon" transform="translate(847 82)" filter="url(#loginGlow)">
+                  <circle r="18" /><circle r="6" />
+                </g>
+                <g className="login-code-fragments">
+                  <text x="92" y="255">01 / COLLABORATE</text>
+                  <text x="650" y="250">SYNC 100%</text>
+                  <text x="718" y="286">LAT 23.1°</text>
+                </g>
+                <g className="login-sailboat">
+                  <path className="login-sail-shadow" d="M315 384 L464 166 L465 390 Z" />
+                  <path className="login-sail-main" d="M460 154 L460 378 L308 378 Q368 274 460 154 Z" />
+                  <path className="login-sail-accent" d="M478 194 L478 378 L592 378 Q544 281 478 194 Z" />
+                  <path className="login-mast" d="M465 142 L465 405" />
+                  <path className="login-hull" d="M274 388 L622 388 Q593 454 505 466 L376 466 Q306 443 274 388 Z" />
+                  <path className="login-hull-line" d="M322 414 L574 414" />
+                  <circle className="login-hull-light" cx="375" cy="429" r="5" />
+                  <circle className="login-hull-light" cx="410" cy="429" r="5" />
+                  <circle className="login-hull-light" cx="445" cy="429" r="5" />
+                </g>
+                <path className="login-wave wave-back" d="M-40 458 C76 420 151 500 266 461 C381 422 453 504 571 463 C681 425 779 496 963 446 L963 590 L-40 590 Z" />
+                <path className="login-wave wave-front" d="M-40 488 C100 440 177 526 298 484 C419 443 525 527 652 480 C752 443 843 500 963 470 L963 590 L-40 590 Z" />
+              </svg>
+            </div>
+
+            <div className="login-voyage-footer">
+              <span>航向 · 全球供应链协同</span>
+              <span>23°07′N / 113°15′E</span>
+            </div>
           </div>
-          {!setupChecked ? <small>正在检查初始化状态...</small> : null}
-          {mode === "setup" ? (
-            <>
-              <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="管理员账号" autoComplete="username" />
-              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="显示名称" autoComplete="name" />
-              <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="管理员密码，至少 8 位" type="password" autoComplete="new-password" />
-              <small>初始化只在没有启用的管理员时开放，创建后入口会自动关闭。</small>
-            </>
-          ) : mode === "account" ? (
-            <>
-              <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="账号" autoComplete="username" />
-              <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="密码" type="password" autoComplete="current-password" />
-            </>
-          ) : (
-            <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="内部访问码" type="password" autoComplete="one-time-code" />
-          )}
-          {error ? <small>{error}</small> : null}
-          <button className="sync-button">{mode === "setup" ? "创建并登录" : "登录"}</button>
-        </form>
+
+          <div className="login-access">
+            <button className="login-close-button" type="button" onClick={() => { setOpen(false); window.setTimeout(() => loginTriggerRef.current?.focus(), 0); }} aria-label="关闭登录页面" disabled={submitting}>
+              <X size={20} />
+            </button>
+
+            <form className="login-page-form" onSubmit={submit}>
+              <div className="login-security-seal"><ShieldCheck size={24} /></div>
+              <p className="login-page-eyebrow">SECURE ACCESS</p>
+              <h1 id="login-page-title">欢迎登船</h1>
+              <p className="login-page-intro">
+                {mode === "setup" ? "创建首位管理员，开启同舟供应链协作空间。" : "进入同舟供应链数智化系统，继续今天的协作。"}
+              </p>
+
+              <div className="login-page-tabs" role="tablist" aria-label="登录方式">
+                {setupRequired ? (
+                  <button className="active" type="button" role="tab" aria-selected="true">初始化管理员</button>
+                ) : (
+                  <>
+                    <button className={mode === "account" ? "active" : ""} type="button" role="tab" aria-selected={mode === "account"} onClick={() => { setMode("account"); setError(""); }}>账号密码</button>
+                    <button className={mode === "code" ? "active" : ""} type="button" role="tab" aria-selected={mode === "code"} onClick={() => { setMode("code"); setError(""); }}>内部访问码</button>
+                  </>
+                )}
+              </div>
+
+              {!setupChecked ? <div className="login-page-status" role="status"><RefreshCw size={15} /> 正在检查系统状态...</div> : null}
+
+              <div className="login-fields">
+                {mode === "setup" ? (
+                  <>
+                    <label><span>管理员账号</span><input ref={firstFieldRef} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="请输入管理员账号" autoComplete="username" /></label>
+                    <label><span>显示名称</span><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="团队成员如何称呼你" autoComplete="name" /></label>
+                    <label><span>管理员密码</span><input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" type="password" autoComplete="new-password" /></label>
+                  </>
+                ) : mode === "account" ? (
+                  <>
+                    <label><span>账号</span><input ref={firstFieldRef} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="请输入账号" autoComplete="username" /></label>
+                    <label><span>密码</span><input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" type="password" autoComplete="current-password" /></label>
+                  </>
+                ) : (
+                  <label><span>内部访问码</span><input ref={firstFieldRef} value={code} onChange={(event) => setCode(event.target.value)} placeholder="请输入内部访问码" type="password" autoComplete="one-time-code" /></label>
+                )}
+              </div>
+
+              {mode === "setup" ? <p className="login-setup-note">初始化仅在没有启用管理员时开放，完成后入口将自动关闭。</p> : null}
+              {error ? <div className="login-page-error" role="alert"><AlertTriangle size={16} /> {error}</div> : null}
+
+              <button className="login-submit-button" disabled={!canSubmit}>
+                <span>{submitting ? "正在验证..." : mode === "setup" ? "创建账号并启航" : "进入协作空间"}</span>
+                {submitting ? <RefreshCw className="spin" size={18} /> : <ArrowUpRight size={18} />}
+              </button>
+
+              <div className="login-trust-note"><KeyRound size={15} /><span>登录信息仅用于本系统身份验证，传输过程受安全保护。</span></div>
+            </form>
+
+            <div className="login-access-footer">
+              <span>© 2026 同舟供应链</span>
+              <span>与世界一起，向前航行</span>
+            </div>
+          </div>
+        </section>
       ) : null}
     </div>
   );
@@ -2065,7 +2257,7 @@ function Sidebar({
                           <Icon size={18} />
                           <span className="nav-label-wrap">
                             {item.beta ? <small>Beta</small> : null}
-                            <span>{item.label}</span>
+                            <span>{navigationDisplayLabel(item.label)}</span>
                           </span>
                         </button>
                       );
@@ -2122,6 +2314,16 @@ function Dashboard({
 }) {
   const [heatmapPeriod, setHeatmapPeriod] = React.useState<HeatmapPeriod>("day");
   const [attentionCopyMessage, setAttentionCopyMessage] = React.useState("");
+  const dataHealth = summary?.sync.dataHealth;
+  const salesDisplay = summary?.counts.salesAmount90Display;
+  const salesMetricValue = salesDisplay?.displayMode === "single" && salesDisplay.displayValue !== null
+    ? formatCurrencyAmount(salesDisplay.displayValue, salesDisplay.displayCurrency)
+    : salesDisplay?.displayMode === "multiple"
+      ? `${salesDisplay.currencyCount} 种币种`
+      : "未提供";
+  const salesMetricNote = salesDisplay?.amountsByCurrency?.length
+    ? `${salesDisplay.amountsByCurrency.slice(0, 3).map((item) => formatCurrencyAmount(item.amount, item.currency)).join(" · ")}${salesDisplay.excludedLines ? ` · ${formatNumber(salesDisplay.excludedLines)} 条未纳入` : ""}`
+    : `${formatNumber(summary?.counts.orderCount90 ?? 0)} 条出库明细，金额口径待补齐`;
   const staleSources = [
     { label: "产品", value: summary?.sync.productsSyncedAt },
     { label: "库存", value: summary?.sync.inventorySyncedAt },
@@ -2314,6 +2516,20 @@ function Dashboard({
 
   return (
     <main className="dashboard-grid">
+      {dataHealth ? (
+        <section className={`notice data-health-banner ${dataHealth.complete ? "good" : dataHealth.code === "failed" ? "danger" : "warning"}`}>
+          <div>
+            <strong>{dataHealth.label}</strong>
+            <span>覆盖 {formatNumber(dataHealth.completeCount)} / {formatNumber(dataHealth.warehouseCount)} 个仓库；当前结论以最弱依赖为准。</span>
+          </div>
+          <div className="data-health-facts">
+            {dataHealth.failedCount ? <span>{formatNumber(dataHealth.failedCount)} 个阻断</span> : null}
+            {dataHealth.partialCount ? <span>{formatNumber(dataHealth.partialCount)} 个不完整</span> : null}
+            {dataHealth.syncingCount ? <span>{formatNumber(dataHealth.syncingCount)} 个同步中</span> : null}
+            <small>生成于 {summary?.generatedAt ? formatDateTime(summary.generatedAt) : "未提供"}</small>
+          </div>
+        </section>
+      ) : null}
       {staleSources.length ? (
         <section className="notice danger data-freshness-notice">
           <strong>数据可能已过期</strong>
@@ -2324,10 +2540,10 @@ function Dashboard({
       ) : null}
 
       <section className="metric-strip">
-        <Metric title="可售库存" value={formatNumber(totalInventory)} note={`${products.length} 个可见产品`} icon={Boxes} tone="blue" />
+        <Metric title="已建档商品可售库存" value={formatNumber(totalInventory)} note={`${formatNumber(products.length)} 个可见商品 · 不含仓库孤儿 SKU`} icon={Boxes} tone="blue" />
         <Metric title="今日出库订单" value={formatNumber(totalOrders)} note={todayOrderNote} icon={PackageCheck} tone="green" />
-        <Metric title="90天订单金额" value={formatMoney(salesAmount)} note={`${formatNumber(summary?.counts.orderCount90 ?? 0)} 条出库明细`} icon={BarChart3} tone="orange" />
-        <Metric title="动销风险 SKU" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} / 仓库孤儿 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
+        <Metric title="90天订单金额" value={salesMetricValue} note={salesMetricNote} icon={BarChart3} tone="orange" />
+        <Metric title="风险 SKU（SKU×国家）" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} / 未建档 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
       </section>
 
       <section className="panel sync-health-panel">
@@ -2517,8 +2733,8 @@ function Dashboard({
               <div className="warehouse-meta">
                 {"orderOk" in warehouse ? (
                   <>
-                    <span className={`status-pill ${warehouse.backgroundRunning ? "warning" : warehouse.orderOk || warehouse.inventoryOk ? "good" : "warning"}`}>
-                      {warehouse.backgroundRunning ? "后台同步中" : warehouse.orderOk || warehouse.inventoryOk ? "正常" : "待同步"}
+                    <span className={`status-pill ${warehouse.dataState?.complete ? "good" : warehouse.dataState?.completeness === "failed" ? "danger" : "warning"}`}>
+                      {warehouse.dataState?.completenessLabel || (warehouse.backgroundRunning ? "同步中" : "待同步")}
                     </span>
                     <small>{warehouse.message || `${formatNumber(warehouse.orderCount)} 条订单`}</small>
                   </>
@@ -3562,6 +3778,7 @@ function MovementBoard({
   onSyncOrders,
   syncing,
   canSync,
+  onCreateStockupDraft,
 }: {
   movementPayload: MovementPayload | null;
   orderSyncJob: OrderSyncJob | null;
@@ -3569,6 +3786,7 @@ function MovementBoard({
   onSyncOrders: (warehouseIds?: string[]) => void;
   syncing: boolean;
   canSync: boolean;
+  onCreateStockupDraft: (item: MovementPayload["items"][number]) => void;
 }) {
   const [country, setCountry] = React.useState("全部");
   const [warehouse, setWarehouse] = React.useState("全部");
@@ -3580,6 +3798,7 @@ function MovementBoard({
   const [sortKey, setSortKey] = React.useState<MovementSortKey>("sales90");
   const [sortDirection, setSortDirection] = React.useState<SortDirection>("desc");
   const [riskCopyMessage, setRiskCopyMessage] = React.useState("");
+  const [selectedRiskItem, setSelectedRiskItem] = React.useState<MovementPayload["items"][number] | null>(null);
 
   React.useEffect(() => {
     if (initialWarehouse) setWarehouse(initialWarehouse);
@@ -3685,9 +3904,9 @@ function MovementBoard({
       <section className="library-hero movement-hero">
         <div>
           <p className="eyebrow">Movement Control</p>
-          <h2>动销分析看板</h2>
+          <h2>库存风险工作台</h2>
           <p>
-            基于仓库实时库存和近 90 天出库订单，按 SKU 判断缺货、补货预警、慢销和滞销，并估算库存还能销售多少天。
+            先定位需要处理的风险 SKU，再查看计算依据并直接创建备货草稿。技术同步诊断已收纳到下方详情中。
           </p>
           <div className="source-row">
             <span className={`status-pill ${movementPayload?.orderSyncedAt ? "good" : "warning"}`}>
@@ -3730,13 +3949,6 @@ function MovementBoard({
           ))}
         </section>
       ) : null}
-
-      <MovementDiagnosticsPanel
-        diagnostics={warehouseDiagnostics}
-        onSelectWarehouse={setWarehouse}
-        onSyncWarehouseOrders={(warehouseId) => onSyncOrders([warehouseId])}
-        syncing={!canSync || syncing || jobRunning}
-      />
 
       <section className="metric-strip movement-metrics">
         <Metric title="缺货 SKU" value={formatNumber(movementPayload?.counts.stockout ?? 0)} note="有销量但可售为 0" icon={AlertTriangle} tone="red" />
@@ -3822,7 +4034,7 @@ function MovementBoard({
         <div className="panel-heading">
           <div>
             <p className="eyebrow">SKU Risk Queue</p>
-            <h2>SKU 动销明细</h2>
+            <h2>风险 SKU 清单</h2>
           </div>
           <div className="movement-risk-toolbar">
             <span className="status-pill muted">{formatNumber(filteredItems.length)} 个 SKU</span>
@@ -3853,6 +4065,7 @@ function MovementBoard({
             <span>趋势</span>
             <SortHeader label="可售天数" sortKey="daysCover" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
             <SortHeader label="状态" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={updateSort} />
+            <span>处理</span>
           </div>
           {sortedItems.slice(0, 80).map((item) => (
             <article className="movement-row" key={`${item.country}-${item.sku}-${item.id}`}>
@@ -3879,10 +4092,69 @@ function MovementBoard({
               <Sparkline values={item.trend30} />
               <DaysCoverInsight item={item} />
               <MovementStatusInsight item={item} />
+              <button className="ghost-button compact-button" type="button" onClick={() => setSelectedRiskItem(item)}>
+                查看依据
+              </button>
             </article>
           ))}
         </div>
       </section>
+
+      <details className="panel movement-diagnostics-disclosure">
+        <summary>
+          <span><strong>数据同步与技术诊断</strong><small>查看仓库连接、分页完整性、失败分片和重试入口</small></span>
+          <ChevronDown size={18} />
+        </summary>
+        <MovementDiagnosticsPanel
+          diagnostics={warehouseDiagnostics}
+          onSelectWarehouse={setWarehouse}
+          onSyncWarehouseOrders={(warehouseId) => onSyncOrders([warehouseId])}
+          syncing={!canSync || syncing || jobRunning}
+        />
+      </details>
+
+      {selectedRiskItem ? (
+        <div className="modal-layer risk-detail-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedRiskItem(null); }}>
+          <section className="risk-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="risk-detail-title">
+            <header>
+              <div>
+                <p className="eyebrow">Risk evidence</p>
+                <h2 id="risk-detail-title">{selectedRiskItem.sku} · {selectedRiskItem.name}</h2>
+                <span>{selectedRiskItem.country} · {selectedRiskItem.identityScope || "SKU×国家"}</span>
+              </div>
+              <button className="icon-button" type="button" aria-label="关闭风险详情" onClick={() => setSelectedRiskItem(null)}><X size={18} /></button>
+            </header>
+            <div className="risk-detail-status-row">
+              <span className={`status-pill ${alertClass(selectedRiskItem.status)}`}>{selectedRiskItem.status}</span>
+              <span className={`status-pill ${selectedRiskItem.dataCompleteness === "complete" ? "good" : "warning"}`}>
+                {selectedRiskItem.dataCompleteness === "complete" ? "数据完整" : selectedRiskItem.dataCompleteness === "partial" ? "数据不完整" : selectedRiskItem.source === "warehouse_only" ? "商品未建档" : "待核实"}
+              </span>
+              <small>快照 {movementPayload?.generatedAt ? formatDateTime(movementPayload.generatedAt) : "未提供"}</small>
+            </div>
+            <div className="risk-evidence-grid">
+              <div><span>可售库存</span><strong>{formatNumber(selectedRiskItem.availableQty)} {selectedRiskItem.unit}</strong><small>在途 {formatNumber(selectedRiskItem.inTransitQty)}</small></div>
+              <div><span>7 / 30 日销量</span><strong>{formatNumber(selectedRiskItem.sales7)} / {formatNumber(selectedRiskItem.sales30)}</strong><small>90日 {formatNumber(selectedRiskItem.sales90)}</small></div>
+              <div><span>加权日均</span><strong>{formatDecimal(selectedRiskItem.calculation?.dailySalesBasis ?? selectedRiskItem.dailyWeighted)}</strong><small>{selectedRiskItem.calculation?.window || "3/7/30/90天"}</small></div>
+              <div><span>预计断货</span><strong>{selectedRiskItem.estimatedStockoutDate || "无法估算"}</strong><small>{selectedRiskItem.daysCover === null ? "当前窗口无有效销量" : `约 ${formatDecimal(selectedRiskItem.daysCover)} 天`}</small></div>
+            </div>
+            <section className="risk-calculation-card">
+              <strong>计算依据</strong>
+              <p>{selectedRiskItem.calculation?.formula || "使用近期多窗口销量估算日均消耗"}</p>
+              <small>规则 {selectedRiskItem.calculation?.ruleVersion || "movement-v2"} · 在途库存不计入可售天数 · 建议备货 {formatNumber(selectedRiskItem.replenishQty)} {selectedRiskItem.unit}</small>
+            </section>
+            <section className="risk-calculation-card">
+              <strong>处理建议</strong>
+              <p>{selectedRiskItem.suggestion}</p>
+            </section>
+            <footer>
+              <button className="ghost-button" type="button" onClick={() => setSelectedRiskItem(null)}>暂不处理</button>
+              <button className="sync-button" type="button" onClick={() => onCreateStockupDraft(selectedRiskItem)} disabled={selectedRiskItem.source === "warehouse_only" || selectedRiskItem.replenishQty <= 0}>
+                <PackageCheck size={16} />创建备货草稿
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -3897,6 +4169,8 @@ function StockupCenter({
   onCreatePlan,
   onUpdatePlanStatus,
   syncing,
+  draftSeed = null,
+  onDraftSeedConsumed,
 }: {
   pageMode?: "workflow" | "recommendations";
   stockupPayload: StockupPayload | null;
@@ -3907,6 +4181,8 @@ function StockupCenter({
   onCreatePlan: (item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) => Promise<void>;
   onUpdatePlanStatus: (id: string, status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled") => Promise<void>;
   syncing: boolean;
+  draftSeed?: StockupDraftSeed | null;
+  onDraftSeedConsumed?: () => void;
 }) {
   const recommendations = stockupPayload?.recommendations ?? [];
   const abandonedRecommendations = stockupPayload?.abandonedRecommendations ?? [];
@@ -3923,6 +4199,10 @@ function StockupCenter({
   const [reviewCopyMessage, setReviewCopyMessage] = React.useState("");
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
   const isRecommendationPage = pageMode === "recommendations";
+
+  React.useEffect(() => {
+    if (draftSeed && !isRecommendationPage) setWorkflowTab("demands");
+  }, [draftSeed, isRecommendationPage]);
 
   const currentCounts = workflowPayload?.counts;
   const actionQueue = [
@@ -4060,7 +4340,7 @@ function StockupCenter({
           <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div>
         ) : null}
         {workflowTab === "overview" ? <StockupWorkflowOverview payload={workflowPayload} /> : null}
-        {workflowTab === "demands" ? <StockupDemandWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
+        {workflowTab === "demands" ? <StockupDemandWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} seed={draftSeed} onSeedConsumed={onDraftSeedConsumed} /> : null}
         {workflowTab === "execution" ? <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
         {workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} onLocked={() => setWorkflowTab("ledger")} /> : null}
         {workflowTab === "ledger" ? <StockupCostLedger payload={workflowPayload} /> : null}
@@ -4524,7 +4804,37 @@ function StockupWorkflowOverview({ payload }: { payload: StockupWorkflowPayload 
   );
 }
 
-function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
+type StockupDemandDraft = {
+  productSourceType: "已有产品" | "外采新品";
+  productRecordId: string;
+  sku: string;
+  productName: string;
+  requestedQty: number;
+  unit: string;
+  project: string;
+  platform: string;
+  destinationCountry: string;
+  destinationWarehouseName: string;
+  stockupMethod: string;
+  priority: string;
+  expectedArrivalAt: string;
+  reason: string;
+};
+
+function emptyStockupDemandDraft(): StockupDemandDraft {
+  return { productSourceType: "已有产品", productRecordId: "", sku: "", productName: "", requestedQty: 0, unit: "件", project: "", platform: "SHOPEE", destinationCountry: "", destinationWarehouseName: "", stockupMethod: "外采成品", priority: "普通", expectedArrivalAt: "", reason: "" };
+}
+
+function readStockupDemandDraft() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STOCKUP_DEMAND_DRAFT_KEY) || "null");
+    return stored && typeof stored === "object" ? { ...emptyStockupDemandDraft(), ...stored } as StockupDemandDraft : emptyStockupDemandDraft();
+  } catch {
+    return emptyStockupDemandDraft();
+  }
+}
+
+function StockupDemandWorkbench({ payload, onRefresh, seed = null, onSeedConsumed }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload>; seed?: StockupDraftSeed | null; onSeedConsumed?: () => void }) {
   const codingDemandIds = new Set((payload?.productCodingQueue ?? []).map((item) => item.sourceDemandRecordId));
   const demands = (payload?.demands ?? []).filter((item) => (
     !/已完成|已取消|关闭/.test(item.businessStatus)
@@ -4532,10 +4842,51 @@ function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
     && Math.max(0, item.requestedQty - item.plannedQty) > 0
   ));
   const productOptions = payload?.productOptions ?? [];
-  const [form, setForm] = React.useState({ productSourceType: "已有产品" as "已有产品" | "外采新品", productRecordId: "", sku: "", productName: "", requestedQty: 0, unit: "件", project: "", platform: "SHOPEE", destinationCountry: "", destinationWarehouseName: "", stockupMethod: "外采成品", priority: "普通", expectedArrivalAt: "", reason: "" });
+  const warehouseOptions = payload?.warehouseOptions ?? [];
+  const [form, setForm] = React.useState<StockupDemandDraft>(readStockupDemandDraft);
+  const [productQuery, setProductQuery] = React.useState("");
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState("");
+  const confirm = useConfirm();
+  const countryOptions = uniqueSorted(warehouseOptions.map((item) => item.country));
+  const destinationWarehouseOptions = warehouseOptions.filter((item) => !form.destinationCountry || item.country === form.destinationCountry);
+  const filteredProductOptions = productOptions.filter((item) => !productQuery.trim() || `${item.sku} ${item.productName}`.toLowerCase().includes(productQuery.trim().toLowerCase())).slice(0, 80);
+  const today = new Date().toISOString().slice(0, 10);
+  const validationIssues = [
+    ...(form.productSourceType === "已有产品" && !form.productRecordId ? ["请选择可识别的正式 SKU"] : []),
+    ...(!form.productName.trim() ? ["填写或选择产品"] : []),
+    ...(!(form.requestedQty > 0) ? ["备货数量必须大于 0"] : []),
+    ...(!form.destinationCountry ? ["选择目的国"] : []),
+    ...(!form.destinationWarehouseName ? ["选择目的仓"] : []),
+    ...(form.expectedArrivalAt && form.expectedArrivalAt < today ? ["期望到仓日期不能早于今天"] : []),
+  ];
+
+  React.useEffect(() => {
+    try { localStorage.setItem(STOCKUP_DEMAND_DRAFT_KEY, JSON.stringify(form)); } catch { /* 本机存储不可用时仍允许继续填写 */ }
+  }, [form]);
+
+  React.useEffect(() => {
+    if (!seed) return;
+    const product = productOptions.find((item) => item.sku.toLowerCase() === seed.sku.toLowerCase());
+    const matchedWarehouse = warehouseOptions.find((item) => item.warehouseName === seed.warehouseName && (!seed.country || item.country === seed.country));
+    setForm((current) => ({
+      ...current,
+      productSourceType: "已有产品",
+      productRecordId: product?.id || "",
+      sku: seed.sku,
+      productName: product?.productName || seed.productName,
+      requestedQty: seed.requestedQty,
+      unit: seed.unit || "件",
+      destinationCountry: matchedWarehouse?.country || seed.country,
+      destinationWarehouseName: matchedWarehouse?.warehouseName || seed.warehouseName,
+      reason: seed.reason,
+    }));
+    setProductQuery(seed.sku);
+    setOpen(true);
+    setNotice(seed.snapshotAt ? `已带入库存风险快照：${formatDateTime(seed.snapshotAt)}。提交前请复核数量与目的仓。` : "已从库存风险带入草稿，请复核数量与目的仓。");
+    onSeedConsumed?.();
+  }, [onSeedConsumed, productOptions, seed, warehouseOptions]);
 
   function selectProduct(productId: string) {
     const product = productOptions.find((item) => item.id === productId);
@@ -4543,13 +4894,26 @@ function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
   }
 
   async function submitDemand() {
+    if (validationIssues.length) {
+      setNotice(`请先完成：${validationIssues.join("、")}。`);
+      return;
+    }
+    const confirmed = await confirm({
+      title: "确认提交备货需求",
+      body: `${form.sku || form.productName} · ${formatNumber(form.requestedQty)} ${form.unit} · ${form.destinationCountry} / ${form.destinationWarehouseName}`,
+      confirmText: "确认提交",
+      details: [form.project ? `归属项目：${form.project}` : "归属项目：未填写", `备货方式：${form.stockupMethod}`, form.reason ? `原因：${form.reason}` : "原因：未填写"],
+    });
+    if (!confirmed) return;
     setBusy(true); setNotice("");
     try {
       const result = await createWorkflowDemand(form);
       await onRefresh();
       setNotice(result.warning || `需求 ${result.demandBatchNo} 已创建${result.temporaryProductNo ? `，临时产品号 ${result.temporaryProductNo}` : ""}。`);
       setOpen(false);
-      setForm((current) => ({ ...current, productRecordId: "", sku: "", productName: "", requestedQty: 0, reason: "" }));
+      setForm(emptyStockupDemandDraft());
+      setProductQuery("");
+      try { localStorage.removeItem(STOCKUP_DEMAND_DRAFT_KEY); } catch { /* ignore */ }
     } catch (error) { setNotice(error instanceof Error ? error.message : "需求创建失败"); }
     finally { setBusy(false); }
   }
@@ -4560,20 +4924,28 @@ function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
         <div className="workflow-heading-actions"><span className="status-pill muted">{formatNumber(demands.length)} 条</span><button className="sync-button compact-button" type="button" onClick={() => setOpen((value) => !value)}><Plus size={14} />新建需求</button></div>
       </div>
       {notice ? <div className="notice compact-notice">{notice}</div> : null}
-      {open ? <div className="workflow-create-form demand-create-form">
-        <label><span>产品来源</span><select value={form.productSourceType} onChange={(event) => setForm({ ...form, productSourceType: event.target.value as typeof form.productSourceType, productRecordId: "", sku: "", productName: "" })}><option>已有产品</option><option>外采新品</option></select></label>
-        {form.productSourceType === "已有产品" ? <label className="wide-field"><span>选择正式 SKU</span><select value={form.productRecordId} onChange={(event) => selectProduct(event.target.value)}><option value="">请选择</option>{productOptions.map((item) => <option value={item.id} key={item.id}>{item.sku} · {item.productName}</option>)}</select></label> : <label className="wide-field"><span>新品名称</span><input value={form.productName} onChange={(event) => setForm({ ...form, productName: event.target.value })} placeholder="输入外采新品名称" /></label>}
-        <label><span>备货数量</span><input type="number" min="0" value={form.requestedQty || ""} onChange={(event) => setForm({ ...form, requestedQty: Number(event.target.value) })} /></label>
+      {open ? <div className="workflow-create-form demand-create-form" aria-label="新建备货需求">
+        <div className="demand-draft-banner wide-field">
+          <div><strong>备货需求草稿</strong><span>内容自动保存在本机；提交失败或离开页面后可以继续填写。</span></div>
+          <span className="status-pill muted">{validationIssues.length ? `${validationIssues.length} 项待完成` : "可以提交"}</span>
+        </div>
+        <label><span>产品来源</span><select aria-label="产品来源" value={form.productSourceType} onChange={(event) => setForm({ ...form, productSourceType: event.target.value as typeof form.productSourceType, productRecordId: "", sku: "", productName: "" })}><option>已有产品</option><option>外采新品</option></select></label>
+        {form.productSourceType === "已有产品" ? <>
+          <label><span>搜索产品</span><input aria-label="搜索正式 SKU" value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="输入 SKU 或商品名称" /></label>
+          <label className="wide-field"><span>选择正式 SKU</span><select aria-label="选择正式 SKU" value={form.productRecordId} onChange={(event) => selectProduct(event.target.value)}><option value="">请选择匹配商品</option>{filteredProductOptions.map((item) => <option value={item.id} key={item.id}>{item.sku} · {item.productName}</option>)}</select><small>当前显示 {formatNumber(filteredProductOptions.length)} 条匹配结果</small></label>
+        </> : <label className="wide-field"><span>新品名称</span><input value={form.productName} onChange={(event) => setForm({ ...form, productName: event.target.value })} placeholder="输入外采新品名称" /></label>}
+        <label><span>备货数量</span><input type="number" min="1" value={form.requestedQty || ""} onChange={(event) => setForm({ ...form, requestedQty: Number(event.target.value) })} /></label>
         <label><span>单位</span><input value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} /></label>
-        <label><span>归属项目</span><input value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder="如 SHOPEE 印尼" /></label>
-        <label><span>平台</span><select value={form.platform} onChange={(event) => setForm({ ...form, platform: event.target.value })}><option>SHOPEE</option><option>TIKTOK</option><option>OZON</option><option>其他</option></select></label>
-        <label><span>目的国</span><input value={form.destinationCountry} onChange={(event) => setForm({ ...form, destinationCountry: event.target.value })} /></label>
-        <label><span>目的仓</span><input value={form.destinationWarehouseName} onChange={(event) => setForm({ ...form, destinationWarehouseName: event.target.value })} /></label>
+        <label><span>归属项目</span><input list="stockup-project-options" value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder="选择或输入项目" /><datalist id="stockup-project-options">{uniqueSorted((payload?.demands ?? []).map((item) => item.project)).map((item) => <option value={item} key={item} />)}</datalist></label>
+        <label><span>平台</span><select value={form.platform} onChange={(event) => setForm({ ...form, platform: event.target.value })}><option>SHOPEE</option><option>TIKTOK</option><option>OZON</option><option>WILDBERRIES</option><option>其他</option></select></label>
+        <label><span>目的国</span><select aria-label="目的国" value={form.destinationCountry} onChange={(event) => setForm({ ...form, destinationCountry: event.target.value, destinationWarehouseName: "" })}><option value="">请选择目的国</option>{countryOptions.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
+        <label><span>目的仓</span><select aria-label="目的仓" value={form.destinationWarehouseName} onChange={(event) => setForm({ ...form, destinationWarehouseName: event.target.value })} disabled={!form.destinationCountry}><option value="">{form.destinationCountry ? "请选择目的仓" : "请先选择目的国"}</option>{destinationWarehouseOptions.map((item) => <option value={item.warehouseName} key={item.connectionId}>{item.warehouseName} · {item.providerName}</option>)}</select></label>
         <label><span>备货方式</span><select value={form.stockupMethod} onChange={(event) => setForm({ ...form, stockupMethod: event.target.value })}><option>外采成品</option><option>委外生产</option><option>自有成品</option><option>待判断</option></select></label>
         <label><span>优先级</span><select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}><option>普通</option><option>紧急</option><option>低</option></select></label>
-        <label><span>期望到仓</span><input type="date" value={form.expectedArrivalAt} onChange={(event) => setForm({ ...form, expectedArrivalAt: event.target.value })} /></label>
-        <label className="wide-field"><span>备货原因</span><input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} /></label>
-        <div className="workflow-form-actions"><button className="ghost-button" type="button" onClick={() => setOpen(false)}>取消</button><button className="sync-button" type="button" disabled={busy || !form.productName || !form.requestedQty} onClick={() => void submitDemand()}>提交需求</button></div>
+        <label><span>期望到仓</span><input type="date" min={today} value={form.expectedArrivalAt} onChange={(event) => setForm({ ...form, expectedArrivalAt: event.target.value })} /></label>
+        <label className="wide-field"><span>备货原因</span><input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="说明缺货、预警、活动或补仓依据" /></label>
+        {validationIssues.length ? <div className="demand-validation wide-field" role="status"><strong>提交前请完成</strong><span>{validationIssues.join("；")}</span></div> : null}
+        <div className="workflow-form-actions"><button className="ghost-button" type="button" onClick={() => setOpen(false)}>保存草稿并收起</button><button className="sync-button" type="button" disabled={busy || validationIssues.length > 0} onClick={() => void submitDemand()}>{busy ? "提交中" : "检查并提交"}</button></div>
       </div> : null}
       <div className="workflow-table demand-workflow-table">
         <div className="workflow-table-row workflow-table-head">
@@ -4588,7 +4960,7 @@ function StockupDemandWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
             <span><strong>{item.stockupMethod || item.productSourceType || "待判断"}</strong><small>{item.priority || "普通"}</small></span>
             <span className={`status-pill ${/完成|到仓/.test(item.businessStatus) ? "good" : /取消|异常/.test(item.businessStatus) ? "warning" : "muted"}`}>{item.businessStatus || "待受理"}</span>
           </article>
-        )) : <div className="stockup-empty">简道云“供应链备货审批”暂无需求数据。运营提交后会自动出现在这里。</div>}
+        )) : <div className="stockup-empty"><strong>还没有待处理的备货需求</strong><span>创建首条需求，系统会在提交前校验商品、数量和目的仓。</span><button className="sync-button compact-button" type="button" onClick={() => setOpen(true)}><Plus size={14} />创建首条需求</button></div>}
       </div>
     </section>
   );

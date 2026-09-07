@@ -33,6 +33,7 @@ import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalize
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
+import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -2977,9 +2978,21 @@ function buildDashboardSummary(auth) {
   const visibleOrders = scoped.orders.orders || [];
   const visibleCatalog = products.catalog || [];
   const orderCount90 = canViewOperations ? visibleOrders.length : 0;
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = dateKeyInTimezone(new Date(), inventorySnapshotTimezone);
   const todayOrders = canViewOperations ? visibleOrders.filter((order) => String(order.shippedAt || order.createdAt || "").slice(0, 10) === todayKey) : [];
   const salesAmount90 = canViewOperations ? visibleOrders.reduce((sum, order) => sum + numberOrZero(order.salesAmount), 0) : 0;
+  const salesSummary = canViewOperations ? summarizeOrderAmounts(visibleOrders) : summarizeOrderAmounts([]);
+  const warehouseDataStates = scoped.connections.map((connection) => {
+    const inventoryResult = warehouseResults.find((item) => item.warehouseId === connection.id);
+    const orderResult = canViewOperations ? orderResults.find((item) => item.warehouseId === connection.id) : null;
+    return buildWarehouseDataState({
+      connection,
+      inventoryResult,
+      orderResult,
+      hasCredentials: canViewSync ? hasWarehouseCredentials(connection) : Boolean(inventoryResult || orderResult),
+    });
+  });
+  const dataHealth = summarizeDataHealth(warehouseDataStates);
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -2991,6 +3004,7 @@ function buildDashboardSummary(auth) {
       todayOrders: todayOrders.length,
       orderCount90,
       salesAmount90,
+      salesAmount90Display: salesSummary,
       riskSku: movementPayload
         ? numberOrZero(movementPayload.counts.stockout) + numberOrZero(movementPayload.counts.replenish) + numberOrZero(movementPayload.counts.slow) + numberOrZero(movementPayload.counts.stagnant)
         : visibleCatalog.filter((product) => product.alert !== "健康").length,
@@ -3009,11 +3023,13 @@ function buildDashboardSummary(auth) {
       autoSyncIntervalMs,
       backgroundRunningWarehouses: movementPayload?.syncState?.backgroundRunningWarehouses || [],
       failedWarehouses: movementPayload?.syncState?.failedWarehouses || [],
+      dataHealth,
     },
     movementDiagnostics: canViewSync ? (movementPayload?.warehouseDiagnostics || []) : [],
     warehouses: scoped.connections.map((connection) => {
       const result = warehouseResults.find((item) => item.warehouseId === connection.id);
       const orderResult = canViewOperations ? orderResults.find((item) => item.warehouseId === connection.id) : null;
+      const dataState = warehouseDataStates.find((item) => item.warehouseId === connection.id);
       return {
         id: connection.id,
         name: connection.name,
@@ -3027,6 +3043,7 @@ function buildDashboardSummary(auth) {
         message: canViewOperations ? (orderResult?.message || (canViewInventory ? result?.message : "") || "") : (canViewInventory ? result?.message || "" : ""),
         inventoryCount: canViewInventory ? (result?.inventoryCount || 0) : 0,
         orderCount: canViewOperations ? (orderResult?.orderCount || 0) : 0,
+        dataState,
       };
     }),
   };
