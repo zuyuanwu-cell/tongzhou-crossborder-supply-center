@@ -48,6 +48,22 @@ function buildOutsourcingBySku(payload = {}) {
   return bySku;
 }
 
+function buildDomesticCustomizationBySku(payload = {}) {
+  const bySku = new Map();
+  for (const order of payload.domesticCustomizationOrders || []) {
+    const sku = firstText(order.productSku, order.tongzhouSku, order.orderNo, order.id);
+    const key = normalizeSkuKey(sku);
+    if (!key) continue;
+    const quantity = firstNumber(order.inProductionQty);
+    if (quantity <= 0) continue;
+    const current = bySku.get(key) || { sku, qty: 0, orders: [] };
+    current.qty += quantity;
+    current.orders.push(order);
+    bySku.set(key, current);
+  }
+  return bySku;
+}
+
 function newestOrder(orders) {
   return [...orders].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())[0] || {};
 }
@@ -82,8 +98,35 @@ function buildOutsourcingQueue(outsourcingBySku, recommendationKeys, productBase
     });
 }
 
+function buildDomesticCustomizationQueue(domesticBySku, productBaseBySku) {
+  return [...domesticBySku.entries()]
+    .map(([key, match]) => {
+      const firstOrder = newestOrder(match.orders);
+      const base = productBaseBySku.get(normalizeSkuKey(firstOrder.tongzhouSku || firstOrder.productSku || key));
+      const remarks = match.orders.map((order) => firstText(order.remark, order.progressSummary)).filter(Boolean);
+      return {
+        id: `domestic:${key}`,
+        sku: firstText(match.sku, firstOrder.productSku, firstOrder.tongzhouSku, key),
+        name: firstText(base?.name, firstOrder.productName, firstOrder.productSku, firstOrder.tongzhouSku, key),
+        unit: firstText(base?.unit, firstOrder.unit, "件"),
+        imageUrl: firstText(base?.imageUrl),
+        createdAt: firstText(firstOrder.createdAt),
+        remark: remarks[0] || "",
+        remarks,
+        inProductionQty: match.qty,
+        orderCount: match.orders.length,
+        inRecommendation: false,
+        note: "国内定制生产单",
+        orders: match.orders,
+      };
+    })
+    .filter((item) => item.inProductionQty > 0)
+    .sort((a, b) => b.inProductionQty - a.inProductionQty);
+}
+
 export function buildStockupPayload(movementPayload, stockupSync = {}, outsourcingPayload = {}, productPayload = {}) {
   const outsourcingBySku = buildOutsourcingBySku(outsourcingPayload);
+  const domesticCustomizationBySku = buildDomesticCustomizationBySku(outsourcingPayload);
   const productBaseBySku = buildProductBaseBySku(productPayload);
   const recommendations = (movementPayload.items || [])
     .filter(shouldRecommend)
@@ -134,6 +177,7 @@ export function buildStockupPayload(movementPayload, stockupSync = {}, outsourci
     [item.sku, item.countrySku, item.id].map(normalizeSkuKey).filter(Boolean).forEach((key) => recommendationKeys.add(key));
   }
   const outsourcingQueue = buildOutsourcingQueue(outsourcingBySku, recommendationKeys, productBaseBySku);
+  const domesticCustomizationQueue = buildDomesticCustomizationQueue(domesticCustomizationBySku, productBaseBySku);
 
   const inboundOrders = Array.isArray(stockupSync.orders) ? stockupSync.orders : [];
   const results = Array.isArray(stockupSync.results) ? stockupSync.results : [];
@@ -151,12 +195,16 @@ export function buildStockupPayload(movementPayload, stockupSync = {}, outsourci
       outsourcingInRecommendationQty: recommendations.reduce((sum, item) => sum + item.outsourcingInProductionQty, 0),
       outsourcingOutsideRecommendationQty: outsourcingQueue.filter((item) => !item.inRecommendation).reduce((sum, item) => sum + item.inProductionQty, 0),
       outsourcingActiveSku: outsourcingQueue.length,
+      domesticCustomizationOrders: outsourcingPayload.counts?.domesticCustomizationOrders || 0,
+      domesticCustomizationInProductionQty: domesticCustomizationQueue.reduce((sum, item) => sum + item.inProductionQty, 0),
+      domesticCustomizationActiveSku: domesticCustomizationQueue.length,
       netRecommendedQty: recommendations.reduce((sum, item) => sum + item.netReplenishQty, 0),
       inboundOrders: inboundOrders.length,
       pendingInboundQty: inboundOrders.reduce((sum, order) => sum + firstNumber(order.quantity), 0),
     },
     recommendations,
     outsourcingQueue,
+    domesticCustomizationQueue,
     outsourcingSyncedAt: outsourcingPayload.syncedAt || "",
     inboundOrders,
     syncResults: results,

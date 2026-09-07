@@ -4700,6 +4700,72 @@ h3 {
   color: var(--muted);
 }
 
+.production-source-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(231, 238, 248, .64);
+}
+
+.production-source-tabs button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  min-height: 68px;
+  padding: 13px 16px 13px 19px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: #61718a;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.production-source-tabs button::before {
+  content: "";
+  position: absolute;
+  inset: 12px auto 12px 0;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: transparent;
+}
+
+.production-source-tabs button:hover {
+  transform: translateY(-1px);
+  color: #173d7a;
+  background: rgba(255, 255, 255, .7);
+}
+
+.production-source-tabs button.active {
+  border-color: rgba(233, 86, 19, .3);
+  background: #fff;
+  color: #173d7a;
+  box-shadow: 0 9px 24px rgba(23, 61, 122, .09);
+}
+
+.production-source-tabs button.active::before { background: #e95613; }
+.production-source-tabs button:focus-visible { outline: 3px solid rgba(23, 103, 183, .2); outline-offset: 2px; }
+.production-source-tabs button span { align-self: end; font-size: 14px; font-weight: 850; }
+.production-source-tabs button strong { grid-row: span 2; align-self: center; min-width: 34px; padding: 7px 9px; border-radius: 10px; background: rgba(23, 61, 122, .08); color: #173d7a; font-size: 16px; text-align: center; }
+.production-source-tabs button.active strong { background: rgba(233, 86, 19, .1); color: #c84a0d; }
+.production-source-tabs button small { color: #8390a3; font-size: 11px; }
+
+.production-panel-meta {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--muted);
+}
+
+.production-panel-meta small { font-size: 11px; }
+
 .workflow-scope-note {
   display: flex;
   align-items: center;
@@ -5398,6 +5464,29 @@ h3 {
 .outsourcing-age-cell em { margin-top: 3px; }
 .outsourcing-production-timeline { margin-top: 2px; }
 
+.production-follow-cell {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.production-follow-cell strong {
+  color: #173d7a;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.production-follow-cell span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: #63738b;
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workflow-card-list article > div:first-child,
 .cost-version-list article > div:first-child {
   display: grid;
@@ -5803,8 +5892,8 @@ h3 {
 
 .outsourcing-queue-head,
 .outsourcing-queue-row {
-  grid-template-columns: minmax(230px, 1.1fr) 90px 54px 142px 106px 76px minmax(155px, .8fr);
-  min-width: 920px;
+  grid-template-columns: minmax(230px, 1.1fr) 100px 60px 132px minmax(180px, .85fr) 112px 104px;
+  min-width: 1080px;
 }
 
 .outsourcing-remark {
@@ -10791,6 +10880,14 @@ h3 {
   .compact-search {
     width: 100%;
     min-width: 0;
+  }
+
+  .production-source-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .production-panel-meta {
+    justify-items: start;
   }
 
   .production-time-summary {

@@ -1689,6 +1689,42 @@ export type PerformanceAnalyticsPayload = {
   };
 };
 
+export type OutsourcingProductionOrder = {
+  id: string;
+  tongzhouSku: string;
+  productSku?: string;
+  orderNo: string;
+  productName: string;
+  supplier: string;
+  status: string;
+  isInProduction?: boolean;
+  productionRegion?: string;
+  productionType?: string;
+  isDomesticCustomization?: boolean;
+  deliveryStatus?: string;
+  progressSummary?: string;
+  unit?: string;
+  plannedQty: number;
+  producedQty: number;
+  inProductionQty: number;
+  createdAt?: string;
+  updatedAt?: string;
+  expectedFinishedAt?: string;
+  packagingExpectedAt?: string;
+  factoryExpectedFinishedAt?: string;
+  actualMaterialReadyAt?: string;
+  finishedShippedAt?: string;
+  inboundCompletedAt?: string;
+  lastFollowedAt?: string;
+  materialReady?: string;
+  filingPassed?: string;
+  testingPassed?: string;
+  innerPackTest?: string;
+  outerPackTest?: string;
+  preProductionSampleConfirmed?: string;
+  remark?: string;
+};
+
 export type StockupRecommendation = {
   id: string;
   recommendationKey?: string;
@@ -1717,22 +1753,7 @@ export type StockupRecommendation = {
   decisionAt?: string;
   decisionNote?: string;
   workflowDemandRecordId?: string;
-  outsourcingOrders: Array<{
-    id: string;
-    tongzhouSku: string;
-    orderNo: string;
-    productName: string;
-    supplier: string;
-    status: string;
-    unit?: string;
-    plannedQty: number;
-    producedQty: number;
-    inProductionQty: number;
-    createdAt?: string;
-    updatedAt?: string;
-    expectedFinishedAt?: string;
-    remark?: string;
-  }>;
+  outsourcingOrders: OutsourcingProductionOrder[];
   suggestion: string;
   warehouseBreakdown: MovementItem["warehouseBreakdown"];
 };
@@ -1770,6 +1791,22 @@ export type StockupPlan = {
   updatedAt: string;
 };
 
+export type StockupProductionQueueItem = {
+  id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  imageUrl?: string;
+  createdAt?: string;
+  remark?: string;
+  remarks?: string[];
+  inProductionQty: number;
+  orderCount: number;
+  inRecommendation: boolean;
+  note: string;
+  orders: OutsourcingProductionOrder[];
+};
+
 export type StockupPayload = {
   ok: boolean;
   generatedAt: string;
@@ -1784,6 +1821,9 @@ export type StockupPayload = {
     outsourcingInRecommendationQty: number;
     outsourcingOutsideRecommendationQty: number;
     outsourcingActiveSku: number;
+    domesticCustomizationOrders?: number;
+    domesticCustomizationInProductionQty?: number;
+    domesticCustomizationActiveSku?: number;
     netRecommendedQty: number;
     acceptedRecommendations?: number;
     abandonedRecommendations?: number;
@@ -1796,21 +1836,8 @@ export type StockupPayload = {
   recommendations: StockupRecommendation[];
   abandonedRecommendations?: StockupRecommendation[];
   plans?: StockupPlan[];
-  outsourcingQueue: Array<{
-    id: string;
-    sku: string;
-    name: string;
-    unit: string;
-    imageUrl?: string;
-    createdAt?: string;
-    remark?: string;
-    remarks?: string[];
-    inProductionQty: number;
-    orderCount: number;
-    inRecommendation: boolean;
-    note: string;
-    orders: StockupRecommendation["outsourcingOrders"];
-  }>;
+  outsourcingQueue: StockupProductionQueueItem[];
+  domesticCustomizationQueue?: StockupProductionQueueItem[];
   inboundOrders: StockupInboundOrder[];
   syncResults: Array<{
     warehouseId: string;

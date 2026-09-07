@@ -361,6 +361,7 @@ const navItems = [
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup" },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup" },
+  { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup" },
   { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "stockup" },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
   { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
@@ -1007,7 +1008,7 @@ function App() {
 
   React.useEffect(() => {
     if (!hasUserPermission(currentUser, "stockup")) return;
-    if (!["#stockup", "#stockup-recommendations", "#production"].includes(hashForView(activeView))) return;
+    if (!["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"].includes(hashForView(activeView))) return;
     void loadStockup();
     void loadStockupWorkflow();
   }, [activeView, permissionSignature]);
@@ -1846,6 +1847,7 @@ function App() {
             onDecision={handleStockupDecision}
             onCreatePlan={handleCreateStockupPlan}
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
+            onOpenExecution={() => handleViewChange("备货执行")}
             syncing={syncing}
           />
         ) : activeView === "备货建议" ? (
@@ -1858,12 +1860,15 @@ function App() {
             onDecision={handleStockupDecision}
             onCreatePlan={handleCreateStockupPlan}
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
+            onOpenExecution={() => handleViewChange("备货执行")}
             syncing={syncing}
             draftSeed={stockupDraftSeed}
             onDraftSeedConsumed={() => setStockupDraftSeed(null)}
           />
+        ) : activeView === "备货执行" ? (
+          <StockupExecutionCenter workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} />
         ) : activeView === "生产中心" ? (
-          <ProductionCenter stockupPayload={stockupPayload} workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} />
+          <ProductionCenter stockupPayload={stockupPayload} onRefresh={loadStockup} syncing={syncing} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
@@ -4197,6 +4202,7 @@ function StockupCenter({
   onDecision,
   onCreatePlan,
   onUpdatePlanStatus,
+  onOpenExecution,
   syncing,
   draftSeed = null,
   onDraftSeedConsumed,
@@ -4209,6 +4215,7 @@ function StockupCenter({
   onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") => void;
   onCreatePlan: (item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) => Promise<void>;
   onUpdatePlanStatus: (id: string, status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled") => Promise<void>;
+  onOpenExecution: () => void;
   syncing: boolean;
   draftSeed?: StockupDraftSeed | null;
   onDraftSeedConsumed?: () => void;
@@ -4311,7 +4318,6 @@ function StockupCenter({
   const workflowTabs = [
     ["overview", "链路总览", workflowPayload?.counts.activeWorkItems ?? 0],
     ["demands", "备货需求", workflowPayload?.counts.pendingDemands ?? 0],
-    ["execution", "供应执行", workflowPayload?.counts.activeExecutionLines ?? 0],
     ["costs", "发货与成本", (workflowPayload?.counts.pendingCostShipments ?? 0) + (workflowPayload?.counts.pendingLockShipments ?? 0)],
     ["ledger", "到仓成本台账", 0],
     ["coding", "新品编码", workflowPayload?.counts.codingQueue ?? 0],
@@ -4341,7 +4347,7 @@ function StockupCenter({
         </div>
         <div className="stockup-command-actions">
           <span className="status-pill good"><Check size={14} />仅显示中台新流程数据</span>
-          {nextAction ? <button className="sync-button" type="button" onClick={() => setWorkflowTab(nextAction.tab)}>处理 {nextAction.count} 项</button> : <button className="sync-button" type="button" onClick={() => setWorkflowTab("demands")}><Plus size={16} />新建测试需求</button>}
+          {nextAction ? <button className="sync-button" type="button" onClick={() => nextAction.tab === "execution" ? onOpenExecution() : setWorkflowTab(nextAction.tab)}>处理 {nextAction.count} 项</button> : <button className="sync-button" type="button" onClick={() => setWorkflowTab("demands")}><Plus size={16} />新建测试需求</button>}
           <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()} title="重新读取简道云业务数据"><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新</button>
         </div>
       </section>
@@ -4352,7 +4358,7 @@ function StockupCenter({
           ["coding", "编码", currentCounts?.codingQueue ?? 0, "新品分配 SKU"],
           ["execution", "执行", currentCounts?.activeExecutionLines ?? 0, "采购生产与发货"],
           ["costs", "成本", (currentCounts?.pendingCostShipments ?? 0) + (currentCounts?.pendingLockShipments ?? 0), "运费分摊与锁定"],
-        ].map(([tab, label, count, note]) => <button type="button" key={String(tab)} onClick={() => setWorkflowTab(tab as typeof workflowTab)}><span>{label}</span><strong>{Number(count) > 0 ? formatNumber(Number(count)) : "—"}</strong><small>{note}</small></button>)}
+        ].map(([tab, label, count, note]) => <button type="button" key={String(tab)} onClick={() => tab === "execution" ? onOpenExecution() : setWorkflowTab(tab as typeof workflowTab)}><span>{label}</span><strong>{Number(count) > 0 ? formatNumber(Number(count)) : "—"}</strong><small>{note}</small></button>)}
       </section>
 
       <section className="stockup-workflow-shell">
@@ -4370,7 +4376,6 @@ function StockupCenter({
         ) : null}
         {workflowTab === "overview" ? <StockupWorkflowOverview payload={workflowPayload} /> : null}
         {workflowTab === "demands" ? <StockupDemandWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} seed={draftSeed} onSeedConsumed={onDraftSeedConsumed} /> : null}
-        {workflowTab === "execution" ? <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
         {workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} onLocked={() => setWorkflowTab("ledger")} /> : null}
         {workflowTab === "ledger" ? <StockupCostLedger payload={workflowPayload} /> : null}
         {workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
@@ -4791,32 +4796,59 @@ function ProductionJourney({ timeline, completedAt, expanded, onToggle, label = 
   );
 }
 
-function ProductionCenter({ stockupPayload, workflowPayload, onRefreshWorkflow, syncing }: {
-  stockupPayload: StockupPayload | null;
+function StockupExecutionCenter({ workflowPayload, onRefreshWorkflow, syncing }: {
   workflowPayload: StockupWorkflowPayload | null;
   onRefreshWorkflow: () => Promise<StockupWorkflowPayload>;
   syncing: boolean;
 }) {
-  const orders = workflowPayload?.stockupOrders ?? [];
-  const orderById = new Map(orders.map((item) => [item.id, item]));
-  const productionLines = (workflowPayload?.stockupLines ?? []).filter((item) => (
-    isActiveStockupLine(item)
-    && (isProductionExecution(item.supplyMode) || isProductionExecution(orderById.get(item.orderRecordId)?.executionMode))
-  ));
-  const activeOrderIds = new Set(productionLines.map((item) => item.orderRecordId));
-  const productionOrders = orders.filter((item) => activeOrderIds.has(item.id));
-  const pendingDemands = (workflowPayload?.demands ?? []).filter((item) => (
-    item.sku
-    && isProductionExecution(item.stockupMethod)
-    && !/已完成|已取消|关闭/.test(item.businessStatus)
-    && Math.max(0, item.requestedQty - item.plannedQty) > 0
-  ));
-  const waitingForProgress = productionLines.filter((item) => (
-    item.completedQty < Math.max(0, item.plannedQty - (item.cancelledQty || 0))
-    || item.completedQty > item.qualifiedQty
-  )).length;
-  const readyToShip = productionLines.filter((item) => item.qualifiedQty > item.shippedQty).length;
-  const outsourcingQueue = stockupPayload?.outsourcingQueue ?? [];
+  const counts = workflowPayload?.counts;
+  return (
+    <main className="movement-page stockup-page stockup-ops-page stockup-execution-page">
+      <section className="stockup-command-bar">
+        <div>
+          <p className="eyebrow">Stockup Execution</p>
+          <h2>备货执行</h2>
+          <p>从已确认的备货需求开始，完成采购或生产开单、进度跟进、发货登记与 WMS 确认。</p>
+        </div>
+        <div className="stockup-command-actions">
+          <span className="status-pill good"><PackageCheck size={14} />{formatNumber(counts?.activeWorkItems ?? 0)} 项进行中</span>
+          <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新</button>
+        </div>
+      </section>
+
+      <section className="production-summary-strip stockup-execution-summary" aria-label="备货执行待办概览">
+        <article><span>待转执行</span><strong>{counts?.pendingDemands ? formatNumber(counts.pendingDemands) : "—"}</strong><small>已受理备货需求</small></article>
+        <article><span>执行中明细</span><strong>{counts?.activeExecutionLines ? formatNumber(counts.activeExecutionLines) : "—"}</strong><small>采购与生产进度</small></article>
+        <article><span>待登记发货</span><strong>{counts?.pendingShipmentLines ? formatNumber(counts.pendingShipmentLines) : "—"}</strong><small>合格数量可发</small></article>
+        <article><span>待处理成本</span><strong>{(counts?.pendingCostShipments ?? 0) + (counts?.pendingLockShipments ?? 0) > 0 ? formatNumber((counts?.pendingCostShipments ?? 0) + (counts?.pendingLockShipments ?? 0)) : "—"}</strong><small>费用分摊与锁定</small></article>
+      </section>
+
+      {workflowPayload?.warnings?.length ? <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div> : null}
+      <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} />
+    </main>
+  );
+}
+
+function ProductionCenter({ stockupPayload, onRefresh, syncing }: {
+  stockupPayload: StockupPayload | null;
+  onRefresh: () => Promise<void>;
+  syncing: boolean;
+}) {
+  const [activeTab, setActiveTab] = React.useState<"tongzhou" | "domestic">("tongzhou");
+  const tongzhouItems = stockupPayload?.outsourcingQueue ?? [];
+  const domesticItems = stockupPayload?.domesticCustomizationQueue ?? [];
+  const items = activeTab === "tongzhou" ? tongzhouItems : domesticItems;
+  const orders = items.flatMap((item) => item.orders);
+  const inProductionQty = items.reduce((sum, item) => sum + item.inProductionQty, 0);
+  const overdueOrders = orders.filter((order) => {
+    const deadline = validTime(order.factoryExpectedFinishedAt || order.expectedFinishedAt);
+    return deadline > 0 && deadline < Date.now();
+  }).length;
+  const followUpDue = orders.filter((order) => {
+    const lastActivity = validTime(order.lastFollowedAt || order.updatedAt || order.createdAt);
+    return lastActivity > 0 && Date.now() - lastActivity >= 7 * 86400000;
+  }).length;
+  const currentLabel = activeTab === "tongzhou" ? "同舟供应链生产单" : "国内定制";
 
   return (
     <main className="movement-page stockup-page stockup-ops-page production-center-page">
@@ -4824,29 +4856,44 @@ function ProductionCenter({ stockupPayload, workflowPayload, onRefreshWorkflow, 
         <div>
           <p className="eyebrow">Production Operations</p>
           <h2>生产中心</h2>
-          <p>只展示委外生产且仍在执行中的产品；外采成品、自有成品和已完成 / 已取消记录不会出现在本页。</p>
+          <p>聚焦简道云中仍在生产的委外加工单，查看生产时长、交期风险和最新跟进；备货开单与发货操作已移至“备货执行”。</p>
         </div>
         <div className="stockup-command-actions">
-          <span className="status-pill good"><Factory size={14} />{formatNumber(productionOrders.length)} 张生产单</span>
-          <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新</button>
+          <span className="status-pill good"><Factory size={14} />{formatNumber(orders.length)} 张在产单</span>
+          <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefresh()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新生产数据</button>
         </div>
       </section>
 
+      <div className="production-source-tabs" role="tablist" aria-label="生产单分类">
+        <button id="production-tab-tongzhou" type="button" role="tab" aria-selected={activeTab === "tongzhou"} aria-controls="production-panel" className={activeTab === "tongzhou" ? "active" : ""} onClick={() => setActiveTab("tongzhou")}>
+          <span>同舟供应链生产单</span><strong>{formatNumber(tongzhouItems.length)}</strong><small>含同舟 SKU 的进行中加工单</small>
+        </button>
+        <button id="production-tab-domestic" type="button" role="tab" aria-selected={activeTab === "domestic"} aria-controls="production-panel" className={activeTab === "domestic" ? "active" : ""} onClick={() => setActiveTab("domestic")}>
+          <span>国内定制</span><strong>{formatNumber(domesticItems.length)}</strong><small>国内 · 定制类进行中加工单</small>
+        </button>
+      </div>
+
       <section className="production-summary-strip" aria-label="生产中心待办概览">
-        <article><span>待建生产单</span><strong>{pendingDemands.length > 0 ? formatNumber(pendingDemands.length) : "—"}</strong><small>委外生产需求</small></article>
-        <article><span>生产中 SKU</span><strong>{productionLines.length > 0 ? formatNumber(productionLines.length) : "—"}</strong><small>排除所有终态</small></article>
-        <article><span>待完工 / 质检</span><strong>{waitingForProgress > 0 ? formatNumber(waitingForProgress) : "—"}</strong><small>需要更新进度</small></article>
-        <article><span>合格待发</span><strong>{readyToShip > 0 ? formatNumber(readyToShip) : "—"}</strong><small>可进入发货</small></article>
+        <article><span>在产 SKU</span><strong>{items.length ? formatNumber(items.length) : "—"}</strong><small>{currentLabel}</small></article>
+        <article><span>加工单</span><strong>{orders.length ? formatNumber(orders.length) : "—"}</strong><small>仅统计进行中</small></article>
+        <article><span>在产数量</span><strong>{inProductionQty ? formatNumber(inProductionQty) : "—"}</strong><small>按加工单单位汇总</small></article>
+        <article><span>逾期 / 待跟进</span><strong>{overdueOrders || followUpDue ? `${formatNumber(overdueOrders)} / ${formatNumber(followUpDue)}` : "—"}</strong><small>交期已过 / 7 天未更新</small></article>
       </section>
 
-      {workflowPayload?.warnings?.length ? <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div> : null}
-      <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} scope="production" />
-      <OutsourcingProductionQueue items={outsourcingQueue} syncedAt={stockupPayload?.outsourcingSyncedAt} />
+      <div id="production-panel" role="tabpanel" aria-labelledby={activeTab === "tongzhou" ? "production-tab-tongzhou" : "production-tab-domestic"}>
+        <OutsourcingProductionQueue items={items} syncedAt={stockupPayload?.outsourcingSyncedAt} loading={!stockupPayload} title={currentLabel} scope={activeTab} />
+      </div>
     </main>
   );
 }
 
-function OutsourcingProductionQueue({ items, syncedAt }: { items: StockupPayload["outsourcingQueue"]; syncedAt?: string }) {
+function OutsourcingProductionQueue({ items, syncedAt, loading, title, scope }: {
+  items: StockupPayload["outsourcingQueue"];
+  syncedAt?: string;
+  loading: boolean;
+  title: string;
+  scope: "tongzhou" | "domestic";
+}) {
   const [expandedItems, setExpandedItems] = React.useState<Set<string>>(() => new Set());
 
   function toggleItem(id: string) {
@@ -4863,30 +4910,79 @@ function OutsourcingProductionQueue({ items, syncedAt }: { items: StockupPayload
     const orders = [...item.orders].sort((left, right) => validTime(left.createdAt) - validTime(right.createdAt));
     const openedAt = orders.map((order) => order.createdAt || "").filter(Boolean).sort()[0] || item.createdAt || "";
     orders.forEach((order) => {
+      const orderLabel = order.orderNo || "委外加工单";
       if (order.createdAt) events.push({
         id: `outsourcing-opened:${order.id}`,
         occurredAt: order.createdAt,
         type: "opened",
-        title: `${order.orderNo || "委外加工单"} 已开单`,
+        title: `${orderLabel} 已开单`,
         description: [order.supplier, `计划 ${formatNumber(order.plannedQty)} ${order.unit || item.unit}`].filter(Boolean).join(" · "),
         actorName: "",
         tone: "done",
       });
-      if (order.updatedAt && order.updatedAt !== order.createdAt) events.push({
-        id: `outsourcing-updated:${order.id}`,
-        occurredAt: order.updatedAt,
-        type: "snapshot",
-        title: `最新跟进：${order.status || "生产中"}`,
-        description: [order.producedQty > 0 ? `已生产 ${formatNumber(order.producedQty)} ${order.unit || item.unit}` : "", order.remark].filter(Boolean).join(" · "),
-        actorName: "来源：委外加工单",
-        tone: "current",
+      if (order.actualMaterialReadyAt) events.push({
+        id: `outsourcing-material-ready:${order.id}`,
+        occurredAt: order.actualMaterialReadyAt,
+        type: "material_ready",
+        title: `${orderLabel} 包材实际到齐`,
+        description: order.materialReady ? `物料状态：${order.materialReady}` : "已记录包材到齐日期",
+        actorName: "来源：简道云委外加工单",
+        tone: "done",
       });
-      if (order.expectedFinishedAt) events.push({
+      const followedAt = order.lastFollowedAt || (order.updatedAt !== order.createdAt ? order.updatedAt : "");
+      if (followedAt) {
+        const checkpoints = [
+          ["物料", order.materialReady],
+          ["备案", order.filingPassed],
+          ["检测", order.testingPassed],
+          ["内包", order.innerPackTest],
+          ["外包", order.outerPackTest],
+          ["产前样", order.preProductionSampleConfirmed],
+        ].filter(([, value]) => value).map(([label, value]) => `${label} ${value}`);
+        events.push({
+          id: `outsourcing-followed:${order.id}`,
+          occurredAt: followedAt,
+          type: "snapshot",
+          title: `${orderLabel} 最新跟进`,
+          description: [order.progressSummary, order.deliveryStatus, order.remark, checkpoints.join(" / ")].filter(Boolean).join(" · ") || order.status || "生产中",
+          actorName: "简道云最新跟单快照",
+          tone: "current",
+        });
+      }
+      if (order.finishedShippedAt) events.push({
+        id: `outsourcing-shipped:${order.id}`,
+        occurredAt: order.finishedShippedAt,
+        type: "shipment",
+        title: `${orderLabel} 完工发货`,
+        description: order.producedQty > 0 ? `发货 ${formatNumber(order.producedQty)} ${order.unit || item.unit}` : "已记录完工发货日期",
+        actorName: "来源：简道云委外加工单",
+        tone: "done",
+      });
+      if (order.inboundCompletedAt) events.push({
+        id: `outsourcing-inbound:${order.id}`,
+        occurredAt: order.inboundCompletedAt,
+        type: "received",
+        title: `${orderLabel} 入库完成`,
+        description: "生产链路已完成入库",
+        actorName: "来源：简道云委外加工单",
+        tone: "done",
+      });
+      if (order.packagingExpectedAt && !order.actualMaterialReadyAt) events.push({
+        id: `outsourcing-packaging-expected:${order.id}`,
+        occurredAt: order.packagingExpectedAt,
+        type: "expected_material",
+        title: `${orderLabel} 预计包材到齐`,
+        description: "计划节点，实际到齐时间以跟单更新为准",
+        actorName: "",
+        tone: "planned",
+      });
+      const expectedFinishedAt = order.factoryExpectedFinishedAt || order.expectedFinishedAt;
+      if (expectedFinishedAt) events.push({
         id: `outsourcing-expected:${order.id}`,
-        occurredAt: order.expectedFinishedAt,
+        occurredAt: expectedFinishedAt,
         type: "expected",
-        title: `${order.orderNo || "委外加工单"} 预计完成`,
-        description: "计划节点，实际完成时间以跟单更新为准",
+        title: `${orderLabel} ${order.factoryExpectedFinishedAt ? "工厂回复交期" : "要求交付"}`,
+        description: "计划节点，实际完成时间以最新跟进为准",
         actorName: "",
         tone: "planned",
       });
@@ -4901,7 +4997,7 @@ function OutsourcingProductionQueue({ items, syncedAt }: { items: StockupPayload
       tone: "current",
     });
     events.sort((left, right) => validTime(left.occurredAt) - validTime(right.occurredAt));
-    const expectedCompletedAt = orders.map((order) => order.expectedFinishedAt || "").filter(Boolean).sort()[0] || "";
+    const expectedCompletedAt = orders.map((order) => order.factoryExpectedFinishedAt || order.expectedFinishedAt || "").filter(Boolean).sort()[0] || "";
     const actualEvents = events.filter((event) => event.tone !== "planned");
     return { orderRecordId: item.id, openedAt, updatedAt: actualEvents.at(-1)?.occurredAt || openedAt, expectedCompletedAt, events };
   }
@@ -4911,34 +5007,37 @@ function OutsourcingProductionQueue({ items, syncedAt }: { items: StockupPayload
       <div className="panel-heading">
         <div>
           <p className="eyebrow">Outsourcing Production</p>
-          <h2>委外加工单同步</h2>
-          <small>来自既有委外加工单的在产数据，用于校验正式生产执行单是否已经真实开工。</small>
+          <h2>{title}</h2>
+          <small>{scope === "tongzhou" ? "按同舟 SKU 汇总简道云进行中的委外加工单。" : "按产品 SKU 汇总生产归属为国内、产品属性为定制的进行中加工单。"}</small>
         </div>
-        <span className="status-pill muted">{formatNumber(items.length)} 个 SKU</span>
+        <div className="production-panel-meta"><span className="status-pill muted">{formatNumber(items.length)} 个 SKU</span><small>{syncedAt ? `更新于 ${formatDateTime(syncedAt)}` : "等待首次同步"}</small></div>
       </div>
       <div className="stockup-table">
         <div className="stockup-row stockup-head outsourcing-queue-head">
-          <span>SKU / 产品</span><span>委外在产</span><span>加工单</span><span>开单时长</span><span>跟进记录</span><span>备货建议</span><span>说明</span>
+          <span>SKU / 产品</span><span>在产数量</span><span>加工单</span><span>生产时长</span><span>最近跟进</span><span>交期状态</span><span>跟进轨迹</span>
         </div>
         {items.length ? items.map((item) => {
           const timeline = timelineFor(item);
           const expanded = expandedItems.has(item.id);
           const deadline = productionDeadline(timeline.expectedCompletedAt);
+          const latestFollowOrder = [...item.orders].sort((left, right) => validTime(right.lastFollowedAt || right.updatedAt) - validTime(left.lastFollowedAt || left.updatedAt))[0];
+          const latestFollowedAt = latestFollowOrder?.lastFollowedAt || latestFollowOrder?.updatedAt || "";
+          const latestFollowText = latestFollowOrder?.remark || latestFollowOrder?.progressSummary || latestFollowOrder?.deliveryStatus || "暂无跟单备注";
           return (
             <article className={`stockup-row outsourcing-queue-row ${expanded ? "expanded" : ""}`} key={item.id}>
               <div className="movement-product"><MovementThumb item={item} /><div><strong>{item.sku}</strong><span>{item.name}</span></div></div>
               <strong>{formatNumber(item.inProductionQty)} {item.unit}</strong>
               <span>{formatNumber(item.orderCount)} 张</span>
-              <div className="outsourcing-age-cell"><strong>{elapsedProductionText(timeline.openedAt)}</strong><small>{timeline.openedAt ? formatDate(timeline.openedAt) : "未记录开单日期"}</small><em className={deadline.tone}>{deadline.text}</em></div>
+              <div className="outsourcing-age-cell"><strong>{elapsedProductionText(timeline.openedAt)}</strong><small>{timeline.openedAt ? `${formatDate(timeline.openedAt)} 开单` : "未记录开单日期"}</small></div>
+              <div className="production-follow-cell"><strong>{latestFollowedAt ? formatDate(latestFollowedAt) : "待跟进"}</strong><span title={latestFollowText}>{latestFollowText}</span></div>
+              <span className={`production-deadline-pill ${deadline.tone}`}>{deadline.text}</span>
               <button className="production-timeline-toggle compact" type="button" aria-expanded={expanded} onClick={() => toggleItem(item.id)}>{expanded ? "收起轨迹" : "查看轨迹"}<em>{timeline.events.length}</em><ChevronDown size={15} /></button>
-              <span className={`status-pill ${item.inRecommendation ? "good" : "warning"}`}>{item.inRecommendation ? "建议内" : "建议外"}</span>
-              <span className="movement-suggestion">{item.note}</span>
               {expanded ? <div className="production-timeline outsourcing-production-timeline" aria-label={`${item.sku} 跟进记录时间线`}>
                 {timeline.events.map((event) => <div className={`production-timeline-event ${event.tone}`} key={event.id}><span className="production-timeline-marker" /><time>{formatDateTime(event.occurredAt)}</time><div><strong>{event.title}</strong>{event.description ? <span>{event.description}</span> : null}{event.actorName ? <small>{event.actorName}</small> : null}</div></div>)}
               </div> : null}
             </article>
           );
-        }) : <div className="stockup-empty">暂无进行中的委外加工 SKU。</div>}
+        }) : <div className="stockup-empty">{loading ? "正在读取简道云生产数据…" : scope === "tongzhou" ? "暂无带同舟 SKU 的进行中加工单。" : "暂无生产归属为国内、产品属性为定制的进行中加工单。"}</div>}
       </div>
     </section>
   );
