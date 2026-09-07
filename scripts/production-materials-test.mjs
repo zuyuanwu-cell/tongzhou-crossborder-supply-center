@@ -12,6 +12,12 @@ const outsourcingRecords = [
     _widget_1741698535338: field("factory-a"),
     _widget_1744031628891: field("杭州同厂加工有限公司"),
     _widget_1666521891102: field("同厂加工"),
+    _widget_1666513866246: field([
+      {
+        _widget_1667632334265: field("PK-A-2"),
+        _widget_1689750794526: field("2026-08-09T00:00:00.000Z"),
+      },
+    ]),
   },
   {
     data_id: "production-b",
@@ -26,6 +32,24 @@ const outsourcingRecords = [
     out_order_id: field("JG-C"),
     _widget_1690015838240: field("进行中"),
     _widget_1741698535338: field("factory-c"),
+  },
+  {
+    data_id: "production-d",
+    out_order_id: field("JG-D"),
+    _widget_1690015838240: field("进行中"),
+    _widget_1741698535338: field("factory-d"),
+  },
+  {
+    data_id: "production-e",
+    out_order_id: field("JG-E"),
+    _widget_1690015838240: field("进行中"),
+    _widget_1741698535338: field("factory-e"),
+  },
+  {
+    data_id: "production-f",
+    out_order_id: field("JG-F"),
+    _widget_1690015838240: field("进行中"),
+    _widget_1741698535338: field("factory-f"),
   },
 ];
 
@@ -94,6 +118,36 @@ const purchaseRecords = [
     _widget_1699618605970: field("已作废"),
     bom: field([{ bom_sku: field("PK-X"), bom_fenlei: field("外包辅材"), bom_sku_name: field("废弃纸盒"), bom_qty: field(999) }]),
   },
+  {
+    data_id: "po-d-standard",
+    _widget_1690032758345: field("PO-D-1"),
+    _widget_1741689808043: field("2026-08-10T00:00:00.000Z"),
+    out_order_id: field("JG-D"),
+    bom_vendor_id: field("vendor-d"),
+    bom_vendor_name: field("常规包材供应商"),
+    _widget_1699618605970: field("采购中"),
+    bom: field([{ bom_sku: field("PK-D"), bom_fenlei: field("内包辅材"), bom_sku_name: field("软管"), bom_unit: field("支"), bom_qty: field(100) }]),
+  },
+  {
+    data_id: "po-e-single-box",
+    _widget_1690032758345: field("PO-E-1"),
+    _widget_1741689808043: field("2026-08-10T00:00:00.000Z"),
+    out_order_id: field("JG-E"),
+    bom_vendor_id: field("vendor-e"),
+    bom_vendor_name: field("单盒供应商"),
+    _widget_1699618605970: field("采购中"),
+    bom: field([{ bom_sku: field("PK-E"), bom_fenlei: field("外包辅材"), bom_sku_name: field("单只彩盒"), bom_unit: field("个"), bom_qty: field(100) }]),
+  },
+  {
+    data_id: "po-f-premium-box",
+    _widget_1690032758345: field("PO-F-1"),
+    _widget_1741689808043: field("2026-08-10T00:00:00.000Z"),
+    out_order_id: field("JG-F"),
+    bom_vendor_id: field("vendor-f"),
+    bom_vendor_name: field("精装包装供应商"),
+    _widget_1699618605970: field("采购中"),
+    bom: field([{ bom_sku: field("PK-F"), bom_fenlei: field("外包辅材"), bom_sku_name: field("精装礼盒套盒"), bom_unit: field("套"), bom_qty: field(100) }]),
+  },
 ];
 
 const inboundRecords = [
@@ -130,10 +184,13 @@ const inboundRecords = [
   },
 ];
 
-const first = buildProductionMaterialProgress(outsourcingRecords, purchaseRecords, inboundRecords, "test");
+const first = buildProductionMaterialProgress(outsourcingRecords, purchaseRecords, inboundRecords, "test", new Date("2026-08-27T00:00:00.000Z"));
 const a = first.byOrderNo["JG-A"];
 const b = first.byOrderNo["JG-B"];
 const c = first.byOrderNo["JG-C"];
+const d = first.byOrderNo["JG-D"];
+const e = first.byOrderNo["JG-E"];
+const f = first.byOrderNo["JG-F"];
 
 assert.equal(a.status, "ready", "同厂内料应被忽略，包材全部累计入库后即到齐");
 assert.equal(a.readyMaterials, 2);
@@ -150,6 +207,28 @@ assert.equal(b.materials.some((item) => item.sku === "PK-X"), false, "作废采�
 assert.equal(c.status, "review", "未识别到包材时不得自动判定到齐");
 assert.equal(c.statusLabel, "数据待核查");
 
+assert.equal(a.purchaseOrders.length, 1);
+assert.equal(a.purchaseOrders[0].orderNo, "PO-A-1");
+assert.equal(a.purchaseOrders[0].orderedAt, "2026-08-01T00:00:00.000Z");
+assert.equal(a.purchaseOrders[0].durationDays, 4, "采购单全部到齐后应以最后入库日截止计时");
+assert.equal(a.purchaseOrders[0].status, "ready");
+assert.equal(a.materials.find((item) => item.sku === "PK-A-2")?.expectedDeliveryAt, "2026-08-09T00:00:00.000Z", "人工计划到料时间优先");
+assert.equal(a.materials.find((item) => item.sku === "PK-A-2")?.expectedDeliverySource, "planned");
+
+assert.deepEqual(d.materials[0].leadTime, { code: "standard", label: "常规包材", warningDays: 15, maxDays: 20 });
+assert.equal(d.materials[0].purchaseOrderedAt, "2026-08-10T00:00:00.000Z");
+assert.equal(d.materials[0].expectedDeliveryAt, "2026-08-30T00:00:00.000Z");
+assert.equal(d.materials[0].purchaseDurationDays, 17);
+assert.equal(d.materials[0].leadTimeStatus, "warning", "常规包材第 15–20 天应提醒但不算逾期");
+
+assert.deepEqual(e.materials[0].leadTime, { code: "single_box", label: "单只盒", warningDays: 7, maxDays: 10 });
+assert.equal(e.materials[0].expectedDeliveryAt, "2026-08-20T00:00:00.000Z");
+assert.equal(e.materials[0].leadTimeStatus, "overdue", "单只盒超过 10 天应逾期");
+
+assert.deepEqual(f.materials[0].leadTime, { code: "premium_box", label: "精装/套盒", warningDays: 25, maxDays: 25 });
+assert.equal(f.materials[0].expectedDeliveryAt, "2026-09-04T00:00:00.000Z");
+assert.equal(f.materials[0].leadTimeStatus, "normal", "精装套盒 25 天内应为正常");
+
 const completed = buildProductionMaterialProgress(outsourcingRecords, purchaseRecords, [
   ...inboundRecords,
   {
@@ -159,7 +238,7 @@ const completed = buildProductionMaterialProgress(outsourcingRecords, purchaseRe
     _widget_1696603667734: field("PO-B-2"),
     _widget_1741756513043: field([{ _widget_1741756513046: field("IN-B"), _widget_1741850722077: field(30) }]),
   },
-], "test");
+], "test", new Date("2026-08-27T00:00:00.000Z"));
 assert.equal(completed.byOrderNo["JG-B"].status, "ready");
 assert.equal(completed.byOrderNo["JG-B"].readyAt, "2026-08-09T00:00:00.000Z");
 

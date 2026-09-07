@@ -928,6 +928,7 @@ function App() {
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupDraftSeed, setStockupDraftSeed] = React.useState<StockupDraftSeed | null>(null);
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
+  const stockupRequestRef = React.useRef<Promise<StockupPayload> | null>(null);
   const [stockupWorkflowPayload, setStockupWorkflowPayload] = React.useState<StockupWorkflowPayload | null>(null);
   const [qualificationPayload, setQualificationPayload] = React.useState<QualificationPayload | null>(null);
   const [assetPayload, setAssetPayload] = React.useState<AssetPayload | null>(null);
@@ -1012,6 +1013,12 @@ function App() {
     void loadStockup();
     void loadStockupWorkflow();
   }, [activeView, permissionSignature]);
+
+  React.useEffect(() => {
+    if (!hasUserPermission(currentUser, "stockup") || !stockupPayload?.outsourcingRefreshing) return;
+    const timer = window.setInterval(() => { void loadStockup(); }, 2500);
+    return () => window.clearInterval(timer);
+  }, [permissionSignature, stockupPayload?.outsourcingRefreshing]);
 
   React.useEffect(() => {
     if (!hasUserPermission(currentUser, "performance_analysis")) return;
@@ -1195,11 +1202,33 @@ function App() {
   }
 
   async function loadStockup() {
+    let request = stockupRequestRef.current;
+    if (!request) {
+      request = fetchStockup();
+      stockupRequestRef.current = request;
+      void request.then(
+        () => { if (stockupRequestRef.current === request) stockupRequestRef.current = null; },
+        () => { if (stockupRequestRef.current === request) stockupRequestRef.current = null; },
+      );
+    }
     try {
-      const data = await fetchStockup();
+      const data = await request;
       setStockupPayload(data);
     } catch {
-      setStockupPayload(null);
+      // Keep the last successful snapshot visible during a transient refresh failure.
+    }
+  }
+
+  async function handleProductionRefresh() {
+    setSyncing(true);
+    setError("");
+    try {
+      await syncOutsourcingOrders();
+      await loadStockup();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "生产数据刷新失败");
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -1868,7 +1897,7 @@ function App() {
         ) : activeView === "备货执行" ? (
           <StockupExecutionCenter workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} />
         ) : activeView === "生产中心" ? (
-          <ProductionCenter stockupPayload={stockupPayload} onRefresh={loadStockup} syncing={syncing} />
+          <ProductionCenter stockupPayload={stockupPayload} onRefresh={handleProductionRefresh} syncing={syncing} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
@@ -4783,12 +4812,23 @@ function ProductionMaterialDetail({ orders }: { orders: OutsourcingOrder[] }) {
                 <span>采购单 <strong>{progress.purchaseOrderCount}</strong></span>
                 <span>入库单 <strong>{progress.inboundDocumentCount}</strong></span>
               </div>
+              {(progress.purchaseOrders || []).length ? <div className="production-purchase-orders" aria-label={`${order.orderNo || "委外加工单"}采购时间`}>
+                {(progress.purchaseOrders || []).map((purchaseOrder) => (
+                  <div className={`production-purchase-order ${purchaseOrder.status}`} key={purchaseOrder.orderNo}>
+                    <div><strong>{purchaseOrder.orderNo}</strong><small>{purchaseOrder.supplierAliases.join("、") || "供应商待识别"} · {purchaseOrder.materialCount} 项物料</small></div>
+                    <span><small>采购下单</small><strong>{purchaseOrder.orderedAt ? formatDate(purchaseOrder.orderedAt) : "待补充"}</strong></span>
+                    <span><small>预计交货</small><strong>{purchaseOrder.expectedDeliveryAt ? formatDate(purchaseOrder.expectedDeliveryAt) : "待补充"}</strong></span>
+                    <span><small>采购持续</small><strong>{purchaseOrder.orderedAt ? `${purchaseOrder.durationDays} 天` : "—"}</strong></span>
+                    <em className={purchaseOrder.status}>{purchaseOrder.statusLabel}</em>
+                  </div>
+                ))}
+              </div> : null}
               {progress.materials.length ? <div className="production-material-list">
                 {progress.materials.map((material) => (
                   <div className="production-material-line" key={material.id}>
-                    <div><strong>{material.name}</strong><small>{material.sku} · {material.category} · {material.supplierAlias}</small></div>
+                    <div><strong>{material.name}</strong><small>{[material.sku, material.category, material.supplierAlias, material.purchaseOrderNo].filter(Boolean).join(" · ")}</small><small className="production-material-timing">下单 {material.purchaseOrderedAt ? formatDate(material.purchaseOrderedAt) : "待补"} · 预计 {material.expectedDeliveryAt ? formatDate(material.expectedDeliveryAt) : "待补"} · 已采购 {material.purchaseOrderedAt ? `${material.purchaseDurationDays ?? 0} 天` : "—"} · {material.leadTime ? material.leadTime.code === "premium_box" ? "标准 25 天" : `标准 ${material.leadTime.warningDays}–${material.leadTime.maxDays} 天` : "标准周期待同步"}</small></div>
                     <span>{formatNumber(material.arrivedQty)} / {formatNumber(material.requiredQty)} {material.unit}</span>
-                    <em className={material.status}>{material.statusLabel}</em>
+                    <div className="production-material-status-stack"><em className={material.status}>{material.statusLabel}</em>{material.leadTimeStatus ? <em className={`lead-time ${material.leadTimeStatus}`}>{material.leadTimeStatusLabel}</em> : null}</div>
                   </div>
                 ))}
               </div> : <p>未识别到包材采购明细，请检查采购订单是否已关联当前生产单。</p>}
@@ -4919,9 +4959,12 @@ function ProductionCenter({ stockupPayload, onRefresh, syncing }: {
         </div>
         <div className="stockup-command-actions">
           <span className="status-pill good"><Factory size={14} />{formatNumber(orders.length)} 张在产单</span>
+          {stockupPayload?.outsourcingRefreshing ? <span className="status-pill muted production-refreshing-pill"><RefreshCw size={14} className="spinning" />后台更新中</span> : null}
           <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefresh()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新生产数据</button>
         </div>
       </section>
+
+      {stockupPayload?.outsourcingRefreshing ? <div className="notice compact-notice production-cache-notice" role="status" aria-live="polite">已先显示 {stockupPayload.outsourcingSyncedAt ? formatDateTime(stockupPayload.outsourcingSyncedAt) : "上一次"} 的生产快照，最新数据正在后台更新，完成后会自动替换。</div> : null}
 
       <div className="production-source-tabs" role="tablist" aria-label="生产单分类">
         <button id="production-tab-tongzhou" type="button" role="tab" aria-selected={activeTab === "tongzhou"} aria-controls="production-panel" className={activeTab === "tongzhou" ? "active" : ""} onClick={() => setActiveTab("tongzhou")}>
@@ -4981,6 +5024,31 @@ function OutsourcingProductionQueue({ items, syncedAt, loading, title, scope }: 
         tone: "done",
       });
       const materialProgress = order.materialProgress;
+      (materialProgress?.purchaseOrders || []).forEach((purchaseOrder) => {
+        if (purchaseOrder.orderedAt) events.push({
+          id: `purchase-ordered:${order.id}:${purchaseOrder.orderNo}`,
+          occurredAt: purchaseOrder.orderedAt,
+          type: "purchase_ordered",
+          title: `${purchaseOrder.orderNo} 采购已下单`,
+          description: [
+            `${purchaseOrder.materialCount} 项物料`,
+            purchaseOrder.supplierAliases.join("、"),
+            `已持续 ${purchaseOrder.durationDays} 天`,
+            purchaseOrder.leadTimeLabels.join(" / "),
+          ].filter(Boolean).join(" · "),
+          actorName: "来源：采购订单",
+          tone: purchaseOrder.status === "ready" ? "done" : purchaseOrder.status === "overdue" ? "warning" : "current",
+        });
+        if (purchaseOrder.expectedDeliveryAt) events.push({
+          id: `purchase-expected:${order.id}:${purchaseOrder.orderNo}`,
+          occurredAt: purchaseOrder.expectedDeliveryAt,
+          type: "purchase_expected",
+          title: `${purchaseOrder.orderNo} 预计物料交货`,
+          description: `${purchaseOrder.expectedDeliverySource === "planned" ? "人工计划到料时间" : "按物料标准周期推算"} · ${purchaseOrder.statusLabel}`,
+          actorName: "",
+          tone: purchaseOrder.status === "overdue" ? "warning" : purchaseOrder.status === "ready" ? "done" : "planned",
+        });
+      });
       if (order.actualMaterialReadyAt && materialProgress?.status !== "ready") events.push({
         id: `outsourcing-material-ready:${order.id}`,
         occurredAt: order.actualMaterialReadyAt,

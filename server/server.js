@@ -12,6 +12,11 @@ import { buildAssetPayload } from "./normalize-assets.js";
 import { buildWarehouseInfoPayload } from "./normalize-warehouse-info.js";
 import { attachProductionMaterialProgress, buildOutsourcingOrderPayload, redactOutsourcingSupplierMentions } from "./normalize-outsourcing-orders.js";
 import { buildProductionMaterialProgress, emptyProductionMaterialPayload } from "./production-materials.js";
+import {
+  createSingleFlight,
+  outsourcingCacheState,
+  shouldRefreshOutsourcingCache,
+} from "./outsourcing-cache-policy.js";
 import { buildSupplierRedactionEntries } from "./supplier-privacy.js";
 import { buildProductionTimelines } from "./production-timeline.js";
 import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js";
@@ -102,6 +107,7 @@ const usersCachePath = resolve(cacheDir, "users.json");
 const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
 const performanceMaterializationCachePath = resolve(cacheDir, "performance-analytics-materialized.json.gz");
 const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
+const outsourcingCacheTtlMs = Math.max(30_000, Number(process.env.OUTSOURCING_CACHE_TTL_MS || 5 * 60 * 1000));
 const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000);
 const orderSyncChunkDays = Math.max(1, Math.min(30, Number(process.env.ORDER_SYNC_CHUNK_DAYS || 7)));
 const inventorySnapshotTimezone = process.env.INVENTORY_SNAPSHOT_TIMEZONE || "Asia/Shanghai";
@@ -177,6 +183,8 @@ assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
 let autoSyncRunning = false;
+let outsourcingRefreshStartedAt = "";
+let outsourcingRefreshError = "";
 let lastAutoSyncAt = "";
 let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
@@ -4778,7 +4786,7 @@ async function refreshWarehouseInfoCache() {
   return cachedWarehouseInfo;
 }
 
-async function refreshOutsourcingOrderCache() {
+async function performOutsourcingOrderRefresh() {
   if (!hasJdyCredentials()) {
     cachedProductionMaterials = emptyProductionMaterialPayload("empty");
     cachedOutsourcingOrders = attachProductionMaterialProgress(
@@ -4851,6 +4859,41 @@ async function refreshOutsourcingOrderCache() {
   cachedOutsourcingOrders = attachProductionMaterialProgress(safeBasePayload, cachedProductionMaterials);
   saveOutsourcingOrderCache(cachedOutsourcingOrders);
   return materialWarning ? { ...cachedOutsourcingOrders, warning: materialWarning } : cachedOutsourcingOrders;
+}
+
+const outsourcingRefresh = createSingleFlight(async () => {
+  outsourcingRefreshStartedAt = new Date().toISOString();
+  outsourcingRefreshError = "";
+  try {
+    return await performOutsourcingOrderRefresh();
+  } catch (error) {
+    outsourcingRefreshError = error.message || "委外加工单同步失败";
+    throw error;
+  } finally {
+    outsourcingRefreshStartedAt = "";
+  }
+});
+
+function refreshOutsourcingOrderCache() {
+  return outsourcingRefresh.run();
+}
+
+function currentOutsourcingCacheState(now = new Date()) {
+  return {
+    ...outsourcingCacheState(cachedOutsourcingOrders, {
+      now,
+      ttlMs: outsourcingCacheTtlMs,
+      refreshing: outsourcingRefresh.active(),
+      refreshStartedAt: outsourcingRefreshStartedAt,
+    }),
+    outsourcingRefreshError,
+  };
+}
+
+function startOutsourcingOrderRefresh(reason = "background") {
+  const refresh = refreshOutsourcingOrderCache();
+  refresh.catch((error) => console.error(`[outsourcing-sync] ${reason} failed; retained previous snapshot`, error));
+  return refresh;
 }
 
 async function handleQualificationFile(req, res, url) {
@@ -6393,7 +6436,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
-      sendJson(res, 200, cachedOutsourcingOrders);
+      sendJson(res, 200, { ...cachedOutsourcingOrders, ...currentOutsourcingCacheState() });
       return;
     }
 
@@ -7065,14 +7108,14 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
-      let outsourcingWarning = "";
-      try {
-        await refreshOutsourcingOrderCache();
-      } catch (error) {
-        outsourcingWarning = error.message || "委外加工单实时同步失败，当前显示上一次缓存数据。";
-      }
-      const stockupPayload = buildCurrentStockupPayload({ notify: true, reason: "page_refresh" });
-      sendJson(res, 200, outsourcingWarning ? { ...stockupPayload, warning: outsourcingWarning } : stockupPayload);
+      const shouldRefresh = shouldRefreshOutsourcingCache(cachedOutsourcingOrders, { ttlMs: outsourcingCacheTtlMs });
+      if (shouldRefresh) startOutsourcingOrderRefresh("page_open");
+      const stockupPayload = buildCurrentStockupPayload({ notify: false, reason: "page_refresh" });
+      sendJson(res, 200, {
+        ...stockupPayload,
+        ...currentOutsourcingCacheState(),
+        ...(outsourcingRefreshError ? { warning: `生产数据后台刷新失败，当前显示上一次结果：${outsourcingRefreshError}` } : {}),
+      });
       return;
     }
 

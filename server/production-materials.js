@@ -41,6 +41,24 @@ function latestDate(values) {
   return values.filter(Boolean).sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] || "";
 }
 
+function earliestDate(values) {
+  return values.filter(Boolean).sort((left, right) => new Date(left).getTime() - new Date(right).getTime())[0] || "";
+}
+
+function addDays(value, days) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString();
+}
+
+function elapsedDays(startValue, endValue) {
+  const start = new Date(startValue).getTime();
+  const end = new Date(endValue).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  return Math.max(0, Math.floor((end - start) / 86400000));
+}
+
 function isCancelled(status) {
   return /作废|取消|驳回|终止/.test(text(status));
 }
@@ -64,6 +82,40 @@ function materialStatusLabel(status) {
   return "待到货";
 }
 
+function packagingLeadTime(category, name) {
+  const haystack = `${text(category)} ${text(name)}`.replace(/\s+/g, "");
+  if (/精装|套盒|礼盒|天地盖|书型盒|抽屉盒|组合盒/.test(haystack)) {
+    return { code: "premium_box", label: "精装/套盒", warningDays: 25, maxDays: 25 };
+  }
+  if (/单只盒|单个盒|单盒|彩盒|小盒|纸盒|折叠盒/.test(haystack)) {
+    return { code: "single_box", label: "单只盒", warningDays: 7, maxDays: 10 };
+  }
+  return { code: "standard", label: "常规包材", warningDays: 15, maxDays: 20 };
+}
+
+function leadTimeState({ status, orderedAt, expectedDeliveryAt, expectedDeliverySource, durationDays, leadTime, now }) {
+  if (status === "ready") return "ready";
+  if (!orderedAt) return "review";
+  const nowTime = new Date(now).getTime();
+  const expectedTime = new Date(expectedDeliveryAt).getTime();
+  if (expectedDeliverySource === "planned" && Number.isFinite(expectedTime)) {
+    if (nowTime > expectedTime) return "overdue";
+    if (nowTime >= expectedTime - 3 * 86400000) return "warning";
+    return "normal";
+  }
+  if (durationDays > leadTime.maxDays) return "overdue";
+  if (durationDays >= leadTime.warningDays) return "warning";
+  return "normal";
+}
+
+function leadTimeStatusLabel(status) {
+  if (status === "ready") return "已到齐";
+  if (status === "overdue") return "采购逾期";
+  if (status === "warning") return "临近周期";
+  if (status === "review") return "待补日期";
+  return "周期正常";
+}
+
 function emptyOrderProgress(orderNo, source, purchaseOrderCount = 0) {
   return {
     orderNo,
@@ -77,6 +129,7 @@ function emptyOrderProgress(orderNo, source, purchaseOrderCount = 0) {
     packaging: { total: 0, ready: 0, pending: 0 },
     exceptionalInner: { total: 0, ready: 0, pending: 0 },
     purchaseOrderCount,
+    purchaseOrders: [],
     inboundDocumentCount: 0,
     lastPurchaseAt: "",
     lastInboundAt: "",
@@ -93,7 +146,7 @@ function toCountSummary(materials, kind) {
   return { total: selected.length, ready, pending: selected.length - ready };
 }
 
-export function buildProductionMaterialProgress(outsourcingRecords = [], purchaseRecords = [], inboundRecords = [], source = "jiandaoyun") {
+export function buildProductionMaterialProgress(outsourcingRecords = [], purchaseRecords = [], inboundRecords = [], source = "jiandaoyun", now = new Date()) {
   const outsourcingConfig = JIANYUN_FORMS.outsourcingOrders;
   const purchaseConfig = JIANYUN_FORMS.purchaseOrders;
   const inboundConfig = JIANYUN_FORMS.purchaseInboundOrders;
@@ -143,6 +196,13 @@ export function buildProductionMaterialProgress(outsourcingRecords = [], purchas
     const materialMap = new Map();
     const purchaseDates = [];
     const inboundDocumentIds = new Set();
+    const plannedArrivalBySku = new Map();
+    for (const line of rowsOf(outsourcing, outsourcingFields.details)) {
+      const sku = text(valueOf(line, outsourcingConfig.detailFields.sku));
+      const plannedArrivalAt = normalizeDate(valueOf(line, outsourcingConfig.detailFields.plannedArrivalAt));
+      if (!sku || !plannedArrivalAt) continue;
+      plannedArrivalBySku.set(sku, earliestDate([plannedArrivalBySku.get(sku), plannedArrivalAt]));
+    }
 
     for (const { purchase, purchaseOrderNo } of purchases) {
       const supplierId = valueOf(purchase, purchaseFields.supplierId);
@@ -165,9 +225,11 @@ export function buildProductionMaterialProgress(outsourcingRecords = [], purchas
 
         const inbound = inboundByPurchaseAndSku.get(`${purchaseOrderNo}\u0000${sku}`) || { arrivedQty: 0, inboundDates: [], inboundIds: new Set() };
         for (const inboundId of inbound.inboundIds) inboundDocumentIds.add(inboundId);
-        const aggregateKey = `${sku}\u0000${category}\u0000${vendorReference}\u0000${kind}`;
+        const aggregateKey = `${purchaseOrderNo}\u0000${sku}\u0000${category}\u0000${vendorReference}\u0000${kind}`;
         const current = materialMap.get(aggregateKey) || {
           id: supplierReference(aggregateKey, ""),
+          purchaseOrderNo,
+          purchaseOrderedAt: orderedAt,
           sku,
           name,
           category: category || (kind === "packaging" ? "包材" : "内料"),
@@ -190,17 +252,69 @@ export function buildProductionMaterialProgress(outsourcingRecords = [], purchas
     const materials = [...materialMap.values()]
       .map(({ inboundDates, ...item }) => {
         const status = materialStatus(item.requiredQty, item.arrivedQty);
-        return { ...item, status, statusLabel: materialStatusLabel(status) };
+        const leadTime = packagingLeadTime(item.category, item.name);
+        const plannedExpectedAt = plannedArrivalBySku.get(item.sku) || "";
+        const expectedDeliveryAt = plannedExpectedAt || addDays(item.purchaseOrderedAt, leadTime.maxDays);
+        const expectedDeliverySource = plannedExpectedAt ? "planned" : item.purchaseOrderedAt ? "standard" : "missing";
+        const purchaseEndedAt = status === "ready" && item.latestInboundAt ? item.latestInboundAt : now;
+        const purchaseDurationDays = item.purchaseOrderedAt ? elapsedDays(item.purchaseOrderedAt, purchaseEndedAt) : 0;
+        const leadTimeStatus = leadTimeState({ status, orderedAt: item.purchaseOrderedAt, expectedDeliveryAt, expectedDeliverySource, durationDays: purchaseDurationDays, leadTime, now });
+        return {
+          ...item,
+          status,
+          statusLabel: materialStatusLabel(status),
+          leadTime,
+          expectedDeliveryAt,
+          expectedDeliverySource,
+          purchaseDurationDays,
+          leadTimeStatus,
+          leadTimeStatusLabel: leadTimeStatusLabel(leadTimeStatus),
+        };
       })
       .sort((left, right) => left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name, "zh-CN"));
+
+    const purchaseOrders = [...new Set(materials.map((item) => item.purchaseOrderNo).filter(Boolean))]
+      .map((purchaseOrderNo) => {
+        const orderMaterials = materials.filter((item) => item.purchaseOrderNo === purchaseOrderNo);
+        const orderedAt = earliestDate(orderMaterials.map((item) => item.purchaseOrderedAt));
+        const expectedDeliveryAt = latestDate(orderMaterials.map((item) => item.expectedDeliveryAt));
+        const expectedMaterial = orderMaterials.find((item) => item.expectedDeliveryAt === expectedDeliveryAt);
+        const ready = orderMaterials.length > 0 && orderMaterials.every((item) => item.status === "ready");
+        const status = ready
+          ? "ready"
+          : orderMaterials.some((item) => item.leadTimeStatus === "overdue")
+            ? "overdue"
+            : orderMaterials.some((item) => item.leadTimeStatus === "warning")
+              ? "warning"
+              : orderedAt
+                ? "normal"
+                : "review";
+        return {
+          orderNo: purchaseOrderNo,
+          orderedAt,
+          expectedDeliveryAt,
+          expectedDeliverySource: expectedMaterial?.expectedDeliverySource || "missing",
+          durationDays: Math.max(0, ...orderMaterials.map((item) => item.purchaseDurationDays)),
+          readyAt: ready ? latestDate(orderMaterials.map((item) => item.latestInboundAt)) : "",
+          status,
+          statusLabel: leadTimeStatusLabel(status),
+          materialCount: orderMaterials.length,
+          readyMaterials: orderMaterials.filter((item) => item.status === "ready").length,
+          supplierAliases: [...new Set(orderMaterials.map((item) => item.supplierAlias).filter(Boolean))],
+          leadTimeLabels: [...new Set(orderMaterials.map((item) => item.leadTime.label))],
+        };
+      })
+      .sort((left, right) => new Date(left.orderedAt || 0).getTime() - new Date(right.orderedAt || 0).getTime());
 
     const packaging = toCountSummary(materials, "packaging");
     const exceptionalInner = toCountSummary(materials, "inner");
     if (packaging.total === 0) {
       const review = emptyOrderProgress(orderNo, source, purchases.length);
       review.lastPurchaseAt = latestDate(purchaseDates);
+      review.purchaseOrderCount = purchaseOrders.length;
       review.inboundDocumentCount = inboundDocumentIds.size;
       review.lastInboundAt = latestDate(materials.map((item) => item.latestInboundAt));
+      review.purchaseOrders = purchaseOrders;
       review.materials = materials;
       byOrderNo[orderNo] = review;
       continue;
@@ -227,7 +341,8 @@ export function buildProductionMaterialProgress(outsourcingRecords = [], purchas
       progressPercent: requiredTotal > 0 ? Math.round((arrivedTotal / requiredTotal) * 100) : 0,
       packaging,
       exceptionalInner,
-      purchaseOrderCount: purchases.length,
+      purchaseOrderCount: purchaseOrders.length,
+      purchaseOrders,
       inboundDocumentCount: inboundDocumentIds.size,
       lastPurchaseAt: latestDate(purchaseDates),
       lastInboundAt,

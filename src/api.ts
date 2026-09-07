@@ -1736,6 +1736,20 @@ export type OutsourcingProductionOrder = {
     packaging: { total: number; ready: number; pending: number };
     exceptionalInner: { total: number; ready: number; pending: number };
     purchaseOrderCount: number;
+    purchaseOrders?: Array<{
+      orderNo: string;
+      orderedAt: string;
+      expectedDeliveryAt: string;
+      expectedDeliverySource: "planned" | "standard" | "missing";
+      durationDays: number;
+      readyAt: string;
+      status: "ready" | "normal" | "warning" | "overdue" | "review";
+      statusLabel: string;
+      materialCount: number;
+      readyMaterials: number;
+      supplierAliases: string[];
+      leadTimeLabels: string[];
+    }>;
     inboundDocumentCount: number;
     lastPurchaseAt: string;
     lastInboundAt: string;
@@ -1744,6 +1758,8 @@ export type OutsourcingProductionOrder = {
     source: string;
     materials: Array<{
       id: string;
+      purchaseOrderNo?: string;
+      purchaseOrderedAt?: string;
       sku: string;
       name: string;
       category: string;
@@ -1753,6 +1769,17 @@ export type OutsourcingProductionOrder = {
       arrivedQty: number;
       latestInboundAt: string;
       supplierAlias: string;
+      leadTime?: {
+        code: "standard" | "single_box" | "premium_box";
+        label: string;
+        warningDays: number;
+        maxDays: number;
+      };
+      expectedDeliveryAt?: string;
+      expectedDeliverySource?: "planned" | "standard" | "missing";
+      purchaseDurationDays?: number;
+      leadTimeStatus?: "ready" | "normal" | "warning" | "overdue" | "review";
+      leadTimeStatusLabel?: string;
       status: "pending" | "partial" | "ready";
       statusLabel: string;
     }>;
@@ -1847,6 +1874,11 @@ export type StockupPayload = {
   movementGeneratedAt: string;
   stockupSyncedAt: string;
   outsourcingSyncedAt: string;
+  outsourcingRefreshing?: boolean;
+  outsourcingCacheStale?: boolean;
+  outsourcingRefreshStartedAt?: string;
+  outsourcingRefreshError?: string;
+  warning?: string;
   counts: {
     recommendations: number;
     recommendedQty: number;

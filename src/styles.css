@@ -5601,6 +5601,63 @@ h3 {
 }
 
 .production-material-metrics strong { color: #173d7a; }
+.production-cache-notice {
+  margin: -2px 0 14px;
+  border-color: #c9dcef;
+  color: #315a83;
+  background: #f3f8fd;
+}
+
+.production-refreshing-pill { color: #315a83; }
+
+.production-purchase-orders {
+  display: grid;
+  gap: 7px;
+}
+
+.production-purchase-order {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(88px, 112px)) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #dfe7f0;
+  border-left: 3px solid #6d88a6;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.production-purchase-order > div,
+.production-purchase-order > span { display: grid; gap: 2px; min-width: 0; }
+.production-purchase-order > div strong { overflow: hidden; color: #173d7a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.production-purchase-order small { color: #77869a; font-size: 10px; }
+.production-purchase-order > span strong { color: #334b68; font-size: 11px; font-variant-numeric: tabular-nums; }
+.production-purchase-order > em,
+.production-material-status-stack em {
+  justify-self: end;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.production-purchase-order.ready { border-left-color: #2a8b62; }
+.production-purchase-order.normal { border-left-color: #4b83b5; }
+.production-purchase-order.warning { border-left-color: #d28a26; }
+.production-purchase-order.overdue { border-left-color: #c64f4f; }
+.production-purchase-order.review { border-left-color: #8c6b9b; }
+.production-purchase-order em.ready,
+.production-material-status-stack em.lead-time.ready { color: #146b45; background: #e8f7ef; }
+.production-purchase-order em.normal,
+.production-material-status-stack em.lead-time.normal { color: #115f9b; background: #eaf4fc; }
+.production-purchase-order em.warning,
+.production-material-status-stack em.lead-time.warning { color: #91520a; background: #fff4d9; }
+.production-purchase-order em.overdue,
+.production-material-status-stack em.lead-time.overdue { color: #a13f3f; background: #fdecec; }
+.production-purchase-order em.review,
+.production-material-status-stack em.lead-time.review { color: #704e80; background: #f7effb; }
+
 .production-material-list { display: grid; gap: 6px; }
 
 .production-material-line {
@@ -5617,11 +5674,13 @@ h3 {
 .production-material-line > div { display: grid; min-width: 0; gap: 3px; }
 .production-material-line strong { overflow: hidden; color: #18273f; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .production-material-line small { overflow: hidden; color: #718097; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.production-material-line small.production-material-timing { overflow: visible; color: #536b87; line-height: 1.45; text-overflow: clip; white-space: normal; }
 .production-material-line > span { color: #455a76; font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
 .production-material-line em { justify-self: end; padding: 4px 7px; border-radius: 999px; font-size: 10px; font-style: normal; font-weight: 800; white-space: nowrap; }
 .production-material-line em.ready { color: #146b45; background: #e8f7ef; }
 .production-material-line em.partial { color: #115f9b; background: #eaf4fc; }
 .production-material-line em.pending { color: #91520a; background: #fff4d9; }
+.production-material-status-stack { align-items: end; }
 
 .production-follow-cell {
   display: grid;
@@ -11083,6 +11142,16 @@ h3 {
   .production-material-line {
     grid-template-columns: 1fr;
   }
+
+  .production-purchase-order {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .production-purchase-order > div,
+  .production-purchase-order > em { grid-column: 1 / -1; }
+
+  .production-purchase-order > em,
+  .production-material-status-stack em { justify-self: start; }
 
   .production-material-line > span { text-align: left; }
   .production-material-line em { justify-self: start; }
