@@ -202,6 +202,7 @@ import {
 } from "./api";
 import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
+import { AfterSalesCenter } from "./AfterSalesCenter";
 import "./styles.css";
 import "./theme-refresh.css";
 
@@ -364,6 +365,7 @@ const navItems = [
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
+  { label: "售后协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse" },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup" },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup" },
   { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup" },
@@ -403,7 +405,7 @@ function hashForView(view: string) {
 }
 
 function visibleNavItems(user: AuthUser) {
-  return navItems.filter((item) => hasUserPermission(user, item.permission));
+  return navItems.filter((item) => hasUserPermission(user, item.permission) || ("alternativePermission" in item && Boolean(item.alternativePermission) && hasUserPermission(user, item.alternativePermission as string)));
 }
 
 function formatNumber(value: number) {
@@ -1759,6 +1761,8 @@ function App() {
           <AgentApiAccessPage currentUser={currentUser} />
         ) : activeView === "妙手 ERP" ? (
           <MiaoshouPage />
+        ) : activeView === "售后协同" ? (
+          <AfterSalesCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -7246,7 +7250,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
 function UserManagement({ userPayload }: { userPayload: UserManagementPayload | null }) {
   const confirm = useConfirm();
   const users = userPayload?.users ?? [];
-  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "admin" });
+  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "warehouse" | "admin" });
   const [saving, setSaving] = React.useState(false);
   const [actionUserId, setActionUserId] = React.useState("");
   const [actionApplicationId, setActionApplicationId] = React.useState("");
@@ -7373,6 +7377,8 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
     const required = user.role === "admin" ? (visiblePayload?.hardRules?.adminRequired || []) : [];
     const denied = user.role === "direct"
       ? (visiblePayload?.hardRules?.directDenied || [])
+      : user.role === "warehouse"
+        ? (visiblePayload?.hardRules?.warehouseDenied || [])
       : user.role === "distributor"
         ? (visiblePayload?.hardRules?.distributorDenied || [])
         : user.role === "guest"
@@ -7466,6 +7472,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
         <Metric title="用户总数" value={formatNumber(visiblePayload?.counts.users ?? 0)} note="本地库为准，创建后同步系统" icon={Lock} tone="blue" />
         <Metric title="管理员" value={formatNumber(visiblePayload?.counts.admin ?? 0)} note="可查看订单、动销、备货和用户管理" icon={ShieldCheck} tone="green" />
         <Metric title="直营运营" value={formatNumber(visiblePayload?.counts.direct ?? 0)} note="看产品、直营价、库存和素材资质" icon={ShoppingBag} tone="orange" />
+        <Metric title="仓库操作员" value={formatNumber(visiblePayload?.counts.warehouse ?? 0)} note="仅处理售后接单、补发和面单" icon={Truck} tone="blue" />
         <Metric title="分销商" value={formatNumber(visiblePayload?.counts.distributor ?? 0)} note="仅看产品、分销价、素材和资质" icon={ShoppingBag} tone="red" />
       </section>
 
@@ -7531,9 +7538,10 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
           </label>
           <label>
             <span>角色</span>
-            <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as "distributor" | "direct" | "admin" }))}>
+            <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as "distributor" | "direct" | "warehouse" | "admin" }))}>
               <option value="distributor">分销商</option>
               <option value="direct">直营运营</option>
+              <option value="warehouse">仓库操作员</option>
               <option value="admin">管理员</option>
             </select>
           </label>
@@ -7620,6 +7628,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
                         {permissionCatalog.filter((item) => item.group === group).map((permission) => {
                           const hardDenied = (
                             user.role === "direct" ? (visiblePayload?.hardRules?.directDenied || [])
+                              : user.role === "warehouse" ? (visiblePayload?.hardRules?.warehouseDenied || [])
                               : user.role === "distributor" ? (visiblePayload?.hardRules?.distributorDenied || [])
                                 : user.role === "guest" ? (visiblePayload?.hardRules?.guestDenied || [])
                                   : []
@@ -7664,7 +7673,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
 
                   <div className="permission-guardrail">
                     <ShieldCheck size={18} />
-                    <span>分销商的直营价、非管理员的用户权限管理均由后端永久锁定；关闭权限会同时隐藏菜单并拒绝接口访问。</span>
+                    <span>仓库操作员仅能处理售后仓库工单；分销商直营价和非管理员用户管理均由后端永久锁定。关闭权限会同时隐藏菜单并拒绝接口访问。</span>
                   </div>
                   <div className="permission-editor-actions">
                     <button className="ghost-button" type="button" onClick={() => setEditingUserId("")}>取消</button>

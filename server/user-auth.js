@@ -47,6 +47,7 @@ export function verifyPassword(password, encoded) {
 export function normalizeRole(value) {
   const role = text(value).toLowerCase();
   if (/admin|管理员|系统管理员|超级管理员|owner|super/.test(role)) return "admin";
+  if (/仓库|仓管|warehouse|fulfillment/.test(role)) return "warehouse";
   if (/直营|直营运营|内部运营|direct|operator|operations/.test(role)) return "direct";
   if (/分销|经销|代理|distribution|distributor|dealer/.test(role)) return "distributor";
   return "guest";
@@ -55,6 +56,7 @@ export function normalizeRole(value) {
 export function roleLabel(role) {
   if (role === "admin") return "管理员";
   if (role === "direct") return "直营运营";
+  if (role === "warehouse") return "仓库操作员";
   if (role === "distributor") return "分销商";
   return "游客";
 }

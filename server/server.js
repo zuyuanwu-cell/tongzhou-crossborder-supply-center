@@ -40,6 +40,7 @@ import { initTongzhouCanvasAi, TongzhouCanvasApiError } from "./tongzhou-canvas-
 import { createMiaoshouCategoryService, normalizeAiPlatformAttributes, validateTikTokReadiness } from "./miaoshou-listing-platform.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
 import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
+import { createAfterSalesService } from "./after-sales.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
@@ -100,6 +101,8 @@ const wecomNotificationCachePath = resolve(cacheDir, "wecom-notifications.json")
 const actionLogCachePath = resolve(cacheDir, "action-log.json");
 const distributorApplicationsPath = resolve(cacheDir, "distributor-applications.json");
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
+const afterSalesCachePath = resolve(cacheDir, "after-sales.json");
+const afterSalesUploadDir = resolve(cacheDir, "after-sales-uploads");
 const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
@@ -172,6 +175,13 @@ const performanceMiaoshouSync = createMiaoshouPerformanceSyncService({
   incrementalLookbackDays: performanceMiaoshouLookbackDays,
   initialBackfillDays: performanceMiaoshouBackfillDays,
   timeZone: performanceMiaoshouTimezone,
+});
+const afterSalesService = createAfterSalesService({
+  cachePath: afterSalesCachePath,
+  uploadDir: afterSalesUploadDir,
+  performanceStore: performanceAnalyticsStore,
+  connector: miaoshouAutomation,
+  getProducts: () => cachedProducts,
 });
 const defaultInternalAccessCode = "admin123";
 const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
@@ -1789,6 +1799,7 @@ function userCounts(users) {
     users: users.length,
     admin: users.filter((user) => user.role === "admin").length,
     direct: users.filter((user) => user.role === "direct").length,
+    warehouse: users.filter((user) => user.role === "warehouse").length,
     distributor: users.filter((user) => user.role === "distributor").length,
     active: users.filter((user) => user.status !== "disabled").length,
     disabled: users.filter((user) => user.status === "disabled").length,
@@ -2520,6 +2531,8 @@ const staticMimeTypes = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".pdf": "application/pdf",
   ".ico": "image/x-icon",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
@@ -2640,6 +2653,10 @@ function canManage(auth) {
 
 function canManageModule(auth, permission) {
   return canManage(auth) && hasPermission(auth, permission);
+}
+
+function canAccessAfterSales(auth) {
+  return hasPermission(auth, "after_sales_report") || hasPermission(auth, "after_sales_warehouse");
 }
 
 function canViewInternalCatalog(auth) {
@@ -5665,6 +5682,140 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, result);
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "订单店铺别名匹配失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/after-sales" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessAfterSales(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有售后协同权限。" });
+        return;
+      }
+      sendJson(res, 200, afterSalesService.list({
+        status: url.searchParams.get("status"),
+        keyword: url.searchParams.get("keyword"),
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/after-sales/order-sync" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有售后运营填报权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const result = await afterSalesService.syncOrder(payload.orderNumber);
+        appendActionLog(auth, "同步售后原订单", "after_sales_order", String(payload.orderNumber || "").trim(), {
+          source: result.source,
+          itemCount: result.order?.items?.length || 0,
+          existingTicketCount: result.order?.existingTickets?.length || 0,
+        });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "同步售后原订单失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/after-sales/uploads" && req.method === "POST") {
+      const auth = getAuth(req);
+      try {
+        const payload = await parseRequestBody(req);
+        const requiredPermission = payload.kind === "label" ? "after_sales_warehouse" : "after_sales_report";
+        if (!hasPermission(auth, requiredPermission)) {
+          sendJson(res, 403, { ok: false, message: payload.kind === "label" ? "当前账号没有上传仓库面单的权限。" : "当前账号没有上传售后凭证的权限。" });
+          return;
+        }
+        const protocol = req.headers["x-forwarded-proto"] || "http";
+        const host = req.headers["x-forwarded-host"] || req.headers.host;
+        const upload = afterSalesService.saveUpload(payload, auth.user, `${protocol}://${host}`);
+        appendActionLog(auth, payload.kind === "label" ? "上传售后补发面单" : "上传售后凭证", "after_sales_upload", upload.fileName, {
+          uploadId: upload.id,
+          kind: upload.kind,
+          size: upload.size,
+        });
+        sendJson(res, 201, { ok: true, upload });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "上传售后附件失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/after-sales/uploads/") && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessAfterSales(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有查看售后附件的权限。" });
+        return;
+      }
+      const fileName = basename(decodeURIComponent(url.pathname.replace("/api/after-sales/uploads/", "")));
+      const resolvedUpload = afterSalesService.uploadPath(fileName);
+      if (!resolvedUpload) {
+        sendJson(res, 404, { ok: false, message: "售后附件不存在。" });
+        return;
+      }
+      serveFile(req, res, resolvedUpload.path);
+      return;
+    }
+
+    if (url.pathname === "/api/after-sales" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有创建售后单的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const result = afterSalesService.create(payload, auth.user);
+        appendActionLog(auth, "提交售后单", "after_sales_ticket", result.ticket.id, {
+          originalOrderNumber: result.ticket.originalOrderNumber,
+          responsibility: result.ticket.responsibility?.party,
+          warehouseLiabilityCny: result.ticket.money?.totalWarehouseLiabilityCny,
+        });
+        sendJson(res, 201, result);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "创建售后单失败。" });
+      }
+      return;
+    }
+
+    const afterSalesDetailMatch = url.pathname.match(/^\/api\/after-sales\/([^/]+)$/);
+    if (afterSalesDetailMatch && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessAfterSales(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有查看售后单的权限。" });
+        return;
+      }
+      const ticket = afterSalesService.get(decodeURIComponent(afterSalesDetailMatch[1]));
+      if (!ticket) {
+        sendJson(res, 404, { ok: false, message: "售后单不存在。" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, ticket });
+      return;
+    }
+
+    const afterSalesWarehouseMatch = url.pathname.match(/^\/api\/after-sales\/([^/]+)\/warehouse$/);
+    if (afterSalesWarehouseMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      try {
+        const payload = await parseRequestBody(req);
+        const adminAction = ["cancel", "reopen"].includes(payload.action);
+        if ((!adminAction && !hasPermission(auth, "after_sales_warehouse")) || (adminAction && !canManage(auth))) {
+          sendJson(res, 403, { ok: false, message: adminAction ? "作废或重开售后单需要管理员权限。" : "当前账号没有仓库售后处理权限。" });
+          return;
+        }
+        const result = afterSalesService.updateWarehouse(decodeURIComponent(afterSalesWarehouseMatch[1]), payload, auth.user);
+        appendActionLog(auth, "更新售后单状态", "after_sales_ticket", result.ticket.id, {
+          action: payload.action,
+          status: result.ticket.status,
+          labelCount: result.ticket.labelUploads?.length || 0,
+        });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "更新售后单失败。" });
       }
       return;
     }

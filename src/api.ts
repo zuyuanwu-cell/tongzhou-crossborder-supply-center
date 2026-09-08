@@ -183,7 +183,7 @@ export type DashboardSummaryPayload = {
   }>;
 };
 
-export type UserRole = "guest" | "distributor" | "direct" | "admin";
+export type UserRole = "guest" | "distributor" | "direct" | "warehouse" | "admin";
 export type UserStatus = "active" | "disabled";
 
 export type PermissionOverrides = {
@@ -244,6 +244,7 @@ export type UserManagementPayload = {
     users: number;
     admin: number;
     direct: number;
+    warehouse: number;
     distributor: number;
     active?: number;
     disabled?: number;
@@ -259,6 +260,7 @@ export type UserManagementPayload = {
   roleDefaults: Record<UserRole, string[]>;
   hardRules: {
     directDenied: string[];
+    warehouseDenied: string[];
     distributorDenied: string[];
     guestDenied: string[];
     adminRequired: string[];
@@ -1603,6 +1605,135 @@ export type MiaoshouOrderAliasMatchPayload = {
     liveHits: number;
   };
   results: MiaoshouOrderAliasResult[];
+};
+
+export type AfterSalesAttachment = {
+  id: string;
+  kind: "evidence" | "label";
+  fileName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+  uploadedAt: string;
+  uploadedBy: string;
+};
+
+export type AfterSalesCustomer = {
+  name: string;
+  phone: string;
+  country: string;
+  province: string;
+  city: string;
+  district: string;
+  address: string;
+  postalCode: string;
+};
+
+export type AfterSalesItem = {
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  orderedQty: number;
+  affectedQty: number;
+  unitCostCny: number;
+  costSource: string;
+  costMissing: boolean;
+};
+
+export type AfterSalesReissueItem = {
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  quantity: number;
+};
+
+export type AfterSalesTicket = {
+  id: string;
+  originalOrderNumber: string;
+  orderIdentity: string;
+  platform: string;
+  site: string;
+  shopId: string;
+  shopAlias: string;
+  platformShopName: string;
+  orderStartedAt: string;
+  orderSyncedAt: string;
+  customer?: AfterSalesCustomer;
+  customerSummary?: { configured: boolean; country: string };
+  originalItems: AfterSalesItem[];
+  reissueItems: AfterSalesReissueItem[];
+  primaryReason: string;
+  secondaryReason: string;
+  responsibility: {
+    party: "warehouse" | "supplier_quality" | "logistics" | "operations" | "pending_review" | string;
+    label: string;
+    ruleCode: string;
+    overridden: boolean;
+    overrideReason: string;
+  };
+  needsReissue: boolean;
+  evidence: AfterSalesAttachment[];
+  labelUploads: AfterSalesAttachment[];
+  operatorRemark: string;
+  warehouseRemark: string;
+  adjustmentReason: string;
+  packagingFeeCny: number;
+  money: {
+    productCostCny: number;
+    packagingFeeWaiverCny: number;
+    additionalLiabilityCny: number;
+    customerRecoveryCny: number;
+    totalWarehouseLiabilityCny: number;
+    currency: "CNY";
+    missingCostSkus: string[];
+  };
+  status: "pending_warehouse" | "processing" | "awaiting_reshipment" | "shipped" | "completed" | "cancelled" | string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  completedAt: string;
+  timeline: Array<{
+    id: string;
+    type: string;
+    label: string;
+    note: string;
+    actor: string;
+    createdAt: string;
+  }>;
+};
+
+export type AfterSalesPayload = {
+  ok: boolean;
+  updatedAt: string;
+  summary: {
+    total: number;
+    open: number;
+    pendingWarehouse: number;
+    processing: number;
+    awaitingReshipment: number;
+    warehouseLiabilityCny: number;
+  };
+  tickets: AfterSalesTicket[];
+};
+
+export type AfterSalesOrderSyncPayload = {
+  ok: boolean;
+  source: "miaoshou_live" | "local_cache" | string;
+  warning: string;
+  order: {
+    orderNumber: string;
+    orderIdentity: string;
+    platform: string;
+    site: string;
+    shopId: string;
+    shopAlias: string;
+    platformShopName: string;
+    orderStartedAt: string;
+    customer: AfterSalesCustomer;
+    items: AfterSalesItem[];
+    packagingFeeCny: number;
+    existingTickets: AfterSalesTicket[];
+  };
 };
 
 export type MiaoshouPlatformReadiness = {
@@ -3357,6 +3488,74 @@ export function matchMiaoshouOrderAliases(orderNumbers: string[]) {
     method: "POST",
     body: JSON.stringify({ orderNumbers }),
   });
+}
+
+export function fetchAfterSales(input: { status?: string; keyword?: string } = {}) {
+  const params = new URLSearchParams();
+  if (input.status) params.set("status", input.status);
+  if (input.keyword) params.set("keyword", input.keyword);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<AfterSalesPayload>(`/api/after-sales${query}`);
+}
+
+export function syncAfterSalesOrder(orderNumber: string) {
+  return requestJson<AfterSalesOrderSyncPayload>("/api/after-sales/order-sync", {
+    method: "POST",
+    body: JSON.stringify({ orderNumber }),
+  });
+}
+
+export function uploadAfterSalesAttachment(input: { fileName: string; dataUrl: string; kind: "evidence" | "label" }) {
+  return requestJson<{ ok: boolean; upload: AfterSalesAttachment }>("/api/after-sales/uploads", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createAfterSalesTicket(input: {
+  order: AfterSalesOrderSyncPayload["order"];
+  customer: AfterSalesCustomer;
+  originalItems: AfterSalesItem[];
+  reissueItems: AfterSalesReissueItem[];
+  primaryReason: string;
+  secondaryReason: string;
+  needsReissue: boolean;
+  evidenceIds: string[];
+  operatorRemark: string;
+  additionalLiabilityCny: number;
+  customerRecoveryCny: number;
+  adjustmentReason: string;
+  responsibilityOverride?: { party: string; label?: string; reason: string } | null;
+}) {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>("/api/after-sales", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchAfterSalesTicket(id: string) {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket }>(`/api/after-sales/${encodeURIComponent(id)}`);
+}
+
+export function updateAfterSalesWarehouse(id: string, input: {
+  action: "accept" | "await_reshipment" | "shipped" | "complete" | "cancel" | "reopen";
+  labelUploadIds?: string[];
+  warehouseRemark?: string;
+  note?: string;
+}) {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>(`/api/after-sales/${encodeURIComponent(id)}/warehouse`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function downloadAfterSalesAttachment(attachment: AfterSalesAttachment) {
+  const response = await fetch(resolveApiUrl(new URL(attachment.url, window.location.origin).pathname), { headers: authHeaders() });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "下载售后附件失败。");
+  }
+  return response.blob();
 }
 
 export function updateMiaoshouConfig(input: {

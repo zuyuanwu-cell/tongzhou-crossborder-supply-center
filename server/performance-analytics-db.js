@@ -619,6 +619,22 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return rows.map(miaoshouOrderFromDb);
   }
 
+  function findMiaoshouOrderBundlesByPlatformOrderSns(orderNumbers = []) {
+    const orders = findMiaoshouOrdersByPlatformOrderSns(orderNumbers);
+    const identities = [...new Set(orders.map((order) => text(order.identity)).filter(Boolean))];
+    const items = [];
+    for (let index = 0; index < identities.length; index += 300) {
+      const batch = identities.slice(index, index + 300);
+      const placeholders = batch.map(() => "?").join(", ");
+      items.push(...all(
+        db,
+        `SELECT * FROM miaoshou_performance_items WHERE order_identity IN (${placeholders}) ORDER BY order_identity ASC, identity ASC`,
+        batch,
+      ));
+    }
+    return { orders, items: items.map(miaoshouItemFromDb) };
+  }
+
   function upsertExchangeRates(rates = [], source = "manual", { preserveOverrides = false } = {}) {
     const now = new Date().toISOString();
     const normalized = (Array.isArray(rates) ? rates : []).map((rate) => ({
@@ -775,6 +791,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     getPerformanceSettings,
     getMetadata,
     getExchangeRateSyncState,
+    findMiaoshouOrderBundlesByPlatformOrderSns,
     findMiaoshouOrdersByPlatformOrderSns,
     listExchangeRates,
     listSalesCurrencies,

@@ -143,4 +143,11 @@ assert.deepEqual(publicDistributor.dataScopes.skus, ["SKU-A"]);
 const directDenied = effectivePermissions({ role: "direct", permissionOverrides: { allow: [], deny: ["direct_price"] } });
 assert.equal(directDenied.includes("direct_price"), false, "explicit deny overrides a role default");
 
+const warehousePermissions = effectivePermissions({
+  role: "warehouse",
+  permissionOverrides: { allow: ["after_sales_report", "product_view", "users"], deny: [] },
+});
+assert.deepEqual(warehousePermissions, ["after_sales_warehouse"], "warehouse operators are isolated to the warehouse after-sales workspace");
+assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
+
 console.log("access-control tests passed");
