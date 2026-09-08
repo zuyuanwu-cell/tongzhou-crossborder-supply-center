@@ -32,6 +32,7 @@
     "test:movement-explainability": "node scripts/movement-explainability-test.mjs",
     "test:shop-directory": "node scripts/shop-directory-test.mjs",
     "test:exchange-rate-sync": "node scripts/exchange-rate-sync-test.mjs",
+    "test:sync-scheduler": "node scripts/sync-scheduler-test.mjs",
     "check:agent-coverage": "node scripts/check-agent-coverage.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
