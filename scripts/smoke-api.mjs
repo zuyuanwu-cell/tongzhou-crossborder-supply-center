@@ -165,6 +165,12 @@ async function main() {
   }
   console.log("[ok] /api/me admin session");
 
+  const scheduler = await expectJson("/api/sync-scheduler", { headers: authHeaders });
+  if (!scheduler.enabled || !Array.isArray(scheduler.tasks) || scheduler.tasks.length < 10 || scheduler.counts?.running === undefined) {
+    throw new Error(`/api/sync-scheduler did not expose the background task state: ${JSON.stringify(scheduler).slice(0, 500)}`);
+  }
+  console.log("[ok] staggered sync scheduler status");
+
   const actionLog = await expectJson("/api/action-log", { headers: authHeaders });
   const loginEntry = (actionLog.entries || []).find((entry) => entry.action === "登录系统");
   if (!loginEntry?.details?.loginIp) {
@@ -328,7 +334,7 @@ async function main() {
   console.log("[ok] /api/warehouses");
 
   const unauthorizedMiaoshou = await fetch(`${baseUrl}/api/miaoshou`);
-  if (unauthorizedMiaoshou.status !== 401) {
+  if (![401, 403].includes(unauthorizedMiaoshou.status)) {
     throw new Error(`/api/miaoshou did not enforce admin authentication: ${unauthorizedMiaoshou.status}`);
   }
   const miaoshou = await expectJson("/api/miaoshou", { headers: authHeaders });

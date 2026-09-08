@@ -117,6 +117,7 @@ export function createSyncScheduler({
       jitterMs: positiveNumber(definition.jitterMs, 0),
       run: definition.run,
       running: false,
+      rerunRequested: false,
       status: restored.status === "failed" ? "failed" : "idle",
       lastStartedAt: isoTime(restored.lastStartedAt),
       lastCompletedAt: isoTime(restored.lastCompletedAt),
@@ -174,12 +175,17 @@ export function createSyncScheduler({
         task.status = "failed";
         task.failureCount += 1;
         task.lastError = publicError(error);
+        console.error(`[sync-scheduler] ${task.id} failed: ${task.lastError}`);
         const retryDelay = Math.min(task.intervalMs, positiveNumber(retryBaseMs, 60_000, 1_000) * (2 ** Math.min(6, task.failureCount - 1)));
         scheduleAfter(task, retryDelay);
         return null;
       })
       .finally(() => {
         task.running = false;
+        if (task.rerunRequested) {
+          task.rerunRequested = false;
+          task.nextRunAt = nowDate().toISOString();
+        }
         runningByLane.set(lane, Math.max(0, laneRunning(lane) - 1));
         runningPromises.delete(task.id);
         saveState();
@@ -216,7 +222,11 @@ export function createSyncScheduler({
   async function trigger(id) {
     const task = tasks.get(text(id));
     if (!task) throw new Error(`Unknown sync task: ${id}`);
-    if (task.running) return { started: false, reason: "running", task: publicTask(task) };
+    if (task.running) {
+      task.rerunRequested = true;
+      saveState();
+      return { started: false, reason: "queued", task: publicTask(task) };
+    }
     task.nextRunAt = nowDate().toISOString();
     saveState();
     const result = await tick();
@@ -238,6 +248,7 @@ export function createSyncScheduler({
       intervalMs: task.intervalMs,
       status: task.running ? "running" : task.status,
       running: task.running,
+      rerunQueued: task.rerunRequested,
       lastStartedAt: task.lastStartedAt,
       lastCompletedAt: task.lastCompletedAt,
       lastSuccessAt: task.lastSuccessAt,

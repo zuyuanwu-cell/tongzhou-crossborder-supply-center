@@ -2446,7 +2446,24 @@ function Dashboard({
   const productRiskCount = Math.max(0, riskCount - warehouseOnlySkuCount);
   const failedWarehouses = summary?.sync.failedWarehouses ?? [];
   const inventoryIssueWarehouses = (summary?.warehouses ?? []).filter((warehouse) => !warehouse.hasCredentials || !warehouse.inventoryOk);
-  const nextAutoSync = nextAutoSyncText(summary?.sync.lastAutoSyncAt, summary?.sync.autoSyncIntervalMs);
+  const scheduler = summary?.sync.scheduler;
+  const schedulerTasks = scheduler?.tasks ?? [];
+  const schedulerTask = (id: string) => schedulerTasks.find((task) => task.id === id);
+  const schedulerFailedTasks = schedulerTasks.filter((task) => task.enabled && task.status === "failed");
+  const nextScheduledTask = schedulerTasks
+    .filter((task) => task.enabled && task.nextRunAt)
+    .sort((left, right) => new Date(left.nextRunAt).getTime() - new Date(right.nextRunAt).getTime())[0];
+  const nextAutoSync = nextScheduledTask?.running
+    ? `${nextScheduledTask.label}更新中`
+    : nextScheduledTask?.nextRunAt
+      ? formatDateTime(nextScheduledTask.nextRunAt)
+      : nextAutoSyncText(summary?.sync.lastAutoSyncAt, summary?.sync.autoSyncIntervalMs);
+  const taskNextText = (id: string) => {
+    const task = schedulerTask(id);
+    if (!task?.enabled) return "未启用";
+    if (task.running) return "更新中";
+    return task.nextRunAt ? formatDateTime(task.nextRunAt) : "等待调度";
+  };
   const todayOrderNote = !summary?.sync.orderSyncedAt
     ? "订单未同步，不能判断是否真实为 0"
     : failedWarehouses.length
@@ -2462,6 +2479,7 @@ function Dashboard({
       status: payload?.warning ? "有提醒" : summary?.sync.productsSyncedAt ? "正常" : "待同步",
       tone: payload?.warning || !summary?.sync.productsSyncedAt ? "warning" : "good",
       reason: payload?.warning || (summary?.sync.productsSyncedAt ? "产品库缓存可用于当前页面。" : "尚未完成产品目录同步。"),
+      next: taskNextText("products"),
     },
     {
       id: "inventory",
@@ -2472,6 +2490,7 @@ function Dashboard({
       reason: inventoryIssueWarehouses.length
         ? inventoryIssueWarehouses.slice(0, 3).map((warehouse) => `${warehouse.name}${warehouse.message ? `：${warehouse.message}` : ""}`).join("；")
         : summary?.sync.inventorySyncedAt ? "库存快照已生成。" : "尚未完成仓库库存同步。",
+      next: taskNextText("warehouse-inventory"),
     },
     {
       id: "orders",
@@ -2482,6 +2501,18 @@ function Dashboard({
       reason: failedWarehouses.length
         ? failedWarehouses.slice(0, 3).map((warehouse) => `${warehouse.warehouseId}${warehouse.message ? `：${warehouse.message}` : ""}`).join("；")
         : todayOrderNote,
+      next: taskNextText("warehouse-orders"),
+    },
+    {
+      id: "scheduler",
+      label: "后台自动更新",
+      last: schedulerTasks.map((task) => task.lastSuccessAt).filter(Boolean).sort().at(-1) || "",
+      status: !scheduler?.enabled ? "未运行" : schedulerFailedTasks.length ? `${schedulerFailedTasks.length} 项待重试` : scheduler.counts.running ? `${scheduler.counts.running} 项更新中` : "错峰运行中",
+      tone: !scheduler?.enabled || schedulerFailedTasks.length ? "warning" : "good",
+      reason: schedulerFailedTasks.length
+        ? `${schedulerFailedTasks.slice(0, 2).map((task) => `${task.label}：${task.lastError || "等待自动重试"}`).join("；")}。已有快照不会被清空。`
+        : `${scheduler?.counts.tasks ?? 0} 项数据按不同周期自动更新，页面只读取已准备好的快照。`,
+      next: nextAutoSync,
     },
   ];
   const wecomRobots = wecomNotificationPayload?.robots ?? [];
@@ -2676,7 +2707,7 @@ function Dashboard({
                 </div>
                 <div>
                   <dt>下一次自动</dt>
-                  <dd>{nextAutoSync}</dd>
+                  <dd>{row.next}</dd>
                 </div>
               </dl>
               <p>{row.reason}</p>

@@ -142,6 +142,29 @@ export type DashboardSummaryPayload = {
     orderSyncedAt: string;
     lastAutoSyncAt: string;
     autoSyncIntervalMs: number;
+    scheduler?: {
+      enabled: boolean;
+      heartbeatMs: number;
+      generatedAt: string;
+      counts: { tasks: number; running: number; failed: number };
+      tasks: Array<{
+        id: string;
+        label: string;
+        enabled: boolean;
+        lane: string;
+        intervalMs: number;
+        status: "idle" | "running" | "failed" | string;
+        running: boolean;
+        lastStartedAt: string;
+        lastCompletedAt: string;
+        lastSuccessAt: string;
+        lastSkippedAt: string;
+        lastDurationMs: number;
+        lastError: string;
+        failureCount: number;
+        nextRunAt: string;
+      }>;
+    };
     backgroundRunningWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
     failedWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
     dataHealth?: {
@@ -2583,6 +2606,7 @@ export type StockupWorkflowPayload = {
   historyHidden?: boolean;
   syncedAt: string;
   warnings: string[];
+  cacheState?: { cached: boolean; refreshing: boolean; syncedAt: string };
   counts: {
     demands: number;
     pendingDemands: number;

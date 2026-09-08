@@ -56,6 +56,21 @@ await lanes.tick();
 await flush();
 assert.deepEqual(laneRuns, ["a", "b"], "the queued due task should start after the lane is released");
 
+clock = Date.parse("2026-09-09T01:30:00.000Z");
+const rerunGate = deferred();
+let rerunCount = 0;
+const reruns = createSyncScheduler({ now: () => new Date(clock), random: () => 0, persist: () => {} });
+reruns.register({ id: "workflow", label: "Workflow", intervalMs: 60_000, run: async () => { rerunCount += 1; if (rerunCount === 1) await rerunGate.promise; } });
+await reruns.tick();
+await flush();
+const queuedRerun = await reruns.trigger("workflow");
+assert.equal(queuedRerun.reason, "queued", "triggering a running task should queue one follow-up run");
+rerunGate.resolve();
+await reruns.waitForIdle();
+await reruns.tick();
+await reruns.waitForIdle();
+assert.equal(rerunCount, 2, "a queued mutation refresh should run after the active refresh completes");
+
 clock = Date.parse("2026-09-09T02:00:00.000Z");
 const failure = createSyncScheduler({ now: () => new Date(clock), random: () => 0, persist: () => {}, retryBaseMs: 60_000 });
 failure.register({ id: "failing", label: "Failing", intervalMs: 30 * 60_000, run: async () => { throw new Error("provider unavailable"); } });

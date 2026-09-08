@@ -15,7 +15,6 @@ import { buildProductionMaterialProgress, emptyProductionMaterialPayload } from 
 import {
   createSingleFlight,
   outsourcingCacheState,
-  shouldRefreshOutsourcingCache,
 } from "./outsourcing-cache-policy.js";
 import { buildSupplierRedactionEntries } from "./supplier-privacy.js";
 import { buildProductionTimelines } from "./production-timeline.js";
@@ -27,7 +26,7 @@ import { projectMovementPayload, scopeMovementSources } from "./movement-access.
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
-import { calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
+import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
@@ -55,6 +54,7 @@ import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
+import { createSyncScheduler } from "./sync-scheduler.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -114,13 +114,26 @@ const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
+const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const productionMaterialCachePath = resolve(cacheDir, "production-materials.json");
 const usersCachePath = resolve(cacheDir, "users.json");
 const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
 const performanceMaterializationCachePath = resolve(cacheDir, "performance-analytics-materialized.json.gz");
-const autoSyncIntervalMs = Number(process.env.AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000);
+const syncSchedulerCachePath = resolve(cacheDir, "sync-scheduler.json");
+const syncSchedulerHeartbeatMs = Math.max(5_000, Number(process.env.SYNC_SCHEDULER_HEARTBEAT_MS || 15_000));
+const productionSyncIntervalMs = Math.max(60_000, Number(process.env.PRODUCTION_SYNC_INTERVAL_MS || 5 * 60 * 1000));
+const warehouseInventorySyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_INVENTORY_SYNC_INTERVAL_MS || 15 * 60 * 1000));
+const warehouseOrderSyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_ORDER_SYNC_INTERVAL_MS || 15 * 60 * 1000));
+const warehouseOrderIncrementalDays = Math.max(1, Math.min(30, Number(process.env.WAREHOUSE_ORDER_INCREMENTAL_DAYS || 7)));
+const warehouseStockupSyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_STOCKUP_SYNC_INTERVAL_MS || 15 * 60 * 1000));
+const productSyncIntervalMs = Math.max(15 * 60_000, Number(process.env.PRODUCT_SYNC_INTERVAL_MS || 60 * 60 * 1000));
+const assetSyncIntervalMs = Math.max(15 * 60_000, Number(process.env.ASSET_SYNC_INTERVAL_MS || 60 * 60 * 1000));
+const warehouseInfoSyncIntervalMs = Math.max(30 * 60_000, Number(process.env.WAREHOUSE_INFO_SYNC_INTERVAL_MS || 2 * 60 * 60 * 1000));
+const qualificationSyncIntervalMs = Math.max(60 * 60_000, Number(process.env.QUALIFICATION_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
+const performanceMaterializationIntervalMs = Math.max(15 * 60_000, Number(process.env.PERFORMANCE_MATERIALIZATION_INTERVAL_MS || 30 * 60 * 1000));
+const autoSyncIntervalMs = warehouseOrderSyncIntervalMs;
 const outsourcingCacheTtlMs = Math.max(30_000, Number(process.env.OUTSOURCING_CACHE_TTL_MS || 5 * 60 * 1000));
 const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000);
 const orderSyncChunkDays = Math.max(1, Math.min(30, Number(process.env.ORDER_SYNC_CHUNK_DAYS || 7)));
@@ -136,6 +149,11 @@ let cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(loadJsonCache(o
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupDecisions = loadJsonCache(stockupDecisionCachePath) || { updatedAt: "", decisions: {} };
 let cachedStockupPlans = normalizeStockupPlans(loadJsonCache(stockupPlanCachePath));
+let cachedStockupWorkflow = loadJsonCache(stockupWorkflowCachePath) || {
+  ...buildStockupWorkflowPayload({}, "warming"),
+  syncedAt: "",
+  warnings: ["后台正在准备备货执行数据，稍后会自动显示。"],
+};
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
@@ -224,13 +242,18 @@ const directAuth = {
 assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
-let autoSyncRunning = false;
 let outsourcingRefreshStartedAt = "";
 let outsourcingRefreshError = "";
 let lastAutoSyncAt = "";
 let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
 let wecomScheduleRunning = false;
+const syncScheduler = createSyncScheduler({
+  heartbeatMs: syncSchedulerHeartbeatMs,
+  laneLimits: { light: 4, external: 1 },
+  restoredState: loadJsonCache(syncSchedulerCachePath) || {},
+  persist: (payload) => saveJsonCache(syncSchedulerCachePath, payload, 0),
+});
 const performanceAnalyticsResponseCache = new Map();
 const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
 const performanceAnalyticsResponseCacheLimit = 24;
@@ -3605,6 +3628,7 @@ function buildDashboardSummary(auth) {
       orderSyncedAt: cachedOrdersSync.syncedAt || "",
       lastAutoSyncAt,
       autoSyncIntervalMs,
+      scheduler: syncScheduler.status(),
       backgroundRunningWarehouses: movementPayload?.syncState?.backgroundRunningWarehouses || [],
       failedWarehouses: movementPayload?.syncState?.failedWarehouses || [],
       dataHealth,
@@ -3899,7 +3923,7 @@ async function performanceMaterialization(exchangeRates, packagingFeeRules, miao
   return job.promise;
 }
 
-async function warmPerformanceAnalyticsMaterialization() {
+async function warmPerformanceAnalyticsMaterialization({ throwOnError = false } = {}) {
   try {
     const exchangeRates = performanceAnalyticsStore.listExchangeRates();
     const settings = performanceAnalyticsStore.getPerformanceSettings();
@@ -3909,6 +3933,7 @@ async function warmPerformanceAnalyticsMaterialization() {
     console.log(`[performance] materialized ${materialization.facts.length} rows in ${materialization.materializationDurationMs}ms (${materialization.dataVersion})`);
   } catch (error) {
     console.error("[performance] materialization failed", error);
+    if (throwOnError) throw error;
   }
 }
 
@@ -5099,11 +5124,44 @@ function mergeLateOrderSyncResult(connection, result, days) {
   console.log(`[orders-sync] background completed ${connection.name || connection.id}: ${snapshot.orderCount} visible orders${snapshot.usingPreviousSuccessfulData ? " (retained previous snapshot)" : ""}`);
 }
 
+const stockupWorkflowRefresh = createSingleFlight(async () => {
+  const workflow = await loadStockupWorkflow();
+  cachedStockupWorkflow = workflow;
+  saveJsonCache(stockupWorkflowCachePath, cachedStockupWorkflow);
+  return cachedStockupWorkflow;
+});
+
+function refreshStockupWorkflowCache() {
+  return stockupWorkflowRefresh.run();
+}
+
+function currentStockupWorkflowPayload() {
+  return {
+    ...workflowWithWmsState(cachedStockupWorkflow),
+    cacheState: {
+      cached: Boolean(cachedStockupWorkflow.syncedAt),
+      refreshing: stockupWorkflowRefresh.active(),
+      syncedAt: cachedStockupWorkflow.syncedAt || "",
+    },
+  };
+}
+
+function queueStockupWorkflowRefresh(reason = "mutation") {
+  void syncScheduler.trigger("stockup-workflow")
+    .catch((error) => console.error(`[stockup-workflow] ${reason} refresh could not be queued`, error));
+}
+
 async function handleStockupSync(req, res) {
   if (!canManageModule(getAuth(req), "stockup")) {
     sendJson(res, 401, { ok: false, message: "同步备货单明细需要内部登录。" });
     return;
   }
+
+  const payload = await refreshWarehouseStockupCache();
+  sendJson(res, 200, payload);
+}
+
+async function refreshWarehouseStockupCache() {
 
   const results = [];
   const orders = [];
@@ -5144,7 +5202,7 @@ async function handleStockupSync(req, res) {
   };
   saveStockupCache(cachedStockupSync);
 
-  sendJson(res, 200, buildCurrentStockupPayload({ notify: true, reason: "wms_sync" }));
+  return buildCurrentStockupPayload({ notify: true, reason: "wms_sync" });
 }
 
 function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {}) {
@@ -5489,12 +5547,6 @@ function currentOutsourcingCacheState(now = new Date()) {
   };
 }
 
-function startOutsourcingOrderRefresh(reason = "background") {
-  const refresh = refreshOutsourcingOrderCache();
-  refresh.catch((error) => console.error(`[outsourcing-sync] ${reason} failed; retained previous snapshot`, error));
-  return refresh;
-}
-
 async function handleQualificationFile(req, res, url) {
   const fileId = decodeURIComponent(url.pathname.replace("/api/qualifications/files/", ""));
   const template = process.env.JIANYUN_FILE_DOWNLOAD_TEMPLATE || "";
@@ -5531,36 +5583,177 @@ async function handleQualificationFile(req, res, url) {
   res.end(buffer);
 }
 
-async function runAutoSync() {
-  if (!autoSyncIntervalMs || autoSyncIntervalMs < 1000 || autoSyncRunning) return;
-  autoSyncRunning = true;
-  try {
-    await refreshProductCache();
-    await refreshQualificationCache();
-    await refreshAssetCache();
-    await refreshWarehouseInfoCache();
-    await refreshOutsourcingOrderCache();
-    const orderPayload = await refreshOrderCache(90);
-    buildCurrentStockupPayload({ notify: true, reason: "auto_order_sync" });
-    upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "auto_sync", movementHistoryTimezone);
-    lastAutoSyncAt = new Date().toISOString();
-    console.log(`[auto-sync] refreshed products, qualifications, assets and ${orderPayload.orders.length} movement orders at ${lastAutoSyncAt}`);
-  } catch (error) {
-    console.error("[auto-sync] failed", error);
-  } finally {
-    autoSyncRunning = false;
-  }
+async function runScheduledProductSync() {
+  const result = await refreshProductCache();
+  lastAutoSyncAt = new Date().toISOString();
+  console.log(`[sync-scheduler] products refreshed at ${lastAutoSyncAt}`);
+  return result;
 }
 
-async function runAutomaticExchangeRateSync(reason = "scheduled") {
-  try {
-    const result = await performanceExchangeRateSync.run({ reason });
-    if (!result.skipped) console.log(`[fx-sync] ${result.message} ${result.lastUpdatedCount || 0} rates through ${result.lastRateDate || "unknown date"}`);
-    return result;
-  } catch (error) {
-    console.error("[fx-sync] failed; previous valid rates were retained", error);
-    return performanceExchangeRateSync.status();
+async function runScheduledInventorySync() {
+  const result = await refreshWarehouseInventoryForSnapshot("scheduled_inventory_sync");
+  upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "scheduled_inventory_sync", movementHistoryTimezone);
+  console.log(`[sync-scheduler] warehouse inventory refreshed at ${new Date().toISOString()}`);
+  return result;
+}
+
+async function runScheduledOrderSync() {
+  const runningJob = latestOrderSyncJob();
+  if (activeOrderSyncJobPromise || (runningJob && ["queued", "running"].includes(runningJob.status))) {
+    return { skipped: true, message: "Order sync job is already running" };
   }
+  const job = createOrderSyncJob({
+    days: warehouseOrderIncrementalDays,
+    incremental: true,
+    reason: "scheduled_incremental",
+  });
+  startOrderSyncJob(job);
+  if (activeOrderSyncJobPromise) await activeOrderSyncJobPromise;
+  const completed = findOrderSyncJob(job.id);
+  if (completed?.status === "failed") throw new Error(completed.message || "Scheduled order sync failed");
+  buildCurrentStockupPayload({ notify: true, reason: "scheduled_order_sync" });
+  lastAutoSyncAt = new Date().toISOString();
+  console.log(`[sync-scheduler] ${warehouseOrderIncrementalDays}-day order window refreshed at ${lastAutoSyncAt}`);
+  return { jobId: job.id, status: completed?.status || "completed" };
+}
+
+async function runScheduledMiaoshouPerformanceSync() {
+  if (!performanceMiaoshouAutoSyncEnabled || !miaoshouAutomation.performanceContext().hasCredentials) {
+    return { skipped: true, message: "Miaoshou performance sync is not configured" };
+  }
+  return performanceMiaoshouSync.run({ reason: "scheduled" });
+}
+
+function registerBackgroundSyncTasks() {
+  const minute = 60_000;
+  const external = (definition) => syncScheduler.register({ lane: "external", jitterMs: 20_000, ...definition });
+  syncScheduler.register({
+    id: "wecom-notifications",
+    label: "企业微信定时通知",
+    lane: "light",
+    priority: 100,
+    intervalMs: minute,
+    initialDelayMs: 5_000,
+    jitterMs: 5_000,
+    run: runWecomSchedules,
+  });
+  external({
+    id: "miaoshou-waybills",
+    label: "妙手自动申请运单",
+    priority: 110,
+    intervalMs: minute,
+    initialDelayMs: 20_000,
+    jitterMs: 5_000,
+    run: () => miaoshouAutomation.runScheduled(),
+  });
+  external({
+    id: "stockup-workflow",
+    label: "备货执行业务链",
+    priority: 105,
+    intervalMs: productionSyncIntervalMs,
+    initialDelayMs: 10_000,
+    run: refreshStockupWorkflowCache,
+  });
+  external({
+    id: "production-materials",
+    label: "生产单与物料进度",
+    priority: 100,
+    intervalMs: productionSyncIntervalMs,
+    initialDelayMs: 35_000,
+    run: () => refreshOutsourcingOrderCache(),
+  });
+  external({
+    id: "daily-inventory-snapshot",
+    label: "每日库存快照检查",
+    priority: 95,
+    intervalMs: minute,
+    initialDelayMs: 40_000,
+    jitterMs: 5_000,
+    run: runScheduledInventorySnapshot,
+  });
+  external({
+    id: "warehouse-inventory",
+    label: "三方仓库存",
+    priority: 90,
+    intervalMs: warehouseInventorySyncIntervalMs,
+    initialDelayMs: 2 * minute,
+    run: runScheduledInventorySync,
+  });
+  external({
+    id: "warehouse-stockup-orders",
+    label: "三方仓备货单",
+    priority: 85,
+    intervalMs: warehouseStockupSyncIntervalMs,
+    initialDelayMs: 3 * minute,
+    run: refreshWarehouseStockupCache,
+  });
+  external({
+    id: "warehouse-orders",
+    label: "三方仓订单增量",
+    priority: 80,
+    intervalMs: warehouseOrderSyncIntervalMs,
+    initialDelayMs: 4 * minute,
+    run: runScheduledOrderSync,
+  });
+  external({
+    id: "miaoshou-performance",
+    label: "妙手订单与售后",
+    enabled: performanceMiaoshouAutoSyncEnabled,
+    priority: 75,
+    intervalMs: performanceMiaoshouSyncIntervalMs,
+    initialDelayMs: 6 * minute,
+    run: runScheduledMiaoshouPerformanceSync,
+  });
+  external({
+    id: "products",
+    label: "产品目录",
+    priority: 60,
+    intervalMs: productSyncIntervalMs,
+    initialDelayMs: 8 * minute,
+    run: runScheduledProductSync,
+  });
+  external({
+    id: "performance-materialization",
+    label: "经营分析快照",
+    priority: 55,
+    intervalMs: performanceMaterializationIntervalMs,
+    initialDelayMs: 10 * minute,
+    run: () => warmPerformanceAnalyticsMaterialization({ throwOnError: true }),
+  });
+  external({
+    id: "assets",
+    label: "素材库",
+    priority: 50,
+    intervalMs: assetSyncIntervalMs,
+    initialDelayMs: 12 * minute,
+    run: refreshAssetCache,
+  });
+  external({
+    id: "warehouse-info",
+    label: "仓库资料",
+    priority: 40,
+    intervalMs: warehouseInfoSyncIntervalMs,
+    initialDelayMs: 16 * minute,
+    run: refreshWarehouseInfoCache,
+  });
+  external({
+    id: "qualifications",
+    label: "产品资质",
+    priority: 30,
+    intervalMs: qualificationSyncIntervalMs,
+    initialDelayMs: 20 * minute,
+    run: refreshQualificationCache,
+  });
+  external({
+    id: "exchange-rates",
+    label: "经营汇率",
+    enabled: performanceFxAutoSyncEnabled,
+    priority: 20,
+    intervalMs: performanceFxSyncIntervalMs,
+    initialDelayMs: 24 * minute,
+    run: () => performanceExchangeRateSync.run({ reason: "scheduled" }),
+  });
+  console.log(`[sync-scheduler] registered ${syncScheduler.status().counts.tasks} staggered tasks; heartbeat ${Math.round(syncSchedulerHeartbeatMs / 1000)}s`);
 }
 
 async function runScheduledInventorySnapshot() {
@@ -5568,14 +5761,18 @@ async function runScheduledInventorySnapshot() {
   const now = new Date();
   const date = dateKeyInTimezone(now);
   const minutes = minutesInTimezone(now);
-  if (minutes < 180 || minutes >= 190 || lastScheduledInventorySnapshotDate === date) return;
+  if (minutes < 180 || minutes >= 190 || lastScheduledInventorySnapshotDate === date) {
+    return { skipped: true, message: "Outside the daily inventory snapshot window" };
+  }
   scheduledInventorySnapshotRunning = true;
   try {
     await refreshWarehouseInventoryForSnapshot("daily_3am");
     lastScheduledInventorySnapshotDate = date;
     console.log(`[inventory-snapshot] captured ${date} at ${new Date().toISOString()}`);
+    return { date, captured: true };
   } catch (error) {
     console.error("[inventory-snapshot] failed", error);
+    throw error;
   } finally {
     scheduledInventorySnapshotRunning = false;
   }
@@ -5747,7 +5944,22 @@ const server = http.createServer(async (req, res) => {
         autoSyncIntervalMs,
         autoSyncIntervalMinutes: autoSyncIntervalMs ? Math.round(autoSyncIntervalMs / 60000) : 0,
         lastAutoSyncAt,
+        scheduler: {
+          enabled: syncScheduler.status().enabled,
+          heartbeatMs: syncSchedulerHeartbeatMs,
+          counts: syncScheduler.status().counts,
+        },
       });
+      return;
+    }
+
+    if (url.pathname === "/api/sync-scheduler" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "dashboard")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有同步状态查看权限。" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, ...syncScheduler.status() });
       return;
     }
 
@@ -8288,8 +8500,6 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
-      const shouldRefresh = shouldRefreshOutsourcingCache(cachedOutsourcingOrders, { ttlMs: outsourcingCacheTtlMs });
-      if (shouldRefresh) startOutsourcingOrderRefresh("page_open");
       const stockupPayload = buildCurrentStockupPayload({ notify: false, reason: "page_refresh" });
       sendJson(res, 200, {
         ...stockupPayload,
@@ -8304,8 +8514,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
         return;
       }
-      const workflow = await loadStockupWorkflow();
-      sendJson(res, 200, workflowWithWmsState(workflow));
+      sendJson(res, 200, currentStockupWorkflowPayload());
       return;
     }
 
@@ -8318,6 +8527,7 @@ const server = http.createServer(async (req, res) => {
       const payload = await parseRequestBody(req);
       const result = await createStockupDemand(payload);
       if (!payload.dryRun) appendActionLog(auth, "创建备货需求", "stockup_demand", result.demandBatchNo, { productName: payload.productName, requestedQty: payload.requestedQty, productSourceType: payload.productSourceType });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("demand_created");
       sendJson(res, payload.dryRun ? 200 : 201, result);
       return;
     }
@@ -8332,6 +8542,7 @@ const server = http.createServer(async (req, res) => {
       const workflow = await loadStockupWorkflow();
       const result = await createStockupExecution(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "需求转备货执行", "stockup_execution", result.orderNo, { demandRecordId: payload.demandRecordId, plannedQty: payload.plannedQty, executionMode: payload.executionMode });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("execution_created");
       sendJson(res, payload.dryRun ? 200 : 201, result);
       return;
     }
@@ -8346,6 +8557,7 @@ const server = http.createServer(async (req, res) => {
       const workflow = await loadStockupWorkflow();
       const result = await cancelStockupExecution(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "取消备货执行剩余数量", "stockup_execution", result.orderNo || result.stockupOrderRecordId, { cancelledQty: result.cancelledQty, reopenedDemandCount: result.reopenedDemandCount, reason: result.reason });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("execution_cancelled");
       sendJson(res, 200, result);
       return;
     }
@@ -8360,6 +8572,7 @@ const server = http.createServer(async (req, res) => {
       const workflow = await loadStockupWorkflow();
       const result = await updateStockupExecutionLine(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "更新备货执行进度", "stockup_execution_line", result.stockupLineRecordId, { status: result.status, orderStatus: result.orderStatus, totals: result.totals });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("execution_updated");
       sendJson(res, 200, result);
       return;
     }
@@ -8374,6 +8587,7 @@ const server = http.createServer(async (req, res) => {
       const workflow = await loadStockupWorkflow();
       const result = await rollbackStockupExecutionLine(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "退回备货执行进度", "stockup_execution_line", result.stockupLineRecordId, { rollbackStage: result.rollbackStage, status: result.status, orderStatus: result.orderStatus, reason: result.reason });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("execution_rolled_back");
       sendJson(res, 200, result);
       return;
     }
@@ -8410,6 +8624,7 @@ const server = http.createServer(async (req, res) => {
           wmsTaskWarning = wmsTaskWarning || `发货和 WMS 待确认任务已保存，但操作日志写入失败：${error.message || "未知错误"}。`;
         }
       }
+      if (!payload.dryRun) queueStockupWorkflowRefresh("shipment_created");
       sendJson(res, payload.dryRun ? 200 : 201, { ...result, wmsPushTask, wmsTaskWarning });
       return;
     }
@@ -8422,6 +8637,7 @@ const server = http.createServer(async (req, res) => {
       }
       const payload = await parseRequestBody(req);
       const result = await confirmWmsStockupPush(payload.taskId, auth);
+      queueStockupWorkflowRefresh("wms_push_confirmed");
       sendJson(res, 200, result);
       return;
     }
@@ -8449,6 +8665,7 @@ const server = http.createServer(async (req, res) => {
         saveWmsStockupPushCache();
       }
       if (!payload.dryRun) appendActionLog(auth, "作废发货单", "shipment", result.shipmentNo || result.shipmentRecordId, { reversedLineCount: result.reversedLineCount, reason: result.reason });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("shipment_voided");
       sendJson(res, 200, result);
       return;
     }
@@ -8463,6 +8680,7 @@ const server = http.createServer(async (req, res) => {
       const workflow = await loadStockupWorkflow();
       const result = await completeProductCoding(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "完成新品编码", "product_coding", result.sku, { productRecordId: result.productRecordId, demandRecordId: result.demandRecordId });
+      if (!payload.dryRun) queueStockupWorkflowRefresh("product_coded");
       sendJson(res, 200, result);
       return;
     }
@@ -8507,6 +8725,7 @@ const server = http.createServer(async (req, res) => {
           currency: payload.currency || "CNY",
           allocationMethod: payload.allocationMethod,
         });
+        queueStockupWorkflowRefresh("shipment_fee_created");
       }
       sendJson(res, payload.dryRun ? 200 : 201, result);
       return;
@@ -8528,6 +8747,7 @@ const server = http.createServer(async (req, res) => {
           version: result.version,
           count: result.created?.length || 0,
         });
+        queueStockupWorkflowRefresh("cost_batch_created");
       }
       sendJson(res, payload.dryRun ? 200 : 201, result);
       return;
@@ -8547,6 +8767,7 @@ const server = http.createServer(async (req, res) => {
           version: Number(payload.version || 0),
           count: result.lockedCount || 0,
         });
+        queueStockupWorkflowRefresh("cost_batch_locked");
       }
       sendJson(res, 200, result);
       return;
@@ -8573,6 +8794,7 @@ const server = http.createServer(async (req, res) => {
         netReplenishQty: item.netReplenishQty,
         workflowDemandRecordId: transfer.demandRecordId,
       });
+      queueStockupWorkflowRefresh("recommendation_transferred");
       sendJson(res, 200, buildCurrentStockupPayload({ notify: false, reason: "decision_accepted" }));
       return;
     }
@@ -8812,22 +9034,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`Tongzhou API server listening on http://localhost:${port}`);
-  if (autoSyncIntervalMs >= 1000) {
-    setInterval(runAutoSync, autoSyncIntervalMs);
-    console.log(`[auto-sync] enabled every ${Math.round(autoSyncIntervalMs / 60000)} minutes`);
-  }
-  setInterval(runScheduledInventorySnapshot, 60 * 1000);
-  setInterval(runWecomSchedules, 60 * 1000);
-  setInterval(() => { void miaoshouAutomation.runScheduled(); }, 60 * 1000);
-  if (performanceMiaoshouAutoSyncEnabled) {
-    setInterval(() => { void performanceMiaoshouSync.runScheduled(); }, 60 * 1000);
-    console.log(`[miaoshou-performance] enabled every ${Math.round(performanceMiaoshouSyncIntervalMs / 60_000)} minutes with ${performanceMiaoshouBackfillDays}-day initial backfill`);
-  }
-  if (performanceFxAutoSyncEnabled) {
-    setInterval(() => { void runAutomaticExchangeRateSync("scheduled"); }, Math.min(performanceFxSyncIntervalMs, 60 * 60 * 1000));
-    void runAutomaticExchangeRateSync("startup");
-    console.log(`[fx-sync] enabled every ${Math.round(performanceFxSyncIntervalMs / 3_600_000)} hours with ${performanceFxBackfillDays}-day initial backfill`);
-  }
-  runScheduledInventorySnapshot();
-  runWecomSchedules();
+  registerBackgroundSyncTasks();
+  syncScheduler.start();
 });
