@@ -757,6 +757,13 @@ export type MiaoshouTask = {
 export type MiaoshouPayload = {
   ok: boolean;
   provider: "miaoshou";
+  batchSummary?: {
+    requestedCount: number;
+    updatedCount: number;
+    unchangedCount: number;
+    shopIds: string[];
+    autoApplyTrackingNo: boolean;
+  };
   config: {
     hasCredentials: boolean;
     credentialsSource: "environment" | "server" | string;
@@ -3345,6 +3352,13 @@ export function updateMiaoshouShop(shopId: string, input: { autoApplyTrackingNo?
   return requestJson<MiaoshouPayload>(`/api/miaoshou/shops/${encodeURIComponent(shopId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export function batchUpdateMiaoshouShops(shopIds: string[], input: { autoApplyTrackingNo: boolean; autoFetchWaybill?: boolean }) {
+  return requestJson<MiaoshouPayload>("/api/miaoshou/shops/batch", {
+    method: "PATCH",
+    body: JSON.stringify({ shopIds, ...input }),
   });
 }
 

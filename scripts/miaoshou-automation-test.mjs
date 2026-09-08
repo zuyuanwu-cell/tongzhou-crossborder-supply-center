@@ -189,8 +189,30 @@ try {
   assert.equal(calls.filter((call) => call.path === MIAOSHOU_PATHS.shops && call.body.site === "VN").length, 2);
   assert.equal(synced.siteOptions.tiktok.find((option) => option.value === "VN")?.label, "越南");
   assert.ok(calls.filter((call) => call.path === MIAOSHOU_PATHS.shops && call.body.pageSize !== 1).every((call) => call.body.pageSize === 50));
-  automation.updateShop("SHOP-1", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
-  automation.updateShop("SHOP-VN", { autoApplyTrackingNo: true, autoFetchWaybill: true }, "测试管理员");
+  const batchEnabled = automation.updateShops(
+    ["SHOP-1", "SHOP-1", "SHOP-VN"],
+    { autoApplyTrackingNo: true, autoFetchWaybill: true },
+    "测试管理员",
+  );
+  assert.deepEqual(batchEnabled.batchSummary, {
+    requestedCount: 2,
+    updatedCount: 2,
+    unchangedCount: 0,
+    shopIds: ["SHOP-1", "SHOP-VN"],
+    autoApplyTrackingNo: true,
+  });
+  const batchUnchanged = automation.updateShops(
+    ["SHOP-1", "SHOP-VN"],
+    { autoApplyTrackingNo: true, autoFetchWaybill: true },
+    "测试管理员",
+  );
+  assert.equal(batchUnchanged.batchSummary.updatedCount, 0);
+  assert.equal(batchUnchanged.batchSummary.unchangedCount, 2);
+  assert.throws(
+    () => automation.updateShops(["SHOP-1", "UNKNOWN"], { autoApplyTrackingNo: false }, "测试管理员"),
+    /未找到妙手店铺：UNKNOWN/,
+  );
+  assert.equal(automation.publicPayload().counts.enabledShops, 2, "批量校验失败时不能修改任何店铺");
 
   const firstRun = await automation.runAutomation({ force: true });
   assert.equal(firstRun.attempted, 1);
@@ -206,6 +228,15 @@ try {
   assert.equal(invalidShop?.connectionStatus, "invalid");
   assert.equal(invalidShop?.autoApplyTrackingNo, false);
   assert.match(invalidShop?.connectionError || "", /越权操作/);
+  const batchStopped = automation.updateShops(["SHOP-1"], { autoApplyTrackingNo: false }, "测试管理员");
+  assert.equal(batchStopped.batchSummary.updatedCount, 1);
+  assert.equal(batchStopped.shops.find((shop) => shop.shopId === "SHOP-1")?.autoApplyTrackingNo, false);
+  assert.throws(
+    () => automation.updateShops(["SHOP-1", "SHOP-VN"], { autoApplyTrackingNo: true }, "测试管理员"),
+    /SHOP-VN.*解绑|解绑.*SHOP-VN/,
+  );
+  assert.equal(automation.publicPayload().shops.find((shop) => shop.shopId === "SHOP-1")?.autoApplyTrackingNo, false, "失效店铺应让整批开启保持原状");
+  automation.updateShops(["SHOP-1"], { autoApplyTrackingNo: true }, "测试管理员");
   const appliedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-001");
   const observedTask = firstPayload.tasks.find((task) => task.trackingNo === "TRACK-EXISTING");
   assert.equal(appliedTask?.waybillUrl, "https://labels.example/PKG-001.pdf");

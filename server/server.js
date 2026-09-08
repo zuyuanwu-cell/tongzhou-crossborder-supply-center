@@ -5931,6 +5931,35 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/miaoshou/shops/batch" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "批量调整妙手店铺自动化需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = miaoshouAutomation.updateShops(
+        payload.shopIds,
+        payload,
+        auth.user?.displayName || auth.user?.username || "管理员",
+      );
+      const summary = result.batchSummary;
+      appendActionLog(
+        auth,
+        summary.autoApplyTrackingNo ? "批量开启店铺自动申请运单号" : "批量关闭店铺自动申请运单号",
+        "miaoshou_shop",
+        `${summary.requestedCount} 家妙手店铺`,
+        {
+          shopIds: summary.shopIds,
+          autoApplyTrackingNo: summary.autoApplyTrackingNo,
+          updatedCount: summary.updatedCount,
+          unchangedCount: summary.unchangedCount,
+        },
+      );
+      sendJson(res, 200, result);
+      return;
+    }
+
     const miaoshouShopMatch = url.pathname.match(/^\/api\/miaoshou\/shops\/([^/]+)$/);
     if (miaoshouShopMatch && req.method === "PATCH") {
       const auth = getAuth(req);

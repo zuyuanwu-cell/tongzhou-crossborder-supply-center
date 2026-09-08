@@ -558,6 +558,58 @@ export async function initMiaoshouAutomation({
     return publicPayload();
   }
 
+  function updateShops(shopIds, input = {}, actorName = "") {
+    const normalizedShopIds = Array.from(new Set(
+      (Array.isArray(shopIds) ? shopIds : []).map((shopId) => text(shopId)).filter(Boolean),
+    ));
+    if (!normalizedShopIds.length) throw new Error("请至少选择一家妙手店铺");
+    if (normalizedShopIds.length > 500) throw new Error("单次最多批量调整 500 家妙手店铺");
+    if (typeof input.autoApplyTrackingNo !== "boolean") throw new Error("请指定批量开启或关闭自动申请");
+
+    const shopsById = new Map(shopState.shops.map((shop) => [shop.shopId, shop]));
+    const missingShopIds = normalizedShopIds.filter((shopId) => !shopsById.has(shopId));
+    if (missingShopIds.length) throw new Error(`未找到妙手店铺：${missingShopIds.join("、")}，请先同步店铺`);
+
+    const shops = normalizedShopIds.map((shopId) => shopsById.get(shopId));
+    if (input.autoApplyTrackingNo) {
+      const invalidShops = shops.filter((shop) => shop.connectionStatus === "invalid");
+      if (invalidShops.length) {
+        throw new Error(`店铺 ${invalidShops.map((shop) => shop.shopId).join("、")} 已解绑或不存在，请重新绑定并同步后再开启。`);
+      }
+      if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手授权后再启用自动申请");
+    }
+
+    const now = new Date().toISOString();
+    let updatedCount = 0;
+    for (const shop of shops) {
+      const nextAutoApplyTrackingNo = input.autoApplyTrackingNo;
+      const nextAutoFetchWaybill = typeof input.autoFetchWaybill === "boolean"
+        ? input.autoFetchWaybill
+        : shop.autoFetchWaybill;
+      if (
+        shop.autoApplyTrackingNo === nextAutoApplyTrackingNo
+        && shop.autoFetchWaybill === nextAutoFetchWaybill
+      ) continue;
+      shop.autoApplyTrackingNo = nextAutoApplyTrackingNo;
+      shop.autoFetchWaybill = nextAutoFetchWaybill;
+      shop.enabledAt = nextAutoApplyTrackingNo ? (shop.enabledAt || now) : "";
+      shop.enabledBy = nextAutoApplyTrackingNo ? text(actorName) : "";
+      shop.updatedAt = now;
+      updatedCount += 1;
+    }
+    if (updatedCount) saveShops();
+    return {
+      ...publicPayload(),
+      batchSummary: {
+        requestedCount: normalizedShopIds.length,
+        updatedCount,
+        unchangedCount: normalizedShopIds.length - updatedCount,
+        shopIds: normalizedShopIds,
+        autoApplyTrackingNo: input.autoApplyTrackingNo,
+      },
+    };
+  }
+
   async function fetchEligiblePackages(enabledShops) {
     const api = client();
     const packageMap = new Map();
@@ -841,5 +893,6 @@ export async function initMiaoshouAutomation({
     testConnection,
     updateConfig,
     updateShop,
+    updateShops,
   };
 }
