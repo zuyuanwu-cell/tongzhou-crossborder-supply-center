@@ -1946,7 +1946,7 @@ function App() {
         ) : activeView === "生产中心" ? (
           <ProductionCenter stockupPayload={stockupPayload} onRefresh={handleProductionRefresh} syncing={syncing} />
         ) : activeView === "企业微信通知" ? (
-          <WecomNotificationCenter payload={wecomNotificationPayload} onRefresh={loadWecomNotifications} />
+          <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "用户管理" ? (
@@ -6303,13 +6303,19 @@ function RobotCheckboxes({
   );
 }
 
-function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotificationPayload | null; onRefresh: () => Promise<void> }) {
+function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { payload: WecomNotificationPayload | null; warehousePayload: WarehousePayload | null; onRefresh: () => Promise<void> }) {
   const confirm = useConfirm();
   const [localPayload, setLocalPayload] = React.useState<WecomNotificationPayload | null>(null);
   const data = localPayload || payload;
   const robots = data?.robots || [];
   const schedules = data?.schedules || [];
-  const scenes = data?.scenes || { stockupRecommendation: defaultWecomScene, inventorySnapshot: defaultWecomScene, qualificationExpiry: defaultWecomScene };
+  const scenes = data?.scenes || {
+    stockupRecommendation: defaultWecomScene,
+    inventorySnapshot: defaultWecomScene,
+    qualificationExpiry: defaultWecomScene,
+    afterSalesNew: { ...defaultWecomScene, warehouseRobotIds: {} },
+    afterSalesProgress: defaultWecomScene,
+  };
   const [robotForm, setRobotForm] = React.useState({ id: "", name: "", webhookUrl: "", enabled: true });
   const [scheduleForm, setScheduleForm] = React.useState({
     id: "",
@@ -6526,13 +6532,32 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
     }));
   }
 
+  function updateAfterSalesNewScene(patch: Partial<WecomNotificationPayload["scenes"]["afterSalesNew"]>) {
+    setSceneForm((current) => ({
+      ...current,
+      afterSalesNew: {
+        ...defaultWecomScene,
+        ...(current.afterSalesNew || {}),
+        ...patch,
+        warehouseRobotIds: patch.warehouseRobotIds || current.afterSalesNew?.warehouseRobotIds || {},
+      },
+    }));
+  }
+
+  function updateAfterSalesWarehouseRobots(warehouseId: string, robotIds: string[]) {
+    const currentMap = sceneForm.afterSalesNew?.warehouseRobotIds || {};
+    updateAfterSalesNewScene({
+      warehouseRobotIds: { ...currentMap, [warehouseId]: robotIds },
+    });
+  }
+
   return (
     <main className="movement-page">
       <section className="library-hero movement-hero">
         <div>
           <p className="eyebrow">WeCom Robot Center</p>
           <h2>企业微信机器人通知</h2>
-          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货建议和库存快照产生后的场景化提醒。</p>
+          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货、库存、资质与售后协同的场景化提醒。</p>
           <div className="source-row">
             <span className={`status-pill ${robots.length ? "good" : "warning"}`}>{robots.length ? "机器人已配置" : "等待配置机器人"}</span>
             <span>{data?.updatedAt ? formatDateTime(data.updatedAt) : "暂无配置"}</span>
@@ -6547,7 +6572,7 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
       <section className="metric-strip movement-metrics">
         <Metric title="机器人" value={formatNumber(robots.length)} note="可配置多个群机器人" icon={BellRing} tone="blue" />
         <Metric title="定时推送" value={formatNumber(schedules.length)} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
-        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货、库存、资质" icon={PackageCheck} tone="orange" />
+        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货、库存、资质、售后" icon={PackageCheck} tone="orange" />
         <Metric title="最近更新" value={data?.updatedAt ? formatDate(data.updatedAt) : "-"} note="本地通知配置" icon={Settings} tone="red" />
       </section>
 
@@ -6710,10 +6735,48 @@ function WecomNotificationCenter({ payload, onRefresh }: { payload: WecomNotific
           <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes"}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
         </div>
         <div className="wecom-scene-grid">
+          <article className="wecom-scene-card wecom-after-sales-routing">
+            <div className="panel-heading">
+              <div>
+                <h3>新售后单通知对应仓库</h3>
+                <p>运营提交后，按售后单的处理仓库精确发送到该仓库群；未映射时可使用默认接收群。</p>
+              </div>
+              <label className="wecom-switch">
+                <input type="checkbox" checked={Boolean(sceneForm.afterSalesNew?.enabled)} onChange={(event) => updateAfterSalesNewScene({ enabled: event.target.checked })} />
+                <span>{sceneForm.afterSalesNew?.enabled ? "启用" : "停用"}</span>
+              </label>
+            </div>
+            <div className="wecom-form-grid">
+              <label>
+                <span>售后中心链接</span>
+                <input value={sceneForm.afterSalesNew?.linkUrl || "#after-sales"} onChange={(event) => updateAfterSalesNewScene({ linkUrl: event.target.value })} placeholder="#after-sales" />
+              </label>
+              <label>
+                <span>附加文字</span>
+                <input value={sceneForm.afterSalesNew?.extraText || ""} onChange={(event) => updateAfterSalesNewScene({ extraText: event.target.value })} placeholder="例如：请及时核查并接单" />
+              </label>
+            </div>
+            <div>
+              <span className="field-label">默认仓库接收群</span>
+              <RobotCheckboxes robots={robots} selected={sceneForm.afterSalesNew?.robotIds || []} onChange={(robotIds) => updateAfterSalesNewScene({ robotIds })} />
+              <small>只有未给具体仓库指定群时才使用这里。</small>
+            </div>
+            <div className="wecom-warehouse-routes">
+              {(warehousePayload?.warehouses || []).map((warehouse) => (
+                <div key={warehouse.id}>
+                  <span><strong>{warehouse.name}</strong><small>{warehouse.country}</small></span>
+                  <RobotCheckboxes robots={robots} selected={sceneForm.afterSalesNew?.warehouseRobotIds?.[warehouse.id] || []} onChange={(robotIds) => updateAfterSalesWarehouseRobots(warehouse.id, robotIds)} />
+                </div>
+              ))}
+              {!warehousePayload?.warehouses?.length ? <div className="stockup-empty">暂无仓库资料，请先在“仓库授权”中完成仓库配置。</div> : null}
+            </div>
+            <small>最近发送：{sceneForm.afterSalesNew?.lastSentAt ? formatDateTime(sceneForm.afterSalesNew.lastSentAt) : "暂无"}</small>
+          </article>
           {([
             ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
+            ["afterSalesProgress", "售后处理进度更新时", "仓库接单、进入待补发、补发发出或完结后，通知运营群查看进度。"],
           ] as Array<[keyof WecomNotificationPayload["scenes"], string, string]>).map(([key, title, description]) => {
             const scene = sceneForm[key] || defaultWecomScene;
             return (

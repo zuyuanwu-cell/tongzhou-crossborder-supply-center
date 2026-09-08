@@ -42,6 +42,12 @@ import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-syn
 import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
 import { createMiaoshouOrderAliasJobService } from "./miaoshou-order-alias-jobs.js";
 import { createAfterSalesService } from "./after-sales.js";
+import {
+  afterSalesWarehouseOptions,
+  buildAfterSalesCreatedMarkdown,
+  buildAfterSalesProgressMarkdown,
+  notificationRobotIds,
+} from "./after-sales-notifications.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
@@ -189,6 +195,11 @@ const afterSalesService = createAfterSalesService({
   connector: miaoshouAutomation,
   getProducts: () => cachedProducts,
 });
+for (const ticket of afterSalesService.list().tickets) {
+  if (ticket.warehouseId) continue;
+  const options = afterSalesWarehouseOptions(ticket, warehouseConnections);
+  if (options.length === 1) afterSalesService.assignWarehouse(ticket.id, options[0]);
+}
 const defaultInternalAccessCode = "admin123";
 const configuredInternalAccessCode = String(process.env.INTERNAL_ACCESS_CODE || "").trim();
 const isProductionRuntime = process.env.NODE_ENV === "production";
@@ -694,6 +705,16 @@ function maskWebhook(url) {
   return text.replace(/key=([^&]{4})[^&]+/i, "key=$1****");
 }
 
+function normalizeWarehouseRobotIds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .map(([warehouseId, robotIds]) => [
+      String(warehouseId || "").trim(),
+      [...new Set((Array.isArray(robotIds) ? robotIds : []).map(String).map((id) => id.trim()).filter(Boolean))],
+    ])
+    .filter(([warehouseId, robotIds]) => warehouseId && robotIds.length));
+}
+
 function buildWecomNotificationPayload(input = {}) {
   const now = new Date().toISOString();
   const robots = (input.robots || [])
@@ -753,6 +774,21 @@ function buildWecomNotificationPayload(input = {}) {
       lastSignature: input.scenes?.qualificationExpiry?.lastSignature || "",
       lastSentAt: input.scenes?.qualificationExpiry?.lastSentAt || "",
     },
+    afterSalesNew: {
+      enabled: Boolean(input.scenes?.afterSalesNew?.enabled),
+      robotIds: Array.isArray(input.scenes?.afterSalesNew?.robotIds) ? input.scenes.afterSalesNew.robotIds.map(String).filter(Boolean) : [],
+      warehouseRobotIds: normalizeWarehouseRobotIds(input.scenes?.afterSalesNew?.warehouseRobotIds),
+      linkUrl: String(input.scenes?.afterSalesNew?.linkUrl || "#after-sales").trim(),
+      extraText: String(input.scenes?.afterSalesNew?.extraText || "").trim(),
+      lastSentAt: input.scenes?.afterSalesNew?.lastSentAt || "",
+    },
+    afterSalesProgress: {
+      enabled: Boolean(input.scenes?.afterSalesProgress?.enabled),
+      robotIds: Array.isArray(input.scenes?.afterSalesProgress?.robotIds) ? input.scenes.afterSalesProgress.robotIds.map(String).filter(Boolean) : [],
+      linkUrl: String(input.scenes?.afterSalesProgress?.linkUrl || "#after-sales").trim(),
+      extraText: String(input.scenes?.afterSalesProgress?.extraText || "").trim(),
+      lastSentAt: input.scenes?.afterSalesProgress?.lastSentAt || "",
+    },
   };
   return { ok: true, source: "local", updatedAt: input.updatedAt || now, robots, schedules, scenes };
 }
@@ -773,14 +809,22 @@ function notificationLinkLine(linkUrl, linkText = "查看详情") {
 
 async function sendWecomRobot(robot, content) {
   if (!robot?.enabled) return { robotId: robot?.id, ok: false, skipped: true, message: "机器人已停用" };
-  const response = await fetch(robot.webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      msgtype: "markdown",
-      markdown: { content: String(content || "").slice(0, 4000) },
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  let response;
+  try {
+    response = await fetch(robot.webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        msgtype: "markdown",
+        markdown: { content: String(content || "").slice(0, 4000) },
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
   const text = await response.text();
   let data;
   try {
@@ -812,6 +856,79 @@ async function sendWecomNotification(robotIds, content) {
   cachedWecomNotifications.updatedAt = new Date().toISOString();
   saveWecomNotificationCache();
   return results;
+}
+
+const afterSalesStatusLabels = Object.freeze({
+  pending_warehouse: "待仓库接单",
+  processing: "仓库已受理",
+  awaiting_reshipment: "待补发",
+  shipped: "补发已发出",
+  completed: "已完结",
+  cancelled: "已作废",
+});
+
+function notificationOutcome(results = [], configured = true) {
+  if (!configured || !results.length) return { status: "skipped", robotCount: 0, failedCount: 0, message: "场景通知未启用，或接收群机器人已停用/未配置" };
+  const failed = results.filter((result) => !result.ok);
+  return {
+    status: failed.length ? "failed" : "sent",
+    robotCount: results.length,
+    failedCount: failed.length,
+    message: failed.map((result) => result.message).filter(Boolean).join("；"),
+  };
+}
+
+async function notifyAfterSalesCreated(ticket, requestOrigin) {
+  const scene = cachedWecomNotifications.scenes?.afterSalesNew;
+  const robotIds = scene?.enabled ? notificationRobotIds(scene, ticket.warehouseId) : [];
+  const configured = Boolean(scene?.enabled && robotIds.length);
+  const results = configured
+    ? await sendWecomNotification(robotIds, buildAfterSalesCreatedMarkdown(ticket, {
+      linkUrl: scene.linkUrl,
+      extraText: scene.extraText,
+      requestOrigin,
+    }))
+    : [];
+  if (results.some((result) => result.ok)) {
+    scene.lastSentAt = new Date().toISOString();
+    saveWecomNotificationCache();
+  }
+  return notificationOutcome(results, configured);
+}
+
+async function notifyAfterSalesProgress(ticket, requestOrigin) {
+  const scene = cachedWecomNotifications.scenes?.afterSalesProgress;
+  const robotIds = scene?.enabled ? (scene.robotIds || []) : [];
+  const configured = Boolean(scene?.enabled && robotIds.length);
+  const results = configured
+    ? await sendWecomNotification(robotIds, buildAfterSalesProgressMarkdown(ticket, {
+      statusLabel: afterSalesStatusLabels[ticket.status] || ticket.status,
+      linkUrl: scene.linkUrl,
+      extraText: scene.extraText,
+      requestOrigin,
+    }))
+    : [];
+  if (results.some((result) => result.ok)) {
+    scene.lastSentAt = new Date().toISOString();
+    saveWecomNotificationCache();
+  }
+  return notificationOutcome(results, configured);
+}
+
+function dispatchAfterSalesNotification(ticket, eventType, requestOrigin) {
+  const send = eventType === "created" ? notifyAfterSalesCreated : notifyAfterSalesProgress;
+  void send(ticket, requestOrigin)
+    .then((outcome) => afterSalesService.recordNotification(ticket.id, {
+      eventType,
+      target: eventType === "created" ? "warehouse" : "operations",
+      ...outcome,
+    }))
+    .catch((error) => afterSalesService.recordNotification(ticket.id, {
+      eventType,
+      target: eventType === "created" ? "warehouse" : "operations",
+      status: "failed",
+      message: error?.message || "企业微信通知发送失败",
+    }));
 }
 
 function stockupSignature(payload) {
@@ -2683,6 +2800,19 @@ function canViewMiaoshouWorkspace(auth) {
 
 function canAccessAfterSales(auth) {
   return hasPermission(auth, "after_sales_report") || hasPermission(auth, "after_sales_warehouse");
+}
+
+function afterSalesCreatedByFilter(auth, requestedMine = false) {
+  const reportOnly = hasPermission(auth, "after_sales_report")
+    && !hasPermission(auth, "after_sales_warehouse")
+    && !canManage(auth);
+  return requestedMine || reportOnly ? String(auth.user?.id || "").trim() : "";
+}
+
+function requestOrigin(req) {
+  const protocol = req.headers["x-forwarded-proto"] || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `${protocol}://${host}`;
 }
 
 function canViewInternalCatalog(auth) {
@@ -5822,6 +5952,7 @@ const server = http.createServer(async (req, res) => {
         status: url.searchParams.get("status"),
         keyword: url.searchParams.get("keyword"),
         dataScopes: normalizeDataScopes(auth.user?.dataScopes),
+        createdById: afterSalesCreatedByFilter(auth, url.searchParams.get("mine") === "1"),
       }));
       return;
     }
@@ -5835,6 +5966,16 @@ const server = http.createServer(async (req, res) => {
       try {
         const payload = await parseRequestBody(req);
         const result = await afterSalesService.syncOrder(payload.orderNumber);
+        const warehouseOptions = afterSalesWarehouseOptions(
+          result.order,
+          warehouseConnections,
+          normalizeDataScopes(auth.user?.dataScopes),
+        );
+        result.order.warehouseOptions = warehouseOptions;
+        if (warehouseOptions.length === 1) {
+          result.order.warehouseId = warehouseOptions[0].id;
+          result.order.warehouseName = warehouseOptions[0].name;
+        }
         if (!afterSalesService.inScope({
           site: result.order?.site,
           customer: result.order?.customer,
@@ -5864,9 +6005,7 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 403, { ok: false, message: payload.kind === "label" ? "当前账号没有上传仓库面单的权限。" : "当前账号没有上传售后凭证的权限。" });
           return;
         }
-        const protocol = req.headers["x-forwarded-proto"] || "http";
-        const host = req.headers["x-forwarded-host"] || req.headers.host;
-        const upload = afterSalesService.saveUpload(payload, auth.user, `${protocol}://${host}`);
+        const upload = afterSalesService.saveUpload(payload, auth.user, requestOrigin(req));
         appendActionLog(auth, payload.kind === "label" ? "上传售后补发面单" : "上传售后凭证", "after_sales_upload", upload.fileName, {
           uploadId: upload.id,
           kind: upload.kind,
@@ -5886,7 +6025,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const fileName = basename(decodeURIComponent(url.pathname.replace("/api/after-sales/uploads/", "")));
-      if (!afterSalesService.canAccessUpload(fileName, normalizeDataScopes(auth.user?.dataScopes), auth.user?.id)) {
+      if (!afterSalesService.canAccessUpload(
+        fileName,
+        normalizeDataScopes(auth.user?.dataScopes),
+        auth.user?.id,
+        afterSalesCreatedByFilter(auth),
+      )) {
         sendJson(res, 404, { ok: false, message: "售后附件不存在或不在当前账号的数据范围内。" });
         return;
       }
@@ -5907,8 +6051,24 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const payload = await parseRequestBody(req);
+        const warehouseOptions = afterSalesWarehouseOptions(
+          payload.order,
+          warehouseConnections,
+          normalizeDataScopes(auth.user?.dataScopes),
+        );
+        const requestedWarehouseId = String(payload.warehouseId || payload.order?.warehouseId || "").trim();
+        const warehouse = warehouseOptions.find((item) => item.id === requestedWarehouseId)
+          || (warehouseOptions.length === 1 ? warehouseOptions[0] : null);
+        if (!warehouse) {
+          sendJson(res, 400, { ok: false, message: warehouseOptions.length ? "请选择该售后单的处理仓库。" : "当前订单没有可用的处理仓库，请先配置仓库授权与数据范围。" });
+          return;
+        }
+        payload.warehouseId = warehouse.id;
+        payload.warehouseName = warehouse.name;
+        payload.order = { ...(payload.order || {}), warehouseId: warehouse.id, warehouseName: warehouse.name };
         if (!afterSalesService.inScope({
           site: payload.order?.site,
+          warehouseId: warehouse.id,
           customer: payload.customer || payload.order?.customer,
           originalItems: payload.originalItems || payload.order?.items,
           reissueItems: payload.reissueItems,
@@ -5923,6 +6083,7 @@ const server = http.createServer(async (req, res) => {
           warehouseLiabilityCny: result.ticket.money?.totalWarehouseLiabilityCny,
         });
         sendJson(res, 201, result);
+        dispatchAfterSalesNotification(result.ticket, "created", requestOrigin(req));
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "创建售后单失败。" });
       }
@@ -5939,6 +6100,7 @@ const server = http.createServer(async (req, res) => {
       const ticket = afterSalesService.get(
         decodeURIComponent(afterSalesDetailMatch[1]),
         normalizeDataScopes(auth.user?.dataScopes),
+        afterSalesCreatedByFilter(auth),
       );
       if (!ticket) {
         sendJson(res, 404, { ok: false, message: "售后单不存在。" });
@@ -5970,6 +6132,7 @@ const server = http.createServer(async (req, res) => {
           labelCount: result.ticket.labelUploads?.length || 0,
         });
         sendJson(res, 200, result);
+        dispatchAfterSalesNotification(result.ticket, payload.action, requestOrigin(req));
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "更新售后单失败。" });
       }
@@ -6584,6 +6747,11 @@ const server = http.createServer(async (req, res) => {
       cachedWecomNotifications.schedules = (cachedWecomNotifications.schedules || []).map((schedule) => ({ ...schedule, robotIds: schedule.robotIds.filter((id) => id !== robotId) }));
       for (const scene of Object.values(cachedWecomNotifications.scenes || {})) {
         scene.robotIds = (scene.robotIds || []).filter((id) => id !== robotId);
+        if (scene.warehouseRobotIds && typeof scene.warehouseRobotIds === "object") {
+          scene.warehouseRobotIds = Object.fromEntries(Object.entries(scene.warehouseRobotIds)
+            .map(([warehouseId, robotIds]) => [warehouseId, (robotIds || []).filter((id) => id !== robotId)])
+            .filter(([, robotIds]) => robotIds.length));
+        }
       }
       cachedWecomNotifications.updatedAt = new Date().toISOString();
       saveWecomNotificationCache();
@@ -6673,11 +6841,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      cachedWecomNotifications.scenes = {
-        ...cachedWecomNotifications.scenes,
-        ...(payload.scenes || {}),
-      };
-      cachedWecomNotifications.updatedAt = new Date().toISOString();
+      cachedWecomNotifications = buildWecomNotificationPayload({
+        ...cachedWecomNotifications,
+        scenes: {
+          ...cachedWecomNotifications.scenes,
+          ...(payload.scenes || {}),
+        },
+        updatedAt: new Date().toISOString(),
+      });
       saveWecomNotificationCache();
       appendActionLog(getAuth(req), "更新企业微信场景配置", "wecom_scene", "场景推送", {
         sceneKeys: Object.keys(payload.scenes || {}),

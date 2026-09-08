@@ -5,9 +5,16 @@ import { resolve } from "node:path";
 import {
   calculateAfterSalesLiability,
   createAfterSalesService,
+  formatAfterSalesRecipientInfo,
   isAfterSalesTicketWithinScope,
   resolveAfterSalesResponsibility,
 } from "../server/after-sales.js";
+import {
+  afterSalesWarehouseOptions,
+  buildAfterSalesCreatedMarkdown,
+  buildAfterSalesProgressMarkdown,
+  notificationRobotIds,
+} from "../server/after-sales-notifications.js";
 
 const tempDir = mkdtempSync(resolve(tmpdir(), "tongzhou-after-sales-"));
 
@@ -16,6 +23,14 @@ try {
   assert.equal(resolveAfterSalesResponsibility("产品质量问题", "客户退全款且退货").party, "supplier_quality");
   assert.equal(resolveAfterSalesResponsibility("运输破损", "补发且留错品").party, "logistics");
   assert.equal(resolveAfterSalesResponsibility("SKU匹配错误", "客户补差价留错品").party, "operations");
+  assert.match(formatAfterSalesRecipientInfo({ name: "张三", phone: "13800000000", country: "中国", address: "测试路 1 号" }), /收件人：张三/);
+
+  const warehouseOptions = afterSalesWarehouseOptions({ site: "ID" }, [
+    { id: "warehouse-id", name: "印尼仓", country: "印度尼西亚" },
+    { id: "warehouse-my", name: "马来仓", country: "马来西亚" },
+  ]);
+  assert.deepEqual(warehouseOptions.map((item) => item.id), ["warehouse-id"]);
+  assert.deepEqual(notificationRobotIds({ robotIds: ["fallback"], warehouseRobotIds: { "warehouse-id": ["robot-id"] } }, "warehouse-id"), ["robot-id"]);
 
   const liability = calculateAfterSalesLiability({
     responsibility: { party: "warehouse" },
@@ -78,6 +93,7 @@ try {
   assert.equal(synced.order.items[0].orderedQty, 2);
   assert.equal(synced.order.items[0].unitCostCny, 14.4);
   assert.equal(synced.order.customer.name, "Tester");
+  assert.match(synced.order.customer.recipientInfo, /电话：081234/);
   assert.equal(upserts.length, 1);
 
   const actor = { id: "user-1", displayName: "运营测试" };
@@ -91,6 +107,8 @@ try {
   const created = service.create({
     order: synced.order,
     customer: synced.order.customer,
+    warehouseId: "warehouse-id",
+    warehouseName: "印尼仓",
     originalItems: synced.order.items,
     reissueItems: [{ sku: "TZKJ-A", productName: "测试产品", quantity: 2 }],
     primaryReason: "仓库错发",
@@ -104,10 +122,13 @@ try {
   assert.match(created.ticket.id, /^AS-\d{8}-0001$/);
   assert.equal(created.ticket.money.totalWarehouseLiabilityCny, 30.7);
   assert.equal(created.ticket.evidence.length, 1);
+  assert.equal(created.ticket.warehouseId, "warehouse-id");
+  assert.match(buildAfterSalesCreatedMarkdown(created.ticket, { requestOrigin: "https://gyl.example.com" }), /新售后单待处理/);
 
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
   const accepted = service.updateWarehouse(created.ticket.id, { action: "accept", warehouseRemark: "已核查" }, warehouse);
   assert.equal(accepted.ticket.status, "processing");
+  assert.match(buildAfterSalesProgressMarkdown(accepted.ticket, { statusLabel: "仓库已受理" }), /仓库已受理/);
   const waiting = service.updateWarehouse(created.ticket.id, { action: "await_reshipment" }, warehouse);
   assert.equal(waiting.ticket.status, "awaiting_reshipment");
   assert.throws(() => service.updateWarehouse(created.ticket.id, { action: "shipped" }, warehouse), /面单/);
@@ -130,10 +151,17 @@ try {
   assert.equal(listed.tickets[0].customerSummary.configured, true);
   assert.equal(service.list({ dataScopes: { countries: ["马来西亚"] } }).summary.total, 0);
   assert.equal(service.list({ dataScopes: { countries: ["印度尼西亚"] } }).summary.total, 1);
+  assert.equal(service.list({ createdById: actor.id }).summary.total, 1);
+  assert.equal(service.list({ createdById: "another-user" }).summary.total, 0);
+  assert.equal(service.list({ dataScopes: { warehouseIds: ["warehouse-my"] } }).summary.total, 0);
+  assert.equal(service.list({ dataScopes: { warehouseIds: ["warehouse-id"] } }).summary.total, 1);
   assert.equal(service.list({ dataScopes: { skus: ["TZKJ-B"] } }).summary.total, 0);
   assert.equal(service.list({ dataScopes: { skus: ["TZKJ-A"] } }).summary.total, 1);
   assert.equal(service.get(created.ticket.id, { countries: ["MY"] }), null);
   assert.equal(service.get(created.ticket.id, { countries: ["ID"] })?.id, created.ticket.id);
+  assert.equal(service.get(created.ticket.id, { countries: ["ID"] }, "another-user"), null);
+  service.recordNotification(created.ticket.id, { eventType: "created", target: "warehouse", status: "sent", robotCount: 1 });
+  assert.equal(service.get(created.ticket.id)?.notifications?.at(-1)?.status, "sent");
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, "other-user"), false);
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["ID"] }, "other-user"), true);
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, actor.id), false, "submitted uploads must follow the ticket's current data scope");

@@ -79,6 +79,19 @@ function event(type, label, actor, note = "") {
   };
 }
 
+export function formatAfterSalesRecipientInfo(customer = {}) {
+  const address = [customer.country, customer.province, customer.city, customer.district, customer.address]
+    .map(text)
+    .filter(Boolean)
+    .join(" ");
+  return [
+    text(customer.name) ? `收件人：${text(customer.name)}` : "",
+    text(customer.phone) ? `电话：${text(customer.phone)}` : "",
+    address ? `地址：${address}` : "",
+    text(customer.postalCode) ? `邮编：${text(customer.postalCode)}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 export function resolveAfterSalesResponsibility(primaryReason, secondaryReason, override = null) {
   const primary = text(primaryReason);
   const secondary = text(secondaryReason);
@@ -220,7 +233,7 @@ function customerFromPackageRows(rows, orderNumber) {
     row?.buyerInfo,
   ]).filter((value) => value && typeof value === "object");
   const pick = (keys) => candidates.map((candidate) => valueAt(candidate, keys)).find(Boolean) || "";
-  return {
+  const customer = {
     name: pick(["recipientName", "receiverName", "consigneeName", "buyerName", "fullName", "name"]),
     phone: pick(["recipientPhone", "receiverPhone", "consigneePhone", "buyerPhone", "phone", "mobile", "mobilePhone"]),
     country: pick(["recipientCountry", "receiverCountry", "country", "countryName"]),
@@ -230,6 +243,7 @@ function customerFromPackageRows(rows, orderNumber) {
     address: pick(["recipientAddress", "receiverAddress", "shippingAddress", "detailAddress", "address", "addressLine1"]),
     postalCode: pick(["recipientPostalCode", "receiverPostalCode", "postalCode", "zipCode", "postcode"]),
   };
+  return { ...customer, recipientInfo: formatAfterSalesRecipientInfo(customer) };
 }
 
 function productLookup(products = {}) {
@@ -323,7 +337,7 @@ function publicListTicket(ticket) {
     ...ticket,
     customer: undefined,
     customerSummary: {
-      configured: Boolean(ticket.customer?.name || ticket.customer?.phone || ticket.customer?.address),
+      configured: Boolean(ticket.customer?.recipientInfo || ticket.customer?.name || ticket.customer?.phone || ticket.customer?.address),
       country: text(ticket.customer?.country),
     },
   };
@@ -336,6 +350,10 @@ export function isAfterSalesTicketWithinScope(ticket, dataScopes = {}) {
   const scopedSkus = new Set((Array.isArray(dataScopes?.skus) ? dataScopes.skus : [])
     .map(normalizedSku)
     .filter(Boolean));
+  const scopedWarehouseIds = new Set((Array.isArray(dataScopes?.warehouseIds) ? dataScopes.warehouseIds : [])
+    .map(text)
+    .filter(Boolean));
+  if (scopedWarehouseIds.size && ticket?.warehouseId && !scopedWarehouseIds.has(text(ticket.warehouseId))) return false;
   if (scopedCountries.size) {
     const ticketCountries = [ticket?.site, ticket?.customer?.country]
       .map(normalizedCountryKey)
@@ -374,7 +392,11 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
   function list(filters = {}) {
     const keyword = text(filters.keyword).toLowerCase();
     const status = text(filters.status);
-    const visibleTickets = store.list().filter((ticket) => isAfterSalesTicketWithinScope(ticket, filters.dataScopes));
+    const createdById = text(filters.createdById);
+    const visibleTickets = store.list().filter((ticket) => (
+      isAfterSalesTicketWithinScope(ticket, filters.dataScopes)
+      && (!createdById || text(ticket.createdById) === createdById)
+    ));
     const tickets = visibleTickets.filter((ticket) => {
       if (status && status !== "all" && ticket.status !== status) return false;
       if (!keyword) return true;
@@ -561,7 +583,10 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       district: text(input.customer?.district || order.customer?.district),
       address: text(input.customer?.address || order.customer?.address),
       postalCode: text(input.customer?.postalCode || order.customer?.postalCode),
+      recipientInfo: text(input.customer?.recipientInfo || order.customer?.recipientInfo),
     };
+    if (!customer.recipientInfo) customer.recipientInfo = formatAfterSalesRecipientInfo(customer);
+    if (needsReissue && !customer.recipientInfo) throw new Error("需要补发时，请填写完整收件信息（收件人、电话和详细地址）。");
     const now = nowIso();
     const ticket = store.create({
       originalOrderNumber,
@@ -571,6 +596,8 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       shopId: text(order.shopId),
       shopAlias: text(order.shopAlias),
       platformShopName: text(order.platformShopName),
+      warehouseId: text(input.warehouseId || order.warehouseId),
+      warehouseName: text(input.warehouseName || order.warehouseName),
       orderStartedAt: text(order.orderStartedAt),
       orderSyncedAt: now,
       customer,
@@ -594,6 +621,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       updatedAt: now,
       completedAt: "",
       timeline: [event("created", "运营提交售后单", actor, `${primaryReason} / ${secondaryReason}`)],
+      notifications: [],
     });
     return { ok: true, ticket, summary: summaryFor(store.list()) };
   }
@@ -629,21 +657,53 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
   }
 
+  function recordNotification(id, input = {}) {
+    return store.update(id, (ticket) => {
+      const entry = {
+        id: randomUUID(),
+        eventType: text(input.eventType),
+        target: text(input.target),
+        status: input.status === "sent" ? "sent" : input.status === "failed" ? "failed" : "skipped",
+        robotCount: quantity(input.robotCount),
+        failedCount: quantity(input.failedCount),
+        message: text(input.message),
+        createdAt: nowIso(),
+      };
+      ticket.notifications = [...(Array.isArray(ticket.notifications) ? ticket.notifications : []), entry].slice(-30);
+      return ticket;
+    });
+  }
+
+  function assignWarehouse(id, warehouse = {}) {
+    return store.update(id, (ticket) => ({
+      ...ticket,
+      warehouseId: text(warehouse.id || warehouse.warehouseId),
+      warehouseName: text(warehouse.name || warehouse.warehouseName),
+    }));
+  }
+
   return {
     list,
-    get(id, dataScopes = {}) {
+    get(id, dataScopes = {}, createdById = "") {
       const ticket = store.get(id);
-      return ticket && isAfterSalesTicketWithinScope(ticket, dataScopes) ? ticket : null;
+      return ticket
+        && isAfterSalesTicketWithinScope(ticket, dataScopes)
+        && (!text(createdById) || text(ticket.createdById) === text(createdById))
+        ? ticket
+        : null;
     },
     inScope(ticket, dataScopes = {}) { return isAfterSalesTicketWithinScope(ticket, dataScopes); },
-    canAccessUpload(id, dataScopes = {}, actorId = "") {
+    canAccessUpload(id, dataScopes = {}, actorId = "", createdById = "") {
       const upload = store.getUpload(id);
       if (!upload) return false;
       const relatedTickets = store.list().filter((ticket) => {
         const uploadIds = [...(ticket.evidence || []), ...(ticket.labelUploads || [])].map((item) => text(item?.id));
         return uploadIds.includes(text(id));
       });
-      if (relatedTickets.length) return relatedTickets.some((ticket) => isAfterSalesTicketWithinScope(ticket, dataScopes));
+      if (relatedTickets.length) return relatedTickets.some((ticket) => (
+        isAfterSalesTicketWithinScope(ticket, dataScopes)
+        && (!text(createdById) || text(ticket.createdById) === text(createdById))
+      ));
       return Boolean(text(actorId) && text(upload.uploadedById) === text(actorId));
     },
     syncOrder,
@@ -651,5 +711,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     uploadPath,
     create,
     updateWarehouse,
+    recordNotification,
+    assignWarehouse,
   };
 }

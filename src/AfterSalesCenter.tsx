@@ -41,7 +41,7 @@ const secondaryReasons = ["补发且留错品", "仓库发错货，客户差评�
 
 const statusMeta: Record<string, { label: string; tone: string }> = {
   pending_warehouse: { label: "待仓库接单", tone: "warning" },
-  processing: { label: "处理中", tone: "info" },
+  processing: { label: "仓库已受理", tone: "info" },
   awaiting_reshipment: { label: "待补发", tone: "danger" },
   shipped: { label: "补发已发出", tone: "good" },
   completed: { label: "已完结", tone: "muted" },
@@ -57,6 +57,7 @@ const blankCustomer: AfterSalesCustomer = {
   district: "",
   address: "",
   postalCode: "",
+  recipientInfo: "",
 };
 
 function hasPermission(user: AuthUser, permission: string) {
@@ -99,6 +100,7 @@ function responsibilityFor(primary: string, secondary: string) {
 
 function customerText(customer?: AfterSalesCustomer) {
   if (!customer) return "";
+  if (customer.recipientInfo?.trim()) return customer.recipientInfo.trim();
   const address = [customer.country, customer.province, customer.city, customer.district, customer.address].filter(Boolean).join(" ");
   return [customer.name, customer.phone, address, customer.postalCode ? `邮编：${customer.postalCode}` : ""].filter(Boolean).join("\n");
 }
@@ -126,7 +128,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const canReport = hasPermission(currentUser, "after_sales_report");
   const canWarehouse = hasPermission(currentUser, "after_sales_warehouse");
   const canAdmin = hasPermission(currentUser, "operations");
-  const [tab, setTab] = React.useState<"report" | "warehouse">(canReport ? "report" : "warehouse");
+  const [tab, setTab] = React.useState<"report" | "mine" | "warehouse">(canReport ? "report" : "warehouse");
   const [payload, setPayload] = React.useState<AfterSalesPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState("");
@@ -135,6 +137,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const [orderNumber, setOrderNumber] = React.useState("");
   const [syncedOrder, setSyncedOrder] = React.useState<AfterSalesOrderSyncPayload["order"] | null>(null);
   const [customer, setCustomer] = React.useState<AfterSalesCustomer>(blankCustomer);
+  const [warehouseId, setWarehouseId] = React.useState("");
   const [items, setItems] = React.useState<AfterSalesItem[]>([]);
   const [primaryReason, setPrimaryReason] = React.useState("");
   const [secondaryReason, setSecondaryReason] = React.useState("");
@@ -162,7 +165,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     : [];
   const effectiveNeedsReissue = secondaryReason === "补发且留错品" || needsReissue;
 
-  const refresh = React.useCallback(async (filters: { status?: string; keyword?: string } = {}) => {
+  const refresh = React.useCallback(async (filters: { status?: string; keyword?: string; mine?: boolean } = {}) => {
     setLoading(true);
     try {
       setPayload(await fetchAfterSales(filters));
@@ -173,7 +176,13 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     }
   }, []);
 
-  React.useEffect(() => { void refresh(); }, [refresh]);
+  React.useEffect(() => {
+    void refresh({
+      status: tab === "report" ? "all" : status,
+      keyword: tab === "report" ? "" : keyword,
+      mine: tab === "mine",
+    });
+  }, [refresh, tab]);
 
   React.useEffect(() => {
     if (secondaryReason === "补发且留错品") setNeedsReissue(true);
@@ -192,6 +201,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       const result = await syncAfterSalesOrder(normalized);
       setSyncedOrder(result.order);
       setCustomer({ ...blankCustomer, ...result.order.customer });
+      setWarehouseId(result.order.warehouseId || "");
       setItems(result.order.items.map((item) => ({ ...item })));
       setReissueItems([]);
       setMessage(result.warning || (result.source === "miaoshou_live" ? "已从妙手实时同步原订单。" : "已从本地妙手缓存读取原订单。"));
@@ -241,6 +251,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     setOrderNumber("");
     setSyncedOrder(null);
     setCustomer(blankCustomer);
+    setWarehouseId("");
     setItems([]);
     setPrimaryReason("");
     setSecondaryReason("");
@@ -257,8 +268,10 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     if (!syncedOrder) return setError("请先同步原订单。");
     if (!primaryReason || !secondaryReason) return setError("请选择完整的售后一级和二级分类。");
     if (!items.some((item) => item.affectedQty > 0)) return setError("请填写至少一个受影响商品数量。");
+    if (!warehouseId) return setError("请选择负责处理该售后单的仓库。");
     if (missingCosts.length) return setError(`请补录商品成本：${missingCosts.join("、")}`);
     if (effectiveNeedsReissue && !reissueItems.some((item) => item.sku && item.quantity > 0)) return setError("请选择补发商品和数量。");
+    if (effectiveNeedsReissue && !customer.recipientInfo.trim()) return setError("需要补发时，请填写完整收件信息（收件人、电话和详细地址）。");
     if ((additionalLiability > 0 || customerRecovery > 0) && !adjustmentReason.trim()) return setError("有额外承担或客户补回金额时，请填写调整说明。");
     setBusy("submit");
     setError("");
@@ -266,6 +279,8 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       const result = await createAfterSalesTicket({
         order: syncedOrder,
         customer,
+        warehouseId,
+        warehouseName: (syncedOrder.warehouseOptions || []).find((item) => item.id === warehouseId)?.name || syncedOrder.warehouseName || "",
         originalItems: items,
         reissueItems: effectiveNeedsReissue ? reissueItems.map((item) => ({ ...item, sku: item.sku.replace(/^待填写-\d+$/, "") })) : [],
         primaryReason,
@@ -279,7 +294,8 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       });
       setMessage(`售后单 ${result.ticket.id} 已提交，等待仓库接单。`);
       resetReport();
-      await refresh();
+      setTab("mine");
+      await refresh({ mine: true });
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "提交售后单失败。");
     } finally {
@@ -342,7 +358,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       setSelectedTicket(result.ticket);
       setLabelUploads([]);
       setMessage(`${result.ticket.id} 已更新为“${statusMeta[result.ticket.status]?.label || result.ticket.status}”。`);
-      await refresh({ status, keyword });
+      await refresh({ status, keyword, mine: tab === "mine" });
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "更新售后单失败。");
     } finally {
@@ -366,6 +382,35 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     }
   }
 
+  function renderTicketList(myTickets = false) {
+    return (
+      <section className="after-sales-warehouse">
+        {myTickets ? <div className="as-progress-intro"><BadgeCheck size={20} /><div><strong>我填报的售后进度</strong><span>仓库接单、补发和完结后会更新到这里；启用企业微信场景通知后，进度也会同步到运营群。</span></div></div> : null}
+        <div className="as-warehouse-toolbar">
+          <div className="as-filter-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索售后单号、原订单号、店铺别名" /></div>
+          <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select>
+          <button type="button" onClick={() => void refresh({ status, keyword, mine: myTickets })}><RefreshCw size={16} />查询</button>
+        </div>
+        <div className="as-ticket-table">
+          <div className="head"><span>售后单 / 原订单</span><span>问题与处理</span><span>处理仓库</span><span>补发</span><span>仓库承担</span><span>状态</span><span></span></div>
+          {loading ? <div className="as-table-empty"><LoaderCircle className="spinning" size={22} />正在读取售后单…</div> : null}
+          {!loading && !(payload?.tickets.length) ? <div className="as-table-empty"><PackageCheck size={24} />{myTickets ? "你还没有填报符合当前筛选条件的售后单" : "当前筛选下没有售后单"}</div> : null}
+          {(payload?.tickets || []).map((ticket) => (
+            <button type="button" className="row" key={ticket.id} onClick={() => void openTicket(ticket)}>
+              <span><strong>{ticket.id}</strong><small>{ticket.originalOrderNumber}</small><small>{ticket.shopAlias || ticket.platformShopName || "未配置店铺别名"}</small></span>
+              <span><strong>{ticket.primaryReason}</strong><small>{ticket.secondaryReason}</small></span>
+              <span><strong>{ticket.warehouseName || "待分配"}</strong><small>{ticket.responsibility.label}</small></span>
+              <span><strong>{ticket.needsReissue ? `${ticket.reissueItems.reduce((sum, item) => sum + item.quantity, 0)} 件` : "无需补发"}</strong><small>{ticket.needsReissue ? `${ticket.reissueItems.length} 个 SKU` : "仅记录 / 赔付"}</small></span>
+              <span><strong>{money(ticket.money.totalWarehouseLiabilityCny)}</strong></span>
+              <span className={`as-status ${statusMeta[ticket.status]?.tone || "muted"}`}>{statusMeta[ticket.status]?.label || ticket.status}</span>
+              <span>{busy === `detail:${ticket.id}` ? <LoaderCircle className="spinning" size={17} /> : "查看进度"}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <div className="after-sales-page">
       <section className="after-sales-hero">
@@ -378,7 +423,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       </section>
 
       <section className="after-sales-kpis">
-        <article><span>待仓库接单</span><strong>{payload?.summary.pendingWarehouse ?? 0}</strong><small>需要仓库确认处理</small></article>
+        <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload?.summary.pendingWarehouse ?? 0}</strong><small>需要仓库确认处理</small></article>
         <article><span>处理中</span><strong>{payload?.summary.processing ?? 0}</strong><small>含待补发工单</small></article>
         <article><span>待补发</span><strong>{payload?.summary.awaitingReshipment ?? 0}</strong><small>等待面单与发出</small></article>
         <article className="liability"><span>仓库承担金额</span><strong>{money(payload?.summary.warehouseLiabilityCny ?? 0)}</strong><small>不含已作废工单</small></article>
@@ -386,6 +431,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
 
       <div className="after-sales-tabs" role="tablist">
         {canReport ? <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")}><Clipboard size={17} />运营填报</button> : null}
+        {canReport ? <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}><BadgeCheck size={17} />我的售后 {tab === "mine" ? <span>{payload?.summary.open || 0}</span> : null}</button> : null}
         {canWarehouse ? <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")}><Truck size={17} />仓库处理 <span>{payload?.summary.pendingWarehouse || 0}</span></button> : null}
       </div>
 
@@ -407,13 +453,9 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
                 <div className="as-synced-order">
                   <header><div><span>{syncedOrder.platform || "妙手订单"} · {syncedOrder.site}</span><strong>{syncedOrder.orderNumber}</strong></div><div><span>店铺别名</span><strong>{syncedOrder.shopAlias || "未配置"}</strong></div><div><span>下单时间</span><strong>{dateTime(syncedOrder.orderStartedAt)}</strong></div></header>
                   {syncedOrder.existingTickets.length ? <div className="as-duplicate-warning"><AlertTriangle size={16} />该原订单已有 {syncedOrder.existingTickets.length} 张售后单，请确认不是重复填报。</div> : null}
-                  <div className="as-customer-grid">
-                    {([
-                      ["name", "收件人"], ["phone", "联系电话"], ["country", "国家"], ["province", "省 / 州"],
-                      ["city", "城市"], ["district", "区 / 县"], ["postalCode", "邮编"], ["address", "详细地址"],
-                    ] as Array<[keyof AfterSalesCustomer, string]>).map(([key, label]) => (
-                      <label className={key === "address" ? "wide" : ""} key={key}><span>{label}</span><input value={customer[key]} onChange={(event) => setCustomer((current) => ({ ...current, [key]: event.target.value }))} placeholder={key === "address" ? "妙手未返回时可手工补齐" : "未读取到可手工补齐"} /></label>
-                    ))}
+                  <div className="as-routing-grid">
+                    <label><span>处理仓库</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">请选择处理仓库</option>{(syncedOrder.warehouseOptions || []).map((warehouse) => <option value={warehouse.id} key={warehouse.id}>{warehouse.name} · {warehouse.country}</option>)}</select><small>{syncedOrder.warehouseOptions?.length === 1 ? "已按订单国家自动匹配" : "请确认实际负责补发或处理的仓库"}</small></label>
+                    <label className="as-recipient-field"><span>完整收件信息</span><textarea value={customer.recipientInfo} onChange={(event) => setCustomer((current) => ({ ...current, recipientInfo: event.target.value }))} placeholder={'请完整填写并核对：\n收件人：张三\n电话：0812xxxxxx\n地址：国家 / 省市区 / 街道门牌号\n邮编：如有请填写'} /><small>无需拆分填写。仓库端会整段显示，并可一键复制。</small></label>
                   </div>
                   <div className="as-item-table">
                     <div className="head"><span>原单商品</span><span>下单数量</span><span>受影响数量</span><span>直营成本 / 件</span><span>补发</span></div>
@@ -481,46 +523,24 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
         </div>
       ) : null}
 
-      {tab === "warehouse" && canWarehouse ? (
-        <section className="after-sales-warehouse">
-          <div className="as-warehouse-toolbar">
-            <div className="as-filter-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索售后单号、原订单号、店铺别名" /></div>
-            <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select>
-            <button type="button" onClick={() => void refresh({ status, keyword })}><RefreshCw size={16} />查询</button>
-          </div>
-          <div className="as-ticket-table">
-            <div className="head"><span>售后单 / 原订单</span><span>问题与处理</span><span>责任归属</span><span>补发</span><span>仓库承担</span><span>状态</span><span></span></div>
-            {loading ? <div className="as-table-empty"><LoaderCircle className="spinning" size={22} />正在读取售后单…</div> : null}
-            {!loading && !(payload?.tickets.length) ? <div className="as-table-empty"><PackageCheck size={24} />当前筛选下没有售后单</div> : null}
-            {(payload?.tickets || []).map((ticket) => (
-              <button type="button" className="row" key={ticket.id} onClick={() => void openTicket(ticket)}>
-                <span><strong>{ticket.id}</strong><small>{ticket.originalOrderNumber}</small><small>{ticket.shopAlias || ticket.platformShopName || "未配置店铺别名"}</small></span>
-                <span><strong>{ticket.primaryReason}</strong><small>{ticket.secondaryReason}</small></span>
-                <span><strong>{ticket.responsibility.label}</strong><small>{ticket.responsibility.overridden ? "人工复核" : "规则判定"}</small></span>
-                <span><strong>{ticket.needsReissue ? `${ticket.reissueItems.reduce((sum, item) => sum + item.quantity, 0)} 件` : "无需补发"}</strong><small>{ticket.needsReissue ? `${ticket.reissueItems.length} 个 SKU` : "仅记录 / 赔付"}</small></span>
-                <span><strong>{money(ticket.money.totalWarehouseLiabilityCny)}</strong></span>
-                <span className={`as-status ${statusMeta[ticket.status]?.tone || "muted"}`}>{statusMeta[ticket.status]?.label || ticket.status}</span>
-                <span>{busy === `detail:${ticket.id}` ? <LoaderCircle className="spinning" size={17} /> : "查看详情"}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      {tab === "mine" && canReport ? renderTicketList(true) : null}
+      {tab === "warehouse" && canWarehouse ? renderTicketList(false) : null}
 
       {selectedTicket ? (
         <div className="as-drawer-backdrop" onMouseDown={(event) => event.currentTarget === event.target && setSelectedTicket(null)}>
           <aside className="as-ticket-drawer">
             <header><div><p className="eyebrow">AFTER-SALES TICKET</p><h2>{selectedTicket.id}</h2><span>原订单 {selectedTicket.originalOrderNumber}</span></div><button type="button" onClick={() => setSelectedTicket(null)}><X size={19} /></button></header>
             <div className="as-drawer-scroll">
-              <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>责任归属</small><strong>{selectedTicket.responsibility.label}</strong></div><div><small>仓库承担</small><strong>{money(selectedTicket.money.totalWarehouseLiabilityCny)}</strong></div></section>
-              <section className="as-drawer-section"><header><div><small>客户信息</small><strong>仅在详情中展示</strong></div><button type="button" onClick={() => void copyText(customerText(selectedTicket.customer), "客户信息")}><Copy size={15} />复制客户信息</button></header><pre>{customerText(selectedTicket.customer) || "妙手未返回客户信息，请联系运营补充。"}</pre></section>
+              <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>处理仓库</small><strong>{selectedTicket.warehouseName || "待分配"}</strong></div><div><small>责任归属</small><strong>{selectedTicket.responsibility.label}</strong></div><div><small>仓库承担</small><strong>{money(selectedTicket.money.totalWarehouseLiabilityCny)}</strong></div></section>
+              <section className="as-drawer-section"><header><div><small>完整收件信息</small><strong>仓库可整段复制</strong></div><button type="button" onClick={() => void copyText(customerText(selectedTicket.customer), "收件信息")}><Copy size={15} />复制收件信息</button></header><pre>{customerText(selectedTicket.customer) || "运营暂未维护收件人、电话和详细地址。"}</pre></section>
               <section className="as-drawer-section"><header><div><small>补发清单</small><strong>{selectedTicket.needsReissue ? `${selectedTicket.reissueItems.length} 个 SKU` : "无需补发"}</strong></div>{selectedTicket.needsReissue ? <button type="button" onClick={() => void copyText(reissueText(selectedTicket.reissueItems), "补发产品信息")}><Copy size={15} />复制补发清单</button> : null}</header>{selectedTicket.needsReissue ? <div className="as-drawer-items">{selectedTicket.reissueItems.map((item) => <div key={item.sku}><span>{item.sku}</span><strong>{item.productName}</strong><b>× {item.quantity}</b></div>)}</div> : <div className="as-empty-inline">该售后单无需仓库补发。</div>}</section>
               <section className="as-drawer-section"><header><div><small>问题说明</small><strong>{selectedTicket.primaryReason} / {selectedTicket.secondaryReason}</strong></div></header><p>{selectedTicket.operatorRemark || "运营未填写补充备注。"}</p><AttachmentList attachments={selectedTicket.evidence || []} onDownload={handleDownload} /></section>
-              {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>上传后随状态动作归档</strong></div></header><label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label><AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...labelUploads]} onDownload={handleDownload} /></section> : null}
-              <section className="as-drawer-section"><label className="as-textarea"><span>仓库处理备注</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查结果、补发物流单号或完结说明。" /></label></section>
+              {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后随状态动作归档" : "仓库上传后可在此查看"}</strong></div></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} /></section> : null}
+              {canWarehouse ? <section className="as-drawer-section"><label className="as-textarea"><span>仓库处理备注</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查结果、补发物流单号或完结说明。" /></label></section> : selectedTicket.warehouseRemark ? <section className="as-drawer-section"><header><div><small>仓库处理说明</small><strong>最近更新</strong></div></header><p>{selectedTicket.warehouseRemark}</p></section> : null}
+              {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
               <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>共 {selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
             </div>
-            <footer>
+            {canWarehouse || canAdmin ? <footer>
               {selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void warehouseAction("accept")} disabled={Boolean(busy)}>确认接单</button> : null}
               {["pending_warehouse", "processing"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("await_reshipment")} disabled={Boolean(busy)}>进入待补发</button> : null}
               {["processing", "awaiting_reshipment"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("shipped")} disabled={Boolean(busy)}>上传面单并标记发出</button> : null}
@@ -528,7 +548,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
               {selectedTicket.status === "shipped" ? <button className="primary" onClick={() => void warehouseAction("complete")} disabled={Boolean(busy)}>确认售后完结</button> : null}
               {canAdmin && !["completed", "cancelled"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void warehouseAction("cancel")} disabled={Boolean(busy)}>作废</button> : null}
               {canAdmin && ["completed", "cancelled"].includes(selectedTicket.status) ? <button onClick={() => void warehouseAction("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}
-            </footer>
+            </footer> : null}
           </aside>
         </div>
       ) : null}

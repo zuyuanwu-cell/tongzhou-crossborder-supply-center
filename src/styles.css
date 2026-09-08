@@ -6606,6 +6606,55 @@ h3 {
   line-height: 1.5;
 }
 
+.wecom-after-sales-routing {
+  grid-column: 1 / -1;
+  gap: 16px;
+  border-color: rgba(36, 81, 164, 0.25);
+  background: linear-gradient(135deg, rgba(36, 81, 164, 0.08), rgba(255, 255, 255, 0.04));
+}
+
+.wecom-after-sales-routing > div:not(.panel-heading):not(.wecom-form-grid) {
+  display: grid;
+  gap: 8px;
+}
+
+.wecom-after-sales-routing > div > small,
+.wecom-after-sales-routing > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wecom-warehouse-routes {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px !important;
+}
+
+.wecom-warehouse-routes > div {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.wecom-warehouse-routes > div > span {
+  display: grid;
+  gap: 3px;
+}
+
+.wecom-warehouse-routes > div > span strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.wecom-warehouse-routes > div > span small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .wecom-template-panel {
   border-color: rgba(244, 181, 72, 0.22);
 }
@@ -10084,6 +10133,7 @@ h3 {
   .catalog-filter-panel,
   .catalog-search-row,
   .wecom-form-grid,
+  .wecom-warehouse-routes,
   .stockup-plan-form,
   .wecom-scene-grid {
     grid-template-columns: 1fr;

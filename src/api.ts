@@ -473,6 +473,10 @@ export type WecomSceneConfig = {
   lastSentAt?: string;
 };
 
+export type WecomAfterSalesNewSceneConfig = WecomSceneConfig & {
+  warehouseRobotIds: Record<string, string[]>;
+};
+
 export type WecomNotificationPayload = {
   ok: boolean;
   source: "local";
@@ -483,6 +487,8 @@ export type WecomNotificationPayload = {
     stockupRecommendation: WecomSceneConfig;
     inventorySnapshot: WecomSceneConfig;
     qualificationExpiry: WecomSceneConfig;
+    afterSalesNew: WecomAfterSalesNewSceneConfig;
+    afterSalesProgress: WecomSceneConfig;
   };
 };
 
@@ -1673,6 +1679,7 @@ export type AfterSalesCustomer = {
   district: string;
   address: string;
   postalCode: string;
+  recipientInfo: string;
 };
 
 export type AfterSalesItem = {
@@ -1702,6 +1709,8 @@ export type AfterSalesTicket = {
   shopId: string;
   shopAlias: string;
   platformShopName: string;
+  warehouseId: string;
+  warehouseName: string;
   orderStartedAt: string;
   orderSyncedAt: string;
   customer?: AfterSalesCustomer;
@@ -1738,6 +1747,16 @@ export type AfterSalesTicket = {
   createdBy: string;
   updatedAt: string;
   completedAt: string;
+  notifications?: Array<{
+    id: string;
+    eventType: string;
+    target: "warehouse" | "operations" | string;
+    status: "sent" | "failed" | "skipped" | string;
+    robotCount: number;
+    failedCount: number;
+    message: string;
+    createdAt: string;
+  }>;
   timeline: Array<{
     id: string;
     type: string;
@@ -1778,6 +1797,9 @@ export type AfterSalesOrderSyncPayload = {
     customer: AfterSalesCustomer;
     items: AfterSalesItem[];
     packagingFeeCny: number;
+    warehouseId?: string;
+    warehouseName?: string;
+    warehouseOptions: Array<{ id: string; name: string; country: string }>;
     existingTickets: AfterSalesTicket[];
   };
 };
@@ -3572,10 +3594,11 @@ export async function downloadMiaoshouOrderAliasJob(jobId: string) {
   return response.blob();
 }
 
-export function fetchAfterSales(input: { status?: string; keyword?: string } = {}) {
+export function fetchAfterSales(input: { status?: string; keyword?: string; mine?: boolean } = {}) {
   const params = new URLSearchParams();
   if (input.status) params.set("status", input.status);
   if (input.keyword) params.set("keyword", input.keyword);
+  if (input.mine) params.set("mine", "1");
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<AfterSalesPayload>(`/api/after-sales${query}`);
 }
@@ -3607,6 +3630,8 @@ export function createAfterSalesTicket(input: {
   additionalLiabilityCny: number;
   customerRecoveryCny: number;
   adjustmentReason: string;
+  warehouseId: string;
+  warehouseName: string;
   responsibilityOverride?: { party: string; label?: string; reason: string } | null;
 }) {
   return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>("/api/after-sales", {
