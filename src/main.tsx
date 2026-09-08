@@ -1012,23 +1012,12 @@ function App() {
   }, [activeView]);
 
   React.useEffect(() => {
-    if (hasUserPermission(currentUser, "product_view")) loadProducts();
-    if (hasUserPermission(currentUser, "dashboard")) loadDashboardSummary();
-    if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) loadWarehouses();
-    if (hasUserPermission(currentUser, "inventory_snapshots")) loadInventorySnapshots();
-    if (hasUserPermission(currentUser, "order_analysis")) loadOrderAnalysis();
-    if (hasUserPermission(currentUser, "movement")) loadMovement();
-    if (hasUserPermission(currentUser, "movement_analysis")) loadMovementHistory();
-    if (hasUserPermission(currentUser, "stockup")) loadStockup();
-    if (hasUserPermission(currentUser, "users")) loadUsers();
-    if (hasUserPermission(currentUser, "notifications")) loadWecomNotifications();
-    if (hasUserPermission(currentUser, "action_log")) loadActionLog();
-    if (hasUserPermission(currentUser, "quick_nav")) loadQuickNav();
-    if (hasUserPermission(currentUser, "tongzhou_ai")) loadAiConfig();
-    if (hasUserPermission(currentUser, "qualifications")) loadQualifications();
-    if (hasUserPermission(currentUser, "assets")) loadAssets();
-    if (hasUserPermission(currentUser, "warehouse_info")) loadWarehouseInfo();
-  }, [permissionSignature]);
+    // Load only the data needed by the page the user is actually viewing. The
+    // previous eager boot requested every authorized dataset at once, allowing
+    // heavyweight order and stockup queries to delay small operational pages
+    // such as after-sales.
+    loadVisibleViewData();
+  }, [activeView, permissionSignature]);
 
   React.useEffect(() => {
     if (!authReady) return;
@@ -1041,55 +1030,14 @@ function App() {
   }, [authReady, permissionSignature, activeView]);
 
   React.useEffect(() => {
-    if (!hasUserPermission(currentUser, "stockup")) return;
-    if (!["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"].includes(hashForView(activeView))) return;
-    void loadStockup();
-    void loadStockupWorkflow();
-  }, [activeView, permissionSignature]);
-
-  React.useEffect(() => {
     if (!hasUserPermission(currentUser, "stockup") || !stockupPayload?.outsourcingRefreshing) return;
     const timer = window.setInterval(() => { void loadStockup(); }, 2500);
     return () => window.clearInterval(timer);
   }, [permissionSignature, stockupPayload?.outsourcingRefreshing]);
 
   React.useEffect(() => {
-    if (!hasUserPermission(currentUser, "performance_analysis")) return;
-    if (hashForView(activeView) !== "#performance") return;
-    void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
-  }, [activeView, permissionSignature]);
-
-  React.useEffect(() => {
-    if (!hasUserPermission(currentUser, "action_log")) return;
-    if (hashForView(activeView) !== "#action-log") return;
-    void loadActionLog();
-  }, [activeView, permissionSignature]);
-
-  React.useEffect(() => {
-    if (!["资质库", "素材库", "仓库信息"].includes(activeView)) return;
-    if (!canViewPartnerAssets(currentUser)) return;
-    void loadProductDetails();
-  }, [activeView, permissionSignature, productDetailLoaded]);
-
-  React.useEffect(() => {
     const timer = window.setInterval(() => {
-      if (hasUserPermission(currentUser, "product_view")) void loadProducts(true);
-      if (hasUserPermission(currentUser, "dashboard")) void loadDashboardSummary();
-      if (hasUserPermission(currentUser, "quick_nav")) void loadQuickNav();
-      if (hasUserPermission(currentUser, "tongzhou_ai")) void loadAiConfig();
-      if (hasUserPermission(currentUser, "qualifications")) void loadQualifications();
-      if (hasUserPermission(currentUser, "assets")) void loadAssets();
-      if (hasUserPermission(currentUser, "warehouse_info")) void loadWarehouseInfo();
-      if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
-      if (hasUserPermission(currentUser, "inventory_snapshots")) void loadInventorySnapshots();
-      if (hasUserPermission(currentUser, "order_analysis")) void loadOrderAnalysis();
-      if (hasUserPermission(currentUser, "performance_analysis") && hashForView(activeView) === "#performance") void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
-      if (hasUserPermission(currentUser, "movement")) void loadMovement();
-      if (hasUserPermission(currentUser, "movement_analysis")) void loadMovementHistory();
-      if (hasUserPermission(currentUser, "stockup")) void loadStockup();
-      if (hasUserPermission(currentUser, "users")) void loadUsers();
-      if (hasUserPermission(currentUser, "notifications")) void loadWecomNotifications();
-      if (hasUserPermission(currentUser, "action_log")) void loadActionLog();
+      loadVisibleViewData(true);
     }, AUTO_SYNC_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [permissionSignature, activeView]);
@@ -1356,6 +1304,81 @@ function App() {
       setUserPayload(data);
     } catch {
       setUserPayload(null);
+    }
+  }
+
+  function loadVisibleViewData(silent = false) {
+    const activeHash = hashForView(activeView);
+    switch (activeHash) {
+      case "#dashboard":
+        if (hasUserPermission(currentUser, "dashboard")) void loadDashboardSummary();
+        if (hasUserPermission(currentUser, "product_view")) void loadProducts(silent);
+        if (hasUserPermission(currentUser, "stockup")) void loadStockup();
+        if (hasUserPermission(currentUser, "notifications")) void loadWecomNotifications();
+        break;
+      case "#products":
+        if (hasUserPermission(currentUser, "product_view")) void loadProducts(silent);
+        break;
+      case "#qualifications":
+        if (hasUserPermission(currentUser, "qualifications")) void loadQualifications();
+        if (canViewPartnerAssets(currentUser)) void loadProductDetails();
+        break;
+      case "#assets":
+        if (hasUserPermission(currentUser, "assets")) void loadAssets();
+        if (canViewPartnerAssets(currentUser)) void loadProductDetails();
+        break;
+      case "#warehouse-info":
+        if (hasUserPermission(currentUser, "warehouse_info")) void loadWarehouseInfo();
+        break;
+      case "#inventory":
+      case "#warehouses":
+        if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
+        break;
+      case "#movement":
+        if (hasUserPermission(currentUser, "movement")) void loadMovement();
+        break;
+      case "#inventory-snapshots":
+        if (hasUserPermission(currentUser, "inventory_snapshots")) void loadInventorySnapshots();
+        if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
+        break;
+      case "#movement-analysis":
+        if (hasUserPermission(currentUser, "movement_analysis")) void loadMovementHistory();
+        break;
+      case "#order-analysis":
+        if (hasUserPermission(currentUser, "order_analysis")) void loadOrderAnalysis();
+        break;
+      case "#performance":
+        if (hasUserPermission(currentUser, "performance_analysis")) void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
+        break;
+      case "#stockup":
+      case "#stockup-recommendations":
+      case "#stockup-execution":
+      case "#production":
+        if (hasUserPermission(currentUser, "stockup")) {
+          void loadStockup();
+          void loadStockupWorkflow();
+        }
+        break;
+      case "#quick-nav":
+        if (hasUserPermission(currentUser, "quick_nav")) void loadQuickNav();
+        break;
+      case "#tongzhou-ai":
+        if (hasUserPermission(currentUser, "tongzhou_ai")) void loadAiConfig();
+        break;
+      case "#wecom-notifications":
+        if (hasUserPermission(currentUser, "notifications")) void loadWecomNotifications();
+        if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
+        break;
+      case "#users":
+        if (hasUserPermission(currentUser, "users")) void loadUsers();
+        break;
+      case "#action-log":
+        if (hasUserPermission(currentUser, "action_log")) void loadActionLog();
+        break;
+      default:
+        // Pages such as Miaoshou and after-sales own their focused data loader,
+        // so the app shell deliberately does not start unrelated requests.
+        break;
     }
   }
 

@@ -1564,6 +1564,7 @@
 .after-sales-tabs button { display: inline-flex; min-height: 42px; align-items: center; gap: 8px; padding: 0 18px; color: #52647d; border: 0; border-radius: 8px; background: transparent; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
 .after-sales-tabs button.active { color: #fff; background: #173d7a; box-shadow: 0 7px 16px rgba(23,61,122,.2); }
 .after-sales-tabs button > span { min-width: 20px; padding: 2px 6px; color: #9a3410; border-radius: 999px; background: #ffdcc5; font-size: 11px; text-align: center; }
+.as-data-freshness { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 0 10px; color: #667993; font-size: 11px; white-space: nowrap; }
 .as-notice { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border: 1px solid; border-radius: 10px; font-size: 13px; }
 .as-notice button { margin-left: auto; padding: 3px; border: 0; background: transparent; cursor: pointer; }
 .as-notice.error { color: #8f1d16; border-color: #ebbbb7; background: #fff3f2; }
@@ -1674,6 +1675,7 @@
 .as-filter-search input,.as-warehouse-toolbar select { width: 100%; min-height: 40px; color: #18273f; border: 0; background: transparent; outline: none; font: inherit; font-size: 12px; }
 .as-warehouse-toolbar select { padding: 0 10px; border: 1px solid #d3ddea; border-radius: 8px; background: #fff; }
 .as-warehouse-toolbar > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 15px; color: #fff; border: 0; border-radius: 8px; background: #2451a4; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }
+.as-warehouse-toolbar > button:disabled { cursor: wait; opacity: .72; }
 .as-ticket-table { overflow-x: auto; border: 1px solid #dfe6ef; border-radius: 12px; background: #fff; box-shadow: 0 10px 30px rgba(23,61,122,.055); }
 .as-ticket-table > .head,.as-ticket-table > .row { display: grid; grid-template-columns: minmax(200px,1.2fr) minmax(210px,1.25fr) 125px 105px 120px 115px 80px; min-width: 980px; align-items: center; gap: 12px; padding: 12px 15px; }
 .as-ticket-table > .head { color: #62748d; background: #edf3ff; font-size: 11px; font-weight: 850; }
@@ -1683,6 +1685,12 @@
 .as-ticket-table .row strong { overflow: hidden; color: #173d7a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .as-ticket-table .row small { overflow: hidden; color: #718097; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .as-table-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; gap: 9px; color: #748298; }
+.as-table-loading,.as-table-load-error { display: flex; min-height: 180px; align-items: center; justify-content: center; gap: 12px; padding: 28px; color: #2451a4; text-align: left; }
+.as-table-loading > div,.as-table-load-error > div { display: grid; gap: 4px; }
+.as-table-loading strong,.as-table-load-error strong { color: #173d7a; font-size: 14px; }
+.as-table-loading span,.as-table-load-error span { color: #718097; font-size: 11px; }
+.as-table-load-error { color: #a23b12; background: #fffaf6; }
+.as-table-load-error > button { min-height: 36px; margin-left: 8px; padding: 0 13px; color: #fff; border: 0; border-radius: 8px; background: #2451a4; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
 .as-status { display: inline-flex !important; width: fit-content; min-height: 27px; align-items: center; padding: 4px 9px; border-radius: 999px; font-size: 10px !important; font-weight: 850; white-space: nowrap; }
 .as-status.warning { color: #8a3c10; background: #fff0df; }.as-status.info { color: #2451a4; background: #eaf1ff; }.as-status.danger { color: #9a2018; background: #ffebe9; }.as-status.good { color: #12613f; background: #e8f7ef; }.as-status.muted { color: #52647d; background: #edf1f6; }
 .as-drawer-backdrop { position: fixed; inset: 0; z-index: 480; display: flex; justify-content: flex-end; background: rgba(9,24,45,.48); backdrop-filter: blur(3px); }
@@ -1714,6 +1722,8 @@
   .as-settlement-card { position: static; }
   .as-customer-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .as-customer-grid label.wide { grid-column: span 1; }
+  .after-sales-tabs { flex-wrap: wrap; }
+  .as-data-freshness { width: 100%; min-height: 30px; margin-left: 0; }
 }
 @media (max-width: 760px) {
   .after-sales-hero { align-items: flex-start; flex-direction: column; gap: 20px; padding: 22px; }

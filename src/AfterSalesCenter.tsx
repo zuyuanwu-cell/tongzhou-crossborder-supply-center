@@ -48,6 +48,66 @@ const statusMeta: Record<string, { label: string; tone: string }> = {
   cancelled: { label: "已作废", tone: "muted" },
 };
 
+type AfterSalesListFilters = { status?: string; keyword?: string; mine?: boolean };
+type AfterSalesCacheEntry = { payload: AfterSalesPayload; cachedAt: number };
+
+const AFTER_SALES_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+const AFTER_SALES_REQUEST_TIMEOUT_MS = 12 * 1000;
+const AFTER_SALES_AUTO_REFRESH_MS = 30 * 1000;
+const AFTER_SALES_STORAGE_PREFIX = "tongzhou_after_sales_list_v1:";
+const afterSalesListCache = new Map<string, AfterSalesCacheEntry>();
+
+function afterSalesOwnerKey(user: AuthUser) {
+  return String(user.id || user.username || user.role || "guest");
+}
+
+function afterSalesQueryKey(ownerKey: string, filters: AfterSalesListFilters) {
+  return [ownerKey, filters.mine ? "mine" : "all", filters.status || "all", (filters.keyword || "").trim().toLowerCase()].join("|");
+}
+
+function readAfterSalesCache(ownerKey: string, filters: AfterSalesListFilters) {
+  const key = afterSalesQueryKey(ownerKey, filters);
+  let cached = afterSalesListCache.get(key) || null;
+  if (!cached) {
+    try {
+      const stored = sessionStorage.getItem(`${AFTER_SALES_STORAGE_PREFIX}${key}`);
+      const parsed = stored ? JSON.parse(stored) as AfterSalesCacheEntry : null;
+      if (parsed?.payload?.tickets && Number.isFinite(parsed.cachedAt)) {
+        cached = parsed;
+        afterSalesListCache.set(key, parsed);
+      }
+    } catch {
+      // Session cache is an optional speed-up; a storage failure must not block the live request.
+    }
+  }
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > AFTER_SALES_CACHE_MAX_AGE_MS) {
+    afterSalesListCache.delete(key);
+    try { sessionStorage.removeItem(`${AFTER_SALES_STORAGE_PREFIX}${key}`); } catch { /* no-op */ }
+    return null;
+  }
+  return cached;
+}
+
+function writeAfterSalesCache(key: string, entry: AfterSalesCacheEntry) {
+  afterSalesListCache.set(key, entry);
+  try { sessionStorage.setItem(`${AFTER_SALES_STORAGE_PREFIX}${key}`, JSON.stringify(entry)); } catch { /* no-op */ }
+}
+
+function clearAfterSalesCache(ownerKey: string) {
+  for (const key of afterSalesListCache.keys()) {
+    if (key.startsWith(`${ownerKey}|`)) afterSalesListCache.delete(key);
+  }
+  try {
+    for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+      const storageKey = sessionStorage.key(index) || "";
+      if (storageKey.startsWith(`${AFTER_SALES_STORAGE_PREFIX}${ownerKey}|`)) sessionStorage.removeItem(storageKey);
+    }
+  } catch {
+    // The live refresh still invalidates the in-memory cache when storage is unavailable.
+  }
+}
+
 const blankCustomer: AfterSalesCustomer = {
   name: "",
   phone: "",
@@ -128,9 +188,16 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const canReport = hasPermission(currentUser, "after_sales_report");
   const canWarehouse = hasPermission(currentUser, "after_sales_warehouse");
   const canAdmin = hasPermission(currentUser, "operations");
-  const [tab, setTab] = React.useState<"report" | "mine" | "warehouse">(canReport ? "report" : "warehouse");
-  const [payload, setPayload] = React.useState<AfterSalesPayload | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const ownerKey = afterSalesOwnerKey(currentUser);
+  const initialTab = canReport ? "report" : "warehouse";
+  const initialFilters: AfterSalesListFilters = { status: "all", keyword: "", mine: false };
+  const initialCache = readAfterSalesCache(ownerKey, initialFilters);
+  const [tab, setTab] = React.useState<"report" | "mine" | "warehouse">(initialTab);
+  const [payload, setPayload] = React.useState<AfterSalesPayload | null>(initialCache?.payload || null);
+  const [loading, setLoading] = React.useState(!initialCache);
+  const [refreshing, setRefreshing] = React.useState(Boolean(initialCache));
+  const [slowLoading, setSlowLoading] = React.useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = React.useState(initialCache?.cachedAt || 0);
   const [busy, setBusy] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
@@ -153,6 +220,11 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const [selectedTicket, setSelectedTicket] = React.useState<AfterSalesTicket | null>(null);
   const [warehouseRemark, setWarehouseRemark] = React.useState("");
   const [labelUploads, setLabelUploads] = React.useState<AfterSalesAttachment[]>([]);
+  const payloadRef = React.useRef<AfterSalesPayload | null>(initialCache?.payload || null);
+  const activeFiltersRef = React.useRef<AfterSalesListFilters>(initialFilters);
+  const activeQueryKeyRef = React.useRef(afterSalesQueryKey(ownerKey, initialFilters));
+  const requestIdRef = React.useRef(0);
+  const abortRef = React.useRef<AbortController | null>(null);
 
   const responsibility = responsibilityFor(primaryReason, secondaryReason);
   const affectedCost = responsibility.party === "warehouse"
@@ -165,16 +237,66 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     : [];
   const effectiveNeedsReissue = secondaryReason === "补发且留错品" || needsReissue;
 
-  const refresh = React.useCallback(async (filters: { status?: string; keyword?: string; mine?: boolean } = {}) => {
-    setLoading(true);
-    try {
-      setPayload(await fetchAfterSales(filters));
-    } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : "读取售后单失败。");
-    } finally {
-      setLoading(false);
+  const refresh = React.useCallback(async (filters: AfterSalesListFilters = {}) => {
+    const normalizedFilters = {
+      status: filters.status || "all",
+      keyword: (filters.keyword || "").trim(),
+      mine: Boolean(filters.mine),
+    };
+    const queryKey = afterSalesQueryKey(ownerKey, normalizedFilters);
+    const cached = readAfterSalesCache(ownerKey, normalizedFilters);
+    const sameQuery = activeQueryKeyRef.current === queryKey;
+    const visiblePayload = sameQuery ? payloadRef.current : cached?.payload || null;
+
+    activeFiltersRef.current = normalizedFilters;
+    activeQueryKeyRef.current = queryKey;
+    if (!sameQuery) {
+      payloadRef.current = visiblePayload;
+      setPayload(visiblePayload);
+      setLastLoadedAt(cached?.cachedAt || 0);
     }
-  }, []);
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    let timedOut = false;
+    setLoading(!visiblePayload);
+    setRefreshing(Boolean(visiblePayload));
+    setSlowLoading(false);
+    setError("");
+    const slowTimer = window.setTimeout(() => {
+      if (requestIdRef.current === requestId) setSlowLoading(true);
+    }, 900);
+    const timeoutTimer = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, AFTER_SALES_REQUEST_TIMEOUT_MS);
+    try {
+      const nextPayload = await fetchAfterSales(normalizedFilters, controller.signal);
+      if (requestIdRef.current !== requestId) return;
+      const cachedAt = Date.now();
+      payloadRef.current = nextPayload;
+      writeAfterSalesCache(queryKey, { payload: nextPayload, cachedAt });
+      setPayload(nextPayload);
+      setLastLoadedAt(cachedAt);
+    } catch (refreshError) {
+      if (requestIdRef.current !== requestId || (controller.signal.aborted && !timedOut)) return;
+      setError(timedOut
+        ? "售后数据读取超时，页面不会把加载失败显示成没有工单，请点击重试。"
+        : refreshError instanceof Error ? refreshError.message : "读取售后单失败。");
+    } finally {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(timeoutTimer);
+      if (requestIdRef.current === requestId) {
+        setLoading(false);
+        setRefreshing(false);
+        setSlowLoading(false);
+        abortRef.current = null;
+      }
+    }
+  }, [ownerKey]);
 
   React.useEffect(() => {
     void refresh({
@@ -182,6 +304,19 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       keyword: tab === "report" ? "" : keyword,
       mine: tab === "mine",
     });
+  }, [refresh, tab]);
+
+  React.useEffect(() => {
+    const refreshVisibleList = () => {
+      if (tab !== "report" && document.visibilityState === "visible") void refresh(activeFiltersRef.current);
+    };
+    const timer = window.setInterval(refreshVisibleList, AFTER_SALES_AUTO_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshVisibleList);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisibleList);
+      abortRef.current?.abort();
+    };
   }, [refresh, tab]);
 
   React.useEffect(() => {
@@ -294,6 +429,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       });
       setMessage(`售后单 ${result.ticket.id} 已提交，等待仓库接单。`);
       resetReport();
+      clearAfterSalesCache(ownerKey);
       setTab("mine");
       await refresh({ mine: true });
     } catch (submitError) {
@@ -358,6 +494,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       setSelectedTicket(result.ticket);
       setLabelUploads([]);
       setMessage(`${result.ticket.id} 已更新为“${statusMeta[result.ticket.status]?.label || result.ticket.status}”。`);
+      clearAfterSalesCache(ownerKey);
       await refresh({ status, keyword, mine: tab === "mine" });
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "更新售后单失败。");
@@ -389,12 +526,13 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
         <div className="as-warehouse-toolbar">
           <div className="as-filter-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索售后单号、原订单号、店铺别名" /></div>
           <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select>
-          <button type="button" onClick={() => void refresh({ status, keyword, mine: myTickets })}><RefreshCw size={16} />查询</button>
+          <button type="button" disabled={loading || refreshing} onClick={() => void refresh({ status, keyword, mine: myTickets })}><RefreshCw className={loading || refreshing ? "spinning" : ""} size={16} />{loading ? "读取中" : refreshing ? "刷新中" : "查询"}</button>
         </div>
         <div className="as-ticket-table">
           <div className="head"><span>售后单 / 原订单</span><span>问题与处理</span><span>处理仓库</span><span>补发</span><span>仓库承担</span><span>状态</span><span></span></div>
-          {loading ? <div className="as-table-empty"><LoaderCircle className="spinning" size={22} />正在读取售后单…</div> : null}
-          {!loading && !(payload?.tickets.length) ? <div className="as-table-empty"><PackageCheck size={24} />{myTickets ? "你还没有填报符合当前筛选条件的售后单" : "当前筛选下没有售后单"}</div> : null}
+          {loading && !payload ? <div className="as-table-loading" role="status" aria-live="polite"><LoaderCircle className="spinning" size={24} /><div><strong>正在同步{myTickets ? "你的" : "仓库"}售后单</strong><span>{slowLoading ? "网络响应较慢，仍在读取；完成前不会显示为“没有售后单”。" : "已优先读取售后数据，请稍候…"}</span></div></div> : null}
+          {!loading && !payload ? <div className="as-table-load-error"><AlertTriangle size={22} /><div><strong>售后单暂未加载成功</strong><span>这不代表没有售后单，请重新读取。</span></div><button type="button" onClick={() => void refresh(activeFiltersRef.current)}>重新读取</button></div> : null}
+          {!loading && payload && !payload.tickets.length ? <div className="as-table-empty"><PackageCheck size={24} />{myTickets ? "你还没有填报符合当前筛选条件的售后单" : "当前筛选下没有售后单"}</div> : null}
           {(payload?.tickets || []).map((ticket) => (
             <button type="button" className="row" key={ticket.id} onClick={() => void openTicket(ticket)}>
               <span><strong>{ticket.id}</strong><small>{ticket.originalOrderNumber}</small><small>{ticket.shopAlias || ticket.platformShopName || "未配置店铺别名"}</small></span>
@@ -423,16 +561,19 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       </section>
 
       <section className="after-sales-kpis">
-        <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload?.summary.pendingWarehouse ?? 0}</strong><small>需要仓库确认处理</small></article>
-        <article><span>处理中</span><strong>{payload?.summary.processing ?? 0}</strong><small>含待补发工单</small></article>
-        <article><span>待补发</span><strong>{payload?.summary.awaitingReshipment ?? 0}</strong><small>等待面单与发出</small></article>
-        <article className="liability"><span>仓库承担金额</span><strong>{money(payload?.summary.warehouseLiabilityCny ?? 0)}</strong><small>不含已作废工单</small></article>
+        <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload ? payload.summary.pendingWarehouse : "—"}</strong><small>{payload ? "需要仓库确认处理" : "数据读取中，不展示为 0"}</small></article>
+        <article><span>处理中</span><strong>{payload ? payload.summary.processing : "—"}</strong><small>{payload ? "含待补发工单" : "数据读取中，不展示为 0"}</small></article>
+        <article><span>待补发</span><strong>{payload ? payload.summary.awaitingReshipment : "—"}</strong><small>{payload ? "等待面单与发出" : "数据读取中，不展示为 0"}</small></article>
+        <article className="liability"><span>仓库承担金额</span><strong>{payload ? money(payload.summary.warehouseLiabilityCny) : "—"}</strong><small>{payload ? "不含已作废工单" : "数据读取中，不展示为 0"}</small></article>
       </section>
 
       <div className="after-sales-tabs" role="tablist">
         {canReport ? <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")}><Clipboard size={17} />运营填报</button> : null}
-        {canReport ? <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}><BadgeCheck size={17} />我的售后 {tab === "mine" ? <span>{payload?.summary.open || 0}</span> : null}</button> : null}
-        {canWarehouse ? <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")}><Truck size={17} />仓库处理 <span>{payload?.summary.pendingWarehouse || 0}</span></button> : null}
+        {canReport ? <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}><BadgeCheck size={17} />我的售后 {tab === "mine" ? <span>{payload ? payload.summary.open : "…"}</span> : null}</button> : null}
+        {canWarehouse ? <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")}><Truck size={17} />仓库处理 <span>{payload ? payload.summary.pendingWarehouse : "…"}</span></button> : null}
+        <div className="as-data-freshness" role="status" aria-live="polite">
+          {refreshing ? <><RefreshCw className="spinning" size={14} />正在后台更新，当前列表可继续使用</> : lastLoadedAt ? <><BadgeCheck size={14} />数据更新于 {new Date(lastLoadedAt).toLocaleTimeString("zh-CN", { hour12: false })}</> : <><LoaderCircle className="spinning" size={14} />正在首次读取</>}
+        </div>
       </div>
 
       {error ? <div className="as-notice error"><AlertTriangle size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div> : null}

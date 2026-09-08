@@ -3594,13 +3594,13 @@ export async function downloadMiaoshouOrderAliasJob(jobId: string) {
   return response.blob();
 }
 
-export function fetchAfterSales(input: { status?: string; keyword?: string; mine?: boolean } = {}) {
+export function fetchAfterSales(input: { status?: string; keyword?: string; mine?: boolean } = {}, signal?: AbortSignal) {
   const params = new URLSearchParams();
   if (input.status) params.set("status", input.status);
   if (input.keyword) params.set("keyword", input.keyword);
   if (input.mine) params.set("mine", "1");
   const query = params.toString() ? `?${params.toString()}` : "";
-  return requestJson<AfterSalesPayload>(`/api/after-sales${query}`);
+  return requestJson<AfterSalesPayload>(`/api/after-sales${query}`, { signal });
 }
 
 export function syncAfterSalesOrder(orderNumber: string) {
