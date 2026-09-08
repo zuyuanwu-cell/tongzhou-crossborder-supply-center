@@ -180,6 +180,7 @@ import {
   updateWarehouseConnection,
   updateMiaoshouConfig,
   updateMiaoshouShop,
+  batchUpdateMiaoshouShops,
   syncMiaoshouShops,
   runMiaoshouAutomation,
   retryMiaoshouTask,
@@ -9878,6 +9879,8 @@ function MiaoshouPage() {
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
   const [shopKeyword, setShopKeyword] = React.useState("");
+  const [selectedShopIds, setSelectedShopIds] = React.useState<Set<string>>(() => new Set());
+  const visibleSelectionRef = React.useRef<HTMLInputElement>(null);
   const [form, setForm] = React.useState({
     appKey: "",
     appSecret: "",
@@ -9905,6 +9908,17 @@ function MiaoshouPage() {
       appSecret: "",
     }));
   }, [payload?.config.updatedAt, payload?.config.lastConnectionTestAt]);
+
+  React.useEffect(() => {
+    if (!payload) return;
+    const selectableShopIds = new Set(payload.shops
+      .filter((shop) => shop.connectionStatus !== "invalid")
+      .map((shop) => shop.shopId));
+    setSelectedShopIds((current) => {
+      const next = new Set(Array.from(current).filter((shopId) => selectableShopIds.has(shopId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [payload?.shops]);
 
   async function load(silent = false) {
     if (!silent) setBusy("load");
@@ -9979,6 +9993,54 @@ function MiaoshouPage() {
     await perform(`shop:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoApplyTrackingNo: nextEnabled, autoFetchWaybill: shop.autoFetchWaybill }), nextEnabled ? "该店铺已加入自动申请队列。" : "该店铺已停止自动申请，不影响已经成功的运单。");
   }
 
+  function toggleShopSelection(shopId: string, checked: boolean) {
+    setSelectedShopIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(shopId);
+      else next.delete(shopId);
+      return next;
+    });
+  }
+
+  async function batchUpdateShops(autoApplyTrackingNo: boolean) {
+    const selectedShops = (payload?.shops || []).filter((shop) => (
+      selectedShopIds.has(shop.shopId) && shop.connectionStatus !== "invalid"
+    ));
+    const targetShops = selectedShops.filter((shop) => shop.autoApplyTrackingNo !== autoApplyTrackingNo);
+    const unchangedCount = selectedShops.length - targetShops.length;
+    if (!targetShops.length) {
+      setError("");
+      setMessage(autoApplyTrackingNo ? "所选店铺均已开启自动申请。" : "所选店铺均已关闭自动申请。");
+      return;
+    }
+    const actionLabel = autoApplyTrackingNo ? "开启" : "关闭";
+    const accepted = await confirm({
+      title: `批量${actionLabel} ${targetShops.length} 家店铺？`,
+      body: autoApplyTrackingNo
+        ? "这些店铺的待打单包裹将进入中台自动申请队列。"
+        : "这些店铺将停止处理新的自动申请任务。",
+      confirmText: `确认批量${actionLabel}`,
+      details: autoApplyTrackingNo
+        ? ["只处理本次勾选且尚未开启的店铺", "包裹需已在妙手配置线上物流", "本功能不会自动发货"]
+        : ["不会删除已经生成的任务记录", "不会影响已经申请成功的运单和面单", "需要时可以再次批量开启"],
+    });
+    if (!accepted) return;
+    const next = await perform(
+      autoApplyTrackingNo ? "batch:enable" : "batch:disable",
+      () => batchUpdateMiaoshouShops(targetShops.map((shop) => shop.shopId), { autoApplyTrackingNo }),
+      "",
+    );
+    if (!next) return;
+    const updatedCount = next.batchSummary?.updatedCount ?? targetShops.length;
+    const racedUnchangedCount = next.batchSummary?.unchangedCount || 0;
+    setSelectedShopIds(new Set());
+    setMessage(
+      `已批量${actionLabel} ${updatedCount} 家店铺`
+      + (unchangedCount + racedUnchangedCount ? `，另有 ${unchangedCount + racedUnchangedCount} 家无需修改` : "")
+      + "。",
+    );
+  }
+
   async function runNow() {
     const accepted = await confirm({
       title: "立即检查已启用店铺？",
@@ -10020,6 +10082,32 @@ function MiaoshouPage() {
     const keyword = shopKeyword.trim().toLowerCase();
     return !keyword || [shop.shopId, shop.platformShopName, shop.shopNick, shop.platform, shop.site, shop.connectionError].some((value) => value.toLowerCase().includes(keyword));
   });
+  const validVisibleShopIds = visibleShops
+    .filter((shop) => shop.connectionStatus !== "invalid")
+    .map((shop) => shop.shopId);
+  const selectedShops = (payload?.shops || []).filter((shop) => selectedShopIds.has(shop.shopId));
+  const selectedEnableCount = selectedShops.filter((shop) => !shop.autoApplyTrackingNo).length;
+  const selectedDisableCount = selectedShops.filter((shop) => shop.autoApplyTrackingNo).length;
+  const allVisibleSelected = Boolean(validVisibleShopIds.length)
+    && validVisibleShopIds.every((shopId) => selectedShopIds.has(shopId));
+  const someVisibleSelected = validVisibleShopIds.some((shopId) => selectedShopIds.has(shopId));
+
+  React.useEffect(() => {
+    if (visibleSelectionRef.current) {
+      visibleSelectionRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+    }
+  }, [allVisibleSelected, someVisibleSelected]);
+
+  function toggleVisibleSelection(checked: boolean) {
+    setSelectedShopIds((current) => {
+      const next = new Set(current);
+      validVisibleShopIds.forEach((shopId) => {
+        if (checked) next.add(shopId);
+        else next.delete(shopId);
+      });
+      return next;
+    });
+  }
   const platformOptions = payload?.platformOptions || [];
   const siteOptions = payload?.siteOptions || {};
 
@@ -10097,12 +10185,33 @@ function MiaoshouPage() {
           <div><p className="eyebrow">Shop Automation</p><h2>选择自动申请店铺</h2><span>包裹必须已在妙手配置线上物流；每家店可以单独控制是否自动获取面单。</span></div>
           <label className="compact-search"><Search size={15} /><input value={shopKeyword} onChange={(event) => setShopKeyword(event.target.value)} placeholder="搜索店铺、平台、站点" /></label>
         </div>
+        <div className="miaoshou-batch-toolbar" aria-label="店铺批量操作">
+          <div className="miaoshou-batch-selection">
+            <label>
+              <input
+                ref={visibleSelectionRef}
+                type="checkbox"
+                checked={allVisibleSelected}
+                aria-checked={someVisibleSelected && !allVisibleSelected ? "mixed" : allVisibleSelected}
+                disabled={Boolean(busy) || !validVisibleShopIds.length}
+                onChange={(event) => toggleVisibleSelection(event.target.checked)}
+              />
+              <span><strong>选择当前结果</strong><small>当前可选 {formatNumber(validVisibleShopIds.length)} 家 · 已选 {formatNumber(selectedShopIds.size)} 家</small></span>
+            </label>
+          </div>
+          <div className="miaoshou-batch-actions">
+            <button className="ghost-button compact-button" type="button" disabled={Boolean(busy) || !selectedShopIds.size} onClick={() => setSelectedShopIds(new Set())}><X size={14} />清空选择</button>
+            <button className="ghost-button compact-button" type="button" disabled={Boolean(busy) || !selectedDisableCount} onClick={() => void batchUpdateShops(false)}><Minus size={14} />{busy === "batch:disable" ? "关闭中" : `批量关闭${selectedDisableCount ? ` ${selectedDisableCount}` : ""}`}</button>
+            <button className="sync-button compact-button" type="button" disabled={Boolean(busy) || !selectedEnableCount} onClick={() => void batchUpdateShops(true)}><Check size={14} />{busy === "batch:enable" ? "开启中" : `批量开启${selectedEnableCount ? ` ${selectedEnableCount}` : ""}`}</button>
+          </div>
+        </div>
         {visibleShops.length ? <div className="miaoshou-shop-list">
           {visibleShops.map((shop) => {
             const invalid = shop.connectionStatus === "invalid";
+            const selected = selectedShopIds.has(shop.shopId);
             return (
-              <article className={invalid ? "invalid" : shop.autoApplyTrackingNo ? "enabled" : ""} key={shop.shopId}>
-                <div className="miaoshou-shop-main"><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.shopNick || shop.platformShopName || shop.shopId}</strong><span>{shop.shopNick && shop.platformShopName ? `${shop.platformShopName} · ` : ""}{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
+              <article className={`${invalid ? "invalid" : shop.autoApplyTrackingNo ? "enabled" : ""}${selected ? " selected" : ""}`} key={shop.shopId}>
+                <div className="miaoshou-shop-main"><input className="miaoshou-shop-select" type="checkbox" checked={selected} disabled={Boolean(busy) || invalid} aria-label={`选择店铺 ${shop.shopNick || shop.platformShopName || shop.shopId}`} onChange={(event) => toggleShopSelection(shop.shopId, event.target.checked)} /><span className="miaoshou-shop-icon"><Store size={18} /></span><div><strong>{shop.shopNick || shop.platformShopName || shop.shopId}</strong><span>{shop.shopNick && shop.platformShopName ? `${shop.platformShopName} · ` : ""}{shop.platform} · {shop.siteName || shop.site} · ID {shop.shopId}</span></div></div>
                 <div className="miaoshou-shop-auth">{invalid ? <span className="status-pill danger">已解绑 / 不存在</span> : <span>授权状态：{shop.status || "未返回"}</span>}<small className={invalid ? "miaoshou-shop-error" : ""} title={invalid ? shop.connectionError : undefined}>{invalid ? shop.connectionError || "妙手已不再返回该店铺" : shop.gmtExpire ? `到期 ${formatDateTime(shop.gmtExpire)}` : `最近同步 ${formatDateTime(shop.lastSeenAt)}`}</small></div>
                 <label className="toggle-line compact"><input type="checkbox" checked={shop.autoFetchWaybill} disabled={Boolean(busy) || invalid} onChange={(event) => void perform(`label:${shop.shopId}`, () => updateMiaoshouShop(shop.shopId, { autoFetchWaybill: event.target.checked }), event.target.checked ? "该店铺会自动获取面单。" : "该店铺仅申请运单号。")}/><span><strong>获取面单</strong><small>{invalid ? "失效店铺已忽略" : "成功后自动保存链接"}</small></span></label>
                 <button className={shop.autoApplyTrackingNo ? "ghost-button" : "sync-button"} type="button" disabled={Boolean(busy) || invalid} onClick={() => void toggleShop(shop)}>{invalid ? "已忽略，等待重新绑定" : busy === `shop:${shop.shopId}` ? "处理中" : shop.autoApplyTrackingNo ? "停止自动申请" : "开启自动申请"}</button>

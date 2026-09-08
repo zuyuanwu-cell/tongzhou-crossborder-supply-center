@@ -1362,8 +1362,11 @@
 .toggle-line,
 .miaoshou-shop-list article,
 .miaoshou-task-row { background: #f9fbfd; }
+.miaoshou-batch-toolbar { color: #18273f; border-color: #d9e2ed; background: #f7faff; }
+.miaoshou-batch-selection small { color: #63738b; }
 .miaoshou-shop-list article.enabled { border-color: #9fd3bb; background: linear-gradient(90deg,#effaf5,#f9fbfd 42%); }
 .miaoshou-shop-list article.invalid { border-color: #efb5ba; background: linear-gradient(90deg,#fff3f2,#f9fbfd 46%); }
+.miaoshou-shop-list article.selected { border-color: #f28a52; box-shadow: 0 0 0 2px rgba(244,91,11,.1); }
 .miaoshou-shop-error,
 .miaoshou-task-error { color: #9a2018 !important; }
 .miaoshou-task-row.head { color: #52647d; background: #edf3ff; }
