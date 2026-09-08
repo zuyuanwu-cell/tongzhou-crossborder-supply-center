@@ -381,6 +381,24 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return text(first(db, "SELECT value FROM performance_meta WHERE key = ?", [key])?.value);
   }
 
+  function calculateMiaoshouDataVersion() {
+    const hash = createHash("sha1");
+    for (const table of [
+      "miaoshou_performance_orders",
+      "miaoshou_performance_items",
+      "miaoshou_performance_returns",
+      "miaoshou_performance_cancellations",
+    ]) {
+      hash.update(table);
+      for (const row of all(db, `SELECT * FROM ${table} ORDER BY identity ASC`)) {
+        const { updated_at: _updatedAt, ...stableRow } = row;
+        hash.update(JSON.stringify(stableRow));
+        hash.update("\n");
+      }
+    }
+    return hash.digest("hex").slice(0, 16);
+  }
+
   function getMetadata() {
     return {
       sourceSyncedAt: getMeta("sourceSyncedAt"),
@@ -389,6 +407,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       miaoshouOrderCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_orders")?.count),
       miaoshouItemCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_items")?.count),
       miaoshouReturnCount: number(first(db, "SELECT COUNT(*) AS count FROM miaoshou_performance_returns")?.count),
+      miaoshouDataVersion: getMeta("miaoshouDataVersion"),
       supplementalCostCount: number(first(db, "SELECT COUNT(*) AS count FROM performance_supplemental_costs")?.count),
       enabledSupplementalCostCount: number(first(db, "SELECT COUNT(*) AS count FROM performance_supplemental_costs WHERE enabled = 1")?.count),
       dbPath,
@@ -584,6 +603,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
         cancellationStatement.free();
       }
       if (syncState) setMeta("miaoshouPerformanceSyncState", JSON.stringify(syncState));
+      setMeta("miaoshouDataVersion", calculateMiaoshouDataVersion());
       db.run("COMMIT");
       persist();
       return getMetadata();
@@ -778,6 +798,8 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     persist();
     return getPerformanceSettings();
   }
+
+  if (!getMeta("miaoshouDataVersion")) setMeta("miaoshouDataVersion", calculateMiaoshouDataVersion());
 
   upsertExchangeRates([
     { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1, source: "system" },

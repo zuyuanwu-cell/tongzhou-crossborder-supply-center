@@ -3565,26 +3565,57 @@ function requestedPerformanceRevenueSource(settings = {}) {
   return ["wms", "shadow", "miaoshou"].includes(configured) ? configured : "shadow";
 }
 
+const performanceProductVersionCache = new WeakMap();
+const performanceOrderVersionCache = new WeakMap();
+
+function sourceContentVersion(value) {
+  return createHash("sha1").update(JSON.stringify(value ?? null)).digest("hex").slice(0, 16);
+}
+
+function memoizedSourceContentVersion(cache, owner, value) {
+  if (owner && typeof owner === "object") {
+    const cached = cache.get(owner);
+    if (cached) return cached;
+    const version = sourceContentVersion(value);
+    cache.set(owner, version);
+    return version;
+  }
+  return sourceContentVersion(value);
+}
+
 function performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, supplementalProductCosts = []) {
   const metadata = performanceAnalyticsStore.getMetadata();
   const miaoshouSyncState = performanceAnalyticsStore.getMiaoshouPerformanceSyncState();
   const sourceSignature = JSON.stringify({
-    orders: cachedOrdersSync.syncedAt || "",
+    orders: memoizedSourceContentVersion(performanceOrderVersionCache, cachedOrdersSync, cachedOrdersSync.orders || []),
     orderRows: (cachedOrdersSync.orders || []).length,
-    products: cachedProducts.syncedAt || "",
+    products: memoizedSourceContentVersion(performanceProductVersionCache, cachedProducts, [cachedProducts.productBase || [], cachedProducts.catalog || []]),
     shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
-    miaoshouShops: miaoshouShopState.shopsSyncedAt || "",
-    miaoshouPerformance: [
+    miaoshouShops: sourceContentVersion((miaoshouShopState.shops || []).map((shop) => [
+      shop.shopId,
+      shop.platform,
+      shop.site,
+      shop.shopNick,
+      shop.platformShopName,
+    ])),
+    miaoshouPerformance: metadata.miaoshouDataVersion || [
       metadata.miaoshouOrderCount,
       metadata.miaoshouItemCount,
       metadata.miaoshouReturnCount,
-      miaoshouSyncState.lastCompletedAt || "",
-      miaoshouSyncState.status || "",
     ],
     revenueSource: requestedPerformanceRevenueSource(settings),
-    exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.updatedAt, rate.rateToCny]),
+    exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.rateToCny, rate.source]),
     packagingFeeRules,
-    supplementalProductCosts: supplementalProductCosts.map((row) => [row.sku, row.countryKey, row.effectiveDate, row.unitCostCny, row.enabled, row.updatedAt]),
+    supplementalProductCosts: supplementalProductCosts.map((row) => [
+      row.sku,
+      row.countryKey,
+      row.effectiveDate,
+      row.unitCostCny,
+      row.enabled,
+      row.productName,
+      row.note,
+      row.source,
+    ]),
   });
   const dataVersion = createHash("sha1").update(sourceSignature).digest("hex").slice(0, 16);
   return { dataVersion, miaoshouSyncState };

@@ -183,6 +183,22 @@ try {
     returns,
     cancellations: cancellation,
   }, { status: "success", lastSuccessAt: "2026-08-04T00:00:00.000Z" });
+  const initialDataVersion = store.getMetadata().miaoshouDataVersion;
+  assert.match(initialDataVersion, /^[a-f0-9]{16}$/);
+  store.upsertMiaoshouPerformance({
+    orders: normalized.orders,
+    items: normalized.items,
+    returns,
+    cancellations: cancellation,
+  }, { status: "success", lastSuccessAt: "2026-08-04T01:00:00.000Z" });
+  assert.equal(store.getMetadata().miaoshouDataVersion, initialDataVersion, "sync timestamps alone must not invalidate the analytics materialization");
+  store.upsertMiaoshouPerformance({
+    orders: normalized.orders.map((order) => ({ ...order, payAmount: Number(order.payAmount || 0) + 1 })),
+    items: normalized.items,
+    returns,
+    cancellations: cancellation,
+  }, { status: "success", lastSuccessAt: "2026-08-04T02:00:00.000Z" });
+  assert.notEqual(store.getMetadata().miaoshouDataVersion, initialDataVersion, "real transaction changes must invalidate the analytics materialization");
   const reopened = await initPerformanceAnalyticsStore(dbPath);
   const snapshot = reopened.listMiaoshouPerformance();
   assert.equal(snapshot.orders.length, 1);
