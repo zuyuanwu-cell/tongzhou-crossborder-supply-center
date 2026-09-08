@@ -39,6 +39,7 @@ import { directHttpsUrls, initMiaoshouListingService, localizeListingWarning, pa
 import { initTongzhouCanvasAi, TongzhouCanvasApiError } from "./tongzhou-canvas-ai.js";
 import { createMiaoshouCategoryService, normalizeAiPlatformAttributes, validateTikTokReadiness } from "./miaoshou-listing-platform.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
+import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
@@ -158,6 +159,10 @@ const performanceExchangeRateSync = createExchangeRateSyncService({
   configuredCurrencies: performanceFxConfiguredCurrencies,
 });
 const miaoshouAutomation = await initMiaoshouAutomation({ cacheDir, dbPath: miaoshouTaskDbPath });
+const miaoshouOrderAliasMatcher = createMiaoshouOrderAliasMatcher({
+  store: performanceAnalyticsStore,
+  connector: miaoshouAutomation,
+});
 const miaoshouListing = initMiaoshouListingService({ cacheDir, connector: miaoshouAutomation });
 const miaoshouCategories = createMiaoshouCategoryService({ connector: miaoshouAutomation });
 const performanceMiaoshouSync = createMiaoshouPerformanceSyncService({
@@ -5637,6 +5642,30 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, miaoshouAutomation.publicPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/order-aliases/match" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "订单店铺别名匹配需要妙手 ERP 权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const result = await miaoshouOrderAliasMatcher.match({ orderNumbers: payload.orderNumbers });
+        appendActionLog(auth, "匹配妙手订单店铺别名", "miaoshou_order_alias", `${result.counts.total} 个平台订单号`, {
+          matched: result.counts.matched,
+          unmatched: result.counts.unmatched,
+          needsReview: result.counts.needsReview,
+          cacheHits: result.counts.cacheHits,
+          liveHits: result.counts.liveHits,
+          queryComplete: result.queryComplete,
+        });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "订单店铺别名匹配失败。" });
+      }
       return;
     }
 

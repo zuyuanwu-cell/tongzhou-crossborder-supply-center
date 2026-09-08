@@ -296,6 +296,16 @@ try {
   assert.equal(store.listSupplementalProductCosts().length, 1, "same SKU, country and effective date must update instead of duplicate");
   assert.equal(store.listSupplementalProductCosts()[0].unitCostCny, 6.5);
   assert.equal(store.listSupplementalProductCosts()[0].enabled, false);
+  store.upsertMiaoshouPerformance({
+    orders: [
+      { identity: "shopee|SHOP-1|ORDER-LOOKUP-1", platform: "shopee", shopId: "SHOP-1", platformOrderSn: "ORDER-LOOKUP-1", site: "ID" },
+      { identity: "shopee|SHOP-2|ORDER-LOOKUP-2", platform: "shopee", shopId: "SHOP-2", platformOrderSn: "ORDER-LOOKUP-2", site: "ID" },
+    ],
+  });
+  assert.deepEqual(
+    store.findMiaoshouOrdersByPlatformOrderSns(["ORDER-LOOKUP-2", "NOT-FOUND"]).map((row) => row.platformOrderSn),
+    ["ORDER-LOOKUP-2"],
+  );
   const reopenedStore = await initPerformanceAnalyticsStore(join(temporaryDirectory, "analytics.sqlite"));
   assert.equal(reopenedStore.getPerformanceSettings().packagingFeeRules[0].baseFeeCny, 2.2);
   assert.equal(reopenedStore.getPerformanceSettings().updatedBy, "test-admin");

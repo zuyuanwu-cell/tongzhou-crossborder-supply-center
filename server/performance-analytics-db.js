@@ -296,6 +296,8 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_miaoshou_performance_order_no
       ON miaoshou_performance_orders (platform, shop_id, platform_order_sn);
+    CREATE INDEX IF NOT EXISTS idx_miaoshou_performance_platform_order_sn
+      ON miaoshou_performance_orders (platform_order_sn);
     CREATE INDEX IF NOT EXISTS idx_miaoshou_performance_order_date
       ON miaoshou_performance_orders (order_started_at, order_modified_at);
     CREATE TABLE IF NOT EXISTS miaoshou_performance_items (
@@ -600,6 +602,23 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     };
   }
 
+  function findMiaoshouOrdersByPlatformOrderSns(orderNumbers = []) {
+    const normalized = [...new Set((Array.isArray(orderNumbers) ? orderNumbers : [])
+      .map((value) => text(value))
+      .filter(Boolean))];
+    const rows = [];
+    for (let index = 0; index < normalized.length; index += 300) {
+      const batch = normalized.slice(index, index + 300);
+      const placeholders = batch.map(() => "?").join(", ");
+      rows.push(...all(
+        db,
+        `SELECT * FROM miaoshou_performance_orders WHERE platform_order_sn IN (${placeholders}) ORDER BY order_started_at DESC, identity ASC`,
+        batch,
+      ));
+    }
+    return rows.map(miaoshouOrderFromDb);
+  }
+
   function upsertExchangeRates(rates = [], source = "manual", { preserveOverrides = false } = {}) {
     const now = new Date().toISOString();
     const normalized = (Array.isArray(rates) ? rates : []).map((rate) => ({
@@ -756,6 +775,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     getPerformanceSettings,
     getMetadata,
     getExchangeRateSyncState,
+    findMiaoshouOrdersByPlatformOrderSns,
     listExchangeRates,
     listSalesCurrencies,
     listSalesFacts,

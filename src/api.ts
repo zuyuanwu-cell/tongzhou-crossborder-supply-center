@@ -1578,6 +1578,33 @@ export type MiaoshouCategoryMetadata = {
   };
 };
 
+export type MiaoshouOrderAliasResult = {
+  orderNumber: string;
+  shopAlias: string;
+  platformShopName: string;
+  platform: string;
+  site: string;
+  shopId: string;
+  status: "matched" | "unmatched" | "ambiguous" | "alias_missing" | "shop_missing" | "query_failed" | "invalid" | string;
+  source: "local_cache" | "miaoshou_live" | string;
+  note: string;
+};
+
+export type MiaoshouOrderAliasMatchPayload = {
+  ok: boolean;
+  queryComplete: boolean;
+  message: string;
+  counts: {
+    total: number;
+    matched: number;
+    unmatched: number;
+    needsReview: number;
+    cacheHits: number;
+    liveHits: number;
+  };
+  results: MiaoshouOrderAliasResult[];
+};
+
 export type MiaoshouPlatformReadiness = {
   blocking: string[];
   warnings: string[];
@@ -3323,6 +3350,13 @@ export function testWarehouseConnection(input: CreateWarehouseInput & { id?: str
 
 export function fetchMiaoshou() {
   return requestJson<MiaoshouPayload>("/api/miaoshou");
+}
+
+export function matchMiaoshouOrderAliases(orderNumbers: string[]) {
+  return requestJson<MiaoshouOrderAliasMatchPayload>("/api/miaoshou/order-aliases/match", {
+    method: "POST",
+    body: JSON.stringify({ orderNumbers }),
+  });
 }
 
 export function updateMiaoshouConfig(input: {
