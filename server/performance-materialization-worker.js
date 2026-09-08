@@ -1,5 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { existsSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { reconcileMiaoshouPerformance } from "./miaoshou-performance.js";
 import { materializePerformanceFacts } from "./performance-analytics.js";
@@ -9,7 +9,19 @@ import { applyShopDirectoryProfile } from "./shop-directory.js";
 async function run() {
   const startedAt = Date.now();
   const store = await initPerformanceAnalyticsStore(workerData.dbPath);
-  const facts = store.listSalesFacts()
+  let orderSnapshot = null;
+  if (workerData.orderCachePath && existsSync(workerData.orderCachePath)) {
+    try {
+      orderSnapshot = JSON.parse(readFileSync(workerData.orderCachePath, "utf8"));
+    } catch {
+      orderSnapshot = null;
+    }
+  }
+  const sourceFacts = Array.isArray(orderSnapshot?.orders)
+    ? orderSnapshot.orders
+    : store.listSalesFacts();
+  const sourceSyncedAt = String(orderSnapshot?.syncedAt || workerData.sourceSyncedAt || "");
+  const facts = sourceFacts
     .map((fact) => applyShopDirectoryProfile(fact, workerData.shopDirectory || {}));
   const miaoshouSnapshot = store.listMiaoshouPerformance();
   const hybrid = reconcileMiaoshouPerformance({
@@ -44,6 +56,7 @@ async function run() {
       transactionSync: workerData.transactionSync || {},
       stale: false,
       targetDataVersion: workerData.dataVersion || "",
+      sourceSyncedAt,
     });
     const temporaryPath = `${workerData.cachePath}.${process.pid}.tmp`;
     writeFileSync(temporaryPath, gzipSync(Buffer.from(cachePayload), { level: 1 }));
@@ -55,6 +68,7 @@ async function run() {
     reconciliation: hybrid.reconciliation,
     materializedAt,
     durationMs,
+    sourceSyncedAt,
   });
   store.close?.();
 }

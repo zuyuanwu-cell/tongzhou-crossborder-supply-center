@@ -153,7 +153,6 @@ let cachedOutsourcingOrders = attachProductionMaterialProgress(
 );
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
-performanceAnalyticsStore.replaceSalesFacts(cachedOrdersSync.orders || [], cachedOrdersSync.syncedAt || "");
 try {
   const environmentRates = JSON.parse(process.env.PERFORMANCE_FX_RATES || "[]");
   if (Array.isArray(environmentRates) && environmentRates.length) performanceAnalyticsStore.upsertExchangeRates(environmentRates, "environment");
@@ -286,9 +285,9 @@ function loadPerformanceMaterializationCache(path) {
   }
 }
 
-function saveJsonCache(path, payload) {
+function saveJsonCache(path, payload, spacing = 2) {
   mkdirSync(cacheDir, { recursive: true });
-  writeFileSync(path, JSON.stringify(payload, null, 2), "utf8");
+  writeFileSync(path, JSON.stringify(payload, null, spacing), "utf8");
 }
 
 function saveProductCache(payload) {
@@ -308,11 +307,12 @@ function saveMovementHistoryCache(payload) {
   saveJsonCache(movementHistoryCachePath, payload);
 }
 
-function saveOrderCache(payload, { rebuildPerformance = true } = {}) {
-  saveJsonCache(orderCachePath, payload);
-  if (rebuildPerformance) {
-    performanceAnalyticsStore.replaceSalesFacts(payload?.orders || [], payload?.syncedAt || "", { force: true });
-  }
+function saveOrderCache(payload) {
+  // The order snapshot is the source of truth for the background analytics
+  // worker. Keeping this compact cuts synchronous serialization and disk I/O;
+  // rebuilding the 60k+ row sql.js table in the API process used to freeze all
+  // endpoints for close to a minute after each order sync.
+  saveJsonCache(orderCachePath, payload, 0);
   clearPerformanceAnalyticsResponseCache();
 }
 
@@ -3818,6 +3818,8 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
   };
   job.promise = runPerformanceMaterializationWorker({
     dbPath: performanceAnalyticsDbPath,
+    orderCachePath,
+    sourceSyncedAt: cachedOrdersSync.syncedAt || "",
     shopDirectory,
     products: cachedProducts,
     exchangeRates,
@@ -3834,6 +3836,7 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
       dataVersion: context.dataVersion,
       materializedAt: result.materializedAt || new Date().toISOString(),
       materializationDurationMs: result.durationMs || Date.now() - startedAt,
+      sourceSyncedAt: result.sourceSyncedAt || cachedOrdersSync.syncedAt || "",
       shopDirectory,
       facts: result.facts,
       transactionReconciliation: result.reconciliation,
@@ -4104,11 +4107,11 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
     shopDirectory: publicShopDirectory(scopedShopDirectory, auth),
     reconciliation: {
       sourceRowCount: (cachedOrdersSync.orders || []).length,
-      factRowCount: metadata.rowCount,
+      factRowCount: materialization.facts.length,
       sourceSyncedAt: cachedOrdersSync.syncedAt || "",
-      factSourceSyncedAt: metadata.sourceSyncedAt || "",
-      rowCountMatched: (cachedOrdersSync.orders || []).length === metadata.rowCount,
-      syncedAtMatched: Boolean(cachedOrdersSync.syncedAt) && cachedOrdersSync.syncedAt === metadata.sourceSyncedAt,
+      factSourceSyncedAt: materialization.sourceSyncedAt || metadata.sourceSyncedAt || "",
+      rowCountMatched: (cachedOrdersSync.orders || []).length === materialization.facts.length,
+      syncedAtMatched: Boolean(cachedOrdersSync.syncedAt) && cachedOrdersSync.syncedAt === (materialization.sourceSyncedAt || metadata.sourceSyncedAt),
     },
   }, auth, exchangeRates));
 }
@@ -4602,7 +4605,7 @@ async function syncCompleteOrderRange(connection, from, to) {
   };
 }
 
-function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true, { rebuildPerformance = true } = {}) {
+function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true) {
   const warehouseId = result.warehouseId || connection.id;
   const orderMeta = orderSyncMetaFromResult(result);
   const previousResult = (cachedOrdersSync.results || []).find((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
@@ -4640,7 +4643,7 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
     orders: replaceWarehouseOrderRows(cachedOrdersSync.orders || [], warehouseIds, snapshot.orders),
     results: nextResults,
   };
-  saveOrderCache(cachedOrdersSync, { rebuildPerformance });
+  saveOrderCache(cachedOrdersSync);
 }
 
 let activeOrderSyncJobPromise = null;
@@ -4790,7 +4793,7 @@ async function runOrderSyncJob(jobId) {
     // Publish atomically per warehouse. A partial date range must never replace
     // the previous complete snapshot, even when some chunks succeeded.
     const replaceOrders = ok;
-    mergeWarehouseOrderCache(connection, result, job.days, replaceOrders, { rebuildPerformance: false });
+    mergeWarehouseOrderCache(connection, result, job.days, replaceOrders);
     job.results = [
       ...(job.results || []).filter((item) => item.warehouseId !== connection.id && item.warehouseId !== result.warehouseId),
       {
@@ -4816,8 +4819,8 @@ async function runOrderSyncJob(jobId) {
   job.currentChunkLabel = "";
   job.message = hadFailure ? "Completed with partial failures" : "Completed";
   saveOrderSyncJobsCache();
-  performanceAnalyticsStore.replaceSalesFacts(cachedOrdersSync.orders || [], cachedOrdersSync.syncedAt || "", { force: true });
   clearPerformanceAnalyticsResponseCache();
+  void warmPerformanceAnalyticsMaterialization();
   try {
     upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "order_sync_job", movementHistoryTimezone);
   } catch (error) {

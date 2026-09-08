@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { allocateOrderSalesAmount, normalizeSeaOrderRows, normalizeYunOrderRows } from "../server/wms-adapters.js";
 import {
   DEFAULT_PACKAGING_FEE_RULES,
@@ -11,6 +12,20 @@ import {
 } from "../server/performance-analytics.js";
 import { initPerformanceAnalyticsStore, legacyCorrectedOrders } from "../server/performance-analytics-db.js";
 import { createPerformanceAnalyticsQueryService } from "../server/performance-query-service.js";
+
+function runMaterializationWorker(workerData) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("../server/performance-materialization-worker.js", import.meta.url), { workerData });
+    worker.once("message", (result) => {
+      if (result?.ok) resolve(result);
+      else reject(new Error(result?.message || "materialization worker failed"));
+    });
+    worker.once("error", reject);
+    worker.once("exit", (code) => {
+      if (code !== 0) reject(new Error(`materialization worker exited with code ${code}`));
+    });
+  });
+}
 
 const allocations = allocateOrderSalesAmount([
   { quantity: 1 },
@@ -312,6 +327,39 @@ try {
   assert.equal(reopenedStore.listSupplementalProductCosts()[0].updatedBy, "test-reviewer");
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
+}
+
+const workerDirectory = mkdtempSync(join(tmpdir(), "tongzhou-performance-worker-"));
+try {
+  const workerDatabasePath = join(workerDirectory, "analytics.sqlite");
+  const emptyStore = await initPerformanceAnalyticsStore(workerDatabasePath);
+  emptyStore.close?.();
+  const workerOrderCachePath = join(workerDirectory, "orders-sync.json");
+  const workerSyncedAt = "2026-09-08T15:30:00.000Z";
+  writeFileSync(workerOrderCachePath, JSON.stringify({
+    syncedAt: workerSyncedAt,
+    orders: [{ ...facts[0], id: "worker-order", sourceOrderId: "WORKER-1", orderNo: "WORKER-1" }],
+  }));
+  const workerResult = await runMaterializationWorker({
+    dbPath: workerDatabasePath,
+    orderCachePath: workerOrderCachePath,
+    sourceSyncedAt: "stale-db-timestamp",
+    shopDirectory: {},
+    products,
+    exchangeRates: [
+      { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+      { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+    ],
+    packagingFeeRules: [],
+    supplementalProductCosts: [],
+    requestedSource: "wms",
+    dataVersion: "worker-order-cache-test",
+  });
+  assert.equal(workerResult.facts.length, 1, "the worker must materialize directly from the order snapshot");
+  assert.equal(workerResult.facts[0].orderNo, "WORKER-1");
+  assert.equal(workerResult.sourceSyncedAt, workerSyncedAt, "the order snapshot timestamp must win over stale DB metadata");
+} finally {
+  rmSync(workerDirectory, { recursive: true, force: true });
 }
 
 console.log("performance analytics tests passed");
