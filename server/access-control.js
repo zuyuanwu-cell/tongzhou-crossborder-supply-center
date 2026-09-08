@@ -27,7 +27,10 @@ const permissionDefinitions = [
   ["quick_nav", "快捷导航", "智能与开放"],
   ["tongzhou_ai", "同舟 AI", "智能与开放"],
   ["api_access", "API 接入", "智能与开放"],
-  ["miaoshou", "妙手 ERP", "智能与开放"],
+  ["miaoshou_alias", "妙手订单别名匹配", "妙手 ERP"],
+  ["miaoshou_listing", "妙手 AI 上架", "妙手 ERP"],
+  ["miaoshou_automation", "妙手自动运单", "妙手 ERP"],
+  ["miaoshou_config", "妙手连接配置", "妙手 ERP"],
   ["warehouses", "仓库授权", "系统管理"],
   ["users", "用户与权限", "系统管理"],
   ["notifications", "企业微信通知", "系统管理"],
@@ -36,11 +39,18 @@ const permissionDefinitions = [
 ];
 
 export const PERMISSION_CATALOG = Object.freeze(permissionDefinitions.map(([key, label, group]) => ({ key, label, group })));
-export const PERMISSION_KEYS = Object.freeze(PERMISSION_CATALOG.map((item) => item.key));
+const LEGACY_PERMISSION_KEYS = Object.freeze(["miaoshou"]);
+const MIAOSHOU_PERMISSION_KEYS = Object.freeze([
+  "miaoshou_alias",
+  "miaoshou_listing",
+  "miaoshou_automation",
+  "miaoshou_config",
+]);
+export const PERMISSION_KEYS = Object.freeze([...PERMISSION_CATALOG.map((item) => item.key), ...LEGACY_PERMISSION_KEYS]);
 const permissionKeySet = new Set(PERMISSION_KEYS);
 
 export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
-  admin: Object.freeze([...PERMISSION_KEYS]),
+  admin: Object.freeze(PERMISSION_CATALOG.map((item) => item.key)),
   direct: Object.freeze([
     "product_view",
     "distribution_price",
@@ -54,6 +64,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "quick_nav",
     "tongzhou_ai",
     "api_access",
+    "miaoshou_alias",
   ]),
   warehouse: Object.freeze([
     "after_sales_warehouse",
@@ -78,6 +89,7 @@ const DIRECT_PRICE_DENIED_ROLES = new Set(["distributor", "guest"]);
 const PERFORMANCE_COST_DENIED_ROLES = new Set(["distributor", "guest"]);
 const USER_MANAGEMENT_DENIED_ROLES = new Set(["direct", "distributor", "guest"]);
 const AFTER_SALES_DENIED_ROLES = new Set(["distributor", "guest"]);
+const MIAOSHOU_DENIED_ROLES = new Set(["distributor", "guest"]);
 const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse"]);
 
 function roleOf(user) {
@@ -109,6 +121,17 @@ export function effectivePermissions(user) {
   const overrides = normalizePermissionOverrides(user?.permissionOverrides);
   const effective = new Set(ROLE_DEFAULT_PERMISSIONS[role] || ROLE_DEFAULT_PERMISSIONS.guest);
   for (const permission of overrides.allow) effective.add(permission);
+
+  // 兼容历史“妙手 ERP”总权限：原先普通账号可使用别名匹配，只有同时具备
+  // 全局管理权限的账号可以配置、上架和执行自动运单。细权限显式拒绝仍优先。
+  if (effective.has("miaoshou")) {
+    effective.add("miaoshou_alias");
+    if (effective.has("operations")) {
+      effective.add("miaoshou_listing");
+      effective.add("miaoshou_automation");
+      effective.add("miaoshou_config");
+    }
+  }
   for (const permission of overrides.deny) effective.delete(permission);
 
   if (DIRECT_PRICE_DENIED_ROLES.has(role)) effective.delete("direct_price");
@@ -120,6 +143,10 @@ export function effectivePermissions(user) {
   if (AFTER_SALES_DENIED_ROLES.has(role)) {
     effective.delete("after_sales_report");
     effective.delete("after_sales_warehouse");
+  }
+  if (MIAOSHOU_DENIED_ROLES.has(role)) {
+    effective.delete("miaoshou");
+    for (const permission of MIAOSHOU_PERMISSION_KEYS) effective.delete(permission);
   }
   if (role === "warehouse") {
     for (const permission of [...effective]) {
@@ -145,8 +172,8 @@ export function permissionConfiguration() {
     hardRules: {
       directDenied: ["users"],
       warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "users"],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "users"],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -165,6 +192,9 @@ export function sanitizePermissionUpdate(role, input) {
   }
   if (AFTER_SALES_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => !["after_sales_report", "after_sales_warehouse"].includes(key));
+  }
+  if (MIAOSHOU_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => key !== "miaoshou" && !MIAOSHOU_PERMISSION_KEYS.includes(key));
   }
   if (role === "warehouse") {
     overrides.allow = overrides.allow.filter((key) => WAREHOUSE_ALLOWED_PERMISSIONS.has(key));

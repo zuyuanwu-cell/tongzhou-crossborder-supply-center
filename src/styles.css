@@ -6155,13 +6155,13 @@ h3 {
 }
 
 .permission-editor {
-  min-width: 1180px;
+  min-width: 0;
   padding: 20px;
-  border: 1px solid rgba(255, 107, 31, 0.44);
+  border: 1px solid #f1c7ae;
   border-radius: 12px;
   background:
-    linear-gradient(135deg, rgba(255, 107, 31, 0.08), transparent 34%),
-    #121419;
+    linear-gradient(135deg, rgba(255, 107, 31, 0.07), transparent 34%),
+    #ffffff;
   box-shadow: inset 3px 0 0 #ff6b1f;
 }
 
@@ -6176,12 +6176,12 @@ h3 {
 
 .permission-editor-heading h3 {
   margin: 3px 0 5px;
-  color: var(--text);
+  color: #12335f;
   font-size: 20px;
 }
 
 .permission-editor-heading > div > span {
-  color: var(--muted);
+  color: #61718a;
   font-size: 12px;
 }
 
@@ -6199,14 +6199,14 @@ h3 {
   min-width: 0;
   margin: 0;
   padding: 13px;
-  border: 1px solid var(--line);
+  border: 1px solid #dbe4ef;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
+  background: #f8fafc;
 }
 
 .permission-group legend {
   padding: 0 7px;
-  color: #ff8a49;
+  color: #c94e0b;
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0.08em;
@@ -6221,18 +6221,18 @@ h3 {
   border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.025);
+  background: #ffffff;
 }
 
 .permission-toggle:has(input:checked) {
-  border-color: rgba(94, 220, 144, 0.3);
-  background: rgba(94, 220, 144, 0.075);
+  border-color: #9ed9b6;
+  background: #edf9f2;
 }
 
 .permission-toggle.locked {
   cursor: not-allowed;
-  border-color: rgba(255, 87, 87, 0.22);
-  background: rgba(255, 87, 87, 0.055);
+  border-color: #efc1c1;
+  background: #fff3f3;
 }
 
 .permission-toggle input {
@@ -6247,12 +6247,12 @@ h3 {
 }
 
 .permission-toggle strong {
-  color: var(--text);
+  color: #17375f;
   font-size: 12px;
 }
 
 .permission-toggle small {
-  color: var(--muted);
+  color: #6b7b91;
   font-size: 10px;
 }
 
@@ -6269,7 +6269,7 @@ h3 {
 }
 
 .permission-scope-grid label > span {
-  color: var(--text);
+  color: #17375f;
   font-size: 12px;
   font-weight: 800;
 }
@@ -6279,11 +6279,11 @@ h3 {
   min-height: 78px;
   resize: vertical;
   padding: 11px 12px;
-  border: 1px solid #3a3d46;
+  border: 1px solid #cfd9e6;
   border-radius: 8px;
   outline: 0;
-  color: #f7f7f8;
-  background: #0d0f13;
+  color: #17375f;
+  background: #ffffff;
   line-height: 1.5;
 }
 
@@ -6293,17 +6293,17 @@ h3 {
 }
 
 .permission-scope-grid textarea::placeholder {
-  color: #747984;
+  color: #8795a8;
 }
 
 .permission-guardrail {
   justify-content: flex-start;
   margin-top: 14px;
   padding: 11px 13px;
-  border: 1px solid rgba(94, 220, 144, 0.24);
+  border: 1px solid #b9dec8;
   border-radius: 8px;
-  color: #b9e8cb;
-  background: rgba(94, 220, 144, 0.06);
+  color: #246a46;
+  background: #eef9f2;
   font-size: 12px;
 }
 

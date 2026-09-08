@@ -2661,6 +2661,26 @@ function canManageModule(auth, permission) {
   return canManage(auth) && hasPermission(auth, permission);
 }
 
+function canUseMiaoshouAlias(auth) {
+  return hasPermission(auth, "miaoshou_alias");
+}
+
+function canUseMiaoshouListing(auth) {
+  return hasPermission(auth, "miaoshou_listing");
+}
+
+function canUseMiaoshouAutomation(auth) {
+  return hasPermission(auth, "miaoshou_automation");
+}
+
+function canConfigureMiaoshou(auth) {
+  return hasPermission(auth, "miaoshou_config");
+}
+
+function canViewMiaoshouWorkspace(auth) {
+  return canUseMiaoshouAutomation(auth) || canConfigureMiaoshou(auth);
+}
+
 function canAccessAfterSales(auth) {
   return hasPermission(auth, "after_sales_report") || hasPermission(auth, "after_sales_warehouse");
 }
@@ -5691,8 +5711,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "当前账号没有妙手 ERP 权限。" });
+      if (!canViewMiaoshouWorkspace(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手连接配置或自动运单权限。" });
         return;
       }
       sendJson(res, 200, miaoshouAutomation.publicPayload());
@@ -5701,8 +5721,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/order-aliases/match" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "订单店铺别名匹配需要妙手 ERP 权限。" });
+      if (!canUseMiaoshouAlias(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手订单别名匹配权限。" });
         return;
       }
       try {
@@ -5725,8 +5745,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/order-aliases/jobs" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "订单店铺别名匹配需要妙手 ERP 权限。" });
+      if (!canUseMiaoshouAlias(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手订单别名匹配权限。" });
         return;
       }
       try {
@@ -5746,8 +5766,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/order-aliases/jobs" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "订单店铺别名任务中心需要妙手 ERP 权限。" });
+      if (!canUseMiaoshouAlias(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手订单别名匹配权限。" });
         return;
       }
       sendJson(res, 200, miaoshouOrderAliasJobs.list(auth.user.id));
@@ -5757,8 +5777,8 @@ const server = http.createServer(async (req, res) => {
     const aliasJobMatch = url.pathname.match(/^\/api\/miaoshou\/order-aliases\/jobs\/([^/]+)(?:\/(download))?$/);
     if (aliasJobMatch && req.method === "GET") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "订单店铺别名任务中心需要妙手 ERP 权限。" });
+      if (!canUseMiaoshouAlias(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手订单别名匹配权限。" });
         return;
       }
       const jobId = decodeURIComponent(aliasJobMatch[1]);
@@ -5958,8 +5978,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/listings" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "使用妙手 AI 上架需要管理员权限。" });
+      if (!canUseMiaoshouListing(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手 AI 上架权限。" });
         return;
       }
       const sku = String(url.searchParams.get("sku") || "").trim();
@@ -5987,8 +6007,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/tiktok/categories" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "读取妙手类目需要管理员权限。" });
+      if (!canUseMiaoshouListing(auth)) {
+        sendJson(res, 403, { ok: false, message: "读取妙手类目需要妙手 AI 上架权限。" });
         return;
       }
       try {
@@ -6005,8 +6025,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouCategoryMetadataMatch = url.pathname.match(/^\/api\/miaoshou\/tiktok\/categories\/([^/]+)\/metadata$/);
     if (miaoshouCategoryMetadataMatch && req.method === "GET") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "读取妙手类目要求需要管理员权限。" });
+      if (!canUseMiaoshouListing(auth)) {
+        sendJson(res, 403, { ok: false, message: "读取妙手类目要求需要妙手 AI 上架权限。" });
         return;
       }
       try {
@@ -6029,8 +6049,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/listings/generate" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
-        sendJson(res, 401, { ok: false, message: "生成妙手上架草稿需要妙手管理和同舟 AI 权限。" });
+      if (!canUseMiaoshouListing(auth) || !canUseTongzhouAi(auth)) {
+        sendJson(res, 403, { ok: false, message: "生成妙手上架草稿需要妙手 AI 上架和同舟 AI 权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -6056,8 +6076,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouListingMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)$/);
     if (miaoshouListingMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "修改妙手上架草稿需要管理员权限。" });
+      if (!canUseMiaoshouListing(auth)) {
+        sendJson(res, 403, { ok: false, message: "修改草稿需要妙手 AI 上架权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -6075,8 +6095,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouSuggestCategoryMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/suggest-category$/);
     if (miaoshouSuggestCategoryMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
-        sendJson(res, 401, { ok: false, message: "AI 推荐类目需要妙手管理和同舟 AI 权限。" });
+      if (!canUseMiaoshouListing(auth) || !canUseTongzhouAi(auth)) {
+        sendJson(res, 403, { ok: false, message: "AI 推荐类目需要妙手 AI 上架和同舟 AI 权限。" });
         return;
       }
       try {
@@ -6119,8 +6139,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouFillAttributesMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/fill-attributes$/);
     if (miaoshouFillAttributesMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
-        sendJson(res, 401, { ok: false, message: "AI 补全平台属性需要妙手管理和同舟 AI 权限。" });
+      if (!canUseMiaoshouListing(auth) || !canUseTongzhouAi(auth)) {
+        sendJson(res, 403, { ok: false, message: "AI 补全平台属性需要妙手 AI 上架和同舟 AI 权限。" });
         return;
       }
       try {
@@ -6152,8 +6172,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouImagePlanMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/image-plan$/);
     if (miaoshouImagePlanMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
-        sendJson(res, 401, { ok: false, message: "生成商品图方案需要妙手管理和同舟 AI 权限。" });
+      if (!canUseMiaoshouListing(auth) || !canUseTongzhouAi(auth)) {
+        sendJson(res, 403, { ok: false, message: "生成商品图方案需要妙手 AI 上架和同舟 AI 权限。" });
         return;
       }
       try {
@@ -6178,8 +6198,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouListingPushMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/push$/);
     if (miaoshouListingPushMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "推送妙手采集箱需要管理员权限。" });
+      if (!canUseMiaoshouListing(auth)) {
+        sendJson(res, 403, { ok: false, message: "推送采集箱需要妙手 AI 上架权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -6207,11 +6227,23 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/config" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "配置妙手 ERP 需要管理员登录。" });
+      const payload = await parseRequestBody(req);
+      const connectionFields = ["appKey", "appSecret", "scopes", "clearCredentials"];
+      const automationFields = ["automationEnabled", "autoFetchWaybillDefault", "pollIntervalMinutes", "maxPackagesPerRun"];
+      const updatesConnection = connectionFields.some((field) => Object.hasOwn(payload, field));
+      const updatesAutomation = automationFields.some((field) => Object.hasOwn(payload, field));
+      if (!updatesConnection && !updatesAutomation) {
+        sendJson(res, 400, { ok: false, message: "没有需要保存的妙手配置。" });
         return;
       }
-      const payload = await parseRequestBody(req);
+      if (updatesConnection && !canConfigureMiaoshou(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手连接配置权限。" });
+        return;
+      }
+      if (updatesAutomation && !canUseMiaoshouAutomation(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手自动运单权限。" });
+        return;
+      }
       const result = miaoshouAutomation.updateConfig(payload, auth.user?.displayName || auth.user?.username || "管理员");
       appendActionLog(auth, "更新妙手 ERP 配置", "miaoshou_config", "妙手开放平台", {
         automationEnabled: result.config.automationEnabled,
@@ -6225,8 +6257,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/test" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "检测妙手授权需要管理员登录。" });
+      if (!canConfigureMiaoshou(auth)) {
+        sendJson(res, 403, { ok: false, message: "检测授权需要妙手连接配置权限。" });
         return;
       }
       const result = await miaoshouAutomation.testConnection();
@@ -6237,8 +6269,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/shops/sync" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "同步妙手店铺需要管理员登录。" });
+      if (!canConfigureMiaoshou(auth)) {
+        sendJson(res, 403, { ok: false, message: "同步店铺需要妙手连接配置权限。" });
         return;
       }
       const result = await miaoshouAutomation.syncShops();
@@ -6249,8 +6281,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/shops/batch" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "批量调整妙手店铺自动化需要管理员登录。" });
+      if (!canUseMiaoshouAutomation(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手自动运单权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -6279,8 +6311,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouShopMatch = url.pathname.match(/^\/api\/miaoshou\/shops\/([^/]+)$/);
     if (miaoshouShopMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "调整妙手店铺自动化需要管理员登录。" });
+      if (!canUseMiaoshouAutomation(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手自动运单权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -6298,8 +6330,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/miaoshou/run" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "运行妙手运单任务需要管理员登录。" });
+      if (!canUseMiaoshouAutomation(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手自动运单权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -6317,8 +6349,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouTaskRetryMatch = url.pathname.match(/^\/api\/miaoshou\/tasks\/([^/]+)\/retry$/);
     if (miaoshouTaskRetryMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "重试妙手运单任务需要管理员登录。" });
+      if (!canUseMiaoshouAutomation(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手自动运单权限。" });
         return;
       }
       const task = await miaoshouAutomation.retryTask(decodeURIComponent(miaoshouTaskRetryMatch[1]));
@@ -6333,8 +6365,8 @@ const server = http.createServer(async (req, res) => {
     const miaoshouTaskWaybillMatch = url.pathname.match(/^\/api\/miaoshou\/tasks\/([^/]+)\/waybill$/);
     if (miaoshouTaskWaybillMatch && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "miaoshou")) {
-        sendJson(res, 401, { ok: false, message: "获取妙手面单需要管理员登录。" });
+      if (!canUseMiaoshouAutomation(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有妙手自动运单权限。" });
         return;
       }
       const task = await miaoshouAutomation.getWaybill(decodeURIComponent(miaoshouTaskWaybillMatch[1]));

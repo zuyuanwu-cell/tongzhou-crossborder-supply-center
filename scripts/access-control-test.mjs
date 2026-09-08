@@ -143,6 +143,33 @@ assert.deepEqual(publicDistributor.dataScopes.skus, ["SKU-A"]);
 const directDenied = effectivePermissions({ role: "direct", permissionOverrides: { allow: [], deny: ["direct_price"] } });
 assert.equal(directDenied.includes("direct_price"), false, "explicit deny overrides a role default");
 
+const directMiaoshouPermissions = effectivePermissions({ role: "direct", permissionOverrides: { allow: [], deny: [] } });
+assert.equal(directMiaoshouPermissions.includes("miaoshou_alias"), true, "direct operators can match order aliases by default");
+assert.equal(directMiaoshouPermissions.includes("miaoshou_listing"), false, "AI listing requires an explicit grant");
+assert.equal(directMiaoshouPermissions.includes("miaoshou_automation"), false, "waybill automation requires an explicit grant");
+assert.equal(directMiaoshouPermissions.includes("miaoshou_config"), false, "connection configuration requires an explicit grant");
+
+const legacyMiaoshouOperator = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["miaoshou"], deny: [] },
+});
+assert.equal(legacyMiaoshouOperator.includes("miaoshou_alias"), true, "legacy Miaoshou access keeps alias matching available");
+assert.equal(legacyMiaoshouOperator.includes("miaoshou_config"), false, "legacy non-manager access does not gain connection configuration");
+
+const legacyMiaoshouManager = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["miaoshou", "operations"], deny: ["miaoshou_config"] },
+});
+assert.equal(legacyMiaoshouManager.includes("miaoshou_listing"), true, "legacy managers retain AI listing access");
+assert.equal(legacyMiaoshouManager.includes("miaoshou_automation"), true, "legacy managers retain waybill automation access");
+assert.equal(legacyMiaoshouManager.includes("miaoshou_config"), false, "a granular deny overrides the legacy umbrella");
+
+const distributorMiaoshouPermissions = effectivePermissions({
+  role: "distributor",
+  permissionOverrides: { allow: ["miaoshou", "miaoshou_alias", "miaoshou_listing", "miaoshou_automation", "miaoshou_config", "operations"], deny: [] },
+});
+assert.equal(distributorMiaoshouPermissions.some((permission) => permission === "miaoshou" || permission.startsWith("miaoshou_")), false, "distributors cannot receive internal Miaoshou permissions");
+
 const warehousePermissions = effectivePermissions({
   role: "warehouse",
   permissionOverrides: { allow: ["after_sales_report", "product_view", "users"], deny: [] },
