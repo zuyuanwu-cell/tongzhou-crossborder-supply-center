@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   createMiaoshouCategoryService,
+  normalizeAiPlatformAttributes,
   normalizeTikTokCategoryMetadata,
   normalizeTikTokCategoryTree,
   searchTikTokCategories,
@@ -50,6 +51,13 @@ const metadataResponse = {
 const metadata = normalizeTikTokCategoryMetadata(metadataResponse);
 assert.equal(metadata.requirements.packageDimensions, true);
 assert.equal(metadata.productAttributes[0].mandatory, true);
+
+const aiAttributes = normalizeAiPlatformAttributes([
+  { attrId: "10", valueId: "20", valueName: "SJU" },
+  { attrId: "999", valueId: "1" },
+], metadata);
+assert.deepEqual(aiAttributes.selected, [{ attrId: "10", name: "品牌", valueId: "20", valueName: "SJU", customValue: "" }]);
+assert.equal(aiAttributes.rejected.length, 1, "AI 返回的类目外属性必须拒绝写入");
 
 const incomplete = validateTikTokReadiness({ platform: "tiktok", shopId: "", categoryId: "3", platformAttributes: [] }, metadata);
 assert.equal(incomplete.ready, false);

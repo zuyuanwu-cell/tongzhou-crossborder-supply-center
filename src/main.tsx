@@ -917,6 +917,8 @@ function App() {
   const [payload, setPayload] = React.useState<ProductPayload | null>(null);
   const [dashboardSummary, setDashboardSummary] = React.useState<DashboardSummaryPayload | null>(null);
   const [productDetailLoaded, setProductDetailLoaded] = React.useState(false);
+  const [productDetailLoading, setProductDetailLoading] = React.useState(false);
+  const productDetailRequestRef = React.useRef<Promise<void> | null>(null);
   const [warehousePayload, setWarehousePayload] = React.useState<WarehousePayload | null>(null);
   const [inventorySnapshotPayload, setInventorySnapshotPayload] = React.useState<InventorySnapshotPayload | null>(null);
   const [movementPayload, setMovementPayload] = React.useState<MovementPayload | null>(null);
@@ -1103,14 +1105,25 @@ function App() {
 
   async function loadProductDetails() {
     if (productDetailLoaded) return;
-    try {
-      const data = await fetchProducts("detail");
-      setPayload(data);
-      setProductDetailLoaded(true);
-      if (data.user) setCurrentUser(data.user);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "产品详情数据读取失败");
-    }
+    if (productDetailRequestRef.current) return productDetailRequestRef.current;
+
+    const request = (async () => {
+      setProductDetailLoading(true);
+      try {
+        const data = await fetchProducts("detail");
+        setPayload(data);
+        setProductDetailLoaded(true);
+        if (data.user) setCurrentUser(data.user);
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : "产品详情数据读取失败");
+      } finally {
+        setProductDetailLoading(false);
+        productDetailRequestRef.current = null;
+      }
+    })();
+
+    productDetailRequestRef.current = request;
+    return request;
   }
 
   async function loadDashboardSummary() {
@@ -1715,6 +1728,7 @@ function App() {
             internal={internal}
             currentUser={currentUser}
             loading={loading}
+            detailsLoading={productDetailLoading}
             payload={payload}
             qualificationPayload={qualificationPayload}
             assetPayload={assetPayload}
@@ -10532,6 +10546,7 @@ function ProductDetailModal({
   productBase,
   qualifications,
   assets,
+  detailsLoading,
   currentUser,
   onAddToBundle,
   onClose,
@@ -10540,6 +10555,7 @@ function ProductDetailModal({
   productBase: ProductBase[];
   qualifications: QualificationRecord[];
   assets: AssetRecord[];
+  detailsLoading: boolean;
   currentUser: AuthUser;
   onAddToBundle: (product: CatalogProduct) => void;
   onClose: () => void;
@@ -10644,7 +10660,7 @@ function ProductDetailModal({
   return (
     <div className="modal-layer" role="presentation">
       <button className="modal-backdrop" type="button" onClick={onClose} aria-label="关闭弹窗" />
-      <section ref={dialogRef} className="product-detail-modal" role="dialog" aria-modal="true" aria-labelledby={`${dialogId}-title`} tabIndex={-1} onKeyDown={handleDialogKeyDown}>
+      <section ref={dialogRef} className="product-detail-modal" role="dialog" aria-modal="true" aria-busy={detailsLoading} aria-labelledby={`${dialogId}-title`} tabIndex={-1} onKeyDown={handleDialogKeyDown}>
         <div className="modal-head">
           <div>
             <p className="eyebrow">Linked Product Assets</p>
@@ -10720,6 +10736,12 @@ function ProductDetailModal({
               <FileText size={18} />
               <h3>产品基础信息</h3>
             </div>
+            {detailsLoading ? (
+              <div className="product-detail-loading" role="status" aria-live="polite">
+                <RefreshCw size={16} className="spinning" />
+                <span>正在后台补全产品详细资料，现有内容可以先查看。</span>
+              </div>
+            ) : null}
             <div className="product-detail-action-row">
               <button className="ghost-button compact-button" type="button" onClick={copySku}>
                 {copiedSku ? <Check size={15} /> : <Copy size={15} />}
@@ -11023,6 +11045,7 @@ function ProductLibrary({
   internal,
   currentUser,
   loading,
+  detailsLoading,
   payload,
   qualificationPayload,
   assetPayload,
@@ -11034,6 +11057,7 @@ function ProductLibrary({
   internal: boolean;
   currentUser: AuthUser;
   loading: boolean;
+  detailsLoading: boolean;
   payload: ProductPayload | null;
   qualificationPayload: QualificationPayload | null;
   assetPayload: AssetPayload | null;
@@ -11347,9 +11371,9 @@ function ProductLibrary({
                       <button type="button" onClick={() => setPartnerApplicationSku(product.sku)}>申请分销账号后查看</button>
                     </div>
                   )}
-                  <button className="icon-button" type="button" aria-label="查看产品关联资料" onClick={async () => {
-                    await onNeedDetails();
+                  <button className="icon-button" type="button" aria-label="查看产品关联资料" onClick={() => {
                     setDetailProduct(product);
+                    void onNeedDetails();
                   }}>
                     <ExternalLink size={17} />
                   </button>
@@ -11373,6 +11397,7 @@ function ProductLibrary({
           productBase={productBase}
           qualifications={getRelatedQualifications(detailProduct, qualificationPayload)}
           assets={getRelatedAssets(detailProduct, findProductBase(detailProduct, productBase), assetPayload)}
+          detailsLoading={detailsLoading}
           currentUser={currentUser}
           onAddToBundle={addToBundle}
           onClose={() => setDetailProduct(null)}

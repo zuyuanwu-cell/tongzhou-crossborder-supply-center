@@ -6,7 +6,9 @@ import {
   buildCommonCollectBoxPayload,
   directHttpsUrls,
   initMiaoshouListingService,
+  localizeListingWarning,
   parseListingAiOutput,
+  parseListingImagePlan,
   validateListingDraft,
 } from "../server/miaoshou-listing.js";
 
@@ -27,6 +29,18 @@ const parsed = parseListingAiOutput(`\`\`\`json
 \`\`\``);
 assert.equal(parsed.title, "Krim Perawatan Rambut SJU");
 assert.deepEqual(parsed.keywords, ["perawatan rambut", "hair cream"]);
+assert.match(localizeListingWarning("Produk mengandung Thioglycolic Acid dan wajib uji tes patch"), /巯基乙酸/);
+assert.match(parsed.warnings[0], /原提示不是中文/);
+
+const imageBriefs = parseListingImagePlan(JSON.stringify({
+  images: [
+    { slot: "main", title: "白底主图", purpose: "展示商品", prompt: "保持产品包装一致的白底商品摄影", negativePrompt: "错误文字" },
+    { slot: "scene", title: "使用场景", purpose: "展示使用氛围", prompt: "浴室场景中的产品静物摄影", negativePrompt: "医疗宣称" },
+  ],
+}));
+assert.equal(imageBriefs.length, 2);
+assert.equal(imageBriefs[0].slot, "main");
+assert.equal(imageBriefs[0].imageUrl, "");
 
 const baseDraft = {
   sku: "TZKJ-SJU005",
@@ -78,6 +92,15 @@ try {
   assert.equal(legacyService.getDraft("legacy-draft")?.price, null, "旧版目标站售价必须清空，避免被当作人民币货源价");
   assert.ok(legacyService.getDraft("legacy-draft")?.warnings.some((message) => message.includes("人民币货源价")));
 
+  const versionTwoDir = join(cacheDir, "version-two");
+  mkdirSync(versionTwoDir, { recursive: true });
+  writeFileSync(join(versionTwoDir, "miaoshou-listing-drafts.json"), JSON.stringify({
+    version: 2,
+    drafts: [{ ...baseDraft, id: "version-two-draft", version: 2, price: 9.9, status: "review_ready" }],
+  }), "utf8");
+  const versionTwoService = initMiaoshouListingService({ cacheDir: versionTwoDir, connector: {} });
+  assert.equal(versionTwoService.getDraft("version-two-draft")?.price, 9.9, "第二版人民币货源价升级到图片方案版本时必须保留");
+
   let createCalls = 0;
   const connector = {
     async createCommonCollectBoxProduct(input) {
@@ -101,8 +124,12 @@ try {
   }, "测试管理员");
   assert.equal(withPlatform.categoryId, "2");
   assert.equal(withPlatform.platformAttributes[0].valueId, "20");
-  const first = await service.pushDraft(withPlatform.id, { confirmed: true, actorName: "测试管理员" });
-  const second = await service.pushDraft(withPlatform.id, { confirmed: true, actorName: "测试管理员" });
+  const withImageBriefs = service.updateDraft(withPlatform.id, {
+    imageBriefs: [{ ...imageBriefs[0], imageUrl: "https://cdn.example/generated-main.jpg" }],
+  }, "测试管理员");
+  assert.equal(withImageBriefs.imageBriefs[0].imageUrl, "https://cdn.example/generated-main.jpg");
+  const first = await service.pushDraft(withImageBriefs.id, { confirmed: true, actorName: "测试管理员" });
+  const second = await service.pushDraft(withImageBriefs.id, { confirmed: true, actorName: "测试管理员" });
   assert.equal(first.status, "pushed");
   assert.equal(first.commonCollectBoxDetailId, "COLLECT-1001");
   assert.equal(second.commonCollectBoxDetailId, "COLLECT-1001");

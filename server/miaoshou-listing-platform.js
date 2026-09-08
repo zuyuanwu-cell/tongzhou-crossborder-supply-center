@@ -147,6 +147,46 @@ export function normalizePlatformAttributes(value) {
   })).filter((item) => item.attrId);
 }
 
+export function normalizeAiPlatformAttributes(value, metadata) {
+  const definitions = [...(metadata?.productAttributes || []), ...(metadata?.saleAttributes || [])];
+  const definitionById = new Map(definitions.map((item) => [text(item.attrId), item]));
+  const selected = [];
+  const rejected = [];
+  const seen = new Set();
+
+  for (const raw of valuesOf(value)) {
+    const attrId = text(raw?.attrId);
+    if (!attrId || seen.has(attrId)) continue;
+    const definition = definitionById.get(attrId);
+    if (!definition) {
+      rejected.push({ attrId, reason: "AI 返回了类目范围外的属性，已忽略。" });
+      continue;
+    }
+    const requestedValueId = text(raw?.valueId);
+    const requestedValueName = text(raw?.valueName);
+    const matched = definition.values.find((item) => (
+      (requestedValueId && item.id === requestedValueId)
+      || (requestedValueName && item.name.toLowerCase() === requestedValueName.toLowerCase())
+    ));
+    const customValue = definition.customized ? text(raw?.customValue) : "";
+    if (definition.values.length && !matched) {
+      rejected.push({ attrId, name: definition.name, reason: "AI 返回的选项不在妙手允许范围内，已忽略。" });
+      continue;
+    }
+    if (!matched && !customValue) continue;
+    selected.push({
+      attrId,
+      name: definition.name || definition.alias || attrId,
+      valueId: matched?.id || "",
+      valueName: matched?.name || "",
+      customValue: matched ? "" : customValue,
+    });
+    seen.add(attrId);
+  }
+
+  return { selected, rejected };
+}
+
 export function validateTikTokReadiness(draft, metadata) {
   const blocking = [];
   const warnings = [];

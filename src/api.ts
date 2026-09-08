@@ -1505,6 +1505,16 @@ export type MiaoshouListingValidation = {
   warnings: string[];
 };
 
+export type MiaoshouListingImageBrief = {
+  id: string;
+  slot: string;
+  title: string;
+  purpose: string;
+  prompt: string;
+  negativePrompt: string;
+  imageUrl: string;
+};
+
 export type MiaoshouShopOption = {
   shopId: string;
   platform: string;
@@ -1596,6 +1606,7 @@ export type MiaoshouListingDraft = {
   packageHeight: number | null;
   barcode: string;
   imageUrls: string[];
+  imageBriefs: MiaoshouListingImageBrief[];
   unavailableMediaCount: number;
   status: "draft" | "review_ready" | "pushing" | "pushed" | "failed" | "manual_check";
   commonCollectBoxDetailId: string;
@@ -1615,7 +1626,9 @@ export type MiaoshouListingPayload = {
   updatedAt: string;
   aiConfigured: boolean;
   aiModels: AiModelCatalogItem[];
+  aiImageModels: AiModelCatalogItem[];
   selectedAiModel: string;
+  selectedAiImageModel: string;
   defaults: { platform: string; site: string; language: string; priceCurrency: "CNY" };
   shops: MiaoshouShopOption[];
   drafts: MiaoshouListingDraft[];
@@ -1646,6 +1659,7 @@ export type MiaoshouListingDraftInput = {
   packageHeight?: number | null;
   barcode?: string;
   imageUrls?: string[];
+  imageBriefs?: MiaoshouListingImageBrief[];
 };
 
 export type PerformanceSupplementalProductCost = {
@@ -3397,11 +3411,40 @@ export function suggestMiaoshouTikTokCategory(id: string, model?: string) {
     metadata: MiaoshouCategoryMetadata;
     readiness: MiaoshouPlatformReadiness;
     draft: MiaoshouListingDraft;
+    attributeFill: {
+      filled: number;
+      skipped: string[];
+      rejected: Array<{ attrId: string; name?: string; reason: string }>;
+      error: string;
+    };
     checkedAt: string;
   }>(`/api/miaoshou/listings/${encodeURIComponent(id)}/suggest-category`, {
     method: "POST",
     body: JSON.stringify({ model }),
   });
+}
+
+export function fillMiaoshouTikTokAttributes(id: string, model?: string) {
+  return requestJson<{
+    ok: boolean;
+    metadata: MiaoshouCategoryMetadata;
+    filled: number;
+    skipped: string[];
+    rejected: Array<{ attrId: string; name?: string; reason: string }>;
+    readiness: MiaoshouPlatformReadiness;
+    draft: MiaoshouListingDraft;
+    checkedAt: string;
+  }>(`/api/miaoshou/listings/${encodeURIComponent(id)}/fill-attributes`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export function planMiaoshouListingImages(id: string, input: { model?: string; count?: number }) {
+  return requestJson<{ ok: boolean; imageBriefs: MiaoshouListingImageBrief[]; draft: MiaoshouListingDraft }>(
+    `/api/miaoshou/listings/${encodeURIComponent(id)}/image-plan`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
 }
 
 export function fetchCurrentUser() {

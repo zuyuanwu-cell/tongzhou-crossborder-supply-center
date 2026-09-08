@@ -1,21 +1,27 @@
 import React from "react";
 import { AlertTriangle, Bot, Check, RefreshCw, Save, Search, Sparkles, Upload } from "lucide-react";
 import {
+  AiJob,
   AssetRecord,
   AiModelCatalogItem,
   CatalogProduct,
   MiaoshouCategoryMetadata,
   MiaoshouCategoryOption,
   MiaoshouListingDraft,
+  MiaoshouListingImageBrief,
   MiaoshouSelectedAttribute,
   MiaoshouShopOption,
   ProductBase,
   QualificationRecord,
+  fetchAiJob,
   fetchMiaoshouListings,
   fetchMiaoshouTikTokCategories,
   fetchMiaoshouTikTokCategoryMetadata,
+  fillMiaoshouTikTokAttributes,
   generateMiaoshouListing,
+  planMiaoshouListingImages,
   pushMiaoshouListing,
+  submitAiJob,
   suggestMiaoshouTikTokCategory,
   updateMiaoshouListing,
 } from "./api";
@@ -35,6 +41,29 @@ const STATUS_LABELS: Record<MiaoshouListingDraft["status"], string> = {
   failed: "推送失败",
   manual_check: "需人工核对",
 };
+
+const ATTRIBUTE_LABELS: Record<string, string> = {
+  "nomor ijin edar (bpom / pirt)": "印尼注册号（BPOM / PIRT）",
+  volume: "容量",
+  "kuantitas per kemasan": "每包装数量",
+  "bentuk produk": "产品形态",
+  "preferensi komposisi": "成分偏好",
+  aroma: "香型",
+  "imported goods": "是否进口",
+};
+
+function displayAttributeName(value: string) {
+  return ATTRIBUTE_LABELS[value.trim().toLowerCase()] || value;
+}
+
+function chineseListingWarning(value: string) {
+  if (/[\u3400-\u9fff]/.test(value)) return value;
+  return "AI 检测到一项需要人工核对的合规风险；原提示不是中文，请重新运行 AI 补全以获得详细中文说明。";
+}
+
+function imageJobUrl(job: AiJob) {
+  return directHttps(job.output?.url) || (job.output?.urls || []).map(directHttps).find(Boolean) || "";
+}
 
 function optionalNumber(value: string) {
   if (!value.trim()) return null;
@@ -117,14 +146,14 @@ function formatDraftTime(value: string) {
 }
 
 export function MiaoshouListingWorkspace({ product, productBase, qualifications, assets }: Props) {
-  const sourceImages = React.useMemo(() => Array.from(new Set([
+  const productReferenceImages = React.useMemo(() => Array.from(new Set([
     productBase?.imageUrl,
     product.imageUrl,
-    productBase?.qualificationImageUrl,
-    product.qualificationImageUrl,
-    ...assets.flatMap((asset) => asset.files.map((file) => file.url)),
-    ...qualifications.flatMap((record) => record.files.map((file) => file.url)),
-  ].map((url) => directHttps(url)).filter(Boolean))).slice(0, 12), [assets, product, productBase, qualifications]);
+  ].map((url) => directHttps(url)).filter(Boolean))).slice(0, 2), [product, productBase]);
+  const sourceImages = React.useMemo(() => Array.from(new Set([
+    ...productReferenceImages,
+    ...assets.flatMap((asset) => (asset.imageFiles || []).map((file) => file.url)),
+  ].map((url) => directHttps(url)).filter(Boolean))).slice(0, 12), [assets, productReferenceImages]);
   const internalMediaCount = React.useMemo(() => [
     ...assets.flatMap((asset) => asset.files),
     ...qualifications.flatMap((record) => record.files),
@@ -136,8 +165,10 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
   const [aiConfigured, setAiConfigured] = React.useState(true);
   const [aiModels, setAiModels] = React.useState<AiModelCatalogItem[]>([]);
   const [aiModel, setAiModel] = React.useState("");
+  const [aiImageModels, setAiImageModels] = React.useState<AiModelCatalogItem[]>([]);
+  const [aiImageModel, setAiImageModel] = React.useState("");
   const [loading, setLoading] = React.useState(true);
-  const [working, setWorking] = React.useState<"" | "generate" | "save" | "push" | "category" | "suggest" | "metadata">("");
+  const [working, setWorking] = React.useState<"" | "generate" | "save" | "push" | "category" | "suggest" | "metadata" | "attributes" | "image-plan" | "image-suite">("");
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [confirmPush, setConfirmPush] = React.useState(false);
@@ -165,6 +196,9 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
   const [packageWidth, setPackageWidth] = React.useState("");
   const [packageHeight, setPackageHeight] = React.useState("");
   const [selectedImages, setSelectedImages] = React.useState<string[]>(sourceImages.slice(0, 9));
+  const [imageBriefs, setImageBriefs] = React.useState<MiaoshouListingImageBrief[]>([]);
+  const [imageTaskStates, setImageTaskStates] = React.useState<Record<string, "waiting" | "running" | "done" | "failed">>({});
+  const [imageProgress, setImageProgress] = React.useState({ completed: 0, total: 0 });
 
   const immutable = Boolean(draft && ["pushed", "pushing", "manual_check"].includes(draft.status));
 
@@ -193,6 +227,9 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
     setPackageWidth(next.packageWidth === null ? "" : String(next.packageWidth));
     setPackageHeight(next.packageHeight === null ? "" : String(next.packageHeight));
     setSelectedImages(next.imageUrls || []);
+    setImageBriefs(next.imageBriefs || []);
+    setImageTaskStates({});
+    setImageProgress({ completed: 0, total: 0 });
     setConfirmPush(false);
   }
 
@@ -206,6 +243,8 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
       setAiConfigured(payload.aiConfigured);
       setAiModels(payload.aiModels || []);
       setAiModel((current) => current && payload.aiModels.some((model) => model.id === current) ? current : (payload.selectedAiModel || payload.aiModels[0]?.id || ""));
+      setAiImageModels(payload.aiImageModels || []);
+      setAiImageModel((current) => current && (payload.aiImageModels || []).some((model) => model.id === current) ? current : (payload.selectedAiImageModel || payload.aiImageModels?.[0]?.id || ""));
       const next = payload.drafts.find((item) => item.id === preferredId) || payload.drafts[0];
       if (next) hydrate(next);
       else {
@@ -273,7 +312,8 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
     packageHeight: optionalNumber(packageHeight),
     barcode: productBase?.barcode || product.barcode || "",
     imageUrls: selectedImages,
-  }), [aiModel, categoryHint, categoryId, categoryMetadata, categoryName, categoryPath, description, keywords, language, packageHeight, packageLength, packageWidth, platform, platformAttributes, price, product, productBase, selectedImages, sellingPoints, shopId, site, stock, title, weight]);
+    imageBriefs,
+  }), [aiModel, categoryHint, categoryId, categoryMetadata, categoryName, categoryPath, description, imageBriefs, keywords, language, packageHeight, packageLength, packageWidth, platform, platformAttributes, price, product, productBase, selectedImages, sellingPoints, shopId, site, stock, title, weight]);
 
   async function generateDraft() {
     setWorking("generate");
@@ -284,7 +324,25 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
       const result = await generateMiaoshouListing(inputPayload);
       setDrafts((current) => [result.draft, ...current.filter((item) => item.id !== result.draft.id)]);
       hydrate(result.draft);
-      setMessage("AI 草稿已生成，请检查标题、详情、价格和图片后再推送。");
+      if (platform === "tiktok") {
+        setWorking("suggest");
+        try {
+          const enriched = await suggestMiaoshouTikTokCategory(result.draft.id, aiModel);
+          setDrafts((current) => [enriched.draft, ...current.filter((item) => item.id !== enriched.draft.id)]);
+          hydrate(enriched.draft, true);
+          setCategoryMetadata(enriched.metadata);
+          setCategoryReason(enriched.reason || "AI 已从妙手候选类目中选择最接近项，请人工确认。");
+          const fillMessage = enriched.attributeFill.error
+            ? `类目已匹配；平台属性补全未完成：${enriched.attributeFill.error}`
+            : `类目已匹配，AI 已填写 ${enriched.attributeFill.filled} 项平台属性${enriched.attributeFill.skipped.length ? `，仍有 ${enriched.attributeFill.skipped.length} 项法定或资料缺失属性需人工补充` : ""}。`;
+          setMessage(`AI 草稿已生成。${fillMessage}`);
+        } catch (categoryError) {
+          setMessage("AI 草稿已生成；类目或平台属性暂未自动补全，可在下方重新执行。");
+          setError(categoryError instanceof Error ? categoryError.message : "AI 类目与属性补全失败");
+        }
+      } else {
+        setMessage("AI 草稿已生成，请检查标题、详情、价格和图片后再推送。");
+      }
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "AI 草稿生成失败");
     } finally {
@@ -330,12 +388,156 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
       hydrate(result.draft, true);
       setCategoryMetadata(result.metadata);
       setCategoryReason(result.reason || "AI 已从妙手候选类目中选择最接近项，请人工确认。");
-      setMessage("AI 类目建议已写入草稿，平台必填属性已读取。");
+      setMessage(result.attributeFill.error
+        ? `AI 类目已写入；平台属性补全未完成：${result.attributeFill.error}`
+        : `AI 类目已写入，并自动填写 ${result.attributeFill.filled} 项平台属性${result.attributeFill.skipped.length ? `；仍有 ${result.attributeFill.skipped.length} 项缺少可靠来源，需人工补充` : ""}。`);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "AI 推荐类目失败");
     } finally {
       setWorking("");
     }
+  }
+
+  async function handleFillAttributes() {
+    if (!draft || !categoryId) return;
+    setWorking("attributes");
+    setError("");
+    setMessage("");
+    try {
+      const saved = await updateMiaoshouListing(draft.id, inputPayload);
+      const result = await fillMiaoshouTikTokAttributes(saved.draft.id, aiModel);
+      setDrafts((current) => current.map((item) => item.id === result.draft.id ? result.draft : item));
+      hydrate(result.draft, true);
+      setCategoryMetadata(result.metadata);
+      setMessage(`AI 已填写 ${result.filled} 项平台属性${result.skipped.length ? `；${result.skipped.length} 项缺少可靠来源，已保留为空并标记人工补充` : ""}。`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "AI 平台属性补全失败");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function requestImagePlan(currentDraft: MiaoshouListingDraft) {
+    const result = await planMiaoshouListingImages(currentDraft.id, { model: aiModel, count: 6 });
+    setDrafts((current) => current.map((item) => item.id === result.draft.id ? result.draft : item));
+    hydrate(result.draft, true);
+    return result;
+  }
+
+  async function handleImagePlan() {
+    if (!draft) return;
+    setWorking("image-plan");
+    setError("");
+    setMessage("");
+    try {
+      const saved = await updateMiaoshouListing(draft.id, inputPayload);
+      const result = await requestImagePlan(saved.draft);
+      setMessage(`已生成 ${result.imageBriefs.length} 张商品图描述，可修改后再生成图片。`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "AI 商品图描述生成失败");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function waitForImageJob(jobId: string) {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      const result = await fetchAiJob(jobId);
+      if (result.job.status === "succeeded") {
+        const url = imageJobUrl(result.job);
+        if (!url) throw new Error("图片任务已完成，但没有返回可用的公网图片地址。");
+        return url;
+      }
+      if (["failed", "canceled"].includes(result.job.status)) throw new Error(result.job.error?.message || "图片生成失败。");
+    }
+    throw new Error("图片生成时间较长，请稍后在同舟 AI 任务记录中查看。");
+  }
+
+  async function handleImageSuite() {
+    if (!draft) return;
+    if (!aiImageModel) {
+      setError("当前密钥没有可用的生图模型，请先到同舟 AI 页面选择图片模型。");
+      return;
+    }
+    setWorking("image-suite");
+    setError("");
+    setMessage("");
+    try {
+      const saved = await updateMiaoshouListing(draft.id, inputPayload);
+      let workingDraft = saved.draft;
+      let briefs = imageBriefs.filter((item) => item.prompt.trim());
+      if (!briefs.length) {
+        const planned = await requestImagePlan(workingDraft);
+        workingDraft = planned.draft;
+        briefs = planned.imageBriefs;
+      }
+      if (!briefs.length) throw new Error("请先生成商品图描述。");
+
+      const results = briefs.map((item) => ({ ...item }));
+      const states = Object.fromEntries(results.map((item) => [item.id, "waiting" as const]));
+      setImageTaskStates(states);
+      setImageProgress({ completed: 0, total: results.length });
+      let cursor = 0;
+      let completed = 0;
+      const failures: string[] = [];
+      const referenceImages = productReferenceImages;
+
+      async function worker() {
+        while (cursor < results.length) {
+          const index = cursor;
+          cursor += 1;
+          const brief = results[index];
+          setImageTaskStates((current) => ({ ...current, [brief.id]: "running" }));
+          try {
+            const submitted = await submitAiJob({
+              kind: "model",
+              category: "image",
+              model: aiImageModel,
+              prompt: brief.prompt,
+              images: referenceImages,
+              params: {
+                size: "1024x1024",
+                resolution: "1024x1024",
+                quality: "standard",
+                style: "natural",
+                ...(brief.negativePrompt ? { negativePrompt: brief.negativePrompt } : {}),
+              },
+            });
+            results[index] = { ...brief, imageUrl: await waitForImageJob(submitted.job.id) };
+            setImageTaskStates((current) => ({ ...current, [brief.id]: "done" }));
+          } catch (nextError) {
+            failures.push(`${brief.title}：${nextError instanceof Error ? nextError.message : "生成失败"}`);
+            setImageTaskStates((current) => ({ ...current, [brief.id]: "failed" }));
+          } finally {
+            completed += 1;
+            setImageProgress({ completed, total: results.length });
+            setImageBriefs(results.map((item) => ({ ...item })));
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(2, results.length) }, () => worker()));
+      const generatedUrls = results.map((item) => directHttps(item.imageUrl)).filter(Boolean);
+      const nextSelectedImages = Array.from(new Set([...generatedUrls, ...selectedImages])).slice(0, 9);
+      const updated = await updateMiaoshouListing(workingDraft.id, { imageBriefs: results, imageUrls: nextSelectedImages });
+      setDrafts((current) => current.map((item) => item.id === updated.draft.id ? updated.draft : item));
+      hydrate(updated.draft, true);
+      if (failures.length) {
+        setError(`${failures.length} 张图片未生成成功：${failures.join("；")}`);
+        setMessage(`已生成并保存 ${generatedUrls.length} 张商品图。`);
+      } else {
+        setMessage(`整套 ${generatedUrls.length} 张商品图已生成并自动选中。`);
+      }
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "整套商品图生成失败");
+    } finally {
+      setWorking("");
+    }
+  }
+
+  function updateImageBrief(id: string, updates: Partial<MiaoshouListingImageBrief>) {
+    setImageBriefs((current) => current.map((item) => item.id === id ? { ...item, ...updates } : item));
   }
 
   function setAttribute(attrId: string, name: string, value: string, values: Array<{ id: string; name: string }>) {
@@ -404,7 +606,7 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
   const visibleWarnings = Array.from(new Set([
     ...(draft?.validation?.warnings || []),
     ...(internalMediaCount > 0 && !draft ? [`${internalMediaCount} 个内部附件没有公网地址，暂不能推送。`] : []),
-  ]));
+  ].map(chineseListingWarning)));
   const platformReadiness = localTikTokReadiness({
     shopId,
     categoryId,
@@ -419,6 +621,11 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
     ...categoryAttributes.filter((item) => item.mandatory),
     ...categoryAttributes.filter((item) => !item.mandatory).slice(0, 6),
   ];
+  const availableImages = Array.from(new Set([
+    ...sourceImages,
+    ...selectedImages,
+    ...imageBriefs.map((item) => directHttps(item.imageUrl)).filter(Boolean),
+  ])).slice(0, 18);
 
   return (
     <div className="miaoshou-listing-workspace">
@@ -454,7 +661,7 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
           <label><span>目标店铺</span><select value={shopId} disabled={immutable || platform !== "tiktok"} onChange={(event) => { setShopId(event.target.value); setCategoryMetadata(null); }}><option value="">{matchingShops.length ? "请选择店铺" : "暂无已同步店铺"}</option>{matchingShops.map((shop) => <option key={shop.shopId} value={shop.shopId}>{shop.name}</option>)}</select></label>
           <label><span>AI 文字模型</span><select value={aiModel} disabled={!aiModels.length || Boolean(working)} onChange={(event) => setAiModel(event.target.value)}><option value="">{aiConfigured ? "暂无文字模型" : "请先配置画布密钥"}</option>{aiModels.map((model) => <option key={model.id} value={model.id}>{model.name}{model.estimatedCredits ? ` · 约 ${model.estimatedCredits} 点` : ""}</option>)}</select></label>
           <button className="listing-generate-button" type="button" onClick={generateDraft} disabled={!aiConfigured || Boolean(working)}>
-            <Bot size={17} />{working === "generate" ? "正在生成…" : draft ? "重新生成新草稿" : "生成 AI 草稿"}
+            <Bot size={17} />{["generate", "suggest"].includes(working) ? "AI 正在生成并补全…" : draft ? "重新生成并补全" : "AI 一键生成并补全"}
           </button>
         </div>
       </section>
@@ -477,15 +684,59 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
       </section>
 
       <section className="listing-card">
-        <div className="listing-card-head"><div><span>03</span><div><strong>商品图片</strong><small>最多 9 张，只显示妙手可访问的公网 HTTPS 图片</small></div></div><b>{selectedImages.length}/9</b></div>
-        {sourceImages.length ? (
+        <div className="listing-card-head listing-media-head">
+          <div><span>03</span><div><strong>AI 商品图片</strong><small>先由文字模型规划每张图，再用生图模型生成；最多推送 9 张</small></div></div>
+          <b>{selectedImages.length}/9</b>
+        </div>
+        <div className="listing-media-actions">
+          <label>
+            <span>AI 生图模型</span>
+            <select value={aiImageModel} disabled={!aiImageModels.length || Boolean(working)} onChange={(event) => setAiImageModel(event.target.value)}>
+              <option value="">{aiConfigured ? "暂无生图模型" : "请先配置画布密钥"}</option>
+              {aiImageModels.map((model) => <option key={model.id} value={model.id}>{model.name}{model.estimatedCredits ? ` · 约 ${model.estimatedCredits} 点/张` : ""}</option>)}
+            </select>
+          </label>
+          <button className="ghost-button" type="button" disabled={!draft || immutable || !aiConfigured || Boolean(working)} onClick={handleImagePlan}>
+            <Sparkles size={15} />{working === "image-plan" ? "正在规划…" : imageBriefs.length ? "重新规划图片描述" : "生成图片描述"}
+          </button>
+          <button className="listing-generate-button" type="button" disabled={!draft || immutable || !aiConfigured || !aiImageModel || Boolean(working)} onClick={handleImageSuite}>
+            <Sparkles size={16} />{working === "image-suite" ? `生成中 ${imageProgress.completed}/${imageProgress.total || 6}` : "一键生成整套图片"}
+          </button>
+        </div>
+        {working === "image-suite" ? (
+          <div className="listing-image-progress" role="status" aria-live="polite">
+            <RefreshCw size={15} className="spinning" />
+            正在并行生成商品图，已完成 {imageProgress.completed}/{imageProgress.total || 6}；可以留在本页查看每张进度。
+          </div>
+        ) : null}
+        {imageBriefs.length ? (
+          <div className="listing-image-brief-grid">
+            {imageBriefs.map((brief, index) => {
+              const state = imageTaskStates[brief.id];
+              return (
+                <article className={`listing-image-brief ${state || ""}`} key={brief.id}>
+                  <div className="listing-image-brief-preview">
+                    {brief.imageUrl ? <img src={brief.imageUrl} alt={brief.title} /> : <span><Sparkles size={20} />{state === "running" ? "正在生图" : state === "failed" ? "生成失败" : `图 ${index + 1}`}</span>}
+                  </div>
+                  <div className="listing-image-brief-body">
+                    <div><strong>{brief.title}</strong><small>{brief.purpose || "商品信息展示"}</small></div>
+                    <label><span>画面描述</span><textarea rows={5} value={brief.prompt} disabled={immutable || working === "image-suite"} onChange={(event) => updateImageBrief(brief.id, { prompt: event.target.value })} /></label>
+                    <label><span>避免内容</span><input value={brief.negativePrompt} disabled={immutable || working === "image-suite"} onChange={(event) => updateImageBrief(brief.id, { negativePrompt: event.target.value })} /></label>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : <div className="listing-empty-media">点击“一键生成整套图片”，系统会先生成 6 张逐图描述，再连续调用生图模型。</div>}
+        <div className="listing-subhead"><strong>可推送图片</strong><span>AI 生成图会自动加入并优先选中</span></div>
+        {availableImages.length ? (
           <div className="listing-image-grid">
-            {sourceImages.map((url) => {
+            {availableImages.map((url) => {
               const selected = selectedImages.includes(url);
               return <button key={url} type="button" disabled={immutable} className={selected ? "selected" : ""} onClick={() => toggleImage(url)}><img src={url} alt="产品素材" /><span>{selected ? <Check size={14} /> : null}{selected ? "已选择" : "选择"}</span></button>;
             })}
           </div>
-        ) : <div className="listing-empty-media">暂无可推送的公网图片，请先为产品配置公网 HTTPS 素材。</div>}
+        ) : <div className="listing-empty-media">暂无可推送的公网图片，可直接使用 AI 生成整套商品图。</div>}
       </section>
 
       <section className="listing-card listing-platform-card">
@@ -497,7 +748,7 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
           <>
             <div className="listing-category-toolbar">
               <label><span>平台类目</span><div className="listing-category-search"><input value={categorySearch} disabled={!draft || immutable} onChange={(event) => setCategorySearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void handleCategorySearch(); }} placeholder="输入中文类目，如：脱毛、洗发水" /><button className="ghost-button" type="button" disabled={!draft || immutable || Boolean(working)} onClick={handleCategorySearch}><Search size={15} />{working === "category" ? "搜索中" : "搜索"}</button></div></label>
-              <button className="listing-ai-category" type="button" disabled={!draft || immutable || !aiConfigured || Boolean(working)} onClick={handleSuggestCategory}><Sparkles size={16} />{working === "suggest" ? "AI 匹配中…" : "AI 推荐类目"}</button>
+              <button className="listing-ai-category" type="button" disabled={!draft || immutable || !aiConfigured || Boolean(working)} onClick={handleSuggestCategory}><Sparkles size={16} />{working === "suggest" ? "AI 匹配并填写中…" : "AI 匹配类目并填写属性"}</button>
             </div>
             {categoryOptions.length ? (
               <div className="listing-category-results">
@@ -512,13 +763,19 @@ export function MiaoshouListingWorkspace({ product, productBase, qualifications,
             {working === "metadata" ? <div className="listing-inline-loading"><RefreshCw size={15} className="spinning" />正在读取妙手类目要求…</div> : null}
             {categoryMetadata ? (
               <div className="listing-attribute-area">
-                <div className="listing-subhead"><strong>平台属性</strong><span>{categoryAttributes.filter((item) => item.mandatory).length} 项必填，另显示最多 6 项常用选填</span></div>
+                <div className="listing-subhead"><strong>平台属性</strong><span>{categoryAttributes.filter((item) => item.mandatory).length} 项必填，AI 会先填写有可靠依据的属性</span></div>
+                <div className="listing-attribute-actions">
+                  <button className="listing-ai-category" type="button" disabled={immutable || !aiConfigured || Boolean(working)} onClick={handleFillAttributes}>
+                    <Sparkles size={15} />{working === "attributes" ? "AI 填写中…" : "AI 自动补全平台属性"}
+                  </button>
+                  <span>注册号、认证等无法从产品资料确认的字段不会编造，仍会明确标记。</span>
+                </div>
                 {visibleAttributes.length ? (
                   <div className="listing-attribute-grid">
                     {visibleAttributes.map((attr) => {
                       const selected = platformAttributes.find((item) => item.attrId === attr.attrId);
                       return (
-                        <label key={attr.attrId}><span>{attr.name || attr.alias || attr.attrId}{attr.mandatory ? <b>*</b> : null}</span>{attr.values.length ? (
+                        <label key={attr.attrId} title={attr.name || attr.alias || attr.attrId}><span>{displayAttributeName(attr.name || attr.alias || attr.attrId)}{attr.mandatory ? <b>*</b> : null}</span>{attr.values.length ? (
                           <select value={selected?.valueId || ""} disabled={immutable} onChange={(event) => setAttribute(attr.attrId, attr.name, event.target.value, attr.values)}><option value="">请选择</option>{attr.values.slice(0, 200).map((value) => <option key={value.id || value.name} value={value.id}>{value.name}</option>)}</select>
                         ) : (
                           <input value={selected?.customValue || ""} disabled={immutable || !attr.customized} onChange={(event) => setAttribute(attr.attrId, attr.name, event.target.value, [])} placeholder={attr.customized ? "请输入属性值" : "需在妙手中填写"} />

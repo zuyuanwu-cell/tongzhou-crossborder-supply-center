@@ -35,9 +35,9 @@ import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogPr
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
-import { directHttpsUrls, initMiaoshouListingService, parseListingAiOutput, validateListingDraft } from "./miaoshou-listing.js";
+import { directHttpsUrls, initMiaoshouListingService, localizeListingWarning, parseListingAiOutput, parseListingImagePlan, validateListingDraft } from "./miaoshou-listing.js";
 import { initTongzhouCanvasAi, TongzhouCanvasApiError } from "./tongzhou-canvas-ai.js";
-import { createMiaoshouCategoryService, validateTikTokReadiness } from "./miaoshou-listing-platform.js";
+import { createMiaoshouCategoryService, normalizeAiPlatformAttributes, validateTikTokReadiness } from "./miaoshou-listing-platform.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
@@ -1966,10 +1966,7 @@ function miaoshouListingSource(sku) {
   const mediaCandidates = [
     product.imageUrl,
     base?.imageUrl,
-    product.qualificationImageUrl,
-    base?.qualificationImageUrl,
-    ...assetRecords.flatMap((record) => (record.files || []).map((file) => file.url)),
-    ...qualificationRecords.flatMap((record) => (record.files || []).map((file) => file.url)),
+    ...assetRecords.flatMap((record) => (record.imageFiles || []).map((file) => file.url)),
   ].filter(Boolean);
   const fileCandidates = [
     ...assetRecords.flatMap((record) => record.files || []),
@@ -2040,6 +2037,8 @@ async function generateMiaoshouListingDraft(input, actorName, userId) {
     `请为 ${platform.toUpperCase()} ${site} 站生成商品上架草稿，输出语言为${listingLanguageLabel(language, site)}。`,
     "只能依据给定产品资料，不得虚构重量、尺寸、认证、功效、成分、适用人群或医疗效果。",
     "标题应自然、可搜索且避免夸大；详情应便于移动端阅读；如存在潜在功效宣称或资料不足，必须写入 warnings。",
+    "warnings 必须全部使用简体中文；标题、详情、关键词和卖点仍使用目标站点语言。",
+    "categoryHint 必须使用简体中文，并填写一个简短、明确、便于搜索妙手类目树的商品类目词。",
     "只返回 JSON，不要 Markdown。结构必须为：",
     '{"title":"","description":"","keywords":[],"sellingPoints":[],"categoryHint":"","warnings":[]}',
     `产品资料：${JSON.stringify(source.aiSource)}`,
@@ -2081,6 +2080,158 @@ async function generateMiaoshouListingDraft(input, actorName, userId) {
   }, actorName);
 }
 
+function parseAiJson(rawAnswer, errorMessage) {
+  const raw = String(rawAnswer || "").trim();
+  const withoutFence = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const start = withoutFence.indexOf("{");
+  const end = withoutFence.lastIndexOf("}");
+  try {
+    return JSON.parse(start >= 0 && end > start ? withoutFence.slice(start, end + 1) : withoutFence);
+  } catch {
+    throw new Error(errorMessage);
+  }
+}
+
+function compactAttributesForAi(metadata, sourceText) {
+  const attributes = [...(metadata?.productAttributes || []), ...(metadata?.saleAttributes || [])]
+    .sort((left, right) => Number(right.mandatory) - Number(left.mandatory))
+    .slice(0, 24);
+  const compact = [];
+  let remaining = 6500;
+  const searchableSource = String(sourceText || "").toLowerCase();
+  for (const attribute of attributes) {
+    const values = [...(attribute.values || [])]
+      .sort((left, right) => Number(searchableSource.includes(String(right.name || "").toLowerCase())) - Number(searchableSource.includes(String(left.name || "").toLowerCase())))
+      .slice(0, 40)
+      .map((item) => ({ id: item.id, name: String(item.name || "").slice(0, 120) }));
+    let entry = {
+      attrId: attribute.attrId,
+      name: attribute.name || attribute.alias || attribute.attrId,
+      mandatory: Boolean(attribute.mandatory),
+      customized: Boolean(attribute.customized),
+      values,
+    };
+    let size = JSON.stringify(entry).length;
+    while (size > remaining && entry.values.length > 4) {
+      entry = { ...entry, values: entry.values.slice(0, Math.max(4, Math.floor(entry.values.length / 2))) };
+      size = JSON.stringify(entry).length;
+    }
+    if (size > remaining && !attribute.mandatory) continue;
+    compact.push(entry);
+    remaining -= Math.min(size, remaining);
+    if (remaining <= 300) break;
+  }
+  return compact;
+}
+
+async function fillMiaoshouPlatformAttributes(draft, metadata, actorName, userId, model = "") {
+  const source = miaoshouListingSource(draft.sku);
+  const safeSource = {
+    name: source.aiSource.name,
+    nameEn: source.aiSource.nameEn,
+    brand: source.aiSource.brand,
+    category: source.aiSource.category,
+    functionCategory: source.aiSource.functionCategory,
+    productType: source.aiSource.productType,
+    skuAttribute: source.aiSource.skuAttribute,
+    specification: source.aiSource.specification,
+    publicDescription: String(source.aiSource.publicDescription || "").slice(0, 1400),
+    sellingPoints: String(source.aiSource.sellingPoints || "").slice(0, 1200),
+  };
+  const attributes = compactAttributesForAi(metadata, JSON.stringify(safeSource));
+  if (!attributes.length) {
+    return { draft, filled: 0, skipped: [], warnings: ["该类目没有返回可由 AI 填写的平台属性。"] };
+  }
+  const prompt = [
+    "请根据真实产品资料填写 TikTok 平台属性。",
+    "只能填写来源中有明确依据的值；不得编造 BPOM/PIRT、认证编号、成分、容量、香型、材质或其他事实。",
+    "有候选值的属性只能从 values 中选择，并原样返回 attrId 与 valueId；无法确定时不要返回该属性。",
+    "允许自定义的属性只有在产品资料明确给出时才能填写 customValue。",
+    "warningsChinese 必须使用简体中文，说明仍需人工补充的法定或关键必填资料。",
+    "只返回 JSON：{\"attributes\":[{\"attrId\":\"\",\"valueId\":\"\",\"valueName\":\"\",\"customValue\":\"\"}],\"warningsChinese\":[]}",
+    `产品资料：${JSON.stringify(safeSource)}`,
+    `当前商品草稿：${JSON.stringify({ title: draft.title, description: draft.description, categoryPath: draft.categoryPath, sellingPoints: draft.sellingPoints })}`,
+    `妙手允许的平台属性：${JSON.stringify(attributes)}`,
+  ].join("\n");
+  const job = await tongzhouCanvasAi.submitModelTask(userId, {
+    category: "chat",
+    model,
+    params: { temperature: 0, max_tokens: 1800 },
+    messages: [
+      { role: "system", content: "你是跨境电商平台属性审核员。只选择平台提供的真实属性和值，不得猜测或编造合规信息。" },
+      { role: "user", content: prompt },
+    ],
+  });
+  const completed = await tongzhouCanvasAi.waitForJob(userId, job.id);
+  const parsed = parseAiJson(completed.output?.text, "AI 平台属性返回格式异常，请重新补全。");
+  const normalized = normalizeAiPlatformAttributes(parsed?.attributes, metadata);
+  const existing = new Map((draft.platformAttributes || []).map((item) => [String(item.attrId), item]));
+  for (const item of normalized.selected) {
+    const current = existing.get(item.attrId);
+    if (!current || !(current.valueId || current.valueName || current.customValue)) existing.set(item.attrId, item);
+  }
+  const warnings = Array.from(new Set([
+    ...(draft.warnings || []),
+    ...(Array.isArray(parsed?.warningsChinese) ? parsed.warningsChinese.map(localizeListingWarning) : []),
+  ].filter(Boolean)));
+  const updated = miaoshouListing.updateAiDraft(draft.id, {
+    platformAttributes: Array.from(existing.values()),
+    categoryMetadataCheckedAt: new Date().toISOString(),
+    warnings,
+  }, actorName, { eventType: "ai_attributes", eventMessage: `AI 已补全 ${normalized.selected.length} 项平台属性` });
+  const selectedIds = new Set(updated.platformAttributes.map((item) => item.attrId));
+  const skipped = [...(metadata?.productAttributes || []), ...(metadata?.saleAttributes || [])]
+    .filter((item) => item.mandatory && !selectedIds.has(item.attrId))
+    .map((item) => item.name || item.alias || item.attrId);
+  return { draft: updated, filled: normalized.selected.length, skipped, warnings, rejected: normalized.rejected };
+}
+
+async function generateMiaoshouImagePlan(draft, actorName, userId, { model = "", count = 6 } = {}) {
+  const source = miaoshouListingSource(draft.sku);
+  const safeCount = Math.max(1, Math.min(9, Number(count) || 6));
+  const roles = [
+    "白底主图",
+    "核心卖点图",
+    "使用场景图",
+    "成分或材质说明图",
+    "使用方法图",
+    "规格与包装图",
+    "细节特写图",
+    "目标人群场景图",
+    "品牌氛围图",
+  ].slice(0, safeCount);
+  const prompt = [
+    `请为该商品规划 ${safeCount} 张 1:1 跨境电商商品图，每张承担不同信息任务。`,
+    "只依据给定资料，不得虚构成分、功效、认证、尺寸、颜色、配件或包装文字。",
+    "后续生图会附带原产品参考图；描述必须要求保持产品外观、包装结构、品牌和现有标签一致，不新增无法保证正确的文字、商标或认证标识。",
+    "每张 prompt 使用中文，包含主体、构图、背景、光线、镜头、信息层级和安全边界；negativePrompt 写明需要避免的内容。",
+    "只返回 JSON：{\"images\":[{\"slot\":\"\",\"title\":\"\",\"purpose\":\"\",\"prompt\":\"\",\"negativePrompt\":\"\"}]}",
+    `固定图片角色：${JSON.stringify(roles)}`,
+    `产品资料：${JSON.stringify({
+      ...source.aiSource,
+      publicDescription: String(source.aiSource.publicDescription || "").slice(0, 1800),
+      sellingPoints: String(source.aiSource.sellingPoints || "").slice(0, 1400),
+      sellingPointsEn: String(source.aiSource.sellingPointsEn || "").slice(0, 900),
+    })}`,
+    `上架草稿：${JSON.stringify({ title: draft.title, description: draft.description, sellingPoints: draft.sellingPoints, categoryPath: draft.categoryPath })}`,
+  ].join("\n");
+  const job = await tongzhouCanvasAi.submitModelTask(userId, {
+    category: "chat",
+    model,
+    params: { temperature: 0.35, max_tokens: 3200 },
+    messages: [
+      { role: "system", content: "你是电商视觉策划师。先规划真实、可执行的商品图描述，再交给图片模型生成。" },
+      { role: "user", content: prompt },
+    ],
+  });
+  const completed = await tongzhouCanvasAi.waitForJob(userId, job.id);
+  const briefs = parseListingImagePlan(completed.output?.text).slice(0, safeCount);
+  const updated = miaoshouListing.updateAiDraft(draft.id, {
+    imageBriefs: briefs,
+  }, actorName, { eventType: "ai_image_plan", eventMessage: `AI 已生成 ${briefs.length} 张商品图描述` });
+  return { draft: updated, imageBriefs: updated.imageBriefs };
+}
+
 async function suggestMiaoshouTikTokCategory(draft, actorName, userId, model = "") {
   const searchText = [draft.categoryHint, draft.sourceProductName, draft.title, ...(draft.keywords || [])].filter(Boolean).join(" ");
   const candidates = await miaoshouCategories.search(draft.site, searchText, 120);
@@ -2110,13 +2261,13 @@ async function suggestMiaoshouTikTokCategory(draft, actorName, userId, model = "
   }
   const selected = candidates.find((item) => item.cid === String(parsed?.cid || "").trim());
   if (!selected) throw new Error("AI 返回了候选范围外的类目，已拒绝写入，请改用人工搜索。草稿未被修改。");
-  const updated = miaoshouListing.updateDraft(draft.id, {
+  const updated = miaoshouListing.updateAiDraft(draft.id, {
     categoryId: selected.cid,
     categoryName: selected.nameChinese || selected.name,
     categoryPath: selected.pathChinese || selected.path,
     platformAttributes: [],
     categoryMetadataCheckedAt: "",
-  }, actorName);
+  }, actorName, { eventType: "ai_category", eventMessage: "AI 已匹配妙手末级类目" });
   return { draft: updated, category: selected, reason: String(parsed?.reason || "").trim() };
 }
 
@@ -5503,11 +5654,14 @@ const server = http.createServer(async (req, res) => {
         site: String(shop.site || "").toUpperCase(),
         name: String(shop.shopNick || shop.platformShopName || shop.shopId || ""),
       }));
+      const listingAiConfig = tongzhouCanvasAi.publicConfig(auth.user.id);
       sendJson(res, 200, {
         ...listingPayload,
-        aiConfigured: tongzhouCanvasAi.publicConfig(auth.user.id).configured,
-        aiModels: tongzhouCanvasAi.publicConfig(auth.user.id).catalog.models.filter((model) => model.category === "chat"),
-        selectedAiModel: tongzhouCanvasAi.publicConfig(auth.user.id).models.text,
+        aiConfigured: listingAiConfig.configured,
+        aiModels: listingAiConfig.catalog.models.filter((model) => model.category === "chat"),
+        aiImageModels: listingAiConfig.catalog.models.filter((model) => model.category === "image"),
+        selectedAiModel: listingAiConfig.models.text,
+        selectedAiImageModel: listingAiConfig.models.image,
         defaults: { platform: "tiktok", site: "ID", language: "id", priceCurrency: "CNY" },
         shops: listingShops,
         drafts: listingPayload.drafts.map((draft) => ({ ...draft, validation: validateListingDraft(draft) })),
@@ -5618,17 +5772,89 @@ const server = http.createServer(async (req, res) => {
         const payload = await parseRequestBody(req);
         const result = await suggestMiaoshouTikTokCategory(current, actorName, auth.user.id, payload.model);
         const metadata = await miaoshouCategories.getMetadata({ site: result.draft.site, shopId: result.draft.shopId, cid: result.draft.categoryId });
+        let attributeResult = { draft: result.draft, filled: 0, skipped: [], rejected: [], warnings: [] };
+        let attributeError = "";
+        try {
+          attributeResult = await fillMiaoshouPlatformAttributes(result.draft, metadata, actorName, auth.user.id, payload.model);
+        } catch (error) {
+          attributeError = error?.message || "AI 平台属性补全失败，请稍后重试。";
+        }
         sendJson(res, 200, {
           ok: true,
           reason: result.reason,
           category: result.category,
           metadata,
+          readiness: validateTikTokReadiness(attributeResult.draft, metadata),
+          draft: { ...attributeResult.draft, validation: validateListingDraft(attributeResult.draft) },
+          attributeFill: {
+            filled: attributeResult.filled,
+            skipped: attributeResult.skipped,
+            rejected: attributeResult.rejected,
+            error: attributeError,
+          },
+          checkedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "AI 推荐 TikTok 类目失败。" });
+      }
+      return;
+    }
+
+    const miaoshouFillAttributesMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/fill-attributes$/);
+    if (miaoshouFillAttributesMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "AI 补全平台属性需要妙手管理和同舟 AI 权限。" });
+        return;
+      }
+      try {
+        const draftId = decodeURIComponent(miaoshouFillAttributesMatch[1]);
+        const current = miaoshouListing.getDraft(draftId);
+        if (!current) throw new Error("未找到妙手上架草稿");
+        if (current.platform !== "tiktok" || !current.categoryId) throw new Error("请先选择 TikTok 末级类目。");
+        const payload = await parseRequestBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "管理员";
+        const metadata = await miaoshouCategories.getMetadata({ site: current.site, shopId: current.shopId, cid: current.categoryId });
+        const result = await fillMiaoshouPlatformAttributes(current, metadata, actorName, auth.user.id, payload.model);
+        appendActionLog(auth, "AI 补全妙手平台属性", "miaoshou_listing", result.draft.sku, { draftId, filled: result.filled, skipped: result.skipped });
+        sendJson(res, 200, {
+          ok: true,
+          metadata,
+          filled: result.filled,
+          skipped: result.skipped,
+          rejected: result.rejected,
           readiness: validateTikTokReadiness(result.draft, metadata),
           draft: { ...result.draft, validation: validateListingDraft(result.draft) },
           checkedAt: new Date().toISOString(),
         });
       } catch (error) {
-        sendJson(res, 400, { ok: false, message: error?.message || "AI 推荐 TikTok 类目失败。" });
+        sendJson(res, 400, { ok: false, message: error?.message || "AI 补全平台属性失败。" });
+      }
+      return;
+    }
+
+    const miaoshouImagePlanMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/image-plan$/);
+    if (miaoshouImagePlanMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "生成商品图方案需要妙手管理和同舟 AI 权限。" });
+        return;
+      }
+      try {
+        const draftId = decodeURIComponent(miaoshouImagePlanMatch[1]);
+        const current = miaoshouListing.getDraft(draftId);
+        if (!current) throw new Error("未找到妙手上架草稿");
+        const payload = await parseRequestBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "管理员";
+        const result = await generateMiaoshouImagePlan(current, actorName, auth.user.id, { model: payload.model, count: payload.count });
+        appendActionLog(auth, "AI 生成妙手商品图方案", "miaoshou_listing", result.draft.sku, { draftId, imageCount: result.imageBriefs.length });
+        sendJson(res, 200, {
+          ok: true,
+          imageBriefs: result.imageBriefs,
+          draft: { ...result.draft, validation: validateListingDraft(result.draft) },
+        });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "AI 商品图方案生成失败。" });
       }
       return;
     }

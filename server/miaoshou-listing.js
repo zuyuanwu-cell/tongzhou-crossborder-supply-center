@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { resolve } from "node:path";
 import { normalizePlatformAttributes } from "./miaoshou-listing-platform.js";
 
-const LISTING_VERSION = 2;
+const LISTING_VERSION = 3;
 const MAX_DRAFTS = 500;
 const MAX_EVENTS = 80;
 
@@ -21,6 +21,62 @@ function stringList(value) {
   return Array.from(new Set((Array.isArray(value) ? value : [])
     .map((item) => text(item))
     .filter(Boolean)));
+}
+
+function hasChinese(value) {
+  return /[\u3400-\u9fff]/.test(text(value));
+}
+
+export function localizeListingWarning(value) {
+  const source = text(value);
+  if (!source || hasChinese(source)) return source;
+  const normalized = source.toLowerCase();
+  const translations = [
+    [["thioglycolic", "tioglikolat"], "产品可能含巯基乙酸类成分，敏感肌使用前应先进行局部皮肤测试。"],
+    [["10 menit", "10 minute"], "使用时间应严格遵循产品标签，最长使用时间不要超过 10 分钟。"],
+    [["area wajah", "intim", "kulit yang terluka"], "请勿用于面部、私密部位或破损皮肤。"],
+    [["sensitif skin", "sensitive skin"], "关于敏感肌适用性的表述需要谨慎，个体反应可能存在差异。"],
+    [["up to 7 days", "fewer dark spots"], "“效果维持 7 天”或“减少黑点”等效果表述缺少可核验依据，不应作为确定性承诺。"],
+    [["bukan produk medis", "not a medical"], "该产品属于日常护理或化妆品，不应宣传为医疗产品或药品。"],
+    [["bpom", "halal"], "当前资料未提供可核验的 BPOM 或 Halal 官方认证信息，发布前需要人工确认。"],
+    [["rohs", "cosmetic safety"], "现有资料中的 RoHS 或化妆品安全测试声明缺少公开可核验依据，发布前需要人工确认。"],
+    [["ingredient list", "komposisi lengkap", "allerg"], "当前资料缺少完整成分表，过敏体质用户相关提示需要人工补充。"],
+  ];
+  const matched = translations.find(([needles]) => needles.some((needle) => normalized.includes(needle)));
+  return matched?.[1] || "AI 检测到一项需要人工核对的合规风险；原提示不是中文，请重新运行 AI 补全以获得详细中文说明。";
+}
+
+function localizedWarnings(value) {
+  return Array.from(new Set(stringList(value).map(localizeListingWarning).filter(Boolean)));
+}
+
+export function normalizeListingImageBriefs(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 9).map((item, index) => ({
+    id: text(item?.id) || `${text(item?.slot) || "image"}-${index + 1}`,
+    slot: text(item?.slot) || `image-${index + 1}`,
+    title: text(item?.title) || `商品图 ${index + 1}`,
+    purpose: text(item?.purpose),
+    prompt: text(item?.prompt).slice(0, 5000),
+    negativePrompt: text(item?.negativePrompt).slice(0, 2000),
+    imageUrl: directHttpsUrls([item?.imageUrl])[0] || "",
+  })).filter((item) => item.prompt);
+}
+
+export function parseListingImagePlan(rawAnswer) {
+  const raw = text(rawAnswer);
+  const withoutFence = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const jsonCandidate = withoutFence.startsWith("{") || withoutFence.startsWith("[")
+    ? withoutFence
+    : withoutFence.slice(withoutFence.indexOf("{"), withoutFence.lastIndexOf("}") + 1);
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonCandidate);
+  } catch {
+    throw new Error("AI 商品图方案返回格式异常，请重新生成。");
+  }
+  const briefs = normalizeListingImageBriefs(Array.isArray(parsed) ? parsed : parsed?.images);
+  if (!briefs.length) throw new Error("AI 没有返回可用的商品图描述，请重新生成。");
+  return briefs;
 }
 
 function nowIso() {
@@ -52,13 +108,13 @@ function safeStatus(value) {
 }
 
 function migrateLoadedDraft(draft) {
-  const legacy = Number(draft?.version || 1) < LISTING_VERSION;
-  if (!legacy || draft?.status === "pushed") return normalizeListingDraft(draft, draft);
-  const migrated = {
+  const version = Number(draft?.version || 1);
+  if (version >= LISTING_VERSION || draft?.status === "pushed") return normalizeListingDraft(draft, draft);
+  const migrated = version < 2 ? {
     ...draft,
     price: null,
     warnings: [...stringList(draft?.warnings), "价格口径已升级为人民币货源价，请重新填写并核对后再推送。"],
-  };
+  } : draft;
   return normalizeListingDraft(migrated, migrated);
 }
 
@@ -98,7 +154,7 @@ export function parseListingAiOutput(rawAnswer) {
     keywords: stringList(parsed.keywords),
     sellingPoints: stringList(parsed.sellingPoints),
     categoryHint: text(parsed.categoryHint || parsed.category),
-    warnings: stringList(parsed.warnings),
+    warnings: localizedWarnings(parsed.warnings),
   };
 }
 
@@ -125,7 +181,7 @@ export function normalizeListingDraft(input = {}, previous = {}) {
     categoryPath: text(fieldValue(input, previous, "categoryPath")),
     platformAttributes: normalizePlatformAttributes(fieldValue(input, previous, "platformAttributes")),
     categoryMetadataCheckedAt: text(fieldValue(input, previous, "categoryMetadataCheckedAt")),
-    warnings: stringList(fieldValue(input, previous, "warnings")),
+    warnings: localizedWarnings(fieldValue(input, previous, "warnings")),
     price: nullableNumber(fieldValue(input, previous, "price")),
     stock: nullableNumber(fieldValue(input, previous, "stock")) ?? 0,
     weight: nullableNumber(fieldValue(input, previous, "weight")),
@@ -134,6 +190,7 @@ export function normalizeListingDraft(input = {}, previous = {}) {
     packageHeight: nullableNumber(fieldValue(input, previous, "packageHeight")),
     barcode: text(fieldValue(input, previous, "barcode")),
     imageUrls: directHttpsUrls(fieldValue(input, previous, "imageUrls")),
+    imageBriefs: normalizeListingImageBriefs(fieldValue(input, previous, "imageBriefs")),
     unavailableMediaCount: Math.max(0, Number(fieldValue(input, previous, "unavailableMediaCount")) || 0),
     status: safeStatus(fieldValue(input, previous, "status") || (title ? "review_ready" : "draft")),
     commonCollectBoxDetailId: text(previous.commonCollectBoxDetailId || input.commonCollectBoxDetailId),
@@ -255,7 +312,7 @@ export function initMiaoshouListingService({ cacheDir, connector } = {}) {
     return draft;
   }
 
-  function updateDraft(id, updates, actorName = "") {
+  function updateDraft(id, updates, actorName = "", options = {}) {
     const index = state.drafts.findIndex((draft) => draft.id === text(id));
     if (index < 0) throw new Error("未找到妙手上架草稿");
     const current = state.drafts[index];
@@ -267,14 +324,25 @@ export function initMiaoshouListingService({ cacheDir, connector } = {}) {
       "title", "description", "keywords", "sellingPoints", "categoryHint", "platform", "site", "language",
       "price", "stock", "weight", "packageLength", "packageWidth", "packageHeight", "barcode", "imageUrls",
       "shopId", "categoryId", "categoryName", "categoryPath", "platformAttributes", "categoryMetadataCheckedAt",
+      "imageBriefs",
     ].forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(updates, key)) allowed[key] = updates[key];
     });
+    if (options.allowWarnings && Object.prototype.hasOwnProperty.call(updates, "warnings")) allowed.warnings = updates.warnings;
     const next = normalizeListingDraft(allowed, { ...current, status: "review_ready", lastError: "" });
-    next.events = [...current.events, event("updated", "已保存人工修改", actorName)].slice(-MAX_EVENTS);
+    next.events = [...current.events, event(text(options.eventType) || "updated", text(options.eventMessage) || "已保存人工修改", actorName)].slice(-MAX_EVENTS);
     state.drafts[index] = next;
     persist();
     return next;
+  }
+
+  function updateAiDraft(id, updates, actorName = "", options = {}) {
+    return updateDraft(id, updates, actorName, {
+      ...options,
+      allowWarnings: true,
+      eventType: text(options.eventType) || "ai_updated",
+      eventMessage: text(options.eventMessage) || "AI 已补全上架草稿",
+    });
   }
 
   async function pushDraft(id, { confirmed = false, actorName = "" } = {}) {
@@ -327,6 +395,7 @@ export function initMiaoshouListingService({ cacheDir, connector } = {}) {
     getDraft,
     listDrafts,
     pushDraft,
+    updateAiDraft,
     updateDraft,
     publicPayload({ sku = "" } = {}) {
       return { ok: true, provider: "miaoshou", updatedAt: state.updatedAt, drafts: listDrafts({ sku }) };
