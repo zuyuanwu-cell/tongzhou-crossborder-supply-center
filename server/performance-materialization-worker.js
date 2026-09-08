@@ -1,5 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { reconcileMiaoshouPerformance } from "./miaoshou-performance.js";
 import { materializePerformanceFacts } from "./performance-analytics.js";
@@ -39,13 +39,10 @@ async function run() {
   });
   const materializedAt = new Date().toISOString();
   const durationMs = Date.now() - startedAt;
-  const cacheMaxAgeMs = Math.max(0, Number(workerData.cacheMaxAgeMs || 0));
-  const shouldPersist = workerData.cachePath && (
-    !existsSync(workerData.cachePath)
-    || !cacheMaxAgeMs
-    || Date.now() - statSync(workerData.cachePath).mtimeMs >= cacheMaxAgeMs
-  );
-  if (shouldPersist) {
+  // A materialization job only starts for a new data version, so its result
+  // must replace the previous snapshot even when that file was written
+  // recently. Otherwise every restart recomputes the same 60k+ rows.
+  if (workerData.cachePath) {
     const cachePayload = JSON.stringify({
       dataVersion: workerData.dataVersion || "",
       materializedAt,

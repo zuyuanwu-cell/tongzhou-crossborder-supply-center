@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { allocateOrderSalesAmount, normalizeSeaOrderRows, normalizeYunOrderRows } from "../server/wms-adapters.js";
 import {
   DEFAULT_PACKAGING_FEE_RULES,
@@ -335,14 +336,17 @@ try {
   const emptyStore = await initPerformanceAnalyticsStore(workerDatabasePath);
   emptyStore.close?.();
   const workerOrderCachePath = join(workerDirectory, "orders-sync.json");
+  const workerMaterializationCachePath = join(workerDirectory, "performance-materialized.json.gz");
   const workerSyncedAt = "2026-09-08T15:30:00.000Z";
   writeFileSync(workerOrderCachePath, JSON.stringify({
     syncedAt: workerSyncedAt,
     orders: [{ ...facts[0], id: "worker-order", sourceOrderId: "WORKER-1", orderNo: "WORKER-1" }],
   }));
+  writeFileSync(workerMaterializationCachePath, gzipSync(Buffer.from(JSON.stringify({ dataVersion: "stale-but-recent" }))));
   const workerResult = await runMaterializationWorker({
     dbPath: workerDatabasePath,
     orderCachePath: workerOrderCachePath,
+    cachePath: workerMaterializationCachePath,
     sourceSyncedAt: "stale-db-timestamp",
     shopDirectory: {},
     products,
@@ -358,6 +362,9 @@ try {
   assert.equal(workerResult.facts.length, 1, "the worker must materialize directly from the order snapshot");
   assert.equal(workerResult.facts[0].orderNo, "WORKER-1");
   assert.equal(workerResult.sourceSyncedAt, workerSyncedAt, "the order snapshot timestamp must win over stale DB metadata");
+  const persistedWorkerResult = JSON.parse(gunzipSync(readFileSync(workerMaterializationCachePath)).toString("utf8"));
+  assert.equal(persistedWorkerResult.dataVersion, "worker-order-cache-test", "a fresh stale cache file must still be replaced by the new data version");
+  assert.equal(persistedWorkerResult.sourceSyncedAt, workerSyncedAt);
 } finally {
   rmSync(workerDirectory, { recursive: true, force: true });
 }

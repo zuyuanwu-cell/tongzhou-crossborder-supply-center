@@ -3826,7 +3826,6 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
     packagingFeeRules,
     supplementalProductCosts,
     cachePath: performanceMaterializationCachePath,
-    cacheMaxAgeMs: 6 * 60 * 60 * 1000,
     dataVersion: context.dataVersion,
     requestedSource: requestedPerformanceRevenueSource(settings),
     syncState: context.miaoshouSyncState,
@@ -4820,7 +4819,6 @@ async function runOrderSyncJob(jobId) {
   job.message = hadFailure ? "Completed with partial failures" : "Completed";
   saveOrderSyncJobsCache();
   clearPerformanceAnalyticsResponseCache();
-  void warmPerformanceAnalyticsMaterialization();
   try {
     upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "order_sync_job", movementHistoryTimezone);
   } catch (error) {
@@ -5526,7 +5524,6 @@ async function runAutoSync() {
     const orderPayload = await refreshOrderCache(90);
     buildCurrentStockupPayload({ notify: true, reason: "auto_order_sync" });
     upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "auto_sync", movementHistoryTimezone);
-    void warmPerformanceAnalyticsMaterialization();
     lastAutoSyncAt = new Date().toISOString();
     console.log(`[auto-sync] refreshed products, qualifications, assets and ${orderPayload.orders.length} movement orders at ${lastAutoSyncAt}`);
   } catch (error) {
@@ -8817,5 +8814,4 @@ server.listen(port, () => {
   runScheduledInventorySnapshot();
   runWecomSchedules();
   void miaoshouAutomation.runScheduled();
-  setTimeout(() => { void warmPerformanceAnalyticsMaterialization(); }, 0);
 });
