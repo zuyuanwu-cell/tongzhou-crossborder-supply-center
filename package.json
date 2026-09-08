@@ -19,6 +19,7 @@
     "test:tongzhou-canvas-ai": "node scripts/tongzhou-canvas-ai-test.mjs",
     "test:miaoshou-performance": "node scripts/miaoshou-performance-test.mjs",
     "test:miaoshou-order-alias": "node scripts/miaoshou-order-alias-test.mjs",
+    "test:miaoshou-order-alias-jobs": "node scripts/miaoshou-order-alias-jobs-test.mjs",
     "test:after-sales": "node scripts/after-sales-test.mjs",
     "test:agent": "node scripts/agent-index-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",

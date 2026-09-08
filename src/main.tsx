@@ -62,7 +62,8 @@ import {
   MovementHistoryPayload,
   MovementWarehouseDiagnostic,
   MovementPayload,
-  MiaoshouOrderAliasResult,
+  MiaoshouOrderAliasJob,
+  MiaoshouOrderAliasJobDetail,
   MiaoshouPayload,
   MiaoshouScope,
   OrderAnalysisPayload,
@@ -104,6 +105,7 @@ import {
   updateWorkflowExecutionLine,
   voidWorkflowShipment,
   createWarehouseConnection,
+  createMiaoshouOrderAliasJob,
   createQuickNavCategory,
   createQuickNavLink,
   createAgentApiKey,
@@ -129,6 +131,8 @@ import {
   fetchMovementHistory,
   fetchLatestOrderSyncJob,
   fetchMiaoshou,
+  fetchMiaoshouOrderAliasJob,
+  fetchMiaoshouOrderAliasJobs,
   fetchOrderAnalysis,
   fetchPerformanceAnalytics,
   fetchProducts,
@@ -147,10 +151,10 @@ import {
   initializeAdmin,
   downloadInventorySnapshotCsv,
   downloadMovementHistoryCsv,
+  downloadMiaoshouOrderAliasJob,
   loginInternal,
   lockStockupCostVersion,
   logoutInternal,
-  matchMiaoshouOrderAliases,
   previewStockupCost,
   qualificationFileDownloadUrl,
   revokeAgentApiKey,
@@ -9895,7 +9899,6 @@ type MiaoshouAliasDataset = {
   rows: MiaoshouAliasImportRow[];
 };
 
-const MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE = 100;
 const MIAOSHOU_ALIAS_MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 const MIAOSHOU_ALIAS_ORDER_HEADERS = new Set([
@@ -9911,6 +9914,14 @@ const MIAOSHOU_ALIAS_ORDER_HEADERS = new Set([
 
 function normalizedAliasHeader(value: string) {
   return String(value || "").normalize("NFKC").replace(/[\s()（）_\-]/g, "").toLowerCase();
+}
+
+function normalizedAliasOrderNumber(value: string) {
+  const normalized = String(value || "")
+    .normalize("NFKC")
+    .replace(/[\uFEFF\u200B-\u200D\u2060]/g, "")
+    .trim();
+  return normalized.startsWith("'") ? normalized.slice(1).trim() : normalized;
 }
 
 function orderAliasGrid(source: string) {
@@ -9939,7 +9950,7 @@ function parseMiaoshouAliasInput(source: string, sourceName = "手动粘贴") {
   const rows = grid.slice(dataStart).map((cells, index) => ({
     rowNumber: index + dataStart + 1,
     cells: headers.map((_, cellIndex) => String(cells[cellIndex] || "").trim()),
-    orderNumber: String(cells[orderNumberIndex] || "").normalize("NFKC").trim(),
+    orderNumber: normalizedAliasOrderNumber(String(cells[orderNumberIndex] || "")),
   })).filter((row) => row.cells.some(Boolean));
   if (!rows.length) throw new Error("文件中没有可匹配的数据行。");
   return { sourceName, headers, rows } satisfies MiaoshouAliasDataset;
@@ -9962,27 +9973,43 @@ function miaoshouAliasStatusTone(status: string) {
   return "warning";
 }
 
-function safeCsvCell(value: string | number | undefined | null) {
-  const raw = String(value ?? "");
-  return csvCell(/^[=+\-@]/.test(raw) ? `'${raw}` : raw);
+function miaoshouAliasJobStatusLabel(status: string) {
+  if (status === "queued") return "排队中";
+  if (status === "running") return "匹配中";
+  if (status === "verifying") return "二次复查";
+  if (status === "completed") return "已完成";
+  if (status === "completed_with_warnings") return "完成，需复核";
+  if (status === "failed") return "任务失败";
+  return status || "未知";
 }
 
-function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean }) {
+function miaoshouAliasJobTone(status: string) {
+  if (status === "completed") return "good";
+  if (status === "failed") return "danger";
+  return "warning";
+}
+
+function miaoshouAliasJobRunning(status: string) {
+  return ["queued", "running", "verifying"].includes(status);
+}
+
+function MiaoshouOrderAliasPanel({
+  hasCredentials,
+  onJobCreated,
+}: {
+  hasCredentials?: boolean;
+  onJobCreated: (jobId: string) => void;
+}) {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [sourceText, setSourceText] = React.useState("");
   const [sourceName, setSourceName] = React.useState("手动粘贴");
   const [dataset, setDataset] = React.useState<MiaoshouAliasDataset | null>(null);
-  const [results, setResults] = React.useState<Map<string, MiaoshouOrderAliasResult>>(() => new Map());
-  const [matching, setMatching] = React.useState(false);
-  const [progress, setProgress] = React.useState({ completed: 0, total: 0 });
-  const [filter, setFilter] = React.useState<"all" | "matched" | "unmatched">("all");
+  const [submitting, setSubmitting] = React.useState(false);
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
 
   function resetResults() {
     setDataset(null);
-    setResults(new Map());
-    setProgress({ completed: 0, total: 0 });
     setMessage("");
     setError("");
   }
@@ -9999,13 +10026,10 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
       const content = await file.text();
       const parsed = parseMiaoshouAliasInput(content, file.name);
       const uniqueOrderCount = new Set(parsed.rows.map((row) => row.orderNumber).filter(Boolean)).size;
-      const batchCount = Math.ceil(uniqueOrderCount / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE);
       setSourceText(content);
       setSourceName(file.name);
       setDataset(parsed);
-      setResults(new Map());
-      setProgress({ completed: 0, total: uniqueOrderCount });
-      setMessage(`已读取 ${parsed.rows.length} 行、${uniqueOrderCount} 个唯一订单号，系统将自动拆为 ${batchCount} 个批次，无需拆分文件。`);
+      setMessage(`已读取 ${parsed.rows.length} 行、${uniqueOrderCount} 个唯一订单号。提交后由服务器自动拆批处理，无需拆分文件。`);
       setError("");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "文件读取失败");
@@ -10020,110 +10044,21 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
       setError(requestError instanceof Error ? requestError.message : "订单号解析失败");
       return;
     }
-    const uniqueOrderNumbers = [...new Set(parsed.rows.map((row) => row.orderNumber).filter(Boolean))];
     setDataset(parsed);
-    setResults(new Map());
-    setProgress({ completed: 0, total: uniqueOrderNumbers.length });
-    setMatching(true);
-    setFilter("all");
+    setSubmitting(true);
     setMessage("");
     setError("");
-    const collected = new Map<string, MiaoshouOrderAliasResult>();
-    let failedBatches = 0;
-    let incompleteBatches = 0;
     try {
-      for (let index = 0; index < uniqueOrderNumbers.length; index += MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE) {
-        const batch = uniqueOrderNumbers.slice(index, index + MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE);
-        try {
-          const response = await matchMiaoshouOrderAliases(batch);
-          if (!response.queryComplete) incompleteBatches += 1;
-          response.results.forEach((result) => collected.set(result.orderNumber, result));
-        } catch (requestError) {
-          failedBatches += 1;
-          const reason = requestError instanceof Error ? requestError.message : "妙手订单查询失败";
-          batch.forEach((orderNumber) => collected.set(orderNumber, {
-            orderNumber,
-            shopAlias: "未匹配",
-            platformShopName: "",
-            platform: "",
-            site: "",
-            shopId: "",
-            status: "query_failed",
-            source: "miaoshou_live",
-            note: reason,
-          }));
-        }
-        setResults(new Map(collected));
-        setProgress({ completed: Math.min(index + batch.length, uniqueOrderNumbers.length), total: uniqueOrderNumbers.length });
-      }
-      const rowResults = parsed.rows.map((row) => collected.get(row.orderNumber));
-      const matched = rowResults.filter((result) => result?.status === "matched").length;
-      const unconfirmed = rowResults.length - matched;
-      const unavailableBatches = failedBatches + incompleteBatches;
-      const batchCount = Math.ceil(uniqueOrderNumbers.length / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE);
-      setMessage(`匹配完成：系统已自动处理 ${batchCount} 个批次，${matched} 行已匹配，${unconfirmed} 行未匹配或需要复核${unavailableBatches ? `，其中 ${unavailableBatches} 个批次未能完成实时查询` : ""}。`);
+      const response = await createMiaoshouOrderAliasJob(parsed);
+      setMessage("后台任务已创建。现在可以关闭页面，服务器会继续处理。");
+      onJobCreated(response.job.id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "后台任务创建失败");
     } finally {
-      setMatching(false);
+      setSubmitting(false);
     }
   }
-
-  function resultForRow(row: MiaoshouAliasImportRow): MiaoshouOrderAliasResult {
-    if (!row.orderNumber) return {
-      orderNumber: "",
-      shopAlias: "未匹配",
-      platformShopName: "",
-      platform: "",
-      site: "",
-      shopId: "",
-      status: "invalid",
-      source: "",
-      note: "订单号为空",
-    };
-    return results.get(row.orderNumber) || {
-      orderNumber: row.orderNumber,
-      shopAlias: "未匹配",
-      platformShopName: "",
-      platform: "",
-      site: "",
-      shopId: "",
-      status: "pending",
-      source: "",
-      note: "等待匹配",
-    };
-  }
-
-  function downloadResults() {
-    if (!dataset || !results.size) return;
-    const extraHeaders = ["店铺别名", "匹配状态", "平台", "站点", "妙手店铺ID", "妙手店铺名称", "匹配来源", "备注"];
-    const rows = dataset.rows.map((row) => {
-      const result = resultForRow(row);
-      return [
-        ...row.cells,
-        result.shopAlias || "未匹配",
-        miaoshouAliasStatusLabel(result.status),
-        result.platform,
-        result.site,
-        result.shopId,
-        result.platformShopName,
-        result.source === "local_cache" ? "中台缓存" : result.source === "miaoshou_live" ? "妙手实时查询" : "",
-        result.note,
-      ];
-    });
-    const csv = [dataset.headers.concat(extraHeaders), ...rows].map((row) => row.map(safeCsvCell).join(",")).join("\r\n");
-    downloadTextFile(`妙手店铺别名匹配-${new Date().toISOString().slice(0, 10)}.csv`, csv, "text/csv;charset=utf-8");
-  }
-
-  const resolvedRows = (dataset?.rows || []).map((row) => ({ row, result: resultForRow(row) }));
-  const matchedRows = resolvedRows.filter(({ result }) => result.status === "matched").length;
-  const unmatchedRows = resolvedRows.filter(({ result }) => result.status !== "matched" && result.status !== "pending").length;
-  const visibleRows = resolvedRows.filter(({ result }) => (
-    filter === "all" || (filter === "matched" ? result.status === "matched" : result.status !== "matched")
-  ));
-  const progressPercent = progress.total ? Math.round(progress.completed / progress.total * 100) : 0;
-  const totalBatches = progress.total ? Math.ceil(progress.total / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE) : 0;
-  const activeBatch = matching && totalBatches
-    ? Math.min(Math.floor(progress.completed / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE) + 1, totalBatches)
-    : 0;
+  const uniqueOrderCount = dataset ? new Set(dataset.rows.map((row) => row.orderNumber).filter(Boolean)).size : 0;
 
   return (
     <section className="panel miaoshou-alias-panel">
@@ -10136,7 +10071,7 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
         <div className="miaoshou-alias-seal"><ShieldCheck size={20} /><span><strong>唯一证据链</strong><small>订单号 · 店铺 ID · 店铺别名</small></span></div>
       </div>
 
-      {hasCredentials === false ? <div className="notice warning">妙手授权尚未配置：已有缓存仍可匹配，缓存外订单会显示“查询失败”，不会误标为未匹配。</div> : null}
+      {hasCredentials === false ? <div className="notice warning">妙手授权尚未配置：已有缓存仍可匹配，缓存外订单会标记为“查询失败”，不会误标为未匹配。</div> : null}
       {error ? <div className="notice danger">{error}</div> : null}
       {message ? <div className="notice success">{message}</div> : null}
 
@@ -10157,68 +10092,164 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
           />
           <div className="miaoshou-alias-input-actions">
             <input ref={fileInputRef} type="file" accept=".csv,.txt,text/csv,text/plain" hidden onChange={(event) => void importFile(event)} />
-            <button className="ghost-button" type="button" disabled={matching} onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传 CSV / TXT</button>
-            <button className="ghost-button" type="button" disabled={matching} onClick={() => downloadTextFile("妙手店铺别名匹配模板.csv", `${safeCsvCell("平台订单号")}\r\n`, "text/csv;charset=utf-8")}><Download size={15} />下载模板</button>
+            <button className="ghost-button" type="button" disabled={submitting} onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传 CSV / TXT</button>
+            <button className="ghost-button" type="button" disabled={submitting} onClick={() => downloadTextFile("妙手店铺别名匹配模板.csv", `\uFEFF${csvCell("平台订单号")}\r\n`, "text/csv;charset=utf-8")}><Download size={15} />下载模板</button>
             <span>{dataset ? `${dataset.sourceName} · ${dataset.rows.length} 行` : "自动识别“平台订单号”或“订单号”列"}</span>
           </div>
         </div>
 
         <div className="miaoshou-alias-run-card">
-          <div className="miaoshou-alias-step"><b>02</b><span><strong>严格匹配</strong><small>超出单批数量时自动拆分</small></span></div>
+          <div className="miaoshou-alias-step"><b>02</b><span><strong>提交后台任务</strong><small>关闭页面后继续运行</small></span></div>
           <div className="miaoshou-alias-rules">
-            <span><Check size={15} />精确订单号，不做模糊猜测</span>
-            <span><Check size={15} />店铺 ID 唯一才返回别名</span>
-            <span><Check size={15} />自动分批查询并合并为一个 CSV</span>
+            <span><Check size={15} />每个订单号单独向妙手精确查询</span>
+            <span><Check size={15} />查完所有店铺范围才确认“未匹配”</span>
+            <span><Check size={15} />未命中与接口异常会自动二次复查</span>
           </div>
-          <button className="sync-button miaoshou-alias-run" type="button" disabled={matching || !sourceText.trim()} onClick={() => void startMatch()}>
-            <RefreshCw size={16} className={matching ? "spinning" : ""} />{matching ? `正在匹配 ${progress.completed}/${progress.total}` : "开始精确匹配"}
+          <button className="sync-button miaoshou-alias-run" type="button" disabled={submitting || !sourceText.trim()} onClick={() => void startMatch()}>
+            <RefreshCw size={16} className={submitting ? "spinning" : ""} />{submitting ? "正在提交" : "创建后台匹配任务"}
           </button>
-          <div className="miaoshou-alias-progress" aria-label={`匹配进度 ${progressPercent}%`}><i style={{ width: `${progressPercent}%` }} /></div>
-          <small>{matching ? `系统正在自动处理第 ${activeBatch}/${totalBatches} 批，结果会持续合并。` : results.size ? "匹配已完成，可以检查结果并下载一个完整 CSV。" : "一次导入即可，系统会自动拆批；不会修改任何订单。"}</small>
+          <div className="miaoshou-alias-progress" aria-label="后台任务准备进度"><i style={{ width: dataset ? "100%" : "0%" }} /></div>
+          <small>{dataset ? `已准备 ${dataset.rows.length} 行、${uniqueOrderCount} 个唯一订单号。` : "一次导入即可；任务完成后在任务中心下载完整 CSV。"}</small>
         </div>
       </div>
+    </section>
+  );
+}
 
-      {dataset ? <>
-        <div className="miaoshou-alias-summary">
-          <article><small>导入行数</small><strong>{formatNumber(dataset.rows.length)}</strong><span>保留原顺序与重复行</span></article>
-          <article className="matched"><small>已匹配</small><strong>{formatNumber(matchedRows)}</strong><span>可直接使用店铺别名</span></article>
-          <article className="unmatched"><small>未匹配 / 待复核</small><strong>{formatNumber(unmatchedRows)}</strong><span>原因写入导出备注</span></article>
-          <article><small>完成进度</small><strong>{progressPercent}%</strong><span>{progress.completed}/{progress.total} 个唯一订单号</span></article>
-        </div>
+function MiaoshouOrderAliasTaskCenter({ focusJobId }: { focusJobId?: string }) {
+  const [jobs, setJobs] = React.useState<MiaoshouOrderAliasJob[]>([]);
+  const [selectedJobId, setSelectedJobId] = React.useState(focusJobId || "");
+  const [detail, setDetail] = React.useState<MiaoshouOrderAliasJobDetail | null>(null);
+  const [filter, setFilter] = React.useState<"all" | "matched" | "review">("all");
+  const [loading, setLoading] = React.useState(true);
+  const [downloading, setDownloading] = React.useState("");
+  const [error, setError] = React.useState("");
 
-        <div className="miaoshou-alias-result-head">
-          <div className="miaoshou-alias-filters" aria-label="匹配结果筛选">
-            <button className={filter === "all" ? "active" : ""} type="button" onClick={() => setFilter("all")}>全部 {resolvedRows.length}</button>
-            <button className={filter === "matched" ? "active" : ""} type="button" onClick={() => setFilter("matched")}>已匹配 {matchedRows}</button>
-            <button className={filter === "unmatched" ? "active" : ""} type="button" onClick={() => setFilter("unmatched")}>未匹配 / 待复核 {resolvedRows.length - matchedRows}</button>
-          </div>
-          <button className="sync-button" type="button" disabled={matching || !results.size} onClick={downloadResults}><Download size={15} />下载匹配结果 CSV</button>
-        </div>
+  React.useEffect(() => {
+    let disposed = false;
+    async function refresh(silent = false) {
+      if (!silent) setLoading(true);
+      try {
+        const payload = await fetchMiaoshouOrderAliasJobs();
+        if (disposed) return;
+        setJobs(payload.jobs);
+        const nextId = (selectedJobId && payload.jobs.some((job) => job.id === selectedJobId) ? selectedJobId : "")
+          || (focusJobId && payload.jobs.some((job) => job.id === focusJobId) ? focusJobId : "")
+          || payload.jobs[0]?.id
+          || "";
+        if (nextId !== selectedJobId) setSelectedJobId(nextId);
+        if (nextId) {
+          const nextDetail = await fetchMiaoshouOrderAliasJob(nextId);
+          if (!disposed) setDetail(nextDetail);
+        } else {
+          setDetail(null);
+        }
+        setError("");
+      } catch (requestError) {
+        if (!disposed) setError(requestError instanceof Error ? requestError.message : "任务中心读取失败");
+      } finally {
+        if (!disposed && !silent) setLoading(false);
+      }
+    }
+    void refresh(false);
+    const timer = window.setInterval(() => void refresh(true), 2500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [focusJobId, selectedJobId]);
 
-        <div className="miaoshou-alias-table-wrap">
-          <div className="miaoshou-alias-table">
-            <div className="miaoshou-alias-row head"><span>原始行</span><span>平台订单号</span><span>店铺别名</span><span>平台 / 站点</span><span>匹配状态</span><span>依据 / 备注</span></div>
-            {visibleRows.slice(0, 300).map(({ row, result }) => (
-              <article className="miaoshou-alias-row" key={`${row.rowNumber}-${row.orderNumber}`}>
-                <span>{row.rowNumber}</span>
-                <strong title={row.orderNumber}>{row.orderNumber || "—"}</strong>
-                <span><strong>{result.shopAlias || "未匹配"}</strong><small>{result.platformShopName || result.shopId || "—"}</small></span>
-                <span>{result.platform || "—"}<small>{result.site || "—"}</small></span>
-                <span><i className={`status-pill ${miaoshouAliasStatusTone(result.status)}`}>{miaoshouAliasStatusLabel(result.status)}</i></span>
-                <span><strong>{result.source === "local_cache" ? "中台缓存" : result.source === "miaoshou_live" ? "妙手实时查询" : "—"}</strong><small>{result.note}</small></span>
-              </article>
-            ))}
-          </div>
+  async function downloadJob(job: MiaoshouOrderAliasJob) {
+    setDownloading(job.id);
+    setError("");
+    try {
+      const blob = await downloadMiaoshouOrderAliasJob(job.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `妙手店铺别名匹配-${job.createdAt.slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "匹配结果下载失败");
+    } finally {
+      setDownloading("");
+    }
+  }
+
+  const job = detail?.job || jobs.find((entry) => entry.id === selectedJobId) || null;
+  const visibleRows = (detail?.previewRows || []).filter((row) => (
+    filter === "all"
+      || (filter === "matched" ? row.result.status === "matched" : row.result.status !== "matched")
+  ));
+
+  return (
+    <section className="panel miaoshou-alias-panel miaoshou-alias-task-center">
+      <div className="miaoshou-alias-heading">
+        <div><p className="eyebrow">Background Task Center</p><h2>订单别名任务中心</h2><span>任务由服务器持续执行；关闭浏览器、退出页面都不会中断。</span></div>
+        <span className="status-pill warning">{formatNumber(jobs.filter((entry) => miaoshouAliasJobRunning(entry.status)).length)} 个处理中</span>
+      </div>
+      {error ? <div className="notice danger">{error}</div> : null}
+      <div className="miaoshou-alias-task-layout">
+        <aside className="miaoshou-alias-job-list" aria-label="后台匹配任务">
+          {jobs.length ? jobs.map((entry) => (
+            <button className={entry.id === selectedJobId ? "active" : ""} type="button" key={entry.id} onClick={() => setSelectedJobId(entry.id)}>
+              <span><strong>{entry.sourceName}</strong><i className={`status-pill ${miaoshouAliasJobTone(entry.status)}`}>{miaoshouAliasJobStatusLabel(entry.status)}</i></span>
+              <small>{formatNumber(entry.rowCount)} 行 · {formatNumber(entry.total)} 个唯一订单</small>
+              <div className="miaoshou-alias-progress"><i style={{ width: `${entry.progressPercent || 0}%` }} /></div>
+              <small>{entry.progressPercent || 0}% · {formatDateTime(entry.updatedAt)}</small>
+            </button>
+          )) : <div className="stockup-empty">{loading ? "正在读取后台任务…" : "暂无任务，请先导入订单号并提交。"}</div>}
+        </aside>
+
+        <div className="miaoshou-alias-job-detail">
+          {job ? <>
+            <div className="miaoshou-alias-result-head">
+              <div><strong>{job.sourceName}</strong><span>{job.message}</span></div>
+              <button className="sync-button" type="button" disabled={!job.downloadReady || downloading === job.id} onClick={() => void downloadJob(job)}><Download size={15} />{downloading === job.id ? "下载中" : job.downloadReady ? "下载完整 CSV" : "完成后可下载"}</button>
+            </div>
+            {job.directoryWarning ? <div className="notice warning">{job.directoryWarning}</div> : null}
+            <div className="miaoshou-alias-summary">
+              <article><small>原始行数</small><strong>{formatNumber(job.rowCount)}</strong><span>保留顺序与重复行</span></article>
+              <article className="matched"><small>已匹配</small><strong>{formatNumber(job.rowCounts.matched)}</strong><span>订单号与店铺 ID 唯一</span></article>
+              <article className="unmatched"><small>未匹配 / 待复核</small><strong>{formatNumber(job.rowCounts.needsReview)}</strong><span>技术异常不会误标未匹配</span></article>
+              <article><small>任务进度</small><strong>{job.progressPercent || 0}%</strong><span>{formatNumber(job.processed)}/{formatNumber(job.total)} 个唯一订单</span></article>
+            </div>
+            <div className="miaoshou-alias-result-head">
+              <div className="miaoshou-alias-filters" aria-label="匹配结果筛选">
+                <button className={filter === "all" ? "active" : ""} type="button" onClick={() => setFilter("all")}>预览全部</button>
+                <button className={filter === "matched" ? "active" : ""} type="button" onClick={() => setFilter("matched")}>已匹配</button>
+                <button className={filter === "review" ? "active" : ""} type="button" onClick={() => setFilter("review")}>未匹配 / 待复核</button>
+              </div>
+              <span className={`status-pill ${miaoshouAliasJobTone(job.status)}`}>{miaoshouAliasJobStatusLabel(job.status)}</span>
+            </div>
+            <div className="miaoshou-alias-table-wrap">
+              <div className="miaoshou-alias-table">
+                <div className="miaoshou-alias-row head"><span>原始行</span><span>平台订单号</span><span>店铺别名</span><span>平台 / 站点</span><span>匹配状态</span><span>依据 / 备注</span></div>
+                {visibleRows.map((row) => (
+                  <article className="miaoshou-alias-row" key={`${row.rowNumber}-${row.orderNumber}`}>
+                    <span>{row.rowNumber}</span>
+                    <strong title={row.orderNumber}>{row.orderNumber || "—"}</strong>
+                    <span><strong>{row.result.shopAlias || "未匹配"}</strong><small>{row.result.platformShopName || row.result.shopId || "—"}</small></span>
+                    <span>{row.result.platform || "—"}<small>{row.result.site || "—"}</small></span>
+                    <span><i className={`status-pill ${miaoshouAliasStatusTone(row.result.status)}`}>{miaoshouAliasStatusLabel(row.result.status)}</i></span>
+                    <span><strong>{row.result.source === "local_cache" ? "中台缓存" : row.result.source === "miaoshou_live" ? "妙手实时查询" : "—"}</strong><small>{row.result.note}</small></span>
+                  </article>
+                ))}
+              </div>
+            </div>
+            {job.rowCount > (detail?.previewLimit || 300) ? <div className="miaoshou-alias-limit-note">页面预览前 {detail?.previewLimit || 300} 行；下载 CSV 包含全部 {formatNumber(job.rowCount)} 行。</div> : null}
+          </> : <div className="stockup-empty">{loading ? "正在读取任务详情…" : "选择一个任务查看进度和结果。"}</div>}
         </div>
-        {visibleRows.length > 300 ? <div className="miaoshou-alias-limit-note">页面仅预览前 300 行；下载的 CSV 包含全部 {formatNumber(visibleRows.length)} 行。</div> : null}
-      </> : null}
+      </div>
     </section>
   );
 }
 
 function MiaoshouPage() {
   const confirm = useConfirm();
-  const [activeWorkspace, setActiveWorkspace] = React.useState<"aliases" | "automation">("aliases");
+  const [activeWorkspace, setActiveWorkspace] = React.useState<"aliases" | "alias_tasks" | "automation">("aliases");
+  const [focusedAliasJobId, setFocusedAliasJobId] = React.useState("");
   const [payload, setPayload] = React.useState<MiaoshouPayload | null>(null);
   const [busy, setBusy] = React.useState("");
   const [message, setMessage] = React.useState("");
@@ -10461,24 +10492,28 @@ function MiaoshouPage() {
       <section className="panel miaoshou-hero">
         <div>
           <p className="eyebrow">Miaoshou Operations</p>
-          <h2>{activeWorkspace === "aliases" ? "订单店铺别名匹配" : "店铺自动申请运单号"}</h2>
-          <p>{activeWorkspace === "aliases" ? "导入三方仓的平台后台订单号，严格匹配妙手店铺别名，并保留原始数据下载 CSV。" : "同步妙手店铺，逐店开启自动申请。系统只申请运单号并获取面单，不会自动提交平台发货。"}</p>
+          <h2>{activeWorkspace === "aliases" ? "订单店铺别名匹配" : activeWorkspace === "alias_tasks" ? "订单别名任务中心" : "店铺自动申请运单号"}</h2>
+          <p>{activeWorkspace === "aliases" ? "导入三方仓的平台后台订单号，逐单精确核验妙手店铺别名。" : activeWorkspace === "alias_tasks" ? "查看服务器后台任务进度；页面关闭后任务继续，完成后可随时下载。" : "同步妙手店铺，逐店开启自动申请。系统只申请运单号并获取面单，不会自动提交平台发货。"}</p>
         </div>
         <div className="miaoshou-hero-actions">
-          {activeWorkspace === "aliases" ? <span className="status-pill good">平台订单号精确匹配</span> : <span className={`status-pill ${config?.automationEnabled ? "good" : "warning"}`}>{config?.automationEnabled ? "自动任务已开启" : "自动任务未开启"}</span>}
+          {activeWorkspace === "aliases" ? <span className="status-pill good">平台订单号精确匹配</span> : activeWorkspace === "alias_tasks" ? <span className="status-pill warning">服务器后台运行</span> : <span className={`status-pill ${config?.automationEnabled ? "good" : "warning"}`}>{config?.automationEnabled ? "自动任务已开启" : "自动任务未开启"}</span>}
           <button className="ghost-button" type="button" onClick={() => void load()} disabled={Boolean(busy)}><RefreshCw size={15} className={busy === "load" ? "spinning" : ""} />刷新</button>
           {activeWorkspace === "automation" ? <button className="sync-button" type="button" onClick={() => void runNow()} disabled={Boolean(busy) || !payload?.counts.enabledShops}><RefreshCw size={15} className={busy === "run" ? "spinning" : ""} />立即检查</button> : null}
         </div>
       </section>
 
       <nav className="miaoshou-workspace-tabs" aria-label="妙手 ERP 功能">
-        <button className={activeWorkspace === "aliases" ? "active" : ""} type="button" aria-current={activeWorkspace === "aliases" ? "page" : undefined} onClick={() => setActiveWorkspace("aliases")}><DatabaseZap size={17} /><span><strong>店铺别名匹配</strong><small>导入订单号并下载 CSV</small></span></button>
+        <button className={activeWorkspace === "aliases" ? "active" : ""} type="button" aria-current={activeWorkspace === "aliases" ? "page" : undefined} onClick={() => setActiveWorkspace("aliases")}><DatabaseZap size={17} /><span><strong>店铺别名匹配</strong><small>导入订单号并创建任务</small></span></button>
+        <button className={activeWorkspace === "alias_tasks" ? "active" : ""} type="button" aria-current={activeWorkspace === "alias_tasks" ? "page" : undefined} onClick={() => setActiveWorkspace("alias_tasks")}><ClipboardList size={17} /><span><strong>任务中心</strong><small>后台进度与结果下载</small></span></button>
         <button className={activeWorkspace === "automation" ? "active" : ""} type="button" aria-current={activeWorkspace === "automation" ? "page" : undefined} onClick={() => setActiveWorkspace("automation")}><Truck size={17} /><span><strong>自动申请运单</strong><small>店铺开关与任务记录</small></span></button>
       </nav>
 
       {error ? <div className="notice danger">{error}</div> : null}
       {message ? <div className="notice success">{message}</div> : null}
-      {activeWorkspace === "aliases" ? <MiaoshouOrderAliasPanel hasCredentials={config?.hasCredentials} /> : <>
+      {activeWorkspace === "aliases" ? <MiaoshouOrderAliasPanel hasCredentials={config?.hasCredentials} onJobCreated={(jobId) => {
+        setFocusedAliasJobId(jobId);
+        setActiveWorkspace("alias_tasks");
+      }} /> : activeWorkspace === "alias_tasks" ? <MiaoshouOrderAliasTaskCenter focusJobId={focusedAliasJobId} /> : <>
       {payload?.counts.invalidShops ? <div className="notice warning">检测到 {formatNumber(payload.counts.invalidShops)} 家店铺已解绑或不存在，系统已关闭这些店铺的自动申请并继续处理其他店铺。请在下方店铺列表查看具体店铺和原因。</div> : null}
       <section className="miaoshou-metrics">
         <article><small>授权状态</small><strong>{config?.hasCredentials ? "已配置" : "待配置"}</strong><span>{config?.appKeyMasked || "填写 AppKey / AppSecret"}</span></article>

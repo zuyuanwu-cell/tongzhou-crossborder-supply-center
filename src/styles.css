@@ -11114,7 +11114,7 @@ h3 {
 
 .miaoshou-workspace-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   padding: 6px;
   background: #eef3fa;
@@ -11456,6 +11456,86 @@ h3 {
   font-size: 12px;
 }
 
+.miaoshou-alias-task-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, .32fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.miaoshou-alias-job-list {
+  display: grid;
+  gap: 8px;
+  max-height: 720px;
+  padding: 8px;
+  overflow-y: auto;
+  background: #f1f5fa;
+  border: 1px solid #d7e1ed;
+  border-radius: 12px;
+}
+
+.miaoshou-alias-job-list > button {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 13px;
+  color: #263952;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #d7e1ed;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.miaoshou-alias-job-list > button:hover,
+.miaoshou-alias-job-list > button.active {
+  border-color: #f45b0b;
+  box-shadow: 0 7px 18px rgba(23,61,122,.08);
+}
+
+.miaoshou-alias-job-list > button.active {
+  background: linear-gradient(135deg, #fff7f1, #fff);
+}
+
+.miaoshou-alias-job-list > button > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.miaoshou-alias-job-list > button strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #173d7a;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.miaoshou-alias-job-list > button small {
+  color: #718198;
+}
+
+.miaoshou-alias-job-list .miaoshou-alias-progress {
+  background: #dce5f0;
+}
+
+.miaoshou-alias-job-detail {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.miaoshou-alias-job-detail .miaoshou-alias-result-head > div:not(.miaoshou-alias-filters) {
+  display: grid;
+  gap: 4px;
+}
+
+.miaoshou-alias-job-detail .miaoshou-alias-result-head > div > span {
+  color: #687990;
+  font-size: 12px;
+}
+
 @media (max-width: 1180px) {
   .miaoshou-config-grid,
   .miaoshou-metrics {
@@ -11480,6 +11560,14 @@ h3 {
 
   .miaoshou-alias-workspace {
     grid-template-columns: 1fr;
+  }
+
+  .miaoshou-alias-task-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .miaoshou-alias-job-list {
+    max-height: 330px;
   }
 
   .miaoshou-alias-summary {

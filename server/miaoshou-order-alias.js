@@ -1,10 +1,17 @@
 import { normalizeMiaoshouPackages } from "./miaoshou-performance.js";
 
 const MAX_ORDER_NUMBERS = 100;
-const API_ORDER_BATCH_SIZE = 20;
 const API_SHOP_BATCH_SIZE = 100;
 const API_PAGE_SIZE = 50;
 const MAX_API_PAGES = 10;
+
+export function normalizeMiaoshouOrderNumber(value) {
+  const normalized = String(value ?? "")
+    .normalize("NFKC")
+    .replace(/[\uFEFF\u200B-\u200D\u2060]/g, "")
+    .trim();
+  return normalized.startsWith("'") ? normalized.slice(1).trim() : normalized;
+}
 
 function text(value) {
   return String(value ?? "").normalize("NFKC").trim();
@@ -27,8 +34,13 @@ function publicApiError(error) {
   return text(error?.message) || "妙手订单查询失败";
 }
 
+function isNoDataError(error) {
+  const details = `${text(error?.code)} ${text(error?.message)}`.toLowerCase();
+  return /没有符合条件的数据|没有匹配的数据|未查询到数据|no\s+(matching\s+)?data|no\s+records?\s+found/.test(details);
+}
+
 function resultFor(orderNumber, orders, shopById, { liveQueried = false, queryFailure = "" } = {}) {
-  const exactOrders = (Array.isArray(orders) ? orders : []).filter((order) => text(order.platformOrderSn) === orderNumber);
+  const exactOrders = (Array.isArray(orders) ? orders : []).filter((order) => normalizeMiaoshouOrderNumber(order.platformOrderSn) === orderNumber);
   const shopIds = [...new Set(exactOrders.map((order) => text(order.shopId)).filter(Boolean))];
   if (!validOrderNumber(orderNumber)) {
     return {
@@ -43,6 +55,9 @@ function resultFor(orderNumber, orders, shopById, { liveQueried = false, queryFa
       note: "订单号格式无效",
     };
   }
+  // A partially failed live search cannot prove uniqueness across all stores.
+  // Keep it as a review item even when one scope returned a candidate; the
+  // background job will retry before it exposes a final result.
   if (liveQueried && queryFailure) {
     return {
       orderNumber,
@@ -53,7 +68,9 @@ function resultFor(orderNumber, orders, shopById, { liveQueried = false, queryFa
       shopId: "",
       status: "query_failed",
       source: "miaoshou_live",
-      note: queryFailure,
+      note: exactOrders.length
+        ? `已查到候选订单，但部分店铺范围未完成核验：${queryFailure}`
+        : queryFailure,
     };
   }
   if (!exactOrders.length) {
@@ -66,7 +83,7 @@ function resultFor(orderNumber, orders, shopById, { liveQueried = false, queryFa
       shopId: "",
       status: "unmatched",
       source: liveQueried ? "miaoshou_live" : "local_cache",
-      note: "妙手未查到该平台订单号",
+      note: "已逐个平台和店铺范围核验，妙手未查到该平台订单号",
     };
   }
   if (shopIds.length !== 1) {
@@ -131,7 +148,7 @@ export function createMiaoshouOrderAliasMatcher({ store, connector } = {}) {
 
   async function match(input = {}) {
     const requested = [...new Set((Array.isArray(input.orderNumbers) ? input.orderNumbers : [])
-      .map((value) => text(value))
+      .map((value) => normalizeMiaoshouOrderNumber(value))
       .filter(Boolean))];
     if (!requested.length) throw new Error("请至少提供一个平台订单号");
     if (requested.length > MAX_ORDER_NUMBERS) throw new Error(`单次最多匹配 ${MAX_ORDER_NUMBERS} 个平台订单号`);
@@ -145,8 +162,8 @@ export function createMiaoshouOrderAliasMatcher({ store, connector } = {}) {
     const shops = Array.isArray(publicShops) && publicShops.length ? publicShops : activeShops;
     const shopById = new Map(shops.map((shop) => [text(shop.shopId), shop]).filter(([shopId]) => shopId));
     const cachedOrders = store.findMiaoshouOrdersByPlatformOrderSns(valid);
-    const cachedNumbers = new Set(cachedOrders.map((order) => text(order.platformOrderSn)).filter(Boolean));
-    const missing = valid.filter((orderNumber) => !cachedNumbers.has(orderNumber));
+    const cachedNumbers = new Set(cachedOrders.map((order) => normalizeMiaoshouOrderNumber(order.platformOrderSn)).filter(Boolean));
+    const missing = input.forceLive ? valid : valid.filter((orderNumber) => !cachedNumbers.has(orderNumber));
     const liveOrders = [];
     const liveItems = [];
     const failures = [];
@@ -175,7 +192,9 @@ export function createMiaoshouOrderAliasMatcher({ store, connector } = {}) {
           shopsByPlatform.set(platform, list);
         }
         if (!shopsByPlatform.size) recordFailure(missing, "妙手店铺目录为空，请先同步店铺");
-        for (const orderBatch of chunks(missing, API_ORDER_BATCH_SIZE)) {
+        // 妙手的 platformOrderSns 字段虽然是复数命名，但实际接口对逗号拼接的
+        // 多订单查询并不稳定。逐个订单精确查询，避免整批中的部分订单被漏掉。
+        for (const orderNumber of missing) {
           for (const [platform, platformShopIds] of shopsByPlatform) {
             for (const shopBatch of chunks([...new Set(platformShopIds)], API_SHOP_BATCH_SIZE)) {
               try {
@@ -185,19 +204,24 @@ export function createMiaoshouOrderAliasMatcher({ store, connector } = {}) {
                     pageSize: API_PAGE_SIZE,
                     platform,
                     shopIds: shopBatch,
-                    platformOrderSns: orderBatch.join(","),
+                    platformOrderSns: orderNumber,
                   });
                   const normalized = normalizeMiaoshouPackages(payload);
-                  const requestedSet = new Set(orderBatch);
-                  liveOrders.push(...normalized.orders.filter((order) => requestedSet.has(text(order.platformOrderSn))));
+                  const exactLiveOrders = normalized.orders.filter((order) => (
+                    normalizeMiaoshouOrderNumber(order.platformOrderSn) === orderNumber
+                  ));
+                  const exactIdentities = new Set(exactLiveOrders.map((order) => order.identity));
+                  liveOrders.push(...exactLiveOrders);
                   liveItems.push(...normalized.items.filter((item) => (
-                    normalized.orders.some((order) => order.identity === item.orderIdentity && requestedSet.has(text(order.platformOrderSn)))
+                    exactIdentities.has(item.orderIdentity)
                   )));
                   if (normalized.sourceRowCount < API_PAGE_SIZE) break;
                   if (page === MAX_API_PAGES) throw new Error("查询结果超过安全分页上限，请缩小单次订单数量");
                 }
               } catch (error) {
-                recordFailure(orderBatch, `${platform}：${publicApiError(error)}`);
+                // “没有符合条件的数据”只代表当前平台/店铺范围没有命中，
+                // 不是整笔订单的查询失败，更不能覆盖其他平台的命中结果。
+                if (!isNoDataError(error)) recordFailure([orderNumber], `${platform}：${publicApiError(error)}`);
               }
             }
           }
@@ -211,8 +235,11 @@ export function createMiaoshouOrderAliasMatcher({ store, connector } = {}) {
       store.upsertMiaoshouPerformance({ orders: uniqueLiveOrders, items: uniqueLiveItems });
     }
 
-    const allOrders = [...cachedOrders, ...uniqueLiveOrders];
-    const liveNumbers = new Set(uniqueLiveOrders.map((order) => text(order.platformOrderSn)).filter(Boolean));
+    // Re-read the shared cache after live queries. This also captures records
+    // written concurrently by the scheduled performance sync.
+    const refreshedCachedOrders = store.findMiaoshouOrdersByPlatformOrderSns(valid);
+    const allOrders = [...cachedOrders, ...refreshedCachedOrders, ...uniqueLiveOrders];
+    const liveNumbers = new Set(uniqueLiveOrders.map((order) => normalizeMiaoshouOrderNumber(order.platformOrderSn)).filter(Boolean));
     const results = requested.map((orderNumber) => resultFor(orderNumber, allOrders, shopById, {
       liveQueried: missing.includes(orderNumber),
       queryFailure: [...new Set(failureByOrder.get(orderNumber) || [])].join("；"),

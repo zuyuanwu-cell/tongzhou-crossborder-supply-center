@@ -40,6 +40,7 @@ import { initTongzhouCanvasAi, TongzhouCanvasApiError } from "./tongzhou-canvas-
 import { createMiaoshouCategoryService, normalizeAiPlatformAttributes, validateTikTokReadiness } from "./miaoshou-listing-platform.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
 import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
+import { createMiaoshouOrderAliasJobService } from "./miaoshou-order-alias-jobs.js";
 import { createAfterSalesService } from "./after-sales.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
@@ -164,6 +165,11 @@ const performanceExchangeRateSync = createExchangeRateSyncService({
 const miaoshouAutomation = await initMiaoshouAutomation({ cacheDir, dbPath: miaoshouTaskDbPath });
 const miaoshouOrderAliasMatcher = createMiaoshouOrderAliasMatcher({
   store: performanceAnalyticsStore,
+  connector: miaoshouAutomation,
+});
+const miaoshouOrderAliasJobs = createMiaoshouOrderAliasJobService({
+  cacheDir,
+  matcher: miaoshouOrderAliasMatcher,
   connector: miaoshouAutomation,
 });
 const miaoshouListing = initMiaoshouListingService({ cacheDir, connector: miaoshouAutomation });
@@ -5713,6 +5719,75 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, result);
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "订单店铺别名匹配失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/order-aliases/jobs" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "订单店铺别名匹配需要妙手 ERP 权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const job = miaoshouOrderAliasJobs.create(payload, auth.user);
+        appendActionLog(auth, "创建订单店铺别名后台任务", "miaoshou_order_alias_job", job.id, {
+          sourceName: job.sourceName,
+          rowCount: job.rowCount,
+          orderCount: job.total,
+        });
+        sendJson(res, 202, { ok: true, job });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "创建订单店铺别名任务失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/order-aliases/jobs" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "订单店铺别名任务中心需要妙手 ERP 权限。" });
+        return;
+      }
+      sendJson(res, 200, miaoshouOrderAliasJobs.list(auth.user.id));
+      return;
+    }
+
+    const aliasJobMatch = url.pathname.match(/^\/api\/miaoshou\/order-aliases\/jobs\/([^/]+)(?:\/(download))?$/);
+    if (aliasJobMatch && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "订单店铺别名任务中心需要妙手 ERP 权限。" });
+        return;
+      }
+      const jobId = decodeURIComponent(aliasJobMatch[1]);
+      try {
+        if (aliasJobMatch[2] === "download") {
+          const file = miaoshouOrderAliasJobs.download(jobId, auth.user.id);
+          if (!file) {
+            sendJson(res, 404, { ok: false, message: "任务不存在或无权访问。" });
+            return;
+          }
+          const content = Buffer.from(file.content, "utf8");
+          res.writeHead(200, {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Length": content.length,
+            "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+          });
+          res.end(content);
+          return;
+        }
+        const detail = miaoshouOrderAliasJobs.detail(jobId, auth.user.id);
+        if (!detail) {
+          sendJson(res, 404, { ok: false, message: "任务不存在或无权访问。" });
+          return;
+        }
+        sendJson(res, 200, detail);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "读取订单店铺别名任务失败。" });
       }
       return;
     }

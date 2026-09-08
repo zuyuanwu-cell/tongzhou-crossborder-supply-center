@@ -1607,6 +1607,52 @@ export type MiaoshouOrderAliasMatchPayload = {
   results: MiaoshouOrderAliasResult[];
 };
 
+export type MiaoshouOrderAliasJob = {
+  id: string;
+  type: "miaoshou_order_alias";
+  sourceName: string;
+  status: "queued" | "running" | "verifying" | "completed" | "completed_with_warnings" | "failed" | string;
+  stage: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string;
+  completedAt: string;
+  total: number;
+  rowCount: number;
+  processed: number;
+  progressPercent: number;
+  verificationTotal: number;
+  verificationCompleted: number;
+  directoryWarning: string;
+  downloadReady: boolean;
+  counts: {
+    total: number;
+    processed: number;
+    matched: number;
+    unmatched: number;
+    needsReview: number;
+    cacheHits: number;
+    liveHits: number;
+  };
+  rowCounts: {
+    total: number;
+    matched: number;
+    needsReview: number;
+  };
+};
+
+export type MiaoshouOrderAliasJobDetail = {
+  ok: boolean;
+  job: MiaoshouOrderAliasJob;
+  previewRows: Array<{
+    rowNumber: number;
+    orderNumber: string;
+    result: MiaoshouOrderAliasResult;
+  }>;
+  previewLimit: number;
+};
+
 export type AfterSalesAttachment = {
   id: string;
   kind: "evidence" | "label";
@@ -3488,6 +3534,42 @@ export function matchMiaoshouOrderAliases(orderNumbers: string[]) {
     method: "POST",
     body: JSON.stringify({ orderNumbers }),
   });
+}
+
+export function createMiaoshouOrderAliasJob(input: {
+  sourceName: string;
+  headers: string[];
+  rows: Array<{ rowNumber: number; cells: string[]; orderNumber: string }>;
+}) {
+  return requestJson<{ ok: boolean; job: MiaoshouOrderAliasJob }>("/api/miaoshou/order-aliases/jobs", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchMiaoshouOrderAliasJobs() {
+  return requestJson<{ ok: boolean; updatedAt: string; jobs: MiaoshouOrderAliasJob[] }>("/api/miaoshou/order-aliases/jobs");
+}
+
+export function fetchMiaoshouOrderAliasJob(jobId: string) {
+  return requestJson<MiaoshouOrderAliasJobDetail>(`/api/miaoshou/order-aliases/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function downloadMiaoshouOrderAliasJob(jobId: string) {
+  const response = await fetch(`${API_BASE}/api/miaoshou/order-aliases/jobs/${encodeURIComponent(jobId)}/download`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    let message = "店铺别名匹配结果下载失败";
+    try {
+      const payload = await response.json();
+      message = payload.message || message;
+    } catch {
+      // Keep the default message when the error response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return response.blob();
 }
 
 export function fetchAfterSales(input: { status?: string; keyword?: string } = {}) {
