@@ -9886,6 +9886,9 @@ type MiaoshouAliasDataset = {
   rows: MiaoshouAliasImportRow[];
 };
 
+const MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE = 100;
+const MIAOSHOU_ALIAS_MAX_FILE_BYTES = 50 * 1024 * 1024;
+
 const MIAOSHOU_ALIAS_ORDER_HEADERS = new Set([
   "订单号",
   "订单编号",
@@ -9930,7 +9933,6 @@ function parseMiaoshouAliasInput(source: string, sourceName = "手动粘贴") {
     orderNumber: String(cells[orderNumberIndex] || "").normalize("NFKC").trim(),
   })).filter((row) => row.cells.some(Boolean));
   if (!rows.length) throw new Error("文件中没有可匹配的数据行。");
-  if (rows.length > 5000) throw new Error("单次最多导入 5000 行，请拆分文件后重试。");
   return { sourceName, headers, rows } satisfies MiaoshouAliasDataset;
 }
 
@@ -9980,19 +9982,21 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      setError("文件不能超过 5MB。");
+    if (file.size > MIAOSHOU_ALIAS_MAX_FILE_BYTES) {
+      setError("文件超过 50MB，暂时无法在浏览器中安全读取。");
       return;
     }
     try {
       const content = await file.text();
       const parsed = parseMiaoshouAliasInput(content, file.name);
+      const uniqueOrderCount = new Set(parsed.rows.map((row) => row.orderNumber).filter(Boolean)).size;
+      const batchCount = Math.ceil(uniqueOrderCount / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE);
       setSourceText(content);
       setSourceName(file.name);
       setDataset(parsed);
       setResults(new Map());
-      setProgress({ completed: 0, total: new Set(parsed.rows.map((row) => row.orderNumber).filter(Boolean)).size });
-      setMessage(`已读取 ${parsed.rows.length} 行，确认后点击“开始精确匹配”。`);
+      setProgress({ completed: 0, total: uniqueOrderCount });
+      setMessage(`已读取 ${parsed.rows.length} 行、${uniqueOrderCount} 个唯一订单号，系统将自动拆为 ${batchCount} 个批次，无需拆分文件。`);
       setError("");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "文件读取失败");
@@ -10019,8 +10023,8 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
     let failedBatches = 0;
     let incompleteBatches = 0;
     try {
-      for (let index = 0; index < uniqueOrderNumbers.length; index += 100) {
-        const batch = uniqueOrderNumbers.slice(index, index + 100);
+      for (let index = 0; index < uniqueOrderNumbers.length; index += MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE) {
+        const batch = uniqueOrderNumbers.slice(index, index + MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE);
         try {
           const response = await matchMiaoshouOrderAliases(batch);
           if (!response.queryComplete) incompleteBatches += 1;
@@ -10047,7 +10051,8 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
       const matched = rowResults.filter((result) => result?.status === "matched").length;
       const unconfirmed = rowResults.length - matched;
       const unavailableBatches = failedBatches + incompleteBatches;
-      setMessage(`匹配完成：${matched} 行已匹配，${unconfirmed} 行未匹配或需要复核${unavailableBatches ? `，其中 ${unavailableBatches} 个批次未能完成实时查询` : ""}。`);
+      const batchCount = Math.ceil(uniqueOrderNumbers.length / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE);
+      setMessage(`匹配完成：系统已自动处理 ${batchCount} 个批次，${matched} 行已匹配，${unconfirmed} 行未匹配或需要复核${unavailableBatches ? `，其中 ${unavailableBatches} 个批次未能完成实时查询` : ""}。`);
     } finally {
       setMatching(false);
     }
@@ -10106,6 +10111,10 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
     filter === "all" || (filter === "matched" ? result.status === "matched" : result.status !== "matched")
   ));
   const progressPercent = progress.total ? Math.round(progress.completed / progress.total * 100) : 0;
+  const totalBatches = progress.total ? Math.ceil(progress.total / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE) : 0;
+  const activeBatch = matching && totalBatches
+    ? Math.min(Math.floor(progress.completed / MIAOSHOU_ALIAS_REQUEST_BATCH_SIZE) + 1, totalBatches)
+    : 0;
 
   return (
     <section className="panel miaoshou-alias-panel">
@@ -10146,17 +10155,17 @@ function MiaoshouOrderAliasPanel({ hasCredentials }: { hasCredentials?: boolean 
         </div>
 
         <div className="miaoshou-alias-run-card">
-          <div className="miaoshou-alias-step"><b>02</b><span><strong>严格匹配</strong><small>重复订单只查询一次</small></span></div>
+          <div className="miaoshou-alias-step"><b>02</b><span><strong>严格匹配</strong><small>超出单批数量时自动拆分</small></span></div>
           <div className="miaoshou-alias-rules">
             <span><Check size={15} />精确订单号，不做模糊猜测</span>
             <span><Check size={15} />店铺 ID 唯一才返回别名</span>
-            <span><AlertTriangle size={15} />查不到统一标记“未匹配”</span>
+            <span><Check size={15} />自动分批查询并合并为一个 CSV</span>
           </div>
           <button className="sync-button miaoshou-alias-run" type="button" disabled={matching || !sourceText.trim()} onClick={() => void startMatch()}>
             <RefreshCw size={16} className={matching ? "spinning" : ""} />{matching ? `正在匹配 ${progress.completed}/${progress.total}` : "开始精确匹配"}
           </button>
           <div className="miaoshou-alias-progress" aria-label={`匹配进度 ${progressPercent}%`}><i style={{ width: `${progressPercent}%` }} /></div>
-          <small>{matching ? "结果会分批出现，请保持当前页面打开。" : results.size ? "匹配已完成，可以检查结果并下载 CSV。" : "不会修改妙手或三方仓中的任何订单。"}</small>
+          <small>{matching ? `系统正在自动处理第 ${activeBatch}/${totalBatches} 批，结果会持续合并。` : results.size ? "匹配已完成，可以检查结果并下载一个完整 CSV。" : "一次导入即可，系统会自动拆批；不会修改任何订单。"}</small>
         </div>
       </div>
 
