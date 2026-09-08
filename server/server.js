@@ -8822,5 +8822,4 @@ server.listen(port, () => {
   }
   runScheduledInventorySnapshot();
   runWecomSchedules();
-  void miaoshouAutomation.runScheduled();
 });

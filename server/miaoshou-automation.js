@@ -747,6 +747,7 @@ export async function initMiaoshouAutomation({
             existingTask = taskStore.upsertPending(packageRow, shop, {
               discoveryType: "discovered_existing_tracking",
               discoveryMessage: "发现妙手已有运单号包裹",
+              shouldPersist: false,
             });
           }
           if (
@@ -759,11 +760,11 @@ export async function initMiaoshouAutomation({
               trackingNo: observedTrackingNo,
               headTrackingNo: text(packageRow.headLogisticsNo),
               logisticsType: text(packageRow.logisticsType),
-            });
+            }, { shouldPersist: false });
           }
           continue;
         }
-        const task = taskStore.upsertPending(packageRow, shop);
+        const task = taskStore.upsertPending(packageRow, shop, { shouldPersist: false });
         if (task.attempts === 0) discovered += 1;
         if (!retryDue(task) || attempted >= config.maxPackagesPerRun) continue;
         attempted += 1;
@@ -771,6 +772,7 @@ export async function initMiaoshouAutomation({
         if (result.status === "succeeded") succeeded += 1;
         else failed += 1;
       }
+      taskStore.persist();
       config.lastRunAt = new Date().toISOString();
       config.lastRunStatus = failed || invalidShops.length ? "partial" : "success";
       config.lastRunMessage = `读取 ${packages.length} 个待发货包裹，已有运单 ${existingTracking} 个，申请 ${attempted} 个，成功 ${succeeded} 个，需处理 ${failed} 个${invalidShops.length ? `，已识别并跳过失效店铺 ${invalidShops.length} 家` : ""}`;

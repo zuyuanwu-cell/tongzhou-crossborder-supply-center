@@ -170,6 +170,7 @@ export async function initMiaoshouTaskStore(dbPath) {
   function upsertPending(packageRow, shop = {}, {
     discoveryType = "discovered",
     discoveryMessage = "发现待申请运单号包裹",
+    shouldPersist = true,
   } = {}) {
     const opOrderPackageId = packageId(packageRow);
     if (!opOrderPackageId) throw new Error("妙手包裹缺少 opOrderPackageId");
@@ -207,7 +208,7 @@ export async function initMiaoshouTaskStore(dbPath) {
       ],
     );
     if (!existing) addEvent(id, discoveryType, "pending", discoveryMessage, "", {}, { shouldPersist: false });
-    persist();
+    if (shouldPersist) persist();
     return getTask(id);
   }
 
@@ -235,7 +236,7 @@ export async function initMiaoshouTaskStore(dbPath) {
     return getTask(id);
   }
 
-  function markObservedTracking(id, result = {}) {
+  function markObservedTracking(id, result = {}, { shouldPersist = true } = {}) {
     const existing = getTask(id);
     if (!existing) throw new Error("妙手运单任务不存在");
     const now = new Date().toISOString();
@@ -256,7 +257,7 @@ export async function initMiaoshouTaskStore(dbPath) {
       { ...result, trackingNo, headTrackingNo, logisticsType },
       { shouldPersist: false },
     );
-    persist();
+    if (shouldPersist) persist();
     return getTask(id);
   }
 
