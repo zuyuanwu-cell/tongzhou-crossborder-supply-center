@@ -381,17 +381,14 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return text(first(db, "SELECT value FROM performance_meta WHERE key = ?", [key])?.value);
   }
 
-  function calculateMiaoshouDataVersion() {
+  function calculateMiaoshouInputVersion(snapshot = {}) {
     const hash = createHash("sha1");
-    for (const table of [
-      "miaoshou_performance_orders",
-      "miaoshou_performance_items",
-      "miaoshou_performance_returns",
-      "miaoshou_performance_cancellations",
-    ]) {
-      hash.update(table);
-      for (const row of all(db, `SELECT * FROM ${table} ORDER BY identity ASC`)) {
-        const { updated_at: _updatedAt, ...stableRow } = row;
+    for (const key of ["orders", "items", "returns", "cancellations"]) {
+      hash.update(key);
+      const rows = [...(Array.isArray(snapshot[key]) ? snapshot[key] : [])]
+        .sort((left, right) => text(left?.identity).localeCompare(text(right?.identity)));
+      for (const row of rows) {
+        const { updatedAt: _updatedAt, ...stableRow } = row || {};
         hash.update(JSON.stringify(stableRow));
         hash.update("\n");
       }
@@ -533,6 +530,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
 
   function upsertMiaoshouPerformance({ orders = [], items = [], returns = [], cancellations = [] } = {}, syncState = null) {
     const now = new Date().toISOString();
+    const inputDataVersion = calculateMiaoshouInputVersion({ orders, items, returns, cancellations });
     db.run("BEGIN TRANSACTION");
     try {
       const orderStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_orders (
@@ -603,7 +601,13 @@ export async function initPerformanceAnalyticsStore(dbPath) {
         cancellationStatement.free();
       }
       if (syncState) setMeta("miaoshouPerformanceSyncState", JSON.stringify(syncState));
-      setMeta("miaoshouDataVersion", calculateMiaoshouDataVersion());
+      if (inputDataVersion !== getMeta("miaoshouLastInputVersion")) {
+        setMeta("miaoshouDataVersion", createHash("sha1")
+          .update(`${getMeta("miaoshouDataVersion")}|${inputDataVersion}`)
+          .digest("hex")
+          .slice(0, 16));
+        setMeta("miaoshouLastInputVersion", inputDataVersion);
+      }
       db.run("COMMIT");
       persist();
       return getMetadata();
@@ -799,7 +803,14 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return getPerformanceSettings();
   }
 
-  if (!getMeta("miaoshouDataVersion")) setMeta("miaoshouDataVersion", calculateMiaoshouDataVersion());
+  if (!getMeta("miaoshouDataVersion")) {
+    const metadata = getMetadata();
+    setMeta("miaoshouDataVersion", createHash("sha1").update(JSON.stringify([
+      metadata.miaoshouOrderCount,
+      metadata.miaoshouItemCount,
+      metadata.miaoshouReturnCount,
+    ])).digest("hex").slice(0, 16));
+  }
 
   upsertExchangeRates([
     { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1, source: "system" },
