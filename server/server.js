@@ -234,7 +234,8 @@ let wecomScheduleRunning = false;
 const performanceAnalyticsResponseCache = new Map();
 const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
 const performanceAnalyticsResponseCacheLimit = 24;
-let performanceAnalyticsMaterializedCache = loadPerformanceMaterializationCache(performanceMaterializationCachePath);
+let performanceAnalyticsMaterializedCache = null;
+let performanceAnalyticsMaterializedCacheLoaded = false;
 let performanceAnalyticsMaterializationJob = null;
 let performanceAnalyticsRefreshQueued = false;
 const performanceAnalyticsQueryService = createPerformanceAnalyticsQueryService();
@@ -288,6 +289,14 @@ function loadPerformanceMaterializationCache(path) {
 function saveJsonCache(path, payload, spacing = 2) {
   mkdirSync(cacheDir, { recursive: true });
   writeFileSync(path, JSON.stringify(payload, null, spacing), "utf8");
+}
+
+function ensurePerformanceMaterializationCacheLoaded() {
+  if (!performanceAnalyticsMaterializedCacheLoaded) {
+    performanceAnalyticsMaterializedCache = loadPerformanceMaterializationCache(performanceMaterializationCachePath);
+    performanceAnalyticsMaterializedCacheLoaded = true;
+  }
+  return performanceAnalyticsMaterializedCache;
 }
 
 function saveProductCache(payload) {
@@ -3843,6 +3852,7 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
       stale: false,
       targetDataVersion: context.dataVersion,
     };
+    performanceAnalyticsMaterializedCacheLoaded = true;
     performanceAnalyticsResponseCache.clear();
     return performanceAnalyticsMaterializedCache;
   }).finally(() => {
@@ -3853,6 +3863,7 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
 }
 
 async function performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, { waitForFresh = false } = {}) {
+  ensurePerformanceMaterializationCacheLoaded();
   const supplementalProductCosts = performanceAnalyticsStore.listSupplementalProductCosts();
   const context = performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings, supplementalProductCosts);
   if (performanceAnalyticsMaterializedCache?.dataVersion === context.dataVersion) return performanceAnalyticsMaterializedCache;
@@ -8796,14 +8807,12 @@ server.listen(port, () => {
   if (autoSyncIntervalMs >= 1000) {
     setInterval(runAutoSync, autoSyncIntervalMs);
     console.log(`[auto-sync] enabled every ${Math.round(autoSyncIntervalMs / 60000)} minutes`);
-    runAutoSync();
   }
   setInterval(runScheduledInventorySnapshot, 60 * 1000);
   setInterval(runWecomSchedules, 60 * 1000);
   setInterval(() => { void miaoshouAutomation.runScheduled(); }, 60 * 1000);
   if (performanceMiaoshouAutoSyncEnabled) {
     setInterval(() => { void performanceMiaoshouSync.runScheduled(); }, 60 * 1000);
-    void performanceMiaoshouSync.runScheduled();
     console.log(`[miaoshou-performance] enabled every ${Math.round(performanceMiaoshouSyncIntervalMs / 60_000)} minutes with ${performanceMiaoshouBackfillDays}-day initial backfill`);
   }
   if (performanceFxAutoSyncEnabled) {
