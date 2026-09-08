@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import {
   calculateAfterSalesLiability,
   createAfterSalesService,
+  isAfterSalesTicketWithinScope,
   resolveAfterSalesResponsibility,
 } from "../server/after-sales.js";
 
@@ -85,6 +86,8 @@ try {
     kind: "evidence",
     dataUrl: "data:image/png;base64,iVBORw0KGgo=",
   }, actor, "http://localhost:8787");
+  assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, actor.id), true, "the uploader must be able to preview an unsubmitted upload");
+  assert.equal(service.canAccessUpload(evidence.id, { countries: ["ID"] }, "other-user"), false, "unsubmitted uploads are private to their uploader");
   const created = service.create({
     order: synced.order,
     customer: synced.order.customer,
@@ -125,6 +128,22 @@ try {
   assert.equal(listed.summary.total, 1);
   assert.equal(listed.tickets[0].customer, undefined, "customer data must not appear in list payloads");
   assert.equal(listed.tickets[0].customerSummary.configured, true);
+  assert.equal(service.list({ dataScopes: { countries: ["马来西亚"] } }).summary.total, 0);
+  assert.equal(service.list({ dataScopes: { countries: ["印度尼西亚"] } }).summary.total, 1);
+  assert.equal(service.list({ dataScopes: { skus: ["TZKJ-B"] } }).summary.total, 0);
+  assert.equal(service.list({ dataScopes: { skus: ["TZKJ-A"] } }).summary.total, 1);
+  assert.equal(service.get(created.ticket.id, { countries: ["MY"] }), null);
+  assert.equal(service.get(created.ticket.id, { countries: ["ID"] })?.id, created.ticket.id);
+  assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, "other-user"), false);
+  assert.equal(service.canAccessUpload(evidence.id, { countries: ["ID"] }, "other-user"), true);
+  assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, actor.id), false, "submitted uploads must follow the ticket's current data scope");
+  assert.equal(isAfterSalesTicketWithinScope({
+    site: "ID",
+    originalItems: [
+      { sku: "TZKJ-A", affectedQty: 1 },
+      { sku: "TZKJ-B", affectedQty: 1 },
+    ],
+  }, { skus: ["TZKJ-A"] }), false, "all affected SKUs must stay inside the assigned scope");
 
   console.log("after-sales workflow tests passed");
 } finally {

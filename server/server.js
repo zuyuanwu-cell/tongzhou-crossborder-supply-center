@@ -5695,6 +5695,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, afterSalesService.list({
         status: url.searchParams.get("status"),
         keyword: url.searchParams.get("keyword"),
+        dataScopes: normalizeDataScopes(auth.user?.dataScopes),
       }));
       return;
     }
@@ -5708,6 +5709,14 @@ const server = http.createServer(async (req, res) => {
       try {
         const payload = await parseRequestBody(req);
         const result = await afterSalesService.syncOrder(payload.orderNumber);
+        if (!afterSalesService.inScope({
+          site: result.order?.site,
+          customer: result.order?.customer,
+          originalItems: result.order?.items,
+        }, normalizeDataScopes(auth.user?.dataScopes))) {
+          sendJson(res, 403, { ok: false, message: "该订单不在当前账号的数据范围内。" });
+          return;
+        }
         appendActionLog(auth, "同步售后原订单", "after_sales_order", String(payload.orderNumber || "").trim(), {
           source: result.source,
           itemCount: result.order?.items?.length || 0,
@@ -5751,6 +5760,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const fileName = basename(decodeURIComponent(url.pathname.replace("/api/after-sales/uploads/", "")));
+      if (!afterSalesService.canAccessUpload(fileName, normalizeDataScopes(auth.user?.dataScopes), auth.user?.id)) {
+        sendJson(res, 404, { ok: false, message: "售后附件不存在或不在当前账号的数据范围内。" });
+        return;
+      }
       const resolvedUpload = afterSalesService.uploadPath(fileName);
       if (!resolvedUpload) {
         sendJson(res, 404, { ok: false, message: "售后附件不存在。" });
@@ -5768,6 +5781,15 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const payload = await parseRequestBody(req);
+        if (!afterSalesService.inScope({
+          site: payload.order?.site,
+          customer: payload.customer || payload.order?.customer,
+          originalItems: payload.originalItems || payload.order?.items,
+          reissueItems: payload.reissueItems,
+        }, normalizeDataScopes(auth.user?.dataScopes))) {
+          sendJson(res, 403, { ok: false, message: "该售后单不在当前账号的数据范围内。" });
+          return;
+        }
         const result = afterSalesService.create(payload, auth.user);
         appendActionLog(auth, "提交售后单", "after_sales_ticket", result.ticket.id, {
           originalOrderNumber: result.ticket.originalOrderNumber,
@@ -5788,7 +5810,10 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有查看售后单的权限。" });
         return;
       }
-      const ticket = afterSalesService.get(decodeURIComponent(afterSalesDetailMatch[1]));
+      const ticket = afterSalesService.get(
+        decodeURIComponent(afterSalesDetailMatch[1]),
+        normalizeDataScopes(auth.user?.dataScopes),
+      );
       if (!ticket) {
         sendJson(res, 404, { ok: false, message: "售后单不存在。" });
         return;
@@ -5807,7 +5832,12 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 403, { ok: false, message: adminAction ? "作废或重开售后单需要管理员权限。" : "当前账号没有仓库售后处理权限。" });
           return;
         }
-        const result = afterSalesService.updateWarehouse(decodeURIComponent(afterSalesWarehouseMatch[1]), payload, auth.user);
+        const ticketId = decodeURIComponent(afterSalesWarehouseMatch[1]);
+        if (!afterSalesService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes))) {
+          sendJson(res, 404, { ok: false, message: "售后单不存在或不在当前账号的数据范围内。" });
+          return;
+        }
+        const result = afterSalesService.updateWarehouse(ticketId, payload, auth.user);
         appendActionLog(auth, "更新售后单状态", "after_sales_ticket", result.ticket.id, {
           action: payload.action,
           status: result.ticket.status,

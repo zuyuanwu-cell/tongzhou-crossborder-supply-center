@@ -329,6 +329,29 @@ function publicListTicket(ticket) {
   };
 }
 
+export function isAfterSalesTicketWithinScope(ticket, dataScopes = {}) {
+  const scopedCountries = new Set((Array.isArray(dataScopes?.countries) ? dataScopes.countries : [])
+    .map(normalizedCountryKey)
+    .filter(Boolean));
+  const scopedSkus = new Set((Array.isArray(dataScopes?.skus) ? dataScopes.skus : [])
+    .map(normalizedSku)
+    .filter(Boolean));
+  if (scopedCountries.size) {
+    const ticketCountries = [ticket?.site, ticket?.customer?.country]
+      .map(normalizedCountryKey)
+      .filter(Boolean);
+    if (!ticketCountries.some((country) => scopedCountries.has(country))) return false;
+  }
+  if (scopedSkus.size) {
+    const affectedItems = (ticket?.originalItems || []).filter((item) => number(item?.affectedQty ?? item?.orderedQty) > 0);
+    const ticketSkus = [...affectedItems, ...(ticket?.reissueItems || [])]
+      .map((item) => normalizedSku(item?.sku))
+      .filter(Boolean);
+    if (!ticketSkus.length || !ticketSkus.every((sku) => scopedSkus.has(sku))) return false;
+  }
+  return true;
+}
+
 function summaryFor(tickets) {
   return tickets.reduce((summary, ticket) => {
     summary.total += 1;
@@ -351,13 +374,14 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
   function list(filters = {}) {
     const keyword = text(filters.keyword).toLowerCase();
     const status = text(filters.status);
-    const tickets = store.list().filter((ticket) => {
+    const visibleTickets = store.list().filter((ticket) => isAfterSalesTicketWithinScope(ticket, filters.dataScopes));
+    const tickets = visibleTickets.filter((ticket) => {
       if (status && status !== "all" && ticket.status !== status) return false;
       if (!keyword) return true;
       return [ticket.id, ticket.originalOrderNumber, ticket.shopAlias, ticket.primaryReason, ticket.secondaryReason]
         .some((value) => text(value).toLowerCase().includes(keyword));
     });
-    return { ok: true, updatedAt: nowIso(), summary: summaryFor(store.list()), tickets: tickets.map(publicListTicket) };
+    return { ok: true, updatedAt: nowIso(), summary: summaryFor(visibleTickets), tickets: tickets.map(publicListTicket) };
   }
 
   async function syncOrder(orderNumberInput) {
@@ -607,7 +631,21 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
 
   return {
     list,
-    get(id) { return store.get(id); },
+    get(id, dataScopes = {}) {
+      const ticket = store.get(id);
+      return ticket && isAfterSalesTicketWithinScope(ticket, dataScopes) ? ticket : null;
+    },
+    inScope(ticket, dataScopes = {}) { return isAfterSalesTicketWithinScope(ticket, dataScopes); },
+    canAccessUpload(id, dataScopes = {}, actorId = "") {
+      const upload = store.getUpload(id);
+      if (!upload) return false;
+      const relatedTickets = store.list().filter((ticket) => {
+        const uploadIds = [...(ticket.evidence || []), ...(ticket.labelUploads || [])].map((item) => text(item?.id));
+        return uploadIds.includes(text(id));
+      });
+      if (relatedTickets.length) return relatedTickets.some((ticket) => isAfterSalesTicketWithinScope(ticket, dataScopes));
+      return Boolean(text(actorId) && text(upload.uploadedById) === text(actorId));
+    },
     syncOrder,
     saveUpload,
     uploadPath,
