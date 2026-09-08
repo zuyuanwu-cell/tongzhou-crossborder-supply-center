@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "../server/order-cache-policy.js";
+import { mergeWarehouseOrderWindow, replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "../server/order-cache-policy.js";
 
 const cached = [
   { warehouseId: "warehouse-a", orderId: "old-a-1" },
@@ -56,5 +56,37 @@ assert.deepEqual(
   ],
   "publishing one warehouse must not affect another warehouse",
 );
+
+const historical = [
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "old", lineId: "1", createdAt: "2026-08-01T09:00:00Z" },
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "changed", lineId: "1", createdAt: "2026-09-05T09:00:00Z", quantity: 1 },
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "removed", lineId: "1", createdAt: "2026-09-06T09:00:00Z" },
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "undated", lineId: "1" },
+];
+const recent = [
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "changed", lineId: "1", createdAt: "2026-09-05T09:00:00Z", quantity: 2 },
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "new", lineId: "1", createdAt: "2026-09-09T09:00:00Z" },
+  { providerId: "sea", warehouseId: "warehouse-a", orderId: "new", lineId: "1", createdAt: "2026-09-09T09:00:00Z" },
+];
+assert.deepEqual(
+  mergeWarehouseOrderWindow(historical, recent, { dateFrom: "2026-09-03", dateTo: "2026-09-09" }),
+  [
+    historical[0],
+    historical[3],
+    recent[0],
+    recent[1],
+  ],
+  "an incremental result should replace the recent window, retain older/undated rows, and remove duplicates",
+);
+
+const incrementalSnapshot = selectWarehouseOrderSnapshot({
+  result: { ok: true, orders: recent },
+  cachedWarehouseOrders: historical,
+  publishable: true,
+  mergeWindow: { dateFrom: "2026-09-03", dateTo: "2026-09-09" },
+});
+assert.equal(incrementalSnapshot.orderCount, 4);
+assert.equal(incrementalSnapshot.liveOrderCount, 3, "live count should describe the fetched rows before de-duplication");
+assert.equal(incrementalSnapshot.published, true);
 
 console.log("order cache policy tests passed");

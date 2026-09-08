@@ -4499,7 +4499,7 @@ function unknownOrderSyncWarehouseIds(warehouseIds = []) {
   return ids.filter((id) => !known.has(id));
 }
 
-function createOrderSyncJob({ days = 90, warehouseIds = [] } = {}) {
+function createOrderSyncJob({ days = 90, warehouseIds = [], incremental = false, reason = "manual" } = {}) {
   const normalizedDays = Math.max(1, Math.min(180, Number(days) || 90));
   const selected = selectedOrderSyncWarehouses(warehouseIds);
   if (!selected.length) {
@@ -4510,6 +4510,8 @@ function createOrderSyncJob({ days = 90, warehouseIds = [] } = {}) {
     id: `order-sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     status: "queued",
     days: normalizedDays,
+    incremental: Boolean(incremental),
+    reason: String(reason || "manual"),
     warehouseIds: selected.map((connection) => connection.id),
     chunkDays: orderSyncChunkDays,
     createdAt: new Date().toISOString(),
@@ -4615,7 +4617,7 @@ async function syncCompleteOrderRange(connection, from, to) {
   };
 }
 
-function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true) {
+function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true, mergeWindow = null) {
   const warehouseId = result.warehouseId || connection.id;
   const orderMeta = orderSyncMetaFromResult(result);
   const previousResult = (cachedOrdersSync.results || []).find((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
@@ -4625,6 +4627,7 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
     result,
     cachedWarehouseOrders,
     publishable: Boolean(replaceOrders),
+    mergeWindow: replaceOrders ? mergeWindow : null,
   });
   const completedAt = new Date().toISOString();
   const nextResults = (cachedOrdersSync.results || []).filter((item) => item.warehouseId !== warehouseId && item.warehouseId !== connection.id);
@@ -4649,11 +4652,12 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
   cachedOrdersSync = {
     ...cachedOrdersSync,
     syncedAt: snapshot.published ? completedAt : cachedOrdersSync.syncedAt,
-    days,
+    days: mergeWindow ? Math.max(numberOrZero(cachedOrdersSync.days), numberOrZero(days)) : days,
     orders: replaceWarehouseOrderRows(cachedOrdersSync.orders || [], warehouseIds, snapshot.orders),
     results: nextResults,
   };
   saveOrderCache(cachedOrdersSync);
+  return snapshot;
 }
 
 let activeOrderSyncJobPromise = null;
@@ -4803,7 +4807,10 @@ async function runOrderSyncJob(jobId) {
     // Publish atomically per warehouse. A partial date range must never replace
     // the previous complete snapshot, even when some chunks succeeded.
     const replaceOrders = ok;
-    mergeWarehouseOrderCache(connection, result, job.days, replaceOrders);
+    const mergeWindow = job.incremental && chunks.length
+      ? { dateFrom: chunks[0].from, dateTo: chunks[chunks.length - 1].to }
+      : null;
+    const publishedSnapshot = mergeWarehouseOrderCache(connection, result, job.days, replaceOrders, mergeWindow);
     job.results = [
       ...(job.results || []).filter((item) => item.warehouseId !== connection.id && item.warehouseId !== result.warehouseId),
       {
@@ -4812,7 +4819,8 @@ async function runOrderSyncJob(jobId) {
         ok,
         skipped: warehouseSkipped,
         message: result.message,
-        orderCount: dedupedOrders.length,
+        orderCount: publishedSnapshot.orderCount,
+        fetchedOrderCount: dedupedOrders.length,
         published: replaceOrders,
         failedChunks: warehouseFailedChunks,
         completedAt: new Date().toISOString(),
