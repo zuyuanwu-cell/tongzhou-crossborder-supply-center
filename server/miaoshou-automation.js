@@ -783,6 +783,32 @@ export async function initMiaoshouAutomation({
     return callApi(() => client().searchCancellations(input), { retryRateLimit: true });
   }
 
+  async function createCommonCollectBoxProduct(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    // 创建商品属于写操作。网络结果不确定时不能自动重试，避免生成重复商品。
+    return callApi(() => client().createCommonCollectBoxProduct(input));
+  }
+
+  async function listCommonCollectBox(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().listCommonCollectBox(input), { retryRateLimit: true });
+  }
+
+  async function getGenerateProductInfoAiNames() {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().getGenerateProductInfoAiNames(), { retryRateLimit: true });
+  }
+
+  async function getTikTokCategoryTree(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().getTikTokCategoryTree(input), { retryRateLimit: true });
+  }
+
+  async function getTikTokCategoryMetadata(input) {
+    if (!hasCredentials(effectiveConfig())) throw new Error("请先配置妙手 AppKey / AppSecret");
+    return callApi(() => client().getTikTokCategoryMetadata(input), { retryRateLimit: true });
+  }
+
   async function runScheduled() {
     if (running || !config.automationEnabled || !hasCredentials(effectiveConfig())) return null;
     const lastRun = Date.parse(config.lastRunAt || "");
@@ -797,7 +823,12 @@ export async function initMiaoshouAutomation({
   }
 
   return {
+    createCommonCollectBoxProduct,
+    getGenerateProductInfoAiNames,
+    getTikTokCategoryMetadata,
+    getTikTokCategoryTree,
     getWaybill,
+    listCommonCollectBox,
     performanceContext,
     publicPayload,
     retryTask,

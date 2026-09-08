@@ -35,6 +35,9 @@ import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogPr
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
+import { directHttpsUrls, initMiaoshouListingService, parseListingAiOutput, validateListingDraft } from "./miaoshou-listing.js";
+import { initTongzhouCanvasAi, TongzhouCanvasApiError } from "./tongzhou-canvas-ai.js";
+import { createMiaoshouCategoryService, validateTikTokReadiness } from "./miaoshou-listing-platform.js";
 import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-sync.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
@@ -155,6 +158,8 @@ const performanceExchangeRateSync = createExchangeRateSyncService({
   configuredCurrencies: performanceFxConfiguredCurrencies,
 });
 const miaoshouAutomation = await initMiaoshouAutomation({ cacheDir, dbPath: miaoshouTaskDbPath });
+const miaoshouListing = initMiaoshouListingService({ cacheDir, connector: miaoshouAutomation });
+const miaoshouCategories = createMiaoshouCategoryService({ connector: miaoshouAutomation });
 const performanceMiaoshouSync = createMiaoshouPerformanceSyncService({
   connector: miaoshouAutomation,
   store: performanceAnalyticsStore,
@@ -169,6 +174,12 @@ const isProductionRuntime = process.env.NODE_ENV === "production";
 const allowInsecureInternalAccessCode = process.env.ALLOW_INSECURE_INTERNAL_ACCESS_CODE === "true";
 const internalAccessCode = configuredInternalAccessCode || (isProductionRuntime ? "" : defaultInternalAccessCode);
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
+const canvasCredentialSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY
+  || (isProductionRuntime ? sessionSecret : createHash("sha256").update(`tongzhou-canvas-local:${sessionSecret}`).digest("hex"));
+const tongzhouCanvasAi = initTongzhouCanvasAi({
+  cacheDir,
+  encryptionSecret: canvasCredentialSecret,
+});
 const directAuth = {
   role: "admin",
   user: {
@@ -1915,6 +1926,200 @@ function workflowWithWmsState(workflow) {
   };
 }
 
+function listingNumber(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function listingWeightKg(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const matched = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*(kg|千克|公斤|g|克)/i);
+  if (!matched) return null;
+  const amount = Number(matched[1]);
+  return matched[2].toLowerCase() === "g" || matched[2] === "克" ? amount / 1000 : amount;
+}
+
+function listingDimensionCm(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const matched = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*(cm|厘米|mm|毫米|m|米)?/i);
+  if (!matched || !matched[0].trim()) return null;
+  const amount = Number(matched[1]);
+  const unit = matched[2]?.toLowerCase() || "cm";
+  if (unit === "mm" || unit === "毫米") return amount / 10;
+  if (unit === "m" || unit === "米") return amount * 100;
+  return amount;
+}
+
+function miaoshouListingSource(sku) {
+  const normalizedSku = String(sku || "").trim().toLowerCase();
+  const catalog = (cachedProducts.catalog || []).find((item) => String(item.sku || "").trim().toLowerCase() === normalizedSku);
+  const base = (cachedProducts.productBase || []).find((item) => String(item.sku || "").trim().toLowerCase() === normalizedSku);
+  const product = catalog || base;
+  if (!product) throw new Error("未找到对应产品，请先刷新产品库。");
+  const matchesProduct = (record) => (
+    String(record?.sku || "").trim().toLowerCase() === normalizedSku
+    || (base?.id && String(record?.productRecordId || "") === String(base.id))
+  );
+  const assetRecords = (cachedAssets.assets || []).filter(matchesProduct);
+  const qualificationRecords = (cachedQualifications.qualifications || []).filter(matchesProduct);
+  const mediaCandidates = [
+    product.imageUrl,
+    base?.imageUrl,
+    product.qualificationImageUrl,
+    base?.qualificationImageUrl,
+    ...assetRecords.flatMap((record) => (record.files || []).map((file) => file.url)),
+    ...qualificationRecords.flatMap((record) => (record.files || []).map((file) => file.url)),
+  ].filter(Boolean);
+  const fileCandidates = [
+    ...assetRecords.flatMap((record) => record.files || []),
+    ...qualificationRecords.flatMap((record) => record.files || []),
+  ];
+  const imageUrls = directHttpsUrls(mediaCandidates).slice(0, 12);
+  const unavailableMediaCount = fileCandidates.filter((file) => file.fileId && !directHttpsUrls([file.url]).length).length
+    + mediaCandidates.filter((value) => !directHttpsUrls([value]).length).length;
+  return {
+    product,
+    base,
+    imageUrls,
+    unavailableMediaCount,
+    aiSource: {
+      sku: product.sku,
+      name: base?.name || product.name,
+      nameEn: base?.nameEn || product.nameEn,
+      brand: base?.brand || product.brand,
+      category: base?.category || product.category,
+      functionCategory: base?.functionCategory || product.functionCategory,
+      productType: base?.productType || product.productType,
+      skuAttribute: base?.skuAttribute || product.skuAttribute,
+      specification: base?.specification || product.specification,
+      publicDescription: String(base?.publicDescription || product.publicDescription || "").slice(0, 4000),
+      sellingPoints: String(base?.sellingPoints || product.sellingPoints || "").slice(0, 2500),
+      sellingPointsEn: String(base?.sellingPointsEn || product.sellingPointsEn || "").slice(0, 2500),
+    },
+  };
+}
+
+function listingLanguageLabel(language, site) {
+  const labels = { id: "印度尼西亚语", en: "英语", ms: "马来语", vi: "越南语", th: "泰语", zh: "简体中文" };
+  return labels[String(language || "").toLowerCase()] || (String(site || "").toUpperCase() === "ID" ? "印度尼西亚语" : "英语");
+}
+
+function preferredCnySourcePrice(product, base) {
+  const direct = [
+    [product?.directCostPrice, product?.directCostCurrency],
+    [product?.directPrice, product?.directCurrency],
+  ];
+  const distribution = [
+    [product?.distributionCostPrice, product?.distributionCostCurrency],
+    [product?.distributionCost, product?.distributionCostCurrency],
+  ];
+  const channelFirst = String(product?.channel || "").includes("分销") ? [...distribution, ...direct] : [...direct, ...distribution];
+  const candidates = [
+    ...channelFirst,
+    [base?.latestLandedUnitCostCny, "CNY"],
+  ];
+  for (const [value, currency] of candidates) {
+    const number = listingNumber(value);
+    if (number !== null && number > 0 && (!String(currency || "").trim() || String(currency).toUpperCase() === "CNY")) return number;
+  }
+  return null;
+}
+
+async function generateMiaoshouListingDraft(input, actorName, userId) {
+  const source = miaoshouListingSource(input.sku);
+  const platform = String(input.platform || "tiktok").trim().toLowerCase();
+  const site = String(input.site || "ID").trim().toUpperCase();
+  const language = String(input.language || "id").trim().toLowerCase();
+  const requestedImages = directHttpsUrls(input.imageUrls);
+  const allowedImageSet = new Set(source.imageUrls);
+  const selectedImages = (requestedImages.length ? requestedImages : source.imageUrls)
+    .filter((url) => allowedImageSet.has(url))
+    .slice(0, 9);
+  const prompt = [
+    `请为 ${platform.toUpperCase()} ${site} 站生成商品上架草稿，输出语言为${listingLanguageLabel(language, site)}。`,
+    "只能依据给定产品资料，不得虚构重量、尺寸、认证、功效、成分、适用人群或医疗效果。",
+    "标题应自然、可搜索且避免夸大；详情应便于移动端阅读；如存在潜在功效宣称或资料不足，必须写入 warnings。",
+    "只返回 JSON，不要 Markdown。结构必须为：",
+    '{"title":"","description":"","keywords":[],"sellingPoints":[],"categoryHint":"","warnings":[]}',
+    `产品资料：${JSON.stringify(source.aiSource)}`,
+  ].join("\n");
+  const job = await tongzhouCanvasAi.submitModelTask(userId, {
+    category: "chat",
+    model: input.model,
+    params: { temperature: 0.25, max_tokens: 2400 },
+    messages: [
+      { role: "system", content: "你是跨境电商商品资料编辑。严格忠于来源，输出可人工审核的结构化草稿，不做自动发布决定。" },
+      { role: "user", content: prompt },
+    ],
+  });
+  const completedJob = await tongzhouCanvasAi.waitForJob(userId, job.id);
+  const generated = parseListingAiOutput(completedJob.output?.text);
+  const product = source.product;
+  const base = source.base;
+  return miaoshouListing.createDraft({
+    ...generated,
+    sku: product.sku,
+    sourceProductName: base?.name || product.name,
+    platform,
+    site,
+    language,
+    price: listingNumber(input.price) ?? preferredCnySourcePrice(product, base),
+    stock: listingNumber(input.stock) ?? listingNumber(product.stockQty) ?? 0,
+    weight: listingNumber(input.weight) ?? listingWeightKg(base?.weight || product.weight),
+    packageLength: listingNumber(input.packageLength) ?? listingDimensionCm(base?.length || product.length),
+    packageWidth: listingNumber(input.packageWidth) ?? listingDimensionCm(base?.width || product.width),
+    packageHeight: listingNumber(input.packageHeight) ?? listingDimensionCm(base?.height || product.height),
+    barcode: base?.barcode || product.barcode || "",
+    shopId: input.shopId,
+    categoryId: input.categoryId,
+    categoryName: input.categoryName,
+    categoryPath: input.categoryPath,
+    platformAttributes: input.platformAttributes,
+    imageUrls: selectedImages,
+    unavailableMediaCount: source.unavailableMediaCount,
+  }, actorName);
+}
+
+async function suggestMiaoshouTikTokCategory(draft, actorName, userId, model = "") {
+  const searchText = [draft.categoryHint, draft.sourceProductName, draft.title, ...(draft.keywords || [])].filter(Boolean).join(" ");
+  const candidates = await miaoshouCategories.search(draft.site, searchText, 120);
+  if (!candidates.length) throw new Error("暂未找到可用的类目候选，请输入更明确的中文类目关键词后搜索。批次不会自动猜测类目。");
+  const prompt = [
+    "请从候选列表中为商品选择最匹配的 TikTok 末级类目。只能选择列表内的 cid；资料不足时也要选择最接近项，并在 reason 说明需要人工复核。",
+    "只返回 JSON：{\"cid\":\"\",\"reason\":\"\"}",
+    `商品：${JSON.stringify({ name: draft.sourceProductName, title: draft.title, categoryHint: draft.categoryHint, keywords: draft.keywords })}`,
+    `候选：${JSON.stringify(candidates.map((item) => ({ cid: item.cid, path: item.path, pathChinese: item.pathChinese })))}`,
+  ].join("\n");
+  const job = await tongzhouCanvasAi.submitModelTask(userId, {
+    category: "chat",
+    model,
+    params: { temperature: 0, max_tokens: 800 },
+    messages: [
+      { role: "system", content: "你是跨境电商类目审核员。必须从给定候选中选择，不能编造类目 ID。" },
+      { role: "user", content: prompt },
+    ],
+  });
+  const completedJob = await tongzhouCanvasAi.waitForJob(userId, job.id);
+  const raw = String(completedJob.output?.text || "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("AI 类目建议返回格式异常，请改用人工搜索。草稿未被修改。");
+  }
+  const selected = candidates.find((item) => item.cid === String(parsed?.cid || "").trim());
+  if (!selected) throw new Error("AI 返回了候选范围外的类目，已拒绝写入，请改用人工搜索。草稿未被修改。");
+  const updated = miaoshouListing.updateDraft(draft.id, {
+    categoryId: selected.cid,
+    categoryName: selected.nameChinese || selected.name,
+    categoryPath: selected.pathChinese || selected.path,
+    platformAttributes: [],
+    categoryMetadataCheckedAt: "",
+  }, actorName);
+  return { draft: updated, category: selected, reason: String(parsed?.reason || "").trim() };
+}
+
 function selectedShipmentWarehouse(payload) {
   const connectionId = String(payload?.destinationWarehouseConnectionId || "").trim();
   if (!connectionId) throw new Error("请选择发往仓库；保存后系统会建立一条待确认的 WMS 推送任务。");
@@ -2287,6 +2492,20 @@ function canViewInternalCatalog(auth) {
 
 function canUseTongzhouAi(auth) {
   return auth.role !== "guest" && hasPermission(auth, "tongzhou_ai");
+}
+
+function canvasAiErrorStatus(error) {
+  if (error instanceof TongzhouCanvasApiError && [400, 401, 402, 403, 409, 422, 429, 503].includes(error.status)) return error.status;
+  return 400;
+}
+
+function canvasAiErrorPayload(error, fallback) {
+  return {
+    ok: false,
+    message: error?.message || fallback,
+    ...(error instanceof TongzhouCanvasApiError && error.code ? { code: error.code } : {}),
+    ...(error instanceof TongzhouCanvasApiError && error.requestId ? { requestId: error.requestId } : {}),
+  };
 }
 
 function dateKeyInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
@@ -5270,6 +5489,180 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/miaoshou/listings" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "使用妙手 AI 上架需要管理员权限。" });
+        return;
+      }
+      const sku = String(url.searchParams.get("sku") || "").trim();
+      const listingPayload = miaoshouListing.publicPayload({ sku });
+      const listingShops = miaoshouAutomation.performanceContext().shops.map((shop) => ({
+        shopId: String(shop.shopId || ""),
+        platform: String(shop.platform || ""),
+        site: String(shop.site || "").toUpperCase(),
+        name: String(shop.shopNick || shop.platformShopName || shop.shopId || ""),
+      }));
+      sendJson(res, 200, {
+        ...listingPayload,
+        aiConfigured: tongzhouCanvasAi.publicConfig(auth.user.id).configured,
+        aiModels: tongzhouCanvasAi.publicConfig(auth.user.id).catalog.models.filter((model) => model.category === "chat"),
+        selectedAiModel: tongzhouCanvasAi.publicConfig(auth.user.id).models.text,
+        defaults: { platform: "tiktok", site: "ID", language: "id", priceCurrency: "CNY" },
+        shops: listingShops,
+        drafts: listingPayload.drafts.map((draft) => ({ ...draft, validation: validateListingDraft(draft) })),
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/tiktok/categories" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "读取妙手类目需要管理员权限。" });
+        return;
+      }
+      try {
+        const site = String(url.searchParams.get("site") || "ID").trim().toUpperCase();
+        const query = String(url.searchParams.get("query") || "").trim().slice(0, 200);
+        const categories = await miaoshouCategories.search(site, query, 60);
+        sendJson(res, 200, { ok: true, site, query, categories });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "读取妙手 TikTok 类目失败。" });
+      }
+      return;
+    }
+
+    const miaoshouCategoryMetadataMatch = url.pathname.match(/^\/api\/miaoshou\/tiktok\/categories\/([^/]+)\/metadata$/);
+    if (miaoshouCategoryMetadataMatch && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "读取妙手类目要求需要管理员权限。" });
+        return;
+      }
+      try {
+        const site = String(url.searchParams.get("site") || "ID").trim().toUpperCase();
+        const shopId = String(url.searchParams.get("shopId") || "").trim();
+        const draftId = String(url.searchParams.get("draftId") || "").trim();
+        const metadata = await miaoshouCategories.getMetadata({ site, shopId, cid: decodeURIComponent(miaoshouCategoryMetadataMatch[1]) });
+        const draft = draftId ? miaoshouListing.getDraft(draftId) : null;
+        sendJson(res, 200, {
+          ok: true,
+          metadata,
+          readiness: draft ? validateTikTokReadiness(draft, metadata) : null,
+          checkedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "读取妙手 TikTok 类目要求失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/miaoshou/listings/generate" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "生成妙手上架草稿需要妙手管理和同舟 AI 权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      if (!String(payload.sku || "").trim()) {
+        sendJson(res, 400, { ok: false, message: "缺少产品 SKU。" });
+        return;
+      }
+      try {
+        const actorName = auth.user?.displayName || auth.user?.username || "管理员";
+        const draft = await generateMiaoshouListingDraft(payload, actorName, auth.user.id);
+        appendActionLog(auth, "生成妙手 AI 上架草稿", "miaoshou_listing", draft.sku, {
+          draftId: draft.id,
+          platform: draft.platform,
+          site: draft.site,
+        });
+        sendJson(res, 201, { ok: true, draft: { ...draft, validation: validateListingDraft(draft) } });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "生成妙手上架草稿失败。" });
+      }
+      return;
+    }
+
+    const miaoshouListingMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)$/);
+    if (miaoshouListingMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "修改妙手上架草稿需要管理员权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      try {
+        const actorName = auth.user?.displayName || auth.user?.username || "管理员";
+        const draft = miaoshouListing.updateDraft(decodeURIComponent(miaoshouListingMatch[1]), payload, actorName);
+        appendActionLog(auth, "修改妙手上架草稿", "miaoshou_listing", draft.sku, { draftId: draft.id });
+        sendJson(res, 200, { ok: true, draft: { ...draft, validation: validateListingDraft(draft) } });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "保存妙手上架草稿失败。" });
+      }
+      return;
+    }
+
+    const miaoshouSuggestCategoryMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/suggest-category$/);
+    if (miaoshouSuggestCategoryMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou") || !canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "AI 推荐类目需要妙手管理和同舟 AI 权限。" });
+        return;
+      }
+      try {
+        const draftId = decodeURIComponent(miaoshouSuggestCategoryMatch[1]);
+        const current = miaoshouListing.getDraft(draftId);
+        if (!current) throw new Error("未找到妙手上架草稿");
+        if (current.platform !== "tiktok") throw new Error("当前仅支持推荐 TikTok 类目");
+        const actorName = auth.user?.displayName || auth.user?.username || "管理员";
+        const payload = await parseRequestBody(req);
+        const result = await suggestMiaoshouTikTokCategory(current, actorName, auth.user.id, payload.model);
+        const metadata = await miaoshouCategories.getMetadata({ site: result.draft.site, shopId: result.draft.shopId, cid: result.draft.categoryId });
+        sendJson(res, 200, {
+          ok: true,
+          reason: result.reason,
+          category: result.category,
+          metadata,
+          readiness: validateTikTokReadiness(result.draft, metadata),
+          draft: { ...result.draft, validation: validateListingDraft(result.draft) },
+          checkedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "AI 推荐 TikTok 类目失败。" });
+      }
+      return;
+    }
+
+    const miaoshouListingPushMatch = url.pathname.match(/^\/api\/miaoshou\/listings\/([^/]+)\/push$/);
+    if (miaoshouListingPushMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "miaoshou")) {
+        sendJson(res, 401, { ok: false, message: "推送妙手采集箱需要管理员权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      try {
+        const actorName = auth.user?.displayName || auth.user?.username || "管理员";
+        const draft = await miaoshouListing.pushDraft(decodeURIComponent(miaoshouListingPushMatch[1]), {
+          confirmed: payload.confirmed === true,
+          actorName,
+        });
+        appendActionLog(auth, "推送妙手公共采集箱", "miaoshou_listing", draft.sku, {
+          draftId: draft.id,
+          commonCollectBoxDetailId: draft.commonCollectBoxDetailId,
+        });
+        sendJson(res, 200, { ok: true, draft: { ...draft, validation: validateListingDraft(draft) } });
+      } catch (error) {
+        const draft = miaoshouListing.getDraft(decodeURIComponent(miaoshouListingPushMatch[1]));
+        sendJson(res, error?.ambiguous ? 409 : 400, {
+          ok: false,
+          message: error?.message || "推送妙手公共采集箱失败。",
+          draft: draft ? { ...draft, validation: validateListingDraft(draft) } : null,
+        });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/miaoshou/config" && req.method === "POST") {
       const auth = getAuth(req);
       if (!canManageModule(auth, "miaoshou")) {
@@ -5905,27 +6298,96 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/ai/config" && req.method === "GET") {
-      sendJson(res, 200, publicAiConfigPayload());
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "查看同舟AI配置需要登录并拥有同舟AI权限。" });
+        return;
+      }
+      sendJson(res, 200, tongzhouCanvasAi.publicConfig(auth.user.id));
       return;
     }
 
     if (url.pathname === "/api/ai/config" && req.method === "POST") {
-      if (!canManageModule(getAuth(req), "tongzhou_ai")) {
-        sendJson(res, 401, { ok: false, message: "配置同舟AI需要管理员登录。" });
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "配置同舟AI需要登录并拥有同舟AI权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
-      cachedAiConfig = buildAiConfig({
-        ...cachedAiConfig,
-        baseUrl: payload.baseUrl || cachedAiConfig.baseUrl,
-        apiKey: payload.apiKey === undefined ? cachedAiConfig.apiKey : String(payload.apiKey || "").trim(),
-        models: {
-          ...cachedAiConfig.models,
-          ...(payload.models || {}),
-        },
-      });
-      saveAiConfigCache();
-      sendJson(res, 200, publicAiConfigPayload());
+      try {
+        const config = await tongzhouCanvasAi.saveUserConfig(auth.user.id, payload);
+        appendActionLog(auth, payload.clearKey ? "清除个人同舟画布密钥" : "更新个人同舟画布配置", "tongzhou_ai_config", auth.user.id, {
+          models: config.models,
+          workflows: config.workflows,
+        });
+        sendJson(res, 200, config);
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "保存同舟画布配置失败。"));
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/ai/config/refresh" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "刷新同舟画布能力需要登录并拥有同舟AI权限。" });
+        return;
+      }
+      try {
+        sendJson(res, 200, await tongzhouCanvasAi.refreshCatalog(auth.user.id));
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "刷新同舟画布能力失败。"));
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/ai/jobs" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "查看同舟AI任务需要登录。" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, jobs: tongzhouCanvasAi.listJobs(auth.user.id) });
+      return;
+    }
+
+    if (url.pathname === "/api/ai/jobs" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录并拥有同舟AI权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      try {
+        const job = payload.kind === "workflow"
+          ? await tongzhouCanvasAi.submitWorkflowRun(auth.user.id, payload)
+          : await tongzhouCanvasAi.submitModelTask(auth.user.id, payload);
+        appendActionLog(auth, payload.kind === "workflow" ? "提交同舟画布工作流" : "提交同舟画布生成任务", "tongzhou_ai_job", job.id, {
+          kind: job.kind,
+          category: job.category,
+          model: job.model,
+          workflowId: job.workflowId,
+        });
+        sendJson(res, 202, { ok: true, job });
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "提交同舟AI任务失败。"));
+      }
+      return;
+    }
+
+    const canvasAiJobMatch = url.pathname.match(/^\/api\/ai\/jobs\/([^/]+)$/);
+    if (canvasAiJobMatch && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 401, { ok: false, message: "查看同舟AI任务需要登录。" });
+        return;
+      }
+      try {
+        const job = await tongzhouCanvasAi.pollJob(auth.user.id, decodeURIComponent(canvasAiJobMatch[1]));
+        sendJson(res, 200, { ok: true, job });
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "读取同舟AI任务失败。"));
+      }
       return;
     }
 
@@ -5970,8 +6432,6 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, message: "请输入文本任务。" });
         return;
       }
-      const directAnswer = aiDirectSafeContextAnswer(payload, auth);
-
       res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
@@ -5979,52 +6439,31 @@ const server = http.createServer(async (req, res) => {
         "Access-Control-Allow-Origin": "*",
       });
 
-      if (directAnswer) {
-        sendSse(res, "delta", { delta: directAnswer });
-        sendSse(res, "done", { ok: true, direct: true });
-        res.end();
-        return;
-      }
-
       try {
-        const model = String(payload.model || cachedAiConfig.models.text);
-        const upstream = await requestAgnesStream("/chat/completions", aiChatPayload({ ...payload, stream: true }, model, auth));
-        const upstreamType = upstream.headers.get("content-type") || "";
-        if (upstreamType.includes("application/json")) {
-          const data = await upstream.json();
-          const answer = extractTextAnswer(data);
-          if (answer) sendSse(res, "delta", { delta: answer });
-          sendSse(res, "done", { ok: true });
-          res.end();
-          return;
+        const directAnswer = aiDirectSafeContextAnswer(payload, auth);
+        if (directAnswer) {
+          sendSse(res, "delta", { delta: directAnswer });
+          sendSse(res, "done", { ok: true, direct: true });
+        } else {
+          const messages = aiMessagesFromPayload(payload, auth).map((message) => ({
+            role: message.role,
+            content: aiContentToText(message.content),
+          })).filter((message) => message.content);
+          const job = await tongzhouCanvasAi.submitModelTask(auth.user.id, {
+            category: "chat",
+            model: payload.model,
+            messages,
+            params: {
+              temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
+              max_tokens: Number.isFinite(Number(payload.maxTokens)) ? Number(payload.maxTokens) : 2048,
+            },
+          });
+          const completed = await tongzhouCanvasAi.waitForJob(auth.user.id, job.id);
+          if (completed.output?.text) sendSse(res, "delta", { delta: completed.output.text });
+          sendSse(res, "done", { ok: true, jobId: completed.id });
         }
-        const reader = upstream.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (reader) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith("data:")) continue;
-            const raw = trimmed.replace(/^data:\s*/, "");
-            if (!raw || raw === "[DONE]") continue;
-            try {
-              const parsed = JSON.parse(raw);
-              const delta = extractStreamDelta(parsed);
-              if (delta) sendSse(res, "delta", { delta });
-            } catch {
-              sendSse(res, "delta", { delta: raw });
-            }
-          }
-        }
-        sendSse(res, "done", { ok: true });
       } catch (error) {
-        sendSse(res, "error", { message: error.message || "同舟AI 流式对话失败。" });
+        sendSse(res, "error", { message: error.message || "同舟AI 对话失败。" });
       } finally {
         res.end();
       }
@@ -6053,19 +6492,28 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
-      const model = String(payload.model || cachedAiConfig.models.text);
-      const data = await requestAgnes("/chat/completions", aiChatPayload(payload, model, auth));
-      sendJson(res, 200, {
-        ok: true,
-        model,
-        answer: extractTextAnswer(data),
-        raw: data,
-      });
+      try {
+        const canvasMessages = messages.map((message) => ({ role: message.role, content: aiContentToText(message.content) })).filter((message) => message.content);
+        const job = await tongzhouCanvasAi.submitModelTask(auth.user.id, {
+          category: "chat",
+          model: payload.model,
+          messages: canvasMessages,
+          params: {
+            temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.7,
+            max_tokens: Number.isFinite(Number(payload.maxTokens)) ? Number(payload.maxTokens) : 2048,
+          },
+        });
+        const completed = await tongzhouCanvasAi.waitForJob(auth.user.id, job.id);
+        sendJson(res, 200, { ok: true, model: completed.model, answer: completed.output?.text || "", jobId: completed.id });
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "同舟AI 对话失败。"));
+      }
       return;
     }
 
     if (url.pathname === "/api/ai/image" && req.method === "POST") {
-      if (!canUseTongzhouAi(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -6075,72 +6523,41 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, message: "请输入图片提示词。" });
         return;
       }
-      const model = String(payload.model || cachedAiConfig.models.image);
-      const requestedCount = Math.max(1, Math.min(4, Number(payload.n) || 1));
-      const referenceImages = normalizeAiReferenceImages(payload.referenceImages);
-      const imagePrompt = aiReferencedProductPrompt(prompt, referenceImages.length);
-      const imagePayload = {
-        model,
-        prompt: imagePrompt,
-        size: payload.size || "1024x1024",
-        n: 1,
-        quality: payload.quality,
-        seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
-        negative_prompt: payload.negativePrompt,
-        ...aiImageReferencePayload(referenceImages),
-      };
-      const images = [];
-      const droppedParams = new Set();
-      let raw = null;
-      const warnings = [];
-      for (let index = 0; index < requestedCount; index += 1) {
-        const perImagePayload = {
-          ...imagePayload,
-          seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) + index : undefined,
-        };
-        let data;
-        let dropped = [];
-        if (referenceImages.length) {
-          try {
-            const editPayload = aiImageEditPayload(
-              payload,
-              model,
-              perImagePayload.prompt,
-              referenceImages,
-            );
-            const editResult = await requestAgnesWithUnsupportedParamRetry("/images/edits", editPayload);
-            data = editResult.data;
-            dropped = editResult.dropped;
-          } catch (error) {
-            warnings.push(error instanceof Error ? error.message : "Image edit request failed.");
-            const generationResult = await requestAgnesWithUnsupportedParamRetry("/images/generations", perImagePayload);
-            data = generationResult.data;
-            dropped = generationResult.dropped;
-          }
-        } else {
-          const generationResult = await requestAgnesWithUnsupportedParamRetry("/images/generations", perImagePayload);
-          data = generationResult.data;
-          dropped = generationResult.dropped;
-        }
-        raw = data;
-        dropped.forEach((param) => droppedParams.add(param));
-        images.push(...extractImageUrls(data));
+      try {
+        const referenceImages = normalizeAiReferenceImages(payload.referenceImages);
+        const job = await tongzhouCanvasAi.submitModelTask(auth.user.id, {
+          category: "image",
+          model: payload.model,
+          prompt: aiReferencedProductPrompt(prompt, referenceImages.length),
+          images: referenceImages,
+          params: {
+            size: String(payload.size || "1024x1024"),
+            resolution: String(payload.size || "1024x1024"),
+            ...(payload.quality ? { quality: String(payload.quality) } : {}),
+            ...(payload.style ? { style: String(payload.style) } : {}),
+            ...(Number.isFinite(Number(payload.seed)) ? { seed: Number(payload.seed) } : {}),
+            ...(payload.negativePrompt ? { negativePrompt: String(payload.negativePrompt) } : {}),
+          },
+        });
+        const completed = await tongzhouCanvasAi.waitForJob(auth.user.id, job.id);
+        sendJson(res, 200, {
+          ok: true,
+          model: completed.model,
+          images: [completed.output?.url, ...(completed.output?.urls || [])].filter(Boolean),
+          imageMode: referenceImages.length ? "reference-edit" : "generation",
+          referenceCount: referenceImages.length,
+          warnings: Number(payload.n) > 1 ? ["同舟画布单次任务按模型返回结果；如需多张请重复生成。"] : [],
+          jobId: completed.id,
+        });
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "同舟AI 图片生成失败。"));
       }
-      sendJson(res, 200, {
-        ok: true,
-        model,
-        images: images.slice(0, requestedCount),
-        imageMode: referenceImages.length ? "reference-edit" : "generation",
-        referenceCount: referenceImages.length,
-        droppedParams: [...droppedParams],
-        warnings: [...new Set(warnings)].filter(Boolean),
-        raw,
-      });
       return;
     }
 
     if (url.pathname === "/api/ai/video" && req.method === "POST") {
-      if (!canUseTongzhouAi(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
@@ -6150,81 +6567,50 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, message: "请输入视频提示词。" });
         return;
       }
-      const model = String(payload.model || cachedAiConfig.models.video);
-      const referenceImages = normalizeAiReferenceImages(payload.referenceImages);
-      const imageReferences = aiImageReferencePayload(referenceImages);
-      const videoPayload = {
-        model,
-        prompt,
-        duration: Number(payload.duration) || 5,
-        aspect_ratio: payload.aspectRatio || "16:9",
-        resolution: payload.resolution,
-        seed: Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : undefined,
-        image_url: normalizeAiReferenceImages(payload.imageUrl)[0],
-        image_urls: imageReferences.image_urls,
-        reference_images: referenceImages.length ? referenceImages : undefined,
-        reference_image: imageReferences.reference_image,
-        input_image: imageReferences.input_image,
-        first_frame_url: normalizeAiReferenceImages(payload.firstFrameUrl)[0],
-        last_frame_url: normalizeAiReferenceImages(payload.lastFrameUrl)[0],
-        negative_prompt: payload.negativePrompt,
-        camera_control: payload.cameraControl,
-        motion_strength: Number.isFinite(Number(payload.motionStrength)) ? Number(payload.motionStrength) : undefined,
-      };
-      const { data, dropped } = await requestAgnesWithUnsupportedParamRetry("/videos", videoPayload);
-      const remoteVideoUrl = extractVideoUrl(data);
-      let videoUrl = remoteVideoUrl;
-      let downloadWarning = "";
-      if (remoteVideoUrl) {
-        try {
-          videoUrl = await cacheAiVideoUrl(remoteVideoUrl);
-        } catch (error) {
-          downloadWarning = error instanceof Error ? error.message : "AI video download failed.";
-        }
+      try {
+        const referenceImages = normalizeAiReferenceImages([
+          ...(Array.isArray(payload.referenceImages) ? payload.referenceImages : []),
+          payload.imageUrl,
+          payload.firstFrameUrl,
+          payload.lastFrameUrl,
+        ]);
+        const job = await tongzhouCanvasAi.submitModelTask(auth.user.id, {
+          category: "video",
+          model: payload.model,
+          prompt,
+          images: referenceImages,
+          params: {
+            duration: Number(payload.duration) || 5,
+            aspectRatio: String(payload.aspectRatio || "16:9"),
+            ...(payload.resolution ? { resolution: String(payload.resolution) } : {}),
+            ...(Number.isFinite(Number(payload.seed)) ? { seed: Number(payload.seed) } : {}),
+            ...(payload.negativePrompt ? { negativePrompt: String(payload.negativePrompt) } : {}),
+            ...(payload.cameraControl ? { cameraControl: String(payload.cameraControl) } : {}),
+            ...(Number.isFinite(Number(payload.motionStrength)) ? { motionStrength: Number(payload.motionStrength) } : {}),
+          },
+        });
+        sendJson(res, 202, { ok: true, model: job.model, taskId: job.id, status: job.status, videoUrl: "", jobId: job.id });
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "同舟AI 视频任务提交失败。"));
       }
-      sendJson(res, 200, {
-        ok: true,
-        model,
-        taskId: extractVideoTask(data),
-        videoUrl,
-        remoteVideoUrl,
-        downloadWarning,
-        droppedParams: dropped,
-        status: data?.status || data?.data?.status || "submitted",
-        raw: data,
-      });
       return;
     }
 
     const aiVideoStatusMatch = url.pathname.match(/^\/api\/ai\/video\/([^/]+)$/);
     if (aiVideoStatusMatch && req.method === "GET") {
-      if (!canUseTongzhouAi(getAuth(req))) {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
         sendJson(res, 401, { ok: false, message: "使用同舟AI需要登录。" });
         return;
       }
       const taskId = decodeURIComponent(aiVideoStatusMatch[1]);
-      const { data, path: statusPath, errors: statusWarnings } = await requestAgnesVideoStatus(taskId);
-      const remoteVideoUrl = extractVideoUrl(data);
-      let videoUrl = remoteVideoUrl;
-      let downloadWarning = "";
-      if (remoteVideoUrl) {
-        try {
-          videoUrl = await cacheAiVideoUrl(remoteVideoUrl);
-        } catch (error) {
-          downloadWarning = error instanceof Error ? error.message : "AI video download failed.";
-        }
+      try {
+        const job = await tongzhouCanvasAi.pollJob(auth.user.id, taskId);
+        const remoteVideoUrl = job.output?.url || job.output?.urls?.[0] || "";
+        sendJson(res, 200, { ok: true, taskId, model: job.model, videoUrl: remoteVideoUrl, remoteVideoUrl, status: job.status, jobId: job.id });
+      } catch (error) {
+        sendJson(res, canvasAiErrorStatus(error), canvasAiErrorPayload(error, "查询同舟AI 视频任务失败。"));
       }
-      sendJson(res, 200, {
-        ok: true,
-        taskId,
-        videoUrl,
-        remoteVideoUrl,
-        downloadWarning,
-        status: extractVideoStatus(data),
-        statusPath,
-        statusWarnings,
-        raw: data,
-      });
       return;
     }
 
@@ -6405,6 +6791,7 @@ const server = http.createServer(async (req, res) => {
 
       cachedUsers.users = users.filter((item) => item.id !== user.id);
       cachedUsers.syncedAt = new Date().toISOString();
+      tongzhouCanvasAi.deleteUserConfig(user.id);
       let warning = "";
       try {
         await deleteUserFromJdy(user);

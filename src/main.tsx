@@ -197,6 +197,8 @@ import {
   updateAiConfig,
   uploadAiImage,
 } from "./api";
+import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
+import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import "./styles.css";
 import "./theme-refresh.css";
 
@@ -1735,7 +1737,7 @@ function App() {
         ) : activeView === "快捷导航" ? (
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
         ) : activeView === "同舟AI" ? (
-          <TongzhouAiPanel aiConfig={aiConfigPayload} currentUser={currentUser} onRefreshConfig={loadAiConfig} />
+          <TongzhouCanvasAiPanel aiConfig={aiConfigPayload} currentUser={currentUser} onRefreshConfig={loadAiConfig} />
         ) : activeView === "API 接入" ? (
           <AgentApiAccessPage currentUser={currentUser} />
         ) : activeView === "妙手 ERP" ? (
@@ -10530,6 +10532,7 @@ function ProductDetailModal({
   productBase,
   qualifications,
   assets,
+  currentUser,
   onAddToBundle,
   onClose,
 }: {
@@ -10537,16 +10540,20 @@ function ProductDetailModal({
   productBase: ProductBase[];
   qualifications: QualificationRecord[];
   assets: AssetRecord[];
+  currentUser: AuthUser;
   onAddToBundle: (product: CatalogProduct) => void;
   onClose: () => void;
 }) {
-  const [activeTab, setActiveTab] = React.useState<"base" | "qualifications" | "assets">("base");
+  const [activeTab, setActiveTab] = React.useState<"base" | "qualifications" | "assets" | "listing">("base");
   const [copiedSku, setCopiedSku] = React.useState(false);
   const [copiedAttachments, setCopiedAttachments] = React.useState(false);
   const dialogRef = React.useRef<HTMLElement | null>(null);
   const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogId = React.useId();
   const base = findProductBase(product, productBase);
+  const canManageListings = hasUserPermission(currentUser, "operations")
+    && hasUserPermission(currentUser, "miaoshou")
+    && hasUserPermission(currentUser, "tongzhou_ai");
   const detailRows = [
     ["产品流水号", base?.skuNo || product.skuNo],
     ["SKU", product.sku],
@@ -10690,6 +10697,21 @@ function ProductDetailModal({
             素材库
             <span>{assets.length}</span>
           </button>
+          {canManageListings ? (
+            <button
+              type="button"
+              role="tab"
+              id={`${dialogId}-listing-tab`}
+              aria-controls={`${dialogId}-listing-panel`}
+              aria-selected={activeTab === "listing"}
+              tabIndex={activeTab === "listing" ? 0 : -1}
+              className={activeTab === "listing" ? "active" : ""}
+              onClick={() => setActiveTab("listing")}
+            >
+              <Bot size={16} />
+              AI 上架
+            </button>
+          ) : null}
         </div>
         <div className="modal-content">
           {activeTab === "base" ? (
@@ -10764,6 +10786,11 @@ function ProductDetailModal({
               <h3>素材库</h3>
             </div>
             <AssetCards assets={assets} />
+          </section>
+          ) : null}
+          {activeTab === "listing" && canManageListings ? (
+          <section className="detail-section listing-detail-section" role="tabpanel" id={`${dialogId}-listing-panel`} aria-labelledby={`${dialogId}-listing-tab`}>
+            <MiaoshouListingWorkspace product={product} productBase={base} qualifications={qualifications} assets={assets} />
           </section>
           ) : null}
         </div>
@@ -11346,6 +11373,7 @@ function ProductLibrary({
           productBase={productBase}
           qualifications={getRelatedQualifications(detailProduct, qualificationPayload)}
           assets={getRelatedAssets(detailProduct, findProductBase(detailProduct, productBase), assetPayload)}
+          currentUser={currentUser}
           onAddToBundle={addToBundle}
           onClose={() => setDetailProduct(null)}
         />

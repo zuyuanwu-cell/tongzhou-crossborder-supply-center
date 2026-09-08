@@ -59,8 +59,7 @@ MIAOSHOU_APP_SECRET=
 MIAOSHOU_API_BASE_URL=https://openapi-erp.91miaoshou.com
 MIAOSHOU_REQUEST_TIMEOUT_MS=25000
 MIAOSHOU_TASK_DB_PATH=.cache/miaoshou-tasks.sqlite
-AGNES_AI_API_KEY=
-AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
+AI_CREDENTIAL_ENCRYPTION_KEY=
 ```
 
 `.env` 不会提交到 GitHub。
@@ -83,7 +82,7 @@ AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
 - `MIAOSHOU_APP_KEY` / `MIAOSHOU_APP_SECRET`：妙手开放平台授权；也可以由管理员在“妙手 ERP”页面录入。环境变量优先级更高，密钥不会返回前端。
 - `MIAOSHOU_REQUEST_TIMEOUT_MS`：妙手单次接口超时时间；请求结果不明确时任务进入人工核实，不会盲目重试。
 - `MIAOSHOU_TASK_DB_PATH`：运单申请任务与事件 SQLite 文件，默认 `.cache/miaoshou-tasks.sqlite`。
-- `AGNES_AI_API_KEY` / `AGNES_AI_BASE_URL`：同舟AI 生成能力配置。
+- `AI_CREDENTIAL_ENCRYPTION_KEY`：用于加密每位用户自行保存的同舟画布 API Key，生产环境建议配置为独立的高强度随机值；未配置时使用 `AUTH_SESSION_SECRET`。
 
 ## 妙手 ERP 自动申请运单号
 

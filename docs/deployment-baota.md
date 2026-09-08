@@ -83,8 +83,7 @@ PERFORMANCE_FX_AUTO_SYNC=true
 PERFORMANCE_FX_SYNC_INTERVAL_MS=86400000
 PERFORMANCE_FX_BACKFILL_DAYS=120
 PERFORMANCE_FX_ENDPOINT=https://api.frankfurter.dev/v2/rates
-AGNES_AI_API_KEY=
-AGNES_AI_BASE_URL=https://apihub.agnes-ai.com/v1
+AI_CREDENTIAL_ENCRYPTION_KEY=
 ```
 
 修改 `.env` 后必须使用 `pm2 restart tongzhou-supply-api --update-env`，否则 PM2 仍可能沿用旧环境变量。

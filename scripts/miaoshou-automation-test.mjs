@@ -120,6 +120,34 @@ async function fetchMock(url, init) {
       data: [{ waybillUrlInfo: { platformOrderSn: "ORDER-001", url: "https://labels.example/PKG-001.pdf" } }],
     });
   }
+  if (path === MIAOSHOU_PATHS.commonCollectBoxAdd) {
+    return jsonResponse({
+      result: "success",
+      code: "200",
+      data: { commonCollectBoxDetailId: "COLLECT-001" },
+    });
+  }
+  if (path === MIAOSHOU_PATHS.commonCollectBoxList) {
+    return jsonResponse({ result: "success", code: "200", data: { list: [] } });
+  }
+  if (path === MIAOSHOU_PATHS.generateProductInfoAiNames) {
+    return jsonResponse({ result: "success", code: "200", data: ["deepSeekR1", "douBao1.6"] });
+  }
+  if (path === MIAOSHOU_PATHS.tiktokCategoryTree) {
+    return jsonResponse({ result: "success", code: "200", data: { cateTree: { 1: { cid: 1, name: "Beauty", nameChinese: "美妆", isLastLevel: "false", children: { 2: { cid: 2, fid: 1, name: "Hair Care", nameChinese: "护发", isLastLevel: "true", children: {} } } } } } });
+  }
+  if (path === MIAOSHOU_PATHS.tiktokCategoryMetadata) {
+    return jsonResponse({
+      result: "success",
+      code: "200",
+      data: {
+        categoryMetadata: {
+          categoryConfig: { packageDimensionIsRequired: true },
+          categoryProductAttrList: [{ attrId: 10, name: "Brand", isMandatory: true, values: [{ id: 20, name: "SJU" }] }],
+        },
+      },
+    });
+  }
   return jsonResponse({ result: "fail", code: "not_found", message: path }, 404);
 }
 
@@ -221,6 +249,21 @@ try {
   assert.ok(signedRequest.headers["x-app-key"]);
   assert.ok(signedRequest.headers["x-timestamp"]);
   assert.match(signedRequest.headers["x-sign"], /^[a-f0-9]{64}$/);
+  const collectResult = await automation.createCommonCollectBoxProduct({
+    title: "测试商品",
+    itemNum: "SKU-001",
+    price: 9.9,
+    stock: 10,
+    imgUrls: ["https://cdn.example/product.jpg"],
+  });
+  assert.equal(collectResult.data.commonCollectBoxDetailId, "COLLECT-001");
+  await automation.listCommonCollectBox({ page: 1, pageSize: 20 });
+  const aiNames = await automation.getGenerateProductInfoAiNames();
+  assert.deepEqual(aiNames.data, ["deepSeekR1", "douBao1.6"]);
+  const categoryTree = await automation.getTikTokCategoryTree({ site: "ID" });
+  assert.equal(categoryTree.data.cateTree[1].children[2].cid, 2);
+  const categoryMetadata = await automation.getTikTokCategoryMetadata({ cid: 2, shopIds: [1001] });
+  assert.equal(categoryMetadata.data.categoryMetadata.categoryProductAttrList[0].attrId, 10);
   console.log(JSON.stringify({
     ok: true,
     shops: firstPayload.counts.shops,

@@ -505,7 +505,7 @@ export type ActionLogPayload = {
 
 export type AiConfigPayload = {
   ok: boolean;
-  provider: "agnes";
+  provider: "tongzhou_canvas";
   baseUrl: string;
   updatedAt: string;
   configured: boolean;
@@ -515,6 +515,53 @@ export type AiConfigPayload = {
     image: string;
     video: string;
   };
+  workflows: {
+    image: string;
+    video: string;
+  };
+  catalog: {
+    models: AiModelCatalogItem[];
+    balance: {
+      balance: number;
+      creditUnitPrice: number;
+      currency: string;
+    } | null;
+    workflows: AiWorkflowCatalogItem[];
+    checkedAt: string;
+  };
+  recentJobs: AiJob[];
+};
+
+export type AiModelCatalogItem = {
+  id: string;
+  name: string;
+  category: "chat" | "image" | "video";
+  estimatedCredits: number;
+};
+
+export type AiWorkflowCatalogItem = {
+  id: string;
+  name: string;
+  revision: number;
+  contract: Record<string, unknown>;
+};
+
+export type AiJob = {
+  id: string;
+  kind: "model" | "workflow";
+  category: "chat" | "image" | "video" | "workflow";
+  model: string;
+  workflowId: string;
+  workflowName: string;
+  status: "submitting" | "queued" | "running" | "succeeded" | "failed" | "canceled" | string;
+  progress: number;
+  estimatedCredits: number;
+  chargedCredits: number | null;
+  output: ({ type?: string; text?: string; url?: string; urls?: string[] } & Record<string, unknown>) | null;
+  error: { code?: string; message?: string } | null;
+  requestId: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type AiTextResult = {
@@ -1451,6 +1498,154 @@ export type PerformancePackagingFeeRule = {
   includedQuantity: number;
   additionalFeePerItemCny: number;
   enabled: boolean;
+};
+
+export type MiaoshouListingValidation = {
+  blocking: string[];
+  warnings: string[];
+};
+
+export type MiaoshouShopOption = {
+  shopId: string;
+  platform: string;
+  site: string;
+  name: string;
+};
+
+export type MiaoshouCategoryOption = {
+  cid: string;
+  aid: string;
+  fid: string;
+  name: string;
+  nameChinese: string;
+  path: string;
+  pathChinese: string;
+  disabled: boolean;
+  leaf: boolean;
+};
+
+export type MiaoshouPlatformAttributeValue = {
+  id: string;
+  name: string;
+};
+
+export type MiaoshouPlatformAttribute = {
+  attrId: string;
+  name: string;
+  alias: string;
+  type: string;
+  mandatory: boolean;
+  multiple: boolean;
+  customized: boolean;
+  values: MiaoshouPlatformAttributeValue[];
+};
+
+export type MiaoshouSelectedAttribute = {
+  attrId: string;
+  name: string;
+  valueId: string;
+  valueName: string;
+  customValue: string;
+};
+
+export type MiaoshouCategoryMetadata = {
+  productAttributes: MiaoshouPlatformAttribute[];
+  saleAttributes: MiaoshouPlatformAttribute[];
+  certifications: Array<{ id: string; name: string; required: boolean }>;
+  requirements: {
+    packageDimensions: boolean;
+    sizeChart: boolean;
+    epr: boolean;
+    responsiblePerson: boolean;
+    manufacturer: boolean;
+  };
+};
+
+export type MiaoshouPlatformReadiness = {
+  blocking: string[];
+  warnings: string[];
+  ready: boolean;
+  completed: number;
+  total: number;
+};
+
+export type MiaoshouListingDraft = {
+  id: string;
+  sku: string;
+  sourceProductName: string;
+  platform: string;
+  site: string;
+  language: string;
+  title: string;
+  description: string;
+  keywords: string[];
+  sellingPoints: string[];
+  categoryHint: string;
+  shopId: string;
+  categoryId: string;
+  categoryName: string;
+  categoryPath: string;
+  platformAttributes: MiaoshouSelectedAttribute[];
+  categoryMetadataCheckedAt: string;
+  warnings: string[];
+  price: number | null;
+  stock: number;
+  weight: number | null;
+  packageLength: number | null;
+  packageWidth: number | null;
+  packageHeight: number | null;
+  barcode: string;
+  imageUrls: string[];
+  unavailableMediaCount: number;
+  status: "draft" | "review_ready" | "pushing" | "pushed" | "failed" | "manual_check";
+  commonCollectBoxDetailId: string;
+  lastError: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+  pushedAt: string;
+  pushedBy: string;
+  validation: MiaoshouListingValidation;
+};
+
+export type MiaoshouListingPayload = {
+  ok: boolean;
+  provider: "miaoshou";
+  updatedAt: string;
+  aiConfigured: boolean;
+  aiModels: AiModelCatalogItem[];
+  selectedAiModel: string;
+  defaults: { platform: string; site: string; language: string; priceCurrency: "CNY" };
+  shops: MiaoshouShopOption[];
+  drafts: MiaoshouListingDraft[];
+};
+
+export type MiaoshouListingDraftInput = {
+  sku: string;
+  model?: string;
+  platform?: string;
+  site?: string;
+  language?: string;
+  title?: string;
+  description?: string;
+  keywords?: string[];
+  sellingPoints?: string[];
+  categoryHint?: string;
+  shopId?: string;
+  categoryId?: string;
+  categoryName?: string;
+  categoryPath?: string;
+  platformAttributes?: MiaoshouSelectedAttribute[];
+  categoryMetadataCheckedAt?: string;
+  price?: number | null;
+  stock?: number | null;
+  weight?: number | null;
+  packageLength?: number | null;
+  packageWidth?: number | null;
+  packageHeight?: number | null;
+  barcode?: string;
+  imageUrls?: string[];
 };
 
 export type PerformanceSupplementalProductCost = {
@@ -2444,7 +2639,13 @@ export function fetchAiConfig() {
   return requestJson<AiConfigPayload>("/api/ai/config");
 }
 
-export function updateAiConfig(input: { apiKey?: string; baseUrl?: string; models?: Partial<AiConfigPayload["models"]> }) {
+export function updateAiConfig(input: {
+  apiKey?: string;
+  baseUrl?: string;
+  clearKey?: boolean;
+  models?: Partial<AiConfigPayload["models"]>;
+  workflows?: Partial<AiConfigPayload["workflows"]>;
+}) {
   return requestJson<AiConfigPayload>("/api/ai/config", {
     method: "POST",
     body: JSON.stringify(input),
@@ -2790,6 +2991,34 @@ export function updatePerformancePackagingFeeRules(rules: PerformancePackagingFe
   });
 }
 
+export function refreshAiConfig() {
+  return requestJson<AiConfigPayload>("/api/ai/config/refresh", { method: "POST" });
+}
+
+export function submitAiJob(input: {
+  kind?: "model";
+  category: "chat" | "image" | "video";
+  model?: string;
+  prompt?: string;
+  messages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  images?: string[];
+  params?: Record<string, string | number>;
+} | {
+  kind: "workflow";
+  workflowId: string;
+  inputs: Record<string, unknown>;
+  clientReferenceId?: string;
+}) {
+  return requestJson<{ ok: boolean; job: AiJob }>("/api/ai/jobs", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchAiJob(jobId: string) {
+  return requestJson<{ ok: boolean; job: AiJob }>(`/api/ai/jobs/${encodeURIComponent(jobId)}`);
+}
+
 export function importPerformanceSupplementalProductCosts(rows: Array<Pick<PerformanceSupplementalProductCost, "sku" | "countryKey" | "countryName" | "productName" | "unitCostCny" | "effectiveDate" | "enabled" | "note">>) {
   return requestJson<{
     ok: boolean;
@@ -3118,6 +3347,61 @@ export function retryMiaoshouTask(taskId: string) {
 
 export function fetchMiaoshouWaybill(taskId: string) {
   return requestJson<MiaoshouPayload>(`/api/miaoshou/tasks/${encodeURIComponent(taskId)}/waybill`, { method: "POST" });
+}
+
+export function fetchMiaoshouListings(sku: string) {
+  return requestJson<MiaoshouListingPayload>(`/api/miaoshou/listings?sku=${encodeURIComponent(sku)}`);
+}
+
+export function generateMiaoshouListing(input: MiaoshouListingDraftInput) {
+  return requestJson<{ ok: boolean; draft: MiaoshouListingDraft }>("/api/miaoshou/listings/generate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateMiaoshouListing(id: string, input: Partial<MiaoshouListingDraftInput>) {
+  return requestJson<{ ok: boolean; draft: MiaoshouListingDraft }>(`/api/miaoshou/listings/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function pushMiaoshouListing(id: string) {
+  return requestJson<{ ok: boolean; draft: MiaoshouListingDraft }>(`/api/miaoshou/listings/${encodeURIComponent(id)}/push`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true }),
+  });
+}
+
+export function fetchMiaoshouTikTokCategories(site: string, query: string) {
+  return requestJson<{ ok: boolean; site: string; query: string; categories: MiaoshouCategoryOption[] }>(
+    `/api/miaoshou/tiktok/categories?site=${encodeURIComponent(site)}&query=${encodeURIComponent(query)}`,
+  );
+}
+
+export function fetchMiaoshouTikTokCategoryMetadata(input: { cid: string; site: string; shopId?: string; draftId?: string }) {
+  const params = new URLSearchParams({ site: input.site });
+  if (input.shopId) params.set("shopId", input.shopId);
+  if (input.draftId) params.set("draftId", input.draftId);
+  return requestJson<{ ok: boolean; metadata: MiaoshouCategoryMetadata; readiness: MiaoshouPlatformReadiness | null; checkedAt: string }>(
+    `/api/miaoshou/tiktok/categories/${encodeURIComponent(input.cid)}/metadata?${params.toString()}`,
+  );
+}
+
+export function suggestMiaoshouTikTokCategory(id: string, model?: string) {
+  return requestJson<{
+    ok: boolean;
+    reason: string;
+    category: MiaoshouCategoryOption;
+    metadata: MiaoshouCategoryMetadata;
+    readiness: MiaoshouPlatformReadiness;
+    draft: MiaoshouListingDraft;
+    checkedAt: string;
+  }>(`/api/miaoshou/listings/${encodeURIComponent(id)}/suggest-category`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
 }
 
 export function fetchCurrentUser() {

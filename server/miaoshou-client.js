@@ -9,6 +9,12 @@ export const MIAOSHOU_PATHS = {
   cancellations: "/open/v1/order/after_sales/fetch/order_cancel_list",
   applyTrackingNo: "/open/v1/order/package/logistics/tracking_no/apply",
   waybill: "/open/v1/order/package/logistics/waybill/get_waybill",
+  commonCollectBoxAdd: "/open/v1/product/common_collect_box/common_collect_box/add_common_collect_box_detail",
+  commonCollectBoxList: "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_list",
+  commonCollectBoxEdit: "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail",
+  generateProductInfoAiNames: "/open/v1/product/common/open_ai/get_generate_product_info_support_ai_name_list",
+  tiktokCategoryTree: "/open/v1/product/collect_box/tiktok/collect_box/get_category_tree_by_site",
+  tiktokCategoryMetadata: "/open/v1/product/collect_box/tiktok/collect_box/get_category_metadata",
 };
 
 function nonEmpty(value, label) {
@@ -140,6 +146,24 @@ export function createMiaoshouClient({
     },
     getWaybill(opOrderPackageId) {
       return request(MIAOSHOU_PATHS.waybill, { opOrderPackageId: String(opOrderPackageId) });
+    },
+    createCommonCollectBoxProduct(input) {
+      return request(MIAOSHOU_PATHS.commonCollectBoxAdd, input);
+    },
+    listCommonCollectBox(input) {
+      return request(MIAOSHOU_PATHS.commonCollectBoxList, input);
+    },
+    editCommonCollectBoxProduct(input) {
+      return request(MIAOSHOU_PATHS.commonCollectBoxEdit, input);
+    },
+    getGenerateProductInfoAiNames(input = {}) {
+      return request(MIAOSHOU_PATHS.generateProductInfoAiNames, input);
+    },
+    getTikTokCategoryTree(input) {
+      return request(MIAOSHOU_PATHS.tiktokCategoryTree, input);
+    },
+    getTikTokCategoryMetadata(input) {
+      return request(MIAOSHOU_PATHS.tiktokCategoryMetadata, input);
     },
   };
 }
