@@ -39,33 +39,41 @@ async function run() {
   });
   const materializedAt = new Date().toISOString();
   const durationMs = Date.now() - startedAt;
+  const metadata = {
+    dataVersion: workerData.dataVersion || "",
+    materializedAt,
+    materializationDurationMs: durationMs,
+    shopDirectory: workerData.shopDirectory || {},
+    factCount: materializedFacts.length,
+    transactionReconciliation: hybrid.reconciliation,
+    transactionSync: workerData.transactionSync || {},
+    stale: false,
+    targetDataVersion: workerData.dataVersion || "",
+    sourceSyncedAt,
+  };
   // A materialization job only starts for a new data version, so its result
   // must replace the previous snapshot even when that file was written
   // recently. Otherwise every restart recomputes the same 60k+ rows.
   if (workerData.cachePath) {
     const cachePayload = JSON.stringify({
-      dataVersion: workerData.dataVersion || "",
-      materializedAt,
-      materializationDurationMs: durationMs,
-      shopDirectory: workerData.shopDirectory || {},
+      ...metadata,
       facts: materializedFacts,
-      transactionReconciliation: hybrid.reconciliation,
-      transactionSync: workerData.transactionSync || {},
-      stale: false,
-      targetDataVersion: workerData.dataVersion || "",
-      sourceSyncedAt,
     });
     const temporaryPath = `${workerData.cachePath}.${process.pid}.tmp`;
     writeFileSync(temporaryPath, gzipSync(Buffer.from(cachePayload), { level: 1 }));
     renameSync(temporaryPath, workerData.cachePath);
   }
+  if (workerData.metadataPath) {
+    const temporaryMetadataPath = `${workerData.metadataPath}.${process.pid}.tmp`;
+    writeFileSync(temporaryMetadataPath, JSON.stringify(metadata));
+    renameSync(temporaryMetadataPath, workerData.metadataPath);
+  }
   parentPort.postMessage({
     ok: true,
-    facts: materializedFacts,
+    ...metadata,
+    ...(workerData.returnFacts === false ? {} : { facts: materializedFacts }),
     reconciliation: hybrid.reconciliation,
-    materializedAt,
     durationMs,
-    sourceSyncedAt,
   });
   store.close?.();
 }

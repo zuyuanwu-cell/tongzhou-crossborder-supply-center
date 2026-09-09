@@ -56,7 +56,8 @@ type AfterSalesCacheEntry = { payload: AfterSalesPayload; cachedAt: number };
 type AfterSalesImagePreview = { src: string; title: string; description?: string };
 
 const AFTER_SALES_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
-const AFTER_SALES_REQUEST_TIMEOUT_MS = 12 * 1000;
+const AFTER_SALES_REQUEST_TIMEOUT_MS = 30 * 1000;
+const AFTER_SALES_RETRY_DELAY_MS = 2500;
 const AFTER_SALES_AUTO_REFRESH_MS = 30 * 1000;
 const AFTER_SALES_STORAGE_PREFIX = "tongzhou_after_sales_list_v1:";
 const afterSalesListCache = new Map<string, AfterSalesCacheEntry>();
@@ -293,7 +294,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const [tab, setTab] = React.useState<"report" | "mine" | "warehouse">(initialTab);
   const [payload, setPayload] = React.useState<AfterSalesPayload | null>(initialCache?.payload || null);
   const [loading, setLoading] = React.useState(!initialCache);
-  const [refreshing, setRefreshing] = React.useState(Boolean(initialCache));
+  const [refreshing, setRefreshing] = React.useState(false);
   const [slowLoading, setSlowLoading] = React.useState(false);
   const [lastLoadedAt, setLastLoadedAt] = React.useState(initialCache?.cachedAt || 0);
   const [busy, setBusy] = React.useState("");
@@ -324,6 +325,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const activeQueryKeyRef = React.useRef(afterSalesQueryKey(ownerKey, initialFilters));
   const requestIdRef = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
+  const retryTimerRef = React.useRef<number | null>(null);
 
   const responsibility = responsibilityFor(primaryReason, secondaryReason);
   const affectedCost = responsibility.party === "warehouse"
@@ -349,6 +351,10 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
 
     activeFiltersRef.current = normalizedFilters;
     activeQueryKeyRef.current = queryKey;
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     if (!sameQuery) {
       payloadRef.current = visiblePayload;
       setPayload(visiblePayload);
@@ -382,9 +388,17 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       setLastLoadedAt(cachedAt);
     } catch (refreshError) {
       if (requestIdRef.current !== requestId || (controller.signal.aborted && !timedOut)) return;
-      setError(timedOut
-        ? "售后数据读取超时，页面不会把加载失败显示成没有工单，请点击重试。"
-        : refreshError instanceof Error ? refreshError.message : "读取售后单失败。");
+      if (timedOut) {
+        // Keep the last trusted snapshot visible and recover automatically when
+        // a background sync briefly occupies the API process.
+        setError(visiblePayload ? "" : "后台同步任务较忙，售后数据正在自动重试；填报功能仍可继续使用。");
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null;
+          void refresh(activeFiltersRef.current);
+        }, AFTER_SALES_RETRY_DELAY_MS);
+      } else {
+        setError(refreshError instanceof Error ? refreshError.message : "读取售后单失败。");
+      }
     } finally {
       window.clearTimeout(slowTimer);
       window.clearTimeout(timeoutTimer);
@@ -398,6 +412,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   }, [ownerKey]);
 
   React.useEffect(() => {
+    if (tab === "report" && payloadRef.current) return;
     void refresh({
       status: tab === "report" ? "all" : status,
       keyword: tab === "report" ? "" : keyword,
@@ -415,6 +430,10 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", refreshVisibleList);
       abortRef.current?.abort();
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
     };
   }, [refresh, tab]);
 

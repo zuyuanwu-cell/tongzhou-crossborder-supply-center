@@ -1,4 +1,6 @@
 import { parentPort } from "node:worker_threads";
+import { existsSync, readFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
 
 let dataVersion = "";
@@ -79,14 +81,34 @@ function query(message) {
   };
 }
 
+function initialize(message = {}) {
+  let initialFacts = Array.isArray(message.facts) ? message.facts : null;
+  if (!initialFacts && message.cachePath && existsSync(message.cachePath)) {
+    const snapshot = JSON.parse(gunzipSync(readFileSync(message.cachePath)).toString("utf8"));
+    if (text(message.dataVersion) && text(snapshot.dataVersion) !== text(message.dataVersion)) {
+      throw new Error("经营分析快照版本已变化，请稍后重试。");
+    }
+    initialFacts = Array.isArray(snapshot.facts) ? snapshot.facts : [];
+  }
+  dataVersion = text(message.dataVersion);
+  facts = initialFacts || [];
+  facts.sort((left, right) => text(left.orderDate).localeCompare(text(right.orderDate)));
+  exchangeRates = Array.isArray(message.exchangeRates) ? message.exchangeRates : [];
+  packagingFeeRules = Array.isArray(message.packagingFeeRules) ? message.packagingFeeRules : [];
+  parentPort.postMessage({ type: "ready", dataVersion, factCount: facts.length });
+}
+
 parentPort.on("message", (message = {}) => {
   if (message.type === "initialize") {
-    dataVersion = text(message.dataVersion);
-    facts = Array.isArray(message.facts) ? message.facts : [];
-    facts.sort((left, right) => text(left.orderDate).localeCompare(text(right.orderDate)));
-    exchangeRates = Array.isArray(message.exchangeRates) ? message.exchangeRates : [];
-    packagingFeeRules = Array.isArray(message.packagingFeeRules) ? message.packagingFeeRules : [];
-    parentPort.postMessage({ type: "ready", dataVersion, factCount: facts.length });
+    try {
+      initialize(message);
+    } catch (error) {
+      parentPort.postMessage({
+        type: "initialization-error",
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : "",
+      });
+    }
     return;
   }
   if (message.type !== "query") return;

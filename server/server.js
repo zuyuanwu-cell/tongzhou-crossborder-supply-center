@@ -121,6 +121,7 @@ const productionMaterialCachePath = resolve(cacheDir, "production-materials.json
 const usersCachePath = resolve(cacheDir, "users.json");
 const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
 const performanceMaterializationCachePath = resolve(cacheDir, "performance-analytics-materialized.json.gz");
+const performanceMaterializationMetadataPath = resolve(cacheDir, "performance-analytics-materialized.meta.json");
 const syncSchedulerCachePath = resolve(cacheDir, "sync-scheduler.json");
 const syncSchedulerHeartbeatMs = Math.max(5_000, Number(process.env.SYNC_SCHEDULER_HEARTBEAT_MS || 15_000));
 const productionSyncIntervalMs = Math.max(60_000, Number(process.env.PRODUCTION_SYNC_INTERVAL_MS || 5 * 60 * 1000));
@@ -300,7 +301,7 @@ function loadJsonCache(path) {
   }
 }
 
-function loadPerformanceMaterializationCache(path) {
+function loadPerformanceMaterializationSnapshot(path) {
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(gunzipSync(readFileSync(path)).toString("utf8"));
@@ -314,9 +315,21 @@ function saveJsonCache(path, payload, spacing = 2) {
   writeFileSync(path, JSON.stringify(payload, null, spacing), "utf8");
 }
 
+function loadPerformanceMaterializationMetadata(path, cachePath) {
+  if (!existsSync(cachePath)) return null;
+  const metadata = loadJsonCache(path);
+  return metadata ? { ...metadata, facts: null } : null;
+}
+
 function ensurePerformanceMaterializationCacheLoaded() {
   if (!performanceAnalyticsMaterializedCacheLoaded) {
-    performanceAnalyticsMaterializedCache = loadPerformanceMaterializationCache(performanceMaterializationCachePath);
+    // Keep the 100MB+ fact snapshot out of the HTTP process. The query worker
+    // reads the compressed snapshot directly, so lightweight endpoints remain
+    // responsive while analytics are warm.
+    performanceAnalyticsMaterializedCache = loadPerformanceMaterializationMetadata(
+      performanceMaterializationMetadataPath,
+      performanceMaterializationCachePath,
+    );
     performanceAnalyticsMaterializedCacheLoaded = true;
   }
   return performanceAnalyticsMaterializedCache;
@@ -3859,6 +3872,8 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
     packagingFeeRules,
     supplementalProductCosts,
     cachePath: performanceMaterializationCachePath,
+    metadataPath: performanceMaterializationMetadataPath,
+    returnFacts: false,
     dataVersion: context.dataVersion,
     requestedSource: requestedPerformanceRevenueSource(settings),
     syncState: context.miaoshouSyncState,
@@ -3870,7 +3885,8 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
       materializationDurationMs: result.durationMs || Date.now() - startedAt,
       sourceSyncedAt: result.sourceSyncedAt || cachedOrdersSync.syncedAt || "",
       shopDirectory,
-      facts: result.facts,
+      facts: null,
+      factCount: numberOrZero(result.factCount),
       transactionReconciliation: result.reconciliation,
       transactionSync: performanceMiaoshouSync.status(),
       stale: false,
@@ -3930,7 +3946,7 @@ async function warmPerformanceAnalyticsMaterialization({ throwOnError = false } 
     const packagingFeeRules = normalizePackagingFeeRules(settings.packagingFeeRules);
     const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
     const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings, { waitForFresh: true });
-    console.log(`[performance] materialized ${materialization.facts.length} rows in ${materialization.materializationDurationMs}ms (${materialization.dataVersion})`);
+    console.log(`[performance] materialized ${numberOrZero(materialization.factCount)} rows in ${materialization.materializationDurationMs}ms (${materialization.dataVersion})`);
   } catch (error) {
     console.error("[performance] materialization failed", error);
     if (throwOnError) throw error;
@@ -4046,7 +4062,8 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
   try {
     queryResult = await performanceAnalyticsQueryService.query({
       dataVersion: materialization.dataVersion,
-      materializedFacts: materialization.facts,
+      materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
+      cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
       exchangeRates,
       packagingFeeRules,
       filters,
@@ -4055,7 +4072,11 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
     });
   } catch (error) {
     console.error("[performance] query worker failed; using inline fallback", error);
-    const scopedFacts = materialization.facts.filter((fact) => {
+    const fallbackSnapshot = Array.isArray(materialization.facts)
+      ? materialization
+      : loadPerformanceMaterializationSnapshot(performanceMaterializationCachePath);
+    if (!Array.isArray(fallbackSnapshot?.facts)) throw error;
+    const scopedFacts = fallbackSnapshot.facts.filter((fact) => {
       if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(fact.warehouseId || ""))) return false;
       return isWithinDataScope(fact, scopes);
     });
@@ -4142,10 +4163,10 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
     shopDirectory: publicShopDirectory(scopedShopDirectory, auth),
     reconciliation: {
       sourceRowCount: (cachedOrdersSync.orders || []).length,
-      factRowCount: materialization.facts.length,
+      factRowCount: numberOrZero(materialization.factCount) || numberOrZero(materialization.facts?.length),
       sourceSyncedAt: cachedOrdersSync.syncedAt || "",
       factSourceSyncedAt: materialization.sourceSyncedAt || metadata.sourceSyncedAt || "",
-      rowCountMatched: (cachedOrdersSync.orders || []).length === materialization.facts.length,
+      rowCountMatched: (cachedOrdersSync.orders || []).length === (numberOrZero(materialization.factCount) || numberOrZero(materialization.facts?.length)),
       syncedAtMatched: Boolean(cachedOrdersSync.syncedAt) && cachedOrdersSync.syncedAt === (materialization.sourceSyncedAt || metadata.sourceSyncedAt),
     },
   }, auth, exchangeRates));
@@ -4642,7 +4663,7 @@ async function syncCompleteOrderRange(connection, from, to) {
   };
 }
 
-function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true, mergeWindow = null) {
+function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true, mergeWindow = null, persist = true) {
   const warehouseId = result.warehouseId || connection.id;
   const orderMeta = orderSyncMetaFromResult(result);
   const previousResult = (cachedOrdersSync.results || []).find((item) => item.warehouseId === warehouseId || item.warehouseId === connection.id);
@@ -4681,7 +4702,7 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
     orders: replaceWarehouseOrderRows(cachedOrdersSync.orders || [], warehouseIds, snapshot.orders),
     results: nextResults,
   };
-  saveOrderCache(cachedOrdersSync);
+  if (persist) saveOrderCache(cachedOrdersSync);
   return snapshot;
 }
 
@@ -4835,7 +4856,10 @@ async function runOrderSyncJob(jobId) {
     const mergeWindow = job.incremental && chunks.length
       ? { dateFrom: chunks[0].from, dateTo: chunks[chunks.length - 1].to }
       : null;
-    const publishedSnapshot = mergeWarehouseOrderCache(connection, result, job.days, replaceOrders, mergeWindow);
+    // A complete order snapshot is tens of megabytes. Persist once after all
+    // warehouses finish instead of serializing the same snapshot per warehouse;
+    // repeated full writes used to pause every HTTP endpoint for long periods.
+    const publishedSnapshot = mergeWarehouseOrderCache(connection, result, job.days, replaceOrders, mergeWindow, false);
     job.results = [
       ...(job.results || []).filter((item) => item.warehouseId !== connection.id && item.warehouseId !== result.warehouseId),
       {
@@ -4861,6 +4885,7 @@ async function runOrderSyncJob(jobId) {
   job.currentWarehouseName = "";
   job.currentChunkLabel = "";
   job.message = hadFailure ? "Completed with partial failures" : "Completed";
+  saveOrderCache(cachedOrdersSync);
   saveOrderSyncJobsCache();
   clearPerformanceAnalyticsResponseCache();
   try {
@@ -8357,7 +8382,9 @@ const server = http.createServer(async (req, res) => {
         performanceAnalyticsMaterializedCache = {
           ...performanceAnalyticsMaterializedCache,
           shopDirectory: updatedDirectory,
-          facts: performanceAnalyticsMaterializedCache.facts.map((fact) => applyShopDirectoryProfile(fact, updatedDirectory)),
+          ...(Array.isArray(performanceAnalyticsMaterializedCache.facts)
+            ? { facts: performanceAnalyticsMaterializedCache.facts.map((fact) => applyShopDirectoryProfile(fact, updatedDirectory)) }
+            : {}),
         };
       }
       await performanceAnalyticsQueryService.close();

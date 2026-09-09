@@ -33,6 +33,10 @@ export function createPerformanceAnalyticsQueryService() {
         target.resolveReady(target);
         return;
       }
+      if (message.type === "initialization-error") {
+        target.rejectReady(new Error(message.message || "经营分析快照读取失败"));
+        return;
+      }
       const pending = target.pending.get(message.id);
       if (!pending) return;
       target.pending.delete(message.id);
@@ -56,7 +60,8 @@ export function createPerformanceAnalyticsQueryService() {
     worker.postMessage({
       type: "initialize",
       dataVersion: input.dataVersion,
-      facts: input.materializedFacts || [],
+      facts: Array.isArray(input.materializedFacts) ? input.materializedFacts : undefined,
+      cachePath: input.cachePath || "",
       exchangeRates: input.exchangeRates || [],
       packagingFeeRules: input.packagingFeeRules || [],
     });

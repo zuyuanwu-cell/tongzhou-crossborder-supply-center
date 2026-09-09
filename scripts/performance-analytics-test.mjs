@@ -337,6 +337,7 @@ try {
   emptyStore.close?.();
   const workerOrderCachePath = join(workerDirectory, "orders-sync.json");
   const workerMaterializationCachePath = join(workerDirectory, "performance-materialized.json.gz");
+  const workerMaterializationMetadataPath = join(workerDirectory, "performance-materialized.meta.json");
   const workerSyncedAt = "2026-09-08T15:30:00.000Z";
   writeFileSync(workerOrderCachePath, JSON.stringify({
     syncedAt: workerSyncedAt,
@@ -365,6 +366,50 @@ try {
   const persistedWorkerResult = JSON.parse(gunzipSync(readFileSync(workerMaterializationCachePath)).toString("utf8"));
   assert.equal(persistedWorkerResult.dataVersion, "worker-order-cache-test", "a fresh stale cache file must still be replaced by the new data version");
   assert.equal(persistedWorkerResult.sourceSyncedAt, workerSyncedAt);
+
+  const metadataOnlyResult = await runMaterializationWorker({
+    dbPath: workerDatabasePath,
+    orderCachePath: workerOrderCachePath,
+    cachePath: workerMaterializationCachePath,
+    metadataPath: workerMaterializationMetadataPath,
+    returnFacts: false,
+    sourceSyncedAt: workerSyncedAt,
+    shopDirectory: {},
+    products,
+    exchangeRates: [
+      { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+      { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+    ],
+    packagingFeeRules: [],
+    supplementalProductCosts: [],
+    requestedSource: "wms",
+    dataVersion: "worker-metadata-only-test",
+  });
+  assert.equal(metadataOnlyResult.facts, undefined, "the API process must not receive the full analytics fact set");
+  assert.equal(metadataOnlyResult.factCount, 1);
+  const persistedMetadata = JSON.parse(readFileSync(workerMaterializationMetadataPath, "utf8"));
+  assert.equal(persistedMetadata.dataVersion, "worker-metadata-only-test");
+  assert.equal(persistedMetadata.factCount, 1);
+
+  const cacheQueryService = createPerformanceAnalyticsQueryService();
+  try {
+    const cacheQueryResult = await cacheQueryService.query({
+      dataVersion: "worker-metadata-only-test",
+      cachePath: workerMaterializationCachePath,
+      exchangeRates: [
+        { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1 },
+        { currency: "IDR", effectiveDate: "2026-01-01", rateToCny: 0.00045 },
+      ],
+      packagingFeeRules: [],
+      filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+      scopes: { warehouseIds: [], countries: [], skus: [] },
+      limits: { products: 10, recentFacts: 10 },
+    });
+    assert.equal(cacheQueryResult.scannedFactCount, 1, "the query worker must read facts directly from the compressed cache");
+    assert.equal(cacheQueryResult.payload.totals.orderLines, 1);
+  } finally {
+    await cacheQueryService.close();
+  }
 } finally {
   rmSync(workerDirectory, { recursive: true, force: true });
 }
