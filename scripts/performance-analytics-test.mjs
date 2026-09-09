@@ -182,6 +182,23 @@ try {
   });
   assert.equal(unrestrictedWorkerResult.visibleShopKeys, null);
   assert.equal(unrestrictedWorkerResult.scannedFactCount, 3);
+
+  const orderAnalysisWorkerResult = await queryService.query({
+    queryType: "order-analysis",
+    dataVersion: "test-v1",
+    materializedFacts: [],
+    exchangeRates: [],
+    packagingFeeRules: [],
+    filters: { dateFrom: "2026-08-01", dateTo: "2026-08-01" },
+    scopes: { warehouseIds: [], countries: [], skus: [] },
+    onlyRussia: true,
+    limits: { recentOrders: 1 },
+  });
+  assert.equal(orderAnalysisWorkerResult.payload.counts.orderLines, 1);
+  assert.equal(orderAnalysisWorkerResult.payload.byProjectGroup[0]?.key, "同舟");
+  assert.deepEqual(orderAnalysisWorkerResult.payload.options.projectGroups, [{ value: "同舟", label: "同舟" }]);
+  assert.equal(orderAnalysisWorkerResult.payload.recentOrders.length, 1);
+  assert.equal(orderAnalysisWorkerResult.scannedFactCount, 3);
 } finally {
   await queryService.close();
 }

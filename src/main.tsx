@@ -961,7 +961,8 @@ function App() {
   const [movementWarehouseFilter, setMovementWarehouseFilter] = React.useState("");
   const [stockupDraftSeed, setStockupDraftSeed] = React.useState<StockupDraftSeed | null>(null);
   const [stockupPayload, setStockupPayload] = React.useState<StockupPayload | null>(null);
-  const stockupRequestRef = React.useRef<Promise<StockupPayload> | null>(null);
+  const stockupRequestRef = React.useRef<{ view: string; request: Promise<StockupPayload> } | null>(null);
+  const stockupLatestViewRef = React.useRef("");
   const [stockupWorkflowPayload, setStockupWorkflowPayload] = React.useState<StockupWorkflowPayload | null>(null);
   const [qualificationPayload, setQualificationPayload] = React.useState<QualificationPayload | null>(null);
   const [assetPayload, setAssetPayload] = React.useState<AssetPayload | null>(null);
@@ -974,6 +975,8 @@ function App() {
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [moduleErrors, setModuleErrors] = React.useState<Record<string, string>>({});
+  const stockupLoadErrorsRef = React.useRef({ summary: "", workflow: "" });
   const [currentUser, setCurrentUser] = React.useState<AuthUser>(getStoredUser);
   const [authReady, setAuthReady] = React.useState(false);
   const [blockedView, setBlockedView] = React.useState("");
@@ -1009,6 +1012,7 @@ function App() {
 
   React.useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    setError("");
   }, [activeView]);
 
   React.useEffect(() => {
@@ -1016,8 +1020,9 @@ function App() {
     // previous eager boot requested every authorized dataset at once, allowing
     // heavyweight order and stockup queries to delay small operational pages
     // such as after-sales.
+    if (!authReady) return;
     loadVisibleViewData();
-  }, [activeView, permissionSignature]);
+  }, [authReady, activeView, permissionSignature]);
 
   React.useEffect(() => {
     if (!authReady) return;
@@ -1030,10 +1035,10 @@ function App() {
   }, [authReady, permissionSignature, activeView]);
 
   React.useEffect(() => {
-    if (!hasUserPermission(currentUser, "stockup") || !stockupPayload?.outsourcingRefreshing) return;
-    const timer = window.setInterval(() => { void loadStockup(); }, 2500);
+    if (!hasUserPermission(currentUser, "stockup") || !stockupPayload?.outsourcingRefreshing || hashForView(activeView) !== "#production") return;
+    const timer = window.setInterval(() => { if (!document.hidden) void loadStockup(); }, 10000);
     return () => window.clearInterval(timer);
-  }, [permissionSignature, stockupPayload?.outsourcingRefreshing]);
+  }, [permissionSignature, activeView, stockupPayload?.outsourcingRefreshing]);
 
   React.useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1048,11 +1053,28 @@ function App() {
     const timer = window.setInterval(async () => {
       const job = await loadLatestOrderJob();
       if (job && !["queued", "running"].includes(job.status)) {
-        await Promise.all([loadMovement(), loadMovementHistory(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadDashboardSummary(), loadStockup()]);
+        loadVisibleViewData(true);
       }
     }, 5000);
     return () => window.clearInterval(timer);
   }, [permissionSignature, orderSyncJob?.id, orderSyncJob?.status]);
+
+  function setModuleLoadError(viewHashes: string[], message = "") {
+    setModuleErrors((current) => {
+      const next = { ...current };
+      for (const viewHash of viewHashes) {
+        if (message) next[viewHash] = message;
+        else delete next[viewHash];
+      }
+      return next;
+    });
+  }
+
+  function setStockupLoadError(source: "summary" | "workflow", message = "") {
+    stockupLoadErrorsRef.current = { ...stockupLoadErrorsRef.current, [source]: message };
+    const combined = Object.values(stockupLoadErrorsRef.current).filter(Boolean).join("；");
+    setModuleLoadError(["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"], combined);
+  }
 
   async function loadCurrentUser() {
     try {
@@ -1107,9 +1129,10 @@ function App() {
     try {
       const data = await fetchDashboardSummary();
       setDashboardSummary(data);
+      setModuleLoadError(["#dashboard"]);
       if (data.user) setCurrentUser(data.user);
-    } catch {
-      setDashboardSummary(null);
+    } catch (requestError) {
+      setModuleLoadError(["#dashboard"], requestError instanceof Error ? requestError.message : "经营总览读取失败");
     }
   }
 
@@ -1117,8 +1140,9 @@ function App() {
     try {
       const data = await fetchWarehouses();
       setWarehousePayload(data);
-    } catch {
-      setWarehousePayload(null);
+      setModuleLoadError(["#inventory", "#warehouses"]);
+    } catch (requestError) {
+      setModuleLoadError(["#inventory", "#warehouses"], requestError instanceof Error ? requestError.message : "仓库数据读取失败");
     }
   }
 
@@ -1126,8 +1150,9 @@ function App() {
     try {
       const data = await fetchInventorySnapshots(date);
       setInventorySnapshotPayload(data);
-    } catch {
-      setInventorySnapshotPayload(null);
+      setModuleLoadError(["#inventory-snapshots"]);
+    } catch (requestError) {
+      setModuleLoadError(["#inventory-snapshots"], requestError instanceof Error ? requestError.message : "库存快照读取失败");
     }
   }
 
@@ -1135,9 +1160,10 @@ function App() {
     try {
       const data = await fetchMovement();
       setMovementPayload(data);
+      setModuleLoadError(["#movement"]);
       if (data.orderSyncJob) setOrderSyncJob(data.orderSyncJob);
-    } catch {
-      setMovementPayload(null);
+    } catch (requestError) {
+      setModuleLoadError(["#movement"], requestError instanceof Error ? requestError.message : "动销数据读取失败");
     }
   }
 
@@ -1145,8 +1171,9 @@ function App() {
     try {
       const data = await fetchMovementHistory(input);
       setMovementHistoryPayload(data);
-    } catch {
-      setMovementHistoryPayload(null);
+      setModuleLoadError(["#movement-analysis"]);
+    } catch (requestError) {
+      setModuleLoadError(["#movement-analysis"], requestError instanceof Error ? requestError.message : "动销趋势读取失败");
     }
   }
 
@@ -1154,8 +1181,9 @@ function App() {
     try {
       const data = await fetchOrderAnalysis(input);
       setOrderAnalysisPayload(data);
-    } catch {
-      setOrderAnalysisPayload(null);
+      setModuleLoadError(["#order-analysis"]);
+    } catch (requestError) {
+      setModuleLoadError(["#order-analysis"], requestError instanceof Error ? requestError.message : "订单分析读取失败");
     }
   }
 
@@ -1166,15 +1194,17 @@ function App() {
     performanceAnalyticsAbortRef.current = controller;
     performanceAnalyticsRequestRef.current = requestId;
     setPerformanceAnalyticsLoading(true);
-    setError("");
     try {
       const data = await fetchPerformanceAnalytics(input, controller.signal);
-      if (performanceAnalyticsRequestRef.current === requestId) setPerformanceAnalyticsPayload(data);
+      if (performanceAnalyticsRequestRef.current === requestId) {
+        setPerformanceAnalyticsPayload(data);
+        setModuleLoadError(["#performance"]);
+      }
     } catch (requestError) {
       if (controller.signal.aborted || performanceAnalyticsRequestRef.current !== requestId) return;
       // Keep the last successful result visible so a transient query failure does
       // not turn the entire analysis page into an empty state.
-      setError(requestError instanceof Error ? requestError.message : "经营贡献数据读取失败");
+      setModuleLoadError(["#performance"], requestError instanceof Error ? requestError.message : "经营贡献数据读取失败");
     } finally {
       if (performanceAnalyticsRequestRef.current === requestId) {
         setPerformanceAnalyticsLoading(false);
@@ -1193,21 +1223,28 @@ function App() {
     }
   }
 
-  async function loadStockup() {
-    let request = stockupRequestRef.current;
-    if (!request) {
-      request = fetchStockup();
-      stockupRequestRef.current = request;
+  async function loadStockup(options: { inboundLimit?: number } = {}) {
+    const view = hashForView(activeView).slice(1) || "dashboard";
+    const inboundLimit = view === "stockup-recommendations" ? Math.max(100, options.inboundLimit || 100) : undefined;
+    const requestKey = `${view}:${inboundLimit || 0}`;
+    stockupLatestViewRef.current = requestKey;
+    let pending = stockupRequestRef.current?.view === requestKey ? stockupRequestRef.current : null;
+    if (!pending) {
+      const request = fetchStockup(view, { inboundLimit });
+      pending = { view: requestKey, request };
+      stockupRequestRef.current = pending;
       void request.then(
-        () => { if (stockupRequestRef.current === request) stockupRequestRef.current = null; },
-        () => { if (stockupRequestRef.current === request) stockupRequestRef.current = null; },
+        () => { if (stockupRequestRef.current?.request === request) stockupRequestRef.current = null; },
+        () => { if (stockupRequestRef.current?.request === request) stockupRequestRef.current = null; },
       );
     }
     try {
-      const data = await request;
-      setStockupPayload(data);
-    } catch {
+      const data = await pending.request;
+      if (stockupLatestViewRef.current === requestKey) setStockupPayload(data);
+      setStockupLoadError("summary");
+    } catch (requestError) {
       // Keep the last successful snapshot visible during a transient refresh failure.
+      setStockupLoadError("summary", requestError instanceof Error ? requestError.message : "备货与生产数据读取失败");
     }
   }
 
@@ -1228,9 +1265,10 @@ function App() {
     try {
       const data = await fetchStockupWorkflow();
       setStockupWorkflowPayload(data);
+      setStockupLoadError("workflow");
       return data;
     } catch (requestError) {
-      setStockupWorkflowPayload(null);
+      setStockupLoadError("workflow", requestError instanceof Error ? requestError.message : "备货执行数据读取失败");
       throw requestError;
     }
   }
@@ -1239,8 +1277,9 @@ function App() {
     try {
       const data = await fetchQualifications();
       setQualificationPayload(data);
-    } catch {
-      setQualificationPayload(null);
+      setModuleLoadError(["#qualifications"]);
+    } catch (requestError) {
+      setModuleLoadError(["#qualifications"], requestError instanceof Error ? requestError.message : "资质数据读取失败");
     }
   }
 
@@ -1248,8 +1287,9 @@ function App() {
     try {
       const data = await fetchAssets();
       setAssetPayload(data);
-    } catch {
-      setAssetPayload(null);
+      setModuleLoadError(["#assets"]);
+    } catch (requestError) {
+      setModuleLoadError(["#assets"], requestError instanceof Error ? requestError.message : "素材数据读取失败");
     }
   }
 
@@ -1257,8 +1297,9 @@ function App() {
     try {
       const data = await fetchWarehouseInfo();
       setWarehouseInfoPayload(data);
-    } catch {
-      setWarehouseInfoPayload(null);
+      setModuleLoadError(["#warehouse-info"]);
+    } catch (requestError) {
+      setModuleLoadError(["#warehouse-info"], requestError instanceof Error ? requestError.message : "仓库资料读取失败");
     }
   }
 
@@ -1266,8 +1307,9 @@ function App() {
     try {
       const data = await fetchQuickNav();
       setQuickNavPayload(data);
-    } catch {
-      setQuickNavPayload(null);
+      setModuleLoadError(["#quick-nav"]);
+    } catch (requestError) {
+      setModuleLoadError(["#quick-nav"], requestError instanceof Error ? requestError.message : "快捷导航读取失败");
     }
   }
 
@@ -1275,8 +1317,9 @@ function App() {
     try {
       const data = await fetchAiConfig();
       setAiConfigPayload(data);
-    } catch {
-      setAiConfigPayload(null);
+      setModuleLoadError(["#tongzhou-ai"]);
+    } catch (requestError) {
+      setModuleLoadError(["#tongzhou-ai"], requestError instanceof Error ? requestError.message : "AI 配置读取失败");
     }
   }
 
@@ -1284,8 +1327,9 @@ function App() {
     try {
       const data = await fetchWecomNotifications();
       setWecomNotificationPayload(data);
-    } catch {
-      setWecomNotificationPayload(null);
+      setModuleLoadError(["#wecom-notifications"]);
+    } catch (requestError) {
+      setModuleLoadError(["#wecom-notifications"], requestError instanceof Error ? requestError.message : "通知配置读取失败");
     }
   }
 
@@ -1293,8 +1337,9 @@ function App() {
     try {
       const data = await fetchActionLog();
       setActionLogPayload(data);
-    } catch {
-      setActionLogPayload(null);
+      setModuleLoadError(["#action-log"]);
+    } catch (requestError) {
+      setModuleLoadError(["#action-log"], requestError instanceof Error ? requestError.message : "操作日志读取失败");
     }
   }
 
@@ -1302,8 +1347,9 @@ function App() {
     try {
       const data = await fetchUsers();
       setUserPayload(data);
-    } catch {
-      setUserPayload(null);
+      setModuleLoadError(["#users"]);
+    } catch (requestError) {
+      setModuleLoadError(["#users"], requestError instanceof Error ? requestError.message : "用户数据读取失败");
     }
   }
 
@@ -1389,7 +1435,7 @@ function App() {
       const data = await syncProducts();
       setPayload(data);
       await syncOutsourcingOrders().catch(() => null);
-      await Promise.all([loadDashboardSummary(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup(), loadQualifications(), loadAssets(), loadWarehouseInfo(), loadQuickNav(), loadAiConfig(), loadWecomNotifications(), loadActionLog()]);
+      loadVisibleViewData(true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
     } finally {
@@ -1402,7 +1448,7 @@ function App() {
     setError("");
     try {
       await syncWarehouses();
-      await Promise.all([loadDashboardSummary(), loadWarehouses(), loadInventorySnapshots(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup()]);
+      loadVisibleViewData(true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "仓库同步失败");
     } finally {
@@ -1622,23 +1668,6 @@ function App() {
 
   async function activateLoggedInUser(user: AuthUser, targetView = blockedView) {
     setCurrentUser(user);
-    const loaders: Array<Promise<unknown>> = [];
-    if (hasUserPermission(user, "product_view")) loaders.push(loadProducts());
-    if (hasUserPermission(user, "quick_nav")) loaders.push(loadQuickNav());
-    if (hasUserPermission(user, "tongzhou_ai")) loaders.push(loadAiConfig());
-    if (hasUserPermission(user, "qualifications")) loaders.push(loadQualifications());
-    if (hasUserPermission(user, "assets")) loaders.push(loadAssets());
-    if (hasUserPermission(user, "warehouse_info")) loaders.push(loadWarehouseInfo());
-    if (hasUserPermission(user, "warehouses") || hasUserPermission(user, "inventory_sync")) loaders.push(loadWarehouses());
-    if (hasUserPermission(user, "inventory_snapshots")) loaders.push(loadInventorySnapshots());
-    if (hasUserPermission(user, "movement")) loaders.push(loadMovement());
-    if (hasUserPermission(user, "movement_analysis")) loaders.push(loadMovementHistory());
-    if (hasUserPermission(user, "order_analysis")) loaders.push(loadOrderAnalysis());
-    if (hasUserPermission(user, "stockup")) loaders.push(loadStockup());
-    if (hasUserPermission(user, "users")) loaders.push(loadUsers());
-    if (hasUserPermission(user, "notifications")) loaders.push(loadWecomNotifications());
-    if (hasUserPermission(user, "action_log")) loaders.push(loadActionLog());
-    await Promise.all(loaders);
     setBlockedView("");
     const allowedItems = visibleNavItems(user);
     if (targetView && allowedItems.some((item) => item.label === targetView)) {
@@ -1678,11 +1707,15 @@ function App() {
     setUserPayload(null);
     setWecomNotificationPayload(null);
     setActionLogPayload(null);
+    setModuleErrors({});
+    stockupLoadErrorsRef.current = { summary: "", workflow: "" };
+    setError("");
     setBlockedView("");
   }
 
   function handleViewChange(view: string, options: { clearBlocked?: boolean } = { clearBlocked: true }) {
     if (options.clearBlocked !== false) setBlockedView("");
+    setError("");
     setActiveView(view);
     window.location.hash = hashForView(view);
     setMobileNavOpen(false);
@@ -1753,6 +1786,7 @@ function App() {
         </header>
 
         {error ? <div className="notice danger">{error}</div> : null}
+        {moduleErrors[hashForView(activeView)] ? <div className="notice warning" role="status">当前显示上一次成功数据。{moduleErrors[hashForView(activeView)]}<button className="ghost-button compact-button" type="button" onClick={() => loadVisibleViewData()}>重新读取</button></div> : null}
         {payload?.warning ? <div className="notice warning">{payload.warning}</div> : null}
         {blockedView ? (
           <section className="blocked-view-notice" role="status" aria-live="polite">
@@ -1894,6 +1928,7 @@ function App() {
           />
         ) : activeView === "仓库授权" || activeView === "库存同步" ? (
           <WarehouseBoard
+            mode={activeView === "库存同步" ? "inventory" : "authorization"}
             warehousePayload={warehousePayload}
             onSync={handleWarehouseSync}
             syncing={syncing}
@@ -1946,6 +1981,7 @@ function App() {
             onDecision={handleStockupDecision}
             onCreatePlan={handleCreateStockupPlan}
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
+            onLoadMoreInbound={(limit) => loadStockup({ inboundLimit: limit })}
             onOpenExecution={() => handleViewChange("备货执行")}
             syncing={syncing}
           />
@@ -1959,6 +1995,7 @@ function App() {
             onDecision={handleStockupDecision}
             onCreatePlan={handleCreateStockupPlan}
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
+            onLoadMoreInbound={(limit) => loadStockup({ inboundLimit: limit })}
             onOpenExecution={() => handleViewChange("备货执行")}
             syncing={syncing}
             draftSeed={stockupDraftSeed}
@@ -3435,10 +3472,10 @@ function stockupPlanReviewText(plans: StockupPlanItem[]) {
   ].join("\n");
 }
 
-function MovementThumb({ item }: { item: { imageUrl?: string } }) {
+function MovementThumb({ item }: { item: { imageUrl?: string; name?: string; sku?: string } }) {
   return (
-    <div className="movement-thumb" aria-hidden="true">
-      {item.imageUrl ? <img src={item.imageUrl} alt="" /> : <ShoppingBag size={18} />}
+    <div className="movement-thumb">
+      {item.imageUrl ? <img src={item.imageUrl} alt={`${item.name || item.sku || "产品"}缩略图`} /> : <ShoppingBag size={18} />}
     </div>
   );
 }
@@ -4125,19 +4162,19 @@ function MovementBoard({
           <Search size={17} />
           <input value={keywordInput} onChange={(event) => setKeywordInput(event.target.value)} placeholder="搜索 SKU、产品名、品牌、分类" />
         </label>
-        <select value={country} onChange={(event) => setCountry(event.target.value)}>
+        <select aria-label="筛选国家" value={country} onChange={(event) => setCountry(event.target.value)}>
           <option value="全部">全部国家</option>
           {countries.map((item) => (
             <option key={item} value={item}>{item}</option>
           ))}
         </select>
-        <select value={warehouse} onChange={(event) => setWarehouse(event.target.value)}>
+        <select aria-label="筛选仓库" value={warehouse} onChange={(event) => setWarehouse(event.target.value)}>
           <option value="全部">全部仓库</option>
           {warehouses.map((item) => (
             <option key={item.id} value={item.id}>{item.name}</option>
           ))}
         </select>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+        <select aria-label="筛选动销状态" value={status} onChange={(event) => setStatus(event.target.value)}>
           {statuses.map((item) => (
             <option key={item} value={item}>{item === "全部" ? "全部状态" : item}</option>
           ))}
@@ -4333,6 +4370,7 @@ function StockupCenter({
   onCreatePlan,
   onUpdatePlanStatus,
   onOpenExecution,
+  onLoadMoreInbound,
   syncing,
   draftSeed = null,
   onDraftSeedConsumed,
@@ -4346,6 +4384,7 @@ function StockupCenter({
   onCreatePlan: (item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) => Promise<void>;
   onUpdatePlanStatus: (id: string, status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled") => Promise<void>;
   onOpenExecution: () => void;
+  onLoadMoreInbound?: (limit: number) => Promise<void>;
   syncing: boolean;
   draftSeed?: StockupDraftSeed | null;
   onDraftSeedConsumed?: () => void;
@@ -4364,7 +4403,22 @@ function StockupCenter({
   const [planCopyMessage, setPlanCopyMessage] = React.useState("");
   const [reviewCopyMessage, setReviewCopyMessage] = React.useState("");
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
+  const [inboundLimit, setInboundLimit] = React.useState(100);
+  const [inboundLoading, setInboundLoading] = React.useState(false);
   const isRecommendationPage = pageMode === "recommendations";
+  const inboundTotal = stockupPayload?.pagination?.inbound?.total ?? inboundOrders.length;
+
+  async function loadMoreInbound() {
+    if (!onLoadMoreInbound || inboundLoading || inboundOrders.length >= inboundTotal) return;
+    const nextLimit = Math.min(inboundTotal, Math.max(inboundOrders.length, inboundLimit) + 100);
+    setInboundLoading(true);
+    try {
+      await onLoadMoreInbound(nextLimit);
+      setInboundLimit(nextLimit);
+    } finally {
+      setInboundLoading(false);
+    }
+  }
 
   React.useEffect(() => {
     if (draftSeed && !isRecommendationPage) setWorkflowTab("demands");
@@ -4816,7 +4870,7 @@ function StockupCenter({
             <span>状态</span>
             <span>预计到仓</span>
           </div>
-          {inboundOrders.length ? inboundOrders.map((order) => (
+          {inboundOrders.length ? inboundOrders.slice(0, inboundLimit).map((order) => (
             <article className="stockup-row inbound-row" key={order.id || `${order.warehouseId}-${order.orderNo}-${order.sku}`}>
               <strong>{order.orderNo}</strong>
               <span>{order.warehouseName || order.warehouseId}</span>
@@ -4829,6 +4883,7 @@ function StockupCenter({
             <div className="stockup-empty">暂无 WMS 备货单明细。当前已预留斗仓 / 神牛 SEA WMS 与俄罗斯 YunWMS 接口入口，补齐字段映射后即可同步。</div>
           )}
         </div>
+        {inboundOrders.length < inboundTotal ? <button className="ghost-button" type="button" disabled={inboundLoading} onClick={() => void loadMoreInbound()}>{inboundLoading ? "正在读取" : `继续显示（剩余 ${formatNumber(inboundTotal - inboundOrders.length)} 条）`}</button> : null}
       </section> : null}
     </main>
   );
@@ -7837,6 +7892,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
 }
 
 function WarehouseBoard({
+  mode = "authorization",
   warehousePayload,
   onSync,
   syncing,
@@ -7849,6 +7905,7 @@ function WarehouseBoard({
   canConfigure,
   canSync,
 }: {
+  mode?: "authorization" | "inventory";
   warehousePayload: WarehousePayload | null;
   onSync: () => void;
   syncing: boolean;
@@ -7862,6 +7919,7 @@ function WarehouseBoard({
   canSync: boolean;
 }) {
   const confirm = useConfirm();
+  const authorizationMode = mode === "authorization";
   const providers = warehousePayload?.providers ?? [];
   const connections = warehousePayload?.warehouses ?? [];
   const warehouseOnlyItems = warehousePayload?.lastSync?.warehouseOnlyInventory ?? [];
@@ -8004,27 +8062,31 @@ function WarehouseBoard({
     <main className="warehouse-page">
       <section className="library-hero warehouse-hero">
         <div>
-          <p className="eyebrow">Warehouse Authorization</p>
-          <h2>多仓库 WMS 授权与同步准备</h2>
-          <p>
-            仓库板块先按 provider 分层：俄罗斯仓走 YunWMS，越南斗仓、马来神牛、印尼神牛走 SEA WMS。
-            每个仓库单独保存接口地址、授权凭据和仓库编码，后续库存、出库日报和动销监控都从这里派生。
-          </p>
+          <p className="eyebrow">{authorizationMode ? "Warehouse Authorization" : "Inventory Synchronization"}</p>
+          <h2>{authorizationMode ? "多仓库 WMS 授权管理" : "仓库库存同步与数据治理"}</h2>
+          <p>{authorizationMode
+            ? "按仓库维护 WMS 接口、授权凭据与仓库编码；授权信息仅在服务端保存。"
+            : "查看各仓库存同步结果、识别未建档 SKU，并在需要时手动触发一次库存同步。"}</p>
           <div className="source-row">
-            <span className="status-pill warning">待录入授权</span>
-            <span>{authorizedCount} / {connections.length} 个仓库已授权</span>
+            {authorizationMode ? <>
+              <span className={`status-pill ${authorizedCount === connections.length && connections.length ? "good" : "warning"}`}>授权状态</span>
+              <span>{authorizedCount} / {connections.length} 个仓库已授权</span>
+            </> : <>
+              <span className={`status-pill ${warehousePayload?.lastSync?.syncedAt ? "good" : "warning"}`}>{warehousePayload?.lastSync?.syncedAt ? "同步快照可用" : "等待首次同步"}</span>
+              <span>{connections.length} 个仓库 · {warehousePayload?.lastSync?.syncedAt ? `更新于 ${formatDateTime(warehousePayload.lastSync.syncedAt)}` : "尚无同步时间"}</span>
+            </>}
           </div>
         </div>
-        {canConfigure ? <button className="ghost-button" onClick={onExport}>
+        {authorizationMode && canConfigure ? <button className="ghost-button" onClick={onExport}>
           <ExternalLink size={16} />
           导出配置
         </button> : null}
-        {canConfigure ? <button className="ghost-button" onClick={() => importInputRef.current?.click()} disabled={importing}>
+        {authorizationMode && canConfigure ? <button className="ghost-button" onClick={() => importInputRef.current?.click()} disabled={importing}>
           <DatabaseZap size={16} />
           {importing ? "导入中" : "导入配置"}
         </button> : null}
         <input ref={importInputRef} className="hidden-file-input" type="file" accept="application/json,.json" onChange={importConfig} />
-        {canConfigure ? <button className="ghost-button" onClick={openCreateForm}>
+        {authorizationMode && canConfigure ? <button className="ghost-button" onClick={openCreateForm}>
           <ShieldCheck size={16} />
           {formOpen && !editingWarehouse ? "收起表单" : "新增仓库"}
         </button> : null}
@@ -8036,7 +8098,7 @@ function WarehouseBoard({
 
       {!canConfigure && !canSync ? <div className="notice">当前账号为只读访问；仓库授权和同步操作需要额外的管理操作权限。</div> : null}
 
-      {formOpen && canConfigure ? (
+      {authorizationMode && formOpen && canConfigure ? (
         <WarehouseAuthForm
           providers={providers}
           initialWarehouse={editingWarehouse}
@@ -8139,7 +8201,7 @@ function WarehouseBoard({
         </div>
       </section>
 
-      <section className="provider-grid">
+      {authorizationMode ? <section className="provider-grid">
         {providers.map((provider) => (
           <article className="panel provider-card" key={provider.id}>
             <div className="panel-heading">
@@ -8159,9 +8221,9 @@ function WarehouseBoard({
             </div>
           </article>
         ))}
-      </section>
+      </section> : null}
 
-      <section className="panel">
+      {authorizationMode ? <section className="panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Connections</p>
@@ -8199,7 +8261,7 @@ function WarehouseBoard({
             </article>
           ))}
         </div>
-      </section>
+      </section> : null}
     </main>
   );
 }
@@ -8313,18 +8375,18 @@ function InventorySnapshotPage({
             <span>当前显示 {formatNumber(visibleRows.length)} / {formatNumber(filteredRows.length)} 条记录。</span>
           </div>
           <div className="snapshot-actions">
-            <select value={selectedSnapshotDate} onChange={(event) => changeSnapshotDate(event.target.value)} disabled={snapshotBusy || !snapshotDates.length}>
+            <select aria-label="选择库存快照日期" value={selectedSnapshotDate} onChange={(event) => changeSnapshotDate(event.target.value)} disabled={snapshotBusy || !snapshotDates.length}>
               {snapshotDates.length ? snapshotDates.map((item) => (
                 <option key={item.date} value={item.date}>{item.date}</option>
               )) : <option value="">暂无快照</option>}
             </select>
-            <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} disabled={!snapshotRows.length}>
+            <select aria-label="筛选库存快照仓库" value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} disabled={!snapshotRows.length}>
               <option value="全部">全部仓库</option>
               {warehouses.map((item) => (
                 <option key={item.warehouseId} value={item.warehouseId}>{item.warehouseName}</option>
               ))}
             </select>
-            <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+            <select aria-label="选择库存快照每页条数" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
               {[50, 200, 500].map((size) => (
                 <option key={size} value={size}>每页 {size} 条</option>
               ))}
@@ -8881,7 +8943,7 @@ function PerformanceAnalysisPage({
             </div>
             {(payload?.products || []).slice(0, 100).map((row, index) => (
               <article className="performance-contribution-row" key={row.key}>
-                <span className="performance-name-cell"><b>{String(index + 1).padStart(2, "0")}</b>{row.imageUrl ? <img src={row.imageUrl} alt="" /> : <span className="performance-product-placeholder"><Boxes size={17} /></span>}<span><strong>{row.productName}</strong><small>{row.sku} · {row.brand}</small></span></span>
+                <span className="performance-name-cell"><b>{String(index + 1).padStart(2, "0")}</b>{row.imageUrl ? <img src={row.imageUrl} alt={`${row.productName || row.sku || "产品"}缩略图`} /> : <span className="performance-product-placeholder"><Boxes size={17} /></span>}<span><strong>{row.productName}</strong><small>{row.sku} · {row.brand}</small></span></span>
                 <strong>{formatNumber(row.quantity)}</strong>
                 {permissions.revenue ? <strong>{performanceRowRevenueReady(row) ? formatCny(row.salesCny) : performanceRowRevenuePendingLabel(row)}<small>{(row.amountsByCurrency || []).map((item) => formatOriginalAmount(item.amount, item.currency)).join(" · ")}</small></strong> : null}
                 <span>{performanceRowRevenueReady(row) ? formatPercentValue(row.contributionRate) : performanceRowRevenuePendingLabel(row)}</span>
@@ -9396,7 +9458,7 @@ function OrderAnalysisPage({
                   disabled={!item.imageUrl}
                   title={item.imageUrl ? "点击查看大图" : "暂无图片"}
                 >
-                  {item.imageUrl ? <img src={item.imageUrl} alt="" /> : <PackageCheck size={18} />}
+                  {item.imageUrl ? <img src={item.imageUrl} alt={`${item.productName || item.sku || "产品"}缩略图`} /> : <PackageCheck size={18} />}
                 </button>
                 <span><strong>{index + 1}. {item.productName}</strong><small>{item.sku}</small></span>
               </span>
@@ -10262,6 +10324,7 @@ function MiaoshouOrderAliasTaskCenter({ focusJobId }: { focusJobId?: string }) {
   const [loading, setLoading] = React.useState(true);
   const [downloading, setDownloading] = React.useState("");
   const [error, setError] = React.useState("");
+  const hasRunningJobs = jobs.some((entry) => miaoshouAliasJobRunning(entry.status));
 
   React.useEffect(() => {
     let disposed = false;
@@ -10290,12 +10353,14 @@ function MiaoshouOrderAliasTaskCenter({ focusJobId }: { focusJobId?: string }) {
       }
     }
     void refresh(false);
-    const timer = window.setInterval(() => void refresh(true), 2500);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refresh(true);
+    }, hasRunningJobs ? 10000 : 60000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [focusJobId, selectedJobId]);
+  }, [focusJobId, selectedJobId, hasRunningJobs]);
 
   async function downloadJob(job: MiaoshouOrderAliasJob) {
     setDownloading(job.id);
@@ -11549,11 +11614,14 @@ function QualificationLibrary({
   const [keyword, setKeyword] = React.useState("");
   const [category, setCategory] = React.useState("全部");
   const [market, setMarket] = React.useState("全部");
+  const [visibleLimit, setVisibleLimit] = React.useState(60);
   const selectedProduct = products.find((product) => product.sku === selectedSku);
   const sourceQualifications = selectedProduct ? getRelatedQualifications(selectedProduct, qualificationPayload) : qualificationPayload?.qualifications || [];
   const categories = uniqueSorted(sourceQualifications.map((item) => item.qualificationCategory));
   const markets = uniqueSorted(sourceQualifications.map((item) => item.market));
   const filteredQualifications = filterQualificationRecords(sourceQualifications, keyword, category, market);
+
+  React.useEffect(() => setVisibleLimit(60), [selectedSku, keyword, category, market]);
 
   React.useEffect(() => {
     if (selectedSku !== ALL_RECORDS && !products.some((product) => product.sku === selectedSku)) {
@@ -11614,7 +11682,8 @@ function QualificationLibrary({
             </label>
             <span className="filter-result">当前显示 <strong>{formatNumber(filteredQualifications.length)}</strong> 条</span>
           </div>
-          <QualificationCards qualifications={filteredQualifications} />
+          <QualificationCards qualifications={filteredQualifications.slice(0, visibleLimit)} />
+          {filteredQualifications.length > visibleLimit ? <button className="ghost-button" type="button" onClick={() => setVisibleLimit((value) => value + 60)}>继续显示（剩余 {formatNumber(filteredQualifications.length - visibleLimit)} 条）</button> : null}
         </div>
       </section>
     </main>
@@ -11638,12 +11707,15 @@ function AssetLibrary({
   const [keyword, setKeyword] = React.useState("");
   const [assetType, setAssetType] = React.useState("全部");
   const [category, setCategory] = React.useState("全部");
+  const [visibleLimit, setVisibleLimit] = React.useState(60);
   const selectedProduct = products.find((product) => product.sku === selectedSku);
   const selectedBase = selectedProduct ? findProductBase(selectedProduct, productBase) : undefined;
   const sourceAssets = selectedProduct ? getRelatedAssets(selectedProduct, selectedBase, assetPayload) : assetPayload?.assets || [];
   const assetTypes = uniqueSorted(sourceAssets.map((item) => item.assetType));
   const categories = uniqueSorted(sourceAssets.map((item) => item.category));
   const filteredAssets = filterAssetRecords(sourceAssets, keyword, assetType, category);
+
+  React.useEffect(() => setVisibleLimit(60), [selectedSku, keyword, assetType, category]);
 
   React.useEffect(() => {
     if (selectedSku !== ALL_RECORDS && !products.some((product) => product.sku === selectedSku)) {
@@ -11704,7 +11776,8 @@ function AssetLibrary({
             </label>
             <span className="filter-result">当前显示 <strong>{formatNumber(filteredAssets.length)}</strong> 条</span>
           </div>
-          <AssetCards assets={filteredAssets} />
+          <AssetCards assets={filteredAssets.slice(0, visibleLimit)} />
+          {filteredAssets.length > visibleLimit ? <button className="ghost-button" type="button" onClick={() => setVisibleLimit((value) => value + 60)}>继续显示（剩余 {formatNumber(filteredAssets.length - visibleLimit)} 条）</button> : null}
         </div>
       </section>
     </main>

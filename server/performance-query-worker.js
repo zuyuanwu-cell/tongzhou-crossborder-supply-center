@@ -2,6 +2,7 @@ import { parentPort } from "node:worker_threads";
 import { existsSync, readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
+import { buildOrderAnalysisFromFacts } from "./order-analysis.js";
 
 let dataVersion = "";
 let facts = [];
@@ -55,7 +56,7 @@ function dateSlice(filters = {}) {
   return facts.slice(start, end);
 }
 
-function query(message) {
+function queryPerformance(message) {
   const startedAt = Date.now();
   const scopes = message.scopes || {};
   const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
@@ -78,6 +79,29 @@ function query(message) {
     visibleShopKeys,
     workerQueryDurationMs: Date.now() - startedAt,
     scannedFactCount: queryFacts.length,
+  };
+}
+
+function queryOrderAnalysis(message) {
+  const startedAt = Date.now();
+  const scopes = message.scopes || {};
+  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
+    .some((values) => Array.isArray(values) && values.length > 0);
+  const scopedFacts = hasDataScope ? facts.filter((row) => withinScope(row, scopes)) : facts;
+  const visibleShopKeys = hasDataScope
+    ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))]
+    : null;
+  const payload = buildOrderAnalysisFromFacts({
+    facts: scopedFacts,
+    filters: message.filters || {},
+    onlyRussia: message.onlyRussia !== false,
+    recentLimit: message.limits?.recentOrders || 200,
+  });
+  return {
+    payload,
+    visibleShopKeys,
+    workerQueryDurationMs: Date.now() - startedAt,
+    scannedFactCount: scopedFacts.length,
   };
 }
 
@@ -113,7 +137,10 @@ parentPort.on("message", (message = {}) => {
   }
   if (message.type !== "query") return;
   try {
-    parentPort.postMessage({ type: "result", id: message.id, dataVersion, ...query(message) });
+    const result = message.queryType === "order-analysis"
+      ? queryOrderAnalysis(message)
+      : queryPerformance(message);
+    parentPort.postMessage({ type: "result", id: message.id, dataVersion, ...result });
   } catch (error) {
     parentPort.postMessage({
       type: "error",

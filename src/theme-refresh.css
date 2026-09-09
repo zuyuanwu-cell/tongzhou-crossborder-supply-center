@@ -1548,7 +1548,7 @@
 .after-sales-hero { position: relative; display: flex; align-items: flex-end; justify-content: space-between; min-height: 178px; padding: 28px 30px; overflow: hidden; border: 1px solid #d9e3f0; border-left: 4px solid #f45b0b; border-radius: 14px; background: radial-gradient(circle at 87% 16%,rgba(36,81,164,.16),transparent 20rem),linear-gradient(120deg,#fff 0%,#f8fbff 58%,#edf4ff 100%); box-shadow: 0 16px 42px rgba(23,61,122,.09); }
 .after-sales-hero::after { position: absolute; right: 11%; bottom: -62px; width: 190px; height: 190px; border: 28px solid rgba(36,81,164,.045); border-radius: 50%; content: ""; }
 .after-sales-hero > * { position: relative; z-index: 1; }
-.after-sales-hero h1 { margin: 6px 0 8px; color: #102e60; font-size: clamp(32px,4vw,52px); letter-spacing: -.055em; }
+.after-sales-hero h2 { margin: 6px 0 8px; color: #102e60; font-size: clamp(32px,4vw,52px); letter-spacing: -.055em; }
 .after-sales-hero > div:first-child > span { color: #63738b; font-size: 14px; }
 .after-sales-hero-badge { display: flex; align-items: center; gap: 12px; min-width: 230px; padding: 14px 16px; color: #fff; border-radius: 12px; background: linear-gradient(135deg,#173d7a,#2451a4); box-shadow: 0 14px 28px rgba(23,61,122,.22); }
 .after-sales-hero-badge span { display: grid; gap: 3px; }

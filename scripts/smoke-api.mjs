@@ -325,6 +325,18 @@ async function main() {
   console.log("[ok] /api/movement-history/compare permissions and payload");
 
   await expectJson("/api/stockup", { headers: authHeaders });
+  const dashboardStockup = await expectJson("/api/stockup?view=dashboard", { headers: authHeaders });
+  const productionStockup = await expectJson("/api/stockup?view=production", { headers: authHeaders });
+  const recommendationStockup = await expectJson("/api/stockup?view=stockup-recommendations&inboundLimit=25", { headers: authHeaders });
+  if (dashboardStockup.view !== "dashboard" || dashboardStockup.recommendations.length || dashboardStockup.inboundOrders.length) {
+    throw new Error("/api/stockup dashboard projection returned unnecessary detail rows.");
+  }
+  if (productionStockup.view !== "production" || productionStockup.recommendations.length || productionStockup.inboundOrders.length) {
+    throw new Error("/api/stockup production projection returned unrelated recommendation or inbound rows.");
+  }
+  if (recommendationStockup.view !== "stockup-recommendations" || recommendationStockup.inboundOrders.length > 25 || recommendationStockup.pagination?.inbound?.returned !== recommendationStockup.inboundOrders.length) {
+    throw new Error("/api/stockup recommendation projection did not paginate inbound rows.");
+  }
   console.log("[ok] /api/stockup");
 
   const warehouses = await expectJson("/api/warehouses", { headers: authHeaders });

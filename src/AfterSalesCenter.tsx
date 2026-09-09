@@ -691,7 +691,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       <section className="after-sales-hero">
         <div>
           <p className="eyebrow">AFTER-SALES COMMAND CENTER</p>
-          <h1>售后协同中心</h1>
+          <h2>售后协同中心</h2>
           <span>原单同步、责任判定、金额核算与仓库补发，一张工单走完全流程。</span>
         </div>
         <div className="after-sales-hero-badge"><ShieldCheck size={22} /><span><strong>规则自动判责</strong><small>成本快照全程可追溯</small></span></div>

@@ -251,13 +251,21 @@ let scheduledInventorySnapshotRunning = false;
 let wecomScheduleRunning = false;
 const syncScheduler = createSyncScheduler({
   heartbeatMs: syncSchedulerHeartbeatMs,
-  laneLimits: { light: 4, external: 1 },
+  laneLimits: { light: 4, jdy: 1, wms: 1, miaoshou: 1, compute: 1, publicApi: 1 },
   restoredState: loadJsonCache(syncSchedulerCachePath) || {},
   persist: (payload) => saveJsonCache(syncSchedulerCachePath, payload, 0),
 });
 const performanceAnalyticsResponseCache = new Map();
 const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
 const performanceAnalyticsResponseCacheLimit = 24;
+const orderAnalysisResponseCache = new Map();
+const orderAnalysisResponseCacheTtlMs = 5 * 60 * 1000;
+const orderAnalysisResponseCacheLimit = 24;
+const derivedResponseCache = new Map();
+const derivedResponseCacheTtlMs = 5 * 60 * 1000;
+const derivedResponseCacheLimit = 48;
+let derivedDataRevision = 0;
+let derivedResponseWarmScheduled = false;
 let performanceAnalyticsMaterializedCache = null;
 let performanceAnalyticsMaterializedCacheLoaded = false;
 let performanceAnalyticsMaterializationJob = null;
@@ -266,6 +274,69 @@ const performanceAnalyticsQueryService = createPerformanceAnalyticsQueryService(
 
 function clearPerformanceAnalyticsResponseCache() {
   performanceAnalyticsResponseCache.clear();
+  orderAnalysisResponseCache.clear();
+}
+
+function invalidateDerivedResponses() {
+  derivedDataRevision += 1;
+  derivedResponseCache.clear();
+  if (!derivedResponseWarmScheduled) {
+    derivedResponseWarmScheduled = true;
+    setImmediate(() => {
+      derivedResponseWarmScheduled = false;
+      warmDerivedResponseCaches();
+    });
+  }
+}
+
+function derivedResponseKey(kind, auth = directAuth) {
+  const user = auth?.user || directAuth.user;
+  const accessUser = publicUser(user);
+  return JSON.stringify({
+    kind,
+    revision: derivedDataRevision,
+    role: accessUser.role || auth.role || "anonymous",
+    permissions: [...(accessUser.permissions || [])].sort(),
+    scopes: normalizeDataScopes(accessUser.dataScopes),
+  });
+}
+
+function cachedDerivedResponse(key) {
+  const entry = derivedResponseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > derivedResponseCacheTtlMs) {
+    derivedResponseCache.delete(key);
+    return null;
+  }
+  return entry.payload;
+}
+
+function cacheDerivedResponse(key, payload) {
+  derivedResponseCache.set(key, { createdAt: Date.now(), payload });
+  while (derivedResponseCache.size > derivedResponseCacheLimit) {
+    derivedResponseCache.delete(derivedResponseCache.keys().next().value);
+  }
+  return payload;
+}
+
+function cachedOrderAnalysisResponse(key) {
+  const entry = orderAnalysisResponseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > orderAnalysisResponseCacheTtlMs) {
+    orderAnalysisResponseCache.delete(key);
+    return null;
+  }
+  orderAnalysisResponseCache.delete(key);
+  orderAnalysisResponseCache.set(key, entry);
+  return entry.payload;
+}
+
+function cacheOrderAnalysisResponse(key, payload) {
+  orderAnalysisResponseCache.set(key, { createdAt: Date.now(), payload });
+  while (orderAnalysisResponseCache.size > orderAnalysisResponseCacheLimit) {
+    orderAnalysisResponseCache.delete(orderAnalysisResponseCache.keys().next().value);
+  }
+  return payload;
 }
 
 function cachedPerformanceAnalyticsResponse(key) {
@@ -338,10 +409,12 @@ function ensurePerformanceMaterializationCacheLoaded() {
 function saveProductCache(payload) {
   saveJsonCache(productCachePath, payload);
   clearPerformanceAnalyticsResponseCache();
+  invalidateDerivedResponses();
 }
 
 function saveWarehouseCache(payload) {
   saveJsonCache(warehouseCachePath, payload);
+  invalidateDerivedResponses();
 }
 
 function saveInventorySnapshotCache(payload) {
@@ -359,6 +432,7 @@ function saveOrderCache(payload) {
   // endpoints for close to a minute after each order sync.
   saveJsonCache(orderCachePath, payload, 0);
   clearPerformanceAnalyticsResponseCache();
+  invalidateDerivedResponses();
 }
 
 function saveOrderSyncJobsCache() {
@@ -369,16 +443,19 @@ function saveOrderSyncJobsCache() {
 
 function saveStockupCache(payload) {
   saveJsonCache(stockupCachePath, payload);
+  invalidateDerivedResponses();
 }
 
 function saveStockupDecisionCache() {
   cachedStockupDecisions.updatedAt = new Date().toISOString();
   saveJsonCache(stockupDecisionCachePath, cachedStockupDecisions);
+  invalidateDerivedResponses();
 }
 
 function saveStockupPlanCache() {
   cachedStockupPlans = normalizeStockupPlans(cachedStockupPlans);
   saveJsonCache(stockupPlanCachePath, cachedStockupPlans);
+  invalidateDerivedResponses();
 }
 
 function saveWmsStockupPushCache() {
@@ -389,6 +466,7 @@ function saveWmsStockupPushCache() {
 
 function saveWarehouseConnections() {
   saveJsonCache(warehouseConnectionsPath, warehouseConnections);
+  invalidateDerivedResponses();
 }
 
 function saveQualificationCache(payload) {
@@ -425,6 +503,7 @@ function saveDistributorApplicationsCache() {
 
 function saveOutsourcingOrderCache(payload) {
   saveJsonCache(outsourcingOrderCachePath, payload);
+  invalidateDerivedResponses();
 }
 
 function saveProductionMaterialCache(payload) {
@@ -2655,6 +2734,7 @@ function pruneWarehouseCaches(warehouseIds) {
   };
   cachedOrdersSync = {
     ...cachedOrdersSync,
+    dataRevisionAt: new Date().toISOString(),
     orders: (cachedOrdersSync.orders || []).filter((item) => !ids.has(item.warehouseId)),
     results: (cachedOrdersSync.results || []).filter((item) => !ids.has(item.warehouseId)),
   };
@@ -3494,6 +3574,9 @@ function scopeOrderSyncJob(job, scoped) {
 }
 
 function movementResponsePayload(auth = directAuth) {
+  const cacheKey = derivedResponseKey("movement", auth);
+  const cached = cachedDerivedResponse(cacheKey);
+  if (cached) return cached;
   const user = auth?.user || directAuth.user;
   const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
   const scoped = scopeMovementSources({
@@ -3567,7 +3650,7 @@ function movementResponsePayload(auth = directAuth) {
       message: running ? (latestJob.currentWarehouseId === connection.id ? latestJob.currentChunkLabel : "Queued") : (result?.message || ""),
     };
   });
-  return projectMovementPayload({
+  return cacheDerivedResponse(cacheKey, projectMovementPayload({
     ...payload,
     orderSyncJob: publicOrderSyncJob(latestJob),
     warehouseFreshness,
@@ -3578,10 +3661,13 @@ function movementResponsePayload(auth = directAuth) {
       backgroundRunningWarehouses,
       failedWarehouses,
     },
-  }, user);
+  }, user));
 }
 
 function buildDashboardSummary(auth) {
+  const cacheKey = derivedResponseKey("dashboard", auth);
+  const cached = cachedDerivedResponse(cacheKey);
+  if (cached) return cached;
   const products = productResponsePayload(cachedProducts, auth, "list");
   const canViewOperations = hasPermission(auth, "dashboard");
   const canViewSync = hasPermission(auth, "movement_sync");
@@ -3613,7 +3699,7 @@ function buildDashboardSummary(auth) {
     });
   });
   const dataHealth = summarizeDataHealth(warehouseDataStates);
-  return {
+  return cacheDerivedResponse(cacheKey, {
     ok: true,
     generatedAt: new Date().toISOString(),
     internal: canViewInternalCatalog(auth),
@@ -3667,7 +3753,7 @@ function buildDashboardSummary(auth) {
         dataState,
       };
     }),
-  };
+  });
 }
 
 function orderDateKey(order) {
@@ -3767,31 +3853,27 @@ function requestedPerformanceRevenueSource(settings = {}) {
   return ["wms", "shadow", "miaoshou"].includes(configured) ? configured : "shadow";
 }
 
-const performanceProductVersionCache = new WeakMap();
-const performanceOrderVersionCache = new WeakMap();
-
 function sourceContentVersion(value) {
   return createHash("sha1").update(JSON.stringify(value ?? null)).digest("hex").slice(0, 16);
-}
-
-function memoizedSourceContentVersion(cache, owner, value) {
-  if (owner && typeof owner === "object") {
-    const cached = cache.get(owner);
-    if (cached) return cached;
-    const version = sourceContentVersion(value);
-    cache.set(owner, version);
-    return version;
-  }
-  return sourceContentVersion(value);
 }
 
 function performanceMaterializationContext(exchangeRates, packagingFeeRules, miaoshouShopState, settings = {}, supplementalProductCosts = []) {
   const metadata = performanceAnalyticsStore.getMetadata();
   const miaoshouSyncState = performanceAnalyticsStore.getMiaoshouPerformanceSyncState();
   const sourceSignature = JSON.stringify({
-    orders: memoizedSourceContentVersion(performanceOrderVersionCache, cachedOrdersSync, cachedOrdersSync.orders || []),
+    orders: sourceContentVersion({
+      syncedAt: cachedOrdersSync.syncedAt || "",
+      dataRevisionAt: cachedOrdersSync.dataRevisionAt || "",
+      days: cachedOrdersSync.days || 0,
+      rows: (cachedOrdersSync.orders || []).length,
+    }),
     orderRows: (cachedOrdersSync.orders || []).length,
-    products: memoizedSourceContentVersion(performanceProductVersionCache, cachedProducts, [cachedProducts.productBase || [], cachedProducts.catalog || []]),
+    products: sourceContentVersion({
+      syncedAt: cachedProducts.syncedAt || "",
+      source: cachedProducts.source || "",
+      productBaseRows: (cachedProducts.productBase || []).length,
+      catalogRows: (cachedProducts.catalog || []).length,
+    }),
     shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
     miaoshouShops: sourceContentVersion((miaoshouShopState.shops || []).map((shop) => [
       shop.shopId,
@@ -3893,7 +3975,7 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
       targetDataVersion: context.dataVersion,
     };
     performanceAnalyticsMaterializedCacheLoaded = true;
-    performanceAnalyticsResponseCache.clear();
+    clearPerformanceAnalyticsResponseCache();
     return performanceAnalyticsMaterializedCache;
   }).finally(() => {
     if (performanceAnalyticsMaterializationJob === job) performanceAnalyticsMaterializationJob = null;
@@ -3947,6 +4029,7 @@ async function warmPerformanceAnalyticsMaterialization({ throwOnError = false } 
     const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
     const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings, { waitForFresh: true });
     console.log(`[performance] materialized ${numberOrZero(materialization.factCount)} rows in ${materialization.materializationDurationMs}ms (${materialization.dataVersion})`);
+    await buildOrderAnalysisResponse({}, directAuth);
   } catch (error) {
     console.error("[performance] materialization failed", error);
     if (throwOnError) throw error;
@@ -4071,36 +4154,8 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
       limits: { products: 100, recentFacts: 50 },
     });
   } catch (error) {
-    console.error("[performance] query worker failed; using inline fallback", error);
-    const fallbackSnapshot = Array.isArray(materialization.facts)
-      ? materialization
-      : loadPerformanceMaterializationSnapshot(performanceMaterializationCachePath);
-    if (!Array.isArray(fallbackSnapshot?.facts)) throw error;
-    const scopedFacts = fallbackSnapshot.facts.filter((fact) => {
-      if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(fact.warehouseId || ""))) return false;
-      return isWithinDataScope(fact, scopes);
-    });
-    const facts = scopedFacts.filter((fact) => {
-      if (filters.dateFrom && fact.orderDate < filters.dateFrom) return false;
-      if (filters.dateTo && fact.orderDate > filters.dateTo) return false;
-      return true;
-    });
-    const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
-      .some((values) => Array.isArray(values) && values.length > 0);
-    queryResult = {
-      payload: buildPerformanceAnalyticsPayload({
-        materializedFacts: facts,
-        exchangeRates,
-        packagingFeeRules,
-        filters,
-        limits: { products: 100, recentFacts: 50 },
-      }),
-      visibleShopKeys: hasDataScope
-        ? [...new Set(scopedFacts.map((fact) => fact.shopKey).filter(Boolean))]
-        : null,
-      workerQueryDurationMs: 0,
-      scannedFactCount: facts.length,
-    };
+    console.error("[performance] query worker failed", error);
+    throw new Error("经营分析后台计算暂时不可用，请稍后重试。页面中的其他功能不受影响。");
   }
   const payload = queryResult.payload;
   const visibleShopKeys = queryResult.visibleShopKeys === null
@@ -4706,6 +4761,87 @@ function mergeWarehouseOrderCache(connection, result, days, replaceOrders = true
   return snapshot;
 }
 
+async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
+  const range = performanceDateRange(params);
+  const filters = {
+    ...range,
+    country: String(params.country || ""),
+    warehouseId: String(params.warehouseId || ""),
+    platform: String(params.platform || ""),
+    shopName: String(params.shopName || ""),
+    projectGroup: String(params.projectGroup || ""),
+    providerId: String(params.providerId || ""),
+    keyword: String(params.keyword || ""),
+  };
+  const onlyRussia = params.onlyRussia !== false;
+  const user = auth?.user || directAuth.user;
+  const accessUser = publicUser(user);
+  const scopes = normalizeDataScopes(accessUser.dataScopes);
+  const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+  const settings = performanceAnalyticsStore.getPerformanceSettings();
+  const packagingFeeRules = normalizePackagingFeeRules(settings.packagingFeeRules);
+  const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+  const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+  const cacheKey = JSON.stringify({
+    dataVersion: materialization.dataVersion,
+    filters,
+    onlyRussia,
+    role: accessUser.role || auth.role || "anonymous",
+    permissions: [...(accessUser.permissions || [])].sort(),
+    scopes,
+  });
+  const cached = cachedOrderAnalysisResponse(cacheKey);
+  if (cached) return cached;
+  let queryResult;
+  try {
+    queryResult = await performanceAnalyticsQueryService.query({
+      queryType: "order-analysis",
+      dataVersion: materialization.dataVersion,
+      materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
+      cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
+      exchangeRates,
+      packagingFeeRules,
+      filters,
+      scopes,
+      onlyRussia,
+      limits: { recentOrders: 200 },
+    });
+  } catch (error) {
+    console.error("[order-analysis] query worker failed", error);
+    throw new Error("订单分析后台计算暂时不可用，请稍后重试。页面中的其他功能不受影响。");
+  }
+  const visibleShopKeys = queryResult.visibleShopKeys === null
+    ? null
+    : new Set(queryResult.visibleShopKeys || []);
+  const directoryShops = visibleShopKeys === null
+    ? (materialization.shopDirectory.shops || [])
+    : (materialization.shopDirectory.shops || []).filter((shop) => visibleShopKeys.has(shop.key));
+  const directory = {
+    ...materialization.shopDirectory,
+    shops: directoryShops,
+    projectGroups: [...new Set(directoryShops.map((shop) => shop.projectGroup).filter(Boolean))].sort(),
+    matchedShopCount: directoryShops.filter((shop) => shop.miaoshouMatched).length,
+    unmatchedShopCount: directoryShops.filter((shop) => !shop.miaoshouMatched).length,
+  };
+  const projectGroups = orderOptionRows(new Set([
+    ...(directory.projectGroups || []),
+    ...(queryResult.payload?.options?.projectGroups || []).map((option) => option.value),
+  ]));
+  return cacheOrderAnalysisResponse(cacheKey, {
+    ...queryResult.payload,
+    options: {
+      ...(queryResult.payload?.options || {}),
+      projectGroups,
+    },
+    syncedAt: cachedOrdersSync.syncedAt || "",
+    dataVersion: materialization.dataVersion,
+    materializationStale: Boolean(materialization.stale),
+    workerQueryDurationMs: queryResult.workerQueryDurationMs,
+    scannedFactCount: queryResult.scannedFactCount,
+    shopDirectory: publicShopDirectory(directory, auth),
+  });
+}
+
 let activeOrderSyncJobPromise = null;
 
 function startOrderSyncJob(job) {
@@ -5231,11 +5367,72 @@ async function refreshWarehouseStockupCache() {
 }
 
 function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {}) {
-  const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
-  const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
-  const payload = applyStockupDecisions(buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts));
+  const cacheKey = `stockup:${derivedDataRevision}`;
+  let payload = cachedDerivedResponse(cacheKey);
+  if (!payload) {
+    const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
+    const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
+    payload = cacheDerivedResponse(cacheKey, applyStockupDecisions(buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts)));
+  }
   if (notify) void notifyStockupRecommendation(payload, reason);
   return payload;
+}
+
+function warmDerivedResponseCaches() {
+  try {
+    movementResponsePayload(directAuth);
+    buildDashboardSummary(directAuth);
+    buildCurrentStockupPayload();
+  } catch (error) {
+    console.error("[derived-cache] warm failed", error);
+  }
+}
+
+function stockupPayloadForView(payload, view = "full", { inboundLimit = 100 } = {}) {
+  const normalizedView = String(view || "full").trim().toLowerCase();
+  const normalizedInboundLimit = Math.max(1, Math.min(1000, Number(inboundLimit) || 100));
+  const inboundTotal = (payload.inboundOrders || []).length;
+  const inboundPagination = (returned) => ({
+    inbound: {
+      total: inboundTotal,
+      returned,
+      limit: normalizedInboundLimit,
+      hasMore: returned < inboundTotal,
+    },
+  });
+  const empty = {
+    recommendations: [],
+    abandonedRecommendations: [],
+    plans: [],
+    outsourcingQueue: [],
+    domesticCustomizationQueue: [],
+    inboundOrders: [],
+    syncResults: [],
+  };
+  if (normalizedView === "dashboard") return { ...payload, ...empty, pagination: inboundPagination(0), view: normalizedView };
+  if (normalizedView === "production") {
+    return {
+      ...payload,
+      ...empty,
+      outsourcingQueue: payload.outsourcingQueue || [],
+      domesticCustomizationQueue: payload.domesticCustomizationQueue || [],
+      pagination: inboundPagination(0),
+      view: normalizedView,
+    };
+  }
+  if (["stockup", "stockup-execution"].includes(normalizedView)) return { ...payload, ...empty, pagination: inboundPagination(0), view: normalizedView };
+  if (normalizedView === "stockup-recommendations") {
+    const inboundOrders = (payload.inboundOrders || []).slice(0, normalizedInboundLimit);
+    return {
+      ...payload,
+      outsourcingQueue: [],
+      domesticCustomizationQueue: [],
+      inboundOrders,
+      pagination: inboundPagination(inboundOrders.length),
+      view: normalizedView,
+    };
+  }
+  return { ...payload, view: "full" };
 }
 
 function updateStockupDecision(payload, status) {
@@ -5651,7 +5848,7 @@ async function runScheduledMiaoshouPerformanceSync() {
 
 function registerBackgroundSyncTasks() {
   const minute = 60_000;
-  const external = (definition) => syncScheduler.register({ lane: "external", jitterMs: 20_000, ...definition });
+  const external = (lane, definition) => syncScheduler.register({ lane, jitterMs: 20_000, ...definition });
   syncScheduler.register({
     id: "wecom-notifications",
     label: "企业微信定时通知",
@@ -5662,7 +5859,7 @@ function registerBackgroundSyncTasks() {
     jitterMs: 5_000,
     run: runWecomSchedules,
   });
-  external({
+  external("miaoshou", {
     id: "miaoshou-waybills",
     label: "妙手自动申请运单",
     priority: 110,
@@ -5671,7 +5868,7 @@ function registerBackgroundSyncTasks() {
     jitterMs: 5_000,
     run: () => miaoshouAutomation.runScheduled(),
   });
-  external({
+  external("jdy", {
     id: "stockup-workflow",
     label: "备货执行业务链",
     priority: 105,
@@ -5679,7 +5876,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 10_000,
     run: refreshStockupWorkflowCache,
   });
-  external({
+  external("jdy", {
     id: "production-materials",
     label: "生产单与物料进度",
     priority: 100,
@@ -5687,7 +5884,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 35_000,
     run: () => refreshOutsourcingOrderCache(),
   });
-  external({
+  external("wms", {
     id: "daily-inventory-snapshot",
     label: "每日库存快照检查",
     priority: 95,
@@ -5696,7 +5893,7 @@ function registerBackgroundSyncTasks() {
     jitterMs: 5_000,
     run: runScheduledInventorySnapshot,
   });
-  external({
+  external("wms", {
     id: "warehouse-inventory",
     label: "三方仓库存",
     priority: 90,
@@ -5704,7 +5901,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 2 * minute,
     run: runScheduledInventorySync,
   });
-  external({
+  external("wms", {
     id: "warehouse-stockup-orders",
     label: "三方仓备货单",
     priority: 85,
@@ -5712,7 +5909,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 3 * minute,
     run: refreshWarehouseStockupCache,
   });
-  external({
+  external("wms", {
     id: "warehouse-orders",
     label: "三方仓订单增量",
     priority: 80,
@@ -5720,7 +5917,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 4 * minute,
     run: runScheduledOrderSync,
   });
-  external({
+  external("miaoshou", {
     id: "miaoshou-performance",
     label: "妙手订单与售后",
     enabled: performanceMiaoshouAutoSyncEnabled,
@@ -5729,7 +5926,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 6 * minute,
     run: runScheduledMiaoshouPerformanceSync,
   });
-  external({
+  external("jdy", {
     id: "products",
     label: "产品目录",
     priority: 60,
@@ -5737,7 +5934,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 8 * minute,
     run: runScheduledProductSync,
   });
-  external({
+  external("compute", {
     id: "performance-materialization",
     label: "经营分析快照",
     priority: 55,
@@ -5745,7 +5942,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 10 * minute,
     run: () => warmPerformanceAnalyticsMaterialization({ throwOnError: true }),
   });
-  external({
+  external("jdy", {
     id: "assets",
     label: "素材库",
     priority: 50,
@@ -5753,7 +5950,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 12 * minute,
     run: refreshAssetCache,
   });
-  external({
+  external("jdy", {
     id: "warehouse-info",
     label: "仓库资料",
     priority: 40,
@@ -5761,7 +5958,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 16 * minute,
     run: refreshWarehouseInfoCache,
   });
-  external({
+  external("jdy", {
     id: "qualifications",
     label: "产品资质",
     priority: 30,
@@ -5769,7 +5966,7 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 20 * minute,
     run: refreshQualificationCache,
   });
-  external({
+  external("publicApi", {
     id: "exchange-rates",
     label: "经营汇率",
     enabled: performanceFxAutoSyncEnabled,
@@ -8388,7 +8585,7 @@ const server = http.createServer(async (req, res) => {
         };
       }
       await performanceAnalyticsQueryService.close();
-      void warmPerformanceAnalyticsMaterialization();
+      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
       sendJson(res, 200, {
         ok: true,
         updatedCount: shopKeys.length,
@@ -8422,7 +8619,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有订单分析权限。" });
         return;
       }
-      sendJson(res, 200, buildOrderAnalysisPayload({
+      sendJson(res, 200, await buildOrderAnalysisResponse({
         dateFrom: url.searchParams.get("dateFrom") || "",
         dateTo: url.searchParams.get("dateTo") || "",
         country: url.searchParams.get("country") || "",
@@ -8527,7 +8724,11 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
-      const stockupPayload = buildCurrentStockupPayload({ notify: false, reason: "page_refresh" });
+      const stockupPayload = stockupPayloadForView(
+        buildCurrentStockupPayload({ notify: false, reason: "page_refresh" }),
+        url.searchParams.get("view") || "full",
+        { inboundLimit: url.searchParams.get("inboundLimit") || 100 },
+      );
       sendJson(res, 200, {
         ...stockupPayload,
         ...currentOutsourcingCacheState(),
@@ -9059,8 +9260,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+warmDerivedResponseCaches();
+
 server.listen(port, () => {
   console.log(`Tongzhou API server listening on http://localhost:${port}`);
   registerBackgroundSyncTasks();
   syncScheduler.start();
+  setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
 });

@@ -2344,6 +2344,15 @@ export type StockupPayload = {
   outsourcingRefreshStartedAt?: string;
   outsourcingRefreshError?: string;
   warning?: string;
+  view?: string;
+  pagination?: {
+    inbound?: {
+      total: number;
+      returned: number;
+      limit: number;
+      hasMore: boolean;
+    };
+  };
   counts: {
     recommendations: number;
     recommendedQty: number;
@@ -2753,22 +2762,24 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...((init?.headers as Record<string, string> | undefined) || {}),
   };
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new Error("暂时无法连接数据服务，请检查网络后重试。页面会保留上一次成功数据。");
+  }
   const text = await response.text();
   let payload: any = {};
   try {
     payload = text ? JSON.parse(text) : {};
   } catch {
-    const contentType = response.headers.get("content-type") || "";
-    const preview = text.replace(/\s+/g, " ").slice(0, 160);
-    throw new Error(
-      contentType.includes("text/html") || text.trim().startsWith("<")
-        ? `服务器返回了 HTML 页面，可能是接口反代异常或同步超时。HTTP ${response.status}${preview ? `：${preview}` : ""}`
-        : `服务器返回了非 JSON 内容。HTTP ${response.status}${preview ? `：${preview}` : ""}`,
-    );
+    if (response.status === 504) throw new Error("数据服务响应超时，系统会继续使用上一次成功数据，请稍后重试。");
+    if ([502, 503].includes(response.status)) throw new Error("数据服务暂时繁忙，系统会保留上一次成功数据，请稍后重试。");
+    throw new Error(`数据服务返回了无法识别的内容（HTTP ${response.status || "未知"}），请稍后重试。`);
   }
   if (!response.ok) {
     throw new Error(payload.message || "请求失败");
@@ -3347,8 +3358,10 @@ export function updateOrderShopAlias(input: { shopName: string; alias: string })
   });
 }
 
-export function fetchStockup() {
-  return requestJson<StockupPayload>("/api/stockup");
+export function fetchStockup(view = "full", options: { inboundLimit?: number } = {}) {
+  const query = new URLSearchParams({ view });
+  if (options.inboundLimit) query.set("inboundLimit", String(options.inboundLimit));
+  return requestJson<StockupPayload>(`/api/stockup?${query.toString()}`);
 }
 
 export function fetchStockupWorkflow() {
