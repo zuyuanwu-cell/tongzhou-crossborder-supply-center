@@ -5,7 +5,9 @@ import {
   Check,
   Clipboard,
   Copy,
-  FileImage,
+  Download,
+  FileText,
+  ImageOff,
   LoaderCircle,
   PackageCheck,
   Plus,
@@ -16,6 +18,7 @@ import {
   Truck,
   Upload,
   X,
+  ZoomIn,
 } from "lucide-react";
 import {
   AfterSalesAttachment,
@@ -50,6 +53,7 @@ const statusMeta: Record<string, { label: string; tone: string }> = {
 
 type AfterSalesListFilters = { status?: string; keyword?: string; mine?: boolean };
 type AfterSalesCacheEntry = { payload: AfterSalesPayload; cachedAt: number };
+type AfterSalesImagePreview = { src: string; title: string; description?: string };
 
 const AFTER_SALES_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
 const AFTER_SALES_REQUEST_TIMEOUT_MS = 12 * 1000;
@@ -169,16 +173,110 @@ function reissueText(items: AfterSalesReissueItem[]) {
   return items.map((item) => `${item.sku}  ${item.productName}  × ${item.quantity}`).join("\n");
 }
 
-function AttachmentList({ attachments, onDownload }: { attachments: AfterSalesAttachment[]; onDownload: (attachment: AfterSalesAttachment) => void }) {
+function isImageAttachment(attachment: AfterSalesAttachment) {
+  return attachment.mimeType.startsWith("image/") || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(attachment.fileName);
+}
+
+function ProductThumbnail({ imageUrl, title, description, onPreview }: {
+  imageUrl?: string;
+  title: string;
+  description?: string;
+  onPreview: (image: AfterSalesImagePreview) => void;
+}) {
+  const source = resolveApiUrl(imageUrl || "");
+  const [failed, setFailed] = React.useState(false);
+
+  React.useEffect(() => setFailed(false), [source]);
+
+  if (!source || failed) {
+    return <span className="as-product-thumb is-empty" aria-label={source ? "产品图片加载失败" : "暂无产品图片"}><ImageOff size={20} /></span>;
+  }
+
+  return (
+    <button type="button" className="as-product-thumb" onClick={() => onPreview({ src: source, title, description })} aria-label={`放大查看 ${title} 产品图片`}>
+      <img src={source} alt={`${title} 产品缩略图`} loading="lazy" onError={() => setFailed(true)} />
+      <span><ZoomIn size={15} /></span>
+    </button>
+  );
+}
+
+function AttachmentPreviewCard({ attachment, onDownload, onPreview, onError }: {
+  attachment: AfterSalesAttachment;
+  onDownload: (attachment: AfterSalesAttachment) => void;
+  onPreview: (image: AfterSalesImagePreview) => void;
+  onError: (message: string) => void;
+}) {
+  const canPreview = isImageAttachment(attachment);
+  const [previewUrl, setPreviewUrl] = React.useState("");
+  const [loadingPreview, setLoadingPreview] = React.useState(canPreview);
+  const [previewFailed, setPreviewFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!canPreview) return undefined;
+    let active = true;
+    let objectUrl = "";
+    setLoadingPreview(true);
+    setPreviewFailed(false);
+    void downloadAfterSalesAttachment(attachment)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (active) setPreviewUrl(objectUrl);
+      })
+      .catch((loadError) => {
+        if (!active) return;
+        setPreviewFailed(true);
+        onError(loadError instanceof Error ? loadError.message : "面单图片预览失败，可尝试直接下载。");
+      })
+      .finally(() => {
+        if (active) setLoadingPreview(false);
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id, attachment.url, canPreview, onError]);
+
+  if (!canPreview) {
+    return (
+      <button type="button" className="as-attachment-file" onClick={() => onDownload(attachment)}>
+        <FileText size={22} />
+        <span><strong>{attachment.fileName}</strong><small>PDF 文件 · {fileSize(attachment.size)}</small></span>
+        <Download size={16} />
+      </button>
+    );
+  }
+
+  return (
+    <article className="as-attachment-card">
+      <button
+        type="button"
+        className="as-attachment-thumb"
+        disabled={!previewUrl}
+        onClick={() => previewUrl && onPreview({ src: previewUrl, title: attachment.fileName, description: `面单图片 · ${fileSize(attachment.size)}` })}
+        aria-label={`放大查看面单 ${attachment.fileName}`}
+      >
+        {previewUrl ? <img src={previewUrl} alt={`${attachment.fileName} 缩略图`} /> : previewFailed ? <span><ImageOff size={22} />预览失败</span> : <span><LoaderCircle className="spinning" size={22} />正在加载</span>}
+        {previewUrl ? <i><ZoomIn size={16} />点击放大</i> : null}
+      </button>
+      <div className="as-attachment-meta">
+        <span><strong>{attachment.fileName}</strong><small>{loadingPreview ? "正在读取" : fileSize(attachment.size)}</small></span>
+        <button type="button" onClick={() => onDownload(attachment)} aria-label={`下载 ${attachment.fileName}`}><Download size={15} /></button>
+      </div>
+    </article>
+  );
+}
+
+function AttachmentList({ attachments, onDownload, onPreview, onError }: {
+  attachments: AfterSalesAttachment[];
+  onDownload: (attachment: AfterSalesAttachment) => void;
+  onPreview: (image: AfterSalesImagePreview) => void;
+  onError: (message: string) => void;
+}) {
   if (!attachments.length) return <span className="as-empty-inline">暂无附件</span>;
   return (
-    <div className="as-attachment-list">
+    <div className="as-attachment-gallery">
       {attachments.map((attachment) => (
-        <button type="button" key={attachment.id} onClick={() => onDownload(attachment)}>
-          <FileImage size={15} />
-          <span>{attachment.fileName}</span>
-          <small>{fileSize(attachment.size)}</small>
-        </button>
+        <AttachmentPreviewCard key={attachment.id} attachment={attachment} onDownload={onDownload} onPreview={onPreview} onError={onError} />
       ))}
     </div>
   );
@@ -218,6 +316,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const [keyword, setKeyword] = React.useState("");
   const [status, setStatus] = React.useState("all");
   const [selectedTicket, setSelectedTicket] = React.useState<AfterSalesTicket | null>(null);
+  const [previewImage, setPreviewImage] = React.useState<AfterSalesImagePreview | null>(null);
   const [warehouseRemark, setWarehouseRemark] = React.useState("");
   const [labelUploads, setLabelUploads] = React.useState<AfterSalesAttachment[]>([]);
   const payloadRef = React.useRef<AfterSalesPayload | null>(initialCache?.payload || null);
@@ -322,6 +421,20 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   React.useEffect(() => {
     if (secondaryReason === "补发且留错品") setNeedsReissue(true);
   }, [secondaryReason]);
+
+  React.useEffect(() => {
+    if (!previewImage) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreviewImage(null);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [previewImage]);
 
   async function handleSyncOrder() {
     const normalized = orderNumber.trim();
@@ -519,6 +632,11 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     }
   }
 
+  function closeTicket() {
+    setPreviewImage(null);
+    setSelectedTicket(null);
+  }
+
   function renderTicketList(myTickets = false) {
     return (
       <section className="after-sales-warehouse">
@@ -623,7 +741,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
               <div className={`as-responsibility ${responsibility.party}`}><ShieldCheck size={20} /><div><span>自动责任归属</span><strong>{responsibility.label}</strong><small>{responsibility.explanation}</small></div></div>
               <div className="as-evidence-zone">
                 <label><Upload size={22} /><strong>{busy === "evidence" ? "正在上传…" : "上传图片 / 视频截图 / PDF 凭证"}</strong><span>单个文件不超过 8MB，最多一次选择 8 个</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleEvidenceUpload(event.target.files)} /></label>
-                <AttachmentList attachments={evidence} onDownload={handleDownload} />
+                <AttachmentList attachments={evidence} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} />
               </div>
               <label className="as-textarea"><span>运营备注</span><textarea value={operatorRemark} onChange={(event) => setOperatorRemark(event.target.value)} placeholder="说明客户反馈、沟通结果、退款情况及需要仓库注意的事项。" /></label>
             </section>
@@ -668,15 +786,16 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       {tab === "warehouse" && canWarehouse ? renderTicketList(false) : null}
 
       {selectedTicket ? (
-        <div className="as-drawer-backdrop" onMouseDown={(event) => event.currentTarget === event.target && setSelectedTicket(null)}>
-          <aside className="as-ticket-drawer">
-            <header><div><p className="eyebrow">AFTER-SALES TICKET</p><h2>{selectedTicket.id}</h2><span>原订单 {selectedTicket.originalOrderNumber}</span></div><button type="button" onClick={() => setSelectedTicket(null)}><X size={19} /></button></header>
+        <div className="as-drawer-backdrop" onMouseDown={(event) => event.currentTarget === event.target && closeTicket()}>
+          <aside className="as-ticket-drawer" aria-label={`售后单 ${selectedTicket.id} 详情`}>
+            <header><div><p className="eyebrow">AFTER-SALES TICKET</p><h2>{selectedTicket.id}</h2><span>原订单 {selectedTicket.originalOrderNumber}</span></div><button type="button" onClick={closeTicket} aria-label="关闭售后详情"><X size={19} /></button></header>
             <div className="as-drawer-scroll">
               <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>处理仓库</small><strong>{selectedTicket.warehouseName || "待分配"}</strong></div><div><small>责任归属</small><strong>{selectedTicket.responsibility.label}</strong></div><div><small>仓库承担</small><strong>{money(selectedTicket.money.totalWarehouseLiabilityCny)}</strong></div></section>
+              <section className="as-drawer-section"><header><div><small>售后产品</small><strong>{selectedTicket.originalItems.reduce((sum, item) => sum + item.affectedQty, 0)} 件受影响</strong></div><span className="as-preview-hint"><ZoomIn size={13} />点击缩略图可放大</span></header><div className="as-drawer-items as-drawer-product-items">{selectedTicket.originalItems.filter((item) => item.affectedQty > 0).map((item) => <div key={item.sku}><ProductThumbnail imageUrl={item.imageUrl} title={item.productName || item.sku} description={`${item.sku} · 受影响 ${item.affectedQty} 件`} onPreview={setPreviewImage} /><span className="as-drawer-item-copy"><span>{item.sku}</span><strong>{item.productName}</strong><small>原单数量：{item.orderedQty}</small></span><b>× {item.affectedQty}</b></div>)}</div></section>
               <section className="as-drawer-section"><header><div><small>完整收件信息</small><strong>仓库可整段复制</strong></div><button type="button" onClick={() => void copyText(customerText(selectedTicket.customer), "收件信息")}><Copy size={15} />复制收件信息</button></header><pre>{customerText(selectedTicket.customer) || "运营暂未维护收件人、电话和详细地址。"}</pre></section>
-              <section className="as-drawer-section"><header><div><small>补发清单</small><strong>{selectedTicket.needsReissue ? `${selectedTicket.reissueItems.length} 个 SKU` : "无需补发"}</strong></div>{selectedTicket.needsReissue ? <button type="button" onClick={() => void copyText(reissueText(selectedTicket.reissueItems), "补发产品信息")}><Copy size={15} />复制补发清单</button> : null}</header>{selectedTicket.needsReissue ? <div className="as-drawer-items">{selectedTicket.reissueItems.map((item) => <div key={item.sku}><span>{item.sku}</span><strong>{item.productName}</strong><b>× {item.quantity}</b></div>)}</div> : <div className="as-empty-inline">该售后单无需仓库补发。</div>}</section>
-              <section className="as-drawer-section"><header><div><small>问题说明</small><strong>{selectedTicket.primaryReason} / {selectedTicket.secondaryReason}</strong></div></header><p>{selectedTicket.operatorRemark || "运营未填写补充备注。"}</p><AttachmentList attachments={selectedTicket.evidence || []} onDownload={handleDownload} /></section>
-              {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后随状态动作归档" : "仓库上传后可在此查看"}</strong></div></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} /></section> : null}
+              <section className="as-drawer-section"><header><div><small>补发清单</small><strong>{selectedTicket.needsReissue ? `${selectedTicket.reissueItems.length} 个 SKU` : "无需补发"}</strong></div>{selectedTicket.needsReissue ? <button type="button" onClick={() => void copyText(reissueText(selectedTicket.reissueItems), "补发产品信息")}><Copy size={15} />复制补发清单</button> : null}</header>{selectedTicket.needsReissue ? <div className="as-drawer-items as-drawer-product-items">{selectedTicket.reissueItems.map((item) => <div key={item.sku}><ProductThumbnail imageUrl={item.imageUrl} title={item.productName || item.sku} description={`${item.sku} · 补发 ${item.quantity} 件`} onPreview={setPreviewImage} /><span className="as-drawer-item-copy"><span>{item.sku}</span><strong>{item.productName}</strong></span><b>× {item.quantity}</b></div>)}</div> : <div className="as-empty-inline">该售后单无需仓库补发。</div>}</section>
+              <section className="as-drawer-section"><header><div><small>问题说明</small><strong>{selectedTicket.primaryReason} / {selectedTicket.secondaryReason}</strong></div></header><p>{selectedTicket.operatorRemark || "运营未填写补充备注。"}</p><AttachmentList attachments={selectedTicket.evidence || []} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section>
+              {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后随状态动作归档" : "仓库上传后可在此查看"}</strong></div><span className="as-preview-hint"><ZoomIn size={13} />图片可放大</span></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section> : null}
               {canWarehouse ? <section className="as-drawer-section"><label className="as-textarea"><span>仓库处理备注</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查结果、补发物流单号或完结说明。" /></label></section> : selectedTicket.warehouseRemark ? <section className="as-drawer-section"><header><div><small>仓库处理说明</small><strong>最近更新</strong></div></header><p>{selectedTicket.warehouseRemark}</p></section> : null}
               {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
               <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>共 {selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
@@ -691,6 +810,16 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
               {canAdmin && ["completed", "cancelled"].includes(selectedTicket.status) ? <button onClick={() => void warehouseAction("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}
             </footer> : null}
           </aside>
+        </div>
+      ) : null}
+
+      {previewImage ? (
+        <div className="as-image-lightbox" role="dialog" aria-modal="true" aria-label="图片放大预览" onMouseDown={(event) => event.currentTarget === event.target && setPreviewImage(null)}>
+          <figure>
+            <button type="button" className="as-lightbox-close" onClick={() => setPreviewImage(null)} aria-label="关闭图片预览"><X size={20} /></button>
+            <img src={previewImage.src} alt={previewImage.title} />
+            <figcaption><strong>{previewImage.title}</strong>{previewImage.description ? <span>{previewImage.description}</span> : null}</figcaption>
+          </figure>
         </div>
       ) : null}
     </div>
