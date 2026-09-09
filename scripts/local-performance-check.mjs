@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fetch } from "undici";
 
 function loadLocalAccessCode() {
   const rows = readFileSync(resolve(process.cwd(), ".env"), "utf8").split(/\r?\n/);
