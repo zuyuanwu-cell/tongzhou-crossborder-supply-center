@@ -11,6 +11,7 @@ import {
 } from "../server/after-sales.js";
 import {
   afterSalesWarehouseOptions,
+  afterSalesNotificationLink,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
   notificationRobotIds,
@@ -31,6 +32,10 @@ try {
   ]);
   assert.deepEqual(warehouseOptions.map((item) => item.id), ["warehouse-id"]);
   assert.deepEqual(notificationRobotIds({ robotIds: ["fallback"], warehouseRobotIds: { "warehouse-id": ["robot-id"] } }, "warehouse-id"), ["robot-id"]);
+  assert.equal(
+    afterSalesNotificationLink("#after-sales", "https://gyl.example.com", { module: "after_sales", view: "warehouse", ticket: "AS-1" }),
+    "https://gyl.example.com/#after-sales?module=after_sales&view=warehouse&ticket=AS-1",
+  );
 
   const liability = calculateAfterSalesLiability({
     responsibility: { party: "warehouse" },
@@ -95,6 +100,12 @@ try {
   assert.equal(synced.order.customer.name, "Tester");
   assert.match(synced.order.customer.recipientInfo, /电话：081234/);
   assert.equal(upserts.length, 1);
+  const productOptions = service.searchProducts({ keyword: "测试", country: "ID" });
+  assert.equal(productOptions.products.length, 1);
+  assert.equal(productOptions.products[0].unitCostCny, 14.4);
+  assert.equal(productOptions.products[0].imageUrl, "/test.png");
+  const productOptionsWithoutCountry = service.searchProducts({ keyword: "测试" });
+  assert.equal(productOptionsWithoutCountry.products[0].unitCostCny, 14.4, "未同步国家时仍应优先带入产品目录直营成本");
 
   const actor = { id: "user-1", displayName: "运营测试" };
   const evidence = service.saveUpload({
@@ -110,7 +121,7 @@ try {
     warehouseId: "warehouse-id",
     warehouseName: "印尼仓",
     originalItems: synced.order.items,
-    reissueItems: [{ sku: "TZKJ-A", productName: "测试产品", quantity: 2 }],
+    reissueItems: [{ sku: "TZKJ-A", productName: "测试产品", imageUrl: "/test.png", quantity: 2, unitCostCny: 14.4, costSource: "产品库直营成本" }],
     primaryReason: "仓库错发",
     secondaryReason: "补发且留错品",
     needsReissue: true,
@@ -123,7 +134,9 @@ try {
   assert.equal(created.ticket.money.totalWarehouseLiabilityCny, 30.7);
   assert.equal(created.ticket.evidence.length, 1);
   assert.equal(created.ticket.warehouseId, "warehouse-id");
-  assert.match(buildAfterSalesCreatedMarkdown(created.ticket, { requestOrigin: "https://gyl.example.com" }), /新售后单待处理/);
+  const createdMarkdown = buildAfterSalesCreatedMarkdown(created.ticket, { requestOrigin: "https://gyl.example.com" });
+  assert.match(createdMarkdown, /新售后单待处理/);
+  assert.match(createdMarkdown, /ticket=AS-/);
 
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
   const rejected = service.updateWarehouse(created.ticket.id, { action: "reject", warehouseRemark: "经核查并非仓库错发，请运营修改原因" }, warehouse);
@@ -149,12 +162,15 @@ try {
     kind: "label",
     dataUrl: "data:application/pdf;base64,JVBERi0xLjQ=",
   }, warehouse, "http://localhost:8787");
-  const shipped = service.updateWarehouse(created.ticket.id, { action: "shipped", labelUploadIds: [label.id] }, warehouse);
+  const withLabel = service.attachLabels(created.ticket.id, [label.id], warehouse, "补发单号 SF123");
+  assert.equal(withLabel.ticket.labelUploads.length, 1);
+  assert.match(buildAfterSalesProgressMarkdown(withLabel.ticket, { requestOrigin: "https://gyl.example.com" }), /补发面单：已上传 1 张/);
+  const shipped = service.updateWarehouse(created.ticket.id, { action: "shipped" }, warehouse);
   assert.equal(shipped.ticket.status, "shipped");
   assert.equal(shipped.ticket.labelUploads.length, 1);
   const completed = service.updateWarehouse(created.ticket.id, { action: "complete", note: "客户确认收到" }, warehouse);
   assert.equal(completed.ticket.status, "completed");
-  assert.equal(completed.ticket.timeline.length, 7);
+  assert.equal(completed.ticket.timeline.length, 8);
 
   const listed = service.list();
   assert.equal(listed.summary.total, 1);

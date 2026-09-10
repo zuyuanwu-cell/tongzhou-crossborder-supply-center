@@ -212,6 +212,7 @@ export function createWarehouseTicketService({ cachePath, uploadDir }) {
     const action = text(input.action);
     const transitions = {
       accept: { from: ["pending_warehouse"], to: "processing", label: "仓库已受理" },
+      reply: { from: ["pending_warehouse", "processing"], to: "", label: "仓库回复工单" },
       resolve: { from: ["pending_warehouse", "processing"], to: "resolved", label: "仓库工单已解决" },
       cancel: { from: ["pending_warehouse", "processing"], to: "cancelled", label: "仓库工单已取消" },
       reopen: { from: ["resolved", "cancelled"], to: "processing", label: "仓库工单已重新打开" },
@@ -219,13 +220,14 @@ export function createWarehouseTicketService({ cachePath, uploadDir }) {
     const transition = transitions[action];
     if (!transition) throw new Error("不支持的仓库工单动作。");
     const note = text(input.note || input.warehouseRemark);
+    if (action === "reply" && !note) throw new Error("发送回复前，请填写仓库回复内容。");
     if (action === "resolve" && !note) throw new Error("完结工单前，请填写处理结果。");
     const updated = store.update(id, (ticket) => {
       if (!transition.from.includes(ticket.status)) throw new Error("当前状态不能执行该操作，请刷新后重试。");
       const now = nowIso();
       return {
         ...ticket,
-        status: transition.to,
+        status: transition.to || ticket.status,
         warehouseRemark: note || ticket.warehouseRemark,
         updatedAt: now,
         acceptedAt: action === "accept" ? now : ticket.acceptedAt,

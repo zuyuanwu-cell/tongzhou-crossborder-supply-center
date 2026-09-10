@@ -33,17 +33,34 @@ export function notificationRobotIds(scene = {}, warehouseId = "") {
   return warehouseIds.length ? warehouseIds : unique(scene?.robotIds);
 }
 
-export function afterSalesNotificationLink(linkUrl, requestOrigin = "") {
+export function afterSalesNotificationLink(linkUrl, requestOrigin = "", params = {}) {
   const link = text(linkUrl) || "#after-sales";
-  if (/^https?:\/\//i.test(link)) return link;
   const origin = text(requestOrigin).replace(/\/$/, "");
-  if (!origin) return link;
-  return link.startsWith("#") ? `${origin}/${link}` : `${origin}/${link.replace(/^\//, "")}`;
+  const absolute = /^https?:\/\//i.test(link)
+    ? link
+    : origin
+      ? (link.startsWith("#") ? `${origin}/${link}` : `${origin}/${link.replace(/^\//, "")}`)
+      : link;
+  const queryEntries = Object.entries(params)
+    .map(([key, value]) => [text(key), text(value)])
+    .filter(([key, value]) => key && value);
+  if (!queryEntries.length) return absolute;
+  const hashIndex = absolute.indexOf("#");
+  const base = hashIndex >= 0 ? absolute.slice(0, hashIndex) : absolute;
+  const hash = hashIndex >= 0 ? absolute.slice(hashIndex + 1) : "after-sales";
+  const [route = "after-sales", rawQuery = ""] = hash.split("?", 2);
+  const query = new URLSearchParams(rawQuery);
+  for (const [key, value] of queryEntries) query.set(key, value);
+  return `${base}#${route || "after-sales"}?${query.toString()}`;
 }
 
 export function buildAfterSalesCreatedMarkdown(ticket = {}, options = {}) {
   const reissueQuantity = (ticket.reissueItems || []).reduce((sum, item) => sum + number(item?.quantity), 0);
-  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin);
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "after_sales",
+    view: "warehouse",
+    ticket: ticket.id,
+  });
   return [
     "### 新售后单待处理",
     `> 售后单：**${text(ticket.id) || "-"}**`,
@@ -59,7 +76,11 @@ export function buildAfterSalesCreatedMarkdown(ticket = {}, options = {}) {
 }
 
 export function buildWarehouseTicketCreatedMarkdown(ticket = {}, options = {}) {
-  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin);
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "tickets",
+    view: "warehouse",
+    ticket: ticket.id,
+  });
   return [
     `### ${ticket.priority === "urgent" ? "紧急" : "新"}仓库工单待处理`,
     `> 工单：**${text(ticket.id) || "-"}**`,
@@ -74,7 +95,11 @@ export function buildWarehouseTicketCreatedMarkdown(ticket = {}, options = {}) {
 
 export function buildWarehouseTicketProgressMarkdown(ticket = {}, options = {}) {
   const latest = Array.isArray(ticket.timeline) ? ticket.timeline.at(-1) : null;
-  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin);
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "tickets",
+    view: "mine",
+    ticket: ticket.id,
+  });
   return [
     `### 仓库工单更新：${text(latest?.label || options.statusLabel) || "状态已更新"}`,
     `> 工单：**${text(ticket.id) || "-"}**`,
@@ -89,7 +114,11 @@ export function buildWarehouseTicketProgressMarkdown(ticket = {}, options = {}) 
 
 export function buildAfterSalesProgressMarkdown(ticket = {}, options = {}) {
   const latest = Array.isArray(ticket.timeline) ? ticket.timeline.at(-1) : null;
-  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin);
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "after_sales",
+    view: "mine",
+    ticket: ticket.id,
+  });
   return [
     `### 售后进度更新：${text(latest?.label || options.statusLabel) || "状态已更新"}`,
     `> 售后单：**${text(ticket.id) || "-"}**`,
@@ -97,6 +126,7 @@ export function buildAfterSalesProgressMarkdown(ticket = {}, options = {}) {
     `> 处理仓库：${text(ticket.warehouseName) || "待分配"}`,
     `> 当前状态：${text(options.statusLabel) || text(ticket.status) || "-"}`,
     `> 更新人：${text(latest?.actor) || "系统"}`,
+    ticket.labelUploads?.length ? `> 补发面单：已上传 ${ticket.labelUploads.length} 张` : "",
     text(latest?.note) ? `> 处理说明：${text(latest.note)}` : "",
     text(options.extraText),
     linkUrl ? `[查看售后进度](${linkUrl})` : "",

@@ -401,7 +401,8 @@ const viewHashMap = Object.fromEntries(navItems.map((item) => [item.hash, item.l
 viewHashMap["#orders"] = "经营总览";
 
 function getInitialView() {
-  return viewHashMap[window.location.hash] ?? "经营总览";
+  const routeHash = window.location.hash.split("?", 1)[0];
+  return viewHashMap[routeHash] ?? "经营总览";
 }
 
 function hashForView(view: string) {
@@ -6443,6 +6444,11 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   const [summaryForm, setSummaryForm] = React.useState({ robotIds: [] as string[], extraText: "", linkUrl: "#dashboard", linkText: "查看经营总览" });
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState("");
+  const afterSalesWarehouseRouteCount = Object.values(sceneForm.afterSalesNew?.warehouseRobotIds || {}).reduce((sum, ids) => sum + ids.length, 0);
+  const afterSalesNewHasRecipients = Boolean((sceneForm.afterSalesNew?.robotIds || []).length || afterSalesWarehouseRouteCount);
+  const afterSalesProgressHasRecipients = Boolean((sceneForm.afterSalesProgress?.robotIds || []).length);
+  const collaborationNotificationNeedsEnable = (afterSalesNewHasRecipients && !sceneForm.afterSalesNew?.enabled)
+    || (afterSalesProgressHasRecipients && !sceneForm.afterSalesProgress?.enabled);
 
   function templateRobotIds(currentIds: string[]) {
     return currentIds.length ? currentIds : robots.filter((robot) => robot.enabled).map((robot) => robot.id);
@@ -6657,7 +6663,17 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
     const currentMap = sceneForm.afterSalesNew?.warehouseRobotIds || {};
     updateAfterSalesNewScene({
       warehouseRobotIds: { ...currentMap, [warehouseId]: robotIds },
+      ...(robotIds.length ? { enabled: true } : {}),
     });
+  }
+
+  function enableCollaborationNotifications() {
+    setSceneForm((current) => ({
+      ...current,
+      afterSalesNew: { ...current.afterSalesNew, enabled: afterSalesNewHasRecipients || current.afterSalesNew.enabled },
+      afterSalesProgress: { ...current.afterSalesProgress, enabled: afterSalesProgressHasRecipients || current.afterSalesProgress.enabled },
+    }));
+    setMessage("已启用已配置接收群的仓库协同通知，请点击“保存场景配置”生效。");
   }
 
   return (
@@ -6843,12 +6859,13 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           </div>
           <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes"}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
         </div>
+        {collaborationNotificationNeedsEnable ? <div className="notice warning wecom-scene-warning"><span><strong>仓库协同接收群已经配置，但通知开关仍处于停用状态。</strong>停用时，运营提交、仓库接单、上传面单和工单回复都不会发送企业微信消息。</span><button type="button" className="ghost-button compact-button" onClick={enableCollaborationNotifications}>启用仓库协同通知</button></div> : null}
         <div className="wecom-scene-grid">
           <article className="wecom-scene-card wecom-after-sales-routing">
             <div className="panel-heading">
               <div>
-                <h3>新售后单通知对应仓库</h3>
-                <p>运营提交后，按售后单的处理仓库精确发送到该仓库群；未映射时可使用默认接收群。</p>
+                <h3>新售后单 / 仓库工单通知对应仓库</h3>
+                <p>运营提交后，按处理仓库精确发送到仓库群；消息附带可直接打开对应工单的快捷链接。</p>
               </div>
               <label className="wecom-switch">
                 <input type="checkbox" checked={Boolean(sceneForm.afterSalesNew?.enabled)} onChange={(event) => updateAfterSalesNewScene({ enabled: event.target.checked })} />
@@ -6857,7 +6874,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             </div>
             <div className="wecom-form-grid">
               <label>
-                <span>售后中心链接</span>
+                <span>仓库协同链接</span>
                 <input value={sceneForm.afterSalesNew?.linkUrl || "#after-sales"} onChange={(event) => updateAfterSalesNewScene({ linkUrl: event.target.value })} placeholder="#after-sales" />
               </label>
               <label>
@@ -6885,7 +6902,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
-            ["afterSalesProgress", "售后处理进度更新时", "仓库接单、进入待补发、补发发出或完结后，通知运营群查看进度。"],
+            ["afterSalesProgress", "仓库协同处理进度更新时", "仓库接单、进度变化、上传面单、驳回或回复工单后，立即通知运营群。"],
           ] as Array<[keyof WecomNotificationPayload["scenes"], string, string]>).map(([key, title, description]) => {
             const scene = sceneForm[key] || defaultWecomScene;
             return (
@@ -6909,7 +6926,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                   <textarea value={scene.extraText || ""} onChange={(event) => updateScene(key, { extraText: event.target.value })} placeholder="可选，追加到自动生成的消息后面" />
                 </label>
                 <span className="field-label">推送机器人</span>
-                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds })} />
+                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds, ...(key === "afterSalesProgress" && robotIds.length ? { enabled: true } : {}) })} />
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );

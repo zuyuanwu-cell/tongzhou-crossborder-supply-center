@@ -1695,6 +1695,13 @@ export type AfterSalesAttachment = {
 
 export type WarehouseTicketAttachment = Omit<AfterSalesAttachment, "kind">;
 
+export type NotificationDeliveryOutcome = {
+  status: "sent" | "failed" | "skipped" | string;
+  robotCount: number;
+  failedCount: number;
+  message: string;
+};
+
 export type WarehouseTicket = {
   id: string;
   warehouseId: string;
@@ -1754,6 +1761,15 @@ export type AfterSalesReissueItem = {
   productName: string;
   imageUrl: string;
   quantity: number;
+  unitCostCny: number;
+  costSource: string;
+  costMissing: boolean;
+};
+
+export type AfterSalesProductOption = Omit<AfterSalesReissueItem, "quantity"> & {
+  brand: string;
+  category: string;
+  country: string;
 };
 
 export type AfterSalesTicket = {
@@ -3686,6 +3702,15 @@ export function syncAfterSalesOrder(orderNumber: string) {
   });
 }
 
+export function searchAfterSalesProducts(input: { keyword?: string; country?: string; effectiveDate?: string; limit?: number } = {}) {
+  const params = new URLSearchParams();
+  if (input.keyword) params.set("keyword", input.keyword);
+  if (input.country) params.set("country", input.country);
+  if (input.effectiveDate) params.set("effectiveDate", input.effectiveDate);
+  if (input.limit) params.set("limit", String(input.limit));
+  return requestJson<{ ok: boolean; country: string; products: AfterSalesProductOption[] }>(`/api/after-sales/products?${params.toString()}`);
+}
+
 export function uploadAfterSalesAttachment(input: { fileName: string; dataUrl: string; kind: "evidence" | "label" }) {
   return requestJson<{ ok: boolean; upload: AfterSalesAttachment }>("/api/after-sales/uploads", {
     method: "POST",
@@ -3710,7 +3735,7 @@ export function createAfterSalesTicket(input: {
   warehouseName: string;
   responsibilityOverride?: { party: string; label?: string; reason: string } | null;
 }) {
-  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>("/api/after-sales", {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"]; notification: NotificationDeliveryOutcome }>("/api/after-sales", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -3727,7 +3752,14 @@ export function updateAfterSalesWarehouse(id: string, input: {
   rejectionReason?: string;
   note?: string;
 }) {
-  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>(`/api/after-sales/${encodeURIComponent(id)}/warehouse`, {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"]; notification: NotificationDeliveryOutcome }>(`/api/after-sales/${encodeURIComponent(id)}/warehouse`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function attachAfterSalesLabels(id: string, input: { labelUploadIds: string[]; note?: string }) {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"]; notification: NotificationDeliveryOutcome }>(`/api/after-sales/${encodeURIComponent(id)}/labels`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
@@ -3743,7 +3775,7 @@ export function resubmitAfterSalesTicket(id: string, input: {
   needsReissue?: boolean;
   customer?: AfterSalesCustomer;
 }) {
-  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>(`/api/after-sales/${encodeURIComponent(id)}/operator`, {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"]; notification: NotificationDeliveryOutcome }>(`/api/after-sales/${encodeURIComponent(id)}/operator`, {
     method: "PATCH",
     body: JSON.stringify({ action: "resubmit", ...input }),
   });
@@ -3774,7 +3806,7 @@ export function createWarehouseTicket(input: {
   description: string;
   attachmentIds: string[];
 }) {
-  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"] }>("/api/warehouse-tickets", {
+  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"]; notification: NotificationDeliveryOutcome }>("/api/warehouse-tickets", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -3784,8 +3816,8 @@ export function fetchWarehouseTicket(id: string) {
   return requestJson<{ ok: boolean; ticket: WarehouseTicket }>(`/api/warehouse-tickets/${encodeURIComponent(id)}`);
 }
 
-export function updateWarehouseTicket(id: string, input: { action: "accept" | "resolve" | "cancel" | "reopen"; note?: string; warehouseRemark?: string }) {
-  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"] }>(`/api/warehouse-tickets/${encodeURIComponent(id)}/warehouse`, {
+export function updateWarehouseTicket(id: string, input: { action: "accept" | "reply" | "resolve" | "cancel" | "reopen"; note?: string; warehouseRemark?: string }) {
+  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"]; notification: NotificationDeliveryOutcome }>(`/api/warehouse-tickets/${encodeURIComponent(id)}/warehouse`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });

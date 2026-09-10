@@ -29,6 +29,10 @@ try {
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
   const accepted = service.updateWarehouse(created.ticket.id, { action: "accept", note: "已开始核查" }, warehouse);
   assert.equal(accepted.ticket.status, "processing");
+  const replied = service.updateWarehouse(created.ticket.id, { action: "reply", note: "已定位订单，预计 16:00 前出库" }, warehouse);
+  assert.equal(replied.ticket.status, "processing");
+  assert.equal(replied.ticket.timeline.at(-1).label, "仓库回复工单");
+  assert.match(buildWarehouseTicketProgressMarkdown(replied.ticket, { requestOrigin: "https://gyl.example.com" }), /module=tickets/);
   assert.throws(() => service.updateWarehouse(created.ticket.id, { action: "resolve" }, warehouse), /处理结果/);
   const resolved = service.updateWarehouse(created.ticket.id, { action: "resolve", note: "已安排今日出库" }, warehouse);
   assert.equal(resolved.ticket.status, "resolved");

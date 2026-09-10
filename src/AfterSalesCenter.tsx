@@ -26,15 +26,19 @@ import {
   AfterSalesItem,
   AfterSalesOrderSyncPayload,
   AfterSalesPayload,
+  AfterSalesProductOption,
   AfterSalesReissueItem,
   AfterSalesTicket,
   AuthUser,
+  NotificationDeliveryOutcome,
+  attachAfterSalesLabels,
   createAfterSalesTicket,
   downloadAfterSalesAttachment,
   fetchAfterSales,
   fetchAfterSalesTicket,
   resolveApiUrl,
   resubmitAfterSalesTicket,
+  searchAfterSalesProducts,
   syncAfterSalesOrder,
   updateAfterSalesWarehouse,
   uploadAfterSalesAttachment,
@@ -139,6 +143,12 @@ function dateTime(value?: string) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function notificationMessage(prefix: string, outcome?: NotificationDeliveryOutcome) {
+  if (outcome?.status === "sent") return `${prefix}，企业微信已推送至 ${outcome.robotCount} 个接收群。`;
+  if (outcome?.status === "failed") return `${prefix}，但企业微信推送失败：${outcome.message || "请检查机器人配置"}`;
+  return `${prefix}，但企业微信场景未启用或未配置接收群。`;
 }
 
 function fileSize(value: number) {
@@ -285,7 +295,17 @@ function AttachmentList({ attachments, onDownload, onPreview, onError }: {
   );
 }
 
-export function AfterSalesCenter({ currentUser, embedded = false }: { currentUser: AuthUser; embedded?: boolean }) {
+export function AfterSalesCenter({
+  currentUser,
+  embedded = false,
+  initialTicketId = "",
+  initialView = "",
+}: {
+  currentUser: AuthUser;
+  embedded?: boolean;
+  initialTicketId?: string;
+  initialView?: "mine" | "warehouse" | "";
+}) {
   const canReport = hasPermission(currentUser, "after_sales_report");
   const canWarehouse = hasPermission(currentUser, "after_sales_warehouse");
   const canAdmin = hasPermission(currentUser, "operations");
@@ -325,6 +345,11 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
   const [correctionPrimaryReason, setCorrectionPrimaryReason] = React.useState("");
   const [correctionSecondaryReason, setCorrectionSecondaryReason] = React.useState("");
   const [correctionNote, setCorrectionNote] = React.useState("");
+  const [productPickerOpen, setProductPickerOpen] = React.useState(false);
+  const [productQuery, setProductQuery] = React.useState("");
+  const [productOptions, setProductOptions] = React.useState<AfterSalesProductOption[]>([]);
+  const [productLoading, setProductLoading] = React.useState(false);
+  const openedDeepLinkRef = React.useRef("");
   const payloadRef = React.useRef<AfterSalesPayload | null>(initialCache?.payload || null);
   const activeFiltersRef = React.useRef<AfterSalesListFilters>(initialFilters);
   const activeQueryKeyRef = React.useRef(afterSalesQueryKey(ownerKey, initialFilters));
@@ -460,6 +485,15 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
     };
   }, [previewImage]);
 
+  React.useEffect(() => {
+    const ticketId = initialTicketId.trim();
+    if (!ticketId || openedDeepLinkRef.current === ticketId) return;
+    openedDeepLinkRef.current = ticketId;
+    const targetTab = initialView === "warehouse" && canWarehouse ? "warehouse" : canReport ? "mine" : "warehouse";
+    setTab(targetTab);
+    void openTicket({ id: ticketId });
+  }, [initialTicketId, initialView, canReport, canWarehouse]);
+
   async function handleSyncOrder() {
     const normalized = orderNumber.trim();
     if (!normalized) {
@@ -491,12 +525,61 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
   function toggleReissue(source: AfterSalesItem) {
     setReissueItems((current) => {
       if (current.some((item) => item.sku === source.sku)) return current.filter((item) => item.sku !== source.sku);
-      return [...current, { sku: source.sku, productName: source.productName, imageUrl: source.imageUrl, quantity: Math.max(1, source.affectedQty || 1) }];
+      return [...current, {
+        sku: source.sku,
+        productName: source.productName,
+        imageUrl: source.imageUrl,
+        quantity: Math.max(1, source.affectedQty || 1),
+        unitCostCny: source.unitCostCny,
+        costSource: source.costSource,
+        costMissing: source.costMissing,
+      }];
     });
   }
 
   function addManualReissueItem() {
-    setReissueItems((current) => [...current, { sku: `待填写-${Date.now()}`, productName: "", imageUrl: "", quantity: 1 }]);
+    setReissueItems((current) => [...current, {
+      sku: `待填写-${Date.now()}`,
+      productName: "",
+      imageUrl: "",
+      quantity: 1,
+      unitCostCny: 0,
+      costSource: "运营人工维护",
+      costMissing: true,
+    }]);
+  }
+
+  async function loadProductOptions(keyword = productQuery) {
+    setProductLoading(true);
+    setError("");
+    try {
+      const result = await searchAfterSalesProducts({
+        keyword: keyword.trim(),
+        country: syncedOrder?.site || customer.country,
+        effectiveDate: syncedOrder?.orderStartedAt?.slice(0, 10),
+        limit: 40,
+      });
+      setProductOptions(result.products);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "读取产品库失败。");
+    } finally {
+      setProductLoading(false);
+    }
+  }
+
+  function openProductPicker() {
+    setProductPickerOpen(true);
+    setProductQuery("");
+    void loadProductOptions("");
+  }
+
+  function chooseReissueProduct(product: AfterSalesProductOption) {
+    setReissueItems((current) => {
+      const existingIndex = current.findIndex((item) => item.sku === product.sku);
+      if (existingIndex < 0) return [...current, { ...product, quantity: 1 }];
+      return current.map((item, index) => index === existingIndex ? { ...item, ...product, quantity: item.quantity + 1 } : item);
+    });
+    setMessage(`${product.sku} ${product.productName} 已加入补发清单。`);
   }
 
   async function handleEvidenceUpload(files: FileList | null) {
@@ -564,7 +647,7 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
         customerRecoveryCny: customerRecovery,
         adjustmentReason,
       });
-      setMessage(`售后单 ${result.ticket.id} 已提交，等待仓库接单。`);
+      setMessage(notificationMessage(`售后单 ${result.ticket.id} 已提交，等待仓库接单`, result.notification));
       resetReport();
       clearAfterSalesCache(ownerKey);
       setTab("mine");
@@ -576,7 +659,7 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
     }
   }
 
-  async function openTicket(ticket: AfterSalesTicket) {
+  async function openTicket(ticket: Pick<AfterSalesTicket, "id">) {
     setBusy(`detail:${ticket.id}`);
     setError("");
     try {
@@ -612,7 +695,15 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
         uploads.push((await uploadAfterSalesAttachment({ fileName: file.name, dataUrl, kind: "label" })).upload);
       }
       setLabelUploads((current) => [...current, ...uploads]);
-      setMessage(`已上传 ${uploads.length} 张补发面单，提交状态后归档。`);
+      if (!selectedTicket) throw new Error("请先打开需要上传面单的售后单。");
+      const result = await attachAfterSalesLabels(selectedTicket.id, {
+        labelUploadIds: uploads.map((upload) => upload.id),
+        note: warehouseRemark,
+      });
+      setSelectedTicket(result.ticket);
+      setLabelUploads([]);
+      setMessage(notificationMessage(`已上传并归档 ${uploads.length} 张补发面单`, result.notification));
+      clearAfterSalesCache(ownerKey);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "上传面单失败。");
     } finally {
@@ -634,7 +725,7 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
       });
       setSelectedTicket(result.ticket);
       setLabelUploads([]);
-      setMessage(`${result.ticket.id} 已更新为“${statusMeta[result.ticket.status]?.label || result.ticket.status}”。`);
+      setMessage(notificationMessage(`${result.ticket.id} 已更新为“${statusMeta[result.ticket.status]?.label || result.ticket.status}”`, result.notification));
       clearAfterSalesCache(ownerKey);
       await refresh({ status, keyword, mine: tab === "mine" });
     } catch (actionError) {
@@ -662,7 +753,7 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
       });
       setSelectedTicket(result.ticket);
       setCorrectionNote("");
-      setMessage(`${result.ticket.id} 已修改并重新提交仓库。`);
+      setMessage(notificationMessage(`${result.ticket.id} 已修改并重新提交仓库`, result.notification));
       clearAfterSalesCache(ownerKey);
       await refresh({ status, keyword, mine: true });
     } catch (resubmitError) {
@@ -807,15 +898,22 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
               <label className="as-switch-row"><input type="checkbox" checked={effectiveNeedsReissue} disabled={secondaryReason === "补发且留错品"} onChange={(event) => setNeedsReissue(event.target.checked)} /><span><strong>需要仓库补发</strong><small>开启后必须维护补发商品与数量，并由仓库上传面单。</small></span></label>
               {effectiveNeedsReissue ? (
                 <div className="as-reissue-editor">
-                  <header><strong>补发商品清单</strong><button type="button" onClick={addManualReissueItem}><Plus size={15} />添加其他商品</button></header>
+                  <header>
+                    <div><strong>补发商品清单</strong><small>优先从产品库选择，自动带入产品名称、图片与直营成本。</small></div>
+                    <span><button type="button" className="primary" onClick={openProductPicker}><Search size={15} />从产品库选择</button><button type="button" onClick={addManualReissueItem}><Plus size={15} />手工补录</button></span>
+                  </header>
                   {reissueItems.length ? reissueItems.map((item, index) => (
                     <div className="as-reissue-row" key={`${item.sku}-${index}`}>
-                      <input value={item.sku.replace(/^待填写-\d+$/, "")} placeholder="SKU" onChange={(event) => setReissueItems((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, sku: event.target.value } : row))} />
-                      <input value={item.productName} placeholder="产品名称" onChange={(event) => setReissueItems((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, productName: event.target.value } : row))} />
+                      {item.imageUrl ? <img src={resolveApiUrl(item.imageUrl)} alt="" /> : <span className="as-reissue-image-empty"><ImageOff size={18} /></span>}
+                      <label><span>SKU</span><input value={item.sku.replace(/^待填写-\d+$/, "")} placeholder="SKU" onChange={(event) => setReissueItems((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, sku: event.target.value } : row))} /></label>
+                      <label><span>产品名称</span><input value={item.productName} placeholder="产品名称" onChange={(event) => setReissueItems((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, productName: event.target.value } : row))} /></label>
+                      <label><span>直营成本 / 件</span><input type="number" min="0" step="0.01" value={item.unitCostCny || ""} placeholder="待维护" onChange={(event) => setReissueItems((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, unitCostCny: Math.max(0, Number(event.target.value)), costMissing: Number(event.target.value) <= 0, costSource: "运营人工维护" } : row))} /><small>{item.costSource}</small></label>
+                      <label><span>补发数量</span>
                       <input type="number" min="1" value={item.quantity} onChange={(event) => setReissueItems((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: Math.max(1, Number(event.target.value)) } : row))} />
+                      </label>
                       <button type="button" onClick={() => setReissueItems((current) => current.filter((_, rowIndex) => rowIndex !== index))}><X size={16} /></button>
                     </div>
-                  )) : <div className="as-empty-inline">请在原单商品右侧点击“+”选择补发商品。</div>}
+                  )) : <div className="as-empty-inline">可在原单商品右侧点击“+”，或从产品库搜索选择补发商品。</div>}
                 </div>
               ) : null}
               <div className="as-adjustment-grid">
@@ -841,6 +939,28 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
       {tab === "mine" && canReport ? renderTicketList(true) : null}
       {tab === "warehouse" && canWarehouse ? renderTicketList(false) : null}
 
+      {productPickerOpen ? (
+        <div className="as-product-picker-backdrop" onMouseDown={(event) => event.currentTarget === event.target && setProductPickerOpen(false)}>
+          <section className="as-product-picker" role="dialog" aria-modal="true" aria-label="从产品库选择补发商品">
+            <header><div><p className="eyebrow">PRODUCT PICKER</p><h2>从产品库选择补发商品</h2><span>已按原订单国家优先匹配直营成本；产品库无成本时仍可回到清单手工维护。</span></div><button type="button" onClick={() => setProductPickerOpen(false)} aria-label="关闭产品选择"><X size={19} /></button></header>
+            <form className="as-product-picker-search" onSubmit={(event) => { event.preventDefault(); void loadProductOptions(); }}><Search size={18} /><input autoFocus value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="搜索 SKU、产品名称、品牌或分类" /><button type="submit" disabled={productLoading}>{productLoading ? <LoaderCircle className="spinning" size={17} /> : null}搜索</button></form>
+            <div className="as-product-picker-results">
+              {productLoading ? <div className="as-empty-inline"><LoaderCircle className="spinning" size={18} />正在读取产品库…</div> : null}
+              {!productLoading && !productOptions.length ? <div className="as-empty-inline">没有匹配的产品，请更换关键词或使用手工补录。</div> : null}
+              {!productLoading ? productOptions.map((product) => {
+                const selected = reissueItems.find((item) => item.sku === product.sku);
+                return <article key={product.sku}>
+                  {product.imageUrl ? <img src={resolveApiUrl(product.imageUrl)} alt="" /> : <span className="as-reissue-image-empty"><ImageOff size={22} /></span>}
+                  <div><strong>{product.productName || product.sku}</strong><span>{product.sku}{product.brand ? ` · ${product.brand}` : ""}</span><small className={product.costMissing ? "missing" : ""}>{product.costMissing ? "直营成本待维护" : `直营成本 ¥${product.unitCostCny.toFixed(2)} / 件`} · {product.costSource}</small></div>
+                  <button type="button" onClick={() => chooseReissueProduct(product)}>{selected ? `已选 ${selected.quantity} 件，继续添加` : "加入补发清单"}</button>
+                </article>;
+              }) : null}
+            </div>
+            <footer><span>已选择 {reissueItems.length} 个 SKU</span><button type="button" className="primary" onClick={() => setProductPickerOpen(false)}>完成选择</button></footer>
+          </section>
+        </div>
+      ) : null}
+
       {selectedTicket ? (
         <div className="as-drawer-backdrop" onMouseDown={(event) => event.currentTarget === event.target && closeTicket()}>
           <aside className="as-ticket-drawer" aria-label={`售后单 ${selectedTicket.id} 详情`}>
@@ -853,7 +973,7 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
               <section className="as-drawer-section"><header><div><small>问题说明</small><strong>{selectedTicket.primaryReason} / {selectedTicket.secondaryReason}</strong></div></header><p>{selectedTicket.operatorRemark || "运营未填写补充备注。"}</p><AttachmentList attachments={selectedTicket.evidence || []} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section>
               {selectedTicket.status === "rejected" ? <section className="as-drawer-section as-rejection-card"><header><div><small>仓库驳回原因</small><strong>请运营核实并修正后重新提交</strong></div></header><p>{selectedTicket.rejectionReason || selectedTicket.warehouseRemark || "仓库未填写驳回原因。"}</p></section> : null}
               {selectedTicket.status === "rejected" && canReport && (canAdmin || selectedTicket.createdById === currentUser.id) ? <section className="as-drawer-section as-correction-form"><header><div><small>运营修改</small><strong>修正分类并重新提交</strong></div></header><div className="as-reason-grid"><label><span>售后一级分类</span><select value={correctionPrimaryReason} onChange={(event) => setCorrectionPrimaryReason(event.target.value)}>{primaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label><label><span>售后二级分类</span><select value={correctionSecondaryReason} onChange={(event) => setCorrectionSecondaryReason(event.target.value)}>{secondaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label></div><label className="as-textarea"><span>修改说明 *</span><textarea value={correctionNote} onChange={(event) => setCorrectionNote(event.target.value)} placeholder="说明已核实的事实和本次修改内容，仓库会重新收到通知。" /></label><button className="as-resubmit-button" type="button" disabled={Boolean(busy)} onClick={() => void handleResubmit()}>{busy === "resubmit" ? <LoaderCircle className="spinning" size={17} /> : <Send size={17} />}修改后重新提交</button></section> : null}
-              {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后随状态动作归档" : "仓库上传后可在此查看"}</strong></div><span className="as-preview-hint"><ZoomIn size={13} />图片可放大</span></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section> : null}
+              {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后立即归档并通知运营" : "仓库上传后可在此查看"}</strong></div><span className="as-preview-hint"><ZoomIn size={13} />图片可放大</span></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传并通知…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section> : null}
               {canWarehouse ? <section className="as-drawer-section"><label className="as-textarea"><span>仓库处理备注</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查结果、补发物流单号或完结说明。" /></label></section> : selectedTicket.warehouseRemark ? <section className="as-drawer-section"><header><div><small>仓库处理说明</small><strong>最近更新</strong></div></header><p>{selectedTicket.warehouseRemark}</p></section> : null}
               {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
               <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>共 {selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
@@ -862,7 +982,7 @@ export function AfterSalesCenter({ currentUser, embedded = false }: { currentUse
               {selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void warehouseAction("accept")} disabled={Boolean(busy)}>确认接单</button> : null}
               {["pending_warehouse", "processing", "awaiting_reshipment"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void warehouseAction("reject")} disabled={Boolean(busy) || !warehouseRemark.trim()} title={!warehouseRemark.trim() ? "请先填写驳回原因" : "退回运营修改"}>驳回给运营</button> : null}
               {["pending_warehouse", "processing"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("await_reshipment")} disabled={Boolean(busy)}>进入待补发</button> : null}
-              {["processing", "awaiting_reshipment"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("shipped")} disabled={Boolean(busy)}>上传面单并标记发出</button> : null}
+              {["processing", "awaiting_reshipment"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("shipped")} disabled={Boolean(busy)}>标记补发已发出</button> : null}
               {selectedTicket.status === "processing" && !selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("complete")} disabled={Boolean(busy)}>确认完结</button> : null}
               {selectedTicket.status === "shipped" ? <button className="primary" onClick={() => void warehouseAction("complete")} disabled={Boolean(busy)}>确认售后完结</button> : null}
               {canAdmin && !["completed", "cancelled"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void warehouseAction("cancel")} disabled={Boolean(busy)}>作废</button> : null}

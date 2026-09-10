@@ -975,18 +975,17 @@ async function sendWecomRobot(robot, content) {
 async function sendWecomNotification(robotIds, content) {
   const ids = new Set((robotIds || []).map(String).filter(Boolean));
   const robots = (cachedWecomNotifications.robots || []).filter((robot) => ids.has(robot.id) && robot.enabled);
-  const results = [];
-  for (const robot of robots) {
+  const results = await Promise.all(robots.map(async (robot) => {
     try {
       const result = await sendWecomRobot(robot, content);
       robot.lastSentAt = new Date().toISOString();
       robot.lastError = "";
-      results.push(result);
+      return result;
     } catch (error) {
       robot.lastError = error.message || "推送失败";
-      results.push({ robotId: robot.id, ok: false, message: robot.lastError });
+      return { robotId: robot.id, ok: false, message: robot.lastError };
     }
-  }
+  }));
   cachedWecomNotifications.updatedAt = new Date().toISOString();
   saveWecomNotificationCache();
   return results;
@@ -1050,21 +1049,31 @@ async function notifyAfterSalesProgress(ticket, requestOrigin) {
   return notificationOutcome(results, configured);
 }
 
-function dispatchAfterSalesNotification(ticket, eventType, requestOrigin) {
+async function deliverAfterSalesNotification(ticket, eventType, requestOrigin) {
   const warehouseTarget = ["created", "resubmit"].includes(eventType);
   const send = warehouseTarget ? notifyAfterSalesCreated : notifyAfterSalesProgress;
-  void send(ticket, requestOrigin)
-    .then((outcome) => afterSalesService.recordNotification(ticket.id, {
+  try {
+    const outcome = await send(ticket, requestOrigin);
+    afterSalesService.recordNotification(ticket.id, {
       eventType,
       target: warehouseTarget ? "warehouse" : "operations",
       ...outcome,
-    }))
-    .catch((error) => afterSalesService.recordNotification(ticket.id, {
+    });
+    return outcome;
+  } catch (error) {
+    const outcome = {
+      status: "failed",
+      robotCount: 0,
+      failedCount: 1,
+      message: error?.message || "企业微信通知发送失败",
+    };
+    afterSalesService.recordNotification(ticket.id, {
       eventType,
       target: warehouseTarget ? "warehouse" : "operations",
-      status: "failed",
-      message: error?.message || "企业微信通知发送失败",
-    }));
+      ...outcome,
+    });
+    return outcome;
+  }
 }
 
 const warehouseTicketStatusLabels = Object.freeze({
@@ -1085,14 +1094,24 @@ async function notifyWarehouseTicket(ticket, eventType, origin) {
     ? buildWarehouseTicketCreatedMarkdown(ticket, { linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin })
     : buildWarehouseTicketProgressMarkdown(ticket, { statusLabel: warehouseTicketStatusLabels[ticket.status] || ticket.status, linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin });
   const results = configured ? await sendWecomNotification(robotIds, markdown) : [];
+  if (results.some((result) => result.ok)) {
+    scene.lastSentAt = new Date().toISOString();
+    saveWecomNotificationCache();
+  }
   return notificationOutcome(results, configured);
 }
 
-function dispatchWarehouseTicketNotification(ticket, eventType, origin) {
+async function deliverWarehouseTicketNotification(ticket, eventType, origin) {
   const target = eventType === "created" ? "warehouse" : "operations";
-  void notifyWarehouseTicket(ticket, eventType, origin)
-    .then((outcome) => warehouseTicketService.recordNotification(ticket.id, { eventType, target, ...outcome }))
-    .catch((error) => warehouseTicketService.recordNotification(ticket.id, { eventType, target, status: "failed", message: error?.message || "企业微信通知发送失败" }));
+  try {
+    const outcome = await notifyWarehouseTicket(ticket, eventType, origin);
+    warehouseTicketService.recordNotification(ticket.id, { eventType, target, ...outcome });
+    return outcome;
+  } catch (error) {
+    const outcome = { status: "failed", robotCount: 0, failedCount: 1, message: error?.message || "企业微信通知发送失败" };
+    warehouseTicketService.recordNotification(ticket.id, { eventType, target, ...outcome });
+    return outcome;
+  }
 }
 
 function stockupSignature(payload) {
@@ -6523,8 +6542,8 @@ const server = http.createServer(async (req, res) => {
         if (!warehouse) throw new Error(warehouses.length ? "请选择可用的处理仓库。" : "当前账号没有可用仓库，请先配置仓库授权。");
         const result = warehouseTicketService.create({ ...payload, warehouseId: warehouse.id, warehouseName: warehouse.name, country: warehouse.country }, auth.user);
         appendActionLog(auth, "提交仓库工单", "warehouse_ticket", result.ticket.id, { category: result.ticket.category, priority: result.ticket.priority });
-        sendJson(res, 201, result);
-        dispatchWarehouseTicketNotification(result.ticket, "created", requestOrigin(req));
+        const notification = await deliverWarehouseTicketNotification(result.ticket, "created", requestOrigin(req));
+        sendJson(res, 201, { ...result, ticket: warehouseTicketService.get(result.ticket.id), notification });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "创建仓库工单失败。" });
       }
@@ -6564,8 +6583,8 @@ const server = http.createServer(async (req, res) => {
         }
         const result = warehouseTicketService.updateWarehouse(ticketId, payload, auth.user);
         appendActionLog(auth, "更新仓库工单", "warehouse_ticket", result.ticket.id, { action: payload.action, status: result.ticket.status });
-        sendJson(res, 200, result);
-        dispatchWarehouseTicketNotification(result.ticket, payload.action, requestOrigin(req));
+        const notification = await deliverWarehouseTicketNotification(result.ticket, payload.action, requestOrigin(req));
+        sendJson(res, 200, { ...result, ticket: warehouseTicketService.get(result.ticket.id), notification });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "更新仓库工单失败。" });
       }
@@ -6583,6 +6602,22 @@ const server = http.createServer(async (req, res) => {
         keyword: url.searchParams.get("keyword"),
         dataScopes: normalizeDataScopes(auth.user?.dataScopes),
         createdById: afterSalesCreatedByFilter(auth, url.searchParams.get("mine") === "1"),
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/after-sales/products" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有选择售后补发商品的权限。" });
+        return;
+      }
+      sendJson(res, 200, afterSalesService.searchProducts({
+        keyword: url.searchParams.get("keyword"),
+        country: url.searchParams.get("country"),
+        effectiveDate: url.searchParams.get("effectiveDate"),
+        limit: url.searchParams.get("limit"),
+        dataScopes: normalizeDataScopes(auth.user?.dataScopes),
       }));
       return;
     }
@@ -6712,10 +6747,36 @@ const server = http.createServer(async (req, res) => {
           responsibility: result.ticket.responsibility?.party,
           warehouseLiabilityCny: result.ticket.money?.totalWarehouseLiabilityCny,
         });
-        sendJson(res, 201, result);
-        dispatchAfterSalesNotification(result.ticket, "created", requestOrigin(req));
+        const notification = await deliverAfterSalesNotification(result.ticket, "created", requestOrigin(req));
+        sendJson(res, 201, { ...result, ticket: afterSalesService.get(result.ticket.id), notification });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "创建售后单失败。" });
+      }
+      return;
+    }
+
+    const afterSalesLabelsMatch = url.pathname.match(/^\/api\/after-sales\/([^/]+)\/labels$/);
+    if (afterSalesLabelsMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_warehouse")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有上传并归档补发面单的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const ticketId = decodeURIComponent(afterSalesLabelsMatch[1]);
+        if (!afterSalesService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes))) {
+          sendJson(res, 404, { ok: false, message: "售后单不存在或不在当前账号的数据范围内。" });
+          return;
+        }
+        const result = afterSalesService.attachLabels(ticketId, payload.labelUploadIds, auth.user, payload.note);
+        appendActionLog(auth, "上传并归档售后补发面单", "after_sales_ticket", result.ticket.id, {
+          labelCount: result.ticket.labelUploads?.length || 0,
+        });
+        const notification = await deliverAfterSalesNotification(result.ticket, "label_uploaded", requestOrigin(req));
+        sendJson(res, 200, { ...result, ticket: afterSalesService.get(result.ticket.id), notification });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "归档补发面单失败。" });
       }
       return;
     }
@@ -6761,8 +6822,8 @@ const server = http.createServer(async (req, res) => {
           status: result.ticket.status,
           labelCount: result.ticket.labelUploads?.length || 0,
         });
-        sendJson(res, 200, result);
-        dispatchAfterSalesNotification(result.ticket, payload.action, requestOrigin(req));
+        const notification = await deliverAfterSalesNotification(result.ticket, payload.action, requestOrigin(req));
+        sendJson(res, 200, { ...result, ticket: afterSalesService.get(result.ticket.id), notification });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "更新售后单失败。" });
       }
@@ -6787,8 +6848,8 @@ const server = http.createServer(async (req, res) => {
         }
         const result = afterSalesService.resubmit(ticketId, payload, auth.user);
         appendActionLog(auth, "修改并重新提交售后单", "after_sales_ticket", result.ticket.id, { primaryReason: result.ticket.primaryReason, secondaryReason: result.ticket.secondaryReason });
-        sendJson(res, 200, result);
-        dispatchAfterSalesNotification(result.ticket, "resubmit", requestOrigin(req));
+        const notification = await deliverAfterSalesNotification(result.ticket, "resubmit", requestOrigin(req));
+        sendJson(res, 200, { ...result, ticket: afterSalesService.get(result.ticket.id), notification });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "重新提交售后单失败。" });
       }

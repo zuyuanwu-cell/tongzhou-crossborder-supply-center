@@ -282,7 +282,11 @@ function supplementalCostFor(rows, sku, countryKey, date) {
 function resolveItemProduct(sku, country, products, rates, supplementalCosts, orderDate) {
   const countryKey = normalizedCountryKey(country);
   const candidates = productLookup(products).get(normalizedSku(sku)) || [];
-  const exact = candidates.filter((item) => normalizedCountryKey(item.country) === countryKey);
+  // 未同步原订单时 country 为空，不能把“无国家”的产品主档误当作国家精确匹配，
+  // 否则会遮住产品目录中已经维护好的直营成本。
+  const exact = countryKey
+    ? candidates.filter((item) => normalizedCountryKey(item.country) === countryKey)
+    : [];
   const product = exact.find((item) => number(item.directCostPrice) > 0)
     || exact[0]
     || candidates.find((item) => number(item.directCostPrice) > 0)
@@ -301,6 +305,17 @@ function resolveItemProduct(sku, country, products, rates, supplementalCosts, or
         costMissing: false,
       };
     }
+  }
+  const landedProduct = candidates.find((item) => number(item?.latestLandedUnitCostCny) > 0) || product;
+  const landedCost = number(landedProduct?.latestLandedUnitCostCny);
+  if (landedCost > 0) {
+    return {
+      productName: text(product?.name || product?.nameEn || landedProduct?.name || landedProduct?.nameEn || sku),
+      imageUrl: text(product?.imageUrl || landedProduct?.imageUrl),
+      unitCostCny: money(landedCost),
+      costSource: "产品库最新到仓成本",
+      costMissing: false,
+    };
   }
   const supplemental = supplementalCostFor(supplementalCosts, sku, countryKey, orderDate);
   if (supplemental) {
@@ -406,6 +421,57 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
         .some((value) => text(value).toLowerCase().includes(keyword));
     });
     return { ok: true, updatedAt: nowIso(), summary: summaryFor(visibleTickets), tickets: tickets.map(publicListTicket) };
+  }
+
+  function searchProducts(input = {}) {
+    const products = getProducts?.() || {};
+    const country = text(input.country);
+    const countryKey = normalizedCountryKey(country);
+    const keyword = text(input.keyword).toLowerCase();
+    const limit = Math.max(1, Math.min(100, Math.floor(number(input.limit) || 30)));
+    const scopedCountries = new Set((Array.isArray(input.dataScopes?.countries) ? input.dataScopes.countries : []).map(normalizedCountryKey).filter(Boolean));
+    const scopedSkus = new Set((Array.isArray(input.dataScopes?.skus) ? input.dataScopes.skus : []).map(normalizedSku).filter(Boolean));
+    if (countryKey && scopedCountries.size && !scopedCountries.has(countryKey)) {
+      return { ok: true, country, products: [] };
+    }
+    const candidates = [...(products.catalog || []), ...(products.productBase || [])]
+      .filter((product) => {
+        const sku = normalizedSku(product?.sku || product?.skuNo || product?.countrySku);
+        if (!sku || (scopedSkus.size && !scopedSkus.has(sku))) return false;
+        const productCountry = normalizedCountryKey(product?.country);
+        if (scopedCountries.size && productCountry && !scopedCountries.has(productCountry)) return false;
+        return !keyword || [sku, product?.name, product?.nameEn, product?.brand, product?.category]
+          .some((value) => text(value).toLowerCase().includes(keyword));
+      })
+      .sort((left, right) => {
+        const leftExact = countryKey && normalizedCountryKey(left?.country) === countryKey ? 1 : 0;
+        const rightExact = countryKey && normalizedCountryKey(right?.country) === countryKey ? 1 : 0;
+        return rightExact - leftExact || normalizedSku(left?.sku || left?.skuNo).localeCompare(normalizedSku(right?.sku || right?.skuNo));
+      });
+    const uniqueProducts = [];
+    const seen = new Set();
+    const rates = performanceStore?.listExchangeRates?.() || [];
+    const supplementalCosts = performanceStore?.listSupplementalProductCosts?.() || [];
+    const effectiveDate = text(input.effectiveDate).slice(0, 10) || nowIso().slice(0, 10);
+    for (const product of candidates) {
+      const sku = normalizedSku(product?.sku || product?.skuNo || product?.countrySku);
+      if (!sku || seen.has(sku)) continue;
+      seen.add(sku);
+      const resolved = resolveItemProduct(sku, country, products, rates, supplementalCosts, effectiveDate);
+      uniqueProducts.push({
+        sku,
+        productName: resolved.productName,
+        imageUrl: resolved.imageUrl,
+        unitCostCny: resolved.unitCostCny,
+        costSource: resolved.costSource,
+        costMissing: resolved.costMissing,
+        brand: text(product?.brand),
+        category: text(product?.category),
+        country: text(product?.country),
+      });
+      if (uniqueProducts.length >= limit) break;
+    }
+    return { ok: true, country, products: uniqueProducts };
   }
 
   async function syncOrder(orderNumberInput) {
@@ -560,6 +626,9 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       productName: text(item.productName || item.sku),
       imageUrl: text(item.imageUrl),
       quantity: quantity(item.quantity),
+      unitCostCny: money(item.unitCostCny),
+      costSource: text(item.costSource || (number(item.unitCostCny) > 0 ? "人工成本" : "待人工维护")),
+      costMissing: number(item.unitCostCny) <= 0,
     })).filter((item) => item.sku && item.quantity > 0);
     if (needsReissue && !reissueItems.length) throw new Error("该处理方式需要补发，请选择补发商品和数量。");
     const packagingFeeCny = money(order.packagingFeeCny ?? input.packagingFeeCny);
@@ -673,6 +742,27 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
   }
 
+  function attachLabels(id, labelUploadIds, actor, note = "") {
+    const newLabels = attachments(labelUploadIds, "label");
+    if (!newLabels.length) throw new Error("请选择需要归档的补发面单。");
+    const updated = store.update(id, (ticket) => {
+      if (["completed", "cancelled", "rejected"].includes(ticket.status)) throw new Error("当前状态不能上传补发面单，请刷新后重试。");
+      const labelIds = new Set();
+      const labelUploads = [...(ticket.labelUploads || []), ...newLabels]
+        .filter((upload) => !labelIds.has(upload.id) && labelIds.add(upload.id));
+      const addedCount = Math.max(0, labelUploads.length - (ticket.labelUploads || []).length);
+      if (!addedCount) return ticket;
+      return {
+        ...ticket,
+        labelUploads,
+        updatedAt: nowIso(),
+        timeline: [...(ticket.timeline || []), event("label_uploaded", `仓库上传 ${addedCount} 张补发面单`, actor, note)],
+      };
+    });
+    if (!updated) throw new Error("售后单不存在。");
+    return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
+  }
+
   function resubmit(id, input, actor) {
     const updated = store.update(id, (ticket) => {
       if (ticket.status !== "rejected") throw new Error("只有仓库已驳回的售后单可以修改后重新提交。");
@@ -696,6 +786,9 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
         ...item,
         sku: normalizedSku(item.sku),
         quantity: quantity(item.quantity),
+        unitCostCny: money(item.unitCostCny),
+        costSource: text(item.costSource || (number(item.unitCostCny) > 0 ? "人工成本" : "待人工维护")),
+        costMissing: number(item.unitCostCny) <= 0,
       })).filter((item) => item.sku && item.quantity > 0);
       if (needsReissue && !reissueItems.length) throw new Error("该处理方式需要补发，请选择补发商品和数量。");
       const responsibility = resolveAfterSalesResponsibility(primaryReason, secondaryReason, input.responsibilityOverride);
@@ -760,6 +853,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
 
   return {
     list,
+    searchProducts,
     get(id, dataScopes = {}, createdById = "") {
       const ticket = store.get(id);
       return ticket
@@ -787,6 +881,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     uploadPath,
     create,
     updateWarehouse,
+    attachLabels,
     resubmit,
     recordNotification,
     assignWarehouse,

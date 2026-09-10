@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distIndexPath = resolve(repoRoot, "dist", "index.html");
@@ -12,6 +13,18 @@ const accessCode = "smoke-internal-code";
 const timeoutMs = 30000;
 const smokeCacheDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-"));
 const movementHistoryDbPath = resolve(smokeCacheDir, "movement-history.sqlite");
+const webhookPayloads = [];
+const webhookServer = createServer((req, res) => {
+  let body = "";
+  req.on("data", (chunk) => { body += chunk.toString(); });
+  req.on("end", () => {
+    try { webhookPayloads.push(JSON.parse(body || "{}")); } catch { webhookPayloads.push({ raw: body }); }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ errcode: 0, errmsg: "ok" }));
+  });
+});
+await new Promise((resolveListen) => webhookServer.listen(0, "127.0.0.1", resolveListen));
+const webhookPort = webhookServer.address().port;
 
 writeFileSync(resolve(smokeCacheDir, "orders-sync.json"), JSON.stringify({
   syncedAt: "2026-08-28T00:00:00.000Z",
@@ -164,6 +177,84 @@ async function main() {
     throw new Error(`/api/me did not preserve admin role: ${JSON.stringify(me).slice(0, 500)}`);
   }
   console.log("[ok] /api/me admin session");
+
+  const productOptions = await expectJson("/api/after-sales/products?country=ID&limit=5", { headers: authHeaders });
+  if (!Array.isArray(productOptions.products) || !productOptions.products.length || !productOptions.products[0]?.sku || !("unitCostCny" in productOptions.products[0])) {
+    throw new Error(`/api/after-sales/products did not return selectable products with cost fields: ${JSON.stringify(productOptions).slice(0, 600)}`);
+  }
+  console.log("[ok] after-sales product picker API");
+
+  const robots = await expectJson("/api/wecom-notifications/robots", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Smoke collaboration robot", webhookUrl: `http://127.0.0.1:${webhookPort}/robot`, enabled: true }),
+  });
+  const collaborationRobot = robots.robots?.find((robot) => robot.name === "Smoke collaboration robot");
+  if (!collaborationRobot?.id) throw new Error("Smoke collaboration robot was not created.");
+  await expectJson("/api/wecom-notifications/scenes", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ scenes: {
+      afterSalesNew: { enabled: true, robotIds: [collaborationRobot.id], warehouseRobotIds: { "id-shenniu-jakarta": [collaborationRobot.id] }, linkUrl: "#after-sales" },
+      afterSalesProgress: { enabled: true, robotIds: [collaborationRobot.id], linkUrl: "#after-sales" },
+    } }),
+  });
+  const warehouseTicket = await expectJson("/api/warehouse-tickets", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ warehouseId: "id-shenniu-jakarta", category: "订单催促", priority: "urgent", relatedOrderNumber: "SMOKE-ORDER-1", title: "请核查订单", description: "请反馈预计出库时间", attachmentIds: [] }),
+  });
+  if (warehouseTicket.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${warehouseTicket.ticket.id}`)) {
+    throw new Error(`Warehouse ticket creation did not synchronously deliver a deep-link webhook: ${JSON.stringify(warehouseTicket).slice(0, 600)}`);
+  }
+  await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "accept", note: "开始核查" }),
+  });
+  const warehouseReply = await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "reply", note: "预计 16:00 前出库" }),
+  });
+  if (warehouseReply.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("仓库回复工单")) {
+    throw new Error("Warehouse ticket reply did not notify operations immediately.");
+  }
+  const afterSales = await expectJson("/api/after-sales", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      order: { orderNumber: "SMOKE-AS-ORDER-1", orderIdentity: "SMOKE-AS-1", platform: "tiktok", site: "ID", shopId: "SHOP-1", shopAlias: "测试店", orderStartedAt: "2026-09-01T10:00:00.000Z", packagingFeeCny: 1.9 },
+      customer: { recipientInfo: "收件人：测试用户\n电话：081234\n地址：Jakarta" },
+      warehouseId: "id-shenniu-jakarta",
+      originalItems: [{ sku: "TZKJ-SJJ001", productName: "测试产品", imageUrl: "", orderedQty: 1, affectedQty: 1, unitCostCny: 10, costSource: "smoke" }],
+      reissueItems: [{ sku: "TZKJ-SJJ001", productName: "测试产品", imageUrl: "", quantity: 1, unitCostCny: 10, costSource: "smoke" }],
+      primaryReason: "仓库错发",
+      secondaryReason: "补发且留错品",
+      needsReissue: true,
+      evidenceIds: [],
+      operatorRemark: "smoke",
+      additionalLiabilityCny: 0,
+      customerRecoveryCny: 0,
+    }),
+  });
+  if (afterSales.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${afterSales.ticket.id}`)) {
+    throw new Error("After-sales creation did not synchronously deliver a warehouse webhook.");
+  }
+  const labelUpload = await expectJson("/api/after-sales/uploads", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ fileName: "label.pdf", kind: "label", dataUrl: "data:application/pdf;base64,JVBERi0xLjQ=" }),
+  });
+  const attachedLabel = await expectJson(`/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/labels`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ labelUploadIds: [labelUpload.upload.id], note: "补发面单" }),
+  });
+  if (attachedLabel.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("补发面单：已上传 1 张")) {
+    throw new Error("After-sales label upload did not notify operations immediately.");
+  }
+  console.log("[ok] warehouse collaboration synchronous webhook chain");
 
   const scheduler = await expectJson("/api/sync-scheduler", { headers: authHeaders });
   if (!scheduler.enabled || !Array.isArray(scheduler.tasks) || scheduler.tasks.length < 10 || scheduler.counts?.running === undefined) {
@@ -457,5 +548,6 @@ try {
 } finally {
   clearTimeout(timer);
   child.kill();
+  webhookServer.close();
   rmSync(smokeCacheDir, { recursive: true, force: true });
 }
