@@ -34,6 +34,7 @@ import {
   fetchAfterSales,
   fetchAfterSalesTicket,
   resolveApiUrl,
+  resubmitAfterSalesTicket,
   syncAfterSalesOrder,
   updateAfterSalesWarehouse,
   uploadAfterSalesAttachment,
@@ -46,6 +47,7 @@ const statusMeta: Record<string, { label: string; tone: string }> = {
   pending_warehouse: { label: "待仓库接单", tone: "warning" },
   processing: { label: "仓库已受理", tone: "info" },
   awaiting_reshipment: { label: "待补发", tone: "danger" },
+  rejected: { label: "仓库已驳回，待运营修改", tone: "danger" },
   shipped: { label: "补发已发出", tone: "good" },
   completed: { label: "已完结", tone: "muted" },
   cancelled: { label: "已作废", tone: "muted" },
@@ -283,7 +285,7 @@ function AttachmentList({ attachments, onDownload, onPreview, onError }: {
   );
 }
 
-export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
+export function AfterSalesCenter({ currentUser, embedded = false }: { currentUser: AuthUser; embedded?: boolean }) {
   const canReport = hasPermission(currentUser, "after_sales_report");
   const canWarehouse = hasPermission(currentUser, "after_sales_warehouse");
   const canAdmin = hasPermission(currentUser, "operations");
@@ -320,6 +322,9 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
   const [previewImage, setPreviewImage] = React.useState<AfterSalesImagePreview | null>(null);
   const [warehouseRemark, setWarehouseRemark] = React.useState("");
   const [labelUploads, setLabelUploads] = React.useState<AfterSalesAttachment[]>([]);
+  const [correctionPrimaryReason, setCorrectionPrimaryReason] = React.useState("");
+  const [correctionSecondaryReason, setCorrectionSecondaryReason] = React.useState("");
+  const [correctionNote, setCorrectionNote] = React.useState("");
   const payloadRef = React.useRef<AfterSalesPayload | null>(initialCache?.payload || null);
   const activeFiltersRef = React.useRef<AfterSalesListFilters>(initialFilters);
   const activeQueryKeyRef = React.useRef(afterSalesQueryKey(ownerKey, initialFilters));
@@ -578,6 +583,9 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       const result = await fetchAfterSalesTicket(ticket.id);
       setSelectedTicket(result.ticket);
       setWarehouseRemark(result.ticket.warehouseRemark || "");
+      setCorrectionPrimaryReason(result.ticket.primaryReason || "");
+      setCorrectionSecondaryReason(result.ticket.secondaryReason || "");
+      setCorrectionNote("");
       setLabelUploads([]);
     } catch (detailError) {
       setError(detailError instanceof Error ? detailError.message : "读取售后详情失败。");
@@ -612,7 +620,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
     }
   }
 
-  async function warehouseAction(action: "accept" | "await_reshipment" | "shipped" | "complete" | "cancel" | "reopen") {
+  async function warehouseAction(action: "accept" | "await_reshipment" | "shipped" | "complete" | "reject" | "cancel" | "reopen") {
     if (!selectedTicket) return;
     setBusy(action);
     setError("");
@@ -620,6 +628,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       const result = await updateAfterSalesWarehouse(selectedTicket.id, {
         action,
         warehouseRemark,
+        rejectionReason: action === "reject" ? warehouseRemark : undefined,
         note: warehouseRemark,
         labelUploadIds: labelUploads.map((upload) => upload.id),
       });
@@ -630,6 +639,34 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
       await refresh({ status, keyword, mine: tab === "mine" });
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "更新售后单失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleResubmit() {
+    if (!selectedTicket) return;
+    if (!correctionNote.trim()) return setError("请填写本次修改说明，方便仓库重新核查。");
+    setBusy("resubmit");
+    setError("");
+    try {
+      const result = await resubmitAfterSalesTicket(selectedTicket.id, {
+        primaryReason: correctionPrimaryReason,
+        secondaryReason: correctionSecondaryReason,
+        correctionNote,
+        operatorRemark: selectedTicket.operatorRemark,
+        originalItems: selectedTicket.originalItems,
+        reissueItems: selectedTicket.reissueItems,
+        needsReissue: selectedTicket.needsReissue,
+        customer: selectedTicket.customer,
+      });
+      setSelectedTicket(result.ticket);
+      setCorrectionNote("");
+      setMessage(`${result.ticket.id} 已修改并重新提交仓库。`);
+      clearAfterSalesCache(ownerKey);
+      await refresh({ status, keyword, mine: true });
+    } catch (resubmitError) {
+      setError(resubmitError instanceof Error ? resubmitError.message : "重新提交售后单失败。");
     } finally {
       setBusy("");
     }
@@ -688,14 +725,14 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
 
   return (
     <div className="after-sales-page">
-      <section className="after-sales-hero">
+      {!embedded ? <section className="after-sales-hero">
         <div>
           <p className="eyebrow">AFTER-SALES COMMAND CENTER</p>
           <h2>售后协同中心</h2>
           <span>原单同步、责任判定、金额核算与仓库补发，一张工单走完全流程。</span>
         </div>
         <div className="after-sales-hero-badge"><ShieldCheck size={22} /><span><strong>规则自动判责</strong><small>成本快照全程可追溯</small></span></div>
-      </section>
+      </section> : null}
 
       <section className="after-sales-kpis">
         <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload ? payload.summary.pendingWarehouse : "—"}</strong><small>{payload ? "需要仓库确认处理" : "数据读取中，不展示为 0"}</small></article>
@@ -814,6 +851,8 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
               <section className="as-drawer-section"><header><div><small>完整收件信息</small><strong>仓库可整段复制</strong></div><button type="button" onClick={() => void copyText(customerText(selectedTicket.customer), "收件信息")}><Copy size={15} />复制收件信息</button></header><pre>{customerText(selectedTicket.customer) || "运营暂未维护收件人、电话和详细地址。"}</pre></section>
               <section className="as-drawer-section"><header><div><small>补发清单</small><strong>{selectedTicket.needsReissue ? `${selectedTicket.reissueItems.length} 个 SKU` : "无需补发"}</strong></div>{selectedTicket.needsReissue ? <button type="button" onClick={() => void copyText(reissueText(selectedTicket.reissueItems), "补发产品信息")}><Copy size={15} />复制补发清单</button> : null}</header>{selectedTicket.needsReissue ? <div className="as-drawer-items as-drawer-product-items">{selectedTicket.reissueItems.map((item) => <div key={item.sku}><ProductThumbnail imageUrl={item.imageUrl} title={item.productName || item.sku} description={`${item.sku} · 补发 ${item.quantity} 件`} onPreview={setPreviewImage} /><span className="as-drawer-item-copy"><span>{item.sku}</span><strong>{item.productName}</strong></span><b>× {item.quantity}</b></div>)}</div> : <div className="as-empty-inline">该售后单无需仓库补发。</div>}</section>
               <section className="as-drawer-section"><header><div><small>问题说明</small><strong>{selectedTicket.primaryReason} / {selectedTicket.secondaryReason}</strong></div></header><p>{selectedTicket.operatorRemark || "运营未填写补充备注。"}</p><AttachmentList attachments={selectedTicket.evidence || []} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section>
+              {selectedTicket.status === "rejected" ? <section className="as-drawer-section as-rejection-card"><header><div><small>仓库驳回原因</small><strong>请运营核实并修正后重新提交</strong></div></header><p>{selectedTicket.rejectionReason || selectedTicket.warehouseRemark || "仓库未填写驳回原因。"}</p></section> : null}
+              {selectedTicket.status === "rejected" && canReport && (canAdmin || selectedTicket.createdById === currentUser.id) ? <section className="as-drawer-section as-correction-form"><header><div><small>运营修改</small><strong>修正分类并重新提交</strong></div></header><div className="as-reason-grid"><label><span>售后一级分类</span><select value={correctionPrimaryReason} onChange={(event) => setCorrectionPrimaryReason(event.target.value)}>{primaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label><label><span>售后二级分类</span><select value={correctionSecondaryReason} onChange={(event) => setCorrectionSecondaryReason(event.target.value)}>{secondaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label></div><label className="as-textarea"><span>修改说明 *</span><textarea value={correctionNote} onChange={(event) => setCorrectionNote(event.target.value)} placeholder="说明已核实的事实和本次修改内容，仓库会重新收到通知。" /></label><button className="as-resubmit-button" type="button" disabled={Boolean(busy)} onClick={() => void handleResubmit()}>{busy === "resubmit" ? <LoaderCircle className="spinning" size={17} /> : <Send size={17} />}修改后重新提交</button></section> : null}
               {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后随状态动作归档" : "仓库上传后可在此查看"}</strong></div><span className="as-preview-hint"><ZoomIn size={13} />图片可放大</span></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section> : null}
               {canWarehouse ? <section className="as-drawer-section"><label className="as-textarea"><span>仓库处理备注</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查结果、补发物流单号或完结说明。" /></label></section> : selectedTicket.warehouseRemark ? <section className="as-drawer-section"><header><div><small>仓库处理说明</small><strong>最近更新</strong></div></header><p>{selectedTicket.warehouseRemark}</p></section> : null}
               {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
@@ -821,6 +860,7 @@ export function AfterSalesCenter({ currentUser }: { currentUser: AuthUser }) {
             </div>
             {canWarehouse || canAdmin ? <footer>
               {selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void warehouseAction("accept")} disabled={Boolean(busy)}>确认接单</button> : null}
+              {["pending_warehouse", "processing", "awaiting_reshipment"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void warehouseAction("reject")} disabled={Boolean(busy) || !warehouseRemark.trim()} title={!warehouseRemark.trim() ? "请先填写驳回原因" : "退回运营修改"}>驳回给运营</button> : null}
               {["pending_warehouse", "processing"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("await_reshipment")} disabled={Boolean(busy)}>进入待补发</button> : null}
               {["processing", "awaiting_reshipment"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("shipped")} disabled={Boolean(busy)}>上传面单并标记发出</button> : null}
               {selectedTicket.status === "processing" && !selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("complete")} disabled={Boolean(busy)}>确认完结</button> : null}

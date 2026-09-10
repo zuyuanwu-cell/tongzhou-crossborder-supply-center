@@ -14,8 +14,10 @@ const permissionDefinitions = [
   ["movement_export", "动销数据导出", "动销"],
   ["movement_sync", "动销数据同步", "动销"],
   ["stockup", "备货中心", "商品与协同"],
-  ["after_sales_report", "售后运营填报", "售后协同"],
-  ["after_sales_warehouse", "售后仓库处理", "售后协同"],
+  ["after_sales_report", "售后运营填报", "仓库协同"],
+  ["after_sales_warehouse", "售后仓库处理", "仓库协同"],
+  ["warehouse_ticket_report", "仓库工单提交", "仓库协同"],
+  ["warehouse_ticket_warehouse", "仓库工单处理", "仓库协同"],
   ["product_view", "产品库", "商品与协同"],
   ["distribution_price", "分销价", "产品字段"],
   ["sales_price", "销售价", "产品字段"],
@@ -61,6 +63,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "assets",
     "warehouse_info",
     "after_sales_report",
+    "warehouse_ticket_report",
     "quick_nav",
     "tongzhou_ai",
     "api_access",
@@ -68,6 +71,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
   ]),
   warehouse: Object.freeze([
     "after_sales_warehouse",
+    "warehouse_ticket_warehouse",
   ]),
   distributor: Object.freeze([
     "product_view",
@@ -88,9 +92,9 @@ const REQUIRED_ADMIN_PERMISSIONS = new Set(["operations", "users"]);
 const DIRECT_PRICE_DENIED_ROLES = new Set(["distributor", "guest"]);
 const PERFORMANCE_COST_DENIED_ROLES = new Set(["distributor", "guest"]);
 const USER_MANAGEMENT_DENIED_ROLES = new Set(["direct", "distributor", "guest"]);
-const AFTER_SALES_DENIED_ROLES = new Set(["distributor", "guest"]);
+const WAREHOUSE_COLLABORATION_DENIED_ROLES = new Set(["distributor", "guest"]);
 const MIAOSHOU_DENIED_ROLES = new Set(["distributor", "guest"]);
-const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse"]);
+const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse", "warehouse_ticket_warehouse"]);
 
 function roleOf(user) {
   return ["admin", "direct", "warehouse", "distributor"].includes(user?.role) ? user.role : "guest";
@@ -140,9 +144,11 @@ export function effectivePermissions(user) {
     effective.delete("performance_profit");
   }
   if (USER_MANAGEMENT_DENIED_ROLES.has(role)) effective.delete("users");
-  if (AFTER_SALES_DENIED_ROLES.has(role)) {
+  if (WAREHOUSE_COLLABORATION_DENIED_ROLES.has(role)) {
     effective.delete("after_sales_report");
     effective.delete("after_sales_warehouse");
+    effective.delete("warehouse_ticket_report");
+    effective.delete("warehouse_ticket_warehouse");
   }
   if (MIAOSHOU_DENIED_ROLES.has(role)) {
     effective.delete("miaoshou");
@@ -172,8 +178,8 @@ export function permissionConfiguration() {
     hardRules: {
       directDenied: ["users"],
       warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -190,8 +196,8 @@ export function sanitizePermissionUpdate(role, input) {
   if (USER_MANAGEMENT_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "users");
   }
-  if (AFTER_SALES_DENIED_ROLES.has(role)) {
-    overrides.allow = overrides.allow.filter((key) => !["after_sales_report", "after_sales_warehouse"].includes(key));
+  if (WAREHOUSE_COLLABORATION_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => !["after_sales_report", "after_sales_warehouse", "warehouse_ticket_report", "warehouse_ticket_warehouse"].includes(key));
   }
   if (MIAOSHOU_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "miaoshou" && !MIAOSHOU_PERMISSION_KEYS.includes(key));

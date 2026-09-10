@@ -1693,6 +1693,39 @@ export type AfterSalesAttachment = {
   uploadedBy: string;
 };
 
+export type WarehouseTicketAttachment = Omit<AfterSalesAttachment, "kind">;
+
+export type WarehouseTicket = {
+  id: string;
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  category: string;
+  priority: "normal" | "urgent";
+  relatedOrderNumber: string;
+  title: string;
+  description: string;
+  attachments: WarehouseTicketAttachment[];
+  status: "pending_warehouse" | "processing" | "resolved" | "cancelled" | string;
+  warehouseRemark: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  createdById: string;
+  acceptedAt: string;
+  resolvedAt: string;
+  timeline: Array<{ id: string; type: string; label: string; note: string; actor: string; createdAt: string }>;
+  notifications?: Array<{ id: string; eventType: string; target: string; status: string; robotCount: number; failedCount: number; message: string; createdAt: string }>;
+};
+
+export type WarehouseTicketPayload = {
+  ok: boolean;
+  updatedAt: string;
+  summary: { total: number; open: number; pendingWarehouse: number; processing: number; resolved: number; urgent: number };
+  tickets: WarehouseTicket[];
+  warehouseOptions: Array<{ id: string; name: string; country: string }>;
+};
+
 export type AfterSalesCustomer = {
   name: string;
   phone: string;
@@ -1754,6 +1787,10 @@ export type AfterSalesTicket = {
   labelUploads: AfterSalesAttachment[];
   operatorRemark: string;
   warehouseRemark: string;
+  rejectionReason?: string;
+  rejectedAt?: string;
+  rejectedBy?: string;
+  rejectionHistory?: Array<{ reason: string; rejectedAt: string; rejectedBy: string }>;
   adjustmentReason: string;
   packagingFeeCny: number;
   money: {
@@ -1765,9 +1802,10 @@ export type AfterSalesTicket = {
     currency: "CNY";
     missingCostSkus: string[];
   };
-  status: "pending_warehouse" | "processing" | "awaiting_reshipment" | "shipped" | "completed" | "cancelled" | string;
+  status: "pending_warehouse" | "processing" | "awaiting_reshipment" | "rejected" | "shipped" | "completed" | "cancelled" | string;
   createdAt: string;
   createdBy: string;
+  createdById: string;
   updatedAt: string;
   completedAt: string;
   notifications?: Array<{
@@ -1799,6 +1837,7 @@ export type AfterSalesPayload = {
     pendingWarehouse: number;
     processing: number;
     awaitingReshipment: number;
+    rejected: number;
     warehouseLiabilityCny: number;
   };
   tickets: AfterSalesTicket[];
@@ -3682,15 +3721,83 @@ export function fetchAfterSalesTicket(id: string) {
 }
 
 export function updateAfterSalesWarehouse(id: string, input: {
-  action: "accept" | "await_reshipment" | "shipped" | "complete" | "cancel" | "reopen";
+  action: "accept" | "await_reshipment" | "shipped" | "complete" | "reject" | "cancel" | "reopen";
   labelUploadIds?: string[];
   warehouseRemark?: string;
+  rejectionReason?: string;
   note?: string;
 }) {
   return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>(`/api/after-sales/${encodeURIComponent(id)}/warehouse`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
+}
+
+export function resubmitAfterSalesTicket(id: string, input: {
+  primaryReason: string;
+  secondaryReason: string;
+  correctionNote: string;
+  operatorRemark?: string;
+  originalItems?: AfterSalesItem[];
+  reissueItems?: AfterSalesReissueItem[];
+  needsReissue?: boolean;
+  customer?: AfterSalesCustomer;
+}) {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"] }>(`/api/after-sales/${encodeURIComponent(id)}/operator`, {
+    method: "PATCH",
+    body: JSON.stringify({ action: "resubmit", ...input }),
+  });
+}
+
+export function fetchWarehouseTickets(input: { status?: string; keyword?: string; mine?: boolean } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.status) params.set("status", input.status);
+  if (input.keyword) params.set("keyword", input.keyword);
+  if (input.mine) params.set("mine", "1");
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<WarehouseTicketPayload>(`/api/warehouse-tickets${query}`, { signal });
+}
+
+export function uploadWarehouseTicketAttachment(input: { fileName: string; dataUrl: string }) {
+  return requestJson<{ ok: boolean; upload: WarehouseTicketAttachment }>("/api/warehouse-tickets/uploads", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createWarehouseTicket(input: {
+  warehouseId: string;
+  category: string;
+  priority: "normal" | "urgent";
+  relatedOrderNumber?: string;
+  title: string;
+  description: string;
+  attachmentIds: string[];
+}) {
+  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"] }>("/api/warehouse-tickets", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchWarehouseTicket(id: string) {
+  return requestJson<{ ok: boolean; ticket: WarehouseTicket }>(`/api/warehouse-tickets/${encodeURIComponent(id)}`);
+}
+
+export function updateWarehouseTicket(id: string, input: { action: "accept" | "resolve" | "cancel" | "reopen"; note?: string; warehouseRemark?: string }) {
+  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"] }>(`/api/warehouse-tickets/${encodeURIComponent(id)}/warehouse`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function downloadWarehouseTicketAttachment(attachment: WarehouseTicketAttachment) {
+  const response = await fetch(resolveApiUrl(new URL(attachment.url, window.location.origin).pathname), { headers: authHeaders() });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "下载仓库工单附件失败。");
+  }
+  return response.blob();
 }
 
 export async function downloadAfterSalesAttachment(attachment: AfterSalesAttachment) {

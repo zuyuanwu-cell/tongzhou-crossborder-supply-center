@@ -24,6 +24,7 @@ export const AFTER_SALES_STATUSES = Object.freeze([
   "pending_warehouse",
   "processing",
   "awaiting_reshipment",
+  "rejected",
   "shipped",
   "completed",
   "cancelled",
@@ -376,10 +377,11 @@ function summaryFor(tickets) {
     if (ticket.status === "pending_warehouse") summary.pendingWarehouse += 1;
     if (["processing", "awaiting_reshipment"].includes(ticket.status)) summary.processing += 1;
     if (ticket.status === "awaiting_reshipment") summary.awaitingReshipment += 1;
+    if (ticket.status === "rejected") summary.rejected += 1;
     if (!['completed', 'cancelled'].includes(ticket.status)) summary.open += 1;
     if (ticket.status !== "cancelled") summary.warehouseLiabilityCny = money(summary.warehouseLiabilityCny + number(ticket.money?.totalWarehouseLiabilityCny));
     return summary;
-  }, { total: 0, open: 0, pendingWarehouse: 0, processing: 0, awaitingReshipment: 0, warehouseLiabilityCny: 0 });
+  }, { total: 0, open: 0, pendingWarehouse: 0, processing: 0, awaitingReshipment: 0, rejected: 0, warehouseLiabilityCny: 0 });
 }
 
 export function createAfterSalesService({ cachePath, uploadDir, performanceStore, connector, getProducts }) {
@@ -622,6 +624,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       completedAt: "",
       timeline: [event("created", "运营提交售后单", actor, `${primaryReason} / ${secondaryReason}`)],
       notifications: [],
+      rejectionHistory: [],
     });
     return { ok: true, ticket, summary: summaryFor(store.list()) };
   }
@@ -633,6 +636,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       await_reshipment: { from: ["pending_warehouse", "processing"], to: "awaiting_reshipment", label: "进入待补发" },
       shipped: { from: ["processing", "awaiting_reshipment"], to: "shipped", label: "补发已发出" },
       complete: { from: ["processing", "shipped"], to: "completed", label: "售后已完结" },
+      reject: { from: ["pending_warehouse", "processing", "awaiting_reshipment"], to: "rejected", label: "仓库已驳回，待运营修改" },
       reopen: { from: ["completed", "cancelled"], to: "processing", label: "售后已重新打开" },
       cancel: { from: AFTER_SALES_STATUSES.filter((status) => !["completed", "cancelled"].includes(status)), to: "cancelled", label: "售后已作废" },
     };
@@ -646,12 +650,84 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       ticket.labelUploads = allLabels.filter((upload) => !labelIds.has(upload.id) && labelIds.add(upload.id));
       if (action === "shipped" && ticket.needsReissue && !ticket.labelUploads.length) throw new Error("请先上传补发面单再标记已发出。");
       if (action === "complete" && ticket.needsReissue && ticket.status !== "shipped") throw new Error("需要补发的售后单请先上传面单并标记已发出。");
+      const rejectionReason = text(input.rejectionReason || input.note || input.warehouseRemark);
+      if (action === "reject" && !rejectionReason) throw new Error("驳回售后单前，请填写具体原因和需要运营修改的内容。");
       ticket.status = transition.to;
       ticket.warehouseRemark = text(input.warehouseRemark || ticket.warehouseRemark);
       ticket.updatedAt = nowIso();
       ticket.completedAt = transition.to === "completed" ? ticket.updatedAt : "";
+      if (action === "reject") {
+        ticket.rejectionReason = rejectionReason;
+        ticket.rejectedAt = ticket.updatedAt;
+        ticket.rejectedBy = actorName(actor);
+        ticket.rejectionHistory = [...(ticket.rejectionHistory || []), {
+          reason: rejectionReason,
+          rejectedAt: ticket.updatedAt,
+          rejectedBy: actorName(actor),
+        }];
+      }
       ticket.timeline = [...(ticket.timeline || []), event(action, transition.label, actor, input.note || input.warehouseRemark)];
       return ticket;
+    });
+    if (!updated) throw new Error("售后单不存在。");
+    return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
+  }
+
+  function resubmit(id, input, actor) {
+    const updated = store.update(id, (ticket) => {
+      if (ticket.status !== "rejected") throw new Error("只有仓库已驳回的售后单可以修改后重新提交。");
+      const primaryReason = text(input.primaryReason || ticket.primaryReason);
+      const secondaryReason = text(input.secondaryReason || ticket.secondaryReason);
+      if (!AFTER_SALES_PRIMARY_REASONS.includes(primaryReason)) throw new Error("请选择售后一级分类。");
+      if (!AFTER_SALES_SECONDARY_REASONS.includes(secondaryReason)) throw new Error("请选择售后二级分类。");
+      const correctionNote = text(input.correctionNote);
+      if (!correctionNote) throw new Error("请填写本次修改说明，方便仓库重新核查。");
+      const originalItems = (Array.isArray(input.originalItems) ? input.originalItems : ticket.originalItems).map((item) => ({
+        ...item,
+        sku: normalizedSku(item.sku),
+        orderedQty: quantity(item.orderedQty),
+        affectedQty: Math.min(quantity(item.orderedQty), quantity(item.affectedQty)),
+        unitCostCny: money(item.unitCostCny),
+        costMissing: number(item.unitCostCny) <= 0,
+      })).filter((item) => item.sku && item.orderedQty > 0);
+      if (!originalItems.some((item) => item.affectedQty > 0)) throw new Error("请填写至少一个受影响商品数量。");
+      const needsReissue = secondaryReason === "补发且留错品" || input.needsReissue === true;
+      const reissueItems = (Array.isArray(input.reissueItems) ? input.reissueItems : ticket.reissueItems).map((item) => ({
+        ...item,
+        sku: normalizedSku(item.sku),
+        quantity: quantity(item.quantity),
+      })).filter((item) => item.sku && item.quantity > 0);
+      if (needsReissue && !reissueItems.length) throw new Error("该处理方式需要补发，请选择补发商品和数量。");
+      const responsibility = resolveAfterSalesResponsibility(primaryReason, secondaryReason, input.responsibilityOverride);
+      const moneyBreakdown = calculateAfterSalesLiability({
+        responsibility,
+        affectedItems: originalItems,
+        packagingFeeCny: ticket.packagingFeeCny,
+        additionalLiabilityCny: input.additionalLiabilityCny ?? ticket.money?.additionalLiabilityCny,
+        customerRecoveryCny: input.customerRecoveryCny ?? ticket.money?.customerRecoveryCny,
+      });
+      if (moneyBreakdown.missingCostSkus.length) throw new Error(`请先维护受影响商品成本：${moneyBreakdown.missingCostSkus.join("、")}`);
+      const nextCustomer = { ...(ticket.customer || {}), ...(input.customer || {}) };
+      if (needsReissue && !text(nextCustomer.recipientInfo)) throw new Error("需要补发时，请填写完整收件信息。");
+      const now = nowIso();
+      return {
+        ...ticket,
+        primaryReason,
+        secondaryReason,
+        responsibility,
+        originalItems,
+        reissueItems,
+        needsReissue,
+        customer: nextCustomer,
+        operatorRemark: text(input.operatorRemark ?? ticket.operatorRemark),
+        adjustmentReason: text(input.adjustmentReason ?? ticket.adjustmentReason),
+        money: moneyBreakdown,
+        status: "pending_warehouse",
+        updatedAt: now,
+        warehouseRemark: "",
+        rejectionReason: "",
+        timeline: [...(ticket.timeline || []), event("resubmit", "运营修改并重新提交", actor, correctionNote)],
+      };
     });
     if (!updated) throw new Error("售后单不存在。");
     return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
@@ -711,6 +787,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     uploadPath,
     create,
     updateWarehouse,
+    resubmit,
     recordNotification,
     assignWarehouse,
   };

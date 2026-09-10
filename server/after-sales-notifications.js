@@ -54,7 +54,36 @@ export function buildAfterSalesCreatedMarkdown(ticket = {}, options = {}) {
     `> 补发：${ticket.needsReissue ? `${reissueQuantity} 件` : "无需补发"}`,
     `> 仓库承担：¥${number(ticket.money?.totalWarehouseLiabilityCny).toFixed(2)}`,
     text(options.extraText),
-    linkUrl ? `[进入售后协同中心](${linkUrl})` : "",
+    linkUrl ? `[进入仓库协同中心](${linkUrl})` : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function buildWarehouseTicketCreatedMarkdown(ticket = {}, options = {}) {
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin);
+  return [
+    `### ${ticket.priority === "urgent" ? "紧急" : "新"}仓库工单待处理`,
+    `> 工单：**${text(ticket.id) || "-"}**`,
+    `> 处理仓库：${text(ticket.warehouseName) || "待分配"}`,
+    `> 类型：${text(ticket.category) || "-"}`,
+    text(ticket.relatedOrderNumber) ? `> 关联订单：${text(ticket.relatedOrderNumber)}` : "",
+    `> 主题：${text(ticket.title) || "-"}`,
+    text(options.extraText),
+    linkUrl ? `[进入仓库协同中心](${linkUrl})` : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function buildWarehouseTicketProgressMarkdown(ticket = {}, options = {}) {
+  const latest = Array.isArray(ticket.timeline) ? ticket.timeline.at(-1) : null;
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin);
+  return [
+    `### 仓库工单更新：${text(latest?.label || options.statusLabel) || "状态已更新"}`,
+    `> 工单：**${text(ticket.id) || "-"}**`,
+    `> 处理仓库：${text(ticket.warehouseName) || "待分配"}`,
+    `> 主题：${text(ticket.title) || "-"}`,
+    `> 当前状态：${text(options.statusLabel) || text(ticket.status) || "-"}`,
+    text(latest?.note) ? `> 处理说明：${text(latest.note)}` : "",
+    text(options.extraText),
+    linkUrl ? `[查看仓库工单](${linkUrl})` : "",
   ].filter(Boolean).join("\n");
 }
 

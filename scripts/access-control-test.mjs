@@ -174,7 +174,7 @@ const warehousePermissions = effectivePermissions({
   role: "warehouse",
   permissionOverrides: { allow: ["after_sales_report", "product_view", "users"], deny: [] },
 });
-assert.deepEqual(warehousePermissions, ["after_sales_warehouse"], "warehouse operators are isolated to the warehouse after-sales workspace");
+assert.deepEqual(warehousePermissions, ["after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration workspaces");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
 
 console.log("access-control tests passed");

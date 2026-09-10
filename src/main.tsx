@@ -206,7 +206,7 @@ import {
 } from "./api";
 import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
-import { AfterSalesCenter } from "./AfterSalesCenter";
+import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import "./styles.css";
 import "./theme-refresh.css";
 
@@ -369,7 +369,7 @@ const navItems = [
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
-  { label: "售后协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse" },
+  { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup" },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup" },
   { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup" },
@@ -1842,8 +1842,8 @@ function App() {
           <AgentApiAccessPage currentUser={currentUser} />
         ) : activeView === "妙手 ERP" ? (
           <MiaoshouPage currentUser={currentUser} />
-        ) : activeView === "售后协同" ? (
-          <AfterSalesCenter currentUser={currentUser} />
+        ) : activeView === "仓库协同" ? (
+          <WarehouseCollaborationCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -6666,7 +6666,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
         <div>
           <p className="eyebrow">WeCom Robot Center</p>
           <h2>企业微信机器人通知</h2>
-          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货、库存、资质与售后协同的场景化提醒。</p>
+          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货、库存、资质与仓库协同的场景化提醒。</p>
           <div className="source-row">
             <span className={`status-pill ${robots.length ? "good" : "warning"}`}>{robots.length ? "机器人已配置" : "等待配置机器人"}</span>
             <span>{data?.updatedAt ? formatDateTime(data.updatedAt) : "暂无配置"}</span>
@@ -7669,7 +7669,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
         <Metric title="用户总数" value={formatNumber(visiblePayload?.counts.users ?? 0)} note="本地库为准，创建后同步系统" icon={Lock} tone="blue" />
         <Metric title="管理员" value={formatNumber(visiblePayload?.counts.admin ?? 0)} note="可查看订单、动销、备货和用户管理" icon={ShieldCheck} tone="green" />
         <Metric title="直营运营" value={formatNumber(visiblePayload?.counts.direct ?? 0)} note="看产品、直营价、库存和素材资质" icon={ShoppingBag} tone="orange" />
-        <Metric title="仓库操作员" value={formatNumber(visiblePayload?.counts.warehouse ?? 0)} note="仅处理售后接单、补发和面单" icon={Truck} tone="blue" />
+        <Metric title="仓库操作员" value={formatNumber(visiblePayload?.counts.warehouse ?? 0)} note="处理售后、补发面单与仓库工单" icon={Truck} tone="blue" />
         <Metric title="分销商" value={formatNumber(visiblePayload?.counts.distributor ?? 0)} note="仅看产品、分销价、素材和资质" icon={ShoppingBag} tone="red" />
       </section>
 

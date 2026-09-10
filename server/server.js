@@ -41,10 +41,13 @@ import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-syn
 import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
 import { createMiaoshouOrderAliasJobService } from "./miaoshou-order-alias-jobs.js";
 import { createAfterSalesService } from "./after-sales.js";
+import { createWarehouseTicketService } from "./warehouse-tickets.js";
 import {
   afterSalesWarehouseOptions,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
+  buildWarehouseTicketCreatedMarkdown,
+  buildWarehouseTicketProgressMarkdown,
   notificationRobotIds,
 } from "./after-sales-notifications.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
@@ -110,6 +113,8 @@ const distributorApplicationsPath = resolve(cacheDir, "distributor-applications.
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
 const afterSalesCachePath = resolve(cacheDir, "after-sales.json");
 const afterSalesUploadDir = resolve(cacheDir, "after-sales-uploads");
+const warehouseTicketCachePath = resolve(cacheDir, "warehouse-tickets.json");
+const warehouseTicketUploadDir = resolve(cacheDir, "warehouse-ticket-uploads");
 const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
@@ -155,6 +160,7 @@ let cachedStockupWorkflow = loadJsonCache(stockupWorkflowCachePath) || {
   syncedAt: "",
   warnings: ["后台正在准备备货执行数据，稍后会自动显示。"],
 };
+let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
@@ -212,6 +218,10 @@ const afterSalesService = createAfterSalesService({
   performanceStore: performanceAnalyticsStore,
   connector: miaoshouAutomation,
   getProducts: () => cachedProducts,
+});
+const warehouseTicketService = createWarehouseTicketService({
+  cachePath: warehouseTicketCachePath,
+  uploadDir: warehouseTicketUploadDir,
 });
 for (const ticket of afterSalesService.list().tickets) {
   if (ticket.warehouseId) continue;
@@ -986,6 +996,7 @@ const afterSalesStatusLabels = Object.freeze({
   pending_warehouse: "待仓库接单",
   processing: "仓库已受理",
   awaiting_reshipment: "待补发",
+  rejected: "仓库已驳回，待运营修改",
   shipped: "补发已发出",
   completed: "已完结",
   cancelled: "已作废",
@@ -1040,19 +1051,48 @@ async function notifyAfterSalesProgress(ticket, requestOrigin) {
 }
 
 function dispatchAfterSalesNotification(ticket, eventType, requestOrigin) {
-  const send = eventType === "created" ? notifyAfterSalesCreated : notifyAfterSalesProgress;
+  const warehouseTarget = ["created", "resubmit"].includes(eventType);
+  const send = warehouseTarget ? notifyAfterSalesCreated : notifyAfterSalesProgress;
   void send(ticket, requestOrigin)
     .then((outcome) => afterSalesService.recordNotification(ticket.id, {
       eventType,
-      target: eventType === "created" ? "warehouse" : "operations",
+      target: warehouseTarget ? "warehouse" : "operations",
       ...outcome,
     }))
     .catch((error) => afterSalesService.recordNotification(ticket.id, {
       eventType,
-      target: eventType === "created" ? "warehouse" : "operations",
+      target: warehouseTarget ? "warehouse" : "operations",
       status: "failed",
       message: error?.message || "企业微信通知发送失败",
     }));
+}
+
+const warehouseTicketStatusLabels = Object.freeze({
+  pending_warehouse: "待仓库受理",
+  processing: "仓库处理中",
+  resolved: "已解决",
+  cancelled: "已取消",
+});
+
+async function notifyWarehouseTicket(ticket, eventType, origin) {
+  const created = eventType === "created";
+  const scene = cachedWecomNotifications.scenes?.[created ? "afterSalesNew" : "afterSalesProgress"];
+  const robotIds = scene?.enabled
+    ? (created ? notificationRobotIds(scene, ticket.warehouseId) : (scene.robotIds || []))
+    : [];
+  const configured = Boolean(scene?.enabled && robotIds.length);
+  const markdown = created
+    ? buildWarehouseTicketCreatedMarkdown(ticket, { linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin })
+    : buildWarehouseTicketProgressMarkdown(ticket, { statusLabel: warehouseTicketStatusLabels[ticket.status] || ticket.status, linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin });
+  const results = configured ? await sendWecomNotification(robotIds, markdown) : [];
+  return notificationOutcome(results, configured);
+}
+
+function dispatchWarehouseTicketNotification(ticket, eventType, origin) {
+  const target = eventType === "created" ? "warehouse" : "operations";
+  void notifyWarehouseTicket(ticket, eventType, origin)
+    .then((outcome) => warehouseTicketService.recordNotification(ticket.id, { eventType, target, ...outcome }))
+    .catch((error) => warehouseTicketService.recordNotification(ticket.id, { eventType, target, status: "failed", message: error?.message || "企业微信通知发送失败" }));
 }
 
 function stockupSignature(payload) {
@@ -2925,6 +2965,17 @@ function canViewMiaoshouWorkspace(auth) {
 
 function canAccessAfterSales(auth) {
   return hasPermission(auth, "after_sales_report") || hasPermission(auth, "after_sales_warehouse");
+}
+
+function canAccessWarehouseTickets(auth) {
+  return hasPermission(auth, "warehouse_ticket_report") || hasPermission(auth, "warehouse_ticket_warehouse");
+}
+
+function warehouseTicketCreatedByFilter(auth, requestedMine = false) {
+  const reportOnly = hasPermission(auth, "warehouse_ticket_report")
+    && !hasPermission(auth, "warehouse_ticket_warehouse")
+    && !canManage(auth);
+  return requestedMine || reportOnly ? String(auth.user?.id || "").trim() : "";
 }
 
 function afterSalesCreatedByFilter(auth, requestedMine = false) {
@@ -5287,7 +5338,13 @@ function mergeLateOrderSyncResult(connection, result, days) {
 
 const stockupWorkflowRefresh = createSingleFlight(async () => {
   const workflow = await loadStockupWorkflow();
+  const readFailures = (workflow.warnings || []).filter((warning) => /读取失败/.test(String(warning)));
+  if (readFailures.length) {
+    stockupWorkflowRefreshError = `简道云暂时未能完成备货数据同步（${readFailures.length} 个数据表），系统将自动重试`;
+    throw new Error(stockupWorkflowRefreshError);
+  }
   cachedStockupWorkflow = workflow;
+  stockupWorkflowRefreshError = "";
   saveJsonCache(stockupWorkflowCachePath, cachedStockupWorkflow);
   return cachedStockupWorkflow;
 });
@@ -5297,8 +5354,12 @@ function refreshStockupWorkflowCache() {
 }
 
 function currentStockupWorkflowPayload() {
+  const safeWarnings = (cachedStockupWorkflow.warnings || []).filter((warning) => !/读取失败|fetch failed|ECONN|timeout|socket/i.test(String(warning)));
   return {
     ...workflowWithWmsState(cachedStockupWorkflow),
+    warnings: stockupWorkflowRefreshError
+      ? [...safeWarnings, `${stockupWorkflowRefreshError}；当前继续展示最近一次成功数据。`]
+      : safeWarnings,
     cacheState: {
       cached: Boolean(cachedStockupWorkflow.syncedAt),
       refreshing: stockupWorkflowRefresh.active(),
@@ -6395,6 +6456,122 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/warehouse-tickets" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseTickets(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库工单权限。" });
+        return;
+      }
+      const result = warehouseTicketService.list({
+        status: url.searchParams.get("status"),
+        keyword: url.searchParams.get("keyword"),
+        dataScopes: normalizeDataScopes(auth.user?.dataScopes),
+        createdById: warehouseTicketCreatedByFilter(auth, url.searchParams.get("mine") === "1"),
+      });
+      result.warehouseOptions = afterSalesWarehouseOptions({}, warehouseConnections, normalizeDataScopes(auth.user?.dataScopes));
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-tickets/uploads" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "warehouse_ticket_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有上传仓库工单附件的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const upload = warehouseTicketService.saveUpload(payload, auth.user, requestOrigin(req));
+        appendActionLog(auth, "上传仓库工单附件", "warehouse_ticket_upload", upload.fileName, { uploadId: upload.id, size: upload.size });
+        sendJson(res, 201, { ok: true, upload });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "上传仓库工单附件失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/warehouse-tickets/uploads/") && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseTickets(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有查看仓库工单附件的权限。" });
+        return;
+      }
+      const fileName = basename(decodeURIComponent(url.pathname.replace("/api/warehouse-tickets/uploads/", "")));
+      if (!warehouseTicketService.canAccessUpload(fileName, normalizeDataScopes(auth.user?.dataScopes), auth.user?.id, warehouseTicketCreatedByFilter(auth))) {
+        sendJson(res, 404, { ok: false, message: "仓库工单附件不存在或无权查看。" });
+        return;
+      }
+      const resolvedUpload = warehouseTicketService.uploadPath(fileName);
+      if (!resolvedUpload) {
+        sendJson(res, 404, { ok: false, message: "仓库工单附件不存在。" });
+        return;
+      }
+      serveFile(req, res, resolvedUpload.path);
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-tickets" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "warehouse_ticket_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有创建仓库工单的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const warehouses = afterSalesWarehouseOptions({}, warehouseConnections, normalizeDataScopes(auth.user?.dataScopes));
+        const warehouse = warehouses.find((item) => item.id === String(payload.warehouseId || "").trim());
+        if (!warehouse) throw new Error(warehouses.length ? "请选择可用的处理仓库。" : "当前账号没有可用仓库，请先配置仓库授权。");
+        const result = warehouseTicketService.create({ ...payload, warehouseId: warehouse.id, warehouseName: warehouse.name, country: warehouse.country }, auth.user);
+        appendActionLog(auth, "提交仓库工单", "warehouse_ticket", result.ticket.id, { category: result.ticket.category, priority: result.ticket.priority });
+        sendJson(res, 201, result);
+        dispatchWarehouseTicketNotification(result.ticket, "created", requestOrigin(req));
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "创建仓库工单失败。" });
+      }
+      return;
+    }
+
+    const warehouseTicketDetailMatch = url.pathname.match(/^\/api\/warehouse-tickets\/([^/]+)$/);
+    if (warehouseTicketDetailMatch && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseTickets(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有查看仓库工单的权限。" });
+        return;
+      }
+      const ticket = warehouseTicketService.get(decodeURIComponent(warehouseTicketDetailMatch[1]), normalizeDataScopes(auth.user?.dataScopes), warehouseTicketCreatedByFilter(auth));
+      if (!ticket) {
+        sendJson(res, 404, { ok: false, message: "仓库工单不存在或无权查看。" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, ticket });
+      return;
+    }
+
+    const warehouseTicketActionMatch = url.pathname.match(/^\/api\/warehouse-tickets\/([^/]+)\/warehouse$/);
+    if (warehouseTicketActionMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      try {
+        const payload = await parseRequestBody(req);
+        const adminAction = ["cancel", "reopen"].includes(payload.action);
+        if ((!adminAction && !hasPermission(auth, "warehouse_ticket_warehouse")) || (adminAction && !canManage(auth))) {
+          sendJson(res, 403, { ok: false, message: adminAction ? "取消或重开仓库工单需要管理员权限。" : "当前账号没有仓库工单处理权限。" });
+          return;
+        }
+        const ticketId = decodeURIComponent(warehouseTicketActionMatch[1]);
+        if (!warehouseTicketService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes))) {
+          sendJson(res, 404, { ok: false, message: "仓库工单不存在或不在当前账号的数据范围内。" });
+          return;
+        }
+        const result = warehouseTicketService.updateWarehouse(ticketId, payload, auth.user);
+        appendActionLog(auth, "更新仓库工单", "warehouse_ticket", result.ticket.id, { action: payload.action, status: result.ticket.status });
+        sendJson(res, 200, result);
+        dispatchWarehouseTicketNotification(result.ticket, payload.action, requestOrigin(req));
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "更新仓库工单失败。" });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/after-sales" && req.method === "GET") {
       const auth = getAuth(req);
       if (!canAccessAfterSales(auth)) {
@@ -6588,6 +6765,32 @@ const server = http.createServer(async (req, res) => {
         dispatchAfterSalesNotification(result.ticket, payload.action, requestOrigin(req));
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "更新售后单失败。" });
+      }
+      return;
+    }
+
+    const afterSalesOperatorMatch = url.pathname.match(/^\/api\/after-sales\/([^/]+)\/operator$/);
+    if (afterSalesOperatorMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有修改售后单的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        if (payload.action !== "resubmit") throw new Error("不支持的运营处理动作。");
+        const ticketId = decodeURIComponent(afterSalesOperatorMatch[1]);
+        const ticket = afterSalesService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes));
+        if (!ticket || (!canManage(auth) && String(ticket.createdById || "") !== String(auth.user?.id || ""))) {
+          sendJson(res, 404, { ok: false, message: "售后单不存在或只能由原填报人修改。" });
+          return;
+        }
+        const result = afterSalesService.resubmit(ticketId, payload, auth.user);
+        appendActionLog(auth, "修改并重新提交售后单", "after_sales_ticket", result.ticket.id, { primaryReason: result.ticket.primaryReason, secondaryReason: result.ticket.secondaryReason });
+        sendJson(res, 200, result);
+        dispatchAfterSalesNotification(result.ticket, "resubmit", requestOrigin(req));
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "重新提交售后单失败。" });
       }
       return;
     }

@@ -11,7 +11,7 @@ export default defineConfig({
           if (normalizedId.indexOf("node_modules/lucide-react") >= 0) return "icons";
           if (normalizedId.indexOf("node_modules/react") >= 0 || normalizedId.indexOf("node_modules/scheduler") >= 0) return "react-vendor";
           if (normalizedId.indexOf("/src/api.ts") >= 0) return "api-client";
-          if (normalizedId.indexOf("/src/AfterSalesCenter.tsx") >= 0) return "after-sales";
+          if (["/src/AfterSalesCenter.tsx", "/src/WarehouseCollaborationCenter.tsx", "/src/WarehouseTicketCenter.tsx"].some((name) => normalizedId.indexOf(name) >= 0)) return "warehouse-collaboration";
           if (normalizedId.indexOf("/src/MiaoshouListingWorkspace.tsx") >= 0) return "listing-workspace";
           if (normalizedId.indexOf("/src/TongzhouCanvasAiPanel.tsx") >= 0) return "tongzhou-ai";
           return undefined;

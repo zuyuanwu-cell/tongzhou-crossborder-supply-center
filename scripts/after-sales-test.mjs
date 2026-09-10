@@ -126,6 +126,17 @@ try {
   assert.match(buildAfterSalesCreatedMarkdown(created.ticket, { requestOrigin: "https://gyl.example.com" }), /新售后单待处理/);
 
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
+  const rejected = service.updateWarehouse(created.ticket.id, { action: "reject", warehouseRemark: "经核查并非仓库错发，请运营修改原因" }, warehouse);
+  assert.equal(rejected.ticket.status, "rejected");
+  assert.match(rejected.ticket.rejectionReason, /并非仓库错发/);
+  assert.throws(() => service.resubmit(created.ticket.id, { primaryReason: "SKU匹配错误", secondaryReason: "补发且留错品" }, actor), /修改说明/);
+  const resubmitted = service.resubmit(created.ticket.id, {
+    primaryReason: "仓库错发",
+    secondaryReason: "补发且留错品",
+    correctionNote: "已复核仓库出库照片，维持仓库错发并补充说明",
+  }, actor);
+  assert.equal(resubmitted.ticket.status, "pending_warehouse");
+  assert.equal(resubmitted.ticket.rejectionHistory.length, 1);
   const accepted = service.updateWarehouse(created.ticket.id, { action: "accept", warehouseRemark: "已核查" }, warehouse);
   assert.equal(accepted.ticket.status, "processing");
   assert.match(buildAfterSalesProgressMarkdown(accepted.ticket, { statusLabel: "仓库已受理" }), /仓库已受理/);
@@ -143,7 +154,7 @@ try {
   assert.equal(shipped.ticket.labelUploads.length, 1);
   const completed = service.updateWarehouse(created.ticket.id, { action: "complete", note: "客户确认收到" }, warehouse);
   assert.equal(completed.ticket.status, "completed");
-  assert.equal(completed.ticket.timeline.length, 5);
+  assert.equal(completed.ticket.timeline.length, 7);
 
   const listed = service.list();
   assert.equal(listed.summary.total, 1);
