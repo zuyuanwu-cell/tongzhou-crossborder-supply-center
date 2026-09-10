@@ -4,7 +4,7 @@ set -euo pipefail
 
 PROJECT_DIR="${DEPLOY_PROJECT_DIR:-/www/wwwroot/gyl.tongzhoukuajing.com}"
 BACKUP_BASE="${DEPLOY_BACKUP_BASE:-/www/backup/tongzhou-supply}"
-HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8789/api/health}"
+HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8787/api/health}"
 PM2_APP="${DEPLOY_PM2_APP:-tongzhou-supply-api}"
 
 if [[ ! -d "$PROJECT_DIR/.git" ]]; then
