@@ -129,11 +129,13 @@ try {
     operatorRemark: "测试错发",
     additionalLiabilityCny: 0,
     customerRecoveryCny: 0,
+    notificationRoute: { teamId: "team-a", teamName: "项目 A", submitterUserId: actor.id, submitterName: actor.displayName, submitterWecomUserId: "operator_1", mentionSubmitter: true, resolvedAt: "2026-09-12T00:00:00.000Z" },
   }, actor);
   assert.match(created.ticket.id, /^AS-\d{8}-0001$/);
   assert.equal(created.ticket.money.totalWarehouseLiabilityCny, 30.7);
   assert.equal(created.ticket.evidence.length, 1);
   assert.equal(created.ticket.warehouseId, "warehouse-id");
+  assert.equal(created.ticket.notificationRoute.teamId, "team-a");
   const createdMarkdown = buildAfterSalesCreatedMarkdown(created.ticket, { requestOrigin: "https://gyl.example.com" });
   assert.match(createdMarkdown, /新售后单待处理/);
   assert.match(createdMarkdown, /ticket=AS-/);
@@ -187,8 +189,10 @@ try {
   assert.equal(service.get(created.ticket.id, { countries: ["MY"] }), null);
   assert.equal(service.get(created.ticket.id, { countries: ["ID"] })?.id, created.ticket.id);
   assert.equal(service.get(created.ticket.id, { countries: ["ID"] }, "another-user"), null);
-  service.recordNotification(created.ticket.id, { eventType: "created", target: "warehouse", status: "sent", robotCount: 1 });
+  service.recordNotification(created.ticket.id, { eventType: "created", target: "warehouse", status: "sent", robotCount: 1, routeLabel: "项目群：项目 A", teamId: "team-a", mentionedCount: 2 });
   assert.equal(service.get(created.ticket.id)?.notifications?.at(-1)?.status, "sent");
+  assert.equal(service.get(created.ticket.id)?.notifications?.at(-1)?.routeLabel, "项目群:项目 A");
+  assert.equal(service.get(created.ticket.id)?.notifications?.at(-1)?.mentionedCount, 2);
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, "other-user"), false);
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["ID"] }, "other-user"), true);
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, actor.id), false, "submitted uploads must follow the ticket's current data scope");

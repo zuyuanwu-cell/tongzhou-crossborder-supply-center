@@ -22,9 +22,11 @@ try {
     title: "订单超过时效仍未出库",
     description: "请今天内核实并反馈预计出库时间。",
     attachmentIds: [upload.id],
+    notificationRoute: { teamId: "team-a", teamName: "项目 A", submitterUserId: operator.id, submitterName: operator.displayName, submitterWecomUserId: "operator_1", mentionSubmitter: true, resolvedAt: "2026-09-12T00:00:00.000Z" },
   }, operator);
   assert.match(created.ticket.id, /^WT-\d{8}-0001$/);
   assert.equal(created.ticket.status, "pending_warehouse");
+  assert.equal(created.ticket.notificationRoute.teamName, "项目 A");
   assert.match(buildWarehouseTicketCreatedMarkdown(created.ticket), /仓库工单待处理/);
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
   const accepted = service.updateWarehouse(created.ticket.id, { action: "accept", note: "已开始核查" }, warehouse);
@@ -41,8 +43,9 @@ try {
   assert.equal(service.list({ dataScopes: { warehouseIds: ["wh-my"] } }).summary.total, 0);
   assert.equal(service.list({ createdById: operator.id }).summary.total, 1);
   assert.equal(service.list({ createdById: "other" }).summary.total, 0);
-  service.recordNotification(created.ticket.id, { eventType: "created", target: "warehouse", status: "sent", robotCount: 1 });
+  service.recordNotification(created.ticket.id, { eventType: "created", target: "warehouse", status: "sent", robotCount: 1, routeLabel: "项目群：项目 A", teamId: "team-a", mentionedCount: 2 });
   assert.equal(service.get(created.ticket.id).notifications.at(-1).status, "sent");
+  assert.equal(service.get(created.ticket.id).notifications.at(-1).teamId, "team-a");
   console.log("warehouse ticket workflow tests passed");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });

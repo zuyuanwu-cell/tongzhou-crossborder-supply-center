@@ -9,6 +9,9 @@ const distributor = {
   role: "distributor",
   permissionOverrides: { allow: ["direct_price", "movement"], deny: [] },
   dataScopes: { countries: ["印度尼西亚"], warehouseIds: ["wh-id"], skus: ["SKU-A"] },
+  notificationTeamId: "team-a",
+  wecomUserId: "partner_01",
+  mentionOnProgress: true,
 };
 
 const distributorPermissions = effectivePermissions(distributor);
@@ -139,6 +142,9 @@ assert.equal("syncState" in projectedMovement, false);
 const publicDistributor = publicUser(distributor);
 assert.equal(publicDistributor.permissions.includes("direct_price"), false);
 assert.deepEqual(publicDistributor.dataScopes.skus, ["SKU-A"]);
+assert.equal(publicDistributor.notificationTeamId, "team-a");
+assert.equal(publicDistributor.wecomUserId, "partner_01");
+assert.equal(publicDistributor.mentionOnProgress, true);
 
 const directDenied = effectivePermissions({ role: "direct", permissionOverrides: { allow: [], deny: ["direct_price"] } });
 assert.equal(directDenied.includes("direct_price"), false, "explicit deny overrides a role default");

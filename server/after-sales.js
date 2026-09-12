@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { extname, resolve } from "node:path";
 import { calculatePackagingFeeCny, normalizedCountryKey, normalizePackagingFeeRules } from "./performance-analytics.js";
 import { normalizeMiaoshouPackages } from "./miaoshou-performance.js";
+import { normalizeNotificationRouteSnapshot } from "./wecom-project-routing.js";
 
 export const AFTER_SALES_PRIMARY_REASONS = Object.freeze([
   "仓库错发",
@@ -689,6 +690,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       createdAt: now,
       createdBy: actorName(actor),
       createdById: text(actor?.id),
+      notificationRoute: normalizeNotificationRouteSnapshot(input.notificationRoute),
       updatedAt: now,
       completedAt: "",
       timeline: [event("created", "运营提交售后单", actor, `${primaryReason} / ${secondaryReason}`)],
@@ -836,6 +838,10 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
         robotCount: quantity(input.robotCount),
         failedCount: quantity(input.failedCount),
         message: text(input.message),
+        routeLabel: text(input.routeLabel),
+        teamId: text(input.teamId),
+        fallback: Boolean(input.fallback),
+        mentionedCount: quantity(input.mentionedCount),
         createdAt: nowIso(),
       };
       ticket.notifications = [...(Array.isArray(ticket.notifications) ? ticket.notifications : []), entry].slice(-30);

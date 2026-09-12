@@ -31,11 +31,13 @@ import {
   AfterSalesTicket,
   AuthUser,
   NotificationDeliveryOutcome,
+  WarehouseNotificationTeamsPayload,
   attachAfterSalesLabels,
   createAfterSalesTicket,
   downloadAfterSalesAttachment,
   fetchAfterSales,
   fetchAfterSalesTicket,
+  fetchWarehouseNotificationTeams,
   resolveApiUrl,
   resubmitAfterSalesTicket,
   searchAfterSalesProducts,
@@ -146,7 +148,7 @@ function dateTime(value?: string) {
 }
 
 function notificationMessage(prefix: string, outcome?: NotificationDeliveryOutcome) {
-  if (outcome?.status === "sent") return `${prefix}，企业微信已推送至 ${outcome.robotCount} 个接收群。`;
+  if (outcome?.status === "sent") return `${prefix}，企业微信已推送至 ${outcome.robotCount} 个接收群${outcome.routeLabel ? `（${outcome.routeLabel}）` : ""}。`;
   if (outcome?.status === "failed") return `${prefix}，但企业微信推送失败：${outcome.message || "请检查机器人配置"}`;
   return `${prefix}，但企业微信场景未启用或未配置接收群。`;
 }
@@ -326,6 +328,8 @@ export function AfterSalesCenter({
   const [syncedOrder, setSyncedOrder] = React.useState<AfterSalesOrderSyncPayload["order"] | null>(null);
   const [customer, setCustomer] = React.useState<AfterSalesCustomer>(blankCustomer);
   const [warehouseId, setWarehouseId] = React.useState("");
+  const [notificationTeams, setNotificationTeams] = React.useState<WarehouseNotificationTeamsPayload | null>(null);
+  const [notificationTeamId, setNotificationTeamId] = React.useState(currentUser.notificationTeamId || "__global__");
   const [items, setItems] = React.useState<AfterSalesItem[]>([]);
   const [primaryReason, setPrimaryReason] = React.useState("");
   const [secondaryReason, setSecondaryReason] = React.useState("");
@@ -468,6 +472,14 @@ export function AfterSalesCenter({
   }, [refresh, tab]);
 
   React.useEffect(() => {
+    if (!canReport) return;
+    void fetchWarehouseNotificationTeams().then((result) => {
+      setNotificationTeams(result);
+      setNotificationTeamId((current) => current || result.defaultTeamId || "__global__");
+    }).catch(() => setNotificationTeams(null));
+  }, [canReport]);
+
+  React.useEffect(() => {
     if (secondaryReason === "补发且留错品") setNeedsReissue(true);
   }, [secondaryReason]);
 
@@ -607,6 +619,7 @@ export function AfterSalesCenter({
     setSyncedOrder(null);
     setCustomer(blankCustomer);
     setWarehouseId("");
+    setNotificationTeamId(notificationTeams?.defaultTeamId || currentUser.notificationTeamId || "__global__");
     setItems([]);
     setPrimaryReason("");
     setSecondaryReason("");
@@ -636,6 +649,7 @@ export function AfterSalesCenter({
         customer,
         warehouseId,
         warehouseName: (syncedOrder.warehouseOptions || []).find((item) => item.id === warehouseId)?.name || syncedOrder.warehouseName || "",
+        notificationTeamId,
         originalItems: items,
         reissueItems: effectiveNeedsReissue ? reissueItems.map((item) => ({ ...item, sku: item.sku.replace(/^待填写-\d+$/, "") })) : [],
         primaryReason,
@@ -861,6 +875,7 @@ export function AfterSalesCenter({
                   {syncedOrder.existingTickets.length ? <div className="as-duplicate-warning"><AlertTriangle size={16} />该原订单已有 {syncedOrder.existingTickets.length} 张售后单，请确认不是重复填报。</div> : null}
                   <div className="as-routing-grid">
                     <label><span>处理仓库</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">请选择处理仓库</option>{(syncedOrder.warehouseOptions || []).map((warehouse) => <option value={warehouse.id} key={warehouse.id}>{warehouse.name} · {warehouse.country}</option>)}</select><small>{syncedOrder.warehouseOptions?.length === 1 ? "已按订单国家自动匹配" : "请确认实际负责补发或处理的仓库"}</small></label>
+                    <label><span>处理进度通知到</span><select value={notificationTeamId} onChange={(event) => setNotificationTeamId(event.target.value)}><option value="__global__">{notificationTeams?.fallbackLabel || "全局运营群（兜底）"}</option>{(notificationTeams?.teams || []).map((team) => <option value={team.id} key={team.id}>{team.name}</option>)}</select><small>默认取你的项目团队；本次选择会随售后单冻结。</small></label>
                     <label className="as-recipient-field"><span>完整收件信息</span><textarea value={customer.recipientInfo} onChange={(event) => setCustomer((current) => ({ ...current, recipientInfo: event.target.value }))} placeholder={'请完整填写并核对：\n收件人：张三\n电话：0812xxxxxx\n地址：国家 / 省市区 / 街道门牌号\n邮编：如有请填写'} /><small>无需拆分填写。仓库端会整段显示，并可一键复制。</small></label>
                   </div>
                   <div className="as-item-table">
@@ -966,7 +981,7 @@ export function AfterSalesCenter({
           <aside className="as-ticket-drawer" aria-label={`售后单 ${selectedTicket.id} 详情`}>
             <header><div><p className="eyebrow">AFTER-SALES TICKET</p><h2>{selectedTicket.id}</h2><span>原订单 {selectedTicket.originalOrderNumber}</span></div><button type="button" onClick={closeTicket} aria-label="关闭售后详情"><X size={19} /></button></header>
             <div className="as-drawer-scroll">
-              <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>处理仓库</small><strong>{selectedTicket.warehouseName || "待分配"}</strong></div><div><small>责任归属</small><strong>{selectedTicket.responsibility.label}</strong></div><div><small>仓库承担</small><strong>{money(selectedTicket.money.totalWarehouseLiabilityCny)}</strong></div></section>
+              <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>处理仓库</small><strong>{selectedTicket.warehouseName || "待分配"}</strong></div><div><small>责任归属</small><strong>{selectedTicket.responsibility.label}</strong></div><div><small>仓库承担</small><strong>{money(selectedTicket.money.totalWarehouseLiabilityCny)}</strong></div><div><small>进度通知群</small><strong>{selectedTicket.notificationRoute?.teamName || "全局运营群"}</strong></div></section>
               <section className="as-drawer-section"><header><div><small>售后产品</small><strong>{selectedTicket.originalItems.reduce((sum, item) => sum + item.affectedQty, 0)} 件受影响</strong></div><span className="as-preview-hint"><ZoomIn size={13} />点击缩略图可放大</span></header><div className="as-drawer-items as-drawer-product-items">{selectedTicket.originalItems.filter((item) => item.affectedQty > 0).map((item) => <div key={item.sku}><ProductThumbnail imageUrl={item.imageUrl} title={item.productName || item.sku} description={`${item.sku} · 受影响 ${item.affectedQty} 件`} onPreview={setPreviewImage} /><span className="as-drawer-item-copy"><span>{item.sku}</span><strong>{item.productName}</strong><small>原单数量：{item.orderedQty}</small></span><b>× {item.affectedQty}</b></div>)}</div></section>
               <section className="as-drawer-section"><header><div><small>完整收件信息</small><strong>仓库可整段复制</strong></div><button type="button" onClick={() => void copyText(customerText(selectedTicket.customer), "收件信息")}><Copy size={15} />复制收件信息</button></header><pre>{customerText(selectedTicket.customer) || "运营暂未维护收件人、电话和详细地址。"}</pre></section>
               <section className="as-drawer-section"><header><div><small>补发清单</small><strong>{selectedTicket.needsReissue ? `${selectedTicket.reissueItems.length} 个 SKU` : "无需补发"}</strong></div>{selectedTicket.needsReissue ? <button type="button" onClick={() => void copyText(reissueText(selectedTicket.reissueItems), "补发产品信息")}><Copy size={15} />复制补发清单</button> : null}</header>{selectedTicket.needsReissue ? <div className="as-drawer-items as-drawer-product-items">{selectedTicket.reissueItems.map((item) => <div key={item.sku}><ProductThumbnail imageUrl={item.imageUrl} title={item.productName || item.sku} description={`${item.sku} · 补发 ${item.quantity} 件`} onPreview={setPreviewImage} /><span className="as-drawer-item-copy"><span>{item.sku}</span><strong>{item.productName}</strong></span><b>× {item.quantity}</b></div>)}</div> : <div className="as-empty-inline">该售后单无需仓库补发。</div>}</section>
@@ -975,7 +990,7 @@ export function AfterSalesCenter({
               {selectedTicket.status === "rejected" && canReport && (canAdmin || selectedTicket.createdById === currentUser.id) ? <section className="as-drawer-section as-correction-form"><header><div><small>运营修改</small><strong>修正分类并重新提交</strong></div></header><div className="as-reason-grid"><label><span>售后一级分类</span><select value={correctionPrimaryReason} onChange={(event) => setCorrectionPrimaryReason(event.target.value)}>{primaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label><label><span>售后二级分类</span><select value={correctionSecondaryReason} onChange={(event) => setCorrectionSecondaryReason(event.target.value)}>{secondaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label></div><label className="as-textarea"><span>修改说明 *</span><textarea value={correctionNote} onChange={(event) => setCorrectionNote(event.target.value)} placeholder="说明已核实的事实和本次修改内容，仓库会重新收到通知。" /></label><button className="as-resubmit-button" type="button" disabled={Boolean(busy)} onClick={() => void handleResubmit()}>{busy === "resubmit" ? <LoaderCircle className="spinning" size={17} /> : <Send size={17} />}修改后重新提交</button></section> : null}
               {selectedTicket.needsReissue ? <section className="as-drawer-section"><header><div><small>补发面单</small><strong>{canWarehouse ? "上传后立即归档并通知运营" : "仓库上传后可在此查看"}</strong></div><span className="as-preview-hint"><ZoomIn size={13} />图片可放大</span></header>{canWarehouse ? <label className="as-label-upload"><Upload size={18} /><span>{busy === "label" ? "正在上传并通知…" : "选择图片或 PDF 面单"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleLabelUpload(event.target.files)} /></label> : null}<AttachmentList attachments={[...(selectedTicket.labelUploads || []), ...(canWarehouse ? labelUploads : [])]} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} /></section> : null}
               {canWarehouse ? <section className="as-drawer-section"><label className="as-textarea"><span>仓库处理备注</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查结果、补发物流单号或完结说明。" /></label></section> : selectedTicket.warehouseRemark ? <section className="as-drawer-section"><header><div><small>仓库处理说明</small><strong>最近更新</strong></div></header><p>{selectedTicket.warehouseRemark}</p></section> : null}
-              {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
+              {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{selectedTicket.notifications.at(-1)?.routeLabel || "默认通知路由"}{selectedTicket.notifications.at(-1)?.fallback ? " · 已使用兜底群" : ""}{selectedTicket.notifications.at(-1)?.mentionedCount ? ` · 已提醒 ${selectedTicket.notifications.at(-1)?.mentionedCount} 人` : ""} · {dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
               <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>共 {selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
             </div>
             {canWarehouse || canAdmin ? <footer>

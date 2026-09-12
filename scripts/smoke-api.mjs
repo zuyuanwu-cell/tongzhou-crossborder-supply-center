@@ -199,19 +199,30 @@ async function main() {
       afterSalesProgress: { enabled: true, robotIds: [collaborationRobot.id], linkUrl: "#after-sales" },
     } }),
   });
+  const projectTeams = await expectJson("/api/wecom-notifications/project-teams", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ projectTeams: [{ id: "smoke-team", name: "Smoke 项目组", enabled: true, robotIds: [collaborationRobot.id], mentionUserIds: ["smoke_lead"] }] }),
+  });
+  if (projectTeams.projectTeams?.[0]?.name !== "Smoke 项目组") throw new Error("Project notification team was not saved.");
+  const selectableTeams = await expectJson("/api/warehouse-collaboration/notification-teams", { headers: authHeaders });
+  if (selectableTeams.teams?.[0]?.id !== "smoke-team") throw new Error("Reporter notification-team choices were not exposed.");
   const warehouseTicket = await expectJson("/api/warehouse-tickets", {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },
-    body: JSON.stringify({ warehouseId: "id-shenniu-jakarta", category: "订单催促", priority: "urgent", relatedOrderNumber: "SMOKE-ORDER-1", title: "请核查订单", description: "请反馈预计出库时间", attachmentIds: [] }),
+    body: JSON.stringify({ warehouseId: "id-shenniu-jakarta", category: "订单催促", priority: "urgent", relatedOrderNumber: "SMOKE-ORDER-1", title: "请核查订单", description: "请反馈预计出库时间", attachmentIds: [], notificationTeamId: "smoke-team" }),
   });
   if (warehouseTicket.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${warehouseTicket.ticket.id}`)) {
     throw new Error(`Warehouse ticket creation did not synchronously deliver a deep-link webhook: ${JSON.stringify(warehouseTicket).slice(0, 600)}`);
   }
-  await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
+  const warehouseAccepted = await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
     method: "PATCH",
     headers: { ...authHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({ action: "accept", note: "开始核查" }),
   });
+  if (warehouseAccepted.notification?.routeLabel !== "项目群：Smoke 项目组" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("<@smoke_lead>")) {
+    throw new Error("Warehouse ticket progress was not routed to the frozen project group with a WeCom mention.");
+  }
   const warehouseReply = await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
     method: "PATCH",
     headers: { ...authHeaders, "Content-Type": "application/json" },
@@ -236,6 +247,7 @@ async function main() {
       operatorRemark: "smoke",
       additionalLiabilityCny: 0,
       customerRecoveryCny: 0,
+      notificationTeamId: "smoke-team",
     }),
   });
   if (afterSales.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${afterSales.ticket.id}`)) {
@@ -251,7 +263,7 @@ async function main() {
     headers: { ...authHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({ labelUploadIds: [labelUpload.upload.id], note: "补发面单" }),
   });
-  if (attachedLabel.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("补发面单：已上传 1 张")) {
+  if (attachedLabel.notification?.status !== "sent" || attachedLabel.notification?.teamId !== "smoke-team" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("补发面单：已上传 1 张") || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("<@smoke_lead>")) {
     throw new Error("After-sales label upload did not notify operations immediately.");
   }
   console.log("[ok] warehouse collaboration synchronous webhook chain");
@@ -478,12 +490,20 @@ async function main() {
       dataScopes: { countries: [], warehouseIds: [], skus: [] },
     }),
   });
+  const notificationProfile = await expectJson(`/api/users/${encodeURIComponent(distributorId)}/notification-profile`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ notificationTeamId: "smoke-team", wecomUserId: "smoke_partner", mentionOnProgress: true }),
+  });
+  if (notificationProfile.user?.notificationTeamId !== "smoke-team" || notificationProfile.user?.wecomUserId !== "smoke_partner") {
+    throw new Error("User project notification profile was not persisted safely.");
+  }
   const distributorLogin = await expectJson("/api/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: "smoke-partner", password: distributorPassword }),
   });
-  if (!distributorLogin.user?.permissions?.includes("movement") || distributorLogin.user?.permissions?.includes("direct_price")) {
+  if (!distributorLogin.user?.permissions?.includes("movement") || distributorLogin.user?.permissions?.includes("direct_price") || distributorLogin.user?.notificationTeamId !== "smoke-team") {
     throw new Error("Distributor effective permissions did not grant movement while enforcing the direct-price hard deny.");
   }
   const distributorHeaders = { Authorization: `Bearer ${distributorLogin.token}` };

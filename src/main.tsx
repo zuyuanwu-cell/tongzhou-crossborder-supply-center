@@ -82,6 +82,7 @@ import {
   StockupWorkflowPayload,
   UserManagementPayload,
   WecomNotificationPayload,
+  WecomProjectTeam,
   WecomRobot,
   WecomSchedule,
   WecomSceneConfig,
@@ -173,6 +174,7 @@ import {
   testWarehouseConnection,
   testMiaoshouConnection,
   testWecomNotification,
+  testWecomProjectTeam,
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
   updatePerformanceExchangeRates,
@@ -182,6 +184,7 @@ import {
   updateShopProjectGroup,
   updateStockupPlanStatus,
   updateUserPermissions,
+  updateUserNotificationProfile,
   updateUserStatus,
   updateWarehouseConnection,
   updateMiaoshouConfig,
@@ -191,6 +194,7 @@ import {
   runMiaoshouAutomation,
   retryMiaoshouTask,
   updateWecomScenes,
+  updateWecomProjectTeams,
   upsertWecomRobot,
   upsertWecomSchedule,
   fetchAiConfig,
@@ -2011,7 +2015,7 @@ function App() {
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "用户管理" ? (
-          <UserManagement userPayload={userPayload} />
+          <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} />
         ) : (
           <Dashboard
             products={catalog}
@@ -2190,7 +2194,7 @@ function LoginButton({
             <div className="login-voyage-copy">
               <p><span /> VOYAGE · 2026</p>
               <h2>我们是<br /><em>同一艘船上的人</em></h2>
-              <blockquote>目标同向，信息同频，行动同行。</blockquote>
+              <blockquote>方向一致，各司其职，一起把船开的更远！</blockquote>
             </div>
 
             <div className="login-sailing-scene" aria-hidden="true">
@@ -6419,6 +6423,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   const data = localPayload || payload;
   const robots = data?.robots || [];
   const schedules = data?.schedules || [];
+  const [projectTeams, setProjectTeams] = React.useState<WecomProjectTeam[]>([]);
   const scenes = data?.scenes || {
     stockupRecommendation: defaultWecomScene,
     inventorySnapshot: defaultWecomScene,
@@ -6494,6 +6499,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
 
   React.useEffect(() => {
     if (data?.scenes) setSceneForm(data.scenes);
+    if (data?.projectTeams) setProjectTeams(data.projectTeams);
   }, [data?.updatedAt]);
 
   async function refresh(result?: WecomNotificationPayload) {
@@ -6647,6 +6653,49 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
     }));
   }
 
+  function addProjectTeam() {
+    setProjectTeams((current) => [...current, {
+      id: `team-${Date.now().toString(36)}`,
+      name: "",
+      enabled: true,
+      robotIds: [],
+      mentionUserIds: [],
+    }]);
+  }
+
+  function updateProjectTeam(id: string, patch: Partial<WecomProjectTeam>) {
+    setProjectTeams((current) => current.map((team) => team.id === id ? { ...team, ...patch } : team));
+  }
+
+  async function saveProjectTeams() {
+    setBusy("project-teams");
+    setMessage("");
+    try {
+      const result = await updateWecomProjectTeams(projectTeams);
+      await refresh(result);
+      setMessage("项目团队通知路由已保存。新提报将按用户默认团队或本次选择冻结通知群。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "项目团队通知路由保存失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function testProjectTeam(team: WecomProjectTeam) {
+    setBusy(`project-team-${team.id}`);
+    setMessage("");
+    try {
+      const result = await testWecomProjectTeam(team.id);
+      await refresh(result);
+      const failed = result.results?.filter((item) => !item.ok) || [];
+      setMessage(failed.length ? `「${team.name}」测试完成，${failed.length} 个机器人失败。` : `「${team.name}」测试消息已发送。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "项目群测试发送失败。请先保存项目团队配置。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   function updateAfterSalesNewScene(patch: Partial<WecomNotificationPayload["scenes"]["afterSalesNew"]>) {
     setSceneForm((current) => ({
       ...current,
@@ -6779,6 +6828,57 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
         </section>
       </section>
 
+      <section className="panel wecom-panel wecom-project-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Project Routing</p>
+            <h2>项目群通知路由</h2>
+            <p>仓库处理进度按提报人所属项目发送；团队负责人和提报人可在群内被自动提醒。</p>
+          </div>
+          <div className="wecom-actions">
+            <button className="ghost-button" type="button" onClick={addProjectTeam}><Plus size={15} />新增项目团队</button>
+            <button className="sync-button" type="button" disabled={busy === "project-teams"} onClick={saveProjectTeams}>{busy === "project-teams" ? "保存中" : "保存项目路由"}</button>
+          </div>
+        </div>
+        <div className="wecom-project-list">
+          {projectTeams.length ? projectTeams.map((team) => (
+            <article className="wecom-project-card" key={team.id}>
+              <div className="wecom-project-card-heading">
+                <label>
+                  <span>项目团队名称</span>
+                  <input value={team.name} onChange={(event) => updateProjectTeam(team.id, { name: event.target.value })} placeholder="例如：Naturekis 项目组" />
+                </label>
+                <label className="wecom-inline-check">
+                  <input type="checkbox" checked={team.enabled} onChange={(event) => updateProjectTeam(team.id, { enabled: event.target.checked })} />
+                  <span>{team.enabled ? "已启用" : "已停用"}</span>
+                </label>
+                <span className="status-pill muted">{team.id}</span>
+              </div>
+              <div>
+                <span className="field-label">项目群机器人</span>
+                <RobotCheckboxes robots={robots} selected={team.robotIds} onChange={(robotIds) => updateProjectTeam(team.id, { robotIds })} />
+              </div>
+              <label>
+                <span>固定提醒负责人 UserID</span>
+                <textarea
+                  value={team.mentionUserIds.join("\n")}
+                  onChange={(event) => updateProjectTeam(team.id, { mentionUserIds: Array.from(new Set(event.target.value.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean))) })}
+                  placeholder="每行一个企业微信 UserID；每次进度更新都会 @这些负责人"
+                />
+              </label>
+              <div className="wecom-actions">
+                <button className="ghost-button compact-button" type="button" disabled={busy === `project-team-${team.id}`} onClick={() => void testProjectTeam(team)}>{busy === `project-team-${team.id}` ? "测试中" : "发送测试"}</button>
+                <button className="ghost-button compact-button danger-button" type="button" onClick={() => setProjectTeams((current) => current.filter((item) => item.id !== team.id))}>移除</button>
+              </div>
+            </article>
+          )) : <div className="stockup-empty">尚未配置项目团队。未配置时，仓库处理进度继续发送到场景中的全局运营群。</div>}
+        </div>
+        <div className="permission-guardrail">
+          <ShieldCheck size={18} />
+          <span>工单创建时会冻结项目团队，人员后续转组不会改变旧工单去向；机器人更换可直接在团队内调整。项目群失效或发送失败时自动回退到全局运营群。</span>
+        </div>
+      </section>
+
       <section className="panel wecom-panel">
         <div className="panel-heading">
           <div>
@@ -6902,7 +7002,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
-            ["afterSalesProgress", "仓库协同处理进度更新时", "仓库接单、进度变化、上传面单、驳回或回复工单后，立即通知运营群。"],
+            ["afterSalesProgress", "仓库协同处理进度更新时", "优先按提交人的项目群通知；未配置或发送失败时回退到全局运营群。"],
           ] as Array<[keyof WecomNotificationPayload["scenes"], string, string]>).map(([key, title, description]) => {
             const scene = sceneForm[key] || defaultWecomScene;
             return (
@@ -7460,10 +7560,10 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   );
 }
 
-function UserManagement({ userPayload }: { userPayload: UserManagementPayload | null }) {
+function UserManagement({ userPayload, projectTeams }: { userPayload: UserManagementPayload | null; projectTeams: WecomProjectTeam[] }) {
   const confirm = useConfirm();
   const users = userPayload?.users ?? [];
-  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "warehouse" | "admin" });
+  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "warehouse" | "admin", notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
   const [saving, setSaving] = React.useState(false);
   const [actionUserId, setActionUserId] = React.useState("");
   const [actionApplicationId, setActionApplicationId] = React.useState("");
@@ -7477,6 +7577,9 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
     countries: "",
     warehouseIds: "",
     skus: "",
+    notificationTeamId: "",
+    wecomUserId: "",
+    mentionOnProgress: true,
   });
   const visiblePayload = localPayload || userPayload;
   const visibleUsers = visiblePayload?.users ?? users;
@@ -7516,7 +7619,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
           nextMessage = `${nextMessage} 但分销申请状态更新失败：${statusError instanceof Error ? statusError.message : "请稍后手动标记"}`;
         }
       }
-      setForm({ username: "", password: "", displayName: "", role: "distributor" });
+      setForm({ username: "", password: "", displayName: "", role: "distributor", notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
       setMessage(nextMessage);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "创建用户失败。");
@@ -7537,6 +7640,9 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
       password: "",
       displayName: application.companyName || application.contactName,
       role: "distributor",
+      notificationTeamId: "",
+      wecomUserId: "",
+      mentionOnProgress: true,
     });
     setSourceApplicationId(application.id);
     setMessage("已带入创建账号表单，请填写初始密码后创建。");
@@ -7568,6 +7674,9 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
       countries: (user.dataScopes?.countries || []).join(", "),
       warehouseIds: (user.dataScopes?.warehouseIds || []).join(", "),
       skus: (user.dataScopes?.skus || []).join(", "),
+      notificationTeamId: user.notificationTeamId || "",
+      wecomUserId: user.wecomUserId || "",
+      mentionOnProgress: user.mentionOnProgress !== false,
     });
     setMessage("");
   }
@@ -7609,13 +7718,18 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
     setActionUserId(user.id);
     setMessage("");
     try {
-      const result = await updateUserPermissions(user.id, {
+      await updateUserPermissions(user.id, {
         permissionOverrides,
         dataScopes: {
           countries: parseScopeInput(permissionDraft.countries),
           warehouseIds: parseScopeInput(permissionDraft.warehouseIds),
           skus: parseScopeInput(permissionDraft.skus),
         },
+      });
+      const result = await updateUserNotificationProfile(user.id, {
+        notificationTeamId: permissionDraft.notificationTeamId,
+        wecomUserId: permissionDraft.wecomUserId,
+        mentionOnProgress: permissionDraft.mentionOnProgress,
       });
       setLocalPayload(result);
       setEditingUserId("");
@@ -7759,6 +7873,21 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
               <option value="admin">管理员</option>
             </select>
           </label>
+          <label>
+            <span>默认项目通知群</span>
+            <select value={form.notificationTeamId} onChange={(event) => setForm((current) => ({ ...current, notificationTeamId: event.target.value }))}>
+              <option value="">全局运营群（兜底）</option>
+              {projectTeams.filter((team) => team.enabled).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>企业微信 UserID</span>
+            <input value={form.wecomUserId} onChange={(event) => setForm((current) => ({ ...current, wecomUserId: event.target.value }))} placeholder="用于在项目群内 @本人" />
+          </label>
+          <label className="wecom-inline-check">
+            <input type="checkbox" checked={form.mentionOnProgress} onChange={(event) => setForm((current) => ({ ...current, mentionOnProgress: event.target.checked }))} />
+            <span>仓库更新处理进度时 @该用户</span>
+          </label>
           <div className="warehouse-auth-actions">
             <button className="sync-button" type="submit" disabled={saving}>
               <Lock size={16} />
@@ -7800,6 +7929,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
                       ? "已限制数据范围"
                       : "数据范围：全部"}
                   </small>
+                  <small>通知群：{projectTeams.find((team) => team.id === user.notificationTeamId)?.name || "全局运营群"}{user.wecomUserId ? " · 可@本人" : " · 未配UserID"}</small>
                 </span>
                 <span className="user-actions">
                   <button type="button" className="sync-button compact-button" disabled={actionUserId === user.id} onClick={() => openPermissionEditor(user)}>
@@ -7885,6 +8015,29 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
                     </label>
                   </div>
 
+                  <div className="notification-profile-grid">
+                    <div className="notification-profile-copy">
+                      <p className="eyebrow">Project Notification</p>
+                      <h4>项目群通知身份</h4>
+                      <span>这里决定该用户新提交工单的默认通知群；提报时仍可为单次工单临时切换。</span>
+                    </div>
+                    <label>
+                      <span>默认项目团队</span>
+                      <select value={permissionDraft.notificationTeamId} onChange={(event) => setPermissionDraft((current) => ({ ...current, notificationTeamId: event.target.value }))}>
+                        <option value="">全局运营群（兜底）</option>
+                        {projectTeams.filter((team) => team.enabled).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>企业微信 UserID</span>
+                      <input value={permissionDraft.wecomUserId} onChange={(event) => setPermissionDraft((current) => ({ ...current, wecomUserId: event.target.value }))} placeholder="例如：zhangsan_01" />
+                    </label>
+                    <label className="wecom-inline-check">
+                      <input type="checkbox" checked={permissionDraft.mentionOnProgress} onChange={(event) => setPermissionDraft((current) => ({ ...current, mentionOnProgress: event.target.checked }))} />
+                      <span>仓库更新工单时在项目群 @本人</span>
+                    </label>
+                  </div>
+
                   <div className="permission-guardrail">
                     <ShieldCheck size={18} />
                     <span>直营运营默认仅开放妙手订单别名匹配，AI 上架、自动运单和连接配置需逐项授权；分销商、游客及仓库账号不可获得妙手内部能力。关闭权限会同时隐藏入口并拒绝接口访问。</span>
@@ -7893,7 +8046,7 @@ function UserManagement({ userPayload }: { userPayload: UserManagementPayload | 
                     <button className="ghost-button" type="button" onClick={() => setEditingUserId("")}>取消</button>
                     <button className="sync-button" type="button" disabled={actionUserId === user.id} onClick={() => savePermissionEditor(user)}>
                       <ShieldCheck size={15} />
-                      {actionUserId === user.id ? "保存中" : "保存并立即生效"}
+                      {actionUserId === user.id ? "保存中" : "保存权限与通知设置"}
                     </button>
                   </div>
                 </section>

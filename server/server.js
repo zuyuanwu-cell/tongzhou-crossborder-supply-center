@@ -43,6 +43,13 @@ import { createMiaoshouOrderAliasJobService } from "./miaoshou-order-alias-jobs.
 import { createAfterSalesService } from "./after-sales.js";
 import { createWarehouseTicketService } from "./warehouse-tickets.js";
 import {
+  normalizeWecomProjectTeams,
+  normalizeWecomUserId,
+  resolveNotificationRouteSnapshot,
+  resolveProgressNotificationRoute,
+  withWecomMentions,
+} from "./wecom-project-routing.js";
+import {
   afterSalesWarehouseOptions,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
@@ -924,7 +931,8 @@ function buildWecomNotificationPayload(input = {}) {
       lastSentAt: input.scenes?.afterSalesProgress?.lastSentAt || "",
     },
   };
-  return { ok: true, source: "local", updatedAt: input.updatedAt || now, robots, schedules, scenes };
+  const projectTeams = normalizeWecomProjectTeams(input.projectTeams);
+  return { ok: true, source: "local", updatedAt: input.updatedAt || now, robots, schedules, projectTeams, scenes };
 }
 
 function publicWecomNotificationPayload() {
@@ -941,7 +949,7 @@ function notificationLinkLine(linkUrl, linkText = "查看详情") {
   return `\n[${String(linkText || "查看详情").trim()}](${url})`;
 }
 
-async function sendWecomRobot(robot, content) {
+async function sendWecomRobot(robot, content, mentionUserIds = []) {
   if (!robot?.enabled) return { robotId: robot?.id, ok: false, skipped: true, message: "机器人已停用" };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
@@ -952,7 +960,7 @@ async function sendWecomRobot(robot, content) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         msgtype: "markdown",
-        markdown: { content: String(content || "").slice(0, 4000) },
+        markdown: { content: withWecomMentions(content, mentionUserIds) },
       }),
       signal: controller.signal,
     });
@@ -972,12 +980,12 @@ async function sendWecomRobot(robot, content) {
   return { robotId: robot.id, ok: true };
 }
 
-async function sendWecomNotification(robotIds, content) {
+async function sendWecomNotification(robotIds, content, mentionUserIds = []) {
   const ids = new Set((robotIds || []).map(String).filter(Boolean));
   const robots = (cachedWecomNotifications.robots || []).filter((robot) => ids.has(robot.id) && robot.enabled);
   const results = await Promise.all(robots.map(async (robot) => {
     try {
-      const result = await sendWecomRobot(robot, content);
+      const result = await sendWecomRobot(robot, content, mentionUserIds);
       robot.lastSentAt = new Date().toISOString();
       robot.lastError = "";
       return result;
@@ -1005,7 +1013,7 @@ function notificationOutcome(results = [], configured = true) {
   if (!configured || !results.length) return { status: "skipped", robotCount: 0, failedCount: 0, message: "场景通知未启用，或接收群机器人已停用/未配置" };
   const failed = results.filter((result) => !result.ok);
   return {
-    status: failed.length ? "failed" : "sent",
+    status: results.some((result) => result.ok) ? "sent" : "failed",
     robotCount: results.length,
     failedCount: failed.length,
     message: failed.map((result) => result.message).filter(Boolean).join("；"),
@@ -1032,21 +1040,40 @@ async function notifyAfterSalesCreated(ticket, requestOrigin) {
 
 async function notifyAfterSalesProgress(ticket, requestOrigin) {
   const scene = cachedWecomNotifications.scenes?.afterSalesProgress;
-  const robotIds = scene?.enabled ? (scene.robotIds || []) : [];
-  const configured = Boolean(scene?.enabled && robotIds.length);
-  const results = configured
-    ? await sendWecomNotification(robotIds, buildAfterSalesProgressMarkdown(ticket, {
+  const route = resolveProgressNotificationRoute({
+    ticket,
+    projectTeams: cachedWecomNotifications.projectTeams,
+    globalRobotIds: scene?.enabled ? scene.robotIds : [],
+  });
+  const configured = Boolean(scene?.enabled && route.robotIds.length);
+  const markdown = buildAfterSalesProgressMarkdown(ticket, {
       statusLabel: afterSalesStatusLabels[ticket.status] || ticket.status,
-      linkUrl: scene.linkUrl,
-      extraText: scene.extraText,
+      linkUrl: scene?.linkUrl,
+      extraText: scene?.extraText,
       requestOrigin,
-    }))
-    : [];
+    });
+  let results = configured ? await sendWecomNotification(route.robotIds, markdown, route.mentionUserIds) : [];
+  let fallback = route.fallback;
+  let routeLabel = route.routeLabel;
+  if (scene?.enabled && !route.fallback && !results.some((result) => result.ok)) {
+    const fallbackRobotIds = (scene.robotIds || []).filter((id) => !route.robotIds.includes(id));
+    if (fallbackRobotIds.length) {
+      results = [...results, ...await sendWecomNotification(fallbackRobotIds, markdown, route.mentionUserIds)];
+      fallback = true;
+      routeLabel = `${route.routeLabel}发送失败，已回退全局运营群`;
+    }
+  }
   if (results.some((result) => result.ok)) {
     scene.lastSentAt = new Date().toISOString();
     saveWecomNotificationCache();
   }
-  return notificationOutcome(results, configured);
+  return {
+    ...notificationOutcome(results, configured || results.length > 0),
+    routeLabel,
+    teamId: route.teamId,
+    fallback,
+    mentionedCount: route.mentionUserIds.length,
+  };
 }
 
 async function deliverAfterSalesNotification(ticket, eventType, requestOrigin) {
@@ -1086,19 +1113,47 @@ const warehouseTicketStatusLabels = Object.freeze({
 async function notifyWarehouseTicket(ticket, eventType, origin) {
   const created = eventType === "created";
   const scene = cachedWecomNotifications.scenes?.[created ? "afterSalesNew" : "afterSalesProgress"];
-  const robotIds = scene?.enabled
-    ? (created ? notificationRobotIds(scene, ticket.warehouseId) : (scene.robotIds || []))
-    : [];
-  const configured = Boolean(scene?.enabled && robotIds.length);
   const markdown = created
     ? buildWarehouseTicketCreatedMarkdown(ticket, { linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin })
     : buildWarehouseTicketProgressMarkdown(ticket, { statusLabel: warehouseTicketStatusLabels[ticket.status] || ticket.status, linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin });
-  const results = configured ? await sendWecomNotification(robotIds, markdown) : [];
+  if (created) {
+    const robotIds = scene?.enabled ? notificationRobotIds(scene, ticket.warehouseId) : [];
+    const configured = Boolean(scene?.enabled && robotIds.length);
+    const results = configured ? await sendWecomNotification(robotIds, markdown) : [];
+    if (results.some((result) => result.ok)) {
+      scene.lastSentAt = new Date().toISOString();
+      saveWecomNotificationCache();
+    }
+    return { ...notificationOutcome(results, configured), routeLabel: "处理仓库群", teamId: "", fallback: false, mentionedCount: 0 };
+  }
+  const route = resolveProgressNotificationRoute({
+    ticket,
+    projectTeams: cachedWecomNotifications.projectTeams,
+    globalRobotIds: scene?.enabled ? scene.robotIds : [],
+  });
+  const configured = Boolean(scene?.enabled && route.robotIds.length);
+  let results = configured ? await sendWecomNotification(route.robotIds, markdown, route.mentionUserIds) : [];
+  let fallback = route.fallback;
+  let routeLabel = route.routeLabel;
+  if (scene?.enabled && !route.fallback && !results.some((result) => result.ok)) {
+    const fallbackRobotIds = (scene.robotIds || []).filter((id) => !route.robotIds.includes(id));
+    if (fallbackRobotIds.length) {
+      results = [...results, ...await sendWecomNotification(fallbackRobotIds, markdown, route.mentionUserIds)];
+      fallback = true;
+      routeLabel = `${route.routeLabel}发送失败，已回退全局运营群`;
+    }
+  }
   if (results.some((result) => result.ok)) {
     scene.lastSentAt = new Date().toISOString();
     saveWecomNotificationCache();
   }
-  return notificationOutcome(results, configured);
+  return {
+    ...notificationOutcome(results, configured || results.length > 0),
+    routeLabel,
+    teamId: route.teamId,
+    fallback,
+    mentionedCount: route.mentionUserIds.length,
+  };
 }
 
 async function deliverWarehouseTicketNotification(ticket, eventType, origin) {
@@ -6492,6 +6547,20 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/warehouse-collaboration/notification-teams" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report") && !hasPermission(auth, "warehouse_ticket_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库协同提报权限。" });
+        return;
+      }
+      const teams = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams)
+        .filter((team) => team.enabled)
+        .map(({ id, name }) => ({ id, name }));
+      const defaultTeamId = teams.some((team) => team.id === auth.user?.notificationTeamId) ? auth.user.notificationTeamId : "";
+      sendJson(res, 200, { ok: true, teams, defaultTeamId, fallbackLabel: "全局运营群（兜底）" });
+      return;
+    }
+
     if (url.pathname === "/api/warehouse-tickets/uploads" && req.method === "POST") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "warehouse_ticket_report")) {
@@ -6540,7 +6609,12 @@ const server = http.createServer(async (req, res) => {
         const warehouses = afterSalesWarehouseOptions({}, warehouseConnections, normalizeDataScopes(auth.user?.dataScopes));
         const warehouse = warehouses.find((item) => item.id === String(payload.warehouseId || "").trim());
         if (!warehouse) throw new Error(warehouses.length ? "请选择可用的处理仓库。" : "当前账号没有可用仓库，请先配置仓库授权。");
-        const result = warehouseTicketService.create({ ...payload, warehouseId: warehouse.id, warehouseName: warehouse.name, country: warehouse.country }, auth.user);
+        const notificationRoute = resolveNotificationRouteSnapshot({
+          actor: auth.user,
+          requestedTeamId: payload.notificationTeamId,
+          projectTeams: cachedWecomNotifications.projectTeams,
+        });
+        const result = warehouseTicketService.create({ ...payload, warehouseId: warehouse.id, warehouseName: warehouse.name, country: warehouse.country, notificationRoute }, auth.user);
         appendActionLog(auth, "提交仓库工单", "warehouse_ticket", result.ticket.id, { category: result.ticket.category, priority: result.ticket.priority });
         const notification = await deliverWarehouseTicketNotification(result.ticket, "created", requestOrigin(req));
         sendJson(res, 201, { ...result, ticket: warehouseTicketService.get(result.ticket.id), notification });
@@ -6741,6 +6815,11 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 403, { ok: false, message: "该售后单不在当前账号的数据范围内。" });
           return;
         }
+        payload.notificationRoute = resolveNotificationRouteSnapshot({
+          actor: auth.user,
+          requestedTeamId: payload.notificationTeamId,
+          projectTeams: cachedWecomNotifications.projectTeams,
+        });
         const result = afterSalesService.create(payload, auth.user);
         appendActionLog(auth, "提交售后单", "after_sales_ticket", result.ticket.id, {
           originalOrderNumber: result.ticket.originalOrderNumber,
@@ -7452,6 +7531,68 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/wecom-notifications/project-teams" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "notifications")) {
+        sendJson(res, 401, { ok: false, message: "配置项目通知群需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const rawTeams = Array.isArray(payload.projectTeams) ? payload.projectTeams : [];
+      const projectTeams = normalizeWecomProjectTeams(rawTeams);
+      if (projectTeams.length !== rawTeams.length) {
+        sendJson(res, 400, { ok: false, message: "项目团队名称或标识不正确，或存在重复标识。" });
+        return;
+      }
+      const robotIds = new Set((cachedWecomNotifications.robots || []).map((robot) => robot.id));
+      const unknownRobotIds = projectTeams.flatMap((team) => team.robotIds).filter((id) => !robotIds.has(id));
+      if (unknownRobotIds.length) {
+        sendJson(res, 400, { ok: false, message: `项目团队引用了不存在的机器人：${[...new Set(unknownRobotIds)].join("、")}` });
+        return;
+      }
+      cachedWecomNotifications = buildWecomNotificationPayload({
+        ...cachedWecomNotifications,
+        projectTeams,
+        updatedAt: new Date().toISOString(),
+      });
+      saveWecomNotificationCache();
+      appendActionLog(auth, "更新项目群通知路由", "wecom_project_team", `${projectTeams.length} 个项目团队`, {
+        teamIds: projectTeams.map((team) => team.id),
+      });
+      sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    const projectTeamTestMatch = url.pathname.match(/^\/api\/wecom-notifications\/project-teams\/([^/]+)\/test$/);
+    if (projectTeamTestMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "notifications")) {
+        sendJson(res, 401, { ok: false, message: "测试项目通知群需要管理员登录。" });
+        return;
+      }
+      const teamId = decodeURIComponent(projectTeamTestMatch[1]);
+      const team = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams).find((item) => item.id === teamId);
+      if (!team) {
+        sendJson(res, 404, { ok: false, message: "项目团队不存在，请先保存配置。" });
+        return;
+      }
+      if (!team.enabled || !team.robotIds.length) {
+        sendJson(res, 400, { ok: false, message: "请先启用团队并至少选择一个群机器人。" });
+        return;
+      }
+      const results = await sendWecomNotification(team.robotIds, [
+        "### 仓库协同项目群通知测试",
+        `项目团队：${team.name}`,
+        "配置成功。后续仓库处理进度会按提报时冻结的项目团队发送到本群。",
+      ].join("\n\n"), team.mentionUserIds);
+      appendActionLog(auth, "测试项目群通知", "wecom_project_team", team.name, {
+        robotCount: team.robotIds.length,
+        failedCount: results.filter((item) => !item.ok).length,
+      });
+      sendJson(res, 200, { ok: true, results, ...publicWecomNotificationPayload() });
+      return;
+    }
+
     const wecomRobotMatch = url.pathname.match(/^\/api\/wecom-notifications\/robots\/([^/]+)$/);
     if (wecomRobotMatch && req.method === "DELETE") {
       if (!canManageModule(getAuth(req), "notifications")) {
@@ -7462,6 +7603,8 @@ const server = http.createServer(async (req, res) => {
       const deletedRobot = (cachedWecomNotifications.robots || []).find((robot) => robot.id === robotId);
       cachedWecomNotifications.robots = (cachedWecomNotifications.robots || []).filter((robot) => robot.id !== robotId);
       cachedWecomNotifications.schedules = (cachedWecomNotifications.schedules || []).map((schedule) => ({ ...schedule, robotIds: schedule.robotIds.filter((id) => id !== robotId) }));
+      cachedWecomNotifications.projectTeams = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams)
+        .map((team) => ({ ...team, robotIds: team.robotIds.filter((id) => id !== robotId) }));
       for (const scene of Object.values(cachedWecomNotifications.scenes || {})) {
         scene.robotIds = (scene.robotIds || []).filter((id) => id !== robotId);
         if (scene.warehouseRobotIds && typeof scene.warehouseRobotIds === "object") {
@@ -8126,6 +8269,19 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      const notificationTeamId = String(payload.notificationTeamId || "").trim().toLowerCase();
+      const enabledNotificationTeams = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams);
+      if (notificationTeamId && !enabledNotificationTeams.some((team) => team.id === notificationTeamId && team.enabled)) {
+        sendJson(res, 400, { ok: false, message: "请选择一个已启用的项目团队，或留空使用全局运营群。" });
+        return;
+      }
+      const rawWecomUserId = String(payload.wecomUserId || "").trim();
+      const wecomUserId = normalizeWecomUserId(rawWecomUserId);
+      if (rawWecomUserId && !wecomUserId) {
+        sendJson(res, 400, { ok: false, message: "企业微信 UserID 只能包含字母、数字、点、下划线、短横线或 @。" });
+        return;
+      }
+
       const user = createLocalUser({
         username,
         password: payload.password,
@@ -8133,6 +8289,9 @@ const server = http.createServer(async (req, res) => {
         role: payload.role,
         permissionOverrides: payload.permissionOverrides,
         dataScopes: payload.dataScopes,
+        notificationTeamId,
+        wecomUserId,
+        mentionOnProgress: payload.mentionOnProgress,
       });
 
       try {
@@ -8201,6 +8360,48 @@ const server = http.createServer(async (req, res) => {
         user: publicUser(user),
         ...publicUsersPayload(),
       });
+      return;
+    }
+
+    const userNotificationProfileMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/notification-profile$/);
+    if (userNotificationProfileMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "users")) {
+        sendJson(res, 401, { ok: false, message: "配置用户通知身份需要管理员登录。" });
+        return;
+      }
+      const userId = decodeURIComponent(userNotificationProfileMatch[1]);
+      const user = (cachedUsers.users || []).find((item) => item.id === userId);
+      if (!user) {
+        sendJson(res, 404, { ok: false, message: "用户不存在。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const teamId = String(payload.notificationTeamId || "").trim().toLowerCase();
+      const teams = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams);
+      if (teamId && !teams.some((team) => team.id === teamId && team.enabled)) {
+        sendJson(res, 400, { ok: false, message: "请选择一个已启用的项目团队，或留空使用全局运营群。" });
+        return;
+      }
+      const rawWecomUserId = String(payload.wecomUserId || "").trim();
+      const wecomUserId = normalizeWecomUserId(rawWecomUserId);
+      if (rawWecomUserId && !wecomUserId) {
+        sendJson(res, 400, { ok: false, message: "企业微信 UserID 只能包含字母、数字、点、下划线、短横线或 @。" });
+        return;
+      }
+      user.notificationTeamId = teamId;
+      user.wecomUserId = wecomUserId;
+      user.mentionOnProgress = payload.mentionOnProgress !== false;
+      user.updatedAt = new Date().toISOString();
+      cachedUsers.syncedAt = user.updatedAt;
+      saveUsersCache();
+      appendActionLog(auth, "更新用户项目通知配置", "user", user.displayName || user.username, {
+        userId: user.id,
+        notificationTeamId: user.notificationTeamId,
+        hasWecomUserId: Boolean(user.wecomUserId),
+        mentionOnProgress: user.mentionOnProgress,
+      });
+      sendJson(res, 200, { ok: true, user: publicUser(user), ...publicUsersPayload() });
       return;
     }
 

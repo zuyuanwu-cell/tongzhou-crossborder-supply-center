@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { normalizedCountryKey } from "./performance-analytics.js";
+import { normalizeNotificationRouteSnapshot } from "./wecom-project-routing.js";
 
 export const WAREHOUSE_TICKET_CATEGORIES = Object.freeze([
   "订单催促",
@@ -200,6 +201,7 @@ export function createWarehouseTicketService({ cachePath, uploadDir }) {
       updatedAt: now,
       createdBy: actorName(actor),
       createdById: text(actor?.id),
+      notificationRoute: normalizeNotificationRouteSnapshot(input.notificationRoute),
       acceptedAt: "",
       resolvedAt: "",
       timeline: [event("created", "运营提交仓库工单", actor, description)],
@@ -250,6 +252,10 @@ export function createWarehouseTicketService({ cachePath, uploadDir }) {
         robotCount: Number(input.robotCount || 0),
         failedCount: Number(input.failedCount || 0),
         message: text(input.message),
+        routeLabel: text(input.routeLabel),
+        teamId: text(input.teamId),
+        fallback: Boolean(input.fallback),
+        mentionedCount: Math.max(0, Math.floor(Number(input.mentionedCount) || 0)),
         createdAt: nowIso(),
       }].slice(-30),
     }));

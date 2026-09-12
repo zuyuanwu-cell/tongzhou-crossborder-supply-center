@@ -237,6 +237,9 @@ export type AuthUser = {
   dataScopes?: UserDataScopes;
   status?: UserStatus;
   statusLabel?: string;
+  notificationTeamId?: string;
+  wecomUserId?: string;
+  mentionOnProgress?: boolean;
 };
 
 export type AgentApiKey = {
@@ -496,6 +499,14 @@ export type WecomSceneConfig = {
   lastSentAt?: string;
 };
 
+export type WecomProjectTeam = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  robotIds: string[];
+  mentionUserIds: string[];
+};
+
 export type WecomAfterSalesNewSceneConfig = WecomSceneConfig & {
   warehouseRobotIds: Record<string, string[]>;
 };
@@ -506,6 +517,7 @@ export type WecomNotificationPayload = {
   updatedAt: string;
   robots: WecomRobot[];
   schedules: WecomSchedule[];
+  projectTeams: WecomProjectTeam[];
   scenes: {
     stockupRecommendation: WecomSceneConfig;
     inventorySnapshot: WecomSceneConfig;
@@ -1700,6 +1712,27 @@ export type NotificationDeliveryOutcome = {
   robotCount: number;
   failedCount: number;
   message: string;
+  routeLabel?: string;
+  teamId?: string;
+  fallback?: boolean;
+  mentionedCount?: number;
+};
+
+export type NotificationRouteSnapshot = {
+  teamId: string;
+  teamName: string;
+  submitterUserId: string;
+  submitterName: string;
+  submitterWecomUserId: string;
+  mentionSubmitter: boolean;
+  resolvedAt: string;
+};
+
+export type WarehouseNotificationTeamsPayload = {
+  ok: boolean;
+  teams: Array<{ id: string; name: string }>;
+  defaultTeamId: string;
+  fallbackLabel: string;
 };
 
 export type WarehouseTicket = {
@@ -1721,8 +1754,9 @@ export type WarehouseTicket = {
   createdById: string;
   acceptedAt: string;
   resolvedAt: string;
+  notificationRoute?: NotificationRouteSnapshot | null;
   timeline: Array<{ id: string; type: string; label: string; note: string; actor: string; createdAt: string }>;
-  notifications?: Array<{ id: string; eventType: string; target: string; status: string; robotCount: number; failedCount: number; message: string; createdAt: string }>;
+  notifications?: Array<{ id: string; eventType: string; target: string; status: string; robotCount: number; failedCount: number; message: string; routeLabel?: string; teamId?: string; fallback?: boolean; mentionedCount?: number; createdAt: string }>;
 };
 
 export type WarehouseTicketPayload = {
@@ -1824,6 +1858,7 @@ export type AfterSalesTicket = {
   createdById: string;
   updatedAt: string;
   completedAt: string;
+  notificationRoute?: NotificationRouteSnapshot | null;
   notifications?: Array<{
     id: string;
     eventType: string;
@@ -1832,6 +1867,10 @@ export type AfterSalesTicket = {
     robotCount: number;
     failedCount: number;
     message: string;
+    routeLabel?: string;
+    teamId?: string;
+    fallback?: boolean;
+    mentionedCount?: number;
     createdAt: string;
   }>;
   timeline: Array<{
@@ -2958,6 +2997,19 @@ export function updateWecomScenes(scenes: Partial<WecomNotificationPayload["scen
   });
 }
 
+export function updateWecomProjectTeams(projectTeams: WecomProjectTeam[]) {
+  return requestJson<WecomNotificationPayload>("/api/wecom-notifications/project-teams", {
+    method: "POST",
+    body: JSON.stringify({ projectTeams }),
+  });
+}
+
+export function testWecomProjectTeam(id: string) {
+  return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>(`/api/wecom-notifications/project-teams/${encodeURIComponent(id)}/test`, {
+    method: "POST",
+  });
+}
+
 export function testWecomNotification(input: { robotIds: string[]; text: string; linkUrl?: string; linkText?: string }) {
   return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>("/api/wecom-notifications/test", {
     method: "POST",
@@ -3121,7 +3173,7 @@ export function updateDistributorApplicationStatus(id: string, status: Distribut
   });
 }
 
-export function createUser(input: { username: string; password: string; displayName: string; role: UserRole; permissionOverrides?: PermissionOverrides; dataScopes?: UserDataScopes }) {
+export function createUser(input: { username: string; password: string; displayName: string; role: UserRole; permissionOverrides?: PermissionOverrides; dataScopes?: UserDataScopes; notificationTeamId?: string; wecomUserId?: string; mentionOnProgress?: boolean }) {
   return requestJson<UserManagementPayload & { user: AuthUser }>("/api/users", {
     method: "POST",
     body: JSON.stringify(input),
@@ -3325,6 +3377,13 @@ export function updatePerformancePackagingFeeRules(rules: PerformancePackagingFe
   return requestJson<{ ok: boolean; packagingFeeRules: PerformancePackagingFeeRule[]; updatedAt: string }>("/api/performance-analytics/packaging-fees", {
     method: "PATCH",
     body: JSON.stringify({ rules }),
+  });
+}
+
+export function updateUserNotificationProfile(id: string, input: { notificationTeamId: string; wecomUserId: string; mentionOnProgress: boolean }) {
+  return requestJson<UserManagementPayload & { user: AuthUser }>(`/api/users/${encodeURIComponent(id)}/notification-profile`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
   });
 }
 
@@ -3733,6 +3792,7 @@ export function createAfterSalesTicket(input: {
   adjustmentReason: string;
   warehouseId: string;
   warehouseName: string;
+  notificationTeamId?: string;
   responsibilityOverride?: { party: string; label?: string; reason: string } | null;
 }) {
   return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"]; notification: NotificationDeliveryOutcome }>("/api/after-sales", {
@@ -3790,6 +3850,10 @@ export function fetchWarehouseTickets(input: { status?: string; keyword?: string
   return requestJson<WarehouseTicketPayload>(`/api/warehouse-tickets${query}`, { signal });
 }
 
+export function fetchWarehouseNotificationTeams() {
+  return requestJson<WarehouseNotificationTeamsPayload>("/api/warehouse-collaboration/notification-teams");
+}
+
 export function uploadWarehouseTicketAttachment(input: { fileName: string; dataUrl: string }) {
   return requestJson<{ ok: boolean; upload: WarehouseTicketAttachment }>("/api/warehouse-tickets/uploads", {
     method: "POST",
@@ -3805,6 +3869,7 @@ export function createWarehouseTicket(input: {
   title: string;
   description: string;
   attachmentIds: string[];
+  notificationTeamId?: string;
 }) {
   return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"]; notification: NotificationDeliveryOutcome }>("/api/warehouse-tickets", {
     method: "POST",

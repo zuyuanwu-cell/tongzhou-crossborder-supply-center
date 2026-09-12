@@ -1,6 +1,7 @@
 import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { JIANYUN_FORMS } from "./field-mapping.js";
 import { effectivePermissions, normalizeDataScopes, normalizePermissionOverrides, permissionConfiguration, sanitizePermissionUpdate } from "./access-control.js";
+import { normalizeWecomUserId } from "./wecom-project-routing.js";
 
 function valueOf(record, fieldId) {
   if (!fieldId) return undefined;
@@ -96,7 +97,12 @@ export function authenticateLocalUser(users, username, password) {
   return publicUser(user);
 }
 
-export function createLocalUser({ username, password, displayName, role, permissionOverrides, dataScopes }) {
+function normalizeNotificationTeamId(value) {
+  const teamId = text(value).toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(teamId) ? teamId : "";
+}
+
+export function createLocalUser({ username, password, displayName, role, permissionOverrides, dataScopes, notificationTeamId, wecomUserId, mentionOnProgress }) {
   const safeUsername = text(username);
   const safeDisplayName = text(displayName, safeUsername);
   const safeRole = normalizeRole(role);
@@ -111,6 +117,9 @@ export function createLocalUser({ username, password, displayName, role, permiss
     roleLabel: roleLabel(safeRole),
     permissionOverrides: sanitizePermissionUpdate(safeRole, permissionOverrides),
     dataScopes: normalizeDataScopes(dataScopes),
+    notificationTeamId: normalizeNotificationTeamId(notificationTeamId),
+    wecomUserId: normalizeWecomUserId(wecomUserId),
+    mentionOnProgress: mentionOnProgress !== false,
     passwordHash: hashPassword(password),
     status: "active",
     createdAt: new Date().toISOString(),
@@ -131,6 +140,9 @@ export function normalizeStoredUser(user) {
     status: user.status === "disabled" ? "disabled" : "active",
     permissionOverrides: sanitizePermissionUpdate(role, normalizePermissionOverrides(user.permissionOverrides)),
     dataScopes: normalizeDataScopes(user.dataScopes),
+    notificationTeamId: normalizeNotificationTeamId(user.notificationTeamId),
+    wecomUserId: normalizeWecomUserId(user.wecomUserId),
+    mentionOnProgress: user.mentionOnProgress !== false,
   };
 }
 
@@ -154,6 +166,9 @@ export function publicUser(user) {
     permissions,
     permissionOverrides,
     dataScopes,
+    notificationTeamId: normalizeNotificationTeamId(user.notificationTeamId),
+    wecomUserId: normalizeWecomUserId(user.wecomUserId),
+    mentionOnProgress: user.mentionOnProgress !== false,
     jdySyncedAt: user.jdySyncedAt || "",
     jdySyncError: user.jdySyncError || "",
   };

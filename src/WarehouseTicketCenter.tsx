@@ -6,10 +6,12 @@ import {
   WarehouseTicket,
   WarehouseTicketAttachment,
   WarehouseTicketPayload,
+  WarehouseNotificationTeamsPayload,
   createWarehouseTicket,
   downloadWarehouseTicketAttachment,
   fetchWarehouseTicket,
   fetchWarehouseTickets,
+  fetchWarehouseNotificationTeams,
   updateWarehouseTicket,
   uploadWarehouseTicketAttachment,
 } from "./api";
@@ -33,7 +35,7 @@ function dateTime(value?: string) {
 }
 
 function notificationMessage(prefix: string, outcome?: NotificationDeliveryOutcome) {
-  if (outcome?.status === "sent") return `${prefix}，企业微信已推送至 ${outcome.robotCount} 个接收群。`;
+  if (outcome?.status === "sent") return `${prefix}，企业微信已推送至 ${outcome.robotCount} 个接收群${outcome.routeLabel ? `（${outcome.routeLabel}）` : ""}。`;
   if (outcome?.status === "failed") return `${prefix}，但企业微信推送失败：${outcome.message || "请检查机器人配置"}`;
   return `${prefix}，但企业微信场景未启用或未配置接收群。`;
 }
@@ -64,6 +66,8 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
   const [keyword, setKeyword] = React.useState("");
   const [status, setStatus] = React.useState("all");
   const [warehouseId, setWarehouseId] = React.useState("");
+  const [notificationTeams, setNotificationTeams] = React.useState<WarehouseNotificationTeamsPayload | null>(null);
+  const [notificationTeamId, setNotificationTeamId] = React.useState(currentUser.notificationTeamId || "__global__");
   const [category, setCategory] = React.useState("订单催促");
   const [priority, setPriority] = React.useState<"normal" | "urgent">("normal");
   const [relatedOrderNumber, setRelatedOrderNumber] = React.useState("");
@@ -91,6 +95,14 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
   React.useEffect(() => {
     void refresh({ mine: tab === "mine", status: tab === "create" ? "all" : status, keyword: tab === "create" ? "" : keyword });
   }, [refresh, tab]);
+
+  React.useEffect(() => {
+    if (!canReport) return;
+    void fetchWarehouseNotificationTeams().then((result) => {
+      setNotificationTeams(result);
+      setNotificationTeamId((current) => current || result.defaultTeamId || "__global__");
+    }).catch(() => setNotificationTeams(null));
+  }, [canReport]);
 
   React.useEffect(() => {
     const ticketId = initialTicketId.trim();
@@ -124,7 +136,7 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
     setBusy("submit");
     setError("");
     try {
-      const result = await createWarehouseTicket({ warehouseId, category, priority, relatedOrderNumber, title, description, attachmentIds: attachments.map((item) => item.id) });
+      const result = await createWarehouseTicket({ warehouseId, category, priority, relatedOrderNumber, title, description, attachmentIds: attachments.map((item) => item.id), notificationTeamId });
       setMessage(notificationMessage(`仓库工单 ${result.ticket.id} 已提交`, result.notification));
       setRelatedOrderNumber("");
       setTitle("");
@@ -227,6 +239,7 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
           <label><span>处理仓库 *</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">请选择仓库</option>{(payload?.warehouseOptions || []).map((item) => <option value={item.id} key={item.id}>{item.name}{item.country ? ` · ${item.country}` : ""}</option>)}</select></label>
           <label><span>工单类型 *</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label>
           <label><span>优先级 *</span><select value={priority} onChange={(event) => setPriority(event.target.value as "normal" | "urgent")}><option value="normal">普通</option><option value="urgent">紧急</option></select></label>
+          <label><span>处理进度通知到</span><select value={notificationTeamId} onChange={(event) => setNotificationTeamId(event.target.value)}><option value="__global__">{notificationTeams?.fallbackLabel || "全局运营群（兜底）"}</option>{(notificationTeams?.teams || []).map((team) => <option value={team.id} key={team.id}>{team.name}</option>)}</select><small>默认取你的项目团队；本次选择会随工单冻结。</small></label>
           <label><span>关联平台订单号{category === "订单催促" ? " *" : ""}</span><input value={relatedOrderNumber} onChange={(event) => setRelatedOrderNumber(event.target.value)} placeholder="填写平台后台订单号" /></label>
           <label className="wide"><span>工单主题 *</span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} placeholder="一句话说明需要仓库处理什么" /></label>
           <label className="wide"><span>详细说明 *</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="请写清问题现象、期望仓库动作、截止时间及已核实的信息。" /></label>
@@ -241,11 +254,11 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
     {selectedTicket ? <div className="as-drawer-backdrop" onMouseDown={(event) => event.currentTarget === event.target && setSelectedTicket(null)}><aside className="as-ticket-drawer wt-drawer">
       <header><div><p className="eyebrow">WAREHOUSE TICKET</p><h2>{selectedTicket.id}</h2><span>{selectedTicket.category} · {selectedTicket.warehouseName}</span></div><button onClick={() => setSelectedTicket(null)}><X size={19} /></button></header>
       <div className="as-drawer-scroll">
-        <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>优先级</small><strong>{selectedTicket.priority === "urgent" ? "紧急" : "普通"}</strong></div><div><small>关联订单</small><strong>{selectedTicket.relatedOrderNumber || "未关联"}</strong></div></section>
+        <section className="as-ticket-summary"><span className={`as-status ${statusMeta[selectedTicket.status]?.tone || "muted"}`}>{statusMeta[selectedTicket.status]?.label || selectedTicket.status}</span><div><small>优先级</small><strong>{selectedTicket.priority === "urgent" ? "紧急" : "普通"}</strong></div><div><small>关联订单</small><strong>{selectedTicket.relatedOrderNumber || "未关联"}</strong></div><div><small>进度通知群</small><strong>{selectedTicket.notificationRoute?.teamName || "全局运营群"}</strong></div></section>
         <section className="as-drawer-section"><header><div><small>工单主题</small><strong>{selectedTicket.title}</strong></div></header><p>{selectedTicket.description}</p></section>
         <section className="as-drawer-section"><header><div><small>附件</small><strong>{selectedTicket.attachments.length} 个</strong></div></header>{selectedTicket.attachments.length ? <div className="wt-detail-files">{selectedTicket.attachments.map((item) => <button key={item.id} onClick={() => void download(item)}><FileText size={18} /><span>{item.fileName}</span><Download size={15} /></button>)}</div> : <span className="as-empty-inline">暂无附件</span>}</section>
         {canWarehouse ? <section className="as-drawer-section"><label className="as-textarea"><span>仓库回复 / 处理说明</span><textarea value={warehouseRemark} onChange={(event) => setWarehouseRemark(event.target.value)} placeholder="填写核查进展、预计处理时间或最终结果；发送回复后运营会立即收到企业微信通知。" /></label></section> : selectedTicket.warehouseRemark ? <section className="as-drawer-section"><header><div><small>仓库处理说明</small><strong>最近更新</strong></div></header><p>{selectedTicket.warehouseRemark}</p></section> : null}
-        {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
+        {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{selectedTicket.notifications.at(-1)?.routeLabel || "默认通知路由"}{selectedTicket.notifications.at(-1)?.fallback ? " · 已使用兜底群" : ""}{selectedTicket.notifications.at(-1)?.mentionedCount ? ` · 已提醒 ${selectedTicket.notifications.at(-1)?.mentionedCount} 人` : ""} · {dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
         <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>{selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
       </div>
       {canWarehouse || canAdmin ? <footer>{selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void act("accept")} disabled={Boolean(busy)}>确认受理</button> : null}{["pending_warehouse", "processing"].includes(selectedTicket.status) ? <button onClick={() => void act("reply")} disabled={Boolean(busy) || !warehouseRemark.trim()}>发送回复</button> : null}{["pending_warehouse", "processing"].includes(selectedTicket.status) ? <button className="primary" onClick={() => void act("resolve")} disabled={Boolean(busy)}>填写结果并完结</button> : null}{canAdmin && !["resolved", "cancelled"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void act("cancel")} disabled={Boolean(busy)}>取消工单</button> : null}{canAdmin && ["resolved", "cancelled"].includes(selectedTicket.status) ? <button onClick={() => void act("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}</footer> : null}
