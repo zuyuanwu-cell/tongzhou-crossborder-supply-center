@@ -51,6 +51,7 @@ const seaConnection = {
 };
 
 const seaRequests = [];
+let seaRequestNumber = 0;
 const seaResult = await queryWarehouseReturns(seaConnection, {
   query: "000123",
   queryType: "platform_order",
@@ -60,6 +61,10 @@ const seaResult = await queryWarehouseReturns(seaConnection, {
 }, {
   fetchImpl: async (url, init) => {
     seaRequests.push({ url, body: JSON.parse(init.body) });
+    seaRequestNumber += 1;
+    if (seaRequestNumber === 1) {
+      return jsonResponse({ result: "success", data: { list: [], total: 0 } });
+    }
     return jsonResponse({
       result: "success",
       data: {
@@ -90,10 +95,15 @@ const seaResult = await queryWarehouseReturns(seaConnection, {
     });
   },
 });
-assert.equal(seaRequests.length, 1, "platform order uses one targeted SEA request");
+assert.equal(seaRequests.length, 2, "platform order falls back to a bounded scan when SEA's reference-number filter misses");
 assert.deepEqual(seaRequests[0].body.thirdOrderSns, ["000123", "WMS-000123"]);
 assert.equal(seaRequests[0].body.searchTimeFrom, undefined, "SEA platform order stays targeted even when a fallback date range is supplied");
+assert.equal(seaRequests[1].body.thirdOrderSns, undefined, "fallback must scan the bounded return list instead of repeating the wrong reference filter");
+assert.equal(seaRequests[1].body.searchTimeField, "create");
+assert.equal(seaRequests[1].body.searchTimeFrom, "2026-09-01 00:00:00");
+assert.equal(seaRequests[1].body.searchTimeTo, "2026-09-13 23:59:59");
 assert.equal(seaResult.complete, true);
+assert.equal(seaResult.method, "targeted_then_bounded_scan");
 assert.equal(seaResult.orders.length, 1, "aliases remain exact and must not match longer order numbers");
 assert.equal(seaResult.orders[0].status, "mixed");
 assert.deepEqual(seaResult.orders[0].items[0], {

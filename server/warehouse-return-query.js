@@ -376,46 +376,68 @@ async function querySeaReturns(connection, input, options) {
   if (!warehouseId) throw new WarehouseReturnQueryError("unconfigured", `${connection.name} 缺少WMS仓库ID。`);
 
   const aliases = unique([input.query, ...(input.lookupAliases || [])]);
-  let targeted = false;
-  let body = { warehouseId, pageSize: PAGE_SIZE };
+  let targetedBody = null;
   if (input.queryType === "platform_order" && aliases.length) {
-    body.thirdOrderSns = aliases;
-    targeted = true;
+    // SEA WMS names this filter thirdOrderSns, but it searches the WMS
+    // reference number (for example TH...), not platformOrderSn. Trying known
+    // aliases first is cheap; a miss must fall back to the bounded return list.
+    targetedBody = { warehouseId, pageSize: PAGE_SIZE, thirdOrderSns: aliases };
   } else if (input.queryType === "return_order" && /^\d+$/.test(input.query)) {
-    body.warehouseReturnOrderIds = [input.query];
-    targeted = true;
-  }
-  if (!targeted) {
-    if (!input.dateFrom || !input.dateTo) {
-      return { orders: [], complete: false, needsDateRange: true, pagesRead: 0, method: "needs_date_range" };
-    }
-    body = {
-      ...body,
-      searchTimeField: "modified",
-      searchTimeFrom: dateTimeStart(input.dateFrom),
-      searchTimeTo: dateTimeEnd(input.dateTo),
-    };
+    targetedBody = { warehouseId, pageSize: PAGE_SIZE, warehouseReturnOrderIds: [input.query] };
   }
 
-  let cursor = "";
-  let pagesRead = 0;
-  let reachedPageLimit = false;
-  const matches = [];
-  for (let page = 0; page < options.maxPages; page += 1) {
-    const payload = await postSea(options.fetchImpl, credentials, "/warehouse_return_order/search_page", cursor ? { ...body, cursor } : body, options);
-    const rows = seaRows(payload);
-    pagesRead = page + 1;
-    matches.push(...rows.filter((row) => rowMatchesInput(row, input)).map((row) => normalizeSeaReturnOrder(row, connection)));
-    if (matches.length) break;
-    const nextCursor = firstText(payload?.data?.cursor);
-    if (!nextCursor || nextCursor === cursor || !rows.length) break;
-    cursor = nextCursor;
-    if (page === options.maxPages - 1) reachedPageLimit = true;
+  async function searchPages(body) {
+    let cursor = "";
+    let pagesRead = 0;
+    let reachedPageLimit = false;
+    const matches = [];
+    for (let page = 0; page < options.maxPages; page += 1) {
+      const payload = await postSea(options.fetchImpl, credentials, "/warehouse_return_order/search_page", cursor ? { ...body, cursor } : body, options);
+      const rows = seaRows(payload);
+      pagesRead = page + 1;
+      matches.push(...rows.filter((row) => rowMatchesInput(row, input)).map((row) => normalizeSeaReturnOrder(row, connection)));
+      if (matches.length) break;
+      const nextCursor = firstText(payload?.data?.cursor);
+      if (!nextCursor || nextCursor === cursor || !rows.length) break;
+      cursor = nextCursor;
+      if (page === options.maxPages - 1) reachedPageLimit = true;
+    }
+    return { matches, pagesRead, reachedPageLimit };
   }
-  if (!matches.length && targeted && !input.dateFrom) {
-    return { orders: [], complete: false, needsDateRange: true, pagesRead, method: "targeted" };
+
+  let targetedPagesRead = 0;
+  if (targetedBody) {
+    const targetedResult = await searchPages(targetedBody);
+    targetedPagesRead = targetedResult.pagesRead;
+    if (targetedResult.matches.length) {
+      return {
+        orders: targetedResult.matches,
+        complete: !targetedResult.reachedPageLimit,
+        needsDateRange: false,
+        pagesRead: targetedPagesRead,
+        method: "targeted",
+      };
+    }
   }
-  return { orders: matches, complete: !reachedPageLimit, needsDateRange: false, pagesRead, method: targeted ? "targeted" : "bounded_scan" };
+
+  if (!input.dateFrom || !input.dateTo) {
+    return { orders: [], complete: false, needsDateRange: true, pagesRead: targetedPagesRead, method: targetedBody ? "targeted" : "needs_date_range" };
+  }
+
+  const boundedResult = await searchPages({
+    warehouseId,
+    pageSize: PAGE_SIZE,
+    searchTimeField: "create",
+    searchTimeFrom: dateTimeStart(input.dateFrom),
+    searchTimeTo: dateTimeEnd(input.dateTo),
+  });
+  return {
+    orders: boundedResult.matches,
+    complete: !boundedResult.reachedPageLimit,
+    needsDateRange: false,
+    pagesRead: targetedPagesRead + boundedResult.pagesRead,
+    method: targetedBody ? "targeted_then_bounded_scan" : "bounded_scan",
+  };
 }
 
 function yunEnvelope(credentials, service, params) {
