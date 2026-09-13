@@ -373,7 +373,7 @@ const navItems = [
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
-  { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse"] },
+  { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup" },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup" },
   { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup" },

@@ -150,6 +150,7 @@ const directDenied = effectivePermissions({ role: "direct", permissionOverrides:
 assert.equal(directDenied.includes("direct_price"), false, "explicit deny overrides a role default");
 
 const directMiaoshouPermissions = effectivePermissions({ role: "direct", permissionOverrides: { allow: [], deny: [] } });
+assert.equal(directMiaoshouPermissions.includes("warehouse_return_query"), true, "direct operators can query scoped WMS returns by default");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_alias"), true, "direct operators can match order aliases by default");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_listing"), false, "AI listing requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_automation"), false, "waybill automation requires an explicit grant");
@@ -178,9 +179,10 @@ assert.equal(distributorMiaoshouPermissions.some((permission) => permission === 
 
 const warehousePermissions = effectivePermissions({
   role: "warehouse",
-  permissionOverrides: { allow: ["after_sales_report", "product_view", "users"], deny: [] },
+  permissionOverrides: { allow: ["after_sales_report", "warehouse_return_query", "product_view", "users"], deny: [] },
 });
 assert.deepEqual(warehousePermissions, ["after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration workspaces");
+assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
 assert.throws(() => createLocalUser({
   username: "warehouse-empty",

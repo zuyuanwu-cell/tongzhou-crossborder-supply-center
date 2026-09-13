@@ -10,6 +10,7 @@ import {
   ImageOff,
   LoaderCircle,
   PackageCheck,
+  PackageSearch,
   Plus,
   RefreshCw,
   Search,
@@ -45,6 +46,7 @@ import {
   updateAfterSalesWarehouse,
   uploadAfterSalesAttachment,
 } from "./api";
+import { WarehouseReturnQuery } from "./WarehouseReturnQuery";
 
 const primaryReasons = ["仓库错发", "仓库漏发少发", "产品质量问题", "快递丢失", "运输破损", "SKU匹配错误"];
 const secondaryReasons = ["补发且留错品", "仓库发错货，客户差评不退货", "客户补差价留错品", "客户退全款且退货"];
@@ -306,16 +308,17 @@ export function AfterSalesCenter({
   currentUser: AuthUser;
   embedded?: boolean;
   initialTicketId?: string;
-  initialView?: "mine" | "warehouse" | "";
+  initialView?: "mine" | "warehouse" | "returns" | "";
 }) {
   const canReport = hasPermission(currentUser, "after_sales_report");
   const canWarehouse = hasPermission(currentUser, "after_sales_warehouse");
+  const canReturnQuery = hasPermission(currentUser, "warehouse_return_query");
   const canAdmin = hasPermission(currentUser, "operations");
   const ownerKey = afterSalesOwnerKey(currentUser);
-  const initialTab = canReport ? "report" : "warehouse";
+  const initialTab = initialView === "returns" && canReturnQuery ? "returns" : canReport ? "report" : canWarehouse ? "warehouse" : "returns";
   const initialFilters: AfterSalesListFilters = { status: "all", keyword: "", mine: false };
   const initialCache = readAfterSalesCache(ownerKey, initialFilters);
-  const [tab, setTab] = React.useState<"report" | "mine" | "warehouse">(initialTab);
+  const [tab, setTab] = React.useState<"report" | "mine" | "warehouse" | "returns">(initialTab);
   const [payload, setPayload] = React.useState<AfterSalesPayload | null>(initialCache?.payload || null);
   const [loading, setLoading] = React.useState(!initialCache);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -446,6 +449,7 @@ export function AfterSalesCenter({
   }, [ownerKey]);
 
   React.useEffect(() => {
+    if (tab === "returns") return;
     if (tab === "report" && payloadRef.current) return;
     void refresh({
       status: tab === "report" ? "all" : status,
@@ -456,7 +460,7 @@ export function AfterSalesCenter({
 
   React.useEffect(() => {
     const refreshVisibleList = () => {
-      if (tab !== "report" && document.visibilityState === "visible") void refresh(activeFiltersRef.current);
+      if (tab !== "report" && tab !== "returns" && document.visibilityState === "visible") void refresh(activeFiltersRef.current);
     };
     const timer = window.setInterval(refreshVisibleList, AFTER_SALES_AUTO_REFRESH_MS);
     document.addEventListener("visibilitychange", refreshVisibleList);
@@ -498,13 +502,17 @@ export function AfterSalesCenter({
   }, [previewImage]);
 
   React.useEffect(() => {
+    if (initialView === "returns" && canReturnQuery) {
+      setTab("returns");
+      return;
+    }
     const ticketId = initialTicketId.trim();
     if (!ticketId || openedDeepLinkRef.current === ticketId) return;
     openedDeepLinkRef.current = ticketId;
     const targetTab = initialView === "warehouse" && canWarehouse ? "warehouse" : canReport ? "mine" : "warehouse";
     setTab(targetTab);
     void openTicket({ id: ticketId });
-  }, [initialTicketId, initialView, canReport, canWarehouse]);
+  }, [initialTicketId, initialView, canReport, canWarehouse, canReturnQuery]);
 
   async function handleSyncOrder() {
     const normalized = orderNumber.trim();
@@ -839,24 +847,25 @@ export function AfterSalesCenter({
         <div className="after-sales-hero-badge"><ShieldCheck size={22} /><span><strong>规则自动判责</strong><small>成本快照全程可追溯</small></span></div>
       </section> : null}
 
-      <section className="after-sales-kpis">
+      {tab !== "returns" ? <section className="after-sales-kpis">
         <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload ? payload.summary.pendingWarehouse : "—"}</strong><small>{payload ? "需要仓库确认处理" : "数据读取中，不展示为 0"}</small></article>
         <article><span>处理中</span><strong>{payload ? payload.summary.processing : "—"}</strong><small>{payload ? "含待补发工单" : "数据读取中，不展示为 0"}</small></article>
         <article><span>待补发</span><strong>{payload ? payload.summary.awaitingReshipment : "—"}</strong><small>{payload ? "等待面单与发出" : "数据读取中，不展示为 0"}</small></article>
         <article className="liability"><span>仓库承担金额</span><strong>{payload ? money(payload.summary.warehouseLiabilityCny) : "—"}</strong><small>{payload ? "不含已作废工单" : "数据读取中，不展示为 0"}</small></article>
-      </section>
+      </section> : null}
 
       <div className="after-sales-tabs" role="tablist">
         {canReport ? <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")}><Clipboard size={17} />运营填报</button> : null}
         {canReport ? <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}><BadgeCheck size={17} />我的售后 {tab === "mine" ? <span>{payload ? payload.summary.open : "…"}</span> : null}</button> : null}
         {canWarehouse ? <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")}><Truck size={17} />仓库处理 <span>{payload ? payload.summary.pendingWarehouse : "…"}</span></button> : null}
+        {canReturnQuery ? <button className={tab === "returns" ? "active" : ""} onClick={() => setTab("returns")}><PackageSearch size={17} />退货查询</button> : null}
         <div className="as-data-freshness" role="status" aria-live="polite">
-          {refreshing ? <><RefreshCw className="spinning" size={14} />正在后台更新，当前列表可继续使用</> : lastLoadedAt ? <><BadgeCheck size={14} />数据更新于 {new Date(lastLoadedAt).toLocaleTimeString("zh-CN", { hour12: false })}</> : <><LoaderCircle className="spinning" size={14} />正在首次读取</>}
+          {tab === "returns" ? <><ShieldCheck size={14} />仅在查询时直连 WMS，不保存结果</> : refreshing ? <><RefreshCw className="spinning" size={14} />正在后台更新，当前列表可继续使用</> : lastLoadedAt ? <><BadgeCheck size={14} />数据更新于 {new Date(lastLoadedAt).toLocaleTimeString("zh-CN", { hour12: false })}</> : <><LoaderCircle className="spinning" size={14} />正在首次读取</>}
         </div>
       </div>
 
-      {error ? <div className="as-notice error"><AlertTriangle size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div> : null}
-      {message ? <div className="as-notice success"><Check size={17} />{message}<button onClick={() => setMessage("")}><X size={15} /></button></div> : null}
+      {tab !== "returns" && error ? <div className="as-notice error"><AlertTriangle size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div> : null}
+      {tab !== "returns" && message ? <div className="as-notice success"><Check size={17} />{message}<button onClick={() => setMessage("")}><X size={15} /></button></div> : null}
 
       {tab === "report" && canReport ? (
         <div className="after-sales-report-layout">
@@ -953,6 +962,7 @@ export function AfterSalesCenter({
 
       {tab === "mine" && canReport ? renderTicketList(true) : null}
       {tab === "warehouse" && canWarehouse ? renderTicketList(false) : null}
+      {tab === "returns" && canReturnQuery ? <WarehouseReturnQuery currentUser={currentUser} /> : null}
 
       {productPickerOpen ? (
         <div className="as-product-picker-backdrop" onMouseDown={(event) => event.currentTarget === event.target && setProductPickerOpen(false)}>

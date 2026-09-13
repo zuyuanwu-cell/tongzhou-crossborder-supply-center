@@ -9,15 +9,21 @@ function hasPermission(user: AuthUser, permission: string) {
 }
 
 export function WarehouseCollaborationCenter({ currentUser }: { currentUser: AuthUser }) {
-  const canAfterSales = hasPermission(currentUser, "after_sales_report") || hasPermission(currentUser, "after_sales_warehouse");
+  const canAfterSales = hasPermission(currentUser, "after_sales_report") || hasPermission(currentUser, "after_sales_warehouse") || hasPermission(currentUser, "warehouse_return_query");
   const canTickets = hasPermission(currentUser, "warehouse_ticket_report") || hasPermission(currentUser, "warehouse_ticket_warehouse");
   const readDeepLink = React.useCallback(() => {
     const query = new URLSearchParams(window.location.hash.split("?", 2)[1] || "");
     const requestedModule = query.get("module");
+    const requestedView = query.get("view");
     return {
       module: requestedModule === "tickets" && canTickets ? "tickets" as const : canAfterSales ? "after_sales" as const : "tickets" as const,
       ticketId: query.get("ticket") || "",
-      view: query.get("view") === "warehouse" ? "warehouse" as const : query.get("view") === "mine" ? "mine" as const : "" as const,
+      view: requestedView === "warehouse" ? "warehouse" as const : requestedView === "mine" ? "mine" as const : requestedView === "returns" ? "returns" as const : requestedView === "create" ? "create" as const : "" as const,
+      warehouseId: query.get("warehouseId") || "",
+      relatedOrderNumber: query.get("relatedOrder") || "",
+      category: query.get("category") || "",
+      title: query.get("title") || "",
+      description: query.get("description") || "",
     };
   }, [canAfterSales, canTickets]);
   const [deepLink, setDeepLink] = React.useState(readDeepLink);
@@ -30,7 +36,7 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
   }, [readDeepLink]);
 
   function changeModule(nextModule: "after_sales" | "tickets") {
-    setDeepLink({ module: nextModule, ticketId: "", view: "" });
+    setDeepLink({ module: nextModule, ticketId: "", view: "", warehouseId: "", relatedOrderNumber: "", category: "", title: "", description: "" });
     window.history.replaceState(null, "", `#after-sales?module=${nextModule}`);
   }
 
@@ -43,7 +49,7 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
       {canAfterSales ? <button className={module === "after_sales" ? "active" : ""} onClick={() => changeModule("after_sales")}><Headphones size={20} /><span><strong>售后订单</strong><small>责任判定、补发、驳回与结算</small></span></button> : null}
       {canTickets ? <button className={module === "tickets" ? "active" : ""} onClick={() => changeModule("tickets")}><ClipboardCheck size={20} /><span><strong>仓库工单</strong><small>订单催促与日常问题反馈</small></span></button> : null}
     </nav>
-    {module === "after_sales" && canAfterSales ? <AfterSalesCenter currentUser={currentUser} embedded initialTicketId={deepLink.ticketId} initialView={deepLink.view} /> : null}
-    {module === "tickets" && canTickets ? <WarehouseTicketCenter currentUser={currentUser} initialTicketId={deepLink.ticketId} initialView={deepLink.view} /> : null}
+    {module === "after_sales" && canAfterSales ? <AfterSalesCenter currentUser={currentUser} embedded initialTicketId={deepLink.ticketId} initialView={deepLink.view === "create" ? "" : deepLink.view} /> : null}
+    {module === "tickets" && canTickets ? <WarehouseTicketCenter currentUser={currentUser} initialTicketId={deepLink.ticketId} initialView={deepLink.view === "returns" ? "" : deepLink.view} initialPrefill={{ warehouseId: deepLink.warehouseId, relatedOrderNumber: deepLink.relatedOrderNumber, category: deepLink.category, title: deepLink.title, description: deepLink.description }} /> : null}
   </div>;
 }

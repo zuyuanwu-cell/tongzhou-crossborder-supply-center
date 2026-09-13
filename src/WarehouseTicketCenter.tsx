@@ -49,10 +49,19 @@ function fileToDataUrl(file: File) {
   });
 }
 
-export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initialView = "" }: {
+type WarehouseTicketPrefill = {
+  warehouseId?: string;
+  relatedOrderNumber?: string;
+  category?: string;
+  title?: string;
+  description?: string;
+};
+
+export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initialView = "", initialPrefill }: {
   currentUser: AuthUser;
   initialTicketId?: string;
-  initialView?: "mine" | "warehouse" | "";
+  initialView?: "create" | "mine" | "warehouse" | "";
+  initialPrefill?: WarehouseTicketPrefill;
 }) {
   const canReport = hasPermission(currentUser, "warehouse_ticket_report");
   const canWarehouse = hasPermission(currentUser, "warehouse_ticket_warehouse");
@@ -77,6 +86,7 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
   const [selectedTicket, setSelectedTicket] = React.useState<WarehouseTicket | null>(null);
   const [warehouseRemark, setWarehouseRemark] = React.useState("");
   const openedDeepLinkRef = React.useRef("");
+  const appliedPrefillRef = React.useRef("");
 
   const refresh = React.useCallback(async (filters: { mine?: boolean; status?: string; keyword?: string } = {}) => {
     setLoading(true);
@@ -103,6 +113,19 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
       setNotificationTeamId((current) => current || result.defaultTeamId || "__global__");
     }).catch(() => setNotificationTeams(null));
   }, [canReport]);
+
+  React.useEffect(() => {
+    if (initialView !== "create" || !canReport) return;
+    const signature = JSON.stringify(initialPrefill || {});
+    if (appliedPrefillRef.current === signature) return;
+    appliedPrefillRef.current = signature;
+    setTab("create");
+    if (initialPrefill?.warehouseId) setWarehouseId(initialPrefill.warehouseId);
+    if (initialPrefill?.relatedOrderNumber) setRelatedOrderNumber(initialPrefill.relatedOrderNumber);
+    if (initialPrefill?.category && categories.includes(initialPrefill.category)) setCategory(initialPrefill.category);
+    if (initialPrefill?.title) setTitle(initialPrefill.title);
+    if (initialPrefill?.description) setDescription(initialPrefill.description);
+  }, [initialView, initialPrefill, canReport]);
 
   React.useEffect(() => {
     const ticketId = initialTicketId.trim();

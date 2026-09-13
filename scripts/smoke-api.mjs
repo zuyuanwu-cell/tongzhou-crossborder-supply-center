@@ -4,6 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { fetch as undiciFetch } from "undici";
+
+if (!globalThis.fetch) globalThis.fetch = undiciFetch;
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distIndexPath = resolve(repoRoot, "dist", "index.html");
@@ -178,6 +181,30 @@ async function main() {
   }
   console.log("[ok] /api/me admin session");
 
+  const returnQueryNeedsScope = await expectJson("/api/warehouse-returns/query", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "TRACK-SMOKE-001", queryType: "tracking" }),
+  });
+  if (!returnQueryNeedsScope.needsInput || returnQueryNeedsScope.complete || !returnQueryNeedsScope.requiredFields?.includes("warehouseId") || !returnQueryNeedsScope.requiredFields?.includes("dateRange")) {
+    throw new Error(`/api/warehouse-returns/query did not require scoped warehouse and date input: ${JSON.stringify(returnQueryNeedsScope).slice(0, 600)}`);
+  }
+  const platformReturnQueryNeedsScope = await expectJson("/api/warehouse-returns/query", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "PLATFORM-SMOKE-001", queryType: "platform_order" }),
+  });
+  if (!platformReturnQueryNeedsScope.needsInput || !platformReturnQueryNeedsScope.requiredFields?.includes("warehouseId") || !platformReturnQueryNeedsScope.requiredFields?.includes("dateRange")) {
+    throw new Error(`/api/warehouse-returns/query did not request warehouse and date fallback for an unmapped platform order: ${JSON.stringify(platformReturnQueryNeedsScope).slice(0, 600)}`);
+  }
+  const anonymousReturnQuery = await fetch(`${baseUrl}/api/warehouse-returns/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "TRACK-SMOKE-001", queryType: "tracking" }),
+  });
+  if (anonymousReturnQuery.status !== 403) throw new Error(`Anonymous WMS return query was not blocked: ${anonymousReturnQuery.status}`);
+  console.log("[ok] WMS return query requires explicit scope and authentication");
+
   const productOptions = await expectJson("/api/after-sales/products?country=ID&limit=5", { headers: authHeaders });
   if (!Array.isArray(productOptions.products) || !productOptions.products.length || !productOptions.products[0]?.sku || !("unitCostCny" in productOptions.products[0])) {
     throw new Error(`/api/after-sales/products did not return selectable products with cost fields: ${JSON.stringify(productOptions).slice(0, 600)}`);
@@ -306,6 +333,12 @@ async function main() {
   const otherWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: otherWarehouseAccount.headers });
   const ownAfterSales = await expectJson("/api/after-sales", { headers: ownWarehouseAccount.headers });
   const otherAfterSales = await expectJson("/api/after-sales", { headers: otherWarehouseAccount.headers });
+  const warehouseReturnQuery = await fetch(`${baseUrl}/api/warehouse-returns/query`, {
+    method: "POST",
+    headers: { ...ownWarehouseAccount.headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "TRACK-SMOKE-001", queryType: "tracking", warehouseId: ownWarehouseId, dateFrom: "2026-09-01", dateTo: "2026-09-13" }),
+  });
+  if (warehouseReturnQuery.status !== 403) throw new Error(`Warehouse operator unexpectedly queried WMS return data: ${warehouseReturnQuery.status}`);
   if (!ownWarehouseTickets.tickets?.some((ticket) => ticket.id === warehouseTicket.ticket.id) || otherWarehouseTickets.tickets?.some((ticket) => ticket.id === warehouseTicket.ticket.id)) {
     throw new Error("Warehouse ticket lists were not isolated by the account warehouse binding.");
   }

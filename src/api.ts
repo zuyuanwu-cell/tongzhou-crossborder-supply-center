@@ -1767,6 +1767,66 @@ export type WarehouseTicketPayload = {
   warehouseOptions: Array<{ id: string; name: string; country: string }>;
 };
 
+export type WarehouseReturnQueryType = "platform_order" | "return_order" | "tracking";
+
+export type WarehouseReturnItem = {
+  id: string;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  expectedQty: number;
+  receivedQty: number;
+  restockedQty: number;
+  scrappedQty: number;
+  goodQty: number;
+  badQty: number;
+  pendingQty: number;
+  handlingMethod: string;
+};
+
+export type WarehouseReturnOrder = {
+  id: string;
+  providerId: string;
+  providerName: string;
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  returnOrderNumber: string;
+  originalOrderNumber: string;
+  trackingNumber: string;
+  logisticsCompany: string;
+  status: "in_transit" | "received_pending" | "processing" | "restocked" | "scrapped" | "mixed" | "exception" | "cancelled" | string;
+  statusLabel: string;
+  providerStatus: string;
+  createdAt: string;
+  submittedAt: string;
+  signedAt: string;
+  completedAt: string;
+  updatedAt: string;
+  items: WarehouseReturnItem[];
+};
+
+export type WarehouseReturnQueryPayload = {
+  ok: boolean;
+  needsInput: boolean;
+  complete: boolean;
+  requiredFields: Array<"warehouseId" | "dateRange" | string>;
+  message: string;
+  queriedAt: string;
+  query: {
+    value: string;
+    type: WarehouseReturnQueryType;
+    warehouseId: string;
+    dateFrom: string;
+    dateTo: string;
+  };
+  warehouseOptions: Array<{ id: string; name: string; country: string; providerId: string; providerName: string }>;
+  source: { id: string; name: string; country: string; providerId: string; providerName: string } | null;
+  method?: "targeted" | "bounded_scan" | string;
+  pagesRead?: number;
+  orders: WarehouseReturnOrder[];
+};
+
 export type AfterSalesCustomer = {
   name: string;
   phone: string;
@@ -3752,6 +3812,20 @@ export function fetchAfterSales(input: { status?: string; keyword?: string; mine
   if (input.mine) params.set("mine", "1");
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<AfterSalesPayload>(`/api/after-sales${query}`, { signal });
+}
+
+export function queryWarehouseReturns(input: {
+  query: string;
+  queryType: WarehouseReturnQueryType;
+  warehouseId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}, signal?: AbortSignal) {
+  return requestJson<WarehouseReturnQueryPayload>("/api/warehouse-returns/query", {
+    method: "POST",
+    body: JSON.stringify(input),
+    signal,
+  });
 }
 
 export function syncAfterSalesOrder(orderNumber: string) {

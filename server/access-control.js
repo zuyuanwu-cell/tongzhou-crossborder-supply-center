@@ -16,6 +16,7 @@ const permissionDefinitions = [
   ["stockup", "备货中心", "商品与协同"],
   ["after_sales_report", "售后运营填报", "仓库协同"],
   ["after_sales_warehouse", "售后仓库处理", "仓库协同"],
+  ["warehouse_return_query", "WMS退货查询", "仓库协同"],
   ["warehouse_ticket_report", "仓库工单提交", "仓库协同"],
   ["warehouse_ticket_warehouse", "仓库工单处理", "仓库协同"],
   ["product_view", "产品库", "商品与协同"],
@@ -63,6 +64,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "assets",
     "warehouse_info",
     "after_sales_report",
+    "warehouse_return_query",
     "warehouse_ticket_report",
     "quick_nav",
     "tongzhou_ai",
@@ -147,6 +149,7 @@ export function effectivePermissions(user) {
   if (WAREHOUSE_COLLABORATION_DENIED_ROLES.has(role)) {
     effective.delete("after_sales_report");
     effective.delete("after_sales_warehouse");
+    effective.delete("warehouse_return_query");
     effective.delete("warehouse_ticket_report");
     effective.delete("warehouse_ticket_warehouse");
   }
@@ -178,8 +181,8 @@ export function permissionConfiguration() {
     hardRules: {
       directDenied: ["users"],
       warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -197,7 +200,7 @@ export function sanitizePermissionUpdate(role, input) {
     overrides.allow = overrides.allow.filter((key) => key !== "users");
   }
   if (WAREHOUSE_COLLABORATION_DENIED_ROLES.has(role)) {
-    overrides.allow = overrides.allow.filter((key) => !["after_sales_report", "after_sales_warehouse", "warehouse_ticket_report", "warehouse_ticket_warehouse"].includes(key));
+    overrides.allow = overrides.allow.filter((key) => !["after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse"].includes(key));
   }
   if (MIAOSHOU_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "miaoshou" && !MIAOSHOU_PERMISSION_KEYS.includes(key));

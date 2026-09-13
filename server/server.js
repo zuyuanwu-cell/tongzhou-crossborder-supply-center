@@ -65,6 +65,7 @@ import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySe
 import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
+import { normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -136,6 +137,8 @@ const performanceMaterializationCachePath = resolve(cacheDir, "performance-analy
 const performanceMaterializationMetadataPath = resolve(cacheDir, "performance-analytics-materialized.meta.json");
 const syncSchedulerCachePath = resolve(cacheDir, "sync-scheduler.json");
 const syncSchedulerHeartbeatMs = Math.max(5_000, Number(process.env.SYNC_SCHEDULER_HEARTBEAT_MS || 15_000));
+const warehouseReturnQueryTimeoutMs = Math.max(10_000, Number(process.env.WAREHOUSE_RETURN_QUERY_TIMEOUT_MS || 45_000));
+const warehouseReturnQueryMaxPages = Math.max(1, Math.min(30, Number(process.env.WAREHOUSE_RETURN_QUERY_MAX_PAGES || 15)));
 const productionSyncIntervalMs = Math.max(60_000, Number(process.env.PRODUCTION_SYNC_INTERVAL_MS || 5 * 60 * 1000));
 const warehouseInventorySyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_INVENTORY_SYNC_INTERVAL_MS || 15 * 60 * 1000));
 const warehouseOrderSyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_ORDER_SYNC_INTERVAL_MS || 15 * 60 * 1000));
@@ -266,6 +269,7 @@ let lastAutoSyncAt = "";
 let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
 let wecomScheduleRunning = false;
+const activeWarehouseReturnQueries = new Map();
 const syncScheduler = createSyncScheduler({
   heartbeatMs: syncSchedulerHeartbeatMs,
   laneLimits: { light: 4, jdy: 1, wms: 1, miaoshou: 1, compute: 1, publicApi: 1 },
@@ -2284,6 +2288,12 @@ function effectiveWarehouseCreateConnection(connection) {
   return fallback ? { ...connection, credentials: fallback.credentials } : connection;
 }
 
+function effectiveWarehouseReturnConnection(connection) {
+  if (hasWarehouseCredentials(connection)) return connection;
+  const fallback = sameSystemCredentialFallback(connection);
+  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+}
+
 function currentWmsWarehouseOptions() {
   return buildWmsWarehouseOptions(
     warehouseConnections,
@@ -3039,6 +3049,116 @@ function canViewMiaoshouWorkspace(auth) {
 
 function canAccessAfterSales(auth) {
   return hasPermission(auth, "after_sales_report") || hasPermission(auth, "after_sales_warehouse");
+}
+
+function canQueryWarehouseReturns(auth) {
+  return hasPermission(auth, "warehouse_return_query") && ["admin", "direct"].includes(auth.user?.role || auth.role);
+}
+
+function warehouseReturnOptions(auth) {
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  const warehouseIds = new Set(scopes.warehouseIds);
+  const countries = new Set(scopes.countries.map(normalizedCountryKey).filter(Boolean));
+  return warehouseConnections
+    .filter((connection) => !warehouseIds.size || warehouseIds.has(String(connection.id || "").trim()))
+    .filter((connection) => !countries.size || countries.has(normalizedCountryKey(connection.country)))
+    .filter((connection) => ["sea_wms", "yunwms_ru"].includes(connection.providerId))
+    .map((connection) => ({
+      id: String(connection.id || "").trim(),
+      name: String(connection.name || connection.id || "").trim(),
+      country: String(connection.country || "").trim(),
+      providerId: String(connection.providerId || "").trim(),
+      providerName: String(connection.providerName || "").trim(),
+    }))
+    .filter((connection) => connection.id && connection.name);
+}
+
+function warehouseReturnOrderMatches(value, candidate) {
+  const normalized = normalizeReturnIdentifier(value);
+  return Boolean(normalized) && normalized === normalizeReturnIdentifier(candidate);
+}
+
+function warehouseReturnLookupContext(input, auth) {
+  const options = warehouseReturnOptions(auth);
+  const selectedWarehouseId = String(input.warehouseId || "").trim();
+  if (selectedWarehouseId && !options.some((option) => option.id === selectedWarehouseId)) {
+    throw new WarehouseReturnQueryError("forbidden", "所选仓库不存在或不在当前账号的数据范围内。");
+  }
+
+  const orderMatches = input.queryType === "platform_order"
+    ? (cachedOrdersSync.orders || []).filter((order) => [order.orderNo, order.orderId, order.externalOrderNo]
+      .some((candidate) => warehouseReturnOrderMatches(input.query, candidate)))
+    : [];
+  const afterSalesMatches = input.queryType === "platform_order"
+    ? (afterSalesService.list().tickets || []).filter((ticket) => warehouseReturnOrderMatches(input.query, ticket.originalOrderNumber))
+    : [];
+  const candidateWarehouseIds = [...new Set([
+    ...orderMatches.map((order) => String(order.warehouseId || "").trim()),
+    ...afterSalesMatches.map((ticket) => String(ticket.warehouseId || "").trim()),
+  ].filter((warehouseId) => options.some((option) => option.id === warehouseId)))];
+  const inferredWarehouseId = candidateWarehouseIds.length === 1 ? candidateWarehouseIds[0] : "";
+  const lookupAliases = [...new Set([
+    input.query,
+    ...orderMatches.flatMap((order) => [order.orderNo, order.orderId, order.externalOrderNo]),
+    ...afterSalesMatches.flatMap((ticket) => [ticket.originalOrderNumber, ticket.orderIdentity]),
+  ].map((value) => String(value || "").trim()).filter(Boolean))];
+  return {
+    options,
+    warehouseId: selectedWarehouseId || inferredWarehouseId,
+    inferred: !selectedWarehouseId && Boolean(inferredWarehouseId),
+    lookupAliases,
+  };
+}
+
+function validateWarehouseReturnDateRange(input) {
+  const dateFrom = String(input.dateFrom || "").trim();
+  const dateTo = String(input.dateTo || "").trim();
+  if (!dateFrom && !dateTo) return { dateFrom: "", dateTo: "" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+    throw new WarehouseReturnQueryError("invalid_input", "请选择完整的退货查询开始和结束日期。");
+  }
+  const fromTime = Date.parse(`${dateFrom}T00:00:00Z`);
+  const toTime = Date.parse(`${dateTo}T23:59:59Z`);
+  if (!Number.isFinite(fromTime) || !Number.isFinite(toTime) || fromTime > toTime) {
+    throw new WarehouseReturnQueryError("invalid_input", "退货查询时间范围无效。");
+  }
+  if (toTime - fromTime > 90 * 24 * 60 * 60 * 1000) {
+    throw new WarehouseReturnQueryError("invalid_input", "单次最多查询90天，请缩小时间范围后重试。");
+  }
+  return { dateFrom, dateTo };
+}
+
+function warehouseReturnProduct(item, country) {
+  const sku = normalizeReturnIdentifier(item.sku);
+  if (!sku) return null;
+  const candidates = [...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])]
+    .filter((product) => [product.sku, product.skuNo, product.countrySku].some((value) => normalizeReturnIdentifier(value) === sku));
+  return candidates.find((product) => normalizedCountryKey(product.country) === normalizedCountryKey(country)) || candidates[0] || null;
+}
+
+function enrichWarehouseReturnOrders(orders, auth) {
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  return (orders || []).map((order) => {
+    const items = (order.items || [])
+      .filter((item) => !scopes.skus.length || scopes.skus.includes(normalizeReturnIdentifier(item.sku)))
+      .map((item) => {
+        const product = warehouseReturnProduct(item, order.country);
+        return {
+          ...item,
+          productName: item.productName || product?.name || product?.nameEn || item.sku,
+          imageUrl: item.imageUrl || product?.imageUrl || product?.qualificationImageUrl || "",
+        };
+      });
+    return { ...order, items };
+  }).filter((order) => !scopes.skus.length || order.items.length > 0);
+}
+
+function warehouseReturnQueryErrorStatus(error) {
+  if (error?.code === "forbidden") return 403;
+  if (error?.code === "timeout") return 504;
+  if (error?.code === "provider_error" || error?.code === "invalid_response") return 502;
+  if (error?.code === "cancelled") return 409;
+  return 400;
 }
 
 function canAccessWarehouseTickets(auth) {
@@ -6542,6 +6662,140 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, detail);
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "读取订单店铺别名任务失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-returns/query" && req.method === "POST") {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      const auth = getAuth(req);
+      if (!canQueryWarehouseReturns(auth)) {
+        sendJson(res, 403, { ok: false, code: "forbidden", message: "当前账号没有WMS退货查询权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const query = String(payload.query || "").trim();
+        const queryType = ["platform_order", "return_order", "tracking"].includes(payload.queryType)
+          ? payload.queryType
+          : "platform_order";
+        if (!query) throw new WarehouseReturnQueryError("invalid_input", "请输入平台原订单号、WMS退货单号或退货物流单号。");
+        if (query.length > 160) throw new WarehouseReturnQueryError("invalid_input", "查询编号过长，请检查后重试。");
+        const dateRange = validateWarehouseReturnDateRange(payload);
+        const context = warehouseReturnLookupContext({ ...payload, query, queryType }, auth);
+        if (!context.options.length) throw new WarehouseReturnQueryError("unconfigured", "当前账号没有可查询的WMS仓库。");
+        if (!context.warehouseId) {
+          const requiredFields = ["platform_order", "tracking"].includes(queryType)
+            ? ["warehouseId", "dateRange"]
+            : ["warehouseId"];
+          sendJson(res, 200, {
+            ok: true,
+            needsInput: true,
+            complete: false,
+            requiredFields,
+            message: queryType === "platform_order"
+              ? "暂时无法从现有订单资料确定处理仓库，请选择仓库后继续查询。"
+              : queryType === "tracking"
+                ? "请选择需要查询的仓库和退货时间范围，系统不会自动扫描全部仓库。"
+                : "请选择需要查询的仓库，系统不会自动扫描全部仓库。",
+            queriedAt: new Date().toISOString(),
+            query: { value: query, type: queryType, warehouseId: "", ...dateRange },
+            warehouseOptions: context.options,
+            source: null,
+            orders: [],
+          });
+          return;
+        }
+        const warehouse = warehouseConnections.find((connection) => connection.id === context.warehouseId);
+        const publicWarehouse = context.options.find((option) => option.id === context.warehouseId);
+        if (!warehouse || !publicWarehouse) throw new WarehouseReturnQueryError("forbidden", "所选仓库不存在或不在当前账号的数据范围内。");
+
+        const actorKey = String(auth.user?.id || auth.user?.username || "anonymous");
+        const previousQuery = activeWarehouseReturnQueries.get(actorKey);
+        if (previousQuery) previousQuery.controller.abort();
+        const controller = new AbortController();
+        const activeQuery = { controller, startedAt: Date.now(), deadlineReached: false };
+        activeWarehouseReturnQueries.set(actorKey, activeQuery);
+        const deadline = setTimeout(() => {
+          activeQuery.deadlineReached = true;
+          controller.abort();
+        }, warehouseReturnQueryTimeoutMs);
+        const cancelOnDisconnect = () => {
+          if (!res.writableEnded) controller.abort();
+        };
+        req.once("aborted", cancelOnDisconnect);
+        res.once("close", cancelOnDisconnect);
+        try {
+          const result = await queryWarehouseReturns(effectiveWarehouseReturnConnection(warehouse), {
+            query,
+            queryType,
+            warehouseId: warehouse.id,
+            dateFrom: dateRange.dateFrom,
+            dateTo: dateRange.dateTo,
+            lookupAliases: context.lookupAliases,
+          }, {
+            signal: controller.signal,
+            timeoutMs: Math.min(25_000, warehouseReturnQueryTimeoutMs),
+            maxPages: warehouseReturnQueryMaxPages,
+          });
+          if (result.needsDateRange) {
+            sendJson(res, 200, {
+              ok: true,
+              needsInput: true,
+              complete: false,
+              requiredFields: ["dateRange"],
+              message: `${publicWarehouse.name}无法仅凭当前编号完成精确查询，请补充退货发生时间（单次最多90天）。`,
+              queriedAt: new Date().toISOString(),
+              query: { value: query, type: queryType, warehouseId: warehouse.id, ...dateRange },
+              warehouseOptions: context.options,
+              source: publicWarehouse,
+              orders: [],
+            });
+            return;
+          }
+          const orders = enrichWarehouseReturnOrders(result.orders, auth);
+          const complete = Boolean(result.complete);
+          const message = orders.length && complete
+            ? `已从${publicWarehouse.name}查询到 ${orders.length} 张退货单。`
+            : orders.length
+              ? `已找到退货主单，但${publicWarehouse.name}未能完整返回商品处理明细，请稍后重新查询。`
+            : complete
+              ? `已完整查询${publicWarehouse.name}的当前条件，没有找到匹配的退货记录。`
+              : `查询达到安全页数上限，当前范围内尚未找到匹配记录；这不代表仓库一定没有退货。`;
+          sendJson(res, 200, {
+            ok: true,
+            needsInput: false,
+            complete,
+            requiredFields: [],
+            message,
+            queriedAt: new Date().toISOString(),
+            query: { value: query, type: queryType, warehouseId: warehouse.id, ...dateRange },
+            warehouseOptions: context.options,
+            source: publicWarehouse,
+            method: result.method,
+            pagesRead: result.pagesRead,
+            orders,
+          });
+        } catch (error) {
+          if (activeQuery.deadlineReached) throw new WarehouseReturnQueryError("timeout", "WMS查询超过45秒，本次查询未完成，请缩小时间范围后重试。");
+          throw error;
+        } finally {
+          clearTimeout(deadline);
+          req.off("aborted", cancelOnDisconnect);
+          res.off("close", cancelOnDisconnect);
+          if (activeWarehouseReturnQueries.get(actorKey) === activeQuery) activeWarehouseReturnQueries.delete(actorKey);
+        }
+      } catch (error) {
+        const normalizedError = error instanceof WarehouseReturnQueryError
+          ? error
+          : new WarehouseReturnQueryError("provider_error", error?.message || "WMS退货查询失败。");
+        sendJson(res, warehouseReturnQueryErrorStatus(normalizedError), {
+          ok: false,
+          code: normalizedError.code,
+          message: normalizedError.message,
+          complete: false,
+          orders: [],
+        });
       }
       return;
     }
