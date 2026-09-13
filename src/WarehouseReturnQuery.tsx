@@ -199,7 +199,12 @@ export function WarehouseReturnQuery({ currentUser }: { currentUser: AuthUser })
         </label>
         <label className="wrq-query-field">
           <span>{currentType.label}</span>
-          <div><Search size={19} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={currentType.placeholder} autoComplete="off" /></div>
+          <div><Search size={19} /><input value={query} onChange={(event) => {
+            setQuery(event.target.value);
+            setPayload(null);
+            setSelectedOrderId("");
+            if (queryType === "platform_order") setWarehouseId("");
+          }} placeholder={currentType.placeholder} autoComplete="off" /></div>
         </label>
         {loading ? <button className="wrq-cancel" type="button" onClick={cancelQuery}><X size={17} />取消查询</button> : <button className="wrq-submit" type="submit"><PackageSearch size={19} />查询WMS</button>}
       </div>
