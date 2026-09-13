@@ -211,6 +211,7 @@ import {
 import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
+import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
 import "./theme-refresh.css";
 
@@ -11405,63 +11406,84 @@ function productDimensionText(product: CatalogProduct, base?: ProductBase) {
   return `${length} × ${width} × ${height}`;
 }
 
-function QualificationCards({ qualifications }: { qualifications: QualificationRecord[] }) {
+function QualificationCards({
+  qualifications,
+  emptyTitle = "当前产品暂无关联资质",
+  emptyDescription = "请确认资质库 SKU 字段与产品库 SKU、SKU 编号或国家 SKU 一致。",
+}: {
+  qualifications: QualificationRecord[];
+  emptyTitle?: string;
+  emptyDescription?: string;
+}) {
   if (!qualifications.length) {
     return (
       <div className="qualification-empty">
         <PackageCheck size={22} />
-        <strong>当前产品暂无关联资质</strong>
-        <span>请确认资质库 SKU 字段与产品库 SKU、SKU 编号或国家 SKU 一致。</span>
+        <strong>{emptyTitle}</strong>
+        <span>{emptyDescription}</span>
       </div>
     );
   }
 
   return (
     <div className="qualification-list">
-      {qualifications.map((qualification) => (
-        <article className="qualification-card" key={qualification.id}>
-          <div className="qualification-card-head">
-            <FileText size={18} />
-            <div>
-              <strong>{qualification.qualificationName}</strong>
-              <span>
-                {qualification.qualificationCategory} · {qualification.market}
-              </span>
+      {qualifications.map((qualification) => {
+        const expiry = getQualificationExpiryInfo(qualification.expiryDate);
+        return (
+          <article className={`qualification-card qualification-card-${expiry.status}`} key={qualification.id}>
+            <div className="qualification-card-head">
+              <div className="qualification-card-title">
+                <FileText size={18} />
+                <div>
+                  <strong>{qualification.qualificationName}</strong>
+                  <span>
+                    {qualification.qualificationCategory} · {qualification.market}
+                  </span>
+                </div>
+              </div>
+              <div className={`qualification-expiry-badge ${expiry.status}`} title={expiry.actionLabel}>
+                <CalendarDays size={15} />
+                <span>{expiry.label}</span>
+              </div>
             </div>
-          </div>
-          <dl>
-            <div>
-              <dt>签发方</dt>
-              <dd>{qualification.issuer || "未配置"}</dd>
+            <dl>
+              <div>
+                <dt>签发方</dt>
+                <dd>{qualification.issuer || "未配置"}</dd>
+              </div>
+              <div>
+                <dt>有效期</dt>
+                <dd>
+                  {formatDate(qualification.effectiveDate)} - {formatDate(qualification.expiryDate)}
+                </dd>
+              </div>
+              <div>
+                <dt>续证状态</dt>
+                <dd className={`qualification-renewal-text ${expiry.status}`}>{expiry.actionLabel}</dd>
+              </div>
+              <div>
+                <dt>备注</dt>
+                <dd>{qualification.remark || "无"}</dd>
+              </div>
+            </dl>
+            <div className="qualification-files">
+              {qualification.files.length ? (
+                qualification.files.map((file) => {
+                  const href = file.url || (file.fileId ? qualificationFileDownloadUrl(file.fileId, file.name) : "");
+                  return href ? (
+                    <a href={href} target="_blank" rel="noreferrer" download key={file.id}>
+                      <Download size={15} />
+                      {file.name}
+                    </a>
+                  ) : null;
+                })
+              ) : (
+                <span>暂无附件</span>
+              )}
             </div>
-            <div>
-              <dt>有效期</dt>
-              <dd>
-                {formatDate(qualification.effectiveDate)} - {formatDate(qualification.expiryDate)}
-              </dd>
-            </div>
-            <div>
-              <dt>备注</dt>
-              <dd>{qualification.remark || "无"}</dd>
-            </div>
-          </dl>
-          <div className="qualification-files">
-            {qualification.files.length ? (
-              qualification.files.map((file) => {
-                const href = file.url || (file.fileId ? qualificationFileDownloadUrl(file.fileId, file.name) : "");
-                return href ? (
-                  <a href={href} target="_blank" rel="noreferrer" download key={file.id}>
-                    <Download size={15} />
-                    {file.name}
-                  </a>
-                ) : null;
-              })
-            ) : (
-              <span>暂无附件</span>
-            )}
-          </div>
-        </article>
-      ))}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -11805,7 +11827,16 @@ function recordMatchesKeyword(values: Array<string | undefined>, keyword: string
   return values.join(" ").toLowerCase().includes(normalized);
 }
 
-function filterQualificationRecords(records: QualificationRecord[], keyword: string, category: string, market: string) {
+type QualificationExpiryFilter = "all" | "renewal" | QualificationExpiryStatus;
+
+function qualificationMatchesExpiryFilter(record: QualificationRecord, expiryFilter: QualificationExpiryFilter) {
+  if (expiryFilter === "all") return true;
+  const { status } = getQualificationExpiryInfo(record.expiryDate);
+  if (expiryFilter === "renewal") return status === "expired" || status === "urgent" || status === "warning";
+  return status === expiryFilter;
+}
+
+function filterQualificationRecords(records: QualificationRecord[], keyword: string, category: string, market: string, expiryFilter: QualificationExpiryFilter) {
   return records.filter((item) => {
     const keywordMatched = recordMatchesKeyword([
       item.sku,
@@ -11819,7 +11850,13 @@ function filterQualificationRecords(records: QualificationRecord[], keyword: str
     ], keyword);
     const categoryMatched = category === "全部" || item.qualificationCategory === category;
     const marketMatched = market === "全部" || item.market === market;
-    return keywordMatched && categoryMatched && marketMatched;
+    return keywordMatched && categoryMatched && marketMatched && qualificationMatchesExpiryFilter(item, expiryFilter);
+  }).sort((left, right) => {
+    const rankDifference = qualificationExpiryRank(left.expiryDate) - qualificationExpiryRank(right.expiryDate);
+    if (rankDifference) return rankDifference;
+    const leftDays = getQualificationExpiryInfo(left.expiryDate).daysLeft ?? Number.MAX_SAFE_INTEGER;
+    const rightDays = getQualificationExpiryInfo(right.expiryDate).daysLeft ?? Number.MAX_SAFE_INTEGER;
+    return leftDays - rightDays;
   });
 }
 
@@ -11856,14 +11893,27 @@ function QualificationLibrary({
   const [keyword, setKeyword] = React.useState("");
   const [category, setCategory] = React.useState("全部");
   const [market, setMarket] = React.useState("全部");
+  const [expiryFilter, setExpiryFilter] = React.useState<QualificationExpiryFilter>("all");
   const [visibleLimit, setVisibleLimit] = React.useState(60);
   const selectedProduct = products.find((product) => product.sku === selectedSku);
   const sourceQualifications = selectedProduct ? getRelatedQualifications(selectedProduct, qualificationPayload) : qualificationPayload?.qualifications || [];
   const categories = uniqueSorted(sourceQualifications.map((item) => item.qualificationCategory));
   const markets = uniqueSorted(sourceQualifications.map((item) => item.market));
-  const filteredQualifications = filterQualificationRecords(sourceQualifications, keyword, category, market);
+  const expiryCounts = sourceQualifications.reduce<Record<QualificationExpiryStatus, number>>((counts, item) => {
+    counts[getQualificationExpiryInfo(item.expiryDate).status] += 1;
+    return counts;
+  }, { expired: 0, urgent: 0, warning: 0, valid: 0, missing: 0 });
+  const renewalCount = expiryCounts.expired + expiryCounts.urgent + expiryCounts.warning;
+  const filteredQualifications = filterQualificationRecords(sourceQualifications, keyword, category, market, expiryFilter);
+  const expirySummary: Array<{ filter: QualificationExpiryFilter; label: string; description: string; value: number; tone: string }> = [
+    { filter: "renewal", label: "待续证", description: "已过期或 90 天内到期", value: renewalCount, tone: "renewal" },
+    { filter: "expired", label: "已过期", description: "需要立即处理", value: expiryCounts.expired, tone: "expired" },
+    { filter: "urgent", label: "30 天内到期", description: "进入紧急续证期", value: expiryCounts.urgent, tone: "urgent" },
+    { filter: "warning", label: "31–90 天到期", description: "建议提前准备资料", value: expiryCounts.warning, tone: "warning" },
+    { filter: "missing", label: "未维护到期日", description: "无法判断续证时间", value: expiryCounts.missing, tone: "missing" },
+  ];
 
-  React.useEffect(() => setVisibleLimit(60), [selectedSku, keyword, category, market]);
+  React.useEffect(() => setVisibleLimit(60), [selectedSku, keyword, category, market, expiryFilter]);
 
   React.useEffect(() => {
     if (selectedSku !== ALL_RECORDS && !products.some((product) => product.sku === selectedSku)) {
@@ -11887,6 +11937,30 @@ function QualificationLibrary({
             同步资质库
           </button>
         </div>
+        <section className="qualification-expiry-overview" aria-label="资质到期预警">
+          <div className="qualification-expiry-overview-head">
+            <div>
+              <p className="eyebrow">Renewal Alert</p>
+              <h4>续证预警</h4>
+            </div>
+            <span>按证件到期日提前 90 天预警，紧急资质已自动排在前面</span>
+          </div>
+          <div className="qualification-expiry-stats">
+            {expirySummary.map((item) => (
+              <button
+                className={`qualification-expiry-stat ${item.tone} ${expiryFilter === item.filter ? "active" : ""}`}
+                type="button"
+                key={item.filter}
+                aria-pressed={expiryFilter === item.filter}
+                onClick={() => setExpiryFilter(item.filter)}
+              >
+                <span>{item.label}</span>
+                <strong>{formatNumber(item.value)}</strong>
+                <small>{item.description}</small>
+              </button>
+            ))}
+          </div>
+        </section>
         <div className="qualification-layout">
           <div className="qualification-filter-stack">
             <label className="qualification-picker">
@@ -11922,9 +11996,28 @@ function QualificationLibrary({
                 ))}
               </select>
             </label>
+            <label className="qualification-picker">
+              <span>续证状态</span>
+              <select value={expiryFilter} onChange={(event) => setExpiryFilter(event.target.value as QualificationExpiryFilter)}>
+                <option value="all">全部状态</option>
+                <option value="renewal">仅看待续证</option>
+                <option value="expired">已过期</option>
+                <option value="urgent">30 天内到期</option>
+                <option value="warning">31–90 天到期</option>
+                <option value="valid">90 天以上</option>
+                <option value="missing">未维护到期日</option>
+              </select>
+            </label>
+            {expiryFilter !== "all" ? (
+              <button className="ghost-button qualification-filter-clear" type="button" onClick={() => setExpiryFilter("all")}>查看全部资质</button>
+            ) : null}
             <span className="filter-result">当前显示 <strong>{formatNumber(filteredQualifications.length)}</strong> 条</span>
           </div>
-          <QualificationCards qualifications={filteredQualifications.slice(0, visibleLimit)} />
+          <QualificationCards
+            qualifications={filteredQualifications.slice(0, visibleLimit)}
+            emptyTitle="当前条件下没有需要处理的资质"
+            emptyDescription="可切换续证状态、产品或市场继续查看。"
+          />
           {filteredQualifications.length > visibleLimit ? <button className="ghost-button" type="button" onClick={() => setVisibleLimit((value) => value + 60)}>继续显示（剩余 {formatNumber(filteredQualifications.length - visibleLimit)} 条）</button> : null}
         </div>
       </section>

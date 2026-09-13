@@ -961,6 +961,17 @@
   box-shadow: 0 12px 34px rgba(26,57,96,.07);
   backdrop-filter: none;
 }
+.qualification-expiry-overview { border-color: #dbe3ed; background: #f8faff; }
+.qualification-expiry-overview-head h4 { color: #173d7a; }
+.qualification-expiry-overview-head > span { color: #718097; }
+.qualification-expiry-stat { color: #173d7a; border-color: #dbe3ed; background: #fff; box-shadow: 0 4px 14px rgba(23,61,122,.04); }
+.qualification-expiry-stat > small { color: #718097; }
+.qualification-expiry-stat.expired { color: #a32018; background: #fff7f6; }
+.qualification-expiry-stat.urgent,
+.qualification-expiry-stat.renewal { color: #c74405; background: #fff8f3; }
+.qualification-expiry-stat.warning { color: #8a570d; background: #fffbf2; }
+.qualification-expiry-stat.missing { color: #52647d; background: #f5f7fa; }
+.qualification-expiry-stat.active { box-shadow: 0 0 0 2px rgba(244,91,11,.13), 0 8px 20px rgba(23,61,122,.08); }
 .qualification-head h3 { color: #173d7a; }
 .qualification-head span,
 .qualification-empty span,
@@ -991,6 +1002,26 @@
 .asset-card dt { color: #78879a; }
 .qualification-card dd,
 .asset-card dd { color: #263b55; }
+.qualification-card-expired { border-left-color: #c9362d; background: #fffafa; }
+.qualification-card-urgent { border-left-color: #f45b0b; background: #fffaf7; }
+.qualification-card-warning { border-left-color: #d99a29; background: #fffdf7; }
+.qualification-card-valid { border-left-color: #38a169; }
+.qualification-card-missing { border-left-color: #9aa8b8; }
+.qualification-expiry-badge.expired,
+.qualification-renewal-text.expired { color: #a32018; }
+.qualification-expiry-badge.expired { background: #ffebe9; }
+.qualification-expiry-badge.urgent,
+.qualification-renewal-text.urgent { color: #b8450a; }
+.qualification-expiry-badge.urgent { background: #fff0df; }
+.qualification-expiry-badge.warning,
+.qualification-renewal-text.warning { color: #80520d; }
+.qualification-expiry-badge.warning { background: #fff4d9; }
+.qualification-expiry-badge.valid,
+.qualification-renewal-text.valid { color: #12613f; }
+.qualification-expiry-badge.valid { background: #e8f7ef; }
+.qualification-expiry-badge.missing,
+.qualification-renewal-text.missing { color: #52647d; }
+.qualification-expiry-badge.missing { background: #edf1f6; }
 .qualification-files a,
 .qualification-files span { color: #294765; border-color: #d4dfeb; background: #fff; }
 .qualification-files a:hover { color: #df4e0e; border-color: #f0a47e; background: #fff8f4; }

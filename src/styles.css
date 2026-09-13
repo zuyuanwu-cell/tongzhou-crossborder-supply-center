@@ -8937,6 +8937,93 @@ h3 {
   font-size: 13px;
 }
 
+.qualification-expiry-overview {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.qualification-expiry-overview-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.qualification-expiry-overview-head h4 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.qualification-expiry-overview-head > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.qualification-expiry-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.qualification-expiry-stat {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  min-height: 100px;
+  padding: 13px 14px;
+  color: var(--text);
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.qualification-expiry-stat:hover,
+.qualification-expiry-stat.active {
+  transform: translateY(-1px);
+  border-color: currentColor;
+}
+
+.qualification-expiry-stat.active {
+  box-shadow: 0 0 0 2px rgba(255, 106, 31, 0.14);
+}
+
+.qualification-expiry-stat > span,
+.qualification-expiry-stat > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qualification-expiry-stat > span {
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.qualification-expiry-stat > strong {
+  font-size: 26px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.qualification-expiry-stat > small {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.qualification-expiry-stat.expired { color: var(--red); }
+.qualification-expiry-stat.urgent,
+.qualification-expiry-stat.renewal { color: var(--orange); }
+.qualification-expiry-stat.warning { color: var(--amber); }
+.qualification-expiry-stat.missing { color: var(--muted); }
+
 .qualification-layout {
   display: grid;
   grid-template-columns: minmax(260px, 0.28fr) minmax(0, 1fr);
@@ -8988,11 +9075,26 @@ h3 {
   display: grid;
   gap: 12px;
   padding: 14px;
+  border-left-width: 3px;
+}
+
+.qualification-card-expired { border-left-color: var(--red); }
+.qualification-card-urgent { border-left-color: var(--orange); }
+.qualification-card-warning { border-left-color: var(--amber); }
+.qualification-card-valid { border-left-color: var(--green); }
+.qualification-card-missing { border-left-color: var(--muted); }
+
+.qualification-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .qualification-card-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
@@ -9007,9 +9109,51 @@ h3 {
 
 .qualification-card dl {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin: 0;
+}
+
+.qualification-expiry-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.qualification-expiry-badge svg {
+  color: currentColor;
+}
+
+.qualification-expiry-badge.expired,
+.qualification-renewal-text.expired { color: var(--red); }
+.qualification-expiry-badge.expired { background: rgba(255, 88, 100, 0.12); }
+.qualification-expiry-badge.urgent,
+.qualification-renewal-text.urgent { color: var(--orange); }
+.qualification-expiry-badge.urgent { background: rgba(255, 106, 31, 0.12); }
+.qualification-expiry-badge.warning,
+.qualification-renewal-text.warning { color: var(--amber); }
+.qualification-expiry-badge.warning { background: rgba(245, 184, 75, 0.12); }
+.qualification-expiry-badge.valid,
+.qualification-renewal-text.valid { color: var(--green); }
+.qualification-expiry-badge.valid { background: rgba(87, 214, 141, 0.12); }
+.qualification-expiry-badge.missing,
+.qualification-renewal-text.missing { color: var(--muted); }
+.qualification-expiry-badge.missing { background: rgba(152, 150, 143, 0.12); }
+
+.qualification-renewal-text {
+  font-weight: 750;
+}
+
+.qualification-filter-clear {
+  width: 100%;
+  justify-content: center;
 }
 
 .qualification-card dt {
@@ -9991,6 +10135,10 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .qualification-expiry-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .gap-row {
     grid-template-columns: 1fr 1fr;
   }
@@ -10286,6 +10434,20 @@ h3 {
   .attention-list,
   .metric-definition-grid {
     grid-template-columns: 1fr;
+  }
+
+  .qualification-expiry-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .qualification-expiry-overview-head,
+  .qualification-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .qualification-expiry-badge {
+    align-self: flex-start;
   }
 
   .attention-item {
