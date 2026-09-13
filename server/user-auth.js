@@ -109,6 +109,10 @@ export function createLocalUser({ username, password, displayName, role, permiss
   if (!safeUsername) throw new Error("账号不能为空。");
   if (String(password || "").length < 4) throw new Error("密码至少需要 4 位。");
   if (safeRole === "guest") throw new Error("请选择有效角色。");
+  const safeDataScopes = normalizeDataScopes(dataScopes);
+  if (safeRole === "warehouse" && !safeDataScopes.warehouseIds.length) {
+    throw new Error("仓库操作员必须至少绑定一个仓库，未绑定时不能创建账号。");
+  }
   return {
     id: `user-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`,
     username: safeUsername,
@@ -116,7 +120,7 @@ export function createLocalUser({ username, password, displayName, role, permiss
     role: safeRole,
     roleLabel: roleLabel(safeRole),
     permissionOverrides: sanitizePermissionUpdate(safeRole, permissionOverrides),
-    dataScopes: normalizeDataScopes(dataScopes),
+    dataScopes: safeDataScopes,
     notificationTeamId: normalizeNotificationTeamId(notificationTeamId),
     wecomUserId: normalizeWecomUserId(wecomUserId),
     mentionOnProgress: mentionOnProgress !== false,

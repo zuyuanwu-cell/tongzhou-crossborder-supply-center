@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { effectivePermissions, projectCatalogProduct, projectProductBase } from "../server/access-control.js";
 import { projectMovementPayload, scopeMovementSources } from "../server/movement-access.js";
-import { publicUser } from "../server/user-auth.js";
+import { createLocalUser, publicUser } from "../server/user-auth.js";
 
 const distributor = {
   id: "dist-1",
@@ -182,5 +182,20 @@ const warehousePermissions = effectivePermissions({
 });
 assert.deepEqual(warehousePermissions, ["after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration workspaces");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
+assert.throws(() => createLocalUser({
+  username: "warehouse-empty",
+  password: "test1234",
+  displayName: "未绑定仓库账号",
+  role: "warehouse",
+  dataScopes: { countries: [], warehouseIds: [], skus: [] },
+}), /至少绑定一个仓库/, "warehouse accounts must never be created with an unrestricted empty warehouse scope");
+const scopedWarehouseUser = createLocalUser({
+  username: "warehouse-scoped",
+  password: "test1234",
+  displayName: "印尼仓账号",
+  role: "warehouse",
+  dataScopes: { countries: [], warehouseIds: ["wh-id"], skus: [] },
+});
+assert.deepEqual(scopedWarehouseUser.dataScopes.warehouseIds, ["wh-id"]);
 
 console.log("access-control tests passed");

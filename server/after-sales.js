@@ -370,7 +370,7 @@ export function isAfterSalesTicketWithinScope(ticket, dataScopes = {}) {
   const scopedWarehouseIds = new Set((Array.isArray(dataScopes?.warehouseIds) ? dataScopes.warehouseIds : [])
     .map(text)
     .filter(Boolean));
-  if (scopedWarehouseIds.size && ticket?.warehouseId && !scopedWarehouseIds.has(text(ticket.warehouseId))) return false;
+  if (scopedWarehouseIds.size && !scopedWarehouseIds.has(text(ticket?.warehouseId))) return false;
   if (scopedCountries.size) {
     const ticketCountries = [ticket?.site, ticket?.customer?.country]
       .map(normalizedCountryKey)

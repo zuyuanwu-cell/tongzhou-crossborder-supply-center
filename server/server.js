@@ -29,7 +29,7 @@ import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
-import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
+import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { createAgentIndexLayer } from "./agent-index.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
@@ -3043,6 +3043,22 @@ function canAccessAfterSales(auth) {
 
 function canAccessWarehouseTickets(auth) {
   return hasPermission(auth, "warehouse_ticket_report") || hasPermission(auth, "warehouse_ticket_warehouse");
+}
+
+function warehouseCollaborationDataScopes(auth) {
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  if (auth.user?.role !== "warehouse" || scopes.warehouseIds.length) return scopes;
+  // 历史仓库账号若尚未绑定仓库，默认看不到任何仓库数据，避免空范围被解释为“全部”。
+  return { ...scopes, warehouseIds: ["__warehouse_unassigned__"] };
+}
+
+function warehouseAccountScopeError(role, dataScopes) {
+  if (role !== "warehouse") return "";
+  const scopes = normalizeDataScopes(dataScopes);
+  if (!scopes.warehouseIds.length) return "仓库操作员必须至少绑定一个仓库；未绑定仓库的账号默认看不到任何售后单或工单。";
+  const knownWarehouseIds = new Set(warehouseConnections.map((warehouse) => String(warehouse.id || "").trim()).filter(Boolean));
+  const unknownWarehouseIds = scopes.warehouseIds.filter((warehouseId) => !knownWarehouseIds.has(warehouseId));
+  return unknownWarehouseIds.length ? `仓库不存在或已停用：${unknownWarehouseIds.join("、")}` : "";
 }
 
 function warehouseTicketCreatedByFilter(auth, requestedMine = false) {
@@ -6539,10 +6555,10 @@ const server = http.createServer(async (req, res) => {
       const result = warehouseTicketService.list({
         status: url.searchParams.get("status"),
         keyword: url.searchParams.get("keyword"),
-        dataScopes: normalizeDataScopes(auth.user?.dataScopes),
+        dataScopes: warehouseCollaborationDataScopes(auth),
         createdById: warehouseTicketCreatedByFilter(auth, url.searchParams.get("mine") === "1"),
       });
-      result.warehouseOptions = afterSalesWarehouseOptions({}, warehouseConnections, normalizeDataScopes(auth.user?.dataScopes));
+      result.warehouseOptions = afterSalesWarehouseOptions({}, warehouseConnections, warehouseCollaborationDataScopes(auth));
       sendJson(res, 200, result);
       return;
     }
@@ -6585,7 +6601,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const fileName = basename(decodeURIComponent(url.pathname.replace("/api/warehouse-tickets/uploads/", "")));
-      if (!warehouseTicketService.canAccessUpload(fileName, normalizeDataScopes(auth.user?.dataScopes), auth.user?.id, warehouseTicketCreatedByFilter(auth))) {
+      if (!warehouseTicketService.canAccessUpload(fileName, warehouseCollaborationDataScopes(auth), auth.user?.id, warehouseTicketCreatedByFilter(auth))) {
         sendJson(res, 404, { ok: false, message: "仓库工单附件不存在或无权查看。" });
         return;
       }
@@ -6606,7 +6622,7 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const payload = await parseRequestBody(req);
-        const warehouses = afterSalesWarehouseOptions({}, warehouseConnections, normalizeDataScopes(auth.user?.dataScopes));
+        const warehouses = afterSalesWarehouseOptions({}, warehouseConnections, warehouseCollaborationDataScopes(auth));
         const warehouse = warehouses.find((item) => item.id === String(payload.warehouseId || "").trim());
         if (!warehouse) throw new Error(warehouses.length ? "请选择可用的处理仓库。" : "当前账号没有可用仓库，请先配置仓库授权。");
         const notificationRoute = resolveNotificationRouteSnapshot({
@@ -6631,7 +6647,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有查看仓库工单的权限。" });
         return;
       }
-      const ticket = warehouseTicketService.get(decodeURIComponent(warehouseTicketDetailMatch[1]), normalizeDataScopes(auth.user?.dataScopes), warehouseTicketCreatedByFilter(auth));
+      const ticket = warehouseTicketService.get(decodeURIComponent(warehouseTicketDetailMatch[1]), warehouseCollaborationDataScopes(auth), warehouseTicketCreatedByFilter(auth));
       if (!ticket) {
         sendJson(res, 404, { ok: false, message: "仓库工单不存在或无权查看。" });
         return;
@@ -6651,7 +6667,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         const ticketId = decodeURIComponent(warehouseTicketActionMatch[1]);
-        if (!warehouseTicketService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes))) {
+        if (!warehouseTicketService.get(ticketId, warehouseCollaborationDataScopes(auth))) {
           sendJson(res, 404, { ok: false, message: "仓库工单不存在或不在当前账号的数据范围内。" });
           return;
         }
@@ -6674,7 +6690,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, afterSalesService.list({
         status: url.searchParams.get("status"),
         keyword: url.searchParams.get("keyword"),
-        dataScopes: normalizeDataScopes(auth.user?.dataScopes),
+        dataScopes: warehouseCollaborationDataScopes(auth),
         createdById: afterSalesCreatedByFilter(auth, url.searchParams.get("mine") === "1"),
       }));
       return;
@@ -6691,7 +6707,7 @@ const server = http.createServer(async (req, res) => {
         country: url.searchParams.get("country"),
         effectiveDate: url.searchParams.get("effectiveDate"),
         limit: url.searchParams.get("limit"),
-        dataScopes: normalizeDataScopes(auth.user?.dataScopes),
+        dataScopes: warehouseCollaborationDataScopes(auth),
       }));
       return;
     }
@@ -6708,7 +6724,7 @@ const server = http.createServer(async (req, res) => {
         const warehouseOptions = afterSalesWarehouseOptions(
           result.order,
           warehouseConnections,
-          normalizeDataScopes(auth.user?.dataScopes),
+          warehouseCollaborationDataScopes(auth),
         );
         result.order.warehouseOptions = warehouseOptions;
         if (warehouseOptions.length === 1) {
@@ -6719,7 +6735,7 @@ const server = http.createServer(async (req, res) => {
           site: result.order?.site,
           customer: result.order?.customer,
           originalItems: result.order?.items,
-        }, normalizeDataScopes(auth.user?.dataScopes))) {
+        }, warehouseCollaborationDataScopes(auth))) {
           sendJson(res, 403, { ok: false, message: "该订单不在当前账号的数据范围内。" });
           return;
         }
@@ -6766,7 +6782,7 @@ const server = http.createServer(async (req, res) => {
       const fileName = basename(decodeURIComponent(url.pathname.replace("/api/after-sales/uploads/", "")));
       if (!afterSalesService.canAccessUpload(
         fileName,
-        normalizeDataScopes(auth.user?.dataScopes),
+        warehouseCollaborationDataScopes(auth),
         auth.user?.id,
         afterSalesCreatedByFilter(auth),
       )) {
@@ -6793,7 +6809,7 @@ const server = http.createServer(async (req, res) => {
         const warehouseOptions = afterSalesWarehouseOptions(
           payload.order,
           warehouseConnections,
-          normalizeDataScopes(auth.user?.dataScopes),
+          warehouseCollaborationDataScopes(auth),
         );
         const requestedWarehouseId = String(payload.warehouseId || payload.order?.warehouseId || "").trim();
         const warehouse = warehouseOptions.find((item) => item.id === requestedWarehouseId)
@@ -6811,7 +6827,7 @@ const server = http.createServer(async (req, res) => {
           customer: payload.customer || payload.order?.customer,
           originalItems: payload.originalItems || payload.order?.items,
           reissueItems: payload.reissueItems,
-        }, normalizeDataScopes(auth.user?.dataScopes))) {
+        }, warehouseCollaborationDataScopes(auth))) {
           sendJson(res, 403, { ok: false, message: "该售后单不在当前账号的数据范围内。" });
           return;
         }
@@ -6844,7 +6860,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const payload = await parseRequestBody(req);
         const ticketId = decodeURIComponent(afterSalesLabelsMatch[1]);
-        if (!afterSalesService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes))) {
+        if (!afterSalesService.get(ticketId, warehouseCollaborationDataScopes(auth))) {
           sendJson(res, 404, { ok: false, message: "售后单不存在或不在当前账号的数据范围内。" });
           return;
         }
@@ -6869,7 +6885,7 @@ const server = http.createServer(async (req, res) => {
       }
       const ticket = afterSalesService.get(
         decodeURIComponent(afterSalesDetailMatch[1]),
-        normalizeDataScopes(auth.user?.dataScopes),
+        warehouseCollaborationDataScopes(auth),
         afterSalesCreatedByFilter(auth),
       );
       if (!ticket) {
@@ -6891,7 +6907,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         const ticketId = decodeURIComponent(afterSalesWarehouseMatch[1]);
-        if (!afterSalesService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes))) {
+        if (!afterSalesService.get(ticketId, warehouseCollaborationDataScopes(auth))) {
           sendJson(res, 404, { ok: false, message: "售后单不存在或不在当前账号的数据范围内。" });
           return;
         }
@@ -6920,7 +6936,7 @@ const server = http.createServer(async (req, res) => {
         const payload = await parseRequestBody(req);
         if (payload.action !== "resubmit") throw new Error("不支持的运营处理动作。");
         const ticketId = decodeURIComponent(afterSalesOperatorMatch[1]);
-        const ticket = afterSalesService.get(ticketId, normalizeDataScopes(auth.user?.dataScopes));
+        const ticket = afterSalesService.get(ticketId, warehouseCollaborationDataScopes(auth));
         if (!ticket || (!canManage(auth) && String(ticket.createdById || "") !== String(auth.user?.id || ""))) {
           sendJson(res, 404, { ok: false, message: "售后单不存在或只能由原填报人修改。" });
           return;
@@ -8269,6 +8285,18 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      const requestedRole = normalizeRole(payload.role);
+      if (requestedRole === "guest") {
+        sendJson(res, 400, { ok: false, message: "请选择有效角色。" });
+        return;
+      }
+      const requestedDataScopes = normalizeDataScopes(payload.dataScopes);
+      const scopeError = warehouseAccountScopeError(requestedRole, requestedDataScopes);
+      if (scopeError) {
+        sendJson(res, 400, { ok: false, message: scopeError });
+        return;
+      }
+
       const notificationTeamId = String(payload.notificationTeamId || "").trim().toLowerCase();
       const enabledNotificationTeams = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams);
       if (notificationTeamId && !enabledNotificationTeams.some((team) => team.id === notificationTeamId && team.enabled)) {
@@ -8286,9 +8314,9 @@ const server = http.createServer(async (req, res) => {
         username,
         password: payload.password,
         displayName: payload.displayName,
-        role: payload.role,
+        role: requestedRole,
         permissionOverrides: payload.permissionOverrides,
-        dataScopes: payload.dataScopes,
+        dataScopes: requestedDataScopes,
         notificationTeamId,
         wecomUserId,
         mentionOnProgress: payload.mentionOnProgress,
@@ -8343,7 +8371,13 @@ const server = http.createServer(async (req, res) => {
         user.permissionOverrides = sanitizePermissionUpdate(user.role, payload.permissionOverrides || payload);
       }
       if (Object.prototype.hasOwnProperty.call(payload, "dataScopes")) {
-        user.dataScopes = normalizeDataScopes(payload.dataScopes);
+        const nextDataScopes = normalizeDataScopes(payload.dataScopes);
+        const scopeError = warehouseAccountScopeError(user.role, nextDataScopes);
+        if (scopeError) {
+          sendJson(res, 400, { ok: false, message: scopeError });
+          return;
+        }
+        user.dataScopes = nextDataScopes;
       }
       user.updatedAt = new Date().toISOString();
       cachedUsers.syncedAt = user.updatedAt;

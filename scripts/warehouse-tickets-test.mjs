@@ -41,6 +41,9 @@ try {
   assert.match(buildWarehouseTicketProgressMarkdown(resolved.ticket, { statusLabel: "已解决" }), /已解决/);
   assert.equal(service.list({ dataScopes: { warehouseIds: ["wh-id"] } }).summary.total, 1);
   assert.equal(service.list({ dataScopes: { warehouseIds: ["wh-my"] } }).summary.total, 0);
+  assert.equal(service.get(created.ticket.id, { warehouseIds: ["wh-id"] })?.id, created.ticket.id);
+  assert.equal(service.get(created.ticket.id, { warehouseIds: ["wh-my"] }), null, "another warehouse must not read ticket details");
+  assert.equal(service.canAccessUpload(upload.id, { warehouseIds: ["wh-my"] }, "other-user"), false, "another warehouse must not read ticket attachments");
   assert.equal(service.list({ createdById: operator.id }).summary.total, 1);
   assert.equal(service.list({ createdById: "other" }).summary.total, 0);
   service.recordNotification(created.ticket.id, { eventType: "created", target: "warehouse", status: "sent", robotCount: 1, routeLabel: "项目群：项目 A", teamId: "team-a", mentionedCount: 2 });

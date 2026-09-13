@@ -1422,6 +1422,7 @@ function App() {
         break;
       case "#users":
         if (hasUserPermission(currentUser, "users")) void loadUsers();
+        if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
         break;
       case "#action-log":
         if (hasUserPermission(currentUser, "action_log")) void loadActionLog();
@@ -2015,7 +2016,7 @@ function App() {
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "用户管理" ? (
-          <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} />
+          <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} warehousePayload={warehousePayload} />
         ) : (
           <Dashboard
             products={catalog}
@@ -7560,10 +7561,10 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   );
 }
 
-function UserManagement({ userPayload, projectTeams }: { userPayload: UserManagementPayload | null; projectTeams: WecomProjectTeam[] }) {
+function UserManagement({ userPayload, projectTeams, warehousePayload }: { userPayload: UserManagementPayload | null; projectTeams: WecomProjectTeam[]; warehousePayload: WarehousePayload | null }) {
   const confirm = useConfirm();
   const users = userPayload?.users ?? [];
-  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "warehouse" | "admin", notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
+  const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "warehouse" | "admin", warehouseIds: [] as string[], notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
   const [saving, setSaving] = React.useState(false);
   const [actionUserId, setActionUserId] = React.useState("");
   const [actionApplicationId, setActionApplicationId] = React.useState("");
@@ -7575,7 +7576,7 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
   const [permissionDraft, setPermissionDraft] = React.useState({
     enabled: [] as string[],
     countries: "",
-    warehouseIds: "",
+    warehouseIds: [] as string[],
     skus: "",
     notificationTeamId: "",
     wecomUserId: "",
@@ -7586,6 +7587,7 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
   const permissionCatalog = visiblePayload?.permissionCatalog ?? [];
   const applications = applicationPayload?.applications ?? [];
   const pendingApplications = applications.filter((item) => item.status === "pending");
+  const warehouseOptions = warehousePayload?.warehouses || [];
 
   React.useEffect(() => {
     void loadApplications();
@@ -7602,10 +7604,18 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (form.role === "warehouse" && !form.warehouseIds.length) {
+      setMessage("创建仓库操作员前，请至少绑定一个负责仓库。");
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
-      const result = await createUser(form);
+      const { warehouseIds, ...accountForm } = form;
+      const result = await createUser({
+        ...accountForm,
+        dataScopes: { countries: [], warehouseIds: form.role === "warehouse" ? warehouseIds : [], skus: [] },
+      });
       setLocalPayload(result);
       let nextMessage = result.warning || "用户已创建，并已同步到同舟供应链数智化系统。";
       if (sourceApplicationId) {
@@ -7619,7 +7629,7 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
           nextMessage = `${nextMessage} 但分销申请状态更新失败：${statusError instanceof Error ? statusError.message : "请稍后手动标记"}`;
         }
       }
-      setForm({ username: "", password: "", displayName: "", role: "distributor", notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
+      setForm({ username: "", password: "", displayName: "", role: "distributor", warehouseIds: [], notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
       setMessage(nextMessage);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "创建用户失败。");
@@ -7640,6 +7650,7 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
       password: "",
       displayName: application.companyName || application.contactName,
       role: "distributor",
+      warehouseIds: [],
       notificationTeamId: "",
       wecomUserId: "",
       mentionOnProgress: true,
@@ -7672,7 +7683,7 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
     setPermissionDraft({
       enabled: [...(user.permissions || [])],
       countries: (user.dataScopes?.countries || []).join(", "),
-      warehouseIds: (user.dataScopes?.warehouseIds || []).join(", "),
+      warehouseIds: [...(user.dataScopes?.warehouseIds || [])],
       skus: (user.dataScopes?.skus || []).join(", "),
       notificationTeamId: user.notificationTeamId || "",
       wecomUserId: user.wecomUserId || "",
@@ -7694,7 +7705,37 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
     return Array.from(new Set(value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean)));
   }
 
+  function toggleCreateWarehouse(warehouseId: string) {
+    setForm((current) => ({
+      ...current,
+      warehouseIds: current.warehouseIds.includes(warehouseId)
+        ? current.warehouseIds.filter((item) => item !== warehouseId)
+        : [...current.warehouseIds, warehouseId],
+    }));
+  }
+
+  function togglePermissionWarehouse(warehouseId: string) {
+    setPermissionDraft((current) => ({
+      ...current,
+      warehouseIds: current.warehouseIds.includes(warehouseId)
+        ? current.warehouseIds.filter((item) => item !== warehouseId)
+        : [...current.warehouseIds, warehouseId],
+    }));
+  }
+
+  function warehouseScopeLabel(user: UserManagementPayload["users"][number]) {
+    const warehouseIds = user.dataScopes?.warehouseIds || [];
+    if (user.role === "warehouse" && !warehouseIds.length) return "未绑定仓库 · 当前不可查看工单";
+    if (!warehouseIds.length) return "数据范围：全部";
+    const names = warehouseIds.map((warehouseId) => warehouseOptions.find((warehouse) => warehouse.id === warehouseId)?.name || warehouseId);
+    return `负责仓库：${names.join("、")}`;
+  }
+
   async function savePermissionEditor(user: UserManagementPayload["users"][number]) {
+    if (user.role === "warehouse" && !permissionDraft.warehouseIds.length) {
+      setMessage("仓库操作员必须至少绑定一个仓库，未绑定时不能保存。");
+      return;
+    }
     const defaults = visiblePayload?.roleDefaults?.[user.role] || [];
     const required = user.role === "admin" ? (visiblePayload?.hardRules?.adminRequired || []) : [];
     const denied = user.role === "direct"
@@ -7718,19 +7759,21 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
     setActionUserId(user.id);
     setMessage("");
     try {
-      await updateUserPermissions(user.id, {
+      const permissionResult = await updateUserPermissions(user.id, {
         permissionOverrides,
         dataScopes: {
           countries: parseScopeInput(permissionDraft.countries),
-          warehouseIds: parseScopeInput(permissionDraft.warehouseIds),
+          warehouseIds: permissionDraft.warehouseIds,
           skus: parseScopeInput(permissionDraft.skus),
         },
       });
-      const result = await updateUserNotificationProfile(user.id, {
-        notificationTeamId: permissionDraft.notificationTeamId,
-        wecomUserId: permissionDraft.wecomUserId,
-        mentionOnProgress: permissionDraft.mentionOnProgress,
-      });
+      const result = user.role === "warehouse"
+        ? permissionResult
+        : await updateUserNotificationProfile(user.id, {
+          notificationTeamId: permissionDraft.notificationTeamId,
+          wecomUserId: permissionDraft.wecomUserId,
+          mentionOnProgress: permissionDraft.mentionOnProgress,
+        });
       setLocalPayload(result);
       setEditingUserId("");
       setMessage(`已保存 ${user.displayName || user.username} 的权限；新请求立即生效。`);
@@ -7866,28 +7909,49 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
           </label>
           <label>
             <span>角色</span>
-            <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as "distributor" | "direct" | "warehouse" | "admin" }))}>
+            <select value={form.role} onChange={(event) => {
+              const role = event.target.value as "distributor" | "direct" | "warehouse" | "admin";
+              setForm((current) => ({ ...current, role, warehouseIds: role === "warehouse" ? current.warehouseIds : [] }));
+            }}>
               <option value="distributor">分销商</option>
               <option value="direct">直营运营</option>
               <option value="warehouse">仓库操作员</option>
               <option value="admin">管理员</option>
             </select>
           </label>
-          <label>
-            <span>默认项目通知群</span>
-            <select value={form.notificationTeamId} onChange={(event) => setForm((current) => ({ ...current, notificationTeamId: event.target.value }))}>
-              <option value="">全局运营群（兜底）</option>
-              {projectTeams.filter((team) => team.enabled).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>企业微信 UserID</span>
-            <input value={form.wecomUserId} onChange={(event) => setForm((current) => ({ ...current, wecomUserId: event.target.value }))} placeholder="用于在项目群内 @本人" />
-          </label>
-          <label className="wecom-inline-check">
-            <input type="checkbox" checked={form.mentionOnProgress} onChange={(event) => setForm((current) => ({ ...current, mentionOnProgress: event.target.checked }))} />
-            <span>仓库更新处理进度时 @该用户</span>
-          </label>
+          {form.role === "warehouse" ? (
+            <fieldset className="warehouse-account-scope warehouse-auth-wide">
+              <legend>负责仓库 *</legend>
+              <p>账号登录后，只能查看和处理所勾选仓库的售后单、面单与仓库工单。</p>
+              <div className="warehouse-account-options">
+                {warehouseOptions.map((warehouse) => (
+                  <label className={form.warehouseIds.includes(warehouse.id) ? "selected" : ""} key={warehouse.id}>
+                    <input type="checkbox" checked={form.warehouseIds.includes(warehouse.id)} onChange={() => toggleCreateWarehouse(warehouse.id)} />
+                    <span><strong>{warehouse.name}</strong><small>{warehouse.country || "未配置国家"}</small></span>
+                  </label>
+                ))}
+                {!warehouseOptions.length ? <div className="warehouse-account-empty">暂无可绑定仓库，请先到“仓库授权”新增仓库。</div> : null}
+              </div>
+            </fieldset>
+          ) : (
+            <>
+              <label>
+                <span>默认项目通知群</span>
+                <select value={form.notificationTeamId} onChange={(event) => setForm((current) => ({ ...current, notificationTeamId: event.target.value }))}>
+                  <option value="">全局运营群（兜底）</option>
+                  {projectTeams.filter((team) => team.enabled).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>企业微信 UserID</span>
+                <input value={form.wecomUserId} onChange={(event) => setForm((current) => ({ ...current, wecomUserId: event.target.value }))} placeholder="用于在项目群内 @本人" />
+              </label>
+              <label className="wecom-inline-check">
+                <input type="checkbox" checked={form.mentionOnProgress} onChange={(event) => setForm((current) => ({ ...current, mentionOnProgress: event.target.checked }))} />
+                <span>仓库更新处理进度时 @该用户</span>
+              </label>
+            </>
+          )}
           <div className="warehouse-auth-actions">
             <button className="sync-button" type="submit" disabled={saving}>
               <Lock size={16} />
@@ -7924,12 +7988,8 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
                 <span className={`status-pill ${user.status === "disabled" ? "danger" : "good"}`}>{user.statusLabel || (user.status === "disabled" ? "停用" : "启用")}</span>
                 <span className="user-permission-summary">
                   <strong>{user.permissions?.length || 0} 项有效权限</strong>
-                  <small>
-                    {user.dataScopes?.countries?.length || user.dataScopes?.warehouseIds?.length || user.dataScopes?.skus?.length
-                      ? "已限制数据范围"
-                      : "数据范围：全部"}
-                  </small>
-                  <small>通知群：{projectTeams.find((team) => team.id === user.notificationTeamId)?.name || "全局运营群"}{user.wecomUserId ? " · 可@本人" : " · 未配UserID"}</small>
+                  <small>{warehouseScopeLabel(user)}</small>
+                  {user.role !== "warehouse" ? <small>通知群：{projectTeams.find((team) => team.id === user.notificationTeamId)?.name || "全局运营群"}{user.wecomUserId ? " · 可@本人" : " · 未配UserID"}</small> : null}
                 </span>
                 <span className="user-actions">
                   <button type="button" className="sync-button compact-button" disabled={actionUserId === user.id} onClick={() => openPermissionEditor(user)}>
@@ -8006,16 +8066,28 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
                       <textarea value={permissionDraft.countries} onChange={(event) => setPermissionDraft((current) => ({ ...current, countries: event.target.value }))} placeholder="留空代表全部；多个用逗号分隔，如：印度尼西亚, 马来西亚" />
                     </label>
                     <label>
-                      <span>仓库 ID 范围</span>
-                      <textarea value={permissionDraft.warehouseIds} onChange={(event) => setPermissionDraft((current) => ({ ...current, warehouseIds: event.target.value }))} placeholder="留空代表全部；填写中台仓库 ID" />
-                    </label>
-                    <label>
                       <span>SKU 范围</span>
                       <textarea value={permissionDraft.skus} onChange={(event) => setPermissionDraft((current) => ({ ...current, skus: event.target.value }))} placeholder="留空代表全部；多个 SKU 用逗号或换行分隔" />
                     </label>
+                    <fieldset className="permission-warehouse-scope">
+                      <legend>{user.role === "warehouse" ? "可处理仓库 *" : "仓库范围"}</legend>
+                      <p>{user.role === "warehouse" ? "该账号只能查看、受理和更新所选仓库的售后单与仓库工单。" : "留空代表全部仓库；选择后仅允许访问指定仓库的数据。"}</p>
+                      <div className="warehouse-account-options compact">
+                        {warehouseOptions.map((warehouse) => (
+                          <label className={permissionDraft.warehouseIds.includes(warehouse.id) ? "selected" : ""} key={warehouse.id}>
+                            <input type="checkbox" checked={permissionDraft.warehouseIds.includes(warehouse.id)} onChange={() => togglePermissionWarehouse(warehouse.id)} />
+                            <span><strong>{warehouse.name}</strong><small>{warehouse.country || "未配置国家"}</small></span>
+                          </label>
+                        ))}
+                        {!warehouseOptions.length ? <div className="warehouse-account-empty">暂无可绑定仓库，请先到“仓库授权”新增仓库。</div> : null}
+                      </div>
+                      {permissionDraft.warehouseIds.some((warehouseId) => !warehouseOptions.some((warehouse) => warehouse.id === warehouseId)) ? (
+                        <div className="warehouse-account-warning">账号含有已移除的仓库绑定，请重新选择并保存。</div>
+                      ) : null}
+                    </fieldset>
                   </div>
 
-                  <div className="notification-profile-grid">
+                  {user.role !== "warehouse" ? <div className="notification-profile-grid">
                     <div className="notification-profile-copy">
                       <p className="eyebrow">Project Notification</p>
                       <h4>项目群通知身份</h4>
@@ -8036,11 +8108,11 @@ function UserManagement({ userPayload, projectTeams }: { userPayload: UserManage
                       <input type="checkbox" checked={permissionDraft.mentionOnProgress} onChange={(event) => setPermissionDraft((current) => ({ ...current, mentionOnProgress: event.target.checked }))} />
                       <span>仓库更新工单时在项目群 @本人</span>
                     </label>
-                  </div>
+                  </div> : null}
 
                   <div className="permission-guardrail">
                     <ShieldCheck size={18} />
-                    <span>直营运营默认仅开放妙手订单别名匹配，AI 上架、自动运单和连接配置需逐项授权；分销商、游客及仓库账号不可获得妙手内部能力。关闭权限会同时隐藏入口并拒绝接口访问。</span>
+                    <span>{user.role === "warehouse" ? "仓库账号必须绑定至少一个仓库；系统会在列表、详情、附件和状态更新接口中同时校验仓库范围，避免不同仓库之间串单。" : "直营运营默认仅开放妙手订单别名匹配，AI 上架、自动运单和连接配置需逐项授权；分销商、游客及仓库账号不可获得妙手内部能力。关闭权限会同时隐藏入口并拒绝接口访问。"}</span>
                   </div>
                   <div className="permission-editor-actions">
                     <button className="ghost-button" type="button" onClick={() => setEditingUserId("")}>取消</button>

@@ -268,6 +268,74 @@ async function main() {
   }
   console.log("[ok] warehouse collaboration synchronous webhook chain");
 
+  const missingWarehouseScopeResponse = await fetch(`${baseUrl}/api/users`, {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "smoke-warehouse-empty", password: "warehouse123", displayName: "未绑定仓库", role: "warehouse" }),
+  });
+  if (missingWarehouseScopeResponse.status !== 400 || !String((await missingWarehouseScopeResponse.json()).message || "").includes("至少绑定一个仓库")) {
+    throw new Error("Warehouse account creation did not reject an empty warehouse scope.");
+  }
+  const isolationWarehouses = await expectJson("/api/warehouses", { headers: authHeaders });
+  const ownWarehouseId = "id-shenniu-jakarta";
+  const otherWarehouseId = isolationWarehouses.warehouses?.find((warehouse) => warehouse.id && warehouse.id !== ownWarehouseId)?.id;
+  if (!otherWarehouseId) throw new Error("Warehouse isolation smoke test needs at least two configured warehouses.");
+  async function createAndLoginWarehouse(username, warehouseId) {
+    const password = "warehouse123";
+    const created = await expectJson("/api/users", {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password,
+        displayName: `${warehouseId} 测试账号`,
+        role: "warehouse",
+        dataScopes: { countries: [], warehouseIds: [warehouseId], skus: [] },
+      }),
+    });
+    const session = await expectJson("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    return { id: created.user?.id, headers: { Authorization: `Bearer ${session.token}` } };
+  }
+  const ownWarehouseAccount = await createAndLoginWarehouse("smoke-warehouse-own", ownWarehouseId);
+  const otherWarehouseAccount = await createAndLoginWarehouse("smoke-warehouse-other", otherWarehouseId);
+  const ownWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: ownWarehouseAccount.headers });
+  const otherWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: otherWarehouseAccount.headers });
+  const ownAfterSales = await expectJson("/api/after-sales", { headers: ownWarehouseAccount.headers });
+  const otherAfterSales = await expectJson("/api/after-sales", { headers: otherWarehouseAccount.headers });
+  if (!ownWarehouseTickets.tickets?.some((ticket) => ticket.id === warehouseTicket.ticket.id) || otherWarehouseTickets.tickets?.some((ticket) => ticket.id === warehouseTicket.ticket.id)) {
+    throw new Error("Warehouse ticket lists were not isolated by the account warehouse binding.");
+  }
+  if (!ownAfterSales.tickets?.some((ticket) => ticket.id === afterSales.ticket.id) || otherAfterSales.tickets?.some((ticket) => ticket.id === afterSales.ticket.id)) {
+    throw new Error("After-sales lists were not isolated by the account warehouse binding.");
+  }
+  await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}`, { headers: ownWarehouseAccount.headers });
+  await expectJson(`/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}`, { headers: ownWarehouseAccount.headers });
+  const crossWarehouseTicketDetail = await fetch(`${baseUrl}/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}`, { headers: otherWarehouseAccount.headers });
+  const crossWarehouseAfterSalesDetail = await fetch(`${baseUrl}/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}`, { headers: otherWarehouseAccount.headers });
+  if (crossWarehouseTicketDetail.status !== 404 || crossWarehouseAfterSalesDetail.status !== 404) {
+    throw new Error(`Cross-warehouse detail access was not hidden: ticket ${crossWarehouseTicketDetail.status}, after-sales ${crossWarehouseAfterSalesDetail.status}.`);
+  }
+  const crossWarehouseTicketUpdate = await fetch(`${baseUrl}/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...otherWarehouseAccount.headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "reply", note: "不应写入" }),
+  });
+  const crossWarehouseAfterSalesUpdate = await fetch(`${baseUrl}/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...otherWarehouseAccount.headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "accept", warehouseRemark: "不应写入" }),
+  });
+  if (crossWarehouseTicketUpdate.status !== 404 || crossWarehouseAfterSalesUpdate.status !== 404) {
+    throw new Error(`Cross-warehouse update was not blocked: ticket ${crossWarehouseTicketUpdate.status}, after-sales ${crossWarehouseAfterSalesUpdate.status}.`);
+  }
+  await expectJson(`/api/users/${encodeURIComponent(ownWarehouseAccount.id)}`, { method: "DELETE", headers: authHeaders });
+  await expectJson(`/api/users/${encodeURIComponent(otherWarehouseAccount.id)}`, { method: "DELETE", headers: authHeaders });
+  console.log("[ok] warehouse account list and detail isolation");
+
   const scheduler = await expectJson("/api/sync-scheduler", { headers: authHeaders });
   if (!scheduler.enabled || !Array.isArray(scheduler.tasks) || scheduler.tasks.length < 10 || scheduler.counts?.running === undefined) {
     throw new Error(`/api/sync-scheduler did not expose the background task state: ${JSON.stringify(scheduler).slice(0, 500)}`);

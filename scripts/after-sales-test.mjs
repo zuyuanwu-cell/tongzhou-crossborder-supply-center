@@ -203,6 +203,11 @@ try {
       { sku: "TZKJ-B", affectedQty: 1 },
     ],
   }, { skus: ["TZKJ-A"] }), false, "all affected SKUs must stay inside the assigned scope");
+  assert.equal(isAfterSalesTicketWithinScope({
+    site: "ID",
+    warehouseId: "",
+    originalItems: [{ sku: "TZKJ-A", affectedQty: 1 }],
+  }, { warehouseIds: ["warehouse-id"] }), false, "unassigned legacy tickets must not leak into a scoped warehouse account");
 
   console.log("after-sales workflow tests passed");
 } finally {
