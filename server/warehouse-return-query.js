@@ -50,6 +50,32 @@ export function normalizeReturnIdentifier(value) {
   return text(value).replace(/[\s\u200B-\u200D\uFEFF]+/g, "").toUpperCase();
 }
 
+function dateOnlyTimestamp(value) {
+  const matched = text(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (matched) return Date.UTC(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]));
+  const parsed = Date.parse(text(value));
+  if (!Number.isFinite(parsed)) return Number.NaN;
+  const date = new Date(parsed);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function isoDateFromTimestamp(value) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+export function automaticPlatformReturnDateRange(values = [], now = new Date()) {
+  const today = dateOnlyTimestamp(now instanceof Date ? now.toISOString() : now);
+  const validDates = (Array.isArray(values) ? values : [])
+    .map(dateOnlyTimestamp)
+    .filter((value) => Number.isFinite(value) && value <= today);
+  const anchor = validDates.length ? Math.max(...validDates) : today - 89 * 24 * 60 * 60 * 1000;
+  const end = Math.min(today, anchor + 89 * 24 * 60 * 60 * 1000);
+  return {
+    dateFrom: isoDateFromTimestamp(anchor),
+    dateTo: isoDateFromTimestamp(end),
+  };
+}
+
 function identifierEquals(left, right) {
   const normalizedLeft = normalizeReturnIdentifier(left);
   return Boolean(normalizedLeft) && normalizedLeft === normalizeReturnIdentifier(right);

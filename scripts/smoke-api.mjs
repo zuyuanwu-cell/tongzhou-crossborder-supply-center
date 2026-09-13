@@ -194,8 +194,8 @@ async function main() {
     headers: { ...authHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({ query: "PLATFORM-SMOKE-001", queryType: "platform_order" }),
   });
-  if (!platformReturnQueryNeedsScope.needsInput || !platformReturnQueryNeedsScope.requiredFields?.includes("warehouseId") || !platformReturnQueryNeedsScope.requiredFields?.includes("dateRange")) {
-    throw new Error(`/api/warehouse-returns/query did not request warehouse and date fallback for an unmapped platform order: ${JSON.stringify(platformReturnQueryNeedsScope).slice(0, 600)}`);
+  if (!platformReturnQueryNeedsScope.needsInput || !platformReturnQueryNeedsScope.requiredFields?.includes("warehouseId") || platformReturnQueryNeedsScope.requiredFields?.includes("dateRange")) {
+    throw new Error(`/api/warehouse-returns/query did not limit the platform-order fallback to warehouse selection: ${JSON.stringify(platformReturnQueryNeedsScope).slice(0, 600)}`);
   }
   const anonymousReturnQuery = await fetch(`${baseUrl}/api/warehouse-returns/query`, {
     method: "POST",

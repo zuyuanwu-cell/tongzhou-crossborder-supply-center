@@ -1819,6 +1819,7 @@ export type WarehouseReturnQueryPayload = {
     warehouseId: string;
     dateFrom: string;
     dateTo: string;
+    dateRangeMode?: "automatic" | "manual" | "none" | string;
   };
   warehouseOptions: Array<{ id: string; name: string; country: string; providerId: string; providerName: string }>;
   source: { id: string; name: string; country: string; providerId: string; providerName: string } | null;

@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
 import {
+  automaticPlatformReturnDateRange,
   normalizeReturnIdentifier,
   normalizeSeaReturnOrder,
   normalizeYunReturnOrder,
   queryWarehouseReturns,
 } from "../server/warehouse-return-query.js";
+
+assert.deepEqual(
+  automaticPlatformReturnDateRange(["2026-09-08 10:00:00", "2026-09-09 09:00:00"], new Date("2026-09-13T12:00:00Z")),
+  { dateFrom: "2026-09-09", dateTo: "2026-09-13" },
+  "platform order lookup derives a bounded range from the latest known order milestone",
+);
+assert.deepEqual(
+  automaticPlatformReturnDateRange(["2026-01-10"], new Date("2026-09-13T12:00:00Z")),
+  { dateFrom: "2026-01-10", dateTo: "2026-04-09" },
+  "older orders stay inside one automatic 90-day return window",
+);
 
 function jsonResponse(payload, status = 200) {
   return {

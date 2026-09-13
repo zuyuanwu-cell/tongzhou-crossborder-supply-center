@@ -65,7 +65,7 @@ import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySe
 import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
-import { normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
+import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -3104,9 +3104,13 @@ function warehouseReturnLookupContext(input, auth) {
   ].map((value) => String(value || "").trim()).filter(Boolean))];
   return {
     options,
-    warehouseId: selectedWarehouseId || inferredWarehouseId,
-    inferred: !selectedWarehouseId && Boolean(inferredWarehouseId),
+    warehouseId: selectedWarehouseId || inferredWarehouseId || (options.length === 1 ? options[0].id : ""),
+    inferred: !selectedWarehouseId && Boolean(inferredWarehouseId || options.length === 1),
     lookupAliases,
+    lookupDates: [
+      ...orderMatches.flatMap((order) => [order.shippedAt, order.createdAt, order.updatedAt]),
+      ...afterSalesMatches.flatMap((ticket) => [ticket.createdAt, ticket.updatedAt]),
+    ].filter(Boolean),
   };
 }
 
@@ -6681,13 +6685,16 @@ const server = http.createServer(async (req, res) => {
           : "platform_order";
         if (!query) throw new WarehouseReturnQueryError("invalid_input", "请输入平台原订单号、WMS退货单号或退货物流单号。");
         if (query.length > 160) throw new WarehouseReturnQueryError("invalid_input", "查询编号过长，请检查后重试。");
-        const dateRange = validateWarehouseReturnDateRange(payload);
+        const requestedDateRange = validateWarehouseReturnDateRange(payload);
         const context = warehouseReturnLookupContext({ ...payload, query, queryType }, auth);
+        const automaticDateRange = queryType === "platform_order" && !requestedDateRange.dateFrom
+          ? automaticPlatformReturnDateRange(context.lookupDates)
+          : null;
+        const dateRange = automaticDateRange || requestedDateRange;
+        const dateRangeMode = automaticDateRange ? "automatic" : requestedDateRange.dateFrom ? "manual" : "none";
         if (!context.options.length) throw new WarehouseReturnQueryError("unconfigured", "当前账号没有可查询的WMS仓库。");
         if (!context.warehouseId) {
-          const requiredFields = ["platform_order", "tracking"].includes(queryType)
-            ? ["warehouseId", "dateRange"]
-            : ["warehouseId"];
+          const requiredFields = queryType === "tracking" ? ["warehouseId", "dateRange"] : ["warehouseId"];
           sendJson(res, 200, {
             ok: true,
             needsInput: true,
@@ -6699,7 +6706,7 @@ const server = http.createServer(async (req, res) => {
                 ? "请选择需要查询的仓库和退货时间范围，系统不会自动扫描全部仓库。"
                 : "请选择需要查询的仓库，系统不会自动扫描全部仓库。",
             queriedAt: new Date().toISOString(),
-            query: { value: query, type: queryType, warehouseId: "", ...dateRange },
+            query: { value: query, type: queryType, warehouseId: "", ...dateRange, dateRangeMode },
             warehouseOptions: context.options,
             source: null,
             orders: [],
@@ -6746,7 +6753,7 @@ const server = http.createServer(async (req, res) => {
               requiredFields: ["dateRange"],
               message: `${publicWarehouse.name}无法仅凭当前编号完成精确查询，请补充退货发生时间（单次最多90天）。`,
               queriedAt: new Date().toISOString(),
-              query: { value: query, type: queryType, warehouseId: warehouse.id, ...dateRange },
+              query: { value: query, type: queryType, warehouseId: warehouse.id, ...dateRange, dateRangeMode },
               warehouseOptions: context.options,
               source: publicWarehouse,
               orders: [],
@@ -6769,7 +6776,7 @@ const server = http.createServer(async (req, res) => {
             requiredFields: [],
             message,
             queriedAt: new Date().toISOString(),
-            query: { value: query, type: queryType, warehouseId: warehouse.id, ...dateRange },
+            query: { value: query, type: queryType, warehouseId: warehouse.id, ...dateRange, dateRangeMode },
             warehouseOptions: context.options,
             source: publicWarehouse,
             method: result.method,

@@ -70,7 +70,10 @@ function quantity(value: number) {
 }
 
 function queryRange(payload: WarehouseReturnQueryPayload) {
-  if (payload.query?.dateFrom && payload.query?.dateTo) return `${payload.query.dateFrom} 至 ${payload.query.dateTo}`;
+  if (payload.query?.dateFrom && payload.query?.dateTo) {
+    const prefix = payload.query.dateRangeMode === "automatic" ? "系统自动：" : "";
+    return `${prefix}${payload.query.dateFrom} 至 ${payload.query.dateTo}`;
+  }
   return payload.method === "targeted" ? "精确单号定向查询" : "未使用时间范围";
 }
 
@@ -101,6 +104,8 @@ export function WarehouseReturnQuery({ currentUser }: { currentUser: AuthUser })
   const requestRef = React.useRef<AbortController | null>(null);
   const selectedOrder = payload?.orders.find((order) => order.id === selectedOrderId) || payload?.orders[0] || null;
   const currentType = queryTypeOptions.find((item) => item.value === queryType) || queryTypeOptions[0];
+  const canShowManualConditions = queryType !== "platform_order"
+    || Boolean(payload?.needsInput && payload.requiredFields.includes("warehouseId"));
 
   React.useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -172,7 +177,7 @@ export function WarehouseReturnQuery({ currentUser }: { currentUser: AuthUser })
       <div>
         <p className="eyebrow">LIVE WMS RETURN LOOKUP</p>
         <h2>仓库退货状态查询</h2>
-        <span>需要看哪一单就查哪一单。结果直接来自仓库WMS，本系统不批量同步、不保存退货数据。</span>
+        <span>{queryType === "platform_order" ? "输入平台订单号即可，系统会自动判断仓库和查询时间。" : "需要看哪一单就查哪一单。结果直接来自仓库WMS，本系统不批量同步、不保存退货数据。"}</span>
       </div>
       <div className="wrq-live-badge"><RefreshCw size={18} /><span><strong>实时按需查询</strong><small>查询后不留存</small></span></div>
     </header>
@@ -187,6 +192,7 @@ export function WarehouseReturnQuery({ currentUser }: { currentUser: AuthUser })
             setWarehouseId("");
             setDateFrom("");
             setDateTo("");
+            setShowConditions(false);
           }}>
             {queryTypeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
           </select>
@@ -197,15 +203,15 @@ export function WarehouseReturnQuery({ currentUser }: { currentUser: AuthUser })
         </label>
         {loading ? <button className="wrq-cancel" type="button" onClick={cancelQuery}><X size={17} />取消查询</button> : <button className="wrq-submit" type="submit"><PackageSearch size={19} />查询WMS</button>}
       </div>
-      <div className="wrq-condition-toggle">
-        <button type="button" onClick={() => setShowConditions((current) => !current)}><Warehouse size={15} />{showConditions ? "收起辅助条件" : "选择仓库和时间"}</button>
+      {canShowManualConditions ? <div className="wrq-condition-toggle">
+        <button type="button" onClick={() => setShowConditions((current) => !current)}><Warehouse size={15} />{showConditions ? "收起辅助条件" : queryType === "platform_order" ? "补选仓库" : "选择仓库和时间"}</button>
         <span>系统会先尝试自动识别；无法定位时再补充条件，不会扫描全部仓库。</span>
-      </div>
-      {showConditions ? <div className="wrq-conditions">
+      </div> : null}
+      {showConditions && canShowManualConditions ? <div className="wrq-conditions">
         <label><span>查询仓库</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">由系统自动识别</option>{(payload?.warehouseOptions || []).map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name} · {warehouse.country}</option>)}</select></label>
-        <label><span>开始日期</span><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
+        {queryType !== "platform_order" ? <><label><span>开始日期</span><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
         <label><span>结束日期</span><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
-        <div className="wrq-date-presets"><span>快捷范围</span><button type="button" onClick={() => applyRange(30)}>近30天</button><button type="button" onClick={() => applyRange(90)}>近90天</button><small>单次最多90天</small></div>
+        <div className="wrq-date-presets"><span>快捷范围</span><button type="button" onClick={() => applyRange(30)}>近30天</button><button type="button" onClick={() => applyRange(90)}>近90天</button><small>单次最多90天</small></div></> : null}
       </div> : null}
     </form>
 
