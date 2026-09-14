@@ -66,7 +66,7 @@ import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } f
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
-import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload } from "./inventory-value.js";
+import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -8956,7 +8956,7 @@ const server = http.createServer(async (req, res) => {
         const sku = String(row?.sku || "").trim().toUpperCase();
         const countryKey = normalizedCountryKey(row?.countryKey || row?.countryName || row?.country);
         const unitCostCny = Number(row?.unitCostCny);
-        const effectiveDate = String(row?.effectiveDate || "").trim().slice(0, 10);
+        const effectiveDate = normalizeInventoryValueEffectiveDate(row?.effectiveDate);
         const timestamp = Date.parse(`${effectiveDate}T00:00:00.000Z`);
         const validDate = /^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)
           && Number.isFinite(timestamp)
@@ -8986,7 +8986,8 @@ const server = http.createServer(async (req, res) => {
         });
       });
       if (errors.length) {
-        sendJson(res, 400, { ok: false, message: `CSV有${errors.length}行未通过校验，未写入任何数据。`, errors: errors.slice(0, 50) });
+        const examples = errors.slice(0, 3).map((item) => `第${item.row}行${item.sku ? `（${item.sku}）` : ""}：${item.message}`).join("；");
+        sendJson(res, 400, { ok: false, message: `CSV有${errors.length}行未通过校验：${examples}${errors.length > 3 ? "；其余错误请修正后重试" : ""}。未写入任何数据。`, errors: errors.slice(0, 50) });
         return;
       }
       const actor = auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员";
@@ -9334,7 +9335,7 @@ const server = http.createServer(async (req, res) => {
         const sku = String(row?.sku || "").trim().toUpperCase();
         const countryKey = normalizedCountryKey(row?.countryKey || row?.countryName || row?.country);
         const unitCostCny = Number(row?.unitCostCny);
-        const effectiveDate = String(row?.effectiveDate || "").trim().slice(0, 10);
+        const effectiveDate = normalizeInventoryValueEffectiveDate(row?.effectiveDate);
         const effectiveTimestamp = Date.parse(`${effectiveDate}T00:00:00.000Z`);
         const validDate = /^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)
           && Number.isFinite(effectiveTimestamp)
@@ -9368,7 +9369,8 @@ const server = http.createServer(async (req, res) => {
         });
       });
       if (errors.length) {
-        sendJson(res, 400, { ok: false, message: `CSV 有 ${errors.length} 行未通过校验，未写入任何数据。`, errors: errors.slice(0, 50) });
+        const examples = errors.slice(0, 3).map((item) => `第${item.row}行${item.sku ? `（${item.sku}）` : ""}：${item.message}`).join("；");
+        sendJson(res, 400, { ok: false, message: `CSV有${errors.length}行未通过校验：${examples}${errors.length > 3 ? "；其余错误请修正后重试" : ""}。未写入任何数据。`, errors: errors.slice(0, 50) });
         return;
       }
       const actor = auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员";

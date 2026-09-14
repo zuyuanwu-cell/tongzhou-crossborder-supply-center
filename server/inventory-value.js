@@ -14,9 +14,16 @@ function round(value, digits = 2) {
   return Math.round((number(value) + Number.EPSILON) * factor) / factor;
 }
 
-function dateKey(value) {
+export function normalizeInventoryValueEffectiveDate(value) {
   const raw = text(value);
-  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : "";
+  const match = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/);
+  if (!match) return raw;
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
+function dateKey(value) {
+  const normalized = normalizeInventoryValueEffectiveDate(value);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
 }
 
 function normalizedSkuKeys(value) {

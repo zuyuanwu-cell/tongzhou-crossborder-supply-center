@@ -93,6 +93,13 @@ export function decodeInventoryValueCsv(input: ArrayBuffer | Uint8Array) {
   }
 }
 
+export function normalizeInventoryValueCsvDate(value: string) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/);
+  if (!match) return raw;
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
 export function parseInventoryValueCostCsv(text: string): InventoryValueCostImportRow[] {
   const grid = parseInventoryValueCsvGrid(text);
   if (grid.length < 2) throw new Error("CSV中没有可导入的数据行。");
@@ -120,7 +127,7 @@ export function parseInventoryValueCostCsv(text: string): InventoryValueCostImpo
   }
   return grid.slice(1).filter((row) => row.some((value) => value.trim())).map((row) => {
     const country = String(row[indexes.country] || "").trim();
-    const date = String(row[indexes.effectiveDate] || "").trim().replace(/[/.]/g, "-");
+    const date = normalizeInventoryValueCsvDate(String(row[indexes.effectiveDate] || ""));
     return {
       sku: String(row[indexes.sku] || "").trim(),
       countryKey: country,

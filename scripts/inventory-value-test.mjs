@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { transform } from "esbuild";
-import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload } from "../server/inventory-value.js";
+import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "../server/inventory-value.js";
 
 const products = {
   productBase: [
@@ -139,5 +139,10 @@ const gbkBytes = Buffer.from("U0tVLLn6vNK0+sLrLMjLw/Gx0rWlzruzybG+LMn60KfI1cbaDQ
 const gbkRows = csvModule.parseInventoryValueCostCsv(csvModule.decodeInventoryValueCsv(gbkBytes));
 assert.equal(gbkRows[0].sku, "TZKJ-004", "Windows Excel GBK CSV exports are supported");
 assert.equal(gbkRows[0].countryKey, "VN");
+
+const compactDateRows = csvModule.parseInventoryValueCostCsv("SKU,国家代码,人民币单位成本,生效日期\r\nTZKJ-005,RU,11.97,2026/9/14");
+assert.equal(compactDateRows[0].effectiveDate, "2026-09-14", "single-digit Excel month and day values are zero-padded");
+assert.equal(normalizeInventoryValueEffectiveDate("2026/9/14"), "2026-09-14", "the API applies the same date normalization as the browser");
+assert.equal(normalizeInventoryValueEffectiveDate("2026-9-4 00:00:00"), "2026-09-04");
 
 console.log("inventory value tests passed");
