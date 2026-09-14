@@ -24,6 +24,7 @@
     "test:warehouse-tickets": "node scripts/warehouse-tickets-test.mjs",
     "test:warehouse-returns": "node scripts/warehouse-return-query-test.mjs",
     "test:qualification-expiry": "node scripts/qualification-expiry-test.mjs",
+    "test:inventory-value": "node scripts/inventory-value-test.mjs",
     "test:wecom-routing": "node scripts/wecom-project-routing-test.mjs",
     "test:agent": "node scripts/agent-index-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",

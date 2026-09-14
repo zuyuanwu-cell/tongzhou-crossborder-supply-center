@@ -13,6 +13,7 @@ import {
   Check,
   Calculator,
   ClipboardList,
+  Coins,
   Copy,
   DatabaseZap,
   Download,
@@ -57,6 +58,8 @@ import {
   CatalogProduct,
   DistributorApplicationPayload,
   InventorySnapshotPayload,
+  InventoryValuePayload,
+  InventoryValuePeriod,
   MovementComparisonPayload,
   MovementComparisonPeriod,
   MovementHistoryPayload,
@@ -127,6 +130,7 @@ import {
   fetchDashboardSummary,
   fetchDistributorApplications,
   fetchInventorySnapshots,
+  fetchInventoryValue,
   fetchMovement,
   fetchMovementComparison,
   fetchMovementHistory,
@@ -180,6 +184,7 @@ import {
   updatePerformanceExchangeRates,
   updatePerformancePackagingFeeRules,
   importPerformanceSupplementalProductCosts,
+  importInventoryValueCosts,
   updatePerformanceRevenueSource,
   updateShopProjectGroup,
   updateStockupPlanStatus,
@@ -211,6 +216,7 @@ import {
 import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
+import { InventoryValuePage } from "./InventoryValuePage";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
 import "./theme-refresh.css";
@@ -372,6 +378,7 @@ const navItems = [
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "inventory", permission: "inventory_sync" },
   { label: "动销监控", icon: BarChart3, hash: "#movement", section: "inventory", permission: "movement" },
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
+  { label: "仓库货值", icon: Coins, hash: "#inventory-value", section: "inventory", permission: "inventory_value" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
@@ -956,6 +963,9 @@ function App() {
   const productDetailRequestRef = React.useRef<Promise<void> | null>(null);
   const [warehousePayload, setWarehousePayload] = React.useState<WarehousePayload | null>(null);
   const [inventorySnapshotPayload, setInventorySnapshotPayload] = React.useState<InventorySnapshotPayload | null>(null);
+  const [inventoryValuePayload, setInventoryValuePayload] = React.useState<InventoryValuePayload | null>(null);
+  const [inventoryValueLoading, setInventoryValueLoading] = React.useState(false);
+  const inventoryValueAbortRef = React.useRef<AbortController | null>(null);
   const [movementPayload, setMovementPayload] = React.useState<MovementPayload | null>(null);
   const [movementHistoryPayload, setMovementHistoryPayload] = React.useState<MovementHistoryPayload | null>(null);
   const [orderAnalysisPayload, setOrderAnalysisPayload] = React.useState<OrderAnalysisPayload | null>(null);
@@ -1254,6 +1264,26 @@ function App() {
     }
   }
 
+  async function loadInventoryValue(input: { period?: InventoryValuePeriod; warehouseId?: string; country?: string; keyword?: string } = {}) {
+    inventoryValueAbortRef.current?.abort();
+    const controller = new AbortController();
+    inventoryValueAbortRef.current = controller;
+    setInventoryValueLoading(true);
+    try {
+      const data = await fetchInventoryValue(input, controller.signal);
+      setInventoryValuePayload(data);
+      setModuleLoadError(["#inventory-value"]);
+    } catch (requestError) {
+      if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+      setModuleLoadError(["#inventory-value"], requestError instanceof Error ? requestError.message : "仓库货值读取失败");
+    } finally {
+      if (inventoryValueAbortRef.current === controller) {
+        inventoryValueAbortRef.current = null;
+        setInventoryValueLoading(false);
+      }
+    }
+  }
+
   async function handleProductionRefresh() {
     setSyncing(true);
     setError("");
@@ -1392,6 +1422,9 @@ function App() {
       case "#inventory-snapshots":
         if (hasUserPermission(currentUser, "inventory_snapshots")) void loadInventorySnapshots();
         if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
+        break;
+      case "#inventory-value":
+        if (hasUserPermission(currentUser, "inventory_value")) void loadInventoryValue(inventoryValuePayload?.filters || {});
         break;
       case "#movement-analysis":
         if (hasUserPermission(currentUser, "movement_analysis")) void loadMovementHistory();
@@ -1705,6 +1738,8 @@ function App() {
     setAiConfigPayload(null);
     setWarehousePayload(null);
     setInventorySnapshotPayload(null);
+    inventoryValueAbortRef.current?.abort();
+    setInventoryValuePayload(null);
     setMovementPayload(null);
     setMovementHistoryPayload(null);
     setOrderAnalysisPayload(null);
@@ -1857,6 +1892,17 @@ function App() {
             onLoadInventorySnapshots={loadInventorySnapshots}
             onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
             canManageActions={canManage(currentUser)}
+          />
+        ) : activeView === "仓库货值" ? (
+          <InventoryValuePage
+            payload={inventoryValuePayload}
+            loading={inventoryValueLoading}
+            onLoad={loadInventoryValue}
+            onImportCosts={async (rows) => {
+              const result = await importInventoryValueCosts(rows);
+              await loadInventoryValue(inventoryValuePayload?.filters || {});
+              return result;
+            }}
           />
         ) : activeView === "经营贡献" ? (
           <PerformanceAnalysisPage

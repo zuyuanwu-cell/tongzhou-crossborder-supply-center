@@ -919,6 +919,85 @@ export type InventorySnapshotPayload = {
   snapshot: InventorySnapshot | null;
 };
 
+export type InventoryValuePeriod = "day" | "week" | "month";
+
+export type InventoryValueRow = {
+  key: string;
+  sku: string;
+  country: string;
+  countryKey: string;
+  productName: string;
+  imageUrl?: string;
+  warehouseNames: string[];
+  onHandQty: number;
+  inTransitQty: number;
+  totalQty: number;
+  unitCostCny: number | null;
+  costSource: "direct_price" | "manual_supplement" | "missing";
+  costSourceLabel: string;
+  onHandValueCny: number;
+  inTransitValueCny: number;
+  totalValueCny: number;
+  previousOnHandQty: number;
+  previousValueCny: number;
+  quantityChange: number;
+  valueChangeCny: number;
+  valueChangeRate: number | null;
+};
+
+export type InventoryValueMissingCost = {
+  key: string;
+  sku: string;
+  country: string;
+  countryKey: string;
+  productName: string;
+  onHandQty: number;
+  warehouseNames: string[];
+};
+
+export type InventoryValuePayload = {
+  ok: boolean;
+  generatedAt: string;
+  basis: "current_direct_price" | string;
+  period: InventoryValuePeriod;
+  filters: { warehouseId: string; country: string; keyword: string };
+  permissions: { manageCosts: boolean };
+  options: {
+    warehouses: Array<{ value: string; label: string }>;
+    countries: Array<{ value: string; label: string }>;
+  };
+  currentPeriod: { key: string; label: string; snapshotDate: string } | null;
+  previousPeriod: { key: string; label: string; snapshotDate: string } | null;
+  summary: {
+    date: string;
+    onHandQty: number;
+    inTransitQty: number;
+    totalQty: number;
+    coveredOnHandQty: number;
+    onHandValueCny: number;
+    inTransitValueCny: number;
+    totalValueCny: number;
+    missingCostSkuCount: number;
+    costCoverageRate: number;
+    previousOnHandValueCny: number;
+    periodChangeCny: number;
+    periodChangeRate: number | null;
+  };
+  timeline: Array<{
+    key: string;
+    label: string;
+    snapshotDate: string;
+    onHandValueCny: number;
+    inTransitValueCny: number;
+    onHandQty: number;
+    costCoverageRate: number;
+    missingCostSkuCount: number;
+  }>;
+  rows: InventoryValueRow[];
+  missingCosts: InventoryValueMissingCost[];
+  supplementalCostCount: number;
+};
+
 export type WarehouseExportPayload = {
   ok: boolean;
   version: number;
@@ -3438,6 +3517,23 @@ export function updatePerformancePackagingFeeRules(rules: PerformancePackagingFe
   return requestJson<{ ok: boolean; packagingFeeRules: PerformancePackagingFeeRule[]; updatedAt: string }>("/api/performance-analytics/packaging-fees", {
     method: "PATCH",
     body: JSON.stringify({ rules }),
+  });
+}
+
+export function fetchInventoryValue(input: { period?: InventoryValuePeriod; warehouseId?: string; country?: string; keyword?: string } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.period) params.set("period", input.period);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.country) params.set("country", input.country);
+  if (input.keyword) params.set("keyword", input.keyword);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<InventoryValuePayload>(`/api/inventory-value${query}`, { signal });
+}
+
+export function importInventoryValueCosts(rows: Array<Pick<PerformanceSupplementalProductCost, "sku" | "countryKey" | "countryName" | "productName" | "unitCostCny" | "effectiveDate" | "enabled" | "note">>) {
+  return requestJson<{ ok: boolean; importedCount: number; updatedAt: string; errors?: Array<{ row: number; sku?: string; message: string }> }>("/api/inventory-value/supplemental-costs", {
+    method: "PATCH",
+    body: JSON.stringify({ rows }),
   });
 }
 

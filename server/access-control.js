@@ -2,6 +2,7 @@ const permissionDefinitions = [
   ["dashboard", "经营总览", "运营分析"],
   ["inventory_sync", "库存同步看板", "运营分析"],
   ["inventory_snapshots", "库存快照", "运营分析"],
+  ["inventory_value", "仓库货值", "运营分析"],
   ["order_analysis", "订单分析", "运营分析"],
   ["performance_analysis", "经营贡献分析", "运营分析"],
   ["performance_revenue", "经营销售金额", "经营分析字段"],
@@ -144,6 +145,7 @@ export function effectivePermissions(user) {
   if (PERFORMANCE_COST_DENIED_ROLES.has(role)) {
     effective.delete("performance_cost");
     effective.delete("performance_profit");
+    effective.delete("inventory_value");
   }
   if (USER_MANAGEMENT_DENIED_ROLES.has(role)) effective.delete("users");
   if (WAREHOUSE_COLLABORATION_DENIED_ROLES.has(role)) {
@@ -181,8 +183,8 @@ export function permissionConfiguration() {
     hardRules: {
       directDenied: ["users"],
       warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -194,7 +196,7 @@ export function sanitizePermissionUpdate(role, input) {
     overrides.allow = overrides.allow.filter((key) => key !== "direct_price");
   }
   if (PERFORMANCE_COST_DENIED_ROLES.has(role)) {
-    overrides.allow = overrides.allow.filter((key) => !["performance_cost", "performance_profit"].includes(key));
+    overrides.allow = overrides.allow.filter((key) => !["performance_cost", "performance_profit", "inventory_value"].includes(key));
   }
   if (USER_MANAGEMENT_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "users");

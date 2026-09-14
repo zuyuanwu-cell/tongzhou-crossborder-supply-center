@@ -30,6 +30,9 @@ assert.equal(distributorPerformancePermissions.includes("performance_analysis"),
 assert.equal(distributorPerformancePermissions.includes("performance_revenue"), true, "a distributor can be granted performance revenue");
 assert.equal(distributorPerformancePermissions.includes("performance_cost"), false, "a distributor can never be granted performance cost");
 assert.equal(distributorPerformancePermissions.includes("performance_profit"), false, "a distributor can never be granted performance profit");
+assert.equal(distributorPerformancePermissions.includes("inventory_value"), false, "a distributor can never receive warehouse value access");
+assert.equal(effectivePermissions({ role: "admin" }).includes("inventory_value"), true, "administrators can view warehouse value by default");
+assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["inventory_value"], deny: [] } }).includes("inventory_value"), true, "authorized operators can be granted warehouse value access");
 
 const projectedProduct = projectCatalogProduct({
   id: "p-1",
@@ -179,7 +182,7 @@ assert.equal(distributorMiaoshouPermissions.some((permission) => permission === 
 
 const warehousePermissions = effectivePermissions({
   role: "warehouse",
-  permissionOverrides: { allow: ["after_sales_report", "warehouse_return_query", "product_view", "users"], deny: [] },
+  permissionOverrides: { allow: ["after_sales_report", "warehouse_return_query", "inventory_value", "product_view", "users"], deny: [] },
 });
 assert.deepEqual(warehousePermissions, ["after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration workspaces");
 assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");

@@ -66,6 +66,7 @@ import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } f
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
+import { buildInventoryValuePayload } from "./inventory-value.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -3332,9 +3333,29 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
 }
 
 function inventorySnapshotPayload(date, auth = directAuth) {
-  const snapshots = cachedInventorySnapshots.snapshots || [];
+  const snapshots = scopedInventorySnapshots(auth);
   const selectedDate = date || snapshots[0]?.date || "";
   const selectedSnapshot = snapshots.find((item) => item.date === selectedDate) || null;
+
+  return {
+    ok: true,
+    updatedAt: cachedInventorySnapshots.updatedAt || "",
+    lastSnapshotAt: cachedInventorySnapshots.lastSnapshotAt || "",
+    dates: snapshots.map((item) => ({
+      date: item.date,
+      capturedAt: item.capturedAt,
+      rowCount: item.rowCount || 0,
+      warehouseCount: item.warehouseCount || 0,
+      skuCount: item.skuCount || 0,
+      totals: item.totals || {},
+    })),
+    selectedDate,
+    snapshot: selectedSnapshot,
+  };
+}
+
+function scopedInventorySnapshots(auth = directAuth) {
+  const snapshots = cachedInventorySnapshots.snapshots || [];
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
   const projectSnapshot = (snapshot) => {
@@ -3352,21 +3373,18 @@ function inventorySnapshotPayload(date, auth = directAuth) {
       totals: inventorySnapshotTotals(rows),
     };
   };
-  return {
-    ok: true,
-    updatedAt: cachedInventorySnapshots.updatedAt || "",
-    lastSnapshotAt: cachedInventorySnapshots.lastSnapshotAt || "",
-    dates: snapshots.map(projectSnapshot).map((item) => ({
-      date: item.date,
-      capturedAt: item.capturedAt,
-      rowCount: item.rowCount || 0,
-      warehouseCount: item.warehouseCount || 0,
-      skuCount: item.skuCount || 0,
-      totals: item.totals || {},
-    })),
-    selectedDate,
-    snapshot: projectSnapshot(selectedSnapshot),
-  };
+  return snapshots.map(projectSnapshot);
+}
+
+function inventoryValuePayload(filters, auth = directAuth) {
+  return buildInventoryValuePayload({
+    snapshots: scopedInventorySnapshots(auth),
+    products: cachedProducts,
+    supplementalCosts: performanceAnalyticsStore.listSupplementalProductCosts(),
+    exchangeRates: performanceAnalyticsStore.listExchangeRates(),
+    filters,
+    manageCosts: canManageModule(auth, "inventory_value"),
+  });
 }
 
 function csvCell(value) {
@@ -8885,6 +8903,83 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, inventorySnapshotPayload(url.searchParams.get("date") || "", auth));
+      return;
+    }
+
+    if (url.pathname === "/api/inventory-value" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "inventory_value")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库货值查看权限。" });
+        return;
+      }
+      sendJson(res, 200, inventoryValuePayload({
+        period: url.searchParams.get("period") || "day",
+        warehouseId: url.searchParams.get("warehouseId") || "",
+        country: url.searchParams.get("country") || "",
+        keyword: url.searchParams.get("keyword") || "",
+      }, auth));
+      return;
+    }
+
+    if (url.pathname === "/api/inventory-value/supplemental-costs" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "inventory_value")) {
+        sendJson(res, 403, { ok: false, message: "维护仓库货值成本需要管理员权限和仓库货值权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const rows = Array.isArray(body.rows) ? body.rows : [];
+      if (!rows.length || rows.length > 5000) {
+        sendJson(res, 400, { ok: false, message: "每次请导入 1 至 5000 条产品成本。" });
+        return;
+      }
+      const countryNames = { ID: "印度尼西亚", MY: "马来西亚", VN: "越南", RU: "俄罗斯", PH: "菲律宾", TH: "泰国", CN: "中国" };
+      const identities = new Set();
+      const normalizedRows = [];
+      const errors = [];
+      rows.forEach((row, index) => {
+        const sku = String(row?.sku || "").trim().toUpperCase();
+        const countryKey = normalizedCountryKey(row?.countryKey || row?.countryName || row?.country);
+        const unitCostCny = Number(row?.unitCostCny);
+        const effectiveDate = String(row?.effectiveDate || "").trim().slice(0, 10);
+        const timestamp = Date.parse(`${effectiveDate}T00:00:00.000Z`);
+        const validDate = /^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)
+          && Number.isFinite(timestamp)
+          && new Date(timestamp).toISOString().slice(0, 10) === effectiveDate;
+        const identity = `${sku}|${countryKey}|${effectiveDate}`;
+        const rowErrors = [];
+        if (!sku || sku.length > 120) rowErrors.push("SKU不能为空且不能超过120个字符");
+        if (!/^[A-Z]{2}$/.test(countryKey)) rowErrors.push("国家必须是可识别的国家名称或两位代码");
+        if (!Number.isFinite(unitCostCny) || unitCostCny <= 0 || unitCostCny > 10000000) rowErrors.push("人民币单位成本必须大于0且不超过10000000");
+        if (!validDate) rowErrors.push("生效日期必须是有效的YYYY-MM-DD日期");
+        if (identities.has(identity)) rowErrors.push("同一文件内SKU、国家和生效日期不能重复");
+        identities.add(identity);
+        if (rowErrors.length) {
+          errors.push({ row: index + 2, sku, message: rowErrors.join("；") });
+          return;
+        }
+        normalizedRows.push({
+          sku,
+          countryKey,
+          countryName: String(countryNames[countryKey] || row?.countryName || row?.country || countryKey).trim(),
+          productName: String(row?.productName || "").trim().slice(0, 200),
+          unitCostCny,
+          effectiveDate,
+          enabled: row?.enabled !== false,
+          note: String(row?.note || "仓库货值缺失成本补录").trim().slice(0, 500),
+          source: "inventory_value_csv",
+        });
+      });
+      if (errors.length) {
+        sendJson(res, 400, { ok: false, message: `CSV有${errors.length}行未通过校验，未写入任何数据。`, errors: errors.slice(0, 50) });
+        return;
+      }
+      const actor = auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员";
+      performanceAnalyticsStore.upsertSupplementalProductCosts(normalizedRows, actor);
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
+      appendActionLog(auth, "导入仓库货值补录成本", "inventory_value_supplemental_cost", normalizedRows.map((row) => `${row.sku}/${row.countryKey}`).join(",").slice(0, 1000), { count: normalizedRows.length });
+      sendJson(res, 200, { ok: true, importedCount: normalizedRows.length, updatedAt: new Date().toISOString() });
       return;
     }
 
