@@ -13,11 +13,10 @@ import {
 import type {
   InventoryValuePayload,
   InventoryValuePeriod,
-  PerformanceSupplementalProductCost,
 } from "./api";
 import { resolveApiUrl } from "./api";
-
-type CostImportRow = Pick<PerformanceSupplementalProductCost, "sku" | "countryKey" | "countryName" | "productName" | "unitCostCny" | "effectiveDate" | "enabled" | "note">;
+import { decodeInventoryValueCsv, parseInventoryValueCostCsv } from "./inventory-value-csv";
+import type { InventoryValueCostImportRow as CostImportRow } from "./inventory-value-csv";
 
 type Props = {
   payload: InventoryValuePayload | null;
@@ -50,36 +49,6 @@ function csvCell(value: unknown) {
   return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
 }
 
-function parseCsv(text: string) {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let quoted = false;
-  const source = text.replace(/^\uFEFF/, "");
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (quoted) {
-      if (character === '"' && source[index + 1] === '"') {
-        cell += '"';
-        index += 1;
-      } else if (character === '"') quoted = false;
-      else cell += character;
-    } else if (character === '"') quoted = true;
-    else if (character === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (character === "\n") {
-      row.push(cell.replace(/\r$/, ""));
-      rows.push(row);
-      row = [];
-      cell = "";
-    } else cell += character;
-  }
-  row.push(cell.replace(/\r$/, ""));
-  if (row.some((value) => value.trim())) rows.push(row);
-  return rows;
-}
-
 function downloadCsv(name: string, rows: unknown[][]) {
   const content = `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
   const link = document.createElement("a");
@@ -87,25 +56,6 @@ function downloadCsv(name: string, rows: unknown[][]) {
   link.download = name;
   link.click();
   URL.revokeObjectURL(link.href);
-}
-
-function parseCostFile(text: string): CostImportRow[] {
-  const grid = parseCsv(text);
-  if (grid.length < 2) throw new Error("CSV中没有可导入的数据行。");
-  const headers = grid[0].map((value) => value.trim());
-  const index = (name: string) => headers.indexOf(name);
-  const required = ["SKU", "国家代码", "人民币单位成本", "生效日期"];
-  if (required.some((name) => index(name) < 0)) throw new Error(`CSV必须包含：${required.join("、")}。`);
-  return grid.slice(1).filter((row) => row.some((value) => value.trim())).map((row) => ({
-    sku: String(row[index("SKU")] || "").trim(),
-    countryKey: String(row[index("国家代码")] || "").trim(),
-    countryName: String(row[index("国家名称")] || "").trim(),
-    productName: String(row[index("产品名称")] || "").trim(),
-    unitCostCny: Number(row[index("人民币单位成本")] || 0),
-    effectiveDate: String(row[index("生效日期")] || "").trim(),
-    enabled: !["否", "0", "false", "停用"].includes(String(row[index("启用")] || "是").trim().toLowerCase()),
-    note: String(row[index("备注")] || "仓库货值缺失成本补录").trim(),
-  }));
 }
 
 function ValueTrend({ payload }: { payload: InventoryValuePayload }) {
@@ -193,7 +143,7 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
     setImporting(true);
     setMessage("");
     try {
-      const rows = parseCostFile(await file.text());
+      const rows = parseInventoryValueCostCsv(decodeInventoryValueCsv(await file.arrayBuffer()));
       const result = await onImportCosts(rows);
       setMessage(`已成功补录 ${result.importedCount} 条成本，货值已重新计算。`);
     } catch (error) {

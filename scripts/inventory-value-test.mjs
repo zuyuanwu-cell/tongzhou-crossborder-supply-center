@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { transform } from "esbuild";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload } from "../server/inventory-value.js";
 
 const products = {
@@ -115,5 +117,27 @@ assert.deepEqual(configuredOptionsPayload.options.warehouses, [
   { value: "WH-MY", label: "马来仓" },
   { value: "WH-ID", label: "印尼仓" },
 ], "the warehouse dropdown uses current configured warehouses instead of historical snapshot labels");
+
+const csvModuleSource = fs.readFileSync(new URL("../src/inventory-value-csv.ts", import.meta.url), "utf8");
+const compiledCsvModule = await transform(csvModuleSource, { loader: "ts", format: "esm", target: "es2020" });
+const csvModule = await import(`data:text/javascript;base64,${Buffer.from(compiledCsvModule.code).toString("base64")}`);
+const utf8Template = "\uFEFFSKU,国家代码,国家名称,产品名称,人民币单位成本,生效日期,启用,备注\r\nTZKJ-001,MY,马来西亚,测试产品,12.5,2026-09-14,是,补录";
+const utf8Rows = csvModule.parseInventoryValueCostCsv(csvModule.decodeInventoryValueCsv(Buffer.from(utf8Template, "utf8")));
+assert.equal(utf8Rows[0].sku, "TZKJ-001", "UTF-8 BOM templates remain supported");
+assert.equal(utf8Rows[0].unitCostCny, 12.5);
+
+const utf16Template = "SKU\t国家\t人民币单位成本\t生效日期\r\nTZKJ-002\t印度尼西亚\t9.80\t2026/09/14";
+const utf16Bytes = Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(utf16Template, "utf16le")]);
+const utf16Rows = csvModule.parseInventoryValueCostCsv(csvModule.decodeInventoryValueCsv(utf16Bytes));
+assert.equal(utf16Rows[0].countryKey, "印度尼西亚", "Excel UTF-16 tab-separated exports are supported");
+assert.equal(utf16Rows[0].effectiveDate, "2026-09-14");
+
+const semicolonRows = csvModule.parseInventoryValueCostCsv("sep=;\r\n产品SKU;CountryCode;成本CNY;成本生效日期\r\nTZKJ-003;RU;1,234.50;2026-09-14");
+assert.equal(semicolonRows[0].unitCostCny, 1234.5, "semicolon-separated Excel exports and header aliases are supported");
+
+const gbkBytes = Buffer.from("U0tVLLn6vNK0+sLrLMjLw/Gx0rWlzruzybG+LMn60KfI1cbaDQpUWktKLTAwNCxWTiw2LjUsMjAyNi0wOS0xNA==", "base64");
+const gbkRows = csvModule.parseInventoryValueCostCsv(csvModule.decodeInventoryValueCsv(gbkBytes));
+assert.equal(gbkRows[0].sku, "TZKJ-004", "Windows Excel GBK CSV exports are supported");
+assert.equal(gbkRows[0].countryKey, "VN");
 
 console.log("inventory value tests passed");
