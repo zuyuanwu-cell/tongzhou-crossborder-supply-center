@@ -260,11 +260,56 @@ function matchesFilters(row, filters) {
   return true;
 }
 
+function hasWarehouseCredentials(connection) {
+  return Boolean(
+    connection?.credentials?.appKey
+      || connection?.credentials?.appSecret
+      || connection?.credentials?.clientId
+      || connection?.credentials?.clientSecret
+      || connection?.credentials?.token,
+  );
+}
+
+function isActiveInventoryWarehouse(connection) {
+  if (!connection || connection.enabled === false || !hasWarehouseCredentials(connection)) return false;
+  const status = text(connection.status).toLowerCase();
+  if (["disabled", "inactive", "停用", "已停用", "禁用", "未启用"].some((value) => status.includes(value))) return false;
+  const syncScope = Array.isArray(connection.syncScope) ? connection.syncScope.map(text).filter(Boolean) : [];
+  return !syncScope.length || syncScope.includes("库存同步");
+}
+
+export function buildActiveInventoryWarehouseOptions({ connections = [], scopes = {} } = {}) {
+  const warehouseIds = new Set((scopes.warehouseIds || []).map(text).filter(Boolean));
+  const countries = new Set((scopes.countries || []).map(normalizedCountryKey).filter(Boolean));
+  const identities = new Set();
+  const options = [];
+
+  for (const connection of Array.isArray(connections) ? connections : []) {
+    const value = text(connection?.id);
+    const label = text(connection?.name || connection?.id);
+    const country = text(connection?.country);
+    if (!value || !label || !isActiveInventoryWarehouse(connection)) continue;
+    if (warehouseIds.size && !warehouseIds.has(value)) continue;
+    if (countries.size && !countries.has(normalizedCountryKey(country))) continue;
+
+    const providerId = text(connection?.providerId).toLowerCase();
+    const baseUrl = text(connection?.baseUrl).replace(/\/$/, "").toLowerCase();
+    const physicalWarehouseId = text(connection?.resolvedWarehouseId || connection?.warehouseId || connection?.warehouseCode).toLowerCase();
+    const identity = physicalWarehouseId ? `${providerId}|${baseUrl}|${physicalWarehouseId}` : `connection|${value}`;
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    options.push({ value, label, country });
+  }
+
+  return options.sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+}
+
 export function buildInventoryValuePayload({
   snapshots = [],
   products = {},
   supplementalCosts = [],
   exchangeRates = [],
+  warehouseOptions = null,
   filters = {},
   manageCosts = false,
 } = {}) {
@@ -320,13 +365,23 @@ export function buildInventoryValuePayload({
   const currentSummary = current?.value.summary || aggregateSnapshot({ date: "", rows: [] }, context).summary;
   const previousSummary = previous?.value.summary || null;
   const periodChangeCny = round(currentSummary.onHandValueCny - number(previousSummary?.onHandValueCny));
-  const warehouseOptions = new Map();
+  const warehouseOptionMap = new Map();
   const countryOptions = new Map();
-  for (const snapshot of snapshots) {
-    for (const row of snapshot?.rows || []) {
-      if (row.warehouseId) warehouseOptions.set(String(row.warehouseId), text(row.warehouseName || row.warehouseId));
-      const key = normalizedCountryKey(row.country);
-      if (key) countryOptions.set(key, text(row.country || key));
+  if (Array.isArray(warehouseOptions)) {
+    for (const option of warehouseOptions) {
+      const value = text(option?.value || option?.id || option?.warehouseId);
+      if (!value || warehouseOptionMap.has(value)) continue;
+      warehouseOptionMap.set(value, text(option?.label || option?.name || option?.warehouseName || value));
+      const key = normalizedCountryKey(option?.country);
+      if (key) countryOptions.set(key, text(option.country || key));
+    }
+  } else {
+    for (const snapshot of snapshots) {
+      for (const row of snapshot?.rows || []) {
+        if (row.warehouseId) warehouseOptionMap.set(String(row.warehouseId), text(row.warehouseName || row.warehouseId));
+        const key = normalizedCountryKey(row.country);
+        if (key) countryOptions.set(key, text(row.country || key));
+      }
     }
   }
 
@@ -338,7 +393,7 @@ export function buildInventoryValuePayload({
     filters: { warehouseId, country, keyword: text(filters.keyword) },
     permissions: { manageCosts: Boolean(manageCosts) },
     options: {
-      warehouses: [...warehouseOptions].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
+      warehouses: [...warehouseOptionMap].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
       countries: [...countryOptions].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
     },
     currentPeriod: current ? { key: current.key, label: current.label, snapshotDate: current.value.summary.date } : null,

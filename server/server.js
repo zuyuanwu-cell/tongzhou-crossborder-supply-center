@@ -66,7 +66,7 @@ import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } f
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
-import { buildInventoryValuePayload } from "./inventory-value.js";
+import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload } from "./inventory-value.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -3354,13 +3354,25 @@ function inventorySnapshotPayload(date, auth = directAuth) {
   };
 }
 
-function scopedInventorySnapshots(auth = directAuth) {
+function activeInventoryValueWarehouseOptions(auth = directAuth) {
+  const user = auth?.user || directAuth.user;
+  return buildActiveInventoryWarehouseOptions({
+    connections: warehouseConnections,
+    scopes: normalizeDataScopes(user.dataScopes),
+  });
+}
+
+function scopedInventorySnapshots(auth = directAuth, activeWarehouseIds = null) {
   const snapshots = cachedInventorySnapshots.snapshots || [];
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
+  const activeIds = activeWarehouseIds instanceof Set
+    ? activeWarehouseIds
+    : new Set(activeInventoryValueWarehouseOptions(auth).map((item) => item.value));
   const projectSnapshot = (snapshot) => {
     if (!snapshot) return null;
     const rows = (snapshot.rows || []).filter((row) => {
+      if (!activeIds.has(String(row.warehouseId || ""))) return false;
       if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(row.warehouseId || ""))) return false;
       return isWithinDataScope(row, scopes);
     });
@@ -3377,11 +3389,14 @@ function scopedInventorySnapshots(auth = directAuth) {
 }
 
 function inventoryValuePayload(filters, auth = directAuth) {
+  const warehouseOptions = activeInventoryValueWarehouseOptions(auth);
+  const activeWarehouseIds = new Set(warehouseOptions.map((item) => item.value));
   return buildInventoryValuePayload({
-    snapshots: scopedInventorySnapshots(auth),
+    snapshots: scopedInventorySnapshots(auth, activeWarehouseIds),
     products: cachedProducts,
     supplementalCosts: performanceAnalyticsStore.listSupplementalProductCosts(),
     exchangeRates: performanceAnalyticsStore.listExchangeRates(),
+    warehouseOptions,
     filters,
     manageCosts: canManageModule(auth, "inventory_value"),
   });

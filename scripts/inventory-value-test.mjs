@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildInventoryValuePayload } from "../server/inventory-value.js";
+import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload } from "../server/inventory-value.js";
 
 const products = {
   productBase: [
@@ -81,5 +81,39 @@ assert.equal(weekly.timeline.length, 2, "weekly mode keeps the latest snapshot i
 
 const filtered = buildInventoryValuePayload({ snapshots, products, supplementalCosts: [], filters: { period: "day", warehouseId: "OTHER" } });
 assert.equal(filtered.summary.onHandQty, 0, "warehouse filters are applied before valuation");
+
+const credential = { appKey: "configured" };
+const activeWarehouseOptions = buildActiveInventoryWarehouseOptions({
+  connections: [
+    { id: "WH-ID", name: "印尼仓", country: "印度尼西亚", providerId: "sea_wms", baseUrl: "https://wms.example", warehouseId: "56064", status: "已授权", syncScope: ["库存同步"], credentials: credential },
+    { id: "WH-ID-OLD", name: "印尼仓（旧）", country: "印度尼西亚", providerId: "sea_wms", baseUrl: "https://wms.example/", warehouseId: "56064", status: "已授权", syncScope: ["库存同步"], credentials: credential },
+    { id: "WH-MY", name: "马来仓", country: "马来西亚", providerId: "sea_wms", baseUrl: "https://wms.example", warehouseId: "148", status: "已授权", syncScope: ["库存同步"], credentials: credential },
+    { id: "WH-DISABLED", name: "停用仓", country: "俄罗斯", status: "已停用", syncScope: ["库存同步"], credentials: credential },
+    { id: "WH-NO-CREDENTIAL", name: "待授权仓", country: "俄罗斯", status: "待授权", syncScope: ["库存同步"], credentials: {} },
+    { id: "WH-NO-INVENTORY", name: "未同步库存仓", country: "越南", status: "已授权", syncScope: ["订单出库日报"], credentials: credential },
+  ],
+  scopes: { warehouseIds: [], countries: [] },
+});
+assert.deepEqual(activeWarehouseOptions.map((item) => item.value), ["WH-MY", "WH-ID"], "only active inventory warehouses are returned and physical duplicates are removed");
+
+const scopedWarehouseOptions = buildActiveInventoryWarehouseOptions({
+  connections: [
+    { id: "WH-ID", name: "印尼仓", country: "印度尼西亚", providerId: "sea_wms", baseUrl: "https://wms.example", warehouseId: "56064", status: "已授权", syncScope: ["库存同步"], credentials: credential },
+    { id: "WH-MY", name: "马来仓", country: "马来西亚", providerId: "sea_wms", baseUrl: "https://wms.example", warehouseId: "148", status: "已授权", syncScope: ["库存同步"], credentials: credential },
+  ],
+  scopes: { warehouseIds: [], countries: ["ID"] },
+});
+assert.deepEqual(scopedWarehouseOptions.map((item) => item.value), ["WH-ID"], "warehouse options respect country data scopes");
+
+const configuredOptionsPayload = buildInventoryValuePayload({
+  snapshots,
+  products,
+  warehouseOptions: activeWarehouseOptions,
+  filters: { period: "day" },
+});
+assert.deepEqual(configuredOptionsPayload.options.warehouses, [
+  { value: "WH-MY", label: "马来仓" },
+  { value: "WH-ID", label: "印尼仓" },
+], "the warehouse dropdown uses current configured warehouses instead of historical snapshot labels");
 
 console.log("inventory value tests passed");
