@@ -52,6 +52,7 @@ import {
 } from "./wecom-project-routing.js";
 import {
   afterSalesWarehouseOptions,
+  buildAfterSalesActivatedMarkdown,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
   buildAfterSalesReminderMarkdown,
@@ -1040,6 +1041,13 @@ async function notifyAfterSalesCreated(ticket, requestOrigin, eventType = "creat
       extraText: scene?.extraText,
       requestOrigin,
     })
+    : eventType === "activate"
+    ? buildAfterSalesActivatedMarkdown(ticket, {
+      statusLabel: afterSalesStatusLabels[ticket.status] || ticket.status,
+      linkUrl: scene?.linkUrl,
+      extraText: scene?.extraText,
+      requestOrigin,
+    })
     : buildAfterSalesCreatedMarkdown(ticket, {
       linkUrl: scene?.linkUrl,
       extraText: scene?.extraText,
@@ -1094,7 +1102,8 @@ async function notifyAfterSalesProgress(ticket, requestOrigin) {
 }
 
 async function deliverAfterSalesNotification(ticket, eventType, requestOrigin) {
-  const warehouseTarget = ["created", "resubmit", "remind"].includes(eventType);
+  const warehouseTarget = ["created", "resubmit", "remind"].includes(eventType)
+    || (eventType === "activate" && ticket.status !== "rejected");
   const send = warehouseTarget ? notifyAfterSalesCreated : notifyAfterSalesProgress;
   try {
     const outcome = await send(ticket, requestOrigin, eventType);
@@ -7500,9 +7509,9 @@ const server = http.createServer(async (req, res) => {
       const auth = getAuth(req);
       try {
         const payload = await parseRequestBody(req);
-        const adminAction = ["cancel", "reopen"].includes(payload.action);
+        const adminAction = ["cancel", "reopen", "activate"].includes(payload.action);
         if ((!adminAction && !hasPermission(auth, "after_sales_warehouse")) || (adminAction && !canManage(auth))) {
-          sendJson(res, 403, { ok: false, message: adminAction ? "作废或重开售后单需要管理员权限。" : "当前账号没有仓库售后处理权限。" });
+          sendJson(res, 403, { ok: false, message: adminAction ? "作废、激活或重开售后单需要管理员权限。" : "当前账号没有仓库售后处理权限。" });
           return;
         }
         const ticketId = decodeURIComponent(afterSalesWarehouseMatch[1]);

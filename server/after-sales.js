@@ -710,7 +710,8 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       shipped: { from: ["processing", "awaiting_reshipment"], to: "shipped", label: "补发已发出" },
       complete: { from: ["processing", "shipped"], to: "completed", label: "售后已完结" },
       reject: { from: ["pending_warehouse", "processing", "awaiting_reshipment"], to: "rejected", label: "仓库已驳回，待运营修改" },
-      reopen: { from: ["completed", "cancelled"], to: "processing", label: "售后已重新打开" },
+      reopen: { from: ["completed"], to: "processing", label: "售后已重新打开" },
+      activate: { from: ["cancelled"], to: "pending_warehouse", label: "售后已激活" },
       cancel: { from: AFTER_SALES_STATUSES.filter((status) => !["completed", "cancelled"].includes(status)), to: "cancelled", label: "售后已作废" },
     };
     const transition = transitions[action];
@@ -725,10 +726,24 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       if (action === "complete" && ticket.needsReissue && ticket.status !== "shipped") throw new Error("需要补发的售后单请先上传面单并标记已发出。");
       const rejectionReason = text(input.rejectionReason || input.note || input.warehouseRemark);
       if (action === "reject" && !rejectionReason) throw new Error("驳回售后单前，请填写具体原因和需要运营修改的内容。");
-      ticket.status = transition.to;
+      const previousStatus = ticket.status;
+      const restorableStatuses = new Set(["pending_warehouse", "processing", "awaiting_reshipment", "rejected", "shipped"]);
+      const nextStatus = action === "activate" && restorableStatuses.has(text(ticket.cancelledFromStatus))
+        ? text(ticket.cancelledFromStatus)
+        : transition.to;
+      ticket.status = nextStatus;
       ticket.warehouseRemark = text(input.warehouseRemark || ticket.warehouseRemark);
       ticket.updatedAt = nowIso();
-      ticket.completedAt = transition.to === "completed" ? ticket.updatedAt : "";
+      ticket.completedAt = nextStatus === "completed" ? ticket.updatedAt : "";
+      if (action === "cancel") {
+        ticket.cancelledFromStatus = previousStatus;
+        ticket.cancelledAt = ticket.updatedAt;
+        ticket.cancelledBy = actorName(actor);
+      }
+      if (action === "activate") {
+        ticket.activatedAt = ticket.updatedAt;
+        ticket.activatedBy = actorName(actor);
+      }
       if (action === "reject") {
         ticket.rejectionReason = rejectionReason;
         ticket.rejectedAt = ticket.updatedAt;
@@ -739,7 +754,17 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
           rejectedBy: actorName(actor),
         }];
       }
-      ticket.timeline = [...(ticket.timeline || []), event(action, transition.label, actor, input.note || input.warehouseRemark)];
+      const statusLabels = {
+        pending_warehouse: "待仓库接单",
+        processing: "仓库已受理",
+        awaiting_reshipment: "待补发",
+        rejected: "仓库已驳回，待运营修改",
+        shipped: "补发已发出",
+      };
+      const timelineLabel = action === "activate"
+        ? `售后已激活，恢复为${statusLabels[nextStatus] || "待仓库接单"}`
+        : transition.label;
+      ticket.timeline = [...(ticket.timeline || []), event(action, timelineLabel, actor, input.note || input.warehouseRemark)];
       return ticket;
     });
     if (!updated) throw new Error("售后单不存在。");

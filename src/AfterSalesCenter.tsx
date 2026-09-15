@@ -751,16 +751,18 @@ export function AfterSalesCenter({
     }
   }
 
-  async function warehouseAction(action: "accept" | "await_reshipment" | "shipped" | "complete" | "reject" | "cancel" | "reopen") {
+  async function warehouseAction(action: "accept" | "await_reshipment" | "shipped" | "complete" | "reject" | "cancel" | "reopen" | "activate") {
     if (!selectedTicket) return;
+    if (action === "activate" && !window.confirm(`确认激活售后单 ${selectedTicket.id}？\n\n系统会恢复到作废前的处理状态，并通知对应处理方继续跟进。`)) return;
     setBusy(action);
     setError("");
+    const actionNote = action === "activate" ? warehouseRemark.trim() || "管理员恢复误作废售后单。" : warehouseRemark;
     try {
       const result = await updateAfterSalesWarehouse(selectedTicket.id, {
         action,
         warehouseRemark,
         rejectionReason: action === "reject" ? warehouseRemark : undefined,
-        note: warehouseRemark,
+        note: actionNote,
         labelUploadIds: labelUploads.map((upload) => upload.id),
       });
       setSelectedTicket(result.ticket);
@@ -1057,7 +1059,8 @@ export function AfterSalesCenter({
               {selectedTicket.status === "processing" && !selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("complete")} disabled={Boolean(busy)}>确认完结</button> : null}
               {selectedTicket.status === "shipped" ? <button className="primary" onClick={() => void warehouseAction("complete")} disabled={Boolean(busy)}>确认售后完结</button> : null}
               {canAdmin && !["completed", "cancelled"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void warehouseAction("cancel")} disabled={Boolean(busy)}>作废</button> : null}
-              {canAdmin && ["completed", "cancelled"].includes(selectedTicket.status) ? <button onClick={() => void warehouseAction("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}
+              {canAdmin && selectedTicket.status === "cancelled" ? <button className="primary" onClick={() => void warehouseAction("activate")} disabled={Boolean(busy)}>{busy === "activate" ? "正在激活" : "激活售后单"}</button> : null}
+              {canAdmin && selectedTicket.status === "completed" ? <button onClick={() => void warehouseAction("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}
             </footer> : null}
           </aside>
         </div>

@@ -12,6 +12,7 @@ import {
 import {
   afterSalesWarehouseOptions,
   afterSalesNotificationLink,
+  buildAfterSalesActivatedMarkdown,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
   buildAfterSalesReminderMarkdown,
@@ -184,6 +185,17 @@ try {
   assert.equal(completed.ticket.status, "completed");
   assert.equal(completed.ticket.timeline.length, 9);
   assert.throws(() => service.remind(created.ticket.id, actor), /已完结/);
+  const reopened = service.updateWarehouse(created.ticket.id, { action: "reopen", note: "继续跟进" }, actor);
+  assert.equal(reopened.ticket.status, "processing");
+  const cancelled = service.updateWarehouse(created.ticket.id, { action: "cancel", note: "误操作测试" }, actor);
+  assert.equal(cancelled.ticket.status, "cancelled");
+  assert.equal(cancelled.ticket.cancelledFromStatus, "processing");
+  const activated = service.updateWarehouse(created.ticket.id, { action: "activate", note: "恢复误作废售后单" }, actor);
+  assert.equal(activated.ticket.status, "processing");
+  assert.equal(activated.ticket.timeline.at(-1).type, "activate");
+  assert.match(activated.ticket.timeline.at(-1).label, /售后已激活/);
+  assert.match(buildAfterSalesActivatedMarkdown(activated.ticket, { requestOrigin: "https://gyl.example.com", statusLabel: "仓库已受理" }), /售后单重新激活/);
+  assert.match(buildAfterSalesActivatedMarkdown(activated.ticket, { requestOrigin: "https://gyl.example.com" }), /view=warehouse/);
 
   const listed = service.list();
   assert.equal(listed.summary.total, 1);

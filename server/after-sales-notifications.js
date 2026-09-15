@@ -85,6 +85,27 @@ export function buildAfterSalesCreatedMarkdown(ticket = {}, options = {}) {
   ].filter(Boolean).join("\n");
 }
 
+export function buildAfterSalesActivatedMarkdown(ticket = {}, options = {}) {
+  const latest = Array.isArray(ticket.timeline) ? ticket.timeline.at(-1) : null;
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "after_sales",
+    view: "warehouse",
+    ticket: ticket.id,
+  });
+  return [
+    "### 售后单重新激活",
+    `> 售后单：**${text(ticket.id) || "-"}**`,
+    `> 原订单：${text(ticket.originalOrderNumber) || "-"}`,
+    `> 处理仓库：${text(ticket.warehouseName) || "待分配"}`,
+    `> 当前状态：${text(options.statusLabel) || text(ticket.status) || "-"}`,
+    `> 激活人：${text(latest?.actor) || "管理员"}`,
+    text(latest?.note) ? `> 激活说明：${text(latest.note)}` : "",
+    "> 该售后单已恢复，请按当前节点继续处理。",
+    text(options.extraText),
+    linkUrl ? `[立即处理售后单](${linkUrl})` : "",
+  ].filter(Boolean).join("\n");
+}
+
 export function buildWarehouseTicketCreatedMarkdown(ticket = {}, options = {}) {
   const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
     module: "tickets",

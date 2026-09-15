@@ -315,6 +315,22 @@ async function main() {
   if (attachedLabel.notification?.status !== "sent" || attachedLabel.notification?.teamId !== "smoke-team" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("补发面单：已上传 1 张") || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("<@smoke_lead>")) {
     throw new Error("After-sales label upload did not notify operations immediately.");
   }
+  const cancelledAfterSales = await expectJson(`/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "cancel", note: "smoke accidental cancellation" }),
+  });
+  if (cancelledAfterSales.ticket?.status !== "cancelled" || cancelledAfterSales.ticket?.cancelledFromStatus !== "pending_warehouse") {
+    throw new Error("After-sales cancellation did not preserve the previous workflow status.");
+  }
+  const activatedAfterSales = await expectJson(`/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "activate", note: "恢复误作废售后单" }),
+  });
+  if (activatedAfterSales.ticket?.status !== "pending_warehouse" || activatedAfterSales.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("售后单重新激活")) {
+    throw new Error("After-sales activation did not restore the workflow or notify the target warehouse.");
+  }
   console.log("[ok] warehouse collaboration synchronous webhook chain");
 
   const missingWarehouseScopeResponse = await fetch(`${baseUrl}/api/users`, {
@@ -353,8 +369,13 @@ async function main() {
   const otherWarehouseAccount = await createAndLoginWarehouse("smoke-warehouse-other", otherWarehouseId);
   const warehouseReminderByWarehouse = await fetch(`${baseUrl}/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/remind`, { method: "POST", headers: ownWarehouseAccount.headers });
   const afterSalesReminderByWarehouse = await fetch(`${baseUrl}/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/remind`, { method: "POST", headers: ownWarehouseAccount.headers });
-  if (warehouseReminderByWarehouse.status !== 403 || afterSalesReminderByWarehouse.status !== 403) {
-    throw new Error(`Warehouse account unexpectedly sent reminders: ticket ${warehouseReminderByWarehouse.status}, after-sales ${afterSalesReminderByWarehouse.status}.`);
+  const afterSalesActivationByWarehouse = await fetch(`${baseUrl}/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/warehouse`, {
+    method: "PATCH",
+    headers: { ...ownWarehouseAccount.headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "activate" }),
+  });
+  if (warehouseReminderByWarehouse.status !== 403 || afterSalesReminderByWarehouse.status !== 403 || afterSalesActivationByWarehouse.status !== 403) {
+    throw new Error(`Warehouse account unexpectedly used an admin collaboration action: ticket reminder ${warehouseReminderByWarehouse.status}, after-sales reminder ${afterSalesReminderByWarehouse.status}, after-sales activation ${afterSalesActivationByWarehouse.status}.`);
   }
   const ownWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: ownWarehouseAccount.headers });
   const otherWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: otherWarehouseAccount.headers });

@@ -2040,6 +2040,11 @@ export type AfterSalesTicket = {
   createdById: string;
   updatedAt: string;
   completedAt: string;
+  cancelledFromStatus?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  activatedAt?: string;
+  activatedBy?: string;
   notificationRoute?: NotificationRouteSnapshot | null;
   notifications?: Array<{
     id: string;
@@ -4030,7 +4035,7 @@ export function fetchAfterSalesTicket(id: string) {
 }
 
 export function updateAfterSalesWarehouse(id: string, input: {
-  action: "accept" | "await_reshipment" | "shipped" | "complete" | "reject" | "cancel" | "reopen";
+  action: "accept" | "await_reshipment" | "shipped" | "complete" | "reject" | "cancel" | "reopen" | "activate";
   labelUploadIds?: string[];
   warehouseRemark?: string;
   rejectionReason?: string;
