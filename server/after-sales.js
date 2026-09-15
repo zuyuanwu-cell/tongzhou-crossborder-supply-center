@@ -31,6 +31,8 @@ export const AFTER_SALES_STATUSES = Object.freeze([
   "cancelled",
 ]);
 
+const REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
+
 const RESPONSIBILITY = Object.freeze({
   warehouse: { party: "warehouse", label: "仓库", ruleCode: "warehouse_fulfillment" },
   quality: { party: "supplier_quality", label: "产品 / 供应链", ruleCode: "product_quality" },
@@ -828,6 +830,42 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
   }
 
+  function remind(id, actor) {
+    const updated = store.update(id, (ticket) => {
+      const statusLabels = {
+        rejected: "仓库已驳回，正在等待运营修改",
+        completed: "已完结",
+        cancelled: "已作废",
+      };
+      if (!["pending_warehouse", "processing", "awaiting_reshipment", "shipped"].includes(ticket.status)) {
+        throw new Error(`${statusLabels[ticket.status] || "当前状态"}的售后单不能催办仓库。`);
+      }
+      const lastReminder = [...(ticket.timeline || [])].reverse().find((item) => item.type === "reminder_sent");
+      const lastReminderAt = Date.parse(lastReminder?.createdAt || "");
+      const remainingMs = Number.isFinite(lastReminderAt) ? REMINDER_COOLDOWN_MS - (Date.now() - lastReminderAt) : 0;
+      if (remainingMs > 0) {
+        const error = new Error(`该售后单 30 分钟内已催办过，请 ${Math.max(1, Math.ceil(remainingMs / 60_000))} 分钟后再试。`);
+        error.code = "reminder_cooldown";
+        error.retryAfterSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
+        throw error;
+      }
+      const reminderEvent = event("reminder_sent", "运营催办仓库", actor, "请仓库尽快查看并更新处理进度。");
+      return {
+        ...ticket,
+        updatedAt: reminderEvent.createdAt,
+        timeline: [...(ticket.timeline || []), reminderEvent],
+      };
+    });
+    if (!updated) throw new Error("售后单不存在。");
+    const reminderAt = updated.timeline?.at(-1)?.createdAt || nowIso();
+    return {
+      ok: true,
+      ticket: updated,
+      summary: summaryFor(store.list()),
+      nextReminderAt: new Date(Date.parse(reminderAt) + REMINDER_COOLDOWN_MS).toISOString(),
+    };
+  }
+
   function recordNotification(id, input = {}) {
     return store.update(id, (ticket) => {
       const entry = {
@@ -889,6 +927,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     updateWarehouse,
     attachLabels,
     resubmit,
+    remind,
     recordNotification,
     assignWarehouse,
   };

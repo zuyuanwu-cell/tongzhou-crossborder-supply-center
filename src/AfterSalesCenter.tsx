@@ -2,6 +2,7 @@ import React from "react";
 import {
   AlertTriangle,
   BadgeCheck,
+  BellRing,
   Check,
   Clipboard,
   Copy,
@@ -40,6 +41,7 @@ import {
   fetchAfterSalesTicket,
   fetchWarehouseNotificationTeams,
   resolveApiUrl,
+  remindAfterSalesTicket,
   resubmitAfterSalesTicket,
   searchAfterSalesProducts,
   syncAfterSalesOrder,
@@ -69,11 +71,19 @@ const AFTER_SALES_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
 const AFTER_SALES_REQUEST_TIMEOUT_MS = 30 * 1000;
 const AFTER_SALES_RETRY_DELAY_MS = 2500;
 const AFTER_SALES_AUTO_REFRESH_MS = 30 * 1000;
+const REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
 const AFTER_SALES_STORAGE_PREFIX = "tongzhou_after_sales_list_v1:";
 const afterSalesListCache = new Map<string, AfterSalesCacheEntry>();
 
 function afterSalesOwnerKey(user: AuthUser) {
   return String(user.id || user.username || user.role || "guest");
+}
+
+function reminderRemainingMinutes(timeline: AfterSalesTicket["timeline"], now: number) {
+  const reminder = [...timeline].reverse().find((item) => item.type === "reminder_sent");
+  const remindedAt = reminder ? Date.parse(reminder.createdAt) : Number.NaN;
+  if (!Number.isFinite(remindedAt)) return 0;
+  return Math.max(0, Math.ceil((remindedAt + REMINDER_COOLDOWN_MS - now) / 60_000));
 }
 
 function afterSalesQueryKey(ownerKey: string, filters: AfterSalesListFilters) {
@@ -325,6 +335,7 @@ export function AfterSalesCenter({
   const [slowLoading, setSlowLoading] = React.useState(false);
   const [lastLoadedAt, setLastLoadedAt] = React.useState(initialCache?.cachedAt || 0);
   const [busy, setBusy] = React.useState("");
+  const [reminderNow, setReminderNow] = React.useState(Date.now());
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
   const [orderNumber, setOrderNumber] = React.useState("");
@@ -358,6 +369,13 @@ export function AfterSalesCenter({
   const [productLoading, setProductLoading] = React.useState(false);
   const openedDeepLinkRef = React.useRef("");
   const payloadRef = React.useRef<AfterSalesPayload | null>(initialCache?.payload || null);
+
+  React.useEffect(() => {
+    if (!selectedTicket) return undefined;
+    setReminderNow(Date.now());
+    const timer = window.setInterval(() => setReminderNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [selectedTicket?.id]);
   const activeFiltersRef = React.useRef<AfterSalesListFilters>(initialFilters);
   const activeQueryKeyRef = React.useRef(afterSalesQueryKey(ownerKey, initialFilters));
   const requestIdRef = React.useRef(0);
@@ -785,6 +803,25 @@ export function AfterSalesCenter({
     }
   }
 
+  async function handleReminder() {
+    if (!selectedTicket) return;
+    setBusy("remind");
+    setError("");
+    setMessage("");
+    try {
+      const result = await remindAfterSalesTicket(selectedTicket.id);
+      setSelectedTicket(result.ticket);
+      setReminderNow(Date.now());
+      setMessage(notificationMessage(`已催办仓库处理售后单 ${result.ticket.id}`, result.notification));
+      clearAfterSalesCache(ownerKey);
+      await refresh({ status, keyword, mine: tab === "mine" });
+    } catch (reminderError) {
+      setError(reminderError instanceof Error ? reminderError.message : "催办仓库失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function handleDownload(attachment: AfterSalesAttachment) {
     try {
       const blob = await downloadAfterSalesAttachment(attachment);
@@ -835,6 +872,14 @@ export function AfterSalesCenter({
       </section>
     );
   }
+
+  const selectedReminderMinutes = selectedTicket ? reminderRemainingMinutes(selectedTicket.timeline, reminderNow) : 0;
+  const canRemindSelected = Boolean(
+    selectedTicket
+    && (canReport || canAdmin)
+    && (canAdmin || selectedTicket.createdById === currentUser.id)
+    && ["pending_warehouse", "processing", "awaiting_reshipment", "shipped"].includes(selectedTicket.status),
+  );
 
   return (
     <div className="after-sales-page">
@@ -1003,7 +1048,8 @@ export function AfterSalesCenter({
               {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{selectedTicket.notifications.at(-1)?.routeLabel || "默认通知路由"}{selectedTicket.notifications.at(-1)?.fallback ? " · 已使用兜底群" : ""}{selectedTicket.notifications.at(-1)?.mentionedCount ? ` · 已提醒 ${selectedTicket.notifications.at(-1)?.mentionedCount} 人` : ""} · {dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
               <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>共 {selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
             </div>
-            {canWarehouse || canAdmin ? <footer>
+            {canWarehouse || canAdmin || canRemindSelected ? <footer>
+              {canRemindSelected ? <button className="remind" onClick={() => void handleReminder()} disabled={Boolean(busy) || selectedReminderMinutes > 0} title={selectedReminderMinutes > 0 ? `为避免重复打扰，${selectedReminderMinutes} 分钟后可再次催办` : "向该仓库的企业微信群发送催办提醒"}>{busy === "remind" ? <LoaderCircle className="spinning" size={16} /> : <BellRing size={16} />}{busy === "remind" ? "正在催办" : selectedReminderMinutes > 0 ? `${selectedReminderMinutes} 分钟后可再催` : "催办仓库"}</button> : null}
               {selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void warehouseAction("accept")} disabled={Boolean(busy)}>确认接单</button> : null}
               {["pending_warehouse", "processing", "awaiting_reshipment"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void warehouseAction("reject")} disabled={Boolean(busy) || !warehouseRemark.trim()} title={!warehouseRemark.trim() ? "请先填写驳回原因" : "退回运营修改"}>驳回给运营</button> : null}
               {["pending_warehouse", "processing"].includes(selectedTicket.status) && selectedTicket.needsReissue ? <button className="primary" onClick={() => void warehouseAction("await_reshipment")} disabled={Boolean(busy)}>进入待补发</button> : null}

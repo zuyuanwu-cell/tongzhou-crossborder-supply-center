@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createWarehouseTicketService } from "../server/warehouse-tickets.js";
-import { buildWarehouseTicketCreatedMarkdown, buildWarehouseTicketProgressMarkdown } from "../server/after-sales-notifications.js";
+import { buildWarehouseTicketCreatedMarkdown, buildWarehouseTicketProgressMarkdown, buildWarehouseTicketReminderMarkdown } from "../server/after-sales-notifications.js";
 
 const tempDir = mkdtempSync(resolve(tmpdir(), "tongzhou-warehouse-ticket-"));
 try {
@@ -28,6 +28,14 @@ try {
   assert.equal(created.ticket.status, "pending_warehouse");
   assert.equal(created.ticket.notificationRoute.teamName, "项目 A");
   assert.match(buildWarehouseTicketCreatedMarkdown(created.ticket), /仓库工单待处理/);
+  const reminded = service.remind(created.ticket.id, operator);
+  assert.equal(reminded.ticket.status, "pending_warehouse");
+  assert.equal(reminded.ticket.timeline.at(-1).type, "reminder_sent");
+  assert.equal(reminded.ticket.timeline.at(-1).label, "运营催办仓库");
+  assert.ok(reminded.nextReminderAt);
+  assert.match(buildWarehouseTicketReminderMarkdown(reminded.ticket, { requestOrigin: "https://gyl.example.com", statusLabel: "待仓库受理" }), /仓库工单催办提醒/);
+  assert.match(buildWarehouseTicketReminderMarkdown(reminded.ticket, { requestOrigin: "https://gyl.example.com" }), /view=warehouse/);
+  assert.throws(() => service.remind(created.ticket.id, operator), /30 分钟/);
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
   const accepted = service.updateWarehouse(created.ticket.id, { action: "accept", note: "已开始核查" }, warehouse);
   assert.equal(accepted.ticket.status, "processing");
@@ -39,6 +47,7 @@ try {
   const resolved = service.updateWarehouse(created.ticket.id, { action: "resolve", note: "已安排今日出库" }, warehouse);
   assert.equal(resolved.ticket.status, "resolved");
   assert.match(buildWarehouseTicketProgressMarkdown(resolved.ticket, { statusLabel: "已解决" }), /已解决/);
+  assert.throws(() => service.remind(created.ticket.id, operator), /已解决/);
   assert.equal(service.list({ dataScopes: { warehouseIds: ["wh-id"] } }).summary.total, 1);
   assert.equal(service.list({ dataScopes: { warehouseIds: ["wh-my"] } }).summary.total, 0);
   assert.equal(service.get(created.ticket.id, { warehouseIds: ["wh-id"] })?.id, created.ticket.id);

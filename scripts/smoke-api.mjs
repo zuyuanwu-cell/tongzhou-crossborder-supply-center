@@ -242,6 +242,17 @@ async function main() {
   if (warehouseTicket.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${warehouseTicket.ticket.id}`)) {
     throw new Error(`Warehouse ticket creation did not synchronously deliver a deep-link webhook: ${JSON.stringify(warehouseTicket).slice(0, 600)}`);
   }
+  const warehouseReminder = await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/remind`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (warehouseReminder.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("仓库工单催办提醒") || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${warehouseTicket.ticket.id}`)) {
+    throw new Error("Warehouse ticket reminder did not notify the target warehouse with a deep link.");
+  }
+  const repeatedWarehouseReminder = await fetch(`${baseUrl}/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/remind`, { method: "POST", headers: authHeaders });
+  if (repeatedWarehouseReminder.status !== 429 || !repeatedWarehouseReminder.headers.get("retry-after")) {
+    throw new Error(`Warehouse ticket reminder cooldown was not enforced: ${repeatedWarehouseReminder.status}.`);
+  }
   const warehouseAccepted = await expectJson(`/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/warehouse`, {
     method: "PATCH",
     headers: { ...authHeaders, "Content-Type": "application/json" },
@@ -279,6 +290,17 @@ async function main() {
   });
   if (afterSales.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${afterSales.ticket.id}`)) {
     throw new Error("After-sales creation did not synchronously deliver a warehouse webhook.");
+  }
+  const afterSalesReminder = await expectJson(`/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/remind`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (afterSalesReminder.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("售后单催办提醒") || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${afterSales.ticket.id}`)) {
+    throw new Error("After-sales reminder did not notify the target warehouse with a deep link.");
+  }
+  const repeatedAfterSalesReminder = await fetch(`${baseUrl}/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/remind`, { method: "POST", headers: authHeaders });
+  if (repeatedAfterSalesReminder.status !== 429 || !repeatedAfterSalesReminder.headers.get("retry-after")) {
+    throw new Error(`After-sales reminder cooldown was not enforced: ${repeatedAfterSalesReminder.status}.`);
   }
   const labelUpload = await expectJson("/api/after-sales/uploads", {
     method: "POST",
@@ -329,6 +351,11 @@ async function main() {
   }
   const ownWarehouseAccount = await createAndLoginWarehouse("smoke-warehouse-own", ownWarehouseId);
   const otherWarehouseAccount = await createAndLoginWarehouse("smoke-warehouse-other", otherWarehouseId);
+  const warehouseReminderByWarehouse = await fetch(`${baseUrl}/api/warehouse-tickets/${encodeURIComponent(warehouseTicket.ticket.id)}/remind`, { method: "POST", headers: ownWarehouseAccount.headers });
+  const afterSalesReminderByWarehouse = await fetch(`${baseUrl}/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/remind`, { method: "POST", headers: ownWarehouseAccount.headers });
+  if (warehouseReminderByWarehouse.status !== 403 || afterSalesReminderByWarehouse.status !== 403) {
+    throw new Error(`Warehouse account unexpectedly sent reminders: ticket ${warehouseReminderByWarehouse.status}, after-sales ${afterSalesReminderByWarehouse.status}.`);
+  }
   const ownWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: ownWarehouseAccount.headers });
   const otherWarehouseTickets = await expectJson("/api/warehouse-tickets", { headers: otherWarehouseAccount.headers });
   const ownAfterSales = await expectJson("/api/after-sales", { headers: ownWarehouseAccount.headers });

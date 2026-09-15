@@ -4065,6 +4065,12 @@ export function resubmitAfterSalesTicket(id: string, input: {
   });
 }
 
+export function remindAfterSalesTicket(id: string) {
+  return requestJson<{ ok: boolean; ticket: AfterSalesTicket; summary: AfterSalesPayload["summary"]; notification: NotificationDeliveryOutcome; nextReminderAt: string }>(`/api/after-sales/${encodeURIComponent(id)}/remind`, {
+    method: "POST",
+  });
+}
+
 export function fetchWarehouseTickets(input: { status?: string; keyword?: string; mine?: boolean } = {}, signal?: AbortSignal) {
   const params = new URLSearchParams();
   if (input.status) params.set("status", input.status);
@@ -4109,6 +4115,12 @@ export function updateWarehouseTicket(id: string, input: { action: "accept" | "r
   return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"]; notification: NotificationDeliveryOutcome }>(`/api/warehouse-tickets/${encodeURIComponent(id)}/warehouse`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export function remindWarehouseTicket(id: string) {
+  return requestJson<{ ok: boolean; ticket: WarehouseTicket; summary: WarehouseTicketPayload["summary"]; notification: NotificationDeliveryOutcome; nextReminderAt: string }>(`/api/warehouse-tickets/${encodeURIComponent(id)}/remind`, {
+    method: "POST",
   });
 }
 

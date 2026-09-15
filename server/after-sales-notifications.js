@@ -13,6 +13,16 @@ function unique(values) {
   return [...new Set((Array.isArray(values) ? values : []).map(text).filter(Boolean))];
 }
 
+function elapsedLabel(startedAt, now = new Date()) {
+  const started = new Date(text(startedAt));
+  if (Number.isNaN(started.getTime())) return "待核实";
+  const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - started.getTime()) / 60_000));
+  if (elapsedMinutes < 60) return `${Math.max(1, elapsedMinutes)} 分钟`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours} 小时 ${elapsedMinutes % 60} 分钟`;
+  return `${Math.floor(elapsedHours / 24)} 天 ${elapsedHours % 24} 小时`;
+}
+
 export function afterSalesWarehouseOptions(order = {}, warehouses = [], dataScopes = {}) {
   const allowedWarehouseIds = new Set(unique(dataScopes?.warehouseIds));
   const allowed = (Array.isArray(warehouses) ? warehouses : []).filter((warehouse) => (
@@ -130,5 +140,48 @@ export function buildAfterSalesProgressMarkdown(ticket = {}, options = {}) {
     text(latest?.note) ? `> 处理说明：${text(latest.note)}` : "",
     text(options.extraText),
     linkUrl ? `[查看售后进度](${linkUrl})` : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function buildAfterSalesReminderMarkdown(ticket = {}, options = {}) {
+  const latest = Array.isArray(ticket.timeline) ? ticket.timeline.at(-1) : null;
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "after_sales",
+    view: "warehouse",
+    ticket: ticket.id,
+  });
+  return [
+    "### 售后单催办提醒",
+    `> 售后单：**${text(ticket.id) || "-"}**`,
+    `> 处理仓库：${text(ticket.warehouseName) || "待分配"}`,
+    `> 原订单：${text(ticket.originalOrderNumber) || "-"}`,
+    `> 当前状态：${text(options.statusLabel) || text(ticket.status) || "-"}`,
+    `> 催办人：${text(latest?.actor) || "运营"}`,
+    `> 自提交已等待：${elapsedLabel(ticket.createdAt, options.now)}`,
+    "> 请仓库尽快查看并更新处理进度。",
+    text(options.extraText),
+    linkUrl ? `[立即处理售后单](${linkUrl})` : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function buildWarehouseTicketReminderMarkdown(ticket = {}, options = {}) {
+  const latest = Array.isArray(ticket.timeline) ? ticket.timeline.at(-1) : null;
+  const linkUrl = afterSalesNotificationLink(options.linkUrl, options.requestOrigin, {
+    module: "tickets",
+    view: "warehouse",
+    ticket: ticket.id,
+  });
+  return [
+    "### 仓库工单催办提醒",
+    `> 工单：**${text(ticket.id) || "-"}**`,
+    `> 处理仓库：${text(ticket.warehouseName) || "待分配"}`,
+    text(ticket.relatedOrderNumber) ? `> 关联订单：${text(ticket.relatedOrderNumber)}` : "",
+    `> 主题：${text(ticket.title) || "-"}`,
+    `> 当前状态：${text(options.statusLabel) || text(ticket.status) || "-"}`,
+    `> 催办人：${text(latest?.actor) || "运营"}`,
+    `> 自提交已等待：${elapsedLabel(ticket.createdAt, options.now)}`,
+    "> 请仓库尽快查看并回复处理进度。",
+    text(options.extraText),
+    linkUrl ? `[立即处理仓库工单](${linkUrl})` : "",
   ].filter(Boolean).join("\n");
 }

@@ -14,6 +14,7 @@ import {
   afterSalesNotificationLink,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
+  buildAfterSalesReminderMarkdown,
   notificationRobotIds,
 } from "../server/after-sales-notifications.js";
 
@@ -140,6 +141,15 @@ try {
   assert.match(createdMarkdown, /新售后单待处理/);
   assert.match(createdMarkdown, /ticket=AS-/);
 
+  const reminded = service.remind(created.ticket.id, actor);
+  assert.equal(reminded.ticket.status, "pending_warehouse");
+  assert.equal(reminded.ticket.timeline.at(-1).type, "reminder_sent");
+  assert.equal(reminded.ticket.timeline.at(-1).label, "运营催办仓库");
+  assert.ok(reminded.nextReminderAt);
+  assert.match(buildAfterSalesReminderMarkdown(reminded.ticket, { requestOrigin: "https://gyl.example.com", statusLabel: "待仓库接单" }), /售后单催办提醒/);
+  assert.match(buildAfterSalesReminderMarkdown(reminded.ticket, { requestOrigin: "https://gyl.example.com" }), /view=warehouse/);
+  assert.throws(() => service.remind(created.ticket.id, actor), /30 分钟/);
+
   const warehouse = { id: "warehouse-1", displayName: "仓库测试" };
   const rejected = service.updateWarehouse(created.ticket.id, { action: "reject", warehouseRemark: "经核查并非仓库错发，请运营修改原因" }, warehouse);
   assert.equal(rejected.ticket.status, "rejected");
@@ -172,7 +182,8 @@ try {
   assert.equal(shipped.ticket.labelUploads.length, 1);
   const completed = service.updateWarehouse(created.ticket.id, { action: "complete", note: "客户确认收到" }, warehouse);
   assert.equal(completed.ticket.status, "completed");
-  assert.equal(completed.ticket.timeline.length, 8);
+  assert.equal(completed.ticket.timeline.length, 9);
+  assert.throws(() => service.remind(created.ticket.id, actor), /已完结/);
 
   const listed = service.list();
   assert.equal(listed.summary.total, 1);

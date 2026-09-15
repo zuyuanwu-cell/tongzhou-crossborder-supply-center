@@ -21,6 +21,8 @@ export const WAREHOUSE_TICKET_STATUSES = Object.freeze([
   "cancelled",
 ]);
 
+const REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
+
 function text(value) {
   return String(value ?? "").normalize("NFKC").trim();
 }
@@ -241,6 +243,38 @@ export function createWarehouseTicketService({ cachePath, uploadDir }) {
     return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
   }
 
+  function remind(id, actor) {
+    const updated = store.update(id, (ticket) => {
+      const statusLabels = { resolved: "已解决", cancelled: "已取消" };
+      if (!["pending_warehouse", "processing"].includes(ticket.status)) {
+        throw new Error(`${statusLabels[ticket.status] || "当前状态"}的仓库工单不能催办。`);
+      }
+      const lastReminder = [...(ticket.timeline || [])].reverse().find((item) => item.type === "reminder_sent");
+      const lastReminderAt = Date.parse(lastReminder?.createdAt || "");
+      const remainingMs = Number.isFinite(lastReminderAt) ? REMINDER_COOLDOWN_MS - (Date.now() - lastReminderAt) : 0;
+      if (remainingMs > 0) {
+        const error = new Error(`该仓库工单 30 分钟内已催办过，请 ${Math.max(1, Math.ceil(remainingMs / 60_000))} 分钟后再试。`);
+        error.code = "reminder_cooldown";
+        error.retryAfterSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
+        throw error;
+      }
+      const reminderEvent = event("reminder_sent", "运营催办仓库", actor, "请仓库尽快查看并回复处理进度。");
+      return {
+        ...ticket,
+        updatedAt: reminderEvent.createdAt,
+        timeline: [...(ticket.timeline || []), reminderEvent],
+      };
+    });
+    if (!updated) throw new Error("仓库工单不存在。");
+    const reminderAt = updated.timeline?.at(-1)?.createdAt || nowIso();
+    return {
+      ok: true,
+      ticket: updated,
+      summary: summaryFor(store.list()),
+      nextReminderAt: new Date(Date.parse(reminderAt) + REMINDER_COOLDOWN_MS).toISOString(),
+    };
+  }
+
   function recordNotification(id, input = {}) {
     return store.update(id, (ticket) => ({
       ...ticket,
@@ -285,6 +319,7 @@ export function createWarehouseTicketService({ cachePath, uploadDir }) {
     },
     create,
     updateWarehouse,
+    remind,
     recordNotification,
   };
 }

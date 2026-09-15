@@ -54,8 +54,10 @@ import {
   afterSalesWarehouseOptions,
   buildAfterSalesCreatedMarkdown,
   buildAfterSalesProgressMarkdown,
+  buildAfterSalesReminderMarkdown,
   buildWarehouseTicketCreatedMarkdown,
   buildWarehouseTicketProgressMarkdown,
+  buildWarehouseTicketReminderMarkdown,
   notificationRobotIds,
 } from "./after-sales-notifications.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
@@ -1027,16 +1029,24 @@ function notificationOutcome(results = [], configured = true) {
   };
 }
 
-async function notifyAfterSalesCreated(ticket, requestOrigin) {
+async function notifyAfterSalesCreated(ticket, requestOrigin, eventType = "created") {
   const scene = cachedWecomNotifications.scenes?.afterSalesNew;
   const robotIds = scene?.enabled ? notificationRobotIds(scene, ticket.warehouseId) : [];
   const configured = Boolean(scene?.enabled && robotIds.length);
-  const results = configured
-    ? await sendWecomNotification(robotIds, buildAfterSalesCreatedMarkdown(ticket, {
-      linkUrl: scene.linkUrl,
-      extraText: scene.extraText,
+  const markdown = eventType === "remind"
+    ? buildAfterSalesReminderMarkdown(ticket, {
+      statusLabel: afterSalesStatusLabels[ticket.status] || ticket.status,
+      linkUrl: scene?.linkUrl,
+      extraText: scene?.extraText,
       requestOrigin,
-    }))
+    })
+    : buildAfterSalesCreatedMarkdown(ticket, {
+      linkUrl: scene?.linkUrl,
+      extraText: scene?.extraText,
+      requestOrigin,
+    });
+  const results = configured
+    ? await sendWecomNotification(robotIds, markdown)
     : [];
   if (results.some((result) => result.ok)) {
     scene.lastSentAt = new Date().toISOString();
@@ -1084,10 +1094,10 @@ async function notifyAfterSalesProgress(ticket, requestOrigin) {
 }
 
 async function deliverAfterSalesNotification(ticket, eventType, requestOrigin) {
-  const warehouseTarget = ["created", "resubmit"].includes(eventType);
+  const warehouseTarget = ["created", "resubmit", "remind"].includes(eventType);
   const send = warehouseTarget ? notifyAfterSalesCreated : notifyAfterSalesProgress;
   try {
-    const outcome = await send(ticket, requestOrigin);
+    const outcome = await send(ticket, requestOrigin, eventType);
     afterSalesService.recordNotification(ticket.id, {
       eventType,
       target: warehouseTarget ? "warehouse" : "operations",
@@ -1119,11 +1129,15 @@ const warehouseTicketStatusLabels = Object.freeze({
 
 async function notifyWarehouseTicket(ticket, eventType, origin) {
   const created = eventType === "created";
-  const scene = cachedWecomNotifications.scenes?.[created ? "afterSalesNew" : "afterSalesProgress"];
-  const markdown = created
+  const reminder = eventType === "remind";
+  const warehouseTarget = created || reminder;
+  const scene = cachedWecomNotifications.scenes?.[warehouseTarget ? "afterSalesNew" : "afterSalesProgress"];
+  const markdown = reminder
+    ? buildWarehouseTicketReminderMarkdown(ticket, { statusLabel: warehouseTicketStatusLabels[ticket.status] || ticket.status, linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin })
+    : created
     ? buildWarehouseTicketCreatedMarkdown(ticket, { linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin })
     : buildWarehouseTicketProgressMarkdown(ticket, { statusLabel: warehouseTicketStatusLabels[ticket.status] || ticket.status, linkUrl: scene?.linkUrl, extraText: scene?.extraText, requestOrigin: origin });
-  if (created) {
+  if (warehouseTarget) {
     const robotIds = scene?.enabled ? notificationRobotIds(scene, ticket.warehouseId) : [];
     const configured = Boolean(scene?.enabled && robotIds.length);
     const results = configured ? await sendWecomNotification(robotIds, markdown) : [];
@@ -1164,7 +1178,7 @@ async function notifyWarehouseTicket(ticket, eventType, origin) {
 }
 
 async function deliverWarehouseTicketNotification(ticket, eventType, origin) {
-  const target = eventType === "created" ? "warehouse" : "operations";
+  const target = ["created", "remind"].includes(eventType) ? "warehouse" : "operations";
   try {
     const outcome = await notifyWarehouseTicket(ticket, eventType, origin);
     warehouseTicketService.recordNotification(ticket.id, { eventType, target, ...outcome });
@@ -7183,6 +7197,35 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const warehouseTicketReminderMatch = url.pathname.match(/^\/api\/warehouse-tickets\/([^/]+)\/remind$/);
+    if (warehouseTicketReminderMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "warehouse_ticket_report") && !canManage(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有催办仓库工单的权限。" });
+        return;
+      }
+      try {
+        const ticketId = decodeURIComponent(warehouseTicketReminderMatch[1]);
+        const createdById = canManage(auth) ? "" : String(auth.user?.id || "").trim();
+        if (!warehouseTicketService.get(ticketId, warehouseCollaborationDataScopes(auth), createdById)) {
+          sendJson(res, 404, { ok: false, message: "仓库工单不存在，或只能由原填报人催办。" });
+          return;
+        }
+        const result = warehouseTicketService.remind(ticketId, auth.user);
+        appendActionLog(auth, "催办仓库工单", "warehouse_ticket", result.ticket.id, {
+          status: result.ticket.status,
+          warehouseId: result.ticket.warehouseId,
+        });
+        const notification = await deliverWarehouseTicketNotification(result.ticket, "remind", requestOrigin(req));
+        sendJson(res, 200, { ...result, ticket: warehouseTicketService.get(result.ticket.id), notification });
+      } catch (error) {
+        const cooldown = error?.code === "reminder_cooldown";
+        if (cooldown && error.retryAfterSeconds) res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        sendJson(res, cooldown ? 429 : 400, { ok: false, code: error?.code || "", message: error?.message || "催办仓库工单失败。", retryAfterSeconds: error?.retryAfterSeconds || 0 });
+      }
+      return;
+    }
+
     const warehouseTicketActionMatch = url.pathname.match(/^\/api\/warehouse-tickets\/([^/]+)\/warehouse$/);
     if (warehouseTicketActionMatch && req.method === "PATCH") {
       const auth = getAuth(req);
@@ -7420,6 +7463,35 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, { ok: true, ticket });
+      return;
+    }
+
+    const afterSalesReminderMatch = url.pathname.match(/^\/api\/after-sales\/([^/]+)\/remind$/);
+    if (afterSalesReminderMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report") && !canManage(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有催办售后单的权限。" });
+        return;
+      }
+      try {
+        const ticketId = decodeURIComponent(afterSalesReminderMatch[1]);
+        const createdById = canManage(auth) ? "" : String(auth.user?.id || "").trim();
+        if (!afterSalesService.get(ticketId, warehouseCollaborationDataScopes(auth), createdById)) {
+          sendJson(res, 404, { ok: false, message: "售后单不存在，或只能由原填报人催办。" });
+          return;
+        }
+        const result = afterSalesService.remind(ticketId, auth.user);
+        appendActionLog(auth, "催办售后单", "after_sales_ticket", result.ticket.id, {
+          status: result.ticket.status,
+          warehouseId: result.ticket.warehouseId,
+        });
+        const notification = await deliverAfterSalesNotification(result.ticket, "remind", requestOrigin(req));
+        sendJson(res, 200, { ...result, ticket: afterSalesService.get(result.ticket.id), notification });
+      } catch (error) {
+        const cooldown = error?.code === "reminder_cooldown";
+        if (cooldown && error.retryAfterSeconds) res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        sendJson(res, cooldown ? 429 : 400, { ok: false, code: error?.code || "", message: error?.message || "催办售后单失败。", retryAfterSeconds: error?.retryAfterSeconds || 0 });
+      }
       return;
     }
 

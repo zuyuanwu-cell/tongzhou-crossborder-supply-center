@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, CheckCircle2, Clock3, Download, FileText, LoaderCircle, PackageSearch, Plus, RefreshCw, Search, Send, Upload, X } from "lucide-react";
+import { AlertTriangle, BellRing, CheckCircle2, Clock3, Download, FileText, LoaderCircle, PackageSearch, Plus, RefreshCw, Search, Send, Upload, X } from "lucide-react";
 import {
   AuthUser,
   NotificationDeliveryOutcome,
@@ -12,6 +12,7 @@ import {
   fetchWarehouseTicket,
   fetchWarehouseTickets,
   fetchWarehouseNotificationTeams,
+  remindWarehouseTicket,
   updateWarehouseTicket,
   uploadWarehouseTicketAttachment,
 } from "./api";
@@ -23,6 +24,14 @@ const statusMeta: Record<string, { label: string; tone: string }> = {
   resolved: { label: "已解决", tone: "good" },
   cancelled: { label: "已取消", tone: "muted" },
 };
+const REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
+
+function reminderRemainingMinutes(timeline: WarehouseTicket["timeline"], now: number) {
+  const reminder = [...timeline].reverse().find((item) => item.type === "reminder_sent");
+  const remindedAt = reminder ? Date.parse(reminder.createdAt) : Number.NaN;
+  if (!Number.isFinite(remindedAt)) return 0;
+  return Math.max(0, Math.ceil((remindedAt + REMINDER_COOLDOWN_MS - now) / 60_000));
+}
 
 function hasPermission(user: AuthUser, permission: string) {
   return Boolean(user.permissions?.includes(permission));
@@ -70,6 +79,7 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
   const [payload, setPayload] = React.useState<WarehouseTicketPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState("");
+  const [reminderNow, setReminderNow] = React.useState(Date.now());
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
@@ -87,6 +97,13 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
   const [warehouseRemark, setWarehouseRemark] = React.useState("");
   const openedDeepLinkRef = React.useRef("");
   const appliedPrefillRef = React.useRef("");
+
+  React.useEffect(() => {
+    if (!selectedTicket) return undefined;
+    setReminderNow(Date.now());
+    const timer = window.setInterval(() => setReminderNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [selectedTicket?.id]);
 
   const refresh = React.useCallback(async (filters: { mine?: boolean; status?: string; keyword?: string } = {}) => {
     setLoading(true);
@@ -206,6 +223,24 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
     }
   }
 
+  async function handleReminder() {
+    if (!selectedTicket) return;
+    setBusy("remind");
+    setError("");
+    setMessage("");
+    try {
+      const result = await remindWarehouseTicket(selectedTicket.id);
+      setSelectedTicket(result.ticket);
+      setReminderNow(Date.now());
+      setMessage(notificationMessage(`已催办仓库处理工单 ${result.ticket.id}`, result.notification));
+      await refresh({ mine: tab === "mine", status, keyword });
+    } catch (reminderError) {
+      setError(reminderError instanceof Error ? reminderError.message : "催办仓库失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function download(attachment: WarehouseTicketAttachment) {
     try {
       const blob = await downloadWarehouseTicketAttachment(attachment);
@@ -239,6 +274,14 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
         </button>)}
       </div>
     </section>
+  );
+
+  const selectedReminderMinutes = selectedTicket ? reminderRemainingMinutes(selectedTicket.timeline, reminderNow) : 0;
+  const canRemindSelected = Boolean(
+    selectedTicket
+    && (canReport || canAdmin)
+    && (canAdmin || selectedTicket.createdById === currentUser.id)
+    && ["pending_warehouse", "processing"].includes(selectedTicket.status),
   );
 
   return <div className="warehouse-ticket-center">
@@ -284,7 +327,7 @@ export function WarehouseTicketCenter({ currentUser, initialTicketId = "", initi
         {selectedTicket.notifications?.length ? <section className="as-drawer-section as-notification-state"><header><div><small>企业微信通知</small><strong>最近一次：{selectedTicket.notifications.at(-1)?.status === "sent" ? "已发送" : selectedTicket.notifications.at(-1)?.status === "failed" ? "发送失败" : "未配置"}</strong></div></header><span>{selectedTicket.notifications.at(-1)?.routeLabel || "默认通知路由"}{selectedTicket.notifications.at(-1)?.fallback ? " · 已使用兜底群" : ""}{selectedTicket.notifications.at(-1)?.mentionedCount ? ` · 已提醒 ${selectedTicket.notifications.at(-1)?.mentionedCount} 人` : ""} · {dateTime(selectedTicket.notifications.at(-1)?.createdAt)}{selectedTicket.notifications.at(-1)?.message ? ` · ${selectedTicket.notifications.at(-1)?.message}` : ""}</span></section> : null}
         <section className="as-drawer-section as-timeline"><header><div><small>处理时间线</small><strong>{selectedTicket.timeline.length} 个节点</strong></div></header>{[...selectedTicket.timeline].reverse().map((item, index) => <div className="as-timeline-item" key={item.id}><i className={index === 0 ? "active" : ""} /><div><strong>{item.label}</strong><span>{item.actor} · {dateTime(item.createdAt)}</span>{item.note ? <p>{item.note}</p> : null}</div></div>)}</section>
       </div>
-      {canWarehouse || canAdmin ? <footer>{selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void act("accept")} disabled={Boolean(busy)}>确认受理</button> : null}{["pending_warehouse", "processing"].includes(selectedTicket.status) ? <button onClick={() => void act("reply")} disabled={Boolean(busy) || !warehouseRemark.trim()}>发送回复</button> : null}{["pending_warehouse", "processing"].includes(selectedTicket.status) ? <button className="primary" onClick={() => void act("resolve")} disabled={Boolean(busy)}>填写结果并完结</button> : null}{canAdmin && !["resolved", "cancelled"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void act("cancel")} disabled={Boolean(busy)}>取消工单</button> : null}{canAdmin && ["resolved", "cancelled"].includes(selectedTicket.status) ? <button onClick={() => void act("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}</footer> : null}
+      {canWarehouse || canAdmin || canRemindSelected ? <footer>{canRemindSelected ? <button className="remind" onClick={() => void handleReminder()} disabled={Boolean(busy) || selectedReminderMinutes > 0} title={selectedReminderMinutes > 0 ? `为避免重复打扰，${selectedReminderMinutes} 分钟后可再次催办` : "向该仓库的企业微信群发送催办提醒"}>{busy === "remind" ? <LoaderCircle className="spinning" size={16} /> : <BellRing size={16} />}{busy === "remind" ? "正在催办" : selectedReminderMinutes > 0 ? `${selectedReminderMinutes} 分钟后可再催` : "催办仓库"}</button> : null}{selectedTicket.status === "pending_warehouse" ? <button className="primary" onClick={() => void act("accept")} disabled={Boolean(busy)}>确认受理</button> : null}{["pending_warehouse", "processing"].includes(selectedTicket.status) ? <button onClick={() => void act("reply")} disabled={Boolean(busy) || !warehouseRemark.trim()}>发送回复</button> : null}{["pending_warehouse", "processing"].includes(selectedTicket.status) ? <button className="primary" onClick={() => void act("resolve")} disabled={Boolean(busy)}>填写结果并完结</button> : null}{canAdmin && !["resolved", "cancelled"].includes(selectedTicket.status) ? <button className="danger" onClick={() => void act("cancel")} disabled={Boolean(busy)}>取消工单</button> : null}{canAdmin && ["resolved", "cancelled"].includes(selectedTicket.status) ? <button onClick={() => void act("reopen")} disabled={Boolean(busy)}>重新打开</button> : null}</footer> : null}
     </aside></div> : null}
   </div>;
 }
