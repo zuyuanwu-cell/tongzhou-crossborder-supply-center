@@ -30,6 +30,8 @@ type Props = {
   route: string;
 };
 
+const AgentMarkdown = React.lazy(() => import("./AgentMarkdown"));
+
 function timeLabel(value: string) {
   if (!value) return "等待数据";
   const date = new Date(value);
@@ -207,7 +209,11 @@ export function AiAgentWidget({ currentUser, route }: Props) {
               {messages.map((message, index) => (
                 <article className={`ai-agent-message ${message.role}`} key={`${message.role}-${index}`}>
                   <i>{message.role === "assistant" ? <Bot size={15} /> : <MessageSquareText size={15} />}</i>
-                  <div>{message.content}</div>
+                  {message.role === "assistant" ? (
+                    <React.Suspense fallback={<div className="ai-agent-markdown-loading">正在整理回答…</div>}>
+                      <AgentMarkdown content={message.content} />
+                    </React.Suspense>
+                  ) : <div>{message.content}</div>}
                 </article>
               ))}
               {thinking ? <article className="ai-agent-message assistant thinking"><i><Bot size={15} /></i><div><span /><span /><span /><em>正在核对数据并组织结论</em></div></article> : null}

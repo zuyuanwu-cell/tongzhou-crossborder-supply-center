@@ -49,6 +49,8 @@
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.3",
+    "remark-gfm": "^4.0.1",
     "sql.js": "^1.14.1",
     "typescript": "^5.7.2",
     "undici": "^5.28.4",
