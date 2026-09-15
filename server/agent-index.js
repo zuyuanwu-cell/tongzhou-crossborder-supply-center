@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { basename, extname, relative, resolve } from "node:path";
 
-const INDEX_VERSION = "1.0";
+const INDEX_VERSION = "1.1";
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 500;
 const MAX_TOMBSTONES = 5000;
@@ -201,6 +201,54 @@ const TYPE_DEFINITIONS = {
     fields: ["tongzhouSku", "orderNo", "productName", "supplier", "status", "plannedQty", "producedQty", "expectedFinishedAt"],
     sourcePath: "/api/outsourcing-orders",
   },
+  inventory_value_summary: {
+    label: "仓库货值摘要",
+    access: "partner",
+    permissionAny: ["inventory_value"],
+    sourceSystem: "derived",
+    fields: ["period", "snapshotDate", "onHandQty", "inTransitQty", "onHandValueCny", "inTransitValueCny", "costCoverageRate", "missingCostSkuCount", "periodChangeCny", "periodChangeRate"],
+    sourcePath: "/api/inventory-value",
+  },
+  qualification_expiry: {
+    label: "资质到期预警",
+    access: "partner",
+    permissionAny: ["qualifications"],
+    sourceSystem: "derived",
+    fields: ["sku", "productName", "qualificationName", "qualificationCategory", "market", "expiryDate", "daysLeft", "urgency", "status"],
+    sourcePath: "/api/qualifications",
+  },
+  after_sales_ticket: {
+    label: "售后协同单",
+    access: "warehouse_collaboration",
+    permissionAny: ["after_sales_report", "after_sales_warehouse"],
+    sourceSystem: "local",
+    fields: ["originalOrderNumber", "platform", "site", "warehouseName", "primaryReason", "secondaryReason", "responsibilityLabel", "needsReissue", "reissueItemCount", "warehouseLiabilityCny", "missingCostSkuCount", "status", "createdAt", "updatedAt", "completedAt"],
+    sourcePath: "/api/after-sales",
+  },
+  warehouse_ticket: {
+    label: "仓库工单",
+    access: "warehouse_collaboration",
+    permissionAny: ["warehouse_ticket_report", "warehouse_ticket_warehouse"],
+    sourceSystem: "local",
+    fields: ["warehouseName", "country", "category", "priority", "relatedOrderNumber", "title", "status", "createdAt", "updatedAt", "acceptedAt", "resolvedAt"],
+    sourcePath: "/api/warehouse-tickets",
+  },
+  performance_summary: {
+    label: "经营贡献摘要",
+    access: "partner",
+    permissionAny: ["performance_analysis"],
+    sourceSystem: "derived",
+    fields: ["dateFrom", "dateTo", "orderCount", "salesAmountCny", "costCoverageRate", "profitCoverageRate", "matchedShopCount", "unmatchedShopCount", "generatedAt"],
+    sourcePath: "/api/performance-analytics",
+  },
+  miaoshou_task: {
+    label: "妙手任务",
+    access: "partner",
+    permissionAny: ["miaoshou_alias", "miaoshou_listing", "miaoshou_automation", "miaoshou_config"],
+    sourceSystem: "miaoshou",
+    fields: ["type", "shopName", "platform", "status", "progress", "message", "createdAt", "updatedAt", "completedAt"],
+    sourcePath: "/api/miaoshou",
+  },
   user: {
     label: "用户",
     access: "admin",
@@ -270,16 +318,23 @@ const PAGE_DEFINITIONS = [
   ["dashboard", "经营总览", "经营指标、同步状态和风险摘要。", ["admin"]],
   ["inventory", "库存同步", "WMS 库存同步和 SKU 治理。", ["admin"]],
   ["inventory-snapshots", "库存快照", "按日期查看库存快照。", ["admin"]],
+  ["inventory-value", "仓库货值", "查看库存货值、成本覆盖与周期变化。", ["direct", "admin"]],
   ["order-analysis", "订单分析", "订单趋势、店铺、平台和产品分析。", ["admin"]],
+  ["performance", "经营贡献", "销售、成本和经营贡献分析。", ["direct", "admin"]],
   ["movement", "动销监控", "当前 SKU 动销和仓库诊断。", ["admin"]],
   ["movement-analysis", "动销分析", "历史动销快照和趋势。", ["admin"]],
   ["stockup", "备货中心", "备货建议、决策和计划。", ["admin"]],
+  ["stockup-recommendations", "备货建议", "按库存和动销查看补货建议。", ["direct", "admin"]],
+  ["stockup-execution", "备货执行", "采购、生产、发货和入库执行。", ["direct", "admin"]],
+  ["production", "生产中心", "生产单、物料齐套和委外进度。", ["direct", "admin"]],
+  ["after-sales", "仓库协同", "售后单、仓库工单和处理进度。", ["warehouse", "direct", "admin"]],
   ["products", "产品库", "按当前用户权限展示产品目录。", ["guest", "distributor", "direct", "admin"]],
   ["qualifications", "资质库", "产品资质和附件。", ["distributor", "direct", "admin"]],
   ["assets", "素材库", "产品图片和源文件。", ["distributor", "direct", "admin"]],
   ["warehouse-info", "仓库信息", "仓库地址、时区和营业信息。", ["distributor", "direct", "admin"]],
   ["quick-nav", "快捷导航", "内部常用网页工具。", ["guest", "distributor", "direct", "admin"]],
   ["tongzhou-ai", "同舟AI", "文本、图片和视频 AI 工具。", ["guest", "distributor", "direct", "admin"]],
+  ["miaoshou", "妙手 ERP", "订单别名、自动运单和 AI 上架任务。", ["direct", "admin"]],
   ["api-access", "API 接入", "Agent API 文档、个人密钥和同步示例。", ["distributor", "direct", "admin"]],
   ["warehouses", "仓库授权", "WMS 仓库连接和授权。", ["admin"]],
   ["users", "用户管理", "账号、角色和状态管理。", ["admin"]],
@@ -395,12 +450,18 @@ function sanitizeForAgent(value, depth = 0) {
 
 function accessRoles(access) {
   if (access === "admin") return ["admin"];
+  if (access === "warehouse_collaboration") return ["warehouse", "direct", "admin"];
   if (access === "partner") return ["distributor", "direct", "admin"];
   return ["guest", "distributor", "direct", "admin"];
 }
 
 function canAccess(definition, auth) {
-  return accessRoles(definition.access).includes(auth?.role || "guest");
+  if (!accessRoles(definition.access).includes(auth?.role || "guest")) return false;
+  if (auth?.role === "admin") return true;
+  const required = Array.isArray(definition.permissionAny) ? definition.permissionAny : [];
+  if (!required.length) return true;
+  const granted = new Set(Array.isArray(auth?.user?.permissions) ? auth.user.permissions : []);
+  return required.some((permission) => granted.has(permission));
 }
 
 function scopeForAuth(auth) {
@@ -497,7 +558,7 @@ function nativeIdentity(type, record, index) {
 
 function nativeIdentityInfo(type, record, index) {
   const id = text(record?.id);
-  if (["product_base", "product_catalog", "qualification", "asset", "warehouse_info", "outsourcing_order"].includes(type)) {
+  if (["product_base", "product_catalog", "qualification", "asset", "warehouse_info", "outsourcing_order", "qualification_expiry", "after_sales_ticket", "warehouse_ticket", "miaoshou_task"].includes(type)) {
     const value = id || text(record?.sku || record?.orderNo);
     return value
       ? { value, fallback: false }
@@ -591,6 +652,12 @@ function titleFor(type, record) {
     stockup_decision: [record.name, record.sku, record.recommendationKey],
     stockup_order: [record.orderNo, record.sku],
     outsourcing_order: [record.orderNo, record.productName, record.tongzhouSku],
+    inventory_value_summary: [record.title, record.snapshotDate, "仓库货值摘要"],
+    qualification_expiry: [record.qualificationName, record.productName, record.sku],
+    after_sales_ticket: [record.originalOrderNumber, record.id],
+    warehouse_ticket: [record.title, record.relatedOrderNumber, record.id],
+    performance_summary: [record.title, record.dateFrom, record.dateTo, "经营贡献摘要"],
+    miaoshou_task: [record.title, record.shopName, record.id],
     user: [record.displayName, record.username],
     distributor_application: [record.companyName, record.contactName],
     warehouse_connection: [record.name, record.id],
@@ -947,6 +1014,26 @@ function openApiDocument() {
           responses: { 200: { description: "源记录与可枚举记录覆盖率" } },
         },
       },
+      "/api/ai/agent/context": {
+        get: {
+          tags: ["Analytics"],
+          operationId: "getCurrentPageAgentContext",
+          summary: "读取当前页面的权限内诊断上下文",
+          security: [{ sessionBearer: [] }],
+          parameters: [{ name: "route", in: "query", schema: { type: "string", example: "#inventory-value" } }],
+          responses: { 200: { description: "页面指标、洞察、数据源和快捷问题" }, 403: { description: "没有同舟 AI 权限" } },
+        },
+      },
+      "/api/ai/agent/chat": {
+        post: {
+          tags: ["Analytics"],
+          operationId: "chatWithTongzhouAgent",
+          summary: "基于权限内业务上下文向同舟领航员提问",
+          security: [{ sessionBearer: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["messages"], properties: { route: { type: "string" }, model: { type: "string" }, messages: { type: "array", items: { type: "object", required: ["role", "content"], properties: { role: { type: "string", enum: ["user", "assistant"] }, content: { type: "string" } } } } } } } } },
+          responses: { 200: { description: "模型回答及安全页面跳转" }, 409: { description: "当前用户尚未配置模型" }, 429: { description: "已有对话请求正在处理" } },
+        },
+      },
       "/api/movement-history/compare": {
         get: {
           tags: ["Analytics"],
@@ -982,6 +1069,12 @@ function openApiDocument() {
           scheme: "bearer",
           bearerFormat: "Tongzhou Agent API Key",
           description: "在站内“API 接入”页面创建，以 tzai_ 开头。",
+        },
+        sessionBearer: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "Tongzhou Session Token",
+          description: "中台当前登录会话令牌；悬浮助手不接受 Agent API Key。",
         },
       },
       schemas: {
@@ -1240,8 +1333,22 @@ export function createAgentIndexLayer({
         updated_since: "/api/agent/updated_since?since={iso8601}&types={type1,type2}",
         deleted_since: "/api/agent/deleted_since?since={iso8601}&types={type1,type2}",
         coverage: "/api/agent/coverage",
+        assistant_context: "/api/ai/agent/context?route={hash}",
+        assistant_chat: "/api/ai/agent/chat",
       },
       operations: [
+        {
+          id: "current_page_ai_assistant",
+          label: "同舟领航员页面诊断与问答",
+          method: "GET / POST",
+          endpoint: "/api/ai/agent/context · /api/ai/agent/chat",
+          accessible: Boolean(auth?.user?.permissions?.includes("tongzhou_ai")),
+          allowed_roles: ["distributor", "direct", "admin"],
+          required_permissions: ["tongzhou_ai"],
+          read_only: true,
+          description: "使用当前登录会话读取权限范围内的页面诊断，并调用用户自己的同舟画布文本模型。",
+          openapi_operation_id: "getCurrentPageAgentContext / chatWithTongzhouAgent",
+        },
         {
           id: "movement_inventory_comparison",
           label: "动销与库存差异计算",
@@ -1282,6 +1389,7 @@ export function createAgentIndexLayer({
         permissions_field: "acl",
         visibility: definition.access,
         allowed_roles: accessRoles(definition.access),
+        required_permissions: definition.permissionAny || [],
         source_system: definition.sourceSystem,
         list_endpoint: `/api/agent/resources/${type}`,
         detail_endpoint: `/api/agent/resources/${type}/{id}`,
@@ -1546,6 +1654,23 @@ export function createAgentIndexLayer({
     handle,
     manifest,
     coverage,
+    queryResources({ types = [], q = "", limit = 50 } = {}, auth) {
+      const requested = Array.isArray(types) ? types : String(types || "").split(",");
+      const accessibleTypes = [...new Set(requested.map(text).filter((type) => TYPE_DEFINITIONS[type] && canAccess(TYPE_DEFINITIONS[type], auth)))];
+      const searchParams = new URLSearchParams();
+      if (q) searchParams.set("q", text(q));
+      const sourceStats = [];
+      const records = accessibleTypes.flatMap((type) => {
+        const collected = collectType(type, auth);
+        sourceStats.push({ type, label: TYPE_DEFINITIONS[type].label, ...collected.stats });
+        return filterRecords(collected.records, searchParams);
+      });
+      return {
+        records: records.slice(0, Math.max(1, Math.min(MAX_PAGE_SIZE, Number(limit) || 50))),
+        sources: sourceStats,
+        types: accessibleTypes,
+      };
+    },
     recordDeletion,
     makeId,
   };

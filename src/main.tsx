@@ -217,6 +217,7 @@ import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import { InventoryValuePage } from "./InventoryValuePage";
+import { AiAgentWidget } from "./AiAgentWidget";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
 import "./theme-refresh.css";
@@ -2087,6 +2088,9 @@ function App() {
           />
         )}
         </div>
+        {authReady && currentUser.role !== "guest" && hasUserPermission(currentUser, "tongzhou_ai") ? (
+          <AiAgentWidget currentUser={currentUser} route={hashForView(activeView)} />
+        ) : null}
         <ConfirmDialog request={confirmRequest} onClose={closeConfirm} />
       </div>
     </ConfirmContext.Provider>

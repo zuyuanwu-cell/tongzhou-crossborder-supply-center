@@ -919,6 +919,48 @@ export type InventorySnapshotPayload = {
   snapshot: InventorySnapshot | null;
 };
 
+export type AiAgentMetric = {
+  label: string;
+  value: string | number;
+  tone: "neutral" | "muted" | "warning" | "success" | "critical" | string;
+};
+
+export type AiAgentInsight = {
+  severity: "critical" | "warning" | "info" | "success" | string;
+  title: string;
+  detail: string;
+  href: string;
+};
+
+export type AiAgentContextPayload = {
+  ok: boolean;
+  configured: boolean;
+  generatedAt: string;
+  page: { id: string; route: string; title: string; description: string };
+  metrics: AiAgentMetric[];
+  insights: AiAgentInsight[];
+  sources: Array<{ type: string; label: string; count: number; updatedAt: string; complete: boolean; warning: string }>;
+  prompts: string[];
+  actions: Array<{ label: string; href: string }>;
+  capabilities: string[];
+  safety: { readOnly: boolean; noBackgroundSync: boolean; dataScopeApplied: boolean; conversationPersisted: boolean };
+};
+
+export type AiAgentChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type AiAgentChatResult = {
+  ok: boolean;
+  answer: string;
+  model: string;
+  jobId: string;
+  generatedAt: string;
+  page: AiAgentContextPayload["page"];
+  actions: Array<{ label: string; href: string }>;
+};
+
 export type InventoryValuePeriod = "day" | "week" | "month";
 
 export type InventoryValueRow = {
@@ -3166,6 +3208,17 @@ export function sendWecomOperatingSummary(input: { robotIds: string[]; extraText
 
 export function fetchAiConfig() {
   return requestJson<AiConfigPayload>("/api/ai/config");
+}
+
+export function fetchAiAgentContext(route: string, signal?: AbortSignal) {
+  return requestJson<AiAgentContextPayload>(`/api/ai/agent/context?route=${encodeURIComponent(route)}`, { signal });
+}
+
+export function runAiAgentChat(input: { route: string; messages: AiAgentChatMessage[]; model?: string }) {
+  return requestJson<AiAgentChatResult>("/api/ai/agent/chat", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function updateAiConfig(input: {

@@ -27,6 +27,7 @@
     "test:inventory-value": "node scripts/inventory-value-test.mjs",
     "test:wecom-routing": "node scripts/wecom-project-routing-test.mjs",
     "test:agent": "node scripts/agent-index-test.mjs",
+    "test:assistant": "node scripts/ai-agent-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",

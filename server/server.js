@@ -32,6 +32,7 @@ import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publ
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { createAgentIndexLayer } from "./agent-index.js";
+import { agentPageDefinition, buildAgentContext, buildAgentSystemPrompt, normalizeAgentChatMessages, publicAgentContext } from "./ai-agent.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 import { directHttpsUrls, initMiaoshouListingService, localizeListingWarning, parseListingAiOutput, parseListingImagePlan, validateListingDraft } from "./miaoshou-listing.js";
@@ -271,6 +272,7 @@ let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
 let wecomScheduleRunning = false;
 const activeWarehouseReturnQueries = new Map();
+const activeAiAgentChats = new Map();
 const syncScheduler = createSyncScheduler({
   heartbeatMs: syncSchedulerHeartbeatMs,
   laneLimits: { light: 4, jdy: 1, wms: 1, miaoshou: 1, compute: 1, publicApi: 1 },
@@ -6390,6 +6392,144 @@ function agentSourceForType(type, auth) {
   if (type === "outsourcing_order") {
     return { records: cachedOutsourcingOrders.orders || [], syncedAt: cachedOutsourcingOrders.syncedAt || "", sourceSystem: cachedOutsourcingOrders.source || "jiandaoyun" };
   }
+  if (type === "inventory_value_summary") {
+    const payload = inventoryValuePayload({}, auth);
+    const summary = payload.summary || {};
+    return {
+      records: [{
+        id: `inventory-value:${payload.period || "day"}:${summary.date || "current"}`,
+        title: "当前仓库货值摘要",
+        period: payload.period,
+        snapshotDate: summary.date || payload.currentPeriod?.snapshotDate || "",
+        onHandQty: summary.onHandQty || 0,
+        inTransitQty: summary.inTransitQty || 0,
+        onHandValueCny: summary.onHandValueCny || 0,
+        inTransitValueCny: summary.inTransitValueCny || 0,
+        costCoverageRate: summary.costCoverageRate || 0,
+        missingCostSkuCount: summary.missingCostSkuCount || 0,
+        periodChangeCny: summary.periodChangeCny || 0,
+        periodChangeRate: summary.periodChangeRate,
+        status: summary.missingCostSkuCount ? "成本待补齐" : "成本已覆盖",
+        updatedAt: payload.generatedAt || "",
+      }],
+      updatedAt: payload.generatedAt || "",
+      sourceSystem: "derived",
+    };
+  }
+  if (type === "qualification_expiry") {
+    const scoped = scopedPartnerPayload(cachedQualifications, "qualifications", auth);
+    const records = qualificationExpiryRows(scoped, 90).map((item) => ({
+      id: item.id || [item.sku, item.qualificationName, item.expiryDate].filter(Boolean).join(":"),
+      sku: item.sku || "",
+      productName: item.productName || "",
+      qualificationName: item.qualificationName || "",
+      qualificationCategory: item.qualificationCategory || "",
+      market: item.market || "",
+      expiryDate: item.expiryDate || "",
+      daysLeft: item.daysLeft,
+      urgency: item.urgency,
+      status: item.daysLeft < 0 ? "已过期" : item.daysLeft <= 30 ? "即将到期" : "90天内到期",
+      updatedAt: cachedQualifications.syncedAt || "",
+    }));
+    return { records, syncedAt: cachedQualifications.syncedAt || "", sourceSystem: cachedQualifications.source || "jiandaoyun" };
+  }
+  if (type === "after_sales_ticket") {
+    const payload = afterSalesService.list({
+      dataScopes: warehouseCollaborationDataScopes(auth),
+      createdById: afterSalesCreatedByFilter(auth),
+    });
+    return {
+      records: (payload.tickets || []).map((ticket) => ({
+        id: ticket.id,
+        originalOrderNumber: ticket.originalOrderNumber || "",
+        platform: ticket.platform || "",
+        site: ticket.site || "",
+        warehouseId: ticket.warehouseId || "",
+        warehouseName: ticket.warehouseName || "",
+        primaryReason: ticket.primaryReason || "",
+        secondaryReason: ticket.secondaryReason || "",
+        responsibilityLabel: ticket.responsibility?.label || "",
+        needsReissue: Boolean(ticket.needsReissue),
+        reissueItemCount: (ticket.reissueItems || []).reduce((sum, item) => sum + numberOrZero(item.quantity), 0),
+        warehouseLiabilityCny: numberOrZero(ticket.money?.totalWarehouseLiabilityCny),
+        missingCostSkuCount: ticket.money?.missingCostSkus?.length || 0,
+        status: ticket.status || "",
+        createdAt: ticket.createdAt || "",
+        updatedAt: ticket.updatedAt || "",
+        completedAt: ticket.completedAt || "",
+      })),
+      updatedAt: payload.updatedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  if (type === "warehouse_ticket") {
+    const payload = warehouseTicketService.list({
+      dataScopes: warehouseCollaborationDataScopes(auth),
+      createdById: warehouseTicketCreatedByFilter(auth),
+    });
+    return {
+      records: (payload.tickets || []).map((ticket) => ({
+        id: ticket.id,
+        warehouseId: ticket.warehouseId || "",
+        warehouseName: ticket.warehouseName || "",
+        country: ticket.country || "",
+        category: ticket.category || "",
+        priority: ticket.priority || "",
+        relatedOrderNumber: ticket.relatedOrderNumber || "",
+        title: ticket.title || "",
+        status: ticket.status || "",
+        createdAt: ticket.createdAt || "",
+        updatedAt: ticket.updatedAt || "",
+        acceptedAt: ticket.acceptedAt || "",
+        resolvedAt: ticket.resolvedAt || "",
+      })),
+      updatedAt: payload.updatedAt || "",
+      sourceSystem: "local",
+    };
+  }
+  if (type === "performance_summary") {
+    const dashboard = buildDashboardSummary(auth);
+    const counts = dashboard.counts || {};
+    const health = dashboard.sync?.dataHealth || {};
+    return {
+      records: [{
+        id: `performance:${String(dashboard.generatedAt || "current").slice(0, 10)}`,
+        title: "经营与订单摘要",
+        dateFrom: "最近90天",
+        dateTo: String(dashboard.generatedAt || "").slice(0, 10),
+        orderCount: numberOrZero(counts.orderCount90),
+        salesAmountCny: numberOrZero(counts.salesAmount90),
+        riskSkuCount: numberOrZero(counts.riskSku),
+        healthyWarehouseCount: numberOrZero(health.healthy),
+        warningWarehouseCount: numberOrZero(health.warning),
+        failedWarehouseCount: numberOrZero(health.failed),
+        generatedAt: dashboard.generatedAt || "",
+        status: numberOrZero(health.failed) ? "存在仓库数据异常" : "数据可用",
+        updatedAt: dashboard.generatedAt || "",
+      }],
+      updatedAt: dashboard.generatedAt || "",
+      sourceSystem: "derived",
+    };
+  }
+  if (type === "miaoshou_task") {
+    const payload = miaoshouAutomation.publicPayload({ taskLimit: 100, eventLimit: 0 });
+    return {
+      records: (payload.tasks || []).map((task) => ({
+        id: task.id,
+        type: task.type || task.taskType || "",
+        shopName: task.shopName || task.shopAlias || "",
+        platform: task.platform || "",
+        status: task.status || "",
+        progress: task.progress || 0,
+        message: task.message || task.lastError || "",
+        createdAt: task.createdAt || "",
+        updatedAt: task.updatedAt || "",
+        completedAt: task.completedAt || "",
+      })),
+      updatedAt: payload.config?.lastRunAt || payload.shopsSyncedAt || "",
+      sourceSystem: "miaoshou",
+    };
+  }
   if (type === "user") {
     return {
       records: (cachedUsers.users || []).map((user) => ({
@@ -6448,6 +6588,99 @@ const agentIndexLayer = createAgentIndexLayer({
   getSource: agentSourceForType,
   sendJson,
 });
+
+function aiAgentDiagnostics(route, auth) {
+  const metrics = [];
+  const insights = [];
+  const metric = (label, value, tone = "neutral") => metrics.push({ label, value, tone });
+  const insight = (severity, title, detail, href = "") => insights.push({ severity, title, detail, href });
+
+  if (route === "#dashboard" && hasPermission(auth, "dashboard")) {
+    const summary = buildDashboardSummary(auth);
+    metric("风险 SKU", numberOrZero(summary.counts?.riskSku), summary.counts?.riskSku ? "warning" : "success");
+    metric("今日订单", numberOrZero(summary.counts?.todayOrders));
+    const failed = summary.sync?.failedWarehouses || [];
+    if (failed.length) insight("critical", `${failed.length} 个仓库同步异常`, failed.slice(0, 3).map((item) => item.name || item.warehouseName || item.warehouseId).filter(Boolean).join("、"), "#inventory");
+  }
+
+  if (["#inventory-value", "#inventory-snapshots"].includes(route) && hasPermission(auth, "inventory_value")) {
+    const payload = inventoryValuePayload({}, auth);
+    const summary = payload.summary || {};
+    metric("当前在库货值", `¥${Math.round(numberOrZero(summary.onHandValueCny)).toLocaleString("zh-CN")}`);
+    metric("成本覆盖率", `${Math.round(numberOrZero(summary.costCoverageRate) * 100)}%`, numberOrZero(summary.costCoverageRate) < 0.98 ? "warning" : "success");
+    if (numberOrZero(summary.missingCostSkuCount)) insight("warning", `${summary.missingCostSkuCount} 个 SKU 缺少成本`, "缺失成本的库存不会按 0 元误计，也不会计入当前货值。", "#inventory-value");
+  }
+
+  if (route === "#qualifications" && hasPermission(auth, "qualifications")) {
+    const scoped = scopedPartnerPayload(cachedQualifications, "qualifications", auth);
+    const expiring = qualificationExpiryRows(scoped, 90);
+    const expired = expiring.filter((item) => item.daysLeft < 0);
+    const due30 = expiring.filter((item) => item.daysLeft >= 0 && item.daysLeft <= 30);
+    metric("已过期", expired.length, expired.length ? "critical" : "success");
+    metric("30天内到期", due30.length, due30.length ? "warning" : "success");
+    if (expired.length) insight("critical", `${expired.length} 份资质已过期`, "应先确认相关产品是否仍在售，再安排续证或下架处理。", "#qualifications");
+  }
+
+  if (route === "#after-sales") {
+    if (canAccessAfterSales(auth)) {
+      const afterSales = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth), createdById: afterSalesCreatedByFilter(auth) });
+      metric("待仓库接单", numberOrZero(afterSales.summary?.pendingWarehouse), afterSales.summary?.pendingWarehouse ? "warning" : "success");
+      metric("被驳回", numberOrZero(afterSales.summary?.rejected), afterSales.summary?.rejected ? "warning" : "success");
+      if (numberOrZero(afterSales.summary?.rejected)) insight("warning", `${afterSales.summary.rejected} 张售后单被驳回`, "请核对原因、责任归属和凭证后重新提交。", "#after-sales");
+    }
+    if (canAccessWarehouseTickets(auth)) {
+      const tickets = warehouseTicketService.list({ dataScopes: warehouseCollaborationDataScopes(auth), createdById: warehouseTicketCreatedByFilter(auth) });
+      metric("未完结工单", numberOrZero(tickets.summary?.open), tickets.summary?.open ? "warning" : "success");
+      if (numberOrZero(tickets.summary?.urgent)) insight("critical", `${tickets.summary.urgent} 张紧急仓库工单`, "建议优先确认是否已受理，并补齐最新回复。", "#after-sales");
+    }
+  }
+
+  if (route === "#movement" && hasPermission(auth, "movement")) {
+    const movement = movementResponsePayload(auth);
+    metric("缺货", numberOrZero(movement.counts?.stockout), movement.counts?.stockout ? "critical" : "success");
+    metric("补货预警", numberOrZero(movement.counts?.replenish), movement.counts?.replenish ? "warning" : "success");
+    metric("滞销", numberOrZero(movement.counts?.stagnant), movement.counts?.stagnant ? "warning" : "success");
+  }
+
+  if (["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"].includes(route) && hasPermission(auth, "stockup")) {
+    const stockup = buildCurrentStockupPayload({ notify: false, reason: "ai_agent" });
+    metric("备货建议", numberOrZero(stockup.counts?.recommendations));
+    metric("未完成计划", numberOrZero(stockup.counts?.openStockupPlans), stockup.counts?.openStockupPlans ? "warning" : "success");
+    metric("待入库", numberOrZero(stockup.counts?.inboundOrders));
+  }
+
+  if (route === "#miaoshou" && canViewMiaoshouWorkspace(auth)) {
+    const miaoshou = miaoshouAutomation.publicPayload({ taskLimit: 20, eventLimit: 0 });
+    metric("已启用店铺", numberOrZero(miaoshou.counts?.enabledShops));
+    metric("异常店铺", numberOrZero(miaoshou.counts?.invalidShops), miaoshou.counts?.invalidShops ? "warning" : "success");
+    if (miaoshou.config?.lastRunStatus === "failed") insight("critical", "最近一次妙手任务失败", miaoshou.config.lastRunMessage || "请检查妙手连接与任务记录。", "#miaoshou");
+  }
+
+  return { metrics, insights };
+}
+
+function aiAgentContext(auth, route, query = "") {
+  const page = agentPageDefinition(route);
+  let indexed = agentIndexLayer.queryResources({ types: page.resourceTypes, q: query, limit: 36 }, auth);
+  if (query && !indexed.records.length) indexed = agentIndexLayer.queryResources({ types: page.resourceTypes, limit: 36 }, auth);
+  const diagnostics = aiAgentDiagnostics(page.route, auth);
+  const config = tongzhouCanvasAi.publicConfig(auth.user.id);
+  return buildAgentContext({
+    route: page.route,
+    configured: config.configured,
+    records: indexed.records,
+    sources: indexed.sources.map((source) => ({
+      type: source.type,
+      label: source.label,
+      count: source.source_count,
+      updatedAt: source.source_updated_at,
+      complete: source.source_complete,
+      warning: source.source_warning,
+    })),
+    metrics: diagnostics.metrics,
+    insights: diagnostics.insights,
+  });
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -8238,6 +8471,89 @@ const server = http.createServer(async (req, res) => {
         nativeId: linkId,
       });
       sendJson(res, 200, cachedQuickNav);
+      return;
+    }
+
+    if (url.pathname === "/api/ai/agent/context" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 403, { ok: false, message: "使用同舟领航员需要登录并拥有同舟 AI 权限。" });
+        return;
+      }
+      try {
+        const context = aiAgentContext(auth, url.searchParams.get("route") || "#dashboard");
+        sendJson(res, 200, publicAgentContext(context));
+      } catch (error) {
+        sendJson(res, 500, { ok: false, message: error?.message || "读取页面诊断上下文失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/ai/agent/chat" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canUseTongzhouAi(auth)) {
+        sendJson(res, 403, { ok: false, message: "使用同舟领航员需要登录并拥有同舟 AI 权限。" });
+        return;
+      }
+      const actorKey = String(auth.user?.id || auth.user?.username || "anonymous");
+      if (activeAiAgentChats.has(actorKey)) {
+        sendJson(res, 429, { ok: false, message: "上一条问题还在分析，请稍候。" });
+        return;
+      }
+      activeAiAgentChats.set(actorKey, { startedAt: Date.now() });
+      try {
+        const payload = await parseRequestBody(req);
+        const messages = normalizeAgentChatMessages(payload.messages);
+        const latestQuestion = messages.at(-1)?.content || "";
+        const context = aiAgentContext(auth, payload.route || "#dashboard", latestQuestion);
+        if (!context.configured) {
+          sendJson(res, 409, {
+            ok: false,
+            code: "ai_not_configured",
+            message: "请先在“同舟 AI”中保存你自己的同舟画布 API Key 和文本模型；本页规则诊断仍可正常使用。",
+            actions: [{ label: "前往配置", href: "#tongzhou-ai" }],
+          });
+          return;
+        }
+        const startedAt = Date.now();
+        const job = await tongzhouCanvasAi.submitModelTask(auth.user.id, {
+          category: "chat",
+          model: payload.model,
+          messages: [
+            { role: "system", content: buildAgentSystemPrompt(context) },
+            ...messages,
+          ],
+          params: {
+            temperature: 0.35,
+            max_tokens: 1800,
+          },
+        });
+        const completed = await tongzhouCanvasAi.waitForJob(auth.user.id, job.id, { timeoutMs: 180_000 });
+        const answer = String(completed.output?.text || "").trim();
+        if (!answer) throw new Error("模型已完成分析，但没有返回可显示的内容。请换一种问法重试。");
+        appendActionLog(auth, "使用同舟领航员分析页面", "ai_agent_chat", context.page.title, {
+          route: context.page.route,
+          model: completed.model,
+          messageCount: messages.length,
+          questionLength: latestQuestion.length,
+          contextRecordCount: context.records.length,
+          durationMs: Date.now() - startedAt,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          answer,
+          model: completed.model,
+          jobId: completed.id,
+          generatedAt: new Date().toISOString(),
+          page: context.page,
+          actions: context.actions,
+        });
+      } catch (error) {
+        const status = error instanceof TongzhouCanvasApiError ? canvasAiErrorStatus(error) : 400;
+        sendJson(res, status, canvasAiErrorPayload(error, "同舟领航员分析失败。"));
+      } finally {
+        activeAiAgentChats.delete(actorKey);
+      }
       return;
     }
 
