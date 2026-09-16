@@ -8,8 +8,12 @@ const fakeFetch = async (url, options = {}) => {
   let payload;
   if (String(url).endsWith("/v1/seller/info")) {
     payload = { result: { company: { name: "Ozon 测试卖家" } } };
-  } else if (String(url).endsWith("/v1/warehouse/list")) {
-    payload = { result: [{ warehouse_id: 9001, name: "Ozon FBS 莫斯科仓", status: "active", is_rfbs: false }] };
+  } else if (String(url).endsWith("/v2/warehouse/list")) {
+    payload = {
+      cursor: "",
+      has_next: false,
+      warehouses: [{ warehouse_id: 9001, name: "Ozon FBS 莫斯科仓", status: "active", is_rfbs: false }],
+    };
   } else if (String(url).endsWith("/v4/posting/fbs/list")) {
     payload = {
       cursor: "",
@@ -83,6 +87,9 @@ assert.equal(tested.ozonWarehouses[0].id, "9001");
 await service.syncStore(store.id);
 assert.equal(requests.some((request) => request.url.endsWith("/v4/posting/fbs/list")), true, "current v4 FBS list endpoint is used");
 assert.equal(requests.some((request) => request.url.includes("/v3/posting/fbs/list")), false, "deprecated v3 list endpoint is never used");
+assert.equal(requests.some((request) => request.url.endsWith("/v2/warehouse/list")), true, "current v2 warehouse list endpoint is used");
+assert.equal(requests.some((request) => request.url.endsWith("/v1/warehouse/list")), false, "retired v1 warehouse list endpoint is never used");
+assert.equal(requests.find((request) => request.url.endsWith("/v2/warehouse/list")).body.limit, 200);
 assert.deepEqual(requests.find((request) => request.url.endsWith("/v4/posting/fbs/list")).body.filter.status, ["awaiting_packaging", "awaiting_deliver"]);
 assert.equal(requests[0].headers["Client-Id"], "client-123");
 assert.equal(requests[0].headers["Api-Key"], "secret-api-key");

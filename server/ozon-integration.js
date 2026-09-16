@@ -248,6 +248,23 @@ function warehousesFromPayload(payload) {
   })).filter((warehouse) => warehouse.id);
 }
 
+async function fetchOzonWarehouses(fetchImpl, store) {
+  const warehouses = [];
+  let cursor = "";
+  for (let page = 0; page < 10; page += 1) {
+    const response = await ozonRequest(fetchImpl, store, "/v2/warehouse/list", {
+      limit: 200,
+      cursor,
+    });
+    warehouses.push(...warehousesFromPayload(response));
+    const nextCursor = text(response?.cursor);
+    if (!response?.has_next || !nextCursor || nextCursor === cursor) break;
+    cursor = nextCursor;
+    if (page === 9) throw new Error("Ozon 仓库数量超过 2000 个，请联系管理员检查店铺配置。");
+  }
+  return warehouses;
+}
+
 function companyNameFromPayload(payload) {
   const company = firstObject(payload?.company, payload?.result?.company, payload?.result);
   return text(company.name || company.company_name || company.companyName || company.legal_name);
@@ -540,10 +557,10 @@ export function createOzonIntegrationService({
     const store = findStore(storeId);
     const [seller, warehouses] = await Promise.all([
       ozonRequest(fetchImpl, store, "/v1/seller/info", {}),
-      ozonRequest(fetchImpl, store, "/v1/warehouse/list", {}),
+      fetchOzonWarehouses(fetchImpl, store),
     ]);
     store.companyName = companyNameFromPayload(seller) || store.companyName;
-    store.ozonWarehouses = warehousesFromPayload(warehouses);
+    store.ozonWarehouses = warehouses;
     store.lastTestedAt = clock().toISOString();
     store.connectedAt = store.connectedAt || store.lastTestedAt;
     store.lastError = "";
@@ -596,8 +613,7 @@ export function createOzonIntegrationService({
         ...synced,
         ...retainedHistory,
       ].sort((a, b) => text(b.createdAt || b.syncedAt).localeCompare(text(a.createdAt || a.syncedAt))).slice(0, MAX_ORDERS);
-      const warehouseResponse = await ozonRequest(fetchImpl, store, "/v1/warehouse/list", {});
-      store.ozonWarehouses = warehousesFromPayload(warehouseResponse);
+      store.ozonWarehouses = await fetchOzonWarehouses(fetchImpl, store);
       store.lastSyncedAt = clock().toISOString();
       store.lastError = "";
       persist();
