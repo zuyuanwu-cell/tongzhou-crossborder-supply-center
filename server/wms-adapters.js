@@ -737,18 +737,7 @@ export function warehouseOutboundCreateCapability(connection) {
   };
 }
 
-export async function findWarehouseOutboundOrder(connection, referenceNo) {
-  if (connection?.providerId !== "yunwms_ru") {
-    throw new Error("当前仅俄罗斯 YunWMS 支持 Ozon 订单查询。");
-  }
-  const credentials = yunCredentials(connection);
-  if (!hasYunCredentials(credentials)) {
-    throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能查询 Ozon 订单。");
-  }
-  const normalizedReferenceNo = firstText(referenceNo);
-  if (!normalizedReferenceNo) throw new Error("缺少 Ozon 发货单号，不能查询 WMS。");
-
-  const payload = await postYun(credentials, "getOrderByRefCode", { reference_no: normalizedReferenceNo });
+function normalizeYunOutboundOrder(payload, connection, normalizedReferenceNo) {
   const order = payload?.data && typeof payload.data === "object" ? payload.data : {};
   const orderNo = firstText(order.order_code, payload?.order_code);
   const message = firstText(payload?.message, payload?.Error?.errMessage, payload?.error);
@@ -761,23 +750,200 @@ export async function findWarehouseOutboundOrder(connection, referenceNo) {
     : Array.isArray(order.item) ? order.item
       : Array.isArray(order.products) ? order.products : [];
   return {
-    ok: true,
-    found: Boolean(orderNo),
-    providerId: connection.providerId,
-    referenceNo: normalizedReferenceNo,
-    orderNo,
-    status: firstText(order.order_status, order.status),
-    platform: firstText(order.platform),
-    platformShop: firstText(order.platform_shop, order.platformShop),
-    warehouseCode: firstText(order.warehouse_code, order.warehouseCode),
-    shippingMethod: firstText(order.shipping_method, order.shippingMethod),
-    createdAt: firstText(order.date_create, order.created_at),
-    releasedAt: firstText(order.date_release, order.released_at),
-    shippedAt: firstText(order.date_shipping, order.shipped_at),
-    items: items.map((item) => ({
-      sku: firstText(item.product_sku, item.sku, item.reference_no),
-      quantity: Math.max(0, firstNumber(item.quantity, item.qty, item.product_quantity)),
-    })).filter((item) => item.sku),
+    summary: {
+      ok: true,
+      found: Boolean(orderNo),
+      providerId: connection.providerId,
+      referenceNo: normalizedReferenceNo,
+      orderNo,
+      status: firstText(order.order_status, order.status).toUpperCase(),
+      platform: firstText(order.platform),
+      platformShop: firstText(order.platform_shop, order.platformShop),
+      warehouseCode: firstText(order.warehouse_code, order.warehouseCode),
+      shippingMethod: firstText(order.shipping_method, order.shippingMethod),
+      createdAt: firstText(order.date_create, order.created_at),
+      releasedAt: firstText(order.date_release, order.released_at),
+      shippedAt: firstText(order.date_shipping, order.shipped_at),
+      items: items.map((item) => ({
+        sku: firstText(item.product_sku, item.sku, item.reference_no).toUpperCase(),
+        quantity: Math.max(0, firstNumber(item.quantity, item.qty, item.product_quantity)),
+      })).filter((item) => item.sku),
+    },
+    order,
+  };
+}
+
+async function queryYunOutboundOrder(connection, referenceNo) {
+  if (connection?.providerId !== "yunwms_ru") {
+    throw new Error("当前仅俄罗斯 YunWMS 支持 Ozon 订单查询。");
+  }
+  const credentials = yunCredentials(connection);
+  if (!hasYunCredentials(credentials)) {
+    throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能查询 Ozon 订单。");
+  }
+  const normalizedReferenceNo = firstText(referenceNo);
+  if (!normalizedReferenceNo) throw new Error("缺少 Ozon 发货单号，不能查询 WMS。");
+
+  const payload = await postYun(credentials, "getOrderByRefCode", { reference_no: normalizedReferenceNo });
+  return { credentials, ...normalizeYunOutboundOrder(payload, connection, normalizedReferenceNo) };
+}
+
+export async function findWarehouseOutboundOrder(connection, referenceNo) {
+  const result = await queryYunOutboundOrder(connection, referenceNo);
+  return result.summary;
+}
+
+function outboundLineMap(items = []) {
+  const result = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const sku = firstText(item?.sku, item?.product_sku).toUpperCase();
+    const quantity = Math.max(0, firstNumber(item?.quantity, item?.qty, item?.product_quantity));
+    if (!sku || quantity <= 0) continue;
+    result.set(sku, (result.get(sku) || 0) + quantity);
+  }
+  return result;
+}
+
+function outboundLinesMatch(actualItems, expectedItems) {
+  const actual = outboundLineMap(actualItems);
+  const expected = outboundLineMap(expectedItems);
+  if (!actual.size || actual.size !== expected.size) return false;
+  return Array.from(expected).every(([sku, quantity]) => actual.get(sku) === quantity);
+}
+
+function yunOrderRecipient(order = {}, fallback = {}) {
+  return {
+    countryCode: firstText(order.country_code, order.consignee_country_code, fallback.countryCode, "RU").toUpperCase(),
+    province: firstText(order.province, order.consignee_state, fallback.province),
+    city: firstText(order.city, order.consignee_city, fallback.city),
+    district: firstText(order.district, order.consignee_district, fallback.district),
+    address1: firstText(order.address1, order.consignee_address1, fallback.address1),
+    address2: firstText(order.address2, order.consignee_address2, fallback.address2),
+    address3: firstText(order.address3, order.consignee_address3, fallback.address3),
+    zipcode: firstText(order.zipcode, order.consigne_zipcode, order.consignee_zipcode, fallback.zipcode),
+    doorplate: firstText(order.doorplate, order.consignee_doorplate, fallback.doorplate),
+    company: firstText(order.company, order.consignee_company, fallback.company),
+    name: firstText(order.name, order.consignee_name, fallback.name),
+    phone: firstText(order.phone, order.consignee_phone, fallback.phone),
+    cellPhone: firstText(order.cell_phone, order.consignee_cell_phone),
+    phoneExtension: firstText(order.phone_extension),
+    email: firstText(order.email, order.consignee_email, fallback.email),
+  };
+}
+
+/**
+ * Replaces the line items of an existing, unverified YunWMS order and submits
+ * it for warehouse fulfillment. This intentionally never creates a new order:
+ * the Ozon store integration remains the single source of WMS order creation.
+ */
+export async function updateAndVerifyWarehouseOutboundOrder(connection, input = {}) {
+  const referenceNo = firstText(input.referenceNo);
+  if (!referenceNo) throw new Error("缺少 Ozon 发货单号，不能设定 SKU 并审单。");
+  const lines = validateCreateLines(input);
+  const queried = await queryYunOutboundOrder(connection, referenceNo);
+  const current = queried.summary;
+  if (!current.found || !current.orderNo) return { ...current, updated: false, verified: false };
+
+  const platform = firstText(current.platform).toUpperCase();
+  if (platform && platform !== "OZON") {
+    throw new Error(`WMS 返回的平台为 ${current.platform}，与 Ozon 不一致，已停止审单。`);
+  }
+  const expectedShop = firstText(input.platformShop);
+  if (expectedShop && current.platformShop && expectedShop !== current.platformShop) {
+    throw new Error(`WMS 店铺 ${current.platformShop} 与路由店铺 ${expectedShop} 不一致，已停止审单。`);
+  }
+  const expectedWarehouseCode = firstText(input.warehouseCode, connection?.warehouseCode, connection?.resolvedWarehouseId);
+  if (expectedWarehouseCode && current.warehouseCode && expectedWarehouseCode !== current.warehouseCode) {
+    throw new Error(`WMS 仓库 ${current.warehouseCode} 与路由仓库 ${expectedWarehouseCode} 不一致，已停止审单。`);
+  }
+
+  const status = firstText(current.status).toUpperCase();
+  const alreadyReleased = ["W", "D"].includes(status);
+  if (alreadyReleased) {
+    if (!outboundLinesMatch(current.items, lines)) {
+      throw new Error(`WMS 订单已${status === "D" ? "发货" : "审核到待发货"}，但 SKU / 数量与中台不一致，不能再自动修改。`);
+    }
+    return { ...current, updated: false, verified: true, alreadyVerified: true };
+  }
+  if (status !== "C") {
+    const label = { H: "暂存", N: "异常订单", P: "问题件", X: "已作废" }[status] || status || "未知";
+    throw new Error(`WMS 订单当前状态为“${label}”，仅“待审核”订单允许自动设定 SKU 并审单。`);
+  }
+
+  const recipient = yunOrderRecipient(queried.order, input.recipient);
+  const missing = [
+    [recipient.countryCode, "国家"],
+    [recipient.address1, "详细地址"],
+    [recipient.zipcode, "邮编"],
+    [recipient.name, "收件人"],
+  ].filter(([value]) => !value).map(([, label]) => label);
+  if (missing.length) {
+    throw new Error(`WMS 原订单缺少${missing.join("、")}，无法安全覆盖商品明细，请先检查店铺自动拉单数据。`);
+  }
+  const shippingMethod = firstText(input.shippingMethod, current.shippingMethod);
+  if (!expectedWarehouseCode) throw new Error("未识别俄罗斯仓库代码，已停止审单。");
+  if (!shippingMethod) throw new Error("未配置 WMS 物流方式代码，已停止审单。");
+
+  const payload = await postYun(queried.credentials, "modifyOrder", {
+    order_code: current.orderNo,
+    reference_no: referenceNo,
+    platform: firstText(current.platform, "OZON"),
+    warehouse_code: expectedWarehouseCode,
+    shipping_method: shippingMethod,
+    country_code: recipient.countryCode,
+    province: recipient.province,
+    city: recipient.city,
+    district: recipient.district,
+    address1: recipient.address1,
+    address2: recipient.address2,
+    address3: recipient.address3,
+    zipcode: recipient.zipcode,
+    doorplate: recipient.doorplate,
+    company: recipient.company,
+    name: recipient.name,
+    phone: recipient.phone,
+    cell_phone: recipient.cellPhone,
+    phone_extension: recipient.phoneExtension,
+    email: recipient.email,
+    platform_shop: firstText(current.platformShop, expectedShop),
+    order_desc: firstText(queried.order.order_desc, input.description, `Ozon ${referenceNo}`).slice(0, 500),
+    remark: firstText(queried.order.remark, input.remark, "同舟中台设定 SKU 并审单").slice(0, 500),
+    verify: 1,
+    forceVerify: 0,
+    async: 0,
+    items: lines.map((line) => ({
+      product_sku: line.sku,
+      quantity: line.quantity,
+      product_name: firstText(line.productName),
+      product_name_en: firstText(line.productName),
+      product_declared_value: firstNumber(line.unitPrice),
+      reference_no: firstText(line.offerId),
+    })),
+  });
+  if (String(payload?.ask || "").toLowerCase() !== "success") {
+    throw new Error(`YunWMS 设定 SKU 并审单失败：${firstText(payload?.message, payload?.Error?.errMessage, payload?.error) || "未知错误"}`);
+  }
+
+  let confirmed = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 200));
+    const next = await queryYunOutboundOrder(connection, referenceNo);
+    confirmed = next.summary;
+    if (["W", "D"].includes(firstText(confirmed.status).toUpperCase())) break;
+  }
+  if (!confirmed?.found || confirmed.orderNo !== current.orderNo) {
+    throw new Error("WMS 已接收审单请求，但回查未找到同一张订单；系统已停止继续操作，请勿重复点击。");
+  }
+  const linesConfirmed = outboundLinesMatch(confirmed.items, lines);
+  const verified = ["W", "D"].includes(firstText(confirmed.status).toUpperCase());
+  if (verified && !linesConfirmed) {
+    throw new Error("WMS 已完成审单，但回查的 SKU / 数量与中台不一致，请勿重复点击并联系管理员核对。");
+  }
+  return {
+    ...confirmed,
+    updated: true,
+    verified: verified && linesConfirmed,
+    pendingConfirmation: !verified || !linesConfirmed,
   };
 }
 

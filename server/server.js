@@ -27,7 +27,7 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -248,6 +248,7 @@ const ozonIntegrationService = createOzonIntegrationService({
   warehouseConnections: () => warehouseConnections,
   inventory: () => cachedWarehouseSync.inventory || [],
   lookupWmsOrder: findWarehouseOutboundOrder,
+  verifyWmsOrder: updateAndVerifyWarehouseOutboundOrder,
 });
 for (const ticket of afterSalesService.list().tickets) {
   if (ticket.warehouseId) continue;
@@ -7229,7 +7230,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const ozonOrderActionMatch = url.pathname.match(/^\/api\/ozon\/orders\/([^/]+)\/(review|push)$/);
+    const ozonOrderActionMatch = url.pathname.match(/^\/api\/ozon\/orders\/([^/]+)\/(review|push|verify-wms)$/);
     if (ozonOrderActionMatch && req.method === "POST") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "ozon_order_push")) {
@@ -7241,8 +7242,13 @@ const server = http.createServer(async (req, res) => {
       const requestPayload = action === "review" ? await parseRequestBody(req) : {};
       const order = action === "review"
         ? ozonIntegrationService.reviewOrder(postingNumber, requestPayload, auth.user)
-        : await ozonIntegrationService.pushOrder(postingNumber, auth.user);
-      appendActionLog(auth, action === "review" ? "审核 Ozon 订单" : "查询并关联 Ozon WMS 订单", "ozon_order", postingNumber, { warehouseId: order.targetWarehouseId, wmsOrderNo: order.push?.wmsOrderNo || "", status: order.push?.status || "" });
+        : action === "verify-wms"
+          ? await ozonIntegrationService.verifyOrderInWms(postingNumber, auth.user)
+          : await ozonIntegrationService.pushOrder(postingNumber, auth.user);
+      const actionLabel = action === "review" ? "审核 Ozon 订单"
+        : action === "verify-wms" ? "设定 Ozon WMS SKU 并审单"
+          : "查询并关联 Ozon WMS 订单";
+      appendActionLog(auth, actionLabel, "ozon_order", postingNumber, { warehouseId: order.targetWarehouseId, wmsOrderNo: order.push?.wmsOrderNo || "", status: order.push?.status || "" });
       sendJson(res, 200, { ok: true, order, payload: ozonIntegrationService.payload(auth.user) });
       return;
     }

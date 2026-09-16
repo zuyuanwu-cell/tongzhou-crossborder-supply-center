@@ -35,6 +35,7 @@ import {
   saveOzonWarehouseRoute,
   syncOzonStore,
   testOzonStore,
+  verifyOzonOrderInWms,
 } from "./api";
 
 function hasPermission(user: AuthUser, permission: string) {
@@ -59,7 +60,10 @@ function statusLabel(status: string) {
 
 function pushStatus(order: OzonOrder) {
   if (order.linked) return { label: "已关联 WMS", tone: "success" };
-  if (order.push?.status === "failed") return { label: "查询失败", tone: "danger" };
+  if (order.push?.status === "failed") return { label: "处理失败", tone: "danger" };
+  if (order.push?.status === "configuring") return { label: "正在设定并审单", tone: "info" };
+  if (order.push?.status === "verification_pending") return { label: "WMS 状态确认中", tone: "warning" };
+  if (order.push?.status === "ready_for_verification") return { label: "待设定 SKU 并审单", tone: "warning" };
   if (order.push?.status === "checking") return { label: "查询中", tone: "info" };
   if (order.push?.status === "waiting_sync") return { label: "等待 WMS 同步", tone: "warning" };
   if (order.workflowStage === "reconcile") return { label: "待关联 WMS", tone: "info" };
@@ -207,18 +211,29 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
     } finally { setBusy(""); }
   }
 
-  async function orderAction(order: OzonOrder, action: "review" | "push") {
-    if (action === "push" && !window.confirm(`确认查询 ${order.postingNumber} 在“${order.targetWarehouseName}”的 WMS 订单？本操作只会精确查单并关联，不会重复创建出库单。`)) return;
+  async function orderAction(order: OzonOrder, action: "review" | "verify" | "query") {
+    if (action === "verify") {
+      const lines = order.products.map((product) => `${product.wmsSku || "未映射"} × ${product.quantity}`).join("\n");
+      if (!window.confirm(`确认处理 ${order.postingNumber}？\n\n目标仓：${order.targetWarehouseName}\n商品：\n${lines}\n\n系统只处理 WMS 已有订单，并将其审核到待发货；审核成功后不能再修改。`)) return;
+    }
     setBusy(`${action}:${order.postingNumber}`);
     setError("");
     setMessage("");
     try {
-      const result = action === "review" ? await reviewOzonOrder(order.postingNumber) : await pushOzonOrder(order.postingNumber);
+      const result = action === "review" ? await reviewOzonOrder(order.postingNumber)
+        : action === "query" ? await pushOzonOrder(order.postingNumber)
+          : await verifyOzonOrderInWms(order.postingNumber);
       accept(result.payload, action === "review"
         ? `${order.postingNumber} 审核通过，正在等待 WMS 自动拉单。`
+        : action === "query"
+          ? result.order.linked
+            ? `${order.postingNumber} 已确认到待发货，WMS 单号：${result.order.push?.wmsOrderNo}。`
+            : `${order.postingNumber} 的 WMS 状态尚未确认，系统会继续自动检查。`
         : result.order.linked
-          ? `${order.postingNumber} 已关联 WMS 单号：${result.order.push?.wmsOrderNo}。`
-          : `${order.postingNumber} 暂未在 WMS 找到，系统会继续自动检查。`);
+          ? `${order.postingNumber} 已设定 SKU 并审核到待发货，WMS 单号：${result.order.push?.wmsOrderNo}。`
+          : result.order.push?.status === "verification_pending"
+            ? `${order.postingNumber} 的 WMS 已接收审单请求，正在确认最终状态，请勿重复点击。`
+            : `${order.postingNumber} 暂未被 WMS 拉取，本次没有执行任何写入；系统会继续自动检查。`);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "订单操作失败。");
     } finally { setBusy(""); }
@@ -270,7 +285,7 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
 
   return <div className="ozon-center">
     <section className="ozon-hero">
-      <div><p className="eyebrow">OZON SELLER CONTROL</p><h2>Ozon 订单审核与 WMS 关联</h2><span>店铺独立授权，Ozon 仓精确路由到俄罗斯1仓 / 2仓；WMS 自动拉单，中台负责审核、查重和关联。</span></div>
+      <div><p className="eyebrow">OZON SELLER CONTROL</p><h2>Ozon 订单审核与 WMS 关联</h2><span>店铺独立授权，Ozon 仓精确路由到俄罗斯1仓 / 2仓；中台可设定 WMS SKU 并审核到待发货。</span></div>
       <div className="ozon-hero-mark"><span>OZON</span><small>Seller API</small></div>
     </section>
 
@@ -292,7 +307,7 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
     {loading ? <div className="ozon-empty"><LoaderCircle className="spinning" />正在读取 Ozon 订单中心…</div> : null}
 
     {!loading && tab === "orders" ? <section className="ozon-panel">
-      <header className="ozon-panel-head"><div><p className="eyebrow">REVIEW QUEUE</p><h3>待审核与 WMS 关联</h3><span>后台每 3 分钟只同步待配货 / 待交运订单；待交运订单只查询 WMS 已有单据，绝不重复创建。</span></div><div className="ozon-sync-actions">{payload?.stores.filter((store) => store.enabled).map((store) => <button key={store.id} onClick={() => void storeAction(store, "sync")} disabled={Boolean(busy)}>{busy === `sync:${store.id}` ? <LoaderCircle className="spinning" size={15} /> : <RefreshCw size={15} />}立即同步 {store.name}</button>)}</div></header>
+      <header className="ozon-panel-head"><div><p className="eyebrow">REVIEW QUEUE</p><h3>待审核与 WMS 关联</h3><span>后台每 3 分钟只读检查 WMS；只有人工确认“设定 SKU 并审单”后才会写入，且绝不重复创建订单。</span></div><div className="ozon-sync-actions">{payload?.stores.filter((store) => store.enabled).map((store) => <button key={store.id} onClick={() => void storeAction(store, "sync")} disabled={Boolean(busy)}>{busy === `sync:${store.id}` ? <LoaderCircle className="spinning" size={15} /> : <RefreshCw size={15} />}立即同步 {store.name}</button>)}</div></header>
       <div className="ozon-toolbar"><label><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索发货单号、订单号或 SKU" /></label><select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}><option value="">全部店铺</option>{payload?.stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="pending">待处理</option><option value="blocked">待补配置</option><option value="approved">已审核</option><option value="pushed">已关联 WMS</option><option value="all">全部</option></select></div>
       <div className="ozon-order-list">
         {!visibleOrders.length ? <div className="ozon-empty"><PackageCheck />当前筛选下没有订单。{payload?.stores.length ? "可点击右上角同步店铺。" : "请先到“店铺授权”添加 Ozon 店铺。"}</div> : null}
@@ -302,9 +317,9 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
             <header><div><span className={`ozon-badge ${state.tone}`}>{state.label}</span><strong>{order.postingNumber}</strong><small>{order.storeName} · Ozon {statusLabel(order.status)}</small></div><div><small>最晚处理</small><strong>{dateTime(order.shipmentAt)}</strong></div></header>
             <div className="ozon-order-route"><span><Store size={15} />{order.ozonWarehouseName || order.ozonWarehouseId || "未识别 Ozon 仓"}</span><ChevronRight size={16} /><span className={order.targetWarehouseId ? "done" : "missing"}><Warehouse size={15} />{order.targetWarehouseName || "未绑定俄罗斯仓"}</span><span>{order.deliverySchema || "FBS"}</span></div>
             <div className="ozon-product-lines">{order.products.map((product) => <div key={`${product.offerId}:${product.ozonSku}`}><span><strong>{product.name || product.offerId}</strong><small>Ozon货号：{product.offerId || "—"} · SKU：{product.ozonSku || "—"}</small></span><span><small>目标仓 SKU</small><strong className={product.mapped ? "mapped" : "missing"}>{product.wmsSku || "未映射"}</strong></span><span><small>数量 / 可用</small><strong>{product.quantity} / {order.inventoryChecked ? product.availableQty : "待同步"}</strong></span></div>)}</div>
-            {order.issues.length ? <div className="ozon-issues"><AlertTriangle size={16} /><div>{order.issues.map((issue) => <span key={issue}>{issue}</span>)}</div></div> : <div className="ozon-ready"><CheckCircle2 size={16} />{order.workflowStage === "reconcile" ? "仓库路由已就绪，可精确查询 WMS" : "仓库路由、SKU 与库存校验通过"}</div>}
+            {order.issues.length ? <div className="ozon-issues"><AlertTriangle size={16} /><div>{order.issues.map((issue) => <span key={issue}>{issue}</span>)}</div></div> : <div className="ozon-ready"><CheckCircle2 size={16} />{order.workflowStage === "reconcile" ? "仓库路由与 SKU 已就绪，可设定 WMS SKU 并审单" : "仓库路由、SKU 与库存校验通过"}</div>}
             <div className="ozon-ready"><CheckCircle2 size={16} />{order.workflowMessage}</div>
-            <footer><div>{order.linked ? <><strong>WMS：{order.push?.wmsOrderNo}</strong><small>已存在订单，{order.push?.platformShop ? `店铺 ${order.push.platformShop}，` : ""}未重复创建 · {dateTime(order.push?.linkedAt || order.push?.checkedAt)}</small></> : order.push?.status === "waiting_sync" ? <><strong>等待 WMS 自动拉单</strong><small>最近检查 {dateTime(order.push.checkedAt)}</small></> : order.review?.status === "approved" ? <><strong>审核人：{order.review.reviewedBy}</strong><small>{dateTime(order.review.reviewedAt)}</small></> : <><strong>{order.orderNumber || order.orderId}</strong><small>同步于 {dateTime(order.syncedAt)}</small></>}</div>{canPush && !order.linked ? <div className="ozon-order-actions">{order.workflowStage === "review" && order.review?.status !== "approved" ? <button onClick={() => void orderAction(order, "review")} disabled={Boolean(busy) || !order.ready}>{busy === `review:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <ShieldCheck size={15} />}审核通过</button> : <button className="primary" onClick={() => void orderAction(order, "push")} disabled={Boolean(busy) || !order.reconcileReady}>{busy === `push:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <Send size={15} />}{order.push?.status === "waiting_sync" || order.push?.status === "failed" ? "重新查询 WMS" : "查询并关联 WMS"}</button>}</div> : null}</footer>
+            <footer><div>{order.linked ? <><strong>WMS：{order.push?.wmsOrderNo}</strong><small>SKU 已确认，状态已到待发货；{order.push?.platformShop ? `店铺 ${order.push.platformShop} · ` : ""}{dateTime(order.push?.linkedAt || order.push?.checkedAt)}</small></> : order.push?.status === "verification_pending" ? <><strong>WMS 已接收审单请求</strong><small>正在回查待发货状态，请勿重复操作 · {dateTime(order.push.checkedAt)}</small></> : order.push?.status === "ready_for_verification" ? <><strong>WMS：{order.push.wmsOrderNo}</strong><small>订单已拉取，等待设定 SKU 并审单</small></> : order.push?.status === "waiting_sync" ? <><strong>等待 WMS 自动拉单</strong><small>最近检查 {dateTime(order.push.checkedAt)}</small></> : order.review?.status === "approved" ? <><strong>审核人：{order.review.reviewedBy}</strong><small>{dateTime(order.review.reviewedAt)}</small></> : <><strong>{order.orderNumber || order.orderId}</strong><small>同步于 {dateTime(order.syncedAt)}</small></>}</div>{canPush && !order.linked ? <div className="ozon-order-actions">{order.workflowStage === "review" && order.review?.status !== "approved" ? <button onClick={() => void orderAction(order, "review")} disabled={Boolean(busy) || !order.ready}>{busy === `review:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <ShieldCheck size={15} />}审核通过</button> : order.push?.status === "verification_pending" ? <button onClick={() => void orderAction(order, "query")} disabled={Boolean(busy)}>{busy === `query:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <RefreshCw size={15} />}查询审单结果</button> : <button className="primary" onClick={() => void orderAction(order, "verify")} disabled={Boolean(busy) || !order.reconcileReady || Boolean(order.issues.length)}>{busy === `verify:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <Send size={15} />}{order.push?.status === "waiting_sync" || order.push?.status === "failed" ? "重新查询并审单" : "设定 SKU 并审单"}</button>}</div> : null}</footer>
           </article>;
         })}
       </div>

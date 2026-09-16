@@ -4439,6 +4439,10 @@ export function pushOzonOrder(postingNumber: string) {
   return requestJson<{ ok: boolean; order: OzonOrder; payload: OzonPayload }>(`/api/ozon/orders/${encodeURIComponent(postingNumber)}/push`, { method: "POST" });
 }
 
+export function verifyOzonOrderInWms(postingNumber: string) {
+  return requestJson<{ ok: boolean; order: OzonOrder; payload: OzonPayload }>(`/api/ozon/orders/${encodeURIComponent(postingNumber)}/verify-wms`, { method: "POST" });
+}
+
 export function fetchCurrentUser() {
   return requestJson<{ ok: boolean; user: AuthUser }>("/api/me");
 }

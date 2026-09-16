@@ -62,6 +62,7 @@ const warehouses = [{
 const inventory = [{ warehouseId: "ru-wh-1", sku: "TZKJ-RU-0016", availableQty: 25 }];
 let persisted = null;
 const lookupCount = new Map();
+const verificationCalls = [];
 const service = createOzonIntegrationService({
   initialState: {},
   save: (state) => { persisted = JSON.parse(JSON.stringify(state)); },
@@ -72,14 +73,31 @@ const service = createOzonIntegrationService({
     const count = (lookupCount.get(referenceNo) || 0) + 1;
     lookupCount.set(referenceNo, count);
     const found = referenceNo.endsWith("0002-1") || count > 1;
+    const status = referenceNo.endsWith("0002-1") ? "D" : "C";
     return {
       found,
       orderNo: found ? `WMS-${referenceNo}` : "",
-      status: found ? "D" : "",
+      status: found ? status : "",
       platform: found ? "OZON" : "",
       platformShop: found ? "FXYZ_RUOZ6005_5610463" : "",
       warehouseCode: found ? "MX001" : "",
       shippingMethod: found ? "MXZFH" : "",
+      items: found ? [{ sku: referenceNo.endsWith("0002-1") ? "TZKJ-RU-0016" : "5540761202", quantity: 1 }] : [],
+    };
+  },
+  verifyWmsOrder: async (_warehouse, input) => {
+    verificationCalls.push(input);
+    return {
+      found: true,
+      orderNo: `WMS-${input.referenceNo}`,
+      status: "W",
+      platform: "OZON",
+      platformShop: "FXYZ_RUOZ6005_5610463",
+      warehouseCode: "MX001",
+      shippingMethod: "MXZFH",
+      items: input.lines.map((line) => ({ sku: line.sku, quantity: line.quantity })),
+      updated: true,
+      verified: true,
     };
   },
   clock: () => new Date("2026-09-15T08:00:00.000Z"),
@@ -133,14 +151,23 @@ const waiting = await service.pushOrder(reviewOrder.postingNumber, scopedOperato
 assert.equal(waiting.push.status, "waiting_sync");
 assert.equal(waiting.push.wmsOrderNo, "");
 const reconciliation = await service.reconcileWaitingOrders({ storeId: store.id }, admin);
-assert.deepEqual(reconciliation, { checked: 1, linked: 1, waiting: 0, failed: 0 });
-const linked = service.payload(admin).orders.find((order) => order.postingNumber === reviewOrder.postingNumber);
+assert.deepEqual(reconciliation, { checked: 1, linked: 0, waiting: 1, failed: 0 });
+const readyForVerification = service.payload(admin).orders.find((order) => order.postingNumber === reviewOrder.postingNumber);
+assert.equal(readyForVerification.linked, false);
+assert.equal(readyForVerification.push.status, "ready_for_verification");
+assert.equal(readyForVerification.push.wmsStatus, "C");
+const linked = await service.verifyOrderInWms(reviewOrder.postingNumber, scopedOperator);
 assert.equal(linked.push.status, "linked");
 assert.equal(linked.push.wmsOrderNo, `WMS-${reviewOrder.postingNumber}`);
 assert.equal(linked.push.platformShop, "FXYZ_RUOZ6005_5610463");
+assert.equal(linked.push.wmsStatus, "W");
+assert.equal(verificationCalls.length, 1);
+assert.deepEqual(verificationCalls[0].lines.map((line) => ({ sku: line.sku, quantity: line.quantity })), [{ sku: "TZKJ-RU-0016", quantity: 1 }]);
 assert.equal(lookupCount.get(reviewOrder.postingNumber), 2);
 await service.pushOrder(reviewOrder.postingNumber, scopedOperator);
 assert.equal(lookupCount.get(reviewOrder.postingNumber), 2, "linked orders must not be queried or created again");
+await service.verifyOrderInWms(reviewOrder.postingNumber, scopedOperator);
+assert.equal(verificationCalls.length, 1, "verified orders must not be submitted twice");
 
 const directLink = await service.pushOrder(reconcileOrder.postingNumber, scopedOperator);
 assert.equal(directLink.linked, true, "awaiting_deliver orders can be reconciled without duplicate review");

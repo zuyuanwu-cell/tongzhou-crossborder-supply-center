@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createWarehouseOutboundOrder, findWarehouseOutboundOrder, warehouseOutboundCreateCapability } from "../server/wms-adapters.js";
+import { createWarehouseOutboundOrder, findWarehouseOutboundOrder, updateAndVerifyWarehouseOutboundOrder, warehouseOutboundCreateCapability } from "../server/wms-adapters.js";
 
 function xmlResponse(payload) {
   const escaped = JSON.stringify(payload)
@@ -104,6 +104,125 @@ try {
   assert.equal(linked.platformShop, "FXYZ_RUOZ6005_5610463");
   assert.deepEqual(linked.items, [{ sku: "TZKJ-RU-0016", quantity: 1 }]);
   assert.deepEqual(requests.map((request) => request.service), ["getOrderByRefCode"], "read-only lookup must never call createOrder");
+
+  requests.length = 0;
+  let verificationLookup = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    const request = extractRequest(String(options.body || ""));
+    requests.push(request);
+    if (request.service === "modifyOrder") {
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", order_code: "RU-OZON-REVIEW" }) };
+    }
+    verificationLookup += 1;
+    const verified = verificationLookup > 1;
+    return { ok: true, status: 200, text: async () => xmlResponse({
+      ask: "Success",
+      data: {
+        order_code: "RU-OZON-REVIEW",
+        reference_no: "0190626839-0049-1",
+        order_status: verified ? "W" : "C",
+        platform: "OZON",
+        platform_shop: "FXYZ_RUOZ6005_5610463",
+        warehouse_code: "MX001",
+        shipping_method: "MXZFH",
+        consignee_country_code: "RU",
+        consignee_state: "Moscow",
+        consignee_city: "Moscow",
+        consignee_address1: "Ozon FBS address",
+        consigne_zipcode: "101000",
+        consignee_name: "Ozon buyer",
+        consignee_phone: "+79990000000",
+        items: [{ product_sku: verified ? "TZKJ-RU-0016" : "5540761202", quantity: 1 }],
+      },
+    }) };
+  };
+  const verified = await updateAndVerifyWarehouseOutboundOrder(connection, {
+    referenceNo: "0190626839-0049-1",
+    platformShop: "FXYZ_RUOZ6005_5610463",
+    warehouseCode: "MX001",
+    shippingMethod: "MXZFH",
+    lines: [{ sku: "TZKJ-RU-0016", quantity: 1, productName: "测试商品", offerId: "TZKJ-RU-0016*1", unitPrice: 799 }],
+  });
+  assert.equal(verified.verified, true);
+  assert.equal(verified.status, "W");
+  assert.deepEqual(requests.map((request) => request.service), ["getOrderByRefCode", "modifyOrder", "getOrderByRefCode"]);
+  assert.deepEqual(requests[1].params.items, [{
+    product_sku: "TZKJ-RU-0016",
+    quantity: 1,
+    product_name: "测试商品",
+    product_name_en: "测试商品",
+    product_declared_value: 799,
+    reference_no: "TZKJ-RU-0016*1",
+  }]);
+  assert.equal(requests[1].params.verify, 1);
+  assert.equal(requests[1].params.forceVerify, 0);
+  assert.equal(requests[1].params.warehouse_code, "MX001");
+  assert.equal(requests[1].params.shipping_method, "MXZFH");
+
+  requests.length = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    requests.push(extractRequest(String(options.body || "")));
+    return { ok: true, status: 200, text: async () => xmlResponse({
+      ask: "Success",
+      data: {
+        order_code: "RU-OZON-READY",
+        order_status: "W",
+        platform: "OZON",
+        platform_shop: "FXYZ_RUOZ6005_5610463",
+        warehouse_code: "MX001",
+        shipping_method: "MXZFH",
+        items: [{ product_sku: "TZKJ-RU-0016", quantity: 1 }],
+      },
+    }) };
+  };
+  const alreadyVerified = await updateAndVerifyWarehouseOutboundOrder(connection, {
+    referenceNo: "0190626839-0049-1",
+    platformShop: "FXYZ_RUOZ6005_5610463",
+    warehouseCode: "MX001",
+    shippingMethod: "MXZFH",
+    lines: [{ sku: "TZKJ-RU-0016", quantity: 1 }],
+  });
+  assert.equal(alreadyVerified.alreadyVerified, true);
+  assert.deepEqual(requests.map((request) => request.service), ["getOrderByRefCode"], "already verified orders must never call modifyOrder");
+
+  requests.length = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    const request = extractRequest(String(options.body || ""));
+    requests.push(request);
+    if (request.service === "modifyOrder") {
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", order_code: "RU-OZON-PENDING" }) };
+    }
+    return { ok: true, status: 200, text: async () => xmlResponse({
+      ask: "Success",
+      data: {
+        order_code: "RU-OZON-PENDING",
+        reference_no: "0190626839-0049-2",
+        order_status: "C",
+        platform: "OZON",
+        platform_shop: "FXYZ_RUOZ6005_5610463",
+        warehouse_code: "MX001",
+        shipping_method: "MXZFH",
+        consignee_country_code: "RU",
+        consignee_city: "Moscow",
+        consignee_address1: "Ozon FBS address",
+        consigne_zipcode: "101000",
+        consignee_name: "Ozon buyer",
+        consignee_phone: "+79990000000",
+        items: [{ product_sku: "5540761202", quantity: 1 }],
+      },
+    }) };
+  };
+  const pending = await updateAndVerifyWarehouseOutboundOrder(connection, {
+    referenceNo: "0190626839-0049-2",
+    platformShop: "FXYZ_RUOZ6005_5610463",
+    warehouseCode: "MX001",
+    shippingMethod: "MXZFH",
+    lines: [{ sku: "TZKJ-RU-0016", quantity: 1 }],
+  });
+  assert.equal(pending.verified, false);
+  assert.equal(pending.pendingConfirmation, true);
+  assert.equal(requests.filter((request) => request.service === "modifyOrder").length, 1, "a delayed WMS status must not trigger repeated writes");
+  assert.equal(requests.filter((request) => request.service === "getOrderByRefCode").length, 4, "the adapter should stop after bounded confirmation checks");
 
   requests.length = 0;
   globalThis.fetch = async (_url, options = {}) => {
