@@ -389,6 +389,14 @@ export function isAfterSalesTicketWithinScope(ticket, dataScopes = {}) {
   return true;
 }
 
+export function isAfterSalesOrderWithinScope(order, dataScopes = {}) {
+  // A freshly synchronized source order has not been assigned to a processing
+  // warehouse yet. Warehouse scope is enforced through the selectable
+  // warehouse list and again when the ticket is submitted; applying it here
+  // would reject every scoped operator because order.warehouseId is empty.
+  return isAfterSalesTicketWithinScope(order, { ...dataScopes, warehouseIds: [] });
+}
+
 function summaryFor(tickets) {
   return tickets.reduce((summary, ticket) => {
     summary.total += 1;
@@ -932,6 +940,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
         : null;
     },
     inScope(ticket, dataScopes = {}) { return isAfterSalesTicketWithinScope(ticket, dataScopes); },
+    orderInScope(order, dataScopes = {}) { return isAfterSalesOrderWithinScope(order, dataScopes); },
     canAccessUpload(id, dataScopes = {}, actorId = "", createdById = "") {
       const upload = store.getUpload(id);
       if (!upload) return false;

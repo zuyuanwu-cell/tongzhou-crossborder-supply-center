@@ -7467,7 +7467,11 @@ const server = http.createServer(async (req, res) => {
           result.order.warehouseId = warehouseOptions[0].id;
           result.order.warehouseName = warehouseOptions[0].name;
         }
-        if (!afterSalesService.inScope({
+        if (!warehouseOptions.length) {
+          sendJson(res, 403, { ok: false, message: "当前账号没有可用于处理该订单的仓库。" });
+          return;
+        }
+        if (!afterSalesService.orderInScope({
           site: result.order?.site,
           customer: result.order?.customer,
           originalItems: result.order?.items,

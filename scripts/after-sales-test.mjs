@@ -6,6 +6,7 @@ import {
   calculateAfterSalesLiability,
   createAfterSalesService,
   formatAfterSalesRecipientInfo,
+  isAfterSalesOrderWithinScope,
   isAfterSalesTicketWithinScope,
   resolveAfterSalesResponsibility,
 } from "../server/after-sales.js";
@@ -231,6 +232,18 @@ try {
     warehouseId: "",
     originalItems: [{ sku: "TZKJ-A", affectedQty: 1 }],
   }, { warehouseIds: ["warehouse-id"] }), false, "unassigned legacy tickets must not leak into a scoped warehouse account");
+  assert.equal(isAfterSalesOrderWithinScope({
+    site: "ID",
+    originalItems: [{ sku: "TZKJ-A", affectedQty: 1 }],
+  }, { warehouseIds: ["warehouse-id"] }), true, "source orders may be synchronized before the operator selects an allowed warehouse");
+  assert.equal(isAfterSalesOrderWithinScope({
+    site: "MY",
+    originalItems: [{ sku: "TZKJ-A", affectedQty: 1 }],
+  }, { countries: ["ID"], warehouseIds: ["warehouse-id"] }), false, "country scope must still be enforced before warehouse selection");
+  assert.equal(isAfterSalesOrderWithinScope({
+    site: "ID",
+    originalItems: [{ sku: "TZKJ-B", affectedQty: 1 }],
+  }, { skus: ["TZKJ-A"], warehouseIds: ["warehouse-id"] }), false, "SKU scope must still be enforced before warehouse selection");
 
   console.log("after-sales workflow tests passed");
 } finally {
