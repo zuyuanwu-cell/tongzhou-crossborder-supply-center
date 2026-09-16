@@ -35,6 +35,9 @@ const permissionDefinitions = [
   ["miaoshou_listing", "妙手 AI 上架", "妙手 ERP"],
   ["miaoshou_automation", "妙手自动运单", "妙手 ERP"],
   ["miaoshou_config", "妙手连接配置", "妙手 ERP"],
+  ["ozon_orders", "Ozon 订单查看与同步", "Ozon 订单"],
+  ["ozon_order_push", "Ozon 订单审核推单", "Ozon 订单"],
+  ["ozon_config", "Ozon 店铺与映射配置", "Ozon 订单"],
   ["warehouses", "仓库授权", "系统管理"],
   ["users", "用户与权限", "系统管理"],
   ["notifications", "企业微信通知", "系统管理"],
@@ -50,6 +53,7 @@ const MIAOSHOU_PERMISSION_KEYS = Object.freeze([
   "miaoshou_automation",
   "miaoshou_config",
 ]);
+const OZON_PERMISSION_KEYS = Object.freeze(["ozon_orders", "ozon_order_push", "ozon_config"]);
 export const PERMISSION_KEYS = Object.freeze([...PERMISSION_CATALOG.map((item) => item.key), ...LEGACY_PERMISSION_KEYS]);
 const permissionKeySet = new Set(PERMISSION_KEYS);
 
@@ -71,6 +75,8 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "tongzhou_ai",
     "api_access",
     "miaoshou_alias",
+    "ozon_orders",
+    "ozon_order_push",
   ]),
   warehouse: Object.freeze([
     "after_sales_warehouse",
@@ -97,6 +103,7 @@ const PERFORMANCE_COST_DENIED_ROLES = new Set(["distributor", "guest"]);
 const USER_MANAGEMENT_DENIED_ROLES = new Set(["direct", "distributor", "guest"]);
 const WAREHOUSE_COLLABORATION_DENIED_ROLES = new Set(["distributor", "guest"]);
 const MIAOSHOU_DENIED_ROLES = new Set(["distributor", "guest"]);
+const OZON_DENIED_ROLES = new Set(["distributor", "guest"]);
 const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse", "warehouse_ticket_warehouse"]);
 
 function roleOf(user) {
@@ -159,6 +166,9 @@ export function effectivePermissions(user) {
     effective.delete("miaoshou");
     for (const permission of MIAOSHOU_PERMISSION_KEYS) effective.delete(permission);
   }
+  if (OZON_DENIED_ROLES.has(role)) {
+    for (const permission of OZON_PERMISSION_KEYS) effective.delete(permission);
+  }
   if (role === "warehouse") {
     for (const permission of [...effective]) {
       if (!WAREHOUSE_ALLOWED_PERMISSIONS.has(permission)) effective.delete(permission);
@@ -183,8 +193,8 @@ export function permissionConfiguration() {
     hardRules: {
       directDenied: ["users"],
       warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -206,6 +216,9 @@ export function sanitizePermissionUpdate(role, input) {
   }
   if (MIAOSHOU_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "miaoshou" && !MIAOSHOU_PERMISSION_KEYS.includes(key));
+  }
+  if (OZON_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => !OZON_PERMISSION_KEYS.includes(key));
   }
   if (role === "warehouse") {
     overrides.allow = overrides.allow.filter((key) => WAREHOUSE_ALLOWED_PERMISSIONS.has(key));

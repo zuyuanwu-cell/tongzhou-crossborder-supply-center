@@ -158,6 +158,9 @@ assert.equal(directMiaoshouPermissions.includes("miaoshou_alias"), true, "direct
 assert.equal(directMiaoshouPermissions.includes("miaoshou_listing"), false, "AI listing requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_automation"), false, "waybill automation requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_config"), false, "connection configuration requires an explicit grant");
+assert.equal(directMiaoshouPermissions.includes("ozon_orders"), true, "direct operators can view and sync Ozon orders by default");
+assert.equal(directMiaoshouPermissions.includes("ozon_order_push"), true, "direct operators can review and push Ozon orders by default");
+assert.equal(directMiaoshouPermissions.includes("ozon_config"), false, "Ozon store credentials and mappings remain administrator-only by default");
 
 const legacyMiaoshouOperator = effectivePermissions({
   role: "direct",
@@ -179,6 +182,7 @@ const distributorMiaoshouPermissions = effectivePermissions({
   permissionOverrides: { allow: ["miaoshou", "miaoshou_alias", "miaoshou_listing", "miaoshou_automation", "miaoshou_config", "operations"], deny: [] },
 });
 assert.equal(distributorMiaoshouPermissions.some((permission) => permission === "miaoshou" || permission.startsWith("miaoshou_")), false, "distributors cannot receive internal Miaoshou permissions");
+assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["ozon_orders", "ozon_order_push", "ozon_config"], deny: [] } }).some((permission) => permission.startsWith("ozon_")), false, "distributors cannot receive Ozon order permissions");
 
 const warehousePermissions = effectivePermissions({
   role: "warehouse",
@@ -186,6 +190,7 @@ const warehousePermissions = effectivePermissions({
 });
 assert.deepEqual(warehousePermissions, ["after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration workspaces");
 assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");
+assert.equal(warehousePermissions.some((permission) => permission.startsWith("ozon_")), false, "warehouse operators cannot access Ozon credentials or order queues");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
 assert.throws(() => createLocalUser({
   username: "warehouse-empty",

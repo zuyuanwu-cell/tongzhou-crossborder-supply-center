@@ -2116,6 +2116,108 @@ export type MiaoshouPlatformReadiness = {
   total: number;
 };
 
+export type OzonStore = {
+  id: string;
+  name: string;
+  clientId: string;
+  apiKeyMasked: string;
+  hasApiKey: boolean;
+  enabled: boolean;
+  companyName: string;
+  connectedAt: string;
+  lastTestedAt: string;
+  lastSyncedAt: string;
+  lastError: string;
+  ozonWarehouses: Array<{ id: string; name: string; status: string; isRfbs: boolean }>;
+};
+
+export type OzonWarehouseRoute = {
+  storeId: string;
+  ozonWarehouseId: string;
+  ozonWarehouseName: string;
+  warehouseConnectionId: string;
+  shippingMethod: string;
+  recipient: {
+    countryCode: string;
+    province: string;
+    city: string;
+    district: string;
+    address1: string;
+    address2: string;
+    zipcode: string;
+    name: string;
+    phone: string;
+    email: string;
+  };
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type OzonSkuMapping = {
+  storeId: string;
+  warehouseConnectionId: string;
+  offerId: string;
+  ozonSku: string;
+  productName: string;
+  wmsSku: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type OzonOrder = {
+  id: string;
+  storeId: string;
+  storeName: string;
+  postingNumber: string;
+  orderId: string;
+  orderNumber: string;
+  status: string;
+  substatus: string;
+  deliverySchema: string;
+  ozonWarehouseId: string;
+  ozonWarehouseName: string;
+  shipmentAt: string;
+  createdAt: string;
+  syncedAt: string;
+  trackingNumber: string;
+  destinationPlaceName: string;
+  currency: string;
+  saleAmount: number;
+  targetWarehouseId: string;
+  targetWarehouseName: string;
+  shippingMethod: string;
+  ready: boolean;
+  inventoryChecked: boolean;
+  issues: string[];
+  products: Array<{
+    offerId: string;
+    ozonSku: string;
+    productId: string;
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    wmsSku: string;
+    wmsSkuExists: boolean;
+    availableQty: number;
+    mapped: boolean;
+  }>;
+  review: null | { status: string; note: string; reviewedAt: string; reviewedBy: string };
+  push: null | { status: string; wmsOrderNo: string; duplicate: boolean; pushedAt: string; pushedBy: string; lastError: string };
+  timeline: Array<{ at: string; action: string; actor: string; note: string }>;
+};
+
+export type OzonPayload = {
+  ok: boolean;
+  updatedAt: string;
+  stores: OzonStore[];
+  routes: OzonWarehouseRoute[];
+  skuMappings: OzonSkuMapping[];
+  warehouses: Array<{ id: string; name: string; warehouseCode: string; status: string }>;
+  products: Array<{ key: string; storeId: string; storeName: string; offerId: string; ozonSku: string; productName: string; orderCount: number }>;
+  orders: OzonOrder[];
+  summary: { stores: number; pending: number; ready: number; approved: number; pushed: number; blocked: number };
+};
+
 export type MiaoshouListingDraft = {
   id: string;
   sku: string;
@@ -4281,6 +4383,52 @@ export function planMiaoshouListingImages(id: string, input: { model?: string; c
     `/api/miaoshou/listings/${encodeURIComponent(id)}/image-plan`,
     { method: "POST", body: JSON.stringify(input) },
   );
+}
+
+export function fetchOzonIntegration() {
+  return requestJson<OzonPayload>("/api/ozon");
+}
+
+export function saveOzonStore(input: { id?: string; name: string; clientId: string; apiKey?: string; enabled?: boolean }) {
+  return requestJson<{ ok: boolean; store: OzonStore; payload: OzonPayload }>("/api/ozon/stores", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteOzonStore(storeId: string) {
+  return requestJson<OzonPayload>(`/api/ozon/stores/${encodeURIComponent(storeId)}`, { method: "DELETE" });
+}
+
+export function testOzonStore(storeId: string) {
+  return requestJson<{ ok: boolean; result: OzonStore; payload: OzonPayload }>(`/api/ozon/stores/${encodeURIComponent(storeId)}/test`, { method: "POST" });
+}
+
+export function syncOzonStore(storeId: string) {
+  return requestJson<{ ok: boolean; result: { store: OzonStore; count: number }; payload: OzonPayload }>(`/api/ozon/stores/${encodeURIComponent(storeId)}/sync`, { method: "POST" });
+}
+
+export function saveOzonWarehouseRoute(input: Omit<OzonWarehouseRoute, "updatedAt" | "updatedBy">) {
+  return requestJson<OzonPayload>("/api/ozon/routes", { method: "PUT", body: JSON.stringify(input) });
+}
+
+export function saveOzonSkuMapping(input: Omit<OzonSkuMapping, "updatedAt" | "updatedBy">) {
+  return requestJson<OzonPayload>("/api/ozon/sku-mappings", { method: "PUT", body: JSON.stringify(input) });
+}
+
+export function autoMapOzonSkus(input: { storeId: string; warehouseConnectionId: string }) {
+  return requestJson<{ ok: boolean; mapped: number; payload: OzonPayload }>("/api/ozon/sku-mappings/auto", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function reviewOzonOrder(postingNumber: string, note = "") {
+  return requestJson<{ ok: boolean; order: OzonOrder; payload: OzonPayload }>(`/api/ozon/orders/${encodeURIComponent(postingNumber)}/review`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function pushOzonOrder(postingNumber: string) {
+  return requestJson<{ ok: boolean; order: OzonOrder; payload: OzonPayload }>(`/api/ozon/orders/${encodeURIComponent(postingNumber)}/push`, { method: "POST" });
 }
 
 export function fetchCurrentUser() {

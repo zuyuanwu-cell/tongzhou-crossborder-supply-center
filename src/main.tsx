@@ -217,6 +217,7 @@ import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import { InventoryValuePage } from "./InventoryValuePage";
+import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -392,6 +393,7 @@ const navItems = [
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "settings", beta: true, permission: "tongzhou_ai" },
   { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "settings", permission: "quick_nav" },
   { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "settings", permission: "miaoshou_alias", additionalPermissions: ["miaoshou_automation", "miaoshou_config"] },
+  { label: "Ozon 订单", icon: ShoppingBag, hash: "#ozon-orders", section: "settings", permission: "ozon_orders", additionalPermissions: ["ozon_order_push", "ozon_config"] },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
   { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
@@ -1885,6 +1887,8 @@ function App() {
           <AgentApiAccessPage currentUser={currentUser} />
         ) : activeView === "妙手 ERP" ? (
           <MiaoshouPage currentUser={currentUser} />
+        ) : activeView === "Ozon 订单" ? (
+          <OzonOrderCenter currentUser={currentUser} />
         ) : activeView === "仓库协同" ? (
           <WarehouseCollaborationCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (

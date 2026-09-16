@@ -620,6 +620,9 @@ function validateCreateLines(input) {
     return {
       sku,
       quantity,
+      productName: firstText(line.productName),
+      offerId: firstText(line.offerId),
+      unitPrice: Math.max(0, firstNumber(line.unitPrice)),
       purchasePrice: Math.max(0, firstNumber(line.purchasePrice)),
       purchasePriceCurrency: firstText(line.purchasePriceCurrency, "CNY") || "CNY",
       boxSequence: Math.max(1, Math.floor(firstNumber(line.boxSequence, index + 1))),
@@ -715,6 +718,130 @@ export async function createWarehouseStockupOrder(connection, input) {
   if (connection.providerId === "sea_wms") return createSeaStockupOrder(connection, input);
   if (connection.providerId === "yunwms_ru") return createYunAsn(connection, input);
   throw new Error(capability.message);
+}
+
+export function warehouseOutboundCreateCapability(connection) {
+  if (connection?.providerId !== "yunwms_ru") {
+    return {
+      supported: false,
+      configured: false,
+      message: "当前仅俄罗斯 YunWMS 支持平台订单推单。",
+    };
+  }
+  const credentials = yunCredentials(connection);
+  const configured = hasYunCredentials(credentials) && Boolean(configuredText(credentials.warehouseCode));
+  return {
+    supported: true,
+    configured,
+    message: configured ? "可创建并审核俄罗斯 YunWMS 出库单。" : "请先完成俄罗斯 YunWMS 授权及仓库代码配置。",
+  };
+}
+
+function normalizeOutboundRecipient(value = {}) {
+  return {
+    countryCode: firstText(value.countryCode, "RU").toUpperCase(),
+    province: firstText(value.province),
+    city: firstText(value.city),
+    district: firstText(value.district),
+    address1: firstText(value.address1),
+    address2: firstText(value.address2),
+    address3: firstText(value.address3),
+    zipcode: firstText(value.zipcode),
+    doorplate: firstText(value.doorplate),
+    company: firstText(value.company),
+    name: firstText(value.name),
+    phone: firstText(value.phone),
+    email: firstText(value.email),
+  };
+}
+
+export async function createWarehouseOutboundOrder(connection, input) {
+  const capability = warehouseOutboundCreateCapability(connection);
+  if (!capability.supported || !capability.configured) throw new Error(capability.message);
+
+  const referenceNo = firstText(input?.referenceNo);
+  const shippingMethod = firstText(input?.shippingMethod);
+  if (!referenceNo) throw new Error("缺少平台发货单号，不能安全推单。");
+  if (!shippingMethod) throw new Error("请先配置该 Ozon 仓对应的 YunWMS 物流方式代码。");
+
+  const lines = validateCreateLines(input);
+  const recipient = normalizeOutboundRecipient(input?.recipient);
+  const requiredRecipient = [
+    [recipient.address1, "详细地址"],
+    [recipient.zipcode, "邮编"],
+    [recipient.name, "收件人"],
+    [recipient.phone, "联系电话"],
+  ].filter(([value]) => !value).map(([, label]) => label);
+  if (requiredRecipient.length) throw new Error(`推单缺少${requiredRecipient.join("、")}；请补充 Ozon 仓路由的默认收件信息。`);
+
+  const credentials = yunCredentials(connection);
+  const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
+  if (!warehouseCode) throw new Error("未能识别俄罗斯 YunWMS 仓库代码，已停止推单。");
+
+  // YunWMS reference_no is our idempotency key. Querying first prevents a retry
+  // after a network timeout from creating a second outbound order.
+  const existing = await postYun(credentials, "getOrderByRefCode", { reference_no: referenceNo });
+  const existingOrderNo = firstText(existing?.data?.order_code, existing?.order_code);
+  if (String(existing?.ask || "").toLowerCase() === "success" && existingOrderNo) {
+    return {
+      ok: true,
+      duplicate: true,
+      providerId: connection.providerId,
+      warehouseId: warehouseCode,
+      orderNo: existingOrderNo,
+      referenceNo,
+    };
+  }
+
+  const payload = await postYun(credentials, "createOrder", {
+    platform: "OTHER",
+    warehouse_code: warehouseCode,
+    shipping_method: shippingMethod,
+    reference_no: referenceNo,
+    ...(firstText(input?.orderNumber) ? { aliexpress_order_no: firstText(input.orderNumber) } : {}),
+    country_code: recipient.countryCode || "RU",
+    province: recipient.province,
+    city: recipient.city,
+    district: recipient.district,
+    address1: recipient.address1,
+    address2: recipient.address2,
+    address3: recipient.address3,
+    zipcode: recipient.zipcode,
+    doorplate: recipient.doorplate,
+    company: recipient.company,
+    name: recipient.name,
+    phone: recipient.phone,
+    email: recipient.email,
+    platform_shop: firstText(input?.shopName),
+    order_desc: firstText(input?.description, `Ozon ${referenceNo}`).slice(0, 500),
+    remark: firstText(input?.remark, "同舟中台审核推单").slice(0, 500),
+    order_sale_amount: firstNumber(input?.saleAmount),
+    order_sale_currency: firstText(input?.currency, "RUB"),
+    verify: input?.verify === false ? 0 : 1,
+    forceVerify: 0,
+    async: 0,
+    items: lines.map((line) => ({
+      product_sku: line.sku,
+      quantity: line.quantity,
+      product_name: firstText(line.productName),
+      product_name_en: firstText(line.productName),
+      product_declared_value: firstNumber(line.unitPrice),
+      reference_no: firstText(line.offerId),
+    })),
+  });
+  if (String(payload?.ask || "").toLowerCase() !== "success") {
+    throw new Error(`YunWMS 创建订单失败：${firstText(payload?.message, payload?.Error?.errMessage, payload?.error) || "未知错误"}`);
+  }
+  const orderNo = firstText(payload?.order_code, payload?.data?.order_code);
+  if (!orderNo) throw new Error("YunWMS 返回成功但缺少订单号；请先在 WMS 核对，避免重复推单。");
+  return {
+    ok: true,
+    duplicate: false,
+    providerId: connection.providerId,
+    warehouseId: warehouseCode,
+    orderNo,
+    referenceNo,
+  };
 }
 
 function normalizeYunProduct(item, connection) {

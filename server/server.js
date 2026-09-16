@@ -27,7 +27,7 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { createWarehouseOutboundOrder, createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -71,6 +71,7 @@ import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
+import { createOzonIntegrationService } from "./ozon-integration.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -128,6 +129,7 @@ const afterSalesCachePath = resolve(cacheDir, "after-sales.json");
 const afterSalesUploadDir = resolve(cacheDir, "after-sales-uploads");
 const warehouseTicketCachePath = resolve(cacheDir, "warehouse-tickets.json");
 const warehouseTicketUploadDir = resolve(cacheDir, "warehouse-ticket-uploads");
+const ozonIntegrationCachePath = resolve(cacheDir, "ozon-integration.json");
 const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
@@ -149,6 +151,7 @@ const warehouseInventorySyncIntervalMs = Math.max(5 * 60_000, Number(process.env
 const warehouseOrderSyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_ORDER_SYNC_INTERVAL_MS || 15 * 60 * 1000));
 const warehouseOrderIncrementalDays = Math.max(1, Math.min(30, Number(process.env.WAREHOUSE_ORDER_INCREMENTAL_DAYS || 7)));
 const warehouseStockupSyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_STOCKUP_SYNC_INTERVAL_MS || 15 * 60 * 1000));
+const ozonOrderSyncIntervalMs = Math.max(60_000, Number(process.env.OZON_ORDER_SYNC_INTERVAL_MS || 3 * 60 * 1000));
 const productSyncIntervalMs = Math.max(15 * 60_000, Number(process.env.PRODUCT_SYNC_INTERVAL_MS || 60 * 60 * 1000));
 const assetSyncIntervalMs = Math.max(15 * 60_000, Number(process.env.ASSET_SYNC_INTERVAL_MS || 60 * 60 * 1000));
 const warehouseInfoSyncIntervalMs = Math.max(30 * 60_000, Number(process.env.WAREHOUSE_INFO_SYNC_INTERVAL_MS || 2 * 60 * 60 * 1000));
@@ -237,6 +240,14 @@ const afterSalesService = createAfterSalesService({
 const warehouseTicketService = createWarehouseTicketService({
   cachePath: warehouseTicketCachePath,
   uploadDir: warehouseTicketUploadDir,
+});
+const ozonIntegrationService = createOzonIntegrationService({
+  initialState: loadJsonCache(ozonIntegrationCachePath) || {},
+  save: (state) => saveJsonCache(ozonIntegrationCachePath, state),
+  fetchImpl: globalThis.fetch,
+  warehouseConnections: () => warehouseConnections,
+  inventory: () => cachedWarehouseSync.inventory || [],
+  createWmsOrder: createWarehouseOutboundOrder,
 });
 for (const ticket of afterSalesService.list().tickets) {
   if (ticket.warehouseId) continue;
@@ -6179,6 +6190,23 @@ async function runScheduledMiaoshouPerformanceSync() {
   return performanceMiaoshouSync.run({ reason: "scheduled" });
 }
 
+async function runScheduledOzonOrderSync() {
+  const stores = ozonIntegrationService.payload({ role: "admin", dataScopes: { warehouseIds: [] } }).stores
+    .filter((store) => store.enabled && store.hasApiKey);
+  if (!stores.length) return { skipped: true, message: "No enabled Ozon stores" };
+  const results = [];
+  for (const store of stores) {
+    try {
+      const result = await ozonIntegrationService.syncStore(store.id);
+      results.push({ storeId: store.id, ok: true, count: result.count });
+    } catch (error) {
+      results.push({ storeId: store.id, ok: false, message: error instanceof Error ? error.message : "Ozon sync failed" });
+    }
+  }
+  if (results.every((result) => !result.ok)) throw new Error(results.map((result) => result.message).filter(Boolean).join("；") || "All Ozon stores failed to sync");
+  return { stores: results.length, orders: results.reduce((sum, result) => sum + Number(result.count || 0), 0), results };
+}
+
 function registerBackgroundSyncTasks() {
   const minute = 60_000;
   const external = (lane, definition) => syncScheduler.register({ lane, jitterMs: 20_000, ...definition });
@@ -6200,6 +6228,15 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 20_000,
     jitterMs: 5_000,
     run: () => miaoshouAutomation.runScheduled(),
+  });
+  external("ozon", {
+    id: "ozon-orders",
+    label: "Ozon 待处理订单",
+    priority: 108,
+    intervalMs: ozonOrderSyncIntervalMs,
+    initialDelayMs: 90_000,
+    jitterMs: 10_000,
+    run: runScheduledOzonOrderSync,
   });
   external("jdy", {
     id: "stockup-workflow",
@@ -7093,6 +7130,118 @@ const server = http.createServer(async (req, res) => {
           orders: [],
         });
       }
+      return;
+    }
+
+    if (url.pathname === "/api/ozon" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!["ozon_orders", "ozon_order_push", "ozon_config"].some((permission) => hasPermission(auth, permission))) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有 Ozon 订单权限。" });
+        return;
+      }
+      sendJson(res, 200, ozonIntegrationService.payload(auth.user));
+      return;
+    }
+
+    if (url.pathname === "/api/ozon/stores" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "ozon_config")) {
+        sendJson(res, 403, { ok: false, message: "保存 Ozon 店铺授权需要 Ozon 连接配置权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const store = ozonIntegrationService.upsertStore(payload, auth.user);
+      appendActionLog(auth, payload.id ? "更新 Ozon 店铺授权" : "新增 Ozon 店铺授权", "ozon_store", store.name, { storeId: store.id, clientId: store.clientId, credentialsUpdated: Boolean(payload.apiKey) });
+      sendJson(res, payload.id ? 200 : 201, { ok: true, store, payload: ozonIntegrationService.payload(auth.user) });
+      return;
+    }
+
+    const ozonStoreActionMatch = url.pathname.match(/^\/api\/ozon\/stores\/([^/]+)\/(test|sync)$/);
+    if (ozonStoreActionMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      const action = ozonStoreActionMatch[2];
+      const permission = action === "test" ? "ozon_config" : "ozon_orders";
+      if (!hasPermission(auth, permission)) {
+        sendJson(res, 403, { ok: false, message: action === "test" ? "测试 Ozon 授权需要连接配置权限。" : "当前账号没有 Ozon 订单同步权限。" });
+        return;
+      }
+      const storeId = decodeURIComponent(ozonStoreActionMatch[1]);
+      const result = action === "test"
+        ? await ozonIntegrationService.testStore(storeId)
+        : await ozonIntegrationService.syncStore(storeId);
+      appendActionLog(auth, action === "test" ? "测试 Ozon 店铺授权" : "同步 Ozon 待处理订单", "ozon_store", storeId, action === "sync" ? { count: result.count } : {});
+      sendJson(res, 200, { ok: true, result, payload: ozonIntegrationService.payload(auth.user) });
+      return;
+    }
+
+    const ozonStoreDeleteMatch = url.pathname.match(/^\/api\/ozon\/stores\/([^/]+)$/);
+    if (ozonStoreDeleteMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "ozon_config")) {
+        sendJson(res, 403, { ok: false, message: "删除 Ozon 店铺授权需要连接配置权限。" });
+        return;
+      }
+      const storeId = decodeURIComponent(ozonStoreDeleteMatch[1]);
+      ozonIntegrationService.deleteStore(storeId);
+      appendActionLog(auth, "删除 Ozon 店铺授权", "ozon_store", storeId, {});
+      sendJson(res, 200, ozonIntegrationService.payload(auth.user));
+      return;
+    }
+
+    if (url.pathname === "/api/ozon/routes" && req.method === "PUT") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "ozon_config")) {
+        sendJson(res, 403, { ok: false, message: "配置 Ozon 仓库路由需要连接配置权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const route = ozonIntegrationService.saveRoute(payload, auth.user);
+      appendActionLog(auth, "配置 Ozon 仓库路由", "ozon_route", `${route.storeId}:${route.ozonWarehouseId}`, { warehouseConnectionId: route.warehouseConnectionId, shippingMethod: route.shippingMethod });
+      sendJson(res, 200, ozonIntegrationService.payload(auth.user));
+      return;
+    }
+
+    if (url.pathname === "/api/ozon/sku-mappings" && req.method === "PUT") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "ozon_config")) {
+        sendJson(res, 403, { ok: false, message: "维护 Ozon SKU 映射需要连接配置权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const mapping = ozonIntegrationService.saveSkuMapping(payload, auth.user);
+      appendActionLog(auth, "维护 Ozon SKU 映射", "ozon_sku_mapping", `${mapping.storeId}:${mapping.offerId || mapping.ozonSku}`, { warehouseConnectionId: mapping.warehouseConnectionId, wmsSku: mapping.wmsSku });
+      sendJson(res, 200, ozonIntegrationService.payload(auth.user));
+      return;
+    }
+
+    if (url.pathname === "/api/ozon/sku-mappings/auto" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "ozon_config")) {
+        sendJson(res, 403, { ok: false, message: "自动匹配 Ozon SKU 需要连接配置权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = ozonIntegrationService.autoMap(payload, auth.user);
+      appendActionLog(auth, "自动匹配 Ozon SKU", "ozon_sku_mapping", `${payload.storeId}:${payload.warehouseConnectionId}`, result);
+      sendJson(res, 200, { ok: true, ...result, payload: ozonIntegrationService.payload(auth.user) });
+      return;
+    }
+
+    const ozonOrderActionMatch = url.pathname.match(/^\/api\/ozon\/orders\/([^/]+)\/(review|push)$/);
+    if (ozonOrderActionMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "ozon_order_push")) {
+        sendJson(res, 403, { ok: false, message: "审核和推送 Ozon 订单需要 Ozon 审核推单权限。" });
+        return;
+      }
+      const postingNumber = decodeURIComponent(ozonOrderActionMatch[1]);
+      const action = ozonOrderActionMatch[2];
+      const requestPayload = action === "review" ? await parseRequestBody(req) : {};
+      const order = action === "review"
+        ? ozonIntegrationService.reviewOrder(postingNumber, requestPayload, auth.user)
+        : await ozonIntegrationService.pushOrder(postingNumber, auth.user);
+      appendActionLog(auth, action === "review" ? "审核 Ozon 订单" : "推送 Ozon 订单到俄罗斯仓", "ozon_order", postingNumber, { warehouseId: order.targetWarehouseId, wmsOrderNo: order.push?.wmsOrderNo || "" });
+      sendJson(res, 200, { ok: true, order, payload: ozonIntegrationService.payload(auth.user) });
       return;
     }
 
