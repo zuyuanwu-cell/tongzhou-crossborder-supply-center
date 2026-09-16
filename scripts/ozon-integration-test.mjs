@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import { createOzonIntegrationService, normalizeOzonState } from "../server/ozon-integration.js";
 
+const posting = (postingNumber, status, offerId) => ({
+  posting_number: postingNumber,
+  order_id: `order-${postingNumber}`,
+  order_number: postingNumber.replace(/-\d+$/, ""),
+  status,
+  delivery_schema: "fbs",
+  in_process_at: "2026-09-15T01:00:00.000Z",
+  cutoff: "2026-09-16T01:00:00.000Z",
+  delivery_method: { warehouse_id: "9001", warehouse: "Ozon FBS 莫斯科仓" },
+  analytics_data: { warehouse_id: "9001", warehouse: "Ozon FBS 莫斯科仓", city: "Moscow" },
+  products: [{
+    product_offer_id: offerId,
+    product_id: `sku-${postingNumber}`,
+    product_name: "测试商品",
+    price: "799.00",
+    quantity: 1,
+    marketplace_seller_price_currency_code: "RUB",
+  }],
+  requirements: { products_requiring_mandatory_mark: [], products_requiring_imei: [] },
+});
+
 const requests = [];
 const fakeFetch = async (url, options = {}) => {
   const body = JSON.parse(options.body || "{}");
@@ -18,28 +39,11 @@ const fakeFetch = async (url, options = {}) => {
     payload = {
       cursor: "",
       has_next: false,
-      postings: [{
-        posting_number: "10000001-0001-1",
-        order_id: "123456789",
-        order_number: "10000001-0001",
-        status_alias: "awaiting_packaging",
-        delivery_schema: "fbs",
-        in_process_at: "2026-09-15T01:00:00.000Z",
-        cutoff: "2026-09-16T01:00:00.000Z",
-        delivery_method: { warehouse_id: "9001", warehouse: "Ozon FBS 莫斯科仓" },
-        analytics_data: { warehouse_id: "9001", warehouse: "Ozon FBS 莫斯科仓", city: "Moscow" },
-        products: [{
-          product_offer_id: "TZKJ-NK001",
-          product_id: "778899",
-          product_name: "NatureKiss 脱毛膏",
-          price: "799.00",
-          quantity: 2,
-          marketplace_seller_price_currency_code: "RUB",
-        }],
-        addressee: null,
-        customer: null,
-        requirements: { products_requiring_mandatory_mark: [], products_requiring_imei: [] },
-      }],
+      postings: [
+        posting("10000001-0001-1", "awaiting_packaging", "TZKJ-RU-0016**1"),
+        posting("10000001-0002-1", "awaiting_deliver", "TZKJ-RU-0016*1"),
+        posting("10000001-0003-1", "delivered", "TZKJ-RU-0016"),
+      ],
     };
   } else {
     throw new Error(`unexpected Ozon request: ${url}`);
@@ -53,22 +57,30 @@ const warehouses = [{
   providerId: "yunwms_ru",
   country: "俄罗斯",
   status: "已启用",
-  warehouseCode: "RU01",
+  warehouseCode: "MX001",
 }];
-const inventory = [{ warehouseId: "ru-wh-1", sku: "TZKJ-NK001", availableQty: 25 }];
+const inventory = [{ warehouseId: "ru-wh-1", sku: "TZKJ-RU-0016", availableQty: 25 }];
 let persisted = null;
-let pushed = 0;
+const lookupCount = new Map();
 const service = createOzonIntegrationService({
   initialState: {},
   save: (state) => { persisted = JSON.parse(JSON.stringify(state)); },
   fetchImpl: fakeFetch,
   warehouseConnections: () => warehouses,
   inventory: () => inventory,
-  createWmsOrder: async (_warehouse, order) => {
-    pushed += 1;
-    assert.equal(order.referenceNo, "10000001-0001-1");
-    assert.deepEqual(order.lines.map((line) => [line.sku, line.quantity]), [["TZKJ-NK001", 2]]);
-    return { orderNo: "WMS-RU-10001", duplicate: false };
+  lookupWmsOrder: async (_warehouse, referenceNo) => {
+    const count = (lookupCount.get(referenceNo) || 0) + 1;
+    lookupCount.set(referenceNo, count);
+    const found = referenceNo.endsWith("0002-1") || count > 1;
+    return {
+      found,
+      orderNo: found ? `WMS-${referenceNo}` : "",
+      status: found ? "D" : "",
+      platform: found ? "OZON" : "",
+      platformShop: found ? "FXYZ_RUOZ6005_5610463" : "",
+      warehouseCode: found ? "MX001" : "",
+      shippingMethod: found ? "MXZFH" : "",
+    };
   },
   clock: () => new Date("2026-09-15T08:00:00.000Z"),
 });
@@ -85,57 +97,54 @@ const tested = await service.testStore(store.id);
 assert.equal(tested.companyName, "Ozon 测试卖家");
 assert.equal(tested.ozonWarehouses[0].id, "9001");
 await service.syncStore(store.id);
-assert.equal(requests.some((request) => request.url.endsWith("/v4/posting/fbs/list")), true, "current v4 FBS list endpoint is used");
-assert.equal(requests.some((request) => request.url.includes("/v3/posting/fbs/list")), false, "deprecated v3 list endpoint is never used");
-assert.equal(requests.some((request) => request.url.endsWith("/v2/warehouse/list")), true, "current v2 warehouse list endpoint is used");
-assert.equal(requests.some((request) => request.url.endsWith("/v1/warehouse/list")), false, "retired v1 warehouse list endpoint is never used");
-assert.equal(requests.find((request) => request.url.endsWith("/v2/warehouse/list")).body.limit, 200);
-assert.deepEqual(requests.find((request) => request.url.endsWith("/v4/posting/fbs/list")).body.filter.status, ["awaiting_packaging", "awaiting_deliver"]);
+assert.equal(requests.some((request) => request.url.endsWith("/v4/posting/fbs/list")), true);
+assert.equal(requests.some((request) => request.url.includes("/v3/posting/fbs/list")), false);
+assert.equal(requests.some((request) => request.url.endsWith("/v2/warehouse/list")), true);
+assert.equal(requests.some((request) => request.url.endsWith("/v1/warehouse/list")), false);
+assert.deepEqual(requests.find((request) => request.url.endsWith("/v4/posting/fbs/list")).body.filter.statuses, ["awaiting_packaging", "awaiting_deliver"]);
+assert.equal("status" in requests.find((request) => request.url.endsWith("/v4/posting/fbs/list")).body.filter, false);
 assert.equal(requests[0].headers["Client-Id"], "client-123");
 assert.equal(requests[0].headers["Api-Key"], "secret-api-key");
 
 let payload = service.payload(admin);
-assert.equal(payload.orders.length, 1);
-assert.equal(payload.orders[0].ready, false);
-assert.match(payload.orders[0].issues.join("；"), /尚未绑定俄罗斯仓/);
+assert.equal(payload.orders.length, 2, "provider anomalies must not retain delivered orders");
+assert.equal(payload.orders.some((order) => order.status === "delivered"), false);
 
 service.saveRoute({
   storeId: store.id,
   ozonWarehouseId: "9001",
   ozonWarehouseName: "Ozon FBS 莫斯科仓",
   warehouseConnectionId: "ru-wh-1",
-  shippingMethod: "OZON_FBS",
-  recipient: {
-    countryCode: "RU",
-    city: "Moscow",
-    address1: "Ozon FBS delivery point",
-    zipcode: "123456",
-    name: "Ozon FBS",
-    phone: "+79990000000",
-  },
 }, admin);
-payload = service.payload(admin);
-assert.match(payload.orders[0].issues.join("；"), /未配置目标仓 SKU/);
+const mapped = service.autoMap({ storeId: store.id, warehouseConnectionId: "ru-wh-1" }, admin);
+assert.equal(mapped.mapped, 2, "explicit *1 and **1 package suffixes should map to the exact base WMS SKU");
 
-service.saveSkuMapping({
-  storeId: store.id,
-  warehouseConnectionId: "ru-wh-1",
-  offerId: "TZKJ-NK001",
-  ozonSku: "778899",
-  productName: "NatureKiss 脱毛膏",
-  wmsSku: "TZKJ-NK001",
-}, admin);
 payload = service.payload(admin);
-assert.equal(payload.orders[0].ready, true);
-assert.equal(payload.orders[0].products[0].availableQty, 25);
+const reviewOrder = payload.orders.find((order) => order.postingNumber.endsWith("0001-1"));
+const reconcileOrder = payload.orders.find((order) => order.postingNumber.endsWith("0002-1"));
+assert.equal(reviewOrder.ready, true);
+assert.equal(reviewOrder.products[0].wmsSku, "TZKJ-RU-0016");
+assert.equal(reconcileOrder.workflowStage, "reconcile");
+assert.equal(reconcileOrder.reconcileReady, true);
 
-const reviewed = service.reviewOrder("10000001-0001-1", { note: "SKU 与库存确认无误" }, scopedOperator);
+const reviewed = service.reviewOrder(reviewOrder.postingNumber, { note: "SKU 与库存确认无误" }, scopedOperator);
 assert.equal(reviewed.review.status, "approved");
-const firstPush = await service.pushOrder("10000001-0001-1", scopedOperator);
-const secondPush = await service.pushOrder("10000001-0001-1", scopedOperator);
-assert.equal(firstPush.push.wmsOrderNo, "WMS-RU-10001");
-assert.equal(secondPush.push.wmsOrderNo, "WMS-RU-10001");
-assert.equal(pushed, 1, "a reviewed Ozon posting is pushed to WMS only once");
+const waiting = await service.pushOrder(reviewOrder.postingNumber, scopedOperator);
+assert.equal(waiting.push.status, "waiting_sync");
+assert.equal(waiting.push.wmsOrderNo, "");
+const reconciliation = await service.reconcileWaitingOrders({ storeId: store.id }, admin);
+assert.deepEqual(reconciliation, { checked: 1, linked: 1, waiting: 0, failed: 0 });
+const linked = service.payload(admin).orders.find((order) => order.postingNumber === reviewOrder.postingNumber);
+assert.equal(linked.push.status, "linked");
+assert.equal(linked.push.wmsOrderNo, `WMS-${reviewOrder.postingNumber}`);
+assert.equal(linked.push.platformShop, "FXYZ_RUOZ6005_5610463");
+assert.equal(lookupCount.get(reviewOrder.postingNumber), 2);
+await service.pushOrder(reviewOrder.postingNumber, scopedOperator);
+assert.equal(lookupCount.get(reviewOrder.postingNumber), 2, "linked orders must not be queried or created again");
+
+const directLink = await service.pushOrder(reconcileOrder.postingNumber, scopedOperator);
+assert.equal(directLink.linked, true, "awaiting_deliver orders can be reconciled without duplicate review");
+assert.equal(directLink.push.wmsOrderNo, `WMS-${reconcileOrder.postingNumber}`);
 assert.equal(Boolean(persisted), true);
 
 const unauthorized = service.payload({ role: "direct", dataScopes: { warehouseIds: ["ru-wh-2"] } });

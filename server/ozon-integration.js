@@ -1,6 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
-const ACTIVE_STATUSES = new Set(["awaiting_packaging", "awaiting_deliver"]);
+const REVIEW_STATUSES = new Set(["awaiting_packaging"]);
+const RECONCILIATION_STATUSES = new Set(["awaiting_deliver"]);
+const ACTIVE_STATUSES = new Set([...REVIEW_STATUSES, ...RECONCILIATION_STATUSES]);
 const MAX_ORDERS = 1500;
 
 function text(value) {
@@ -78,6 +80,8 @@ function normalizeRoute(value = {}) {
     ozonWarehouseId: text(value.ozonWarehouseId),
     ozonWarehouseName: text(value.ozonWarehouseName),
     warehouseConnectionId: text(value.warehouseConnectionId),
+    platformShop: text(value.platformShop),
+    wmsWarehouseCode: text(value.wmsWarehouseCode),
     shippingMethod: text(value.shippingMethod),
     recipient: {
       countryCode: text(value.recipient?.countryCode || "RU").toUpperCase() || "RU",
@@ -166,9 +170,16 @@ function normalizeOrder(value = {}) {
       wmsOrderNo: text(value.push.wmsOrderNo),
       duplicate: Boolean(value.push.duplicate),
       pushedAt: dateIso(value.push.pushedAt),
+      linkedAt: dateIso(value.push.linkedAt || value.push.pushedAt),
+      checkedAt: dateIso(value.push.checkedAt),
       pushedBy: text(value.push.pushedBy),
       lastError: text(value.push.lastError),
       payloadHash: text(value.push.payloadHash),
+      wmsStatus: text(value.push.wmsStatus),
+      platform: text(value.push.platform),
+      platformShop: text(value.push.platformShop),
+      warehouseCode: text(value.push.warehouseCode),
+      shippingMethod: text(value.push.shippingMethod),
     } : null,
     timeline: (Array.isArray(value.timeline) ? value.timeline : []).slice(-40).map((entry) => ({
       at: dateIso(entry.at),
@@ -181,7 +192,7 @@ function normalizeOrder(value = {}) {
 
 export function normalizeOzonState(value = {}) {
   return {
-    version: 1,
+    version: 2,
     updatedAt: dateIso(value.updatedAt),
     stores: (Array.isArray(value.stores) ? value.stores : []).map(normalizeStore).filter((store) => store.id),
     routes: (Array.isArray(value.routes) ? value.routes : []).map(normalizeRoute)
@@ -389,44 +400,69 @@ function availableInventory(inventoryRows, warehouseId) {
   return { bySku, hasSnapshot: rows.length > 0 };
 }
 
+function isWmsLinked(order) {
+  return ["linked", "pushed"].includes(text(order?.push?.status)) && Boolean(text(order?.push?.wmsOrderNo));
+}
+
+function skuCandidates(...values) {
+  const candidates = [];
+  for (const value of values) {
+    const normalized = text(value).toUpperCase();
+    if (!normalized) continue;
+    candidates.push(normalized);
+    const withoutPackSuffix = normalized.replace(/\*+\d+$/, "");
+    if (withoutPackSuffix && withoutPackSuffix !== normalized) candidates.push(withoutPackSuffix);
+  }
+  return uniqueStrings(candidates);
+}
+
 function orderProjection(state, order, dependencies) {
   const store = state.stores.find((item) => item.id === order.storeId);
   const route = state.routes.find((item) => routeKey(item.storeId, item.ozonWarehouseId) === routeKey(order.storeId, order.ozonWarehouseId));
   const connection = dependencies.warehouseConnections().find((item) => item.id === route?.warehouseConnectionId);
   const inventory = availableInventory(dependencies.inventory(), route?.warehouseConnectionId);
   const mappings = new Map(state.skuMappings.map((mapping) => [mappingKey(mapping.storeId, mapping.warehouseConnectionId, mapping.offerId, mapping.ozonSku), mapping]));
-  const issues = [];
-  if (!store || store.enabled === false) issues.push("店铺授权未启用");
-  if (!ACTIVE_STATUSES.has(order.status) && order.push?.status !== "pushed") issues.push(`Ozon 状态 ${order.status || "未知"} 不允许新推单`);
-  if (!order.ozonWarehouseId) issues.push("Ozon 订单未返回卖家仓库 ID");
-  if (!route?.warehouseConnectionId) issues.push("Ozon 仓尚未绑定俄罗斯仓");
-  if (!connection || !russianWarehouse(connection)) issues.push("目标俄罗斯仓不可用");
-  if (!route?.shippingMethod) issues.push("尚未配置 YunWMS 物流方式代码");
-  const recipient = mergeRecipient(order.recipient, route?.recipient);
-  for (const [key, label] of [["address1", "详细地址"], ["zipcode", "邮编"], ["name", "收件人"], ["phone", "联系电话"]]) {
-    if (!recipient[key]) issues.push(`缺少${label}`);
+  const routeIssues = [];
+  const productIssues = [];
+  if (!store || store.enabled === false) routeIssues.push("店铺授权未启用");
+  if (!ACTIVE_STATUSES.has(order.status) && !isWmsLinked(order)) routeIssues.push(`Ozon 状态 ${order.status || "未知"} 不在处理中`);
+  if (!order.ozonWarehouseId) routeIssues.push("Ozon 订单未返回卖家仓库 ID");
+  if (!route?.warehouseConnectionId) routeIssues.push("Ozon 仓尚未绑定俄罗斯仓");
+  if (!connection || !russianWarehouse(connection)) routeIssues.push("目标俄罗斯仓不可用");
+  if (REVIEW_STATUSES.has(order.status) && (order.requirements.mandatoryMark.length || order.requirements.imei.length)) {
+    productIssues.push("订单含强制标识商品，需先在 Ozon 完成标识信息");
   }
-  if (order.requirements.mandatoryMark.length || order.requirements.imei.length) issues.push("订单含强制标识商品，需先在 Ozon 完成标识信息");
   const products = order.products.map((product) => {
     const mapping = mappings.get(mappingKey(order.storeId, route?.warehouseConnectionId, product.offerId, product.ozonSku));
     const wmsSku = text(mapping?.wmsSku).toUpperCase();
     const wmsSkuExists = Boolean(wmsSku && inventory.bySku.has(wmsSku));
     const availableQty = wmsSkuExists ? inventory.bySku.get(wmsSku) || 0 : 0;
-    if (!mapping?.wmsSku) issues.push(`${product.offerId || product.ozonSku} 未配置目标仓 SKU`);
-    else if (inventory.hasSnapshot && !wmsSkuExists) issues.push(`${mapping.wmsSku} 不存在于目标仓库存快照`);
-    else if (inventory.hasSnapshot && availableQty < product.quantity) issues.push(`${mapping.wmsSku} 可用库存不足（${availableQty}/${product.quantity}）`);
+    if (!mapping?.wmsSku) productIssues.push(`${product.offerId || product.ozonSku} 未配置目标仓 SKU`);
+    else if (inventory.hasSnapshot && !wmsSkuExists) productIssues.push(`${mapping.wmsSku} 不存在于目标仓库存快照`);
+    else if (inventory.hasSnapshot && availableQty < product.quantity) productIssues.push(`${mapping.wmsSku} 可用库存不足（${availableQty}/${product.quantity}）`);
     return { ...product, wmsSku, wmsSkuExists, availableQty, mapped: Boolean(wmsSku) };
   });
+  const workflowStage = REVIEW_STATUSES.has(order.status) ? "review"
+    : RECONCILIATION_STATUSES.has(order.status) ? "reconcile" : "history";
+  const issues = Array.from(new Set([...routeIssues, ...productIssues]));
   return {
     ...order,
     storeName: store?.name || "",
     targetWarehouseId: connection?.id || "",
     targetWarehouseName: connection?.name || "",
+    platformShop: route?.platformShop || order.push?.platformShop || "",
+    wmsWarehouseCode: route?.wmsWarehouseCode || order.push?.warehouseCode || "",
     shippingMethod: route?.shippingMethod || "",
-    recipient,
+    recipient: mergeRecipient(order.recipient, route?.recipient),
     products,
-    issues: Array.from(new Set(issues)),
-    ready: issues.length === 0,
+    issues,
+    workflowStage,
+    workflowMessage: workflowStage === "reconcile"
+      ? "该订单已进入待交运阶段，中台只查询并关联 WMS 已有订单，不会重复创建。"
+      : "审核通过后，中台会等待 WMS 按已绑定的 Ozon 店铺自动拉单，再进行精确关联。",
+    ready: workflowStage === "review" && routeIssues.length === 0 && productIssues.length === 0,
+    reconcileReady: ACTIVE_STATUSES.has(order.status) && routeIssues.length === 0,
+    linked: isWmsLinked(order),
     inventoryChecked: inventory.hasSnapshot,
   };
 }
@@ -442,7 +478,7 @@ export function createOzonIntegrationService({
   fetchImpl = globalThis.fetch,
   warehouseConnections = () => [],
   inventory = () => [],
-  createWmsOrder,
+  lookupWmsOrder,
   clock = () => new Date(),
 } = {}) {
   const dependencies = { warehouseConnections, inventory };
@@ -513,11 +549,11 @@ export function createOzonIntegrationService({
       orders,
       summary: {
         stores: state.stores.filter((store) => store.enabled !== false).length,
-        pending: orders.filter((order) => !order.push || order.push.status !== "pushed").length,
-        ready: orders.filter((order) => order.ready && order.review?.status !== "approved" && order.push?.status !== "pushed").length,
-        approved: orders.filter((order) => order.review?.status === "approved" && order.push?.status !== "pushed").length,
-        pushed: orders.filter((order) => order.push?.status === "pushed").length,
-        blocked: orders.filter((order) => !order.ready && order.push?.status !== "pushed").length,
+        pending: orders.filter((order) => !order.linked).length,
+        ready: orders.filter((order) => order.ready && order.review?.status !== "approved" && !order.linked).length,
+        approved: orders.filter((order) => order.review?.status === "approved" && !order.linked).length,
+        pushed: orders.filter((order) => order.linked).length,
+        blocked: orders.filter((order) => order.workflowStage === "review" && !order.ready && !order.linked).length,
       },
     };
   }
@@ -582,7 +618,7 @@ export function createOzonIntegrationService({
           filter: {
             since: start,
             to: end,
-            status: Array.from(ACTIVE_STATUSES),
+            statuses: Array.from(ACTIVE_STATUSES),
           },
           limit: 100,
           cursor,
@@ -606,12 +642,10 @@ export function createOzonIntegrationService({
         const normalized = normalizeOzonPosting(row, store.id);
         const previous = previousByPosting.get(normalized.postingNumber);
         return normalizeOrder({ ...normalized, review: previous?.review, push: previous?.push, timeline: previous?.timeline });
-      }).filter((order) => order.postingNumber);
-      const retainedHistory = state.orders.filter((order) => order.storeId === store.id && order.push?.status === "pushed" && !synced.some((item) => item.postingNumber === order.postingNumber));
+      }).filter((order) => order.postingNumber && ACTIVE_STATUSES.has(order.status));
       state.orders = [
         ...state.orders.filter((order) => order.storeId !== store.id),
         ...synced,
-        ...retainedHistory,
       ].sort((a, b) => text(b.createdAt || b.syncedAt).localeCompare(text(a.createdAt || a.syncedAt))).slice(0, MAX_ORDERS);
       store.ozonWarehouses = await fetchOzonWarehouses(fetchImpl, store);
       store.lastSyncedAt = clock().toISOString();
@@ -663,7 +697,7 @@ export function createOzonIntegrationService({
     let mapped = 0;
     const products = state.orders.filter((order) => order.storeId === store.id).flatMap((order) => order.products);
     for (const product of products) {
-      const candidates = uniqueStrings([product.offerId, product.ozonSku]).map((item) => item.toUpperCase());
+      const candidates = skuCandidates(product.offerId, product.ozonSku);
       const wmsSku = candidates.find((candidate) => snapshot.bySku.has(candidate));
       if (!wmsSku) continue;
       saveSkuMapping({ storeId: store.id, warehouseConnectionId: connection.id, offerId: product.offerId, ozonSku: product.ozonSku, productName: product.name, wmsSku }, actor);
@@ -676,6 +710,7 @@ export function createOzonIntegrationService({
     const order = findOrder(postingNumber);
     const projected = orderProjection(state, order, dependencies);
     if (!scopeAllowsWarehouse(actor, projected.targetWarehouseId)) throw new Error("当前账号无权审核该仓订单。");
+    if (projected.workflowStage !== "review") throw new Error("该订单已进入待交运阶段，请直接查询并关联 WMS 订单，无需重复审核。");
     if (!projected.ready) throw new Error(`订单尚未通过推单校验：${projected.issues.join("；")}`);
     order.review = {
       status: "approved",
@@ -683,7 +718,7 @@ export function createOzonIntegrationService({
       reviewedAt: clock().toISOString(),
       reviewedBy: actorName(actor),
     };
-    appendTimeline(order, "review_approved", actor, input.note || "SKU、仓库路由与库存校验通过");
+    appendTimeline(order, "review_approved", actor, input.note || "SKU、仓库路由与库存校验通过，等待 WMS 自动拉单");
     persist();
     return orderProjection(state, order, dependencies);
   }
@@ -693,57 +728,108 @@ export function createOzonIntegrationService({
     if (inFlightPushes.has(normalizedPosting)) return inFlightPushes.get(normalizedPosting);
     const job = (async () => {
       const order = findOrder(normalizedPosting);
-      if (order.push?.status === "pushed" && order.push.wmsOrderNo) return orderProjection(state, order, dependencies);
+      if (isWmsLinked(order)) return orderProjection(state, order, dependencies);
       const projected = orderProjection(state, order, dependencies);
-      if (!scopeAllowsWarehouse(actor, projected.targetWarehouseId)) throw new Error("当前账号无权推送该仓订单。");
-      if (order.review?.status !== "approved") throw new Error("请先审核订单，再推送至俄罗斯仓。");
-      if (!projected.ready) throw new Error(`订单当前不满足推单条件：${projected.issues.join("；")}`);
-      if (typeof createWmsOrder !== "function") throw new Error("俄罗斯仓推单能力尚未配置。");
+      if (!scopeAllowsWarehouse(actor, projected.targetWarehouseId)) throw new Error("当前账号无权查询该仓订单。");
+      if (projected.workflowStage === "review" && order.review?.status !== "approved") throw new Error("请先审核订单，再查询 WMS 自动拉单结果。");
+      if (!projected.reconcileReady) throw new Error(`订单当前不满足 WMS 查询条件：${projected.issues.join("；")}`);
+      if (typeof lookupWmsOrder !== "function") throw new Error("俄罗斯仓订单查询能力尚未配置。");
       const connection = warehouseConnections().find((item) => item.id === projected.targetWarehouseId);
-      const input = {
-        referenceNo: projected.postingNumber,
-        orderNumber: projected.orderNumber,
-        shopName: projected.storeName,
-        shippingMethod: projected.shippingMethod,
-        recipient: projected.recipient,
-        saleAmount: projected.saleAmount,
-        currency: projected.currency,
-        description: `Ozon ${projected.postingNumber} / ${projected.deliverySchema || "FBS"}`,
-        verify: true,
-        lines: projected.products.map((product) => ({
-          sku: product.wmsSku,
-          quantity: product.quantity,
-          productName: product.name,
-          offerId: product.offerId,
-          unitPrice: product.unitPrice,
-        })),
+      order.push = {
+        ...(order.push || {}),
+        status: "checking",
+        wmsOrderNo: "",
+        duplicate: true,
+        pushedAt: "",
+        linkedAt: "",
+        checkedAt: clock().toISOString(),
+        pushedBy: actorName(actor),
+        lastError: "",
       };
-      const payloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
-      order.push = { status: "pushing", wmsOrderNo: "", duplicate: false, pushedAt: "", pushedBy: actorName(actor), lastError: "", payloadHash };
-      appendTimeline(order, "push_started", actor, projected.targetWarehouseName);
+      appendTimeline(order, "wms_lookup_started", actor, `${projected.targetWarehouseName} · ${projected.postingNumber}`);
       persist();
       try {
-        const result = await createWmsOrder(connection, input);
+        const result = await lookupWmsOrder(connection, projected.postingNumber);
+        if (!result?.found || !text(result.orderNo)) {
+          order.push = {
+            ...order.push,
+            status: "waiting_sync",
+            checkedAt: clock().toISOString(),
+            lastError: "",
+          };
+          appendTimeline(order, "wms_waiting_sync", actor, "WMS 暂未返回该单，等待已绑定的 Ozon 店铺自动同步");
+          persist();
+          return orderProjection(state, order, dependencies);
+        }
+        const route = state.routes.find((item) => routeKey(item.storeId, item.ozonWarehouseId) === routeKey(order.storeId, order.ozonWarehouseId));
+        if (text(result.platform) && text(result.platform).toUpperCase() !== "OZON") {
+          throw new Error(`WMS 返回的平台为 ${text(result.platform)}，与 Ozon 不一致，已停止关联。`);
+        }
+        if (text(route?.platformShop) && text(result.platformShop) && text(route.platformShop) !== text(result.platformShop)) {
+          throw new Error(`WMS 店铺 ${text(result.platformShop)} 与当前路由绑定的店铺不一致，已停止关联。`);
+        }
+        if (text(route?.wmsWarehouseCode) && text(result.warehouseCode) && text(route.wmsWarehouseCode) !== text(result.warehouseCode)) {
+          throw new Error(`WMS 仓库 ${text(result.warehouseCode)} 与当前路由绑定的仓库不一致，已停止关联。`);
+        }
+        const expectedLines = new Map(projected.products.filter((product) => product.wmsSku).map((product) => [product.wmsSku, product.quantity]));
+        const actualLines = new Map((Array.isArray(result.items) ? result.items : []).map((item) => [text(item.sku).toUpperCase(), number(item.quantity)]).filter(([sku]) => sku));
+        if (expectedLines.size === projected.products.length && actualLines.size) {
+          const mismatched = Array.from(expectedLines).filter(([sku, quantity]) => actualLines.get(sku) !== quantity);
+          if (mismatched.length || expectedLines.size !== actualLines.size) {
+            throw new Error("WMS 订单商品明细与中台审核的 SKU / 数量不一致，已停止关联，请人工核对。");
+          }
+        }
         order.push = {
           ...order.push,
-          status: "pushed",
+          status: "linked",
           wmsOrderNo: text(result.orderNo),
-          duplicate: Boolean(result.duplicate),
-          pushedAt: clock().toISOString(),
+          duplicate: true,
+          linkedAt: clock().toISOString(),
+          checkedAt: clock().toISOString(),
           lastError: "",
+          wmsStatus: text(result.status),
+          platform: text(result.platform),
+          platformShop: text(result.platformShop),
+          warehouseCode: text(result.warehouseCode),
+          shippingMethod: text(result.shippingMethod),
         };
-        appendTimeline(order, result.duplicate ? "push_idempotent" : "push_succeeded", actor, `${projected.targetWarehouseName} · ${result.orderNo}`);
+        if (route) {
+          route.platformShop = route.platformShop || text(result.platformShop);
+          route.wmsWarehouseCode = route.wmsWarehouseCode || text(result.warehouseCode);
+          route.shippingMethod = route.shippingMethod || text(result.shippingMethod);
+        }
+        appendTimeline(order, "wms_linked", actor, `${projected.targetWarehouseName} · ${result.orderNo}`);
         persist();
         return orderProjection(state, order, dependencies);
       } catch (error) {
-        order.push = { ...order.push, status: "failed", lastError: error instanceof Error ? error.message : "WMS 推单失败" };
-        appendTimeline(order, "push_failed", actor, order.push.lastError);
+        order.push = { ...order.push, status: "failed", checkedAt: clock().toISOString(), lastError: error instanceof Error ? error.message : "WMS 订单查询失败" };
+        appendTimeline(order, "wms_lookup_failed", actor, order.push.lastError);
         persist();
         throw error;
       }
     })().finally(() => inFlightPushes.delete(normalizedPosting));
     inFlightPushes.set(normalizedPosting, job);
     return job;
+  }
+
+  async function reconcileWaitingOrders({ storeId = "", limit = 50 } = {}, actor = { id: "ozon-scheduler", displayName: "Ozon 自动关联" }) {
+    const candidates = state.orders.filter((order) => {
+      if (storeId && order.storeId !== text(storeId)) return false;
+      return ["waiting_sync", "failed"].includes(text(order.push?.status))
+        && (order.review?.status === "approved" || RECONCILIATION_STATUSES.has(order.status));
+    }).slice(0, Math.max(1, Math.min(100, Number(limit) || 50)));
+    const result = { checked: 0, linked: 0, waiting: 0, failed: 0 };
+    for (const order of candidates) {
+      result.checked += 1;
+      try {
+        const projected = await pushOrder(order.postingNumber, actor);
+        if (projected.linked) result.linked += 1;
+        else result.waiting += 1;
+      } catch {
+        result.failed += 1;
+      }
+    }
+    return result;
   }
 
   return {
@@ -757,6 +843,7 @@ export function createOzonIntegrationService({
     autoMap,
     reviewOrder,
     pushOrder,
+    reconcileWaitingOrders,
     rawState: () => state,
   };
 }

@@ -737,6 +737,50 @@ export function warehouseOutboundCreateCapability(connection) {
   };
 }
 
+export async function findWarehouseOutboundOrder(connection, referenceNo) {
+  if (connection?.providerId !== "yunwms_ru") {
+    throw new Error("当前仅俄罗斯 YunWMS 支持 Ozon 订单查询。");
+  }
+  const credentials = yunCredentials(connection);
+  if (!hasYunCredentials(credentials)) {
+    throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能查询 Ozon 订单。");
+  }
+  const normalizedReferenceNo = firstText(referenceNo);
+  if (!normalizedReferenceNo) throw new Error("缺少 Ozon 发货单号，不能查询 WMS。");
+
+  const payload = await postYun(credentials, "getOrderByRefCode", { reference_no: normalizedReferenceNo });
+  const order = payload?.data && typeof payload.data === "object" ? payload.data : {};
+  const orderNo = firstText(order.order_code, payload?.order_code);
+  const message = firstText(payload?.message, payload?.Error?.errMessage, payload?.error);
+  const success = String(payload?.ask || "").toLowerCase() === "success";
+  const clearlyNotFound = /not\s*found|does\s*not\s*exist|no\s*data|不存在|未找到|查询不到|无此/i.test(message);
+  if (!success && !orderNo && !clearlyNotFound) {
+    throw new Error(`YunWMS 查询订单失败：${message || "未知错误"}`);
+  }
+  const items = Array.isArray(order.items) ? order.items
+    : Array.isArray(order.item) ? order.item
+      : Array.isArray(order.products) ? order.products : [];
+  return {
+    ok: true,
+    found: Boolean(orderNo),
+    providerId: connection.providerId,
+    referenceNo: normalizedReferenceNo,
+    orderNo,
+    status: firstText(order.order_status, order.status),
+    platform: firstText(order.platform),
+    platformShop: firstText(order.platform_shop, order.platformShop),
+    warehouseCode: firstText(order.warehouse_code, order.warehouseCode),
+    shippingMethod: firstText(order.shipping_method, order.shippingMethod),
+    createdAt: firstText(order.date_create, order.created_at),
+    releasedAt: firstText(order.date_release, order.released_at),
+    shippedAt: firstText(order.date_shipping, order.shipped_at),
+    items: items.map((item) => ({
+      sku: firstText(item.product_sku, item.sku, item.reference_no),
+      quantity: Math.max(0, firstNumber(item.quantity, item.qty, item.product_quantity)),
+    })).filter((item) => item.sku),
+  };
+}
+
 function normalizeOutboundRecipient(value = {}) {
   return {
     countryCode: firstText(value.countryCode, "RU").toUpperCase(),

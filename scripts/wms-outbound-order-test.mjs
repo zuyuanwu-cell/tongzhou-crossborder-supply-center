@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createWarehouseOutboundOrder, warehouseOutboundCreateCapability } from "../server/wms-adapters.js";
+import { createWarehouseOutboundOrder, findWarehouseOutboundOrder, warehouseOutboundCreateCapability } from "../server/wms-adapters.js";
 
 function xmlResponse(payload) {
   const escaped = JSON.stringify(payload)
@@ -80,6 +80,40 @@ try {
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.orderNo, "RU-OUT-EXISTS");
   assert.deepEqual(requests.map((request) => request.service), ["getOrderByRefCode"], "existing reference must stop before createOrder");
+
+  requests.length = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    requests.push(extractRequest(String(options.body || "")));
+    return { ok: true, status: 200, text: async () => xmlResponse({
+      ask: "Success",
+      data: {
+        order_code: "RU-OZON-EXISTS",
+        order_status: "D",
+        platform: "OZON",
+        platform_shop: "FXYZ_RUOZ6005_5610463",
+        warehouse_code: "MX001",
+        shipping_method: "MXZFH",
+        items: [{ product_sku: "TZKJ-RU-0016", quantity: 1 }],
+      },
+    }) };
+  };
+  const linked = await findWarehouseOutboundOrder(connection, "0187062354-0015-1");
+  assert.equal(linked.found, true);
+  assert.equal(linked.orderNo, "RU-OZON-EXISTS");
+  assert.equal(linked.platform, "OZON");
+  assert.equal(linked.platformShop, "FXYZ_RUOZ6005_5610463");
+  assert.deepEqual(linked.items, [{ sku: "TZKJ-RU-0016", quantity: 1 }]);
+  assert.deepEqual(requests.map((request) => request.service), ["getOrderByRefCode"], "read-only lookup must never call createOrder");
+
+  requests.length = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    requests.push(extractRequest(String(options.body || "")));
+    return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Failure", message: "order not found" }) };
+  };
+  const missing = await findWarehouseOutboundOrder(connection, "0190626839-0049-1");
+  assert.equal(missing.found, false);
+  assert.equal(missing.orderNo, "");
+  assert.deepEqual(requests.map((request) => request.service), ["getOrderByRefCode"], "missing orders must remain a read-only result");
 } finally {
   globalThis.fetch = originalFetch;
 }

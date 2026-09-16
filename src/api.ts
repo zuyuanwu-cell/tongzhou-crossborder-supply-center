@@ -2136,8 +2136,10 @@ export type OzonWarehouseRoute = {
   ozonWarehouseId: string;
   ozonWarehouseName: string;
   warehouseConnectionId: string;
+  platformShop: string;
+  wmsWarehouseCode: string;
   shippingMethod: string;
-  recipient: {
+  recipient?: {
     countryCode: string;
     province: string;
     city: string;
@@ -2185,8 +2187,14 @@ export type OzonOrder = {
   saleAmount: number;
   targetWarehouseId: string;
   targetWarehouseName: string;
+  platformShop: string;
+  wmsWarehouseCode: string;
   shippingMethod: string;
+  workflowStage: "review" | "reconcile" | "history";
+  workflowMessage: string;
   ready: boolean;
+  reconcileReady: boolean;
+  linked: boolean;
   inventoryChecked: boolean;
   issues: string[];
   products: Array<{
@@ -2202,7 +2210,7 @@ export type OzonOrder = {
     mapped: boolean;
   }>;
   review: null | { status: string; note: string; reviewedAt: string; reviewedBy: string };
-  push: null | { status: string; wmsOrderNo: string; duplicate: boolean; pushedAt: string; pushedBy: string; lastError: string };
+  push: null | { status: string; wmsOrderNo: string; duplicate: boolean; pushedAt: string; linkedAt: string; checkedAt: string; pushedBy: string; lastError: string; wmsStatus: string; platform: string; platformShop: string; warehouseCode: string; shippingMethod: string };
   timeline: Array<{ at: string; action: string; actor: string; note: string }>;
 };
 

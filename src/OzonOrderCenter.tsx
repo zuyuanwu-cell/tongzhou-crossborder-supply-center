@@ -58,26 +58,15 @@ function statusLabel(status: string) {
 }
 
 function pushStatus(order: OzonOrder) {
-  if (order.push?.status === "pushed") return { label: "已推仓", tone: "success" };
-  if (order.push?.status === "failed") return { label: "推单失败", tone: "danger" };
-  if (order.push?.status === "pushing") return { label: "推送中", tone: "info" };
+  if (order.linked) return { label: "已关联 WMS", tone: "success" };
+  if (order.push?.status === "failed") return { label: "查询失败", tone: "danger" };
+  if (order.push?.status === "checking") return { label: "查询中", tone: "info" };
+  if (order.push?.status === "waiting_sync") return { label: "等待 WMS 同步", tone: "warning" };
+  if (order.workflowStage === "reconcile") return { label: "待关联 WMS", tone: "info" };
   if (order.review?.status === "approved") return { label: "已审核", tone: "info" };
   if (order.ready) return { label: "待审核", tone: "warning" };
   return { label: "待补配置", tone: "muted" };
 }
-
-const emptyRecipient = {
-  countryCode: "RU",
-  province: "",
-  city: "",
-  district: "",
-  address1: "",
-  address2: "",
-  zipcode: "",
-  name: "",
-  phone: "",
-  email: "",
-};
 
 function WarehouseRouteEditor({
   store,
@@ -94,8 +83,9 @@ function WarehouseRouteEditor({
 }) {
   const [form, setForm] = React.useState(() => ({
     warehouseConnectionId: existing?.warehouseConnectionId || "",
+    platformShop: existing?.platformShop || "",
+    wmsWarehouseCode: existing?.wmsWarehouseCode || "",
     shippingMethod: existing?.shippingMethod || "",
-    recipient: { ...emptyRecipient, ...(existing?.recipient || {}) },
   }));
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -103,14 +93,11 @@ function WarehouseRouteEditor({
   React.useEffect(() => {
     setForm({
       warehouseConnectionId: existing?.warehouseConnectionId || "",
+      platformShop: existing?.platformShop || "",
+      wmsWarehouseCode: existing?.wmsWarehouseCode || "",
       shippingMethod: existing?.shippingMethod || "",
-      recipient: { ...emptyRecipient, ...(existing?.recipient || {}) },
     });
-  }, [existing?.warehouseConnectionId, existing?.shippingMethod, existing?.updatedAt]);
-
-  function updateRecipient(key: keyof typeof emptyRecipient, value: string) {
-    setForm((current) => ({ ...current, recipient: { ...current.recipient, [key]: value } }));
-  }
+  }, [existing?.warehouseConnectionId, existing?.platformShop, existing?.wmsWarehouseCode, existing?.shippingMethod, existing?.updatedAt]);
 
   async function save() {
     setBusy(true);
@@ -121,8 +108,9 @@ function WarehouseRouteEditor({
         ozonWarehouseId: ozonWarehouse.id,
         ozonWarehouseName: ozonWarehouse.name,
         warehouseConnectionId: form.warehouseConnectionId,
+        platformShop: form.platformShop,
+        wmsWarehouseCode: form.wmsWarehouseCode,
         shippingMethod: form.shippingMethod,
-        recipient: form.recipient,
       });
       onSaved(result, `${ozonWarehouse.name || ozonWarehouse.id} 已绑定俄罗斯仓。`);
     } catch (saveError) {
@@ -136,15 +124,12 @@ function WarehouseRouteEditor({
     <header><div><strong>{ozonWarehouse.name || `Ozon 仓 ${ozonWarehouse.id}`}</strong><small>ID {ozonWarehouse.id} · {ozonWarehouse.isRfbs ? "rFBS" : "FBS"}</small></div>{existing ? <span className="ozon-badge success"><Check size={13} />已配置</span> : <span className="ozon-badge muted">待配置</span>}</header>
     <div className="ozon-form-grid compact">
       <label><span>目标俄罗斯仓 *</span><select value={form.warehouseConnectionId} onChange={(event) => setForm((current) => ({ ...current, warehouseConnectionId: event.target.value }))}><option value="">请选择俄罗斯1仓 / 2仓</option>{payload.warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}{warehouse.warehouseCode ? ` · ${warehouse.warehouseCode}` : ""}</option>)}</select></label>
-      <label><span>YunWMS 物流方式代码 *</span><input value={form.shippingMethod} onChange={(event) => setForm((current) => ({ ...current, shippingMethod: event.target.value }))} placeholder="例如 OZON_FBS" /></label>
-      <label><span>默认收件人 *</span><input value={form.recipient.name} onChange={(event) => updateRecipient("name", event.target.value)} placeholder="Ozon FBS 交接点或实际收件人" /></label>
-      <label><span>联系电话 *</span><input value={form.recipient.phone} onChange={(event) => updateRecipient("phone", event.target.value)} placeholder="WMS 校验所需" /></label>
-      <label><span>城市</span><input value={form.recipient.city} onChange={(event) => updateRecipient("city", event.target.value)} placeholder="订单有地址时优先使用订单地址" /></label>
-      <label><span>邮编 *</span><input value={form.recipient.zipcode} onChange={(event) => updateRecipient("zipcode", event.target.value)} placeholder="俄罗斯邮编" /></label>
-      <label className="wide"><span>默认详细地址 *</span><input value={form.recipient.address1} onChange={(event) => updateRecipient("address1", event.target.value)} placeholder="仅当 Ozon 订单未返回详细地址时使用" /></label>
+      <label><span>WMS 店铺编码（自动回填）</span><input value={form.platformShop} onChange={(event) => setForm((current) => ({ ...current, platformShop: event.target.value }))} placeholder="关联成功后自动读取" /></label>
+      <label><span>WMS 仓库代码（自动回填）</span><input value={form.wmsWarehouseCode} onChange={(event) => setForm((current) => ({ ...current, wmsWarehouseCode: event.target.value }))} placeholder="例如 MX001" /></label>
+      <label><span>WMS 物流代码（自动回填）</span><input value={form.shippingMethod} onChange={(event) => setForm((current) => ({ ...current, shippingMethod: event.target.value }))} placeholder="例如 MXZFH" /></label>
     </div>
     {error ? <p className="ozon-inline-error"><AlertTriangle size={14} />{error}</p> : null}
-    <footer><small>订单自身有收件信息时会优先使用；默认信息只用于补齐 FBS 推单必填项。</small><button onClick={() => void save()} disabled={busy || !form.warehouseConnectionId || !form.shippingMethod}>{busy ? <LoaderCircle className="spinning" size={15} /> : <Route size={15} />}保存仓库路由</button></footer>
+    <footer><small>WMS 已绑定 Ozon 店铺时，中台只按发货单号查询并关联，不创建通用出库单；后 3 项可留空，首次关联后自动回填。</small><button onClick={() => void save()} disabled={busy || !form.warehouseConnectionId}>{busy ? <LoaderCircle className="spinning" size={15} /> : <Route size={15} />}保存仓库路由</button></footer>
   </article>;
 }
 
@@ -223,13 +208,17 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
   }
 
   async function orderAction(order: OzonOrder, action: "review" | "push") {
-    if (action === "push" && !window.confirm(`确认将 ${order.postingNumber} 创建并审核到“${order.targetWarehouseName}”？系统会用发货单号查重。`)) return;
+    if (action === "push" && !window.confirm(`确认查询 ${order.postingNumber} 在“${order.targetWarehouseName}”的 WMS 订单？本操作只会精确查单并关联，不会重复创建出库单。`)) return;
     setBusy(`${action}:${order.postingNumber}`);
     setError("");
     setMessage("");
     try {
       const result = action === "review" ? await reviewOzonOrder(order.postingNumber) : await pushOzonOrder(order.postingNumber);
-      accept(result.payload, action === "review" ? `${order.postingNumber} 审核通过。` : `${order.postingNumber} 已推送，WMS 单号：${result.order.push?.wmsOrderNo || "待返回"}。`);
+      accept(result.payload, action === "review"
+        ? `${order.postingNumber} 审核通过，正在等待 WMS 自动拉单。`
+        : result.order.linked
+          ? `${order.postingNumber} 已关联 WMS 单号：${result.order.push?.wmsOrderNo}。`
+          : `${order.postingNumber} 暂未在 WMS 找到，系统会继续自动检查。`);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "订单操作失败。");
     } finally { setBusy(""); }
@@ -262,7 +251,7 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
     setError("");
     try {
       const result = await autoMapOzonSkus({ storeId: mappingStoreId, warehouseConnectionId: mappingWarehouseId });
-      accept(result.payload, `已按完全相同 SKU 自动匹配 ${result.mapped} 项；其余请人工确认。`);
+      accept(result.payload, `已按精确 SKU 及明确的包装后缀规则自动匹配 ${result.mapped} 项；其余请人工确认。`);
     } catch (mappingError) {
       setError(mappingError instanceof Error ? mappingError.message : "自动匹配失败。");
     } finally { setBusy(""); }
@@ -271,17 +260,17 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
   const visibleOrders = (payload?.orders || []).filter((order) => {
     if (storeFilter && order.storeId !== storeFilter) return false;
     if (keyword && ![order.postingNumber, order.orderNumber, order.storeName, ...order.products.flatMap((product) => [product.offerId, product.ozonSku, product.wmsSku, product.name])].some((value) => value.toLowerCase().includes(keyword.toLowerCase()))) return false;
-    if (statusFilter === "pending" && order.push?.status === "pushed") return false;
-    if (statusFilter === "blocked" && order.ready) return false;
+    if (statusFilter === "pending" && order.linked) return false;
+    if (statusFilter === "blocked" && (order.workflowStage !== "review" || order.ready)) return false;
     if (statusFilter === "approved" && order.review?.status !== "approved") return false;
-    if (statusFilter === "pushed" && order.push?.status !== "pushed") return false;
+    if (statusFilter === "pushed" && !order.linked) return false;
     return true;
   });
   const mappingProducts = (payload?.products || []).filter((product) => !mappingStoreId || product.storeId === mappingStoreId);
 
   return <div className="ozon-center">
     <section className="ozon-hero">
-      <div><p className="eyebrow">OZON SELLER CONTROL</p><h2>Ozon 订单审核推单</h2><span>店铺独立授权，Ozon 仓精确路由到俄罗斯1仓 / 2仓，SKU 校验通过后再推单。</span></div>
+      <div><p className="eyebrow">OZON SELLER CONTROL</p><h2>Ozon 订单审核与 WMS 关联</h2><span>店铺独立授权，Ozon 仓精确路由到俄罗斯1仓 / 2仓；WMS 自动拉单，中台负责审核、查重和关联。</span></div>
       <div className="ozon-hero-mark"><span>OZON</span><small>Seller API</small></div>
     </section>
 
@@ -289,7 +278,7 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
       <article><Store /><span>已授权店铺</span><strong>{payload?.summary.stores || 0}</strong></article>
       <article><Clock3 /><span>待处理</span><strong>{payload?.summary.pending || 0}</strong></article>
       <article><ShieldCheck /><span>可审核</span><strong>{payload?.summary.ready || 0}</strong></article>
-      <article><PackageCheck /><span>已推俄罗斯仓</span><strong>{payload?.summary.pushed || 0}</strong></article>
+      <article><PackageCheck /><span>已关联 WMS</span><strong>{payload?.summary.pushed || 0}</strong></article>
     </section>
 
     <nav className="ozon-tabs">
@@ -303,8 +292,8 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
     {loading ? <div className="ozon-empty"><LoaderCircle className="spinning" />正在读取 Ozon 订单中心…</div> : null}
 
     {!loading && tab === "orders" ? <section className="ozon-panel">
-      <header className="ozon-panel-head"><div><p className="eyebrow">REVIEW QUEUE</p><h3>待审核与推单</h3><span>后台每 3 分钟同步待配货 / 待交运订单；审核前会再次校验仓库、SKU 和可用库存。</span></div><div className="ozon-sync-actions">{payload?.stores.filter((store) => store.enabled).map((store) => <button key={store.id} onClick={() => void storeAction(store, "sync")} disabled={Boolean(busy)}>{busy === `sync:${store.id}` ? <LoaderCircle className="spinning" size={15} /> : <RefreshCw size={15} />}立即同步 {store.name}</button>)}</div></header>
-      <div className="ozon-toolbar"><label><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索发货单号、订单号或 SKU" /></label><select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}><option value="">全部店铺</option>{payload?.stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="pending">待处理</option><option value="blocked">待补配置</option><option value="approved">已审核</option><option value="pushed">已推仓</option><option value="all">全部</option></select></div>
+      <header className="ozon-panel-head"><div><p className="eyebrow">REVIEW QUEUE</p><h3>待审核与 WMS 关联</h3><span>后台每 3 分钟只同步待配货 / 待交运订单；待交运订单只查询 WMS 已有单据，绝不重复创建。</span></div><div className="ozon-sync-actions">{payload?.stores.filter((store) => store.enabled).map((store) => <button key={store.id} onClick={() => void storeAction(store, "sync")} disabled={Boolean(busy)}>{busy === `sync:${store.id}` ? <LoaderCircle className="spinning" size={15} /> : <RefreshCw size={15} />}立即同步 {store.name}</button>)}</div></header>
+      <div className="ozon-toolbar"><label><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索发货单号、订单号或 SKU" /></label><select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}><option value="">全部店铺</option>{payload?.stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="pending">待处理</option><option value="blocked">待补配置</option><option value="approved">已审核</option><option value="pushed">已关联 WMS</option><option value="all">全部</option></select></div>
       <div className="ozon-order-list">
         {!visibleOrders.length ? <div className="ozon-empty"><PackageCheck />当前筛选下没有订单。{payload?.stores.length ? "可点击右上角同步店铺。" : "请先到“店铺授权”添加 Ozon 店铺。"}</div> : null}
         {visibleOrders.map((order) => {
@@ -313,15 +302,16 @@ export function OzonOrderCenter({ currentUser }: { currentUser: AuthUser }) {
             <header><div><span className={`ozon-badge ${state.tone}`}>{state.label}</span><strong>{order.postingNumber}</strong><small>{order.storeName} · Ozon {statusLabel(order.status)}</small></div><div><small>最晚处理</small><strong>{dateTime(order.shipmentAt)}</strong></div></header>
             <div className="ozon-order-route"><span><Store size={15} />{order.ozonWarehouseName || order.ozonWarehouseId || "未识别 Ozon 仓"}</span><ChevronRight size={16} /><span className={order.targetWarehouseId ? "done" : "missing"}><Warehouse size={15} />{order.targetWarehouseName || "未绑定俄罗斯仓"}</span><span>{order.deliverySchema || "FBS"}</span></div>
             <div className="ozon-product-lines">{order.products.map((product) => <div key={`${product.offerId}:${product.ozonSku}`}><span><strong>{product.name || product.offerId}</strong><small>Ozon货号：{product.offerId || "—"} · SKU：{product.ozonSku || "—"}</small></span><span><small>目标仓 SKU</small><strong className={product.mapped ? "mapped" : "missing"}>{product.wmsSku || "未映射"}</strong></span><span><small>数量 / 可用</small><strong>{product.quantity} / {order.inventoryChecked ? product.availableQty : "待同步"}</strong></span></div>)}</div>
-            {order.issues.length ? <div className="ozon-issues"><AlertTriangle size={16} /><div>{order.issues.map((issue) => <span key={issue}>{issue}</span>)}</div></div> : <div className="ozon-ready"><CheckCircle2 size={16} />仓库路由、SKU 与库存校验通过</div>}
-            <footer><div>{order.push?.status === "pushed" ? <><strong>WMS：{order.push.wmsOrderNo}</strong><small>{order.push.duplicate ? "已存在订单，未重复创建" : `推送于 ${dateTime(order.push.pushedAt)}`}</small></> : order.review?.status === "approved" ? <><strong>审核人：{order.review.reviewedBy}</strong><small>{dateTime(order.review.reviewedAt)}</small></> : <><strong>{order.orderNumber || order.orderId}</strong><small>同步于 {dateTime(order.syncedAt)}</small></>}</div>{canPush && order.push?.status !== "pushed" ? <div className="ozon-order-actions">{order.review?.status !== "approved" ? <button onClick={() => void orderAction(order, "review")} disabled={Boolean(busy) || !order.ready}>{busy === `review:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <ShieldCheck size={15} />}审核通过</button> : <button className="primary" onClick={() => void orderAction(order, "push")} disabled={Boolean(busy)}>{busy === `push:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <Send size={15} />}推送并审核到 WMS</button>}</div> : null}</footer>
+            {order.issues.length ? <div className="ozon-issues"><AlertTriangle size={16} /><div>{order.issues.map((issue) => <span key={issue}>{issue}</span>)}</div></div> : <div className="ozon-ready"><CheckCircle2 size={16} />{order.workflowStage === "reconcile" ? "仓库路由已就绪，可精确查询 WMS" : "仓库路由、SKU 与库存校验通过"}</div>}
+            <div className="ozon-ready"><CheckCircle2 size={16} />{order.workflowMessage}</div>
+            <footer><div>{order.linked ? <><strong>WMS：{order.push?.wmsOrderNo}</strong><small>已存在订单，{order.push?.platformShop ? `店铺 ${order.push.platformShop}，` : ""}未重复创建 · {dateTime(order.push?.linkedAt || order.push?.checkedAt)}</small></> : order.push?.status === "waiting_sync" ? <><strong>等待 WMS 自动拉单</strong><small>最近检查 {dateTime(order.push.checkedAt)}</small></> : order.review?.status === "approved" ? <><strong>审核人：{order.review.reviewedBy}</strong><small>{dateTime(order.review.reviewedAt)}</small></> : <><strong>{order.orderNumber || order.orderId}</strong><small>同步于 {dateTime(order.syncedAt)}</small></>}</div>{canPush && !order.linked ? <div className="ozon-order-actions">{order.workflowStage === "review" && order.review?.status !== "approved" ? <button onClick={() => void orderAction(order, "review")} disabled={Boolean(busy) || !order.ready}>{busy === `review:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <ShieldCheck size={15} />}审核通过</button> : <button className="primary" onClick={() => void orderAction(order, "push")} disabled={Boolean(busy) || !order.reconcileReady}>{busy === `push:${order.postingNumber}` ? <LoaderCircle className="spinning" size={15} /> : <Send size={15} />}{order.push?.status === "waiting_sync" || order.push?.status === "failed" ? "重新查询 WMS" : "查询并关联 WMS"}</button>}</div> : null}</footer>
           </article>;
         })}
       </div>
     </section> : null}
 
     {!loading && tab === "mapping" && canConfigure ? <section className="ozon-panel">
-      <header className="ozon-panel-head"><div><p className="eyebrow">SKU MAPPING</p><h3>Ozon SKU → 俄罗斯仓 SKU</h3><span>映射按“店铺 + 目标仓”隔离；自动匹配只接受完全相同的 SKU，不做模糊猜测。</span></div><button onClick={() => void autoMap()} disabled={Boolean(busy) || !mappingStoreId || !mappingWarehouseId}>{busy === "auto-map" ? <LoaderCircle className="spinning" size={15} /> : <Settings2 size={15} />}完全相同项自动匹配</button></header>
+      <header className="ozon-panel-head"><div><p className="eyebrow">SKU MAPPING</p><h3>Ozon SKU → 俄罗斯仓 SKU</h3><span>映射按“店铺 + 目标仓”隔离；除完全相同外，仅识别 *1、**1 这类明确包装后缀，其他情况仍需人工确认。</span></div><button onClick={() => void autoMap()} disabled={Boolean(busy) || !mappingStoreId || !mappingWarehouseId}>{busy === "auto-map" ? <LoaderCircle className="spinning" size={15} /> : <Settings2 size={15} />}安全规则自动匹配</button></header>
       <div className="ozon-mapping-filter"><label><span>Ozon 店铺</span><select value={mappingStoreId} onChange={(event) => setMappingStoreId(event.target.value)}><option value="">请选择店铺</option>{payload?.stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label><label><span>目标俄罗斯仓</span><select value={mappingWarehouseId} onChange={(event) => setMappingWarehouseId(event.target.value)}><option value="">请选择俄罗斯仓</option>{payload?.warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label></div>
       <div className="ozon-mapping-table"><div className="head"><span>Ozon 商品</span><span>Ozon 标识</span><span>目标仓 SKU</span><span>操作</span></div>{mappingProducts.map((product) => {
         const key = `${product.storeId}:${product.offerId || product.ozonSku}`;

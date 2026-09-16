@@ -27,7 +27,7 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { createWarehouseOutboundOrder, createWarehouseStockupOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -247,7 +247,7 @@ const ozonIntegrationService = createOzonIntegrationService({
   fetchImpl: globalThis.fetch,
   warehouseConnections: () => warehouseConnections,
   inventory: () => cachedWarehouseSync.inventory || [],
-  createWmsOrder: createWarehouseOutboundOrder,
+  lookupWmsOrder: findWarehouseOutboundOrder,
 });
 for (const ticket of afterSalesService.list().tickets) {
   if (ticket.warehouseId) continue;
@@ -6203,8 +6203,9 @@ async function runScheduledOzonOrderSync() {
       results.push({ storeId: store.id, ok: false, message: error instanceof Error ? error.message : "Ozon sync failed" });
     }
   }
+  const reconciliation = await ozonIntegrationService.reconcileWaitingOrders({ limit: 50 });
   if (results.every((result) => !result.ok)) throw new Error(results.map((result) => result.message).filter(Boolean).join("；") || "All Ozon stores failed to sync");
-  return { stores: results.length, orders: results.reduce((sum, result) => sum + Number(result.count || 0), 0), results };
+  return { stores: results.length, orders: results.reduce((sum, result) => sum + Number(result.count || 0), 0), reconciliation, results };
 }
 
 function registerBackgroundSyncTasks() {
@@ -7169,6 +7170,7 @@ const server = http.createServer(async (req, res) => {
       const result = action === "test"
         ? await ozonIntegrationService.testStore(storeId)
         : await ozonIntegrationService.syncStore(storeId);
+      if (action === "sync") result.reconciliation = await ozonIntegrationService.reconcileWaitingOrders({ storeId, limit: 50 });
       appendActionLog(auth, action === "test" ? "测试 Ozon 店铺授权" : "同步 Ozon 待处理订单", "ozon_store", storeId, action === "sync" ? { count: result.count } : {});
       sendJson(res, 200, { ok: true, result, payload: ozonIntegrationService.payload(auth.user) });
       return;
@@ -7196,7 +7198,7 @@ const server = http.createServer(async (req, res) => {
       }
       const payload = await parseRequestBody(req);
       const route = ozonIntegrationService.saveRoute(payload, auth.user);
-      appendActionLog(auth, "配置 Ozon 仓库路由", "ozon_route", `${route.storeId}:${route.ozonWarehouseId}`, { warehouseConnectionId: route.warehouseConnectionId, shippingMethod: route.shippingMethod });
+      appendActionLog(auth, "配置 Ozon 仓库路由", "ozon_route", `${route.storeId}:${route.ozonWarehouseId}`, { warehouseConnectionId: route.warehouseConnectionId });
       sendJson(res, 200, ozonIntegrationService.payload(auth.user));
       return;
     }
@@ -7240,7 +7242,7 @@ const server = http.createServer(async (req, res) => {
       const order = action === "review"
         ? ozonIntegrationService.reviewOrder(postingNumber, requestPayload, auth.user)
         : await ozonIntegrationService.pushOrder(postingNumber, auth.user);
-      appendActionLog(auth, action === "review" ? "审核 Ozon 订单" : "推送 Ozon 订单到俄罗斯仓", "ozon_order", postingNumber, { warehouseId: order.targetWarehouseId, wmsOrderNo: order.push?.wmsOrderNo || "" });
+      appendActionLog(auth, action === "review" ? "审核 Ozon 订单" : "查询并关联 Ozon WMS 订单", "ozon_order", postingNumber, { warehouseId: order.targetWarehouseId, wmsOrderNo: order.push?.wmsOrderNo || "", status: order.push?.status || "" });
       sendJson(res, 200, { ok: true, order, payload: ozonIntegrationService.payload(auth.user) });
       return;
     }
