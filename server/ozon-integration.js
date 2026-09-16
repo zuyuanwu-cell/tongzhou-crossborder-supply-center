@@ -865,14 +865,21 @@ export function createOzonIntegrationService({
           })),
         });
         if (!result?.found || !text(result.orderNo)) {
+          const generationRequested = result?.generationRequested === true;
+          const platformPending = result?.platformPending === true;
           order.push = {
             ...order.push,
-            status: "waiting_sync",
+            status: generationRequested ? "generation_pending" : platformPending ? "platform_pending" : "waiting_sync",
             wmsOrderNo: "",
             checkedAt: clock().toISOString(),
             lastError: "",
           };
-          appendTimeline(order, "wms_waiting_sync", actor, "WMS 暂未拉取该 Ozon 订单，本次没有执行任何写入");
+          appendTimeline(order, generationRequested ? "wms_generation_pending" : platformPending ? "wms_platform_pending" : "wms_waiting_sync", actor,
+            generationRequested
+              ? "WMS 已接收正式出库单生成请求，等待开放接口返回结果"
+              : platformPending
+                ? "WMS 已拉取平台订单，当前处于待生成订单"
+                : "WMS 尚未返回该 Ozon 订单，本次没有执行任何写入");
           persist();
           return orderProjection(state, order, dependencies);
         }

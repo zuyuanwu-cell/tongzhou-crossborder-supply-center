@@ -17,6 +17,22 @@ function extractRequest(body) {
   return { service, params };
 }
 
+function fakeResponse(body, { status = 200, headers = {} } = {}) {
+  const normalized = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get(name) { return normalized[String(name).toLowerCase()] || null; },
+      getSetCookie() {
+        const value = normalized["set-cookie"];
+        return value ? (Array.isArray(value) ? value : [value]) : [];
+      },
+    },
+    text: async () => typeof body === "string" ? body : JSON.stringify(body),
+  };
+}
+
 const connection = {
   id: "ru-wh-1",
   name: "俄罗斯1仓",
@@ -158,6 +174,102 @@ try {
   assert.equal(requests[1].params.forceVerify, 0);
   assert.equal(requests[1].params.warehouse_code, "MX001");
   assert.equal(requests[1].params.shipping_method, "MXZFH");
+
+  requests.length = 0;
+  let generatedLookup = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    const requestUrl = new URL(String(url));
+    const body = String(options.body || "");
+    if (requestUrl.pathname === "/default/svc/web-service") {
+      const request = extractRequest(body);
+      requests.push({ kind: "soap", ...request });
+      if (request.service === "getOrderByRefCode") {
+        generatedLookup += 1;
+        if (generatedLookup === 1) return fakeResponse(xmlResponse({ ask: "Failure", message: "not found" }));
+        const verifiedAfterModify = generatedLookup > 2;
+        return fakeResponse(xmlResponse({
+          ask: "Success",
+          data: {
+            order_code: "RU-OZON-GENERATED",
+            reference_no: "57004853-0264-2",
+            order_status: verifiedAfterModify ? "W" : "C",
+            platform: "OZON",
+            platform_shop: "FXYZ_RUOZ6005_5610463",
+            warehouse_code: "MX001",
+            shipping_method: "MXZFH",
+            consignee_country_code: "RU",
+            consignee_city: "Moscow",
+            consignee_address1: "Ozon FBS address",
+            consigne_zipcode: "101000",
+            consignee_name: "Ozon buyer",
+            consignee_phone: "+79990000000",
+            items: [{ product_sku: verifiedAfterModify ? "TZKJ-RU-0016" : "5540761202", quantity: 1 }],
+          },
+        }));
+      }
+      if (request.service === "getAccount") {
+        return fakeResponse(xmlResponse({ ask: "Success", data: { company_code: "TZKJ01" } }));
+      }
+      if (request.service === "getSsoToken") {
+        return fakeResponse(xmlResponse({ ask: "Success", data: { userCode: "TZKJ01", token: "one-time-token" } }));
+      }
+      if (request.service === "modifyOrder") {
+        return fakeResponse(xmlResponse({ ask: "Success", order_code: "RU-OZON-GENERATED" }));
+      }
+      throw new Error(`unexpected SOAP service: ${request.service}`);
+    }
+    if (requestUrl.pathname === "/default/index/quick-login") {
+      requests.push({ kind: "web-login" });
+      return fakeResponse("", { status: 302, headers: { location: "/", "set-cookie": "PHPSESSID=session-id; Path=/; HttpOnly" } });
+    }
+    if (requestUrl.pathname === "/") {
+      requests.push({ kind: "web-home" });
+      return fakeResponse("<html><title>WMS</title></html>");
+    }
+    if (requestUrl.pathname === "/platform/order/list/page/1/pageSize/20") {
+      const params = new URLSearchParams(body);
+      requests.push({ kind: "platform-list", params });
+      return fakeResponse({
+        state: 1,
+        total: "1",
+        orderIdArr: ["3800052"],
+        data: {
+          3800052: {
+            order_id: "3800052",
+            platform: "ozon",
+            order_status: "2",
+            refrence_no: "57004853-0264-2",
+            user_account: "FXYZ_RUOZ6005_5610463",
+          },
+        },
+      });
+    }
+    if (requestUrl.pathname === "/platform/order/list") {
+      requests.push({ kind: "platform-page" });
+      return fakeResponse('<select name="order_allot[warehouse_id]"><option value="0">请选择</option><option value="1" data-code="MX001" selected>俄罗斯1仓 MX001</option></select>');
+    }
+    if (requestUrl.pathname === "/platform/order-op/verify") {
+      const params = new URLSearchParams(body);
+      requests.push({ kind: "platform-verify", params, search: requestUrl.search });
+      return fakeResponse({ ask: 1, success_count: 1, fail_count: 0, successArr: [{ ref_id: "57004853-0264-2" }], failArr: [] });
+    }
+    throw new Error(`unexpected WMS web request: ${requestUrl.pathname}`);
+  };
+  const generated = await updateAndVerifyWarehouseOutboundOrder({ ...connection, baseUrl: "https://wms.example.test" }, {
+    referenceNo: "57004853-0264-2",
+    platformShop: "FXYZ_RUOZ6005_5610463",
+    warehouseCode: "MX001",
+    shippingMethod: "MXZFH",
+    lines: [{ sku: "TZKJ-RU-0016", quantity: 1, productName: "测试商品", offerId: "TZKJ-RU-0016*1", unitPrice: 799 }],
+  });
+  assert.equal(generated.verified, true);
+  assert.equal(generated.generatedFromPlatformOrder, true);
+  assert.equal(generated.orderNo, "RU-OZON-GENERATED");
+  assert.equal(requests.find((request) => request.kind === "platform-list").params.get("refrenceNo"), "57004853-0264-2");
+  assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("ref_id[]"), "57004853-0264-2");
+  assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("order_allot[warehouse_id]"), "1");
+  assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("order_allot[shipping_method]"), "MXZFH");
+  assert.equal(requests.filter((request) => request.service === "modifyOrder").length, 1);
 
   requests.length = 0;
   globalThis.fetch = async (_url, options = {}) => {

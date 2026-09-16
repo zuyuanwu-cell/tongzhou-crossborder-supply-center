@@ -339,6 +339,247 @@ async function postYun(credentials, service, params = {}) {
   }
 }
 
+function yunWebOrigin(credentials) {
+  try {
+    return new URL(credentials.baseUrl).origin;
+  } catch {
+    throw new Error("YunWMS 地址无效，不能连接平台订单模块。");
+  }
+}
+
+function splitSetCookieHeader(value) {
+  return String(value || "")
+    .split(/,(?=\s*[^;,=\s]+=[^;,]*)/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function responseSetCookies(headers) {
+  if (typeof headers?.getSetCookie === "function") return headers.getSetCookie();
+  return splitSetCookieHeader(headers?.get?.("set-cookie"));
+}
+
+function absorbCookies(jar, headers) {
+  for (const header of responseSetCookies(headers)) {
+    const pair = header.split(";", 1)[0];
+    const separator = pair.indexOf("=");
+    if (separator <= 0) continue;
+    jar.set(pair.slice(0, separator).trim(), pair.slice(separator + 1).trim());
+  }
+}
+
+function cookieHeader(jar) {
+  return Array.from(jar.entries()).map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+async function requestYunWeb(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), wmsTimeoutMs());
+  try {
+    const response = await fetch(url, { redirect: "manual", ...options, signal: controller.signal });
+    const text = await response.text();
+    return { response, text };
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("YunWMS 平台订单请求超时，请稍后重试。");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function nestedYunData(payload) {
+  return payload?.data?.data && typeof payload.data.data === "object" ? payload.data.data
+    : payload?.data && typeof payload.data === "object" ? payload.data : {};
+}
+
+async function createYunWebSession(credentials) {
+  const account = await postYun(credentials, "getAccount", {});
+  const companyCode = firstText(account?.data?.company_code, account?.data?.companyCode);
+  if (!companyCode) throw new Error("YunWMS 未返回公司代码，不能进入平台订单模块。");
+
+  const sso = await postYun(credentials, "getSsoToken", { company_code: companyCode });
+  const ssoData = nestedYunData(sso);
+  const userCode = firstText(ssoData.userCode, ssoData.user_code);
+  const token = firstText(ssoData.token);
+  if (!userCode || !token) throw new Error("YunWMS 未返回一次性登录凭证，不能处理待生成订单。");
+
+  const origin = yunWebOrigin(credentials);
+  const jar = new Map();
+  let target = new URL("/default/index/quick-login", origin);
+  target.searchParams.set("userCode", userCode);
+  target.searchParams.set("token", token);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (target.origin !== origin) throw new Error("YunWMS 登录跳转到了其他域名，已停止处理。");
+    const { response } = await requestYunWeb(target, {
+      headers: cookieHeader(jar) ? { Cookie: cookieHeader(jar) } : {},
+    });
+    absorbCookies(jar, response.headers);
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      if (!response.ok) throw new Error(`YunWMS 一次性登录失败（HTTP ${response.status}）。`);
+      break;
+    }
+    const location = response.headers.get("location");
+    if (!location) throw new Error("YunWMS 一次性登录缺少跳转地址。");
+    target = new URL(location, target);
+  }
+  if (!jar.size) throw new Error("YunWMS 一次性登录未建立会话，请检查接口授权范围。");
+  return { origin, cookies: cookieHeader(jar) };
+}
+
+function parseYunWebJson(text, label) {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`YunWMS ${label}返回了非 JSON 内容，请稍后重试。`);
+  }
+}
+
+async function postYunWeb(session, pathname, params = {}) {
+  const body = new URLSearchParams();
+  for (const [name, value] of Object.entries(params)) {
+    if (Array.isArray(value)) value.forEach((item) => body.append(name, String(item ?? "")));
+    else body.append(name, String(value ?? ""));
+  }
+  const url = new URL(pathname, session.origin);
+  if (url.origin !== session.origin) throw new Error("YunWMS 请求地址越界，已停止处理。");
+  const { response, text } = await requestYunWeb(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+      Referer: `${session.origin}/platform/order/list`,
+      Cookie: session.cookies,
+    },
+    body: body.toString(),
+  });
+  if (!response.ok) throw new Error(`YunWMS 平台订单接口失败（HTTP ${response.status}）。`);
+  return parseYunWebJson(text, "平台订单接口");
+}
+
+function yunPlatformRows(payload) {
+  if (!payload?.data || typeof payload.data !== "object" || Array.isArray(payload.data)) return [];
+  const ids = Array.isArray(payload.orderIdArr) ? payload.orderIdArr.map(String) : Object.keys(payload.data);
+  return ids.map((id) => payload.data[id]).filter((row) => row && typeof row === "object");
+}
+
+function normalizeYunPlatformReference(row = {}) {
+  return firstText(row.refrence_no, row.reference_no, row.refrence_no_platform, row.third_part_order_no);
+}
+
+function comparableWmsShop(value) {
+  return firstText(value).replace(/[\s-]+/g, "_").toUpperCase();
+}
+
+async function findYunPendingPlatformOrder(session, referenceNo, expectedShop = "") {
+  const payload = await postYunWeb(session, "/platform/order/list/page/1/pageSize/20", {
+    status: "2",
+    refrenceNo: referenceNo,
+  });
+  if (Number(payload?.state) !== 1) {
+    throw new Error(`YunWMS 待生成订单查询失败：${firstText(payload?.message) || "未知错误"}`);
+  }
+  const matches = yunPlatformRows(payload).filter((row) => normalizeYunPlatformReference(row) === referenceNo);
+  if (!matches.length) return { found: false, payload };
+  if (matches.length > 1) throw new Error("YunWMS 返回多张相同参考号的待生成订单，已停止自动处理，请联系管理员核对。");
+  const row = matches[0];
+  if (firstText(row.platform).toUpperCase() !== "OZON") {
+    throw new Error(`YunWMS 待生成订单的平台为 ${firstText(row.platform) || "未知"}，与 Ozon 不一致。`);
+  }
+  const actualShop = firstText(row.user_account, row.platform_user_name);
+  if (expectedShop && actualShop && comparableWmsShop(actualShop) !== comparableWmsShop(expectedShop)) {
+    throw new Error(`YunWMS 待生成订单店铺 ${actualShop} 与路由店铺 ${expectedShop} 不一致，已停止处理。`);
+  }
+  return { found: true, row, payload };
+}
+
+function htmlAttribute(tag, name) {
+  const match = String(tag || "").match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, "i"));
+  return firstText(match?.[1]);
+}
+
+function decodeHtmlLabel(value) {
+  return String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function yunWarehouseOptionsFromHtml(html) {
+  const select = String(html || "").match(/<select[^>]*name=["']order_allot\[warehouse_id\]["'][^>]*>([\s\S]*?)<\/select>/i);
+  if (!select) return [];
+  return Array.from(select[1].matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/gi)).map((match) => ({
+    value: htmlAttribute(match[1], "value"),
+    label: decodeHtmlLabel(match[2]),
+    selected: /\bselected(?:\s*=|\s|$)/i.test(match[1]),
+    raw: match[1],
+  })).filter((option) => option.value && option.value !== "0");
+}
+
+async function resolveYunWebWarehouseId(session, input = {}) {
+  const explicit = firstText(input.webWarehouseId, input.connection?.webWarehouseId, input.connection?.credentials?.webWarehouseId);
+  if (explicit) return explicit;
+  const { response, text } = await requestYunWeb(new URL("/platform/order/list", session.origin), {
+    headers: { Cookie: session.cookies },
+  });
+  if (!response.ok) throw new Error(`YunWMS 仓库选项读取失败（HTTP ${response.status}）。`);
+  const options = yunWarehouseOptionsFromHtml(text);
+  const warehouseCode = firstText(input.warehouseCode).toUpperCase();
+  const warehouseName = firstText(input.connection?.name).toUpperCase();
+  const exact = options.find((option) => warehouseCode && `${option.raw} ${option.label}`.toUpperCase().includes(warehouseCode))
+    || options.find((option) => warehouseName && option.label.toUpperCase().includes(warehouseName));
+  if (exact) return exact.value;
+  const selected = options.filter((option) => option.selected);
+  if (selected.length === 1) return selected[0].value;
+  if (options.length === 1) return options[0].value;
+  throw new Error("YunWMS 有多个可用仓库，无法自动确定平台订单的处理仓库；请先完善仓库路由代码。");
+}
+
+function yunVerifyFailureMessage(payload) {
+  const failures = Array.isArray(payload?.failArr) ? payload.failArr : [];
+  return failures.map((item) => firstText(item?.message, item?.msg, item?.rs?.message)).filter(Boolean).join("；")
+    || firstText(payload?.message, payload?.msg) || "未知错误";
+}
+
+async function generateYunPendingPlatformOrder(connection, credentials, input = {}) {
+  const referenceNo = firstText(input.referenceNo);
+  const session = await createYunWebSession(credentials);
+  const pending = await findYunPendingPlatformOrder(session, referenceNo, firstText(input.platformShop));
+  if (!pending.found) return { found: false, platformPending: false, generationRequested: false };
+  const shippingMethod = firstText(input.shippingMethod);
+  if (!shippingMethod) throw new Error("未配置 WMS 物流方式代码，不能生成待审核出库单。");
+  const warehouseId = await resolveYunWebWarehouseId(session, {
+    connection,
+    warehouseCode: firstText(input.warehouseCode, connection?.warehouseCode, connection?.resolvedWarehouseId),
+    webWarehouseId: input.webWarehouseId,
+  });
+  const payload = await postYunWeb(session, "/platform/order-op/verify?type=D&order_type=0", {
+    "order_allot[warehouse_id]": warehouseId,
+    "order_allot[shipping_method]": shippingMethod,
+    "order_allot[tail_method]": "",
+    "ref_id[]": referenceNo,
+  });
+  const successCount = firstNumber(payload?.success_count, payload?.successCount);
+  const failCount = firstNumber(payload?.fail_count, payload?.failCount);
+  if (successCount !== 1 || failCount > 0) {
+    throw new Error(`YunWMS 生成正式出库单失败：${yunVerifyFailureMessage(payload)}`);
+  }
+  return {
+    found: true,
+    platformPending: true,
+    generationRequested: true,
+    platformOrderId: firstText(pending.row?.order_id),
+    platformShop: firstText(pending.row?.user_account, pending.row?.platform_user_name),
+    warehouseId,
+  };
+}
+
 async function fetchYunPageList(credentials, service, params = {}, pageSize = 200, maxPages = 20) {
   const items = [];
   for (let page = 1; page <= maxPages; page += 1) {
@@ -840,9 +1081,38 @@ export async function updateAndVerifyWarehouseOutboundOrder(connection, input = 
   const referenceNo = firstText(input.referenceNo);
   if (!referenceNo) throw new Error("缺少 Ozon 发货单号，不能设定 SKU 并审单。");
   const lines = validateCreateLines(input);
-  const queried = await queryYunOutboundOrder(connection, referenceNo);
-  const current = queried.summary;
-  if (!current.found || !current.orderNo) return { ...current, updated: false, verified: false };
+  let queried = await queryYunOutboundOrder(connection, referenceNo);
+  let current = queried.summary;
+  let generatedFromPlatformOrder = false;
+  if (!current.found || !current.orderNo) {
+    const generated = await generateYunPendingPlatformOrder(connection, queried.credentials, input);
+    if (!generated.found) {
+      return {
+        ...current,
+        platformPending: false,
+        generationRequested: false,
+        updated: false,
+        verified: false,
+      };
+    }
+    generatedFromPlatformOrder = true;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      queried = await queryYunOutboundOrder(connection, referenceNo);
+      current = queried.summary;
+      if (current.found && current.orderNo) break;
+    }
+    if (!current.found || !current.orderNo) {
+      return {
+        ...current,
+        platformPending: true,
+        generationRequested: true,
+        pendingConfirmation: true,
+        updated: false,
+        verified: false,
+      };
+    }
+  }
 
   const platform = firstText(current.platform).toUpperCase();
   if (platform && platform !== "OZON") {
@@ -863,7 +1133,7 @@ export async function updateAndVerifyWarehouseOutboundOrder(connection, input = 
     if (!outboundLinesMatch(current.items, lines)) {
       throw new Error(`WMS 订单已${status === "D" ? "发货" : "审核到待发货"}，但 SKU / 数量与中台不一致，不能再自动修改。`);
     }
-    return { ...current, updated: false, verified: true, alreadyVerified: true };
+    return { ...current, updated: false, verified: true, alreadyVerified: true, generatedFromPlatformOrder };
   }
   if (status !== "C") {
     const label = { H: "暂存", N: "异常订单", P: "问题件", X: "已作废" }[status] || status || "未知";
@@ -944,6 +1214,7 @@ export async function updateAndVerifyWarehouseOutboundOrder(connection, input = 
     updated: true,
     verified: verified && linesConfirmed,
     pendingConfirmation: !verified || !linesConfirmed,
+    generatedFromPlatformOrder,
   };
 }
 
