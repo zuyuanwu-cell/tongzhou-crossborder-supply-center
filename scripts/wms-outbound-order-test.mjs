@@ -239,6 +239,7 @@ try {
             platform: "ozon",
             order_status: "2",
             refrence_no: "57004853-0264-2",
+            refrence_no_platform: "TZKJ01-260916-0936",
             user_account: "FXYZ_RUOZ6005_5610463",
           },
         },
@@ -266,7 +267,7 @@ try {
   assert.equal(generated.generatedFromPlatformOrder, true);
   assert.equal(generated.orderNo, "RU-OZON-GENERATED");
   assert.equal(requests.find((request) => request.kind === "platform-list").params.get("refrenceNo"), "57004853-0264-2");
-  assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("ref_id[]"), "57004853-0264-2");
+  assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("ref_id[]"), "TZKJ01-260916-0936", "YunWMS verify must use the platform order reference rendered by its own UI");
   assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("order_allot[warehouse_id]"), "1");
   assert.equal(requests.find((request) => request.kind === "platform-verify").params.get("order_allot[shipping_method]"), "MXZFH");
   assert.equal(requests.filter((request) => request.service === "modifyOrder").length, 1);

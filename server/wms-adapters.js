@@ -559,11 +559,17 @@ async function generateYunPendingPlatformOrder(connection, credentials, input = 
     warehouseCode: firstText(input.warehouseCode, connection?.warehouseCode, connection?.resolvedWarehouseId),
     webWarehouseId: input.webWarehouseId,
   });
+  // YunWMS renders this exact value into the selected row's `ref_id`
+  // attribute. The endpoint does not accept the Ozon posting/reference
+  // number here; sending it produces the misleading "current OMS data"
+  // authorization error even though the order belongs to this account.
+  const platformReferenceId = firstText(pending.row?.refrence_no_platform);
+  if (!platformReferenceId) throw new Error("YunWMS 待生成订单缺少平台单号，已停止自动审单。请在 WMS 核对订单数据。");
   const payload = await postYunWeb(session, "/platform/order-op/verify?type=D&order_type=0", {
     "order_allot[warehouse_id]": warehouseId,
     "order_allot[shipping_method]": shippingMethod,
     "order_allot[tail_method]": "",
-    "ref_id[]": referenceNo,
+    "ref_id[]": platformReferenceId,
   });
   const successCount = firstNumber(payload?.success_count, payload?.successCount);
   const failCount = firstNumber(payload?.fail_count, payload?.failCount);
@@ -575,6 +581,7 @@ async function generateYunPendingPlatformOrder(connection, credentials, input = 
     platformPending: true,
     generationRequested: true,
     platformOrderId: firstText(pending.row?.order_id),
+    platformReferenceId,
     platformShop: firstText(pending.row?.user_account, pending.row?.platform_user_name),
     warehouseId,
   };
