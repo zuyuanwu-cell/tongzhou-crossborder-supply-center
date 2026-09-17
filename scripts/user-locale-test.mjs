@@ -10,6 +10,7 @@ assert.equal(normalizeUiLocale(), "zh-CN");
 assert.equal(normalizeUiLocale("zh_cn"), "zh-CN");
 assert.equal(normalizeUiLocale("EN-us"), "en");
 assert.equal(normalizeUiLocale("id-ID"), "id");
+assert.equal(publicUser(null).locale, "zh-CN");
 
 const created = createLocalUser({
   username: "locale-test",

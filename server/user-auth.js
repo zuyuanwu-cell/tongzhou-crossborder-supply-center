@@ -161,7 +161,7 @@ export function normalizeStoredUser(user) {
 
 export function publicUser(user) {
   if (!user) {
-    const guest = { role: "guest", roleLabel: "游客", permissionOverrides: { allow: [], deny: [] }, dataScopes: normalizeDataScopes() };
+    const guest = { role: "guest", roleLabel: "游客", locale: "zh-CN", permissionOverrides: { allow: [], deny: [] }, dataScopes: normalizeDataScopes() };
     return { ...guest, permissions: effectivePermissions(guest) };
   }
   const role = normalizeRole(user.role);
