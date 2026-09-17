@@ -347,6 +347,7 @@ const patterns: Array<{ pattern: RegExp; en: string; id: string }> = [
   { pattern: /^(\d{4})年(\d{1,2})月$/, en: "$1-$2", id: "$2/$1" },
   { pattern: /^恶化\s*(\d[\d,]*)$/, en: "Deteriorated $1", id: "Memburuk $1" },
   { pattern: /^(\d[\d,]*)\s*行$/, en: "$1 rows", id: "$1 baris" },
+  { pattern: /^每行\s*(\d+)\s*个产品$/, en: "$1 products per row", id: "$1 produk per baris" },
   { pattern: /^Slow-moving\s*(\d[\d,]*)\s*\/\s*滞销\s*(\d[\d,]*)$/, en: "Slow-moving $1 / dead stock $2", id: "Pergerakan lambat $1 / stok mati $2" },
   { pattern: /^改善\s*(\d[\d,]*)\s*\/\s*恶化\s*(\d[\d,]*)$/, en: "Improved $1 / deteriorated $2", id: "Membaik $1 / memburuk $2" },
   { pattern: /^匹配订单行\s*(\d[\d,]*)$/, en: "Matched order lines $1", id: "Baris pesanan cocok $1" },
