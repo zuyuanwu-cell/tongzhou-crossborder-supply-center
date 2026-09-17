@@ -1039,6 +1039,11 @@ const entries = [
   ["平台后台订单号或 CSV 内容", "Platform order numbers or CSV content", "Nomor pesanan platform atau isi CSV"],
   ["立即同步", "Sync now", "Sinkronkan sekarang"],
   ["搜索发货单号、订单号或 SKU", "Search shipment number, order number, or SKU", "Cari nomor pengiriman, nomor pesanan, atau SKU"],
+  ["全部类型", "All types", "Semua jenis"],
+  ["全部市场", "All markets", "Semua pasar"],
+  ["继续显示（剩余", "Show more (", "Tampilkan lagi ("],
+  ["条）", "remaining)", "tersisa)"],
+  ["平台订单号\n576231234567890123\n576239876543210987", "Platform order numbers\n576231234567890123\n576239876543210987", "Nomor pesanan platform\n576231234567890123\n576239876543210987"],
 ] as const;
 
 export const pageMessages: Record<string, PageTranslation> = Object.fromEntries(
