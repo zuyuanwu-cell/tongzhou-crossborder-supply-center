@@ -357,6 +357,7 @@ const patterns: Array<{ pattern: RegExp; en: string; id: string }> = [
   { pattern: /^订单缓存未完整覆盖\s*(.+)\s*至\s*(.+)，当前差异仅供排查参考。$/, en: "The order cache does not fully cover $1 to $2; current variances are for investigation only.", id: "Cache pesanan tidak sepenuhnya mencakup $1 hingga $2; selisih saat ini hanya untuk pemeriksaan." },
   { pattern: /^来自同舟供应链数智化系统，已同步\s*(\d[\d,]*)\s*条记录，覆盖\s*(\d[\d,]*)\s*个仓库。$/, en: "Synced $1 records covering $2 warehouses from the Tongzhou Digital Supply Chain.", id: "$1 catatan dari Sistem Rantai Pasok Digital Tongzhou telah disinkronkan dan mencakup $2 gudang." },
   { pattern: /^GMT\+8\s*·\s*当前\s*(.+)$/, en: "GMT+8 · Current $1", id: "GMT+8 · Saat ini $1" },
+  { pattern: /^上班时间\s*(.+?)\s*-\s*(.+?)。$/, en: "Opening hours $1 - $2.", id: "Jam buka $1 - $2." },
   { pattern: /^当前待办\s*(\d[\d,]*)$/, en: "Current pending $1", id: "Tugas saat ini $1" },
   { pattern: /^本次读取\s*(.+)$/, en: "Loaded at $1", id: "Dimuat pada $1" },
   { pattern: /^(\d[\d,]*)\s*项进行中$/, en: "$1 in progress", id: "$1 sedang berjalan" },
