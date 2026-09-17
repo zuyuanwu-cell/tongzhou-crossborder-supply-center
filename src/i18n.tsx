@@ -1,5 +1,6 @@
 import React from "react";
 import type { UiLocale } from "./api";
+import { pageMessages } from "./i18n-pages";
 
 type Translation = { en: string; id: string };
 
@@ -10,6 +11,7 @@ export const localeOptions: Array<{ value: UiLocale; label: string; shortLabel: 
 ];
 
 const messages: Record<string, Translation> = {
+  ...pageMessages,
   "语言": { en: "Language", id: "Bahasa" },
   "切换语言": { en: "Change language", id: "Ganti bahasa" },
   "正在保存语言偏好": { en: "Saving language preference", id: "Menyimpan preferensi bahasa" },
@@ -294,6 +296,110 @@ const messages: Record<string, Translation> = {
 };
 
 const patterns: Array<{ pattern: RegExp; en: string; id: string }> = [
+  { pattern: /^订单\s*(\d+)\s*天前。请先同步后再用于备货、补货或经营复盘判断。$/, en: "Orders are $1 days old. Sync before using them for stock planning, replenishment, or business review.", id: "Data pesanan berumur $1 hari. Sinkronkan sebelum digunakan untuk perencanaan stok, pengisian ulang, atau evaluasi bisnis." },
+  { pattern: /^订单\s*(\d+)\s*天前。用于备货或经营复盘前建议先完成同步。$/, en: "Orders are $1 days old. Sync before stock planning or business review.", id: "Data pesanan berumur $1 hari. Sinkronkan sebelum perencanaan stok atau evaluasi bisnis." },
+  { pattern: /^订单\s*(\d+)\s*天前$/, en: "Orders are $1 days old", id: "Data pesanan berumur $1 hari" },
+  { pattern: /^(\d[\d,]*)\s*个可见商品\s*·\s*不含仓库孤儿 SKU$/, en: "$1 visible products · excludes uncatalogued warehouse SKUs", id: "$1 produk terlihat · tidak termasuk SKU gudang tanpa katalog" },
+  { pattern: /^(.*)\s*·\s*(\d[\d,]*)\s*条未纳入$/, en: "$1 · $2 lines excluded", id: "$1 · $2 baris tidak disertakan" },
+  { pattern: /^产品风险\s*(\d[\d,]*)\s*\/\s*未建档\s*(\d[\d,]*)$/, en: "Product risks $1 / uncatalogued $2", id: "Risiko produk $1 / belum terdaftar $2" },
+  { pattern: /^(\d[\d,]*)\s*项$/, en: "$1 items", id: "$1 item" },
+  { pattern: /^(.+)\s+动销诊断$/, en: "$1 movement diagnosis", id: "$1 diagnosis pergerakan" },
+  { pattern: /^库存 SKU\s*(\d[\d,]*)，近 90 天订单\s*(\d[\d,]*)，已匹配订单\s*(\d[\d,]*)。$/, en: "Inventory SKUs $1; orders in the last 90 days $2; matched orders $3.", id: "SKU inventaris $1; pesanan 90 hari terakhir $2; pesanan cocok $3." },
+  { pattern: /^净建议备货\s*(\d[\d,]*)，请确认采纳、放弃或创建备货计划。$/, en: "Net recommended stock $1. Accept, dismiss, or create a stock plan.", id: "Rekomendasi stok bersih $1. Terima, abaikan, atau buat rencana persediaan." },
+  { pattern: /^覆盖\s*(\d+)\s*\/\s*(\d+)\s*个仓库；当前结论以最弱依赖为准。$/, en: "Coverage: $1 of $2 warehouses; the conclusion uses the weakest dependency.", id: "Cakupan: $1 dari $2 gudang; kesimpulan mengikuti dependensi terlemah." },
+  { pattern: /^(\d[\d,]*)\s*个阻断$/, en: "$1 blockers", id: "$1 kendala" },
+  { pattern: /^生成于\s*(.+)$/, en: "Generated at $1", id: "Dibuat pada $1" },
+  { pattern: /^下一次：(.+)$/, en: "Next: $1", id: "Berikutnya: $1" },
+  { pattern: /^(\d[\d,]*)\s*项数据按不同周期自动更新，页面只读取已准备好的快照。$/, en: "$1 datasets update on separate schedules; pages read prepared snapshots only.", id: "$1 kumpulan data diperbarui menurut jadwal berbeda; halaman hanya membaca snapshot yang siap." },
+  { pattern: /^(\d[\d,]*)\s*项待处理$/, en: "$1 pending", id: "$1 tertunda" },
+  { pattern: /^(\d[\d,]*)\s*项更新中$/, en: "$1 updating", id: "$1 sedang diperbarui" },
+  { pattern: /^(\d[\d,]*)\s*个仓库订单失败，今日订单可能不完整$/, en: "$1 warehouse order syncs failed; today's orders may be incomplete", id: "$1 sinkronisasi pesanan gudang gagal; pesanan hari ini mungkin tidak lengkap" },
+  { pattern: /^(\d[\d,]*)\s*种币种$/, en: "$1 currencies", id: "$1 mata uang" },
+  { pattern: /^预计日出库\s*(\d[\d,]*)$/, en: "Estimated daily outbound $1", id: "Perkiraan keluar harian $1" },
+  { pattern: /^覆盖仓库\s*(\d[\d,]*)$/, en: "Warehouses covered $1", id: "Gudang tercakup $1" },
+  { pattern: /^最近订单同步\s*(.+)$/, en: "Last order sync $1", id: "Sinkronisasi pesanan terakhir $1" },
+  { pattern: /^(\d[\d,]*)\s*个仓库\s*·\s*(.+)$/, en: "$1 warehouses · $2", id: "$1 gudang · $2" },
+  { pattern: /^(\d[\d,]*)\s*条样例$/, en: "$1 samples", id: "$1 contoh" },
+  { pattern: /^(\d[\d,]*)\s*单\s+(.+)$/, en: "$1 orders · $2", id: "$1 pesanan · $2" },
+  { pattern: /^(\d[\d,]*)\s*单$/, en: "$1 orders", id: "$1 pesanan" },
+  { pattern: /^部分仓库订单正在后台继续同步：(.+)。同步完成后刷新本页即可看到补齐数据。$/, en: "Some warehouse orders are still syncing in the background: $1. Refresh this page after completion to view the complete data.", id: "Sebagian pesanan gudang masih disinkronkan di latar belakang: $1. Muat ulang halaman ini setelah selesai untuk melihat data lengkap." },
+  { pattern: /^(.+)。同步完成后刷新本页即可看到补齐数据。$/, en: "$1. Refresh this page after completion to view the complete data.", id: "$1. Muat ulang halaman ini setelah selesai untuk melihat data lengkap." },
+  { pattern: /^(\d[\d,]*)\s*个 SKU$/, en: "$1 SKUs", id: "$1 SKU" },
+  { pattern: /^(\d[\d,]*)\s*个风险$/, en: "$1 risks", id: "$1 risiko" },
+  { pattern: /^(\d+)天$/, en: "$1 days", id: "$1 hari" },
+  { pattern: /^(\d+)日\s*([\d.]+)$/, en: "$1-day $2", id: "$1 hari $2" },
+  { pattern: /^(\d+)日$/, en: "$1-day", id: "$1 hari" },
+  { pattern: /^当前显示\s*(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*条(?:记录)?。?$/, en: "Showing $1 of $2 records.", id: "Menampilkan $1 dari $2 catatan." },
+  { pattern: /^当前显示\s*(\d[\d,]*)\s*\/\s*(\d[\d,]*)$/, en: "Showing $1 of $2", id: "Menampilkan $1 dari $2" },
+  { pattern: /^每页\s*(\d[\d,]*)\s*条$/, en: "$1 per page", id: "$1 per halaman" },
+  { pattern: /^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, en: "Page $1 of $2", id: "Halaman $1 dari $2" },
+  { pattern: /^增长\s*([\d.]+)%$/, en: "Up $1%", id: "Naik $1%" },
+  { pattern: /^下降\s*([\d.]+)%$/, en: "Down $1%", id: "Turun $1%" },
+  { pattern: /^(\d{4}-\d{2}-\d{2})\s*快照$/, en: "$1 snapshot", id: "Snapshot $1" },
+  { pattern: /^(\d[\d,]*)\s*件在途$/, en: "$1 units in transit", id: "$1 unit dalam perjalanan" },
+  { pattern: /^(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*件已估值$/, en: "$1 / $2 units valued", id: "$1 / $2 unit dinilai" },
+  { pattern: /^([¥$]?[\d,.]+)万$/, en: "$1×10K", id: "$1×10 ribu" },
+  { pattern: /^共\s*(\d[\d,]*)\s*valid periods$/, en: "$1 valid periods", id: "$1 periode valid" },
+  { pattern: /^(\d[\d,]*)\s*个待补$/, en: "$1 missing", id: "$1 belum lengkap" },
+  { pattern: /^共\s*(\d[\d,]*)\s*个 SKU × 国家$/, en: "$1 SKU × country combinations", id: "$1 kombinasi SKU × negara" },
+  { pattern: /^已对比\s*(\d{4})年(\d{1,2})月\s*与\s*(\d{4})年(\d{1,2})月$/, en: "Compared $1-$2 with $3-$4", id: "Membandingkan $2/$1 dengan $4/$3" },
+  { pattern: /^已对比\s*(.+)\s*与\s*(.+)$/, en: "Compared $1 with $2", id: "Membandingkan $1 dengan $2" },
+  { pattern: /^(\d{4})年(\d{1,2})月$/, en: "$1-$2", id: "$2/$1" },
+  { pattern: /^恶化\s*(\d[\d,]*)$/, en: "Deteriorated $1", id: "Memburuk $1" },
+  { pattern: /^(\d[\d,]*)\s*行$/, en: "$1 rows", id: "$1 baris" },
+  { pattern: /^Slow-moving\s*(\d[\d,]*)\s*\/\s*滞销\s*(\d[\d,]*)$/, en: "Slow-moving $1 / dead stock $2", id: "Pergerakan lambat $1 / stok mati $2" },
+  { pattern: /^改善\s*(\d[\d,]*)\s*\/\s*恶化\s*(\d[\d,]*)$/, en: "Improved $1 / deteriorated $2", id: "Membaik $1 / memburuk $2" },
+  { pattern: /^匹配订单行\s*(\d[\d,]*)$/, en: "Matched order lines $1", id: "Baris pesanan cocok $1" },
+  { pattern: /^未匹配订单行\s*(\d[\d,]*)$/, en: "Unmatched order lines $1", id: "Baris pesanan tidak cocok $1" },
+  { pattern: /^未匹配出库\s*(\d[\d,]*)$/, en: "Unmatched outbound $1", id: "Keluar tidak cocok $1" },
+  { pattern: /^期初\s*([\d,]+)\s*－\s*出库\s*([\d,]+)\s*＝\s*理论\s*([\d,]+)$/, en: "Opening $1 − outbound $2 = theoretical $3", id: "Awal $1 − keluar $2 = teoretis $3" },
+  { pattern: /^实际期末\s*([\d,]+)$/, en: "Actual closing $1", id: "Penutupan aktual $1" },
+  { pattern: /^订单缓存未完整覆盖\s*(.+)\s*至\s*(.+)，当前差异仅供排查参考。$/, en: "The order cache does not fully cover $1 to $2; current variances are for investigation only.", id: "Cache pesanan tidak sepenuhnya mencakup $1 hingga $2; selisih saat ini hanya untuk pemeriksaan." },
+  { pattern: /^来自同舟供应链数智化系统，已同步\s*(\d[\d,]*)\s*条记录，覆盖\s*(\d[\d,]*)\s*个仓库。$/, en: "Synced $1 records covering $2 warehouses from the Tongzhou Digital Supply Chain.", id: "$1 catatan dari Sistem Rantai Pasok Digital Tongzhou telah disinkronkan dan mencakup $2 gudang." },
+  { pattern: /^GMT\+8\s*·\s*当前\s*(.+)$/, en: "GMT+8 · Current $1", id: "GMT+8 · Saat ini $1" },
+  { pattern: /^当前待办\s*(\d[\d,]*)$/, en: "Current pending $1", id: "Tugas saat ini $1" },
+  { pattern: /^本次读取\s*(.+)$/, en: "Loaded at $1", id: "Dimuat pada $1" },
+  { pattern: /^(\d[\d,]*)\s*项进行中$/, en: "$1 in progress", id: "$1 sedang berjalan" },
+  { pattern: /^(\d[\d,]*)\s*行可发$/, en: "$1 lines ready to ship", id: "$1 baris siap dikirim" },
+  { pattern: /^(.+)\s*个待处理$/, en: "$1 pending", id: "$1 tertunda" },
+  { pattern: /^(\d[\d,]*)\s*张在产单$/, en: "$1 active production orders", id: "$1 order produksi aktif" },
+  { pattern: /^(\d[\d,]*)\s*张需跟进或核查$/, en: "$1 require follow-up or review", id: "$1 perlu ditindaklanjuti atau diperiksa" },
+  { pattern: /^(\d[\d,]*)\s*张$/, en: "$1 orders", id: "$1 order" },
+  { pattern: /^已进行\s*(\d[\d,]*)\s*天$/, en: "In progress for $1 days", id: "Berjalan selama $1 hari" },
+  { pattern: /^(.+)\s*开单$/, en: "Opened $1", id: "Dibuka $1" },
+  { pattern: /^(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*项$/, en: "$1 of $2 items", id: "$1 dari $2 item" },
+  { pattern: /^(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*项\s*·\s*含待核查单$/, en: "$1 of $2 items · includes orders requiring review", id: "$1 dari $2 item · termasuk order yang perlu diperiksa" },
+  { pattern: /^已逾期\s*(\d[\d,]*)\s*天$/, en: "Overdue by $1 days", id: "Terlambat $1 hari" },
+  { pattern: /^更新于\s*(.+)$/, en: "Updated $1", id: "Diperbarui $1" },
+  { pattern: /^数据截至\s*(.+)$/, en: "Data through $1", id: "Data hingga $1" },
+  { pattern: /^(\d[\d,]*)\s*条(?:\s*SKU\s*)?行$/, en: "$1 lines", id: "$1 baris" },
+  { pattern: /^(\d[\d,]*)\s*条订单行$/, en: "$1 order lines", id: "$1 baris pesanan" },
+  { pattern: /^(\d[\d,]*)\s*个店铺$/, en: "$1 stores", id: "$1 toko" },
+  { pattern: /^(\d[\d,]*)\s*个平台$/, en: "$1 platforms", id: "$1 platform" },
+  { pattern: /^(\d[\d,]*)\s*单$/, en: "$1 orders", id: "$1 pesanan" },
+  { pattern: /^Filter\s*(\d+)\s*ms\s*·\s*版本\s*(.+)$/, en: "Filter $1 ms · version $2", id: "Filter $1 ms · versi $2" },
+  { pattern: /^版本\s*(.+)$/, en: "version $1", id: "versi $1" },
+  { pattern: /^Source lines\s*(\d[\d,]*)\s*行\s*·\s*分析事实\s*(\d[\d,]*)\s*rows$/, en: "Source lines $1 · analysis facts $2 rows", id: "Baris sumber $1 · fakta analisis $2 baris" },
+  { pattern: /^([\d.]+)%\s*贡献$/, en: "$1% contribution", id: "kontribusi $1%" },
+  { pattern: /^未完成仓库：(.+)。系统已保留上一份完整快照，本批次不会覆盖正式数据。$/, en: "Incomplete warehouses: $1. The previous complete snapshot is retained; this batch will not overwrite official data.", id: "Gudang belum selesai: $1. Snapshot lengkap sebelumnya dipertahankan; batch ini tidak akan menimpa data resmi." },
+  { pattern: /^金额覆盖\s*([\d.]+)%$/, en: "Amount coverage $1%", id: "Cakupan nilai $1%" },
+  { pattern: /^毛利同口径成本\s*(.+)\s*·\s*已识别成本覆盖\s*([\d.]+)%$/, en: "Comparable gross-profit cost $1 · identified-cost coverage $2%", id: "Biaya laba kotor sebanding $1 · cakupan biaya teridentifikasi $2%" },
+  { pattern: /^同口径收入\s*(.+)\s*·\s*成本\s*(.+)\s*·\s*毛利率\s*([\d.]+)%\s*·\s*覆盖\s*([\d.]+)%$/, en: "Comparable revenue $1 · cost $2 · gross margin $3% · coverage $4%", id: "Pendapatan sebanding $1 · biaya $2 · margin kotor $3% · cakupan $4%" },
+  { pattern: /^(\d[\d,]*)\s*SKU\s*·\s*([\d.]+)%\s*贡献$/, en: "$1 SKUs · $2% contribution", id: "$1 SKU · kontribusi $2%" },
+  { pattern: /^已识别\s*(.+)\s*·\s*覆盖\s*([\d.]+)%$/, en: "Identified $1 · coverage $2%", id: "Teridentifikasi $1 · cakupan $2%" },
+  { pattern: /^成本覆盖\s*([\d.]+)%$/, en: "Cost coverage $1%", id: "Cakupan biaya $1%" },
+  { pattern: /^(\d[\d,]*)\s*件\s*·\s*(\d[\d,]*)\s*SKU$/, en: "$1 units · $2 SKUs", id: "$1 unit · $2 SKU" },
+  { pattern: /^已收录\s*(\d[\d,]*)\s*个网页工具，按\s*(\d[\d,]*)\s*个分类归档。$/, en: "$1 web tools across $2 categories.", id: "$1 alat web dalam $2 kategori." },
+  { pattern: /^(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*个仓库已授权$/, en: "$1 of $2 warehouses authorized", id: "$1 dari $2 gudang terotorisasi" },
+  { pattern: /^(\d[\d,]*)\s*个模板$/, en: "$1 templates", id: "$1 templat" },
+  { pattern: /^最近发送：(.+)$/, en: "Last sent: $1", id: "Terakhir dikirim: $1" },
+  { pattern: /^(\d[\d,]*)\s*个账号$/, en: "$1 accounts", id: "$1 akun" },
+  { pattern: /^(\d[\d,]*)\s*项有效权限$/, en: "$1 effective permissions", id: "$1 izin efektif" },
+  { pattern: /^(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*条$/, en: "$1 of $2 records", id: "$1 dari $2 catatan" },
+  { pattern: /^(\d+)\s*\/\s*行$/, en: "$1 / row", id: "$1 / baris" },
+  { pattern: /^(\d[\d,]*)\s*个平台订单号$/, en: "$1 platform order numbers", id: "$1 nomor pesanan platform" },
+  { pattern: /^API Key 只允许调用只读 Agent 索引及明确声明的分析接口，并实时继承当前账号“(.+)”的角色和停用状态。$/, en: "API keys can call only the read-only Agent index and explicitly listed analysis endpoints, and inherit account “$1” role and active status.", id: "API key hanya dapat memanggil indeks Agent hanya-baca dan endpoint analisis yang tercantum, serta mengikuti peran dan status aktif akun “$1”." },
+  { pattern: /^最近更新：?\s*(.+)$/, en: "Last updated: $1", id: "Terakhir diperbarui: $1" },
   { pattern: /^(\d[\d,]*)\s*条$/, en: "$1 items", id: "$1 item" },
   { pattern: /^共\s*(\d[\d,]*)\s*条$/, en: "$1 items total", id: "Total $1 item" },
   { pattern: /^(\d[\d,]*)\s*个$/, en: "$1", id: "$1" },
@@ -360,7 +466,7 @@ const sourceText = new WeakMap<Text, string>();
 const lastAppliedText = new WeakMap<Text, string>();
 const sourceAttributes = new WeakMap<Element, Map<string, string>>();
 const lastAppliedAttributes = new WeakMap<Element, Map<string, string>>();
-const translatedAttributes = ["placeholder", "title", "aria-label"] as const;
+const translatedAttributes = ["placeholder", "title", "aria-label", "alt"] as const;
 
 function withPreservedSpacing(value: string, locale: UiLocale) {
   const match = value.match(/^(\s*)([\s\S]*?)(\s*)$/);
@@ -439,6 +545,7 @@ export function LegacyUiTranslator() {
 
   React.useLayoutEffect(() => {
     document.documentElement.lang = localeOptions.find((item) => item.value === locale)?.htmlLang || "zh-CN";
+    document.title = translate(locale, "同舟供应链中台");
     const root = document.getElementById("root");
     if (root) translateTree(root, locale);
   }, [locale]);
