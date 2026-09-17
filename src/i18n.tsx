@@ -410,6 +410,7 @@ const patterns: Array<{ pattern: RegExp; en: string; id: string }> = [
   { pattern: /^第\s*(\d+)\s*页$/, en: "Page $1", id: "Halaman $1" },
   { pattern: /^第\s*(\d+)\s*步$/, en: "Step $1", id: "Langkah $1" },
   { pattern: /^再加载\s*(\d+)\s*个$/, en: "Load $1 more", id: "Muat $1 lagi" },
+  { pattern: /^继续显示（剩余\s*(\d[\d,]*)\s*条）$/, en: "Show more ($1 remaining)", id: "Tampilkan lagi ($1 tersisa)" },
   { pattern: /^加入组合 SKU 计算器：(.+)$/, en: "Add $1 to the bundle SKU calculator", id: "Tambahkan $1 ke kalkulator SKU bundel" },
 ];
 
@@ -480,6 +481,10 @@ function shouldSkip(element: Element | null) {
   return Boolean(element?.closest("script, style, code, pre, textarea, [contenteditable='true'], [data-i18n-skip]"));
 }
 
+function shouldSkipAttributes(element: Element | null) {
+  return Boolean(element?.closest("script, style, code, pre, [contenteditable='true'], [data-i18n-skip]"));
+}
+
 function translateTextNode(node: Text, locale: UiLocale) {
   if (shouldSkip(node.parentElement)) return;
   const current = node.data;
@@ -495,7 +500,7 @@ function translateTextNode(node: Text, locale: UiLocale) {
 }
 
 function translateElementAttributes(element: Element, locale: UiLocale) {
-  if (shouldSkip(element)) return;
+  if (shouldSkipAttributes(element)) return;
   let sources = sourceAttributes.get(element);
   let applied = lastAppliedAttributes.get(element);
   if (!sources) {
