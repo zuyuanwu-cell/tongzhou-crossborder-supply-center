@@ -29,7 +29,7 @@ import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
-import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
+import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { createAgentIndexLayer } from "./agent-index.js";
 import { agentPageDefinition, buildAgentContext, buildAgentSystemPrompt, normalizeAgentChatMessages, publicAgentContext } from "./ai-agent.js";
@@ -279,6 +279,7 @@ const directAuth = {
 };
 assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
+directAuth.user.locale = normalizeUiLocale(cachedUsers.systemPreferences?.locale);
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
 let outsourcingRefreshStartedAt = "";
 let outsourcingRefreshError = "";
@@ -2143,10 +2144,13 @@ function saveAiUpload(payload, req) {
 
 function loadUsersCache() {
   const payload = loadJsonCache(usersCachePath);
-  if (payload?.users?.length) {
+  if (payload && Array.isArray(payload.users)) {
     const migrated = migrateLegacyAdminUser(payload);
     return {
       ...migrated,
+      systemPreferences: {
+        locale: normalizeUiLocale(migrated.systemPreferences?.locale),
+      },
       users: (migrated.users || []).map(normalizeStoredUser).filter(Boolean),
     };
   }
@@ -2154,6 +2158,7 @@ function loadUsersCache() {
     ok: true,
     source: "local",
     syncedAt: "",
+    systemPreferences: { locale: "zh-CN" },
     users: [],
   };
 }
@@ -2177,6 +2182,9 @@ function migrateLegacyAdminUser(payload) {
     ok: true,
     source: "local",
     syncedAt: payload.syncedAt,
+    systemPreferences: {
+      locale: normalizeUiLocale(payload.systemPreferences?.locale),
+    },
     users,
     migration: {
       name: "legacy-direct-admin-to-admin",
@@ -2193,6 +2201,9 @@ function saveUsersCache() {
     ok: true,
     source: "local",
     syncedAt: new Date().toISOString(),
+    systemPreferences: {
+      locale: normalizeUiLocale(cachedUsers.systemPreferences?.locale),
+    },
     users: cachedUsers.users,
   });
 }
@@ -6844,6 +6855,46 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/me" && req.method === "GET") {
       sendJson(res, 200, { ok: true, user: publicUser(getAuth(req).user) });
+      return;
+    }
+
+    if (url.pathname === "/api/me/preferences" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (auth.role === "guest" || !auth.user?.id) {
+        sendJson(res, 401, { ok: false, message: "保存界面语言需要先登录。" });
+        return;
+      }
+
+      const payload = await parseRequestBody(req);
+      const requestedLocale = String(payload.locale || "").trim();
+      if (!/^(?:zh(?:[-_]cn)?|en(?:[-_](?:us|gb))?|id(?:[-_]id)?|in(?:[-_]id)?)$/i.test(requestedLocale)) {
+        sendJson(res, 400, { ok: false, message: "暂时只支持中文、英文和印尼语。" });
+        return;
+      }
+      const locale = normalizeUiLocale(requestedLocale);
+
+      let user;
+      if (auth.user.id === directAuth.user.id && auth.user.username === directAuth.user.username) {
+        cachedUsers.systemPreferences = { ...(cachedUsers.systemPreferences || {}), locale };
+        directAuth.user.locale = locale;
+        user = directAuth.user;
+      } else {
+        user = (cachedUsers.users || []).find((item) => item.id === auth.user.id);
+        if (!user || user.status === "disabled") {
+          sendJson(res, 401, { ok: false, message: "当前账号已失效，请重新登录。" });
+          return;
+        }
+        user.locale = locale;
+        user.updatedAt = new Date().toISOString();
+        cachedUsers.syncedAt = user.updatedAt;
+      }
+
+      saveUsersCache();
+      appendActionLog(auth, "切换界面语言", "user_preference", user.displayName || user.username, {
+        userId: user.id,
+        locale,
+      });
+      sendJson(res, 200, { ok: true, user: publicUser(user) });
       return;
     }
 

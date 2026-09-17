@@ -208,6 +208,7 @@ export type DashboardSummaryPayload = {
 
 export type UserRole = "guest" | "distributor" | "direct" | "warehouse" | "admin";
 export type UserStatus = "active" | "disabled";
+export type UiLocale = "zh-CN" | "en" | "id";
 
 export type PermissionOverrides = {
   allow: string[];
@@ -240,6 +241,7 @@ export type AuthUser = {
   notificationTeamId?: string;
   wecomUserId?: string;
   mentionOnProgress?: boolean;
+  locale?: UiLocale;
 };
 
 export type AgentApiKey = {
@@ -4447,6 +4449,15 @@ export function fetchCurrentUser() {
   return requestJson<{ ok: boolean; user: AuthUser }>("/api/me");
 }
 
+export async function updateCurrentUserPreferences(input: { locale: UiLocale }) {
+  const payload = await requestJson<{ ok: boolean; user: AuthUser }>("/api/me/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+  return payload;
+}
+
 export async function loginInternal(input: { username?: string; password?: string; code?: string }) {
   const payload = await requestJson<{ ok: boolean; token: string; user: AuthUser }>("/api/login", {
     method: "POST",
@@ -4469,8 +4480,8 @@ export function hasInternalToken() {
 export function getStoredUser(): AuthUser {
   try {
     const raw = localStorage.getItem(AUTH_USER_KEY);
-    return raw ? JSON.parse(raw) : { role: "guest", roleLabel: "游客", permissions: ["product_view"] };
+    return raw ? JSON.parse(raw) : { role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" };
   } catch {
-    return { role: "guest", roleLabel: "游客", permissions: ["product_view"] };
+    return { role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" };
   }
 }

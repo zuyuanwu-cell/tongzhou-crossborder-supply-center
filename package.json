@@ -31,6 +31,8 @@
     "test:agent": "node scripts/agent-index-test.mjs",
     "test:assistant": "node scripts/ai-agent-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",
+    "test:user-locale": "node scripts/user-locale-test.mjs",
+    "test:user-locale-api": "node scripts/user-locale-api-test.mjs",
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",
     "test:order-cache-policy": "node scripts/order-cache-policy-test.mjs",

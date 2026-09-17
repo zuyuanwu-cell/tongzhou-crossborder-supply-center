@@ -88,6 +88,13 @@ export function userStatusLabel(status) {
   return status === "disabled" ? "停用" : "启用";
 }
 
+export function normalizeUiLocale(value) {
+  const locale = text(value).toLowerCase().replace("_", "-");
+  if (["en", "en-us", "en-gb"].includes(locale)) return "en";
+  if (["id", "id-id", "in", "in-id"].includes(locale)) return "id";
+  return "zh-CN";
+}
+
 export function authenticateLocalUser(users, username, password) {
   const normalizedUsername = text(username).toLowerCase();
   if (!normalizedUsername || !password) return null;
@@ -102,7 +109,7 @@ function normalizeNotificationTeamId(value) {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(teamId) ? teamId : "";
 }
 
-export function createLocalUser({ username, password, displayName, role, permissionOverrides, dataScopes, notificationTeamId, wecomUserId, mentionOnProgress }) {
+export function createLocalUser({ username, password, displayName, role, permissionOverrides, dataScopes, notificationTeamId, wecomUserId, mentionOnProgress, locale }) {
   const safeUsername = text(username);
   const safeDisplayName = text(displayName, safeUsername);
   const safeRole = normalizeRole(role);
@@ -124,6 +131,7 @@ export function createLocalUser({ username, password, displayName, role, permiss
     notificationTeamId: normalizeNotificationTeamId(notificationTeamId),
     wecomUserId: normalizeWecomUserId(wecomUserId),
     mentionOnProgress: mentionOnProgress !== false,
+    locale: normalizeUiLocale(locale),
     passwordHash: hashPassword(password),
     status: "active",
     createdAt: new Date().toISOString(),
@@ -147,6 +155,7 @@ export function normalizeStoredUser(user) {
     notificationTeamId: normalizeNotificationTeamId(user.notificationTeamId),
     wecomUserId: normalizeWecomUserId(user.wecomUserId),
     mentionOnProgress: user.mentionOnProgress !== false,
+    locale: normalizeUiLocale(user.locale),
   };
 }
 
@@ -173,6 +182,7 @@ export function publicUser(user) {
     notificationTeamId: normalizeNotificationTeamId(user.notificationTeamId),
     wecomUserId: normalizeWecomUserId(user.wecomUserId),
     mentionOnProgress: user.mentionOnProgress !== false,
+    locale: normalizeUiLocale(user.locale),
     jdySyncedAt: user.jdySyncedAt || "",
     jdySyncError: user.jdySyncError || "",
   };

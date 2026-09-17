@@ -55,6 +55,7 @@ import {
   AssetPayload,
   AssetRecord,
   AuthUser,
+  UiLocale,
   CatalogProduct,
   DistributorApplicationPayload,
   InventorySnapshotPayload,
@@ -191,6 +192,7 @@ import {
   updateUserPermissions,
   updateUserNotificationProfile,
   updateUserStatus,
+  updateCurrentUserPreferences,
   updateWarehouseConnection,
   updateMiaoshouConfig,
   updateMiaoshouShop,
@@ -219,6 +221,7 @@ import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import { InventoryValuePage } from "./InventoryValuePage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
+import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
 import "./theme-refresh.css";
@@ -998,6 +1001,7 @@ function App() {
   const stockupLoadErrorsRef = React.useRef({ summary: "", workflow: "" });
   const [currentUser, setCurrentUser] = React.useState<AuthUser>(getStoredUser);
   const [authReady, setAuthReady] = React.useState(false);
+  const [languageSaving, setLanguageSaving] = React.useState(false);
   const [blockedView, setBlockedView] = React.useState("");
   const [globalSearch, setGlobalSearch] = React.useState("");
   const [productSearchKeyword, setProductSearchKeyword] = React.useState("");
@@ -1100,7 +1104,7 @@ function App() {
       const data = await fetchCurrentUser();
       setCurrentUser(data.user);
     } catch {
-      setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"] });
+      setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" });
     } finally {
       setAuthReady(true);
     }
@@ -1733,7 +1737,7 @@ function App() {
 
   function handleLogout() {
     logoutInternal();
-    setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"] });
+    setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" });
     setQualificationPayload(null);
     setAssetPayload(null);
     setWarehouseInfoPayload(null);
@@ -1756,6 +1760,28 @@ function App() {
     stockupLoadErrorsRef.current = { summary: "", workflow: "" };
     setError("");
     setBlockedView("");
+  }
+
+  async function handleLocaleChange(nextLocale: UiLocale) {
+    const previousUser = currentUser;
+    const normalizedLocale = normalizeUiLocale(nextLocale);
+    if (normalizedLocale === normalizeUiLocale(previousUser.locale) || languageSaving) return;
+    if (previousUser.role === "guest") {
+      setCurrentUser({ ...previousUser, locale: normalizedLocale });
+      return;
+    }
+    setError("");
+    setLanguageSaving(true);
+    setCurrentUser({ ...previousUser, locale: normalizedLocale });
+    try {
+      const result = await updateCurrentUserPreferences({ locale: normalizedLocale });
+      setCurrentUser(result.user);
+    } catch (requestError) {
+      setCurrentUser(previousUser);
+      setError(requestError instanceof Error ? requestError.message : translate(normalizeUiLocale(previousUser.locale), "语言偏好保存失败，请重试。"));
+    } finally {
+      setLanguageSaving(false);
+    }
   }
 
   function handleViewChange(view: string, options: { clearBlocked?: boolean } = { clearBlocked: true }) {
@@ -1785,7 +1811,10 @@ function App() {
     });
   }
 
+  const currentLocale = normalizeUiLocale(currentUser.locale);
+
   return (
+    <I18nProvider locale={currentLocale}>
     <ConfirmContext.Provider value={confirmAction}>
       <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
         <Sidebar
@@ -1804,24 +1833,35 @@ function App() {
           </button>
           <div>
             <p className="eyebrow">Tongzhou Control Tower</p>
-            <h1>{navigationDisplayLabel(activeView)}</h1>
+            <h1>{translate(currentLocale, navigationDisplayLabel(activeView))}</h1>
           </div>
           <div className="topbar-actions">
             <form className="search-box" onSubmit={handleGlobalSearch}>
               <Search size={16} />
               <input aria-label="全局搜索商品或 SKU" value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="全局搜索商品 / SKU" />
             </form>
+            <label className={`language-switcher ${languageSaving ? "is-saving" : ""}`} title={translate(currentLocale, languageSaving ? "正在保存语言偏好" : "切换语言")} data-i18n-skip>
+              <Globe2 size={16} />
+              <select
+                aria-label={translate(currentLocale, "切换语言")}
+                value={currentLocale}
+                disabled={languageSaving}
+                onChange={(event) => void handleLocaleChange(event.target.value as UiLocale)}
+              >
+                {localeOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+              </select>
+            </label>
             {currentUser.role !== "guest" ? (
               <>
                 {canManage(currentUser) ? (
                   <button className="sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
-                    {syncing ? "同步中" : "同步全部数据"}
+                    {translate(currentLocale, syncing ? "同步中" : "同步全部数据")}
                   </button>
                 ) : null}
                 <button className="ghost-button" onClick={handleLogout}>
                   <LogOut size={16} />
-                  退出 {currentUser.roleLabel}
+                  {translate(currentLocale, "退出")} {translate(currentLocale, currentUser.roleLabel)}
                 </button>
               </>
             ) : (
@@ -2096,8 +2136,10 @@ function App() {
           <AiAgentWidget currentUser={currentUser} route={hashForView(activeView)} />
         ) : null}
         <ConfirmDialog request={confirmRequest} onClose={closeConfirm} />
+        <LegacyUiTranslator />
       </div>
     </ConfirmContext.Provider>
+    </I18nProvider>
   );
 }
 
@@ -2385,6 +2427,7 @@ function Sidebar({
   onToggleCollapse: () => void;
   open: boolean;
 }) {
+  const { t } = useI18n();
   const items = visibleNavItems(currentUser);
   const CollapseIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
   const activeItemRef = React.useRef<HTMLButtonElement | null>(null);
@@ -2441,7 +2484,7 @@ function Sidebar({
                     onClick={() => toggleSection(section.id)}
                     aria-expanded={!sectionCollapsed}
                   >
-                    <span>{section.label}</span>
+                    <span>{t(section.label)}</span>
                     <span className="nav-section-meta">
                       {sectionItems.length}
                       <ChevronDown size={13} className={sectionCollapsed ? "section-collapsed" : ""} />
@@ -2458,12 +2501,12 @@ function Sidebar({
                           ref={active ? activeItemRef : undefined}
                           className={`${active ? "active" : childActive ? "parent-active" : ""} ${item.childOf ? "nav-child" : ""}`}
                           onClick={() => onChange(item.label)}
-                          title={collapsed ? item.label : undefined}
+                          title={collapsed ? t(navigationDisplayLabel(item.label)) : undefined}
                         >
                           <Icon size={18} />
                           <span className="nav-label-wrap">
                             {item.beta ? <small>Beta</small> : null}
-                            <span>{navigationDisplayLabel(item.label)}</span>
+                            <span>{t(navigationDisplayLabel(item.label))}</span>
                           </span>
                         </button>
                       );
@@ -2475,8 +2518,8 @@ function Sidebar({
           </nav>
           <div className="integration-card">
             <p>同舟供应链</p>
-            <strong>同舟供应链数智化系统</strong>
-            <span>产品 · 仓库 · 备货协同</span>
+            <strong>{t("同舟供应链数智化系统")}</strong>
+            <span>{t("产品 · 仓库 · 备货协同")}</span>
           </div>
         </div>
       </aside>
