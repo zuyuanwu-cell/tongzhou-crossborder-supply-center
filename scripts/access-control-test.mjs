@@ -176,6 +176,61 @@ const legacyMiaoshouManager = effectivePermissions({
 assert.equal(legacyMiaoshouManager.includes("miaoshou_listing"), true, "legacy managers retain AI listing access");
 assert.equal(legacyMiaoshouManager.includes("miaoshou_automation"), true, "legacy managers retain waybill automation access");
 assert.equal(legacyMiaoshouManager.includes("miaoshou_config"), false, "a granular deny overrides the legacy umbrella");
+assert.equal(legacyMiaoshouManager.includes("operations"), false, "legacy direct managers no longer retain global operations access");
+assert.equal(legacyMiaoshouManager.includes("product_sync"), true, "legacy direct managers retain product sync through a scoped permission");
+
+const directStockupViewer = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["production_view"], deny: [] },
+});
+assert.equal(directStockupViewer.includes("production_view"), true, "direct operators can receive production view access");
+assert.equal(directStockupViewer.includes("production_sync"), false, "production view does not imply refresh access");
+assert.equal(directStockupViewer.includes("stockup_recommendations_view"), false, "stockup pages can be granted independently");
+
+const directStockupOperator = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["stockup_execution_manage"], deny: ["stockup_execution_view"] },
+});
+assert.equal(directStockupOperator.includes("stockup_execution_manage"), true, "direct operators can receive stockup execution operations");
+assert.equal(directStockupOperator.includes("stockup_execution_view"), true, "stockup operation access always includes the matching page view");
+
+const legacyStockupViewer = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["stockup"], deny: [] },
+});
+assert.equal(legacyStockupViewer.includes("stockup_workflow_view"), true, "legacy stockup access migrates to workflow view");
+assert.equal(legacyStockupViewer.includes("stockup_recommendations_view"), true, "legacy stockup access migrates to recommendation view");
+assert.equal(legacyStockupViewer.includes("stockup_execution_view"), true, "legacy stockup access migrates to execution view");
+assert.equal(legacyStockupViewer.includes("production_view"), true, "legacy stockup access migrates to production view");
+assert.equal(legacyStockupViewer.some((permission) => permission.endsWith("_manage") || permission === "production_sync"), false, "legacy read-only stockup access does not gain write access");
+
+const legacyStockupManager = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["stockup", "operations"], deny: [] },
+});
+assert.equal(legacyStockupManager.includes("stockup_workflow_manage"), true, "legacy stockup managers retain workflow operations");
+assert.equal(legacyStockupManager.includes("stockup_recommendations_manage"), true, "legacy stockup managers retain recommendation operations");
+assert.equal(legacyStockupManager.includes("stockup_execution_manage"), true, "legacy stockup managers retain execution operations");
+assert.equal(legacyStockupManager.includes("production_sync"), true, "legacy stockup managers retain production refresh access");
+assert.equal(legacyStockupManager.includes("operations"), false, "legacy stockup managers are migrated away from global operations");
+
+const directSyncOperator = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["product_sync", "order_sync_run", "inventory_sync_run"], deny: [] },
+});
+assert.equal(directSyncOperator.includes("product_sync"), true, "direct operators can receive product sync access");
+assert.equal(directSyncOperator.includes("order_sync_run"), true, "direct operators can receive order sync access");
+assert.equal(directSyncOperator.includes("inventory_sync_run"), true, "direct operators can receive inventory sync access");
+assert.equal(directSyncOperator.includes("operations"), false, "module sync access does not require global operations");
+assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["movement_sync"], deny: [] } }).includes("order_sync_run"), true, "existing movement sync grants continue to permit order synchronization");
+
+const directAnalyticsManager = effectivePermissions({
+  role: "direct",
+  permissionOverrides: { allow: ["inventory_value_manage", "order_analysis_manage", "performance_manage"], deny: ["inventory_value", "order_analysis", "performance_analysis"] },
+});
+assert.equal(directAnalyticsManager.includes("inventory_value"), true, "warehouse value maintenance implies warehouse value view");
+assert.equal(directAnalyticsManager.includes("order_analysis"), true, "order analysis maintenance implies order analysis view");
+assert.equal(directAnalyticsManager.includes("performance_analysis"), true, "performance maintenance implies performance analysis view");
 
 const distributorMiaoshouPermissions = effectivePermissions({
   role: "distributor",
@@ -183,6 +238,7 @@ const distributorMiaoshouPermissions = effectivePermissions({
 });
 assert.equal(distributorMiaoshouPermissions.some((permission) => permission === "miaoshou" || permission.startsWith("miaoshou_")), false, "distributors cannot receive internal Miaoshou permissions");
 assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["ozon_orders", "ozon_order_push", "ozon_config"], deny: [] } }).some((permission) => permission.startsWith("ozon_")), false, "distributors cannot receive Ozon order permissions");
+assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["production_view", "stockup_recommendations_view", "product_sync"], deny: [] } }).some((permission) => permission.startsWith("stockup_") || permission === "production_view" || permission === "product_sync"), false, "distributors cannot receive internal stockup or sync permissions");
 
 const warehousePermissions = effectivePermissions({
   role: "warehouse",

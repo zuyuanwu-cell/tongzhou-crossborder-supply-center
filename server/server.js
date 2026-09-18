@@ -3076,6 +3076,24 @@ function canManageModule(auth, permission) {
   return canManage(auth) && hasPermission(auth, permission);
 }
 
+function hasAnyPermission(auth, permissions = []) {
+  return permissions.some((permission) => hasPermission(auth, permission));
+}
+
+const stockupViewPermissions = [
+  "stockup_workflow_view",
+  "stockup_recommendations_view",
+  "stockup_execution_view",
+  "production_view",
+];
+
+function stockupPermissionForView(view) {
+  if (view === "stockup-recommendations" || view === "dashboard") return "stockup_recommendations_view";
+  if (view === "stockup-execution") return "stockup_execution_view";
+  if (view === "production") return "production_view";
+  return "stockup_workflow_view";
+}
+
 function canUseMiaoshouAlias(auth) {
   return hasPermission(auth, "miaoshou_alias");
 }
@@ -3446,7 +3464,7 @@ function inventoryValuePayload(filters, auth = directAuth) {
     exchangeRates: performanceAnalyticsStore.listExchangeRates(),
     warehouseOptions,
     filters,
-    manageCosts: canManageModule(auth, "inventory_value"),
+    manageCosts: hasPermission(auth, "inventory_value_manage"),
   });
 }
 
@@ -4016,7 +4034,7 @@ function buildDashboardSummary(auth) {
   if (cached) return cached;
   const products = productResponsePayload(cachedProducts, auth, "list");
   const canViewOperations = hasPermission(auth, "dashboard");
-  const canViewSync = hasPermission(auth, "movement_sync");
+  const canViewSync = hasPermission(auth, "movement_sync") || hasPermission(auth, "order_sync_run");
   const canViewInventory = hasPermission(auth, "inventory");
   const movementPayload = hasPermission(auth, "movement") ? movementResponsePayload(auth) : null;
   const scoped = scopeMovementSources({
@@ -4180,7 +4198,7 @@ function publicShopDirectory(directory, auth = directAuth) {
     matchedShopCount: directory.matchedShopCount || 0,
     unmatchedShopCount: directory.unmatchedShopCount || 0,
     miaoshouSyncedAt: directory.miaoshouSyncedAt || "",
-    canManage: canManageModule(auth, "performance_analysis"),
+    canManage: hasPermission(auth, "performance_manage"),
   };
 }
 
@@ -4436,7 +4454,7 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
   }
   return {
     ...payload,
-    permissions: { revenue, cost, profit, manageRates: canManage(auth) && revenue, manageCosts: canManage(auth) && cost, manageTransactionSource: canManage(auth) && revenue },
+    permissions: { revenue, cost, profit, manageRates: hasPermission(auth, "performance_manage") && revenue, manageCosts: hasPermission(auth, "performance_manage") && cost, manageTransactionSource: hasPermission(auth, "performance_manage") && revenue },
     metadata: safeMetadata,
     totals: omitPerformanceFields(payload.totals, projection),
     quality,
@@ -4780,8 +4798,8 @@ function buildOrderAnalysisPayload(params = {}, auth = directAuth) {
 }
 
 async function handleWarehouseSync(req, res) {
-  if (!canManageModule(getAuth(req), "inventory_sync")) {
-    sendJson(res, 401, { ok: false, message: "同步仓库数据需要内部登录。" });
+  if (!hasPermission(getAuth(req), "inventory_sync_run")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有执行库存同步权限。" });
     return;
   }
 
@@ -5496,8 +5514,8 @@ async function handleWarehouseTest(req, res) {
 }
 
 async function handleOrderSync(req, res) {
-  if (!canManageModule(getAuth(req), "movement_sync")) {
-    sendJson(res, 401, { ok: false, message: "同步订单数据需要内部登录。" });
+  if (!hasPermission(getAuth(req), "order_sync_run")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有执行订单同步权限。" });
     return;
   }
 
@@ -5669,8 +5687,8 @@ function queueStockupWorkflowRefresh(reason = "mutation") {
 }
 
 async function handleStockupSync(req, res) {
-  if (!canManageModule(getAuth(req), "stockup")) {
-    sendJson(res, 401, { ok: false, message: "同步备货单明细需要内部登录。" });
+  if (!hasPermission(getAuth(req), "stockup_recommendations_manage")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有备货建议处理权限。" });
     return;
   }
 
@@ -5917,8 +5935,8 @@ function updateStockupPlanStatus(planId, status) {
 }
 
 async function handleSync(req, res) {
-  if (!canManageModule(getAuth(req), "product_view")) {
-    sendJson(res, 401, { ok: false, message: "同步产品数据需要内部登录。" });
+  if (!hasPermission(getAuth(req), "product_sync")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有执行产品同步权限。" });
     return;
   }
 
@@ -5943,8 +5961,8 @@ async function refreshProductCache() {
 }
 
 async function handleQualificationSync(req, res) {
-  if (!canManageModule(getAuth(req), "qualifications")) {
-    sendJson(res, 401, { ok: false, message: "同步资质库需要内部登录。" });
+  if (!hasPermission(getAuth(req), "qualification_sync")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有执行资质同步权限。" });
     return;
   }
 
@@ -5970,8 +5988,8 @@ async function refreshQualificationCache() {
 }
 
 async function handleAssetSync(req, res) {
-  if (!canManageModule(getAuth(req), "assets")) {
-    sendJson(res, 401, { ok: false, message: "同步素材库需要内部登录。" });
+  if (!hasPermission(getAuth(req), "asset_sync")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有执行素材同步权限。" });
     return;
   }
 
@@ -5996,8 +6014,8 @@ async function refreshAssetCache() {
 }
 
 async function handleWarehouseInfoSync(req, res) {
-  if (!canManageModule(getAuth(req), "warehouse_info")) {
-    sendJson(res, 401, { ok: false, message: "同步仓库信息需要管理员登录。" });
+  if (!hasPermission(getAuth(req), "warehouse_info_sync")) {
+    sendJson(res, 403, { ok: false, message: "当前账号没有执行仓库信息同步权限。" });
     return;
   }
 
@@ -6715,7 +6733,8 @@ function aiAgentDiagnostics(route, auth) {
     metric("滞销", numberOrZero(movement.counts?.stagnant), movement.counts?.stagnant ? "warning" : "success");
   }
 
-  if (["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"].includes(route) && hasPermission(auth, "stockup")) {
+  if (["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"].includes(route)
+    && hasPermission(auth, stockupPermissionForView(route.slice(1)))) {
     const stockup = buildCurrentStockupPayload({ notify: false, reason: "ai_agent" });
     metric("备货建议", numberOrZero(stockup.counts?.recommendations));
     metric("未完成计划", numberOrZero(stockup.counts?.openStockupPlans), stockup.counts?.openStockupPlans ? "warning" : "success");
@@ -9448,8 +9467,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/outsourcing-orders" && req.method === "GET") {
-      if (!hasPermission(getAuth(req), "stockup")) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
+      if (!hasPermission(getAuth(req), "production_view")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有生产中心查看权限。" });
         return;
       }
       sendJson(res, 200, { ...cachedOutsourcingOrders, ...currentOutsourcingCacheState() });
@@ -9457,8 +9476,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/outsourcing-orders/sync" && req.method === "POST") {
-      if (!canManageModule(getAuth(req), "stockup")) {
-        sendJson(res, 401, { ok: false, message: "同步委外加工单需要内部登录。" });
+      if (!hasPermission(getAuth(req), "production_sync")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有生产数据刷新权限。" });
         return;
       }
       const result = await refreshOutsourcingOrderCache();
@@ -9547,8 +9566,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/inventory-value/supplemental-costs" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "inventory_value")) {
-        sendJson(res, 403, { ok: false, message: "维护仓库货值成本需要管理员权限和仓库货值权限。" });
+      if (!hasPermission(auth, "inventory_value_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库货值成本维护权限。" });
         return;
       }
       const body = await parseRequestBody(req);
@@ -9610,8 +9629,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/inventory-snapshots/capture" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "inventory_snapshots")) {
-        sendJson(res, 401, { ok: false, message: "生成库存快照需要管理员登录。" });
+      if (!hasPermission(auth, "inventory_snapshot_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有库存快照操作权限。" });
         return;
       }
       const snapshot = upsertInventorySnapshot(dateKeyInTimezone(), "manual");
@@ -9621,8 +9640,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/inventory-snapshots/export" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "inventory_snapshots")) {
-        sendJson(res, 401, { ok: false, message: "导出库存快照需要管理员登录。" });
+      if (!hasPermission(auth, "inventory_snapshot_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有库存快照操作权限。" });
         return;
       }
       const payload = inventorySnapshotPayload(url.searchParams.get("date") || "", auth);
@@ -9813,8 +9832,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/performance-analytics/miaoshou/sync" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
-        sendJson(res, 403, { ok: false, message: "同步妙手交易数据需要管理员及经营销售金额权限。" });
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "同步妙手交易数据需要经营分析维护及销售金额权限。" });
         return;
       }
       const body = await parseRequestBody(req);
@@ -9849,8 +9868,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/performance-analytics/revenue-source" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
-        sendJson(res, 403, { ok: false, message: "切换经营收入来源需要管理员及经营销售金额权限。" });
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "切换经营收入来源需要经营分析维护及销售金额权限。" });
         return;
       }
       const body = await parseRequestBody(req);
@@ -9889,8 +9908,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/performance-analytics/packaging-fees" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth) || !hasPermission(auth, "performance_cost")) {
-        sendJson(res, 403, { ok: false, message: "维护打包费规则需要管理员及经营成本权限。" });
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_cost")) {
+        sendJson(res, 403, { ok: false, message: "维护打包费规则需要经营分析维护及经营成本权限。" });
         return;
       }
       const body = await parseRequestBody(req);
@@ -9925,8 +9944,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/performance-analytics/supplemental-costs" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth) || !hasPermission(auth, "performance_cost")) {
-        sendJson(res, 403, { ok: false, message: "维护经营补录成本需要管理员及经营成本权限。" });
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_cost")) {
+        sendJson(res, 403, { ok: false, message: "维护经营补录成本需要经营分析维护及经营成本权限。" });
         return;
       }
       const body = await parseRequestBody(req);
@@ -9993,8 +10012,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/performance-analytics/exchange-rates" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
-        sendJson(res, 403, { ok: false, message: "维护经营汇率需要管理员及经营销售金额权限。" });
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "维护经营汇率需要经营分析维护及销售金额权限。" });
         return;
       }
       const body = await parseRequestBody(req);
@@ -10014,7 +10033,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/shop-directory/project-group" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "performance_analysis")) {
+      if (!hasPermission(auth, "performance_manage")) {
         sendJson(res, 403, { ok: false, message: "设置店铺项目组需要经营贡献管理权限。" });
         return;
       }
@@ -10078,8 +10097,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/performance-analytics/exchange-rates/sync" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManage(auth) || !hasPermission(auth, "performance_revenue")) {
-        sendJson(res, 403, { ok: false, message: "立即同步汇率需要管理员及经营销售金额权限。" });
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "立即同步汇率需要经营分析维护及销售金额权限。" });
         return;
       }
       const sync = await performanceExchangeRateSync.run({ force: true, reason: `manual:${auth.user?.username || auth.user?.id || "admin"}` });
@@ -10117,8 +10136,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/order-analysis/shop-alias" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "order_analysis")) {
-        sendJson(res, 401, { ok: false, message: "设置店铺别称需要管理员登录。" });
+      if (!hasPermission(auth, "order_analysis_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有订单分析设置维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10144,8 +10163,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync-jobs" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "movement_sync")) {
-        sendJson(res, 401, { ok: false, message: "当前账号没有动销同步权限。" });
+      if (!hasPermission(auth, "order_sync_run")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有执行订单同步权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10191,7 +10210,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync-jobs/latest" && req.method === "GET") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "movement_sync")) {
+      if (!hasPermission(auth, "order_sync_run")) {
         sendJson(res, 403, { ok: false, message: "当前账号没有动销同步任务权限。" });
         return;
       }
@@ -10201,13 +10220,16 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup" && req.method === "GET") {
-      if (!hasPermission(getAuth(req), "stockup")) {
+      const auth = getAuth(req);
+      const view = url.searchParams.get("view") || "full";
+      const requiredPermission = stockupPermissionForView(view);
+      if (!hasPermission(auth, requiredPermission)) {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货中心权限。" });
         return;
       }
       const stockupPayload = stockupPayloadForView(
         buildCurrentStockupPayload({ notify: false, reason: "page_refresh" }),
-        url.searchParams.get("view") || "full",
+        view,
         { inboundLimit: url.searchParams.get("inboundLimit") || 100 },
       );
       sendJson(res, 200, {
@@ -10219,7 +10241,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/workflow" && req.method === "GET") {
-      if (!hasPermission(getAuth(req), "stockup")) {
+      if (!hasAnyPermission(getAuth(req), stockupViewPermissions)) {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
         return;
       }
@@ -10229,8 +10251,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/demands" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "创建备货需求需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货需求维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10243,8 +10265,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/executions" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "创建备货执行单需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10258,8 +10280,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/executions/cancel" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "取消备货执行单需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10273,8 +10295,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/execution-lines" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "更新备货执行进度需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10288,8 +10310,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/execution-lines/rollback" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "退回备货执行进度需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10303,8 +10325,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/shipments" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "登记发货需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10340,8 +10362,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/wms-pushes/confirm" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "确认推送 WMS 备货单需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10353,8 +10375,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/shipments/void" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "作废发货单需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_execution_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货执行操作权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10381,8 +10403,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "完成新品编码需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10395,8 +10417,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/workflow/cost-preview" && req.method === "POST") {
-      if (!canManageModule(getAuth(req), "stockup")) {
-        sendJson(res, 401, { ok: false, message: "预览到仓成本需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10420,8 +10442,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/fees" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "登记发货费用需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10442,8 +10464,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/cost-batches" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "生成到仓成本批次需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10464,8 +10486,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/workflow/cost-batches/lock" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "锁定正式到仓成本需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务维护权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10488,8 +10510,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/recommendations/accept" && req.method === "POST") {
-      if (!canManageModule(getAuth(req), "stockup")) {
-        sendJson(res, 401, { ok: false, message: "采纳备货建议需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup_recommendations_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货建议处理权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10509,8 +10531,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/recommendations/abandon" && req.method === "POST") {
-      if (!canManageModule(getAuth(req), "stockup")) {
-        sendJson(res, 401, { ok: false, message: "放弃备货建议需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup_recommendations_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货建议处理权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10527,8 +10549,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/stockup/recommendations/restore" && req.method === "POST") {
-      if (!canManageModule(getAuth(req), "stockup")) {
-        sendJson(res, 401, { ok: false, message: "恢复备货建议需要管理员登录。" });
+      if (!hasPermission(getAuth(req), "stockup_recommendations_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货建议处理权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10549,8 +10571,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/stockup/plans" && req.method === "POST") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "创建备货计划需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_recommendations_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货建议处理权限。" });
         return;
       }
       const payload = await parseRequestBody(req);
@@ -10570,8 +10592,8 @@ const server = http.createServer(async (req, res) => {
     const stockupPlanStatusMatch = url.pathname.match(/^\/api\/stockup\/plans\/([^/]+)\/status$/);
     if (stockupPlanStatusMatch && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!canManageModule(auth, "stockup")) {
-        sendJson(res, 401, { ok: false, message: "更新备货计划需要管理员登录。" });
+      if (!hasPermission(auth, "stockup_recommendations_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货建议处理权限。" });
         return;
       }
       const payload = await parseRequestBody(req);

@@ -168,35 +168,40 @@ const TYPE_DEFINITIONS = {
   },
   stockup_recommendation: {
     label: "备货建议",
-    access: "admin",
+    access: "partner",
+    permissionAny: ["stockup_recommendations_view"],
     sourceSystem: "derived",
     fields: ["recommendationKey", "sku", "country", "replenishQty", "netReplenishQty", "decisionStatus", "suggestion"],
     sourcePath: "/api/stockup",
   },
   stockup_plan: {
     label: "备货计划",
-    access: "admin",
+    access: "partner",
+    permissionAny: ["stockup_recommendations_view"],
     sourceSystem: "local",
     fields: ["recommendationKey", "sku", "country", "quantity", "planType", "owner", "expectedArrivalAt", "status"],
     sourcePath: "/api/stockup",
   },
   stockup_decision: {
     label: "备货决策",
-    access: "admin",
+    access: "partner",
+    permissionAny: ["stockup_recommendations_view"],
     sourceSystem: "local",
     fields: ["recommendationKey", "sku", "country", "status", "note", "updatedAt"],
     sourcePath: "/api/stockup",
   },
   stockup_order: {
     label: "WMS 备货入库单",
-    access: "admin",
+    access: "partner",
+    permissionAny: ["stockup_recommendations_view"],
     sourceSystem: "wms",
     fields: ["orderNo", "warehouseId", "sku", "productName", "quantity", "status", "expectedArrivalAt"],
     sourcePath: "/api/stockup",
   },
   outsourcing_order: {
     label: "委外加工单",
-    access: "admin",
+    access: "partner",
+    permissionAny: ["production_view"],
     sourceSystem: "jiandaoyun",
     fields: ["tongzhouSku", "orderNo", "productName", "supplier", "status", "plannedQty", "producedQty", "expectedFinishedAt"],
     sourcePath: "/api/outsourcing-orders",
@@ -323,10 +328,10 @@ const PAGE_DEFINITIONS = [
   ["performance", "经营贡献", "销售、成本和经营贡献分析。", ["direct", "admin"]],
   ["movement", "动销监控", "当前 SKU 动销和仓库诊断。", ["admin"]],
   ["movement-analysis", "动销分析", "历史动销快照和趋势。", ["admin"]],
-  ["stockup", "备货中心", "备货建议、决策和计划。", ["admin"]],
-  ["stockup-recommendations", "备货建议", "按库存和动销查看补货建议。", ["direct", "admin"]],
-  ["stockup-execution", "备货执行", "采购、生产、发货和入库执行。", ["direct", "admin"]],
-  ["production", "生产中心", "生产单、物料齐套和委外进度。", ["direct", "admin"]],
+  ["stockup", "备货中心", "备货建议、决策和计划。", ["direct", "admin"], ["stockup_workflow_view"]],
+  ["stockup-recommendations", "备货建议", "按库存和动销查看补货建议。", ["direct", "admin"], ["stockup_recommendations_view"]],
+  ["stockup-execution", "备货执行", "采购、生产、发货和入库执行。", ["direct", "admin"], ["stockup_execution_view"]],
+  ["production", "生产中心", "生产单、物料齐套和委外进度。", ["direct", "admin"], ["production_view"]],
   ["after-sales", "仓库协同", "售后单、仓库工单和处理进度。", ["warehouse", "direct", "admin"]],
   ["products", "产品库", "按当前用户权限展示产品目录。", ["guest", "distributor", "direct", "admin"]],
   ["qualifications", "资质库", "产品资质和附件。", ["distributor", "direct", "admin"]],
@@ -1266,12 +1271,19 @@ function builtInSource(type, auth, rootDir, observedAt) {
     const updatedAt = sourceStats?.mtime.toISOString() || observedAt;
     return {
       records: PAGE_DEFINITIONS
-        .filter(([, , , roles]) => roles.includes(auth?.role || "guest"))
-        .map(([route, title, description, roles]) => ({
+        .filter(([, , , roles, permissionAny = []]) => {
+          const role = auth?.role || "guest";
+          if (!roles.includes(role)) return false;
+          if (role === "admin" || !permissionAny.length) return true;
+          const granted = new Set(Array.isArray(auth?.user?.permissions) ? auth.user.permissions : []);
+          return permissionAny.some((permission) => granted.has(permission));
+        })
+        .map(([route, title, description, roles, permissionAny = []]) => ({
           route: `#${route}`,
           title,
           description,
           allowedRoles: roles,
+          requiredPermissions: permissionAny,
           createdAt,
           updatedAt,
         })),

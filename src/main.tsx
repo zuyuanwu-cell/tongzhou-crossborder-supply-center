@@ -387,10 +387,10 @@ const navItems = [
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
-  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup" },
-  { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup" },
-  { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup" },
-  { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "stockup" },
+  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_workflow_view" },
+  { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
+  { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_execution_view" },
+  { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "production_view" },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
   { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "settings", beta: true, permission: "tongzhou_ai" },
@@ -428,7 +428,7 @@ function hashForView(view: string) {
 }
 
 function visibleNavItems(user: AuthUser) {
-  return navItems.filter((item) => {
+  const allowedItems = navItems.filter((item) => {
     const permissions = [
       item.permission,
       ...("alternativePermission" in item && item.alternativePermission ? [item.alternativePermission as string] : []),
@@ -440,6 +440,12 @@ function visibleNavItems(user: AuthUser) {
         : hasUserPermission(user, permission)
     ));
   });
+  const allowedLabels = new Set(allowedItems.map((item) => item.label));
+  return allowedItems.map((item) => (
+    "childOf" in item && item.childOf && !allowedLabels.has(item.childOf)
+      ? { ...item, childOf: undefined }
+      : item
+  ));
 }
 
 function formatNumber(value: number) {
@@ -1058,7 +1064,7 @@ function App() {
   }, [authReady, permissionSignature, activeView]);
 
   React.useEffect(() => {
-    if (!hasUserPermission(currentUser, "stockup") || !stockupPayload?.outsourcingRefreshing || hashForView(activeView) !== "#production") return;
+    if (!hasUserPermission(currentUser, "production_view") || !stockupPayload?.outsourcingRefreshing || hashForView(activeView) !== "#production") return;
     const timer = window.setInterval(() => { if (!document.hidden) void loadStockup(); }, 10000);
     return () => window.clearInterval(timer);
   }, [permissionSignature, activeView, stockupPayload?.outsourcingRefreshing]);
@@ -1071,7 +1077,7 @@ function App() {
   }, [permissionSignature, activeView]);
 
   React.useEffect(() => {
-    if (!hasUserPermission(currentUser, "movement_sync")) return;
+    if (!hasUserPermission(currentUser, "order_sync_run")) return;
     if (!orderSyncJob || !["queued", "running"].includes(orderSyncJob.status)) return;
     const timer = window.setInterval(async () => {
       const job = await loadLatestOrderJob();
@@ -1402,7 +1408,7 @@ function App() {
       case "#dashboard":
         if (hasUserPermission(currentUser, "dashboard")) void loadDashboardSummary();
         if (hasUserPermission(currentUser, "product_view")) void loadProducts(silent);
-        if (hasUserPermission(currentUser, "stockup")) void loadStockup();
+        if (hasUserPermission(currentUser, "stockup_recommendations_view")) void loadStockup();
         if (hasUserPermission(currentUser, "notifications")) void loadWecomNotifications();
         break;
       case "#products":
@@ -1443,10 +1449,19 @@ function App() {
         if (hasUserPermission(currentUser, "performance_analysis")) void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
         break;
       case "#stockup":
+        if (hasUserPermission(currentUser, "stockup_workflow_view")) void loadStockupWorkflow();
+        break;
       case "#stockup-recommendations":
+        if (hasUserPermission(currentUser, "stockup_recommendations_view")) {
+          void loadStockup();
+          void loadStockupWorkflow();
+        }
+        break;
       case "#stockup-execution":
+        if (hasUserPermission(currentUser, "stockup_execution_view")) void loadStockupWorkflow();
+        break;
       case "#production":
-        if (hasUserPermission(currentUser, "stockup")) {
+        if (hasUserPermission(currentUser, "production_view")) {
           void loadStockup();
           void loadStockupWorkflow();
         }
@@ -1481,7 +1496,6 @@ function App() {
     try {
       const data = await syncProducts();
       setPayload(data);
-      await syncOutsourcingOrders().catch(() => null);
       loadVisibleViewData(true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "同步失败");
@@ -1853,10 +1867,10 @@ function App() {
             </label>
             {currentUser.role !== "guest" ? (
               <>
-                {canManage(currentUser) ? (
+                {hasUserPermission(currentUser, "product_sync") ? (
                   <button className="sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
-                    {translate(currentLocale, syncing ? "同步中" : "同步全部数据")}
+                    {translate(currentLocale, syncing ? "同步中" : "同步产品数据")}
                   </button>
                 ) : null}
                 <button className="ghost-button" onClick={handleLogout}>
@@ -1908,7 +1922,7 @@ function App() {
             onNeedDetails={loadProductDetails}
           />
         ) : activeView === "资质库" ? (
-          <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} />
+          <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} canSync={hasUserPermission(currentUser, "qualification_sync")} />
         ) : activeView === "素材库" ? (
           <AssetLibrary
             products={catalog}
@@ -1916,9 +1930,10 @@ function App() {
             assetPayload={assetPayload}
             onSyncAssets={handleAssetSync}
             syncing={syncing}
+            canSync={hasUserPermission(currentUser, "asset_sync")}
           />
         ) : activeView === "仓库信息" ? (
-          <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} />
+          <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} canSync={hasUserPermission(currentUser, "warehouse_info_sync")} />
         ) : activeView === "快捷导航" ? (
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
         ) : activeView === "同舟AI" ? (
@@ -1936,7 +1951,7 @@ function App() {
             inventorySnapshotPayload={inventorySnapshotPayload}
             onLoadInventorySnapshots={loadInventorySnapshots}
             onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
-            canManageActions={canManage(currentUser)}
+            canManageActions={hasUserPermission(currentUser, "inventory_snapshot_manage")}
           />
         ) : activeView === "仓库货值" ? (
           <InventoryValuePage
@@ -1999,7 +2014,7 @@ function App() {
               } : { scope: "all" });
             }}
             syncing={syncing}
-            canSync={hasUserPermission(currentUser, "movement_sync")}
+            canSync={hasUserPermission(currentUser, "order_sync_run")}
           />
         ) : activeView === "订单分析" ? (
           <OrderAnalysisPage
@@ -2021,8 +2036,8 @@ function App() {
             }}
             onSyncOrders={handleOrderSync}
             syncing={syncing}
-            canSync={hasUserPermission(currentUser, "movement_sync")}
-            canManageSettings={canManage(currentUser)}
+            canSync={hasUserPermission(currentUser, "order_sync_run")}
+            canManageSettings={hasUserPermission(currentUser, "order_analysis_manage")}
           />
         ) : activeView === "仓库授权" || activeView === "库存同步" ? (
           <WarehouseBoard
@@ -2037,7 +2052,7 @@ function App() {
             onImport={handleImportWarehouses}
             onTest={handleTestWarehouse}
             canConfigure={canManage(currentUser) && hasUserPermission(currentUser, "warehouses")}
-            canSync={canManage(currentUser) && hasUserPermission(currentUser, "inventory_sync")}
+            canSync={hasUserPermission(currentUser, "inventory_sync_run")}
           />
         ) : activeView === "动销监控" ? (
           <MovementBoard
@@ -2046,7 +2061,8 @@ function App() {
             initialWarehouse={movementWarehouseFilter}
             onSyncOrders={handleOrderSync}
             syncing={syncing}
-            canSync={hasUserPermission(currentUser, "movement_sync")}
+            canSync={hasUserPermission(currentUser, "order_sync_run")}
+            canCreateStockupDraft={hasUserPermission(currentUser, "stockup_workflow_manage")}
             onCreateStockupDraft={(item) => {
               setStockupDraftSeed({
                 sku: item.sku,
@@ -2082,6 +2098,7 @@ function App() {
             onLoadMoreInbound={(limit) => loadStockup({ inboundLimit: limit })}
             onOpenExecution={() => handleViewChange("备货执行")}
             syncing={syncing}
+            canManage={hasUserPermission(currentUser, "stockup_workflow_manage")}
           />
         ) : activeView === "备货建议" ? (
           <StockupCenter
@@ -2096,13 +2113,14 @@ function App() {
             onLoadMoreInbound={(limit) => loadStockup({ inboundLimit: limit })}
             onOpenExecution={() => handleViewChange("备货执行")}
             syncing={syncing}
+            canManage={hasUserPermission(currentUser, "stockup_recommendations_manage")}
             draftSeed={stockupDraftSeed}
             onDraftSeedConsumed={() => setStockupDraftSeed(null)}
           />
         ) : activeView === "备货执行" ? (
-          <StockupExecutionCenter workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} />
+          <StockupExecutionCenter workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} canManage={hasUserPermission(currentUser, "stockup_execution_manage")} />
         ) : activeView === "生产中心" ? (
-          <ProductionCenter stockupPayload={stockupPayload} onRefresh={handleProductionRefresh} syncing={syncing} />
+          <ProductionCenter stockupPayload={stockupPayload} onRefresh={handleProductionRefresh} syncing={syncing} canRefresh={hasUserPermission(currentUser, "production_sync")} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
@@ -4058,6 +4076,7 @@ function MovementBoard({
   onSyncOrders,
   syncing,
   canSync,
+  canCreateStockupDraft,
   onCreateStockupDraft,
 }: {
   movementPayload: MovementPayload | null;
@@ -4066,6 +4085,7 @@ function MovementBoard({
   onSyncOrders: (warehouseIds?: string[]) => void;
   syncing: boolean;
   canSync: boolean;
+  canCreateStockupDraft: boolean;
   onCreateStockupDraft: (item: MovementPayload["items"][number]) => void;
 }) {
   const [country, setCountry] = React.useState("全部");
@@ -4453,9 +4473,9 @@ function MovementBoard({
             </section>
             <footer>
               <button className="ghost-button" type="button" onClick={() => setSelectedRiskItem(null)}>暂不处理</button>
-              <button className="sync-button" type="button" onClick={() => onCreateStockupDraft(selectedRiskItem)} disabled={!riskMetricsReady || selectedRiskItem.source === "warehouse_only" || selectedRiskItem.replenishQty <= 0}>
+              {canCreateStockupDraft ? <button className="sync-button" type="button" onClick={() => onCreateStockupDraft(selectedRiskItem)} disabled={!riskMetricsReady || selectedRiskItem.source === "warehouse_only" || selectedRiskItem.replenishQty <= 0}>
                 <PackageCheck size={16} />创建备货草稿
-              </button>
+              </button> : null}
             </footer>
           </section>
         </div>
@@ -4476,6 +4496,7 @@ function StockupCenter({
   onOpenExecution,
   onLoadMoreInbound,
   syncing,
+  canManage = false,
   draftSeed = null,
   onDraftSeedConsumed,
 }: {
@@ -4490,6 +4511,7 @@ function StockupCenter({
   onOpenExecution: () => void;
   onLoadMoreInbound?: (limit: number) => Promise<void>;
   syncing: boolean;
+  canManage?: boolean;
   draftSeed?: StockupDraftSeed | null;
   onDraftSeedConsumed?: () => void;
 }) {
@@ -4525,8 +4547,12 @@ function StockupCenter({
   }
 
   React.useEffect(() => {
-    if (draftSeed && !isRecommendationPage) setWorkflowTab("demands");
-  }, [draftSeed, isRecommendationPage]);
+    if (draftSeed && !isRecommendationPage && canManage) setWorkflowTab("demands");
+  }, [draftSeed, isRecommendationPage, canManage]);
+
+  React.useEffect(() => {
+    if (!canManage && !["overview", "ledger"].includes(workflowTab)) setWorkflowTab("overview");
+  }, [canManage, workflowTab]);
 
   const currentCounts = workflowPayload?.counts;
   const actionQueue = [
@@ -4603,13 +4629,13 @@ function StockupCenter({
     window.setTimeout(() => setReviewCopyMessage(""), 1800);
   }
 
-  const workflowTabs = [
+  const workflowTabs = ([
     ["overview", "链路总览", workflowPayload?.counts.activeWorkItems ?? 0],
     ["demands", "备货需求", workflowPayload?.counts.pendingDemands ?? 0],
     ["costs", "发货与成本", (workflowPayload?.counts.pendingCostShipments ?? 0) + (workflowPayload?.counts.pendingLockShipments ?? 0)],
     ["ledger", "到仓成本台账", 0],
     ["coding", "新品编码", workflowPayload?.counts.codingQueue ?? 0],
-  ] as const;
+  ] as const).filter(([key]) => canManage || ["overview", "ledger"].includes(String(key)));
 
   return (
     <main className={`movement-page stockup-page stockup-ops-page ${isRecommendationPage ? "stockup-recommendation-page" : ""}`}>
@@ -4623,7 +4649,7 @@ function StockupCenter({
           <div className="stockup-command-actions">
             <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
             <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
-            <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button>
+            {canManage ? <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button> : <span className="status-pill muted">只读查看</span>}
           </div>
         </section>
       ) : <>
@@ -4635,7 +4661,7 @@ function StockupCenter({
         </div>
         <div className="stockup-command-actions">
           <span className="status-pill good"><Check size={14} />仅显示中台新流程数据</span>
-          {nextAction ? <button className="sync-button" type="button" onClick={() => nextAction.tab === "execution" ? onOpenExecution() : setWorkflowTab(nextAction.tab)}>处理 {nextAction.count} 项</button> : <button className="sync-button" type="button" onClick={() => setWorkflowTab("demands")}><Plus size={16} />新建测试需求</button>}
+          {canManage ? (nextAction ? <button className="sync-button" type="button" onClick={() => nextAction.tab === "execution" ? onOpenExecution() : setWorkflowTab(nextAction.tab)}>处理 {nextAction.count} 项</button> : <button className="sync-button" type="button" onClick={() => setWorkflowTab("demands")}><Plus size={16} />新建测试需求</button>) : <span className="status-pill muted">只读查看</span>}
           <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()} title="重新读取简道云业务数据"><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新</button>
         </div>
       </section>
@@ -4646,7 +4672,7 @@ function StockupCenter({
           ["coding", "编码", currentCounts?.codingQueue ?? 0, "新品分配 SKU"],
           ["execution", "执行", currentCounts?.activeExecutionLines ?? 0, "采购生产与发货"],
           ["costs", "成本", (currentCounts?.pendingCostShipments ?? 0) + (currentCounts?.pendingLockShipments ?? 0), "运费分摊与锁定"],
-        ].map(([tab, label, count, note]) => <button type="button" key={String(tab)} onClick={() => tab === "execution" ? onOpenExecution() : setWorkflowTab(tab as typeof workflowTab)}><span>{label}</span><strong>{Number(count) > 0 ? formatNumber(Number(count)) : "—"}</strong><small>{note}</small></button>)}
+        ].map(([tab, label, count, note]) => <button type="button" key={String(tab)} disabled={!canManage} onClick={() => tab === "execution" ? onOpenExecution() : setWorkflowTab(tab as typeof workflowTab)}><span>{label}</span><strong>{Number(count) > 0 ? formatNumber(Number(count)) : "—"}</strong><small>{note}</small></button>)}
       </section>
 
       <section className="stockup-workflow-shell">
@@ -4663,10 +4689,10 @@ function StockupCenter({
           <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div>
         ) : null}
         {workflowTab === "overview" ? <StockupWorkflowOverview payload={workflowPayload} /> : null}
-        {workflowTab === "demands" ? <StockupDemandWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} seed={draftSeed} onSeedConsumed={onDraftSeedConsumed} /> : null}
-        {workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} onLocked={() => setWorkflowTab("ledger")} /> : null}
+        {canManage && workflowTab === "demands" ? <StockupDemandWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} seed={draftSeed} onSeedConsumed={onDraftSeedConsumed} /> : null}
+        {canManage && workflowTab === "costs" ? <StockupCostWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} onLocked={() => setWorkflowTab("ledger")} /> : null}
         {workflowTab === "ledger" ? <StockupCostLedger payload={workflowPayload} /> : null}
-        {workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
+        {canManage && workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
       </section>
       </>}
       {isRecommendationPage && acceptedRecommendations.length ? (
@@ -4708,7 +4734,7 @@ function StockupCenter({
                     <small>负责人：{planFor(item)?.owner || "未指定"} · 预计到仓：{planFor(item)?.expectedArrivalAt || "未设置"}</small>
                   </div>
                 ) : null}
-                {!planFor(item) && draftFor(item).open ? (
+                {canManage && !planFor(item) && draftFor(item).open ? (
                   <div className="stockup-plan-form">
                     <label>
                       <span>计划数量</span>
@@ -4739,7 +4765,7 @@ function StockupCenter({
                     </div>
                   </div>
                 ) : null}
-                <div className="accepted-task-actions">
+                {canManage ? <div className="accepted-task-actions">
                   <button className="sync-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "accept")}>送入正式采购 / 生产流程</button>
                   {planFor(item) ? (
                     <div className="stockup-plan-actions">
@@ -4751,7 +4777,7 @@ function StockupCenter({
                     <button className="sync-button compact-button" type="button" disabled={syncing} onClick={() => updatePlanDraft(item, { open: true })}>创建计划</button>
                   )}
                   <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "restore")}>退回提醒</button>
-                </div>
+                </div> : null}
               </article>
             ))}
           </div>
@@ -4805,10 +4831,12 @@ function StockupCenter({
                   <button className="ghost-button compact-button" type="button" onClick={() => void copyPlanExecutionSummary([plan])}>
                     复制下单信息
                   </button>
-                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "ordered")}>已下单</button>
-                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "in_production")}>生产/在途</button>
-                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "arrived")}>已到仓</button>
-                  <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "cancelled")}>取消</button>
+                  {canManage ? <>
+                    <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "ordered")}>已下单</button>
+                    <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "in_production")}>生产/在途</button>
+                    <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "arrived")}>已到仓</button>
+                    <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => void onUpdatePlanStatus(plan.id, "cancelled")}>取消</button>
+                  </> : null}
                 </div>
               </article>
             ))}
@@ -4884,7 +4912,7 @@ function StockupCenter({
               <article key={item.recommendationKey || `${item.country}-${item.sku}`}>
                 <strong>{item.sku} · {item.name}</strong>
                 <span>{item.country}，净建议 {formatNumber(item.netReplenishQty)} {item.unit}。放弃后不会进入当前备货提醒。</span>
-                <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "restore")}>恢复提醒</button>
+                {canManage ? <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "restore")}>恢复提醒</button> : null}
               </article>
             ))}
           </div>
@@ -4932,12 +4960,12 @@ function StockupCenter({
               <StockupFormulaInsight item={item} />
               <MovementStatusInsight item={item} />
               <div className="stockup-actions">
-                {item.decisionStatus === "accepted" ? (
+                {!canManage ? <span className="status-pill muted">只读</span> : item.decisionStatus === "accepted" ? (
                   <span className="status-pill good">已采纳 · 待创建计划</span>
                 ) : (
                   <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "accept")}>采纳</button>
                 )}
-                <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => onDecision(item, "abandon")}>放弃</button>
+                {canManage ? <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => onDecision(item, "abandon")}>放弃</button> : null}
               </div>
             </article>
           )) : (
@@ -5153,10 +5181,44 @@ function ProductionJourney({ timeline, completedAt, expanded, onToggle, label = 
   );
 }
 
-function StockupExecutionCenter({ workflowPayload, onRefreshWorkflow, syncing }: {
+function StockupExecutionReadOnly({ payload }: { payload: StockupWorkflowPayload | null }) {
+  const orders = payload?.stockupOrders ?? [];
+  const lines = payload?.stockupLines ?? [];
+  return (
+    <section className="panel stockup-panel">
+      <div className="panel-heading">
+        <div><p className="eyebrow">Execution Overview</p><h2>执行单进度</h2></div>
+        <span className="status-pill muted">只读</span>
+      </div>
+      <div className="stockup-table">
+        <div className="stockup-row stockup-head inbound-head"><span>执行单</span><span>目的仓</span><span>SKU / 产品</span><span>计划 / 合格 / 已发</span><span>状态</span><span>预计完成</span></div>
+        {orders.length ? orders.slice(0, 100).map((order) => {
+          const orderLines = lines.filter((line) => line.orderRecordId === order.id);
+          return orderLines.length ? orderLines.map((line, index) => (
+            <article className="stockup-row inbound-row" key={`${order.id}:${line.id}`}>
+              <strong>{index === 0 ? order.orderNo : ""}</strong>
+              <span>{index === 0 ? order.destinationWarehouseName || order.destinationCountry : ""}</span>
+              <span>{line.sku} · {line.productName}</span>
+              <span>{formatNumber(line.plannedQty)} / {formatNumber(line.qualifiedQty)} / {formatNumber(line.shippedQty)}</span>
+              <span>{line.status || order.status}</span>
+              <span>{order.expectedCompletedAt ? formatDate(order.expectedCompletedAt) : "未设置"}</span>
+            </article>
+          )) : (
+            <article className="stockup-row inbound-row" key={order.id}>
+              <strong>{order.orderNo}</strong><span>{order.destinationWarehouseName || order.destinationCountry}</span><span>暂无明细</span><span>{formatNumber(order.plannedQty)} / — / {formatNumber(order.shippedQty)}</span><span>{order.status}</span><span>{order.expectedCompletedAt ? formatDate(order.expectedCompletedAt) : "未设置"}</span>
+            </article>
+          );
+        }) : <div className="stockup-empty">当前没有备货执行单。</div>}
+      </div>
+    </section>
+  );
+}
+
+function StockupExecutionCenter({ workflowPayload, onRefreshWorkflow, syncing, canManage = false }: {
   workflowPayload: StockupWorkflowPayload | null;
   onRefreshWorkflow: () => Promise<StockupWorkflowPayload>;
   syncing: boolean;
+  canManage?: boolean;
 }) {
   const counts = workflowPayload?.counts;
   return (
@@ -5181,15 +5243,16 @@ function StockupExecutionCenter({ workflowPayload, onRefreshWorkflow, syncing }:
       </section>
 
       {workflowPayload?.warnings?.length ? <div className="notice warning compact-notice">{workflowPayload.warnings.join("；")}</div> : null}
-      <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} />
+      {canManage ? <StockupExecutionWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : <StockupExecutionReadOnly payload={workflowPayload} />}
     </main>
   );
 }
 
-function ProductionCenter({ stockupPayload, onRefresh, syncing }: {
+function ProductionCenter({ stockupPayload, onRefresh, syncing, canRefresh = false }: {
   stockupPayload: StockupPayload | null;
   onRefresh: () => Promise<void>;
   syncing: boolean;
+  canRefresh?: boolean;
 }) {
   const [activeTab, setActiveTab] = React.useState<"tongzhou" | "domestic">("tongzhou");
   const tongzhouItems = stockupPayload?.outsourcingQueue ?? [];
@@ -5220,7 +5283,7 @@ function ProductionCenter({ stockupPayload, onRefresh, syncing }: {
         <div className="stockup-command-actions">
           <span className="status-pill good"><Factory size={14} />{formatNumber(orders.length)} 张在产单</span>
           {stockupPayload?.outsourcingRefreshing ? <span className="status-pill muted production-refreshing-pill"><RefreshCw size={14} className="spinning" />后台更新中</span> : null}
-          <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefresh()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新生产数据</button>
+          {canRefresh ? <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefresh()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新生产数据</button> : <span className="status-pill muted">只读查看</span>}
         </div>
       </section>
 
@@ -7686,6 +7749,27 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
   const applications = applicationPayload?.applications ?? [];
   const pendingApplications = applications.filter((item) => item.status === "pending");
   const warehouseOptions = warehousePayload?.warehouses || [];
+  const editingUser = visibleUsers.find((user) => user.id === editingUserId) || null;
+  const permissionPreviewUser = editingUser ? { ...editingUser, permissions: permissionDraft.enabled } : null;
+  const permissionPreviewMenus = permissionPreviewUser ? visibleNavItems(permissionPreviewUser).map((item) => navigationDisplayLabel(item.label)) : [];
+
+  function permissionTemplates(user: UserManagementPayload["users"][number]) {
+    const defaults = visiblePayload?.roleDefaults?.[user.role] || [];
+    const build = (label: string, extra: string[]) => ({ label, permissions: Array.from(new Set([...defaults, ...extra])) });
+    if (user.role === "direct") {
+      return [
+        build("角色默认", []),
+        build("直营运营", ["dashboard", "order_analysis", "performance_analysis", "performance_revenue", "movement", "movement_analysis", "movement_inventory", "movement_warehouse", "movement_export", "stockup_workflow_view", "stockup_recommendations_view", "stockup_recommendations_manage", "stockup_execution_view", "production_view"]),
+        build("备货跟单", ["stockup_workflow_view", "stockup_workflow_manage", "stockup_recommendations_view", "stockup_recommendations_manage", "stockup_execution_view", "stockup_execution_manage", "production_view"]),
+        build("生产跟单", ["stockup_execution_view", "stockup_execution_manage", "production_view", "production_sync"]),
+      ];
+    }
+    return [build("角色默认", [])];
+  }
+
+  function applyPermissionTemplate(permissions: string[]) {
+    setPermissionDraft((current) => ({ ...current, enabled: permissions }));
+  }
 
   React.useEffect(() => {
     void loadApplications();
@@ -8123,6 +8207,13 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
                     <span className="status-pill warning">当前选择 {permissionDraft.enabled.length} 项</span>
                   </div>
 
+                  <div className="stockup-plan-actions" aria-label="权限模板">
+                    <span className="status-pill muted">快捷模板</span>
+                    {permissionTemplates(user).map((template) => (
+                      <button className="ghost-button compact-button" type="button" key={template.label} onClick={() => applyPermissionTemplate(template.permissions)}>{template.label}</button>
+                    ))}
+                  </div>
+
                   <div className="permission-groups">
                     {Array.from(new Set(permissionCatalog.map((item) => item.group))).map((group) => (
                       <fieldset className="permission-group" key={group}>
@@ -8137,6 +8228,7 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
                           ).includes(permission.key);
                           const required = user.role === "admin" && (visiblePayload?.hardRules?.adminRequired || []).includes(permission.key);
                           const checked = required || (!hardDenied && permissionDraft.enabled.includes(permission.key));
+                          const permissionKind = /(_manage|_sync|_run)$/.test(permission.key) || ["movement_export", "ozon_order_push"].includes(permission.key) ? "操作权限" : "查看权限";
                           return (
                             <label className={`permission-toggle ${hardDenied ? "locked" : ""}`} key={permission.key}>
                               <input
@@ -8149,13 +8241,18 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
                                 <strong>{permission.label}</strong>
                                 <small>{hardDenied
                                   ? permission.key === "direct_price" ? "分销商系统禁区" : permission.key === "users" ? "仅管理员可用" : "系统禁区"
-                                  : required ? "管理员必需" : checked ? "已允许" : "未允许"}</small>
+                                  : required ? `管理员必需 · ${permissionKind}` : checked ? `已允许 · ${permissionKind}` : `未允许 · ${permissionKind}`}</small>
                               </span>
                             </label>
                           );
                         })}
                       </fieldset>
                     ))}
+                  </div>
+
+                  <div className="permission-guardrail">
+                    <ShieldCheck size={18} />
+                    <span><strong>授权后可见菜单：</strong>{permissionPreviewMenus.length ? permissionPreviewMenus.join("、") : "无"}。查看权限只开放页面和数据，操作权限才允许提交、同步或修改。</span>
                   </div>
 
                   <div className="permission-scope-grid">
@@ -9382,7 +9479,7 @@ function PerformanceAnalysisPage({
             </div>
             <div className={`performance-supplemental-cost-message ${/失败|错误|缺少|为空|必须|重复|无法/.test(supplementalCostMessage) ? "danger" : ""}`}>
               <ShieldCheck size={15} />
-              <span>{supplementalCostMessage || (permissions.manageCosts ? "导入采用整批校验：任意一行有误，整份文件都不会写入。相同 SKU、国家和生效日期会安全更新。" : "当前账号仅可查看；导入维护需要管理员及经营成本权限。")}</span>
+              <span>{supplementalCostMessage || (permissions.manageCosts ? "导入采用整批校验：任意一行有误，整份文件都不会写入。相同 SKU、国家和生效日期会安全更新。" : "当前账号仅可查看；导入维护需要经营分析维护及经营成本权限。")}</span>
             </div>
             <div className="performance-supplemental-cost-table-wrap">
               <div className="performance-supplemental-cost-table">
@@ -9426,7 +9523,7 @@ function PerformanceAnalysisPage({
                 </article>
               ))}
             </div>
-            <div className="performance-rate-actions"><span>{packagingMessage || (permissions.manageCosts ? "修改后保存，将立即清除分析缓存并重算。" : "只有管理员且拥有经营成本权限的账号可以修改。")}</span>{permissions.manageCosts ? <button className="sync-button" type="button" onClick={savePackagingRules} disabled={busy || !packagingRuleDrafts.length}>{busy ? "保存中" : "保存规则并重算"}</button> : null}</div>
+            <div className="performance-rate-actions"><span>{packagingMessage || (permissions.manageCosts ? "修改后保存，将立即清除分析缓存并重算。" : "需要经营分析维护及经营成本权限才可修改。")}</span>{permissions.manageCosts ? <button className="sync-button" type="button" onClick={savePackagingRules} disabled={busy || !packagingRuleDrafts.length}>{busy ? "保存中" : "保存规则并重算"}</button> : null}</div>
           </section>
           </div>
         ) : (
@@ -11980,11 +12077,13 @@ function QualificationLibrary({
   qualificationPayload,
   onSyncQualifications,
   syncing,
+  canSync = false,
 }: {
   products: CatalogProduct[];
   qualificationPayload: QualificationPayload | null;
   onSyncQualifications: () => Promise<void>;
   syncing: boolean;
+  canSync?: boolean;
 }) {
   const [selectedSku, setSelectedSku] = React.useState(ALL_RECORDS);
   const [keyword, setKeyword] = React.useState("");
@@ -12029,10 +12128,10 @@ function QualificationLibrary({
               选择产品后查看对应 SKU 的资质、有效期和附件。已同步 {formatNumber(qualificationPayload?.counts.qualifications || 0)} 条资质。
             </span>
           </div>
-          <button className="sync-button" type="button" onClick={onSyncQualifications} disabled={syncing}>
+          {canSync ? <button className="sync-button" type="button" onClick={onSyncQualifications} disabled={syncing}>
             <RefreshCw size={16} className={syncing ? "spinning" : ""} />
             同步资质库
-          </button>
+          </button> : null}
         </div>
         <section className="qualification-expiry-overview" aria-label="资质到期预警">
           <div className="qualification-expiry-overview-head">
@@ -12128,12 +12227,14 @@ function AssetLibrary({
   assetPayload,
   onSyncAssets,
   syncing,
+  canSync = false,
 }: {
   products: CatalogProduct[];
   productBase: ProductBase[];
   assetPayload: AssetPayload | null;
   onSyncAssets: () => Promise<void>;
   syncing: boolean;
+  canSync?: boolean;
 }) {
   const [selectedSku, setSelectedSku] = React.useState(ALL_RECORDS);
   const [keyword, setKeyword] = React.useState("");
@@ -12166,10 +12267,10 @@ function AssetLibrary({
               选择产品后查看对应的图片、源文件和素材附件。已同步 {formatNumber(assetPayload?.counts.assets || 0)} 条素材。
             </span>
           </div>
-          <button className="sync-button" type="button" onClick={onSyncAssets} disabled={syncing}>
+          {canSync ? <button className="sync-button" type="button" onClick={onSyncAssets} disabled={syncing}>
             <RefreshCw size={16} className={syncing ? "spinning" : ""} />
             同步素材库
-          </button>
+          </button> : null}
         </div>
         <div className="qualification-layout">
           <div className="qualification-filter-stack">
@@ -13951,10 +14052,12 @@ function WarehouseInfoLibrary({
   warehouseInfoPayload,
   onSyncWarehouseInfo,
   syncing,
+  canSync = false,
 }: {
   warehouseInfoPayload: WarehouseInfoPayload | null;
   onSyncWarehouseInfo: () => Promise<void>;
   syncing: boolean;
+  canSync?: boolean;
 }) {
   const records = warehouseInfoPayload?.warehouseInfo ?? [];
   const [selectedId, setSelectedId] = React.useState(records[0]?.id || "");
@@ -13997,10 +14100,10 @@ function WarehouseInfoLibrary({
               来自同舟供应链数智化系统，已同步 {formatNumber(warehouseInfoPayload?.counts.records || 0)} 条记录，覆盖 {formatNumber(warehouseInfoPayload?.counts.warehouses || 0)} 个仓库。
             </span>
           </div>
-          <button className="sync-button" type="button" onClick={onSyncWarehouseInfo} disabled={syncing}>
+          {canSync ? <button className="sync-button" type="button" onClick={onSyncWarehouseInfo} disabled={syncing}>
             <RefreshCw size={16} className={syncing ? "spinning" : ""} />
             同步仓库信息
-          </button>
+          </button> : null}
         </div>
 
         <div className="warehouse-info-toolbar">
