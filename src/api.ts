@@ -3602,7 +3602,7 @@ export function fetchMovementComparison(input: {
   return requestJson<MovementComparisonPayload>(`/api/movement-history/compare${query}`);
 }
 
-export function captureMovementHistory(input: { date?: string; timezone?: string } = {}) {
+export function captureMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
   return requestJson<MovementHistoryPayload>("/api/movement-history/capture", {
     method: "POST",
     body: JSON.stringify(input),

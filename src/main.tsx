@@ -120,7 +120,7 @@ import {
   deleteQuickNavCategory,
   deleteQuickNavLink,
   captureInventorySnapshot,
-  captureMovementHistory,
+  captureMovementHistory as captureMovementHistoryRequest,
   deleteUser,
   deleteWarehouseConnection,
   exportWarehouseConnections,
@@ -1277,6 +1277,18 @@ function App() {
     }
   }
 
+  async function handleCaptureMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
+    try {
+      const data = await captureMovementHistoryRequest(input);
+      setMovementHistoryPayload(data);
+      setModuleLoadError(["#movement-analysis"]);
+      return data;
+    } catch (requestError) {
+      setModuleLoadError(["#movement-analysis"], requestError instanceof Error ? requestError.message : "Snapshot capture failed");
+      throw requestError;
+    }
+  }
+
   async function loadInventoryValue(input: { period?: InventoryValuePeriod; warehouseId?: string; country?: string; keyword?: string } = {}) {
     inventoryValueAbortRef.current?.abort();
     const controller = new AbortController();
@@ -2081,7 +2093,7 @@ function App() {
           <MovementAnalysisPage
             movementHistoryPayload={movementHistoryPayload}
             onLoadMovementHistory={loadMovementHistory}
-            onCaptureMovementHistory={captureMovementHistory}
+            onCaptureMovementHistory={handleCaptureMovementHistory}
             canCapture={hasUserPermission(currentUser, "movement_sync")}
             canExport={hasUserPermission(currentUser, "movement_export")}
             canCompare={hasUserPermission(currentUser, "movement_inventory")}
@@ -9978,7 +9990,7 @@ function MovementAnalysisPage({
 }: {
   movementHistoryPayload: MovementHistoryPayload | null;
   onLoadMovementHistory: (input?: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string }) => Promise<void>;
-  onCaptureMovementHistory: (input?: { date?: string; timezone?: string }) => Promise<MovementHistoryPayload>;
+  onCaptureMovementHistory: (input?: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string }) => Promise<MovementHistoryPayload>;
   canCapture: boolean;
   canExport: boolean;
   canCompare: boolean;
@@ -10115,9 +10127,8 @@ function MovementAnalysisPage({
   async function captureSnapshot() {
     setBusy(true);
     try {
-      const result = await onCaptureMovementHistory({ date: date || undefined, timezone });
+      const result = await onCaptureMovementHistory({ ...currentFilters, date: date || undefined, timezone });
       setDate(result.selectedDate || result.snapshot?.date || date);
-      await onLoadMovementHistory({ ...currentFilters, date: result.selectedDate || result.snapshot?.date || date });
     } finally {
       setBusy(false);
     }

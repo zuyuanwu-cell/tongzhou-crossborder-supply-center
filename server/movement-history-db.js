@@ -92,12 +92,97 @@ function buildWhere({ date = "", from = "", to = "", timezone = "" } = {}) {
   };
 }
 
+const MOVEMENT_STATUSES = {
+  stockout: "\u7f3a\u8d27",
+  replenish: "\u8865\u8d27\u9884\u8b66",
+  slow: "\u6162\u9500",
+  stagnant: "\u6ede\u9500",
+  noSalesData: "\u65e0\u52a8\u9500\u6570\u636e",
+};
+
+function normalizedStrings(values, transform = (value) => value) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((value) => transform(String(value || "").trim()))
+    .filter(Boolean)));
+}
+
+function buildRowWhere(params = {}, filters = {}) {
+  const { where, params: whereParams } = buildWhere(params);
+  const clauses = where ? [where.replace(/^WHERE\s+/i, "")] : [];
+  const queryParams = [...whereParams];
+  const warehouseIds = normalizedStrings(filters.warehouseIds);
+  const countries = normalizedStrings(filters.countries);
+  const skus = normalizedStrings(filters.skus, (value) => value.toUpperCase());
+  const warehouseId = String(filters.warehouseId || "").trim();
+  const keyword = String(filters.sku || "").trim().toLowerCase();
+
+  if (warehouseId) {
+    clauses.push("warehouse_id = ?");
+    queryParams.push(warehouseId);
+  }
+  if (warehouseIds.length) {
+    clauses.push(`warehouse_id IN (${warehouseIds.map(() => "?").join(", ")})`);
+    queryParams.push(...warehouseIds);
+  }
+  if (countries.length) {
+    clauses.push(`country IN (${countries.map(() => "?").join(", ")})`);
+    queryParams.push(...countries);
+  }
+  if (skus.length) {
+    const placeholders = skus.map(() => "?").join(", ");
+    clauses.push(`(UPPER(sku) IN (${placeholders}) OR UPPER(country_sku) IN (${placeholders}))`);
+    queryParams.push(...skus, ...skus);
+  }
+  if (keyword) {
+    const searchableColumns = ["sku", "country_sku", "product_name", "brand", "category"];
+    clauses.push(`(${searchableColumns.map((column) => `INSTR(LOWER(COALESCE(${column}, '')), ?) > 0`).join(" OR ")})`);
+    queryParams.push(...searchableColumns.map(() => keyword));
+  }
+  return {
+    where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+    params: queryParams,
+  };
+}
+
+function hasRowFilters(filters = {}) {
+  return Boolean(
+    String(filters.warehouseId || "").trim()
+    || String(filters.sku || "").trim()
+    || normalizedStrings(filters.warehouseIds).length
+    || normalizedStrings(filters.countries).length
+    || normalizedStrings(filters.skus).length
+  );
+}
+
+function summaryFromTotals(row, totals = {}) {
+  return {
+    date: row.date || "",
+    timezone: row.timezone || "",
+    capturedAt: row.captured_at || row.capturedAt || "",
+    rowCount: Number(totals.rowCount || 0),
+    warehouseCount: Number(totals.warehouseCount || 0),
+    skuCount: Number(totals.skuCount || 0),
+    availableQty: Number(totals.availableQty || 0),
+    totalQty: Number(totals.totalQty || 0),
+    sales3: Number(totals.sales3 || 0),
+    sales7: Number(totals.sales7 || 0),
+    sales30: Number(totals.sales30 || 0),
+    sales90: Number(totals.sales90 || 0),
+    stockout: Number(totals.stockout || 0),
+    replenish: Number(totals.replenish || 0),
+    slow: Number(totals.slow || 0),
+    stagnant: Number(totals.stagnant || 0),
+    noSalesData: Number(totals.noSalesData || 0),
+  };
+}
+
 export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = existsSync(dbPath)
     ? new SQL.Database(readFileSync(dbPath))
     : new SQL.Database();
+  const summaryCache = new Map();
 
   db.run(`
     PRAGMA user_version = 1;
@@ -261,6 +346,7 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
       setMeta("updatedAt", now);
       setMeta("lastSnapshotAt", capturedAt);
       db.run("COMMIT");
+      summaryCache.clear();
       if (shouldPersist) persist();
     } catch (error) {
       db.run("ROLLBACK");
@@ -300,6 +386,100 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
     ).map((row) => snapshotFromDb(row, includeRows));
   }
 
+  function getLatestSnapshot(params = {}, { includeRows = true } = {}) {
+    const { where, params: whereParams } = buildWhere(params);
+    const row = first(
+      db,
+      `SELECT * FROM movement_snapshots ${where} ORDER BY date DESC, captured_at DESC, timezone ASC LIMIT 1`,
+      whereParams,
+    );
+    return row ? snapshotFromDb(row, includeRows) : null;
+  }
+
+  function summarizeSnapshots(params = {}, filters = {}) {
+    const cacheKey = JSON.stringify({ params, filters });
+    const cached = summaryCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < 30_000) return cached.value;
+
+    let summaries;
+    if (!hasRowFilters(filters)) {
+      const { where, params: whereParams } = buildWhere(params);
+      summaries = all(
+        db,
+        `SELECT date, timezone, captured_at, totals_json FROM movement_snapshots ${where} ORDER BY date DESC, timezone ASC`,
+        whereParams,
+      ).map((row) => summaryFromTotals(row, jsonParse(row.totals_json, {})));
+    } else {
+      const { where, params: whereParams } = buildRowWhere(params, filters);
+      const aggregateRows = all(
+        db,
+        `SELECT
+          date,
+          timezone,
+          COUNT(*) AS row_count,
+          COUNT(DISTINCT CASE WHEN warehouse_id <> '' THEN warehouse_id END) AS warehouse_count,
+          COUNT(DISTINCT CASE WHEN sku <> '' THEN sku END) AS sku_count,
+          SUM(available_qty) AS available_qty,
+          SUM(total_qty) AS total_qty,
+          SUM(sales3) AS sales3,
+          SUM(sales7) AS sales7,
+          SUM(sales30) AS sales30,
+          SUM(sales90) AS sales90
+         FROM movement_snapshot_rows
+         ${where}
+         GROUP BY date, timezone
+         ORDER BY date DESC, timezone ASC`,
+        whereParams,
+      );
+      const statusRows = all(
+        db,
+        `SELECT date, timezone, status, COUNT(*) AS count
+         FROM movement_snapshot_rows
+         ${where}
+         GROUP BY date, timezone, status`,
+        whereParams,
+      );
+      const statusBySnapshot = new Map();
+      for (const row of statusRows) {
+        const key = `${row.date}::${row.timezone}`;
+        const counts = statusBySnapshot.get(key) || {};
+        counts[row.status || ""] = Number(row.count || 0);
+        statusBySnapshot.set(key, counts);
+      }
+      const capturedAtBySnapshot = new Map(all(
+        db,
+        "SELECT date, timezone, captured_at FROM movement_snapshots",
+      ).map((row) => [`${row.date}::${row.timezone}`, row.captured_at || ""]));
+      summaries = aggregateRows.map((row) => {
+        const counts = statusBySnapshot.get(`${row.date}::${row.timezone}`) || {};
+        return summaryFromTotals({
+          date: row.date,
+          timezone: row.timezone,
+          captured_at: capturedAtBySnapshot.get(`${row.date}::${row.timezone}`) || "",
+        }, {
+          rowCount: row.row_count,
+          warehouseCount: row.warehouse_count,
+          skuCount: row.sku_count,
+          availableQty: row.available_qty,
+          totalQty: row.total_qty,
+          sales3: row.sales3,
+          sales7: row.sales7,
+          sales30: row.sales30,
+          sales90: row.sales90,
+          stockout: counts[MOVEMENT_STATUSES.stockout],
+          replenish: counts[MOVEMENT_STATUSES.replenish],
+          slow: counts[MOVEMENT_STATUSES.slow],
+          stagnant: counts[MOVEMENT_STATUSES.stagnant],
+          noSalesData: counts[MOVEMENT_STATUSES.noSalesData],
+        });
+      });
+    }
+
+    summaryCache.set(cacheKey, { cachedAt: Date.now(), value: summaries });
+    if (summaryCache.size > 64) summaryCache.delete(summaryCache.keys().next().value);
+    return summaries;
+  }
+
   function listDates(timezone = "") {
     const params = timezone ? [timezone] : [];
     const where = timezone ? "WHERE timezone = ?" : "";
@@ -331,11 +511,13 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
 
   return {
     dbPath,
+    getLatestSnapshot,
     getMetadata,
     getSnapshots,
     hasSnapshots,
     listDates,
     persist,
+    summarizeSnapshots,
     upsertSnapshot,
   };
 }

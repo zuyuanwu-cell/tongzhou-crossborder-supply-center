@@ -3663,47 +3663,68 @@ function movementHistorySnapshotsInRange({ date = "", from = "", to = "", timezo
   return movementHistoryStore.getSnapshots({ date, from, to, timezone: resolvedTimezone });
 }
 
+function movementHistorySummaryFilters(params = {}, user = directAuth.user) {
+  const scopes = normalizeDataScopes(user?.dataScopes);
+  return {
+    warehouseId: String(params.warehouseId || "").trim(),
+    sku: String(params.sku || "").trim(),
+    warehouseIds: scopes.warehouseIds,
+    countries: scopes.countries,
+    skus: scopes.skus,
+  };
+}
+
+function movementHistoryTrendPoint(summary, inventoryVisible) {
+  return {
+    date: summary.date,
+    capturedAt: summary.capturedAt || "",
+    sales7: summary.sales7 || 0,
+    sales30: summary.sales30 || 0,
+    sales90: summary.sales90 || 0,
+    availableQty: inventoryVisible ? summary.availableQty || 0 : 0,
+    totalQty: inventoryVisible ? summary.totalQty || 0 : 0,
+    riskSku: inventoryVisible
+      ? (summary.stockout || 0) + (summary.replenish || 0) + (summary.slow || 0) + (summary.stagnant || 0)
+      : 0,
+    rowCount: summary.rowCount || 0,
+  };
+}
+
 function movementHistoryPayload(params = {}, auth = directAuth) {
   const user = auth?.user || directAuth.user;
   const timezone = safeTimezone(params.timezone, movementHistoryTimezone);
-  const dates = movementHistoryDateOptions(timezone).map((item) => {
-    const snapshot = movementHistoryStore.getSnapshots({ date: item.date, timezone })[0];
-    const visibleRows = projectMovementPayload({
-      items: filterMovementHistoryRows(snapshot?.rows || [], {}, user),
-    }, user).items;
-    return { ...item, rowCount: visibleRows.length };
-  });
+  const baseDates = movementHistoryDateOptions(timezone);
+  const scopedDateSummaries = movementHistoryStore.summarizeSnapshots(
+    { timezone },
+    movementHistorySummaryFilters({}, user),
+  );
+  const scopedDateSummaryByDate = new Map(scopedDateSummaries.map((item) => [item.date, item]));
+  const dates = baseDates.map((item) => ({
+    ...item,
+    rowCount: scopedDateSummaryByDate.get(item.date)?.rowCount || 0,
+  }));
   const selectedDate = params.date || dates[0]?.date || "";
-  const snapshots = movementHistorySnapshotsInRange({
-    date: selectedDate,
-    from: params.from,
-    to: params.to,
-    timezone,
-  });
-  const selectedSnapshot = snapshots[0] || null;
+  const selectedSnapshot = selectedDate
+    ? movementHistoryStore.getLatestSnapshot({ date: selectedDate, timezone })
+    : null;
   const scopedRows = selectedSnapshot ? filterMovementHistoryRows(selectedSnapshot.rows || [], params, user) : [];
   const rows = projectMovementPayload({ items: scopedRows }, user).items;
   const filteredSnapshot = selectedSnapshot ? { ...selectedSnapshot, totals: movementSnapshotTotals(rows), rows } : null;
-  const trendSnapshots = movementHistorySnapshotsInRange({
-    from: params.from || dates.at(-1)?.date || "",
-    to: params.to || dates[0]?.date || "",
-    timezone,
-  }).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-  const trend = trendSnapshots.map((snapshot) => {
-    const trendRows = projectMovementPayload({ items: filterMovementHistoryRows(snapshot.rows || [], params, user) }, user).items;
-    const totals = movementSnapshotTotals(trendRows);
-    return {
-      date: snapshot.date,
-      capturedAt: snapshot.capturedAt || "",
-      sales7: totals.sales7,
-      sales30: totals.sales30,
-      sales90: totals.sales90,
-      availableQty: totals.availableQty,
-      totalQty: totals.totalQty,
-      riskSku: totals.stockout + totals.replenish + totals.slow + totals.stagnant,
-      rowCount: totals.rowCount,
-    };
-  });
+  const trendFrom = params.from || dates[dates.length - 1]?.date || "";
+  const trendTo = params.to || dates[0]?.date || "";
+  const trendSummaries = movementHistoryStore.summarizeSnapshots(
+    { from: trendFrom, to: trendTo, timezone },
+    movementHistorySummaryFilters(params, user),
+  );
+  const trendSummaryByDate = new Map(trendSummaries.map((item) => [item.date, item]));
+  const inventoryVisible = hasPermission(user, "movement_inventory");
+  const trend = baseDates
+    .filter((item) => (!trendFrom || item.date >= trendFrom) && (!trendTo || item.date <= trendTo))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .map((item) => movementHistoryTrendPoint(
+      trendSummaryByDate.get(item.date) || { date: item.date, capturedAt: item.capturedAt || "" },
+      inventoryVisible,
+    ));
   const warehouseOptions = Array.from(new Map(
     filterMovementHistoryRows(selectedSnapshot?.rows || [], {}, user)
       .filter((row) => row.warehouseId)
@@ -3747,9 +3768,9 @@ function movementComparisonPayload(params = {}, auth = directAuth) {
     compareFrom: params.compareFrom || "",
     compareTo: params.compareTo || "",
   });
-  const rangeFrom = [ranges.previous.from, ranges.current.from].sort()[0];
-  const rangeTo = [ranges.previous.to, ranges.current.to].sort().at(-1);
-  const snapshots = movementHistoryStore.getSnapshots({ from: rangeFrom, to: rangeTo, timezone })
+  const snapshots = [ranges.previous, ranges.current]
+    .map((range) => movementHistoryStore.getLatestSnapshot({ from: range.from, to: range.to, timezone }))
+    .filter(Boolean)
     .map((snapshot) => ({ ...snapshot, rows: filterMovementHistoryRows(snapshot.rows || [], {}, user) }));
   const scopes = normalizeDataScopes(user.dataScopes);
   const orders = (cachedOrdersSync.orders || []).filter((order) => {
@@ -9715,7 +9736,14 @@ const server = http.createServer(async (req, res) => {
       const timezone = safeTimezone(payload.timezone || url.searchParams.get("timezone") || "", movementHistoryTimezone);
       const date = String(payload.date || url.searchParams.get("date") || dateKeyInTimezone(new Date(), timezone)).trim();
       const snapshot = upsertMovementSnapshot(date, "manual", timezone);
-      sendJson(res, 200, { ok: true, ...movementHistoryPayload({ date: snapshot.date, timezone }, auth) });
+      sendJson(res, 200, { ok: true, ...movementHistoryPayload({
+        date: snapshot.date,
+        from: String(payload.from || ""),
+        to: String(payload.to || ""),
+        warehouseId: String(payload.warehouseId || ""),
+        sku: String(payload.sku || ""),
+        timezone,
+      }, auth) });
       return;
     }
 
