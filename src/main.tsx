@@ -1034,6 +1034,22 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    if (!authReady) return;
+    const refreshPermissions = () => { void loadCurrentUser({ preserveOnError: true }); };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) refreshPermissions();
+    };
+    const timer = window.setInterval(refreshPermissions, 30_000);
+    window.addEventListener("focus", refreshPermissions);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshPermissions);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [authReady]);
+
+  React.useEffect(() => {
     const syncViewFromHash = () => setActiveView(getInitialView());
     window.addEventListener("hashchange", syncViewFromHash);
     return () => window.removeEventListener("hashchange", syncViewFromHash);
@@ -1105,12 +1121,14 @@ function App() {
     setModuleLoadError(["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"], combined);
   }
 
-  async function loadCurrentUser() {
+  async function loadCurrentUser(options: { preserveOnError?: boolean } = {}) {
     try {
       const data = await fetchCurrentUser();
       setCurrentUser(data.user);
     } catch {
-      setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" });
+      if (!options.preserveOnError) {
+        setCurrentUser({ role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" });
+      }
     } finally {
       setAuthReady(true);
     }

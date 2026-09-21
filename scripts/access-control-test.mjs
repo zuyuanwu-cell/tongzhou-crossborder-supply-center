@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { effectivePermissions, projectCatalogProduct, projectProductBase } from "../server/access-control.js";
+import { effectivePermissions, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "../server/access-control.js";
 import { projectMovementPayload, scopeMovementSources } from "../server/movement-access.js";
 import { createLocalUser, publicUser } from "../server/user-auth.js";
 
@@ -186,6 +186,17 @@ const directStockupViewer = effectivePermissions({
 assert.equal(directStockupViewer.includes("production_view"), true, "direct operators can receive production view access");
 assert.equal(directStockupViewer.includes("production_sync"), false, "production view does not imply refresh access");
 assert.equal(directStockupViewer.includes("stockup_recommendations_view"), false, "stockup pages can be granted independently");
+
+const savedDirectProductionOverrides = sanitizePermissionUpdate("direct", {
+  allow: ["production_view", "production_sync"],
+  deny: [],
+});
+const savedDirectProductionPermissions = effectivePermissions({
+  role: "direct",
+  permissionOverrides: savedDirectProductionOverrides,
+});
+assert.equal(savedDirectProductionPermissions.includes("production_view"), true, "saved direct production access remains visible after permission normalization");
+assert.equal(savedDirectProductionPermissions.includes("production_sync"), true, "saved direct production refresh access remains available after permission normalization");
 
 const directStockupOperator = effectivePermissions({
   role: "direct",

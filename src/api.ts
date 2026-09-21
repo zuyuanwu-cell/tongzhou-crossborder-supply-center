@@ -4445,8 +4445,14 @@ export function verifyOzonOrderInWms(postingNumber: string) {
   return requestJson<{ ok: boolean; order: OzonOrder; payload: OzonPayload }>(`/api/ozon/orders/${encodeURIComponent(postingNumber)}/verify-wms`, { method: "POST" });
 }
 
-export function fetchCurrentUser() {
-  return requestJson<{ ok: boolean; user: AuthUser }>("/api/me");
+export async function fetchCurrentUser() {
+  const payload = await requestJson<{ ok: boolean; user: AuthUser }>("/api/me");
+  try {
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+  } catch {
+    // Keep the live session usable when browser storage is unavailable.
+  }
+  return payload;
 }
 
 export async function updateCurrentUserPreferences(input: { locale: UiLocale }) {
