@@ -22,6 +22,7 @@ const payload = buildMovementPayload(
 );
 
 assert.equal(payload.items.length, 1);
+assert.equal(payload.orderDataAvailable, false, "an empty order snapshot is not treated as usable sales data");
 const [item] = payload.items;
 assert.equal(item.identityScope, "SKU×国家");
 assert.equal(item.dataCompleteness, "complete");

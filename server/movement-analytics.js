@@ -408,6 +408,7 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
     ok: true,
     generatedAt: new Date().toISOString(),
     orderSyncedAt: ordersPayload.syncedAt || "",
+    orderDataAvailable: Boolean(ordersPayload.syncedAt && (ordersPayload.orders || []).length),
     inventorySyncedAt: warehousePayload.syncedAt || "",
     windows: [3, 7, 15, 30, 60, 90],
     counts: {

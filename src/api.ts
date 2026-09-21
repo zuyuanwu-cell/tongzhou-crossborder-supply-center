@@ -1215,6 +1215,7 @@ export type MovementPayload = {
   ok: boolean;
   generatedAt: string;
   orderSyncedAt: string;
+  orderDataAvailable?: boolean;
   inventorySyncedAt: string;
   windows: number[];
   counts: {

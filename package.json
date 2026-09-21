@@ -37,6 +37,7 @@
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",
     "test:order-cache-policy": "node scripts/order-cache-policy-test.mjs",
+    "test:order-sync-job-state": "node scripts/order-sync-job-state-test.mjs",
     "test:production-timeline": "node scripts/production-timeline-test.mjs",
     "test:production-materials": "node scripts/production-materials-test.mjs",
     "test:outsourcing-cache-policy": "node scripts/outsourcing-cache-policy-test.mjs",

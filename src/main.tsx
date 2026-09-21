@@ -4151,18 +4151,23 @@ function MovementBoard({
   const failedAuthorizedWarehouses = (movementPayload?.orderSyncResults || []).filter((result) => !result.ok && result.hasCredentials && !result.backgroundRunning);
   const retainedWarehouseResults = (movementPayload?.orderSyncResults || []).filter((result) => result.usingPreviousSuccessfulData);
   const hasUsableOrderData = Boolean(movementPayload?.orderSyncedAt)
-    && (movementPayload?.orderSyncResults || []).some((result) => Number(result.orderCount || 0) > 0);
+    && (movementPayload?.orderDataAvailable ?? true);
   const riskMetricsReady = Boolean(movementPayload && hasUsableOrderData);
+  const inventoryMetricsReady = Boolean(movementPayload?.inventorySyncedAt);
+  const orderAgeDays = daysSince(movementPayload?.orderSyncedAt);
+  const orderDataStale = riskMetricsReady && orderAgeDays !== null && orderAgeDays >= 2;
   const orderStatusLabel = !movementPayload
     ? "正在读取订单数据"
     : !movementPayload.orderSyncedAt
       ? "订单待同步"
     : !hasUsableOrderData
       ? "订单数据不可用"
+      : orderDataStale
+        ? `订单 ${orderAgeDays} 天未更新`
       : retainedWarehouseResults.length
         ? "部分仓库沿用历史数据"
         : "订单已同步";
-  const orderStatusTone = !movementPayload?.orderSyncedAt || retainedWarehouseResults.length
+  const orderStatusTone = !movementPayload?.orderSyncedAt || orderDataStale || retainedWarehouseResults.length
     ? "warning"
     : hasUsableOrderData
       ? "good"
@@ -4286,6 +4291,12 @@ function MovementBoard({
         </section>
       ) : null}
 
+      {orderDataStale ? (
+        <section className="notice warning" role="status">
+          当前先展示最近一次成功订单快照计算出的库存风险；订单数据已 {orderAgeDays} 天未更新，后台会自动重新同步，完成后页面将使用新数据重算。
+        </section>
+      ) : null}
+
       {movementPayload?.warehouseFreshness?.length ? (
         <section className="warehouse-freshness-strip">
           {movementPayload.warehouseFreshness.map((item) => (
@@ -4302,7 +4313,7 @@ function MovementBoard({
         <Metric title="缺货 SKU" value={riskMetricsReady ? formatNumber(movementPayload?.counts.stockout ?? 0) : "—"} note={riskMetricsReady ? "有销量但可售为 0" : "等待可用订单数据"} icon={AlertTriangle} tone="red" />
         <Metric title="补货预警" value={riskMetricsReady ? formatNumber(movementPayload?.counts.replenish ?? 0) : "—"} note={riskMetricsReady ? "可售天数低于补货周期" : "等待可用订单数据"} icon={PackageCheck} tone="orange" />
         <Metric title="慢销 / 滞销" value={riskMetricsReady ? formatNumber((movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0)) : "—"} note={riskMetricsReady ? "库存覆盖过高或无销量" : "等待可用订单数据"} icon={BarChart3} tone="blue" />
-        <Metric title="仓库未建档" value={riskMetricsReady ? formatNumber(movementPayload?.counts.warehouseOnly ?? 0) : "—"} note={riskMetricsReady ? "仓库有库存但产品库缺失" : "等待可用订单数据"} icon={Boxes} tone="green" />
+        <Metric title="仓库未建档" value={inventoryMetricsReady ? formatNumber(movementPayload?.counts.warehouseOnly ?? 0) : "—"} note={inventoryMetricsReady ? "仓库有库存但产品库缺失" : "等待可用库存数据"} icon={Boxes} tone="green" />
       </section>
 
       <form

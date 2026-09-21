@@ -123,6 +123,7 @@ const salesOnlyUser = {
   permissionOverrides: { allow: ["movement"], deny: [] },
 };
 const projectedMovement = projectMovementPayload({
+  orderDataAvailable: true,
   items: [{
     sku: "SKU-A",
     sales30: 4,
@@ -138,6 +139,7 @@ const projectedMovement = projectMovementPayload({
   syncState: { usingCachedOrders: true },
 }, salesOnlyUser);
 assert.equal(projectedMovement.items[0].status, "有动销");
+assert.equal(projectedMovement.orderDataAvailable, true, "read-only movement users retain the safe order-availability signal");
 assert.equal("availableQty" in projectedMovement.items[0], false);
 assert.equal("warehouseBreakdown" in projectedMovement.items[0], false);
 assert.equal("syncState" in projectedMovement, false);

@@ -68,6 +68,7 @@ import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
+import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
@@ -5229,6 +5230,16 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
 
 let activeOrderSyncJobPromise = null;
 
+function recoverOrphanedOrderSyncJobs(message) {
+  if (activeOrderSyncJobPromise) return { recoveredCount: 0, recoveredJobIds: [] };
+  const recovery = recoverInterruptedOrderSyncJobs(cachedOrderSyncJobs, { message });
+  if (recovery.recoveredCount) {
+    saveOrderSyncJobsCache();
+    console.warn(`[orders-sync-job] recovered ${recovery.recoveredCount} interrupted job(s): ${recovery.recoveredJobIds.join(", ")}`);
+  }
+  return recovery;
+}
+
 function startOrderSyncJob(job) {
   if (activeOrderSyncJobPromise) return;
   activeOrderSyncJobPromise = runOrderSyncJob(job.id)
@@ -5542,6 +5553,7 @@ async function handleOrderSync(req, res) {
 
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host}`);
   const days = Math.max(1, Math.min(180, Number(requestUrl.searchParams.get("days") || 90)));
+  recoverOrphanedOrderSyncJobs("检测到没有实际运行进程的历史同步任务，已结束旧任务并创建新的同步任务。");
   const runningJob = latestOrderSyncJob();
   if (runningJob && ["queued", "running"].includes(runningJob.status)) {
     sendJson(res, 202, { ok: true, jobId: runningJob.id, job: publicOrderSyncJob(runningJob), reused: true });
@@ -6215,6 +6227,7 @@ async function runScheduledInventorySync() {
 }
 
 async function runScheduledOrderSync() {
+  recoverOrphanedOrderSyncJobs("检测到没有实际运行进程的历史同步任务，已结束旧任务并自动重新同步。");
   const runningJob = latestOrderSyncJob();
   if (activeOrderSyncJobPromise || (runningJob && ["queued", "running"].includes(runningJob.status))) {
     return { skipped: true, message: "Order sync job is already running" };
@@ -6261,6 +6274,8 @@ async function runScheduledOzonOrderSync() {
 
 function registerBackgroundSyncTasks() {
   const minute = 60_000;
+  const orderSnapshotTime = Date.parse(String(cachedOrdersSync.syncedAt || ""));
+  const orderSnapshotStale = !Number.isFinite(orderSnapshotTime) || Date.now() - orderSnapshotTime >= warehouseOrderSyncIntervalMs;
   const external = (lane, definition) => syncScheduler.register({ lane, jitterMs: 20_000, ...definition });
   syncScheduler.register({
     id: "wecom-notifications",
@@ -6336,7 +6351,7 @@ function registerBackgroundSyncTasks() {
     label: "三方仓订单增量",
     priority: 80,
     intervalMs: warehouseOrderSyncIntervalMs,
-    initialDelayMs: 4 * minute,
+    initialDelayMs: orderSnapshotStale ? 15_000 : 4 * minute,
     run: runScheduledOrderSync,
   });
   external("miaoshou", {
@@ -10198,6 +10213,7 @@ const server = http.createServer(async (req, res) => {
       const payload = await parseRequestBody(req);
       const scoped = scopeMovementSources({ products: cachedProducts, warehouse: cachedWarehouseSync, orders: cachedOrdersSync, connections: warehouseConnections }, auth.user || directAuth.user);
       const allowedWarehouseIds = new Set(scoped.connections.map((connection) => connection.id));
+      recoverOrphanedOrderSyncJobs("检测到没有实际运行进程的历史同步任务，已结束旧任务并创建新的同步任务。");
       const runningJob = latestOrderSyncJob();
       if (runningJob && ["queued", "running"].includes(runningJob.status)) {
         sendJson(res, 202, { ok: true, jobId: runningJob.id, job: publicOrderSyncJob(scopeOrderSyncJob(runningJob, scoped)), reused: true });
@@ -10795,6 +10811,7 @@ warmDerivedResponseCaches();
 
 server.listen(port, () => {
   console.log(`Tongzhou API server listening on http://localhost:${port}`);
+  recoverOrphanedOrderSyncJobs("服务重启时发现上次订单同步尚未结束，已关闭旧任务并等待自动重试。");
   registerBackgroundSyncTasks();
   syncScheduler.start();
   setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
