@@ -2009,7 +2009,9 @@ export type AfterSalesTicket = {
   originalItems: AfterSalesItem[];
   reissueItems: AfterSalesReissueItem[];
   primaryReason: string;
+  primaryReasonCode?: string;
   secondaryReason: string;
+  secondaryReasonCode?: string;
   responsibility: {
     party: "warehouse" | "supplier_quality" | "logistics" | "operations" | "pending_review" | string;
     label: string;
@@ -2109,6 +2111,30 @@ export type AfterSalesOrderSyncPayload = {
     warehouseOptions: Array<{ id: string; name: string; country: string }>;
     existingTickets: AfterSalesTicket[];
   };
+};
+
+export type AfterSalesDraft = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  createdById: string;
+  createdBy: string;
+  orderNumber: string;
+  order: AfterSalesOrderSyncPayload["order"] | null;
+  customer: AfterSalesCustomer;
+  warehouseId: string;
+  warehouseName: string;
+  notificationTeamId: string;
+  originalItems: AfterSalesItem[];
+  reissueItems: AfterSalesReissueItem[];
+  primaryReason: string;
+  secondaryReason: string;
+  needsReissue: boolean;
+  evidence: AfterSalesAttachment[];
+  operatorRemark: string;
+  additionalLiabilityCny: number;
+  customerRecoveryCny: number;
+  adjustmentReason: string;
 };
 
 export type MiaoshouPlatformReadiness = {
@@ -4119,13 +4145,36 @@ export function uploadAfterSalesAttachment(input: { fileName: string; dataUrl: s
   });
 }
 
+export async function uploadAfterSalesFile(file: File, kind: "evidence" | "label") {
+  const params = new URLSearchParams({ kind, fileName: file.name });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/after-sales/uploads/file?${params.toString()}`, {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    });
+  } catch {
+    throw new Error("附件上传连接失败，请检查网络后重试。");
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || "上传售后附件失败。");
+  return payload as { ok: boolean; upload: AfterSalesAttachment };
+}
+
 export function createAfterSalesTicket(input: {
+  draftId?: string;
   order: AfterSalesOrderSyncPayload["order"];
   customer: AfterSalesCustomer;
   originalItems: AfterSalesItem[];
   reissueItems: AfterSalesReissueItem[];
   primaryReason: string;
+  primaryReasonCode?: string;
   secondaryReason: string;
+  secondaryReasonCode?: string;
   needsReissue: boolean;
   evidenceIds: string[];
   operatorRemark: string;
@@ -4141,6 +4190,41 @@ export function createAfterSalesTicket(input: {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function fetchAfterSalesDrafts() {
+  return requestJson<{ ok: boolean; drafts: AfterSalesDraft[] }>("/api/after-sales/drafts");
+}
+
+export function saveAfterSalesDraft(input: {
+  id?: string;
+  orderNumber?: string;
+  order: AfterSalesOrderSyncPayload["order"] | null;
+  customer: AfterSalesCustomer;
+  originalItems: AfterSalesItem[];
+  reissueItems: AfterSalesReissueItem[];
+  primaryReason: string;
+  primaryReasonCode?: string;
+  secondaryReason: string;
+  secondaryReasonCode?: string;
+  needsReissue: boolean;
+  evidenceIds: string[];
+  operatorRemark: string;
+  additionalLiabilityCny: number;
+  customerRecoveryCny: number;
+  adjustmentReason: string;
+  warehouseId: string;
+  warehouseName: string;
+  notificationTeamId?: string;
+}) {
+  return requestJson<{ ok: boolean; draft: AfterSalesDraft }>("/api/after-sales/drafts", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteAfterSalesDraft(id: string) {
+  return requestJson<{ ok: boolean; draftId: string }>(`/api/after-sales/drafts/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function fetchAfterSalesTicket(id: string) {
@@ -4169,7 +4253,9 @@ export function attachAfterSalesLabels(id: string, input: { labelUploadIds: stri
 
 export function resubmitAfterSalesTicket(id: string, input: {
   primaryReason: string;
+  primaryReasonCode?: string;
   secondaryReason: string;
+  secondaryReasonCode?: string;
   correctionNote: string;
   operatorRemark?: string;
   originalItems?: AfterSalesItem[];

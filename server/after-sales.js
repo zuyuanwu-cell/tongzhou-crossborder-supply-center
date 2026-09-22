@@ -21,6 +21,22 @@ export const AFTER_SALES_SECONDARY_REASONS = Object.freeze([
   "客户退全款且退货",
 ]);
 
+export const AFTER_SALES_PRIMARY_REASON_CODES = Object.freeze({
+  warehouse_wrong_item: "仓库错发",
+  warehouse_short_shipment: "仓库漏发少发",
+  product_quality: "产品质量问题",
+  parcel_lost: "快递丢失",
+  transport_damage: "运输破损",
+  sku_mapping_error: "SKU匹配错误",
+});
+
+export const AFTER_SALES_SECONDARY_REASON_CODES = Object.freeze({
+  reship_keep_wrong_item: "补发且留错品",
+  wrong_item_bad_review_no_return: "仓库发错货，客户差评不退货",
+  customer_pays_difference_keep_wrong_item: "客户补差价留错品",
+  full_refund_and_return: "客户退全款且退货",
+});
+
 export const AFTER_SALES_STATUSES = Object.freeze([
   "pending_warehouse",
   "processing",
@@ -32,6 +48,31 @@ export const AFTER_SALES_STATUSES = Object.freeze([
 ]);
 
 const REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
+export const AFTER_SALES_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024;
+export const AFTER_SALES_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+
+const AFTER_SALES_UPLOAD_TYPES = Object.freeze({
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "application/pdf": "pdf",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+});
+
+const AFTER_SALES_EXTENSION_TYPES = Object.freeze({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".pdf": "application/pdf",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+});
 
 const RESPONSIBILITY = Object.freeze({
   warehouse: { party: "warehouse", label: "仓库", ruleCode: "warehouse_fulfillment" },
@@ -69,6 +110,44 @@ function nowIso() {
 
 function actorName(actor) {
   return text(actor?.displayName || actor?.username || actor?.id || "系统");
+}
+
+function afterSalesUploadMimeType(input = {}) {
+  const explicit = text(input.mimeType).toLowerCase().split(";")[0].replace("image/jpg", "image/jpeg");
+  if (AFTER_SALES_UPLOAD_TYPES[explicit]) return explicit;
+  return AFTER_SALES_EXTENSION_TYPES[extname(text(input.fileName)).toLowerCase()] || "";
+}
+
+function normalizedReasonKey(value) {
+  return text(value).toLowerCase().replace(/[\s,，、;；。/]+/g, "");
+}
+
+function normalizeAfterSalesReason(value, code, reasonCodes, aliases = {}) {
+  const normalizedCode = text(code || value).toLowerCase();
+  if (reasonCodes[normalizedCode]) return reasonCodes[normalizedCode];
+  const normalizedValue = normalizedReasonKey(value);
+  const matched = Object.values(reasonCodes).find((label) => normalizedReasonKey(label) === normalizedValue);
+  if (matched) return matched;
+  return aliases[normalizedValue] || text(value);
+}
+
+function normalizeAfterSalesReasons(input = {}) {
+  return {
+    primaryReason: normalizeAfterSalesReason(
+      input.primaryReason,
+      input.primaryReasonCode,
+      AFTER_SALES_PRIMARY_REASON_CODES,
+      {
+        [normalizedReasonKey("仓库发错货")]: "仓库错发",
+        [normalizedReasonKey("仓库漏发/少发")]: "仓库漏发少发",
+      },
+    ),
+    secondaryReason: normalizeAfterSalesReason(
+      input.secondaryReason,
+      input.secondaryReasonCode,
+      AFTER_SALES_SECONDARY_REASON_CODES,
+    ),
+  };
 }
 
 function event(type, label, actor, note = "") {
@@ -149,8 +228,9 @@ function loadJson(path, fallback) {
 }
 
 function createStore(cachePath) {
-  let state = loadJson(cachePath, { version: 1, updatedAt: "", sequenceDate: "", sequence: 0, tickets: [], uploads: [] });
+  let state = loadJson(cachePath, { version: 1, updatedAt: "", sequenceDate: "", sequence: 0, tickets: [], drafts: [], uploads: [] });
   state.tickets = Array.isArray(state.tickets) ? state.tickets : [];
+  state.drafts = Array.isArray(state.drafts) ? state.drafts : [];
   state.uploads = Array.isArray(state.uploads) ? state.uploads : [];
 
   function persist() {
@@ -187,6 +267,22 @@ function createStore(cachePath) {
       state.tickets[index] = updater({ ...state.tickets[index] });
       persist();
       return state.tickets[index];
+    },
+    listDrafts() { return state.drafts; },
+    getDraft(id) { return state.drafts.find((draft) => draft.id === id) || null; },
+    saveDraft(draft) {
+      const index = state.drafts.findIndex((item) => item.id === draft.id);
+      if (index >= 0) state.drafts[index] = draft;
+      else state.drafts.unshift(draft);
+      persist();
+      return draft;
+    },
+    deleteDraft(id) {
+      const index = state.drafts.findIndex((draft) => draft.id === id);
+      if (index < 0) return null;
+      const [removed] = state.drafts.splice(index, 1);
+      persist();
+      return removed;
     },
     addUpload(upload) {
       state.uploads.unshift(upload);
@@ -570,16 +666,16 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     };
   }
 
-  function saveUpload(input, actor, requestOrigin) {
-    const dataUrl = text(input.dataUrl);
+  function saveUploadBytes(input, actor, requestOrigin) {
     const kind = input.kind === "label" ? "label" : "evidence";
-    const match = dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif)|application\/pdf);base64,(.+)$/i);
-    if (!match) throw new Error("请上传 PNG、JPG、WEBP、GIF 或 PDF 文件。");
-    const mimeType = match[1].toLowerCase().replace("image/jpg", "image/jpeg");
-    const bytes = Buffer.from(match[2], "base64");
+    const mimeType = afterSalesUploadMimeType(input);
+    if (!mimeType) throw new Error("请上传 PNG、JPG、WEBP、GIF、PDF、MP4、MOV 或 WebM 文件。");
+    if (kind === "label" && mimeType.startsWith("video/")) throw new Error("补发面单仅支持图片或 PDF，视频请上传到售后问题凭证。");
+    const bytes = Buffer.isBuffer(input.bytes) ? input.bytes : Buffer.from(input.bytes || []);
     if (!bytes.length) throw new Error("文件内容为空。");
-    if (bytes.length > 8 * 1024 * 1024) throw new Error("单个文件不能超过 8MB。");
-    const suffix = mimeType === "application/pdf" ? "pdf" : mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1];
+    const maxBytes = mimeType.startsWith("video/") ? AFTER_SALES_VIDEO_MAX_BYTES : AFTER_SALES_DOCUMENT_MAX_BYTES;
+    if (bytes.length > maxBytes) throw new Error(mimeType.startsWith("video/") ? "单个视频不能超过 50MB。" : "单个图片或 PDF 不能超过 8MB。");
+    const suffix = AFTER_SALES_UPLOAD_TYPES[mimeType];
     const id = `as-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${suffix}`;
     mkdirSync(uploadDir, { recursive: true });
     writeFileSync(resolve(uploadDir, id), bytes);
@@ -597,9 +693,20 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return store.addUpload(upload);
   }
 
+  function saveUpload(input, actor, requestOrigin) {
+    const dataUrl = text(input.dataUrl);
+    const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/i);
+    if (!match) throw new Error("附件内容格式不正确。");
+    return saveUploadBytes({
+      ...input,
+      mimeType: match[1],
+      bytes: Buffer.from(match[2], "base64"),
+    }, actor, requestOrigin);
+  }
+
   function uploadPath(fileName) {
     const safeName = text(fileName);
-    if (!/^as-[a-z0-9-]+\.(?:png|jpg|jpeg|webp|gif|pdf)$/i.test(safeName)) return null;
+    if (!/^as-[a-z0-9-]+\.(?:png|jpg|jpeg|webp|gif|pdf|mp4|mov|webm)$/i.test(safeName)) return null;
     const upload = store.getUpload(safeName);
     const path = resolve(uploadDir, safeName);
     return upload && existsSync(path) ? { path, upload } : null;
@@ -610,12 +717,59 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return unique.map((id) => store.getUpload(id)).filter((upload) => upload && upload.kind === kind);
   }
 
+  function listDrafts(actor) {
+    const actorId = text(actor?.id);
+    return store.listDrafts()
+      .filter((draft) => actorId && draft.createdById === actorId)
+      .sort((left, right) => text(right.updatedAt).localeCompare(text(left.updatedAt)));
+  }
+
+  function saveDraft(input, actor) {
+    const actorId = text(actor?.id);
+    if (!actorId) throw new Error("当前账号无法保存草稿。");
+    const requestedId = text(input.id || input.draftId);
+    const existing = requestedId ? store.getDraft(requestedId) : null;
+    if (requestedId && (!existing || existing.createdById !== actorId)) throw new Error("售后草稿不存在或不属于当前账号。");
+    const now = nowIso();
+    const order = input.order && typeof input.order === "object" ? input.order : null;
+    const normalizedReasons = normalizeAfterSalesReasons(input);
+    const draft = {
+      id: existing?.id || `ASD-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      createdById: actorId,
+      createdBy: existing?.createdBy || actorName(actor),
+      orderNumber: text(input.orderNumber || order?.orderNumber),
+      order,
+      customer: input.customer && typeof input.customer === "object" ? input.customer : {},
+      warehouseId: text(input.warehouseId || order?.warehouseId),
+      warehouseName: text(input.warehouseName || order?.warehouseName),
+      notificationTeamId: text(input.notificationTeamId),
+      originalItems: Array.isArray(input.originalItems) ? input.originalItems : [],
+      reissueItems: Array.isArray(input.reissueItems) ? input.reissueItems : [],
+      primaryReason: AFTER_SALES_PRIMARY_REASONS.includes(normalizedReasons.primaryReason) ? normalizedReasons.primaryReason : text(input.primaryReason),
+      secondaryReason: AFTER_SALES_SECONDARY_REASONS.includes(normalizedReasons.secondaryReason) ? normalizedReasons.secondaryReason : text(input.secondaryReason),
+      needsReissue: input.needsReissue === true,
+      evidence: attachments(input.evidenceIds, "evidence"),
+      operatorRemark: text(input.operatorRemark),
+      additionalLiabilityCny: money(input.additionalLiabilityCny),
+      customerRecoveryCny: money(input.customerRecoveryCny),
+      adjustmentReason: text(input.adjustmentReason),
+    };
+    return store.saveDraft(draft);
+  }
+
+  function deleteDraft(id, actor) {
+    const draft = store.getDraft(text(id));
+    if (!draft || draft.createdById !== text(actor?.id)) throw new Error("售后草稿不存在或不属于当前账号。");
+    return store.deleteDraft(draft.id);
+  }
+
   function create(input, actor) {
     const order = input.order && typeof input.order === "object" ? input.order : {};
     const originalOrderNumber = text(order.orderNumber || input.originalOrderNumber);
     if (!originalOrderNumber) throw new Error("请先同步原订单。");
-    const primaryReason = text(input.primaryReason);
-    const secondaryReason = text(input.secondaryReason);
+    const { primaryReason, secondaryReason } = normalizeAfterSalesReasons(input);
     if (!AFTER_SALES_PRIMARY_REASONS.includes(primaryReason)) throw new Error("请选择售后一级分类。");
     if (!AFTER_SALES_SECONDARY_REASONS.includes(secondaryReason)) throw new Error("请选择售后二级分类。");
     const responsibility = resolveAfterSalesResponsibility(primaryReason, secondaryReason, input.responsibilityOverride);
@@ -803,8 +957,12 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
   function resubmit(id, input, actor) {
     const updated = store.update(id, (ticket) => {
       if (ticket.status !== "rejected") throw new Error("只有仓库已驳回的售后单可以修改后重新提交。");
-      const primaryReason = text(input.primaryReason || ticket.primaryReason);
-      const secondaryReason = text(input.secondaryReason || ticket.secondaryReason);
+      const { primaryReason, secondaryReason } = normalizeAfterSalesReasons({
+        primaryReason: input.primaryReason || ticket.primaryReason,
+        primaryReasonCode: input.primaryReasonCode,
+        secondaryReason: input.secondaryReason || ticket.secondaryReason,
+        secondaryReasonCode: input.secondaryReasonCode,
+      });
       if (!AFTER_SALES_PRIMARY_REASONS.includes(primaryReason)) throw new Error("请选择售后一级分类。");
       if (!AFTER_SALES_SECONDARY_REASONS.includes(secondaryReason)) throw new Error("请选择售后二级分类。");
       const correctionNote = text(input.correctionNote);
@@ -954,8 +1112,12 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       ));
       return Boolean(text(actorId) && text(upload.uploadedById) === text(actorId));
     },
+    listDrafts,
+    saveDraft,
+    deleteDraft,
     syncOrder,
     saveUpload,
+    saveUploadBytes,
     uploadPath,
     create,
     updateWarehouse,

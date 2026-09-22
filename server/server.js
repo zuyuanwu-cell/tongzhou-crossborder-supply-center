@@ -2954,6 +2954,9 @@ const staticMimeTypes = {
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".gif": "image/gif",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
   ".pdf": "application/pdf",
   ".ico": "image/x-icon",
   ".woff": "font/woff",
@@ -3426,6 +3429,31 @@ function activeInventoryValueWarehouseOptions(auth = directAuth) {
   return buildActiveInventoryWarehouseOptions({
     connections: warehouseConnections,
     scopes: normalizeDataScopes(user.dataScopes),
+  });
+}
+
+function parseRequestBytes(req, maxBytes = 50 * 1024 * 1024) {
+  return new Promise((resolveBody, rejectBody) => {
+    const chunks = [];
+    let size = 0;
+    let overflow = false;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        overflow = true;
+        chunks.length = 0;
+        return;
+      }
+      if (!overflow) chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (overflow) {
+        rejectBody(new Error("单个视频不能超过 50MB。"));
+        return;
+      }
+      resolveBody(Buffer.concat(chunks, size));
+    });
+    req.on("error", rejectBody);
   });
 }
 
@@ -7538,6 +7566,53 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/after-sales/drafts" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有查看售后草稿的权限。" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, drafts: afterSalesService.listDrafts(auth.user) });
+      return;
+    }
+
+    if (url.pathname === "/api/after-sales/drafts" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有保存售后草稿的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const draft = afterSalesService.saveDraft(payload, auth.user);
+        appendActionLog(auth, payload.id || payload.draftId ? "更新售后草稿" : "保存售后草稿", "after_sales_draft", draft.id, {
+          orderNumber: draft.orderNumber,
+          warehouseId: draft.warehouseId,
+        });
+        sendJson(res, payload.id || payload.draftId ? 200 : 201, { ok: true, draft });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "保存售后草稿失败。" });
+      }
+      return;
+    }
+
+    const afterSalesDraftMatch = url.pathname.match(/^\/api\/after-sales\/drafts\/([^/]+)$/);
+    if (afterSalesDraftMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有删除售后草稿的权限。" });
+        return;
+      }
+      try {
+        const draft = afterSalesService.deleteDraft(decodeURIComponent(afterSalesDraftMatch[1]), auth.user);
+        appendActionLog(auth, "删除售后草稿", "after_sales_draft", draft.id, { orderNumber: draft.orderNumber });
+        sendJson(res, 200, { ok: true, draftId: draft.id });
+      } catch (error) {
+        sendJson(res, 404, { ok: false, message: error?.message || "售后草稿不存在。" });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/after-sales/products" && req.method === "GET") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "after_sales_report")) {
@@ -7597,6 +7672,36 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/after-sales/uploads/file" && req.method === "POST") {
+      const auth = getAuth(req);
+      const kind = url.searchParams.get("kind") === "label" ? "label" : "evidence";
+      const requiredPermission = kind === "label" ? "after_sales_warehouse" : "after_sales_report";
+      if (!hasPermission(auth, requiredPermission)) {
+        req.resume();
+        sendJson(res, 403, { ok: false, message: kind === "label" ? "当前账号没有上传仓库面单的权限。" : "当前账号没有上传售后凭证的权限。" });
+        return;
+      }
+      try {
+        const bytes = await parseRequestBytes(req, 50 * 1024 * 1024);
+        const upload = afterSalesService.saveUploadBytes({
+          fileName: url.searchParams.get("fileName") || "",
+          mimeType: req.headers["content-type"] || "",
+          kind,
+          bytes,
+        }, auth.user, requestOrigin(req));
+        appendActionLog(auth, kind === "label" ? "上传售后补发面单" : "上传售后凭证", "after_sales_upload", upload.fileName, {
+          uploadId: upload.id,
+          kind: upload.kind,
+          mimeType: upload.mimeType,
+          size: upload.size,
+        });
+        sendJson(res, 201, { ok: true, upload });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "上传售后附件失败。" });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/after-sales/uploads" && req.method === "POST") {
       const auth = getAuth(req);
       try {
@@ -7652,6 +7757,10 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const payload = await parseRequestBody(req);
+        if (payload.draftId && !afterSalesService.listDrafts(auth.user).some((draft) => draft.id === String(payload.draftId))) {
+          sendJson(res, 404, { ok: false, message: "售后草稿不存在或不属于当前账号，请刷新草稿箱后重试。" });
+          return;
+        }
         const warehouseOptions = afterSalesWarehouseOptions(
           payload.order,
           warehouseConnections,
@@ -7683,6 +7792,7 @@ const server = http.createServer(async (req, res) => {
           projectTeams: cachedWecomNotifications.projectTeams,
         });
         const result = afterSalesService.create(payload, auth.user);
+        if (payload.draftId) afterSalesService.deleteDraft(payload.draftId, auth.user);
         appendActionLog(auth, "提交售后单", "after_sales_ticket", result.ticket.id, {
           originalOrderNumber: result.ticket.originalOrderNumber,
           responsibility: result.ticket.responsibility?.party,

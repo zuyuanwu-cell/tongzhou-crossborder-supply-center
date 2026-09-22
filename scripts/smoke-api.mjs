@@ -269,19 +269,54 @@ async function main() {
   if (warehouseReply.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes("仓库回复工单")) {
     throw new Error("Warehouse ticket reply did not notify operations immediately.");
   }
+  const evidenceVideoUpload = await expectJson("/api/after-sales/uploads/file?kind=evidence&fileName=customer-feedback.mp4", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "video/mp4" },
+    body: Buffer.from("000000186674797069736f6d00000000", "hex"),
+  });
+  if (!evidenceVideoUpload.upload?.id || evidenceVideoUpload.upload?.mimeType !== "video/mp4") {
+    throw new Error("After-sales evidence video was not uploaded through the binary route.");
+  }
+  const webhookCountBeforeDraft = webhookPayloads.length;
+  const afterSalesDraft = await expectJson("/api/after-sales/drafts", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      orderNumber: "SMOKE-AS-ORDER-1",
+      order: { orderNumber: "SMOKE-AS-ORDER-1", orderIdentity: "SMOKE-AS-1", platform: "tiktok", site: "ID", shopId: "SHOP-1", shopAlias: "测试店", orderStartedAt: "2026-09-01T10:00:00.000Z", packagingFeeCny: 1.9 },
+      customer: { recipientInfo: "收件人：测试用户\n电话：081234\n地址：Jakarta" },
+      warehouseId: "id-shenniu-jakarta",
+      originalItems: [{ sku: "TZKJ-SJJ001", productName: "测试产品", orderedQty: 1, affectedQty: 1, unitCostCny: 10 }],
+      reissueItems: [],
+      primaryReasonCode: "warehouse_short_shipment",
+      secondaryReasonCode: "wrong_item_bad_review_no_return",
+      evidenceIds: [evidenceVideoUpload.upload.id],
+      operatorRemark: "等待客户确认处理方式",
+    }),
+  });
+  if (!afterSalesDraft.draft?.id || webhookPayloads.length !== webhookCountBeforeDraft) {
+    throw new Error("Saving an after-sales draft failed or incorrectly triggered a webhook.");
+  }
+  const listedAfterSalesDrafts = await expectJson("/api/after-sales/drafts", { headers: authHeaders });
+  if (listedAfterSalesDrafts.drafts?.length !== 1 || listedAfterSalesDrafts.drafts[0].secondaryReason !== "仓库发错货，客户差评不退货") {
+    throw new Error("After-sales draft list did not preserve the selected resolution.");
+  }
   const afterSales = await expectJson("/api/after-sales", {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({
+      draftId: afterSalesDraft.draft.id,
       order: { orderNumber: "SMOKE-AS-ORDER-1", orderIdentity: "SMOKE-AS-1", platform: "tiktok", site: "ID", shopId: "SHOP-1", shopAlias: "测试店", orderStartedAt: "2026-09-01T10:00:00.000Z", packagingFeeCny: 1.9 },
       customer: { recipientInfo: "收件人：测试用户\n电话：081234\n地址：Jakarta" },
       warehouseId: "id-shenniu-jakarta",
       originalItems: [{ sku: "TZKJ-SJJ001", productName: "测试产品", imageUrl: "", orderedQty: 1, affectedQty: 1, unitCostCny: 10, costSource: "smoke" }],
       reissueItems: [{ sku: "TZKJ-SJJ001", productName: "测试产品", imageUrl: "", quantity: 1, unitCostCny: 10, costSource: "smoke" }],
       primaryReason: "仓库错发",
+      primaryReasonCode: "warehouse_wrong_item",
       secondaryReason: "补发且留错品",
+      secondaryReasonCode: "reship_keep_wrong_item",
       needsReissue: true,
-      evidenceIds: [],
+      evidenceIds: [evidenceVideoUpload.upload.id],
       operatorRemark: "smoke",
       additionalLiabilityCny: 0,
       customerRecoveryCny: 0,
@@ -290,6 +325,15 @@ async function main() {
   });
   if (afterSales.notification?.status !== "sent" || !String(webhookPayloads.at(-1)?.markdown?.content || "").includes(`ticket=${afterSales.ticket.id}`)) {
     throw new Error("After-sales creation did not synchronously deliver a warehouse webhook.");
+  }
+  if (!afterSales.ticket?.evidence?.some((item) => item.id === evidenceVideoUpload.upload.id && item.mimeType === "video/mp4")) {
+    throw new Error("After-sales evidence video was not linked to the created ticket.");
+  }
+  const draftsAfterSubmit = await expectJson("/api/after-sales/drafts", { headers: authHeaders });
+  if (draftsAfterSubmit.drafts?.length) throw new Error("Submitted after-sales draft was not removed from the draft box.");
+  const evidenceVideoResponse = await fetch(`${baseUrl}${new URL(evidenceVideoUpload.upload.url).pathname}`, { headers: authHeaders });
+  if (!evidenceVideoResponse.ok || evidenceVideoResponse.headers.get("content-type") !== "video/mp4") {
+    throw new Error(`After-sales evidence video could not be read with its media type: ${evidenceVideoResponse.status}.`);
   }
   const afterSalesReminder = await expectJson(`/api/after-sales/${encodeURIComponent(afterSales.ticket.id)}/remind`, {
     method: "POST",

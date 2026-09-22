@@ -116,8 +116,42 @@ try {
     kind: "evidence",
     dataUrl: "data:image/png;base64,iVBORw0KGgo=",
   }, actor, "http://localhost:8787");
+  const videoEvidence = service.saveUploadBytes({
+    fileName: "customer-feedback.mp4",
+    mimeType: "video/mp4",
+    kind: "evidence",
+    bytes: Buffer.from("000000186674797069736f6d00000000", "hex"),
+  }, actor, "http://localhost:8787");
+  assert.equal(videoEvidence.mimeType, "video/mp4");
+  assert.match(videoEvidence.id, /\.mp4$/);
+  assert.equal(service.uploadPath(videoEvidence.id)?.upload.id, videoEvidence.id);
+  assert.throws(() => service.saveUploadBytes({
+    fileName: "not-a-label.mp4",
+    mimeType: "video/mp4",
+    kind: "label",
+    bytes: Buffer.from("000000186674797069736f6d00000000", "hex"),
+  }, actor, "http://localhost:8787"), /视频请上传到售后问题凭证/);
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["MY"] }, actor.id), true, "the uploader must be able to preview an unsubmitted upload");
+  assert.equal(service.canAccessUpload(videoEvidence.id, { countries: ["MY"] }, actor.id), true, "the uploader must be able to preview an unsubmitted video");
   assert.equal(service.canAccessUpload(evidence.id, { countries: ["ID"] }, "other-user"), false, "unsubmitted uploads are private to their uploader");
+  const draft = service.saveDraft({
+    orderNumber: synced.order.orderNumber,
+    order: synced.order,
+    customer: synced.order.customer,
+    warehouseId: "warehouse-id",
+    warehouseName: "印尼仓",
+    originalItems: synced.order.items,
+    reissueItems: [],
+    primaryReasonCode: "warehouse_short_shipment",
+    secondaryReasonCode: "wrong_item_bad_review_no_return",
+    evidenceIds: [videoEvidence.id],
+    operatorRemark: "等待客户确认是否补发",
+  }, actor);
+  assert.match(draft.id, /^ASD-/);
+  assert.equal(draft.primaryReason, "仓库漏发少发");
+  assert.equal(draft.secondaryReason, "仓库发错货，客户差评不退货");
+  assert.equal(service.listDrafts(actor).length, 1);
+  assert.equal(service.listDrafts({ id: "other-user" }).length, 0, "drafts must remain private to their creator");
   const created = service.create({
     order: synced.order,
     customer: synced.order.customer,
@@ -125,10 +159,12 @@ try {
     warehouseName: "印尼仓",
     originalItems: synced.order.items,
     reissueItems: [{ sku: "TZKJ-A", productName: "测试产品", imageUrl: "/test.png", quantity: 2, unitCostCny: 14.4, costSource: "产品库直营成本" }],
-    primaryReason: "仓库错发",
-    secondaryReason: "补发且留错品",
+    primaryReason: "仓库漏发 / 少发",
+    primaryReasonCode: "warehouse_short_shipment",
+    secondaryReason: "",
+    secondaryReasonCode: "wrong_item_bad_review_no_return",
     needsReissue: true,
-    evidenceIds: [evidence.id],
+    evidenceIds: [evidence.id, videoEvidence.id],
     operatorRemark: "测试错发",
     additionalLiabilityCny: 0,
     customerRecoveryCny: 0,
@@ -136,9 +172,11 @@ try {
   }, actor);
   assert.match(created.ticket.id, /^AS-\d{8}-0001$/);
   assert.equal(created.ticket.money.totalWarehouseLiabilityCny, 30.7);
-  assert.equal(created.ticket.evidence.length, 1);
+  assert.equal(created.ticket.evidence.length, 2);
   assert.equal(created.ticket.warehouseId, "warehouse-id");
   assert.equal(created.ticket.notificationRoute.teamId, "team-a");
+  assert.equal(created.ticket.primaryReason, "仓库漏发少发");
+  assert.equal(created.ticket.secondaryReason, "仓库发错货，客户差评不退货");
   const createdMarkdown = buildAfterSalesCreatedMarkdown(created.ticket, { requestOrigin: "https://gyl.example.com" });
   assert.match(createdMarkdown, /新售后单待处理/);
   assert.match(createdMarkdown, /ticket=AS-/);
@@ -197,6 +235,8 @@ try {
   assert.match(activated.ticket.timeline.at(-1).label, /售后已激活/);
   assert.match(buildAfterSalesActivatedMarkdown(activated.ticket, { requestOrigin: "https://gyl.example.com", statusLabel: "仓库已受理" }), /售后单重新激活/);
   assert.match(buildAfterSalesActivatedMarkdown(activated.ticket, { requestOrigin: "https://gyl.example.com" }), /view=warehouse/);
+  assert.equal(service.deleteDraft(draft.id, actor).id, draft.id);
+  assert.equal(service.listDrafts(actor).length, 0);
 
   const listed = service.list();
   assert.equal(listed.summary.total, 1);

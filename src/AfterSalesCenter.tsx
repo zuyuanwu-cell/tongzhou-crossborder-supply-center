@@ -12,19 +12,23 @@ import {
   LoaderCircle,
   PackageCheck,
   PackageSearch,
+  Play,
   Plus,
   RefreshCw,
   Search,
   Send,
   ShieldCheck,
+  Trash2,
   Truck,
   Upload,
+  Video,
   X,
   ZoomIn,
 } from "lucide-react";
 import {
   AfterSalesAttachment,
   AfterSalesCustomer,
+  AfterSalesDraft,
   AfterSalesItem,
   AfterSalesOrderSyncPayload,
   AfterSalesPayload,
@@ -36,22 +40,43 @@ import {
   WarehouseNotificationTeamsPayload,
   attachAfterSalesLabels,
   createAfterSalesTicket,
+  deleteAfterSalesDraft,
   downloadAfterSalesAttachment,
   fetchAfterSales,
+  fetchAfterSalesDrafts,
   fetchAfterSalesTicket,
   fetchWarehouseNotificationTeams,
   resolveApiUrl,
   remindAfterSalesTicket,
   resubmitAfterSalesTicket,
   searchAfterSalesProducts,
+  saveAfterSalesDraft,
   syncAfterSalesOrder,
   updateAfterSalesWarehouse,
-  uploadAfterSalesAttachment,
+  uploadAfterSalesFile,
 } from "./api";
 import { WarehouseReturnQuery } from "./WarehouseReturnQuery";
 
-const primaryReasons = ["仓库错发", "仓库漏发少发", "产品质量问题", "快递丢失", "运输破损", "SKU匹配错误"];
-const secondaryReasons = ["补发且留错品", "仓库发错货，客户差评不退货", "客户补差价留错品", "客户退全款且退货"];
+const primaryReasonOptions = [
+  { code: "warehouse_wrong_item", label: "仓库错发" },
+  { code: "warehouse_short_shipment", label: "仓库漏发少发" },
+  { code: "product_quality", label: "产品质量问题" },
+  { code: "parcel_lost", label: "快递丢失" },
+  { code: "transport_damage", label: "运输破损" },
+  { code: "sku_mapping_error", label: "SKU匹配错误" },
+];
+const secondaryReasonOptions = [
+  { code: "reship_keep_wrong_item", label: "补发且留错品" },
+  { code: "wrong_item_bad_review_no_return", label: "仓库发错货，客户差评不退货" },
+  { code: "customer_pays_difference_keep_wrong_item", label: "客户补差价留错品" },
+  { code: "full_refund_and_return", label: "客户退全款且退货" },
+];
+const primaryReasons = primaryReasonOptions.map((item) => item.label);
+const secondaryReasons = secondaryReasonOptions.map((item) => item.label);
+
+function reasonCode(options: Array<{ code: string; label: string }>, label: string) {
+  return options.find((item) => item.label === label)?.code || "";
+}
 
 const statusMeta: Record<string, { label: string; tone: string }> = {
   pending_warehouse: { label: "待仓库接单", tone: "warning" },
@@ -65,7 +90,7 @@ const statusMeta: Record<string, { label: string; tone: string }> = {
 
 type AfterSalesListFilters = { status?: string; keyword?: string; mine?: boolean };
 type AfterSalesCacheEntry = { payload: AfterSalesPayload; cachedAt: number };
-type AfterSalesImagePreview = { src: string; title: string; description?: string };
+type AfterSalesMediaPreview = { src: string; title: string; description?: string; kind: "image" | "video" };
 
 const AFTER_SALES_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
 const AFTER_SALES_REQUEST_TIMEOUT_MS = 30 * 1000;
@@ -73,6 +98,8 @@ const AFTER_SALES_RETRY_DELAY_MS = 2500;
 const AFTER_SALES_AUTO_REFRESH_MS = 30 * 1000;
 const REMINDER_COOLDOWN_MS = 30 * 60 * 1000;
 const AFTER_SALES_STORAGE_PREFIX = "tongzhou_after_sales_list_v1:";
+const AFTER_SALES_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024;
+const AFTER_SALES_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
 const afterSalesListCache = new Map<string, AfterSalesCacheEntry>();
 
 function afterSalesOwnerKey(user: AuthUser) {
@@ -170,13 +197,17 @@ function fileSize(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function fileToDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("读取文件失败。"));
-    reader.readAsDataURL(file);
-  });
+function isVideoFile(file: Pick<File, "name" | "type">) {
+  return file.type.startsWith("video/") || /\.(?:mp4|mov|webm)$/i.test(file.name);
+}
+
+function validateAfterSalesFile(file: File, kind: "evidence" | "label") {
+  const video = isVideoFile(file);
+  const allowed = video || file.type === "application/pdf" || file.type.startsWith("image/") || /\.(?:png|jpe?g|webp|gif|pdf)$/i.test(file.name);
+  if (!allowed) throw new Error("仅支持 PNG、JPG、WEBP、GIF、PDF、MP4、MOV 或 WebM 文件。");
+  if (kind === "label" && video) throw new Error("补发面单仅支持图片或 PDF，视频请上传到售后问题凭证。");
+  const limit = video ? AFTER_SALES_VIDEO_MAX_BYTES : AFTER_SALES_DOCUMENT_MAX_BYTES;
+  if (file.size > limit) throw new Error(video ? "单个视频不能超过 50MB。" : "单个图片或 PDF 不能超过 8MB。");
 }
 
 function responsibilityFor(primary: string, secondary: string) {
@@ -204,11 +235,15 @@ function isImageAttachment(attachment: AfterSalesAttachment) {
   return attachment.mimeType.startsWith("image/") || /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(attachment.fileName);
 }
 
+function isVideoAttachment(attachment: AfterSalesAttachment) {
+  return attachment.mimeType.startsWith("video/") || /\.(?:mp4|mov|webm)$/i.test(attachment.fileName);
+}
+
 function ProductThumbnail({ imageUrl, title, description, onPreview }: {
   imageUrl?: string;
   title: string;
   description?: string;
-  onPreview: (image: AfterSalesImagePreview) => void;
+  onPreview: (image: AfterSalesMediaPreview) => void;
 }) {
   const source = resolveApiUrl(imageUrl || "");
   const [failed, setFailed] = React.useState(false);
@@ -220,7 +255,7 @@ function ProductThumbnail({ imageUrl, title, description, onPreview }: {
   }
 
   return (
-    <button type="button" className="as-product-thumb" onClick={() => onPreview({ src: source, title, description })} aria-label={`放大查看 ${title} 产品图片`}>
+    <button type="button" className="as-product-thumb" onClick={() => onPreview({ src: source, title, description, kind: "image" })} aria-label={`放大查看 ${title} 产品图片`}>
       <img src={source} alt={`${title} 产品缩略图`} loading="lazy" onError={() => setFailed(true)} />
       <span><ZoomIn size={15} /></span>
     </button>
@@ -230,24 +265,26 @@ function ProductThumbnail({ imageUrl, title, description, onPreview }: {
 function AttachmentPreviewCard({ attachment, onDownload, onPreview, onError }: {
   attachment: AfterSalesAttachment;
   onDownload: (attachment: AfterSalesAttachment) => void;
-  onPreview: (image: AfterSalesImagePreview) => void;
+  onPreview: (media: AfterSalesMediaPreview) => void;
   onError: (message: string) => void;
 }) {
-  const canPreview = isImageAttachment(attachment);
+  const imageAttachment = isImageAttachment(attachment);
+  const videoAttachment = isVideoAttachment(attachment);
   const [previewUrl, setPreviewUrl] = React.useState("");
-  const [loadingPreview, setLoadingPreview] = React.useState(canPreview);
+  const [loadingPreview, setLoadingPreview] = React.useState(imageAttachment);
   const [previewFailed, setPreviewFailed] = React.useState(false);
 
   React.useEffect(() => {
-    if (!canPreview) return undefined;
+    if (!imageAttachment) return undefined;
     let active = true;
-    let objectUrl = "";
     setLoadingPreview(true);
     setPreviewFailed(false);
+    setPreviewUrl("");
     void downloadAfterSalesAttachment(attachment)
       .then((blob) => {
-        objectUrl = URL.createObjectURL(blob);
+        const objectUrl = URL.createObjectURL(blob);
         if (active) setPreviewUrl(objectUrl);
+        else URL.revokeObjectURL(objectUrl);
       })
       .catch((loadError) => {
         if (!active) return;
@@ -259,11 +296,49 @@ function AttachmentPreviewCard({ attachment, onDownload, onPreview, onError }: {
       });
     return () => {
       active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [attachment.id, attachment.url, canPreview, onError]);
+  }, [attachment.id, attachment.url, imageAttachment, onError]);
 
-  if (!canPreview) {
+  React.useEffect(() => () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+  }, [previewUrl]);
+
+  async function previewVideo() {
+    if (previewUrl) {
+      onPreview({ src: previewUrl, title: attachment.fileName, description: `售后反馈视频 · ${fileSize(attachment.size)}`, kind: "video" });
+      return;
+    }
+    setLoadingPreview(true);
+    setPreviewFailed(false);
+    try {
+      const blob = await downloadAfterSalesAttachment(attachment);
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewUrl(objectUrl);
+      onPreview({ src: objectUrl, title: attachment.fileName, description: `售后反馈视频 · ${fileSize(attachment.size)}`, kind: "video" });
+    } catch (loadError) {
+      setPreviewFailed(true);
+      onError(loadError instanceof Error ? loadError.message : "视频加载失败，可尝试直接下载查看。");
+    } finally {
+      setLoadingPreview(false);
+    }
+  }
+
+  if (videoAttachment) {
+    return (
+      <article className="as-attachment-card is-video">
+        <button type="button" className="as-attachment-thumb as-attachment-video" disabled={loadingPreview} onClick={() => void previewVideo()} aria-label={`在线播放视频 ${attachment.fileName}`}>
+          <span>{loadingPreview ? <LoaderCircle className="spinning" size={26} /> : <Video size={30} />}{loadingPreview ? "正在加载视频" : previewFailed ? "重新加载视频" : "点击在线播放"}</span>
+          <i><Play size={16} />播放视频</i>
+        </button>
+        <div className="as-attachment-meta">
+          <span><strong>{attachment.fileName}</strong><small>视频文件 · {fileSize(attachment.size)}</small></span>
+          <button type="button" onClick={() => onDownload(attachment)} aria-label={`下载 ${attachment.fileName}`}><Download size={15} /></button>
+        </div>
+      </article>
+    );
+  }
+
+  if (!imageAttachment) {
     return (
       <button type="button" className="as-attachment-file" onClick={() => onDownload(attachment)}>
         <FileText size={22} />
@@ -279,7 +354,7 @@ function AttachmentPreviewCard({ attachment, onDownload, onPreview, onError }: {
         type="button"
         className="as-attachment-thumb"
         disabled={!previewUrl}
-        onClick={() => previewUrl && onPreview({ src: previewUrl, title: attachment.fileName, description: `面单图片 · ${fileSize(attachment.size)}` })}
+        onClick={() => previewUrl && onPreview({ src: previewUrl, title: attachment.fileName, description: `售后图片 · ${fileSize(attachment.size)}`, kind: "image" })}
         aria-label={`放大查看面单 ${attachment.fileName}`}
       >
         {previewUrl ? <img src={previewUrl} alt={`${attachment.fileName} 缩略图`} /> : previewFailed ? <span><ImageOff size={22} />预览失败</span> : <span><LoaderCircle className="spinning" size={22} />正在加载</span>}
@@ -296,7 +371,7 @@ function AttachmentPreviewCard({ attachment, onDownload, onPreview, onError }: {
 function AttachmentList({ attachments, onDownload, onPreview, onError }: {
   attachments: AfterSalesAttachment[];
   onDownload: (attachment: AfterSalesAttachment) => void;
-  onPreview: (image: AfterSalesImagePreview) => void;
+  onPreview: (media: AfterSalesMediaPreview) => void;
   onError: (message: string) => void;
 }) {
   if (!attachments.length) return <span className="as-empty-inline">暂无附件</span>;
@@ -328,7 +403,7 @@ export function AfterSalesCenter({
   const initialTab = initialView === "returns" && canReturnQuery ? "returns" : canReport ? "report" : canWarehouse ? "warehouse" : "returns";
   const initialFilters: AfterSalesListFilters = { status: "all", keyword: "", mine: false };
   const initialCache = readAfterSalesCache(ownerKey, initialFilters);
-  const [tab, setTab] = React.useState<"report" | "mine" | "warehouse" | "returns">(initialTab);
+  const [tab, setTab] = React.useState<"report" | "drafts" | "mine" | "warehouse" | "returns">(initialTab);
   const [payload, setPayload] = React.useState<AfterSalesPayload | null>(initialCache?.payload || null);
   const [loading, setLoading] = React.useState(!initialCache);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -347,6 +422,9 @@ export function AfterSalesCenter({
   const [items, setItems] = React.useState<AfterSalesItem[]>([]);
   const [primaryReason, setPrimaryReason] = React.useState("");
   const [secondaryReason, setSecondaryReason] = React.useState("");
+  const [drafts, setDrafts] = React.useState<AfterSalesDraft[]>([]);
+  const [draftsLoading, setDraftsLoading] = React.useState(false);
+  const [activeDraftId, setActiveDraftId] = React.useState("");
   const [needsReissue, setNeedsReissue] = React.useState(false);
   const [reissueItems, setReissueItems] = React.useState<AfterSalesReissueItem[]>([]);
   const [evidence, setEvidence] = React.useState<AfterSalesAttachment[]>([]);
@@ -357,7 +435,7 @@ export function AfterSalesCenter({
   const [keyword, setKeyword] = React.useState("");
   const [status, setStatus] = React.useState("all");
   const [selectedTicket, setSelectedTicket] = React.useState<AfterSalesTicket | null>(null);
-  const [previewImage, setPreviewImage] = React.useState<AfterSalesImagePreview | null>(null);
+  const [previewImage, setPreviewImage] = React.useState<AfterSalesMediaPreview | null>(null);
   const [warehouseRemark, setWarehouseRemark] = React.useState("");
   const [labelUploads, setLabelUploads] = React.useState<AfterSalesAttachment[]>([]);
   const [correctionPrimaryReason, setCorrectionPrimaryReason] = React.useState("");
@@ -369,6 +447,8 @@ export function AfterSalesCenter({
   const [productLoading, setProductLoading] = React.useState(false);
   const openedDeepLinkRef = React.useRef("");
   const payloadRef = React.useRef<AfterSalesPayload | null>(initialCache?.payload || null);
+  const primaryReasonSelectRef = React.useRef<HTMLSelectElement | null>(null);
+  const secondaryReasonSelectRef = React.useRef<HTMLSelectElement | null>(null);
 
   React.useEffect(() => {
     if (!selectedTicket) return undefined;
@@ -466,8 +546,21 @@ export function AfterSalesCenter({
     }
   }, [ownerKey]);
 
+  const loadDrafts = React.useCallback(async () => {
+    if (!canReport) return;
+    setDraftsLoading(true);
+    try {
+      const result = await fetchAfterSalesDrafts();
+      setDrafts(result.drafts || []);
+    } catch (draftError) {
+      setError(draftError instanceof Error ? draftError.message : "读取售后草稿失败。");
+    } finally {
+      setDraftsLoading(false);
+    }
+  }, [canReport]);
+
   React.useEffect(() => {
-    if (tab === "returns") return;
+    if (tab === "returns" || tab === "drafts") return;
     if (tab === "report" && payloadRef.current) return;
     void refresh({
       status: tab === "report" ? "all" : status,
@@ -478,7 +571,7 @@ export function AfterSalesCenter({
 
   React.useEffect(() => {
     const refreshVisibleList = () => {
-      if (tab !== "report" && tab !== "returns" && document.visibilityState === "visible") void refresh(activeFiltersRef.current);
+      if (tab !== "report" && tab !== "drafts" && tab !== "returns" && document.visibilityState === "visible") void refresh(activeFiltersRef.current);
     };
     const timer = window.setInterval(refreshVisibleList, AFTER_SALES_AUTO_REFRESH_MS);
     document.addEventListener("visibilitychange", refreshVisibleList);
@@ -492,6 +585,11 @@ export function AfterSalesCenter({
       }
     };
   }, [refresh, tab]);
+
+  React.useEffect(() => {
+    if (!canReport) return;
+    void loadDrafts();
+  }, [canReport, loadDrafts]);
 
   React.useEffect(() => {
     if (!canReport) return;
@@ -628,8 +726,8 @@ export function AfterSalesCenter({
     try {
       const uploads: AfterSalesAttachment[] = [];
       for (const file of selected.slice(0, 8)) {
-        const dataUrl = await fileToDataUrl(file);
-        uploads.push((await uploadAfterSalesAttachment({ fileName: file.name, dataUrl, kind: "evidence" })).upload);
+        validateAfterSalesFile(file, "evidence");
+        uploads.push((await uploadAfterSalesFile(file, "evidence")).upload);
       }
       setEvidence((current) => [...current, ...uploads]);
       setMessage(`已上传 ${uploads.length} 个售后凭证。`);
@@ -641,6 +739,7 @@ export function AfterSalesCenter({
   }
 
   function resetReport() {
+    setActiveDraftId("");
     setOrderNumber("");
     setSyncedOrder(null);
     setCustomer(blankCustomer);
@@ -658,9 +757,89 @@ export function AfterSalesCenter({
     setAdjustmentReason("");
   }
 
+  async function handleSaveDraft() {
+    const normalizedOrderNumber = (syncedOrder?.orderNumber || orderNumber).trim();
+    if (!normalizedOrderNumber) return setError("请至少填写平台后台订单号后再暂存草稿。");
+    const selectedPrimaryReason = primaryReasonSelectRef.current?.value || primaryReason;
+    const selectedSecondaryReason = secondaryReasonSelectRef.current?.value || secondaryReason;
+    setBusy("draft");
+    setError("");
+    try {
+      const result = await saveAfterSalesDraft({
+        id: activeDraftId || undefined,
+        orderNumber: normalizedOrderNumber,
+        order: syncedOrder,
+        customer,
+        warehouseId,
+        warehouseName: (syncedOrder?.warehouseOptions || []).find((item) => item.id === warehouseId)?.name || syncedOrder?.warehouseName || "",
+        notificationTeamId,
+        originalItems: items,
+        reissueItems,
+        primaryReason: selectedPrimaryReason,
+        primaryReasonCode: reasonCode(primaryReasonOptions, selectedPrimaryReason),
+        secondaryReason: selectedSecondaryReason,
+        secondaryReasonCode: reasonCode(secondaryReasonOptions, selectedSecondaryReason),
+        needsReissue: selectedSecondaryReason === "补发且留错品" || needsReissue,
+        evidenceIds: evidence.map((item) => item.id),
+        operatorRemark,
+        additionalLiabilityCny: additionalLiability,
+        customerRecoveryCny: customerRecovery,
+        adjustmentReason,
+      });
+      setActiveDraftId(result.draft.id);
+      setDrafts((current) => [result.draft, ...current.filter((draft) => draft.id !== result.draft.id)]);
+      setMessage(`草稿 ${result.draft.id} 已保存，不会通知仓库。`);
+    } catch (draftError) {
+      setError(draftError instanceof Error ? draftError.message : "保存售后草稿失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function continueDraft(draft: AfterSalesDraft) {
+    setActiveDraftId(draft.id);
+    setOrderNumber(draft.orderNumber || draft.order?.orderNumber || "");
+    setSyncedOrder(draft.order || null);
+    setCustomer({ ...blankCustomer, ...(draft.customer || {}) });
+    setWarehouseId(draft.warehouseId || draft.order?.warehouseId || "");
+    setNotificationTeamId(draft.notificationTeamId || notificationTeams?.defaultTeamId || currentUser.notificationTeamId || "__global__");
+    setItems((draft.originalItems || []).map((item) => ({ ...item })));
+    setPrimaryReason(draft.primaryReason || "");
+    setSecondaryReason(draft.secondaryReason || "");
+    setNeedsReissue(Boolean(draft.needsReissue));
+    setReissueItems((draft.reissueItems || []).map((item) => ({ ...item })));
+    setEvidence(draft.evidence || []);
+    setOperatorRemark(draft.operatorRemark || "");
+    setAdditionalLiability(Number(draft.additionalLiabilityCny || 0));
+    setCustomerRecovery(Number(draft.customerRecoveryCny || 0));
+    setAdjustmentReason(draft.adjustmentReason || "");
+    setError("");
+    setMessage(`已载入草稿 ${draft.id}，确认处理方案后可提交给仓库。`);
+    setTab("report");
+  }
+
+  async function handleDeleteDraft(draft: AfterSalesDraft) {
+    if (!window.confirm(`确认删除订单 ${draft.orderNumber || "未填写订单号"} 的售后草稿？`)) return;
+    setBusy(`delete-draft:${draft.id}`);
+    setError("");
+    try {
+      await deleteAfterSalesDraft(draft.id);
+      setDrafts((current) => current.filter((item) => item.id !== draft.id));
+      if (activeDraftId === draft.id) resetReport();
+      setMessage("售后草稿已删除。");
+    } catch (draftError) {
+      setError(draftError instanceof Error ? draftError.message : "删除售后草稿失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function handleSubmit() {
     if (!syncedOrder) return setError("请先同步原订单。");
-    if (!primaryReason || !secondaryReason) return setError("请选择完整的售后一级和二级分类。");
+    const selectedPrimaryReason = primaryReasonSelectRef.current?.value || primaryReason;
+    const selectedSecondaryReason = secondaryReasonSelectRef.current?.value || secondaryReason;
+    if (!selectedPrimaryReason) return setError("请选择售后一级分类。");
+    if (!selectedSecondaryReason) return setError("请选择售后二级分类。");
     if (!items.some((item) => item.affectedQty > 0)) return setError("请填写至少一个受影响商品数量。");
     if (!warehouseId) return setError("请选择负责处理该售后单的仓库。");
     if (missingCosts.length) return setError(`请补录商品成本：${missingCosts.join("、")}`);
@@ -671,6 +850,7 @@ export function AfterSalesCenter({
     setError("");
     try {
       const result = await createAfterSalesTicket({
+        draftId: activeDraftId || undefined,
         order: syncedOrder,
         customer,
         warehouseId,
@@ -678,8 +858,10 @@ export function AfterSalesCenter({
         notificationTeamId,
         originalItems: items,
         reissueItems: effectiveNeedsReissue ? reissueItems.map((item) => ({ ...item, sku: item.sku.replace(/^待填写-\d+$/, "") })) : [],
-        primaryReason,
-        secondaryReason,
+        primaryReason: selectedPrimaryReason,
+        primaryReasonCode: reasonCode(primaryReasonOptions, selectedPrimaryReason),
+        secondaryReason: selectedSecondaryReason,
+        secondaryReasonCode: reasonCode(secondaryReasonOptions, selectedSecondaryReason),
         needsReissue: effectiveNeedsReissue,
         evidenceIds: evidence.map((item) => item.id),
         operatorRemark,
@@ -689,6 +871,7 @@ export function AfterSalesCenter({
       });
       setMessage(notificationMessage(`售后单 ${result.ticket.id} 已提交，等待仓库接单`, result.notification));
       resetReport();
+      void loadDrafts();
       clearAfterSalesCache(ownerKey);
       setTab("mine");
       await refresh({ mine: true });
@@ -731,8 +914,8 @@ export function AfterSalesCenter({
     try {
       const uploads: AfterSalesAttachment[] = [];
       for (const file of selected.slice(0, 4)) {
-        const dataUrl = await fileToDataUrl(file);
-        uploads.push((await uploadAfterSalesAttachment({ fileName: file.name, dataUrl, kind: "label" })).upload);
+        validateAfterSalesFile(file, "label");
+        uploads.push((await uploadAfterSalesFile(file, "label")).upload);
       }
       setLabelUploads((current) => [...current, ...uploads]);
       if (!selectedTicket) throw new Error("请先打开需要上传面单的售后单。");
@@ -785,7 +968,9 @@ export function AfterSalesCenter({
     try {
       const result = await resubmitAfterSalesTicket(selectedTicket.id, {
         primaryReason: correctionPrimaryReason,
+        primaryReasonCode: reasonCode(primaryReasonOptions, correctionPrimaryReason),
         secondaryReason: correctionSecondaryReason,
+        secondaryReasonCode: reasonCode(secondaryReasonOptions, correctionSecondaryReason),
         correctionNote,
         operatorRemark: selectedTicket.operatorRemark,
         originalItems: selectedTicket.originalItems,
@@ -875,6 +1060,27 @@ export function AfterSalesCenter({
     );
   }
 
+  function renderDraftList() {
+    return (
+      <section className="as-draft-panel">
+        <header>
+          <div><span>DRAFT BOX</span><h2>售后草稿箱</h2><p>草稿仅自己可见，不会进入仓库队列，也不会触发企业微信通知。</p></div>
+          <button type="button" disabled={draftsLoading} onClick={() => void loadDrafts()}><RefreshCw className={draftsLoading ? "spinning" : ""} size={16} />刷新</button>
+        </header>
+        {draftsLoading && !drafts.length ? <div className="as-table-loading"><LoaderCircle className="spinning" size={22} />正在读取草稿…</div> : null}
+        {!draftsLoading && !drafts.length ? <div className="as-draft-empty"><FileText size={28} /><strong>目前没有售后草稿</strong><span>填报过程中点击“暂存草稿”，之后可从这里继续。</span><button type="button" onClick={() => setTab("report")}>去填报售后</button></div> : null}
+        <div className="as-draft-list">
+          {drafts.map((draft) => <article key={draft.id}>
+            <div className="as-draft-main"><span>{draft.id}</span><strong>{draft.orderNumber || "未填写订单号"}</strong><small>{draft.order?.shopAlias || draft.order?.platformShopName || "订单尚未同步"}{draft.warehouseName ? ` · ${draft.warehouseName}` : ""}</small></div>
+            <div><span>处理方案</span><strong>{draft.primaryReason || "待确定原因"}</strong><small>{draft.secondaryReason || "待确定处理方式"}</small></div>
+            <div><span>暂存内容</span><strong>{draft.originalItems?.length || 0} 个原单 SKU · {draft.evidence?.length || 0} 个凭证</strong><small>更新于 {dateTime(draft.updatedAt)}</small></div>
+            <div className="as-draft-actions"><button type="button" className="primary" onClick={() => continueDraft(draft)}>继续编辑</button><button type="button" className="danger" disabled={busy === `delete-draft:${draft.id}`} onClick={() => void handleDeleteDraft(draft)}>{busy === `delete-draft:${draft.id}` ? <LoaderCircle className="spinning" size={15} /> : <Trash2 size={15} />}删除</button></div>
+          </article>)}
+        </div>
+      </section>
+    );
+  }
+
   const selectedReminderMinutes = selectedTicket ? reminderRemainingMinutes(selectedTicket.timeline, reminderNow) : 0;
   const canRemindSelected = Boolean(
     selectedTicket
@@ -894,7 +1100,7 @@ export function AfterSalesCenter({
         <div className="after-sales-hero-badge"><ShieldCheck size={22} /><span><strong>规则自动判责</strong><small>成本快照全程可追溯</small></span></div>
       </section> : null}
 
-      {tab !== "returns" ? <section className="after-sales-kpis">
+      {tab !== "returns" && tab !== "drafts" ? <section className="after-sales-kpis">
         <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload ? payload.summary.pendingWarehouse : "—"}</strong><small>{payload ? "需要仓库确认处理" : "数据读取中，不展示为 0"}</small></article>
         <article><span>处理中</span><strong>{payload ? payload.summary.processing : "—"}</strong><small>{payload ? "含待补发工单" : "数据读取中，不展示为 0"}</small></article>
         <article><span>待补发</span><strong>{payload ? payload.summary.awaitingReshipment : "—"}</strong><small>{payload ? "等待面单与发出" : "数据读取中，不展示为 0"}</small></article>
@@ -903,11 +1109,12 @@ export function AfterSalesCenter({
 
       <div className="after-sales-tabs" role="tablist">
         {canReport ? <button className={tab === "report" ? "active" : ""} onClick={() => setTab("report")}><Clipboard size={17} />运营填报</button> : null}
+        {canReport ? <button className={tab === "drafts" ? "active" : ""} onClick={() => setTab("drafts")}><FileText size={17} />草稿箱 <span>{draftsLoading ? "…" : drafts.length}</span></button> : null}
         {canReport ? <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}><BadgeCheck size={17} />我的售后 {tab === "mine" ? <span>{payload ? payload.summary.open : "…"}</span> : null}</button> : null}
         {canWarehouse ? <button className={tab === "warehouse" ? "active" : ""} onClick={() => setTab("warehouse")}><Truck size={17} />仓库处理 <span>{payload ? payload.summary.pendingWarehouse : "…"}</span></button> : null}
         {canReturnQuery ? <button className={tab === "returns" ? "active" : ""} onClick={() => setTab("returns")}><PackageSearch size={17} />退货查询</button> : null}
         <div className="as-data-freshness" role="status" aria-live="polite">
-          {tab === "returns" ? <><ShieldCheck size={14} />仅在查询时直连 WMS，不保存结果</> : refreshing ? <><RefreshCw className="spinning" size={14} />正在后台更新，当前列表可继续使用</> : lastLoadedAt ? <><BadgeCheck size={14} />数据更新于 {new Date(lastLoadedAt).toLocaleTimeString("zh-CN", { hour12: false })}</> : <><LoaderCircle className="spinning" size={14} />正在首次读取</>}
+          {tab === "returns" ? <><ShieldCheck size={14} />仅在查询时直连 WMS，不保存结果</> : tab === "drafts" ? <><ShieldCheck size={14} />草稿仅本人可见，不通知仓库</> : refreshing ? <><RefreshCw className="spinning" size={14} />正在后台更新，当前列表可继续使用</> : lastLoadedAt ? <><BadgeCheck size={14} />数据更新于 {new Date(lastLoadedAt).toLocaleTimeString("zh-CN", { hour12: false })}</> : <><LoaderCircle className="spinning" size={14} />正在首次读取</>}
         </div>
       </div>
 
@@ -917,6 +1124,7 @@ export function AfterSalesCenter({
       {tab === "report" && canReport ? (
         <div className="after-sales-report-layout">
           <main className="after-sales-form-flow">
+            {activeDraftId ? <div className="as-editing-draft"><FileText size={18} /><div><strong>正在编辑草稿 {activeDraftId}</strong><span>继续暂存不会通知仓库；点击“提交给仓库”后才会正式进入处理队列。</span></div></div> : null}
             <section className="as-step-card">
               <div className="as-step-heading"><span>01</span><div><p>同步原单</p><h2>输入平台后台订单号</h2></div></div>
               <div className="as-order-search">
@@ -953,12 +1161,12 @@ export function AfterSalesCenter({
             <section className="as-step-card">
               <div className="as-step-heading"><span>02</span><div><p>原因与凭证</p><h2>系统自动判断责任归属</h2></div></div>
               <div className="as-reason-grid">
-                <label><span>售后一级分类</span><select value={primaryReason} onChange={(event) => setPrimaryReason(event.target.value)}><option value="">请选择问题原因</option>{primaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label>
-                <label><span>售后二级分类</span><select value={secondaryReason} onChange={(event) => setSecondaryReason(event.target.value)}><option value="">请选择处理方式</option>{secondaryReasons.map((reason) => <option key={reason}>{reason}</option>)}</select></label>
+                <label><span>售后一级分类</span><select ref={primaryReasonSelectRef} value={primaryReason} onChange={(event) => { setPrimaryReason(event.target.value); setError(""); }}><option value="">请选择问题原因</option>{primaryReasonOptions.map((reason) => <option key={reason.code} value={reason.label}>{reason.label}</option>)}</select></label>
+                <label><span>售后二级分类</span><select ref={secondaryReasonSelectRef} value={secondaryReason} onChange={(event) => { setSecondaryReason(event.target.value); setError(""); }}><option value="">请选择处理方式</option>{secondaryReasonOptions.map((reason) => <option key={reason.code} value={reason.label}>{reason.label}</option>)}</select></label>
               </div>
               <div className={`as-responsibility ${responsibility.party}`}><ShieldCheck size={20} /><div><span>自动责任归属</span><strong>{responsibility.label}</strong><small>{responsibility.explanation}</small></div></div>
               <div className="as-evidence-zone">
-                <label><Upload size={22} /><strong>{busy === "evidence" ? "正在上传…" : "上传图片 / 视频截图 / PDF 凭证"}</strong><span>单个文件不超过 8MB，最多一次选择 8 个</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple hidden onChange={(event) => void handleEvidenceUpload(event.target.files)} /></label>
+                <label><Upload size={22} /><strong>{busy === "evidence" ? "正在上传…" : "上传图片 / 视频 / PDF 凭证"}</strong><span>图片/PDF 不超过 8MB，视频不超过 50MB，最多一次选择 8 个</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,video/mp4,video/quicktime,video/webm,.mov" multiple hidden onChange={(event) => void handleEvidenceUpload(event.target.files)} /></label>
                 <AttachmentList attachments={evidence} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} />
               </div>
               <label className="as-textarea"><span>运营备注</span><textarea value={operatorRemark} onChange={(event) => setOperatorRemark(event.target.value)} placeholder="说明客户反馈、沟通结果、退款情况及需要仓库注意的事项。" /></label>
@@ -1001,13 +1209,14 @@ export function AfterSalesCenter({
             <dl><div><dt>受影响产品成本</dt><dd>{money(affectedCost)}</dd></div><div><dt>打包费减免</dt><dd>{money(packagingFee)}</dd></div><div><dt>额外承担</dt><dd>{money(additionalLiability)}</dd></div><div className="minus"><dt>客户补回</dt><dd>- {money(customerRecovery)}</dd></div></dl>
             <div className="as-settlement-total"><span>仓库需承担</span><strong>{money(liabilityTotal)}</strong><small>创建后冻结本次成本与规则快照</small></div>
             {missingCosts.length ? <div className="as-cost-warning"><AlertTriangle size={16} />缺少成本：{missingCosts.join("、")}</div> : null}
-            <button type="button" className="as-submit" disabled={busy === "submit" || !syncedOrder} onClick={() => void handleSubmit()}>{busy === "submit" ? <LoaderCircle className="spinning" size={18} /> : <Send size={18} />}{busy === "submit" ? "正在提交" : "提交给仓库"}</button>
-            <p>系统允许同一订单多次售后，但会在同步时提示已有工单，避免重复计责。</p>
+            <div className="as-submit-actions"><button type="button" className="as-save-draft" disabled={Boolean(busy)} onClick={() => void handleSaveDraft()}>{busy === "draft" ? <LoaderCircle className="spinning" size={18} /> : <FileText size={18} />}{busy === "draft" ? "正在保存" : activeDraftId ? "更新草稿" : "暂存草稿"}</button><button type="button" className="as-submit" disabled={Boolean(busy) || !syncedOrder} onClick={() => void handleSubmit()}>{busy === "submit" ? <LoaderCircle className="spinning" size={18} /> : <Send size={18} />}{busy === "submit" ? "正在提交" : "提交给仓库"}</button></div>
+            <p>草稿不会通知仓库；正式提交后才进入仓库处理队列。系统会提示同一订单已有的售后单，避免重复计责。</p>
           </aside>
         </div>
       ) : null}
 
       {tab === "mine" && canReport ? renderTicketList(true) : null}
+      {tab === "drafts" && canReport ? renderDraftList() : null}
       {tab === "warehouse" && canWarehouse ? renderTicketList(false) : null}
       {tab === "returns" && canReturnQuery ? <WarehouseReturnQuery currentUser={currentUser} /> : null}
 
@@ -1067,10 +1276,10 @@ export function AfterSalesCenter({
       ) : null}
 
       {previewImage ? (
-        <div className="as-image-lightbox" role="dialog" aria-modal="true" aria-label="图片放大预览" onMouseDown={(event) => event.currentTarget === event.target && setPreviewImage(null)}>
+        <div className="as-image-lightbox" role="dialog" aria-modal="true" aria-label="售后附件预览" onMouseDown={(event) => event.currentTarget === event.target && setPreviewImage(null)}>
           <figure>
-            <button type="button" className="as-lightbox-close" onClick={() => setPreviewImage(null)} aria-label="关闭图片预览"><X size={20} /></button>
-            <img src={previewImage.src} alt={previewImage.title} />
+            <button type="button" className="as-lightbox-close" onClick={() => setPreviewImage(null)} aria-label="关闭附件预览"><X size={20} /></button>
+            {previewImage.kind === "video" ? <video src={previewImage.src} controls autoPlay playsInline /> : <img src={previewImage.src} alt={previewImage.title} />}
             <figcaption><strong>{previewImage.title}</strong>{previewImage.description ? <span>{previewImage.description}</span> : null}</figcaption>
           </figure>
         </div>
