@@ -80,6 +80,7 @@ const child = spawn(process.execPath, ["server/server.js"], {
     WAREHOUSE_TEST_TIMEOUT_MS: "2000",
     WMS_REQUEST_TIMEOUT_MS: "2000",
     MOVEMENT_HISTORY_DB_PATH: movementHistoryDbPath,
+    STOCKUP_COLLABORATION_DB_PATH: resolve(smokeCacheDir, "stockup-collaboration.sqlite"),
     CACHE_DIR: smokeCacheDir,
     SKIP_ENV_FILE: "true",
   },
@@ -180,6 +181,35 @@ async function main() {
     throw new Error(`/api/me did not preserve admin role: ${JSON.stringify(me).slice(0, 500)}`);
   }
   console.log("[ok] /api/me admin session");
+
+  const collaborationWarehouses = await expectJson("/api/stockup/collaboration/warehouses", { headers: authHeaders });
+  if (!Array.isArray(collaborationWarehouses.warehouses) || !collaborationWarehouses.warehouses.length) {
+    throw new Error("Stockup collaboration did not expose scoped warehouse options.");
+  }
+  const destination = collaborationWarehouses.warehouses[0];
+  const collaborationRequest = await expectJson("/api/stockup/collaboration/requests", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json", "Idempotency-Key": "smoke-stockup-request-1" },
+    body: JSON.stringify({
+      project: "Smoke Operations",
+      destinationCountry: destination.country || "Russia",
+      destinationWarehouseId: destination.id,
+      destinationWarehouseName: destination.name,
+      expectedArrivalAt: "2026-12-31",
+      priority: "normal",
+      reason: "smoke test",
+      submit: true,
+      lines: [
+        { sku: "SMOKE-SKU-001", productName: "Smoke product A", method: "purchase", requestedQty: 10, unit: "pcs", targetUnitCostCny: 8.5 },
+        { sku: "SMOKE-SKU-002", productName: "Smoke product B", method: "outsourced", requestedQty: 5, unit: "pcs", targetUnitCostCny: 12 },
+      ],
+    }),
+  });
+  const collaborationDetail = await expectJson(`/api/stockup/collaboration/requests/${encodeURIComponent(collaborationRequest.requestId)}`, { headers: authHeaders });
+  if (collaborationDetail.request?.lines?.length !== 2 || collaborationDetail.request?.status !== "pending_acceptance") {
+    throw new Error(`Stockup collaboration request workflow was not persisted correctly: ${JSON.stringify(collaborationDetail).slice(0, 600)}`);
+  }
+  console.log("[ok] stockup collaboration warehouse options and multi-product request");
 
   const returnQueryNeedsScope = await expectJson("/api/warehouse-returns/query", {
     method: "POST",

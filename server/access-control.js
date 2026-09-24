@@ -30,6 +30,18 @@ const permissionDefinitions = [
   ["stockup_recommendations_manage", "备货建议处理", "备货协同"],
   ["stockup_execution_view", "备货执行查看", "备货协同"],
   ["stockup_execution_manage", "备货执行操作", "备货协同"],
+  ["stockup_request_create", "备货需求创建", "备货协同"],
+  ["stockup_request_view_own", "本人/项目备货需求查看", "备货协同"],
+  ["stockup_request_view_all", "授权范围备货需求查看", "备货协同"],
+  ["stockup_request_accept", "备货需求受理", "备货协同"],
+  ["stockup_execution_update", "采购生产进度维护", "备货协同"],
+  ["stockup_shipment_update", "备货发运维护", "备货协同"],
+  ["stockup_receipt_confirm", "备货到仓确认", "备货协同"],
+  ["stockup_cost_edit", "备货费用录入与试算", "备货协同"],
+  ["stockup_cost_review", "备货成本复核", "备货协同"],
+  ["stockup_cost_lock", "备货成本锁定与调整", "备货协同"],
+  ["stockup_cost_report_view", "月度到仓成本报表", "备货协同"],
+  ["stockup_supplier_view", "备货真实供应商查看", "备货字段"],
   ["production_view", "生产中心查看", "备货协同"],
   ["production_sync", "生产数据刷新", "备货协同"],
   ["after_sales_report", "售后运营填报", "仓库协同"],
@@ -75,12 +87,24 @@ export const STOCKUP_VIEW_PERMISSION_KEYS = Object.freeze([
   "stockup_workflow_view",
   "stockup_recommendations_view",
   "stockup_execution_view",
+  "stockup_request_view_own",
+  "stockup_request_view_all",
+  "stockup_cost_report_view",
   "production_view",
 ]);
 export const STOCKUP_MANAGE_PERMISSION_KEYS = Object.freeze([
   "stockup_workflow_manage",
   "stockup_recommendations_manage",
   "stockup_execution_manage",
+  "stockup_request_create",
+  "stockup_request_accept",
+  "stockup_execution_update",
+  "stockup_shipment_update",
+  "stockup_receipt_confirm",
+  "stockup_cost_edit",
+  "stockup_cost_review",
+  "stockup_cost_lock",
+  "stockup_supplier_view",
   "production_sync",
 ]);
 const STOCKUP_PERMISSION_KEYS = Object.freeze([...STOCKUP_VIEW_PERMISSION_KEYS, ...STOCKUP_MANAGE_PERMISSION_KEYS]);
@@ -121,10 +145,14 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "miaoshou_alias",
     "ozon_orders",
     "ozon_order_push",
+    "stockup_request_create",
+    "stockup_request_view_own",
   ]),
   warehouse: Object.freeze([
     "after_sales_warehouse",
     "warehouse_ticket_warehouse",
+    "stockup_request_view_all",
+    "stockup_receipt_confirm",
   ]),
   distributor: Object.freeze([
     "product_view",
@@ -150,7 +178,7 @@ const MIAOSHOU_DENIED_ROLES = new Set(["distributor", "guest"]);
 const OZON_DENIED_ROLES = new Set(["distributor", "guest"]);
 const STOCKUP_DENIED_ROLES = new Set(["distributor", "guest"]);
 const INTERNAL_SYNC_DENIED_ROLES = new Set(["distributor", "guest"]);
-const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse", "warehouse_ticket_warehouse"]);
+const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
   return ["admin", "direct", "warehouse", "distributor"].includes(user?.role) ? user.role : "guest";
@@ -246,6 +274,14 @@ export function effectivePermissions(user) {
   if (effective.has("stockup")) {
     for (const permission of STOCKUP_VIEW_PERMISSION_KEYS) effective.add(permission);
   }
+  if (effective.has("stockup_workflow_view")) effective.add("stockup_request_view_own");
+  if (effective.has("stockup_workflow_manage")) {
+    for (const permission of ["stockup_request_create", "stockup_request_accept", "stockup_cost_edit", "stockup_cost_review", "stockup_cost_lock", "stockup_cost_report_view", "stockup_supplier_view"]) effective.add(permission);
+  }
+  if (effective.has("stockup_execution_view")) effective.add("stockup_request_view_all");
+  if (effective.has("stockup_execution_manage")) {
+    for (const permission of ["stockup_request_view_all", "stockup_execution_update", "stockup_shipment_update", "stockup_receipt_confirm", "stockup_supplier_view"]) effective.add(permission);
+  }
   for (const permission of overrides.deny) effective.delete(permission);
 
   if (DIRECT_PRICE_DENIED_ROLES.has(role)) effective.delete("direct_price");
@@ -321,6 +357,14 @@ export function sanitizePermissionUpdate(role, input) {
     ["stockup_workflow_manage", "stockup_workflow_view"],
     ["stockup_recommendations_manage", "stockup_recommendations_view"],
     ["stockup_execution_manage", "stockup_execution_view"],
+    ["stockup_request_create", "stockup_request_view_own"],
+    ["stockup_request_accept", "stockup_request_view_all"],
+    ["stockup_execution_update", "stockup_request_view_all"],
+    ["stockup_shipment_update", "stockup_request_view_all"],
+    ["stockup_receipt_confirm", "stockup_request_view_all"],
+    ["stockup_cost_edit", "stockup_request_view_all"],
+    ["stockup_cost_review", "stockup_request_view_all"],
+    ["stockup_cost_lock", "stockup_request_view_all"],
     ["production_sync", "production_view"],
   ];
   for (const [operationPermission, viewPermission] of permissionImplications) {

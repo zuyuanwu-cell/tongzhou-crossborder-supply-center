@@ -221,6 +221,7 @@ import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import { InventoryValuePage } from "./InventoryValuePage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
+import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -387,9 +388,12 @@ const navItems = [
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
-  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_workflow_view" },
+  { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
-  { label: "备货执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_execution_view" },
+  { label: "供应链执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_request_accept", additionalPermissions: ["stockup_execution_update", "stockup_execution_view"] },
+  { label: "物流与到仓", icon: Truck, hash: "#stockup-logistics", section: "stockup", childOf: "备货中心", permission: "stockup_shipment_update", additionalPermissions: ["stockup_receipt_confirm", "stockup_execution_manage"] },
+  { label: "成本结算", icon: Coins, hash: "#stockup-cost", section: "stockup", childOf: "备货中心", permission: "stockup_cost_edit", additionalPermissions: ["stockup_cost_review", "stockup_cost_lock", "stockup_workflow_manage"] },
+  { label: "月度成本", icon: Calculator, hash: "#stockup-cost-report", section: "stockup", childOf: "备货中心", permission: "stockup_cost_report_view", additionalPermissions: ["stockup_workflow_manage"] },
   { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "production_view" },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
   { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
@@ -409,6 +413,7 @@ const navigationDisplayLabels: Record<string, string> = {
   动销监控: "库存风险",
   动销分析: "动销趋势与对账",
   库存同步: "库存同步",
+  备货中心: "备货协同",
 };
 
 function navigationDisplayLabel(view: string) {
@@ -1479,7 +1484,7 @@ function App() {
         if (hasUserPermission(currentUser, "performance_analysis")) void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
         break;
       case "#stockup":
-        if (hasUserPermission(currentUser, "stockup_workflow_view")) void loadStockupWorkflow();
+        if (hasUserPermission(currentUser, "product_view")) void loadProducts(silent);
         break;
       case "#stockup-recommendations":
         if (hasUserPermission(currentUser, "stockup_recommendations_view")) {
@@ -1488,7 +1493,10 @@ function App() {
         }
         break;
       case "#stockup-execution":
-        if (hasUserPermission(currentUser, "stockup_execution_view")) void loadStockupWorkflow();
+      case "#stockup-logistics":
+      case "#stockup-cost":
+      case "#stockup-cost-report":
+        if (hasUserPermission(currentUser, "product_view")) void loadProducts(silent);
         break;
       case "#production":
         if (hasUserPermission(currentUser, "production_view")) {
@@ -2117,19 +2125,7 @@ function App() {
             canCompare={hasUserPermission(currentUser, "movement_inventory")}
           />
         ) : activeView === "备货中心" ? (
-          <StockupCenter
-            stockupPayload={stockupPayload}
-            workflowPayload={stockupWorkflowPayload}
-            onRefreshWorkflow={loadStockupWorkflow}
-            onSyncStockup={handleStockupSync}
-            onDecision={handleStockupDecision}
-            onCreatePlan={handleCreateStockupPlan}
-            onUpdatePlanStatus={handleUpdateStockupPlanStatus}
-            onLoadMoreInbound={(limit) => loadStockup({ inboundLimit: limit })}
-            onOpenExecution={() => handleViewChange("备货执行")}
-            syncing={syncing}
-            canManage={hasUserPermission(currentUser, "stockup_workflow_manage")}
-          />
+          <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="requests" />
         ) : activeView === "备货建议" ? (
           <StockupCenter
             pageMode="recommendations"
@@ -2141,14 +2137,20 @@ function App() {
             onCreatePlan={handleCreateStockupPlan}
             onUpdatePlanStatus={handleUpdateStockupPlanStatus}
             onLoadMoreInbound={(limit) => loadStockup({ inboundLimit: limit })}
-            onOpenExecution={() => handleViewChange("备货执行")}
+            onOpenExecution={() => handleViewChange("供应链执行")}
             syncing={syncing}
             canManage={hasUserPermission(currentUser, "stockup_recommendations_manage")}
             draftSeed={stockupDraftSeed}
             onDraftSeedConsumed={() => setStockupDraftSeed(null)}
           />
-        ) : activeView === "备货执行" ? (
-          <StockupExecutionCenter workflowPayload={stockupWorkflowPayload} onRefreshWorkflow={loadStockupWorkflow} syncing={syncing} canManage={hasUserPermission(currentUser, "stockup_execution_manage")} />
+        ) : activeView === "供应链执行" ? (
+          <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="execution" />
+        ) : activeView === "物流与到仓" ? (
+          <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="logistics" />
+        ) : activeView === "成本结算" ? (
+          <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="costs" />
+        ) : activeView === "月度成本" ? (
+          <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="report" />
         ) : activeView === "生产中心" ? (
           <ProductionCenter stockupPayload={stockupPayload} onRefresh={handleProductionRefresh} syncing={syncing} canRefresh={hasUserPermission(currentUser, "production_sync")} />
         ) : activeView === "企业微信通知" ? (

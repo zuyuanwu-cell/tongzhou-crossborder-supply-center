@@ -105,3 +105,5 @@ AI_CREDENTIAL_ENCRYPTION_KEY=
 
 宝塔面板部署说明见 [docs/deployment-baota.md](docs/deployment-baota.md)。
 
+备货协同中心使用 `.cache/stockup-collaboration.sqlite` 保存网页端需求、执行、发运、到仓和成本版本。首次启用前可运行 `npm run migrate:stockup-collaboration` 预览历史缓存迁移，再使用 `npm run migrate:stockup-collaboration -- --apply` 执行；迁移只读取本地旧缓存，不写入简道云。
+

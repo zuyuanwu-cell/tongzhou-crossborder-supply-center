@@ -1,3 +1,5 @@
+import type { StockupMonthlyCostRow, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment } from "./stockup/types";
+
 export type CatalogProduct = {
   id: string;
   skuNo: string;
@@ -4054,6 +4056,90 @@ export function testWarehouseConnection(input: CreateWarehouseInput & { id?: str
 
 export function fetchMiaoshou() {
   return requestJson<MiaoshouPayload>("/api/miaoshou");
+}
+
+export function fetchStockupCollaborationRequests(filters: { page?: number; pageSize?: number; status?: string; keyword?: string } = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") query.set(key, String(value));
+  });
+  return requestJson<StockupRequestListPayload>(`/api/stockup/collaboration/requests?${query.toString()}`);
+}
+
+export function fetchStockupCollaborationWarehouses() {
+  return requestJson<{ ok: boolean; warehouses: Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">> }>("/api/stockup/collaboration/warehouses");
+}
+
+export function fetchStockupCollaborationRequest(requestId: string) {
+  return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}`);
+}
+
+export function createStockupCollaborationRequest(payload: Record<string, unknown>, idempotencyKey = crypto.randomUUID()) {
+  return requestJson<{ ok: boolean; requestId: string; requestNo: string; status: string }>("/api/stockup/collaboration/requests", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateStockupCollaborationRequest(requestId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function changeStockupCollaborationRequest(requestId: string, action: "submit" | "accept" | "request-changes" | "reject" | "cancel" | "restore", payload: Record<string, unknown> = {}) {
+  return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/${action}`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function createStockupCollaborationTask(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; task: Record<string, unknown> }>("/api/stockup/collaboration/tasks", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateStockupCollaborationTask(taskId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; task: Record<string, unknown> }>(`/api/stockup/collaboration/tasks/${encodeURIComponent(taskId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function fetchStockupCollaborationShipments(status = "") {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return requestJson<{ ok: boolean; shipments: StockupShipment[] }>(`/api/stockup/collaboration/shipments${query}`);
+}
+
+export function createStockupCollaborationShipment(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function dispatchStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/dispatch`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function fetchStockupCollaborationReceipts(status = "") {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return requestJson<{ ok: boolean; receipts: StockupReceipt[] }>(`/api/stockup/collaboration/receipts${query}`);
+}
+
+export function confirmStockupCollaborationReceipt(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; receipt: StockupReceipt; hasDifference: boolean }>("/api/stockup/collaboration/receipts", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function addStockupCollaborationCostItem(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; costItem: Record<string, unknown> }>("/api/stockup/collaboration/cost-items", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function previewStockupCollaborationCost(receiptId: string) {
+  return requestJson<Record<string, any>>(`/api/stockup/collaboration/costs/${encodeURIComponent(receiptId)}/preview`);
+}
+
+export function saveStockupCollaborationCostVersion(receiptId: string, action: "submit-review" | "lock" | "adjust", payload: Record<string, unknown> = {}) {
+  return requestJson<Record<string, any>>(`/api/stockup/collaboration/costs/${encodeURIComponent(receiptId)}/${action}`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function fetchStockupMonthlyCostReport(filters: { month?: string; country?: string; warehouseId?: string; keyword?: string } = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
+  return requestJson<{ ok: boolean; month: string; generatedAt: string; items: StockupMonthlyCostRow[]; totals: { skuCount: number; receivedQty: number; totalCostCny: number } }>(`/api/stockup/collaboration/reports/monthly-cost?${query.toString()}`);
+}
+
+export function fetchStockupCollaborationNotifications() {
+  return requestJson<{ ok: boolean; unread: number; items: Array<{ id: string; requestId: string; title: string; message: string; createdAt: string; readAt: string }> }>("/api/stockup/collaboration/notifications");
 }
 
 export function matchMiaoshouOrderAliases(orderNumbers: string[]) {

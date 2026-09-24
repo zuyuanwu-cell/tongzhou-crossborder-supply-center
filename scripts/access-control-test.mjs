@@ -206,6 +206,8 @@ const directStockupOperator = effectivePermissions({
 });
 assert.equal(directStockupOperator.includes("stockup_execution_manage"), true, "direct operators can receive stockup execution operations");
 assert.equal(directStockupOperator.includes("stockup_execution_view"), true, "stockup operation access always includes the matching page view");
+assert.equal(directStockupOperator.includes("stockup_execution_update"), true, "legacy execution management grants the new execution progress capability");
+assert.equal(directStockupOperator.includes("stockup_shipment_update"), true, "legacy execution management grants the new shipment capability");
 
 const legacyStockupViewer = effectivePermissions({
   role: "direct",
@@ -257,7 +259,8 @@ const warehousePermissions = effectivePermissions({
   role: "warehouse",
   permissionOverrides: { allow: ["after_sales_report", "warehouse_return_query", "inventory_value", "product_view", "users"], deny: [] },
 });
-assert.deepEqual(warehousePermissions, ["after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration workspaces");
+assert.deepEqual(warehousePermissions, ["stockup_request_view_all", "stockup_receipt_confirm", "after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration and scoped receiving workspaces");
+assert.equal(warehousePermissions.includes("stockup_receipt_confirm"), true, "warehouse operators can confirm receipts for their bound warehouses");
 assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");
 assert.equal(warehousePermissions.some((permission) => permission.startsWith("ozon_")), false, "warehouse operators cannot access Ozon credentials or order queues");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");

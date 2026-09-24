@@ -73,6 +73,9 @@ import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
 import { createOzonIntegrationService } from "./ozon-integration.js";
+import { initStockupCollaborationStore } from "./stockup-collaboration-db.js";
+import { createStockupCollaborationService } from "./stockup-collaboration-service.js";
+import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -136,6 +139,7 @@ const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
+const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const productionMaterialCachePath = resolve(cacheDir, "production-materials.json");
@@ -197,6 +201,8 @@ let cachedOutsourcingOrders = attachProductionMaterialProgress(
 );
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
+const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
+const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore);
 try {
   const environmentRates = JSON.parse(process.env.PERFORMANCE_FX_RATES || "[]");
   if (Array.isArray(environmentRates) && environmentRates.length) performanceAnalyticsStore.upsertExchangeRates(environmentRates, "environment");
@@ -281,6 +287,20 @@ const directAuth = {
 assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
 directAuth.user.locale = normalizeUiLocale(cachedUsers.systemPreferences?.locale);
+const stockupCollaborationApi = createStockupCollaborationApi({
+  service: stockupCollaborationService,
+  getAuth,
+  appendActionLog,
+  listWarehouses: () => warehouseConnections
+    .filter((warehouse) => !/(停用|禁用|disabled)/i.test(String(warehouse.status || "")))
+    .map((warehouse) => ({
+      id: String(warehouse.id || warehouse.warehouseId || warehouse.resolvedWarehouseId || ""),
+      name: String(warehouse.name || warehouse.warehouseName || ""),
+      country: String(warehouse.country || ""),
+      status: String(warehouse.status || ""),
+    }))
+    .filter((warehouse) => warehouse.id && warehouse.name),
+});
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
 let outsourcingRefreshStartedAt = "";
 let outsourcingRefreshError = "";
@@ -2938,7 +2958,7 @@ function sendJson(res, status, payload) {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key",
   });
   res.end(JSON.stringify(payload));
 }
@@ -6848,6 +6868,8 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
     if (await agentIndexLayer.handle(req, res, url)) return;
+
+    if (await stockupCollaborationApi(req, res, url)) return;
 
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {
