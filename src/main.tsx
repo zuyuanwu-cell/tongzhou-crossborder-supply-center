@@ -44,6 +44,7 @@ import {
   Video,
   Truck,
   Upload,
+  Warehouse as WarehouseIcon,
   X,
 } from "lucide-react";
 import {
@@ -130,6 +131,7 @@ import {
   fetchCurrentUser,
   fetchDashboardSummary,
   fetchDistributorApplications,
+  fetchDomesticInventory,
   fetchInventorySnapshots,
   fetchInventoryValue,
   fetchMovement,
@@ -222,6 +224,7 @@ import { InventoryValuePage } from "./InventoryValuePage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
+import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -387,6 +390,7 @@ const navItems = [
   { label: "仓库货值", icon: Coins, hash: "#inventory-value", section: "inventory", permission: "inventory_value" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
+  { label: "仓库管理", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
   { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
@@ -1460,6 +1464,9 @@ function App() {
       case "#warehouse-info":
         if (hasUserPermission(currentUser, "warehouse_info")) void loadWarehouseInfo();
         break;
+      case "#domestic-inventory":
+        if (hasUserPermission(currentUser, "product_view")) void loadProducts(silent);
+        break;
       case "#inventory":
       case "#warehouses":
         if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
@@ -1972,6 +1979,8 @@ function App() {
           />
         ) : activeView === "仓库信息" ? (
           <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} canSync={hasUserPermission(currentUser, "warehouse_info_sync")} />
+        ) : activeView === "仓库管理" ? (
+          <DomesticInventoryCenter products={catalog} canManage={hasUserPermission(currentUser, "domestic_inventory_manage")} />
         ) : activeView === "快捷导航" ? (
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
         ) : activeView === "同舟AI" ? (
@@ -7775,6 +7784,7 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
   const [sourceApplicationId, setSourceApplicationId] = React.useState("");
   const [localPayload, setLocalPayload] = React.useState<UserManagementPayload | null>(null);
   const [applicationPayload, setApplicationPayload] = React.useState<DistributorApplicationPayload | null>(null);
+  const [domesticWarehouseOptions, setDomesticWarehouseOptions] = React.useState<Array<{ id: string; name: string; country: string }>>([]);
   const [message, setMessage] = React.useState("");
   const [editingUserId, setEditingUserId] = React.useState("");
   const [permissionDraft, setPermissionDraft] = React.useState({
@@ -7791,7 +7801,12 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
   const permissionCatalog = visiblePayload?.permissionCatalog ?? [];
   const applications = applicationPayload?.applications ?? [];
   const pendingApplications = applications.filter((item) => item.status === "pending");
-  const warehouseOptions = warehousePayload?.warehouses || [];
+  const warehouseOptions = React.useMemo(() => {
+    const merged = new Map<string, { id: string; name: string; country: string }>();
+    (warehousePayload?.warehouses || []).forEach((warehouse) => merged.set(warehouse.id, { id: warehouse.id, name: warehouse.name, country: warehouse.country }));
+    domesticWarehouseOptions.forEach((warehouse) => merged.set(warehouse.id, warehouse));
+    return [...merged.values()];
+  }, [warehousePayload?.warehouses, domesticWarehouseOptions]);
   const editingUser = visibleUsers.find((user) => user.id === editingUserId) || null;
   const permissionPreviewUser = editingUser ? { ...editingUser, permissions: permissionDraft.enabled } : null;
   const permissionPreviewMenus = permissionPreviewUser ? visibleNavItems(permissionPreviewUser).map((item) => navigationDisplayLabel(item.label)) : [];
@@ -7816,6 +7831,9 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
 
   React.useEffect(() => {
     void loadApplications();
+    void fetchDomesticInventory()
+      .then((data) => setDomesticWarehouseOptions(data.warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: "中国 · 国内成品仓" }))))
+      .catch(() => setDomesticWarehouseOptions([]));
   }, []);
 
   async function loadApplications() {

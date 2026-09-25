@@ -54,7 +54,7 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [] }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [] }) {
   return async function handleStockupCollaborationApi(req, res, url) {
     if (!url.pathname.startsWith("/api/stockup/collaboration")) return false;
     const auth = getAuth(req);
@@ -71,7 +71,13 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
           return (!context.warehouseIds.length || context.warehouseIds.includes(warehouseId))
             && (!context.countries.length || context.countries.includes(country));
         });
-        sendJson(res, 200, { ok: true, warehouses });
+        const projectTeams = listProjectTeams(context)
+          .filter((team) => team?.enabled !== false && team?.id && team?.name)
+          .map((team) => ({ id: String(team.id), name: String(team.name) }));
+        const defaultTeamId = projectTeams.some((team) => team.id === auth?.user?.notificationTeamId)
+          ? String(auth.user.notificationTeamId)
+          : "";
+        sendJson(res, 200, { ok: true, warehouses, projectTeams, defaultTeamId });
         return true;
       }
 

@@ -47,6 +47,8 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   const [error, setError] = useState("");
   const [unread, setUnread] = useState(0);
   const [warehouseOptions, setWarehouseOptions] = useState<Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">>>(warehouses);
+  const [projectTeams, setProjectTeams] = useState<Array<{ id: string; name: string }>>([]);
+  const [defaultProjectTeamId, setDefaultProjectTeamId] = useState("");
 
   const permissions = useMemo(() => ({
     canCreate: allowed(user, "stockup_request_create", ["stockup_workflow_manage"]),
@@ -75,6 +77,8 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
       setReceipts(receiptData.receipts);
       setUnread(notificationData.unread);
       setWarehouseOptions(warehouseData.warehouses);
+      setProjectTeams(warehouseData.projectTeams || []);
+      setDefaultProjectTeamId(warehouseData.defaultTeamId || "");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "备货协同数据读取失败");
     } finally {
@@ -128,7 +132,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
 
     <section className="sc-guidance"><Sparkles size={18} /><div><b>无需再记复杂步骤</b><span>系统根据当前角色和单据状态，只展示下一步要处理的动作。</span></div></section>
 
-    {showCreate ? <RequestCreatePanel products={products} warehouses={warehouseOptions} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); }} /> : null}
+    {showCreate ? <RequestCreatePanel products={products} warehouses={warehouseOptions} projectTeams={projectTeams} defaultProjectTeamId={defaultProjectTeamId} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); }} /> : null}
     {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} onClose={() => setSelected(null)} onChanged={reloadSelected} /> : null}
   </main>;
 }

@@ -76,6 +76,9 @@ import { createOzonIntegrationService } from "./ozon-integration.js";
 import { initStockupCollaborationStore } from "./stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "./stockup-collaboration-service.js";
 import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
+import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
+import { createDomesticInventoryService } from "./domestic-inventory-service.js";
+import { createDomesticInventoryApi } from "./domestic-inventory-api.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -140,6 +143,7 @@ const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
+const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const productionMaterialCachePath = resolve(cacheDir, "production-materials.json");
@@ -203,6 +207,8 @@ const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPat
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore);
+const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
+const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
 try {
   const environmentRates = JSON.parse(process.env.PERFORMANCE_FX_RATES || "[]");
   if (Array.isArray(environmentRates) && environmentRates.length) performanceAnalyticsStore.upsertExchangeRates(environmentRates, "environment");
@@ -300,6 +306,12 @@ const stockupCollaborationApi = createStockupCollaborationApi({
       status: String(warehouse.status || ""),
     }))
     .filter((warehouse) => warehouse.id && warehouse.name),
+  listProjectTeams: () => normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams),
+});
+const domesticInventoryApi = createDomesticInventoryApi({
+  service: domesticInventoryService,
+  getAuth,
+  appendActionLog,
 });
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
 let outsourcingRefreshStartedAt = "";
@@ -6870,6 +6882,7 @@ const server = http.createServer(async (req, res) => {
     if (await agentIndexLayer.handle(req, res, url)) return;
 
     if (await stockupCollaborationApi(req, res, url)) return;
+    if (await domesticInventoryApi(req, res, url)) return;
 
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {

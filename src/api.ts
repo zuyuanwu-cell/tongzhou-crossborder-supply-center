@@ -4067,7 +4067,12 @@ export function fetchStockupCollaborationRequests(filters: { page?: number; page
 }
 
 export function fetchStockupCollaborationWarehouses() {
-  return requestJson<{ ok: boolean; warehouses: Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">> }>("/api/stockup/collaboration/warehouses");
+  return requestJson<{
+    ok: boolean;
+    warehouses: Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">>;
+    projectTeams: Array<{ id: string; name: string }>;
+    defaultTeamId: string;
+  }>("/api/stockup/collaboration/warehouses");
 }
 
 export function fetchStockupCollaborationRequest(requestId: string) {
@@ -4663,4 +4668,132 @@ export function getStoredUser(): AuthUser {
   } catch {
     return { role: "guest", roleLabel: "游客", permissions: ["product_view"], locale: "zh-CN" };
   }
+}
+
+export type DomesticWarehouse = {
+  id: string;
+  code: string;
+  name: string;
+  country: string;
+  province: string;
+  city: string;
+  address: string;
+  contactName: string;
+  contactPhone: string;
+  status: "active" | "inactive";
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+  skuCount: number;
+  onHandQty: number;
+  lowStockSkuCount: number;
+};
+
+export type DomesticInventoryBalance = {
+  warehouseId: string;
+  warehouseName: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  specification: string;
+  unit: string;
+  onHandQty: number;
+  reservedQty: number;
+  availableQty: number;
+  safetyStockQty: number;
+  lowStock: boolean;
+  updatedAt: string;
+};
+
+export type DomesticInventoryMovementLine = {
+  id: string;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  unit: string;
+  quantity: number;
+  signedQty: number;
+  beforeQty: number;
+  afterQty: number;
+  unitCostCny: number;
+};
+
+export type DomesticInventoryMovement = {
+  id: string;
+  movementNo: string;
+  warehouseId: string;
+  warehouseName: string;
+  type: "inbound" | "outbound" | "adjustment";
+  referenceNo: string;
+  occurredAt: string;
+  note: string;
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+  lines: DomesticInventoryMovementLine[];
+};
+
+export type DomesticInventoryPayload = {
+  ok: boolean;
+  updatedAt: string;
+  summary: { warehouses: number; skuCount: number; onHandQty: number; availableQty: number; lowStockSkuCount: number };
+  warehouses: DomesticWarehouse[];
+  balances: DomesticInventoryBalance[];
+};
+
+export function fetchDomesticInventory(filters: { warehouseId?: string; keyword?: string; lowStock?: boolean } = {}) {
+  const params = new URLSearchParams();
+  if (filters.warehouseId) params.set("warehouseId", filters.warehouseId);
+  if (filters.keyword) params.set("keyword", filters.keyword);
+  if (filters.lowStock) params.set("lowStock", "1");
+  return requestJson<DomesticInventoryPayload>(`/api/domestic-inventory${params.size ? `?${params}` : ""}`);
+}
+
+export function fetchDomesticInventoryMovements(filters: { warehouseId?: string; keyword?: string; type?: string } = {}) {
+  const params = new URLSearchParams();
+  if (filters.warehouseId) params.set("warehouseId", filters.warehouseId);
+  if (filters.keyword) params.set("keyword", filters.keyword);
+  if (filters.type) params.set("type", filters.type);
+  return requestJson<{ ok: boolean; movements: DomesticInventoryMovement[] }>(`/api/domestic-inventory/movements${params.size ? `?${params}` : ""}`);
+}
+
+export function createDomesticWarehouse(input: Pick<DomesticWarehouse, "code" | "name"> & Partial<DomesticWarehouse>) {
+  return requestJson<{ ok: boolean; warehouse: DomesticWarehouse }>("/api/domestic-inventory/warehouses", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateDomesticWarehouse(id: string, input: Partial<DomesticWarehouse>) {
+  return requestJson<{ ok: boolean; warehouse: DomesticWarehouse }>(`/api/domestic-inventory/warehouses/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function createDomesticInventoryMovement(input: {
+  warehouseId: string;
+  type: "inbound" | "outbound" | "adjustment";
+  referenceNo?: string;
+  occurredAt?: string;
+  note?: string;
+  lines: Array<{
+    productId?: string;
+    sku: string;
+    productName: string;
+    imageUrl?: string;
+    specification?: string;
+    unit?: string;
+    quantity?: number;
+    deltaQty?: number;
+    unitCostCny?: number;
+  }>;
+}, idempotencyKey: string) {
+  return requestJson<{ ok: boolean; movementId: string; movementNo: string; type: string; warehouseId: string }>("/api/domestic-inventory/movements", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateDomesticInventorySafetyStock(warehouseId: string, sku: string, safetyStockQty: number) {
+  return requestJson<{ ok: boolean; warehouseId: string; sku: string; safetyStockQty: number }>(
+    `/api/domestic-inventory/balances/${encodeURIComponent(warehouseId)}/${encodeURIComponent(sku)}`,
+    { method: "PATCH", body: JSON.stringify({ safetyStockQty }) },
+  );
 }

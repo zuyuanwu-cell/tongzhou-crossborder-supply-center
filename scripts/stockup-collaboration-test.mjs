@@ -35,6 +35,15 @@ try {
   const duplicated = service.createRequest(input, context, "idem-create-1");
   assert.equal(created.requestId, duplicated.requestId, "相同幂等键不能重复建单");
   assert.equal(service.listRequests({}, context).total, 1);
+  assert.throws(
+    () => service.createRequest({
+      ...input,
+      project: "SKU 去重校验",
+      lines: [input.lines[0], { ...input.lines[0], sku: " tzkj-ru-0001 ", method: "委外生产" }],
+    }, context),
+    (error) => error?.code === "duplicate_sku",
+    "the same normalized SKU must not appear twice in one request",
+  );
 
   service.setRequestStatus(created.requestId, "accepted", {}, context);
   const accepted = service.getRequest(created.requestId, context);

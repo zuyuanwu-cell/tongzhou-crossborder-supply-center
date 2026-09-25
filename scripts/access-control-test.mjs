@@ -259,10 +259,17 @@ const warehousePermissions = effectivePermissions({
   role: "warehouse",
   permissionOverrides: { allow: ["after_sales_report", "warehouse_return_query", "inventory_value", "product_view", "users"], deny: [] },
 });
-assert.deepEqual(warehousePermissions, ["stockup_request_view_all", "stockup_receipt_confirm", "after_sales_warehouse", "warehouse_ticket_warehouse"], "warehouse operators are isolated to warehouse collaboration and scoped receiving workspaces");
+assert.equal(warehousePermissions.includes("product_view"), true, "warehouse operators can select scoped products for domestic inventory movements");
+assert.equal(warehousePermissions.includes("domestic_inventory_view"), true, "warehouse operators can view their scoped domestic warehouse ledger");
+assert.equal(warehousePermissions.includes("domestic_inventory_manage"), true, "warehouse operators can register scoped inventory movements");
 assert.equal(warehousePermissions.includes("stockup_receipt_confirm"), true, "warehouse operators can confirm receipts for their bound warehouses");
 assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");
 assert.equal(warehousePermissions.some((permission) => permission.startsWith("ozon_")), false, "warehouse operators cannot access Ozon credentials or order queues");
+assert.equal(effectivePermissions({ role: "direct" }).includes("domestic_inventory_view"), true, "direct operators can view domestic inventory by default");
+assert.equal(effectivePermissions({ role: "direct" }).includes("domestic_inventory_manage"), false, "domestic inventory write access remains separately grantable for direct operators");
+assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["domestic_inventory_view", "domestic_inventory_manage"], deny: [] } }).some((permission) => permission.startsWith("domestic_inventory_")), false, "distributors cannot receive domestic inventory permissions");
+const domesticManagerPermissions = effectivePermissions({ role: "direct", permissionOverrides: sanitizePermissionUpdate("direct", { allow: ["domestic_inventory_manage"], deny: ["domestic_inventory_view"] }) });
+assert.equal(domesticManagerPermissions.includes("domestic_inventory_view"), true, "domestic inventory management implies view access");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
 assert.throws(() => createLocalUser({
   username: "warehouse-empty",

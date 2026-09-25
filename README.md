@@ -49,6 +49,7 @@ WMS_ORDER_MAX_PAGES=200
 INVENTORY_SNAPSHOT_TIMEZONE=Asia/Shanghai
 MOVEMENT_HISTORY_TIMEZONE=Asia/Shanghai
 MOVEMENT_HISTORY_DB_PATH=.cache/movement-history.sqlite
+DOMESTIC_INVENTORY_DB_PATH=.cache/domestic-inventory.sqlite
 PERFORMANCE_ANALYTICS_DB_PATH=.cache/performance-analytics.sqlite
 PERFORMANCE_FX_AUTO_SYNC=true
 PERFORMANCE_FX_SYNC_INTERVAL_MS=86400000
@@ -74,6 +75,7 @@ AI_CREDENTIAL_ENCRYPTION_KEY=
 - `WMS_ORDER_MAX_PAGES`：订单同步单分片最多分页数；SEA WMS 印尼/马来订单量较大，建议保持 200，避免出库单被截断。
 - `INVENTORY_SNAPSHOT_TIMEZONE` / `MOVEMENT_HISTORY_TIMEZONE`：库存快照与动销历史默认日期时区，页面筛选也支持手动选择时区。
 - `MOVEMENT_HISTORY_DB_PATH`：动销历史 SQLite 数据库文件路径，默认 `.cache/movement-history.sqlite`；备份这个文件即可保留历史动销。
+- `DOMESTIC_INVENTORY_DB_PATH`：国内成品仓进销存 SQLite 数据库文件路径，默认 `.cache/domestic-inventory.sqlite`；仓库档案、库存余额与出入库流水保存在此文件中。
 - `PERFORMANCE_ANALYTICS_DB_PATH`：经营贡献订单事实与历史日汇率数据库，默认 `.cache/performance-analytics.sqlite`。
 - `PERFORMANCE_FX_AUTO_SYNC`：是否启用经营汇率自动同步，默认开启。
 - `PERFORMANCE_FX_SYNC_INTERVAL_MS`：成功同步后的最短再次同步间隔，默认 24 小时；失败不会清空旧值，并会在后台检查周期内重试。
@@ -106,4 +108,6 @@ AI_CREDENTIAL_ENCRYPTION_KEY=
 宝塔面板部署说明见 [docs/deployment-baota.md](docs/deployment-baota.md)。
 
 备货协同中心使用 `.cache/stockup-collaboration.sqlite` 保存网页端需求、执行、发运、到仓和成本版本。首次启用前可运行 `npm run migrate:stockup-collaboration` 预览历史缓存迁移，再使用 `npm run migrate:stockup-collaboration -- --apply` 执行；迁移只读取本地旧缓存，不写入简道云。
+
+“库存与履约 → 仓库管理”提供国内成品仓建档、入库、出库、调整、安全库存及流水查询。管理员可在用户管理中分别授予“国内仓库进销存查看”和“国内仓库进销存操作”权限，并为仓库账号绑定可见仓库。核心回归测试可运行 `npm run test:domestic-inventory`。
 

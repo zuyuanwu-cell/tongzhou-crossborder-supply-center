@@ -81,6 +81,7 @@ const child = spawn(process.execPath, ["server/server.js"], {
     WMS_REQUEST_TIMEOUT_MS: "2000",
     MOVEMENT_HISTORY_DB_PATH: movementHistoryDbPath,
     STOCKUP_COLLABORATION_DB_PATH: resolve(smokeCacheDir, "stockup-collaboration.sqlite"),
+    DOMESTIC_INVENTORY_DB_PATH: resolve(smokeCacheDir, "domestic-inventory.sqlite"),
     CACHE_DIR: smokeCacheDir,
     SKIP_ENV_FILE: "true",
   },
@@ -210,6 +211,27 @@ async function main() {
     throw new Error(`Stockup collaboration request workflow was not persisted correctly: ${JSON.stringify(collaborationDetail).slice(0, 600)}`);
   }
   console.log("[ok] stockup collaboration warehouse options and multi-product request");
+
+  const domesticWarehouse = await expectJson("/api/domestic-inventory/warehouses", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "CN-SMOKE-01", name: "Smoke 国内成品仓", province: "广东", city: "广州" }),
+  });
+  const domesticInbound = await expectJson("/api/domestic-inventory/movements", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json", "Idempotency-Key": "smoke-domestic-inbound-1" },
+    body: JSON.stringify({
+      warehouseId: domesticWarehouse.warehouse.id,
+      type: "inbound",
+      referenceNo: "SMOKE-PO-001",
+      lines: [{ sku: "SMOKE-SKU-001", productName: "Smoke product A", unit: "pcs", quantity: 12, unitCostCny: 8.5 }],
+    }),
+  });
+  const domesticInventory = await expectJson("/api/domestic-inventory", { headers: authHeaders });
+  if (!domesticInbound.movementNo || domesticInventory.summary?.onHandQty !== 12 || domesticInventory.balances?.[0]?.sku !== "SMOKE-SKU-001") {
+    throw new Error(`Domestic inventory API did not persist the inbound flow correctly: ${JSON.stringify(domesticInventory).slice(0, 600)}`);
+  }
+  console.log("[ok] domestic warehouse master, inbound flow and inventory ledger");
 
   const returnQueryNeedsScope = await expectJson("/api/warehouse-returns/query", {
     method: "POST",

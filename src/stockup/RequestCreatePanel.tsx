@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { Check, Copy, PackagePlus, Plus, Save, Search, Send, Trash2, X } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, PackagePlus, Plus, Save, Search, Send, Trash2, X } from "lucide-react";
 import type { CatalogProduct, WarehouseConnection } from "../api";
 
 export type StockupRequestDraftLine = {
@@ -19,41 +19,85 @@ export type StockupRequestDraftLine = {
 type Props = {
   products: CatalogProduct[];
   warehouses?: Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">>;
+  projectTeams?: Array<{ id: string; name: string }>;
+  defaultProjectTeamId?: string;
   onClose: () => void;
   onSave: (payload: Record<string, unknown>) => Promise<void>;
 };
+
+const COMMON_COUNTRIES = ["中国", "俄罗斯", "马来西亚", "印尼", "越南", "菲律宾", "泰国", "新加坡", "美国", "英国"];
+const PLATFORM_OPTIONS = ["Ozon", "Shopee", "TikTok Shop", "Lazada", "Temu", "Amazon", "Shopify", "独立站", "线下渠道"];
+
+function skuKey(value: string) {
+  return String(value || "").replace(/\s+/g, "").toUpperCase();
+}
+
+function countryName(value: string) {
+  const country = String(value || "").replace(/[\s\u200B-\u200D\uFEFF]+/g, "").trim();
+  if (/印度尼西亚|印尼/i.test(country)) return "印尼";
+  if (/中国大陆|^中国$/i.test(country)) return "中国";
+  if (/Russian|Russia|俄罗斯/i.test(country)) return "俄罗斯";
+  return country;
+}
 
 function uniqueKey() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function RequestCreatePanel({ products, warehouses = [], onClose, onSave }: Props) {
+export function RequestCreatePanel({ products, warehouses = [], projectTeams = [], defaultProjectTeamId = "", onClose, onSave }: Props) {
   const [query, setQuery] = useState("");
   const [showPicker, setShowPicker] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ project: "", destinationCountry: "", destinationWarehouseId: "", destinationWarehouseName: "", expectedArrivalAt: "", priority: "常规", reason: "补库存", platform: "", note: "" });
   const [lines, setLines] = useState<StockupRequestDraftLine[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState(defaultProjectTeamId || "");
+  const [platformChoice, setPlatformChoice] = useState("");
+
+  useEffect(() => {
+    const preferred = projectTeams.find((team) => team.id === defaultProjectTeamId);
+    if (!preferred) return;
+    setSelectedTeamId((current) => current === "other" || !current ? preferred.id : current);
+    setForm((current) => current.project ? current : ({ ...current, project: preferred.name }));
+  }, [defaultProjectTeamId, projectTeams]);
 
   const productMatches = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    return products.filter((product) => !keyword || `${product.sku} ${product.name} ${product.nameEn}`.toLowerCase().includes(keyword)).slice(0, 12);
-  }, [products, query]);
+    const preferredCountry = countryName(form.destinationCountry).toLowerCase();
+    const ordered = [...products].sort((left, right) => {
+      const leftPreferred = preferredCountry && countryName(left.country || "").toLowerCase() === preferredCountry ? 1 : 0;
+      const rightPreferred = preferredCountry && countryName(right.country || "").toLowerCase() === preferredCountry ? 1 : 0;
+      return rightPreferred - leftPreferred;
+    });
+    const unique = new Map<string, CatalogProduct>();
+    ordered.forEach((product) => {
+      const key = skuKey(product.sku);
+      if (key && !unique.has(key)) unique.set(key, product);
+    });
+    return [...unique.values()].filter((product) => !keyword || `${product.sku} ${product.name} ${product.nameEn}`.toLowerCase().includes(keyword)).slice(0, 12);
+  }, [form.destinationCountry, products, query]);
 
   const warehouseOptions = useMemo(() => {
     const options = new Map<string, { id: string; name: string; country: string }>();
     warehouses.forEach((warehouse) => {
       const warehouseId = String(warehouse.id || "").trim();
-      if (warehouseId && warehouse.name) options.set(warehouseId, { id: warehouseId, name: warehouse.name, country: warehouse.country || "" });
+      if (warehouseId && warehouse.name) options.set(warehouseId, { id: warehouseId, name: warehouse.name, country: countryName(warehouse.country || "") });
     });
     products.forEach((product) => product.warehouseBreakdown?.forEach((warehouse) => {
-      if (warehouse.warehouseId && warehouse.warehouseName && !options.has(warehouse.warehouseId)) options.set(warehouse.warehouseId, { id: warehouse.warehouseId, name: warehouse.warehouseName, country: product.country });
+      if (warehouse.warehouseId && warehouse.warehouseName && !options.has(warehouse.warehouseId)) options.set(warehouse.warehouseId, { id: warehouse.warehouseId, name: warehouse.warehouseName, country: countryName(product.country) });
     }));
     return [...options.values()];
   }, [products, warehouses]);
 
+  const countryOptions = useMemo(() => Array.from(new Set([
+    ...warehouseOptions.map((warehouse) => warehouse.country).filter(Boolean),
+    ...COMMON_COUNTRIES,
+  ])), [warehouseOptions]);
+
+  const filteredWarehouses = useMemo(() => warehouseOptions.filter((warehouse) => !form.destinationCountry || !warehouse.country || warehouse.country === form.destinationCountry), [form.destinationCountry, warehouseOptions]);
+
   function addProduct(product: CatalogProduct) {
-    const duplicate = lines.find((line) => line.sku.toUpperCase() === product.sku.toUpperCase() && line.method === "采购");
+    const duplicate = lines.find((line) => skuKey(line.sku) === skuKey(product.sku));
     if (duplicate) {
       setLines((current) => current.map((line) => line.key === duplicate.key ? { ...line, requestedQty: line.requestedQty + 1 } : line));
     } else {
@@ -108,21 +152,53 @@ export function RequestCreatePanel({ products, warehouses = [], onClose, onSave 
           <section className="sc-form-section">
             <div className="sc-section-heading"><span>01</span><div><b>需求去向</b><small>决定由谁受理、送到哪里</small></div></div>
             <div className="sc-form-grid sc-form-grid-4">
-              <label>项目 / 团队<input value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder="例如：直营运营一组" /></label>
-              <label>目的国家<input value={form.destinationCountry} onChange={(event) => setForm({ ...form, destinationCountry: event.target.value })} placeholder="俄罗斯 / 马来西亚" /></label>
+              <label>项目 / 团队
+                <select value={selectedTeamId} onChange={(event) => {
+                  const teamId = event.target.value;
+                  const team = projectTeams.find((item) => item.id === teamId);
+                  setSelectedTeamId(teamId);
+                  setForm({ ...form, project: team?.name || "" });
+                }}>
+                  <option value="">请选择项目团队</option>
+                  {projectTeams.map((team) => <option key={team.id} value={team.id}>{team.name}{team.id === defaultProjectTeamId ? "（我的团队）" : ""}</option>)}
+                  <option value="other">其他团队</option>
+                </select>
+                {selectedTeamId === "other" ? <input value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder="填写项目或团队名称" /> : null}
+              </label>
+              <label>目的国家
+                <select value={form.destinationCountry} onChange={(event) => {
+                  const destinationCountry = event.target.value;
+                  const selectedWarehouse = warehouseOptions.find((item) => item.id === form.destinationWarehouseId);
+                  setForm({ ...form, destinationCountry, ...(selectedWarehouse?.country && selectedWarehouse.country !== destinationCountry ? { destinationWarehouseId: "", destinationWarehouseName: "" } : {}) });
+                }}>
+                  <option value="">请选择目的国家</option>
+                  {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
+                </select>
+              </label>
               <label>目的仓库
                 <select value={form.destinationWarehouseId} onChange={(event) => {
                   const option = warehouseOptions.find((item) => item.id === event.target.value);
-                  setForm({ ...form, destinationWarehouseId: option?.id || "", destinationWarehouseName: option?.name || "", destinationCountry: form.destinationCountry || option?.country || "" });
+                  setForm({ ...form, destinationWarehouseId: option?.id || "", destinationWarehouseName: option?.name || "", destinationCountry: option?.country || form.destinationCountry });
                 }}>
                   <option value="">请选择启用仓库</option>
-                  {warehouseOptions.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+                  {filteredWarehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
                 </select>
               </label>
               <label>期望到仓日期<input type="date" value={form.expectedArrivalAt} onChange={(event) => setForm({ ...form, expectedArrivalAt: event.target.value })} /></label>
               <label>优先级<select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}><option>常规</option><option>加急</option><option>紧急</option></select></label>
               <label>需求原因<select value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })}><option>补库存</option><option>活动备货</option><option>新品首单</option><option>客户订单</option><option>其他</option></select></label>
-              <label>销售平台（可选）<input value={form.platform} onChange={(event) => setForm({ ...form, platform: event.target.value })} placeholder="Ozon / Shopee" /></label>
+              <label>销售平台（可选）
+                <select value={platformChoice} onChange={(event) => {
+                  const value = event.target.value;
+                  setPlatformChoice(value);
+                  setForm({ ...form, platform: value === "other" ? "" : value });
+                }}>
+                  <option value="">请选择销售平台</option>
+                  {PLATFORM_OPTIONS.map((platform) => <option key={platform} value={platform}>{platform}</option>)}
+                  <option value="other">其他平台</option>
+                </select>
+                {platformChoice === "other" ? <input value={form.platform} onChange={(event) => setForm({ ...form, platform: event.target.value })} placeholder="填写其他销售平台" /> : null}
+              </label>
               <label>备注（可选）<input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="告诉供应链需要注意的事情" /></label>
             </div>
           </section>
@@ -134,13 +210,15 @@ export function RequestCreatePanel({ products, warehouses = [], onClose, onSave 
               <button className="sc-button sc-button-secondary" onClick={() => setShowPicker((value) => !value)}><Plus size={17} />添加产品</button>
               {showPicker ? (
                 <div className="sc-product-picker">
-                  {productMatches.length ? productMatches.map((product) => (
-                    <button key={`${product.id}-${product.sku}`} onClick={() => addProduct(product)}>
+                  {productMatches.length ? productMatches.map((product) => {
+                    const selected = lines.some((line) => skuKey(line.sku) === skuKey(product.sku));
+                    return (
+                    <button key={skuKey(product.sku)} disabled={selected} onClick={() => addProduct(product)}>
                       <span className="sc-product-thumb">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <PackagePlus size={20} />}</span>
                       <span><b>{product.sku}</b><small>{product.name}</small></span>
-                      <Plus size={17} />
+                      {selected ? <Check size={17} /> : <Plus size={17} />}
                     </button>
-                  )) : <p>没有找到匹配产品</p>}
+                  ); }) : <p>没有找到匹配产品</p>}
                 </div>
               ) : null}
             </div>
@@ -156,7 +234,6 @@ export function RequestCreatePanel({ products, warehouses = [], onClose, onSave 
                     <label>需求数量<div className="sc-input-unit"><input type="number" min="0.01" value={line.requestedQty} onChange={(event) => updateLine(line.key, { requestedQty: Number(event.target.value) })} /><span>{line.unit}</span></div></label>
                     <label>目标成本（可选）<input type="number" min="0" step="0.01" value={line.targetUnitCostCny} onChange={(event) => updateLine(line.key, { targetUnitCostCny: event.target.value === "" ? "" : Number(event.target.value) })} /></label>
                     <div className="sc-line-actions">
-                      <button title="复制一行" onClick={() => setLines((current) => [...current, { ...line, key: uniqueKey() }])}><Copy size={16} /></button>
                       <button title="删除" onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))}><Trash2 size={16} /></button>
                     </div>
                   </div>

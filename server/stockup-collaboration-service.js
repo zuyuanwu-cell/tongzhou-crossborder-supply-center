@@ -77,6 +77,19 @@ function normalizeLine(line, now) {
   };
 }
 
+function normalizeLines(input, now) {
+  const lines = Array.isArray(input) ? input.map((line) => normalizeLine(line, now)) : [];
+  const seen = new Set();
+  for (const line of lines) {
+    const sku = line.sku.replace(/\s+/g, "").toUpperCase();
+    if (seen.has(sku)) {
+      throw Object.assign(new Error(`产品 ${line.sku} 已在清单中，同一个 SKU 只能保留一行。`), { statusCode: 400, code: "duplicate_sku" });
+    }
+    seen.add(sku);
+  }
+  return lines;
+}
+
 function requestFromRow(row) {
   if (!row) return null;
   return {
@@ -355,21 +368,11 @@ export function createStockupCollaborationService(store) {
       if (existing) return parseJson(existing.response_json, {});
     }
     const now = nowIso();
-    const lines = Array.isArray(payload.lines) ? payload.lines.map((line) => normalizeLine(line, now)) : [];
+    const lines = normalizeLines(payload.lines, now);
     if (!lines.length) {
       const error = new Error("请至少添加一个产品。" );
       error.statusCode = 400;
       throw error;
-    }
-    const duplicates = new Set();
-    for (const line of lines) {
-      const key = `${line.sku.toUpperCase()}::${line.method}`;
-      if (duplicates.has(key)) {
-        const error = new Error(`产品 ${line.sku} 的“${line.method}”需求重复，请合并数量。`);
-        error.statusCode = 400;
-        throw error;
-      }
-      duplicates.add(key);
     }
     const request = {
       id: id("spr"), requestNo: businessNo("BR"), project: required(payload.project, "项目/团队"),
@@ -402,7 +405,7 @@ export function createStockupCollaborationService(store) {
     if (request.requesterId !== user.id && !context.viewAll) throw Object.assign(new Error("只能修改本人创建的需求。"), { statusCode: 403 });
     if (!["draft", "needs_changes", "rejected"].includes(request.status)) throw Object.assign(new Error("当前状态不能修改需求内容。"), { statusCode: 409 });
     if (number(payload.version, request.version) !== request.version) throw Object.assign(new Error("需求已被其他用户更新，请刷新后重试。"), { statusCode: 409, code: "version_conflict", latest: request });
-    const nextLines = Array.isArray(payload.lines) ? payload.lines.map((line) => normalizeLine(line, nowIso())) : request.lines;
+    const nextLines = Array.isArray(payload.lines) ? normalizeLines(payload.lines, nowIso()) : request.lines;
     const now = nowIso();
     return store.transaction(() => {
       store.run(`UPDATE stockup_requests SET project=?,destination_country=?,destination_warehouse_id=?,destination_warehouse_name=?,expected_arrival_at=?,priority=?,reason=?,platform=?,note=?,version=version+1,updated_at=? WHERE id=?`,

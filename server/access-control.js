@@ -6,6 +6,8 @@ const permissionDefinitions = [
   ["inventory_snapshot_manage", "生成与删除库存快照", "运营分析操作"],
   ["inventory_value", "仓库货值", "运营分析"],
   ["inventory_value_manage", "维护仓库货值成本", "运营分析操作"],
+  ["domestic_inventory_view", "国内仓库进销存查看", "库存与履约"],
+  ["domestic_inventory_manage", "国内仓库进销存操作", "库存与履约"],
   ["order_analysis", "订单分析", "运营分析"],
   ["order_analysis_manage", "维护订单分析设置", "运营分析操作"],
   ["performance_analysis", "经营贡献分析", "运营分析"],
@@ -133,6 +135,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "sales_price",
     "direct_price",
     "inventory",
+    "domestic_inventory_view",
     "qualifications",
     "assets",
     "warehouse_info",
@@ -149,6 +152,9 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "stockup_request_view_own",
   ]),
   warehouse: Object.freeze([
+    "product_view",
+    "domestic_inventory_view",
+    "domestic_inventory_manage",
     "after_sales_warehouse",
     "warehouse_ticket_warehouse",
     "stockup_request_view_all",
@@ -178,7 +184,9 @@ const MIAOSHOU_DENIED_ROLES = new Set(["distributor", "guest"]);
 const OZON_DENIED_ROLES = new Set(["distributor", "guest"]);
 const STOCKUP_DENIED_ROLES = new Set(["distributor", "guest"]);
 const INTERNAL_SYNC_DENIED_ROLES = new Set(["distributor", "guest"]);
-const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
+const DOMESTIC_INVENTORY_DENIED_ROLES = new Set(["distributor", "guest"]);
+const DOMESTIC_INVENTORY_PERMISSION_KEYS = Object.freeze(["domestic_inventory_view", "domestic_inventory_manage"]);
+const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
   return ["admin", "direct", "warehouse", "distributor"].includes(user?.role) ? user.role : "guest";
@@ -316,6 +324,9 @@ export function effectivePermissions(user) {
     for (const permission of INTERNAL_SYNC_PERMISSION_KEYS) effective.delete(permission);
     for (const permission of INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS) effective.delete(permission);
   }
+  if (DOMESTIC_INVENTORY_DENIED_ROLES.has(role)) {
+    for (const permission of DOMESTIC_INVENTORY_PERMISSION_KEYS) effective.delete(permission);
+  }
   if (role === "warehouse") {
     for (const permission of [...effective]) {
       if (!WAREHOUSE_ALLOWED_PERMISSIONS.has(permission)) effective.delete(permission);
@@ -340,8 +351,8 @@ export function permissionConfiguration() {
     hardRules: {
       directDenied: ["users", "operations"],
       warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", "operations", ...INTERNAL_SYNC_PERMISSION_KEYS, ...INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS, ...STOCKUP_PERMISSION_KEYS, ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", "operations", ...INTERNAL_SYNC_PERMISSION_KEYS, ...INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS, ...STOCKUP_PERMISSION_KEYS, ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
+      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", "operations", ...DOMESTIC_INVENTORY_PERMISSION_KEYS, ...INTERNAL_SYNC_PERMISSION_KEYS, ...INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS, ...STOCKUP_PERMISSION_KEYS, ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
+      guestDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "users", "operations", ...DOMESTIC_INVENTORY_PERMISSION_KEYS, ...INTERNAL_SYNC_PERMISSION_KEYS, ...INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS, ...STOCKUP_PERMISSION_KEYS, ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
     },
   };
@@ -366,6 +377,7 @@ export function sanitizePermissionUpdate(role, input) {
     ["stockup_cost_review", "stockup_request_view_all"],
     ["stockup_cost_lock", "stockup_request_view_all"],
     ["production_sync", "production_view"],
+    ["domestic_inventory_manage", "domestic_inventory_view"],
   ];
   for (const [operationPermission, viewPermission] of permissionImplications) {
     if (overrides.allow.includes(operationPermission) && !overrides.deny.includes(operationPermission)) {
@@ -396,6 +408,9 @@ export function sanitizePermissionUpdate(role, input) {
   }
   if (INTERNAL_SYNC_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => !INTERNAL_SYNC_PERMISSION_KEYS.includes(key) && !INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS.includes(key));
+  }
+  if (DOMESTIC_INVENTORY_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => !DOMESTIC_INVENTORY_PERMISSION_KEYS.includes(key));
   }
   if (role === "warehouse") {
     overrides.allow = overrides.allow.filter((key) => WAREHOUSE_ALLOWED_PERMISSIONS.has(key));
