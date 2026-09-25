@@ -390,7 +390,7 @@ const navItems = [
   { label: "仓库货值", icon: Coins, hash: "#inventory-value", section: "inventory", permission: "inventory_value" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
-  { label: "仓库管理", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
+  { label: "国内仓进销存", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
   { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
@@ -1871,6 +1871,7 @@ function App() {
   }
 
   const currentLocale = normalizeUiLocale(currentUser.locale);
+  const canRenderActiveView = authReady && visibleNavItems(currentUser).some((item) => item.label === activeView);
 
   return (
     <I18nProvider locale={currentLocale}>
@@ -1952,7 +1953,15 @@ function App() {
           </section>
         ) : null}
 
-        {activeView === "产品库" ? (
+        {!canRenderActiveView ? (
+          <section className="blocked-view-notice" role="status" aria-live="polite">
+            <div className="blocked-view-icon"><Lock size={18} /></div>
+            <div className="blocked-view-copy">
+              <strong>{authReady ? "正在切换到可访问页面" : "正在验证访问权限"}</strong>
+              <span>系统确认账号权限后再读取页面数据，避免无权限接口被提前请求。</span>
+            </div>
+          </section>
+        ) : activeView === "产品库" ? (
           <ProductLibrary
             products={catalog}
             internal={internal}
@@ -1979,7 +1988,7 @@ function App() {
           />
         ) : activeView === "仓库信息" ? (
           <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} canSync={hasUserPermission(currentUser, "warehouse_info_sync")} />
-        ) : activeView === "仓库管理" ? (
+        ) : activeView === "国内仓进销存" ? (
           <DomesticInventoryCenter products={catalog} canManage={hasUserPermission(currentUser, "domestic_inventory_manage")} />
         ) : activeView === "快捷导航" ? (
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />

@@ -3172,6 +3172,25 @@ const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : `
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
 const AUTH_USER_KEY = "tongzhou_auth_user";
 
+type TimedApiCache<T> = {
+  key: string;
+  expiresAt: number;
+  value?: T;
+  promise?: Promise<T>;
+};
+
+let currentUserCache: TimedApiCache<{ ok: boolean; user: AuthUser }> | null = null;
+const productCaches = new Map<string, TimedApiCache<ProductPayload>>();
+
+function authCacheKey() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || "guest";
+}
+
+function resetSessionCaches() {
+  currentUserCache = null;
+  productCaches.clear();
+}
+
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem(AUTH_TOKEN_KEY);
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -3220,11 +3239,26 @@ export function fetchDashboardSummary() {
 }
 
 export function fetchProducts(mode: "list" | "detail" = "list") {
-  return requestJson<ProductPayload>(`/api/products?mode=${mode}`);
+  const key = `${authCacheKey()}:${mode}`;
+  const cached = productCaches.get(key);
+  if (cached?.value && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
+  if (cached?.promise) return cached.promise;
+  let promise: Promise<ProductPayload>;
+  promise = requestJson<ProductPayload>(`/api/products?mode=${mode}`).then((value) => {
+    productCaches.set(key, { key, value, expiresAt: Date.now() + 15_000 });
+    return value;
+  }).finally(() => {
+    const current = productCaches.get(key);
+    if (current?.promise === promise) productCaches.delete(key);
+  });
+  productCaches.set(key, { key, promise, expiresAt: 0 });
+  return promise;
 }
 
-export function syncProducts() {
-  return requestJson<ProductPayload>("/api/products/sync", { method: "POST" });
+export async function syncProducts() {
+  const payload = await requestJson<ProductPayload>("/api/products/sync", { method: "POST" });
+  productCaches.clear();
+  return payload;
 }
 
 export function fetchQualifications() {
@@ -4624,7 +4658,17 @@ export function verifyOzonOrderInWms(postingNumber: string) {
 }
 
 export async function fetchCurrentUser() {
-  const payload = await requestJson<{ ok: boolean; user: AuthUser }>("/api/me");
+  const key = authCacheKey();
+  if (currentUserCache?.key === key && currentUserCache.value && currentUserCache.expiresAt > Date.now()) return currentUserCache.value;
+  if (currentUserCache?.key === key && currentUserCache.promise) return currentUserCache.promise;
+  let promise: Promise<{ ok: boolean; user: AuthUser }>;
+  promise = requestJson<{ ok: boolean; user: AuthUser }>("/api/me").catch((error) => {
+    if (currentUserCache?.key === key && currentUserCache.promise === promise) currentUserCache = null;
+    throw error;
+  });
+  currentUserCache = { key, promise, expiresAt: 0 };
+  const payload = await promise;
+  if (authCacheKey() === key) currentUserCache = { key, value: payload, expiresAt: Date.now() + 10_000 };
   try {
     localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
   } catch {
@@ -4639,6 +4683,7 @@ export async function updateCurrentUserPreferences(input: { locale: UiLocale }) 
     body: JSON.stringify(input),
   });
   localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+  currentUserCache = { key: authCacheKey(), value: payload, expiresAt: Date.now() + 10_000 };
   return payload;
 }
 
@@ -4649,12 +4694,15 @@ export async function loginInternal(input: { username?: string; password?: strin
   });
   localStorage.setItem(AUTH_TOKEN_KEY, payload.token);
   localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+  resetSessionCaches();
+  currentUserCache = { key: payload.token, value: { ok: payload.ok, user: payload.user }, expiresAt: Date.now() + 10_000 };
   return payload;
 }
 
 export function logoutInternal() {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_USER_KEY);
+  resetSessionCaches();
 }
 
 export function hasInternalToken() {
@@ -4724,7 +4772,7 @@ export type DomesticInventoryMovement = {
   movementNo: string;
   warehouseId: string;
   warehouseName: string;
-  type: "inbound" | "outbound" | "adjustment";
+  type: "opening" | "inbound" | "outbound" | "adjustment";
   referenceNo: string;
   occurredAt: string;
   note: string;
@@ -4785,6 +4833,30 @@ export function createDomesticInventoryMovement(input: {
   }>;
 }, idempotencyKey: string) {
   return requestJson<{ ok: boolean; movementId: string; movementNo: string; type: string; warehouseId: string }>("/api/domestic-inventory/movements", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(input),
+  });
+}
+
+export function importDomesticOpeningInventory(input: {
+  warehouseId: string;
+  referenceNo?: string;
+  occurredAt?: string;
+  note?: string;
+  lines: Array<{
+    productId?: string;
+    sku: string;
+    productName: string;
+    imageUrl?: string;
+    specification?: string;
+    unit?: string;
+    quantity: number;
+    safetyStockQty?: number;
+    unitCostCny?: number;
+  }>;
+}, idempotencyKey: string) {
+  return requestJson<{ ok: boolean; movementId: string; movementNo: string; type: string; warehouseId: string }>("/api/domestic-inventory/opening-import", {
     method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(input),

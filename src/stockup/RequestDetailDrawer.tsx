@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Boxes, CalendarClock, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Factory, PackageCheck, Plus, Route, Send, Truck, X } from "lucide-react";
 import { changeStockupCollaborationRequest, createStockupCollaborationTask, updateStockupCollaborationTask } from "../api";
 import type { StockupExecutionTask, StockupRequest } from "./types";
@@ -23,6 +23,17 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
 
   const taskGroups = useMemo(() => Object.fromEntries((request.lines || []).map((line) => [line.id, (request.tasks || []).filter((task) => task.lineId === line.id)])), [request.lines, request.tasks]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (editingTask) setEditingTask(null);
+      else if (taskLineId) setTaskLineId("");
+      else if (!busy) onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, editingTask, onClose, taskLineId]);
+
   async function run(label: string, action: () => Promise<unknown>) {
     setBusy(label);
     setError("");
@@ -44,11 +55,11 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
   }
 
   return (
-    <div className="sc-drawer-backdrop" role="dialog" aria-modal="true">
-      <aside className="sc-drawer">
+    <div className="sc-drawer-backdrop" role="presentation">
+      <aside className="sc-drawer" role="dialog" aria-modal="true" aria-label={`备货需求 ${request.requestNo}`}>
         <header className="sc-drawer-head">
           <div><span className="sc-eyebrow">REQUEST JOURNEY</span><h2>{request.requestNo}</h2><p>{request.project} · {request.destinationWarehouseName}</p></div>
-          <button className="sc-icon-button" onClick={onClose}><X size={20} /></button>
+          <button className="sc-icon-button" type="button" aria-label="关闭需求详情" onClick={onClose}><X size={20} /></button>
         </header>
         {error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
         <div className="sc-drawer-scroll">

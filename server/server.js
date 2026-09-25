@@ -338,7 +338,6 @@ const derivedResponseCache = new Map();
 const derivedResponseCacheTtlMs = 5 * 60 * 1000;
 const derivedResponseCacheLimit = 48;
 let derivedDataRevision = 0;
-let derivedResponseWarmScheduled = false;
 let performanceAnalyticsMaterializedCache = null;
 let performanceAnalyticsMaterializedCacheLoaded = false;
 let performanceAnalyticsMaterializationJob = null;
@@ -353,13 +352,9 @@ function clearPerformanceAnalyticsResponseCache() {
 function invalidateDerivedResponses() {
   derivedDataRevision += 1;
   derivedResponseCache.clear();
-  if (!derivedResponseWarmScheduled) {
-    derivedResponseWarmScheduled = true;
-    setImmediate(() => {
-      derivedResponseWarmScheduled = false;
-      warmDerivedResponseCaches();
-    });
-  }
+  // Rebuild each derived response only when its endpoint is requested. Eagerly
+  // rebuilding movement, dashboard and stockup payloads after every sync used
+  // to monopolize the Node.js event loop for tens of seconds on large datasets.
 }
 
 function derivedResponseKey(kind, auth = directAuth) {
@@ -5845,16 +5840,6 @@ function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {})
   return payload;
 }
 
-function warmDerivedResponseCaches() {
-  try {
-    movementResponsePayload(directAuth);
-    buildDashboardSummary(directAuth);
-    buildCurrentStockupPayload();
-  } catch (error) {
-    console.error("[derived-cache] warm failed", error);
-  }
-}
-
 function stockupPayloadForView(payload, view = "full", { inboundLimit = 100 } = {}) {
   const normalizedView = String(view || "full").trim().toLowerCase();
   const normalizedInboundLimit = Math.max(1, Math.min(1000, Number(inboundLimit) || 100));
@@ -10951,8 +10936,6 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 500, { ok: false, message: error.message });
   }
 });
-
-warmDerivedResponseCaches();
 
 server.listen(port, () => {
   console.log(`Tongzhou API server listening on http://localhost:${port}`);

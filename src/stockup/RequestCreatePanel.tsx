@@ -25,7 +25,7 @@ type Props = {
   onSave: (payload: Record<string, unknown>) => Promise<void>;
 };
 
-const COMMON_COUNTRIES = ["中国", "俄罗斯", "马来西亚", "印尼", "越南", "菲律宾", "泰国", "新加坡", "美国", "英国"];
+const COMMON_COUNTRIES = ["中国", "俄罗斯", "马来西亚", "印度尼西亚", "越南", "菲律宾", "泰国", "新加坡", "美国", "英国"];
 const PLATFORM_OPTIONS = ["Ozon", "Shopee", "TikTok Shop", "Lazada", "Temu", "Amazon", "Shopify", "独立站", "线下渠道"];
 
 function skuKey(value: string) {
@@ -34,7 +34,7 @@ function skuKey(value: string) {
 
 function countryName(value: string) {
   const country = String(value || "").replace(/[\s\u200B-\u200D\uFEFF]+/g, "").trim();
-  if (/印度尼西亚|印尼/i.test(country)) return "印尼";
+  if (/印度尼西亚|印尼/i.test(country)) return "印度尼西亚";
   if (/中国大陆|^中国$/i.test(country)) return "中国";
   if (/Russian|Russia|俄罗斯/i.test(country)) return "俄罗斯";
   return country;
@@ -60,6 +60,14 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
     setSelectedTeamId((current) => current === "other" || !current ? preferred.id : current);
     setForm((current) => current.project ? current : ({ ...current, project: preferred.name }));
   }, [defaultProjectTeamId, projectTeams]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !saving) onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, saving]);
 
   const productMatches = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -136,12 +144,12 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
   }
 
   return (
-    <div className="sc-modal-backdrop" role="dialog" aria-modal="true" aria-label="新建备货需求">
-      <div className="sc-modal sc-request-editor">
+    <div className="sc-modal-backdrop" role="presentation">
+      <div className="sc-modal sc-request-editor" role="dialog" aria-modal="true" aria-labelledby="stockup-request-title">
         <header className="sc-modal-head">
           <div>
             <span className="sc-eyebrow">NEW STOCKUP REQUEST</span>
-            <h2>新建备货需求</h2>
+            <h2 id="stockup-request-title">新建备货需求</h2>
             <p>只填目的地、到仓时间和产品清单，后续采购与物流由供应链接力。</p>
           </div>
           <button className="sc-icon-button" onClick={onClose} aria-label="关闭"><X size={20} /></button>

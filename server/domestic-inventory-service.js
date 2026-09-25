@@ -24,7 +24,7 @@ function id(prefix) {
 function businessNo(type) {
   const now = new Date();
   const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-  const prefix = { inbound: "RK", outbound: "CK", adjustment: "TZ" }[type] || "KC";
+  const prefix = { opening: "QC", inbound: "RK", outbound: "CK", adjustment: "TZ" }[type] || "KC";
   return `${prefix}-${stamp}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
 }
 
@@ -171,7 +171,7 @@ export function createDomesticInventoryService(store) {
       if (existing) return JSON.parse(existing.response_json);
     }
     const warehouse = ensureWarehouse(input.warehouseId, context, { active: true });
-    const type = ["inbound", "outbound", "adjustment"].includes(input.type) ? input.type : fail("库存流水类型无效。");
+    const type = ["opening", "inbound", "outbound", "adjustment"].includes(input.type) ? input.type : fail("库存流水类型无效。");
     const rawLines = Array.isArray(input.lines) ? input.lines : [];
     if (!rawLines.length) fail("请至少添加一个产品。", 400, "empty_lines");
     if (type === "adjustment" && !text(input.note)) fail("库存调整必须填写原因。", 400, "adjustment_reason_required");
@@ -184,8 +184,10 @@ export function createDomesticInventoryService(store) {
       return {
         productId: text(line.productId), sku, productName: required(line.productName, `${sku} 产品名称`), imageUrl: text(line.imageUrl), specification: text(line.specification),
         unit: text(line.unit) || "件", quantity: Math.abs(quantity), signedQty: type === "outbound" ? -quantity : quantity, unitCostCny: Math.max(0, number(line.unitCostCny)),
+        safetyStockQty: line.safetyStockQty === undefined || line.safetyStockQty === null || line.safetyStockQty === "" ? null : number(line.safetyStockQty),
       };
     });
+    if (normalized.some((line) => line.safetyStockQty !== null && line.safetyStockQty < 0)) fail("安全库存不能小于 0。");
     if (new Set(normalized.map((line) => line.sku)).size !== normalized.length) fail("同一个 SKU 不能在一张库存单中重复。", 400, "duplicate_sku");
     const movement = { id: id("dim"), movementNo: businessNo(type), occurredAt: text(input.occurredAt) || nowIso(), createdAt: nowIso() };
     const response = store.transaction(() => {
@@ -194,12 +196,13 @@ export function createDomesticInventoryService(store) {
       for (const line of normalized) {
         const current = store.first("SELECT * FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [warehouse.id, line.sku]);
         const beforeQty = number(current?.on_hand_qty);
+        if (type === "opening" && current) fail(`${line.sku} 已建立库存台账，不能重复导入期初库存。`, 409, "opening_balance_exists");
         const afterQty = beforeQty + line.signedQty;
         if (afterQty < 0) fail(`${line.sku} 库存不足：当前 ${beforeQty} ${line.unit}，本次需出库 ${line.quantity} ${line.unit}。`, 409, "insufficient_stock");
         store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,updated_at)
           VALUES (?,?,?,?,?,?,?,?,0,?,?)
-          ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,updated_at=excluded.updated_at`,
-          [warehouse.id, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, afterQty, number(current?.safety_stock_qty), movement.createdAt]);
+          ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,safety_stock_qty=excluded.safety_stock_qty,updated_at=excluded.updated_at`,
+          [warehouse.id, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, afterQty, line.safetyStockQty === null ? number(current?.safety_stock_qty) : line.safetyStockQty, movement.createdAt]);
         store.run(`INSERT INTO domestic_inventory_movement_lines (id,movement_id,product_id,sku,product_name,image_url,specification,unit,quantity,signed_qty,before_qty,after_qty,unit_cost_cny) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [id("dml"), movement.id, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, line.quantity, line.signedQty, beforeQty, afterQty, line.unitCostCny]);
       }
@@ -208,6 +211,19 @@ export function createDomesticInventoryService(store) {
       return result;
     });
     return response;
+  }
+
+  function importOpeningBalances(input, context, idempotencyKey = "") {
+    const lines = Array.isArray(input.lines) ? input.lines : [];
+    if (lines.length > 2000) fail("单次期初库存导入不能超过 2000 个 SKU。", 400, "too_many_lines");
+    return createMovement({
+      warehouseId: input.warehouseId,
+      type: "opening",
+      referenceNo: text(input.referenceNo) || `期初-${new Date().toISOString().slice(0, 10)}`,
+      occurredAt: input.occurredAt,
+      note: text(input.note) || "期初库存批量导入",
+      lines,
+    }, context, idempotencyKey);
   }
 
   function listMovements(filters = {}, context = {}) {
@@ -244,5 +260,5 @@ export function createDomesticInventoryService(store) {
     return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty };
   }
 
-  return { createMovement, createWarehouse, list, listMovements, updateSafetyStock, updateWarehouse };
+  return { createMovement, createWarehouse, importOpeningBalances, list, listMovements, updateSafetyStock, updateWarehouse };
 }

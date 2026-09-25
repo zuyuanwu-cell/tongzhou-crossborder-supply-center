@@ -68,6 +68,13 @@ export function createDomesticInventoryApi({ service, getAuth, appendActionLog =
         sendJson(res, 201, result);
         return true;
       }
+      if (suffix === "/opening-import" && req.method === "POST") {
+        if (!hasPermission(auth, "domestic_inventory_manage")) throw Object.assign(new Error("当前账号没有期初库存导入权限。"), { statusCode: 403 });
+        const result = service.importOpeningBalances(await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, "导入国内仓期初库存", "domestic_inventory_movement", result.movementNo, { movementId: result.movementId, warehouseId: result.warehouseId });
+        sendJson(res, 201, result);
+        return true;
+      }
       if ((match = suffix.match(/^\/balances\/([^/]+)\/([^/]+)$/)) && req.method === "PATCH") {
         if (!hasPermission(auth, "domestic_inventory_manage")) throw Object.assign(new Error("当前账号没有库存参数维护权限。"), { statusCode: 403 });
         const result = service.updateSafetyStock(decodeURIComponent(match[1]), decodeURIComponent(match[2]), await readBody(req), context);

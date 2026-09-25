@@ -14,6 +14,20 @@ try {
   const warehouseB = service.createWarehouse({ code: "CN-SZ-01", name: "深圳成品仓" }, admin).warehouse;
   assert.equal(service.list({}, admin).summary.warehouses, 2);
 
+  const opening = service.importOpeningBalances({
+    warehouseId: warehouseB.id,
+    lines: [{ productId: "p3", sku: "SKU-C", productName: "产品C", quantity: 12, safetyStockQty: 3, unitCostCny: 6.5 }],
+  }, admin, "idem-opening");
+  assert.match(opening.movementNo, /^QC-/);
+  const openingBalance = service.list({ warehouseId: warehouseB.id }, admin).balances[0];
+  assert.equal(openingBalance.onHandQty, 12);
+  assert.equal(openingBalance.safetyStockQty, 3);
+  assert.throws(
+    () => service.importOpeningBalances({ warehouseId: warehouseB.id, lines: [{ sku: "SKU-D", productName: "产品D", quantity: 2 }, { sku: "SKU-C", productName: "产品C", quantity: 1 }] }, admin),
+    (error) => error?.code === "opening_balance_exists",
+  );
+  assert.equal(service.list({ warehouseId: warehouseB.id }, admin).balances.some((item) => item.sku === "SKU-D"), false, "failed opening import must roll back every line");
+
   const inbound = {
     warehouseId: warehouseA.id,
     type: "inbound",
@@ -26,7 +40,7 @@ try {
   const firstInbound = service.createMovement(inbound, admin, "idem-inbound");
   const duplicateInbound = service.createMovement(inbound, admin, "idem-inbound");
   assert.equal(firstInbound.movementId, duplicateInbound.movementId, "idempotency must prevent duplicate stock entries");
-  assert.equal(service.list({}, admin).summary.onHandQty, 14);
+  assert.equal(service.list({}, admin).summary.onHandQty, 26);
   assert.throws(
     () => service.createMovement({ ...inbound, lines: [inbound.lines[0], { ...inbound.lines[0], sku: "SKU-A" }] }, admin),
     (error) => error?.code === "duplicate_sku",
@@ -54,7 +68,7 @@ try {
 
   service.updateWarehouse(warehouseB.id, { status: "inactive" }, admin);
   assert.throws(() => service.createMovement({ warehouseId: warehouseB.id, type: "inbound", lines: [{ sku: "SKU-A", productName: "产品A", quantity: 1 }] }, admin), (error) => error?.code === "warehouse_inactive");
-  assert.equal(service.listMovements({}, admin).movements.length, 3);
+  assert.equal(service.listMovements({}, admin).movements.length, 4);
   console.log("domestic inventory tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

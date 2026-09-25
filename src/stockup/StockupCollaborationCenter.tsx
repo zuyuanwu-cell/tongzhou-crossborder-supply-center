@@ -117,7 +117,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   return <main className="stockup-collaboration-page">
     <section className="sc-hero">
       <div><span className="sc-eyebrow"><i /> STOCKUP COLLABORATION</span><h1>备货协同中心</h1><p>从一张简单需求开始，采购、生产、物流、到仓和成本沿同一条航线协作。</p><div className="sc-hero-route"><span>需求</span><i /><span>执行</span><i /><span>发运</span><i /><span>到仓</span><i /><span>成本</span></div></div>
-      <div className="sc-hero-actions"><button className="sc-notification-button" title="未读进度通知"><BellRing size={18} /><span>{unread}</span></button><button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void loadAll()}><RefreshCw className={loading ? "spin" : ""} size={17} />刷新</button>{permissions.canCreate ? <button className="sc-button sc-button-primary" onClick={() => setShowCreate(true)}><Plus size={18} />新建需求</button> : null}</div>
+      <div className="sc-hero-actions"><button className="sc-notification-button" type="button" aria-label={`进度通知，${unread} 条未读`} title="未读进度通知"><BellRing size={18} /><b>进度通知</b><span>{unread}</span></button><button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void loadAll()}><RefreshCw className={loading ? "spin" : ""} size={17} />刷新</button>{permissions.canCreate ? <button className="sc-button sc-button-primary" onClick={() => setShowCreate(true)}><Plus size={18} />新建需求</button> : null}</div>
       <div className="sc-hero-mark"><Route size={46} /><span>同舟协同航线</span></div>
     </section>
 

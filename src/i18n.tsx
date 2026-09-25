@@ -66,6 +66,7 @@ const messages: Record<string, Translation> = {
   "动销分析": { en: "Sales Movement", id: "Pergerakan Penjualan" },
   "动销趋势与对账": { en: "Movement & Reconciliation", id: "Tren & Rekonsiliasi" },
   "仓库信息": { en: "Warehouse Directory", id: "Informasi Gudang" },
+  "国内仓进销存": { en: "Domestic Inventory", id: "Inventaris Gudang Domestik" },
   "仓库协同": { en: "Warehouse Collaboration", id: "Kolaborasi Gudang" },
   "备货中心": { en: "Stock Preparation", id: "Pusat Persediaan" },
   "备货建议": { en: "Stock Recommendations", id: "Rekomendasi Persediaan" },
