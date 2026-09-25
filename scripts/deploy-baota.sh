@@ -16,7 +16,9 @@ cd "$PROJECT_DIR"
 
 if [[ -z "${DEPLOY_TARGET_COMMIT:-}" ]]; then
   git fetch origin main
-  DEPLOY_TARGET_COMMIT="$(git rev-parse origin/main)"
+  # Resolve the commit that was fetched just now. Some production clones keep
+  # a stale origin/main tracking ref when fetching a single branch explicitly.
+  DEPLOY_TARGET_COMMIT="$(git rev-parse FETCH_HEAD)"
 fi
 
 if ! git cat-file -e "${DEPLOY_TARGET_COMMIT}^{commit}" 2>/dev/null; then
