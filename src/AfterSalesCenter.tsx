@@ -718,7 +718,7 @@ export function AfterSalesCenter({
     setMessage(`${product.sku} ${product.productName} 已加入补发清单。`);
   }
 
-  async function handleEvidenceUpload(files: FileList | null) {
+  async function handleEvidenceUpload(files: FileList | File[] | null) {
     const selected = Array.from(files || []);
     if (!selected.length) return;
     setBusy("evidence");
@@ -736,6 +736,23 @@ export function AfterSalesCenter({
     } finally {
       setBusy("");
     }
+  }
+
+  function handleEvidencePaste(event: React.ClipboardEvent<HTMLElement>) {
+    const pastedFiles = Array.from(event.clipboardData.files || []);
+    const files = pastedFiles.length
+      ? pastedFiles
+      : Array.from(event.clipboardData.items || [])
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+    if (!files.length) return;
+    event.preventDefault();
+    if (busy === "evidence") {
+      setMessage("当前凭证仍在上传，请稍候再粘贴。");
+      return;
+    }
+    void handleEvidenceUpload(files);
   }
 
   function resetReport() {
@@ -1123,7 +1140,7 @@ export function AfterSalesCenter({
 
       {tab === "report" && canReport ? (
         <div className="after-sales-report-layout">
-          <main className="after-sales-form-flow">
+          <main className="after-sales-form-flow" onPaste={handleEvidencePaste}>
             {activeDraftId ? <div className="as-editing-draft"><FileText size={18} /><div><strong>正在编辑草稿 {activeDraftId}</strong><span>继续暂存不会通知仓库；点击“提交给仓库”后才会正式进入处理队列。</span></div></div> : null}
             <section className="as-step-card">
               <div className="as-step-heading"><span>01</span><div><p>同步原单</p><h2>输入平台后台订单号</h2></div></div>
@@ -1166,7 +1183,7 @@ export function AfterSalesCenter({
               </div>
               <div className={`as-responsibility ${responsibility.party}`}><ShieldCheck size={20} /><div><span>自动责任归属</span><strong>{responsibility.label}</strong><small>{responsibility.explanation}</small></div></div>
               <div className="as-evidence-zone">
-                <label><Upload size={22} /><strong>{busy === "evidence" ? "正在上传…" : "上传图片 / 视频 / PDF 凭证"}</strong><span>图片/PDF 不超过 8MB，视频不超过 50MB，最多一次选择 8 个</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,video/mp4,video/quicktime,video/webm,.mov" multiple hidden onChange={(event) => void handleEvidenceUpload(event.target.files)} /></label>
+                <label><Upload size={22} /><strong>{busy === "evidence" ? "正在上传…" : "上传图片 / 视频 / PDF 凭证"}</strong><span>点击选择，或直接 Ctrl+V 粘贴；图片/PDF 不超过 8MB，视频不超过 50MB，一次最多 8 个</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,video/mp4,video/quicktime,video/webm,.mov" multiple hidden onChange={(event) => { void handleEvidenceUpload(event.target.files); event.currentTarget.value = ""; }} /></label>
                 <AttachmentList attachments={evidence} onDownload={handleDownload} onPreview={setPreviewImage} onError={setError} />
               </div>
               <label className="as-textarea"><span>运营备注</span><textarea value={operatorRemark} onChange={(event) => setOperatorRemark(event.target.value)} placeholder="说明客户反馈、沟通结果、退款情况及需要仓库注意的事项。" /></label>

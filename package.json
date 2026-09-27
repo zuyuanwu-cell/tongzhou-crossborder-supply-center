@@ -53,6 +53,7 @@
     "test:shop-directory": "node scripts/shop-directory-test.mjs",
     "test:exchange-rate-sync": "node scripts/exchange-rate-sync-test.mjs",
     "test:sync-scheduler": "node scripts/sync-scheduler-test.mjs",
+    "test:business-chain": "node scripts/business-chain-test.mjs",
     "check:local-performance": "node scripts/local-performance-check.mjs",
     "check:agent-coverage": "node scripts/check-agent-coverage.mjs",
     "preview": "vite preview --host 0.0.0.0"

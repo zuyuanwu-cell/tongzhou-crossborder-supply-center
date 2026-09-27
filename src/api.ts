@@ -246,6 +246,103 @@ export type AuthUser = {
   locale?: UiLocale;
 };
 
+export type BusinessChainFreshness = {
+  updatedAt: string;
+  oldestAt: string;
+  complete: boolean;
+  indexedForms: number;
+  expectedForms: number;
+  failedForms: Array<{ formKey: string; label: string; message: string }>;
+};
+
+export type BusinessChainStage = {
+  key: string;
+  label: string;
+  status: "complete" | "active" | "pending" | string;
+  count: number;
+  lastAt: string;
+};
+
+export type BusinessChainDocumentLine = {
+  id: string;
+  lineUuid: string;
+  sku: string;
+  name: string;
+  unit: string;
+  quantity: number;
+  amount: number;
+  referenceNo: string;
+  contractNo: string;
+  contractLineNo: string;
+};
+
+export type BusinessChainDocument = {
+  id: string;
+  sourceDataId: string;
+  documentType: string;
+  documentTypeLabel: string;
+  chainId: string;
+  documentNo: string;
+  contractNo: string;
+  contractLineNo: string;
+  status: string;
+  customerId: string;
+  customerName: string;
+  supplierId: string;
+  supplierName: string;
+  currency: string;
+  quantity: number;
+  amount: number;
+  payableAmount: number;
+  paidAmount: number;
+  occurredAt: string;
+  updatedAt: string;
+  isInternal: boolean;
+  internalInferred: boolean;
+  lines?: BusinessChainDocumentLine[];
+};
+
+export type BusinessChainContract = BusinessChainDocument & {
+  ageDays: number | null;
+  stages: BusinessChainStage[];
+  inboundQty: number;
+  shippedQty: number;
+  linkedDocumentCount: number;
+  accruedPayable?: number;
+  paidAmount?: number;
+  unpaidAmount?: number;
+};
+
+export type BusinessChainSummaryPayload = {
+  ok: boolean;
+  freshness: BusinessChainFreshness;
+  sync: { running: boolean; currentForm: string; startedAt: string; completedAt: string; results: Array<{ formKey: string; label: string; ok: boolean; count?: number; message?: string }> };
+  counts: { contracts: number; activeContracts: number; internalContracts: number; inboundQty: number; shippedQty: number; pendingLinks: number };
+  finance?: { accruedPayable: number; paidAmount: number; unpaidAmount: number };
+};
+
+export type BusinessChainContractsPayload = {
+  ok: boolean;
+  freshness: BusinessChainFreshness;
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  contracts: BusinessChainContract[];
+};
+
+export type BusinessChainContractDetailPayload = {
+  ok: boolean;
+  contract: BusinessChainDocument;
+  stages: BusinessChainStage[];
+  documents: BusinessChainDocument[];
+  metrics: { inboundQty: number; shippedQty: number; accruedPayable?: number; paidAmount?: number; unpaidAmount?: number };
+};
+
+export type BusinessChainPayablesPayload = {
+  ok: boolean;
+  freshness: BusinessChainFreshness;
+  suppliers: Array<{ supplierId: string; supplierName: string; accruedPayable: number; paidAmount: number; unpaidAmount: number; inboundDocumentCount: number; paymentDocumentCount: number; lastOccurredAt: string; reconciliationStatus: string }>;
+  totals: { accruedPayable: number; paidAmount: number; unpaidAmount: number };
+};
+
 export type AgentApiKey = {
   id: string;
   name: string;
@@ -3236,6 +3333,34 @@ export function resolveApiUrl(value: string) {
 
 export function fetchDashboardSummary() {
   return requestJson<DashboardSummaryPayload>("/api/dashboard-summary");
+}
+
+export function fetchBusinessChainSummary() {
+  return requestJson<BusinessChainSummaryPayload>("/api/business-chain/summary");
+}
+
+export function fetchBusinessChainContracts(input: { keyword?: string; status?: string; internal?: "yes" | "no" | ""; page?: number; pageSize?: number } = {}) {
+  const query = new URLSearchParams();
+  if (input.keyword) query.set("keyword", input.keyword);
+  if (input.status) query.set("status", input.status);
+  if (input.internal) query.set("internal", input.internal);
+  if (input.page) query.set("page", String(input.page));
+  if (input.pageSize) query.set("pageSize", String(input.pageSize));
+  return requestJson<BusinessChainContractsPayload>(`/api/business-chain/contracts?${query.toString()}`);
+}
+
+export function fetchBusinessChainContract(id: string) {
+  return requestJson<BusinessChainContractDetailPayload>(`/api/business-chain/contracts/${encodeURIComponent(id)}`);
+}
+
+export function fetchBusinessChainPayables(keyword = "") {
+  const query = new URLSearchParams();
+  if (keyword) query.set("keyword", keyword);
+  return requestJson<BusinessChainPayablesPayload>(`/api/business-chain/payables?${query.toString()}`);
+}
+
+export function syncBusinessChain() {
+  return requestJson<{ ok: boolean; accepted: boolean; reason?: string }>("/api/business-chain/sync", { method: "POST" });
 }
 
 export function fetchProducts(mode: "list" | "detail" = "list") {

@@ -246,6 +246,8 @@ const entries = [
   ["选择一级分类后自动判断责任归属。", "Responsibility is assigned after selecting a primary category.", "Tanggung jawab ditentukan setelah memilih kategori utama."],
   ["上传图片 / 视频 / PDF 凭证", "Upload image / video / PDF evidence", "Unggah bukti gambar / video / PDF"],
   ["图片/PDF 不超过 8MB，视频不超过 50MB，最多一次选择 8 个", "Images/PDFs up to 8 MB; videos up to 50 MB; select up to 8 files", "Gambar/PDF maksimal 8 MB; video maksimal 50 MB; pilih hingga 8 file"],
+  ["点击选择，或直接 Ctrl+V 粘贴；图片/PDF 不超过 8MB，视频不超过 50MB，一次最多 8 个", "Click to select or paste with Ctrl+V; images/PDFs up to 8 MB, videos up to 50 MB, up to 8 files at a time", "Klik untuk memilih atau tempel dengan Ctrl+V; gambar/PDF maksimal 8 MB, video maksimal 50 MB, hingga 8 file sekaligus"],
+  ["当前凭证仍在上传，请稍候再粘贴。", "Evidence is still uploading. Please wait before pasting again.", "Bukti masih diunggah. Tunggu sebelum menempel lagi."],
   ["点击在线播放", "Click to play", "Klik untuk memutar"],
   ["正在加载视频", "Loading video", "Memuat video"],
   ["重新加载视频", "Reload video", "Muat ulang video"],

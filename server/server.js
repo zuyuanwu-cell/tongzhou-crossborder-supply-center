@@ -5,7 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
-import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
@@ -79,6 +79,11 @@ import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
 import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
 import { createDomesticInventoryService } from "./domestic-inventory-service.js";
 import { createDomesticInventoryApi, domesticInventoryContextForAuth } from "./domestic-inventory-api.js";
+import { initBusinessChainStore } from "./business-chain-db.js";
+import { createBusinessChainSyncService } from "./business-chain-sync.js";
+import { createBusinessChainService } from "./business-chain-service.js";
+import { createBusinessChainApi } from "./business-chain-api.js";
+import { BUSINESS_CHAIN_SYNC_INTERVAL_MS } from "./business-chain-config.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -144,6 +149,7 @@ const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
+const businessChainDbPath = resolve(process.env.BUSINESS_CHAIN_DB_PATH || resolve(cacheDir, "business-chain.sqlite"));
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const productionMaterialCachePath = resolve(cacheDir, "production-materials.json");
@@ -209,6 +215,9 @@ const stockupCollaborationStore = await initStockupCollaborationStore(stockupCol
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore);
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
+const businessChainStore = await initBusinessChainStore(businessChainDbPath);
+const businessChainSyncService = createBusinessChainSyncService({ store: businessChainStore, fetchDataList: fetchJdyDataList });
+const businessChainService = createBusinessChainService(businessChainStore, businessChainSyncService);
 try {
   const environmentRates = JSON.parse(process.env.PERFORMANCE_FX_RATES || "[]");
   if (Array.isArray(environmentRates) && environmentRates.length) performanceAnalyticsStore.upsertExchangeRates(environmentRates, "environment");
@@ -310,6 +319,12 @@ const stockupCollaborationApi = createStockupCollaborationApi({
 });
 const domesticInventoryApi = createDomesticInventoryApi({
   service: domesticInventoryService,
+  getAuth,
+  appendActionLog,
+});
+const businessChainApi = createBusinessChainApi({
+  service: businessChainService,
+  syncService: businessChainSyncService,
   getAuth,
   appendActionLog,
 });
@@ -6366,6 +6381,14 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 35_000,
     run: () => refreshOutsourcingOrderCache(),
   });
+  external("jdy", {
+    id: "business-chain",
+    label: "合同履约与财务链路索引",
+    priority: 96,
+    intervalMs: BUSINESS_CHAIN_SYNC_INTERVAL_MS,
+    initialDelayMs: 2 * minute,
+    run: () => businessChainSyncService.sync({ reason: "scheduled" }),
+  });
   external("wms", {
     id: "daily-inventory-snapshot",
     label: "每日库存快照检查",
@@ -6576,6 +6599,33 @@ function agentSourceForType(type, auth) {
   }
   if (type === "outsourcing_order") {
     return { records: cachedOutsourcingOrders.orders || [], syncedAt: cachedOutsourcingOrders.syncedAt || "", sourceSystem: cachedOutsourcingOrders.source || "jiandaoyun" };
+  }
+  if (type === "business_chain_contract") {
+    const records = [];
+    let page = 1;
+    let payload;
+    do {
+      payload = businessChainService.listContracts({ page, pageSize: 100 }, { finance: false });
+      records.push(...payload.contracts);
+      page += 1;
+    } while (page <= payload.pagination.totalPages);
+    return {
+      records,
+      updatedAt: payload?.freshness?.updatedAt || "",
+      sourceSystem: "sqlite",
+      complete: true,
+      warning: payload?.freshness?.complete ? "" : "部分简道云来源尚未成功建立索引，链路结论可能不完整。",
+    };
+  }
+  if (type === "supplier_payable") {
+    const payload = businessChainService.listPayables();
+    return {
+      records: payload.suppliers || [],
+      updatedAt: payload.freshness?.updatedAt || "",
+      sourceSystem: "sqlite",
+      complete: true,
+      warning: payload.freshness?.complete ? "" : "部分入库、预付款或结算来源尚未成功建立索引。",
+    };
   }
   if (type === "inventory_value_summary") {
     const payload = inventoryValuePayload({}, auth);
@@ -6835,6 +6885,15 @@ function aiAgentDiagnostics(route, auth) {
     metric("待入库", numberOrZero(stockup.counts?.inboundOrders));
   }
 
+  if (route === "#business-chain" && hasPermission(auth, "business_chain_view")) {
+    const summary = businessChainService.summary({ finance: hasPermission(auth, "contract_finance_view") });
+    metric("生产中合同", numberOrZero(summary.counts?.activeContracts), summary.counts?.activeContracts ? "warning" : "success");
+    metric("累计入库", numberOrZero(summary.counts?.inboundQty));
+    metric("累计发货", numberOrZero(summary.counts?.shippedQty));
+    if (numberOrZero(summary.counts?.pendingLinks)) insight("warning", `${summary.counts.pendingLinks} 张单据待人工关联`, "系统不会仅凭 SKU 猜测单据关系，请补齐合同号或关联记录。", "#business-chain");
+    if (summary.finance?.unpaidAmount) insight("info", `待核对应付 ¥${Math.round(summary.finance.unpaidAmount).toLocaleString("zh-CN")}`, "正式入账前需财务核对付款归属与冲销关系。", "#business-chain");
+  }
+
   if (route === "#miaoshou" && canViewMiaoshouWorkspace(auth)) {
     const miaoshou = miaoshouAutomation.publicPayload({ taskLimit: 20, eventLimit: 0 });
     metric("已启用店铺", numberOrZero(miaoshou.counts?.enabledShops));
@@ -6881,6 +6940,7 @@ const server = http.createServer(async (req, res) => {
 
     if (await stockupCollaborationApi(req, res, url)) return;
     if (await domesticInventoryApi(req, res, url)) return;
+    if (await businessChainApi(req, res, url)) return;
 
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {

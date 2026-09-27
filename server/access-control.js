@@ -49,6 +49,9 @@ const permissionDefinitions = [
   ["stockup_supplier_view", "备货真实供应商查看", "备货字段"],
   ["production_view", "生产中心查看", "备货协同"],
   ["production_sync", "生产数据刷新", "备货协同"],
+  ["business_chain_view", "业务链路中心查看", "备货协同"],
+  ["contract_finance_view", "合同财务台账查看", "经营分析字段"],
+  ["business_chain_sync", "业务链路索引同步", "数据同步操作"],
   ["after_sales_report", "售后运营填报", "仓库协同"],
   ["after_sales_warehouse", "售后仓库处理", "仓库协同"],
   ["warehouse_return_query", "WMS退货查询", "仓库协同"],
@@ -120,6 +123,7 @@ const INTERNAL_SYNC_PERMISSION_KEYS = Object.freeze([
   "qualification_sync",
   "asset_sync",
   "warehouse_info_sync",
+  "business_chain_sync",
 ]);
 const INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS = Object.freeze([
   "inventory_snapshot_manage",
@@ -153,6 +157,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "ozon_order_push",
     "stockup_request_create",
     "stockup_request_view_own",
+    "business_chain_view",
   ]),
   warehouse: Object.freeze([
     "product_view",
@@ -382,6 +387,7 @@ export function sanitizePermissionUpdate(role, input) {
     ["stockup_cost_review", "stockup_request_view_all"],
     ["stockup_cost_lock", "stockup_request_view_all"],
     ["production_sync", "production_view"],
+    ["business_chain_sync", "business_chain_view"],
     ["domestic_inventory_receive", "domestic_inventory_view"],
     ["domestic_inventory_issue", "domestic_inventory_view"],
     ["domestic_inventory_adjust", "domestic_inventory_view"],

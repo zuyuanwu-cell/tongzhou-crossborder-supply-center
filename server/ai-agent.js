@@ -139,6 +139,14 @@ const PAGE_DEFINITIONS = {
     prompts: ["哪些生产单可能延期？", "物料未到齐的主要原因是什么？", "帮我生成生产跟进清单"],
     actions: [{ label: "查看备货执行", href: "#stockup-execution" }],
   },
+  "#business-chain": {
+    id: "business-chain",
+    title: "业务链路中心",
+    description: "理解报价、合同、生产、采购、入库、发货与结算的完整履约关系。",
+    resourceTypes: ["business_chain_contract", "supplier_payable"],
+    prompts: ["哪些合同履约节点不完整？", "哪些生产中合同需要跟进？", "供应商应付有哪些待核对风险？"],
+    actions: [{ label: "查看生产中心", href: "#production" }, { label: "查看备货中心", href: "#stockup" }],
+  },
   "#after-sales": {
     id: "after-sales",
     title: "仓库协同",

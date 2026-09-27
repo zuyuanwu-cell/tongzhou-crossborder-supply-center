@@ -22,6 +22,7 @@ import {
   FileText,
   Grid2X2,
   Globe2,
+  GitBranch,
   Image,
   KeyRound,
   LayoutDashboard,
@@ -225,6 +226,7 @@ import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
+import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -399,6 +401,7 @@ const navItems = [
   { label: "成本结算", icon: Coins, hash: "#stockup-cost", section: "stockup", childOf: "备货中心", permission: "stockup_cost_edit", additionalPermissions: ["stockup_cost_review", "stockup_cost_lock", "stockup_workflow_manage"] },
   { label: "月度成本", icon: Calculator, hash: "#stockup-cost-report", section: "stockup", childOf: "备货中心", permission: "stockup_cost_report_view", additionalPermissions: ["stockup_workflow_manage"] },
   { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "production_view" },
+  { label: "业务链路", icon: GitBranch, hash: "#business-chain", section: "stockup", childOf: "备货中心", permission: "business_chain_view" },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
   { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "settings", beta: true, permission: "tongzhou_ai" },
@@ -2177,6 +2180,8 @@ function App() {
           <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="report" />
         ) : activeView === "生产中心" ? (
           <ProductionCenter stockupPayload={stockupPayload} onRefresh={handleProductionRefresh} syncing={syncing} canRefresh={hasUserPermission(currentUser, "production_sync")} />
+        ) : activeView === "业务链路" ? (
+          <BusinessChainCenter user={currentUser} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
