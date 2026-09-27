@@ -223,12 +223,7 @@ export function createDomesticInventoryService(store) {
     return { ok: true, warehouse: ensureWarehouse(warehouse.id, context) };
   }
 
-  function createMovement(input, context, idempotencyKey = "") {
-    const actor = userOf(context);
-    if (idempotencyKey) {
-      const existing = store.first("SELECT response_json FROM domestic_inventory_idempotency WHERE key=? AND user_id=?", [idempotencyKey, actor.id]);
-      if (existing) return JSON.parse(existing.response_json);
-    }
+  function normalizeMovement(input, context) {
     const warehouse = ensureWarehouse(input.warehouseId, context, { active: true });
     const type = ["opening", "inbound", "outbound", "adjustment"].includes(input.type) ? input.type : fail("库存流水类型无效。");
     const rawLines = Array.isArray(input.lines) ? input.lines : [];
@@ -253,6 +248,34 @@ export function createDomesticInventoryService(store) {
     });
     if (normalized.some((line) => line.safetyStockQty !== null && line.safetyStockQty < 0)) fail("安全库存不能小于 0。");
     if (new Set(normalized.map((line) => line.sku)).size !== normalized.length) fail("同一个 SKU 不能在一张库存单中重复。", 400, "duplicate_sku");
+    return { warehouse, type, lines: normalized };
+  }
+
+  function previewMovement(input, context) {
+    const normalized = normalizeMovement(input, context);
+    return {
+      ok: true,
+      dryRun: true,
+      type: normalized.type,
+      warehouse: normalized.warehouse,
+      lines: normalized.lines.map((line) => ({
+        sku: line.sku,
+        productName: line.productName,
+        quantity: line.quantity,
+        unit: line.unit,
+        unitCostCny: line.unitCostCny,
+        packagingMode: line.packaging?.packagingMode || "piece",
+      })),
+    };
+  }
+
+  function createMovement(input, context, idempotencyKey = "") {
+    const actor = userOf(context);
+    if (idempotencyKey) {
+      const existing = store.first("SELECT response_json FROM domestic_inventory_idempotency WHERE key=? AND user_id=?", [idempotencyKey, actor.id]);
+      if (existing) return { ...JSON.parse(existing.response_json), idempotentReplay: true };
+    }
+    const { warehouse, type, lines: normalized } = normalizeMovement(input, context);
     const movement = { id: id("dim"), movementNo: businessNo(type), occurredAt: text(input.occurredAt) || nowIso(), createdAt: nowIso() };
     const response = store.transaction(() => {
       store.run(`INSERT INTO domestic_inventory_movements (id,movement_no,warehouse_id,movement_type,reference_no,occurred_at,note,created_by_id,created_by_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -451,5 +474,5 @@ export function createDomesticInventoryService(store) {
     return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty };
   }
 
-  return { createMovement, createWarehouse, getMovement, importOpeningBalances, list, listLots, listMovements, listWarehouses, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse };
+  return { createMovement, createWarehouse, getMovement, importOpeningBalances, list, listLots, listMovements, listWarehouses, previewMovement, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse };
 }

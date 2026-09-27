@@ -79,6 +79,7 @@ import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
 import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
 import { createDomesticInventoryService } from "./domestic-inventory-service.js";
 import { createDomesticInventoryApi, domesticInventoryContextForAuth } from "./domestic-inventory-api.js";
+import { createJiandaoyunDomesticInventoryApi } from "./jiandaoyun-domestic-inventory-api.js";
 import { initBusinessChainStore } from "./business-chain-db.js";
 import { createBusinessChainSyncService } from "./business-chain-sync.js";
 import { createBusinessChainService } from "./business-chain-service.js";
@@ -320,6 +321,11 @@ const stockupCollaborationApi = createStockupCollaborationApi({
 const domesticInventoryApi = createDomesticInventoryApi({
   service: domesticInventoryService,
   getAuth,
+  appendActionLog,
+});
+const jiandaoyunDomesticInventoryApi = createJiandaoyunDomesticInventoryApi({
+  service: domesticInventoryService,
+  token: process.env.JIANYUN_DOMESTIC_INVENTORY_PLUGIN_TOKEN,
   appendActionLog,
 });
 const businessChainApi = createBusinessChainApi({
@@ -6939,6 +6945,7 @@ const server = http.createServer(async (req, res) => {
     if (await agentIndexLayer.handle(req, res, url)) return;
 
     if (await stockupCollaborationApi(req, res, url)) return;
+    if (await jiandaoyunDomesticInventoryApi(req, res, url)) return;
     if (await domesticInventoryApi(req, res, url)) return;
     if (await businessChainApi(req, res, url)) return;
 

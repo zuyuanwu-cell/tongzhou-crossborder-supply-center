@@ -16,6 +16,8 @@
 
 OpenAPI：`GET /api/domestic-inventory/openapi.json`（需要登录且具备查看权限）。Agent API Key 只读访问方式见下方“Agent 资源”。
 
+简道云委外/生产入库使用受限的插件专用接口，不复用登录令牌，详见 [简道云国内库存入库插件接口](./jiandaoyun-domestic-inventory-plugin.md)。
+
 ## 查询接口
 
 - `GET /api/domestic-inventory`：库存汇总、仓库统计和 SKU 余额。

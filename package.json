@@ -16,6 +16,8 @@
     "test:stockup-collaboration": "node scripts/stockup-collaboration-test.mjs",
     "test:domestic-inventory": "node scripts/domestic-inventory-test.mjs",
     "test:domestic-inventory-api": "node scripts/domestic-inventory-api-test.mjs",
+    "test:jiandaoyun-domestic-inventory": "node scripts/jiandaoyun-domestic-inventory-api-test.mjs",
+    "test:jiandaoyun-plugin-function": "node scripts/jiandaoyun-plugin-function-test.mjs",
     "test:stockup-shipment-receipt": "node scripts/stockup-shipment-receipt-test.mjs",
     "test:stockup-costing": "node scripts/stockup-costing-test.mjs",
     "test:stockup-notification": "node scripts/stockup-notification-test.mjs",
