@@ -35,6 +35,60 @@ export function domesticInventoryContextForAuth(auth) {
   };
 }
 
+function normalizeProductSku(value) {
+  return String(value ?? "").replace(/\s+/g, "").toUpperCase();
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== "") ?? "";
+}
+
+export function domesticInventoryProductOptions(products = {}, context = {}, filters = {}) {
+  const keyword = String(filters.keyword || "").trim().toLowerCase();
+  const limit = Math.max(1, Math.min(10000, Math.floor(Number(filters.limit) || 5000)));
+  const offset = Math.max(0, Math.floor(Number(filters.offset) || 0));
+  const scopedSkus = new Set((context.skus || []).map(normalizeProductSku).filter(Boolean));
+  const bySku = new Map();
+  const candidates = [...(products.productBase || []), ...(products.catalog || [])];
+
+  for (const product of candidates) {
+    const sku = normalizeProductSku(product?.sku || product?.skuNo || product?.countrySku);
+    if (!sku || (scopedSkus.size && !scopedSkus.has(sku))) continue;
+    const current = bySku.get(sku) || {};
+    const includeCosts = context.includeCosts === true;
+    bySku.set(sku, {
+      id: firstValue(current.id, product?.id, sku),
+      sku,
+      skuNo: firstValue(current.skuNo, product?.skuNo, product?.sku, sku),
+      name: firstValue(current.name, product?.name, product?.productName, product?.nameEn, sku),
+      nameEn: firstValue(current.nameEn, product?.nameEn),
+      imageUrl: firstValue(current.imageUrl, product?.imageUrl, product?.qualificationImageUrl),
+      specification: firstValue(current.specification, product?.specification),
+      unit: firstValue(current.unit, product?.unit, "件"),
+      barcode: firstValue(current.barcode, product?.barcode),
+      brand: firstValue(current.brand, product?.brand),
+      category: firstValue(current.category, product?.category),
+      ...(includeCosts ? {
+        directCostPrice: Number(firstValue(current.directCostPrice, product?.directCostPrice, product?.directPrice, 0)) || 0,
+        directPrice: Number(firstValue(current.directPrice, product?.directPrice, 0)) || 0,
+      } : {}),
+    });
+  }
+
+  const matched = [...bySku.values()]
+    .filter((product) => !keyword || [product.sku, product.skuNo, product.name, product.nameEn, product.barcode, product.brand, product.category]
+      .some((value) => String(value || "").toLowerCase().includes(keyword)))
+    .sort((left, right) => left.sku.localeCompare(right.sku, "zh-CN", { numeric: true }));
+
+  return {
+    ok: true,
+    total: matched.length,
+    limit,
+    offset,
+    products: matched.slice(offset, offset + limit),
+  };
+}
+
 function requireAnyPermission(auth, permissions, message) {
   if (!permissions.some((permission) => hasPermission(auth, permission))) throw Object.assign(new Error(message), { statusCode: 403, code: "forbidden" });
 }
@@ -50,6 +104,7 @@ export function domesticInventoryOpenApi() {
     tags: [{ name: "Inventory", description: "库存汇总与仓库" }, { name: "Movements", description: "入库、出库和调整" }, { name: "Lots", description: "批次、条码、生产日期和箱规" }, { name: "Stockup", description: "供海外仓备货调用的国内库存可用量" }],
     paths: {
       "/api/domestic-inventory": { get: { tags: ["Inventory"], operationId: "listDomesticInventory", responses: { 200: response("库存汇总") } } },
+      "/api/domestic-inventory/products": { get: { tags: ["Inventory"], operationId: "listDomesticInventoryProducts", parameters: [{ name: "keyword", in: "query", schema: { type: "string" } }, { name: "limit", in: "query", schema: { type: "integer", maximum: 10000 } }, { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } }], responses: { 200: response("可用于国内仓进销存的同舟 SKU 列表") } } },
       "/api/domestic-inventory/warehouses": {
         get: { tags: ["Inventory"], operationId: "listDomesticWarehouses", responses: { 200: response("仓库列表") } },
         post: { tags: ["Inventory"], operationId: "createDomesticWarehouse", responses: { 201: response("已创建仓库"), 403: response("无档案管理权限") } },
@@ -76,7 +131,7 @@ export function domesticInventoryOpenApi() {
   };
 }
 
-export function createDomesticInventoryApi({ service, getAuth, appendActionLog = () => {} }) {
+export function createDomesticInventoryApi({ service, getAuth, getProducts = () => ({}), appendActionLog = () => {} }) {
   return async function handleDomesticInventoryApi(req, res, url) {
     if (url.pathname !== "/api/domestic-inventory" && !url.pathname.startsWith("/api/domestic-inventory/")) return false;
     const auth = getAuth(req);
@@ -91,6 +146,13 @@ export function createDomesticInventoryApi({ service, getAuth, appendActionLog =
       }
       if (suffix === "/" && req.method === "GET") {
         sendJson(res, 200, service.list(Object.fromEntries(url.searchParams.entries()), context));
+        return true;
+      }
+      if (suffix === "/products" && req.method === "GET") {
+        sendJson(res, 200, domesticInventoryProductOptions(getProducts(), {
+          ...context,
+          includeCosts: hasPermission(auth, "direct_price"),
+        }, Object.fromEntries(url.searchParams.entries())));
         return true;
       }
       if (suffix === "/movements" && req.method === "GET") {

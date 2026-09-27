@@ -4864,6 +4864,22 @@ export type DomesticWarehouse = {
   lowStockSkuCount: number;
 };
 
+export type DomesticInventoryProductOption = {
+  id: string;
+  skuNo: string;
+  sku: string;
+  name: string;
+  nameEn: string;
+  imageUrl: string;
+  specification: string;
+  unit: string;
+  barcode: string;
+  brand: string;
+  category: string;
+  directCostPrice?: number;
+  directPrice?: number;
+};
+
 export type DomesticInventoryBalance = {
   warehouseId: string;
   warehouseName: string;
@@ -4956,6 +4972,14 @@ export function fetchDomesticInventory(filters: { warehouseId?: string; keyword?
   if (filters.keyword) params.set("keyword", filters.keyword);
   if (filters.lowStock) params.set("lowStock", "1");
   return requestJson<DomesticInventoryPayload>(`/api/domestic-inventory${params.size ? `?${params}` : ""}`);
+}
+
+export function fetchDomesticInventoryProducts(filters: { keyword?: string; limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (filters.keyword) params.set("keyword", filters.keyword);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  if (filters.offset) params.set("offset", String(filters.offset));
+  return requestJson<{ ok: boolean; total: number; limit: number; offset: number; products: DomesticInventoryProductOption[] }>(`/api/domestic-inventory/products${params.size ? `?${params}` : ""}`);
 }
 
 export function fetchDomesticWarehouses() {

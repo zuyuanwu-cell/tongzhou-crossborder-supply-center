@@ -14,7 +14,17 @@ try {
   const adminAuth = { role: "admin", user: { id: "admin", displayName: "管理员", role: "admin", dataScopes: {} } };
   const warehouse = service.createWarehouse({ code: "CN-TEST", name: "测试成品仓" }, { auth: adminAuth, countries: [], warehouseIds: [], skus: [] }).warehouse;
   let activeAuth = adminAuth;
-  const handler = createDomesticInventoryApi({ service, getAuth: () => activeAuth });
+  const productFixtures = {
+    productBase: [
+      { id: "base-1", sku: "SKU-1", skuNo: "SKU-1", name: "产品一", unit: "件", barcode: "690001" },
+      ...Array.from({ length: 140 }, (_, index) => ({ id: `base-${index + 2}`, sku: `TZKJ-${String(index + 2).padStart(4, "0")}`, name: `同舟产品 ${index + 2}`, unit: "件" })),
+    ],
+    catalog: [
+      { id: "catalog-1", sku: "SKU-1", name: "产品一（目录）", imageUrl: "https://example.com/sku-1.jpg", directCostPrice: 8.5 },
+      { id: "catalog-duplicate", sku: " sku-1 ", name: "重复产品一" },
+    ],
+  };
+  const handler = createDomesticInventoryApi({ service, getAuth: () => activeAuth, getProducts: () => productFixtures });
 
   async function invoke(method, path, auth, body, headers = {}) {
     activeAuth = auth;
@@ -35,6 +45,16 @@ try {
   assert.equal(warehousesResponse.status, 200);
   assert.equal(warehousesResponse.headers["Access-Control-Allow-Origin"], "*");
   assert.equal((await invoke("GET", "/api/domestic-inventory/openapi.json", viewer)).payload.openapi, "3.1.0");
+  const productOptions = await invoke("GET", "/api/domestic-inventory/products?limit=10000", adminAuth);
+  assert.equal(productOptions.status, 200);
+  assert.equal(productOptions.payload.total, 141);
+  assert.equal(productOptions.payload.products.filter((item) => item.sku === "SKU-1").length, 1);
+  assert.equal(productOptions.payload.products.find((item) => item.sku === "SKU-1").imageUrl, "https://example.com/sku-1.jpg");
+  assert.equal((await invoke("GET", "/api/domestic-inventory/products?keyword=TZKJ-0141", adminAuth)).payload.total, 1);
+  const skuScopedAuth = { role: "direct", user: { id: "sku-scoped", role: "direct", permissionOverrides: { allow: ["domestic_inventory_view"], deny: ["direct_price"] }, dataScopes: { skus: ["SKU-1"] } } };
+  const scopedProducts = await invoke("GET", "/api/domestic-inventory/products", skuScopedAuth);
+  assert.deepEqual(scopedProducts.payload.products.map((item) => item.sku), ["SKU-1"]);
+  assert.equal("directCostPrice" in scopedProducts.payload.products[0], false);
   assert.equal((await invoke("POST", "/api/domestic-inventory/movements", viewer, { warehouseId: warehouse.id, type: "inbound", lines: [{ sku: "SKU-1", productName: "产品一", quantity: 1 }] })).status, 403);
   assert.equal((await invoke("GET", "/api/domestic-inventory", distributor)).status, 403);
 

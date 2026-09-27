@@ -23,12 +23,14 @@ import {
   type DomesticInventoryLot,
   type DomesticInventoryMovement,
   type DomesticInventoryPayload,
+  type DomesticInventoryProductOption,
   type DomesticWarehouse,
   createDomesticInventoryMovement,
   createDomesticWarehouse,
   fetchDomesticInventory,
   fetchDomesticInventoryLots,
   fetchDomesticInventoryMovements,
+  fetchDomesticInventoryProducts,
   importDomesticOpeningInventory,
   updateDomesticInventorySafetyStock,
   updateDomesticWarehouse,
@@ -37,6 +39,22 @@ import "./domestic-inventory.css";
 
 type ViewTab = "inventory" | "lots" | "movements" | "warehouses";
 type MovementType = "inbound" | "outbound" | "adjustment";
+
+type SelectableProduct = {
+  id: string;
+  sku?: string;
+  skuNo?: string;
+  name?: string;
+  nameEn?: string;
+  imageUrl?: string;
+  specification?: string;
+  unit?: string;
+  barcode?: string;
+  brand?: string;
+  category?: string;
+  directCostPrice?: number;
+  directPrice?: number;
+};
 
 type MovementLineDraft = {
   productId: string;
@@ -92,8 +110,8 @@ function dateTime(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function uniqueProducts(products: CatalogProduct[]) {
-  const output = new Map<string, CatalogProduct>();
+function uniqueProducts(products: SelectableProduct[]) {
+  const output = new Map<string, SelectableProduct>();
   for (const product of products) {
     const key = skuKey(product.sku || product.skuNo);
     if (!key) continue;
@@ -174,6 +192,9 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
   const [warehouseModal, setWarehouseModal] = useState(false);
   const [openingImportModal, setOpeningImportModal] = useState(false);
   const [safetyDrafts, setSafetyDrafts] = useState<Record<string, string>>({});
+  const [inventoryProducts, setInventoryProducts] = useState<DomesticInventoryProductOption[]>([]);
+  const [productCatalogLoading, setProductCatalogLoading] = useState(true);
+  const [productCatalogError, setProductCatalogError] = useState("");
 
   const loadInventory = useCallback(async () => {
     setLoading(true);
@@ -217,9 +238,25 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
   useEffect(() => { void loadInventory(); }, [loadInventory]);
   useEffect(() => { if (tab === "movements") void loadMovements(); }, [tab, loadMovements]);
   useEffect(() => { if (tab === "lots") void loadLots(); }, [tab, loadLots]);
+  useEffect(() => {
+    let cancelled = false;
+    setProductCatalogLoading(true);
+    setProductCatalogError("");
+    fetchDomesticInventoryProducts({ limit: 10000 })
+      .then((data) => {
+        if (!cancelled) setInventoryProducts(data.products);
+      })
+      .catch((requestError) => {
+        if (!cancelled) setProductCatalogError(requestError instanceof Error ? requestError.message : "完整产品列表读取失败，请稍后重试。");
+      })
+      .finally(() => {
+        if (!cancelled) setProductCatalogLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const activeWarehouses = useMemo(() => payload.warehouses.filter((item) => item.status === "active"), [payload.warehouses]);
-  const productOptions = useMemo(() => uniqueProducts(products), [products]);
+  const productOptions = useMemo(() => uniqueProducts([...products, ...inventoryProducts]), [products, inventoryProducts]);
 
   function runSearch() {
     setQuery(keyword.trim());
@@ -326,6 +363,8 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
           type={movementModal}
           warehouses={activeWarehouses}
           products={productOptions}
+          productsLoading={productCatalogLoading}
+          productLoadError={productCatalogError}
           onClose={() => setMovementModal(null)}
           onSaved={async (message) => { setMovementModal(null); setSuccess(message); await loadInventory(); if (tab === "movements") await loadMovements(); }}
           onError={setError}
@@ -430,10 +469,12 @@ function WarehouseCards({ warehouses, canManage, onToggle }: { warehouses: Domes
   ))}</div>;
 }
 
-function MovementModal({ type, warehouses, products, onClose, onSaved, onError }: {
+function MovementModal({ type, warehouses, products, productsLoading, productLoadError, onClose, onSaved, onError }: {
   type: MovementType;
   warehouses: DomesticWarehouse[];
-  products: CatalogProduct[];
+  products: SelectableProduct[];
+  productsLoading: boolean;
+  productLoadError: string;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
@@ -444,10 +485,14 @@ function MovementModal({ type, warehouses, products, onClose, onSaved, onError }
   const [search, setSearch] = useState("");
   const [lines, setLines] = useState<MovementLineDraft[]>([]);
   const [saving, setSaving] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(60);
   useEscapeClose(onClose, saving);
-  const visibleProducts = products.filter((product) => !search || `${product.sku} ${product.name} ${product.nameEn}`.toLowerCase().includes(search.toLowerCase())).slice(0, 30);
+  const matchingProducts = products.filter((product) => !search || `${product.sku || ""} ${product.skuNo || ""} ${product.name || ""} ${product.nameEn || ""} ${product.barcode || ""}`.toLowerCase().includes(search.toLowerCase()));
+  const visibleProducts = matchingProducts.slice(0, visibleLimit);
 
-  function addProduct(product: CatalogProduct) {
+  useEffect(() => { setVisibleLimit(60); }, [search]);
+
+  function addProduct(product: SelectableProduct) {
     const sku = skuKey(product.sku || product.skuNo);
     if (lines.some((line) => line.sku === sku)) return;
     setLines([...lines, {
@@ -521,7 +566,20 @@ function MovementModal({ type, warehouses, products, onClose, onSaved, onError }
           </details> : null}
         </article>) : <p className="movement-lines-empty">从右侧产品库选择产品</p>}</div>
       </div>
-      <aside className="movement-product-picker"><label><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 SKU / 产品名称" /></label><div>{visibleProducts.map((product) => { const selected = lines.some((line) => line.sku === skuKey(product.sku || product.skuNo)); return <button type="button" key={skuKey(product.sku || product.skuNo)} disabled={selected} onClick={() => addProduct(product)}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span><Boxes size={16} /></span>}<div><strong>{product.name}</strong><small>{product.sku}</small></div>{selected ? <Check size={16} /> : <Plus size={16} />}</button>; })}</div></aside>
+      <aside className="movement-product-picker">
+        <label><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 SKU / 产品名称 / 条码" /></label>
+        <p className={productLoadError ? "product-picker-status error" : "product-picker-status"}>
+          {productsLoading ? <><RefreshCw className="spinning" size={13} />正在载入全部 SKU…</> : productLoadError ? `完整目录读取失败，当前可选 ${products.length} 个 SKU` : `已载入同舟供应链 ${products.length} 个 SKU`}
+        </p>
+        <div>
+          {visibleProducts.map((product) => {
+            const selected = lines.some((line) => line.sku === skuKey(product.sku || product.skuNo));
+            return <button type="button" key={skuKey(product.sku || product.skuNo)} disabled={selected} onClick={() => addProduct(product)}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span><Boxes size={16} /></span>}<div><strong>{product.name || product.nameEn || product.sku}</strong><small>{product.sku || product.skuNo}</small></div>{selected ? <Check size={16} /> : <Plus size={16} />}</button>;
+          })}
+          {!productsLoading && !visibleProducts.length ? <p className="product-picker-empty">没有找到匹配的 SKU</p> : null}
+        </div>
+        {visibleProducts.length < matchingProducts.length ? <button className="product-picker-more" type="button" onClick={() => setVisibleLimit((current) => current + 60)}>加载更多（剩余 {matchingProducts.length - visibleProducts.length}）</button> : null}
+      </aside>
     </div>
     <footer><button className="domestic-inventory-secondary" type="button" onClick={onClose}>取消</button><button className="domestic-inventory-primary" type="button" disabled={saving} onClick={() => void submit()}>{saving ? "正在登记…" : `确认${movementLabel(type)}`}</button></footer>
   </section></div>;
@@ -541,7 +599,7 @@ type OpeningImportLine = {
 
 function OpeningImportModal({ warehouses, products, onClose, onSaved, onError }: {
   warehouses: DomesticWarehouse[];
-  products: CatalogProduct[];
+  products: SelectableProduct[];
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;

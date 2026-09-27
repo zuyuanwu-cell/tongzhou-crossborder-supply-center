@@ -321,6 +321,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
 const domesticInventoryApi = createDomesticInventoryApi({
   service: domesticInventoryService,
   getAuth,
+  getProducts: () => cachedProducts,
   appendActionLog,
 });
 const jiandaoyunDomesticInventoryApi = createJiandaoyunDomesticInventoryApi({
