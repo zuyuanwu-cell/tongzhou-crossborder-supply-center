@@ -95,6 +95,17 @@ function ContractStages({ contract }: { contract: BusinessChainContract }) {
   );
 }
 
+function TongzhouSkuList({ skus, compact = false }: { skus: string[]; compact?: boolean }) {
+  if (!skus.length) return <span className="bc-sku-empty">生产单暂未填写同舟 SKU</span>;
+  const visible = compact ? skus.slice(0, 4) : skus;
+  return (
+    <div className="bc-sku-list" aria-label="同舟 SKU">
+      {visible.map((sku) => <span key={sku}>{sku}</span>)}
+      {compact && skus.length > visible.length ? <em>+{skus.length - visible.length}</em> : null}
+    </div>
+  );
+}
+
 function ContractDrawer({ detail, loading, onClose, canViewFinance }: { detail: BusinessChainContractDetailPayload | null; loading: boolean; onClose: () => void; canViewFinance: boolean }) {
   return (
     <div className="bc-drawer-layer" role="dialog" aria-modal="true" aria-label="合同业务链路详情" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
@@ -118,6 +129,10 @@ function ContractDrawer({ detail, loading, onClose, canViewFinance }: { detail: 
               <div><span>链路单据</span><strong>{detail.documents.length}</strong></div>
               {canViewFinance ? <div><span>待付供应商</span><strong>{formatMoney(detail.metrics.unpaidAmount || 0)}</strong></div> : null}
             </div>
+            <section className="bc-contract-skus">
+              <div><span>同舟 SKU</span><small>取自关联合同号一致的生产单</small></div>
+              <TongzhouSkuList skus={detail.contract.tongzhouSkus} />
+            </section>
             <section className="bc-detail-section">
               <div className="bc-section-title"><div><p className="bc-eyebrow">FULFILLMENT</p><h3>合同履约时间线</h3></div></div>
               <div className="bc-timeline">
@@ -164,7 +179,6 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
   const [payables, setPayables] = React.useState<BusinessChainPayablesPayload | null>(null);
   const [keyword, setKeyword] = React.useState("");
   const [queryKeyword, setQueryKeyword] = React.useState("");
-  const [internal, setInternal] = React.useState<"yes" | "no" | "">("");
   const [page, setPage] = React.useState(1);
   const [loading, setLoading] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
@@ -179,7 +193,7 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
     try {
       const tasks: [Promise<BusinessChainSummaryPayload>, Promise<BusinessChainContractsPayload>, Promise<BusinessChainPayablesPayload> | null] = [
         fetchBusinessChainSummary(),
-        fetchBusinessChainContracts({ keyword: queryKeyword, internal, page, pageSize: 20 }),
+        fetchBusinessChainContracts({ keyword: queryKeyword, page, pageSize: 20 }),
         canViewFinance ? fetchBusinessChainPayables(queryKeyword) : null,
       ];
       const [nextSummary, nextContracts, nextPayables] = await Promise.all([tasks[0], tasks[1], tasks[2] || Promise.resolve(null)]);
@@ -192,7 +206,7 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
     } finally {
       setLoading(false);
     }
-  }, [canViewFinance, internal, page, queryKeyword]);
+  }, [canViewFinance, page, queryKeyword]);
 
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
@@ -240,7 +254,7 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
   }
 
   const cards = [
-    { label: "生产中合同", value: summary?.counts.activeContracts ?? "—", hint: `全部合同 ${summary?.counts.contracts ?? "—"}`, icon: GitBranch },
+    { label: "生产中合同", value: summary?.counts.activeContracts ?? "—", hint: `同舟生效合同 ${summary?.counts.contracts ?? "—"}`, icon: GitBranch },
     { label: "累计入库数量", value: summary ? formatNumber(summary.counts.inboundQty) : "—", hint: "采购 + 委外入库", icon: Warehouse },
     { label: "累计发货数量", value: summary ? formatNumber(summary.counts.shippedQty) : "—", hint: "销售发货单累计", icon: Ship },
     { label: "待人工关联", value: summary?.counts.pendingLinks ?? "—", hint: "不凭 SKU 猜测关系", icon: FileSearch, warning: Boolean(summary?.counts.pendingLinks) },
@@ -252,7 +266,7 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
         <div>
           <p className="bc-eyebrow">BUSINESS CHAIN CONTROL</p>
           <h1>业务链路中心</h1>
-          <p>从报价、合同到生产、采购、入库、发货与结算，一份合同一条可追溯链路。</p>
+          <p>仅呈现已审批生效的同舟内部合同，从生产、采购到入库、发货与结算全程可追溯。</p>
           <div className="bc-source-row"><FreshnessBadge summary={summary} /><span>数据源：千顷 ERP · 只读索引</span></div>
         </div>
         {canSync ? <button className="bc-primary-button" type="button" onClick={handleSync} disabled={syncing}><RefreshCw size={17} className={syncing ? "bc-spin" : ""} />{syncing ? "正在后台同步" : "刷新业务链路"}</button> : null}
@@ -272,7 +286,6 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
 
         <form className="bc-toolbar" onSubmit={submitSearch}>
           <label><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={tab === "finance" ? "搜索供应商" : "搜索合同号、客户名称"} /></label>
-          {tab === "contracts" ? <select value={internal} onChange={(event) => { setInternal(event.target.value as "yes" | "no" | ""); setPage(1); }}><option value="">全部合同</option><option value="yes">同舟内部合同</option><option value="no">外部客户合同</option></select> : null}
           <button type="submit">查询</button>
         </form>
 
@@ -283,8 +296,9 @@ export function BusinessChainCenter({ user }: { user: AuthUser }) {
             {contracts?.contracts.map((contract) => (
               <article className="bc-contract-card" key={contract.id}>
                 <div className="bc-contract-main">
-                  <div className="bc-contract-title"><div><span className={`bc-kind-tag ${contract.isInternal ? "is-internal" : ""}`}>{contract.isInternal ? "同舟内部" : "客户合同"}</span><h3>{contract.documentNo || "未生成合同号"}</h3></div><span className="bc-status-tag">{contract.status || "状态未标记"}</span></div>
-                  <p>{contract.customerName || "客户名称未填写"} · {formatDate(contract.occurredAt)}{contract.ageDays !== null ? ` · 已进行 ${contract.ageDays} 天` : ""}</p>
+                  <div className="bc-contract-title"><div><span className="bc-kind-tag is-internal">同舟生效</span><h3>{contract.documentNo || "未生成合同号"}</h3></div><span className="bc-status-tag">{contract.status || "状态未标记"}</span></div>
+                  <p>{contract.customerName || "客户名称未填写"} · 生效于 {formatDate(contract.effectiveAt || contract.occurredAt)}{contract.ageDays !== null ? ` · 已生效 ${contract.ageDays} 天` : ""}</p>
+                  <div className="bc-card-skus"><span>同舟 SKU</span><TongzhouSkuList skus={contract.tongzhouSkus} compact /></div>
                   <ContractStages contract={contract} />
                 </div>
                 <div className="bc-contract-numbers">

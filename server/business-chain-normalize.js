@@ -179,6 +179,7 @@ export function normalizeBusinessChainRecord(formKey, record) {
   if (formKey === "salesContracts") {
     const customerName = scalarText(fieldValue(record, f.customerFullName) || fieldValue(record, f.customerName));
     const internal = normalizeInternal(customerName, fieldValue(record, f.internalContract));
+    const effectiveAt = isoDate(fieldValue(record, f.effectiveAt));
     const detailRows = rows(fieldValue(record, f.details));
     const lines = detailRows.map((line, index) => normalizeLine(id, line, form.detailFields, index, {
       contractLineNo: scalarText(fieldValue(line, form.detailFields.contractLineNo)),
@@ -187,7 +188,7 @@ export function normalizeBusinessChainRecord(formKey, record) {
     return baseDocument(formKey, form, record, {
       chainId: `CHN-${sourceDataId}`,
       documentNo: fieldValue(record, f.contractNo), contractNo: fieldValue(record, f.contractNo), status: fieldValue(record, f.status),
-      occurredAt: isoDate(fieldValue(record, f.signedAt) || fieldValue(record, f.effectiveAt)), customerId: fieldValue(record, f.customerId), customerName,
+      occurredAt: effectiveAt || isoDate(fieldValue(record, f.signedAt)), customerId: fieldValue(record, f.customerId), customerName,
       currency: fieldValue(record, f.currency), quantity: fieldValue(record, f.totalQty), amount: fieldValue(record, f.totalAmount),
       isInternal: internal.value, internalInferred: internal.inferred,
       linkedRecordIds: [

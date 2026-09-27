@@ -45,6 +45,12 @@
 .bc-kind-tag.is-internal { color: #056a43; background: #e6f7ee; }
 .bc-status-tag { color: #365c88; background: #eaf1fa; }
 .bc-contract-main > p { margin: 9px 0 15px; color: #718198; font-size: 12px; }
+.bc-card-skus { display: flex; align-items: center; gap: 9px; min-height: 27px; margin: -4px 0 14px; }
+.bc-card-skus > span, .bc-contract-skus > div > span { color: #617791; font-size: 11px; font-weight: 700; }
+.bc-sku-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.bc-sku-list span, .bc-sku-list em { padding: 4px 7px; color: #0b5f46; border: 1px solid #bfe4d4; border-radius: 6px; background: #edf9f4; font-size: 10px; font-style: normal; font-weight: 800; }
+.bc-sku-list em { color: #526b89; border-color: #d8e2ee; background: #f2f6fa; }
+.bc-sku-empty { color: #9a775b; font-size: 11px; }
 .bc-stage-track { display: flex; align-items: flex-start; width: 100%; }
 .bc-stage { display: grid; justify-items: center; gap: 6px; min-width: 54px; color: #8a98a9; }
 .bc-stage > span { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid #cad5e1; border-radius: 50%; background: #fff; font-size: 10px; font-style: normal; }
@@ -91,6 +97,9 @@
 .bc-detail-metrics > div { display: grid; gap: 5px; padding: 14px; border: 1px solid #dce5ef; border-radius: 11px; background: #fff; }
 .bc-detail-metrics span { color: #71839a; font-size: 11px; }
 .bc-detail-metrics strong { color: #123f75; font-size: 18px; }
+.bc-contract-skus { display: grid; gap: 10px; padding: 14px; border: 1px solid #d6e4f1; border-radius: 11px; background: #fff; }
+.bc-contract-skus > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.bc-contract-skus > div > small { color: #8a98aa; font-size: 10px; }
 .bc-detail-section { display: grid; gap: 15px; }
 .bc-section-title h3 { margin: 0; color: #173e70; }
 .bc-timeline { display: grid; }

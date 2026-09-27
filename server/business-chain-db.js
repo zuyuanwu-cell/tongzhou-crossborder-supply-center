@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { BUSINESS_CHAIN_FORMS } from "./business-chain-config.js";
 
 function rows(db, sql, params = []) {
   const statement = db.prepare(sql);
@@ -24,6 +25,12 @@ function json(value, fallback) {
 
 function rowToDocument(row) {
   if (!row) return null;
+  const raw = json(row.raw_json, {});
+  const effectiveField = BUSINESS_CHAIN_FORMS.salesContracts.fields.effectiveAt;
+  const effectiveValue = raw?.[effectiveField];
+  const effectiveAt = effectiveValue && typeof effectiveValue === "object" && Object.prototype.hasOwnProperty.call(effectiveValue, "value")
+    ? effectiveValue.value
+    : effectiveValue;
   return {
     id: row.id,
     formKey: row.form_key,
@@ -48,6 +55,7 @@ function rowToDocument(row) {
     payableAmount: Number(row.payable_amount || 0),
     paidAmount: Number(row.paid_amount || 0),
     occurredAt: row.occurred_at || "",
+    effectiveAt: String(effectiveAt || "").trim(),
     updatedAt: row.updated_at || "",
     isInternal: Boolean(row.is_internal),
     internalInferred: Boolean(row.internal_inferred),

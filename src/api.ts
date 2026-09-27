@@ -296,6 +296,7 @@ export type BusinessChainDocument = {
   payableAmount: number;
   paidAmount: number;
   occurredAt: string;
+  effectiveAt: string;
   updatedAt: string;
   isInternal: boolean;
   internalInferred: boolean;
@@ -308,6 +309,7 @@ export type BusinessChainContract = BusinessChainDocument & {
   inboundQty: number;
   shippedQty: number;
   linkedDocumentCount: number;
+  tongzhouSkus: string[];
   accruedPayable?: number;
   paidAmount?: number;
   unpaidAmount?: number;
@@ -330,7 +332,7 @@ export type BusinessChainContractsPayload = {
 
 export type BusinessChainContractDetailPayload = {
   ok: boolean;
-  contract: BusinessChainDocument;
+  contract: BusinessChainDocument & { tongzhouSkus: string[] };
   stages: BusinessChainStage[];
   documents: BusinessChainDocument[];
   metrics: { inboundQty: number; shippedQty: number; accruedPayable?: number; paidAmount?: number; unpaidAmount?: number };
