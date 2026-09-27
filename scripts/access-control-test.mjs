@@ -261,7 +261,10 @@ const warehousePermissions = effectivePermissions({
 });
 assert.equal(warehousePermissions.includes("product_view"), true, "warehouse operators can select scoped products for domestic inventory movements");
 assert.equal(warehousePermissions.includes("domestic_inventory_view"), true, "warehouse operators can view their scoped domestic warehouse ledger");
-assert.equal(warehousePermissions.includes("domestic_inventory_manage"), true, "warehouse operators can register scoped inventory movements");
+assert.equal(warehousePermissions.includes("domestic_inventory_receive"), true, "warehouse operators can receive scoped domestic inventory");
+assert.equal(warehousePermissions.includes("domestic_inventory_issue"), true, "warehouse operators can issue scoped domestic inventory");
+assert.equal(warehousePermissions.includes("domestic_inventory_adjust"), true, "warehouse operators can adjust scoped domestic inventory");
+assert.equal(warehousePermissions.includes("domestic_inventory_manage"), false, "warehouse operators do not manage warehouse masters by default");
 assert.equal(warehousePermissions.includes("stockup_receipt_confirm"), true, "warehouse operators can confirm receipts for their bound warehouses");
 assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");
 assert.equal(warehousePermissions.some((permission) => permission.startsWith("ozon_")), false, "warehouse operators cannot access Ozon credentials or order queues");

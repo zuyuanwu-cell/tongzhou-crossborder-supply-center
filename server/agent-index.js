@@ -124,6 +124,30 @@ const TYPE_DEFINITIONS = {
     fields: ["warehouseName", "countryRegion", "warehouseCode", "addresses", "timezone", "workTime", "remark"],
     sourcePath: "/api/warehouse-info",
   },
+  domestic_inventory_balance: {
+    label: "国内仓库存余额",
+    access: "warehouse_collaboration",
+    permissionAny: ["domestic_inventory_view"],
+    sourceSystem: "local",
+    fields: ["warehouseName", "sku", "productName", "onHandQty", "reservedQty", "availableQty", "safetyStockQty", "updatedAt"],
+    sourcePath: "/api/domestic-inventory",
+  },
+  domestic_inventory_lot: {
+    label: "国内仓库存批次",
+    access: "warehouse_collaboration",
+    permissionAny: ["domestic_inventory_view"],
+    sourceSystem: "local",
+    fields: ["warehouseName", "movementNo", "sku", "productName", "lotNo", "barcode", "productionDate", "expiryDate", "packagingMode", "cartonCount", "unitsPerCarton", "cartonLengthCm", "cartonWidthCm", "cartonHeightCm", "cartonWeightKg", "receivedQty", "remainingQty", "updatedAt"],
+    sourcePath: "/api/domestic-inventory/lots",
+  },
+  domestic_inventory_movement: {
+    label: "国内仓库存流水",
+    access: "warehouse_collaboration",
+    permissionAny: ["domestic_inventory_view"],
+    sourceSystem: "local",
+    fields: ["movementNo", "warehouseName", "type", "referenceNo", "occurredAt", "note", "createdByName", "lines", "createdAt"],
+    sourcePath: "/api/domestic-inventory/movements",
+  },
   wms_product: {
     label: "WMS 商品",
     access: "admin",
@@ -324,6 +348,7 @@ const PAGE_DEFINITIONS = [
   ["inventory", "库存同步", "WMS 库存同步和 SKU 治理。", ["admin"]],
   ["inventory-snapshots", "库存快照", "按日期查看库存快照。", ["admin"]],
   ["inventory-value", "仓库货值", "查看库存货值、成本覆盖与周期变化。", ["direct", "admin"]],
+  ["domestic-inventory", "国内仓进销存", "国内成品仓库存、批次、箱规与流水。", ["warehouse", "direct", "admin"], ["domestic_inventory_view"]],
   ["order-analysis", "订单分析", "订单趋势、店铺、平台和产品分析。", ["admin"]],
   ["performance", "经营贡献", "销售、成本和经营贡献分析。", ["direct", "admin"]],
   ["movement", "动销监控", "当前 SKU 动销和仓库诊断。", ["admin"]],
@@ -566,7 +591,7 @@ function nativeIdentity(type, record, index) {
 
 function nativeIdentityInfo(type, record, index) {
   const id = text(record?.id);
-  if (["product_base", "product_catalog", "qualification", "asset", "warehouse_info", "outsourcing_order", "qualification_expiry", "after_sales_ticket", "warehouse_ticket", "miaoshou_task"].includes(type)) {
+  if (["product_base", "product_catalog", "qualification", "asset", "warehouse_info", "domestic_inventory_lot", "domestic_inventory_movement", "outsourcing_order", "qualification_expiry", "after_sales_ticket", "warehouse_ticket", "miaoshou_task"].includes(type)) {
     const value = id || text(record?.sku || record?.orderNo);
     return value
       ? { value, fallback: false }
@@ -574,6 +599,12 @@ function nativeIdentityInfo(type, record, index) {
   }
   if (type === "wms_product" || type === "inventory_position") {
     const value = [record.warehouseId, record.goodsSkuId || record.sku, record.providerWarehouseCode].filter(Boolean).join("::");
+    return value
+      ? { value, fallback: false }
+      : { value: hash(sanitizeForAgent(record)).slice(0, 24), fallback: true };
+  }
+  if (type === "domestic_inventory_balance") {
+    const value = [record.warehouseId, record.sku].filter(Boolean).join("::");
     return value
       ? { value, fallback: false }
       : { value: hash(sanitizeForAgent(record)).slice(0, 24), fallback: true };
@@ -649,6 +680,9 @@ function titleFor(type, record) {
     qualification: [record.qualificationName, record.productName, record.sku],
     asset: [record.assetName, record.productName, record.sku],
     warehouse_info: [record.warehouseName, record.warehouseCode],
+    domestic_inventory_balance: [record.productName, record.sku, record.warehouseName],
+    domestic_inventory_lot: [record.productName, record.sku, record.lotNo, record.movementNo],
+    domestic_inventory_movement: [record.movementNo, record.referenceNo, record.warehouseName],
     wms_product: [record.name, record.sku],
     inventory_position: [record.sku, record.countrySku],
     order_line: [record.orderNo, record.orderId],

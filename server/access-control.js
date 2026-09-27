@@ -7,7 +7,10 @@ const permissionDefinitions = [
   ["inventory_value", "仓库货值", "运营分析"],
   ["inventory_value_manage", "维护仓库货值成本", "运营分析操作"],
   ["domestic_inventory_view", "国内仓库进销存查看", "库存与履约"],
-  ["domestic_inventory_manage", "国内仓库进销存操作", "库存与履约"],
+  ["domestic_inventory_receive", "国内仓入库与批次维护", "库存与履约"],
+  ["domestic_inventory_issue", "国内仓出库登记", "库存与履约"],
+  ["domestic_inventory_adjust", "国内仓库存调整", "库存与履约"],
+  ["domestic_inventory_manage", "国内仓档案、期初与安全库存管理", "库存与履约"],
   ["order_analysis", "订单分析", "运营分析"],
   ["order_analysis_manage", "维护订单分析设置", "运营分析操作"],
   ["performance_analysis", "经营贡献分析", "运营分析"],
@@ -154,7 +157,9 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
   warehouse: Object.freeze([
     "product_view",
     "domestic_inventory_view",
-    "domestic_inventory_manage",
+    "domestic_inventory_receive",
+    "domestic_inventory_issue",
+    "domestic_inventory_adjust",
     "after_sales_warehouse",
     "warehouse_ticket_warehouse",
     "stockup_request_view_all",
@@ -185,8 +190,8 @@ const OZON_DENIED_ROLES = new Set(["distributor", "guest"]);
 const STOCKUP_DENIED_ROLES = new Set(["distributor", "guest"]);
 const INTERNAL_SYNC_DENIED_ROLES = new Set(["distributor", "guest"]);
 const DOMESTIC_INVENTORY_DENIED_ROLES = new Set(["distributor", "guest"]);
-const DOMESTIC_INVENTORY_PERMISSION_KEYS = Object.freeze(["domestic_inventory_view", "domestic_inventory_manage"]);
-const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
+const DOMESTIC_INVENTORY_PERMISSION_KEYS = Object.freeze(["domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_adjust", "domestic_inventory_manage"]);
+const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
   return ["admin", "direct", "warehouse", "distributor"].includes(user?.role) ? user.role : "guest";
@@ -377,6 +382,9 @@ export function sanitizePermissionUpdate(role, input) {
     ["stockup_cost_review", "stockup_request_view_all"],
     ["stockup_cost_lock", "stockup_request_view_all"],
     ["production_sync", "production_view"],
+    ["domestic_inventory_receive", "domestic_inventory_view"],
+    ["domestic_inventory_issue", "domestic_inventory_view"],
+    ["domestic_inventory_adjust", "domestic_inventory_view"],
     ["domestic_inventory_manage", "domestic_inventory_view"],
   ];
   for (const [operationPermission, viewPermission] of permissionImplications) {

@@ -4765,6 +4765,39 @@ export type DomesticInventoryMovementLine = {
   beforeQty: number;
   afterQty: number;
   unitCostCny: number;
+  lot?: DomesticInventoryLot | null;
+  allocations?: Array<{ id: string; lotId: string; lotNo: string; barcode: string; quantity: number; type: string }>;
+};
+
+export type DomesticInventoryLot = {
+  id: string;
+  warehouseId: string;
+  warehouseName: string;
+  movementLineId: string;
+  movementId: string;
+  movementNo: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  lotNo: string;
+  barcode: string;
+  productionDate: string;
+  expiryDate: string;
+  packagingMode: "piece" | "carton";
+  cartonCount: number;
+  unitsPerCarton: number;
+  looseQuantity: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
+  receivedQty: number;
+  remainingQty: number;
+  unitCostCny: number;
+  sourceType: string;
+  receivedAt: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type DomesticInventoryMovement = {
@@ -4798,12 +4831,38 @@ export function fetchDomesticInventory(filters: { warehouseId?: string; keyword?
   return requestJson<DomesticInventoryPayload>(`/api/domestic-inventory${params.size ? `?${params}` : ""}`);
 }
 
+export function fetchDomesticWarehouses() {
+  return requestJson<{ ok: boolean; warehouses: DomesticWarehouse[] }>("/api/domestic-inventory/warehouses");
+}
+
 export function fetchDomesticInventoryMovements(filters: { warehouseId?: string; keyword?: string; type?: string } = {}) {
   const params = new URLSearchParams();
   if (filters.warehouseId) params.set("warehouseId", filters.warehouseId);
   if (filters.keyword) params.set("keyword", filters.keyword);
   if (filters.type) params.set("type", filters.type);
   return requestJson<{ ok: boolean; movements: DomesticInventoryMovement[] }>(`/api/domestic-inventory/movements${params.size ? `?${params}` : ""}`);
+}
+
+export function fetchDomesticInventoryMovement(id: string) {
+  return requestJson<{ ok: boolean; movement: DomesticInventoryMovement }>(`/api/domestic-inventory/movements/${encodeURIComponent(id)}`);
+}
+
+export function fetchDomesticInventoryLots(filters: { warehouseId?: string; sku?: string; barcode?: string; lotNo?: string; keyword?: string; availableOnly?: boolean; limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === "" || value === false) return;
+    params.set(key, value === true ? "1" : String(value));
+  });
+  return requestJson<{ ok: boolean; total: number; limit: number; offset: number; lots: DomesticInventoryLot[] }>(`/api/domestic-inventory/lots?${params}`);
+}
+
+export function updateDomesticInventoryLot(id: string, input: { lotNo?: string; barcode?: string; productionDate?: string; expiryDate?: string }) {
+  return requestJson<{ ok: boolean; lot: DomesticInventoryLot }>(`/api/domestic-inventory/lots/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function fetchDomesticStockupAvailability(warehouseId: string, skus: string[]) {
+  const params = new URLSearchParams({ warehouseId, skus: skus.join(",") });
+  return requestJson<{ ok: boolean; warehouse: DomesticWarehouse; queriedAt: string; items: Array<{ warehouseId: string; warehouseName: string; sku: string; productId: string; productName: string; imageUrl: string; unit: string; onHandQty: number; reservedQty: number; availableQty: number; knownLotQty: number; untrackedQty: number; lotCount: number; cartonProfiles: Array<{ unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; availableQty: number; fullCartons: number; looseUnits: number }>; lots: DomesticInventoryLot[] }> }>(`/api/domestic-inventory/stockup-availability?${params}`);
 }
 
 export function createDomesticWarehouse(input: Pick<DomesticWarehouse, "code" | "name"> & Partial<DomesticWarehouse>) {
@@ -4830,6 +4889,18 @@ export function createDomesticInventoryMovement(input: {
     quantity?: number;
     deltaQty?: number;
     unitCostCny?: number;
+    packagingMode?: "piece" | "carton";
+    cartonCount?: number;
+    unitsPerCarton?: number;
+    looseQuantity?: number;
+    cartonLengthCm?: number;
+    cartonWidthCm?: number;
+    cartonHeightCm?: number;
+    cartonWeightKg?: number;
+    lotNo?: string;
+    barcode?: string;
+    productionDate?: string;
+    expiryDate?: string;
   }>;
 }, idempotencyKey: string) {
   return requestJson<{ ok: boolean; movementId: string; movementNo: string; type: string; warehouseId: string }>("/api/domestic-inventory/movements", {

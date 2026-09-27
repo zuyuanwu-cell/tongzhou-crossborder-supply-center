@@ -36,6 +36,8 @@ GET /api/agent/deleted_since?since=2026-07-01T00:00:00.000Z
 
 每条记录包含稳定 `id`、源主键 `source_id`、类型、标题、可搜索文本、来源路径、创建/更新时间、所有者、ACL、来源系统和内容校验和。`get_by_id` 的 `{id}` 应进行 URL 编码。
 
+国内仓进销存已提供三个权限感知资源：`domestic_inventory_balance`（库存余额）、`domestic_inventory_lot`（批次/箱规）和 `domestic_inventory_movement`（库存流水）。它们要求账号具有 `domestic_inventory_view`，并继续应用仓库与 SKU 数据范围。入库、出库和批次修改不接受 Agent API Key；业务写接口及字段定义见 [国内仓进销存 API](./domestic-inventory-api.md)。
+
 ## 同步协议
 
 1. 全量同步：读取 manifest 中的可访问类型，逐类型分页拉取至 `has_more=false`。

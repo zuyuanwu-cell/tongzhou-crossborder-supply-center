@@ -78,7 +78,7 @@ import { createStockupCollaborationService } from "./stockup-collaboration-servi
 import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
 import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
 import { createDomesticInventoryService } from "./domestic-inventory-service.js";
-import { createDomesticInventoryApi } from "./domestic-inventory-api.js";
+import { createDomesticInventoryApi, domesticInventoryContextForAuth } from "./domestic-inventory-api.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -6484,6 +6484,19 @@ async function runScheduledInventorySnapshot() {
 
 function agentSourceForType(type, auth) {
   const now = new Date().toISOString();
+  if (["domestic_inventory_balance", "domestic_inventory_lot", "domestic_inventory_movement"].includes(type)) {
+    const context = domesticInventoryContextForAuth(auth);
+    if (type === "domestic_inventory_balance") {
+      const payload = domesticInventoryService.list({}, context);
+      return { records: payload.balances || [], syncedAt: payload.updatedAt || now, sourceSystem: "local", complete: true };
+    }
+    if (type === "domestic_inventory_lot") {
+      const payload = domesticInventoryService.listLots({ limit: 500 }, context);
+      return { records: payload.lots || [], syncedAt: payload.lots?.[0]?.updatedAt || now, sourceSystem: "local", complete: payload.total <= payload.limit, warning: payload.total > payload.limit ? "批次超过单次 Agent 索引上限，请使用国内仓批次接口分页查询。" : "" };
+    }
+    const payload = domesticInventoryService.listMovements({}, context);
+    return { records: payload.movements || [], syncedAt: payload.movements?.[0]?.createdAt || now, sourceSystem: "local", complete: payload.movements.length < 300, warning: payload.movements.length >= 300 ? "流水达到单次 Agent 索引上限，请使用国内仓流水接口按条件查询。" : "" };
+  }
   if (type === "product_base" || type === "product_catalog") {
     const products = productResponsePayload(cachedProducts, auth, "detail");
     return {

@@ -131,7 +131,7 @@ import {
   fetchCurrentUser,
   fetchDashboardSummary,
   fetchDistributorApplications,
-  fetchDomesticInventory,
+  fetchDomesticWarehouses,
   fetchInventorySnapshots,
   fetchInventoryValue,
   fetchMovement,
@@ -1989,7 +1989,13 @@ function App() {
         ) : activeView === "仓库信息" ? (
           <WarehouseInfoLibrary warehouseInfoPayload={warehouseInfoPayload} onSyncWarehouseInfo={handleWarehouseInfoSync} syncing={syncing} canSync={hasUserPermission(currentUser, "warehouse_info_sync")} />
         ) : activeView === "国内仓进销存" ? (
-          <DomesticInventoryCenter products={catalog} canManage={hasUserPermission(currentUser, "domestic_inventory_manage")} />
+          <DomesticInventoryCenter
+            products={catalog}
+            canManage={hasUserPermission(currentUser, "domestic_inventory_manage")}
+            canReceive={hasUserPermission(currentUser, "domestic_inventory_receive")}
+            canIssue={hasUserPermission(currentUser, "domestic_inventory_issue")}
+            canAdjust={hasUserPermission(currentUser, "domestic_inventory_adjust")}
+          />
         ) : activeView === "快捷导航" ? (
           <QuickNavPage quickNavPayload={quickNavPayload} currentUser={currentUser} onRefresh={loadQuickNav} />
         ) : activeView === "同舟AI" ? (
@@ -7551,6 +7557,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   const manifestUrl = new URL(resolveApiUrl("/api/agent/manifest"), window.location.href).toString();
   const openApiUrl = new URL(resolveApiUrl("/api/agent/openapi.json"), window.location.href).toString();
   const apiBaseUrl = manifestUrl.replace(/\/api\/agent\/manifest$/, "");
+  const domesticInventoryCurlExample = `curl "${apiBaseUrl}/api/agent/search?q=<SKU>&types=domestic_inventory_balance,domestic_inventory_lot,domestic_inventory_movement" -H "Authorization: Bearer <YOUR_API_KEY>"`;
   const agentConfig = `TONGZHOU_AGENT_BASE_URL=${apiBaseUrl}\nTONGZHOU_AGENT_TOKEN=<YOUR_API_KEY>`;
   const curlExample = `curl "${apiBaseUrl}/api/agent/search?q=SKU&types=product_catalog" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
   const comparisonCurlExample = `curl "${apiBaseUrl}/api/movement-history/compare?period=month&warehouseId=<WAREHOUSE_ID>&timezone=Asia%2FShanghai" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
@@ -7760,6 +7767,17 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
             </section>
           ) : null}
 
+          {hasUserPermission(currentUser, "domestic_inventory_view") ? (
+            <section className="panel">
+              <div className="section-title-row">
+                <div><p className="eyebrow">Domestic Inventory</p><h3>国内仓库存与批次 API</h3></div>
+                <button className="ghost-button compact-button" type="button" onClick={() => void handleCopy(domesticInventoryCurlExample, "国内仓 Agent 查询示例已复制。")}> <Copy size={15} />复制</button>
+              </div>
+              <p className="agent-operation-note">Agent Key 可只读检索库存余额、批次箱规和库存流水；入库、出库、调整等写接口只接受登录会话并校验细分权限。</p>
+              <pre className="agent-code-block"><code>{domesticInventoryCurlExample}</code></pre>
+            </section>
+          ) : null}
+
           <section className="panel agent-endpoint-list">
             <p className="eyebrow">Endpoints</p>
             <h3>Agent 会用到的接口</h3>
@@ -7769,6 +7787,11 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
               ["按 ID 获取", "/api/agent/resources/{type}/{id}"],
               ["增量更新", "/api/agent/updated_since"],
               ["删除同步", "/api/agent/deleted_since"],
+              ...(hasUserPermission(currentUser, "domestic_inventory_view") ? [
+                ["国内仓库存（Agent）", "/api/agent/resources/domestic_inventory_balance"],
+                ["国内仓批次（Agent）", "/api/agent/resources/domestic_inventory_lot"],
+                ["国内仓业务 API", "/api/domestic-inventory/*（登录会话）"],
+              ] : []),
               ...(currentUser.role === "admin" ? [["库存差异计算", "/api/movement-history/compare"]] : []),
             ].map(([label, endpoint]) => (
               <div key={endpoint}>
@@ -7840,7 +7863,7 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
 
   React.useEffect(() => {
     void loadApplications();
-    void fetchDomesticInventory()
+    void fetchDomesticWarehouses()
       .then((data) => setDomesticWarehouseOptions(data.warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: "中国 · 国内成品仓" }))))
       .catch(() => setDomesticWarehouseOptions([]));
   }, []);

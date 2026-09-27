@@ -109,5 +109,5 @@ AI_CREDENTIAL_ENCRYPTION_KEY=
 
 备货协同中心使用 `.cache/stockup-collaboration.sqlite` 保存网页端需求、执行、发运、到仓和成本版本。首次启用前可运行 `npm run migrate:stockup-collaboration` 预览历史缓存迁移，再使用 `npm run migrate:stockup-collaboration -- --apply` 执行；迁移只读取本地旧缓存，不写入简道云。
 
-“库存与履约 → 仓库管理”提供国内成品仓建档、入库、出库、调整、安全库存及流水查询。管理员可在用户管理中分别授予“国内仓库进销存查看”和“国内仓库进销存操作”权限，并为仓库账号绑定可见仓库。核心回归测试可运行 `npm run test:domestic-inventory`。
+“库存与履约 → 仓库管理”提供国内成品仓建档、按件/按箱入库、批次与条码追溯、出库、调整、安全库存及流水查询。管理员可在用户管理中分别授予查看、入库、出库、调整和档案管理权限，并为仓库账号绑定可见仓库。业务接口提供登录态 OpenAPI：`GET /api/domestic-inventory/openapi.json`，字段和调用示例见 [`docs/domestic-inventory-api.md`](docs/domestic-inventory-api.md)。核心回归测试可运行 `npm run test:domestic-inventory` 与 `npm run test:domestic-inventory-api`。
 

@@ -87,6 +87,52 @@ export async function initDomesticInventoryStore(dbPath) {
     );
     CREATE INDEX IF NOT EXISTS idx_domestic_movement_lines_sku ON domestic_inventory_movement_lines(sku, movement_id);
 
+    CREATE TABLE IF NOT EXISTS domestic_inventory_lots (
+      id TEXT PRIMARY KEY,
+      warehouse_id TEXT NOT NULL,
+      movement_line_id TEXT NOT NULL UNIQUE,
+      product_id TEXT,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      lot_no TEXT,
+      barcode TEXT,
+      production_date TEXT,
+      expiry_date TEXT,
+      packaging_mode TEXT NOT NULL DEFAULT 'piece',
+      carton_count REAL NOT NULL DEFAULT 0,
+      units_per_carton REAL NOT NULL DEFAULT 0,
+      loose_quantity REAL NOT NULL DEFAULT 0,
+      carton_length_cm REAL NOT NULL DEFAULT 0,
+      carton_width_cm REAL NOT NULL DEFAULT 0,
+      carton_height_cm REAL NOT NULL DEFAULT 0,
+      carton_weight_kg REAL NOT NULL DEFAULT 0,
+      received_qty REAL NOT NULL,
+      remaining_qty REAL NOT NULL,
+      unit_cost_cny REAL NOT NULL DEFAULT 0,
+      source_type TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(warehouse_id) REFERENCES domestic_warehouses(id),
+      FOREIGN KEY(movement_line_id) REFERENCES domestic_inventory_movement_lines(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_lots_available ON domestic_inventory_lots(warehouse_id, sku, remaining_qty, received_at);
+    CREATE INDEX IF NOT EXISTS idx_domestic_lots_barcode ON domestic_inventory_lots(barcode, warehouse_id);
+    CREATE INDEX IF NOT EXISTS idx_domestic_lots_lot_no ON domestic_inventory_lots(lot_no, warehouse_id);
+
+    CREATE TABLE IF NOT EXISTS domestic_inventory_lot_allocations (
+      id TEXT PRIMARY KEY,
+      movement_line_id TEXT NOT NULL,
+      lot_id TEXT,
+      quantity REAL NOT NULL,
+      allocation_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(movement_line_id) REFERENCES domestic_inventory_movement_lines(id),
+      FOREIGN KEY(lot_id) REFERENCES domestic_inventory_lots(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_lot_allocations_line ON domestic_inventory_lot_allocations(movement_line_id);
+    CREATE INDEX IF NOT EXISTS idx_domestic_lot_allocations_lot ON domestic_inventory_lot_allocations(lot_id);
+
     CREATE TABLE IF NOT EXISTS domestic_inventory_idempotency (
       key TEXT NOT NULL,
       user_id TEXT NOT NULL,

@@ -20,12 +20,14 @@ import {
 } from "lucide-react";
 import {
   type CatalogProduct,
+  type DomesticInventoryLot,
   type DomesticInventoryMovement,
   type DomesticInventoryPayload,
   type DomesticWarehouse,
   createDomesticInventoryMovement,
   createDomesticWarehouse,
   fetchDomesticInventory,
+  fetchDomesticInventoryLots,
   fetchDomesticInventoryMovements,
   importDomesticOpeningInventory,
   updateDomesticInventorySafetyStock,
@@ -33,7 +35,7 @@ import {
 } from "../api";
 import "./domestic-inventory.css";
 
-type ViewTab = "inventory" | "movements" | "warehouses";
+type ViewTab = "inventory" | "lots" | "movements" | "warehouses";
 type MovementType = "inbound" | "outbound" | "adjustment";
 
 type MovementLineDraft = {
@@ -46,11 +48,26 @@ type MovementLineDraft = {
   quantity: number;
   deltaQty: number;
   unitCostCny: number;
+  packagingMode: "piece" | "carton";
+  cartonCount: number;
+  unitsPerCarton: number;
+  looseQuantity: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
+  lotNo: string;
+  barcode: string;
+  productionDate: string;
+  expiryDate: string;
 };
 
 type Props = {
   products: CatalogProduct[];
   canManage: boolean;
+  canReceive: boolean;
+  canIssue: boolean;
+  canAdjust: boolean;
 };
 
 const emptyPayload: DomesticInventoryPayload = {
@@ -141,9 +158,10 @@ function downloadOpeningTemplate() {
   URL.revokeObjectURL(url);
 }
 
-export function DomesticInventoryCenter({ products, canManage }: Props) {
+export function DomesticInventoryCenter({ products, canManage, canReceive, canIssue, canAdjust }: Props) {
   const [payload, setPayload] = useState<DomesticInventoryPayload>(emptyPayload);
   const [movements, setMovements] = useState<DomesticInventoryMovement[]>([]);
+  const [lots, setLots] = useState<DomesticInventoryLot[]>([]);
   const [tab, setTab] = useState<ViewTab>("inventory");
   const [warehouseId, setWarehouseId] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -183,8 +201,22 @@ export function DomesticInventoryCenter({ products, canManage }: Props) {
     }
   }, [warehouseId, query]);
 
+  const loadLots = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchDomesticInventoryLots({ warehouseId, keyword: query, limit: 300 });
+      setLots(data.lots);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "库存批次读取失败，请稍后重试。");
+    } finally {
+      setLoading(false);
+    }
+  }, [warehouseId, query]);
+
   useEffect(() => { void loadInventory(); }, [loadInventory]);
   useEffect(() => { if (tab === "movements") void loadMovements(); }, [tab, loadMovements]);
+  useEffect(() => { if (tab === "lots") void loadLots(); }, [tab, loadLots]);
 
   const activeWarehouses = useMemo(() => payload.warehouses.filter((item) => item.status === "active"), [payload.warehouses]);
   const productOptions = useMemo(() => uniqueProducts(products), [products]);
@@ -252,26 +284,27 @@ export function DomesticInventoryCenter({ products, canManage }: Props) {
       <section className="domestic-inventory-workspace">
         <div className="domestic-inventory-tabs">
           <button className={tab === "inventory" ? "active" : ""} onClick={() => setTab("inventory")}><Boxes size={17} />库存台账</button>
+          <button className={tab === "lots" ? "active" : ""} onClick={() => setTab("lots")}><ClipboardList size={17} />批次与箱规</button>
           <button className={tab === "movements" ? "active" : ""} onClick={() => setTab("movements")}><History size={17} />进销存流水</button>
           <button className={tab === "warehouses" ? "active" : ""} onClick={() => setTab("warehouses")}><Warehouse size={17} />仓库档案</button>
           <span className="domestic-inventory-updated">更新 {dateTime(payload.updatedAt)}</span>
         </div>
 
         <div className="domestic-inventory-toolbar">
-          <label className="domestic-inventory-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") runSearch(); }} placeholder={tab === "movements" ? "搜索单号、关联单号、SKU 或产品" : "搜索 SKU、产品或仓库"} /></label>
+          <label className="domestic-inventory-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") runSearch(); }} placeholder={tab === "movements" ? "搜索单号、关联单号、SKU 或产品" : tab === "lots" ? "搜索 SKU、产品、批次号、条码或入库单" : "搜索 SKU、产品或仓库"} /></label>
           <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} aria-label="选择国内仓库">
             <option value="">全部国内仓库</option>
             {payload.warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}{warehouse.status === "inactive" ? "（已停用）" : ""}</option>)}
           </select>
           {tab === "inventory" ? <label className="domestic-inventory-check"><input type="checkbox" checked={lowStockOnly} onChange={(event) => setLowStockOnly(event.target.checked)} />只看低库存</label> : null}
           <button className="domestic-inventory-secondary" type="button" onClick={runSearch}><Search size={16} />查询</button>
-          <button className="domestic-inventory-secondary icon-only" type="button" aria-label="刷新" onClick={() => void (tab === "movements" ? loadMovements() : loadInventory())}><RefreshCw className={loading ? "spinning" : ""} size={17} /></button>
-          {canManage && tab !== "warehouses" ? (
+          <button className="domestic-inventory-secondary icon-only" type="button" aria-label="刷新" onClick={() => void (tab === "movements" ? loadMovements() : tab === "lots" ? loadLots() : loadInventory())}><RefreshCw className={loading ? "spinning" : ""} size={17} /></button>
+          {(canManage || canReceive || canIssue || canAdjust) && tab !== "warehouses" ? (
             <div className="domestic-inventory-actions">
-              <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "批量导入期初库存" : "请先创建并启用国内仓库"} onClick={() => setOpeningImportModal(true)}><FileUp size={17} />期初导入</button>
-              <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记采购入库" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("inbound")}><PackagePlus size={17} />入库</button>
-              <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记领用或出库" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("outbound")}><ArrowUpFromLine size={17} />出库</button>
-              <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记库存调整" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("adjustment")}><SlidersHorizontal size={17} />调整</button>
+              {canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "批量导入期初库存" : "请先创建并启用国内仓库"} onClick={() => setOpeningImportModal(true)}><FileUp size={17} />期初导入</button> : null}
+              {canReceive || canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记采购入库" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("inbound")}><PackagePlus size={17} />入库</button> : null}
+              {canIssue || canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记领用或出库" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("outbound")}><ArrowUpFromLine size={17} />出库</button> : null}
+              {canAdjust || canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记库存调整" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("adjustment")}><SlidersHorizontal size={17} />调整</button> : null}
             </div>
           ) : null}
           {canManage && tab === "warehouses" ? <button className="domestic-inventory-primary" type="button" onClick={() => setWarehouseModal(true)}><Plus size={17} />新建仓库</button> : null}
@@ -279,6 +312,8 @@ export function DomesticInventoryCenter({ products, canManage }: Props) {
 
         {tab === "inventory" ? (
           <InventoryTable payload={payload} loading={loading} canManage={canManage} safetyDrafts={safetyDrafts} setSafetyDrafts={setSafetyDrafts} onSaveSafety={saveSafetyStock} />
+        ) : tab === "lots" ? (
+          <LotTable lots={lots} loading={loading} />
         ) : tab === "movements" ? (
           <MovementTable movements={movements} loading={loading} />
         ) : (
@@ -338,6 +373,28 @@ function InventoryTable({ payload, loading, canManage, safetyDrafts, setSafetyDr
   );
 }
 
+function LotTable({ lots, loading }: { lots: DomesticInventoryLot[]; loading: boolean }) {
+  if (!loading && !lots.length) return <EmptyState title="还没有库存批次" description="新的入库、期初库存和盘盈会自动形成可追溯批次。" />;
+  return (
+    <div className="domestic-inventory-table-wrap">
+      <table className="domestic-inventory-table domestic-lot-table">
+        <thead><tr><th>产品 / 批次</th><th>仓库</th><th>入库单</th><th>数量</th><th>箱规</th><th>箱子尺寸 / 重量</th><th>生产信息</th><th>条码</th></tr></thead>
+        <tbody>{lots.map((lot) => <tr key={lot.id}>
+          <td><strong>{lot.productName}</strong><small>{lot.sku}{lot.lotNo ? ` · 批次 ${lot.lotNo}` : " · 未录批次号"}</small></td>
+          <td>{lot.warehouseName}</td>
+          <td><strong>{lot.movementNo}</strong><small>{dateTime(lot.receivedAt)}</small></td>
+          <td className="number-cell"><strong>{numberText(lot.remainingQty)}</strong> / {numberText(lot.receivedQty)}</td>
+          <td>{lot.packagingMode === "carton" ? <><strong>{numberText(lot.cartonCount)} 箱</strong><small>{numberText(lot.unitsPerCarton)} 件/箱{lot.looseQuantity ? ` + ${numberText(lot.looseQuantity)} 件` : ""}</small></> : <span className="domestic-status normal">按件</span>}</td>
+          <td>{lot.packagingMode === "carton" ? <><strong>{numberText(lot.cartonLengthCm)} × {numberText(lot.cartonWidthCm)} × {numberText(lot.cartonHeightCm)} cm</strong><small>{numberText(lot.cartonWeightKg)} kg/箱</small></> : "—"}</td>
+          <td><strong>{lot.productionDate || "未录生产日期"}</strong><small>{lot.expiryDate ? `有效期 ${lot.expiryDate}` : "未录有效期"}</small></td>
+          <td>{lot.barcode || "—"}</td>
+        </tr>)}</tbody>
+      </table>
+      {loading ? <div className="domestic-loading">正在读取库存批次…</div> : null}
+    </div>
+  );
+}
+
 function MovementTable({ movements, loading }: { movements: DomesticInventoryMovement[]; loading: boolean }) {
   if (!loading && !movements.length) return <EmptyState title="还没有库存流水" description="入库、出库和调整记录会按时间沉淀在这里。" />;
   return (
@@ -393,7 +450,20 @@ function MovementModal({ type, warehouses, products, onClose, onSaved, onError }
   function addProduct(product: CatalogProduct) {
     const sku = skuKey(product.sku || product.skuNo);
     if (lines.some((line) => line.sku === sku)) return;
-    setLines([...lines, { productId: product.id, sku, productName: product.name || product.nameEn || sku, imageUrl: product.imageUrl || "", specification: product.specification || "", unit: product.unit || "件", quantity: 1, deltaQty: 0, unitCostCny: Number(product.directCostPrice || product.directPrice || 0) }]);
+    setLines([...lines, {
+      productId: product.id, sku, productName: product.name || product.nameEn || sku, imageUrl: product.imageUrl || "", specification: product.specification || "", unit: product.unit || "件",
+      quantity: 1, deltaQty: 0, unitCostCny: Number(product.directCostPrice || product.directPrice || 0), packagingMode: "piece", cartonCount: 1, unitsPerCarton: 1,
+      looseQuantity: 0, cartonLengthCm: 0, cartonWidthCm: 0, cartonHeightCm: 0, cartonWeightKg: 0, lotNo: "", barcode: "", productionDate: "", expiryDate: "",
+    }]);
+  }
+
+  function updateLine(index: number, patch: Partial<MovementLineDraft>) {
+    setLines(lines.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const next = { ...item, ...patch };
+      if (next.packagingMode === "carton") next.quantity = Number(next.cartonCount || 0) * Number(next.unitsPerCarton || 0) + Number(next.looseQuantity || 0);
+      return next;
+    }));
   }
 
   async function submit() {
@@ -401,6 +471,9 @@ function MovementModal({ type, warehouses, products, onClose, onSaved, onError }
     if (!lines.length) { onError("请至少选择一个产品。"); return; }
     if (type === "adjustment" && !note.trim()) { onError("库存调整必须填写原因。"); return; }
     if (lines.some((line) => type === "adjustment" ? !line.deltaQty : line.quantity <= 0)) { onError(type === "adjustment" ? "调整数量不能为 0。" : "数量必须大于 0。"); return; }
+    if (type === "inbound" && lines.some((line) => line.packagingMode === "carton" && (!Number.isInteger(line.cartonCount) || line.cartonCount <= 0 || !Number.isInteger(line.unitsPerCarton) || line.unitsPerCarton <= 0 || [line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg].some((value) => value <= 0)))) {
+      onError("按箱入库时，请完整填写箱数、箱规、箱子长宽高和单箱重量。"); return;
+    }
     setSaving(true);
     try {
       const result = await createDomesticInventoryMovement({ warehouseId, type, referenceNo, note, lines: lines.map((line) => ({ ...line, quantity: type === "adjustment" ? undefined : line.quantity, deltaQty: type === "adjustment" ? line.deltaQty : undefined })) }, `inventory-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -419,13 +492,34 @@ function MovementModal({ type, warehouses, products, onClose, onSaved, onError }
         <div className="domestic-form-row"><label>仓库<select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">请选择仓库</option>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>关联单号<input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} placeholder="采购单、领用单或盘点单号" /></label></div>
         <label>备注 / 原因{type === "adjustment" ? <b>*</b> : null}<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={type === "adjustment" ? "请说明盘盈、盘亏或库存修正原因" : "选填，便于后续追溯"} /></label>
         <div className="movement-line-header"><strong>产品明细</strong><span>同一个 SKU 每张单只出现一次</span></div>
-        <div className="movement-line-editor">{lines.length ? lines.map((line, index) => <div key={line.sku} className="movement-line-edit">
-          {line.imageUrl ? <img src={line.imageUrl} alt="" /> : <span className="image-placeholder"><Boxes size={17} /></span>}
-          <div><strong>{line.productName}</strong><small>{line.sku}</small></div>
-          <label>{type === "adjustment" ? "调整数（±）" : "数量"}<input type="number" step="any" value={type === "adjustment" ? line.deltaQty : line.quantity} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, [type === "adjustment" ? "deltaQty" : "quantity"]: Number(event.target.value) } : item))} /></label>
-          {type === "inbound" ? <label>单位成本<input type="number" min="0" step="0.01" value={line.unitCostCny} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, unitCostCny: Number(event.target.value) } : item))} /></label> : null}
-          <button type="button" onClick={() => setLines(lines.filter((item) => item.sku !== line.sku))}><X size={16} /></button>
-        </div>) : <p className="movement-lines-empty">从右侧产品库选择产品</p>}</div>
+        <div className="movement-line-editor">{lines.length ? lines.map((line, index) => <article key={line.sku} className="movement-line-card">
+          <div className="movement-line-edit">
+            {line.imageUrl ? <img src={line.imageUrl} alt="" /> : <span className="image-placeholder"><Boxes size={17} /></span>}
+            <div><strong>{line.productName}</strong><small>{line.sku}</small></div>
+            <label>{type === "adjustment" ? "调整数（±）" : "数量"}<input type="number" step="any" readOnly={type === "inbound" && line.packagingMode === "carton"} value={type === "adjustment" ? line.deltaQty : line.quantity} onChange={(event) => updateLine(index, { [type === "adjustment" ? "deltaQty" : "quantity"]: Number(event.target.value) })} /></label>
+            {type === "inbound" ? <label>单位成本<input type="number" min="0" step="0.01" value={line.unitCostCny} onChange={(event) => updateLine(index, { unitCostCny: Number(event.target.value) })} /></label> : null}
+            <button type="button" onClick={() => setLines(lines.filter((item) => item.sku !== line.sku))}><X size={16} /></button>
+          </div>
+          {type === "inbound" ? <details className="movement-trace-fields">
+            <summary>箱规与追溯信息 <small>可选；按箱入库时箱规必填</small></summary>
+            <div className="movement-trace-grid">
+              <label>入库方式<select value={line.packagingMode} onChange={(event) => updateLine(index, { packagingMode: event.target.value === "carton" ? "carton" : "piece" })}><option value="piece">按件入库</option><option value="carton">按箱入库</option></select></label>
+              {line.packagingMode === "carton" ? <>
+                <label>箱数 *<input type="number" min="1" step="1" value={line.cartonCount} onChange={(event) => updateLine(index, { cartonCount: Number(event.target.value) })} /></label>
+                <label>箱规（件/箱）*<input type="number" min="1" step="1" value={line.unitsPerCarton} onChange={(event) => updateLine(index, { unitsPerCarton: Number(event.target.value) })} /></label>
+                <label>零散数量<input type="number" min="0" step="1" value={line.looseQuantity} onChange={(event) => updateLine(index, { looseQuantity: Number(event.target.value) })} /></label>
+                <label>箱长 cm *<input type="number" min="0" step="0.01" value={line.cartonLengthCm || ""} onChange={(event) => updateLine(index, { cartonLengthCm: Number(event.target.value) })} /></label>
+                <label>箱宽 cm *<input type="number" min="0" step="0.01" value={line.cartonWidthCm || ""} onChange={(event) => updateLine(index, { cartonWidthCm: Number(event.target.value) })} /></label>
+                <label>箱高 cm *<input type="number" min="0" step="0.01" value={line.cartonHeightCm || ""} onChange={(event) => updateLine(index, { cartonHeightCm: Number(event.target.value) })} /></label>
+                <label>单箱重量 kg *<input type="number" min="0" step="0.001" value={line.cartonWeightKg || ""} onChange={(event) => updateLine(index, { cartonWeightKg: Number(event.target.value) })} /></label>
+              </> : null}
+              <label>生产批次<input value={line.lotNo} onChange={(event) => updateLine(index, { lotNo: event.target.value })} placeholder="例如 202609-A" /></label>
+              <label>商品条码<input value={line.barcode} onChange={(event) => updateLine(index, { barcode: event.target.value })} placeholder="扫码或输入条码" /></label>
+              <label>生产日期<input type="date" value={line.productionDate} onChange={(event) => updateLine(index, { productionDate: event.target.value })} /></label>
+              <label>有效期<input type="date" value={line.expiryDate} onChange={(event) => updateLine(index, { expiryDate: event.target.value })} /></label>
+            </div>
+          </details> : null}
+        </article>) : <p className="movement-lines-empty">从右侧产品库选择产品</p>}</div>
       </div>
       <aside className="movement-product-picker"><label><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 SKU / 产品名称" /></label><div>{visibleProducts.map((product) => { const selected = lines.some((line) => line.sku === skuKey(product.sku || product.skuNo)); return <button type="button" key={skuKey(product.sku || product.skuNo)} disabled={selected} onClick={() => addProduct(product)}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span><Boxes size={16} /></span>}<div><strong>{product.name}</strong><small>{product.sku}</small></div>{selected ? <Check size={16} /> : <Plus size={16} />}</button>; })}</div></aside>
     </div>
