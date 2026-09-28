@@ -134,6 +134,8 @@ code, .kicker, .portal-version { font-family: "DIN Alternate", Bahnschrift, Cons
 .profile-card b, .profile-card small { display: block; }
 .profile-card b { font-size: 11px; }
 .profile-card small { margin-top: 2px; color: rgba(255,255,255,.56); font-size: 9px; }
+.sidebar-logout { margin: 2px 9px 5px; min-height: 34px; border: 1px solid rgba(255,255,255,.13); display: flex; align-items: center; justify-content: center; gap: 6px; color: rgba(255,255,255,.68); background: rgba(255,255,255,.03); font-size: 9px; cursor: pointer; }
+.sidebar-logout:hover { color: #fff; background: rgba(255,255,255,.08); }
 .main-stage { margin-left: 264px; min-height: 100vh; }
 .topbar { position: sticky; top: 0; z-index: 20; height: 68px; padding: 0 clamp(24px, 4vw, 56px); display: flex; align-items: center; justify-content: space-between; background: rgba(245,247,251,.9); border-bottom: 1px solid #dfe6ef; backdrop-filter: blur(16px); }
 .topbar > div:first-of-type { display: grid; gap: 2px; }
@@ -298,6 +300,14 @@ code, .kicker, .portal-version { font-family: "DIN Alternate", Bahnschrift, Cons
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 
+/* Self-service account and password recovery profile */
+.account-email-note { padding: 16px 18px; display: flex; align-items: center; gap: 12px; color: #173d7a; background: #eef5ff; border: 1px solid #ceddf1; box-shadow: var(--shadow); }
+.account-email-note > svg { flex: 0 0 auto; }.account-email-note b,.account-email-note span { display: block; }.account-email-note b { font-size: 11px; }.account-email-note span { margin-top: 4px; color: #617590; font-size: 9px; }
+.account-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; align-items: start; }
+.account-card { padding: 20px; display: grid; gap: 13px; background: var(--paper-bright); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.account-card > header { padding-bottom: 13px; display: flex; align-items: flex-start; gap: 10px; border-bottom: 1px solid var(--line); }.account-card > header > svg { box-sizing: content-box; padding: 8px; color: #fff; background: #173d7a; }.account-card h2,.account-card p { margin: 0; }.account-card h2 { font-size: 15px; }.account-card p { margin-top: 4px; color: var(--muted); font-size: 8px; }
+.account-card label { display: grid; gap: 5px; }.account-card label > span { color: #61728b; font-size: 8px; font-weight: 700; }.account-card input { width: 100%; height: 41px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line); outline: 0; font-size: 10px; }.account-card input:focus { border-color: #6f91c2; box-shadow: 0 0 0 3px rgba(36,81,164,.09); }.account-card input:disabled { color: #7c8999; background: #f2f5f8; }.account-card .primary-action { width: 100%; }
+
 /* Organization administrator workspace */
 .member-admin-page { --member-blue: #173d7a; --member-orange: #f45b0b; }
 .member-metrics { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 11px; }
@@ -319,6 +329,11 @@ code, .kicker, .portal-version { font-family: "DIN Alternate", Bahnschrift, Cons
   .member-layout { grid-template-columns: 260px minmax(0,1fr); }
   .member-list > article { grid-template-columns: 38px 1fr 110px; }.member-list select { grid-column: 3; grid-row: 1; }.member-security { grid-column: 2; }.member-state-action { grid-column: 3; }
 }
+@media (min-width: 801px) and (max-width: 1100px) {
+  .member-layout { grid-template-columns: 1fr; }
+  .invite-panel { order: 1; }
+  .member-list-panel { order: 0; }
+}
 @media (max-width: 800px) {
   .mobile-tabs.with-members { grid-template-columns: repeat(5,1fr); }
   .member-metrics { grid-template-columns: repeat(3,1fr); gap: 6px; }.member-metrics article { min-height: 80px; padding: 11px; gap: 7px; }.member-metrics article > svg { padding: 6px; }.member-metrics strong { font-size: 20px; }.member-metrics span { font-size: 7px; }
@@ -327,6 +342,7 @@ code, .kicker, .portal-version { font-family: "DIN Alternate", Bahnschrift, Cons
   .member-layout { grid-template-columns: 1fr; }.invite-panel { order: 1; }.member-list-panel { order: 0; }
   .member-list > article { grid-template-columns: 39px 1fr; gap: 8px; }.member-list select,.member-security,.member-state-action { grid-column: auto; grid-row: auto; }.member-list select { grid-column: 1 / -1; }.member-security { grid-column: 1 / 2; }.member-state-action { grid-column: 2 / 3; }
   .invitation-list article { grid-template-columns: 1fr 1fr; }.invitation-list article > div:last-child { justify-content: flex-start; }
+  .account-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 460px) {
   .member-metrics { grid-template-columns: 1fr; }.member-metrics article { min-height: 66px; }.member-security { grid-column: 1 / -1; }.member-state-action { grid-column: 1 / -1; }.invitation-list article { grid-template-columns: 1fr; }

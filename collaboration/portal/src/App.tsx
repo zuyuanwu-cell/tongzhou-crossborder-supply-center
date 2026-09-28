@@ -7,19 +7,20 @@ import {
   Truck, Upload, UserPlus, UserRound, Users, Warehouse, X, XCircle, Copy, KeyRound, Mail,
 } from "lucide-react";
 import {
-  acceptInvitation, ApiError, confirmPasswordReset, createInvitation, fetchDashboard, fetchInventory, fetchInvitations, fetchMe, fetchMembers, fetchNotifications, fetchWorkItem,
+  acceptInvitation, ApiError, changeOwnPassword, confirmPasswordReset, createMember, fetchDashboard, fetchInventory, fetchInvitations, fetchMe, fetchMembers, fetchNotifications, fetchWorkItem,
   fetchWorkItems, login, logout, markNotificationRead, requestPasswordReset, setupMfa, submitAction, submitOemArtifact, submitSupplierQuote, updateProductionMilestone, uploadAttachment,
-  verifyMfa, updateMember, reissueInvitation, revokeInvitation,
+  verifyMfa, updateMember, updateOwnProfile, reissueInvitation, revokeInvitation,
 } from "./api";
 import type { Dashboard, InventoryItem, InvitationDeliveryResult, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, Session, TaskLine, WorkItem, WorkItemDetail, WorkItemStatus } from "./types";
 
-type Route = "overview" | "tasks" | "inventory" | "notifications" | "members";
+type Route = "overview" | "tasks" | "inventory" | "notifications" | "members" | "account";
 const routeMeta: Record<Route, { label: string; icon: React.ComponentType<{ size?: number }> }> = {
   overview: { label: "作业总览", icon: LayoutDashboard },
   tasks: { label: "协同任务", icon: ClipboardCheck },
   inventory: { label: "本仓库存", icon: Boxes },
   notifications: { label: "消息中心", icon: Bell },
   members: { label: "成员管理", icon: Users },
+  account: { label: "账号安全", icon: UserRound },
 };
 const statusMeta: Record<WorkItemStatus, { label: string; tone: string }> = {
   pending: { label: "待接单", tone: "amber" }, accepted: { label: "已接单", tone: "blue" }, in_progress: { label: "处理中", tone: "blue" },
@@ -76,7 +77,7 @@ function LoginPage({ onLogin, onForgot }: { onLogin(session: Session, setupRequi
     </section>
     <section className="login-panel">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-card-head"><p>PARTNER ACCESS</p><h2>伙伴登录</h2><span>请使用邀请邮件中的组织代码与账号</span></div>
+        <div className="login-card-head"><p>PARTNER ACCESS</p><h2>伙伴登录</h2><span>请使用管理员分配的组织代码、账号和密码</span></div>
         <label><span>组织代码</span><input autoComplete="organization" value={form.organizationCode} onChange={(event) => setForm({ ...form, organizationCode: event.target.value.toLowerCase() })} placeholder="例如 cn-warehouse-01" required /></label>
         <label><span>账号</span><input autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="请输入登录账号" required /></label>
         <label><span>密码</span><input type="password" autoComplete="current-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="至少 12 位" required /></label>
@@ -126,6 +127,28 @@ function MfaGate({ session, setupRequired, onVerified }: { session: Session; set
     {setupRequired ? <div className="mfa-setup">{qr ? <img src={qr} alt="二次验证二维码" /> : <div className="qr-loading"><LoaderCircle className="spin" /></div>}<div><span>无法扫码时输入</span><code>{setup?.secret || "正在生成…"}</code></div></div> : null}
     <form onSubmit={submit}><label><span>动态验证码</span><input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={token} onChange={(event) => setToken(event.target.value.replace(/\D/g, ""))} placeholder="000 000" autoFocus required /></label>{error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}<button className="primary-action" disabled={busy || token.length !== 6}>{busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}验证并继续</button></form>
   </section></main>;
+}
+
+function ForcedPasswordChangePage({ session, onChanged }: { session: Session; onChanged(session: Session): void }) {
+  const [form, setForm] = React.useState({ currentPassword: "", newPassword: "", confirm: "" });
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  async function submit(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      if (form.newPassword !== form.confirm) throw new Error("两次输入的新密码不一致。");
+      await changeOwnPassword({ currentPassword: form.currentPassword, newPassword: form.newPassword });
+      const refreshed = await fetchMe();
+      onChanged(refreshed.session);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "密码修改失败。"); }
+    finally { setBusy(false); }
+  }
+  return <main className="credential-page"><section className="credential-card"><span className="brand-mark"><KeyRound size={25} /></span><p className="kicker">FIRST LOGIN SECURITY</p><h1>请先修改初始密码</h1><p>你好，{session.user.displayName}。管理员分配的密码只能用于首次登录；修改后才可进入协同工作区。</p><form onSubmit={submit}>
+    <label><span>管理员分配的初始密码</span><input type="password" autoComplete="current-password" value={form.currentPassword} onChange={(event) => setForm({ ...form, currentPassword: event.target.value })} required /></label>
+    <label><span>新密码</span><input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={form.newPassword} onChange={(event) => setForm({ ...form, newPassword: event.target.value })} placeholder="至少 12 位，包含字母和数字" required /></label>
+    <label><span>确认新密码</span><input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} required /></label>
+    {error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}<button className="primary-action" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}修改密码并继续</button>
+  </form></section></main>;
 }
 
 function StatusPill({ status }: { status: WorkItemStatus }) { const meta = statusMeta[status]; return <span className={`status-pill ${meta.tone}`}><CircleDot size={12} />{meta.label}</span>; }
@@ -260,6 +283,42 @@ function TaskDetailDrawer({ item, onClose, onChanged, notify }: { item: WorkItem
   </aside></div>;
 }
 
+function AccountPage({ session, onSessionChange, notify }: { session: Session; onSessionChange(session: Session): void; notify(message: string, tone: "success" | "error"): void }) {
+  const [profile, setProfile] = React.useState({ displayName: session.user.displayName, email: session.user.email, currentPassword: "" });
+  const [password, setPassword] = React.useState({ currentPassword: "", newPassword: "", confirm: "" });
+  const [busy, setBusy] = React.useState("");
+  async function refreshSession() { const refreshed = await fetchMe(); onSessionChange(refreshed.session); }
+  async function saveProfile(event: React.FormEvent) {
+    event.preventDefault(); setBusy("profile");
+    try {
+      await updateOwnProfile(profile);
+      setProfile((value) => ({ ...value, currentPassword: "" }));
+      await refreshSession();
+      notify("账号资料已更新", "success");
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "账号资料更新失败", "error"); }
+    finally { setBusy(""); }
+  }
+  async function savePassword(event: React.FormEvent) {
+    event.preventDefault(); setBusy("password");
+    try {
+      if (password.newPassword !== password.confirm) throw new Error("两次输入的新密码不一致。");
+      await changeOwnPassword({ currentPassword: password.currentPassword, newPassword: password.newPassword });
+      setPassword({ currentPassword: "", newPassword: "", confirm: "" });
+      await refreshSession();
+      notify("密码已更新，其他设备的登录会话已退出", "success");
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "密码修改失败", "error"); }
+    finally { setBusy(""); }
+  }
+  return <div className="page-stack account-page">
+    <section className="page-title"><div><p className="kicker">ACCOUNT SECURITY</p><h1>账号安全</h1><span>维护自己的姓名、找回邮箱和登录密码。</span></div><div className="scope-badge"><ShieldCheck size={16} />会话受保护</div></section>
+    <section className="account-email-note"><Mail size={20} /><div><b>{session.user.email ? "找回邮箱已设置" : "建议补充找回邮箱"}</b><span>{session.user.email ? `密码重置邮件将发送到 ${session.user.email}` : "邮箱不是开户必填项；补充后可在登录页自行找回密码。"}</span></div></section>
+    <div className="account-grid">
+      <form className="account-card" onSubmit={saveProfile}><header><UserRound size={20} /><div><h2>个人资料</h2><p>更改邮箱需要验证当前密码。</p></div></header><label><span>登录账号</span><input value={session.user.username} disabled /></label><label><span>姓名</span><input value={profile.displayName} maxLength={120} onChange={(event) => setProfile({ ...profile, displayName: event.target.value })} required /></label><label><span>找回邮箱（可选）</span><input type="email" autoComplete="email" value={profile.email} onChange={(event) => setProfile({ ...profile, email: event.target.value })} placeholder="用于自行找回密码" /></label><label><span>当前密码</span><input type="password" autoComplete="current-password" value={profile.currentPassword} onChange={(event) => setProfile({ ...profile, currentPassword: event.target.value })} required /></label><button className="primary-action" disabled={busy === "profile"}>{busy === "profile" ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存资料</button></form>
+      <form className="account-card" onSubmit={savePassword}><header><KeyRound size={20} /><div><h2>修改密码</h2><p>新密码生效后，其他设备会自动退出。</p></div></header><label><span>当前密码</span><input type="password" autoComplete="current-password" value={password.currentPassword} onChange={(event) => setPassword({ ...password, currentPassword: event.target.value })} required /></label><label><span>新密码</span><input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={password.newPassword} onChange={(event) => setPassword({ ...password, newPassword: event.target.value })} placeholder="至少 12 位，包含字母和数字" required /></label><label><span>确认新密码</span><input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={password.confirm} onChange={(event) => setPassword({ ...password, confirm: event.target.value })} required /></label><button className="primary-action" disabled={busy === "password"}>{busy === "password" ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}更新密码</button></form>
+    </div>
+  </div>;
+}
+
 const memberRoleLabels: Record<OrganizationMemberRole, string> = { organization_admin: "组织管理员", manager: "业务经理", operator: "操作员", finance: "财务", viewer: "只读成员" };
 
 function MembersPage({ session, notify }: { session: Session; notify(message: string, tone: "success" | "error"): void }) {
@@ -268,7 +327,8 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState("");
   const [activation, setActivation] = React.useState<InvitationDeliveryResult | null>(null);
-  const [form, setForm] = React.useState({ username: "", email: "", role: "operator" as OrganizationMemberRole, mfaRequired: false });
+  const emptyMemberForm = { username: "", displayName: "", email: "", password: "", confirm: "", role: "operator" as OrganizationMemberRole, mfaRequired: false };
+  const [form, setForm] = React.useState(emptyMemberForm);
   const [stepUp, setStepUp] = React.useState<{ secret: string; qr: string } | null>(null);
   const [mfaToken, setMfaToken] = React.useState("");
   const pendingAction = React.useRef<{ run: () => Promise<unknown>; success: string } | null>(null);
@@ -325,17 +385,20 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
 
   async function submitInvite(event: React.FormEvent) {
     event.preventDefault();
-    const action = () => createInvitation(form);
+    if (form.password !== form.confirm) { notify("两次输入的初始密码不一致", "error"); return; }
+    const action = async () => {
+      const result = await createMember({ username: form.username, displayName: form.displayName || undefined, email: form.email, password: form.password, role: form.role, mfaRequired: form.mfaRequired });
+      setForm(emptyMemberForm);
+      return result;
+    };
     setBusy("invite");
     try {
-      const result = await action();
-      setActivation(result);
-      setForm({ username: "", email: "", role: "operator", mfaRequired: false });
-      notify(result.delivery?.sent ? "邀请邮件已发送" : "邀请已创建，请复制一次性激活链接", "success");
+      await action();
+      notify("成员账号已创建，请将初始密码通过可信渠道交给本人", "success");
       await load();
     } catch (reason) {
-      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run: async () => { const result = await action(); setActivation(result); setForm({ username: "", email: "", role: "operator", mfaRequired: false }); }, success: "邀请已创建" });
-      else notify(reason instanceof Error ? reason.message : "邀请创建失败", "error");
+      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run: action, success: "成员账号已创建" });
+      else notify(reason instanceof Error ? reason.message : "成员账号创建失败", "error");
     } finally { setBusy(""); }
   }
 
@@ -354,33 +417,34 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
 
   const activeCount = members.filter((member) => member.status === "active").length;
   const mfaCount = members.filter((member) => member.mfaEnabled).length;
-  const pendingCount = invitations.filter((invitation) => invitation.status === "pending").length;
+  const pendingCount = members.filter((member) => member.mustChangePassword).length;
   return <div className="page-stack member-admin-page">
     <section className="page-title"><div><p className="kicker">ORGANIZATION ACCESS</p><h1>成员管理</h1><span>只管理“{session.organization.name}”成员；其他合作组织不会出现在列表或搜索中。</span></div><div className="scope-badge"><ShieldCheck size={16} />组织边界已锁定</div></section>
-    <section className="member-metrics"><article><Users size={20} /><div><strong>{activeCount}</strong><span>有效成员</span></div></article><article><ShieldCheck size={20} /><div><strong>{mfaCount}</strong><span>已启用 MFA</span></div></article><article><Mail size={20} /><div><strong>{pendingCount}</strong><span>待激活邀请</span></div></article></section>
+    <section className="member-metrics"><article><Users size={20} /><div><strong>{activeCount}</strong><span>有效成员</span></div></article><article><ShieldCheck size={20} /><div><strong>{mfaCount}</strong><span>已启用 MFA</span></div></article><article><KeyRound size={20} /><div><strong>{pendingCount}</strong><span>待首次改密</span></div></article></section>
     {activation?.activationUrl ? <section className="activation-strip"><div><KeyRound size={20} /><span><b>一次性激活链接</b><small>48 小时有效，仅在本次创建或重签后显示。</small></span></div><code>{activation.activationUrl}</code><button onClick={async () => { await navigator.clipboard.writeText(activation.activationUrl || ""); notify("激活链接已复制", "success"); }}><Copy size={16} />复制</button></section> : null}
     {stepUp ? <section className={`member-step-up ${stepUp.qr ? "" : "configured"}`}>{stepUp.qr ? <img src={stepUp.qr} alt="二次验证二维码" /> : <ShieldCheck size={35} />}<div><p className="kicker">SECURITY CHECKPOINT</p><h3>完成二次验证后自动继续</h3><span>{stepUp.qr ? "请先使用验证器扫码绑定，再输入 6 位动态码。" : "请输入验证器中的 6 位动态码。"}</span>{stepUp.secret ? <code>{stepUp.secret}</code> : null}<div><input inputMode="numeric" maxLength={6} value={mfaToken} onChange={(event) => setMfaToken(event.target.value.replace(/\D/g, ""))} placeholder="000000" /><button className="primary-action" disabled={busy === "mfa" || mfaToken.length !== 6} onClick={() => void verifyAndRetry()}>{busy === "mfa" ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并继续</button></div></div></section> : null}
     <section className="member-layout">
-      <form className="invite-panel" onSubmit={submitInvite}><header><span><UserPlus size={19} /></span><div><h2>邀请新成员</h2><p>成员自行设置密码；不发送默认密码。</p></div></header><label><span>登录账号</span><input required minLength={3} autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} placeholder="例如 inbound.operator" /></label><label><span>成员邮箱</span><input required type="email" autoComplete="off" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="成员本人邮箱" /></label><label><span>组织角色</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as OrganizationMemberRole })}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="mfa-toggle"><input type="checkbox" checked={form.mfaRequired} onChange={(event) => setForm({ ...form, mfaRequired: event.target.checked })} /><span><b>强制启用 MFA</b><small>建议财务、经理和管理员开启</small></span></label><button className="primary-action" disabled={busy === "invite"}>{busy === "invite" ? <LoaderCircle className="spin" size={18} /> : <Mail size={18} />}创建并发送邀请</button><p className="secure-footnote"><ShieldCheck size={13} />邀请、角色、停用与 MFA 变更均写入不可覆盖的审计记录。</p></form>
-      <section className="member-list-panel"><header><div><p className="kicker">ACTIVE MEMBERS</p><h2>组织成员</h2></div><button className="secondary-action" onClick={() => void load()}><RefreshCw size={16} />刷新</button></header>{loading ? <div className="loading-state"><LoaderCircle className="spin" />正在读取成员…</div> : <div className="member-list">{members.map((member) => <article key={member.id} className={member.status === "disabled" ? "disabled" : ""}><span className="member-avatar">{member.displayName.slice(0, 1)}</span><div className="member-identity"><b>{member.displayName}{member.id === session.membership.id ? <em>当前账号</em> : null}</b><small>{member.username} · {member.email || "未留邮箱"}</small><span>{member.lastLoginAt ? `最近登录 ${fullDate(member.lastLoginAt)}` : "尚未登录"}</span></div><select aria-label={`${member.displayName}的角色`} value={member.role} disabled={busy === member.id || member.id === session.membership.id} onChange={(event) => void runSensitive(member.id, () => updateMember(member.id, { role: event.target.value as OrganizationMemberRole }), "成员角色已更新")}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className={`member-security ${member.mfaRequired ? "active" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { mfaRequired: !member.mfaRequired }), member.mfaRequired ? "已取消强制 MFA" : "已要求成员启用 MFA")}><ShieldCheck size={15} />{member.mfaEnabled ? "MFA 已启用" : member.mfaRequired ? "等待 MFA" : "未强制 MFA"}</button><button className={`member-state-action ${member.status === "active" ? "danger" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { status: member.status === "active" ? "disabled" : "active" }), member.status === "active" ? "成员已停用，会话已撤销" : "成员已重新启用")}>{member.status === "active" ? "停用" : "启用"}</button></article>)}</div>}</section>
+      <form className="invite-panel" onSubmit={submitInvite}><header><span><UserPlus size={19} /></span><div><h2>新增成员账号</h2><p>管理员分配账号和初始密码；成员首次登录后必须改密。</p></div></header><label><span>登录账号</span><input required minLength={3} autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} placeholder="例如 inbound.operator" /></label><label><span>成员姓名（可选）</span><input maxLength={120} autoComplete="off" value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} placeholder="未填写时使用登录账号" /></label><label><span>成员邮箱（可选）</span><input type="email" autoComplete="off" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="可由成员登录后补充" /></label><label><span>初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="至少 12 位，包含字母和数字" /></label><label><span>确认初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} /></label><label><span>组织角色</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as OrganizationMemberRole })}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="mfa-toggle"><input type="checkbox" checked={form.mfaRequired} onChange={(event) => setForm({ ...form, mfaRequired: event.target.checked })} /><span><b>强制启用 MFA</b><small>建议财务、经理和管理员开启</small></span></label><button className="primary-action" disabled={busy === "invite"}>{busy === "invite" ? <LoaderCircle className="spin" size={18} /> : <KeyRound size={18} />}创建成员账号</button><p className="secure-footnote"><ShieldCheck size={13} />初始密码立即哈希，不写入日志；角色、停用与 MFA 变更均进入审计记录。</p></form>
+      <section className="member-list-panel"><header><div><p className="kicker">ACTIVE MEMBERS</p><h2>组织成员</h2></div><button className="secondary-action" onClick={() => void load()}><RefreshCw size={16} />刷新</button></header>{loading ? <div className="loading-state"><LoaderCircle className="spin" />正在读取成员…</div> : <div className="member-list">{members.map((member) => <article key={member.id} className={member.status === "disabled" ? "disabled" : ""}><span className="member-avatar">{member.displayName.slice(0, 1)}</span><div className="member-identity"><b>{member.displayName}{member.id === session.membership.id ? <em>当前账号</em> : null}</b><small>{member.username} · {member.email || "未留邮箱"}</small><span>{member.mustChangePassword ? "等待首次修改密码" : member.lastLoginAt ? `最近登录 ${fullDate(member.lastLoginAt)}` : "尚未登录"}</span></div><select aria-label={`${member.displayName}的角色`} value={member.role} disabled={busy === member.id || member.id === session.membership.id} onChange={(event) => void runSensitive(member.id, () => updateMember(member.id, { role: event.target.value as OrganizationMemberRole }), "成员角色已更新")}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className={`member-security ${member.mfaRequired ? "active" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { mfaRequired: !member.mfaRequired }), member.mfaRequired ? "已取消强制 MFA" : "已要求成员启用 MFA")}><ShieldCheck size={15} />{member.mfaEnabled ? "MFA 已启用" : member.mfaRequired ? "等待 MFA" : "未强制 MFA"}</button><button className={`member-state-action ${member.status === "active" ? "danger" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { status: member.status === "active" ? "disabled" : "active" }), member.status === "active" ? "成员已停用，会话已撤销" : "成员已重新启用")}>{member.status === "active" ? "停用" : "启用"}</button></article>)}</div>}</section>
     </section>
-    <section className="invitation-panel"><header><div><p className="kicker">INVITATIONS</p><h2>邀请记录</h2></div><span>{invitations.length} 条</span></header>{invitations.length ? <div className="invitation-list">{invitations.map((invitation) => <article key={invitation.id}><div><b>{invitation.username}</b><span>{invitation.email}</span></div><div><b>{memberRoleLabels[invitation.role]}</b><span>{invitation.mfaRequired ? "必须启用 MFA" : "常规验证"}</span></div><div><b>{invitation.status === "pending" ? "待激活" : invitation.status === "accepted" ? "已激活" : "已失效"}</b><span>{invitation.status === "pending" ? `有效期至 ${fullDate(invitation.expiresAt)}` : fullDate(invitation.acceptedAt || invitation.expiresAt)}</span></div><div>{invitation.status !== "accepted" ? <button disabled={busy === invitation.id} onClick={() => void renew(invitation)}>重发</button> : null}{invitation.status === "pending" ? <button className="danger" disabled={busy === invitation.id} onClick={() => void runSensitive(invitation.id, () => revokeInvitation(invitation.id), "邀请已撤销")}>撤销</button> : null}</div></article>)}</div> : <div className="empty-state"><Mail size={34} /><h3>暂无邀请记录</h3><p>从左侧表单邀请第一位成员。</p></div>}</section>
+    {invitations.length ? <section className="invitation-panel"><header><div><p className="kicker">LEGACY INVITATIONS</p><h2>历史邀请记录</h2></div><span>{invitations.length} 条</span></header><div className="invitation-list">{invitations.map((invitation) => <article key={invitation.id}><div><b>{invitation.username}</b><span>{invitation.email || "未留邮箱"}</span></div><div><b>{memberRoleLabels[invitation.role]}</b><span>{invitation.mfaRequired ? "必须启用 MFA" : "常规验证"}</span></div><div><b>{invitation.status === "pending" ? "待激活" : invitation.status === "accepted" ? "已激活" : "已失效"}</b><span>{invitation.status === "pending" ? `有效期至 ${fullDate(invitation.expiresAt)}` : fullDate(invitation.acceptedAt || invitation.expiresAt)}</span></div><div>{invitation.status !== "accepted" ? <button disabled={busy === invitation.id} onClick={() => void renew(invitation)}>重发</button> : null}{invitation.status === "pending" ? <button className="danger" disabled={busy === invitation.id} onClick={() => void runSensitive(invitation.id, () => revokeInvitation(invitation.id), "邀请已撤销")}>撤销</button> : null}</div></article>)}</div></section> : null}
   </div>;
 }
 
-function AppShell({ session, onLogout }: { session: Session; onLogout(): void }) {
+function AppShell({ session, onSessionChange, onLogout }: { session: Session; onSessionChange(session: Session): void; onLogout(): void }) {
   const [route, navigate] = useRoute(); const [mobileNav, setMobileNav] = React.useState(false); const [selected, setSelected] = React.useState<WorkItem | null>(null); const [toast, setToast] = React.useState<{ message: string; tone: "success" | "error" } | null>(null); const [refreshKey, setRefreshKey] = React.useState(0);
   const canManageMembers = session.membership.role === "organization_admin";
   const showToast = React.useCallback((message: string, tone: "success" | "error") => setToast({ message, tone }), []);
   React.useEffect(() => { if (route === "members" && !canManageMembers) navigate("overview"); }, [route, canManageMembers, navigate]);
   async function openTaskById(id: string) { try { const detail = await fetchWorkItem(id); setSelected(detail.item); } catch (reason) { setToast({ message: reason instanceof Error ? reason.message : "任务不存在", tone: "error" }); } }
   const visibleRoutes = (Object.entries(routeMeta) as Array<[Route, typeof routeMeta[Route]]>).filter(([key]) => key !== "members" || canManageMembers);
-  const page = route === "overview" ? <OverviewPage key={refreshKey} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} onOpenTask={setSelected} /> : route === "inventory" ? <InventoryPage key={refreshKey} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
+  const mobileRoutes = visibleRoutes.filter(([key]) => key !== "account");
+  const page = route === "overview" ? <OverviewPage key={refreshKey} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} onOpenTask={setSelected} /> : route === "inventory" ? <InventoryPage key={refreshKey} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : route === "account" ? <AccountPage session={session} onSessionChange={onSessionChange} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
   return <div className="portal-shell">
-    <aside className={`sidebar ${mobileNav ? "open" : ""}`}><div className="sidebar-brand"><span><Boxes size={23} /></span><div><b>同舟协同</b><small>PARTNER PORTAL</small></div></div><div className="org-card"><span><Building2 size={17} /></span><div><small>当前组织</small><b>{session.organization.name}</b><code>{session.organization.code}</code></div><ShieldCheck size={17} /></div><nav>{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => { navigate(key); setMobileNav(false); }}><Icon size={20} /><span>{meta.label}</span>{key === "notifications" ? <i /> : null}</button>; })}</nav><div className="sidebar-scope"><ShieldCheck size={18} /><div><b>数据边界已锁定</b><span>仅访问本组织资料</span></div></div><button className="profile-card" onClick={onLogout}><span><UserRound size={19} /></span><div><b>{session.user.displayName}</b><small>{session.membership.role}</small></div><LogOut size={17} /></button></aside>
+    <aside className={`sidebar ${mobileNav ? "open" : ""}`}><div className="sidebar-brand"><span><Boxes size={23} /></span><div><b>同舟协同</b><small>PARTNER PORTAL</small></div></div><div className="org-card"><span><Building2 size={17} /></span><div><small>当前组织</small><b>{session.organization.name}</b><code>{session.organization.code}</code></div><ShieldCheck size={17} /></div><nav>{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => { navigate(key); setMobileNav(false); }}><Icon size={20} /><span>{meta.label}</span>{key === "notifications" ? <i /> : null}</button>; })}</nav><div className="sidebar-scope"><ShieldCheck size={18} /><div><b>数据边界已锁定</b><span>仅访问本组织资料</span></div></div><button className="profile-card" onClick={() => navigate("account")}><span><UserRound size={19} /></span><div><b>{session.user.displayName}</b><small>{session.user.email || "未设置找回邮箱"}</small></div><ChevronRight size={17} /></button><button className="sidebar-logout" onClick={onLogout}><LogOut size={16} />退出登录</button></aside>
     {mobileNav ? <button className="nav-scrim" onClick={() => setMobileNav(false)} aria-label="关闭导航" /> : null}
     <main className="main-stage"><header className="topbar"><button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={21} /></button><div><span>{routeMeta[route].label}</span><small>组织级安全协同 · {session.organization.code}</small></div><div className="topbar-actions"><button onClick={() => navigate("notifications")} aria-label="消息"><Bell size={19} /><i /></button><span className="online-mark"><i />在线</span></div></header><div className="page-content">{page}</div></main>
-    <nav className={`mobile-tabs ${canManageMembers ? "with-members" : ""}`}>{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={21} /><span>{meta.label.slice(0, 2)}</span></button>; })}</nav>
+    <nav className={`mobile-tabs ${canManageMembers ? "with-members" : ""}`}>{mobileRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={21} /><span>{meta.label.slice(0, 2)}</span></button>; })}</nav>
     {selected ? <TaskDetailDrawer item={selected} onClose={() => setSelected(null)} onChanged={() => setRefreshKey((key) => key + 1)} notify={(message, tone) => setToast({ message, tone })} /> : null}
     {toast ? <Toast {...toast} onClose={() => setToast(null)} /> : null}
   </div>;
@@ -395,5 +459,6 @@ export function App() {
   if (loading) return <main className="boot-screen"><span className="brand-mark"><Boxes size={26} /></span><LoaderCircle className="spin" /><b>正在建立安全工作区</b><small>VERIFYING ORGANIZATION BOUNDARY</small></main>;
   if (!session) return <LoginPage onLogin={(next, required) => { setSession(next); setSetupRequired(required); }} onForgot={() => setCredentialFlow({ mode: "request", token: "" })} />;
   if (session.pendingMfa || setupRequired) return <MfaGate session={session} setupRequired={setupRequired} onVerified={(next) => { setSession(next); setSetupRequired(false); }} />;
-  return <AppShell session={session} onLogout={() => logout().finally(() => setSession(null))} />;
+  if (session.mustChangePassword) return <ForcedPasswordChangePage session={session} onChanged={setSession} />;
+  return <AppShell session={session} onSessionChange={setSession} onLogout={() => logout().finally(() => setSession(null))} />;
 }

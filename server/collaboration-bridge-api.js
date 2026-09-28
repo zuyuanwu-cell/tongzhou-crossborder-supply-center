@@ -71,7 +71,7 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, appen
         const input = await readBody(req);
         const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
         const result = await bridge.bootstrapOrganization({ ...input, actorName });
-        appendActionLog(auth, "创建协作组织并邀请首位管理员", "collaboration_organization", input.name || input.code || "", { code: input.code || "", administratorUsername: input.administrator?.username || "" });
+        appendActionLog(auth, "创建协作组织和首位管理员账号", "collaboration_organization", input.name || result.organization?.code || "", { code: result.organization?.code || "", administratorUsername: input.administrator?.username || "" });
         sendJson(res, 201, { ok: true, ...result });
         return true;
       }

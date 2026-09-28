@@ -155,13 +155,13 @@ test("identity administration stays behind the server-side collaboration token",
 
   await bridge.listOrganizations({ keyword: "华东", status: "active" });
   await bridge.bootstrapOrganization({
-    code: "cn-east-warehouse",
     name: "华东仓储",
     organizationType: "warehouse",
     administrator: {
       username: "warehouse-admin",
-      email: "admin@example.com",
+      email: "",
       displayName: "仓库管理员",
+      password: "Temporary123!",
     },
     actorName: "内部管理员",
   });
@@ -176,7 +176,9 @@ test("identity administration stays behind the server-side collaboration token",
   assert.match(requests[0].url, /status=active/);
   assert.equal(requests[1].url, "http://collaboration.test/collaboration/internal/v1/organizations/bootstrap");
   assert.equal(requests[1].method, "POST");
-  assert.equal(requests[1].body.administrator.password, undefined);
+  assert.equal(requests[1].body.code, undefined);
+  assert.equal(requests[1].body.administrator.email, "");
+  assert.equal(requests[1].body.administrator.password, "Temporary123!");
   assert.equal(requests[2].url, "http://collaboration.test/collaboration/internal/v1/organizations/cn-east-warehouse");
   assert.equal(requests[3].method, "PATCH");
   assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);

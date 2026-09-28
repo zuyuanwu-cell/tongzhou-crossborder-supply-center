@@ -30,6 +30,7 @@ export type CollaborationMember = {
   userStatus: string;
   mfaRequired: boolean;
   mfaEnabled: boolean;
+  mustChangePassword: boolean;
   lastLoginAt: string;
   createdAt: string;
 };
@@ -57,6 +58,20 @@ export type CollaborationInvitationResult = {
   invitation: CollaborationInvitation;
   delivery?: { sent: boolean; channel?: string; reason?: string; message?: string };
   activationUrl?: string;
+};
+
+export type CollaborationBootstrapResult = {
+  organization: CollaborationOrganization;
+  administrator: {
+    membershipId: string;
+    userId: string;
+    username: string;
+    displayName: string;
+    email: string;
+    role: string;
+    mfaRequired: boolean;
+    mustChangePassword: boolean;
+  };
 };
 
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
@@ -89,14 +104,13 @@ export function fetchCollaborationOrganizationAccess(code: string) {
 }
 
 export function bootstrapCollaborationOrganization(input: {
-  code: string;
   name: string;
   organizationType: CollaborationOrganizationType;
   status: CollaborationOrganizationStatus;
   notificationEmail?: string;
-  administrator: { username: string; email: string };
+  administrator: { username: string; displayName?: string; email?: string; password: string };
 }) {
-  return request<{ ok: boolean } & CollaborationInvitationResult>("/api/collaboration-bridge/organizations/bootstrap", {
+  return request<{ ok: boolean } & CollaborationBootstrapResult>("/api/collaboration-bridge/organizations/bootstrap", {
     method: "POST",
     body: JSON.stringify(input),
   });

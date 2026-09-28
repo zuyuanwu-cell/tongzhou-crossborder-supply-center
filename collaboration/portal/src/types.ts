@@ -7,6 +7,7 @@ export type Session = {
   mfaEnabled: boolean;
   mfaVerifiedAt: string;
   pendingMfa: boolean;
+  mustChangePassword: boolean;
   oemEnabled: boolean;
 };
 export type Dashboard = { openTasks: number; urgentTasks: number; waitingTasks: number; unreadNotifications: number; inventorySkuCount: number; inventorySyncedAt: string };
@@ -30,7 +31,7 @@ export type OrganizationMemberRole = "organization_admin" | "manager" | "operato
 export type OrganizationMember = {
   id: string; userId: string; username: string; email: string; displayName: string; userStatus: string;
   role: OrganizationMemberRole; status: "active" | "disabled"; permissions: string[]; mfaRequired: boolean; mfaEnabled: boolean;
-  lastLoginAt: string; createdAt: string;
+  mustChangePassword: boolean; lastLoginAt: string; createdAt: string;
 };
 export type OrganizationInvitation = {
   id: string; username: string; email: string; role: OrganizationMemberRole; mfaRequired: boolean;

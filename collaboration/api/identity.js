@@ -2,15 +2,26 @@ import { z } from "zod";
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { sendSecurityEmail } from "./notifications.js";
-import { hashPassword, randomToken, tokenHash, validateNewPassword } from "./security.js";
+import { hashPassword, randomToken, tokenHash, validateNewPassword, verifyPassword } from "./security.js";
 
 const roles = ["organization_admin", "manager", "operator", "finance", "viewer"];
 const organizationTypes = ["internal", "warehouse", "filing_service", "sampling_factory", "packaging_factory", "production_factory"];
 const resetAttempts = new Map();
+const usernameSchema = z.string().trim().min(3).max(80).regex(/^[A-Za-z0-9._-]+$/);
+const optionalEmailSchema = z.union([z.string().trim().email().max(320), z.literal("")]).optional().default("");
 
 const invitationSchema = z.object({
-  username: z.string().trim().min(3).max(80).regex(/^[A-Za-z0-9._-]+$/),
-  email: z.string().trim().email().max(320),
+  username: usernameSchema,
+  email: optionalEmailSchema,
+  role: z.enum(roles),
+  mfaRequired: z.boolean().optional().default(false),
+}).strict();
+
+const accountProvisionSchema = z.object({
+  username: usernameSchema,
+  displayName: z.string().trim().min(1).max(120).optional(),
+  email: optionalEmailSchema,
+  password: z.string(),
   role: z.enum(roles),
   mfaRequired: z.boolean().optional().default(false),
 }).strict();
@@ -34,6 +45,17 @@ const memberUpdateSchema = z.object({
   mfaRequired: z.boolean().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "请至少提供一个修改字段。");
 
+const ownProfileSchema = z.object({
+  displayName: z.string().trim().min(1).max(120),
+  email: optionalEmailSchema,
+  currentPassword: z.string().min(1).max(512),
+}).strict();
+
+const ownPasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(512),
+  newPassword: z.string(),
+}).strict();
+
 const organizationSchema = z.object({
   code: z.string().trim().regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),
   name: z.string().trim().min(1).max(200),
@@ -43,8 +65,8 @@ const organizationSchema = z.object({
   wecomWebhook: z.string().trim().url().max(2_000).optional().or(z.literal("")),
 }).strict();
 
-const organizationBootstrapSchema = organizationSchema.extend({
-  administrator: invitationSchema.pick({ username: true, email: true }),
+const organizationBootstrapSchema = organizationSchema.omit({ code: true }).extend({
+  administrator: accountProvisionSchema.pick({ username: true, displayName: true, email: true, password: true }),
   actorName: z.string().trim().min(1).max(120).optional().default("供应链中台管理员"),
 }).strict();
 
@@ -63,6 +85,41 @@ function clientIp(req) {
 
 function assertOrganizationAdmin(auth) {
   if (auth?.membership?.role !== "organization_admin") fail("仅组织管理员可以管理成员。", 403, "forbidden");
+}
+
+const organizationCodePrefixes = {
+  internal: "in",
+  warehouse: "wh",
+  filing_service: "fs",
+  sampling_factory: "sf",
+  packaging_factory: "pf",
+  production_factory: "mf",
+};
+
+export function generateOrganizationCode(organizationType, entropy = randomToken(6)) {
+  const prefix = organizationCodePrefixes[organizationType] || "org";
+  const suffix = String(entropy).toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 10);
+  if (suffix.length < 6) return `${prefix}-${randomToken(6).toLowerCase()}`;
+  return `${prefix}-${suffix}`;
+}
+
+function publicMember(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    username: row.username,
+    email: row.email || "",
+    displayName: row.display_name,
+    userStatus: row.user_status,
+    role: row.role,
+    status: row.status,
+    permissions: row.permissions || [],
+    mfaRequired: Boolean(row.mfa_required),
+    mfaEnabled: Boolean(row.totp_enabled_at),
+    mustChangePassword: Boolean(row.must_change_password),
+    lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : "",
+    createdAt: new Date(row.created_at).toISOString(),
+  };
 }
 
 function rateLimitReset(req, input) {
@@ -116,7 +173,7 @@ export async function createInvitation(auth, body) {
   const rawToken = randomToken();
   const expiresAt = new Date(Date.now() + 48 * 60 * 60_000);
   const invitation = await withOrganization(auth.organization.id, async (client) => {
-    const existing = await client.query("SELECT id FROM collaboration_users WHERE lower(username)=lower($1) OR lower(email)=lower($2)", [input.username, input.email]);
+    const existing = await client.query("SELECT id FROM collaboration_users WHERE lower(username)=lower($1) OR ($2<>'' AND lower(email)=lower($2))", [input.username, input.email]);
     if (existing.rows[0]) fail("账号或邮箱已存在。", 409, "identity_exists");
     await client.query("UPDATE collaboration_invitations SET expires_at=now() WHERE organization_id=$1 AND lower(username)=lower($2) AND accepted_at IS NULL", [auth.organization.id, input.username]);
     const result = await client.query(
@@ -146,6 +203,43 @@ export async function listInvitations(auth) {
       [auth.organization.id],
     );
     return { invitations: result.rows.map(publicInvitation) };
+  });
+}
+
+export async function createMember(auth, body) {
+  assertOrganizationAdmin(auth);
+  const input = accountProvisionSchema.parse(body);
+  const passwordHash = await hashPassword(validateNewPassword(input.password));
+  return withSystem(async (client) => {
+    const duplicate = await client.query(
+      `SELECT 1 FROM collaboration_users WHERE lower(username)=lower($1) OR ($2<>'' AND lower(email)=lower($2))
+       UNION ALL
+       SELECT 1 FROM collaboration_invitations WHERE accepted_at IS NULL AND expires_at>now()
+        AND (lower(username)=lower($1) OR ($2<>'' AND lower(email)=lower($2))) LIMIT 1`,
+      [input.username, input.email],
+    );
+    if (duplicate.rows[0]) fail("账号或邮箱已被使用。", 409, "identity_exists");
+    const userResult = await client.query(
+      `INSERT INTO collaboration_users(username,email,display_name,password_hash,status,must_change_password)
+       VALUES ($1,$2,$3,$4,'active',true)
+       RETURNING id,username,email,display_name,status AS user_status,must_change_password,totp_enabled_at,last_login_at,created_at`,
+      [input.username, input.email || null, input.displayName || input.username, passwordHash],
+    );
+    const user = userResult.rows[0];
+    const mfaRequired = input.role === "organization_admin" || input.mfaRequired;
+    const membershipResult = await client.query(
+      `INSERT INTO organization_memberships(organization_id,user_id,role,status,mfa_required)
+       VALUES ($1,$2,$3,'active',$4)
+       RETURNING id,role,status,permissions,mfa_required,created_at`,
+      [auth.organization.id, user.id, input.role, mfaRequired],
+    );
+    const membership = membershipResult.rows[0];
+    await client.query(
+      `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
+       VALUES ($1,$2,$3,'identity.member.create','membership',$4,'created',$5)`,
+      [auth.organization.id, auth.user.id, auth.user.displayName, membership.id, { username: input.username, role: input.role, mfaRequired }],
+    );
+    return { member: publicMember({ ...user, ...membership, user_id: user.id }) };
   });
 }
 
@@ -220,8 +314,8 @@ export async function acceptInvitation(body) {
     await client.query("UPDATE collaboration_invitations SET accepted_at=now() WHERE id=$1", [invitation.id]);
     await client.query(
       `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
-       VALUES ($1,$2,$3,'identity.invite.accept','user',$2,'success',$4)`,
-      [invitation.organization_id, user.id, user.display_name, { username: user.username, role: invitation.role }],
+       VALUES ($1,$2,$3,'identity.invite.accept','user',$5,'success',$4)`,
+      [invitation.organization_id, user.id, user.display_name, { username: user.username, role: invitation.role }, user.id],
     );
     return { user: { id: user.id, username: user.username, email: user.email || "", displayName: user.display_name }, organization: { code: invitation.organization_code, name: invitation.organization_name }, mfaRequired };
   });
@@ -261,7 +355,7 @@ export async function confirmPasswordReset(body) {
     const result = await client.query("SELECT * FROM collaboration_password_resets WHERE token_hash=$1 FOR UPDATE", [tokenHash(input.token)]);
     const reset = result.rows[0];
     if (!reset || reset.used_at || new Date(reset.expires_at).getTime() <= Date.now()) fail("密码重置链接无效或已过期。", 410, "reset_invalid");
-    await client.query("UPDATE collaboration_users SET password_hash=$2,password_changed_at=now(),failed_login_count=0,locked_until=NULL,status='active' WHERE id=$1", [reset.user_id, passwordHash]);
+    await client.query("UPDATE collaboration_users SET password_hash=$2,password_changed_at=now(),must_change_password=false,failed_login_count=0,locked_until=NULL,status='active' WHERE id=$1", [reset.user_id, passwordHash]);
     await client.query("UPDATE collaboration_password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [reset.user_id]);
     await client.query("UPDATE collaboration_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [reset.user_id]);
     return { changed: true };
@@ -272,12 +366,12 @@ export async function listMembers(auth) {
   assertOrganizationAdmin(auth);
   return withOrganization(auth.organization.id, async (client) => {
     const result = await client.query(
-      `SELECT m.id,m.role,m.status,m.permissions,m.mfa_required,m.created_at,u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.last_login_at
+      `SELECT m.id,m.role,m.status,m.permissions,m.mfa_required,m.created_at,u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.must_change_password,u.last_login_at
          FROM organization_memberships m JOIN collaboration_users u ON u.id=m.user_id
         WHERE m.organization_id=$1 ORDER BY u.display_name,u.username`,
       [auth.organization.id],
     );
-    return { members: result.rows.map((row) => ({ id: row.id, userId: row.user_id, username: row.username, email: row.email || "", displayName: row.display_name, userStatus: row.user_status, role: row.role, status: row.status, permissions: row.permissions || [], mfaRequired: row.mfa_required, mfaEnabled: Boolean(row.totp_enabled_at), lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : "", createdAt: new Date(row.created_at).toISOString() })) };
+    return { members: result.rows.map(publicMember) };
   });
 }
 
@@ -320,6 +414,56 @@ export async function revokeOwnSession(auth, sessionId) {
     const result = await client.query("UPDATE collaboration_sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL RETURNING id", [sessionId, auth.user.id]);
     if (!result.rows[0]) fail("会话不存在。", 404, "not_found");
     return { revoked: true, current: sessionId === auth.sessionId };
+  });
+}
+
+export async function updateOwnProfile(auth, body) {
+  const input = ownProfileSchema.parse(body);
+  return withSystem(async (client) => {
+    const currentResult = await client.query("SELECT password_hash,email,display_name FROM collaboration_users WHERE id=$1 FOR UPDATE", [auth.user.id]);
+    const current = currentResult.rows[0];
+    if (!current || !(await verifyPassword(current.password_hash, input.currentPassword))) fail("当前密码不正确。", 401, "invalid_current_password");
+    if (input.email) {
+      const duplicate = await client.query("SELECT 1 FROM collaboration_users WHERE id<>$1 AND lower(email)=lower($2) LIMIT 1", [auth.user.id, input.email]);
+      if (duplicate.rows[0]) fail("该邮箱已被其他账号使用。", 409, "email_exists");
+    }
+    const result = await client.query(
+      `UPDATE collaboration_users SET display_name=$2,email=$3,updated_at=now()
+        WHERE id=$1 RETURNING id,username,email,display_name`,
+      [auth.user.id, input.displayName, input.email || null],
+    );
+    await client.query("UPDATE collaboration_password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [auth.user.id]);
+    await client.query(
+      `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
+       VALUES ($1,$2,$3,'identity.profile.update','user',$5,'success',$4)`,
+      [auth.organization.id, auth.user.id, auth.user.displayName, { emailChanged: (current.email || "") !== input.email, displayNameChanged: current.display_name !== input.displayName }, auth.user.id],
+    );
+    const user = result.rows[0];
+    return { user: { id: user.id, username: user.username, displayName: user.display_name, email: user.email || "" } };
+  });
+}
+
+export async function changeOwnPassword(auth, body) {
+  const input = ownPasswordSchema.parse(body);
+  const newPassword = validateNewPassword(input.newPassword);
+  return withSystem(async (client) => {
+    const currentResult = await client.query("SELECT password_hash FROM collaboration_users WHERE id=$1 FOR UPDATE", [auth.user.id]);
+    const current = currentResult.rows[0];
+    if (!current || !(await verifyPassword(current.password_hash, input.currentPassword))) fail("当前密码不正确。", 401, "invalid_current_password");
+    if (await verifyPassword(current.password_hash, newPassword)) fail("新密码不能与当前密码相同。", 400, "password_unchanged");
+    const passwordHash = await hashPassword(newPassword);
+    await client.query(
+      "UPDATE collaboration_users SET password_hash=$2,password_changed_at=now(),must_change_password=false,failed_login_count=0,locked_until=NULL,updated_at=now() WHERE id=$1",
+      [auth.user.id, passwordHash],
+    );
+    await client.query("UPDATE collaboration_password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [auth.user.id]);
+    await client.query("UPDATE collaboration_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL", [auth.user.id, auth.sessionId]);
+    await client.query(
+      `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
+       VALUES ($1,$2,$3,'identity.password.change','user',$4,'success','{}'::jsonb)`,
+      [auth.organization.id, auth.user.id, auth.user.displayName, auth.user.id],
+    );
+    return { changed: true, mustChangePassword: false };
   });
 }
 
@@ -391,7 +535,7 @@ export async function getOrganizationAccess(code) {
     if (!organization) fail("协作组织不存在。", 404, "organization_not_found");
     const [members, invitations] = await Promise.all([
       client.query(
-        `SELECT m.id,m.role,m.status,m.mfa_required,m.created_at,u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.last_login_at
+        `SELECT m.id,m.role,m.status,m.permissions,m.mfa_required,m.created_at,u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.must_change_password,u.last_login_at
            FROM organization_memberships m JOIN collaboration_users u ON u.id=m.user_id
           WHERE m.organization_id=$1 ORDER BY CASE m.role WHEN 'organization_admin' THEN 0 ELSE 1 END,u.display_name,u.username`,
         [organization.id],
@@ -413,20 +557,7 @@ export async function getOrganizationAccess(code) {
         createdAt: new Date(organization.created_at).toISOString(),
         updatedAt: new Date(organization.updated_at).toISOString(),
       },
-      members: members.rows.map((row) => ({
-        id: row.id,
-        userId: row.user_id,
-        username: row.username,
-        email: row.email || "",
-        displayName: row.display_name,
-        role: row.role,
-        status: row.status,
-        userStatus: row.user_status,
-        mfaRequired: Boolean(row.mfa_required),
-        mfaEnabled: Boolean(row.totp_enabled_at),
-        lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : "",
-        createdAt: new Date(row.created_at).toISOString(),
-      })),
+      members: members.rows.map(publicMember),
       invitations: invitations.rows.map(publicInvitation),
     };
   });
@@ -434,48 +565,49 @@ export async function getOrganizationAccess(code) {
 
 export async function bootstrapOrganization(body) {
   const input = organizationBootstrapSchema.parse(body);
-  const rawToken = randomToken();
-  const expiresAt = new Date(Date.now() + 48 * 60 * 60_000);
+  const passwordHash = await hashPassword(validateNewPassword(input.administrator.password));
   const output = await withSystem(async (client) => {
-    const organizationResult = await client.query(
-      `INSERT INTO organizations(code,name,organization_type,status,metadata)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT(code) DO UPDATE SET name=excluded.name,organization_type=excluded.organization_type,status=excluded.status,metadata=excluded.metadata
-       RETURNING id,code,name,organization_type,status,metadata,created_at,updated_at`,
-      [input.code, input.name, input.organizationType, input.status, { notificationEmail: input.notificationEmail || "", wecomWebhook: input.wecomWebhook || "" }],
-    );
-    const organization = organizationResult.rows[0];
-    const administrator = await client.query(
-      "SELECT 1 FROM organization_memberships WHERE organization_id=$1 AND role='organization_admin' AND status='active' LIMIT 1",
-      [organization.id],
-    );
-    if (administrator.rows[0]) fail("该组织已经存在有效管理员，请由组织管理员邀请成员。", 409, "organization_admin_exists");
+    let organization;
+    for (let attempt = 0; attempt < 5 && !organization; attempt += 1) {
+      const code = generateOrganizationCode(input.organizationType);
+      const organizationResult = await client.query(
+        `INSERT INTO organizations(code,name,organization_type,status,metadata)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT(code) DO NOTHING
+         RETURNING id,code,name,organization_type,status,metadata,created_at,updated_at`,
+        [code, input.name, input.organizationType, input.status, { notificationEmail: input.notificationEmail || "", wecomWebhook: input.wecomWebhook || "" }],
+      );
+      organization = organizationResult.rows[0];
+    }
+    if (!organization) fail("组织编码生成失败，请重试。", 503, "organization_code_unavailable");
     const duplicate = await client.query(
-      `SELECT 1 FROM collaboration_users WHERE lower(username)=lower($1) OR lower(email)=lower($2)
+      `SELECT 1 FROM collaboration_users WHERE lower(username)=lower($1) OR ($2<>'' AND lower(email)=lower($2))
        UNION ALL
-       SELECT 1 FROM collaboration_invitations WHERE organization_id<>$3 AND accepted_at IS NULL AND expires_at>now()
-         AND (lower(username)=lower($1) OR lower(email)=lower($2)) LIMIT 1`,
-      [input.administrator.username, input.administrator.email, organization.id],
+       SELECT 1 FROM collaboration_invitations WHERE accepted_at IS NULL AND expires_at>now()
+         AND (lower(username)=lower($1) OR ($2<>'' AND lower(email)=lower($2))) LIMIT 1`,
+      [input.administrator.username, input.administrator.email],
     );
-    if (duplicate.rows[0]) fail("管理员账号或邮箱已被其他组织使用。", 409, "identity_exists");
-    await client.query(
-      "UPDATE collaboration_invitations SET expires_at=now() WHERE organization_id=$1 AND role='organization_admin' AND accepted_at IS NULL",
-      [organization.id],
+    if (duplicate.rows[0]) fail("管理员账号或邮箱已被使用。", 409, "identity_exists");
+    const userResult = await client.query(
+      `INSERT INTO collaboration_users(username,email,display_name,password_hash,status,must_change_password)
+       VALUES ($1,$2,$3,$4,'active',true)
+       RETURNING id,username,email,display_name,status,must_change_password,created_at`,
+      [input.administrator.username, input.administrator.email || null, input.administrator.displayName || input.administrator.username, passwordHash],
     );
-    const invitationResult = await client.query(
-      `INSERT INTO collaboration_invitations(organization_id,email,username,role,mfa_required,token_hash,expires_at,created_by)
-       VALUES ($1,$2,$3,'organization_admin',true,$4,$5,NULL)
-       RETURNING id,username,email,role,mfa_required,expires_at,accepted_at,created_at`,
-      [organization.id, input.administrator.email, input.administrator.username, tokenHash(rawToken), expiresAt],
+    const administrator = userResult.rows[0];
+    const membershipResult = await client.query(
+      `INSERT INTO organization_memberships(organization_id,user_id,role,status,mfa_required)
+       VALUES ($1,$2,'organization_admin','active',true)
+       RETURNING id,role,status,mfa_required,created_at`,
+      [organization.id, administrator.id],
     );
     await client.query(
       `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
-       VALUES ($1,NULL,$2,'identity.organization.bootstrap','organization',$1,'created',$3)`,
-      [organization.id, input.actorName, { code: organization.code, administratorUsername: input.administrator.username }],
+       VALUES ($1,NULL,$2,'identity.organization.bootstrap','organization',$4,'created',$3)`,
+      [organization.id, input.actorName, { code: organization.code, administratorUsername: input.administrator.username }, organization.id],
     );
-    return { organization, invitation: invitationResult.rows[0] };
+    return { organization, administrator, membership: membershipResult.rows[0] };
   });
-  const { activationUrl, delivery } = await deliverInvitation({ rawToken, email: output.invitation.email, organizationName: output.organization.name, inviterName: input.actorName });
   return {
     organization: {
       id: output.organization.id,
@@ -484,10 +616,16 @@ export async function bootstrapOrganization(body) {
       organizationType: output.organization.organization_type,
       status: output.organization.status,
     },
-    invitation: publicInvitation(output.invitation),
-    delivery,
-    ...(!delivery.sent ? { activationUrl } : {}),
-    ...developmentSecret(rawToken),
+    administrator: {
+      membershipId: output.membership.id,
+      userId: output.administrator.id,
+      username: output.administrator.username,
+      displayName: output.administrator.display_name,
+      email: output.administrator.email || "",
+      role: output.membership.role,
+      mfaRequired: true,
+      mustChangePassword: true,
+    },
   };
 }
 
@@ -510,8 +648,8 @@ export async function updateOrganizationStatus(code, body) {
     }
     await client.query(
       `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
-       VALUES ($1,NULL,$2,'identity.organization.status','organization',$1,'success',$3)`,
-      [organization.id, input.actorName, { status: input.status }],
+       VALUES ($1,NULL,$2,'identity.organization.status','organization',$4,'success',$3)`,
+      [organization.id, input.actorName, { status: input.status }, organization.id],
     );
     return { organization: { id: organization.id, code: organization.code, name: organization.name, organizationType: organization.organization_type, status: organization.status, updatedAt: new Date(organization.updated_at).toISOString() } };
   });

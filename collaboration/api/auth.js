@@ -69,6 +69,7 @@ function publicAuth(row) {
     mfaRequired: requiresMfaAtLogin(membership),
     mfaEnabled: Boolean(row.totp_enabled_at),
     mfaVerifiedAt: row.mfa_verified_at ? new Date(row.mfa_verified_at).toISOString() : "",
+    mustChangePassword: Boolean(row.must_change_password),
   };
 }
 
@@ -86,7 +87,7 @@ export async function login(req, { username, password, organizationCode = "" }) 
   if (!normalizedUsername || !password) throw Object.assign(new Error("请输入账号和密码。"), { statusCode: 400, code: "credentials_required" });
   return withSystem(async (client) => {
     const result = await client.query(
-      `SELECT u.id AS user_id,u.username,u.email,u.display_name,u.password_hash,u.status AS user_status,
+      `SELECT u.id AS user_id,u.username,u.email,u.display_name,u.password_hash,u.status AS user_status,u.must_change_password,
               u.failed_login_count,u.locked_until,u.totp_secret_ciphertext,u.totp_enabled_at,
               m.id AS membership_id,m.organization_id,m.role AS membership_role,m.status AS membership_status,m.permissions,m.mfa_required,
               o.code AS organization_code,o.name AS organization_name,o.organization_type,o.status AS organization_status
@@ -144,7 +145,7 @@ export async function authenticate(req, { allowPendingMfa = false } = {}) {
   return withSystem(async (client) => {
     const result = await client.query(
       `SELECT s.id AS session_id,s.csrf_token_hash,s.mfa_verified_at,s.last_seen_at,s.expires_at,s.revoked_at,
-              u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.totp_secret_ciphertext,
+              u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.must_change_password,u.totp_enabled_at,u.totp_secret_ciphertext,
               m.id AS membership_id,m.organization_id,m.role AS membership_role,m.status AS membership_status,m.permissions,m.mfa_required,
               o.code AS organization_code,o.name AS organization_name,o.organization_type,o.status AS organization_status
          FROM collaboration_sessions s

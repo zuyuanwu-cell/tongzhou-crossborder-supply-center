@@ -28,17 +28,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
-const demoSession: Session = {
+let demoSession: Session = {
   user: { id: "demo-user", username: "warehouse.admin", displayName: "仓库负责人", email: "warehouse@example.test" },
   membership: { id: "demo-membership", organizationId: "demo-org", organizationCode: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", organizationName: demoOem ? "战略包装伙伴" : "华东协同仓", organizationType: demoOem ? "packaging_factory" : "warehouse", role: demoAdmin ? "organization_admin" : "manager", status: "active", permissions: [], mfaRequired: demoAdmin },
   organization: { id: "demo-org", code: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", name: demoOem ? "战略包装伙伴" : "华东协同仓", type: demoOem ? "packaging_factory" : "warehouse" },
-  mfaRequired: demoAdmin, mfaEnabled: demoOem || demoAdmin, mfaVerifiedAt: demoOem || demoAdmin ? new Date().toISOString() : "", pendingMfa: false, oemEnabled: demoOem,
+  mfaRequired: demoAdmin, mfaEnabled: demoOem || demoAdmin, mfaVerifiedAt: demoOem || demoAdmin ? new Date().toISOString() : "", pendingMfa: false, mustChangePassword: false, oemEnabled: demoOem,
 };
 const now = Date.now();
 let demoMembers: OrganizationMember[] = [
-  { id: "demo-membership", userId: "demo-user", username: "warehouse.admin", email: "warehouse@example.test", displayName: "仓库负责人", userStatus: "active", role: "organization_admin", status: "active", permissions: [], mfaRequired: true, mfaEnabled: true, lastLoginAt: new Date(now - 18e5).toISOString(), createdAt: new Date(now - 30 * 864e5).toISOString() },
-  { id: "demo-operator", userId: "demo-user-2", username: "warehouse.operator", email: "operator@example.test", displayName: "入库操作员", userStatus: "active", role: "operator", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, lastLoginAt: new Date(now - 864e5).toISOString(), createdAt: new Date(now - 20 * 864e5).toISOString() },
-  { id: "demo-viewer", userId: "demo-user-3", username: "warehouse.viewer", email: "viewer@example.test", displayName: "质检查看员", userStatus: "active", role: "viewer", status: "disabled", permissions: [], mfaRequired: false, mfaEnabled: false, lastLoginAt: "", createdAt: new Date(now - 12 * 864e5).toISOString() },
+  { id: "demo-membership", userId: "demo-user", username: "warehouse.admin", email: "warehouse@example.test", displayName: "仓库负责人", userStatus: "active", role: "organization_admin", status: "active", permissions: [], mfaRequired: true, mfaEnabled: true, mustChangePassword: false, lastLoginAt: new Date(now - 18e5).toISOString(), createdAt: new Date(now - 30 * 864e5).toISOString() },
+  { id: "demo-operator", userId: "demo-user-2", username: "warehouse.operator", email: "", displayName: "入库操作员", userStatus: "active", role: "operator", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: true, lastLoginAt: new Date(now - 864e5).toISOString(), createdAt: new Date(now - 20 * 864e5).toISOString() },
+  { id: "demo-viewer", userId: "demo-user-3", username: "warehouse.viewer", email: "viewer@example.test", displayName: "质检查看员", userStatus: "active", role: "viewer", status: "disabled", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: "", createdAt: new Date(now - 12 * 864e5).toISOString() },
 ];
 let demoInvitations: OrganizationInvitation[] = [
   { id: "demo-invitation", username: "warehouse.finance", email: "finance@example.test", role: "finance", mfaRequired: true, status: "pending", expiresAt: new Date(now + 36 * 36e5).toISOString(), acceptedAt: "", createdAt: new Date(now - 12 * 36e5).toISOString() },
@@ -58,6 +58,14 @@ export async function confirmPasswordReset(token: string, password: string) { re
 export async function logout() { if (demoMode) return { ok: true }; return request<{ ok: boolean }>("/collaboration/auth/logout", { method: "POST" }); }
 export async function setupMfa() { return request<{ ok: boolean; configured: boolean; secret: string; uri: string }>("/collaboration/auth/mfa/setup", { method: "POST" }); }
 export async function verifyMfa(token: string) { return request<{ ok: boolean; session: Session }>("/collaboration/auth/mfa/verify", { method: "POST", body: JSON.stringify({ token }) }); }
+export async function updateOwnProfile(input: { displayName: string; email: string; currentPassword: string }) {
+  if (demoMode) { demoSession = { ...demoSession, user: { ...demoSession.user, displayName: input.displayName, email: input.email } }; return { ok: true, user: demoSession.user }; }
+  return request<{ ok: boolean; user: Session["user"] }>("/collaboration/v1/account/profile", { method: "PATCH", body: JSON.stringify(input) });
+}
+export async function changeOwnPassword(input: { currentPassword: string; newPassword: string }) {
+  if (demoMode) { demoSession = { ...demoSession, mustChangePassword: false }; return { ok: true, changed: true, mustChangePassword: false }; }
+  return request<{ ok: boolean; changed: boolean; mustChangePassword: boolean }>("/collaboration/v1/account/password", { method: "POST", body: JSON.stringify(input) });
+}
 export async function fetchMembers() { if (demoMode) return { ok: true, members: demoMembers }; return request<{ ok: boolean; members: OrganizationMember[] }>("/collaboration/v1/admin/members"); }
 export async function fetchInvitations() { if (demoMode) return { ok: true, invitations: demoInvitations }; return request<{ ok: boolean; invitations: OrganizationInvitation[] }>("/collaboration/v1/admin/invitations"); }
 export async function createInvitation(input: { username: string; email: string; role: OrganizationMemberRole; mfaRequired: boolean }) {
@@ -67,6 +75,14 @@ export async function createInvitation(input: { username: string; email: string;
     return { ok: true, invitation, delivery: { sent: false, reason: "demo" }, activationUrl: `${location.origin}${location.pathname}?invite=demo-${invitation.id}` } satisfies { ok: boolean } & InvitationDeliveryResult;
   }
   return request<{ ok: boolean } & InvitationDeliveryResult>("/collaboration/v1/admin/invitations", { method: "POST", body: JSON.stringify(input) });
+}
+export async function createMember(input: { username: string; displayName?: string; email?: string; password: string; role: OrganizationMemberRole; mfaRequired: boolean }) {
+  if (demoMode) {
+    const member: OrganizationMember = { id: crypto.randomUUID(), userId: crypto.randomUUID(), username: input.username, email: input.email || "", displayName: input.displayName || input.username, userStatus: "active", role: input.role, status: "active", permissions: [], mfaRequired: input.role === "organization_admin" || input.mfaRequired, mfaEnabled: false, mustChangePassword: true, lastLoginAt: "", createdAt: new Date().toISOString() };
+    demoMembers = [member, ...demoMembers];
+    return { ok: true, member };
+  }
+  return request<{ ok: boolean; member: OrganizationMember }>("/collaboration/v1/admin/members", { method: "POST", body: JSON.stringify(input) });
 }
 export async function updateMember(id: string, input: { role?: OrganizationMemberRole; status?: "active" | "disabled"; mfaRequired?: boolean }) {
   if (demoMode) { demoMembers = demoMembers.map((member) => member.id === id ? { ...member, ...input } : member); return { ok: true, membership: { id, ...input } }; }

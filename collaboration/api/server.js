@@ -50,8 +50,10 @@ import {
 import {
   acceptInvitation,
   bootstrapOrganization,
+  changeOwnPassword,
   confirmPasswordReset,
   createInvitation,
+  createMember,
   getOrganizationAccess,
   listInvitations,
   listMembers,
@@ -65,6 +67,7 @@ import {
   revokeInvitationInternally,
   revokeOwnSession,
   updateMember,
+  updateOwnProfile,
   updateOrganizationStatus,
 } from "./identity.js";
 
@@ -125,6 +128,7 @@ function publicSession(auth) {
     mfaEnabled: Boolean(auth.mfaEnabled),
     mfaVerifiedAt: auth.mfaVerifiedAt || "",
     pendingMfa: Boolean(auth.pendingMfa || (auth.mfaRequired && !auth.mfaVerifiedAt)),
+    mustChangePassword: Boolean(auth.mustChangePassword),
     oemEnabled: collaborationConfig.oemEnabled,
   };
 }
@@ -270,12 +274,30 @@ async function route(req, res) {
   assertAuthenticated(auth);
   if (!["GET", "HEAD"].includes(req.method || "GET")) assertCsrf(req, auth);
 
+  const passwordSelfServiceRoute = url.pathname === "/collaboration/v1/account/profile" || url.pathname === "/collaboration/v1/account/password";
+  if (auth.mustChangePassword && !passwordSelfServiceRoute) {
+    throw Object.assign(new Error("请先修改管理员分配的初始密码。"), { statusCode: 428, code: "password_change_required" });
+  }
+  if (url.pathname === "/collaboration/v1/account/profile" && req.method === "PATCH") {
+    sendJson(res, 200, { ok: true, ...(await updateOwnProfile(auth, await readJson(req))) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/account/password" && req.method === "POST") {
+    sendJson(res, 200, { ok: true, ...(await changeOwnPassword(auth, await readJson(req))) });
+    return;
+  }
+
   if (url.pathname === "/collaboration/v1/dashboard" && req.method === "GET") {
     sendJson(res, 200, { ok: true, dashboard: await organizationDashboard(auth) });
     return;
   }
   if (url.pathname === "/collaboration/v1/admin/members" && req.method === "GET") {
     sendJson(res, 200, { ok: true, ...(await listMembers(auth)) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/admin/members" && req.method === "POST") {
+    assertFreshMfa(auth);
+    sendJson(res, 201, { ok: true, ...(await createMember(auth, await readJson(req))) });
     return;
   }
   if (url.pathname === "/collaboration/v1/admin/invitations" && req.method === "GET") {
