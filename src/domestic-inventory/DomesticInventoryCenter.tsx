@@ -330,6 +330,7 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
 
   const activeWarehouses = useMemo(() => payload.warehouses.filter((item) => item.status === "active"), [payload.warehouses]);
   const productOptions = useMemo(() => uniqueProducts([...products, ...inventoryProducts]), [products, inventoryProducts]);
+  const ledgerSkuCount = Number((payload.summary as typeof payload.summary & { ledgerSkuCount?: number }).ledgerSkuCount ?? payload.balances.length);
 
   function runSearch() {
     setQuery(keyword.trim());
@@ -415,18 +416,18 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
       {error ? <div className="domestic-inventory-notice error"><AlertTriangle size={17} />{error}<button type="button" onClick={() => setError("")}><X size={15} /></button></div> : null}
       {success ? <div className="domestic-inventory-notice success"><Check size={17} />{success}<button type="button" onClick={() => setSuccess("")}><X size={15} /></button></div> : null}
 
-      {canManage && (!payload.warehouses.length || !payload.balances.length) ? <section className="domestic-onboarding">
+      {canManage && (!payload.warehouses.length || !ledgerSkuCount) ? <section className="domestic-onboarding">
         <header><div><span>FIRST USE</span><h3>三步建立国内仓库存台账</h3><p>先建仓，再一次性导入期初库存；之后所有入库、出库和调整都会形成可追溯流水。</p></div><FileUp size={28} /></header>
         <div>
           <article className={!payload.warehouses.length ? "current" : "done"}><b>01</b><span><strong>建立仓库档案</strong><small>维护仓库编码、名称和联系人</small></span>{!payload.warehouses.length ? <button type="button" onClick={() => { setTab("warehouses"); setWarehouseModal(true); }}>新建仓库</button> : <Check size={18} />}</article>
-          <article className={payload.warehouses.length && !payload.balances.length ? "current" : payload.balances.length ? "done" : ""}><b>02</b><span><strong>导入期初库存</strong><small>下载模板后批量导入 SKU、数量和安全库存</small></span>{payload.warehouses.length && !payload.balances.length ? <button type="button" disabled={!activeWarehouses.length} onClick={() => setOpeningImportModal(true)}>导入期初</button> : payload.balances.length ? <Check size={18} /> : null}</article>
-          <article className={payload.balances.length ? "current" : ""}><b>03</b><span><strong>维护安全库存</strong><small>在库存台账直接设置补货预警线</small></span></article>
+          <article className={payload.warehouses.length && !ledgerSkuCount ? "current" : ledgerSkuCount ? "done" : ""}><b>02</b><span><strong>导入期初库存</strong><small>下载模板后批量导入 SKU、数量和安全库存</small></span>{payload.warehouses.length && !ledgerSkuCount ? <button type="button" disabled={!activeWarehouses.length} onClick={() => setOpeningImportModal(true)}>导入期初</button> : ledgerSkuCount ? <Check size={18} /> : null}</article>
+          <article className={ledgerSkuCount ? "current" : ""}><b>03</b><span><strong>维护安全库存</strong><small>在库存台账直接设置补货预警线</small></span></article>
         </div>
       </section> : null}
 
       <section className="domestic-inventory-metrics">
         <article><span>启用仓库</span><strong>{payload.summary.warehouses}</strong><small>国内成品仓</small></article>
-        <article><span>在库 SKU</span><strong>{numberText(payload.summary.skuCount)}</strong><small>已建立库存台账</small></article>
+        <article><span>在库 SKU</span><strong>{numberText(payload.summary.skuCount)}</strong><small>当前在库数量大于 0</small></article>
         <article><span>在库数量</span><strong>{numberText(payload.summary.onHandQty)}</strong><small>可用 {numberText(payload.summary.availableQty)}</small></article>
         <article className={payload.summary.lowStockSkuCount ? "warning" : ""}><span>低库存</span><strong>{numberText(payload.summary.lowStockSkuCount)}</strong><small>低于安全库存</small></article>
       </section>
@@ -505,7 +506,7 @@ function InventoryTable({ payload, loading, canManage, safetyDrafts, setSafetyDr
   setSafetyDrafts: (value: Record<string, string>) => void;
   onSaveSafety: (warehouseId: string, sku: string, current: number) => void;
 }) {
-  if (!loading && !payload.balances.length) return <EmptyState title="还没有库存台账" description="先建立国内仓库，再登记第一笔采购入库。" />;
+  if (!loading && !payload.balances.length) return <EmptyState title="当前没有在库商品" description="入库后将在这里展示；库存为 0 的商品已自动隐藏。" />;
   return (
     <div className="domestic-inventory-table-wrap">
       <table className="domestic-inventory-table">

@@ -221,7 +221,7 @@ export function createDomesticInventoryService(store) {
   }
 
   function list(filters = {}, context = {}) {
-    if (!chinaAllowed(context)) return { ok: true, updatedAt: nowIso(), summary: { warehouses: 0, skuCount: 0, onHandQty: 0, availableQty: 0, lowStockSkuCount: 0 }, warehouses: [], balances: [] };
+    if (!chinaAllowed(context)) return { ok: true, updatedAt: nowIso(), summary: { warehouses: 0, skuCount: 0, ledgerSkuCount: 0, onHandQty: 0, availableQty: 0, lowStockSkuCount: 0 }, warehouses: [], balances: [] };
     const warehouseWhere = [];
     const warehouseParams = [];
     if (context.warehouseIds?.length) {
@@ -229,7 +229,13 @@ export function createDomesticInventoryService(store) {
       warehouseParams.push(...context.warehouseIds);
     }
     const warehouses = store.all(`SELECT * FROM domestic_warehouses ${warehouseWhere.length ? `WHERE ${warehouseWhere.join(" AND ")}` : ""} ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,name`, warehouseParams).map(warehouseFromRow);
-    const where = [];
+    const ledgerWhere = [];
+    const ledgerParams = [];
+    if (context.warehouseIds?.length) { ledgerWhere.push(`b.warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); ledgerParams.push(...context.warehouseIds); }
+    if (context.skus?.length) { ledgerWhere.push(`UPPER(b.sku) IN (${context.skus.map(() => "?").join(",")})`); ledgerParams.push(...context.skus); }
+    const ledgerClause = ledgerWhere.length ? `WHERE ${ledgerWhere.join(" AND ")}` : "";
+    const ledgerSkuCount = number(store.first(`SELECT COUNT(*) AS count FROM domestic_inventory_balances b ${ledgerClause}`, ledgerParams)?.count);
+    const where = ["b.on_hand_qty>0"];
     const params = [];
     if (filters.warehouseId) { where.push("b.warehouse_id=?"); params.push(text(filters.warehouseId)); }
     if (context.warehouseIds?.length) { where.push(`b.warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); params.push(...context.warehouseIds); }
@@ -256,6 +262,7 @@ export function createDomesticInventoryService(store) {
       summary: {
         warehouses: warehouses.filter((item) => item.status === "active").length,
         skuCount: balances.length,
+        ledgerSkuCount,
         onHandQty: balances.reduce((sum, item) => sum + item.onHandQty, 0),
         availableQty: balances.reduce((sum, item) => sum + item.availableQty, 0),
         lowStockSkuCount: balances.filter((item) => item.lowStock).length,

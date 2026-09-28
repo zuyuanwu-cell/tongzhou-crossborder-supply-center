@@ -158,6 +158,10 @@ try {
   assert.equal(service.cancelTransfer(cancelledTransfer.transferId, sourceWarehouseUser).transfer.status, "cancelled");
   assert.equal(service.cancelTransfer(cancelledTransfer.transferId, sourceWarehouseUser).idempotentReplay, true);
   assert.equal(service.list({ warehouseId: warehouseA.id }, admin).balances.find((item) => item.sku === "SKU-B").onHandQty, 4);
+  service.createMovement({ warehouseId: warehouseA.id, type: "outbound", referenceNo: "USE-ALL-SKU-B", lines: [{ sku: "SKU-B", productName: "产品B", unit: "盒", quantity: 4 }] }, admin);
+  const afterFullOutbound = service.list({ warehouseId: warehouseA.id }, admin);
+  assert.equal(afterFullOutbound.balances.some((item) => item.sku === "SKU-B"), false, "zero-stock SKUs must not appear in the inventory balance list");
+  assert.ok(afterFullOutbound.summary.ledgerSkuCount > afterFullOutbound.summary.skuCount, "zero-stock ledger rows remain available for traceability");
 
   const scoped = { ...admin, warehouseIds: [warehouseA.id], skus: ["SKU-A"] };
   assert.deepEqual(service.list({}, scoped).warehouses.map((item) => item.id), [warehouseA.id]);
@@ -167,7 +171,7 @@ try {
 
   service.updateWarehouse(warehouseB.id, { status: "inactive" }, admin);
   assert.throws(() => service.createMovement({ warehouseId: warehouseB.id, type: "inbound", lines: [{ sku: "SKU-A", productName: "产品A", quantity: 1 }] }, admin), (error) => error?.code === "warehouse_inactive");
-  assert.equal(service.listMovements({}, admin).movements.length, 12);
+  assert.equal(service.listMovements({}, admin).movements.length, 13);
   console.log("domestic inventory tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });
