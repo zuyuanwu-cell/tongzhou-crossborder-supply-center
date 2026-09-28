@@ -42,15 +42,23 @@ export type StockupExecutionTask = {
 export type StockupShipmentLine = {
   id: string;
   shipmentId: string;
+  requestId: string;
   taskId: string;
   lineId: string;
   sku: string;
   productName: string;
+  imageUrl: string;
   shippedQty: number;
   unit: string;
   baseUnitCostCny: number;
   weightKg: number;
   volumeM3: number;
+  cartonCount: number;
+  unitsPerCarton: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
 };
 
 export type StockupShipment = {
@@ -58,6 +66,8 @@ export type StockupShipment = {
   requestId: string;
   shipmentNo: string;
   originWarehouse: string;
+  originWarehouseId: string;
+  originAddress: string;
   destinationWarehouseId: string;
   destinationWarehouseName: string;
   destinationCountry: string;
@@ -73,6 +83,10 @@ export type StockupShipment = {
   totalVolumeM3: number;
   chargeableWeightKg: number;
   note: string;
+  boxMark: string;
+  inventoryMovementId: string;
+  requestIds?: string[];
+  requestNos?: string[];
   version: number;
   lines?: StockupShipmentLine[];
 };

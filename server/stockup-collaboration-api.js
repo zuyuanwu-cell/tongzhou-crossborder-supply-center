@@ -54,7 +54,7 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [] }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null }) {
   return async function handleStockupCollaborationApi(req, res, url) {
     if (!url.pathname.startsWith("/api/stockup/collaboration")) return false;
     const auth = getAuth(req);
@@ -63,6 +63,23 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       requireAny(auth, ["stockup_request_view_own", "stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view", "stockup_cost_report_view", "stockup_request_create", "stockup_request_accept", "stockup_execution_update", "stockup_shipment_update", "stockup_receipt_confirm", "stockup_cost_edit", "stockup_cost_review", "stockup_cost_lock"], "当前账号没有备货协同查看权限。");
       const suffix = url.pathname.replace("/api/stockup/collaboration", "") || "/";
       let match;
+
+      if (suffix === "/products" && req.method === "GET") {
+        sendJson(res, 200, listProducts(context, queryObject(url), auth));
+        return true;
+      }
+
+      if (suffix === "/domestic-warehouses" && req.method === "GET") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有国内仓发运权限。");
+        sendJson(res, 200, listDomesticWarehouses(context, auth));
+        return true;
+      }
+
+      if (suffix === "/domestic-availability" && req.method === "GET") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有国内库存查看权限。");
+        sendJson(res, 200, getDomesticAvailability(queryObject(url), context, auth));
+        return true;
+      }
 
       if (suffix === "/warehouses" && req.method === "GET") {
         const warehouses = listWarehouses(context).filter((warehouse) => {
@@ -148,7 +165,14 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       }
       if ((match = suffix.match(/^\/shipments\/([^/]+)\/dispatch$/)) && req.method === "POST") {
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有确认发运权限。");
-        const result = service.dispatchShipment(decodeURIComponent(match[1]), await readBody(req), context);
+        const shipmentId = decodeURIComponent(match[1]);
+        const payload = await readBody(req);
+        const shipment = service.getShipment(shipmentId, context);
+        if (shipment.originWarehouseId && !shipment.inventoryMovementId) {
+          const outbound = createDomesticOutbound(shipment, auth);
+          payload.inventoryMovementId = outbound?.movementId || "";
+        }
+        const result = service.dispatchShipment(shipmentId, payload, context);
         appendActionLog(auth, "确认备货发运", "stockup_collaboration_shipment", result.shipment.shipmentNo, { trackingNo: result.shipment.trackingNo });
         sendJson(res, 200, result);
         return true;

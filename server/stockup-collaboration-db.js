@@ -120,6 +120,8 @@ export async function initStockupCollaborationStore(dbPath) {
       request_id TEXT NOT NULL,
       shipment_no TEXT NOT NULL UNIQUE,
       origin_warehouse TEXT,
+      origin_warehouse_id TEXT,
+      origin_address TEXT,
       destination_warehouse_id TEXT,
       destination_warehouse_name TEXT NOT NULL,
       destination_country TEXT NOT NULL,
@@ -135,6 +137,8 @@ export async function initStockupCollaborationStore(dbPath) {
       total_volume_m3 REAL NOT NULL DEFAULT 0,
       chargeable_weight_kg REAL NOT NULL DEFAULT 0,
       note TEXT,
+      box_mark TEXT,
+      inventory_movement_id TEXT,
       version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -143,16 +147,31 @@ export async function initStockupCollaborationStore(dbPath) {
     CREATE TABLE IF NOT EXISTS stockup_shipment_lines (
       id TEXT PRIMARY KEY,
       shipment_id TEXT NOT NULL,
+      request_id TEXT,
       task_id TEXT NOT NULL,
       line_id TEXT NOT NULL,
       sku TEXT NOT NULL,
       product_name TEXT NOT NULL,
+      image_url TEXT,
       shipped_qty REAL NOT NULL,
       unit TEXT NOT NULL,
       base_unit_cost_cny REAL NOT NULL DEFAULT 0,
       weight_kg REAL NOT NULL DEFAULT 0,
       volume_m3 REAL NOT NULL DEFAULT 0
+      ,carton_count REAL NOT NULL DEFAULT 0
+      ,units_per_carton REAL NOT NULL DEFAULT 0
+      ,carton_length_cm REAL NOT NULL DEFAULT 0
+      ,carton_width_cm REAL NOT NULL DEFAULT 0
+      ,carton_height_cm REAL NOT NULL DEFAULT 0
+      ,carton_weight_kg REAL NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS stockup_shipment_request_links (
+      shipment_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(shipment_id, request_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_shipment_links_request ON stockup_shipment_request_links(request_id, shipment_id);
 
     CREATE TABLE IF NOT EXISTS stockup_receipts (
       id TEXT PRIMARY KEY,
@@ -259,6 +278,33 @@ export async function initStockupCollaborationStore(dbPath) {
       created_at TEXT NOT NULL
     );
   `);
+
+  const ensureColumn = (table, definition) => {
+    const column = definition.trim().split(/\s+/)[0];
+    if (!rows(db, `PRAGMA table_info(${table})`).some((item) => String(item.name) === column)) db.run(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  };
+  ensureColumn("stockup_shipments", "origin_warehouse_id TEXT");
+  ensureColumn("stockup_shipments", "origin_address TEXT");
+  ensureColumn("stockup_shipments", "box_mark TEXT");
+  ensureColumn("stockup_shipments", "inventory_movement_id TEXT");
+  ensureColumn("stockup_shipment_lines", "request_id TEXT");
+  ensureColumn("stockup_shipment_lines", "image_url TEXT");
+  ensureColumn("stockup_shipment_lines", "carton_count REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "units_per_carton REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "carton_length_cm REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "carton_width_cm REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "carton_height_cm REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "carton_weight_kg REAL NOT NULL DEFAULT 0");
+  db.run(`
+    UPDATE stockup_shipment_lines
+    SET image_url = COALESCE((
+      SELECT image_url
+      FROM stockup_request_lines
+      WHERE stockup_request_lines.id = stockup_shipment_lines.line_id
+    ), '')
+    WHERE COALESCE(image_url, '') = ''
+  `);
+  db.run("PRAGMA user_version = 3");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

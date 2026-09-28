@@ -4236,6 +4236,21 @@ export function fetchStockupCollaborationWarehouses() {
   }>("/api/stockup/collaboration/warehouses");
 }
 
+export function fetchStockupCollaborationProducts(keyword = "") {
+  const query = new URLSearchParams({ limit: "10000" });
+  if (keyword.trim()) query.set("keyword", keyword.trim());
+  return requestJson<{ ok: boolean; total: number; products: CatalogProduct[] }>(`/api/stockup/collaboration/products?${query.toString()}`);
+}
+
+export function fetchStockupDomesticWarehouses() {
+  return requestJson<{ ok: boolean; warehouses: DomesticWarehouse[] }>("/api/stockup/collaboration/domestic-warehouses");
+}
+
+export function fetchStockupDomesticAvailability(warehouseId: string, skus: string[]) {
+  const params = new URLSearchParams({ warehouseId, skus: skus.join(",") });
+  return requestJson<{ ok: boolean; warehouse: DomesticWarehouse; queriedAt: string; items: Array<{ warehouseId: string; warehouseName: string; sku: string; productId: string; productName: string; imageUrl: string; unit: string; onHandQty: number; reservedQty: number; availableQty: number; knownLotQty: number; untrackedQty: number; lotCount: number; cartonProfiles: Array<{ unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; availableQty: number; fullCartons: number; looseUnits: number }>; lots: DomesticInventoryLot[] }> }>(`/api/stockup/collaboration/domestic-availability?${params}`);
+}
+
 export function fetchStockupCollaborationRequest(requestId: string) {
   return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}`);
 }

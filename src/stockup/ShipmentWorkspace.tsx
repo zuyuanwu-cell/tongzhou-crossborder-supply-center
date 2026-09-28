@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CalendarClock, Check, MapPin, PackageOpen, Plus, Route, Ship, Truck, X } from "lucide-react";
-import { confirmStockupCollaborationReceipt, createStockupCollaborationShipment, dispatchStockupCollaborationShipment } from "../api";
+import { CalendarClock, Check, MapPin, PackageOpen, Plus, Printer, Route, Ship, Truck, Warehouse, X } from "lucide-react";
+import QRCode from "qrcode";
+import { confirmStockupCollaborationReceipt, createStockupCollaborationShipment, dispatchStockupCollaborationShipment, fetchStockupDomesticAvailability, fetchStockupDomesticWarehouses, type DomesticWarehouse } from "../api";
 import type { StockupRequest, StockupShipment } from "./types";
 import { formatStockupDate } from "./status";
 
@@ -13,14 +14,17 @@ type Props = {
   onChanged: () => Promise<void>;
 };
 
+type ShipmentDraftLine = { requestId: string; requestNo: string; taskId: string; sku: string; productName: string; unit: string; shippedQty: number; baseUnitCostCny: number; availableQty: number; cartonCount: number; unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; weightKg: number; volumeM3: number };
+
 export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, loadRequest, onChanged }: Props) {
   const [modal, setModal] = useState<"shipment" | "receipt" | "">("");
-  const [selectedRequest, setSelectedRequest] = useState<StockupRequest | null>(null);
+  const [selectedRequests, setSelectedRequests] = useState<StockupRequest[]>([]);
   const [selectedShipment, setSelectedShipment] = useState<StockupShipment | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ requestId: "", originWarehouse: "", carrier: "", transportMode: "海运", trackingNo: "", etd: "", eta: "", packages: 0, totalWeightKg: 0, totalVolumeM3: 0, chargeableWeightKg: 0, note: "" });
-  const [shipLines, setShipLines] = useState<Array<{ taskId: string; sku: string; productName: string; shippedQty: number; baseUnitCostCny: number }>>([]);
+  const [form, setForm] = useState({ originWarehouseId: "", originWarehouse: "", originAddress: "", carrier: "", transportMode: "海运", trackingNo: "", etd: "", eta: "", packages: 0, totalWeightKg: 0, totalVolumeM3: 0, chargeableWeightKg: 0, boxMark: "", note: "" });
+  const [shipLines, setShipLines] = useState<ShipmentDraftLine[]>([]);
+  const [domesticWarehouses, setDomesticWarehouses] = useState<DomesticWarehouse[]>([]);
   const [receipt, setReceipt] = useState({ arrivedAt: new Date().toISOString().slice(0, 10), shelvedAt: "", wmsInboundNo: "", note: "" });
   const [receiptLines, setReceiptLines] = useState<Array<{ shipmentLineId: string; sku: string; productName: string; expectedQty: number; receivedQty: number; goodQty: number; damagedQty: number; shortageQty: number; pendingQty: number; shelvedQty: number; unit: string; exceptionNote: string }>>([]);
 
@@ -29,25 +33,64 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
   const drafts = shipments.filter((shipment) => shipment.status === "draft");
   const arrived = shipments.filter((shipment) => shipment.status === "arrived");
 
-  async function selectRequest(requestId: string) {
-    setForm((current) => ({ ...current, requestId }));
-    if (!requestId) { setSelectedRequest(null); setShipLines([]); return; }
-    const detail = await loadRequest(requestId);
-    setSelectedRequest(detail);
-    const lines = (detail.tasks || []).filter((task) => task.completedQty > 0 && !["terminated"].includes(task.status)).map((task) => {
+  function linesFor(details: StockupRequest[]) {
+    return details.flatMap((detail) => (detail.tasks || []).filter((task) => task.completedQty > 0 && task.status !== "terminated").map((task) => {
       const product = detail.lines.find((line) => line.id === task.lineId);
       const sent = (detail.shipments || []).flatMap((shipment) => shipment.lines || []).filter((line) => line.taskId === task.id).reduce((sum, line) => sum + line.shippedQty, 0);
-      return { taskId: task.id, sku: product?.sku || "", productName: product?.productName || "", shippedQty: Math.max(0, task.completedQty - sent), baseUnitCostCny: Number(product?.targetUnitCostCny || 0) };
-    }).filter((line) => line.shippedQty > 0);
-    setShipLines(lines);
+      return { requestId: detail.id, requestNo: detail.requestNo, taskId: task.id, sku: product?.sku || "", productName: product?.productName || "", unit: product?.unit || "件", shippedQty: Math.max(0, task.completedQty - sent), baseUnitCostCny: Number(product?.targetUnitCostCny || 0), availableQty: 0, cartonCount: 0, unitsPerCarton: 0, cartonLengthCm: 0, cartonWidthCm: 0, cartonHeightCm: 0, cartonWeightKg: 0, weightKg: 0, volumeM3: 0 };
+    }).filter((line) => line.shippedQty > 0));
+  }
+
+  async function toggleRequest(requestId: string, checked: boolean) {
+    setError("");
+    if (!checked) {
+      const next = selectedRequests.filter((item) => item.id !== requestId);
+      const nextLines = linesFor(next);
+      setSelectedRequests(next); setShipLines(nextLines);
+      if (form.originWarehouseId && nextLines.length) await applyAvailability(form.originWarehouseId, nextLines);
+      return;
+    }
+    const detail = await loadRequest(requestId);
+    if (selectedRequests.length && selectedRequests[0].destinationWarehouseId !== detail.destinationWarehouseId) { setError("一次发运只能合并相同目的仓的备货需求。"); return; }
+    const next = [...selectedRequests, detail];
+    const nextLines = linesFor(next);
+    setSelectedRequests(next);
+    setShipLines(nextLines);
+    if (form.originWarehouseId) await applyAvailability(form.originWarehouseId, nextLines);
+  }
+
+  async function applyAvailability(warehouseId: string, sourceLines: ShipmentDraftLine[]) {
+    try {
+      const result = await fetchStockupDomesticAvailability(warehouseId, [...new Set(sourceLines.map((line) => line.sku))]);
+      const availability = new Map(result.items.map((item) => [item.sku.toUpperCase(), item]));
+      setShipLines(sourceLines.map((line) => {
+        const stock = availability.get(line.sku.toUpperCase());
+        const profile = stock?.cartonProfiles?.[0];
+        return { ...line, availableQty: stock?.availableQty || 0, unitsPerCarton: profile?.unitsPerCarton || line.unitsPerCarton, cartonLengthCm: profile?.cartonLengthCm || line.cartonLengthCm, cartonWidthCm: profile?.cartonWidthCm || line.cartonWidthCm, cartonHeightCm: profile?.cartonHeightCm || line.cartonHeightCm, cartonWeightKg: profile?.cartonWeightKg || line.cartonWeightKg, cartonCount: profile?.unitsPerCarton ? Math.ceil(line.shippedQty / profile.unitsPerCarton) : line.cartonCount };
+      }));
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "国内库存读取失败"); }
+  }
+
+  async function selectOriginWarehouse(warehouseId: string) {
+    const warehouse = domesticWarehouses.find((item) => item.id === warehouseId);
+    setForm((current) => ({ ...current, originWarehouseId: warehouse?.id || "", originWarehouse: warehouse?.name || "", originAddress: warehouse ? [warehouse.province, warehouse.city, warehouse.address, warehouse.contactName, warehouse.contactPhone].filter(Boolean).join(" ") : "" }));
+    if (warehouse && shipLines.length) await applyAvailability(warehouse.id, shipLines);
   }
 
   async function submitShipment() {
-    if (!selectedRequest || !shipLines.some((line) => line.shippedQty > 0)) { setError("请选择有已完成数量的需求。" ); return; }
+    if (!selectedRequests.length || !shipLines.some((line) => line.shippedQty > 0)) { setError("请选择有已完成数量的需求。" ); return; }
+    if (!form.originWarehouseId) { setError("请选择国内发货仓，系统会据此校验并扣减库存。" ); return; }
     if (!form.carrier || !form.trackingNo || !form.eta) { setError("请填写承运商、物流单号和预计到仓时间。" ); return; }
+    if (shipLines.some((line) => line.shippedQty > 0 && [line.cartonCount, line.unitsPerCarton, line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg].some((value) => value <= 0))) { setError("请补齐每个发运产品的箱数、箱规、外箱长宽高和单箱重量。" ); return; }
+    const requestedBySku = new Map<string, number>();
+    shipLines.forEach((line) => requestedBySku.set(line.sku, (requestedBySku.get(line.sku) || 0) + line.shippedQty));
+    const insufficient = shipLines.find((line) => (requestedBySku.get(line.sku) || 0) > line.availableQty);
+    if (insufficient) { setError(`${insufficient.sku} 国内仓可用库存不足，可用 ${insufficient.availableQty}，本次需发 ${(requestedBySku.get(insufficient.sku) || 0)}。`); return; }
     setBusy(true); setError("");
     try {
-      const created = await createStockupCollaborationShipment({ ...form, lines: shipLines.filter((line) => line.shippedQty > 0) });
+      const computedLines = shipLines.filter((line) => line.shippedQty > 0).map((line) => ({ ...line, weightKg: line.cartonCount * line.cartonWeightKg, volumeM3: line.cartonCount * line.cartonLengthCm * line.cartonWidthCm * line.cartonHeightCm / 1_000_000 }));
+      const totals = { packages: computedLines.reduce((sum, line) => sum + line.cartonCount, 0), totalWeightKg: computedLines.reduce((sum, line) => sum + line.weightKg, 0), totalVolumeM3: computedLines.reduce((sum, line) => sum + line.volumeM3, 0) };
+      const created = await createStockupCollaborationShipment({ ...form, ...totals, requestId: selectedRequests[0].id, requestIds: selectedRequests.map((item) => item.id), lines: computedLines });
       await dispatchStockupCollaborationShipment(created.shipment.id, { carrier: form.carrier, transportMode: form.transportMode, trackingNo: form.trackingNo, etd: form.etd, eta: form.eta, actualShippedAt: new Date().toISOString() });
       setModal(""); await onChanged();
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "登记发运失败"); }
@@ -75,20 +118,66 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     setReceiptLines((current) => current.map((line, itemIndex) => itemIndex === index ? { ...line, [field]: value } : line));
   }
 
+  async function openShipmentEditor() {
+    setError(""); setSelectedRequests([]); setShipLines([]); setModal("shipment");
+    try {
+      const result = await fetchStockupDomesticWarehouses();
+      setDomesticWarehouses((result.warehouses || []).filter((warehouse) => warehouse.status === "active"));
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "国内仓列表读取失败"); }
+  }
+
   return <>
     <div className="sc-logistics-summary"><article><Route size={21} /><div><small>待登记发运</small><b>{readyRequests.length}</b></div></article><article><Ship size={21} /><div><small>在途批次</small><b>{inTransit.length}</b></div></article><article><PackageOpen size={21} /><div><small>已到仓批次</small><b>{arrived.length}</b></div></article><article><CalendarClock size={21} /><div><small>7天内预计到仓</small><b>{inTransit.filter((item) => item.eta && item.eta <= new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)).length}</b></div></article></div>
-    <section className="sc-panel"><div className="sc-panel-head"><div><span className="sc-eyebrow">LOGISTICS & RECEIVING</span><h3>物流与到仓</h3><p>物流跟单登记发运，仓库只处理待收货批次。</p></div>{canShip ? <button className="sc-button sc-button-primary" onClick={() => { setModal("shipment"); setSelectedRequest(null); setShipLines([]); }}><Plus size={17} />登记发运</button> : null}</div>
+    <section className="sc-panel"><div className="sc-panel-head"><div><span className="sc-eyebrow">LOGISTICS & RECEIVING</span><h3>物流与到仓</h3><p>可合并多个同目的仓需求，从国内仓库存直接发运。</p></div>{canShip ? <button className="sc-button sc-button-primary" onClick={() => void openShipmentEditor()}><Plus size={17} />登记发运</button> : null}</div>
       <div className="sc-shipment-board"><div><h4>待发运 <span>{drafts.length}</span></h4>{drafts.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} />)}{!drafts.length ? <EmptyLane text="暂无待发运批次" /> : null}</div><div><h4>在途中 <span>{inTransit.length}</span></h4>{inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}{!inTransit.length ? <EmptyLane text="暂无在途批次" /> : null}</div><div><h4>已到仓 <span>{arrived.length}</span></h4>{arrived.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} />)}{!arrived.length ? <EmptyLane text="暂无已到仓批次" /> : null}</div></div>
     </section>
 
-    {modal === "shipment" ? <div className="sc-modal-backdrop"><div className="sc-modal sc-medium-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">NEW SHIPMENT</span><h2>登记发运</h2><p>选择已完工任务，登记物流单号与预计到仓时间。</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}<div className="sc-form-grid"><label className="full">备货需求<select value={form.requestId} onChange={(event) => void selectRequest(event.target.value)}><option value="">请选择待发运需求</option>{readyRequests.map((request) => <option value={request.id} key={request.id}>{request.requestNo} · {request.destinationWarehouseName}</option>)}</select></label><label>发货仓<input value={form.originWarehouse} onChange={(event) => setForm({ ...form, originWarehouse: event.target.value })} /></label><label>运输方式<select value={form.transportMode} onChange={(event) => setForm({ ...form, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label><label>承运商<input value={form.carrier} onChange={(event) => setForm({ ...form, carrier: event.target.value })} /></label><label>物流单号 / 提单号<input value={form.trackingNo} onChange={(event) => setForm({ ...form, trackingNo: event.target.value })} /></label><label>计划发运日 ETD<input type="date" value={form.etd} onChange={(event) => setForm({ ...form, etd: event.target.value })} /></label><label>预计到仓日 ETA<input type="date" value={form.eta} onChange={(event) => setForm({ ...form, eta: event.target.value })} /></label></div><div className="sc-shipment-lines">{shipLines.map((line, index) => <div key={line.taskId}><span>{line.sku}</span><b>{line.productName}</b><label><input type="number" min="0" value={line.shippedQty} onChange={(event) => setShipLines((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, shippedQty: Number(event.target.value) } : item))} /> 件</label></div>)}</div></div><footer className="sc-modal-foot"><span>确认后会立即进入在途状态并回传运营。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitShipment}><Truck size={17} />确认发运</button></div></footer></div></div> : null}
+    {modal === "shipment" ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">DOMESTIC STOCK SHIPMENT</span><h2>从国内仓合并发运</h2><p>可勾选多个相同目的仓的需求，确认发运时自动生成国内仓出库流水。</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
+      <div className="sc-request-checklist"><b>选择待发运需求</b>{readyRequests.map((request) => { const checked = selectedRequests.some((item) => item.id === request.id); const disabled = !checked && selectedRequests.length > 0 && selectedRequests[0].destinationWarehouseId !== request.destinationWarehouseId; return <label className={disabled ? "is-disabled" : ""} key={request.id}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => void toggleRequest(request.id, event.target.checked)} /><span><strong>{request.requestNo}</strong><small>{request.destinationWarehouseName} · {request.lines.map((line) => line.sku).join("、")}</small></span></label>; })}</div>
+      <div className="sc-form-grid sc-form-grid-4"><label>国内发货仓<select value={form.originWarehouseId} onChange={(event) => void selectOriginWarehouse(event.target.value)}><option value="">请选择有库存的国内仓</option>{domesticWarehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>运输方式<select value={form.transportMode} onChange={(event) => setForm({ ...form, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label><label>承运商<input value={form.carrier} onChange={(event) => setForm({ ...form, carrier: event.target.value })} /></label><label>物流单号 / 提单号<input value={form.trackingNo} onChange={(event) => setForm({ ...form, trackingNo: event.target.value })} /></label><label>计划发运日 ETD<input type="date" value={form.etd} onChange={(event) => setForm({ ...form, etd: event.target.value })} /></label><label>预计到仓日 ETA<input type="date" value={form.eta} onChange={(event) => setForm({ ...form, eta: event.target.value })} /></label><label className="full">发货地址（引用仓库档案）<input value={form.originAddress} readOnly placeholder="选择国内仓后自动带入" /></label><label className="full">箱唛内容<input value={form.boxMark} onChange={(event) => setForm({ ...form, boxMark: event.target.value })} placeholder="例如：项目、目的仓、PO号或客户箱唛要求" /></label></div>
+      <div className="sc-pack-table"><div className="head"><span>需求 / 产品</span><span>发货数量 / 库存</span><span>箱数</span><span>箱规</span><span>外箱尺寸 cm</span><span>单箱 kg</span></div>{shipLines.map((line, index) => { const update = (patch: Partial<ShipmentDraftLine>) => setShipLines((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); return <div key={line.taskId}><span><b>{line.sku}</b><small>{line.productName}</small><small>{line.requestNo}</small></span><span><input type="number" min="0" value={line.shippedQty} onChange={(event) => update({ shippedQty: Number(event.target.value) })} /><small className={line.availableQty < line.shippedQty ? "danger" : ""}>可用 {line.availableQty}</small></span><span><input type="number" min="0" value={line.cartonCount} onChange={(event) => update({ cartonCount: Number(event.target.value) })} /></span><span><input type="number" min="0" value={line.unitsPerCarton} onChange={(event) => update({ unitsPerCarton: Number(event.target.value) })} /><small>件/箱</small></span><span className="dims"><input type="number" min="0" value={line.cartonLengthCm} onChange={(event) => update({ cartonLengthCm: Number(event.target.value) })} /><i>×</i><input type="number" min="0" value={line.cartonWidthCm} onChange={(event) => update({ cartonWidthCm: Number(event.target.value) })} /><i>×</i><input type="number" min="0" value={line.cartonHeightCm} onChange={(event) => update({ cartonHeightCm: Number(event.target.value) })} /></span><span><input type="number" min="0" step="0.01" value={line.cartonWeightKg} onChange={(event) => update({ cartonWeightKg: Number(event.target.value) })} /></span></div>; })}</div>
+    </div><footer className="sc-modal-foot"><span><Warehouse size={16} />确认后扣减国内仓库存、生成出库流水，并进入在途状态。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitShipment}><Truck size={17} />确认出库并发运</button></div></footer></div></div> : null}
 
     {modal === "receipt" && selectedShipment ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">WAREHOUSE RECEIPT</span><h2>确认到仓</h2><p>{selectedShipment.shipmentNo} · {selectedShipment.destinationWarehouseName}</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}<div className="sc-form-grid sc-form-grid-4"><label>实际到仓日期<input type="date" value={receipt.arrivedAt} onChange={(event) => setReceipt({ ...receipt, arrivedAt: event.target.value })} /></label><label>上架日期<input type="date" value={receipt.shelvedAt} onChange={(event) => setReceipt({ ...receipt, shelvedAt: event.target.value })} /></label><label>WMS 入库单号<input value={receipt.wmsInboundNo} onChange={(event) => setReceipt({ ...receipt, wmsInboundNo: event.target.value })} /></label><label>备注<input value={receipt.note} onChange={(event) => setReceipt({ ...receipt, note: event.target.value })} /></label></div><div className="sc-receipt-table"><div className="head"><span>产品</span><span>应到</span><span>实收</span><span>良品</span><span>破损</span><span>短少</span><span>待处理</span><span>上架</span></div>{receiptLines.map((line, index) => <div key={line.shipmentLineId}><span><b>{line.sku}</b><small>{line.productName}</small></span>{["expectedQty", "receivedQty", "goodQty", "damagedQty", "shortageQty", "pendingQty", "shelvedQty"].map((field) => <span key={field}><input type="number" min="0" value={Number(line[field as keyof typeof line])} onChange={(event) => updateReceiptLine(index, field, Number(event.target.value))} /></span>)}</div>)}</div></div><footer className="sc-modal-foot"><span>短少、破损或待处理数量会自动创建收货异常。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitReceipt}><Check size={17} />确认收货</button></div></footer></div></div> : null}
   </>;
 }
 
 function ShipmentCard({ shipment, action }: { shipment: StockupShipment; action?: React.ReactNode }) {
-  return <article className="sc-shipment-card"><div><span className="sc-route-icon">{shipment.transportMode === "海运" ? <Ship size={18} /> : <Truck size={18} />}</span><div><b>{shipment.shipmentNo}</b><small>{shipment.carrier || "待填写承运商"}</small></div></div><dl><div><dt>物流单号</dt><dd>{shipment.trackingNo || "—"}</dd></div><div><dt>预计到仓</dt><dd>{formatStockupDate(shipment.eta)}</dd></div><div><dt>目的仓</dt><dd><MapPin size={13} />{shipment.destinationWarehouseName}</dd></div></dl>{action ? <footer>{action}</footer> : null}</article>;
+  return <article className="sc-shipment-card"><div><span className="sc-route-icon">{shipment.transportMode === "海运" ? <Ship size={18} /> : <Truck size={18} />}</span><div><b>{shipment.shipmentNo}</b><small>{shipment.carrier || "待填写承运商"}</small></div></div><dl><div><dt>物流单号</dt><dd>{shipment.trackingNo || "—"}</dd></div><div><dt>预计到仓</dt><dd>{formatStockupDate(shipment.eta)}</dd></div><div><dt>目的仓</dt><dd><MapPin size={13} />{shipment.destinationWarehouseName}</dd></div><div><dt>来源需求</dt><dd>{shipment.requestNos?.join("、") || "1 个需求"}</dd></div></dl><footer className="sc-shipment-card-actions"><button type="button" onClick={() => void printShipmentDocument(shipment, "packing")}><Printer size={14} />装箱单</button><button type="button" onClick={() => void printShipmentDocument(shipment, "mark")}><Printer size={14} />箱唛</button>{action}</footer></article>;
 }
 
 function EmptyLane({ text }: { text: string }) { return <div className="sc-lane-empty"><Route size={23} /><span>{text}</span></div>; }
+
+function html(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[character] || character));
+}
+
+function printableImageUrl(value: string) {
+  if (!value) return "";
+  try {
+    return new URL(value, window.location.origin).href;
+  } catch {
+    return "";
+  }
+}
+
+async function printShipmentDocument(shipment: StockupShipment, kind: "packing" | "mark") {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return;
+  printWindow.opener = null;
+  const detailUrl = `${window.location.origin}/?shipment=${encodeURIComponent(shipment.id)}#stockup-logistics`;
+  const qrCode = await QRCode.toDataURL(detailUrl, { width: 240, margin: 1, errorCorrectionLevel: "M" });
+  const lines = shipment.lines || [];
+  const totalCartons = Math.max(1, Math.round(shipment.packages || lines.reduce((sum, line) => sum + line.cartonCount, 0)));
+  const tableRows = lines.map((line, index) => {
+    const imageUrl = printableImageUrl(line.imageUrl);
+    const productImage = imageUrl
+      ? `<img class="product-image" src="${html(imageUrl)}" alt="${html(line.productName)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="product-placeholder">无图</span>`
+      : `<span class="product-placeholder" style="display:flex">无图</span>`;
+    return `<tr><td>${index + 1}</td><td><div class="product-cell"><span class="product-visual">${productImage}</span><span><b>${html(line.sku)}</b><br><small>${html(line.productName)}</small></span></div></td><td>${html(line.shippedQty)} ${html(line.unit)}</td><td>${html(line.cartonCount)}</td><td>${html(line.unitsPerCarton)} ${html(line.unit)}/箱</td><td>${html(line.cartonLengthCm)} × ${html(line.cartonWidthCm)} × ${html(line.cartonHeightCm)} cm</td><td>${html(line.cartonWeightKg)} kg</td><td>${html(line.volumeM3.toFixed(3))} m³</td></tr>`;
+  }).join("");
+  const packing = `<section class="packing"><header><div><span>TONGZHOU SUPPLY CHAIN</span><h1>装 箱 单 / PACKING LIST</h1><p>${html(shipment.shipmentNo)}</p></div><img src="${qrCode}" alt="二维码"></header><dl><div><dt>发货仓 / 地址</dt><dd>${html(shipment.originWarehouse)}<br>${html(shipment.originAddress)}</dd></div><div><dt>目的仓</dt><dd>${html(shipment.destinationWarehouseName)} · ${html(shipment.destinationCountry)}</dd></div><div><dt>关联需求</dt><dd>${html(shipment.requestNos?.join("、") || shipment.requestId)}</dd></div><div><dt>物流信息</dt><dd>${html(shipment.carrier)} · ${html(shipment.transportMode)} · ${html(shipment.trackingNo)}</dd></div></dl><table><thead><tr><th>#</th><th>图片 / SKU / 产品名称</th><th>数量</th><th>箱数</th><th>箱规</th><th>箱子尺寸</th><th>单箱重量</th><th>体积</th></tr></thead><tbody>${tableRows}</tbody><tfoot><tr><td colspan="3">汇总</td><td>${totalCartons} 箱</td><td colspan="2"></td><td>${html(shipment.totalWeightKg.toFixed(2))} kg</td><td>${html(shipment.totalVolumeM3.toFixed(3))} m³</td></tr></tfoot></table><aside><b>箱唛：</b>${html(shipment.boxMark || "无特殊箱唛要求")}</aside><footer>生成时间：${html(new Date().toLocaleString("zh-CN"))}　扫码可进入同舟中台查看发运数据</footer></section>`;
+  const marks = Array.from({ length: totalCartons }, (_, index) => `<section class="mark"><div class="mark-head"><b>TONGZHOU</b><span>${index + 1} / ${totalCartons}</span></div><h1>${html(shipment.boxMark || shipment.destinationWarehouseName)}</h1><dl><div><dt>发运单</dt><dd>${html(shipment.shipmentNo)}</dd></div><div><dt>目的仓</dt><dd>${html(shipment.destinationWarehouseName)}</dd></div><div><dt>SKU</dt><dd>${html([...new Set(lines.map((line) => line.sku))].join(" / "))}</dd></div><div><dt>物流单号</dt><dd>${html(shipment.trackingNo || "待填写")}</dd></div></dl><img src="${qrCode}" alt="二维码"><small>扫描查看发运数据</small></section>`).join("");
+  printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${kind === "packing" ? "装箱单" : "箱唛"}-${html(shipment.shipmentNo)}</title><style>${kind === "mark" ? "@page{size:100mm 100mm;margin:0}" : "@page{size:A4 landscape;margin:10mm}"}*{box-sizing:border-box}body{margin:0;color:#102b4e;font-family:'Microsoft YaHei','Noto Sans SC',Arial,sans-serif}.packing{padding:4mm}.packing header{display:flex;justify-content:space-between;border-bottom:3px solid #0b4e91;padding-bottom:4mm}.packing header span{font-size:10px;letter-spacing:2px;color:#f05a16;font-weight:800}.packing h1{margin:2mm 0;font-size:24px}.packing header p{margin:0}.packing header img{width:25mm;height:25mm}.packing dl{display:grid;grid-template-columns:1fr 1fr;gap:2mm 8mm;margin:5mm 0}.packing dl div{display:grid;grid-template-columns:30mm 1fr}.packing dt{color:#667b95}.packing dd{margin:0;font-weight:700}.packing table{width:100%;border-collapse:collapse;font-size:10px}.packing th,.packing td{border:1px solid #99abc0;padding:2mm;text-align:left;vertical-align:middle}.packing th{background:#e8f1fb}.packing tfoot{font-weight:800;background:#fff3ea}.product-cell{display:flex;align-items:center;gap:2.5mm;min-width:48mm}.product-visual{width:15mm;height:15mm;flex:0 0 15mm}.product-image,.product-placeholder{width:15mm;height:15mm;border:1px solid #d5dfeb;border-radius:2mm;object-fit:contain;background:#fff}.product-placeholder{display:none;align-items:center;justify-content:center;color:#8494a8;font-size:8px}.packing aside{margin-top:4mm;padding:3mm;background:#f4f7fb;border-left:3px solid #f05a16}.packing footer{margin-top:4mm;color:#73849a;font-size:9px}.mark{width:100mm;height:100mm;padding:7mm;page-break-after:always;border:2mm solid #0b3c76;display:flex;flex-direction:column;position:relative}.mark:last-child{page-break-after:auto}.mark-head{display:flex;justify-content:space-between;align-items:center}.mark-head b{font-size:16px;color:#f05a16;letter-spacing:2px}.mark-head span{font-size:20px;font-weight:900}.mark h1{font-size:25px;line-height:1.2;margin:7mm 0 5mm;border-bottom:1px solid #94a9c2;padding-bottom:4mm}.mark dl{margin:0;display:grid;gap:2mm}.mark dl div{display:grid;grid-template-columns:22mm 1fr}.mark dt{font-size:10px;color:#667a94}.mark dd{margin:0;font-size:12px;font-weight:800;word-break:break-all}.mark img{position:absolute;width:26mm;height:26mm;right:6mm;bottom:9mm}.mark small{position:absolute;right:7mm;bottom:5mm;font-size:8px}@media print{button{display:none}}</style></head><body>${kind === "packing" ? packing : marks}<script>window.onload=()=>{let printed=false;const printOnce=()=>{if(!printed){printed=true;window.print()}};const images=[...document.images];Promise.all(images.map((image)=>image.complete?Promise.resolve():new Promise((resolve)=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true})}))).then(()=>setTimeout(printOnce,120));setTimeout(printOnce,5000)}<\/script></body></html>`);
+  printWindow.document.close();
+}

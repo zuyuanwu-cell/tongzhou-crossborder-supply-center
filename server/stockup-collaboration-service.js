@@ -144,11 +144,12 @@ function taskFromRow(row, revealSupplier = false) {
 function shipmentFromRow(row) {
   return {
     id: String(row.id), requestId: String(row.request_id), shipmentNo: String(row.shipment_no), originWarehouse: String(row.origin_warehouse || ""),
+    originWarehouseId: String(row.origin_warehouse_id || ""), originAddress: String(row.origin_address || ""),
     destinationWarehouseId: String(row.destination_warehouse_id || ""), destinationWarehouseName: String(row.destination_warehouse_name),
     destinationCountry: String(row.destination_country), carrier: String(row.carrier || ""), transportMode: String(row.transport_mode || ""),
     trackingNo: String(row.tracking_no || ""), etd: String(row.etd || ""), eta: String(row.eta || ""), actualShippedAt: String(row.actual_shipped_at || ""),
     status: String(row.status), packages: number(row.packages), totalWeightKg: number(row.total_weight_kg), totalVolumeM3: number(row.total_volume_m3),
-    chargeableWeightKg: number(row.chargeable_weight_kg), note: String(row.note || ""), version: number(row.version, 1),
+    chargeableWeightKg: number(row.chargeable_weight_kg), note: String(row.note || ""), boxMark: String(row.box_mark || ""), inventoryMovementId: String(row.inventory_movement_id || ""), version: number(row.version, 1),
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
@@ -182,6 +183,24 @@ function costItemFromRow(row) {
 }
 
 export function createStockupCollaborationService(store) {
+  function shipmentLineFromRow(line) {
+    return {
+      id: String(line.id), shipmentId: String(line.shipment_id), requestId: String(line.request_id || ""), taskId: String(line.task_id), lineId: String(line.line_id), sku: String(line.sku), productName: String(line.product_name), imageUrl: String(line.image_url || ""),
+      shippedQty: number(line.shipped_qty), unit: String(line.unit), baseUnitCostCny: number(line.base_unit_cost_cny), weightKg: number(line.weight_kg), volumeM3: number(line.volume_m3),
+      cartonCount: number(line.carton_count), unitsPerCarton: number(line.units_per_carton), cartonLengthCm: number(line.carton_length_cm), cartonWidthCm: number(line.carton_width_cm),
+      cartonHeightCm: number(line.carton_height_cm), cartonWeightKg: number(line.carton_weight_kg),
+    };
+  }
+
+  function hydrateShipment(row) {
+    const shipment = shipmentFromRow(row);
+    if (!shipment) return null;
+    shipment.lines = store.all("SELECT * FROM stockup_shipment_lines WHERE shipment_id=? ORDER BY sku,id", [shipment.id]).map(shipmentLineFromRow);
+    const links = store.all(`SELECT r.id,r.request_no FROM stockup_requests r WHERE r.id=? OR r.id IN (SELECT request_id FROM stockup_shipment_request_links WHERE shipment_id=?) ORDER BY r.request_no`, [shipment.requestId, shipment.id]);
+    shipment.requestIds = links.map((item) => String(item.id));
+    shipment.requestNos = links.map((item) => String(item.request_no));
+    return shipment;
+  }
   function ensureVisible(request, context) {
     if (!request) {
       const error = new Error("未找到备货需求。");
@@ -255,15 +274,12 @@ export function createStockupCollaborationService(store) {
     request.tasks = store.all("SELECT * FROM stockup_execution_tasks WHERE request_id = ? ORDER BY created_at", [request.id])
       .map((row) => taskFromRow(row, context.revealSupplier))
       .filter((task) => !scopedLineIds || scopedLineIds.has(task.lineId));
-    request.shipments = store.all("SELECT * FROM stockup_shipments WHERE request_id = ? ORDER BY created_at", [request.id]).map((row) => {
-      const shipment = shipmentFromRow(row);
-      shipment.lines = store.all("SELECT * FROM stockup_shipment_lines WHERE shipment_id = ? ORDER BY sku", [shipment.id]).map((line) => ({
-        id: String(line.id), shipmentId: String(line.shipment_id), taskId: String(line.task_id), lineId: String(line.line_id), sku: String(line.sku), productName: String(line.product_name),
-        shippedQty: number(line.shipped_qty), unit: String(line.unit), baseUnitCostCny: number(line.base_unit_cost_cny), weightKg: number(line.weight_kg), volumeM3: number(line.volume_m3),
-      })).filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
+    request.shipments = store.all("SELECT DISTINCT * FROM stockup_shipments WHERE request_id = ? OR id IN (SELECT shipment_id FROM stockup_shipment_request_links WHERE request_id=?) ORDER BY created_at", [request.id, request.id]).map((row) => {
+      const shipment = hydrateShipment(row);
+      shipment.lines = shipment.lines.filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
       return shipment;
     });
-    request.receipts = store.all("SELECT * FROM stockup_receipts WHERE request_id = ? ORDER BY arrived_at DESC", [request.id]).map((row) => {
+    request.receipts = store.all("SELECT DISTINCT * FROM stockup_receipts WHERE request_id = ? OR shipment_id IN (SELECT shipment_id FROM stockup_shipment_request_links WHERE request_id=?) ORDER BY arrived_at DESC", [request.id, request.id]).map((row) => {
       const receipt = receiptFromRow(row);
       receipt.lines = store.all("SELECT * FROM stockup_receipt_lines WHERE receipt_id = ? ORDER BY sku", [receipt.id]).map((line) => ({
         id: String(line.id), receiptId: String(line.receipt_id), shipmentLineId: String(line.shipment_line_id), lineId: String(line.line_id), sku: String(line.sku), productName: String(line.product_name),
@@ -482,10 +498,10 @@ export function createStockupCollaborationService(store) {
     if (!row) return;
     const tasks = store.all("SELECT status FROM stockup_execution_tasks WHERE request_id=? AND status!='terminated'", [requestId]);
     const requestedQty = number(store.first("SELECT SUM(requested_qty) AS value FROM stockup_request_lines WHERE request_id=?", [requestId])?.value);
-    const shippedQty = number(store.first("SELECT SUM(shipped_qty) AS value FROM stockup_shipment_lines WHERE shipment_id IN (SELECT id FROM stockup_shipments WHERE request_id=? AND status!='voided')", [requestId])?.value);
-    const received = store.first("SELECT SUM(received_qty) AS received,SUM(good_qty) AS good FROM stockup_receipt_lines WHERE receipt_id IN (SELECT id FROM stockup_receipts WHERE request_id=? AND status!='voided')", [requestId]) || {};
-    const totalReceipts = number(store.first("SELECT COUNT(*) AS count FROM stockup_receipts WHERE request_id=?", [requestId])?.count);
-    const lockedReceipts = number(store.first("SELECT COUNT(DISTINCT receipt_id) AS count FROM stockup_cost_versions WHERE status='locked' AND receipt_id IN (SELECT id FROM stockup_receipts WHERE request_id=?)", [requestId])?.count);
+    const shippedQty = number(store.first(`SELECT SUM(sl.shipped_qty) AS value FROM stockup_shipment_lines sl JOIN stockup_shipments s ON s.id=sl.shipment_id WHERE s.status!='voided' AND (sl.request_id=? OR (COALESCE(sl.request_id,'')='' AND s.request_id=?))`, [requestId, requestId])?.value);
+    const received = store.first(`SELECT SUM(rl.received_qty) AS received,SUM(rl.good_qty) AS good FROM stockup_receipt_lines rl JOIN stockup_shipment_lines sl ON sl.id=rl.shipment_line_id JOIN stockup_shipments s ON s.id=sl.shipment_id WHERE (sl.request_id=? OR (COALESCE(sl.request_id,'')='' AND s.request_id=?))`, [requestId, requestId]) || {};
+    const totalReceipts = number(store.first(`SELECT COUNT(DISTINCT rl.receipt_id) AS count FROM stockup_receipt_lines rl JOIN stockup_shipment_lines sl ON sl.id=rl.shipment_line_id JOIN stockup_shipments s ON s.id=sl.shipment_id WHERE sl.request_id=? OR (COALESCE(sl.request_id,'')='' AND s.request_id=?)`, [requestId, requestId])?.count);
+    const lockedReceipts = number(store.first(`SELECT COUNT(DISTINCT cv.receipt_id) AS count FROM stockup_cost_versions cv WHERE cv.status='locked' AND cv.receipt_id IN (SELECT rl.receipt_id FROM stockup_receipt_lines rl JOIN stockup_shipment_lines sl ON sl.id=rl.shipment_line_id JOIN stockup_shipments s ON s.id=sl.shipment_id WHERE sl.request_id=? OR (COALESCE(sl.request_id,'')='' AND s.request_id=?))`, [requestId, requestId])?.count);
     const next = deriveRequestStatus({ currentStatus: String(row.status), taskStatuses: tasks.map((item) => String(item.status)), requestedQty, shippedQty, receivedQty: number(received.received), goodQty: number(received.good), costsLocked: totalReceipts > 0 && lockedReceipts === totalReceipts });
     if (next !== row.status) store.run("UPDATE stockup_requests SET status=?,version=version+1,updated_at=? WHERE id=?", [next, nowIso(), requestId]);
   }
@@ -503,27 +519,34 @@ export function createStockupCollaborationService(store) {
   }
 
   function createShipment(payload, context) {
-    const request = getRequest(payload.requestId, { ...context, viewAll: true });
     const lines = Array.isArray(payload.lines) ? payload.lines : [];
     if (!lines.length) throw Object.assign(new Error("请至少选择一个发运产品。"), { statusCode: 400 });
+    const requestIds = [...new Set([...(Array.isArray(payload.requestIds) ? payload.requestIds : []), payload.requestId, ...lines.map((line) => line.requestId)].filter((value) => value != null && String(value).trim()).map(String))];
+    const requests = requestIds.map((requestId) => getRequest(requestId, { ...context, viewAll: true }));
+    if (!requests.length) throw Object.assign(new Error("请选择至少一个备货需求。"), { statusCode: 400 });
+    const request = requests[0];
+    if (requests.some((item) => item.destinationWarehouseId !== request.destinationWarehouseId || item.destinationCountry !== request.destinationCountry)) throw Object.assign(new Error("合并发运的备货需求必须发往同一个目的仓。"), { statusCode: 400, code: "mixed_destination" });
     const shipmentId = id("sps");
     const now = nowIso();
     return store.transaction(() => {
       store.run(`INSERT INTO stockup_shipments
-        (id,request_id,shipment_no,origin_warehouse,destination_warehouse_id,destination_warehouse_name,destination_country,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,note,version,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?,?,?,?,1,?,?)`, [shipmentId, request.id, businessNo("FY"), String(payload.originWarehouse || ""), request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, String(payload.carrier || ""), String(payload.transportMode || "海运"), String(payload.trackingNo || ""), String(payload.etd || ""), String(payload.eta || ""), "", number(payload.packages), number(payload.totalWeightKg), number(payload.totalVolumeM3), number(payload.chargeableWeightKg), String(payload.note || ""), now, now]);
+        (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,note,box_mark,inventory_movement_id,version,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentId, request.id, businessNo("FY"), String(payload.originWarehouse || ""), String(payload.originWarehouseId || ""), String(payload.originAddress || ""), request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, String(payload.carrier || ""), String(payload.transportMode || "海运"), String(payload.trackingNo || ""), String(payload.etd || ""), String(payload.eta || ""), "", "draft", number(payload.packages), number(payload.totalWeightKg), number(payload.totalVolumeM3), number(payload.chargeableWeightKg), String(payload.note || ""), String(payload.boxMark || ""), "", 1, now, now]);
+      requests.forEach((item) => store.run("INSERT OR IGNORE INTO stockup_shipment_request_links (shipment_id,request_id,created_at) VALUES (?,?,?)", [shipmentId, item.id, now]));
       for (const input of lines) {
-        const task = request.tasks.find((item) => item.id === String(input.taskId));
-        const line = request.lines.find((item) => item.id === task?.lineId);
+        const taskRow = store.first("SELECT * FROM stockup_execution_tasks WHERE id=?", [String(input.taskId)]);
+        const task = taskRow ? taskFromRow(taskRow, true) : null;
+        const sourceRequest = requests.find((item) => item.id === task?.requestId);
+        const line = sourceRequest?.lines.find((item) => item.id === task?.lineId);
         const qty = number(input.shippedQty);
         if (!task || !line || qty <= 0) throw Object.assign(new Error("发运产品或数量无效。"), { statusCode: 400 });
         const previouslyShipped = number(store.first("SELECT SUM(shipped_qty) AS value FROM stockup_shipment_lines WHERE task_id=? AND shipment_id IN (SELECT id FROM stockup_shipments WHERE status!='voided')", [task.id])?.value);
         if (previouslyShipped + qty > task.completedQty) throw Object.assign(new Error(`${line.sku} 发运数量超过已完成数量。`), { statusCode: 400 });
-        store.run(`INSERT INTO stockup_shipment_lines (id,shipment_id,task_id,line_id,sku,product_name,shipped_qty,unit,base_unit_cost_cny,weight_kg,volume_m3) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-          [id("spl"), shipmentId, task.id, line.id, line.sku, line.productName, qty, line.unit, number(input.baseUnitCostCny ?? line.targetUnitCostCny), number(input.weightKg), number(input.volumeM3)]);
+        store.run(`INSERT INTO stockup_shipment_lines (id,shipment_id,request_id,task_id,line_id,sku,product_name,image_url,shipped_qty,unit,base_unit_cost_cny,weight_kg,volume_m3,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [id("spl"), shipmentId, sourceRequest.id, task.id, line.id, line.sku, line.productName, line.imageUrl, qty, line.unit, number(input.baseUnitCostCny ?? line.targetUnitCostCny), number(input.weightKg), number(input.volumeM3), number(input.cartonCount), number(input.unitsPerCarton), number(input.cartonLengthCm), number(input.cartonWidthCm), number(input.cartonHeightCm), number(input.cartonWeightKg)]);
       }
-      addEvent(request.id, "shipment_created", "已创建发运批次", `目的仓：${request.destinationWarehouseName}`, context, { shipmentId });
-      return { ok: true, shipment: shipmentFromRow(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipmentId])) };
+      requests.forEach((item) => addEvent(item.id, "shipment_created", "已创建合并发运批次", `目的仓：${request.destinationWarehouseName}`, context, { shipmentId }));
+      return { ok: true, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipmentId])) };
     });
   }
 
@@ -531,11 +554,14 @@ export function createStockupCollaborationService(store) {
     const shipment = ensureShipmentVisible(shipmentId, context);
     const now = nowIso();
     return store.transaction(() => {
-      store.run("UPDATE stockup_shipments SET carrier=?,transport_mode=?,tracking_no=?,etd=?,eta=?,actual_shipped_at=?,status='shipped',version=version+1,updated_at=? WHERE id=?", [required(payload.carrier ?? shipment.carrier, "承运商"), String(payload.transportMode ?? shipment.transportMode), required(payload.trackingNo ?? shipment.trackingNo, "物流单号"), String(payload.etd ?? shipment.etd), required(payload.eta ?? shipment.eta, "预计到仓时间"), String(payload.actualShippedAt || now), now, shipmentId]);
+      store.run("UPDATE stockup_shipments SET carrier=?,transport_mode=?,tracking_no=?,etd=?,eta=?,actual_shipped_at=?,inventory_movement_id=?,status='shipped',version=version+1,updated_at=? WHERE id=?", [required(payload.carrier ?? shipment.carrier, "承运商"), String(payload.transportMode ?? shipment.transportMode), required(payload.trackingNo ?? shipment.trackingNo, "物流单号"), String(payload.etd ?? shipment.etd), required(payload.eta ?? shipment.eta, "预计到仓时间"), String(payload.actualShippedAt || now), String(payload.inventoryMovementId || shipment.inventoryMovementId || ""), now, shipmentId]);
       store.run("UPDATE stockup_execution_tasks SET status='shipped',version=version+1,updated_at=? WHERE id IN (SELECT task_id FROM stockup_shipment_lines WHERE shipment_id=?)", [now, shipmentId]);
-      addEvent(shipment.requestId, "shipment_dispatched", "货物已发运", `${payload.transportMode || shipment.transportMode} · ${payload.trackingNo || shipment.trackingNo} · 预计 ${payload.eta || shipment.eta} 到仓`, context, { shipmentId });
-      refreshRequestStatus(shipment.requestId);
-      return { ok: true, shipment: shipmentFromRow(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipmentId])) };
+      const linkedRequestIds = hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipmentId])).requestIds;
+      linkedRequestIds.forEach((requestId) => {
+        addEvent(requestId, "shipment_dispatched", "货物已发运", `${payload.transportMode || shipment.transportMode} · ${payload.trackingNo || shipment.trackingNo} · 预计 ${payload.eta || shipment.eta} 到仓`, context, { shipmentId });
+        refreshRequestStatus(requestId);
+      });
+      return { ok: true, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipmentId])) };
     });
   }
 
@@ -548,8 +574,13 @@ export function createStockupCollaborationService(store) {
     if (context.countries?.length) { where.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); params.push(...context.countries); }
     if (context.skus?.length) { where.push(`s.id IN (SELECT shipment_id FROM stockup_shipment_lines WHERE UPPER(sku) IN (${context.skus.map(() => "?").join(",")}))`); params.push(...context.skus); }
     const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const shipments = store.all(`SELECT s.* FROM stockup_shipments s JOIN stockup_requests r ON r.id=s.request_id ${clause} ORDER BY s.updated_at DESC LIMIT 200`, params).map(shipmentFromRow);
+    const shipments = store.all(`SELECT s.* FROM stockup_shipments s JOIN stockup_requests r ON r.id=s.request_id ${clause} ORDER BY s.updated_at DESC LIMIT 200`, params).map(hydrateShipment);
     return { ok: true, shipments };
+  }
+
+  function getShipment(shipmentId, context = {}) {
+    const shipment = ensureShipmentVisible(shipmentId, context);
+    return hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id]));
   }
 
   function confirmReceipt(payload, context) {
@@ -575,9 +606,12 @@ export function createStockupCollaborationService(store) {
         store.run("UPDATE stockup_request_lines SET fulfilled_qty=fulfilled_qty+?,updated_at=? WHERE id=?", [values.goodQty, now, source.line_id]);
       }
       store.run("UPDATE stockup_shipments SET status='arrived',version=version+1,updated_at=? WHERE id=?", [now, shipment.id]);
-      if (hasDifference) store.run("UPDATE stockup_requests SET exception_count=exception_count+1,updated_at=? WHERE id=?", [now, shipment.requestId]);
-      addEvent(shipment.requestId, "receipt_confirmed", hasDifference ? "货物已到仓，存在收货差异" : "货物已到仓", `${shipment.destinationWarehouseName} · ${payload.arrivedAt}`, context, { shipmentId: shipment.id, receiptId });
-      refreshRequestStatus(shipment.requestId);
+      const linkedRequestIds = hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])).requestIds;
+      linkedRequestIds.forEach((requestId) => {
+        if (hasDifference) store.run("UPDATE stockup_requests SET exception_count=exception_count+1,updated_at=? WHERE id=?", [now, requestId]);
+        addEvent(requestId, "receipt_confirmed", hasDifference ? "货物已到仓，存在收货差异" : "货物已到仓", `${shipment.destinationWarehouseName} · ${payload.arrivedAt}`, context, { shipmentId: shipment.id, receiptId });
+        refreshRequestStatus(requestId);
+      });
       return { ok: true, receipt: receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [receiptId])), hasDifference };
     });
   }
@@ -700,7 +734,7 @@ export function createStockupCollaborationService(store) {
   }
 
   return {
-    addCostItem, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, getRequest,
+    addCostItem, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, getRequest, getShipment,
     listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport,
     saveCostVersion, setRequestStatus, updateRequest, updateTask,
   };

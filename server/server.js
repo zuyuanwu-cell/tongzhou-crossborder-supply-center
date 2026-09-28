@@ -78,7 +78,7 @@ import { createStockupCollaborationService } from "./stockup-collaboration-servi
 import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
 import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
 import { createDomesticInventoryService } from "./domestic-inventory-service.js";
-import { createDomesticInventoryApi, domesticInventoryContextForAuth } from "./domestic-inventory-api.js";
+import { createDomesticInventoryApi, domesticInventoryContextForAuth, domesticInventoryProductOptions } from "./domestic-inventory-api.js";
 import { createJiandaoyunDomesticInventoryApi } from "./jiandaoyun-domestic-inventory-api.js";
 import { initBusinessChainStore } from "./business-chain-db.js";
 import { createBusinessChainSyncService } from "./business-chain-sync.js";
@@ -317,6 +317,36 @@ const stockupCollaborationApi = createStockupCollaborationApi({
     }))
     .filter((warehouse) => warehouse.id && warehouse.name),
   listProjectTeams: () => normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams),
+  listProducts: (context, filters, auth) => domesticInventoryProductOptions(cachedProducts, {
+    ...context,
+    includeCosts: hasPermission(auth, "direct_price"),
+  }, { ...filters, limit: filters.limit || 10000 }),
+  listDomesticWarehouses: (_context, auth) => domesticInventoryService.listWarehouses({ ...domesticInventoryContextForAuth(auth), warehouseIds: [], countries: [] }),
+  getDomesticAvailability: (filters, _context, auth) => domesticInventoryService.stockupAvailability(filters, { ...domesticInventoryContextForAuth(auth), warehouseIds: [], countries: [] }),
+  createDomesticOutbound: (shipment, auth) => {
+    const bySku = new Map();
+    for (const line of shipment.lines || []) {
+      const key = String(line.sku || "").replace(/\s+/g, "").toUpperCase();
+      const current = bySku.get(key) || { ...line, shippedQty: 0 };
+      current.shippedQty += Number(line.shippedQty || 0);
+      bySku.set(key, current);
+    }
+    const scoped = domesticInventoryContextForAuth(auth);
+    return domesticInventoryService.createMovement({
+      warehouseId: shipment.originWarehouseId,
+      type: "outbound",
+      referenceNo: shipment.shipmentNo,
+      note: `备货协同发运：${shipment.shipmentNo}`,
+      lines: [...bySku.values()].map((line) => ({
+        productId: "",
+        sku: line.sku,
+        productName: line.productName,
+        quantity: line.shippedQty,
+        unit: line.unit,
+        unitCostCny: line.baseUnitCostCny,
+      })),
+    }, { ...scoped, warehouseIds: [], countries: [] }, `stockup-shipment:${shipment.id}`);
+  },
 });
 const domesticInventoryApi = createDomesticInventoryApi({
   service: domesticInventoryService,
