@@ -3,6 +3,7 @@ import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { canPerformAction } from "./permissions.js";
 import { riskByAction, workItemActionSchema } from "../shared/contracts.js";
+import { actionPermission, assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -38,7 +39,7 @@ export async function listWorkItems(auth, filters = {}) {
   const status = allowedStatuses.has(filters.status) ? filters.status : "";
   const keyword = String(filters.keyword || "").trim().slice(0, 100);
   return withOrganization(auth.organization.id, async (client) => {
-    const conditions = ["organization_id=$1"];
+    const conditions = ["organization_id=$1", workItemAccessPredicate];
     const params = [auth.organization.id];
     if (status) { params.push(status); conditions.push(`status=$${params.length}`); }
     if (keyword) { params.push(`%${keyword}%`); conditions.push(`(title ILIKE $${params.length} OR public_payload->>'referenceNo' ILIKE $${params.length})`); }
@@ -51,7 +52,7 @@ export async function listWorkItems(auth, filters = {}) {
       params,
     );
     const counts = await client.query(
-      `SELECT status,count(*)::int AS count FROM work_items WHERE organization_id=$1 GROUP BY status`,
+      `SELECT status,count(*)::int AS count FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate} GROUP BY status`,
       [auth.organization.id],
     );
     return { items: rows.rows.map(workItemFromRow), counts: Object.fromEntries(counts.rows.map((row) => [row.status, row.count])), limit, offset };
@@ -60,7 +61,7 @@ export async function listWorkItems(auth, filters = {}) {
 
 export async function getWorkItem(auth, workItemId) {
   return withOrganization(auth.organization.id, async (client) => {
-    const itemResult = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2", [workItemId, auth.organization.id]);
+    const itemResult = await client.query(`SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 AND ${workItemAccessPredicate}`, [workItemId, auth.organization.id]);
     const row = itemResult.rows[0];
     if (!row) fail("任务不存在。", 404, "not_found");
     const [lines, events, attachments, commands] = await Promise.all([
@@ -113,18 +114,24 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
 
   return withOrganization(auth.organization.id, async (client) => {
     const existing = await client.query("SELECT * FROM partner_commands WHERE organization_id=$1 AND idempotency_key=$2", [auth.organization.id, idempotencyKey]);
-    if (existing.rows[0]) return {
-      command: {
-        id: existing.rows[0].id,
-        type: existing.rows[0].command_type,
-        status: existing.rows[0].status,
-        riskLevel: existing.rows[0].risk_level,
-      },
-      idempotentReplay: true,
-    };
     const itemResult = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 FOR UPDATE", [workItemId, auth.organization.id]);
     const item = itemResult.rows[0];
     if (!item) fail("任务不存在。", 404, "not_found");
+    const requiredPermission = actionPermission(item.item_type, action);
+    if (!requiredPermission) fail("该任务不支持此操作。", 403, "forbidden");
+    await assertWorkItemPermission(client, auth.organization.id, item, requiredPermission);
+    if (existing.rows[0]) {
+      if (existing.rows[0].work_item_id !== item.id || existing.rows[0].command_type !== action) fail("Idempotency-Key 已用于其他操作。", 409, "idempotency_key_conflict");
+      return {
+        command: {
+          id: existing.rows[0].id,
+          type: existing.rows[0].command_type,
+          status: existing.rows[0].status,
+          riskLevel: existing.rows[0].risk_level,
+        },
+        idempotentReplay: true,
+      };
+    }
     if (Number(item.version) !== version) fail("任务已被更新，请刷新后重试。", 409, "version_conflict");
     if (["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续操作。", 409, "invalid_state");
     if (!collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote", "production_order"].includes(item.item_type)) fail("OEM 协同尚未通过上线门禁。", 403, "feature_disabled");
@@ -172,7 +179,14 @@ export async function listInventory(auth, filters = {}) {
     const result = await client.query(
       `SELECT warehouse_ref,warehouse_name,sku,product_name,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version
          FROM warehouse_inventory_projections
-        WHERE organization_id=$1${keywordClause}
+        WHERE organization_id=$1
+          AND EXISTS (
+            SELECT 1 FROM organization_access_grants access_grant
+             WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id
+               AND access_grant.resource_type='warehouse'
+               AND access_grant.resource_ref=warehouse_inventory_projections.warehouse_ref
+               AND access_grant.permissions ? 'warehouse.inventory.view'
+          )${keywordClause}
         ORDER BY product_name,sku LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
@@ -191,6 +205,10 @@ export async function listNotifications(auth, filters = {}) {
       `SELECT id,work_item_id,title,body,channel,delivery_status,read_at,created_at
          FROM notifications
         WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2)
+          AND (work_item_id IS NULL OR EXISTS (
+            SELECT 1 FROM work_items
+             WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}
+          ))
         ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
       [auth.organization.id, auth.user.id, limit, offset],
     );
@@ -202,7 +220,11 @@ export async function markNotificationRead(auth, notificationId) {
   return withOrganization(auth.organization.id, async (client) => {
     const result = await client.query(
       `UPDATE notifications SET read_at=COALESCE(read_at,now()),delivery_status='read'
-        WHERE id=$1 AND organization_id=$2 AND (user_id IS NULL OR user_id=$3) RETURNING id,read_at`,
+        WHERE id=$1 AND organization_id=$2 AND (user_id IS NULL OR user_id=$3)
+          AND (work_item_id IS NULL OR EXISTS (
+            SELECT 1 FROM work_items
+             WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}
+          )) RETURNING id,read_at`,
       [notificationId, auth.organization.id, auth.user.id],
     );
     if (!result.rows[0]) fail("消息不存在。", 404, "not_found");
@@ -213,9 +235,9 @@ export async function markNotificationRead(auth, notificationId) {
 export async function organizationDashboard(auth) {
   return withOrganization(auth.organization.id, async (client) => {
     const [work, unread, stock] = await Promise.all([
-      client.query("SELECT count(*) FILTER (WHERE status NOT IN ('completed','cancelled','rejected'))::int AS open,count(*) FILTER (WHERE priority='urgent' AND status NOT IN ('completed','cancelled','rejected'))::int AS urgent,count(*) FILTER (WHERE status IN ('pending_sync','pending_approval'))::int AS waiting FROM work_items WHERE organization_id=$1", [auth.organization.id]),
-      client.query("SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND read_at IS NULL", [auth.organization.id, auth.user.id]),
-      client.query("SELECT count(DISTINCT sku)::int AS sku_count,max(last_core_synced_at) AS synced_at FROM warehouse_inventory_projections WHERE organization_id=$1", [auth.organization.id]),
+      client.query(`SELECT count(*) FILTER (WHERE status NOT IN ('completed','cancelled','rejected'))::int AS open,count(*) FILTER (WHERE priority='urgent' AND status NOT IN ('completed','cancelled','rejected'))::int AS urgent,count(*) FILTER (WHERE status IN ('pending_sync','pending_approval'))::int AS waiting FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]),
+      client.query(`SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND read_at IS NULL AND (work_item_id IS NULL OR EXISTS (SELECT 1 FROM work_items WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}))`, [auth.organization.id, auth.user.id]),
+      client.query("SELECT count(DISTINCT sku)::int AS sku_count,max(last_core_synced_at) AS synced_at FROM warehouse_inventory_projections WHERE organization_id=$1 AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id AND access_grant.resource_type='warehouse' AND access_grant.resource_ref=warehouse_inventory_projections.warehouse_ref AND access_grant.permissions ? 'warehouse.inventory.view')", [auth.organization.id]),
     ]);
     return { openTasks: work.rows[0].open, urgentTasks: work.rows[0].urgent, waitingTasks: work.rows[0].waiting, unreadNotifications: unread.rows[0].count, inventorySkuCount: stock.rows[0].sku_count, inventorySyncedAt: stock.rows[0].synced_at ? new Date(stock.rows[0].synced_at).toISOString() : "" };
   });

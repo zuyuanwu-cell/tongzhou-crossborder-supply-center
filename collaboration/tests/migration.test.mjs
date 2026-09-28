@@ -9,6 +9,7 @@ const directAccountSql = readFileSync(join(dirname(fileURLToPath(import.meta.url
 const noMfaSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0003_disable_mfa_requirement.sql"), "utf8");
 const noForcedPasswordSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0004_disable_forced_password_change.sql"), "utf8");
 const usernameOnlyLoginSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0005_username_only_login.sql"), "utf8");
+const accessGrantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0006_organization_access_grants.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -16,6 +17,9 @@ const portalSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 
 const repositorySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "repository.js"), "utf8");
 const oemSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "oem.js"), "utf8");
 const notificationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "notifications.js"), "utf8");
+const accessSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "access.js"), "utf8");
+const integrationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "integration.js"), "utf8");
+const storageSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "storage.js"), "utf8");
 
 test("all partner-owned tables opt into forced row-level security", () => {
   const tables = [
@@ -74,4 +78,25 @@ test("authenticator requirements are disabled without removing legacy security c
   assert.doesNotMatch(serverSource, /collaboration\/auth\/mfa\/(setup|verify)/);
   assert.doesNotMatch(repositorySource, /mfa_step_up_required/);
   assert.doesNotMatch(oemSource, /mfa_step_up_required/);
+});
+
+test("organization resource grants are deny-by-default and RLS protected", () => {
+  assert.match(accessGrantSql, /CREATE TABLE IF NOT EXISTS organization_access_grants/);
+  assert.match(accessGrantSql, /UNIQUE \(organization_id, resource_type, resource_ref\)/);
+  assert.match(accessGrantSql, /ALTER TABLE organization_access_grants ENABLE ROW LEVEL SECURITY/);
+  assert.match(accessGrantSql, /ALTER TABLE organization_access_grants FORCE ROW LEVEL SECURITY/);
+  assert.match(accessGrantSql, /FROM warehouse_inventory_projections/);
+  assert.match(accessGrantSql, /FROM work_items/);
+  assert.doesNotMatch(accessGrantSql, /CROSS JOIN organizations/);
+});
+
+test("resource permissions guard projections, reads, actions and attachments", () => {
+  assert.match(accessSource, /有效|organization_access_grants/);
+  assert.match(integrationSource, /assertResourcePermission[\s\S]*warehouse\.task\.view/);
+  assert.match(integrationSource, /assertResourcePermission[\s\S]*warehouse\.inventory\.view/);
+  assert.match(repositorySource, /workItemAccessPredicate/);
+  assert.match(repositorySource, /assertWorkItemPermission/);
+  assert.match(storageSource, /assertWorkItemPermission[\s\S]*attachment\.upload/);
+  assert.match(oemSource, /packaging\.quote\.submit/);
+  assert.match(oemSource, /production\.progress\.update/);
 });

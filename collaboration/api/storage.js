@@ -8,6 +8,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { z } from "zod";
 import { collaborationConfig } from "./config.js";
 import { withOrganization } from "./db.js";
+import { assertWorkItemPermission } from "./access.js";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const allowedMimeTypes = new Set([
@@ -37,6 +38,10 @@ function fail(message, statusCode = 400, code = "invalid_attachment") {
   throw Object.assign(new Error(message), { statusCode, code });
 }
 
+function assertAttachmentContributor(auth) {
+  if (!auth?.membership || !["organization_admin", "manager", "operator"].includes(auth.membership.role)) fail("当前岗位无权上传附件。", 403, "forbidden");
+}
+
 function safeName(value) {
   return basename(String(value || "file")).replace(/[^\p{L}\p{N}._ -]+/gu, "_").slice(0, 180) || "file";
 }
@@ -48,11 +53,13 @@ function localPath(objectKey) {
 }
 
 export async function createAttachmentUpload(auth, input) {
+  assertAttachmentContributor(auth);
   const parsed = uploadSchema.parse(input);
   if (!allowedMimeTypes.has(parsed.mimeType)) fail("不支持该附件类型。", 415, "unsupported_media_type");
   return withOrganization(auth.organization.id, async (client) => {
-    const item = await client.query("SELECT id FROM work_items WHERE id=$1 AND organization_id=$2", [parsed.workItemId, auth.organization.id]);
+    const item = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2", [parsed.workItemId, auth.organization.id]);
     if (!item.rows[0]) fail("任务不存在。", 404, "not_found");
+    await assertWorkItemPermission(client, auth.organization.id, item.rows[0], "attachment.upload");
     const id = randomUUID();
     const objectKey = `${auth.organization.id}/${parsed.workItemId}/${id}-${safeName(parsed.fileName)}`;
     await client.query(
@@ -68,17 +75,24 @@ export async function createAttachmentUpload(auth, input) {
   });
 }
 
-async function attachmentForOrg(auth, attachmentId) {
+async function attachmentForOrg(auth, attachmentId, permission) {
   return withOrganization(auth.organization.id, async (client) => {
-    const result = await client.query("SELECT * FROM attachments WHERE id=$1 AND organization_id=$2", [attachmentId, auth.organization.id]);
+    const result = await client.query(
+      `SELECT attachments.*,work_items.item_type,work_items.public_payload
+         FROM attachments JOIN work_items ON work_items.id=attachments.work_item_id
+        WHERE attachments.id=$1 AND attachments.organization_id=$2`,
+      [attachmentId, auth.organization.id],
+    );
     if (!result.rows[0]) fail("附件不存在。", 404, "not_found");
+    await assertWorkItemPermission(client, auth.organization.id, result.rows[0], permission);
     return result.rows[0];
   });
 }
 
 export async function receiveLocalUpload(auth, attachmentId, req) {
+  assertAttachmentContributor(auth);
   if (collaborationConfig.storageDriver !== "local") fail("本地上传入口未启用。", 404, "not_found");
-  const attachment = await attachmentForOrg(auth, attachmentId);
+  const attachment = await attachmentForOrg(auth, attachmentId, "attachment.upload");
   const contentLength = Number(req.headers["content-length"] || 0);
   if (!contentLength || contentLength !== Number(attachment.size_bytes) || contentLength > MAX_UPLOAD_BYTES) fail("附件大小与申请信息不一致。", 400, "size_mismatch");
   if (String(req.headers["content-type"] || "").split(";")[0] !== attachment.mime_type) fail("附件类型与申请信息不一致。", 400, "mime_mismatch");
@@ -111,7 +125,8 @@ async function runClamScan(path) {
 }
 
 export async function scanAttachment(auth, attachmentId) {
-  const attachment = await attachmentForOrg(auth, attachmentId);
+  assertAttachmentContributor(auth);
+  const attachment = await attachmentForOrg(auth, attachmentId, "attachment.upload");
   let path = "";
   let temporary = false;
   try {
@@ -138,8 +153,9 @@ export async function scanAttachment(auth, attachmentId) {
 }
 
 export async function completeS3Upload(auth, attachmentId) {
+  assertAttachmentContributor(auth);
   if (collaborationConfig.storageDriver !== "s3") return scanAttachment(auth, attachmentId);
-  const attachment = await attachmentForOrg(auth, attachmentId);
+  const attachment = await attachmentForOrg(auth, attachmentId, "attachment.upload");
   const head = await s3.send(new HeadObjectCommand({ Bucket: collaborationConfig.s3.bucket, Key: attachment.object_key }));
   if (Number(head.ContentLength || 0) !== Number(attachment.size_bytes)) fail("附件大小与申请信息不一致。", 400, "size_mismatch");
   if (String(head.ContentType || "") !== attachment.mime_type) fail("附件类型与申请信息不一致。", 400, "mime_mismatch");

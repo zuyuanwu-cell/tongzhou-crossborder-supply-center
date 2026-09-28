@@ -2,6 +2,7 @@ import { collaborationProjectionSchema, commandResultSchema, inventoryProjection
 import { withSystem } from "./db.js";
 import { safeEqual } from "./security.js";
 import { collaborationConfig } from "./config.js";
+import { assertResourcePermission } from "./access.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -30,6 +31,7 @@ export async function applyCollaborationProjection(input) {
     }
     try {
       const organization = await organizationByCode(client, projection.organizationCode);
+      await assertResourcePermission(client, organization.id, "warehouse", projection.publicPayload.warehouseRef, "warehouse.task.view");
       const projectResult = await client.query(
         `INSERT INTO collaboration_projects(organization_id,core_ref_type,core_ref_id,project_type,title,status,public_summary,version)
          VALUES ($1,$2,$3,'warehouse',$4,'active',$5,$6)
@@ -101,6 +103,7 @@ export async function applyInventoryProjection(input) {
     if (seen.rows[0]?.status === "applied") return { ok: true, idempotentReplay: true };
     if (!seen.rows[0]) await client.query("INSERT INTO integration_inbox(source_event_id,event_type,payload,status) VALUES ($1,'core.inventory_projection',$2,'processing')", [projection.eventId, projection]);
     const organization = await organizationByCode(client, projection.organizationCode);
+    await assertResourcePermission(client, organization.id, "warehouse", projection.warehouseRef, "warehouse.inventory.view");
     for (const item of projection.items) {
       await client.query(
         `INSERT INTO warehouse_inventory_projections(organization_id,warehouse_ref,warehouse_name,sku,product_name,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version)

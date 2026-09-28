@@ -298,6 +298,14 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`);
   }
 
+  function getOrganizationAccessGrants(code) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`);
+  }
+
+  function replaceOrganizationAccessGrants(code, input) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`, { method: "PUT", body: input });
+  }
+
   function bootstrapOrganization(input) {
     return internalRequest("/collaboration/internal/v1/organizations/bootstrap", { method: "POST", body: input });
   }
@@ -353,6 +361,7 @@ export function createCollaborationBridge({
     flushOutbox,
     awardOemQuote,
     getOrganizationAccess,
+    getOrganizationAccessGrants,
     listOrganizations,
     listApprovals: () => store.listCommands(["awaiting_approval"], 200),
     listOemQuotes,
@@ -362,6 +371,7 @@ export function createCollaborationBridge({
     queueOemProjection,
     queueProjection,
     reissueInvitation,
+    replaceOrganizationAccessGrants,
     reviewCommand,
     revokeInvitation,
     start,

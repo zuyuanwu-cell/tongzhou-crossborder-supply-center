@@ -1,7 +1,9 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Check, ChevronRight, Copy, KeyRound, LoaderCircle, Mail, RefreshCw, Search, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { AlertTriangle, Building2, Check, ChevronRight, Copy, KeyRound, LoaderCircle, LockKeyhole, Mail, RefreshCw, Save, Search, ShieldCheck, UserPlus, Users, Warehouse, X } from "lucide-react";
 import {
   bootstrapCollaborationOrganization,
+  CollaborationAccessGrant,
+  CollaborationAccessGrantPayload,
   CollaborationInvitation,
   CollaborationInvitationResult,
   CollaborationOrganization,
@@ -9,11 +11,14 @@ import {
   CollaborationOrganizationStatus,
   CollaborationOrganizationType,
   fetchCollaborationOrganizationAccess,
+  fetchCollaborationOrganizationAccessGrants,
   fetchCollaborationOrganizations,
   reissueCollaborationInvitation,
   revokeCollaborationInvitation,
+  replaceCollaborationOrganizationAccessGrants,
   updateCollaborationOrganizationStatus,
 } from "./collaboration-identity-admin-api";
+import { DomesticWarehouse, fetchDomesticWarehouses, fetchWarehouses, WarehouseConnection } from "./api";
 import "./collaboration-identity-admin.css";
 
 const organizationTypes: Array<{ value: CollaborationOrganizationType; label: string; hint: string }> = [
@@ -29,6 +34,7 @@ const roleLabels: Record<string, string> = { organization_admin: "组织管理�
 const partnerPortalUrl = "https://partner.tongzhoukuajing.com";
 
 type ProvisionedAccess = { organizationName: string; username: string; password: string };
+type WarehouseOption = { ref: string; name: string; meta: string; capabilities?: CollaborationAccessGrantPayload["capabilities"] };
 
 function provisioningMessage(access: ProvisionedAccess) {
   return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${partnerPortalUrl}\n组织名称：${access.organizationName}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
@@ -42,6 +48,28 @@ function formatTime(value?: string) {
 
 async function copyText(value: string) {
   await navigator.clipboard.writeText(value);
+}
+
+function warehouseDirectory(domestic: DomesticWarehouse[], connected: WarehouseConnection[], grants: CollaborationAccessGrant[]) {
+  const options = new Map<string, WarehouseOption>();
+  domestic.forEach((warehouse) => options.set(warehouse.id, {
+    ref: warehouse.id,
+    name: warehouse.name,
+    meta: [warehouse.code, warehouse.city || warehouse.province, "国内库存"].filter(Boolean).join(" · "),
+  }));
+  connected.forEach((warehouse) => {
+    const ref = String(warehouse.id || warehouse.resolvedWarehouseId || warehouse.warehouseId || warehouse.warehouseCode || "").trim();
+    if (!ref || options.has(ref)) return;
+    options.set(ref, {
+      ref,
+      name: warehouse.name,
+      meta: [warehouse.providerName, warehouse.warehouseCode, warehouse.country, "WMS"].filter(Boolean).join(" · "),
+    });
+  });
+  grants.filter((grant) => grant.resourceType === "warehouse").forEach((grant) => {
+    if (!options.has(grant.resourceRef)) options.set(grant.resourceRef, { ref: grant.resourceRef, name: grant.resourceName || grant.resourceRef, meta: "已有协同授权" });
+  });
+  return [...options.values()].sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
 }
 
 function InvitationRows({ invitations, busyId, onReissue, onRevoke }: {
@@ -80,6 +108,10 @@ export function CollaborationIdentityAdmin() {
   const [showCreate, setShowCreate] = useState(false);
   const [activation, setActivation] = useState<CollaborationInvitationResult | null>(null);
   const [provisionedAccess, setProvisionedAccess] = useState<ProvisionedAccess | null>(null);
+  const [access, setAccess] = useState<CollaborationAccessGrantPayload | null>(null);
+  const [draftGrants, setDraftGrants] = useState<CollaborationAccessGrant[]>([]);
+  const [warehouseOptions, setWarehouseOptions] = useState<WarehouseOption[]>([]);
+  const [accessLoading, setAccessLoading] = useState(false);
   const [form, setForm] = useState({ name: "", organizationType: "warehouse" as CollaborationOrganizationType, notificationEmail: "", administratorUsername: "", administratorDisplayName: "", administratorEmail: "", administratorPassword: "", administratorPasswordConfirm: "" });
 
   const loadOrganizations = useCallback(async (nextKeyword = keyword, nextStatus = status) => {
@@ -110,8 +142,34 @@ export function CollaborationIdentityAdmin() {
     }
   }, []);
 
+  const loadAccess = useCallback(async (code: string) => {
+    if (!code) { setAccess(null); setDraftGrants([]); setWarehouseOptions([]); return; }
+    setAccessLoading(true);
+    try {
+      const payload = await fetchCollaborationOrganizationAccessGrants(code);
+      setAccess(payload);
+      setDraftGrants(payload.grants || []);
+      if (payload.organization.organizationType === "warehouse") {
+        const [domesticResult, connectedResult] = await Promise.allSettled([fetchDomesticWarehouses(), fetchWarehouses()]);
+        const domestic = domesticResult.status === "fulfilled" ? domesticResult.value.warehouses || [] : [];
+        const connected = connectedResult.status === "fulfilled" ? connectedResult.value.warehouses || [] : [];
+        setWarehouseOptions(warehouseDirectory(domestic, connected, payload.grants || []));
+      } else {
+        setWarehouseOptions([]);
+      }
+    } catch (requestError) {
+      setAccess(null);
+      setDraftGrants([]);
+      setWarehouseOptions([]);
+      setError(requestError instanceof Error ? requestError.message : "资源权限读取失败");
+    } finally {
+      setAccessLoading(false);
+    }
+  }, []);
+
   useEffect(() => { void loadOrganizations("", ""); }, []);
   useEffect(() => { void loadDetail(selectedCode); }, [selectedCode, loadDetail]);
+  useEffect(() => { void loadAccess(selectedCode); }, [selectedCode, loadAccess]);
 
   const metrics = useMemo(() => ({
     total: organizations.length,
@@ -119,6 +177,13 @@ export function CollaborationIdentityAdmin() {
     adminsMissing: organizations.filter((item) => Number(item.administratorCount || 0) === 0).length,
     pending: organizations.reduce((sum, item) => sum + Number(item.pendingInvitationCount || 0), 0),
   }), [organizations]);
+
+  const resourceOptions = useMemo<WarehouseOption[]>(() => {
+    if (!access) return [];
+    if (access.organization.organizationType === "warehouse") return warehouseOptions;
+    if (access.resources?.length) return access.resources.map((resource) => ({ ref: resource.resourceRef, name: resource.resourceName, meta: `${detail?.organization.name || access.organization.name} · 私有协作空间`, capabilities: resource.capabilities }));
+    return [{ ref: access.defaultResourceRef || "", name: detail?.organization.name || access.organization.name, meta: "组织级业务范围", capabilities: access.capabilities }].filter((item) => item.ref);
+  }, [access, warehouseOptions, detail?.organization.name]);
 
   async function submitCreate(event: FormEvent) {
     event.preventDefault();
@@ -162,6 +227,52 @@ export function CollaborationIdentityAdmin() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "组织状态更新失败");
     } finally { setBusyId(""); }
+  }
+
+  function toggleResource(option: WarehouseOption | { ref: string; name: string; capabilities?: CollaborationAccessGrantPayload["capabilities"] }) {
+    setDraftGrants((current) => {
+      const existing = current.find((grant) => grant.resourceRef === option.ref);
+      if (existing) return current.filter((grant) => grant.resourceRef !== option.ref);
+      return [...current, {
+        resourceType: access?.organization.organizationType === "warehouse" ? "warehouse" : "organization",
+        resourceRef: option.ref,
+        resourceName: option.name,
+        permissions: (option.capabilities || access?.capabilities || []).map((capability) => capability.key),
+      }];
+    });
+  }
+
+  function toggleCapability(resourceRef: string, permission: string) {
+    setDraftGrants((current) => current.map((grant) => grant.resourceRef !== resourceRef ? grant : {
+      ...grant,
+      permissions: grant.permissions.includes(permission)
+        ? grant.permissions.filter((item) => item !== permission)
+        : [...grant.permissions, permission],
+    }));
+  }
+
+  function applyRecommendedPermissions() {
+    setDraftGrants((current) => current.map((grant) => {
+      const option = resourceOptions.find((item) => item.ref === grant.resourceRef);
+      return { ...grant, permissions: (option?.capabilities || access?.capabilities || []).map((capability) => capability.key) };
+    }));
+  }
+
+  async function saveAccess() {
+    if (!detail || !access) return;
+    if (!draftGrants.length && !window.confirm("保存后该组织将看不到任何任务或库存。确认撤销全部资源权限？")) return;
+    setBusyId("access");
+    setError("");
+    try {
+      const result = await replaceCollaborationOrganizationAccessGrants(detail.organization.code, draftGrants);
+      setDraftGrants(result.grants || []);
+      setAccess({ ...access, grants: result.grants || [], capabilities: result.capabilities || access.capabilities, resources: result.resources || access.resources });
+      setNotice(`已保存 ${detail.organization.name} 的资源与业务权限，立即生效。`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "资源权限保存失败");
+    } finally {
+      setBusyId("");
+    }
   }
 
   async function reissue(invitation: CollaborationInvitation) {
@@ -244,6 +355,26 @@ export function CollaborationIdentityAdmin() {
             <div><span className={`cia-status ${detail.organization.status}`}>{statusLabels[detail.organization.status]}</span>{detail.organization.status === "active" ? <button type="button" className="cia-danger-button" disabled={busyId === "status"} onClick={() => void changeStatus("suspended")}>停用组织</button> : <button type="button" className="cia-secondary" disabled={busyId === "status"} onClick={() => void changeStatus("active")}>重新启用</button>}</div>
           </header>
           <div className="cia-safety-note"><ShieldCheck size={18} /><div><strong>组织边界已经独立</strong><span>该组织成员只能进入自己的协作空间；停用组织会撤销其所有活动会话，但不会删除审计记录。</span></div></div>
+          <section className="cia-section cia-access-section">
+            <div className="cia-section-head">
+              <div><LockKeyhole size={18} /><div><h4>资源与业务权限</h4><p>先分配仓库或业务范围，再决定允许的操作；合作方管理员不能自行扩大这些权限。</p></div></div>
+              <div className="cia-access-actions"><button type="button" className="cia-secondary" onClick={applyRecommendedPermissions} disabled={accessLoading || !draftGrants.length}>使用推荐权限</button><button type="button" className="cia-primary" onClick={() => void saveAccess()} disabled={accessLoading || busyId === "access"}>{busyId === "access" ? <LoaderCircle size={15} className="cia-spin" /> : <Save size={15} />}保存权限</button></div>
+            </div>
+            {accessLoading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" /> 正在读取资源目录与授权…</div> : access ? <>
+              <div className="cia-access-rule"><Warehouse size={17} /><span><strong>{access.organization.organizationType === "warehouse" ? "按仓库隔离" : "按私有协作空间隔离"}</strong>未勾选的资源默认不可见；取消授权不会删除历史记录。</span></div>
+              <div className="cia-resource-list">
+                {resourceOptions.map((option) => {
+                  const grant = draftGrants.find((item) => item.resourceRef === option.ref);
+                  const capabilities = option.capabilities || access.capabilities;
+                  return <article className={`cia-resource-card ${grant ? "selected" : ""}`} key={option.ref}>
+                    <label className="cia-resource-toggle"><input type="checkbox" checked={Boolean(grant)} onChange={() => toggleResource(option)} /><span><strong>{option.name}</strong><small>{option.meta || option.ref}</small><code>{option.ref}</code></span><em>{grant ? "已授权" : "未授权"}</em></label>
+                    {grant ? <div className="cia-capability-grid">{capabilities.map((capability) => <label key={capability.key} className={grant.permissions.includes(capability.key) ? "checked" : ""}><input type="checkbox" checked={grant.permissions.includes(capability.key)} onChange={() => toggleCapability(option.ref, capability.key)} /><span><strong>{capability.label}</strong><small>{capability.description}</small></span></label>)}</div> : null}
+                  </article>;
+                })}
+                {!resourceOptions.length ? <div className="cia-empty"><Warehouse size={22} /><strong>没有可分配的仓库</strong><span>请先在国内库存或仓库管理中建立仓库；已有历史授权仍会保留显示。</span></div> : null}
+              </div>
+            </> : <div className="cia-empty"><AlertTriangle size={22} /><strong>资源权限暂不可用</strong><span>请刷新页面；在权限载入前不会扩大任何组织的访问范围。</span></div>}
+          </section>
           <section className="cia-section">
             <div className="cia-section-head"><div><Users size={18} /><div><h4>已激活成员</h4><p>这里只查看状态。日常新增和角色调整由组织管理员在外部门户完成。</p></div></div><span>{detail.members.length} 人</span></div>
             {detail.members.length ? <div className="cia-table-wrap"><table className="cia-table"><thead><tr><th>成员</th><th>角色</th><th>账号状态</th><th>最近登录</th></tr></thead><tbody>{detail.members.map((member) => <tr key={member.id}><td><strong>{member.displayName}</strong><small>{member.username} · {member.email || "未留邮箱"}</small></td><td>{roleLabels[member.role] || member.role}</td><td><span className={`cia-state ${member.status === "active" ? "cia-state-accepted" : "cia-state-expired"}`}>{member.status === "active" ? "正常" : "已停用"}</span><small>账号密码直接登录</small></td><td>{formatTime(member.lastLoginAt)}</td></tr>)}</tbody></table></div> : <div className="cia-empty"><Users size={22} /><strong>暂无管理员账号</strong><span>创建组织时会同步建立首位管理员账号。</span></div>}

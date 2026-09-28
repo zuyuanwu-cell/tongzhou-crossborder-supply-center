@@ -88,6 +88,20 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, appen
         sendJson(res, 200, { ok: true, ...result });
         return true;
       }
+      const accessGrantMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/access-grants$/);
+      if (accessGrantMatch && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationAccessGrants(decodeURIComponent(accessGrantMatch[1]))) });
+        return true;
+      }
+      if (accessGrantMatch && req.method === "PUT") {
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const code = decodeURIComponent(accessGrantMatch[1]);
+        const result = await bridge.replaceOrganizationAccessGrants(code, { grants: input.grants || [], actorName });
+        appendActionLog(auth, "调整协同组织资源权限", "collaboration_organization", code, { grantCount: Array.isArray(input.grants) ? input.grants.length : 0 });
+        sendJson(res, 200, { ok: true, ...result });
+        return true;
+      }
       const invitationMatch = suffix.match(/^\/invitations\/([0-9a-fA-F-]{36})\/(reissue|revoke)$/);
       if (invitationMatch && req.method === "POST") {
         const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";

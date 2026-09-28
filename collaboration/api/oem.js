@@ -1,6 +1,7 @@
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { milestoneUpdateSchema, oemArtifactSchema, oemProjectionSchema, supplierQuoteSchema } from "../shared/contracts.js";
+import { assertResourcePermission, assertWorkItemPermission } from "./access.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -44,6 +45,13 @@ export async function applyOemProjection(input) {
     try {
       const organization = await activeOrganizationByCode(client, projection.organizationCode);
       assertOrganizationType(organization, projection.spaceType);
+      const viewPermission = {
+        filing: "filing.task.view",
+        sampling: "sampling.task.view",
+        packaging_quote: "packaging.quote.view",
+        production: "production.order.view",
+      }[projection.spaceType];
+      await assertResourcePermission(client, organization.id, "organization", projection.spaceType, viewPermission);
       const projectResult = await client.query(
         `INSERT INTO collaboration_projects(organization_id,core_ref_type,core_ref_id,project_type,title,status,public_summary,version)
          VALUES ($1,'oem_project',$2,'oem',$3,'active',$4,$5)
@@ -112,18 +120,24 @@ export async function applyOemProjection(input) {
   });
 }
 
-async function lockedOemItem(client, auth, workItemId, itemType) {
+async function lockedOemItem(client, auth, workItemId, itemType, { allowTerminal = false } = {}) {
   const result = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 FOR UPDATE", [workItemId, auth.organization.id]);
   const item = result.rows[0];
   if (!item) fail("OEM 任务不存在。", 404, "not_found");
   if (item.item_type !== itemType) fail("OEM 提交类型与当前任务不匹配。", 409, "item_type_mismatch");
-  if (["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续提交。", 409, "invalid_state");
+  if (!allowTerminal && ["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续提交。", 409, "invalid_state");
   return item;
 }
 
 async function existingCommand(client, organizationId, idempotencyKey) {
   const result = await client.query("SELECT * FROM partner_commands WHERE organization_id=$1 AND idempotency_key=$2", [organizationId, idempotencyKey]);
   return result.rows[0] || null;
+}
+
+function replayResult(replay, workItemId, commandType) {
+  if (!replay) return null;
+  if (replay.work_item_id !== workItemId || replay.command_type !== commandType) fail("Idempotency-Key 已用于其他操作。", 409, "idempotency_key_conflict");
+  return { ok: true, idempotentReplay: true, commandId: replay.id, status: replay.status };
 }
 
 async function createOemCommand(client, auth, item, { commandType, idempotencyKey, expectedVersion, payload }) {
@@ -153,8 +167,10 @@ export async function submitSupplierQuote(auth, body, { idempotencyKey, expected
   const key = assertIdempotencyKey(idempotencyKey);
   return withOrganization(auth.organization.id, async (client) => {
     const replay = await existingCommand(client, auth.organization.id, key);
-    if (replay) return { ok: true, idempotentReplay: true, commandId: replay.id, status: replay.status };
-    const item = await lockedOemItem(client, auth, input.workItemId, "packaging_quote");
+    const item = await lockedOemItem(client, auth, input.workItemId, "packaging_quote", { allowTerminal: Boolean(replay) });
+    await assertWorkItemPermission(client, auth.organization.id, item, "packaging.quote.submit");
+    const replayed = replayResult(replay, item.id, "quote_submit");
+    if (replayed) return replayed;
     const versionResult = await client.query("SELECT COALESCE(MAX(version),0)::int+1 AS version FROM supplier_quotes WHERE organization_id=$1 AND work_item_id=$2", [auth.organization.id, item.id]);
     const quoteResult = await client.query(
       `INSERT INTO supplier_quotes(organization_id,space_id,work_item_id,currency,amount,minimum_order_quantity,lead_time_days,terms,version,submitted_by)
@@ -175,10 +191,17 @@ export async function submitOemArtifact(auth, body, { idempotencyKey, expectedVe
   const key = assertIdempotencyKey(idempotencyKey);
   return withOrganization(auth.organization.id, async (client) => {
     const replay = await existingCommand(client, auth.organization.id, key);
-    if (replay) return { ok: true, idempotentReplay: true, commandId: replay.id, status: replay.status };
     const itemResult = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 FOR UPDATE", [input.workItemId, auth.organization.id]);
     const item = itemResult.rows[0];
     if (!item || !["filing_task", "sampling_task", "production_order"].includes(item.item_type)) fail("当前任务不接受该资料提交。", 409, "item_type_mismatch");
+    const artifactPermission = item.item_type === "filing_task"
+      ? "filing.artifact.submit"
+      : item.item_type === "sampling_task"
+        ? "sampling.artifact.submit"
+        : "production.artifact.submit";
+    await assertWorkItemPermission(client, auth.organization.id, item, artifactPermission);
+    const replayed = replayResult(replay, item.id, "artifact_submit");
+    if (replayed) return replayed;
     if (["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续提交。", 409, "invalid_state");
     const artifactResult = await client.query(
       `INSERT INTO oem_artifacts(organization_id,space_id,artifact_type,title,version,status,public_payload,submitted_by)
@@ -199,10 +222,12 @@ export async function updateProductionMilestone(auth, milestoneId, body, { idemp
   const key = assertIdempotencyKey(idempotencyKey);
   return withOrganization(auth.organization.id, async (client) => {
     const replay = await existingCommand(client, auth.organization.id, key);
-    if (replay) return { ok: true, idempotentReplay: true, commandId: replay.id, status: replay.status };
     const milestoneResult = await client.query("SELECT m.*,w.version AS work_item_version,w.item_type FROM production_milestones m JOIN work_items w ON w.id=m.work_item_id WHERE m.id=$1 AND m.organization_id=$2 FOR UPDATE", [milestoneId, auth.organization.id]);
     const milestone = milestoneResult.rows[0];
     if (!milestone || milestone.item_type !== "production_order") fail("生产里程碑不存在。", 404, "not_found");
+    await assertResourcePermission(client, auth.organization.id, "organization", "production", "production.progress.update");
+    const replayed = replayResult(replay, milestone.work_item_id, "milestone_update");
+    if (replayed) return replayed;
     const workItem = await client.query("SELECT status FROM work_items WHERE id=$1 AND organization_id=$2", [milestone.work_item_id, auth.organization.id]);
     if (["completed", "cancelled", "rejected"].includes(workItem.rows[0]?.status)) fail("当前生产工单状态不允许更新。", 409, "invalid_state");
     if (Number(milestone.work_item_version) !== Number(expectedVersion)) fail("任务已更新，请刷新后重试。", 409, "version_conflict");

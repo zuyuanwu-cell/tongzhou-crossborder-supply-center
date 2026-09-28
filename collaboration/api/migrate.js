@@ -23,11 +23,11 @@ async function configurePortalPrivileges(client) {
     "collaboration_projects", "collaboration_spaces", "work_items", "warehouse_task_lines",
     "warehouse_inventory_projections", "work_item_events", "partner_commands", "approvals",
     "attachments", "notifications", "audit_log", "oem_artifacts", "supplier_quotes", "production_milestones",
-    "integration_outbox",
+    "organization_access_grants", "integration_outbox",
   ];
   await client.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
   await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM ${role}`);
-  await client.query(`GRANT SELECT ON organizations,collaboration_users,collaboration_projects,collaboration_spaces,warehouse_task_lines,warehouse_inventory_projections TO ${role}`);
+  await client.query(`GRANT SELECT ON organizations,collaboration_users,collaboration_projects,collaboration_spaces,warehouse_task_lines,warehouse_inventory_projections,organization_access_grants TO ${role}`);
   await client.query(`GRANT SELECT,UPDATE ON organization_memberships TO ${role}`);
   await client.query(`GRANT SELECT,INSERT,UPDATE ON collaboration_invitations TO ${role}`);
   await client.query(`GRANT SELECT,UPDATE ON work_items TO ${role}`);

@@ -11,7 +11,6 @@ const actionRoles = Object.freeze({
 
 export function canPerformAction(membership, action) {
   if (!membership || membership.status !== "active") return false;
-  if (Array.isArray(membership.permissions) && membership.permissions.includes(`work_item:${action}`)) return true;
   return Boolean(actionRoles[action]?.has(membership.role));
 }
 

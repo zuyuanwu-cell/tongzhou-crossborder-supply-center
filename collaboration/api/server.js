@@ -67,6 +67,7 @@ import {
   updateOwnProfile,
   updateOrganizationStatus,
 } from "./identity.js";
+import { listOrganizationAccessGrants, replaceOrganizationAccessGrants } from "./access.js";
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const uuidPattern = "([0-9a-fA-F-]{36})";
@@ -196,6 +197,15 @@ async function route(req, res) {
     }
     if (organizationMatch && req.method === "PATCH") {
       sendJson(res, 200, { ok: true, ...(await updateOrganizationStatus(organizationMatch[1], await readJson(req))) });
+      return;
+    }
+    const accessGrantMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/organizations/${organizationCodePattern}/access-grants$`));
+    if (accessGrantMatch && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...(await listOrganizationAccessGrants(accessGrantMatch[1])) });
+      return;
+    }
+    if (accessGrantMatch && req.method === "PUT") {
+      sendJson(res, 200, { ok: true, ...(await replaceOrganizationAccessGrants(accessGrantMatch[1], await readJson(req))) });
       return;
     }
     let internalInvitationMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/invitations/${uuidPattern}/(reissue|revoke)$`));

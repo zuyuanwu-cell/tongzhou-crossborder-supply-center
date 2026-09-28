@@ -74,6 +74,31 @@ export type CollaborationBootstrapResult = {
   };
 };
 
+export type CollaborationAccessGrant = {
+  id?: string;
+  resourceType: "warehouse" | "organization";
+  resourceRef: string;
+  resourceName: string;
+  permissions: string[];
+  createdByName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type CollaborationCapability = {
+  key: string;
+  label: string;
+  description: string;
+};
+
+export type CollaborationAccessGrantPayload = {
+  organization: { code: string; name: string; organizationType: CollaborationOrganizationType };
+  grants: CollaborationAccessGrant[];
+  capabilities: CollaborationCapability[];
+  resources?: Array<{ resourceRef: string; resourceName: string; capabilities: CollaborationCapability[] }>;
+  defaultResourceRef?: string;
+};
+
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -101,6 +126,17 @@ export async function fetchCollaborationOrganizations(filters: { keyword?: strin
 
 export function fetchCollaborationOrganizationAccess(code: string) {
   return request<{ ok: boolean } & CollaborationOrganizationAccess>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}`);
+}
+
+export function fetchCollaborationOrganizationAccessGrants(code: string) {
+  return request<{ ok: boolean } & CollaborationAccessGrantPayload>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/access-grants`);
+}
+
+export function replaceCollaborationOrganizationAccessGrants(code: string, grants: CollaborationAccessGrant[]) {
+  return request<{ ok: boolean; grants: CollaborationAccessGrant[]; capabilities: CollaborationCapability[]; resources?: CollaborationAccessGrantPayload["resources"] }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/access-grants`, {
+    method: "PUT",
+    body: JSON.stringify({ grants }),
+  });
 }
 
 export function bootstrapCollaborationOrganization(input: {
