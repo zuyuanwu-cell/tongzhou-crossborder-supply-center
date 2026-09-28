@@ -26,14 +26,15 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   });
   assert.match(bootstrap.organization.code, /^wh-[a-z0-9_-]{6,10}$/);
   assert.equal(bootstrap.administrator.email, "");
-  assert.equal(bootstrap.administrator.mustChangePassword, true);
+  assert.equal(bootstrap.administrator.mustChangePassword, false);
   const stored = await integrationPool.query("SELECT password_hash,must_change_password,email FROM collaboration_users WHERE id=$1", [bootstrap.administrator.userId]);
   assert.match(stored.rows[0].password_hash, /^\$argon2id\$/);
   assert.notEqual(stored.rows[0].password_hash, initialPassword);
+  assert.equal(stored.rows[0].must_change_password, false);
   assert.equal(stored.rows[0].email, null);
   const request = { headers: { "x-forwarded-for": "127.0.0.1", "user-agent": "collaboration-integration-test" }, socket: { remoteAddress: "127.0.0.1" } };
   const signedIn = await authApi.login(request, { organizationCode: bootstrap.organization.code, username: `admin-${unique}`, password: initialPassword });
-  assert.equal(signedIn.auth.mustChangePassword, true);
+  assert.equal(signedIn.auth.mustChangePassword, false);
   await identity.updateOwnProfile(signedIn.auth, { displayName: "更新后的管理员", email: `admin-${unique}@example.test`, currentPassword: initialPassword });
   await identity.changeOwnPassword(signedIn.auth, { currentPassword: initialPassword, newPassword: nextPassword });
   const signedInAgain = await authApi.login(request, { organizationCode: bootstrap.organization.code, username: `admin-${unique}`, password: nextPassword });

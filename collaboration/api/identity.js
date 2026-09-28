@@ -116,7 +116,7 @@ function publicMember(row) {
     permissions: row.permissions || [],
     mfaRequired: false,
     mfaEnabled: false,
-    mustChangePassword: Boolean(row.must_change_password),
+    mustChangePassword: false,
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : "",
     createdAt: new Date(row.created_at).toISOString(),
   };
@@ -221,7 +221,7 @@ export async function createMember(auth, body) {
     if (duplicate.rows[0]) fail("账号或邮箱已被使用。", 409, "identity_exists");
     const userResult = await client.query(
       `INSERT INTO collaboration_users(username,email,display_name,password_hash,status,must_change_password)
-       VALUES ($1,$2,$3,$4,'active',true)
+       VALUES ($1,$2,$3,$4,'active',false)
        RETURNING id,username,email,display_name,status AS user_status,must_change_password,totp_enabled_at,last_login_at,created_at`,
       [input.username, input.email || null, input.displayName || input.username, passwordHash],
     );
@@ -590,7 +590,7 @@ export async function bootstrapOrganization(body) {
     if (duplicate.rows[0]) fail("管理员账号或邮箱已被使用。", 409, "identity_exists");
     const userResult = await client.query(
       `INSERT INTO collaboration_users(username,email,display_name,password_hash,status,must_change_password)
-       VALUES ($1,$2,$3,$4,'active',true)
+       VALUES ($1,$2,$3,$4,'active',false)
        RETURNING id,username,email,display_name,status,must_change_password,created_at`,
       [input.administrator.username, input.administrator.email || null, input.administrator.displayName || input.administrator.username, passwordHash],
     );
@@ -624,7 +624,7 @@ export async function bootstrapOrganization(body) {
       email: output.administrator.email || "",
       role: output.membership.role,
       mfaRequired: false,
-      mustChangePassword: true,
+      mustChangePassword: false,
     },
   };
 }

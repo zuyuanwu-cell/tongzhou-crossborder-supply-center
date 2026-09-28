@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const sql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0001_foundation.sql"), "utf8");
 const directAccountSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0002_direct_account_provisioning.sql"), "utf8");
 const noMfaSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0003_disable_mfa_requirement.sql"), "utf8");
+const noForcedPasswordSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0004_disable_forced_password_change.sql"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
 const repositorySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "repository.js"), "utf8");
@@ -43,9 +44,12 @@ test("notification delivery only locks notification rows across outer joins", ()
   assert.doesNotMatch(notificationSource, /LIMIT 20 FOR UPDATE SKIP LOCKED/);
 });
 
-test("directly provisioned accounts must replace their initial password", () => {
+test("directly provisioned accounts can use the assigned password immediately", () => {
   assert.match(directAccountSql, /must_change_password boolean NOT NULL DEFAULT false/);
-  assert.match(identitySource, /must_change_password\)\s*\n\s*VALUES[\s\S]*'active',true/);
+  assert.match(identitySource, /must_change_password\)\s*\n\s*VALUES[\s\S]*'active',false/);
+  assert.doesNotMatch(identitySource, /must_change_password\)\s*\n\s*VALUES[\s\S]*'active',true/);
+  assert.match(noForcedPasswordSql, /UPDATE collaboration_users[\s\S]*must_change_password = false/);
+  assert.doesNotMatch(serverSource, /password_change_required/);
   assert.match(identitySource, /hashPassword\(validateNewPassword\(input\.administrator\.password\)\)/);
   assert.match(identitySource, /generateOrganizationCode\(input\.organizationType\)/);
   assert.match(identitySource, /email: optionalEmailSchema/);

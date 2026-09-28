@@ -64,7 +64,7 @@ function publicAuth(row) {
     mfaRequired: requiresMfaAtLogin(membership),
     mfaEnabled: false,
     mfaVerifiedAt: "",
-    mustChangePassword: Boolean(row.must_change_password),
+    mustChangePassword: false,
   };
 }
 

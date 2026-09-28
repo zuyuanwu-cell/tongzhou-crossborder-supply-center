@@ -37,7 +37,7 @@ let demoSession: Session = {
 const now = Date.now();
 let demoMembers: OrganizationMember[] = [
   { id: "demo-membership", userId: "demo-user", username: "warehouse.admin", email: "warehouse@example.test", displayName: "仓库负责人", userStatus: "active", role: "organization_admin", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: new Date(now - 18e5).toISOString(), createdAt: new Date(now - 30 * 864e5).toISOString() },
-  { id: "demo-operator", userId: "demo-user-2", username: "warehouse.operator", email: "", displayName: "入库操作员", userStatus: "active", role: "operator", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: true, lastLoginAt: new Date(now - 864e5).toISOString(), createdAt: new Date(now - 20 * 864e5).toISOString() },
+  { id: "demo-operator", userId: "demo-user-2", username: "warehouse.operator", email: "", displayName: "入库操作员", userStatus: "active", role: "operator", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: new Date(now - 864e5).toISOString(), createdAt: new Date(now - 20 * 864e5).toISOString() },
   { id: "demo-viewer", userId: "demo-user-3", username: "warehouse.viewer", email: "viewer@example.test", displayName: "质检查看员", userStatus: "active", role: "viewer", status: "disabled", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: "", createdAt: new Date(now - 12 * 864e5).toISOString() },
 ];
 let demoInvitations: OrganizationInvitation[] = [
@@ -78,7 +78,7 @@ export async function createInvitation(input: { username: string; email: string;
 }
 export async function createMember(input: { username: string; displayName?: string; email?: string; password: string; role: OrganizationMemberRole; mfaRequired: boolean }) {
   if (demoMode) {
-    const member: OrganizationMember = { id: crypto.randomUUID(), userId: crypto.randomUUID(), username: input.username, email: input.email || "", displayName: input.displayName || input.username, userStatus: "active", role: input.role, status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: true, lastLoginAt: "", createdAt: new Date().toISOString() };
+    const member: OrganizationMember = { id: crypto.randomUUID(), userId: crypto.randomUUID(), username: input.username, email: input.email || "", displayName: input.displayName || input.username, userStatus: "active", role: input.role, status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: "", createdAt: new Date().toISOString() };
     demoMembers = [member, ...demoMembers];
     return { ok: true, member };
   }

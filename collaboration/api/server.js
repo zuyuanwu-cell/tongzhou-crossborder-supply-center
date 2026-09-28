@@ -125,7 +125,7 @@ function publicSession(auth) {
     mfaEnabled: false,
     mfaVerifiedAt: "",
     pendingMfa: false,
-    mustChangePassword: Boolean(auth.mustChangePassword),
+    mustChangePassword: false,
     oemEnabled: collaborationConfig.oemEnabled,
   };
 }
@@ -249,10 +249,6 @@ async function route(req, res) {
   assertAuthenticated(auth);
   if (!["GET", "HEAD"].includes(req.method || "GET")) assertCsrf(req, auth);
 
-  const passwordSelfServiceRoute = url.pathname === "/collaboration/v1/account/profile" || url.pathname === "/collaboration/v1/account/password";
-  if (auth.mustChangePassword && !passwordSelfServiceRoute) {
-    throw Object.assign(new Error("请先修改管理员分配的初始密码。"), { statusCode: 428, code: "password_change_required" });
-  }
   if (url.pathname === "/collaboration/v1/account/profile" && req.method === "PATCH") {
     sendJson(res, 200, { ok: true, ...(await updateOwnProfile(auth, await readJson(req))) });
     return;

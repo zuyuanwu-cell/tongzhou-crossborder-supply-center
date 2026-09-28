@@ -31,7 +31,7 @@ const partnerPortalUrl = "https://partner.tongzhoukuajing.com";
 type ProvisionedAccess = { organizationName: string; organizationCode: string; username: string; password: string };
 
 function provisioningMessage(access: ProvisionedAccess) {
-  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${partnerPortalUrl}\n组织代码：${access.organizationCode}\n登录账号：${access.username}\n初始密码：${access.password}\n首次登录后请按页面提示修改初始密码；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
+  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${partnerPortalUrl}\n组织代码：${access.organizationCode}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
 }
 
 function formatTime(value?: string) {
@@ -126,7 +126,7 @@ export function CollaborationIdentityAdmin() {
     setError("");
     setNotice("");
     try {
-      if (form.administratorPassword !== form.administratorPasswordConfirm) throw new Error("两次输入的初始密码不一致。");
+      if (form.administratorPassword !== form.administratorPasswordConfirm) throw new Error("两次输入的登录密码不一致。");
       const result = await bootstrapCollaborationOrganization({
         name: form.name.trim(),
         organizationType: form.organizationType,
@@ -216,8 +216,8 @@ export function CollaborationIdentityAdmin() {
       <button type="button" onClick={async () => { await copyText(activation.activationUrl || ""); setNotice("激活链接已复制，请通过可信渠道发送给管理员本人。"); }}><Copy size={16} /> 复制链接</button>
     </section> : null}
     {provisionedAccess ? <section className="cia-credential" aria-live="polite">
-      <header><div><KeyRound size={20} /><div><strong>开户信息已生成</strong><span>明文密码仅保留在当前页面，关闭后无法再次查看。</span></div></div><button type="button" aria-label="关闭并清除开户信息" onClick={() => setProvisionedAccess(null)}><X size={16} /></button></header>
-      <div className="cia-credential-grid"><span>伙伴网址</span><a href={partnerPortalUrl} target="_blank" rel="noreferrer">{partnerPortalUrl}</a><span>组织代码</span><code>{provisionedAccess.organizationCode}</code><span>登录账号</span><code>{provisionedAccess.username}</code><span>初始密码</span><code>{provisionedAccess.password}</code></div>
+      <header><div><KeyRound size={20} /><div><strong>开户信息已生成</strong><span>用户收到后可直接登录；明文密码仅保留在当前页面。</span></div></div><button type="button" aria-label="关闭并清除开户信息" onClick={() => setProvisionedAccess(null)}><X size={16} /></button></header>
+      <div className="cia-credential-grid"><span>伙伴网址</span><a href={partnerPortalUrl} target="_blank" rel="noreferrer">{partnerPortalUrl}</a><span>组织代码</span><code>{provisionedAccess.organizationCode}</code><span>登录账号</span><code>{provisionedAccess.username}</code><span>登录密码</span><code>{provisionedAccess.password}</code></div>
       <button className="cia-copy-credential" type="button" onClick={async () => { await copyText(provisioningMessage(provisionedAccess)); setNotice("完整开户文案已复制，可直接发送给对方。"); }}><Copy size={17} /> 一键复制开户文案</button>
     </section> : null}
 
@@ -246,7 +246,7 @@ export function CollaborationIdentityAdmin() {
           <div className="cia-safety-note"><ShieldCheck size={18} /><div><strong>组织边界已经独立</strong><span>该组织成员只能进入自己的协作空间；停用组织会撤销其所有活动会话，但不会删除审计记录。</span></div></div>
           <section className="cia-section">
             <div className="cia-section-head"><div><Users size={18} /><div><h4>已激活成员</h4><p>这里只查看状态。日常新增和角色调整由组织管理员在外部门户完成。</p></div></div><span>{detail.members.length} 人</span></div>
-            {detail.members.length ? <div className="cia-table-wrap"><table className="cia-table"><thead><tr><th>成员</th><th>角色</th><th>账号状态</th><th>最近登录</th></tr></thead><tbody>{detail.members.map((member) => <tr key={member.id}><td><strong>{member.displayName}</strong><small>{member.username} · {member.email || "未留邮箱"}</small></td><td>{roleLabels[member.role] || member.role}</td><td><span className={`cia-state ${member.status === "active" ? "cia-state-accepted" : "cia-state-expired"}`}>{member.status === "active" ? "正常" : "已停用"}</span><small>{member.mustChangePassword ? "等待首次修改密码" : "账号密码登录"}</small></td><td>{formatTime(member.lastLoginAt)}</td></tr>)}</tbody></table></div> : <div className="cia-empty"><Users size={22} /><strong>暂无管理员账号</strong><span>创建组织时会同步建立首位管理员账号。</span></div>}
+            {detail.members.length ? <div className="cia-table-wrap"><table className="cia-table"><thead><tr><th>成员</th><th>角色</th><th>账号状态</th><th>最近登录</th></tr></thead><tbody>{detail.members.map((member) => <tr key={member.id}><td><strong>{member.displayName}</strong><small>{member.username} · {member.email || "未留邮箱"}</small></td><td>{roleLabels[member.role] || member.role}</td><td><span className={`cia-state ${member.status === "active" ? "cia-state-accepted" : "cia-state-expired"}`}>{member.status === "active" ? "正常" : "已停用"}</span><small>账号密码直接登录</small></td><td>{formatTime(member.lastLoginAt)}</td></tr>)}</tbody></table></div> : <div className="cia-empty"><Users size={22} /><strong>暂无管理员账号</strong><span>创建组织时会同步建立首位管理员账号。</span></div>}
           </section>
           <section className="cia-section">
             <div className="cia-section-head"><div><Mail size={18} /><div><h4>邀请记录</h4><p>重发会轮换令牌；旧链接立即失效。激活完成后不允许继续撤销。</p></div></div><span>{detail.invitations.length} 条</span></div>
@@ -258,22 +258,22 @@ export function CollaborationIdentityAdmin() {
 
     {showCreate ? <div className="cia-modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && busyId !== "create") setShowCreate(false); }}>
       <form className="cia-modal" onSubmit={submitCreate} role="dialog" aria-modal="true" aria-labelledby="cia-create-title">
-        <header><div><span className="cia-kicker"><UserPlus size={14} /> 安全开户</span><h3 id="cia-create-title">创建组织与首位管理员</h3><p>组织编码由系统自动生成。你分配初始账号和密码，管理员首次登录后只需修改初始密码。</p></div><button type="button" aria-label="关闭" onClick={() => setShowCreate(false)} disabled={busyId === "create"}><X size={18} /></button></header>
+        <header><div><span className="cia-kicker"><UserPlus size={14} /> 安全开户</span><h3 id="cia-create-title">创建组织与首位管理员</h3><p>组织编码由系统自动生成。你分配账号和登录密码，管理员收到后可直接进入伙伴门户。</p></div><button type="button" aria-label="关闭" onClick={() => setShowCreate(false)} disabled={busyId === "create"}><X size={18} /></button></header>
         <div className="cia-form-grid">
           <label><span>组织名称</span><input required maxLength={200} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：华东履约仓" /></label>
           <div className="cia-auto-code"><span>组织编码</span><strong>系统自动生成</strong><small>创建完成后会显示并作为伙伴登录凭据。</small></div>
           <label className="wide"><span>合作类型</span><select value={form.organizationType} onChange={(event) => setForm({ ...form, organizationType: event.target.value as CollaborationOrganizationType })}>{organizationTypes.map((item) => <option key={item.value} value={item.value}>{item.label} — {item.hint}</option>)}</select></label>
           <label className="wide"><span>组织通知邮箱（可选）</span><input type="email" value={form.notificationEmail} onChange={(event) => setForm({ ...form, notificationEmail: event.target.value })} placeholder="用于组织级业务通知，不替代管理员邮箱" /></label>
         </div>
-        <div className="cia-form-divider"><span>首位组织管理员</span><em>首次登录改密</em></div>
+        <div className="cia-form-divider"><span>首位组织管理员</span><em>直接登录</em></div>
         <div className="cia-form-grid">
           <label><span>管理员登录账号</span><input required minLength={3} maxLength={80} autoComplete="off" value={form.administratorUsername} onChange={(event) => setForm({ ...form, administratorUsername: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} placeholder="例如：east-warehouse-admin" /></label>
           <label><span>管理员姓名（可选）</span><input maxLength={120} autoComplete="off" value={form.administratorDisplayName} onChange={(event) => setForm({ ...form, administratorDisplayName: event.target.value })} placeholder="未填写时使用登录账号" /></label>
           <label><span>管理员邮箱（可选）</span><input type="email" autoComplete="off" value={form.administratorEmail} onChange={(event) => setForm({ ...form, administratorEmail: event.target.value })} placeholder="可登录后补充，用于找回密码" /></label>
-          <label><span>初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.administratorPassword} onChange={(event) => setForm({ ...form, administratorPassword: event.target.value })} placeholder="至少 12 位，包含字母和数字" /></label>
-          <label className="wide"><span>确认初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.administratorPasswordConfirm} onChange={(event) => setForm({ ...form, administratorPasswordConfirm: event.target.value })} placeholder="再次输入初始密码" /></label>
+          <label><span>登录密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.administratorPassword} onChange={(event) => setForm({ ...form, administratorPassword: event.target.value })} placeholder="至少 12 位，包含字母和数字" /></label>
+          <label className="wide"><span>确认登录密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.administratorPasswordConfirm} onChange={(event) => setForm({ ...form, administratorPasswordConfirm: event.target.value })} placeholder="再次输入登录密码" /></label>
         </div>
-        <div className="cia-modal-note"><KeyRound size={18} /><span>服务端只保存 Argon2id 密码哈希。创建成功后页面会临时生成可一键复制的开户文案，关闭凭证卡或刷新页面后明文密码即被清除。</span></div>
+        <div className="cia-modal-note"><KeyRound size={18} /><span>用户收到账号和密码后可直接登录。服务端只保存 Argon2id 密码哈希；关闭凭证卡或刷新页面后明文密码即被清除。</span></div>
         <footer><button className="cia-secondary" type="button" onClick={() => setShowCreate(false)} disabled={busyId === "create"}>取消</button><button className="cia-primary" type="submit" disabled={busyId === "create"}>{busyId === "create" ? <LoaderCircle size={17} className="cia-spin" /> : <UserPlus size={17} />}{busyId === "create" ? "正在创建…" : "创建组织与账号"}</button></footer>
       </form>
     </div> : null}
