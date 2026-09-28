@@ -1,0 +1,22 @@
+services:
+  collaboration-postgres:
+    image: postgres:16-alpine
+    container_name: tongzhou-collaboration-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tongzhou_collaboration
+      POSTGRES_USER: tongzhou_integration
+      POSTGRES_PASSWORD: local-integration-only
+    ports:
+      - "${COLLABORATION_POSTGRES_PORT:-64321}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tongzhou_integration -d tongzhou_collaboration"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - collaboration-postgres-data:/var/lib/postgresql/data
+      - ./collaboration/docker/init-roles.sql:/docker-entrypoint-initdb.d/001-init-roles.sql:ro
+
+volumes:
+  collaboration-postgres-data:

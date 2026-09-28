@@ -58,12 +58,25 @@
     "test:business-chain": "node scripts/business-chain-test.mjs",
     "check:local-performance": "node scripts/local-performance-check.mjs",
     "check:agent-coverage": "node scripts/check-agent-coverage.mjs",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "collaboration:api": "node collaboration/api/server.js",
+    "collaboration:migrate": "node collaboration/api/migrate.js",
+    "collaboration:seed": "node collaboration/api/seed.js",
+    "collaboration:portal": "vite --config collaboration/portal/vite.config.ts",
+    "collaboration:dev": "concurrently \"npm run collaboration:api\" \"npm run collaboration:portal\"",
+    "build:collaboration": "tsc -p collaboration/portal/tsconfig.json && vite build --config collaboration/portal/vite.config.ts",
+    "test:collaboration": "node --test collaboration/tests"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/s3-request-presigner": "^3.1141.0",
+    "@node-rs/argon2": "^2.2.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^8.2.2",
     "lucide-react": "^0.468.0",
+    "nodemailer": "^10.0.11",
+    "otplib": "^12.0.1",
+    "pg": "^8.23.0",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -72,7 +85,8 @@
     "sql.js": "^1.14.1",
     "typescript": "^5.7.2",
     "undici": "^5.28.4",
-    "vite": "^4.5.3"
+    "vite": "^4.5.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.5",

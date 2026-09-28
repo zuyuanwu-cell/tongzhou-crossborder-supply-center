@@ -3,12 +3,15 @@ node_modules/
 
 # Build output
 dist/
+dist-collaboration/
 *.tsbuildinfo
 
 # Runtime cache and generated files
 .cache/
 .cache-test-stockup/
 artifacts/
+.cache/collaboration-objects/
+.cache/collaboration-antivirus/
 
 # Local secrets
 .env

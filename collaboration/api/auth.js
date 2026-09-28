@@ -1,0 +1,223 @@
+import { collaborationConfig } from "./config.js";
+import { withSystem } from "./db.js";
+import {
+  clearSessionCookies,
+  createTotpSecret,
+  csrfCookie,
+  decryptSecret,
+  encryptSecret,
+  parseCookies,
+  randomToken,
+  safeEqual,
+  sessionCookie,
+  tokenHash,
+  totpUri,
+  verifyPassword,
+  verifyTotp,
+} from "./security.js";
+import { requiresMfaAtLogin } from "./permissions.js";
+
+const SESSION_COOKIE = "tz_collab_session";
+const CSRF_COOKIE = "tz_collab_csrf";
+const loginAttempts = new Map();
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+}
+
+function pruneLoginAttempts(now = Date.now()) {
+  for (const [key, value] of loginAttempts) {
+    if (now - value.windowStartedAt > 15 * 60 * 1000) loginAttempts.delete(key);
+  }
+}
+
+function assertLoginRate(req, username) {
+  pruneLoginAttempts();
+  const key = `${clientIp(req)}:${String(username || "").toLowerCase()}`;
+  const now = Date.now();
+  const entry = loginAttempts.get(key) || { count: 0, windowStartedAt: now };
+  if (entry.count >= 10) throw Object.assign(new Error("登录尝试过于频繁，请稍后再试。"), { statusCode: 429, code: "login_rate_limited" });
+  loginAttempts.set(key, { ...entry, count: entry.count + 1 });
+  return () => loginAttempts.delete(key);
+}
+
+function membershipFromRow(row) {
+  return {
+    id: row.membership_id,
+    organizationId: row.organization_id,
+    organizationCode: row.organization_code,
+    organizationName: row.organization_name,
+    organizationType: row.organization_type,
+    role: row.membership_role,
+    status: row.membership_status,
+    permissions: Array.isArray(row.permissions) ? row.permissions : [],
+    mfaRequired: Boolean(row.mfa_required),
+  };
+}
+
+function publicAuth(row) {
+  const membership = membershipFromRow(row);
+  return {
+    user: { id: row.user_id, username: row.username, displayName: row.display_name, email: row.email || "" },
+    membership,
+    organization: {
+      id: row.organization_id,
+      code: row.organization_code,
+      name: row.organization_name,
+      type: row.organization_type,
+    },
+    mfaRequired: requiresMfaAtLogin(membership),
+    mfaEnabled: Boolean(row.totp_enabled_at),
+    mfaVerifiedAt: row.mfa_verified_at ? new Date(row.mfa_verified_at).toISOString() : "",
+  };
+}
+
+async function writeAudit(client, auth, action, result, req, metadata = {}) {
+  await client.query(
+    `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,ip_address,metadata)
+     VALUES ($1,$2,$3,$4,'session',$5,$6,$7,$8)`,
+    [auth.organization.id, auth.user.id, auth.user.displayName, action, auth.user.id, result, clientIp(req) || null, metadata],
+  );
+}
+
+export async function login(req, { username, password, organizationCode = "" }) {
+  const clearAttempt = assertLoginRate(req, username);
+  const normalizedUsername = String(username || "").trim().toLowerCase();
+  if (!normalizedUsername || !password) throw Object.assign(new Error("请输入账号和密码。"), { statusCode: 400, code: "credentials_required" });
+  return withSystem(async (client) => {
+    const result = await client.query(
+      `SELECT u.id AS user_id,u.username,u.email,u.display_name,u.password_hash,u.status AS user_status,
+              u.failed_login_count,u.locked_until,u.totp_secret_ciphertext,u.totp_enabled_at,
+              m.id AS membership_id,m.organization_id,m.role AS membership_role,m.status AS membership_status,m.permissions,m.mfa_required,
+              o.code AS organization_code,o.name AS organization_name,o.organization_type,o.status AS organization_status
+         FROM collaboration_users u
+         JOIN organization_memberships m ON m.user_id=u.id
+         JOIN organizations o ON o.id=m.organization_id
+        WHERE lower(u.username)=lower($1)
+          AND ($2='' OR o.code=$2)
+        ORDER BY CASE m.role WHEN 'organization_admin' THEN 0 ELSE 1 END,o.code`,
+      [normalizedUsername, String(organizationCode || "").trim().toLowerCase()],
+    );
+    if (result.rowCount > 1 && !organizationCode) {
+      throw Object.assign(new Error("该账号属于多个组织，请填写组织代码。"), { statusCode: 409, code: "organization_required" });
+    }
+    const row = result.rows[0];
+    const now = new Date();
+    if (!row || row.user_status !== "active" || row.membership_status !== "active" || row.organization_status !== "active") {
+      throw Object.assign(new Error("账号、密码或组织无效。"), { statusCode: 401, code: "invalid_credentials" });
+    }
+    if (row.locked_until && new Date(row.locked_until) > now) {
+      throw Object.assign(new Error("账号暂时锁定，请稍后再试。"), { statusCode: 423, code: "account_locked" });
+    }
+    if (!(await verifyPassword(row.password_hash, password))) {
+      const nextFailures = Number(row.failed_login_count || 0) + 1;
+      const lockUntil = nextFailures >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+      await client.query("UPDATE collaboration_users SET failed_login_count=$2,locked_until=$3 WHERE id=$1", [row.user_id, nextFailures, lockUntil]);
+      throw Object.assign(new Error("账号、密码或组织无效。"), { statusCode: 401, code: "invalid_credentials" });
+    }
+
+    clearAttempt();
+    const rawSession = randomToken();
+    const rawCsrf = randomToken(24);
+    const expiresAt = new Date(Date.now() + collaborationConfig.sessionAbsoluteMs);
+    const mfaRequired = requiresMfaAtLogin(membershipFromRow(row));
+    await client.query("UPDATE collaboration_users SET failed_login_count=0,locked_until=NULL,status='active',last_login_at=now() WHERE id=$1", [row.user_id]);
+    const sessionResult = await client.query(
+      `INSERT INTO collaboration_sessions(token_hash,csrf_token_hash,user_id,membership_id,ip_address,user_agent,mfa_verified_at,expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [tokenHash(rawSession), tokenHash(rawCsrf), row.user_id, row.membership_id, clientIp(req) || null, String(req.headers["user-agent"] || "").slice(0, 500), null, expiresAt],
+    );
+    const auth = { ...publicAuth({ ...row, mfa_verified_at: null }), sessionId: sessionResult.rows[0].id };
+    await writeAudit(client, auth, "auth.login", "success", req, { mfaRequired });
+    return {
+      auth,
+      mfaSetupRequired: mfaRequired && !row.totp_secret_ciphertext,
+      cookies: [sessionCookie(rawSession), csrfCookie(rawCsrf)],
+    };
+  });
+}
+
+export async function authenticate(req, { allowPendingMfa = false } = {}) {
+  const cookies = parseCookies(req.headers.cookie);
+  const rawSession = cookies[SESSION_COOKIE];
+  if (!rawSession) return null;
+  return withSystem(async (client) => {
+    const result = await client.query(
+      `SELECT s.id AS session_id,s.csrf_token_hash,s.mfa_verified_at,s.last_seen_at,s.expires_at,s.revoked_at,
+              u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.totp_secret_ciphertext,
+              m.id AS membership_id,m.organization_id,m.role AS membership_role,m.status AS membership_status,m.permissions,m.mfa_required,
+              o.code AS organization_code,o.name AS organization_name,o.organization_type,o.status AS organization_status
+         FROM collaboration_sessions s
+         JOIN collaboration_users u ON u.id=s.user_id
+         JOIN organization_memberships m ON m.id=s.membership_id
+         JOIN organizations o ON o.id=m.organization_id
+        WHERE s.token_hash=$1`,
+      [tokenHash(rawSession)],
+    );
+    const row = result.rows[0];
+    const now = Date.now();
+    const invalid = !row || row.revoked_at || new Date(row.expires_at).getTime() <= now
+      || new Date(row.last_seen_at).getTime() + collaborationConfig.sessionIdleMs <= now
+      || row.user_status !== "active" || row.membership_status !== "active" || row.organization_status !== "active";
+    if (invalid) return null;
+    const auth = { ...publicAuth(row), sessionId: row.session_id, csrfTokenHash: row.csrf_token_hash, totpSecretCiphertext: row.totp_secret_ciphertext };
+    if (auth.mfaRequired && !auth.mfaVerifiedAt && !allowPendingMfa) return { ...auth, pendingMfa: true };
+    await client.query("UPDATE collaboration_sessions SET last_seen_at=now() WHERE id=$1", [row.session_id]);
+    return auth;
+  });
+}
+
+export function assertAuthenticated(auth) {
+  if (!auth) throw Object.assign(new Error("请先登录。"), { statusCode: 401, code: "authentication_required" });
+  if (auth.pendingMfa || (auth.mfaRequired && !auth.mfaVerifiedAt)) throw Object.assign(new Error("请先完成二次验证。"), { statusCode: 428, code: "mfa_required" });
+  return auth;
+}
+
+export function assertFreshMfa(auth) {
+  assertAuthenticated(auth);
+  if (!auth.mfaVerifiedAt || Date.now() - new Date(auth.mfaVerifiedAt).getTime() > collaborationConfig.mfaFreshMs) {
+    throw Object.assign(new Error("此操作需要重新进行二次验证。"), { statusCode: 428, code: "mfa_step_up_required" });
+  }
+}
+
+export function assertCsrf(req, auth) {
+  const cookies = parseCookies(req.headers.cookie);
+  const header = String(req.headers["x-csrf-token"] || "");
+  if (!header || !cookies[CSRF_COOKIE] || !safeEqual(header, cookies[CSRF_COOKIE]) || !safeEqual(tokenHash(header), auth?.csrfTokenHash)) {
+    throw Object.assign(new Error("请求验证失败，请刷新页面后重试。"), { statusCode: 403, code: "csrf_failed" });
+  }
+}
+
+export async function setupMfa(auth) {
+  if (!auth) throw Object.assign(new Error("登录会话已失效。"), { statusCode: 401, code: "authentication_required" });
+  if (auth.mfaEnabled && auth.totpSecretCiphertext) return { configured: true, secret: "", uri: "" };
+  return withSystem(async (client) => {
+    let secret;
+    if (auth.totpSecretCiphertext) secret = decryptSecret(auth.totpSecretCiphertext);
+    else {
+      secret = createTotpSecret();
+      await client.query("UPDATE collaboration_users SET totp_secret_ciphertext=$2 WHERE id=$1", [auth.user.id, encryptSecret(secret)]);
+    }
+    return { configured: false, secret, uri: totpUri(auth.user.username, auth.organization.name, secret) };
+  });
+}
+
+export async function verifyMfa(req, auth, token) {
+  if (!auth?.totpSecretCiphertext) {
+    const refreshed = await authenticate(req, { allowPendingMfa: true });
+    auth = refreshed || auth;
+  }
+  if (!auth?.totpSecretCiphertext) throw Object.assign(new Error("请先配置验证器。"), { statusCode: 409, code: "mfa_setup_required" });
+  const secret = decryptSecret(auth.totpSecretCiphertext);
+  if (!verifyTotp(secret, token)) throw Object.assign(new Error("验证码不正确或已过期。"), { statusCode: 401, code: "invalid_mfa_code" });
+  return withSystem(async (client) => {
+    await client.query("UPDATE collaboration_users SET totp_enabled_at=COALESCE(totp_enabled_at,now()) WHERE id=$1", [auth.user.id]);
+    await client.query("UPDATE collaboration_sessions SET mfa_verified_at=now(),last_seen_at=now() WHERE id=$1", [auth.sessionId]);
+    return { ...auth, pendingMfa: false, mfaEnabled: true, mfaVerifiedAt: new Date().toISOString() };
+  });
+}
+
+export async function logout(req, auth) {
+  if (auth?.sessionId) await withSystem((client) => client.query("UPDATE collaboration_sessions SET revoked_at=now() WHERE id=$1", [auth.sessionId]));
+  return clearSessionCookies();
+}

@@ -8,5 +8,13 @@ module.exports = {
         NODE_ENV: "production",
       },
     },
+    {
+      name: "tongzhou-collaboration-api",
+      script: "collaboration/api/server.js",
+      cwd: __dirname,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
   ],
 };

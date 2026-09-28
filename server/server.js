@@ -85,6 +85,9 @@ import { createBusinessChainSyncService } from "./business-chain-sync.js";
 import { createBusinessChainService } from "./business-chain-service.js";
 import { createBusinessChainApi } from "./business-chain-api.js";
 import { BUSINESS_CHAIN_SYNC_INTERVAL_MS } from "./business-chain-config.js";
+import { initCollaborationBridgeStore } from "./collaboration-bridge-db.js";
+import { createCollaborationBridge } from "./collaboration-bridge.js";
+import { createCollaborationBridgeApi } from "./collaboration-bridge-api.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -151,6 +154,7 @@ const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
 const businessChainDbPath = resolve(process.env.BUSINESS_CHAIN_DB_PATH || resolve(cacheDir, "business-chain.sqlite"));
+const collaborationBridgeDbPath = resolve(process.env.COLLABORATION_BRIDGE_DB_PATH || resolve(cacheDir, "collaboration-bridge.sqlite"));
 const wmsStockupPushCachePath = resolve(cacheDir, "wms-stockup-pushes.json");
 const outsourcingOrderCachePath = resolve(cacheDir, "outsourcing-orders.json");
 const productionMaterialCachePath = resolve(cacheDir, "production-materials.json");
@@ -216,6 +220,7 @@ const stockupCollaborationStore = await initStockupCollaborationStore(stockupCol
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore);
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
+const collaborationBridgeStore = await initCollaborationBridgeStore(collaborationBridgeDbPath);
 const businessChainStore = await initBusinessChainStore(businessChainDbPath);
 const businessChainSyncService = createBusinessChainSyncService({ store: businessChainStore, fetchDataList: fetchJdyDataList });
 const businessChainService = createBusinessChainService(businessChainStore, businessChainSyncService);
@@ -363,6 +368,24 @@ const businessChainApi = createBusinessChainApi({
   service: businessChainService,
   syncService: businessChainSyncService,
   getAuth,
+  appendActionLog,
+});
+const collaborationBridge = createCollaborationBridge({
+  store: collaborationBridgeStore,
+  domesticInventoryService,
+  listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
+  onAudit: (action, command, result) => appendActionLog(
+    directAuth,
+    action,
+    "collaboration_command",
+    command.id,
+    { organizationCode: command.organizationCode, coreRefId: command.coreRefId, commandType: command.commandType, result },
+  ),
+});
+const collaborationBridgeApi = createCollaborationBridgeApi({
+  bridge: collaborationBridge,
+  getAuth,
+  canManage: (auth) => hasPermission(auth, "operations") && hasPermission(auth, "domestic_inventory_manage"),
   appendActionLog,
 });
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
@@ -6978,6 +7001,7 @@ const server = http.createServer(async (req, res) => {
     if (await stockupCollaborationApi(req, res, url)) return;
     if (await jiandaoyunDomesticInventoryApi(req, res, url)) return;
     if (await domesticInventoryApi(req, res, url)) return;
+    if (await collaborationBridgeApi(req, res, url)) return;
     if (await businessChainApi(req, res, url)) return;
 
     if (url.pathname === "/api/health") {
@@ -11053,5 +11077,6 @@ server.listen(port, () => {
   recoverOrphanedOrderSyncJobs("服务重启时发现上次订单同步尚未结束，已关闭旧任务并等待自动重试。");
   registerBackgroundSyncTasks();
   syncScheduler.start();
+  collaborationBridge.start();
   setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
 });

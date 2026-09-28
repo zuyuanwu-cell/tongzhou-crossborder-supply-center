@@ -1,0 +1,13 @@
+{
+  "name": "同舟伙伴协同",
+  "short_name": "同舟协同",
+  "description": "仓库、服务商与委外工厂的安全协作工作台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1f0e8",
+  "theme_color": "#0b2e28",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
