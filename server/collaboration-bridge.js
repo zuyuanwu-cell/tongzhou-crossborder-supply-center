@@ -286,6 +286,34 @@ export function createCollaborationBridge({
     return internalRequest("/collaboration/internal/v1/organizations", { method: "POST", body: input });
   }
 
+  function listOrganizations({ keyword = "", status = "" } = {}) {
+    const query = new URLSearchParams();
+    if (keyword) query.set("keyword", String(keyword));
+    if (status) query.set("status", String(status));
+    const suffix = query.size ? `?${query}` : "";
+    return internalRequest(`/collaboration/internal/v1/organizations${suffix}`);
+  }
+
+  function getOrganizationAccess(code) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`);
+  }
+
+  function bootstrapOrganization(input) {
+    return internalRequest("/collaboration/internal/v1/organizations/bootstrap", { method: "POST", body: input });
+  }
+
+  function updateOrganizationStatus(code, input) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`, { method: "PATCH", body: input });
+  }
+
+  function reissueInvitation(invitationId, input) {
+    return internalRequest(`/collaboration/internal/v1/invitations/${encodeURIComponent(invitationId)}/reissue`, { method: "POST", body: input });
+  }
+
+  function revokeInvitation(invitationId, input) {
+    return internalRequest(`/collaboration/internal/v1/invitations/${encodeURIComponent(invitationId)}/revoke`, { method: "POST", body: input });
+  }
+
   async function synchronize() {
     if (running) return { ok: true, skipped: true, reason: "already_running" };
     running = true;
@@ -321,8 +349,11 @@ export function createCollaborationBridge({
   }
 
   return {
+    bootstrapOrganization,
     flushOutbox,
     awardOemQuote,
+    getOrganizationAccess,
+    listOrganizations,
     listApprovals: () => store.listCommands(["awaiting_approval"], 200),
     listOemQuotes,
     pullCommands,
@@ -330,10 +361,13 @@ export function createCollaborationBridge({
     queueInventoryProjection,
     queueOemProjection,
     queueProjection,
+    reissueInvitation,
     reviewCommand,
+    revokeInvitation,
     start,
     status,
     stop,
     synchronize,
+    updateOrganizationStatus,
   };
 }

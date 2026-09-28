@@ -56,11 +56,47 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, appen
         sendJson(res, 200, { ok: true, approvals: bridge.listApprovals().map(publicApproval) });
         return true;
       }
+      if (suffix === "/organizations" && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(await bridge.listOrganizations({ keyword: url.searchParams.get("keyword") || "", status: url.searchParams.get("status") || "" })) });
+        return true;
+      }
       if (suffix === "/organizations" && req.method === "POST") {
         const input = await readBody(req);
         const result = await bridge.provisionOrganization(input);
         appendActionLog(auth, "配置外部协作组织", "collaboration_organization", input.name || input.code || "", { code: input.code || "", organizationType: input.organizationType || "", status: input.status || "active" });
         sendJson(res, 200, result);
+        return true;
+      }
+      if (suffix === "/organizations/bootstrap" && req.method === "POST") {
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.bootstrapOrganization({ ...input, actorName });
+        appendActionLog(auth, "创建协作组织并邀请首位管理员", "collaboration_organization", input.name || input.code || "", { code: input.code || "", administratorUsername: input.administrator?.username || "" });
+        sendJson(res, 201, { ok: true, ...result });
+        return true;
+      }
+      const organizationMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})$/);
+      if (organizationMatch && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationAccess(decodeURIComponent(organizationMatch[1]))) });
+        return true;
+      }
+      if (organizationMatch && req.method === "PATCH") {
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.updateOrganizationStatus(decodeURIComponent(organizationMatch[1]), { ...input, actorName });
+        appendActionLog(auth, input.status === "active" ? "启用协作组织" : "停用协作组织", "collaboration_organization", decodeURIComponent(organizationMatch[1]), { status: input.status || "" });
+        sendJson(res, 200, { ok: true, ...result });
+        return true;
+      }
+      const invitationMatch = suffix.match(/^\/invitations\/([0-9a-fA-F-]{36})\/(reissue|revoke)$/);
+      if (invitationMatch && req.method === "POST") {
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const invitationId = decodeURIComponent(invitationMatch[1]);
+        const result = invitationMatch[2] === "reissue"
+          ? await bridge.reissueInvitation(invitationId, { actorName })
+          : await bridge.revokeInvitation(invitationId, { actorName });
+        appendActionLog(auth, invitationMatch[2] === "reissue" ? "重新签发协作邀请" : "撤销协作邀请", "collaboration_invitation", invitationId, {});
+        sendJson(res, 200, { ok: true, ...result });
         return true;
       }
       if (suffix === "/projections" && req.method === "POST") {

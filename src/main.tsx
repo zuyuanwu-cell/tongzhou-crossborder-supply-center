@@ -227,6 +227,7 @@ import { AiAgentWidget } from "./AiAgentWidget";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
+import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -411,6 +412,7 @@ const navItems = [
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
   { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
+  { label: "协同组织与账号", icon: ShieldCheck, hash: "#collaboration-accounts", section: "settings", permission: "operations" },
   { label: "操作日志", icon: List, hash: "#action-log", section: "settings", permission: "action_log" },
   { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "settings", permission: "api_access" },
 ];
@@ -2189,6 +2191,8 @@ function App() {
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "用户管理" ? (
           <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} warehousePayload={warehousePayload} />
+        ) : activeView === "协同组织与账号" ? (
+          <CollaborationIdentityAdmin />
         ) : (
           <Dashboard
             products={catalog}

@@ -148,3 +148,38 @@ test("a result callback outage never replays an already-booked inventory movemen
   assert.equal(movements.length, 1);
   assert.equal(store.command(command.id).local_status, "applied");
 });
+
+test("identity administration stays behind the server-side collaboration token", async (t) => {
+  const { bridge, requests } = await fixture(t);
+  const invitationId = "77777777-7777-4777-8777-777777777777";
+
+  await bridge.listOrganizations({ keyword: "华东", status: "active" });
+  await bridge.bootstrapOrganization({
+    code: "cn-east-warehouse",
+    name: "华东仓储",
+    organizationType: "warehouse",
+    administrator: {
+      username: "warehouse-admin",
+      email: "admin@example.com",
+      displayName: "仓库管理员",
+    },
+    actorName: "内部管理员",
+  });
+  await bridge.getOrganizationAccess("cn-east-warehouse");
+  await bridge.updateOrganizationStatus("cn-east-warehouse", { status: "suspended", actorName: "内部管理员" });
+  await bridge.reissueInvitation(invitationId, { actorName: "内部管理员" });
+  await bridge.revokeInvitation(invitationId, { actorName: "内部管理员" });
+
+  assert.equal(requests.length, 6);
+  assert.match(requests[0].url, /^http:\/\/collaboration\.test\/collaboration\/internal\/v1\/organizations\?/);
+  assert.match(requests[0].url, /keyword=%E5%8D%8E%E4%B8%9C/);
+  assert.match(requests[0].url, /status=active/);
+  assert.equal(requests[1].url, "http://collaboration.test/collaboration/internal/v1/organizations/bootstrap");
+  assert.equal(requests[1].method, "POST");
+  assert.equal(requests[1].body.administrator.password, undefined);
+  assert.equal(requests[2].url, "http://collaboration.test/collaboration/internal/v1/organizations/cn-east-warehouse");
+  assert.equal(requests[3].method, "PATCH");
+  assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);
+  assert.equal(requests[5].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/revoke`);
+  assert.ok(requests.every((request) => request.authorization === "Bearer internal-test-token"));
+});

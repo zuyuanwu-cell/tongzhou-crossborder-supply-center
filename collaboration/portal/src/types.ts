@@ -26,3 +26,18 @@ export type ProductionMilestone = { id: string; milestoneType: string; title: st
 export type WorkItemDetail = { item: WorkItem; lines: TaskLine[]; events: WorkEvent[]; attachments: Attachment[]; commands: WorkCommand[]; oem?: { artifacts: OemArtifact[]; quotes: SupplierQuote[]; milestones: ProductionMilestone[] } | null };
 export type InventoryItem = { warehouseRef: string; warehouseName: string; sku: string; productName: string; availableQuantity: number; lockedQuantity: number; inTransitQuantity: number; unit: string; lastCoreSyncedAt: string; version: number };
 export type NotificationItem = { id: string; workItemId: string; title: string; body: string; channel: string; deliveryStatus: string; readAt: string; createdAt: string };
+export type OrganizationMemberRole = "organization_admin" | "manager" | "operator" | "finance" | "viewer";
+export type OrganizationMember = {
+  id: string; userId: string; username: string; email: string; displayName: string; userStatus: string;
+  role: OrganizationMemberRole; status: "active" | "disabled"; permissions: string[]; mfaRequired: boolean; mfaEnabled: boolean;
+  lastLoginAt: string; createdAt: string;
+};
+export type OrganizationInvitation = {
+  id: string; username: string; email: string; role: OrganizationMemberRole; mfaRequired: boolean;
+  status: "pending" | "expired" | "accepted"; expiresAt: string; acceptedAt: string; createdAt: string;
+};
+export type InvitationDeliveryResult = {
+  invitation: OrganizationInvitation;
+  delivery?: { sent: boolean; channel?: string; reason?: string; message?: string };
+  activationUrl?: string;
+};

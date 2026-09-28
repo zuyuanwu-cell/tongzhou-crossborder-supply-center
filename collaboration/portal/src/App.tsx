@@ -4,21 +4,22 @@ import {
   AlertTriangle, ArrowLeftRight, Bell, Boxes, Building2, Camera, Check, CheckCircle2,
   BadgeDollarSign, ChevronRight, CircleDot, Clock3, ClipboardCheck, Factory, FileCheck2, FileText, FlaskConical, Inbox, LayoutDashboard,
   LoaderCircle, LogOut, Menu, PackageCheck, RefreshCw, ScanLine, Search, ShieldCheck, Stamp,
-  Truck, Upload, UserRound, Warehouse, X, XCircle,
+  Truck, Upload, UserPlus, UserRound, Users, Warehouse, X, XCircle, Copy, KeyRound, Mail,
 } from "lucide-react";
 import {
-  acceptInvitation, ApiError, confirmPasswordReset, fetchDashboard, fetchInventory, fetchMe, fetchNotifications, fetchWorkItem,
+  acceptInvitation, ApiError, confirmPasswordReset, createInvitation, fetchDashboard, fetchInventory, fetchInvitations, fetchMe, fetchMembers, fetchNotifications, fetchWorkItem,
   fetchWorkItems, login, logout, markNotificationRead, requestPasswordReset, setupMfa, submitAction, submitOemArtifact, submitSupplierQuote, updateProductionMilestone, uploadAttachment,
-  verifyMfa,
+  verifyMfa, updateMember, reissueInvitation, revokeInvitation,
 } from "./api";
-import type { Dashboard, InventoryItem, NotificationItem, Session, TaskLine, WorkItem, WorkItemDetail, WorkItemStatus } from "./types";
+import type { Dashboard, InventoryItem, InvitationDeliveryResult, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, Session, TaskLine, WorkItem, WorkItemDetail, WorkItemStatus } from "./types";
 
-type Route = "overview" | "tasks" | "inventory" | "notifications";
+type Route = "overview" | "tasks" | "inventory" | "notifications" | "members";
 const routeMeta: Record<Route, { label: string; icon: React.ComponentType<{ size?: number }> }> = {
   overview: { label: "作业总览", icon: LayoutDashboard },
   tasks: { label: "协同任务", icon: ClipboardCheck },
   inventory: { label: "本仓库存", icon: Boxes },
   notifications: { label: "消息中心", icon: Bell },
+  members: { label: "成员管理", icon: Users },
 };
 const statusMeta: Record<WorkItemStatus, { label: string; tone: string }> = {
   pending: { label: "待接单", tone: "amber" }, accepted: { label: "已接单", tone: "blue" }, in_progress: { label: "处理中", tone: "blue" },
@@ -43,7 +44,7 @@ function useRoute() {
   const read = () => (Object.keys(routeMeta).includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview") as Route;
   const [route, setRoute] = React.useState<Route>(read);
   React.useEffect(() => { const listener = () => setRoute(read()); window.addEventListener("hashchange", listener); return () => window.removeEventListener("hashchange", listener); }, []);
-  const navigate = (next: Route) => { location.hash = next; setRoute(next); };
+  const navigate = React.useCallback((next: Route) => { location.hash = next; setRoute(next); }, []);
   return [route, navigate] as const;
 }
 
@@ -259,15 +260,127 @@ function TaskDetailDrawer({ item, onClose, onChanged, notify }: { item: WorkItem
   </aside></div>;
 }
 
+const memberRoleLabels: Record<OrganizationMemberRole, string> = { organization_admin: "组织管理员", manager: "业务经理", operator: "操作员", finance: "财务", viewer: "只读成员" };
+
+function MembersPage({ session, notify }: { session: Session; notify(message: string, tone: "success" | "error"): void }) {
+  const [members, setMembers] = React.useState<OrganizationMember[]>([]);
+  const [invitations, setInvitations] = React.useState<OrganizationInvitation[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState("");
+  const [activation, setActivation] = React.useState<InvitationDeliveryResult | null>(null);
+  const [form, setForm] = React.useState({ username: "", email: "", role: "operator" as OrganizationMemberRole, mfaRequired: false });
+  const [stepUp, setStepUp] = React.useState<{ secret: string; qr: string } | null>(null);
+  const [mfaToken, setMfaToken] = React.useState("");
+  const pendingAction = React.useRef<{ run: () => Promise<unknown>; success: string } | null>(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const [memberPayload, invitationPayload] = await Promise.all([fetchMembers(), fetchInvitations()]);
+      setMembers(memberPayload.members || []);
+      setInvitations(invitationPayload.invitations || []);
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "成员信息读取失败", "error"); }
+    finally { setLoading(false); }
+  }, [notify]);
+  React.useEffect(() => { void load(); }, [load]);
+
+  async function requestStepUp(action: { run: () => Promise<unknown>; success: string }) {
+    pendingAction.current = action;
+    try {
+      const setup = await setupMfa();
+      const qr = setup.uri ? await QRCode.toDataURL(setup.uri, { width: 160, margin: 1 }) : "";
+      setStepUp({ secret: setup.secret || "", qr });
+      notify("该操作需要进行一次近期二次验证", "error");
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "无法启动二次验证", "error"); }
+  }
+
+  async function runSensitive(id: string, run: () => Promise<unknown>, success: string) {
+    setBusy(id);
+    try {
+      await run();
+      notify(success, "success");
+      await load();
+      return true;
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run, success });
+      else notify(reason instanceof Error ? reason.message : "操作失败", "error");
+      return false;
+    } finally { setBusy(""); }
+  }
+
+  async function verifyAndRetry() {
+    if (!pendingAction.current) return;
+    setBusy("mfa");
+    try {
+      await verifyMfa(mfaToken);
+      const action = pendingAction.current;
+      pendingAction.current = null;
+      setStepUp(null); setMfaToken("");
+      await action.run();
+      notify(action.success, "success");
+      await load();
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "二次验证失败", "error"); }
+    finally { setBusy(""); }
+  }
+
+  async function submitInvite(event: React.FormEvent) {
+    event.preventDefault();
+    const action = () => createInvitation(form);
+    setBusy("invite");
+    try {
+      const result = await action();
+      setActivation(result);
+      setForm({ username: "", email: "", role: "operator", mfaRequired: false });
+      notify(result.delivery?.sent ? "邀请邮件已发送" : "邀请已创建，请复制一次性激活链接", "success");
+      await load();
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run: async () => { const result = await action(); setActivation(result); setForm({ username: "", email: "", role: "operator", mfaRequired: false }); }, success: "邀请已创建" });
+      else notify(reason instanceof Error ? reason.message : "邀请创建失败", "error");
+    } finally { setBusy(""); }
+  }
+
+  async function renew(invitation: OrganizationInvitation) {
+    setBusy(invitation.id);
+    try {
+      const result = await reissueInvitation(invitation.id);
+      setActivation(result);
+      notify(result.delivery?.sent ? "激活邮件已重新发送" : "邀请已重签，请复制新激活链接", "success");
+      await load();
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run: async () => { const result = await reissueInvitation(invitation.id); setActivation(result); }, success: "邀请已重新签发" });
+      else notify(reason instanceof Error ? reason.message : "邀请重发失败", "error");
+    } finally { setBusy(""); }
+  }
+
+  const activeCount = members.filter((member) => member.status === "active").length;
+  const mfaCount = members.filter((member) => member.mfaEnabled).length;
+  const pendingCount = invitations.filter((invitation) => invitation.status === "pending").length;
+  return <div className="page-stack member-admin-page">
+    <section className="page-title"><div><p className="kicker">ORGANIZATION ACCESS</p><h1>成员管理</h1><span>只管理“{session.organization.name}”成员；其他合作组织不会出现在列表或搜索中。</span></div><div className="scope-badge"><ShieldCheck size={16} />组织边界已锁定</div></section>
+    <section className="member-metrics"><article><Users size={20} /><div><strong>{activeCount}</strong><span>有效成员</span></div></article><article><ShieldCheck size={20} /><div><strong>{mfaCount}</strong><span>已启用 MFA</span></div></article><article><Mail size={20} /><div><strong>{pendingCount}</strong><span>待激活邀请</span></div></article></section>
+    {activation?.activationUrl ? <section className="activation-strip"><div><KeyRound size={20} /><span><b>一次性激活链接</b><small>48 小时有效，仅在本次创建或重签后显示。</small></span></div><code>{activation.activationUrl}</code><button onClick={async () => { await navigator.clipboard.writeText(activation.activationUrl || ""); notify("激活链接已复制", "success"); }}><Copy size={16} />复制</button></section> : null}
+    {stepUp ? <section className={`member-step-up ${stepUp.qr ? "" : "configured"}`}>{stepUp.qr ? <img src={stepUp.qr} alt="二次验证二维码" /> : <ShieldCheck size={35} />}<div><p className="kicker">SECURITY CHECKPOINT</p><h3>完成二次验证后自动继续</h3><span>{stepUp.qr ? "请先使用验证器扫码绑定，再输入 6 位动态码。" : "请输入验证器中的 6 位动态码。"}</span>{stepUp.secret ? <code>{stepUp.secret}</code> : null}<div><input inputMode="numeric" maxLength={6} value={mfaToken} onChange={(event) => setMfaToken(event.target.value.replace(/\D/g, ""))} placeholder="000000" /><button className="primary-action" disabled={busy === "mfa" || mfaToken.length !== 6} onClick={() => void verifyAndRetry()}>{busy === "mfa" ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并继续</button></div></div></section> : null}
+    <section className="member-layout">
+      <form className="invite-panel" onSubmit={submitInvite}><header><span><UserPlus size={19} /></span><div><h2>邀请新成员</h2><p>成员自行设置密码；不发送默认密码。</p></div></header><label><span>登录账号</span><input required minLength={3} autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} placeholder="例如 inbound.operator" /></label><label><span>成员邮箱</span><input required type="email" autoComplete="off" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="成员本人邮箱" /></label><label><span>组织角色</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as OrganizationMemberRole })}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="mfa-toggle"><input type="checkbox" checked={form.mfaRequired} onChange={(event) => setForm({ ...form, mfaRequired: event.target.checked })} /><span><b>强制启用 MFA</b><small>建议财务、经理和管理员开启</small></span></label><button className="primary-action" disabled={busy === "invite"}>{busy === "invite" ? <LoaderCircle className="spin" size={18} /> : <Mail size={18} />}创建并发送邀请</button><p className="secure-footnote"><ShieldCheck size={13} />邀请、角色、停用与 MFA 变更均写入不可覆盖的审计记录。</p></form>
+      <section className="member-list-panel"><header><div><p className="kicker">ACTIVE MEMBERS</p><h2>组织成员</h2></div><button className="secondary-action" onClick={() => void load()}><RefreshCw size={16} />刷新</button></header>{loading ? <div className="loading-state"><LoaderCircle className="spin" />正在读取成员…</div> : <div className="member-list">{members.map((member) => <article key={member.id} className={member.status === "disabled" ? "disabled" : ""}><span className="member-avatar">{member.displayName.slice(0, 1)}</span><div className="member-identity"><b>{member.displayName}{member.id === session.membership.id ? <em>当前账号</em> : null}</b><small>{member.username} · {member.email || "未留邮箱"}</small><span>{member.lastLoginAt ? `最近登录 ${fullDate(member.lastLoginAt)}` : "尚未登录"}</span></div><select aria-label={`${member.displayName}的角色`} value={member.role} disabled={busy === member.id || member.id === session.membership.id} onChange={(event) => void runSensitive(member.id, () => updateMember(member.id, { role: event.target.value as OrganizationMemberRole }), "成员角色已更新")}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className={`member-security ${member.mfaRequired ? "active" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { mfaRequired: !member.mfaRequired }), member.mfaRequired ? "已取消强制 MFA" : "已要求成员启用 MFA")}><ShieldCheck size={15} />{member.mfaEnabled ? "MFA 已启用" : member.mfaRequired ? "等待 MFA" : "未强制 MFA"}</button><button className={`member-state-action ${member.status === "active" ? "danger" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { status: member.status === "active" ? "disabled" : "active" }), member.status === "active" ? "成员已停用，会话已撤销" : "成员已重新启用")}>{member.status === "active" ? "停用" : "启用"}</button></article>)}</div>}</section>
+    </section>
+    <section className="invitation-panel"><header><div><p className="kicker">INVITATIONS</p><h2>邀请记录</h2></div><span>{invitations.length} 条</span></header>{invitations.length ? <div className="invitation-list">{invitations.map((invitation) => <article key={invitation.id}><div><b>{invitation.username}</b><span>{invitation.email}</span></div><div><b>{memberRoleLabels[invitation.role]}</b><span>{invitation.mfaRequired ? "必须启用 MFA" : "常规验证"}</span></div><div><b>{invitation.status === "pending" ? "待激活" : invitation.status === "accepted" ? "已激活" : "已失效"}</b><span>{invitation.status === "pending" ? `有效期至 ${fullDate(invitation.expiresAt)}` : fullDate(invitation.acceptedAt || invitation.expiresAt)}</span></div><div>{invitation.status !== "accepted" ? <button disabled={busy === invitation.id} onClick={() => void renew(invitation)}>重发</button> : null}{invitation.status === "pending" ? <button className="danger" disabled={busy === invitation.id} onClick={() => void runSensitive(invitation.id, () => revokeInvitation(invitation.id), "邀请已撤销")}>撤销</button> : null}</div></article>)}</div> : <div className="empty-state"><Mail size={34} /><h3>暂无邀请记录</h3><p>从左侧表单邀请第一位成员。</p></div>}</section>
+  </div>;
+}
+
 function AppShell({ session, onLogout }: { session: Session; onLogout(): void }) {
   const [route, navigate] = useRoute(); const [mobileNav, setMobileNav] = React.useState(false); const [selected, setSelected] = React.useState<WorkItem | null>(null); const [toast, setToast] = React.useState<{ message: string; tone: "success" | "error" } | null>(null); const [refreshKey, setRefreshKey] = React.useState(0);
+  const canManageMembers = session.membership.role === "organization_admin";
+  const showToast = React.useCallback((message: string, tone: "success" | "error") => setToast({ message, tone }), []);
+  React.useEffect(() => { if (route === "members" && !canManageMembers) navigate("overview"); }, [route, canManageMembers, navigate]);
   async function openTaskById(id: string) { try { const detail = await fetchWorkItem(id); setSelected(detail.item); } catch (reason) { setToast({ message: reason instanceof Error ? reason.message : "任务不存在", tone: "error" }); } }
-  const page = route === "overview" ? <OverviewPage key={refreshKey} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} onOpenTask={setSelected} /> : route === "inventory" ? <InventoryPage key={refreshKey} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
+  const visibleRoutes = (Object.entries(routeMeta) as Array<[Route, typeof routeMeta[Route]]>).filter(([key]) => key !== "members" || canManageMembers);
+  const page = route === "overview" ? <OverviewPage key={refreshKey} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} onOpenTask={setSelected} /> : route === "inventory" ? <InventoryPage key={refreshKey} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
   return <div className="portal-shell">
-    <aside className={`sidebar ${mobileNav ? "open" : ""}`}><div className="sidebar-brand"><span><Boxes size={23} /></span><div><b>同舟协同</b><small>PARTNER PORTAL</small></div></div><div className="org-card"><span><Building2 size={17} /></span><div><small>当前组织</small><b>{session.organization.name}</b><code>{session.organization.code}</code></div><ShieldCheck size={17} /></div><nav>{Object.entries(routeMeta).map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => { navigate(key as Route); setMobileNav(false); }}><Icon size={20} /><span>{meta.label}</span>{key === "notifications" ? <i /> : null}</button>; })}</nav><div className="sidebar-scope"><ShieldCheck size={18} /><div><b>数据边界已锁定</b><span>仅访问本组织资料</span></div></div><button className="profile-card" onClick={onLogout}><span><UserRound size={19} /></span><div><b>{session.user.displayName}</b><small>{session.membership.role}</small></div><LogOut size={17} /></button></aside>
+    <aside className={`sidebar ${mobileNav ? "open" : ""}`}><div className="sidebar-brand"><span><Boxes size={23} /></span><div><b>同舟协同</b><small>PARTNER PORTAL</small></div></div><div className="org-card"><span><Building2 size={17} /></span><div><small>当前组织</small><b>{session.organization.name}</b><code>{session.organization.code}</code></div><ShieldCheck size={17} /></div><nav>{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => { navigate(key); setMobileNav(false); }}><Icon size={20} /><span>{meta.label}</span>{key === "notifications" ? <i /> : null}</button>; })}</nav><div className="sidebar-scope"><ShieldCheck size={18} /><div><b>数据边界已锁定</b><span>仅访问本组织资料</span></div></div><button className="profile-card" onClick={onLogout}><span><UserRound size={19} /></span><div><b>{session.user.displayName}</b><small>{session.membership.role}</small></div><LogOut size={17} /></button></aside>
     {mobileNav ? <button className="nav-scrim" onClick={() => setMobileNav(false)} aria-label="关闭导航" /> : null}
     <main className="main-stage"><header className="topbar"><button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={21} /></button><div><span>{routeMeta[route].label}</span><small>组织级安全协同 · {session.organization.code}</small></div><div className="topbar-actions"><button onClick={() => navigate("notifications")} aria-label="消息"><Bell size={19} /><i /></button><span className="online-mark"><i />在线</span></div></header><div className="page-content">{page}</div></main>
-    <nav className="mobile-tabs">{(["overview","tasks","inventory","notifications"] as Route[]).map((key) => { const Icon = routeMeta[key].icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={21} /><span>{routeMeta[key].label.slice(0, 2)}</span></button>; })}</nav>
+    <nav className={`mobile-tabs ${canManageMembers ? "with-members" : ""}`}>{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={21} /><span>{meta.label.slice(0, 2)}</span></button>; })}</nav>
     {selected ? <TaskDetailDrawer item={selected} onClose={() => setSelected(null)} onChanged={() => setRefreshKey((key) => key + 1)} notify={(message, tone) => setToast({ message, tone })} /> : null}
     {toast ? <Toast {...toast} onClose={() => setToast(null)} /> : null}
   </div>;

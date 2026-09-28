@@ -49,18 +49,28 @@ import {
 } from "./oem.js";
 import {
   acceptInvitation,
+  bootstrapOrganization,
   confirmPasswordReset,
   createInvitation,
+  getOrganizationAccess,
+  listInvitations,
   listMembers,
+  listOrganizations,
   listOwnSessions,
   provisionOrganization,
+  reissueInvitation,
+  reissueInvitationInternally,
   requestPasswordReset,
+  revokeInvitation,
+  revokeInvitationInternally,
   revokeOwnSession,
   updateMember,
+  updateOrganizationStatus,
 } from "./identity.js";
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const uuidPattern = "([0-9a-fA-F-]{36})";
+const organizationCodePattern = "([a-z0-9][a-z0-9_-]{1,63})";
 
 function applySecurityHeaders(req, res) {
   const origin = String(req.headers.origin || "");
@@ -188,8 +198,34 @@ async function route(req, res) {
 
   if (url.pathname.startsWith("/collaboration/internal/")) {
     assertInternalRequest(req);
+    if (url.pathname === "/collaboration/internal/v1/organizations" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...(await listOrganizations(queryObject(url))) });
+      return;
+    }
     if (url.pathname === "/collaboration/internal/v1/organizations" && req.method === "POST") {
       sendJson(res, 200, { ok: true, ...(await provisionOrganization(await readJson(req))) });
+      return;
+    }
+    if (url.pathname === "/collaboration/internal/v1/organizations/bootstrap" && req.method === "POST") {
+      sendJson(res, 201, { ok: true, ...(await bootstrapOrganization(await readJson(req))) });
+      return;
+    }
+    let organizationMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/organizations/${organizationCodePattern}$`));
+    if (organizationMatch && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...(await getOrganizationAccess(organizationMatch[1])) });
+      return;
+    }
+    if (organizationMatch && req.method === "PATCH") {
+      sendJson(res, 200, { ok: true, ...(await updateOrganizationStatus(organizationMatch[1], await readJson(req))) });
+      return;
+    }
+    let internalInvitationMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/invitations/${uuidPattern}/(reissue|revoke)$`));
+    if (internalInvitationMatch && req.method === "POST") {
+      const input = await readJson(req);
+      const result = internalInvitationMatch[2] === "reissue"
+        ? await reissueInvitationInternally(internalInvitationMatch[1], input.actorName)
+        : await revokeInvitationInternally(internalInvitationMatch[1], input.actorName);
+      sendJson(res, 200, { ok: true, ...result });
       return;
     }
     if (url.pathname === "/collaboration/internal/v1/projections" && req.method === "PUT") {
@@ -242,9 +278,22 @@ async function route(req, res) {
     sendJson(res, 200, { ok: true, ...(await listMembers(auth)) });
     return;
   }
+  if (url.pathname === "/collaboration/v1/admin/invitations" && req.method === "GET") {
+    sendJson(res, 200, { ok: true, ...(await listInvitations(auth)) });
+    return;
+  }
   if (url.pathname === "/collaboration/v1/admin/invitations" && req.method === "POST") {
     assertFreshMfa(auth);
     sendJson(res, 201, { ok: true, ...(await createInvitation(auth, await readJson(req))) });
+    return;
+  }
+  let invitationMatch = url.pathname.match(new RegExp(`^/collaboration/v1/admin/invitations/${uuidPattern}/(reissue|revoke)$`));
+  if (invitationMatch && req.method === "POST") {
+    assertFreshMfa(auth);
+    const result = invitationMatch[2] === "reissue"
+      ? await reissueInvitation(auth, invitationMatch[1])
+      : await revokeInvitation(auth, invitationMatch[1]);
+    sendJson(res, 200, { ok: true, ...result });
     return;
   }
   let identityMatch = url.pathname.match(new RegExp(`^/collaboration/v1/admin/members/${uuidPattern}$`));
