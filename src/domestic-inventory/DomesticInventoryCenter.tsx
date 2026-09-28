@@ -68,6 +68,7 @@ type SelectableProduct = {
   category?: string;
   directCostPrice?: number;
   directPrice?: number;
+  availableQty?: number;
 };
 
 type MovementLineDraft = {
@@ -92,6 +93,7 @@ type MovementLineDraft = {
   barcode: string;
   productionDate: string;
   expiryDate: string;
+  availableQty?: number;
 };
 
 type Props = {
@@ -134,6 +136,19 @@ function uniqueProducts(products: SelectableProduct[]) {
     if (!current || (!current.imageUrl && product.imageUrl)) output.set(key, product);
   }
   return [...output.values()].sort((a, b) => skuKey(a.sku).localeCompare(skuKey(b.sku)));
+}
+
+function inventoryBalanceProduct(balance: DomesticInventoryBalance): SelectableProduct {
+  return {
+    id: balance.productId || `inventory:${balance.warehouseId}:${balance.sku}`,
+    sku: balance.sku,
+    skuNo: balance.sku,
+    name: balance.productName || balance.sku,
+    imageUrl: balance.imageUrl,
+    specification: balance.specification,
+    unit: balance.unit || "件",
+    availableQty: balance.availableQty,
+  };
 }
 
 function movementLabel(type: DomesticInventoryMovement["type"]) {
@@ -788,17 +803,43 @@ function MovementModal({ type, warehouses, products, productsLoading, productLoa
   const [lines, setLines] = useState<MovementLineDraft[]>([]);
   const [saving, setSaving] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(60);
+  const [warehouseProducts, setWarehouseProducts] = useState<SelectableProduct[]>([]);
+  const [warehouseProductsLoading, setWarehouseProductsLoading] = useState(true);
+  const [warehouseProductsError, setWarehouseProductsError] = useState("");
   useEscapeClose(onClose, saving);
-  const matchingProducts = products.filter((product) => !search || `${product.sku || ""} ${product.skuNo || ""} ${product.name || ""} ${product.nameEn || ""} ${product.barcode || ""}`.toLowerCase().includes(search.toLowerCase()));
+  const selectableProducts = useMemo(() => type === "outbound"
+    ? uniqueProducts(warehouseProducts.filter((product) => Number(product.availableQty || 0) > 0))
+    : uniqueProducts([...products, ...warehouseProducts]), [products, type, warehouseProducts]);
+  const matchingProducts = selectableProducts.filter((product) => !search || `${product.sku || ""} ${product.skuNo || ""} ${product.name || ""} ${product.nameEn || ""} ${product.barcode || ""}`.toLowerCase().includes(search.toLowerCase()));
   const visibleProducts = matchingProducts.slice(0, visibleLimit);
+  const pickerLoading = type === "outbound" ? warehouseProductsLoading : productsLoading || warehouseProductsLoading;
+  const pickerError = type === "outbound" ? warehouseProductsError : productLoadError || warehouseProductsError;
 
   useEffect(() => { setVisibleLimit(60); }, [search]);
+  useEffect(() => {
+    let cancelled = false;
+    setWarehouseProducts([]);
+    setWarehouseProductsError("");
+    setWarehouseProductsLoading(Boolean(warehouseId));
+    if (!warehouseId) return () => { cancelled = true; };
+    fetchDomesticInventory({ warehouseId })
+      .then((data) => {
+        if (!cancelled) setWarehouseProducts(data.balances.map(inventoryBalanceProduct));
+      })
+      .catch((requestError) => {
+        if (!cancelled) setWarehouseProductsError(requestError instanceof Error ? requestError.message : "所选仓库库存读取失败，请稍后重试。");
+      })
+      .finally(() => {
+        if (!cancelled) setWarehouseProductsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [warehouseId]);
 
   function addProduct(product: SelectableProduct) {
     const sku = skuKey(product.sku || product.skuNo);
     if (lines.some((line) => line.sku === sku)) return;
     setLines([...lines, {
-      productId: product.id, sku, productName: product.name || product.nameEn || sku, imageUrl: product.imageUrl || "", specification: product.specification || "", unit: product.unit || "件",
+      productId: product.id, sku, productName: product.name || product.nameEn || sku, imageUrl: product.imageUrl || "", specification: product.specification || "", unit: product.unit || "件", availableQty: product.availableQty,
       quantity: 1, deltaQty: 0, unitCostCny: Number(product.directCostPrice || product.directPrice || 0), packagingMode: "piece", cartonCount: 1, unitsPerCarton: 1,
       looseQuantity: 0, cartonLengthCm: 0, cartonWidthCm: 0, cartonHeightCm: 0, cartonWeightKg: 0, lotNo: "", barcode: "", productionDate: "", expiryDate: "",
     }]);
@@ -818,6 +859,7 @@ function MovementModal({ type, warehouses, products, productsLoading, productLoa
     if (!lines.length) { onError("请至少选择一个产品。"); return; }
     if (type === "adjustment" && !note.trim()) { onError("库存调整必须填写原因。"); return; }
     if (lines.some((line) => type === "adjustment" ? !line.deltaQty : line.quantity <= 0)) { onError(type === "adjustment" ? "调整数量不能为 0。" : "数量必须大于 0。"); return; }
+    if (type === "outbound" && lines.some((line) => line.quantity > Number(line.availableQty || 0))) { onError("出库数量不能超过所选仓库的可用库存。"); return; }
     if (type === "inbound" && lines.some((line) => line.packagingMode === "carton" && (!Number.isInteger(line.cartonCount) || line.cartonCount <= 0 || !Number.isInteger(line.unitsPerCarton) || line.unitsPerCarton <= 0 || [line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg].some((value) => value <= 0)))) {
       onError("按箱入库时，请完整填写箱数、箱规、箱子长宽高和单箱重量。"); return;
     }
@@ -836,14 +878,14 @@ function MovementModal({ type, warehouses, products, productsLoading, productLoa
     <header><div><span>{movementIcon(type)}</span><div><p>INVENTORY MOVEMENT</p><h3>{movementLabel(type)}</h3></div></div><button type="button" aria-label={`关闭${movementLabel(type)}窗口`} onClick={onClose}><X size={20} /></button></header>
     <div className="domestic-modal-body movement-form-grid">
       <div className="movement-form-main">
-        <div className="domestic-form-row"><label>仓库<select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">请选择仓库</option>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>关联单号<input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} placeholder="采购单、领用单或盘点单号" /></label></div>
+        <div className="domestic-form-row"><label>仓库<select value={warehouseId} onChange={(event) => { setWarehouseId(event.target.value); setLines([]); }}><option value="">请选择仓库</option>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>关联单号<input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} placeholder="采购单、领用单或盘点单号" /></label></div>
         <label>备注 / 原因{type === "adjustment" ? <b>*</b> : null}<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={type === "adjustment" ? "请说明盘盈、盘亏或库存修正原因" : "选填，便于后续追溯"} /></label>
         <div className="movement-line-header"><strong>产品明细</strong><span>同一个 SKU 每张单只出现一次</span></div>
         <div className="movement-line-editor">{lines.length ? lines.map((line, index) => <article key={line.sku} className="movement-line-card">
           <div className="movement-line-edit">
             {line.imageUrl ? <img src={line.imageUrl} alt="" /> : <span className="image-placeholder"><Boxes size={17} /></span>}
-            <div><strong>{line.productName}</strong><small>{line.sku}</small></div>
-            <label>{type === "adjustment" ? "调整数（±）" : "数量"}<input type="number" step="any" readOnly={type === "inbound" && line.packagingMode === "carton"} value={type === "adjustment" ? line.deltaQty : line.quantity} onChange={(event) => updateLine(index, { [type === "adjustment" ? "deltaQty" : "quantity"]: Number(event.target.value) })} /></label>
+            <div><strong>{line.productName}</strong><small>{line.sku}{type === "outbound" ? ` · 可用 ${numberText(Number(line.availableQty || 0))} ${line.unit}` : ""}</small></div>
+            <label>{type === "adjustment" ? "调整数（±）" : "数量"}<input type="number" step="any" min={type === "outbound" ? 0.01 : undefined} max={type === "outbound" ? line.availableQty : undefined} readOnly={type === "inbound" && line.packagingMode === "carton"} value={type === "adjustment" ? line.deltaQty : line.quantity} onChange={(event) => updateLine(index, { [type === "adjustment" ? "deltaQty" : "quantity"]: Number(event.target.value) })} /></label>
             {type === "inbound" ? <label>单位成本<input type="number" min="0" step="0.01" value={line.unitCostCny} onChange={(event) => updateLine(index, { unitCostCny: Number(event.target.value) })} /></label> : null}
             <button type="button" onClick={() => setLines(lines.filter((item) => item.sku !== line.sku))}><X size={16} /></button>
           </div>
@@ -870,15 +912,15 @@ function MovementModal({ type, warehouses, products, productsLoading, productLoa
       </div>
       <aside className="movement-product-picker">
         <label><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 SKU / 产品名称 / 条码" /></label>
-        <p className={productLoadError ? "product-picker-status error" : "product-picker-status"}>
-          {productsLoading ? <><RefreshCw className="spinning" size={13} />正在载入全部 SKU…</> : productLoadError ? `完整目录读取失败，当前可选 ${products.length} 个 SKU` : `已载入同舟供应链 ${products.length} 个 SKU`}
+        <p className={pickerError ? "product-picker-status error" : "product-picker-status"}>
+          {pickerLoading ? <><RefreshCw className="spinning" size={13} />{type === "outbound" ? "正在读取所选仓库可用库存…" : "正在载入全部 SKU…"}</> : pickerError ? pickerError : type === "outbound" ? `按所选仓库实际库存显示，共 ${selectableProducts.length} 个可出库 SKU` : `已载入 ${selectableProducts.length} 个可选 SKU`}
         </p>
         <div>
           {visibleProducts.map((product) => {
             const selected = lines.some((line) => line.sku === skuKey(product.sku || product.skuNo));
-            return <button type="button" key={skuKey(product.sku || product.skuNo)} disabled={selected} onClick={() => addProduct(product)}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span><Boxes size={16} /></span>}<div><strong>{product.name || product.nameEn || product.sku}</strong><small>{product.sku || product.skuNo}</small></div>{selected ? <Check size={16} /> : <Plus size={16} />}</button>;
+            return <button type="button" key={skuKey(product.sku || product.skuNo)} disabled={selected} onClick={() => addProduct(product)}>{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <span><Boxes size={16} /></span>}<div><strong>{product.name || product.nameEn || product.sku}</strong><small>{product.sku || product.skuNo}{type === "outbound" ? ` · 可用 ${numberText(Number(product.availableQty || 0))} ${product.unit || "件"}` : ""}</small></div>{selected ? <Check size={16} /> : <Plus size={16} />}</button>;
           })}
-          {!productsLoading && !visibleProducts.length ? <p className="product-picker-empty">没有找到匹配的 SKU</p> : null}
+          {!pickerLoading && !visibleProducts.length ? <p className="product-picker-empty">{type === "outbound" && !search ? "所选仓库当前没有可出库库存" : "没有找到匹配的 SKU"}</p> : null}
         </div>
         {visibleProducts.length < matchingProducts.length ? <button className="product-picker-more" type="button" onClick={() => setVisibleLimit((current) => current + 60)}>加载更多（剩余 {matchingProducts.length - visibleProducts.length}）</button> : null}
       </aside>
