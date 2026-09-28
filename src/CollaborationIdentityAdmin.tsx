@@ -28,10 +28,10 @@ const statusLabels: Record<CollaborationOrganizationStatus, string> = { active: 
 const roleLabels: Record<string, string> = { organization_admin: "组织管理员", manager: "业务经理", operator: "操作员", finance: "财务", viewer: "只读成员" };
 const partnerPortalUrl = "https://partner.tongzhoukuajing.com";
 
-type ProvisionedAccess = { organizationName: string; organizationCode: string; username: string; password: string };
+type ProvisionedAccess = { organizationName: string; username: string; password: string };
 
 function provisioningMessage(access: ProvisionedAccess) {
-  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${partnerPortalUrl}\n组织代码：${access.organizationCode}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
+  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${partnerPortalUrl}\n组织名称：${access.organizationName}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
 }
 
 function formatTime(value?: string) {
@@ -134,7 +134,7 @@ export function CollaborationIdentityAdmin() {
         notificationEmail: form.notificationEmail.trim(),
         administrator: { username: form.administratorUsername.trim(), displayName: form.administratorDisplayName.trim() || undefined, email: form.administratorEmail.trim(), password: form.administratorPassword },
       });
-      setProvisionedAccess({ organizationName: form.name.trim(), organizationCode: result.organization.code, username: form.administratorUsername.trim(), password: form.administratorPassword });
+      setProvisionedAccess({ organizationName: form.name.trim(), username: form.administratorUsername.trim(), password: form.administratorPassword });
       setActivation(null);
       setSelectedCode(result.organization.code);
       setNotice(`组织与管理员账号已创建，组织编码为 ${result.organization.code}。可点击下方按钮复制完整开户文案。`);
@@ -217,7 +217,7 @@ export function CollaborationIdentityAdmin() {
     </section> : null}
     {provisionedAccess ? <section className="cia-credential" aria-live="polite">
       <header><div><KeyRound size={20} /><div><strong>开户信息已生成</strong><span>用户收到后可直接登录；明文密码仅保留在当前页面。</span></div></div><button type="button" aria-label="关闭并清除开户信息" onClick={() => setProvisionedAccess(null)}><X size={16} /></button></header>
-      <div className="cia-credential-grid"><span>伙伴网址</span><a href={partnerPortalUrl} target="_blank" rel="noreferrer">{partnerPortalUrl}</a><span>组织代码</span><code>{provisionedAccess.organizationCode}</code><span>登录账号</span><code>{provisionedAccess.username}</code><span>登录密码</span><code>{provisionedAccess.password}</code></div>
+      <div className="cia-credential-grid"><span>伙伴网址</span><a href={partnerPortalUrl} target="_blank" rel="noreferrer">{partnerPortalUrl}</a><span>登录账号</span><code>{provisionedAccess.username}</code><span>登录密码</span><code>{provisionedAccess.password}</code></div>
       <button className="cia-copy-credential" type="button" onClick={async () => { await copyText(provisioningMessage(provisionedAccess)); setNotice("完整开户文案已复制，可直接发送给对方。"); }}><Copy size={17} /> 一键复制开户文案</button>
     </section> : null}
 

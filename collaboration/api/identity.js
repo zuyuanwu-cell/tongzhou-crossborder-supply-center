@@ -33,7 +33,6 @@ const acceptInvitationSchema = z.object({
 }).strict();
 
 const resetRequestSchema = z.object({
-  organizationCode: z.string().trim().min(2).max(64),
   username: z.string().trim().min(1).max(80),
 }).strict();
 
@@ -123,7 +122,7 @@ function publicMember(row) {
 }
 
 function rateLimitReset(req, input) {
-  const key = `${clientIp(req)}:${input.organizationCode.toLowerCase()}:${input.username.toLowerCase()}`;
+  const key = `${clientIp(req)}:${input.username.toLowerCase()}`;
   const now = Date.now();
   const existing = resetAttempts.get(key);
   const entry = !existing || now - existing.startedAt > 15 * 60_000 ? { count: 0, startedAt: now } : existing;
@@ -328,8 +327,8 @@ export async function requestPasswordReset(req, body) {
     const identity = await client.query(
       `SELECT u.id,u.email,u.display_name,o.name AS organization_name
          FROM collaboration_users u JOIN organization_memberships m ON m.user_id=u.id JOIN organizations o ON o.id=m.organization_id
-        WHERE lower(u.username)=lower($1) AND o.code=$2 AND u.status='active' AND m.status='active' AND o.status='active'`,
-      [input.username, input.organizationCode.toLowerCase()],
+        WHERE lower(u.username)=lower($1) AND u.status='active' AND m.status='active' AND o.status='active'`,
+      [input.username],
     );
     if (!identity.rows[0]?.email) return null;
     const rawToken = randomToken();

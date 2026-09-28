@@ -76,7 +76,7 @@ async function writeAudit(client, auth, action, result, req, metadata = {}) {
   );
 }
 
-export async function login(req, { username, password, organizationCode = "" }) {
+export async function login(req, { username, password }) {
   const clearAttempt = assertLoginRate(req, username);
   const normalizedUsername = String(username || "").trim().toLowerCase();
   if (!normalizedUsername || !password) throw Object.assign(new Error("请输入账号和密码。"), { statusCode: 400, code: "credentials_required" });
@@ -90,12 +90,11 @@ export async function login(req, { username, password, organizationCode = "" }) 
          JOIN organization_memberships m ON m.user_id=u.id
          JOIN organizations o ON o.id=m.organization_id
         WHERE lower(u.username)=lower($1)
-          AND ($2='' OR o.code=$2)
         ORDER BY CASE m.role WHEN 'organization_admin' THEN 0 ELSE 1 END,o.code`,
-      [normalizedUsername, String(organizationCode || "").trim().toLowerCase()],
+      [normalizedUsername],
     );
-    if (result.rowCount > 1 && !organizationCode) {
-      throw Object.assign(new Error("该账号属于多个组织，请填写组织代码。"), { statusCode: 409, code: "organization_required" });
+    if (result.rowCount > 1) {
+      throw Object.assign(new Error("账号归属异常，请联系管理员。"), { statusCode: 409, code: "account_membership_invalid" });
     }
     const row = result.rows[0];
     const now = new Date();

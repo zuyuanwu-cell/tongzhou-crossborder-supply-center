@@ -33,11 +33,11 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   assert.equal(stored.rows[0].must_change_password, false);
   assert.equal(stored.rows[0].email, null);
   const request = { headers: { "x-forwarded-for": "127.0.0.1", "user-agent": "collaboration-integration-test" }, socket: { remoteAddress: "127.0.0.1" } };
-  const signedIn = await authApi.login(request, { organizationCode: bootstrap.organization.code, username: `admin-${unique}`, password: initialPassword });
+  const signedIn = await authApi.login(request, { username: `admin-${unique}`, password: initialPassword });
   assert.equal(signedIn.auth.mustChangePassword, false);
   await identity.updateOwnProfile(signedIn.auth, { displayName: "更新后的管理员", email: `admin-${unique}@example.test`, currentPassword: initialPassword });
   await identity.changeOwnPassword(signedIn.auth, { currentPassword: initialPassword, newPassword: nextPassword });
-  const signedInAgain = await authApi.login(request, { organizationCode: bootstrap.organization.code, username: `admin-${unique}`, password: nextPassword });
+  const signedInAgain = await authApi.login(request, { username: `admin-${unique}`, password: nextPassword });
   assert.equal(signedInAgain.auth.mustChangePassword, false);
   assert.equal(signedInAgain.auth.user.email, `admin-${unique}@example.test`);
   const orgs = await integrationPool.query("INSERT INTO organizations(code,name,organization_type) VALUES ('rls-a','A仓','warehouse'),('rls-b','B仓','warehouse') ON CONFLICT(code) DO UPDATE SET name=excluded.name RETURNING id,code");

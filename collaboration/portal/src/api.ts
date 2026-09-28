@@ -51,9 +51,9 @@ const demoItems: WorkItem[] = [
 ];
 
 export async function fetchMe() { if (demoMode) return { ok: true, session: demoSession }; return request<{ ok: boolean; session: Session }>("/collaboration/me"); }
-export async function login(input: { organizationCode: string; username: string; password: string }) { if (demoMode) return { ok: true, session: demoSession, mfaSetupRequired: false }; return request<{ ok: boolean; session: Session; mfaSetupRequired: boolean }>("/collaboration/auth/login", { method: "POST", body: JSON.stringify(input) }); }
+export async function login(input: { username: string; password: string }) { if (demoMode) return { ok: true, session: demoSession, mfaSetupRequired: false }; return request<{ ok: boolean; session: Session; mfaSetupRequired: boolean }>("/collaboration/auth/login", { method: "POST", body: JSON.stringify(input) }); }
 export async function acceptInvitation(token: string, displayName: string, password: string) { return request<{ ok: boolean; organization: { code: string; name: string } }>("/collaboration/auth/invitations/accept", { method: "POST", body: JSON.stringify({ token, displayName, password }) }); }
-export async function requestPasswordReset(organizationCode: string, username: string) { return request<{ ok: boolean; accepted: boolean }>("/collaboration/auth/password-reset/request", { method: "POST", body: JSON.stringify({ organizationCode, username }) }); }
+export async function requestPasswordReset(username: string) { return request<{ ok: boolean; accepted: boolean }>("/collaboration/auth/password-reset/request", { method: "POST", body: JSON.stringify({ username }) }); }
 export async function confirmPasswordReset(token: string, password: string) { return request<{ ok: boolean; changed: boolean }>("/collaboration/auth/password-reset/confirm", { method: "POST", body: JSON.stringify({ token, password }) }); }
 export async function logout() { if (demoMode) return { ok: true }; return request<{ ok: boolean }>("/collaboration/auth/logout", { method: "POST" }); }
 export async function setupMfa() { return request<{ ok: boolean; configured: boolean; secret: string; uri: string }>("/collaboration/auth/mfa/setup", { method: "POST" }); }

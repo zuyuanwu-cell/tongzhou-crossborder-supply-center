@@ -8,8 +8,11 @@ const sql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "mi
 const directAccountSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0002_direct_account_provisioning.sql"), "utf8");
 const noMfaSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0003_disable_mfa_requirement.sql"), "utf8");
 const noForcedPasswordSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0004_disable_forced_password_change.sql"), "utf8");
+const usernameOnlyLoginSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0005_username_only_login.sql"), "utf8");
+const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
+const portalSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "portal", "src", "App.tsx"), "utf8");
 const repositorySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "repository.js"), "utf8");
 const oemSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "oem.js"), "utf8");
 const notificationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "notifications.js"), "utf8");
@@ -53,6 +56,16 @@ test("directly provisioned accounts can use the assigned password immediately", 
   assert.match(identitySource, /hashPassword\(validateNewPassword\(input\.administrator\.password\)\)/);
   assert.match(identitySource, /generateOrganizationCode\(input\.organizationType\)/);
   assert.match(identitySource, /email: optionalEmailSchema/);
+});
+
+test("partner login resolves the organization from a globally unique username", () => {
+  assert.match(sql, /UNIQUE INDEX[^\n]+collaboration_users_username_lower[^\n]+lower\(username\)/i);
+  assert.match(usernameOnlyLoginSql, /UNIQUE INDEX[^\n]+organization_memberships_user_unique[\s\S]+organization_memberships\(user_id\)/i);
+  assert.match(authSource, /export async function login\(req, \{ username, password \}\)/);
+  assert.doesNotMatch(authSource, /organization_required|AND \(\$2='' OR o\.code=\$2\)/);
+  assert.doesNotMatch(identitySource.match(/const resetRequestSchema[\s\S]*?\.strict\(\);/)?.[0] || "", /organizationCode/);
+  assert.match(portalSource, /请输入管理员分配的账号和密码/);
+  assert.doesNotMatch(portalSource.match(/function LoginPage[\s\S]*?function CredentialFlowPage/)?.[0] || "", /组织代码/);
 });
 
 test("authenticator requirements are disabled without removing legacy security columns", () => {

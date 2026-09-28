@@ -1,6 +1,6 @@
 # 协同组织与账号管理实施计划
 
-> 变更说明：本计划中的邀请激活、强制 MFA/TOTP 和首次改密方案已由 [ADR-0002](../adr/0002-password-only-partner-login.md) 与 [ADR-0003](../adr/0003-direct-login-with-assigned-password.md) 替代；现行方案为管理员直接分配账号密码，用户收到后直接登录。
+> 变更说明：本计划中的邀请激活、强制 MFA/TOTP、首次改密和组织代码登录方案已由 [ADR-0002](../adr/0002-password-only-partner-login.md)、[ADR-0003](../adr/0003-direct-login-with-assigned-password.md) 与 [ADR-0004](../adr/0004-username-only-partner-login.md) 替代；现行方案为管理员直接分配账号密码，用户只需账号和密码即可直接登录。
 
 > **For Claude:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 

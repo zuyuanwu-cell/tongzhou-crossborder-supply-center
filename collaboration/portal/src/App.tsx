@@ -54,7 +54,7 @@ function Toast({ message, tone, onClose }: { message: string; tone: "success" | 
 }
 
 function LoginPage({ onLogin, onForgot }: { onLogin(session: Session): void; onForgot(): void }) {
-  const [form, setForm] = React.useState({ organizationCode: "", username: "", password: "" });
+  const [form, setForm] = React.useState({ username: "", password: "" });
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   async function submit(event: React.FormEvent) {
@@ -76,8 +76,7 @@ function LoginPage({ onLogin, onForgot }: { onLogin(session: Session): void; onF
     </section>
     <section className="login-panel">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-card-head"><p>PARTNER ACCESS</p><h2>伙伴登录</h2><span>请使用管理员分配的组织代码、账号和密码</span></div>
-        <label><span>组织代码</span><input autoComplete="organization" value={form.organizationCode} onChange={(event) => setForm({ ...form, organizationCode: event.target.value.toLowerCase() })} placeholder="例如 cn-warehouse-01" required /></label>
+        <div className="login-card-head"><p>PARTNER ACCESS</p><h2>伙伴登录</h2><span>请输入管理员分配的账号和密码</span></div>
         <label><span>账号</span><input autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="请输入登录账号" required /></label>
         <label><span>密码</span><input type="password" autoComplete="current-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="至少 12 位" required /></label>
         {error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}
@@ -90,13 +89,13 @@ function LoginPage({ onLogin, onForgot }: { onLogin(session: Session): void; onF
 }
 
 function CredentialFlowPage({ mode, token = "", onDone }: { mode: "invite" | "reset" | "request"; token?: string; onDone(): void }) {
-  const [form, setForm] = React.useState({ organizationCode: "", username: "", displayName: "", password: "", confirm: "" });
+  const [form, setForm] = React.useState({ username: "", displayName: "", password: "", confirm: "" });
   const [busy, setBusy] = React.useState(false); const [error, setError] = React.useState(""); const [success, setSuccess] = React.useState("");
   const title = mode === "invite" ? "激活伙伴账号" : mode === "reset" ? "设置新密码" : "找回密码";
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      if (mode === "request") { await requestPasswordReset(form.organizationCode, form.username); setSuccess("如果账号信息匹配，重置邮件将在几分钟内送达。"); }
+      if (mode === "request") { await requestPasswordReset(form.username); setSuccess("如果账号信息匹配，重置邮件将在几分钟内送达。"); }
       else {
         if (form.password !== form.confirm) throw new Error("两次输入的密码不一致。");
         if (mode === "invite") await acceptInvitation(token, form.displayName, form.password);
@@ -106,8 +105,8 @@ function CredentialFlowPage({ mode, token = "", onDone }: { mode: "invite" | "re
     } catch (reason) { setError(reason instanceof Error ? reason.message : "操作失败，请稍后重试。"); }
     finally { setBusy(false); }
   }
-  return <main className="credential-page"><section className="credential-card"><span className="brand-mark"><ShieldCheck size={25} /></span><p className="kicker">SECURE ACCOUNT FLOW</p><h1>{title}</h1><p>{mode === "invite" ? "完成账号资料并设置至少 12 位、同时包含字母和数字的密码。" : mode === "reset" ? "新密码生效后，所有已登录设备会被安全退出。" : "输入组织代码和账号；无论账号是否存在，页面都不会暴露注册状态。"}</p>
-    {success ? <div className="credential-success"><CheckCircle2 size={20} /><span>{success}</span><button className="primary-action" onClick={onDone}>返回登录</button></div> : <form onSubmit={submit}>{mode === "request" ? <><label><span>组织代码</span><input value={form.organizationCode} onChange={(event) => setForm({ ...form, organizationCode: event.target.value.toLowerCase() })} required /></label><label><span>账号</span><input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label></> : <>{mode === "invite" ? <label><span>姓名</span><input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} required /></label> : null}<label><span>新密码</span><input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required /></label><label><span>确认新密码</span><input type="password" autoComplete="new-password" minLength={12} value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} required /></label></>}{error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}<button className="primary-action" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}{mode === "request" ? "发送重置邮件" : "安全确认"}</button><button type="button" className="credential-back" onClick={onDone}>返回登录</button></form>}
+  return <main className="credential-page"><section className="credential-card"><span className="brand-mark"><ShieldCheck size={25} /></span><p className="kicker">SECURE ACCOUNT FLOW</p><h1>{title}</h1><p>{mode === "invite" ? "完成账号资料并设置至少 12 位、同时包含字母和数字的密码。" : mode === "reset" ? "新密码生效后，所有已登录设备会被安全退出。" : "输入登录账号；无论账号是否存在，页面都不会暴露注册状态。"}</p>
+    {success ? <div className="credential-success"><CheckCircle2 size={20} /><span>{success}</span><button className="primary-action" onClick={onDone}>返回登录</button></div> : <form onSubmit={submit}>{mode === "request" ? <label><span>账号</span><input autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label> : <>{mode === "invite" ? <label><span>姓名</span><input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} required /></label> : null}<label><span>新密码</span><input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required /></label><label><span>确认新密码</span><input type="password" autoComplete="new-password" minLength={12} value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} required /></label></>}{error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}<button className="primary-action" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}{mode === "request" ? "发送重置邮件" : "安全确认"}</button><button type="button" className="credential-back" onClick={onDone}>返回登录</button></form>}
   </section></main>;
 }
 
@@ -268,10 +267,10 @@ function AccountPage({ session, onSessionChange, notify }: { session: Session; o
 
 const memberRoleLabels: Record<OrganizationMemberRole, string> = { organization_admin: "组织管理员", manager: "业务经理", operator: "操作员", finance: "财务", viewer: "只读成员" };
 
-type ProvisionedAccess = { organizationName: string; organizationCode: string; username: string; password: string; portalUrl: string };
+type ProvisionedAccess = { organizationName: string; username: string; password: string; portalUrl: string };
 
 function accountHandoffText(access: ProvisionedAccess) {
-  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${access.portalUrl}\n组织名称：${access.organizationName}\n组织代码：${access.organizationCode}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
+  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${access.portalUrl}\n组织名称：${access.organizationName}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
 }
 
 function MembersPage({ session, notify }: { session: Session; notify(message: string, tone: "success" | "error"): void }) {
@@ -313,7 +312,7 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
     if (form.password !== form.confirm) { notify("两次输入的登录密码不一致", "error"); return; }
     setBusy("invite");
     try {
-      const access = { organizationName: session.organization.name, organizationCode: session.organization.code, username: form.username, password: form.password, portalUrl: window.location.origin };
+      const access = { organizationName: session.organization.name, username: form.username, password: form.password, portalUrl: window.location.origin };
       await createMember({ username: form.username, displayName: form.displayName || undefined, email: form.email, password: form.password, role: form.role, mfaRequired: false });
       setProvisionedAccess(access);
       setForm(emptyMemberForm);
