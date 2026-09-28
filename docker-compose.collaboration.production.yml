@@ -99,7 +99,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-    networks: [collaboration_private]
+    # The second bridge keeps localhost port publishing functional on the
+    # production CentOS 7 Docker host; the host binding still limits access.
+    networks: [collaboration_private, collaboration_egress]
 
 networks:
   collaboration_private:
