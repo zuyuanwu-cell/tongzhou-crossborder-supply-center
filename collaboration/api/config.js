@@ -38,6 +38,7 @@ export const collaborationConfig = Object.freeze({
   secretKey: required("COLLABORATION_SECRET_KEY", { developmentFallback: production ? "" : "local-only-change-before-production" }),
   internalToken: required("COLLABORATION_INTERNAL_TOKEN", { developmentFallback: production ? "" : "local-internal-token-change-me" }),
   storageDriver: process.env.COLLABORATION_STORAGE_DRIVER === "s3" ? "s3" : "local",
+  allowLocalPrivateStorage: process.env.COLLABORATION_ALLOW_LOCAL_PRIVATE_STORAGE === "true",
   storageDir: resolve(process.env.COLLABORATION_STORAGE_DIR || resolve(process.cwd(), ".cache", "collaboration-objects")),
   clamscanPath: String(process.env.COLLABORATION_CLAMSCAN_PATH || "clamscan").trim(),
   trustLocalUploads: !production && process.env.COLLABORATION_DEV_TRUST_UPLOADS !== "false",
@@ -62,8 +63,12 @@ if (collaborationConfig.production) {
   if (collaborationConfig.secretKey.length < 32) throw new Error("COLLABORATION_SECRET_KEY must be at least 32 characters in production.");
   if (collaborationConfig.internalToken.length < 32) throw new Error("COLLABORATION_INTERNAL_TOKEN must be at least 32 characters in production.");
   if (!collaborationConfig.cookieSecure) throw new Error("Secure collaboration cookies are required in production.");
-  if (collaborationConfig.storageDriver !== "s3") throw new Error("S3-compatible private storage is required in production.");
-  if (!collaborationConfig.s3.bucket || !collaborationConfig.s3.accessKeyId || !collaborationConfig.s3.secretAccessKey) throw new Error("Complete S3 private storage credentials are required in production.");
+  if (collaborationConfig.storageDriver !== "s3" && !collaborationConfig.allowLocalPrivateStorage) {
+    throw new Error("S3 storage or explicit private local storage is required in production.");
+  }
+  if (collaborationConfig.storageDriver === "s3" && (!collaborationConfig.s3.bucket || !collaborationConfig.s3.accessKeyId || !collaborationConfig.s3.secretAccessKey)) {
+    throw new Error("Complete S3 private storage credentials are required in production.");
+  }
   if (!collaborationConfig.integrationDatabaseUrl) throw new Error("COLLABORATION_INTEGRATION_DATABASE_URL is required in production.");
   if (collaborationConfig.integrationDatabaseUrl === collaborationConfig.databaseUrl) throw new Error("Portal and integration PostgreSQL roles must use different connection URLs in production.");
 }

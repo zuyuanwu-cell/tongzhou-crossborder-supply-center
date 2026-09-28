@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+.cache
+.playwright-cli
+dist
+dist-collaboration
+node_modules
+output
+reports
+video

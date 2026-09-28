@@ -79,6 +79,30 @@ pm2 startOrReload ecosystem.config.cjs --update-env
 pm2 save
 ```
 
+### CentOS 7 / 旧 Node.js 宿主机兼容部署
+
+不要替换宿主机的 `/usr/bin/node`，也不要用旧 Node.js 直接启动协同 API。使用独立容器栈：
+
+```bash
+cp collaboration/docker/production.env.example .env.collaboration.production
+# 写入随机密码、密钥及正式域名后，将文件权限设为仅 root 可读
+chmod 600 .env.collaboration.production
+
+docker compose \
+  --env-file .env.collaboration.production \
+  -f docker-compose.collaboration.production.yml \
+  config --quiet
+
+docker compose \
+  --env-file .env.collaboration.production \
+  -f docker-compose.collaboration.production.yml \
+  up -d --build
+```
+
+该栈将 Node.js 20、PostgreSQL、ClamAV、协同 API 和门户 Nginx 封装在独立容器中。首期附件保存在只有协同 API 挂载的私有 Docker 卷，下载仍需重新校验组织和任务权限；接入正式 S3 后可切换为短期签名地址。宿主机只绑定 `127.0.0.1:8790` 与 `127.0.0.1:8791`，不会替换现有 Node.js、PM2 或中台 Nginx 站点。数据库、附件及病毒库分别使用独立命名卷。
+
+宿主机 Nginx 可基于 `collaboration/docker/nginx.host.example.conf` 新建独立站点。DNS 和 HTTPS 就绪前，只能使用带 `Host` 请求头的回环健康检查，不得开放账号给伙伴使用。
+
 协同 API 健康检查为 `GET /collaboration/health`。核心桥接状态为内部鉴权后的 `GET /api/collaboration-bridge/status`。
 
 ## 5. Nginx 示例

@@ -1,0 +1,110 @@
+name: tongzhou-collaboration-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tongzhou_collaboration
+      POSTGRES_USER: tongzhou_bootstrap
+      POSTGRES_PASSWORD: ${COLLABORATION_BOOTSTRAP_DB_PASSWORD:?required}
+      COLLABORATION_INTEGRATION_DB_PASSWORD: ${COLLABORATION_INTEGRATION_DB_PASSWORD:?required}
+      COLLABORATION_PORTAL_DB_PASSWORD: ${COLLABORATION_PORTAL_DB_PASSWORD:?required}
+    volumes:
+      - collaboration_postgres_data:/var/lib/postgresql/data
+      - ./collaboration/docker/init-production.sh:/docker-entrypoint-initdb.d/10-collaboration-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tongzhou_bootstrap -d tongzhou_collaboration"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [collaboration_private]
+
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    volumes:
+      - collaboration_clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/clamav/daily.cvd -o -s /var/lib/clamav/daily.cld"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 90s
+    networks: [collaboration_egress]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: collaboration/docker/Dockerfile.api
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &api_environment
+      NODE_ENV: production
+      COLLABORATION_API_PORT: 8790
+      COLLABORATION_DATABASE_URL: postgres://tongzhou_portal:${COLLABORATION_PORTAL_DB_PASSWORD:?required}@postgres:5432/tongzhou_collaboration
+      COLLABORATION_INTEGRATION_DATABASE_URL: postgres://tongzhou_integration:${COLLABORATION_INTEGRATION_DB_PASSWORD:?required}@postgres:5432/tongzhou_collaboration
+      COLLABORATION_PORTAL_DB_ROLE: tongzhou_portal
+      COLLABORATION_PUBLIC_ORIGIN: ${COLLABORATION_PUBLIC_ORIGIN:?required}
+      COLLABORATION_COOKIE_SECURE: "true"
+      COLLABORATION_SECRET_KEY: ${COLLABORATION_SECRET_KEY:?required}
+      COLLABORATION_INTERNAL_TOKEN: ${COLLABORATION_INTERNAL_TOKEN:?required}
+      COLLABORATION_STORAGE_DRIVER: local
+      COLLABORATION_ALLOW_LOCAL_PRIVATE_STORAGE: "true"
+      COLLABORATION_STORAGE_DIR: /var/lib/tongzhou-collaboration/objects
+      COLLABORATION_CLAMSCAN_PATH: /usr/bin/clamscan
+      COLLABORATION_AUTO_MIGRATE: "false"
+      COLLABORATION_OEM_ENABLED: "false"
+    command: ["node", "collaboration/api/migrate.js"]
+    networks: [collaboration_private]
+
+  api:
+    build:
+      context: .
+      dockerfile: collaboration/docker/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: *api_environment
+    volumes:
+      - collaboration_clamav_data:/var/lib/clamav:ro
+      - collaboration_object_data:/var/lib/tongzhou-collaboration/objects
+    ports:
+      - "127.0.0.1:8790:8790"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/collaboration/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [collaboration_private, collaboration_egress]
+
+  portal:
+    build:
+      context: .
+      dockerfile: collaboration/docker/Dockerfile.portal
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8791:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [collaboration_private]
+
+networks:
+  collaboration_private:
+    internal: true
+  collaboration_egress:
+
+volumes:
+  collaboration_postgres_data:
+  collaboration_clamav_data:
+  collaboration_object_data:
