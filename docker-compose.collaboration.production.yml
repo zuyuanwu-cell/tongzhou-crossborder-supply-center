@@ -2,7 +2,9 @@ name: tongzhou-collaboration-prod
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # Debian Bookworm remains compatible with the production CentOS 7 kernel;
+    # recent Alpine builds fail during initdb on that host filesystem.
+    image: postgres:16-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_DB: tongzhou_collaboration
