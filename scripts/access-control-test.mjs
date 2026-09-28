@@ -267,6 +267,7 @@ assert.equal(warehousePermissions.includes("product_view"), true, "warehouse ope
 assert.equal(warehousePermissions.includes("domestic_inventory_view"), true, "warehouse operators can view their scoped domestic warehouse ledger");
 assert.equal(warehousePermissions.includes("domestic_inventory_receive"), true, "warehouse operators can receive scoped domestic inventory");
 assert.equal(warehousePermissions.includes("domestic_inventory_issue"), true, "warehouse operators can issue scoped domestic inventory");
+assert.equal(warehousePermissions.includes("domestic_inventory_transfer"), true, "warehouse operators can transfer scoped domestic inventory");
 assert.equal(warehousePermissions.includes("domestic_inventory_adjust"), true, "warehouse operators can adjust scoped domestic inventory");
 assert.equal(warehousePermissions.includes("domestic_inventory_manage"), false, "warehouse operators do not manage warehouse masters by default");
 assert.equal(warehousePermissions.includes("stockup_receipt_confirm"), true, "warehouse operators can confirm receipts for their bound warehouses");
@@ -277,6 +278,8 @@ assert.equal(effectivePermissions({ role: "direct" }).includes("domestic_invento
 assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["domestic_inventory_view", "domestic_inventory_manage"], deny: [] } }).some((permission) => permission.startsWith("domestic_inventory_")), false, "distributors cannot receive domestic inventory permissions");
 const domesticManagerPermissions = effectivePermissions({ role: "direct", permissionOverrides: sanitizePermissionUpdate("direct", { allow: ["domestic_inventory_manage"], deny: ["domestic_inventory_view"] }) });
 assert.equal(domesticManagerPermissions.includes("domestic_inventory_view"), true, "domestic inventory management implies view access");
+const domesticTransferPermissions = effectivePermissions({ role: "direct", permissionOverrides: sanitizePermissionUpdate("direct", { allow: ["domestic_inventory_transfer"], deny: ["domestic_inventory_view"] }) });
+assert.equal(domesticTransferPermissions.includes("domestic_inventory_view"), true, "domestic inventory transfer implies view access");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
 assert.throws(() => createLocalUser({
   username: "warehouse-empty",

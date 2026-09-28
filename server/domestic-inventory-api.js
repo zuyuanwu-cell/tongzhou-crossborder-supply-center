@@ -101,7 +101,7 @@ export function domesticInventoryOpenApi() {
     info: { title: "同舟国内仓进销存 API", version: "1.0.0", description: "登录会话下的国内仓库存、批次、箱规和备货可用量接口。所有接口继续应用角色权限、仓库范围和 SKU 范围。" },
     servers: [{ url: "/", description: "当前同舟供应链服务" }],
     security: [{ sessionBearer: [] }],
-    tags: [{ name: "Inventory", description: "库存汇总与仓库" }, { name: "Movements", description: "入库、出库和调整" }, { name: "Lots", description: "批次、条码、生产日期和箱规" }, { name: "Stockup", description: "供海外仓备货调用的国内库存可用量" }],
+    tags: [{ name: "Inventory", description: "库存汇总与仓库" }, { name: "Movements", description: "入库、出库和调整" }, { name: "Transfers", description: "两段式仓间调拨" }, { name: "Lots", description: "批次、条码、生产日期和箱规" }, { name: "Stockup", description: "供海外仓备货调用的国内库存可用量" }],
     paths: {
       "/api/domestic-inventory": { get: { tags: ["Inventory"], operationId: "listDomesticInventory", responses: { 200: response("库存汇总") } } },
       "/api/domestic-inventory/products": { get: { tags: ["Inventory"], operationId: "listDomesticInventoryProducts", parameters: [{ name: "keyword", in: "query", schema: { type: "string" } }, { name: "limit", in: "query", schema: { type: "integer", maximum: 10000 } }, { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } }], responses: { 200: response("可用于国内仓进销存的同舟 SKU 列表") } } },
@@ -115,6 +115,13 @@ export function domesticInventoryOpenApi() {
         post: { tags: ["Movements"], operationId: "createDomesticInventoryMovement", parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/MovementInput" } } } }, responses: { 201: response("已创建库存单据"), 409: response("库存不足或幂等冲突") } },
       },
       "/api/domestic-inventory/movements/{id}": { get: { tags: ["Movements"], operationId: "getDomesticInventoryMovement", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("库存单据详情"), 404: response("不存在或不可见") } } },
+      "/api/domestic-inventory/transfers": {
+        get: { tags: ["Transfers"], operationId: "listDomesticInventoryTransfers", responses: { 200: response("调拨单列表") } },
+        post: { tags: ["Transfers"], operationId: "createDomesticInventoryTransfer", parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } }], responses: { 201: response("调拨单已发出"), 409: response("可用库存不足") } },
+      },
+      "/api/domestic-inventory/transfers/{id}": { get: { tags: ["Transfers"], operationId: "getDomesticInventoryTransfer", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("调拨单详情"), 404: response("不存在或不可见") } } },
+      "/api/domestic-inventory/transfers/{id}/receive": { post: { tags: ["Transfers"], operationId: "receiveDomesticInventoryTransfer", responses: { 200: response("调入仓已确认收货"), 409: response("状态已变化") } } },
+      "/api/domestic-inventory/transfers/{id}/cancel": { post: { tags: ["Transfers"], operationId: "cancelDomesticInventoryTransfer", responses: { 200: response("调拨已取消并恢复原批次") } } },
       "/api/domestic-inventory/lots": { get: { tags: ["Lots"], operationId: "listDomesticInventoryLots", parameters: ["warehouseId", "sku", "barcode", "lotNo", "keyword", "incompleteOnly"].map((name) => ({ name, in: "query", schema: { type: "string" } })), responses: { 200: response("批次列表") } } },
       "/api/domestic-inventory/lots/{id}": { patch: { tags: ["Lots"], operationId: "updateDomesticInventoryLot", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("已更新批次追溯字段"), 403: response("无入库维护权限") } } },
       "/api/domestic-inventory/lots/{id}/split": { post: { tags: ["Lots"], operationId: "splitDomesticInventoryLot", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("已按实际生产批次拆分库存批次"), 409: response("批次已发生出库，不能安全拆分") } } },
@@ -164,6 +171,35 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
         sendJson(res, 200, service.getMovement(decodeURIComponent(match[1]), context));
         return true;
       }
+      if (suffix === "/transfers" && req.method === "GET") {
+        requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有库存调拨查看权限。");
+        sendJson(res, 200, service.listTransfers(Object.fromEntries(url.searchParams.entries()), context));
+        return true;
+      }
+      if (suffix === "/transfer-targets" && req.method === "GET") {
+        requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有库存调拨权限。");
+        sendJson(res, 200, service.listTransferTargets(url.searchParams.get("sourceWarehouseId") || "", context));
+        return true;
+      }
+      if ((match = suffix.match(/^\/transfers\/([^/]+)$/)) && req.method === "GET") {
+        requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有库存调拨查看权限。");
+        sendJson(res, 200, service.getTransfer(decodeURIComponent(match[1]), context));
+        return true;
+      }
+      if ((match = suffix.match(/^\/transfers\/([^/]+)\/receive$/)) && req.method === "POST") {
+        requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有调拨收货权限。");
+        const result = service.receiveTransfer(decodeURIComponent(match[1]), context);
+        if (!result.idempotentReplay) appendActionLog(auth, "确认国内仓调拨收货", "domestic_inventory_transfer", result.transfer.transferNo, { transferId: result.transfer.id, targetWarehouseId: result.transfer.targetWarehouseId, movementId: result.movementId });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/transfers\/([^/]+)\/cancel$/)) && req.method === "POST") {
+        requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有调拨取消权限。");
+        const result = service.cancelTransfer(decodeURIComponent(match[1]), context);
+        if (!result.idempotentReplay) appendActionLog(auth, "取消国内仓库存调拨", "domestic_inventory_transfer", result.transfer.transferNo, { transferId: result.transfer.id, sourceWarehouseId: result.transfer.sourceWarehouseId, movementId: result.movementId });
+        sendJson(res, 200, result);
+        return true;
+      }
       if (suffix === "/warehouses" && req.method === "GET") {
         sendJson(res, 200, service.listWarehouses(context));
         return true;
@@ -210,6 +246,13 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
         requireAnyPermission(auth, [requiredPermission, "domestic_inventory_manage"], "当前账号没有对应的库存流水登记权限。");
         const result = service.createMovement(body, context, String(req.headers["idempotency-key"] || ""));
         appendActionLog(auth, "登记国内仓库存流水", "domestic_inventory_movement", result.movementNo, { movementId: result.movementId, type: result.type, warehouseId: result.warehouseId });
+        sendJson(res, 201, result);
+        return true;
+      }
+      if (suffix === "/transfers" && req.method === "POST") {
+        requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有库存调拨权限。");
+        const result = service.createTransfer(await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        if (!result.idempotentReplay) appendActionLog(auth, "发起国内仓库存调拨", "domestic_inventory_transfer", result.transferNo, { transferId: result.transferId, sourceWarehouseId: result.sourceWarehouseId, targetWarehouseId: result.targetWarehouseId });
         sendJson(res, 201, result);
         return true;
       }

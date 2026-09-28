@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownToLine,
+  ArrowRightLeft,
   ArrowUpFromLine,
   Boxes,
   Check,
@@ -12,6 +13,7 @@ import {
   History,
   PackagePlus,
   Plus,
+  Printer,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -20,26 +22,36 @@ import {
 } from "lucide-react";
 import {
   type CatalogProduct,
+  type DomesticInventoryBalance,
   type DomesticInventoryLot,
   type DomesticInventoryMovement,
   type DomesticInventoryPayload,
   type DomesticInventoryProductOption,
+  type DomesticInventoryTransfer,
   type DomesticWarehouse,
+  cancelDomesticInventoryTransfer,
   createDomesticInventoryMovement,
+  createDomesticInventoryTransfer,
   createDomesticWarehouse,
   fetchDomesticInventory,
   fetchDomesticInventoryLots,
+  fetchDomesticInventoryMovement,
   fetchDomesticInventoryMovements,
   fetchDomesticInventoryProducts,
+  fetchDomesticInventoryTransfer,
+  fetchDomesticInventoryTransfers,
+  fetchDomesticInventoryTransferTargets,
   importDomesticOpeningInventory,
+  receiveDomesticInventoryTransfer,
   splitDomesticInventoryLot,
   updateDomesticInventorySafetyStock,
   updateDomesticInventoryLot,
   updateDomesticWarehouse,
 } from "../api";
+import { printInventoryMovement, printInventoryTransfer } from "./inventory-print";
 import "./domestic-inventory.css";
 
-type ViewTab = "inventory" | "lots" | "movements" | "warehouses";
+type ViewTab = "inventory" | "lots" | "movements" | "transfers" | "warehouses";
 type MovementType = "inbound" | "outbound" | "adjustment";
 
 type SelectableProduct = {
@@ -87,6 +99,7 @@ type Props = {
   canManage: boolean;
   canReceive: boolean;
   canIssue: boolean;
+  canTransfer: boolean;
   canAdjust: boolean;
 };
 
@@ -124,7 +137,7 @@ function uniqueProducts(products: SelectableProduct[]) {
 }
 
 function movementLabel(type: DomesticInventoryMovement["type"]) {
-  return { opening: "期初库存", inbound: "采购入库", outbound: "领用 / 出库", adjustment: "库存调整" }[type];
+  return { opening: "期初库存", inbound: "采购入库", outbound: "领用 / 出库", adjustment: "库存调整", transfer_out: "调拨出库", transfer_in: "调拨入库", transfer_cancel: "调拨取消" }[type];
 }
 
 function movementIcon(type: DomesticInventoryMovement["type"]) {
@@ -178,10 +191,12 @@ function downloadOpeningTemplate() {
   URL.revokeObjectURL(url);
 }
 
-export function DomesticInventoryCenter({ products, canManage, canReceive, canIssue, canAdjust }: Props) {
+export function DomesticInventoryCenter({ products, canManage, canReceive, canIssue, canTransfer, canAdjust }: Props) {
   const [payload, setPayload] = useState<DomesticInventoryPayload>(emptyPayload);
   const [movements, setMovements] = useState<DomesticInventoryMovement[]>([]);
   const [lots, setLots] = useState<DomesticInventoryLot[]>([]);
+  const [transfers, setTransfers] = useState<DomesticInventoryTransfer[]>([]);
+  const [transferSummary, setTransferSummary] = useState({ inTransit: 0, received: 0, cancelled: 0 });
   const [tab, setTab] = useState<ViewTab>("inventory");
   const [warehouseId, setWarehouseId] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -191,6 +206,11 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [movementModal, setMovementModal] = useState<MovementType | null>(null);
+  const [transferModal, setTransferModal] = useState(false);
+  const [focusedTransferId, setFocusedTransferId] = useState("");
+  const [focusedMovementId, setFocusedMovementId] = useState("");
+  const [transferStatus, setTransferStatus] = useState("");
+  const [transferBusy, setTransferBusy] = useState("");
   const [warehouseModal, setWarehouseModal] = useState(false);
   const [openingImportModal, setOpeningImportModal] = useState(false);
   const [editingLot, setEditingLot] = useState<DomesticInventoryLot | null>(null);
@@ -239,9 +259,43 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
     }
   }, [warehouseId, query, incompleteLotsOnly]);
 
+  const loadTransfers = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchDomesticInventoryTransfers({ warehouseId, keyword: query, status: transferStatus });
+      setTransfers(data.transfers);
+      setTransferSummary(data.summary);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "库存调拨单读取失败，请稍后重试。");
+    } finally {
+      setLoading(false);
+    }
+  }, [warehouseId, query, transferStatus]);
+
   useEffect(() => { void loadInventory(); }, [loadInventory]);
   useEffect(() => { if (tab === "movements") void loadMovements(); }, [tab, loadMovements]);
   useEffect(() => { if (tab === "lots") void loadLots(); }, [tab, loadLots]);
+  useEffect(() => { if (tab === "transfers") void loadTransfers(); }, [tab, loadTransfers]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const kind = params.get("inventoryDocument");
+    const documentId = params.get("inventoryDocumentId") || "";
+    if (!documentId) return;
+    if (kind === "transfer") {
+      setTab("transfers");
+      setFocusedTransferId(documentId);
+      fetchDomesticInventoryTransfer(documentId)
+        .then((result) => setTransfers((current) => [result.transfer, ...current.filter((item) => item.id !== result.transfer.id)]))
+        .catch((requestError) => setError(requestError instanceof Error ? requestError.message : "扫码调拨单读取失败。"));
+    } else if (kind === "movement") {
+      setTab("movements");
+      setFocusedMovementId(documentId);
+      fetchDomesticInventoryMovement(documentId)
+        .then((result) => setMovements((current) => [result.movement, ...current.filter((item) => item.id !== result.movement.id)]))
+        .catch((requestError) => setError(requestError instanceof Error ? requestError.message : "扫码库存单据读取失败。"));
+    }
+  }, []);
   useEffect(() => {
     let cancelled = false;
     setProductCatalogLoading(true);
@@ -292,6 +346,46 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
     }
   }
 
+  async function receiveTransfer(transfer: DomesticInventoryTransfer) {
+    if (!window.confirm(`确认 ${transfer.transferNo} 的货物已经到达 ${transfer.targetWarehouseName}，并正式计入库存吗？`)) return;
+    setTransferBusy(transfer.id);
+    setError("");
+    try {
+      await receiveDomesticInventoryTransfer(transfer.id);
+      setSuccess(`${transfer.transferNo} 已确认收货，库存已进入 ${transfer.targetWarehouseName}。`);
+      await Promise.all([loadTransfers(), loadInventory()]);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "调拨收货失败。");
+    } finally {
+      setTransferBusy("");
+    }
+  }
+
+  async function cancelTransfer(transfer: DomesticInventoryTransfer) {
+    if (!window.confirm(`确认取消 ${transfer.transferNo}？取消后库存将按原批次恢复到 ${transfer.sourceWarehouseName}。`)) return;
+    setTransferBusy(transfer.id);
+    setError("");
+    try {
+      await cancelDomesticInventoryTransfer(transfer.id);
+      setSuccess(`${transfer.transferNo} 已取消，原批次库存已恢复。`);
+      await Promise.all([loadTransfers(), loadInventory()]);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "调拨取消失败。");
+    } finally {
+      setTransferBusy("");
+    }
+  }
+
+  async function printTransfer(transfer: DomesticInventoryTransfer) {
+    try { await printInventoryTransfer(transfer); }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "调拨单打印模板生成失败。"); }
+  }
+
+  async function printMovement(movement: DomesticInventoryMovement) {
+    try { await printInventoryMovement(movement); }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "库存单据打印模板生成失败。"); }
+  }
+
   return (
     <main className="domestic-inventory-page">
       <section className="domestic-inventory-hero">
@@ -327,25 +421,28 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
           <button className={tab === "inventory" ? "active" : ""} onClick={() => setTab("inventory")}><Boxes size={17} />库存台账</button>
           <button className={tab === "lots" ? "active" : ""} onClick={() => setTab("lots")}><ClipboardList size={17} />批次与箱规</button>
           <button className={tab === "movements" ? "active" : ""} onClick={() => setTab("movements")}><History size={17} />进销存流水</button>
+          {canTransfer || canManage ? <button className={tab === "transfers" ? "active" : ""} onClick={() => setTab("transfers")}><ArrowRightLeft size={17} />库存调拨{transferSummary.inTransit ? <em className="transfer-tab-count">{transferSummary.inTransit}</em> : null}</button> : null}
           <button className={tab === "warehouses" ? "active" : ""} onClick={() => setTab("warehouses")}><Warehouse size={17} />仓库档案</button>
           <span className="domestic-inventory-updated">更新 {dateTime(payload.updatedAt)}</span>
         </div>
 
         <div className="domestic-inventory-toolbar">
-          <label className="domestic-inventory-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") runSearch(); }} placeholder={tab === "movements" ? "搜索单号、关联单号、SKU 或产品" : tab === "lots" ? "搜索 SKU、产品、批次号、条码或入库单" : "搜索 SKU、产品或仓库"} /></label>
+          <label className="domestic-inventory-search"><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") runSearch(); }} placeholder={tab === "transfers" ? "搜索调拨单号、SKU、产品或仓库" : tab === "movements" ? "搜索单号、关联单号、SKU 或产品" : tab === "lots" ? "搜索 SKU、产品、批次号、条码或入库单" : "搜索 SKU、产品或仓库"} /></label>
           <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} aria-label="选择国内仓库">
             <option value="">全部国内仓库</option>
             {payload.warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}{warehouse.status === "inactive" ? "（已停用）" : ""}</option>)}
           </select>
+          {tab === "transfers" ? <select value={transferStatus} onChange={(event) => setTransferStatus(event.target.value)} aria-label="筛选调拨状态"><option value="">全部调拨状态</option><option value="in_transit">调拨在途</option><option value="received">已收货</option><option value="cancelled">已取消</option></select> : null}
           {tab === "inventory" ? <label className="domestic-inventory-check"><input type="checkbox" checked={lowStockOnly} onChange={(event) => setLowStockOnly(event.target.checked)} />只看低库存</label> : null}
           {tab === "lots" ? <label className="domestic-inventory-check"><input type="checkbox" checked={incompleteLotsOnly} onChange={(event) => setIncompleteLotsOnly(event.target.checked)} />只看资料待补</label> : null}
           <button className="domestic-inventory-secondary" type="button" onClick={runSearch}><Search size={16} />查询</button>
-          <button className="domestic-inventory-secondary icon-only" type="button" aria-label="刷新" onClick={() => void (tab === "movements" ? loadMovements() : tab === "lots" ? loadLots() : loadInventory())}><RefreshCw className={loading ? "spinning" : ""} size={17} /></button>
-          {(canManage || canReceive || canIssue || canAdjust) && tab !== "warehouses" ? (
+          <button className="domestic-inventory-secondary icon-only" type="button" aria-label="刷新" onClick={() => void (tab === "transfers" ? loadTransfers() : tab === "movements" ? loadMovements() : tab === "lots" ? loadLots() : loadInventory())}><RefreshCw className={loading ? "spinning" : ""} size={17} /></button>
+          {(canManage || canReceive || canIssue || canTransfer || canAdjust) && tab !== "warehouses" ? (
             <div className="domestic-inventory-actions">
               {canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "批量导入期初库存" : "请先创建并启用国内仓库"} onClick={() => setOpeningImportModal(true)}><FileUp size={17} />期初导入</button> : null}
               {canReceive || canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记采购入库" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("inbound")}><PackagePlus size={17} />入库</button> : null}
               {canIssue || canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记领用或出库" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("outbound")}><ArrowUpFromLine size={17} />出库</button> : null}
+              {canTransfer || canManage ? <button type="button" disabled={activeWarehouses.length < 1} title="发起两段式仓间调拨" onClick={() => setTransferModal(true)}><ArrowRightLeft size={17} />调拨</button> : null}
               {canAdjust || canManage ? <button type="button" disabled={!activeWarehouses.length} title={activeWarehouses.length ? "登记库存调整" : "请先创建并启用国内仓库"} onClick={() => setMovementModal("adjustment")}><SlidersHorizontal size={17} />调整</button> : null}
             </div>
           ) : null}
@@ -357,7 +454,9 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
         ) : tab === "lots" ? (
           <LotTable lots={lots} loading={loading} canEdit={canReceive || canManage} onEdit={setEditingLot} />
         ) : tab === "movements" ? (
-          <MovementTable movements={movements} loading={loading} />
+          <MovementTable movements={movements} loading={loading} focusedId={focusedMovementId} onPrint={(movement) => void printMovement(movement)} />
+        ) : tab === "transfers" ? (
+          <TransferList transfers={transfers} loading={loading} focusedId={focusedTransferId} busyId={transferBusy} canOperate={canTransfer || canManage} warehouseIds={payload.warehouses.map((item) => item.id)} onReceive={(transfer) => void receiveTransfer(transfer)} onCancel={(transfer) => void cancelTransfer(transfer)} onPrint={(transfer) => void printTransfer(transfer)} />
         ) : (
           <WarehouseCards warehouses={payload.warehouses} canManage={canManage} onToggle={toggleWarehouse} />
         )}
@@ -376,6 +475,7 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
         />
       ) : null}
       {openingImportModal ? <OpeningImportModal warehouses={activeWarehouses} products={productOptions} onClose={() => setOpeningImportModal(false)} onSaved={async (message) => { setOpeningImportModal(false); setSuccess(message); setTab("inventory"); await loadInventory(); }} onError={setError} /> : null}
+      {transferModal ? <TransferModal warehouses={activeWarehouses} onClose={() => setTransferModal(false)} onSaved={async (transfer) => { setTransferModal(false); setSuccess(`${transfer.transferNo} 已发出，当前为调拨在途。`); setTab("transfers"); setFocusedTransferId(transfer.id); await Promise.all([loadTransfers(), loadInventory()]); }} onError={setError} /> : null}
       {editingLot ? <LotSupplementModal lot={editingLot} onClose={() => setEditingLot(null)} onSaved={async (message) => { setEditingLot(null); setSuccess(message); await loadLots(); }} onError={setError} /> : null}
       {warehouseModal ? <WarehouseModal onClose={() => setWarehouseModal(false)} onSaved={async (name) => { setWarehouseModal(false); setSuccess(`${name}已建立。`); await loadInventory(); }} onError={setError} /> : null}
     </main>
@@ -416,6 +516,110 @@ function InventoryTable({ payload, loading, canManage, safetyDrafts, setSafetyDr
       {loading ? <div className="domestic-loading">正在读取库存台账…</div> : null}
     </div>
   );
+}
+
+function TransferList({ transfers, loading, focusedId, busyId, canOperate, warehouseIds, onReceive, onCancel, onPrint }: {
+  transfers: DomesticInventoryTransfer[];
+  loading: boolean;
+  focusedId: string;
+  busyId: string;
+  canOperate: boolean;
+  warehouseIds: string[];
+  onReceive: (transfer: DomesticInventoryTransfer) => void;
+  onCancel: (transfer: DomesticInventoryTransfer) => void;
+  onPrint: (transfer: DomesticInventoryTransfer) => void;
+}) {
+  if (!loading && !transfers.length) return <EmptyState title="还没有库存调拨单" description="点击右上角“调拨”，选择调出仓、调入仓和产品后即可发起。" />;
+  const visibleWarehouses = new Set(warehouseIds);
+  const statusText = { in_transit: "调拨在途", received: "已确认收货", cancelled: "已取消" };
+  return <div className="domestic-transfer-list">
+    {transfers.map((transfer) => {
+      const canReceiveThis = canOperate && visibleWarehouses.has(transfer.targetWarehouseId);
+      const canCancelThis = canOperate && visibleWarehouses.has(transfer.sourceWarehouseId);
+      return <details key={transfer.id} open={focusedId === transfer.id} className={`domestic-transfer-card ${focusedId === transfer.id ? "focused" : ""}`}>
+        <summary><span className="transfer-route-icon"><ArrowRightLeft size={18} /></span><span><strong>{transfer.transferNo}</strong><small>{dateTime(transfer.shippedAt)} · {transfer.createdByName}</small></span><span className="transfer-route"><b>{transfer.sourceWarehouseName}</b><ArrowRightLeft size={14} /><b>{transfer.targetWarehouseName}</b></span><span><strong>{transfer.skuCount} 个 SKU / {numberText(transfer.totalQuantity)} 件</strong><small>{transfer.note || "无备注"}</small></span><em className={`transfer-status ${transfer.status}`}>{statusText[transfer.status]}</em></summary>
+        <div className="transfer-card-body">
+          <div className="transfer-lines"><header><span>产品</span><span>批次与箱规</span><span>调拨数量</span></header>{transfer.lines.map((line) => <article key={line.id}><div className="domestic-product-cell">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <span><Boxes size={18} /></span>}<div><strong>{line.productName}</strong><small>{line.sku}{line.specification ? ` · ${line.specification}` : ""}</small></div></div><div>{line.allocations.length ? line.allocations.map((allocation) => <p key={allocation.id}><b>{allocation.lotNo || "未追溯批次"}</b><small>{numberText(allocation.quantity)} {line.unit}{allocation.packagingMode === "carton" && allocation.unitsPerCarton ? ` · ${numberText(allocation.unitsPerCarton)}件/箱` : ""}</small></p>) : <span className="muted">未追溯批次</span>}</div><strong className="number-cell">{numberText(line.quantity)} {line.unit}</strong></article>)}</div>
+          <footer><div><span>发出：{dateTime(transfer.shippedAt)}</span>{transfer.receivedAt ? <span>收货：{dateTime(transfer.receivedAt)} · {transfer.receivedByName}</span> : null}{transfer.cancelledAt ? <span>取消：{dateTime(transfer.cancelledAt)} · {transfer.cancelledByName}</span> : null}</div><div className="transfer-actions"><button type="button" onClick={() => onPrint(transfer)}><Printer size={15} />打印 / PDF</button>{transfer.status === "in_transit" && canCancelThis ? <button type="button" className="danger" disabled={busyId === transfer.id} onClick={() => onCancel(transfer)}>取消调拨</button> : null}{transfer.status === "in_transit" && canReceiveThis ? <button type="button" className="primary" disabled={busyId === transfer.id} onClick={() => onReceive(transfer)}>{busyId === transfer.id ? "正在处理…" : "确认收货入库"}</button> : null}</div></footer>
+        </div>
+      </details>;
+    })}
+    {loading ? <div className="domestic-loading">正在读取库存调拨单…</div> : null}
+  </div>;
+}
+
+type TransferDraftLine = { sku: string; productName: string; imageUrl: string; unit: string; availableQty: number; quantity: number };
+
+function TransferModal({ warehouses, onClose, onSaved, onError }: {
+  warehouses: DomesticWarehouse[];
+  onClose: () => void;
+  onSaved: (transfer: DomesticInventoryTransfer) => void;
+  onError: (message: string) => void;
+}) {
+  const [sourceWarehouseId, setSourceWarehouseId] = useState(warehouses[0]?.id || "");
+  const [targetWarehouseId, setTargetWarehouseId] = useState("");
+  const [targets, setTargets] = useState<DomesticWarehouse[]>([]);
+  const [inventoryBalances, setInventoryBalances] = useState<DomesticInventoryBalance[]>([]);
+  const [lines, setLines] = useState<TransferDraftLine[]>([]);
+  const [note, setNote] = useState("");
+  const [search, setSearch] = useState("");
+  const [loadingTargets, setLoadingTargets] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState("");
+  useEscapeClose(onClose, saving);
+
+  useEffect(() => {
+    if (!sourceWarehouseId) { setTargets([]); setInventoryBalances([]); setTargetWarehouseId(""); return; }
+    let cancelled = false;
+    setLoadingTargets(true);
+    Promise.all([
+      fetchDomesticInventoryTransferTargets(sourceWarehouseId),
+      fetchDomesticInventory({ warehouseId: sourceWarehouseId }),
+    ])
+      .then(([result, inventory]) => {
+        if (cancelled) return;
+        setTargets(result.warehouses);
+        setInventoryBalances(inventory.balances);
+        setTargetWarehouseId((current) => result.warehouses.some((item) => item.id === current) ? current : result.warehouses[0]?.id || "");
+      })
+      .catch((requestError) => {
+        if (cancelled) return;
+        setTargets([]);
+        setInventoryBalances([]);
+        setLocalError(requestError instanceof Error ? requestError.message : "调拨仓库及库存读取失败。");
+      })
+      .finally(() => { if (!cancelled) setLoadingTargets(false); });
+    return () => { cancelled = true; };
+  }, [sourceWarehouseId]);
+
+  useEffect(() => { setLines([]); }, [sourceWarehouseId]);
+  const sourceBalances = inventoryBalances.filter((item) => item.availableQty > 0 && (!search || `${item.sku} ${item.productName}`.toLowerCase().includes(search.toLowerCase())));
+
+  function addLine(balance: DomesticInventoryBalance) {
+    if (lines.some((item) => item.sku === balance.sku)) return;
+    setLines([...lines, { sku: balance.sku, productName: balance.productName, imageUrl: balance.imageUrl, unit: balance.unit, availableQty: balance.availableQty, quantity: 1 }]);
+  }
+
+  async function submit() {
+    if (!sourceWarehouseId || !targetWarehouseId) { setLocalError("请选择调出仓和调入仓。"); return; }
+    if (!lines.length) { setLocalError("请至少添加一个调拨产品。"); return; }
+    if (lines.some((line) => line.quantity <= 0 || line.quantity > line.availableQty)) { setLocalError("调拨数量必须大于 0 且不能超过可用库存。"); return; }
+    setSaving(true);
+    setLocalError("");
+    onError("");
+    try {
+      const result = await createDomesticInventoryTransfer({ sourceWarehouseId, targetWarehouseId, note, lines: lines.map((line) => ({ sku: line.sku, quantity: line.quantity })) }, `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await onSaved(result.transfer);
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : "库存调拨发起失败。";
+      setLocalError(message);
+      onError(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="domestic-modal-backdrop"><section className="domestic-modal wide transfer-modal" role="dialog" aria-modal="true" aria-label="发起库存调拨"><header><div><span><ArrowRightLeft size={20} /></span><div><p>WAREHOUSE TRANSFER</p><h3>发起库存调拨</h3></div></div><button type="button" aria-label="关闭调拨窗口" onClick={onClose}><X size={20} /></button></header><div className="domestic-modal-body transfer-modal-body"><section className="transfer-route-form"><label>调出仓 *<select value={sourceWarehouseId} onChange={(event) => setSourceWarehouseId(event.target.value)}><option value="">请选择调出仓</option>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><ArrowRightLeft size={20} /><label>调入仓 *<select value={targetWarehouseId} disabled={loadingTargets} onChange={(event) => setTargetWarehouseId(event.target.value)}><option value="">{loadingTargets ? "正在读取…" : "请选择调入仓"}</option>{targets.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label></section><label>调拨备注<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：项目备货、仓间补货或库存调配原因" /></label>{localError ? <div className="domestic-inventory-notice error"><AlertTriangle size={16} />{localError}</div> : null}<div className="transfer-editor"><section><header><strong>调拨清单</strong><span>{lines.length} 个 SKU</span></header>{lines.length ? lines.map((line, index) => <article key={line.sku}><div className="domestic-product-cell">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <span><Boxes size={17} /></span>}<div><strong>{line.productName}</strong><small>{line.sku} · 可用 {numberText(line.availableQty)} {line.unit}</small></div></div><label>调拨数量<input type="number" min="0.01" max={line.availableQty} step="any" value={line.quantity} onChange={(event) => setLines((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: Number(event.target.value) } : item))} /></label><button type="button" aria-label="移除调拨产品" onClick={() => setLines((current) => current.filter((item) => item.sku !== line.sku))}><X size={15} /></button></article>) : <div className="movement-lines-empty">从右侧选择需要调拨的产品</div>}</section><aside className="movement-product-picker"><label><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索调出仓 SKU / 产品" /></label><p className="product-picker-status">{loadingTargets ? "正在读取调出仓可用库存…" : "仅显示调出仓当前可用库存"}</p><div>{sourceBalances.slice(0, 200).map((balance) => { const selected = lines.some((item) => item.sku === balance.sku); return <button type="button" key={balance.sku} disabled={selected} onClick={() => addLine(balance)}>{balance.imageUrl ? <img src={balance.imageUrl} alt="" /> : <span><Boxes size={16} /></span>}<div><strong>{balance.productName}</strong><small>{balance.sku} · 可用 {numberText(balance.availableQty)}</small></div>{selected ? <Check size={16} /> : <Plus size={16} />}</button>; })}{!loadingTargets && !sourceBalances.length ? <p className="product-picker-empty">该仓库没有可调拨库存</p> : null}</div></aside></div></div><footer><button className="domestic-inventory-secondary" type="button" onClick={onClose}>取消</button><button className="domestic-inventory-primary" type="button" disabled={saving || loadingTargets || !lines.length || !targetWarehouseId} onClick={() => void submit()}>{saving ? "正在发出…" : "确认发出并转为在途"}</button></footer></section></div>;
 }
 
 function LotTable({ lots, loading, canEdit, onEdit }: { lots: DomesticInventoryLot[]; loading: boolean; canEdit: boolean; onEdit: (lot: DomesticInventoryLot) => void }) {
@@ -531,12 +735,12 @@ function LotSupplementModal({ lot, onClose, onSaved, onError }: {
   </section></div>;
 }
 
-function MovementTable({ movements, loading }: { movements: DomesticInventoryMovement[]; loading: boolean }) {
+function MovementTable({ movements, loading, focusedId, onPrint }: { movements: DomesticInventoryMovement[]; loading: boolean; focusedId: string; onPrint: (movement: DomesticInventoryMovement) => void }) {
   if (!loading && !movements.length) return <EmptyState title="还没有库存流水" description="入库、出库和调整记录会按时间沉淀在这里。" />;
   return (
     <div className="domestic-movement-list">
       {movements.map((movement) => (
-        <details key={movement.id} className={`domestic-movement ${movement.type}`}>
+        <details key={movement.id} open={focusedId === movement.id} className={`domestic-movement ${movement.type} ${focusedId === movement.id ? "focused" : ""}`}>
           <summary>
             <span className="movement-icon">{movementIcon(movement.type)}</span>
             <span><strong>{movement.movementNo}</strong><small>{movementLabel(movement.type)} · {movement.warehouseName}</small></span>
@@ -546,6 +750,7 @@ function MovementTable({ movements, loading }: { movements: DomesticInventoryMov
           <div className="movement-lines">
             {movement.note ? <p className="movement-note">备注：{movement.note}</p> : null}
             {movement.lines.map((line) => <div key={line.id}><span>{line.sku}</span><strong>{line.productName}</strong><span className={line.signedQty >= 0 ? "positive" : "negative"}>{line.signedQty >= 0 ? "+" : ""}{numberText(line.signedQty)} {line.unit}</span><small>{numberText(line.beforeQty)} → {numberText(line.afterQty)}</small></div>)}
+            <button className="movement-print-button" type="button" onClick={() => onPrint(movement)}><Printer size={15} />打印 / 保存 PDF</button>
           </div>
         </details>
       ))}

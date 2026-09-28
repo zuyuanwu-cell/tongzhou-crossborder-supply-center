@@ -13,6 +13,7 @@ try {
   const service = createDomesticInventoryService(store);
   const adminAuth = { role: "admin", user: { id: "admin", displayName: "管理员", role: "admin", dataScopes: {} } };
   const warehouse = service.createWarehouse({ code: "CN-TEST", name: "测试成品仓" }, { auth: adminAuth, countries: [], warehouseIds: [], skus: [] }).warehouse;
+  const targetWarehouse = service.createWarehouse({ code: "CN-TARGET", name: "测试调入仓" }, { auth: adminAuth, countries: [], warehouseIds: [], skus: [] }).warehouse;
   let activeAuth = adminAuth;
   const productFixtures = {
     productBase: [
@@ -40,6 +41,8 @@ try {
   const viewer = { role: "direct", user: { id: "viewer", role: "direct", dataScopes: {} } };
   const receiver = { role: "direct", user: { id: "receiver", role: "direct", permissionOverrides: { allow: ["domestic_inventory_receive"], deny: [] }, dataScopes: { warehouseIds: [warehouse.id] } } };
   const distributor = { role: "distributor", user: { id: "dist", role: "distributor", permissionOverrides: { allow: ["domestic_inventory_view", "domestic_inventory_receive"], deny: [] }, dataScopes: {} } };
+  const sourceOperator = { role: "warehouse", user: { id: "source-operator", role: "warehouse", dataScopes: { warehouseIds: [warehouse.id] } } };
+  const targetOperator = { role: "warehouse", user: { id: "target-operator", role: "warehouse", dataScopes: { warehouseIds: [targetWarehouse.id] } } };
 
   const warehousesResponse = await invoke("GET", "/api/domestic-inventory/warehouses", viewer);
   assert.equal(warehousesResponse.status, 200);
@@ -87,6 +90,27 @@ try {
   assert.equal((await invoke("GET", `/api/domestic-inventory/movements/${inbound.payload.movementId}`, receiver)).payload.movement.lines[0].lots.length, 2);
   const availability = await invoke("GET", `/api/domestic-inventory/stockup-availability?warehouseId=${warehouse.id}&skus=SKU-1`, receiver);
   assert.equal(availability.payload.items[0].cartonProfiles[0].fullCartons, 2);
+  const transferTargets = await invoke("GET", `/api/domestic-inventory/transfer-targets?sourceWarehouseId=${encodeURIComponent(warehouse.id)}`, sourceOperator);
+  assert.equal(transferTargets.status, 200);
+  assert.deepEqual(transferTargets.payload.warehouses.map((item) => item.id), [targetWarehouse.id]);
+  assert.equal("address" in transferTargets.payload.warehouses[0], false, "transfer target directory must not expose target warehouse private fields");
+  assert.equal((await invoke("GET", "/api/domestic-inventory/transfers", viewer)).status, 403);
+  assert.equal((await invoke("POST", "/api/domestic-inventory/transfers", viewer, { sourceWarehouseId: warehouse.id, targetWarehouseId: targetWarehouse.id, lines: [{ sku: "SKU-1", quantity: 5 }] })).status, 403);
+  const transfer = await invoke("POST", "/api/domestic-inventory/transfers", sourceOperator, {
+    sourceWarehouseId: warehouse.id,
+    targetWarehouseId: targetWarehouse.id,
+    note: "API 调拨测试",
+    lines: [{ sku: "SKU-1", quantity: 5 }],
+  }, { "idempotency-key": "api-transfer-1" });
+  assert.equal(transfer.status, 201);
+  assert.equal(transfer.payload.transfer.status, "in_transit");
+  assert.equal((await invoke("POST", `/api/domestic-inventory/transfers/${encodeURIComponent(transfer.payload.transferId)}/receive`, sourceOperator)).status, 403);
+  assert.equal((await invoke("GET", "/api/domestic-inventory/transfers?status=in_transit", targetOperator)).payload.summary.inTransit, 1);
+  const received = await invoke("POST", `/api/domestic-inventory/transfers/${encodeURIComponent(transfer.payload.transferId)}/receive`, targetOperator);
+  assert.equal(received.status, 200);
+  assert.equal(received.payload.transfer.status, "received");
+  assert.equal((await invoke("POST", `/api/domestic-inventory/transfers/${encodeURIComponent(transfer.payload.transferId)}/receive`, targetOperator)).payload.idempotentReplay, true);
+  assert.equal(service.list({ warehouseId: targetWarehouse.id }, { auth: adminAuth, countries: [], warehouseIds: [], skus: [] }).balances[0].onHandQty, 5);
   console.log("domestic inventory API tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

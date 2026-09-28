@@ -125,6 +125,40 @@ try {
   const lowStock = service.list({ lowStock: "1" }, admin);
   assert.deepEqual(lowStock.balances.map((item) => item.sku), ["SKU-A"]);
 
+  const sourceWarehouseUser = { ...admin, warehouseIds: [warehouseA.id] };
+  const targetWarehouseUser = { ...admin, warehouseIds: [warehouseB.id] };
+  assert.deepEqual(service.listTransferTargets(warehouseA.id, sourceWarehouseUser).warehouses.map((item) => item.id), [warehouseB.id]);
+  const transfer = service.createTransfer({
+    sourceWarehouseId: warehouseA.id,
+    targetWarehouseId: warehouseB.id,
+    note: "马来仓备货调拨",
+    lines: [{ sku: "SKU-SPLIT", quantity: 6 }],
+  }, sourceWarehouseUser, "transfer-1");
+  assert.match(transfer.transferNo, /^DB-/);
+  assert.equal(transfer.transfer.status, "in_transit");
+  assert.equal(service.list({ warehouseId: warehouseA.id }, admin).balances.find((item) => item.sku === "SKU-SPLIT").onHandQty, 18);
+  assert.equal(service.listTransfers({}, sourceWarehouseUser).summary.inTransit, 1);
+  assert.equal(service.listTransfers({}, targetWarehouseUser).transfers[0].id, transfer.transferId);
+  assert.throws(() => service.receiveTransfer(transfer.transferId, sourceWarehouseUser), (error) => error?.statusCode === 403);
+  const receivedTransfer = service.receiveTransfer(transfer.transferId, targetWarehouseUser);
+  assert.equal(receivedTransfer.transfer.status, "received");
+  assert.equal(service.receiveTransfer(transfer.transferId, targetWarehouseUser).idempotentReplay, true);
+  assert.equal(service.list({ warehouseId: warehouseB.id }, admin).balances.find((item) => item.sku === "SKU-SPLIT").onHandQty, 6);
+  const receivedLot = service.listLots({ warehouseId: warehouseB.id, sku: "SKU-SPLIT" }, admin).lots[0];
+  assert.equal(receivedLot.lotNo, "SPLIT-A");
+  assert.equal(receivedLot.unitsPerCarton, 6);
+  assert.equal(receivedLot.receivedQty, 6);
+
+  const cancelledTransfer = service.createTransfer({
+    sourceWarehouseId: warehouseA.id,
+    targetWarehouseId: warehouseB.id,
+    lines: [{ sku: "SKU-B", quantity: 2 }],
+  }, sourceWarehouseUser, "transfer-2");
+  assert.throws(() => service.cancelTransfer(cancelledTransfer.transferId, targetWarehouseUser), (error) => error?.statusCode === 403);
+  assert.equal(service.cancelTransfer(cancelledTransfer.transferId, sourceWarehouseUser).transfer.status, "cancelled");
+  assert.equal(service.cancelTransfer(cancelledTransfer.transferId, sourceWarehouseUser).idempotentReplay, true);
+  assert.equal(service.list({ warehouseId: warehouseA.id }, admin).balances.find((item) => item.sku === "SKU-B").onHandQty, 4);
+
   const scoped = { ...admin, warehouseIds: [warehouseA.id], skus: ["SKU-A"] };
   assert.deepEqual(service.list({}, scoped).warehouses.map((item) => item.id), [warehouseA.id]);
   assert.deepEqual(service.list({}, scoped).balances.map((item) => item.sku), ["SKU-A"]);
@@ -133,7 +167,7 @@ try {
 
   service.updateWarehouse(warehouseB.id, { status: "inactive" }, admin);
   assert.throws(() => service.createMovement({ warehouseId: warehouseB.id, type: "inbound", lines: [{ sku: "SKU-A", productName: "产品A", quantity: 1 }] }, admin), (error) => error?.code === "warehouse_inactive");
-  assert.equal(service.listMovements({}, admin).movements.length, 8);
+  assert.equal(service.listMovements({}, admin).movements.length, 12);
   console.log("domestic inventory tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

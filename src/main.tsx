@@ -1997,6 +1997,7 @@ function App() {
             canManage={hasUserPermission(currentUser, "domestic_inventory_manage")}
             canReceive={hasUserPermission(currentUser, "domestic_inventory_receive")}
             canIssue={hasUserPermission(currentUser, "domestic_inventory_issue")}
+            canTransfer={hasUserPermission(currentUser, "domestic_inventory_transfer")}
             canAdjust={hasUserPermission(currentUser, "domestic_inventory_adjust")}
           />
         ) : activeView === "快捷导航" ? (

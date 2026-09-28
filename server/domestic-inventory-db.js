@@ -218,6 +218,54 @@ export async function initDomesticInventoryStore(dbPath) {
       created_at TEXT NOT NULL,
       PRIMARY KEY (key, user_id)
     );
+
+    CREATE TABLE IF NOT EXISTS domestic_inventory_transfers (
+      id TEXT PRIMARY KEY,
+      transfer_no TEXT NOT NULL UNIQUE,
+      source_warehouse_id TEXT NOT NULL,
+      target_warehouse_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'in_transit',
+      note TEXT,
+      outbound_movement_id TEXT NOT NULL,
+      inbound_movement_id TEXT,
+      cancel_movement_id TEXT,
+      shipped_at TEXT NOT NULL,
+      received_at TEXT,
+      cancelled_at TEXT,
+      created_by_id TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      received_by_id TEXT,
+      received_by_name TEXT,
+      cancelled_by_id TEXT,
+      cancelled_by_name TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(source_warehouse_id) REFERENCES domestic_warehouses(id),
+      FOREIGN KEY(target_warehouse_id) REFERENCES domestic_warehouses(id),
+      FOREIGN KEY(outbound_movement_id) REFERENCES domestic_inventory_movements(id),
+      FOREIGN KEY(inbound_movement_id) REFERENCES domestic_inventory_movements(id),
+      FOREIGN KEY(cancel_movement_id) REFERENCES domestic_inventory_movements(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_transfers_source ON domestic_inventory_transfers(source_warehouse_id, status, shipped_at);
+    CREATE INDEX IF NOT EXISTS idx_domestic_transfers_target ON domestic_inventory_transfers(target_warehouse_id, status, shipped_at);
+
+    CREATE TABLE IF NOT EXISTS domestic_inventory_transfer_lines (
+      id TEXT PRIMARY KEY,
+      transfer_id TEXT NOT NULL,
+      source_movement_line_id TEXT NOT NULL,
+      product_id TEXT,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      image_url TEXT,
+      specification TEXT,
+      unit TEXT NOT NULL DEFAULT '件',
+      quantity REAL NOT NULL,
+      unit_cost_cny REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(transfer_id) REFERENCES domestic_inventory_transfers(id),
+      FOREIGN KEY(source_movement_line_id) REFERENCES domestic_inventory_movement_lines(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_transfer_lines_transfer ON domestic_inventory_transfer_lines(transfer_id, sku);
   `);
   migrateLotSplittingSchema(db);
 

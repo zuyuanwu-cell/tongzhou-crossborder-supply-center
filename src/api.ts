@@ -4951,7 +4951,7 @@ export type DomesticInventoryMovement = {
   movementNo: string;
   warehouseId: string;
   warehouseName: string;
-  type: "opening" | "inbound" | "outbound" | "adjustment";
+  type: "opening" | "inbound" | "outbound" | "adjustment" | "transfer_out" | "transfer_in" | "transfer_cancel";
   referenceNo: string;
   occurredAt: string;
   note: string;
@@ -4959,6 +4959,66 @@ export type DomesticInventoryMovement = {
   createdByName: string;
   createdAt: string;
   lines: DomesticInventoryMovementLine[];
+};
+
+export type DomesticInventoryTransferAllocation = {
+  id: string;
+  lotId: string;
+  lotNo: string;
+  barcode: string;
+  productionDate: string;
+  expiryDate: string;
+  packagingMode: "piece" | "carton";
+  unitsPerCarton: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
+  unitCostCny: number;
+  quantity: number;
+  type: string;
+};
+
+export type DomesticInventoryTransferLine = {
+  id: string;
+  sourceMovementLineId: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  specification: string;
+  unit: string;
+  quantity: number;
+  unitCostCny: number;
+  allocations: DomesticInventoryTransferAllocation[];
+};
+
+export type DomesticInventoryTransfer = {
+  id: string;
+  transferNo: string;
+  sourceWarehouseId: string;
+  sourceWarehouseName: string;
+  targetWarehouseId: string;
+  targetWarehouseName: string;
+  status: "in_transit" | "received" | "cancelled";
+  note: string;
+  outboundMovementId: string;
+  inboundMovementId: string;
+  cancelMovementId: string;
+  shippedAt: string;
+  receivedAt: string;
+  cancelledAt: string;
+  createdById: string;
+  createdByName: string;
+  receivedById: string;
+  receivedByName: string;
+  cancelledById: string;
+  cancelledByName: string;
+  createdAt: string;
+  updatedAt: string;
+  totalQuantity: number;
+  skuCount: number;
+  lines: DomesticInventoryTransferLine[];
 };
 
 export type DomesticInventoryPayload = {
@@ -4999,6 +5059,36 @@ export function fetchDomesticInventoryMovements(filters: { warehouseId?: string;
 
 export function fetchDomesticInventoryMovement(id: string) {
   return requestJson<{ ok: boolean; movement: DomesticInventoryMovement }>(`/api/domestic-inventory/movements/${encodeURIComponent(id)}`);
+}
+
+export function fetchDomesticInventoryTransfers(filters: { warehouseId?: string; keyword?: string; status?: string } = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, String(value)); });
+  return requestJson<{ ok: boolean; summary: { inTransit: number; received: number; cancelled: number }; transfers: DomesticInventoryTransfer[] }>(`/api/domestic-inventory/transfers${params.size ? `?${params}` : ""}`);
+}
+
+export function fetchDomesticInventoryTransfer(id: string) {
+  return requestJson<{ ok: boolean; transfer: DomesticInventoryTransfer }>(`/api/domestic-inventory/transfers/${encodeURIComponent(id)}`);
+}
+
+export function fetchDomesticInventoryTransferTargets(sourceWarehouseId: string) {
+  return requestJson<{ ok: boolean; sourceWarehouseId: string; warehouses: DomesticWarehouse[] }>(`/api/domestic-inventory/transfer-targets?sourceWarehouseId=${encodeURIComponent(sourceWarehouseId)}`);
+}
+
+export function createDomesticInventoryTransfer(input: { sourceWarehouseId: string; targetWarehouseId: string; note?: string; lines: Array<{ sku: string; quantity: number; unitCostCny?: number }> }, idempotencyKey: string) {
+  return requestJson<{ ok: boolean; transferId: string; transferNo: string; status: string; sourceWarehouseId: string; targetWarehouseId: string; transfer: DomesticInventoryTransfer }>("/api/domestic-inventory/transfers", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(input),
+  });
+}
+
+export function receiveDomesticInventoryTransfer(id: string) {
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; movementId?: string; movementNo?: string; transfer: DomesticInventoryTransfer }>(`/api/domestic-inventory/transfers/${encodeURIComponent(id)}/receive`, { method: "POST", body: "{}" });
+}
+
+export function cancelDomesticInventoryTransfer(id: string) {
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; movementId?: string; movementNo?: string; transfer: DomesticInventoryTransfer }>(`/api/domestic-inventory/transfers/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" });
 }
 
 export function fetchDomesticInventoryLots(filters: { warehouseId?: string; sku?: string; barcode?: string; lotNo?: string; keyword?: string; availableOnly?: boolean; incompleteOnly?: boolean; limit?: number; offset?: number } = {}) {

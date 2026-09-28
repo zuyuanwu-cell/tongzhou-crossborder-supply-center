@@ -31,7 +31,7 @@ function id(prefix) {
 function businessNo(type) {
   const now = new Date();
   const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-  const prefix = { opening: "QC", inbound: "RK", outbound: "CK", adjustment: "TZ" }[type] || "KC";
+  const prefix = { opening: "QC", inbound: "RK", outbound: "CK", adjustment: "TZ", transfer: "DB", transfer_out: "DBCK", transfer_in: "DBRK", transfer_cancel: "DBHX" }[type] || "KC";
   return `${prefix}-${stamp}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
 }
 
@@ -78,6 +78,18 @@ function movementFromRow(row) {
     id: text(row.id), movementNo: text(row.movement_no), warehouseId: text(row.warehouse_id), warehouseName: text(row.warehouse_name),
     type: text(row.movement_type), referenceNo: text(row.reference_no), occurredAt: text(row.occurred_at), note: text(row.note),
     createdById: text(row.created_by_id), createdByName: text(row.created_by_name), createdAt: text(row.created_at), lines: [],
+  };
+}
+
+function transferFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id), transferNo: text(row.transfer_no), sourceWarehouseId: text(row.source_warehouse_id), sourceWarehouseName: text(row.source_warehouse_name),
+    targetWarehouseId: text(row.target_warehouse_id), targetWarehouseName: text(row.target_warehouse_name), status: text(row.status), note: text(row.note),
+    outboundMovementId: text(row.outbound_movement_id), inboundMovementId: text(row.inbound_movement_id), cancelMovementId: text(row.cancel_movement_id),
+    shippedAt: text(row.shipped_at), receivedAt: text(row.received_at), cancelledAt: text(row.cancelled_at), createdById: text(row.created_by_id),
+    createdByName: text(row.created_by_name), receivedById: text(row.received_by_id), receivedByName: text(row.received_by_name),
+    cancelledById: text(row.cancelled_by_id), cancelledByName: text(row.cancelled_by_name), createdAt: text(row.created_at), updatedAt: text(row.updated_at), lines: [],
   };
 }
 
@@ -185,13 +197,27 @@ function chinaAllowed(context) {
 }
 
 export function createDomesticInventoryService(store) {
-  function ensureWarehouse(warehouseId, context, options = {}) {
-    if (!chinaAllowed(context)) fail("当前账号没有国内仓数据权限。", 403, "forbidden");
+  function warehouseById(warehouseId, options = {}) {
     const warehouse = warehouseFromRow(store.first("SELECT * FROM domestic_warehouses WHERE id=?", [text(warehouseId)]));
     if (!warehouse) fail("国内仓库不存在。", 404, "not_found");
-    if (context.warehouseIds?.length && !context.warehouseIds.includes(warehouse.id)) fail("该仓库不在当前账号的数据范围内。", 403, "forbidden");
-    if (options.active && warehouse.status !== "active") fail("该仓库已停用，不能登记库存流水。", 409, "warehouse_inactive");
+    if (options.active && warehouse.status !== "active") fail("该仓库已停用，不能进行库存操作。", 409, "warehouse_inactive");
     return warehouse;
+  }
+
+  function ensureWarehouse(warehouseId, context, options = {}) {
+    if (!chinaAllowed(context)) fail("当前账号没有国内仓数据权限。", 403, "forbidden");
+    const warehouse = warehouseById(warehouseId, options);
+    if (context.warehouseIds?.length && !context.warehouseIds.includes(warehouse.id)) fail("该仓库不在当前账号的数据范围内。", 403, "forbidden");
+    return warehouse;
+  }
+
+  function listTransferTargets(sourceWarehouseId, context = {}) {
+    const source = ensureWarehouse(sourceWarehouseId, context, { active: true });
+    // 调出仓人员需要知道可以发往哪个启用仓，但不应借此读取目标仓地址、联系人等档案信息。
+    const warehouses = store.all("SELECT id,code,name,country,status FROM domestic_warehouses WHERE status='active' AND id<>? ORDER BY name", [source.id]).map((row) => ({
+      id: text(row.id), code: text(row.code), name: text(row.name), country: text(row.country) || "CN", status: text(row.status) || "active",
+    }));
+    return { ok: true, sourceWarehouseId: source.id, warehouses };
   }
 
   function list(filters = {}, context = {}) {
@@ -371,6 +397,245 @@ export function createDomesticInventoryService(store) {
       return result;
     });
     return response;
+  }
+
+  function normalizeTransfer(input, context = {}) {
+    const sourceWarehouse = ensureWarehouse(input.sourceWarehouseId, context, { active: true });
+    const targetWarehouse = warehouseById(input.targetWarehouseId, { active: true });
+    if (sourceWarehouse.id === targetWarehouse.id) fail("调出仓和调入仓不能相同。", 400, "same_transfer_warehouse");
+    const rawLines = Array.isArray(input.lines) ? input.lines : [];
+    if (!rawLines.length) fail("请至少选择一个调拨产品。", 400, "empty_lines");
+    const lines = rawLines.map((line) => {
+      const sku = skuKey(line.sku);
+      const quantity = number(line.quantity, -1);
+      if (!sku) fail("请填写产品 SKU。", 400, "sku_required");
+      if (quantity <= 0) fail(`${sku} 的调拨数量必须大于 0。`, 400, "invalid_transfer_quantity");
+      if (context.skus?.length && !context.skus.includes(sku)) fail(`${sku} 不在当前账号的数据范围内。`, 403, "forbidden");
+      const current = store.first("SELECT * FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [sourceWarehouse.id, sku]);
+      if (!current) fail(`${sku} 在调出仓没有库存。`, 409, "transfer_stock_not_found");
+      const availableQty = number(current.on_hand_qty) - number(current.reserved_qty);
+      if (quantity > availableQty) fail(`${sku} 可调拨 ${availableQty} ${text(current.unit) || "件"}，本次申请 ${quantity}。`, 409, "insufficient_stock");
+      return {
+        productId: text(current.product_id), sku, productName: text(current.product_name), imageUrl: text(current.image_url), specification: text(current.specification),
+        unit: text(current.unit) || "件", quantity, unitCostCny: Math.max(0, number(line.unitCostCny)), current,
+      };
+    });
+    if (new Set(lines.map((line) => line.sku)).size !== lines.length) fail("同一 SKU 不能在一张调拨单中重复。", 400, "duplicate_sku");
+    return { sourceWarehouse, targetWarehouse, lines };
+  }
+
+  function transferVisible(row, context = {}) {
+    if (!chinaAllowed(context)) return false;
+    if (!context.warehouseIds?.length) return true;
+    return context.warehouseIds.includes(text(row.source_warehouse_id)) || context.warehouseIds.includes(text(row.target_warehouse_id));
+  }
+
+  function hydrateTransfer(row, context = {}) {
+    if (!row || !transferVisible(row, context)) return null;
+    const transfer = transferFromRow(row);
+    const rawLines = store.all("SELECT * FROM domestic_inventory_transfer_lines WHERE transfer_id=? ORDER BY sku,id", [transfer.id]);
+    transfer.lines = rawLines
+      .filter((line) => !context.skus?.length || context.skus.includes(skuKey(line.sku)))
+      .map((line) => {
+        const allocations = store.all(`SELECT a.*,l.lot_no,l.barcode,l.production_date,l.expiry_date,l.packaging_mode,l.units_per_carton,l.carton_length_cm,l.carton_width_cm,l.carton_height_cm,l.carton_weight_kg,l.unit_cost_cny
+          FROM domestic_inventory_lot_allocations a LEFT JOIN domestic_inventory_lots l ON l.id=a.lot_id WHERE a.movement_line_id=? ORDER BY a.created_at,a.id`, [text(line.source_movement_line_id)])
+          .map((allocation) => ({
+            id: text(allocation.id), lotId: text(allocation.lot_id), lotNo: text(allocation.lot_no), barcode: text(allocation.barcode), productionDate: text(allocation.production_date),
+            expiryDate: text(allocation.expiry_date), packagingMode: text(allocation.packaging_mode) || "piece", unitsPerCarton: number(allocation.units_per_carton),
+            cartonLengthCm: number(allocation.carton_length_cm), cartonWidthCm: number(allocation.carton_width_cm), cartonHeightCm: number(allocation.carton_height_cm),
+            cartonWeightKg: number(allocation.carton_weight_kg), unitCostCny: number(allocation.unit_cost_cny, number(line.unit_cost_cny)), quantity: number(allocation.quantity), type: text(allocation.allocation_type),
+          }));
+        return {
+          id: text(line.id), sourceMovementLineId: text(line.source_movement_line_id), productId: text(line.product_id), sku: text(line.sku), productName: text(line.product_name),
+          imageUrl: text(line.image_url), specification: text(line.specification), unit: text(line.unit) || "件", quantity: number(line.quantity), unitCostCny: number(line.unit_cost_cny), allocations,
+        };
+      });
+    if (context.skus?.length && !transfer.lines.length) return null;
+    transfer.totalQuantity = transfer.lines.reduce((sum, line) => sum + line.quantity, 0);
+    transfer.skuCount = transfer.lines.length;
+    return transfer;
+  }
+
+  function transferRow(transferId) {
+    return store.first(`SELECT t.*,sw.name AS source_warehouse_name,tw.name AS target_warehouse_name
+      FROM domestic_inventory_transfers t JOIN domestic_warehouses sw ON sw.id=t.source_warehouse_id JOIN domestic_warehouses tw ON tw.id=t.target_warehouse_id WHERE t.id=?`, [text(transferId)]);
+  }
+
+  function getTransfer(transferId, context = {}) {
+    const transfer = hydrateTransfer(transferRow(transferId), context);
+    if (!transfer) fail("调拨单不存在或不在当前账号的数据范围内。", 404, "not_found");
+    return { ok: true, transfer };
+  }
+
+  function listTransfers(filters = {}, context = {}) {
+    if (!chinaAllowed(context)) return { ok: true, summary: { inTransit: 0, received: 0, cancelled: 0 }, transfers: [] };
+    const where = [];
+    const params = [];
+    if (context.warehouseIds?.length) {
+      const placeholders = context.warehouseIds.map(() => "?").join(",");
+      where.push(`(t.source_warehouse_id IN (${placeholders}) OR t.target_warehouse_id IN (${placeholders}))`);
+      params.push(...context.warehouseIds, ...context.warehouseIds);
+    }
+    if (filters.status) { where.push("t.status=?"); params.push(text(filters.status)); }
+    if (filters.warehouseId) { where.push("(t.source_warehouse_id=? OR t.target_warehouse_id=?)"); params.push(text(filters.warehouseId), text(filters.warehouseId)); }
+    if (filters.keyword) {
+      const keyword = `%${text(filters.keyword)}%`;
+      where.push("(t.transfer_no LIKE ? OR sw.name LIKE ? OR tw.name LIKE ? OR t.id IN (SELECT transfer_id FROM domestic_inventory_transfer_lines WHERE sku LIKE ? OR product_name LIKE ?))");
+      params.push(keyword, keyword, keyword, keyword, keyword);
+    }
+    const rows = store.all(`SELECT t.*,sw.name AS source_warehouse_name,tw.name AS target_warehouse_name
+      FROM domestic_inventory_transfers t JOIN domestic_warehouses sw ON sw.id=t.source_warehouse_id JOIN domestic_warehouses tw ON tw.id=t.target_warehouse_id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY t.shipped_at DESC,t.created_at DESC LIMIT 200`, params);
+    const transfers = rows.map((row) => hydrateTransfer(row, context)).filter(Boolean);
+    return {
+      ok: true,
+      summary: {
+        inTransit: transfers.filter((item) => item.status === "in_transit").length,
+        received: transfers.filter((item) => item.status === "received").length,
+        cancelled: transfers.filter((item) => item.status === "cancelled").length,
+      },
+      transfers,
+    };
+  }
+
+  function createTransfer(input, context = {}, idempotencyKey = "") {
+    const actor = userOf(context);
+    const storedKey = idempotencyKey ? `transfer:create:${idempotencyKey}` : "";
+    if (storedKey) {
+      const existing = store.first("SELECT response_json FROM domestic_inventory_idempotency WHERE key=? AND user_id=?", [storedKey, actor.id]);
+      if (existing) return { ...JSON.parse(existing.response_json), idempotentReplay: true };
+    }
+    const { sourceWarehouse, targetWarehouse, lines } = normalizeTransfer(input, context);
+    const now = nowIso();
+    const transferId = id("dtr");
+    const transferNo = businessNo("transfer");
+    const movementId = id("dim");
+    const movementNo = businessNo("transfer_out");
+    const response = store.transaction(() => {
+      store.run(`INSERT INTO domestic_inventory_movements (id,movement_no,warehouse_id,movement_type,reference_no,occurred_at,note,created_by_id,created_by_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [movementId, movementNo, sourceWarehouse.id, "transfer_out", transferNo, now, text(input.note) || `调拨至${targetWarehouse.name}`, actor.id, actor.name, now]);
+      store.run(`INSERT INTO domestic_inventory_transfers (id,transfer_no,source_warehouse_id,target_warehouse_id,status,note,outbound_movement_id,shipped_at,created_by_id,created_by_name,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [transferId, transferNo, sourceWarehouse.id, targetWarehouse.id, "in_transit", text(input.note), movementId, now, actor.id, actor.name, now, now]);
+      for (const line of lines) {
+        const current = store.first("SELECT * FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [sourceWarehouse.id, line.sku]);
+        const beforeQty = number(current.on_hand_qty);
+        const afterQty = beforeQty - line.quantity;
+        if (afterQty < number(current.reserved_qty)) fail(`${line.sku} 可调拨库存不足。`, 409, "insufficient_stock");
+        store.run("UPDATE domestic_inventory_balances SET on_hand_qty=?,updated_at=? WHERE warehouse_id=? AND sku=?", [afterQty, now, sourceWarehouse.id, line.sku]);
+        const movementLineId = id("dml");
+        store.run(`INSERT INTO domestic_inventory_movement_lines (id,movement_id,product_id,sku,product_name,image_url,specification,unit,quantity,signed_qty,before_qty,after_qty,unit_cost_cny) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [movementLineId, movementId, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, line.quantity, -line.quantity, beforeQty, afterQty, line.unitCostCny]);
+        store.run(`INSERT INTO domestic_inventory_transfer_lines (id,transfer_id,source_movement_line_id,product_id,sku,product_name,image_url,specification,unit,quantity,unit_cost_cny,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [id("dtl"), transferId, movementLineId, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, line.quantity, line.unitCostCny, now]);
+        let remainingToAllocate = line.quantity;
+        const lots = store.all("SELECT * FROM domestic_inventory_lots WHERE warehouse_id=? AND sku=? AND remaining_qty>0 ORDER BY received_at,created_at,id", [sourceWarehouse.id, line.sku]);
+        for (const lot of lots) {
+          if (remainingToAllocate <= 0) break;
+          const allocated = Math.min(remainingToAllocate, number(lot.remaining_qty));
+          if (allocated <= 0) continue;
+          store.run("UPDATE domestic_inventory_lots SET remaining_qty=remaining_qty-?,updated_at=? WHERE id=?", [allocated, now, text(lot.id)]);
+          store.run("INSERT INTO domestic_inventory_lot_allocations (id,movement_line_id,lot_id,quantity,allocation_type,created_at) VALUES (?,?,?,?,?,?)",
+            [id("dla"), movementLineId, text(lot.id), allocated, "transfer_fifo", now]);
+          remainingToAllocate -= allocated;
+        }
+        if (remainingToAllocate > 0) {
+          store.run("INSERT INTO domestic_inventory_lot_allocations (id,movement_line_id,lot_id,quantity,allocation_type,created_at) VALUES (?,?,?,?,?,?)",
+            [id("dla"), movementLineId, null, remainingToAllocate, "transfer_legacy_untracked", now]);
+        }
+      }
+      const result = { ok: true, transferId, transferNo, status: "in_transit", sourceWarehouseId: sourceWarehouse.id, targetWarehouseId: targetWarehouse.id };
+      if (storedKey) store.run("INSERT INTO domestic_inventory_idempotency (key,user_id,response_json,created_at) VALUES (?,?,?,?)", [storedKey, actor.id, JSON.stringify(result), now]);
+      return result;
+    });
+    return { ...response, transfer: getTransfer(transferId, context).transfer };
+  }
+
+  function receiveTransfer(transferId, context = {}) {
+    const row = transferRow(transferId);
+    if (!row) fail("调拨单不存在。", 404, "not_found");
+    const targetWarehouse = ensureWarehouse(row.target_warehouse_id, context, { active: true });
+    if (text(row.status) === "received") return { ok: true, idempotentReplay: true, transfer: getTransfer(transferId, context).transfer };
+    if (text(row.status) !== "in_transit") fail("只有在途调拨单可以确认收货。", 409, "transfer_not_receivable");
+    const actor = userOf(context);
+    const now = nowIso();
+    const movementId = id("dim");
+    const movementNo = businessNo("transfer_in");
+    store.transaction(() => {
+      const fresh = store.first("SELECT status FROM domestic_inventory_transfers WHERE id=?", [text(transferId)]);
+      if (text(fresh?.status) !== "in_transit") fail("调拨状态已变化，请刷新后重试。", 409, "transfer_state_changed");
+      store.run(`INSERT INTO domestic_inventory_movements (id,movement_no,warehouse_id,movement_type,reference_no,occurred_at,note,created_by_id,created_by_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [movementId, movementNo, targetWarehouse.id, "transfer_in", text(row.transfer_no), now, `调拨收货：${text(row.source_warehouse_name)} → ${targetWarehouse.name}`, actor.id, actor.name, now]);
+      const transferLines = store.all("SELECT * FROM domestic_inventory_transfer_lines WHERE transfer_id=? ORDER BY sku,id", [text(transferId)]);
+      for (const line of transferLines) {
+        const allocations = store.all(`SELECT a.*,l.* FROM domestic_inventory_lot_allocations a LEFT JOIN domestic_inventory_lots l ON l.id=a.lot_id WHERE a.movement_line_id=? ORDER BY a.created_at,a.id`, [text(line.source_movement_line_id)]);
+        const parts = allocations.length ? allocations : [{ quantity: line.quantity }];
+        for (const allocation of parts) {
+          const quantity = number(allocation.quantity);
+          if (quantity <= 0) continue;
+          const current = store.first("SELECT * FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [targetWarehouse.id, text(line.sku)]);
+          const beforeQty = number(current?.on_hand_qty);
+          const afterQty = beforeQty + quantity;
+          store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,0,?,?) ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,updated_at=excluded.updated_at`,
+            [targetWarehouse.id, text(line.product_id), text(line.sku), text(line.product_name), text(line.image_url), text(line.specification), text(line.unit) || "件", afterQty, number(current?.safety_stock_qty), now]);
+          const movementLineId = id("dml");
+          const unitCostCny = number(allocation.unit_cost_cny, number(line.unit_cost_cny));
+          store.run(`INSERT INTO domestic_inventory_movement_lines (id,movement_id,product_id,sku,product_name,image_url,specification,unit,quantity,signed_qty,before_qty,after_qty,unit_cost_cny) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [movementLineId, movementId, text(line.product_id), text(line.sku), text(line.product_name), text(line.image_url), text(line.specification), text(line.unit) || "件", quantity, quantity, beforeQty, afterQty, unitCostCny]);
+          const unitsPerCarton = number(allocation.units_per_carton);
+          const cartonMode = text(allocation.packaging_mode) === "carton" && Number.isInteger(quantity) && Number.isInteger(unitsPerCarton) && unitsPerCarton > 0;
+          const cartonCount = cartonMode ? Math.floor(quantity / unitsPerCarton) : 0;
+          const looseQuantity = cartonMode ? quantity - cartonCount * unitsPerCarton : 0;
+          store.run(`INSERT INTO domestic_inventory_lots
+            (id,warehouse_id,movement_line_id,product_id,sku,product_name,lot_no,barcode,production_date,expiry_date,packaging_mode,carton_count,units_per_carton,loose_quantity,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,received_qty,remaining_qty,unit_cost_cny,source_type,received_at,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [id("dlot"), targetWarehouse.id, movementLineId, text(line.product_id), text(line.sku), text(line.product_name), text(allocation.lot_no), text(allocation.barcode),
+              text(allocation.production_date), text(allocation.expiry_date), cartonMode ? "carton" : "piece", cartonCount, cartonMode ? unitsPerCarton : 0, looseQuantity,
+              cartonMode ? number(allocation.carton_length_cm) : 0, cartonMode ? number(allocation.carton_width_cm) : 0, cartonMode ? number(allocation.carton_height_cm) : 0,
+              cartonMode ? number(allocation.carton_weight_kg) : 0, quantity, quantity, unitCostCny, "transfer_in", now, now, now]);
+        }
+      }
+      store.run(`UPDATE domestic_inventory_transfers SET status='received',inbound_movement_id=?,received_at=?,received_by_id=?,received_by_name=?,updated_at=? WHERE id=?`,
+        [movementId, now, actor.id, actor.name, now, text(transferId)]);
+    });
+    return { ok: true, movementId, movementNo, transfer: getTransfer(transferId, context).transfer };
+  }
+
+  function cancelTransfer(transferId, context = {}) {
+    const row = transferRow(transferId);
+    if (!row) fail("调拨单不存在。", 404, "not_found");
+    const sourceWarehouse = ensureWarehouse(row.source_warehouse_id, context, { active: true });
+    if (text(row.status) === "cancelled") return { ok: true, idempotentReplay: true, transfer: getTransfer(transferId, context).transfer };
+    if (text(row.status) !== "in_transit") fail("只有在途调拨单可以取消。", 409, "transfer_not_cancellable");
+    const actor = userOf(context);
+    const now = nowIso();
+    const movementId = id("dim");
+    const movementNo = businessNo("transfer_cancel");
+    store.transaction(() => {
+      const fresh = store.first("SELECT status FROM domestic_inventory_transfers WHERE id=?", [text(transferId)]);
+      if (text(fresh?.status) !== "in_transit") fail("调拨状态已变化，请刷新后重试。", 409, "transfer_state_changed");
+      store.run(`INSERT INTO domestic_inventory_movements (id,movement_no,warehouse_id,movement_type,reference_no,occurred_at,note,created_by_id,created_by_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [movementId, movementNo, sourceWarehouse.id, "transfer_cancel", text(row.transfer_no), now, "取消调拨并恢复原批次库存", actor.id, actor.name, now]);
+      const transferLines = store.all("SELECT * FROM domestic_inventory_transfer_lines WHERE transfer_id=? ORDER BY sku,id", [text(transferId)]);
+      for (const line of transferLines) {
+        const current = store.first("SELECT * FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [sourceWarehouse.id, text(line.sku)]);
+        const beforeQty = number(current?.on_hand_qty);
+        const afterQty = beforeQty + number(line.quantity);
+        store.run("UPDATE domestic_inventory_balances SET on_hand_qty=?,updated_at=? WHERE warehouse_id=? AND sku=?", [afterQty, now, sourceWarehouse.id, text(line.sku)]);
+        const movementLineId = id("dml");
+        store.run(`INSERT INTO domestic_inventory_movement_lines (id,movement_id,product_id,sku,product_name,image_url,specification,unit,quantity,signed_qty,before_qty,after_qty,unit_cost_cny) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [movementLineId, movementId, text(line.product_id), text(line.sku), text(line.product_name), text(line.image_url), text(line.specification), text(line.unit) || "件", number(line.quantity), number(line.quantity), beforeQty, afterQty, number(line.unit_cost_cny)]);
+        const allocations = store.all("SELECT * FROM domestic_inventory_lot_allocations WHERE movement_line_id=? ORDER BY created_at,id", [text(line.source_movement_line_id)]);
+        for (const allocation of allocations) {
+          if (allocation.lot_id) store.run("UPDATE domestic_inventory_lots SET remaining_qty=remaining_qty+?,updated_at=? WHERE id=?", [number(allocation.quantity), now, text(allocation.lot_id)]);
+          store.run("INSERT INTO domestic_inventory_lot_allocations (id,movement_line_id,lot_id,quantity,allocation_type,created_at) VALUES (?,?,?,?,?,?)",
+            [id("dla"), movementLineId, allocation.lot_id ? text(allocation.lot_id) : null, number(allocation.quantity), "transfer_cancel_restore", now]);
+        }
+      }
+      store.run(`UPDATE domestic_inventory_transfers SET status='cancelled',cancel_movement_id=?,cancelled_at=?,cancelled_by_id=?,cancelled_by_name=?,updated_at=? WHERE id=?`,
+        [movementId, now, actor.id, actor.name, now, text(transferId)]);
+    });
+    return { ok: true, movementId, movementNo, transfer: getTransfer(transferId, context).transfer };
   }
 
   function importOpeningBalances(input, context, idempotencyKey = "") {
@@ -565,5 +830,8 @@ export function createDomesticInventoryService(store) {
     return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty };
   }
 
-  return { createMovement, createWarehouse, getMovement, importOpeningBalances, list, listLots, listMovements, listWarehouses, previewMovement, splitLot, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse };
+  return {
+    cancelTransfer, createMovement, createTransfer, createWarehouse, getMovement, getTransfer, importOpeningBalances, list, listLots, listMovements,
+    listTransfers, listTransferTargets, listWarehouses, previewMovement, receiveTransfer, splitLot, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse,
+  };
 }
