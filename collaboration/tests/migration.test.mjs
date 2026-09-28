@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const sql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0001_foundation.sql"), "utf8");
+const notificationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "notifications.js"), "utf8");
 
 test("all partner-owned tables opt into forced row-level security", () => {
   const tables = [
@@ -29,4 +30,9 @@ test("sensitive platform records do not store raw credentials in work items", ()
   assert.doesNotMatch(workItemDefinition, /password|secret|credential|unit_cost|customer_name/i);
   assert.match(sql, /token_hash text NOT NULL UNIQUE/);
   assert.match(sql, /csrf_token_hash text NOT NULL/);
+});
+
+test("notification delivery only locks notification rows across outer joins", () => {
+  assert.match(notificationSource, /FOR UPDATE OF n SKIP LOCKED/);
+  assert.doesNotMatch(notificationSource, /LIMIT 20 FOR UPDATE SKIP LOCKED/);
 });

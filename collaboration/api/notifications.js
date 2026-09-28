@@ -33,7 +33,7 @@ export async function runNotificationDeliveryBatch() {
          JOIN organizations o ON o.id=n.organization_id
         WHERE n.channel IN ('email','wecom') AND n.delivery_status IN ('pending','failed')
           AND COALESCE(n.next_attempt_at,now()) <= now() AND n.attempt_count < 6
-        ORDER BY n.created_at LIMIT 20 FOR UPDATE SKIP LOCKED`,
+        ORDER BY n.created_at LIMIT 20 FOR UPDATE OF n SKIP LOCKED`,
     );
     for (const row of result.rows) await client.query("UPDATE notifications SET delivery_status='pending',attempt_count=attempt_count+1 WHERE id=$1", [row.id]);
     return result.rows;
