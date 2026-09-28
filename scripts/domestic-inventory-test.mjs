@@ -41,6 +41,18 @@ try {
   const duplicateInbound = service.createMovement(inbound, admin, "idem-inbound");
   assert.equal(firstInbound.movementId, duplicateInbound.movementId, "idempotency must prevent duplicate stock entries");
   assert.equal(service.list({}, admin).summary.onHandQty, 26);
+  const skuALotBefore = service.listLots({ warehouseId: warehouseA.id, sku: "SKU-A" }, admin).lots[0];
+  assert.equal(skuALotBefore.needsSupplement, true);
+  const supplementedSkuA = service.updateLot(skuALotBefore.id, {
+    lotNo: "LOT-SKU-A-001", barcode: "690000000010", productionDate: "2026-09-20", expiryDate: "2029-09-20",
+    packagingMode: "carton", unitsPerCarton: 6, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 7.2,
+  }, admin).lot;
+  assert.equal(supplementedSkuA.receivedQty, 10, "supplementing metadata must not change received quantity");
+  assert.equal(supplementedSkuA.remainingQty, 10, "supplementing metadata must not change remaining quantity");
+  assert.equal(supplementedSkuA.cartonCount, 1);
+  assert.equal(supplementedSkuA.looseQuantity, 4);
+  assert.equal(supplementedSkuA.needsSupplement, false);
+  assert.equal(service.listLots({ warehouseId: warehouseA.id, incompleteOnly: "1" }, admin).lots.some((item) => item.sku === "SKU-A"), false);
   assert.throws(
     () => service.createMovement({ ...inbound, lines: [inbound.lines[0], { ...inbound.lines[0], sku: "SKU-A" }] }, admin),
     (error) => error?.code === "duplicate_sku",
@@ -77,6 +89,28 @@ try {
   assert.equal(availability.items[0].cartonProfiles[0].looseUnits, 0);
   assert.equal(service.listWarehouses(admin).warehouses.length, 2);
 
+  const splitInbound = service.createMovement({
+    warehouseId: warehouseA.id,
+    type: "inbound",
+    referenceNo: "PO-SPLIT-001",
+    lines: [{ productId: "p-split", sku: "SKU-SPLIT", productName: "多批次产品", unit: "件", quantity: 25, unitCostCny: 4.5 }],
+  }, admin, "idem-split");
+  const splitSource = service.listLots({ warehouseId: warehouseA.id, sku: "SKU-SPLIT" }, admin).lots[0];
+  const splitResult = service.splitLot(splitSource.id, { splits: [
+    { lotNo: "SPLIT-A", barcode: "690100000001", productionDate: "2026-09-01", expiryDate: "2029-09-01", quantity: 12, packagingMode: "carton", unitsPerCarton: 6, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 6 },
+    { lotNo: "SPLIT-B", barcode: "690100000002", productionDate: "2026-09-02", expiryDate: "2029-09-02", quantity: 13, packagingMode: "carton", unitsPerCarton: 6, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 6 },
+  ] }, admin);
+  assert.equal(splitResult.lots.length, 2);
+  assert.equal(splitResult.lots.reduce((sum, item) => sum + item.receivedQty, 0), 25);
+  assert.equal(splitResult.lots.find((item) => item.lotNo === "SPLIT-B").looseQuantity, 1);
+  assert.equal(service.getMovement(splitInbound.movementId, admin).movement.lines[0].lots.length, 2);
+  assert.equal(service.stockupAvailability({ warehouseId: warehouseA.id, skus: "SKU-SPLIT" }, admin).items[0].knownLotQty, 25);
+  service.createMovement({ warehouseId: warehouseA.id, type: "outbound", referenceNo: "USE-SPLIT", lines: [{ sku: "SKU-SPLIT", productName: "多批次产品", unit: "件", quantity: 1 }] }, admin);
+  assert.throws(
+    () => service.splitLot(splitResult.lots[0].id, { splits: [{ lotNo: "X", quantity: 5 }, { lotNo: "Y", quantity: 7 }] }, admin),
+    (error) => error?.code === "lot_already_allocated",
+  );
+
   service.createMovement({ warehouseId: warehouseA.id, type: "outbound", referenceNo: "USE-001", lines: [{ sku: "SKU-A", productName: "产品A", unit: "件", quantity: 3 }] }, admin);
   assert.equal(service.list({ warehouseId: warehouseA.id }, admin).balances.find((item) => item.sku === "SKU-A").onHandQty, 7);
   assert.throws(
@@ -99,7 +133,7 @@ try {
 
   service.updateWarehouse(warehouseB.id, { status: "inactive" }, admin);
   assert.throws(() => service.createMovement({ warehouseId: warehouseB.id, type: "inbound", lines: [{ sku: "SKU-A", productName: "产品A", quantity: 1 }] }, admin), (error) => error?.code === "warehouse_inactive");
-  assert.equal(service.listMovements({}, admin).movements.length, 6);
+  assert.equal(service.listMovements({}, admin).movements.length, 8);
   console.log("domestic inventory tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

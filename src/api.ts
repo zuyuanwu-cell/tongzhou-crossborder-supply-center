@@ -4909,6 +4909,7 @@ export type DomesticInventoryMovementLine = {
   afterQty: number;
   unitCostCny: number;
   lot?: DomesticInventoryLot | null;
+  lots?: DomesticInventoryLot[];
   allocations?: Array<{ id: string; lotId: string; lotNo: string; barcode: string; quantity: number; type: string }>;
 };
 
@@ -4941,6 +4942,8 @@ export type DomesticInventoryLot = {
   receivedAt: string;
   createdAt: string;
   updatedAt: string;
+  missingFields: string[];
+  needsSupplement: boolean;
 };
 
 export type DomesticInventoryMovement = {
@@ -4998,7 +5001,7 @@ export function fetchDomesticInventoryMovement(id: string) {
   return requestJson<{ ok: boolean; movement: DomesticInventoryMovement }>(`/api/domestic-inventory/movements/${encodeURIComponent(id)}`);
 }
 
-export function fetchDomesticInventoryLots(filters: { warehouseId?: string; sku?: string; barcode?: string; lotNo?: string; keyword?: string; availableOnly?: boolean; limit?: number; offset?: number } = {}) {
+export function fetchDomesticInventoryLots(filters: { warehouseId?: string; sku?: string; barcode?: string; lotNo?: string; keyword?: string; availableOnly?: boolean; incompleteOnly?: boolean; limit?: number; offset?: number } = {}) {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
     if (value === undefined || value === "" || value === false) return;
@@ -5007,8 +5010,27 @@ export function fetchDomesticInventoryLots(filters: { warehouseId?: string; sku?
   return requestJson<{ ok: boolean; total: number; limit: number; offset: number; lots: DomesticInventoryLot[] }>(`/api/domestic-inventory/lots?${params}`);
 }
 
-export function updateDomesticInventoryLot(id: string, input: { lotNo?: string; barcode?: string; productionDate?: string; expiryDate?: string }) {
+export type DomesticInventoryLotSupplementInput = {
+  lotNo?: string;
+  barcode?: string;
+  productionDate?: string;
+  expiryDate?: string;
+  packagingMode?: "piece" | "carton";
+  cartonCount?: number;
+  unitsPerCarton?: number;
+  looseQuantity?: number;
+  cartonLengthCm?: number;
+  cartonWidthCm?: number;
+  cartonHeightCm?: number;
+  cartonWeightKg?: number;
+};
+
+export function updateDomesticInventoryLot(id: string, input: DomesticInventoryLotSupplementInput) {
   return requestJson<{ ok: boolean; lot: DomesticInventoryLot }>(`/api/domestic-inventory/lots/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function splitDomesticInventoryLot(id: string, splits: Array<DomesticInventoryLotSupplementInput & { quantity: number }>) {
+  return requestJson<{ ok: boolean; originalLotId: string; warehouseId: string; sku: string; lots: DomesticInventoryLot[] }>(`/api/domestic-inventory/lots/${encodeURIComponent(id)}/split`, { method: "POST", body: JSON.stringify({ splits }) });
 }
 
 export function fetchDomesticStockupAvailability(warehouseId: string, skus: string[]) {

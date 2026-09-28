@@ -32,7 +32,9 @@ import {
   fetchDomesticInventoryMovements,
   fetchDomesticInventoryProducts,
   importDomesticOpeningInventory,
+  splitDomesticInventoryLot,
   updateDomesticInventorySafetyStock,
+  updateDomesticInventoryLot,
   updateDomesticWarehouse,
 } from "../api";
 import "./domestic-inventory.css";
@@ -191,6 +193,8 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
   const [movementModal, setMovementModal] = useState<MovementType | null>(null);
   const [warehouseModal, setWarehouseModal] = useState(false);
   const [openingImportModal, setOpeningImportModal] = useState(false);
+  const [editingLot, setEditingLot] = useState<DomesticInventoryLot | null>(null);
+  const [incompleteLotsOnly, setIncompleteLotsOnly] = useState(false);
   const [safetyDrafts, setSafetyDrafts] = useState<Record<string, string>>({});
   const [inventoryProducts, setInventoryProducts] = useState<DomesticInventoryProductOption[]>([]);
   const [productCatalogLoading, setProductCatalogLoading] = useState(true);
@@ -226,14 +230,14 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
     setLoading(true);
     setError("");
     try {
-      const data = await fetchDomesticInventoryLots({ warehouseId, keyword: query, limit: 300 });
+      const data = await fetchDomesticInventoryLots({ warehouseId, keyword: query, incompleteOnly: incompleteLotsOnly, limit: 300 });
       setLots(data.lots);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "库存批次读取失败，请稍后重试。");
     } finally {
       setLoading(false);
     }
-  }, [warehouseId, query]);
+  }, [warehouseId, query, incompleteLotsOnly]);
 
   useEffect(() => { void loadInventory(); }, [loadInventory]);
   useEffect(() => { if (tab === "movements") void loadMovements(); }, [tab, loadMovements]);
@@ -334,6 +338,7 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
             {payload.warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}{warehouse.status === "inactive" ? "（已停用）" : ""}</option>)}
           </select>
           {tab === "inventory" ? <label className="domestic-inventory-check"><input type="checkbox" checked={lowStockOnly} onChange={(event) => setLowStockOnly(event.target.checked)} />只看低库存</label> : null}
+          {tab === "lots" ? <label className="domestic-inventory-check"><input type="checkbox" checked={incompleteLotsOnly} onChange={(event) => setIncompleteLotsOnly(event.target.checked)} />只看资料待补</label> : null}
           <button className="domestic-inventory-secondary" type="button" onClick={runSearch}><Search size={16} />查询</button>
           <button className="domestic-inventory-secondary icon-only" type="button" aria-label="刷新" onClick={() => void (tab === "movements" ? loadMovements() : tab === "lots" ? loadLots() : loadInventory())}><RefreshCw className={loading ? "spinning" : ""} size={17} /></button>
           {(canManage || canReceive || canIssue || canAdjust) && tab !== "warehouses" ? (
@@ -350,7 +355,7 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
         {tab === "inventory" ? (
           <InventoryTable payload={payload} loading={loading} canManage={canManage} safetyDrafts={safetyDrafts} setSafetyDrafts={setSafetyDrafts} onSaveSafety={saveSafetyStock} />
         ) : tab === "lots" ? (
-          <LotTable lots={lots} loading={loading} />
+          <LotTable lots={lots} loading={loading} canEdit={canReceive || canManage} onEdit={setEditingLot} />
         ) : tab === "movements" ? (
           <MovementTable movements={movements} loading={loading} />
         ) : (
@@ -371,6 +376,7 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
         />
       ) : null}
       {openingImportModal ? <OpeningImportModal warehouses={activeWarehouses} products={productOptions} onClose={() => setOpeningImportModal(false)} onSaved={async (message) => { setOpeningImportModal(false); setSuccess(message); setTab("inventory"); await loadInventory(); }} onError={setError} /> : null}
+      {editingLot ? <LotSupplementModal lot={editingLot} onClose={() => setEditingLot(null)} onSaved={async (message) => { setEditingLot(null); setSuccess(message); await loadLots(); }} onError={setError} /> : null}
       {warehouseModal ? <WarehouseModal onClose={() => setWarehouseModal(false)} onSaved={async (name) => { setWarehouseModal(false); setSuccess(`${name}已建立。`); await loadInventory(); }} onError={setError} /> : null}
     </main>
   );
@@ -412,14 +418,14 @@ function InventoryTable({ payload, loading, canManage, safetyDrafts, setSafetyDr
   );
 }
 
-function LotTable({ lots, loading }: { lots: DomesticInventoryLot[]; loading: boolean }) {
+function LotTable({ lots, loading, canEdit, onEdit }: { lots: DomesticInventoryLot[]; loading: boolean; canEdit: boolean; onEdit: (lot: DomesticInventoryLot) => void }) {
   if (!loading && !lots.length) return <EmptyState title="还没有库存批次" description="新的入库、期初库存和盘盈会自动形成可追溯批次。" />;
   return (
     <div className="domestic-inventory-table-wrap">
       <table className="domestic-inventory-table domestic-lot-table">
-        <thead><tr><th>产品 / 批次</th><th>仓库</th><th>入库单</th><th>数量</th><th>箱规</th><th>箱子尺寸 / 重量</th><th>生产信息</th><th>条码</th></tr></thead>
+        <thead><tr><th>产品 / 批次</th><th>仓库</th><th>入库单</th><th>数量</th><th>箱规</th><th>箱子尺寸 / 重量</th><th>生产信息</th><th>条码</th>{canEdit ? <th>操作</th> : null}</tr></thead>
         <tbody>{lots.map((lot) => <tr key={lot.id}>
-          <td><strong>{lot.productName}</strong><small>{lot.sku}{lot.lotNo ? ` · 批次 ${lot.lotNo}` : " · 未录批次号"}</small></td>
+          <td><strong>{lot.productName}</strong><small>{lot.sku}{lot.lotNo ? ` · 批次 ${lot.lotNo}` : " · 未录批次号"}</small>{lot.needsSupplement ? <em className="lot-incomplete-badge">资料待补：{lot.missingFields.join("、")}</em> : <em className="lot-complete-badge">资料完整</em>}</td>
           <td>{lot.warehouseName}</td>
           <td><strong>{lot.movementNo}</strong><small>{dateTime(lot.receivedAt)}</small></td>
           <td className="number-cell"><strong>{numberText(lot.remainingQty)}</strong> / {numberText(lot.receivedQty)}</td>
@@ -427,11 +433,102 @@ function LotTable({ lots, loading }: { lots: DomesticInventoryLot[]; loading: bo
           <td>{lot.packagingMode === "carton" ? <><strong>{numberText(lot.cartonLengthCm)} × {numberText(lot.cartonWidthCm)} × {numberText(lot.cartonHeightCm)} cm</strong><small>{numberText(lot.cartonWeightKg)} kg/箱</small></> : "—"}</td>
           <td><strong>{lot.productionDate || "未录生产日期"}</strong><small>{lot.expiryDate ? `有效期 ${lot.expiryDate}` : "未录有效期"}</small></td>
           <td>{lot.barcode || "—"}</td>
+          {canEdit ? <td><button className="lot-edit-button" type="button" onClick={() => onEdit(lot)}><Edit3 size={14} />{lot.needsSupplement ? "补录资料" : "修改资料"}</button></td> : null}
         </tr>)}</tbody>
       </table>
       {loading ? <div className="domestic-loading">正在读取库存批次…</div> : null}
     </div>
   );
+}
+
+type SplitLotDraft = { lotNo: string; barcode: string; productionDate: string; expiryDate: string; quantity: number };
+
+function LotSupplementModal({ lot, onClose, onSaved, onError }: {
+  lot: DomesticInventoryLot;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [mode, setMode] = useState<"supplement" | "split">("supplement");
+  const [lotNo, setLotNo] = useState(lot.lotNo);
+  const [barcode, setBarcode] = useState(lot.barcode);
+  const [productionDate, setProductionDate] = useState(lot.productionDate);
+  const [expiryDate, setExpiryDate] = useState(lot.expiryDate);
+  const [packagingMode, setPackagingMode] = useState<"piece" | "carton">(lot.packagingMode);
+  const [unitsPerCarton, setUnitsPerCarton] = useState(lot.unitsPerCarton || 1);
+  const [cartonLengthCm, setCartonLengthCm] = useState(lot.cartonLengthCm || 0);
+  const [cartonWidthCm, setCartonWidthCm] = useState(lot.cartonWidthCm || 0);
+  const [cartonHeightCm, setCartonHeightCm] = useState(lot.cartonHeightCm || 0);
+  const [cartonWeightKg, setCartonWeightKg] = useState(lot.cartonWeightKg || 0);
+  const firstQuantity = Math.max(1, Math.floor(lot.receivedQty / 2));
+  const [splits, setSplits] = useState<SplitLotDraft[]>([
+    { lotNo: "", barcode: "", productionDate: lot.productionDate, expiryDate: lot.expiryDate, quantity: firstQuantity },
+    { lotNo: "", barcode: "", productionDate: lot.productionDate, expiryDate: lot.expiryDate, quantity: Math.max(1, lot.receivedQty - firstQuantity) },
+  ]);
+  const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const splitAllowed = Number.isInteger(lot.receivedQty) && Math.abs(lot.receivedQty - lot.remainingQty) < 0.000001 && lot.receivedQty >= 2;
+  const splitTotal = splits.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  useEscapeClose(onClose, saving);
+
+  function cartonFields(quantity: number) {
+    if (packagingMode !== "carton") return { packagingMode: "piece" as const };
+    const units = Number(unitsPerCarton || 0);
+    const cartonCount = units > 0 ? Math.floor(quantity / units) : 0;
+    const looseQuantity = units > 0 ? quantity - cartonCount * units : quantity;
+    return { packagingMode: "carton" as const, unitsPerCarton: units, cartonCount, looseQuantity, cartonLengthCm, cartonWidthCm, cartonHeightCm, cartonWeightKg };
+  }
+
+  async function submit() {
+    setSaving(true);
+    setLocalError("");
+    onError("");
+    try {
+      if (mode === "split") {
+        const result = await splitDomesticInventoryLot(lot.id, splits.map((item) => ({ ...item, ...cartonFields(Number(item.quantity)) })));
+        await onSaved(`${lot.sku} 已拆分为 ${result.lots.length} 个可追溯批次。`);
+      } else {
+        await updateDomesticInventoryLot(lot.id, { lotNo, barcode, productionDate, expiryDate, ...cartonFields(lot.receivedQty) });
+        await onSaved(`${lot.sku} 的批次与箱规资料已补录。`);
+      }
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : "库存批次资料保存失败。";
+      setLocalError(message);
+      onError(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function updateSplit(index: number, patch: Partial<SplitLotDraft>) {
+    setSplits((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  }
+
+  return <div className="domestic-modal-backdrop" role="presentation"><section className="domestic-modal lot-supplement-modal" role="dialog" aria-modal="true" aria-label="补录库存批次资料">
+    <header><div><span><ClipboardList size={20} /></span><div><p>LOT INFORMATION</p><h3>补录批次与箱规</h3></div></div><button type="button" aria-label="关闭补录窗口" onClick={onClose}><X size={20} /></button></header>
+    <div className="domestic-modal-body lot-supplement-body">
+      <section className="lot-locked-summary"><div><strong>{lot.productName}</strong><small>{lot.sku} · {lot.warehouseName} · {lot.movementNo}</small></div><div><span>原入库数量（锁定）</span><strong>{numberText(lot.receivedQty)}</strong><small>当前剩余 {numberText(lot.remainingQty)}</small></div></section>
+      {lot.needsSupplement ? <div className="lot-missing-tip"><AlertTriangle size={16} />当前待补：{lot.missingFields.join("、")}</div> : null}
+      {localError ? <div className="lot-modal-error"><AlertTriangle size={16} />{localError}</div> : null}
+      <div className="lot-mode-tabs"><button type="button" className={mode === "supplement" ? "active" : ""} onClick={() => setMode("supplement")}>补录当前批次</button><button type="button" className={mode === "split" ? "active" : ""} disabled={!splitAllowed} title={splitAllowed ? "按实际生产批次拆分" : "已发生出库或数量不足，不能拆分"} onClick={() => setMode("split")}>拆成多个批次</button></div>
+
+      {mode === "supplement" ? <div className="lot-trace-grid">
+        <label>批次号<input value={lotNo} onChange={(event) => setLotNo(event.target.value)} placeholder="例如 202609-A" /></label>
+        <label>商品条码<input value={barcode} onChange={(event) => setBarcode(event.target.value)} placeholder="扫码或输入条码" /></label>
+        <label>生产日期<input type="date" value={productionDate} onChange={(event) => setProductionDate(event.target.value)} /></label>
+        <label>有效期<input type="date" value={expiryDate} onChange={(event) => setExpiryDate(event.target.value)} /></label>
+      </div> : <div className="lot-split-list">
+        <header><div><strong>拆分明细</strong><small>各批次数量合计必须等于 {numberText(lot.receivedQty)}</small></div><span className={splitTotal === lot.receivedQty ? "valid" : "invalid"}>已分配 {numberText(splitTotal)} / {numberText(lot.receivedQty)}</span></header>
+        {splits.map((item, index) => <article key={index}><b>{String(index + 1).padStart(2, "0")}</b><label>批次号 *<input value={item.lotNo} onChange={(event) => updateSplit(index, { lotNo: event.target.value })} /></label><label>数量 *<input type="number" min="1" step="1" value={item.quantity} onChange={(event) => updateSplit(index, { quantity: Number(event.target.value) })} /></label><label>生产日期<input type="date" value={item.productionDate} onChange={(event) => updateSplit(index, { productionDate: event.target.value })} /></label><label>有效期<input type="date" value={item.expiryDate} onChange={(event) => updateSplit(index, { expiryDate: event.target.value })} /></label><label>条码<input value={item.barcode} onChange={(event) => updateSplit(index, { barcode: event.target.value })} /></label><button type="button" aria-label="删除该拆分批次" disabled={splits.length <= 2} onClick={() => setSplits((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={15} /></button></article>)}
+        <button className="lot-add-split" type="button" disabled={splits.length >= 50} onClick={() => setSplits((current) => [...current, { lotNo: "", barcode: "", productionDate: lot.productionDate, expiryDate: lot.expiryDate, quantity: 1 }])}><Plus size={15} />增加批次</button>
+      </div>}
+
+      <section className="lot-packaging-section"><header><div><strong>箱规信息</strong><small>不改变库存数量，系统按原入库数量自动计算整箱与零散件</small></div><select value={packagingMode} onChange={(event) => setPackagingMode(event.target.value === "carton" ? "carton" : "piece")}><option value="piece">暂按件管理</option><option value="carton">补录箱规</option></select></header>
+        {packagingMode === "carton" ? <><div className="lot-carton-grid"><label>箱规（件/箱）*<input type="number" min="1" step="1" value={unitsPerCarton} onChange={(event) => setUnitsPerCarton(Number(event.target.value))} /></label><label>箱长 cm *<input type="number" min="0" step="0.01" value={cartonLengthCm || ""} onChange={(event) => setCartonLengthCm(Number(event.target.value))} /></label><label>箱宽 cm *<input type="number" min="0" step="0.01" value={cartonWidthCm || ""} onChange={(event) => setCartonWidthCm(Number(event.target.value))} /></label><label>箱高 cm *<input type="number" min="0" step="0.01" value={cartonHeightCm || ""} onChange={(event) => setCartonHeightCm(Number(event.target.value))} /></label><label>单箱重量 kg *<input type="number" min="0" step="0.001" value={cartonWeightKg || ""} onChange={(event) => setCartonWeightKg(Number(event.target.value))} /></label></div>{mode === "supplement" && unitsPerCarton > 0 ? <p className="lot-carton-result">自动计算：<strong>{Math.floor(lot.receivedQty / unitsPerCarton)} 箱</strong>{lot.receivedQty % unitsPerCarton ? ` + ${lot.receivedQty % unitsPerCarton} 件零散` : "，无零散件"}</p> : <p className="lot-carton-result">拆分模式下将分别按各批次数量自动计算箱数。</p>}</> : <p className="lot-piece-hint">仍按件管理，只补录批次、条码和生产日期，不填写箱规。</p>}
+      </section>
+    </div>
+    <footer><button className="domestic-inventory-secondary" type="button" onClick={onClose}>取消</button><button className="domestic-inventory-primary" type="button" disabled={saving || (mode === "split" && splitTotal !== lot.receivedQty)} onClick={() => void submit()}>{saving ? "正在保存…" : mode === "split" ? "确认拆分批次" : "保存补录资料"}</button></footer>
+  </section></div>;
 }
 
 function MovementTable({ movements, loading }: { movements: DomesticInventoryMovement[]; loading: boolean }) {

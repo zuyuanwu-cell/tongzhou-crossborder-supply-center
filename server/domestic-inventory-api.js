@@ -115,8 +115,9 @@ export function domesticInventoryOpenApi() {
         post: { tags: ["Movements"], operationId: "createDomesticInventoryMovement", parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/MovementInput" } } } }, responses: { 201: response("已创建库存单据"), 409: response("库存不足或幂等冲突") } },
       },
       "/api/domestic-inventory/movements/{id}": { get: { tags: ["Movements"], operationId: "getDomesticInventoryMovement", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("库存单据详情"), 404: response("不存在或不可见") } } },
-      "/api/domestic-inventory/lots": { get: { tags: ["Lots"], operationId: "listDomesticInventoryLots", parameters: ["warehouseId", "sku", "barcode", "lotNo", "keyword"].map((name) => ({ name, in: "query", schema: { type: "string" } })), responses: { 200: response("批次列表") } } },
+      "/api/domestic-inventory/lots": { get: { tags: ["Lots"], operationId: "listDomesticInventoryLots", parameters: ["warehouseId", "sku", "barcode", "lotNo", "keyword", "incompleteOnly"].map((name) => ({ name, in: "query", schema: { type: "string" } })), responses: { 200: response("批次列表") } } },
       "/api/domestic-inventory/lots/{id}": { patch: { tags: ["Lots"], operationId: "updateDomesticInventoryLot", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("已更新批次追溯字段"), 403: response("无入库维护权限") } } },
+      "/api/domestic-inventory/lots/{id}/split": { post: { tags: ["Lots"], operationId: "splitDomesticInventoryLot", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("已按实际生产批次拆分库存批次"), 409: response("批次已发生出库，不能安全拆分") } } },
       "/api/domestic-inventory/stockup-availability": { get: { tags: ["Stockup"], operationId: "getDomesticStockupAvailability", parameters: [{ name: "warehouseId", in: "query", required: true, schema: { type: "string" } }, { name: "skus", in: "query", required: true, schema: { type: "string", description: "逗号分隔，最多 100 个" } }], responses: { 200: response("SKU 可用量、批次和可用整箱数") } } },
       "/api/domestic-inventory/opening-import": { post: { tags: ["Movements"], operationId: "importDomesticOpeningInventory", parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } }], responses: { 201: response("期初库存已导入"), 403: response("无档案管理权限") } } },
       "/api/domestic-inventory/balances/{warehouseId}/{sku}": { patch: { tags: ["Inventory"], operationId: "updateDomesticSafetyStock", parameters: [{ name: "warehouseId", in: "path", required: true, schema: { type: "string" } }, { name: "sku", in: "path", required: true, schema: { type: "string" } }], responses: { 200: response("已更新安全库存"), 403: response("无档案管理权限") } } },
@@ -175,6 +176,13 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
         requireAnyPermission(auth, ["domestic_inventory_receive", "domestic_inventory_manage"], "当前账号没有入库批次维护权限。");
         const result = service.updateLot(decodeURIComponent(match[1]), await readBody(req), context);
         appendActionLog(auth, "更新国内仓库存批次", "domestic_inventory_lot", result.lot.sku, { lotId: result.lot.id, warehouseId: result.lot.warehouseId });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/lots\/([^/]+)\/split$/)) && req.method === "POST") {
+        requireAnyPermission(auth, ["domestic_inventory_receive", "domestic_inventory_manage"], "当前账号没有库存批次拆分权限。");
+        const result = service.splitLot(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "拆分国内仓库存批次", "domestic_inventory_lot", result.sku, { originalLotId: result.originalLotId, warehouseId: result.warehouseId, splitCount: result.lots.length });
         sendJson(res, 200, result);
         return true;
       }

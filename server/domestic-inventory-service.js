@@ -83,7 +83,7 @@ function movementFromRow(row) {
 
 function lotFromRow(row) {
   if (!row) return null;
-  return {
+  const lot = {
     id: text(row.id), warehouseId: text(row.warehouse_id), warehouseName: text(row.warehouse_name), movementLineId: text(row.movement_line_id),
     movementId: text(row.movement_id), movementNo: text(row.movement_no), productId: text(row.product_id), sku: text(row.sku), productName: text(row.product_name),
     lotNo: text(row.lot_no), barcode: text(row.barcode), productionDate: text(row.production_date), expiryDate: text(row.expiry_date),
@@ -93,6 +93,12 @@ function lotFromRow(row) {
     remainingQty: number(row.remaining_qty), unitCostCny: number(row.unit_cost_cny), sourceType: text(row.source_type), receivedAt: text(row.received_at),
     createdAt: text(row.created_at), updatedAt: text(row.updated_at),
   };
+  lot.missingFields = [
+    !lot.lotNo ? "批次号" : "",
+    lot.packagingMode !== "carton" || lot.unitsPerCarton <= 0 ? "箱规" : "",
+  ].filter(Boolean);
+  lot.needsSupplement = lot.missingFields.length > 0;
+  return lot;
 }
 
 function normalizePackaging(line, quantity) {
@@ -131,6 +137,46 @@ function normalizePackaging(line, quantity) {
   const packageQuantity = packaging.cartonCount * packaging.unitsPerCarton + packaging.looseQuantity;
   if (Math.abs(packageQuantity - quantity) > 0.000001) fail(`箱规计算数量为 ${packageQuantity}，与入库数量 ${quantity} 不一致。`, 400, "packaging_quantity_mismatch");
   return packaging;
+}
+
+function normalizedSupplementFields(input = {}, currentRow = {}, quantity) {
+  const productionDate = optionalDate(input.productionDate ?? currentRow.production_date, "生产日期");
+  const expiryDate = optionalDate(input.expiryDate ?? currentRow.expiry_date, "有效期");
+  if (productionDate && expiryDate && expiryDate < productionDate) fail("有效期不能早于生产日期。", 400, "invalid_expiry_date");
+  const packagingMode = (input.packagingMode ?? currentRow.packaging_mode) === "carton" ? "carton" : "piece";
+  const fields = {
+    lotNo: text(input.lotNo ?? currentRow.lot_no),
+    barcode: text(input.barcode ?? currentRow.barcode),
+    productionDate,
+    expiryDate,
+    packagingMode,
+    cartonCount: 0,
+    unitsPerCarton: 0,
+    looseQuantity: 0,
+    cartonLengthCm: 0,
+    cartonWidthCm: 0,
+    cartonHeightCm: 0,
+    cartonWeightKg: 0,
+  };
+  if (packagingMode === "piece") return fields;
+  if (!Number.isInteger(quantity) || quantity <= 0) fail("按箱补录仅支持大于 0 的整数库存数量。", 400, "invalid_carton_quantity");
+  fields.unitsPerCarton = number(input.unitsPerCarton ?? currentRow.units_per_carton, -1);
+  if (!Number.isInteger(fields.unitsPerCarton) || fields.unitsPerCarton <= 0) fail("箱规必须是大于 0 的整数。", 400, "invalid_units_per_carton");
+  const computedCartons = Math.floor(quantity / fields.unitsPerCarton);
+  const computedLoose = quantity - computedCartons * fields.unitsPerCarton;
+  fields.cartonCount = input.cartonCount === undefined || input.cartonCount === "" ? computedCartons : number(input.cartonCount, -1);
+  fields.looseQuantity = input.looseQuantity === undefined || input.looseQuantity === "" ? computedLoose : number(input.looseQuantity, -1);
+  if (!Number.isInteger(fields.cartonCount) || fields.cartonCount < 0) fail("整箱数必须是大于或等于 0 的整数。", 400, "invalid_carton_count");
+  if (!Number.isInteger(fields.looseQuantity) || fields.looseQuantity < 0 || fields.looseQuantity >= fields.unitsPerCarton) fail("零散数量必须小于箱规且不能为负数。", 400, "invalid_loose_quantity");
+  if (fields.cartonCount * fields.unitsPerCarton + fields.looseQuantity !== quantity) fail("整箱数、箱规和零散数量之和必须等于原入库数量。", 400, "packaging_quantity_mismatch");
+  fields.cartonLengthCm = number(input.cartonLengthCm ?? currentRow.carton_length_cm, -1);
+  fields.cartonWidthCm = number(input.cartonWidthCm ?? currentRow.carton_width_cm, -1);
+  fields.cartonHeightCm = number(input.cartonHeightCm ?? currentRow.carton_height_cm, -1);
+  fields.cartonWeightKg = number(input.cartonWeightKg ?? currentRow.carton_weight_kg, -1);
+  if ([fields.cartonLengthCm, fields.cartonWidthCm, fields.cartonHeightCm, fields.cartonWeightKg].some((value) => value <= 0)) {
+    fail("按箱补录必须填写大于 0 的箱子长、宽、高和单箱重量。", 400, "invalid_carton_dimensions");
+  }
+  return fields;
 }
 
 function chinaAllowed(context) {
@@ -358,10 +404,10 @@ export function createDomesticInventoryService(store) {
       movement.lines = store.all("SELECT * FROM domestic_inventory_movement_lines WHERE movement_id=? ORDER BY sku", [movement.id])
         .filter((line) => !context.skus?.length || context.skus.includes(skuKey(line.sku)))
         .map((line) => {
-          const lot = lotFromRow(store.first("SELECT * FROM domestic_inventory_lots WHERE movement_line_id=?", [text(line.id)]));
+          const lots = store.all("SELECT * FROM domestic_inventory_lots WHERE movement_line_id=? ORDER BY created_at,id", [text(line.id)]).map(lotFromRow);
           const allocations = store.all(`SELECT a.*,l.lot_no,l.barcode FROM domestic_inventory_lot_allocations a LEFT JOIN domestic_inventory_lots l ON l.id=a.lot_id WHERE a.movement_line_id=? ORDER BY a.created_at,a.id`, [text(line.id)])
             .map((allocation) => ({ id: text(allocation.id), lotId: text(allocation.lot_id), lotNo: text(allocation.lot_no), barcode: text(allocation.barcode), quantity: number(allocation.quantity), type: text(allocation.allocation_type) }));
-          return { id: text(line.id), sku: text(line.sku), productName: text(line.product_name), imageUrl: text(line.image_url), unit: text(line.unit), quantity: number(line.quantity), signedQty: number(line.signed_qty), beforeQty: number(line.before_qty), afterQty: number(line.after_qty), unitCostCny: number(line.unit_cost_cny), lot, allocations };
+          return { id: text(line.id), sku: text(line.sku), productName: text(line.product_name), imageUrl: text(line.image_url), unit: text(line.unit), quantity: number(line.quantity), signedQty: number(line.signed_qty), beforeQty: number(line.before_qty), afterQty: number(line.after_qty), unitCostCny: number(line.unit_cost_cny), lot: lots[0] || null, lots, allocations };
         });
     }
     return { ok: true, movements };
@@ -401,6 +447,7 @@ export function createDomesticInventoryService(store) {
     if (filters.barcode) { where.push("l.barcode=?"); params.push(text(filters.barcode)); }
     if (filters.lotNo) { where.push("l.lot_no=?"); params.push(text(filters.lotNo)); }
     if (String(filters.availableOnly || "") === "1") where.push("l.remaining_qty>0");
+    if (String(filters.incompleteOnly || "") === "1") where.push("(COALESCE(l.lot_no,'')='' OR l.packaging_mode<>'carton' OR l.units_per_carton<=0)");
     if (filters.keyword) {
       const keyword = `%${text(filters.keyword)}%`;
       where.push("(l.sku LIKE ? OR l.product_name LIKE ? OR l.barcode LIKE ? OR l.lot_no LIKE ? OR m.movement_no LIKE ?)");
@@ -422,14 +469,58 @@ export function createDomesticInventoryService(store) {
     ensureWarehouse(currentRow.warehouse_id, context);
     const sku = skuKey(currentRow.sku);
     if (context.skus?.length && !context.skus.includes(sku)) fail("该产品不在当前账号的数据范围内。", 403, "forbidden");
-    const productionDate = optionalDate(input.productionDate ?? currentRow.production_date, "生产日期");
-    const expiryDate = optionalDate(input.expiryDate ?? currentRow.expiry_date, "有效期");
-    if (productionDate && expiryDate && expiryDate < productionDate) fail("有效期不能早于生产日期。", 400, "invalid_expiry_date");
+    const fields = normalizedSupplementFields(input, currentRow, number(currentRow.received_qty));
     const now = nowIso();
-    store.transaction(() => store.run("UPDATE domestic_inventory_lots SET lot_no=?,barcode=?,production_date=?,expiry_date=?,updated_at=? WHERE id=?",
-      [text(input.lotNo ?? currentRow.lot_no), text(input.barcode ?? currentRow.barcode), productionDate, expiryDate, now, text(lotId)]));
+    store.transaction(() => store.run(`UPDATE domestic_inventory_lots SET lot_no=?,barcode=?,production_date=?,expiry_date=?,packaging_mode=?,carton_count=?,units_per_carton=?,loose_quantity=?,carton_length_cm=?,carton_width_cm=?,carton_height_cm=?,carton_weight_kg=?,updated_at=? WHERE id=?`,
+      [fields.lotNo, fields.barcode, fields.productionDate, fields.expiryDate, fields.packagingMode, fields.cartonCount, fields.unitsPerCarton, fields.looseQuantity,
+        fields.cartonLengthCm, fields.cartonWidthCm, fields.cartonHeightCm, fields.cartonWeightKg, now, text(lotId)]));
     const row = store.first("SELECT l.*,w.name AS warehouse_name,ml.movement_id,m.movement_no FROM domestic_inventory_lots l JOIN domestic_warehouses w ON w.id=l.warehouse_id JOIN domestic_inventory_movement_lines ml ON ml.id=l.movement_line_id JOIN domestic_inventory_movements m ON m.id=ml.movement_id WHERE l.id=?", [text(lotId)]);
     return { ok: true, lot: lotFromRow(row) };
+  }
+
+  function splitLot(lotId, input, context = {}) {
+    const currentRow = store.first("SELECT * FROM domestic_inventory_lots WHERE id=?", [text(lotId)]);
+    if (!currentRow) fail("库存批次不存在。", 404, "not_found");
+    ensureWarehouse(currentRow.warehouse_id, context);
+    const sku = skuKey(currentRow.sku);
+    if (context.skus?.length && !context.skus.includes(sku)) fail("该产品不在当前账号的数据范围内。", 403, "forbidden");
+    const receivedQty = number(currentRow.received_qty);
+    const remainingQty = number(currentRow.remaining_qty);
+    if (Math.abs(receivedQty - remainingQty) > 0.000001) fail("该批次已发生出库，无法安全拆分；可直接补录现有批次资料。", 409, "lot_already_allocated");
+    const rawSplits = Array.isArray(input.splits) ? input.splits : [];
+    if (rawSplits.length < 2 || rawSplits.length > 50) fail("拆分批次应包含 2 至 50 条明细。", 400, "invalid_split_count");
+    const normalized = rawSplits.map((item, index) => {
+      const quantity = number(item.quantity, -1);
+      if (!Number.isInteger(quantity) || quantity <= 0) fail(`第 ${index + 1} 个批次的数量必须是大于 0 的整数。`, 400, "invalid_split_quantity");
+      const fields = normalizedSupplementFields(item, {}, quantity);
+      if (!fields.lotNo) fail(`第 ${index + 1} 个批次必须填写批次号。`, 400, "split_lot_no_required");
+      return { quantity, fields };
+    });
+    const total = normalized.reduce((sum, item) => sum + item.quantity, 0);
+    if (Math.abs(total - receivedQty) > 0.000001) fail(`拆分数量合计 ${total}，必须等于原批次数量 ${receivedQty}。`, 400, "split_quantity_mismatch");
+    const uniqueLotNos = new Set(normalized.map((item) => item.fields.lotNo.toUpperCase()));
+    if (uniqueLotNos.size !== normalized.length) fail("拆分后的批次号不能重复。", 400, "duplicate_split_lot_no");
+    const now = nowIso();
+    store.transaction(() => {
+      normalized.forEach((item, index) => {
+        const values = [item.fields.lotNo, item.fields.barcode, item.fields.productionDate, item.fields.expiryDate, item.fields.packagingMode, item.fields.cartonCount,
+          item.fields.unitsPerCarton, item.fields.looseQuantity, item.fields.cartonLengthCm, item.fields.cartonWidthCm, item.fields.cartonHeightCm, item.fields.cartonWeightKg,
+          item.quantity, item.quantity, now];
+        if (index === 0) {
+          store.run(`UPDATE domestic_inventory_lots SET lot_no=?,barcode=?,production_date=?,expiry_date=?,packaging_mode=?,carton_count=?,units_per_carton=?,loose_quantity=?,carton_length_cm=?,carton_width_cm=?,carton_height_cm=?,carton_weight_kg=?,received_qty=?,remaining_qty=?,updated_at=? WHERE id=?`, [...values, text(lotId)]);
+          return;
+        }
+        store.run(`INSERT INTO domestic_inventory_lots
+          (id,warehouse_id,movement_line_id,product_id,sku,product_name,lot_no,barcode,production_date,expiry_date,packaging_mode,carton_count,units_per_carton,loose_quantity,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,received_qty,remaining_qty,unit_cost_cny,source_type,received_at,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [id("dlot"), currentRow.warehouse_id, currentRow.movement_line_id, currentRow.product_id, currentRow.sku, currentRow.product_name,
+          item.fields.lotNo, item.fields.barcode, item.fields.productionDate, item.fields.expiryDate, item.fields.packagingMode, item.fields.cartonCount, item.fields.unitsPerCarton,
+          item.fields.looseQuantity, item.fields.cartonLengthCm, item.fields.cartonWidthCm, item.fields.cartonHeightCm, item.fields.cartonWeightKg, item.quantity, item.quantity,
+          currentRow.unit_cost_cny, currentRow.source_type, currentRow.received_at, now, now]);
+      });
+    });
+    const lots = store.all("SELECT l.*,w.name AS warehouse_name,ml.movement_id,m.movement_no FROM domestic_inventory_lots l JOIN domestic_warehouses w ON w.id=l.warehouse_id JOIN domestic_inventory_movement_lines ml ON ml.id=l.movement_line_id JOIN domestic_inventory_movements m ON m.id=ml.movement_id WHERE l.movement_line_id=? ORDER BY l.created_at,l.id", [text(currentRow.movement_line_id)]).map(lotFromRow);
+    return { ok: true, originalLotId: text(lotId), warehouseId: text(currentRow.warehouse_id), sku, lots };
   }
 
   function stockupAvailability(filters = {}, context = {}) {
@@ -474,5 +565,5 @@ export function createDomesticInventoryService(store) {
     return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty };
   }
 
-  return { createMovement, createWarehouse, getMovement, importOpeningBalances, list, listLots, listMovements, listWarehouses, previewMovement, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse };
+  return { createMovement, createWarehouse, getMovement, importOpeningBalances, list, listLots, listMovements, listWarehouses, previewMovement, splitLot, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse };
 }

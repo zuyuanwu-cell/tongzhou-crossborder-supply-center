@@ -14,6 +14,83 @@ function rows(db, sql, params = []) {
   }
 }
 
+function lotMovementLineIsUnique(db) {
+  return rows(db, "PRAGMA index_list('domestic_inventory_lots')").some((index) => {
+    if (!Number(index.unique)) return false;
+    const columns = rows(db, `PRAGMA index_info('${String(index.name).replaceAll("'", "''")}')`).map((item) => String(item.name));
+    return columns.length === 1 && columns[0] === "movement_line_id";
+  });
+}
+
+function migrateLotSplittingSchema(db) {
+  if (!lotMovementLineIsUnique(db)) return;
+  db.run("PRAGMA foreign_keys = OFF");
+  db.run("BEGIN TRANSACTION");
+  try {
+    db.run("ALTER TABLE domestic_inventory_lot_allocations RENAME TO domestic_inventory_lot_allocations_legacy");
+    db.run("ALTER TABLE domestic_inventory_lots RENAME TO domestic_inventory_lots_legacy");
+    db.run(`
+      CREATE TABLE domestic_inventory_lots (
+        id TEXT PRIMARY KEY,
+        warehouse_id TEXT NOT NULL,
+        movement_line_id TEXT NOT NULL,
+        product_id TEXT,
+        sku TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        lot_no TEXT,
+        barcode TEXT,
+        production_date TEXT,
+        expiry_date TEXT,
+        packaging_mode TEXT NOT NULL DEFAULT 'piece',
+        carton_count REAL NOT NULL DEFAULT 0,
+        units_per_carton REAL NOT NULL DEFAULT 0,
+        loose_quantity REAL NOT NULL DEFAULT 0,
+        carton_length_cm REAL NOT NULL DEFAULT 0,
+        carton_width_cm REAL NOT NULL DEFAULT 0,
+        carton_height_cm REAL NOT NULL DEFAULT 0,
+        carton_weight_kg REAL NOT NULL DEFAULT 0,
+        received_qty REAL NOT NULL,
+        remaining_qty REAL NOT NULL,
+        unit_cost_cny REAL NOT NULL DEFAULT 0,
+        source_type TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(warehouse_id) REFERENCES domestic_warehouses(id),
+        FOREIGN KEY(movement_line_id) REFERENCES domestic_inventory_movement_lines(id)
+      );
+      INSERT INTO domestic_inventory_lots SELECT * FROM domestic_inventory_lots_legacy;
+      CREATE TABLE domestic_inventory_lot_allocations (
+        id TEXT PRIMARY KEY,
+        movement_line_id TEXT NOT NULL,
+        lot_id TEXT,
+        quantity REAL NOT NULL,
+        allocation_type TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(movement_line_id) REFERENCES domestic_inventory_movement_lines(id),
+        FOREIGN KEY(lot_id) REFERENCES domestic_inventory_lots(id)
+      );
+      INSERT INTO domestic_inventory_lot_allocations SELECT * FROM domestic_inventory_lot_allocations_legacy;
+      DROP TABLE domestic_inventory_lot_allocations_legacy;
+      DROP TABLE domestic_inventory_lots_legacy;
+      CREATE INDEX idx_domestic_lots_available ON domestic_inventory_lots(warehouse_id, sku, remaining_qty, received_at);
+      CREATE INDEX idx_domestic_lots_barcode ON domestic_inventory_lots(barcode, warehouse_id);
+      CREATE INDEX idx_domestic_lots_lot_no ON domestic_inventory_lots(lot_no, warehouse_id);
+      CREATE INDEX idx_domestic_lots_line ON domestic_inventory_lots(movement_line_id);
+      CREATE INDEX idx_domestic_lot_allocations_line ON domestic_inventory_lot_allocations(movement_line_id);
+      CREATE INDEX idx_domestic_lot_allocations_lot ON domestic_inventory_lot_allocations(lot_id);
+    `);
+    db.run("COMMIT");
+  } catch (error) {
+    db.run("ROLLBACK");
+    throw error;
+  } finally {
+    db.run("PRAGMA foreign_keys = ON");
+  }
+  const foreignKeyErrors = rows(db, "PRAGMA foreign_key_check");
+  if (foreignKeyErrors.length) throw new Error("国内库存批次拆分结构迁移后外键校验失败。");
+}
+
 export async function initDomesticInventoryStore(dbPath) {
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -90,7 +167,7 @@ export async function initDomesticInventoryStore(dbPath) {
     CREATE TABLE IF NOT EXISTS domestic_inventory_lots (
       id TEXT PRIMARY KEY,
       warehouse_id TEXT NOT NULL,
-      movement_line_id TEXT NOT NULL UNIQUE,
+      movement_line_id TEXT NOT NULL,
       product_id TEXT,
       sku TEXT NOT NULL,
       product_name TEXT NOT NULL,
@@ -119,6 +196,7 @@ export async function initDomesticInventoryStore(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_domestic_lots_available ON domestic_inventory_lots(warehouse_id, sku, remaining_qty, received_at);
     CREATE INDEX IF NOT EXISTS idx_domestic_lots_barcode ON domestic_inventory_lots(barcode, warehouse_id);
     CREATE INDEX IF NOT EXISTS idx_domestic_lots_lot_no ON domestic_inventory_lots(lot_no, warehouse_id);
+    CREATE INDEX IF NOT EXISTS idx_domestic_lots_line ON domestic_inventory_lots(movement_line_id);
 
     CREATE TABLE IF NOT EXISTS domestic_inventory_lot_allocations (
       id TEXT PRIMARY KEY,
@@ -141,6 +219,7 @@ export async function initDomesticInventoryStore(dbPath) {
       PRIMARY KEY (key, user_id)
     );
   `);
+  migrateLotSplittingSchema(db);
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

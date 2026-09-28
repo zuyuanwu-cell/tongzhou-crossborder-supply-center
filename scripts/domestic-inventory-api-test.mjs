@@ -66,7 +66,25 @@ try {
   }, { "idempotency-key": "api-inbound-1" });
   assert.equal(inbound.status, 201);
   assert.equal((await invoke("GET", `/api/domestic-inventory/movements/${inbound.payload.movementId}`, receiver)).payload.movement.lines[0].lot.barcode, "690001");
-  assert.equal((await invoke("GET", `/api/domestic-inventory/lots?warehouseId=${warehouse.id}&barcode=690001`, receiver)).payload.total, 1);
+  const initialLots = await invoke("GET", `/api/domestic-inventory/lots?warehouseId=${warehouse.id}&barcode=690001`, receiver);
+  assert.equal(initialLots.payload.total, 1);
+  const lotId = initialLots.payload.lots[0].id;
+  const patchedLot = await invoke("PATCH", `/api/domestic-inventory/lots/${encodeURIComponent(lotId)}`, receiver, {
+    lotNo: "API-LOT-ROOT", barcode: "690001", productionDate: "2026-09-01", expiryDate: "2029-09-01",
+    packagingMode: "carton", unitsPerCarton: 10, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 8,
+  });
+  assert.equal(patchedLot.status, 200);
+  assert.equal(patchedLot.payload.lot.receivedQty, 21);
+  assert.equal(patchedLot.payload.lot.cartonCount, 2);
+  assert.equal(patchedLot.payload.lot.looseQuantity, 1);
+  assert.equal((await invoke("POST", `/api/domestic-inventory/lots/${encodeURIComponent(lotId)}/split`, viewer, { splits: [] })).status, 403);
+  const splitLot = await invoke("POST", `/api/domestic-inventory/lots/${encodeURIComponent(lotId)}/split`, receiver, { splits: [
+    { lotNo: "API-LOT-A", barcode: "690001", productionDate: "2026-09-01", expiryDate: "2029-09-01", quantity: 10, packagingMode: "carton", unitsPerCarton: 10, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 8 },
+    { lotNo: "API-LOT-B", barcode: "690001", productionDate: "2026-09-02", expiryDate: "2029-09-02", quantity: 11, packagingMode: "carton", unitsPerCarton: 10, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 8 },
+  ] });
+  assert.equal(splitLot.status, 200);
+  assert.equal(splitLot.payload.lots.length, 2);
+  assert.equal((await invoke("GET", `/api/domestic-inventory/movements/${inbound.payload.movementId}`, receiver)).payload.movement.lines[0].lots.length, 2);
   const availability = await invoke("GET", `/api/domestic-inventory/stockup-availability?warehouseId=${warehouse.id}&skus=SKU-1`, receiver);
   assert.equal(availability.payload.items[0].cartonProfiles[0].fullCartons, 2);
   console.log("domestic inventory API tests passed");
