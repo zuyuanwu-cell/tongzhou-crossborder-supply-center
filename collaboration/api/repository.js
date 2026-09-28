@@ -2,7 +2,7 @@ import { z } from "zod";
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { canPerformAction } from "./permissions.js";
-import { riskByAction, sensitiveActions, workItemActionSchema } from "../shared/contracts.js";
+import { riskByAction, workItemActionSchema } from "../shared/contracts.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -102,13 +102,12 @@ function nextStatus(action, risk) {
   return "in_progress";
 }
 
-export async function submitWorkItemAction(auth, workItemId, body, { idempotencyKey, expectedVersion, hasFreshMfa }) {
+export async function submitWorkItemAction(auth, workItemId, body, { idempotencyKey, expectedVersion }) {
   if (!idempotencyKey || idempotencyKey.length > 160) fail("请提供有效的 Idempotency-Key。", 400, "idempotency_key_required");
   const parsed = workItemActionSchema.safeParse(body);
   if (!parsed.success) fail(parsed.error.issues[0]?.message || "操作内容不正确。", 400, "invalid_action_payload");
   const action = parsed.data.action;
   if (!canPerformAction(auth.membership, action)) fail("当前岗位无权执行此操作。", 403, "forbidden");
-  if (sensitiveActions.has(action) && !hasFreshMfa) fail("此操作需要重新进行二次验证。", 428, "mfa_step_up_required");
   const version = Number(expectedVersion);
   if (!Number.isInteger(version) || version <= 0) fail("请提供有效的 If-Match 任务版本。", 428, "version_required");
 

@@ -29,13 +29,13 @@ test("partner action schemas reject unbounded and unknown payload fields", () =>
   assert.equal(riskByAction.inventory_adjustment, "high");
 });
 
-test("organization jobs enforce role capabilities and MFA policy", () => {
+test("organization jobs enforce role capabilities without an authenticator gate", () => {
   const operator = { role: "operator", status: "active", permissions: [] };
   const manager = { role: "manager", status: "active", permissions: [] };
   assert.equal(canPerformAction(operator, "transfer_receive"), true);
   assert.equal(canPerformAction(operator, "inventory_adjustment"), false);
   assert.equal(canPerformAction(manager, "inventory_adjustment"), true);
-  assert.equal(requiresMfaAtLogin({ role: "organization_admin" }), true);
+  assert.equal(requiresMfaAtLogin({ role: "organization_admin", mfa_required: true }), false);
 });
 
 test("OEM projections create one typed private space and reject sensitive fields", () => {

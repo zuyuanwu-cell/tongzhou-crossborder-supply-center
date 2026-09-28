@@ -8,12 +8,9 @@ import { migrate } from "./migrate.js";
 import {
   assertAuthenticated,
   assertCsrf,
-  assertFreshMfa,
   authenticate,
   login,
   logout,
-  setupMfa,
-  verifyMfa,
 } from "./auth.js";
 import {
   getWorkItem,
@@ -124,17 +121,13 @@ function publicSession(auth) {
     user: auth.user,
     membership: auth.membership,
     organization: auth.organization,
-    mfaRequired: Boolean(auth.mfaRequired),
-    mfaEnabled: Boolean(auth.mfaEnabled),
-    mfaVerifiedAt: auth.mfaVerifiedAt || "",
-    pendingMfa: Boolean(auth.pendingMfa || (auth.mfaRequired && !auth.mfaVerifiedAt)),
+    mfaRequired: false,
+    mfaEnabled: false,
+    mfaVerifiedAt: "",
+    pendingMfa: false,
     mustChangePassword: Boolean(auth.mustChangePassword),
     oemEnabled: collaborationConfig.oemEnabled,
   };
-}
-
-function hasFreshMfa(auth) {
-  return Boolean(auth?.mfaVerifiedAt && Date.now() - new Date(auth.mfaVerifiedAt).getTime() <= collaborationConfig.mfaFreshMs);
 }
 
 async function route(req, res) {
@@ -165,24 +158,6 @@ async function route(req, res) {
   }
   if (url.pathname === "/collaboration/auth/password-reset/confirm" && req.method === "POST") {
     sendJson(res, 200, { ok: true, ...(await confirmPasswordReset(await readJson(req))) });
-    return;
-  }
-
-  if (url.pathname === "/collaboration/auth/mfa/setup" && req.method === "POST") {
-    const auth = await authenticate(req, { allowPendingMfa: true });
-    if (!auth) throw Object.assign(new Error("请先登录。"), { statusCode: 401, code: "authentication_required" });
-    assertCsrf(req, auth);
-    sendJson(res, 200, { ok: true, ...(await setupMfa(auth)) });
-    return;
-  }
-
-  if (url.pathname === "/collaboration/auth/mfa/verify" && req.method === "POST") {
-    const auth = await authenticate(req, { allowPendingMfa: true });
-    if (!auth) throw Object.assign(new Error("请先登录。"), { statusCode: 401, code: "authentication_required" });
-    assertCsrf(req, auth);
-    const payload = await readJson(req);
-    const verified = await verifyMfa(req, auth, payload.token);
-    sendJson(res, 200, { ok: true, session: publicSession(verified) });
     return;
   }
 
@@ -296,7 +271,6 @@ async function route(req, res) {
     return;
   }
   if (url.pathname === "/collaboration/v1/admin/members" && req.method === "POST") {
-    assertFreshMfa(auth);
     sendJson(res, 201, { ok: true, ...(await createMember(auth, await readJson(req))) });
     return;
   }
@@ -305,13 +279,11 @@ async function route(req, res) {
     return;
   }
   if (url.pathname === "/collaboration/v1/admin/invitations" && req.method === "POST") {
-    assertFreshMfa(auth);
     sendJson(res, 201, { ok: true, ...(await createInvitation(auth, await readJson(req))) });
     return;
   }
   let invitationMatch = url.pathname.match(new RegExp(`^/collaboration/v1/admin/invitations/${uuidPattern}/(reissue|revoke)$`));
   if (invitationMatch && req.method === "POST") {
-    assertFreshMfa(auth);
     const result = invitationMatch[2] === "reissue"
       ? await reissueInvitation(auth, invitationMatch[1])
       : await revokeInvitation(auth, invitationMatch[1]);
@@ -320,7 +292,6 @@ async function route(req, res) {
   }
   let identityMatch = url.pathname.match(new RegExp(`^/collaboration/v1/admin/members/${uuidPattern}$`));
   if (identityMatch && req.method === "PATCH") {
-    assertFreshMfa(auth);
     sendJson(res, 200, { ok: true, ...(await updateMember(auth, identityMatch[1], await readJson(req))) });
     return;
   }
@@ -347,7 +318,6 @@ async function route(req, res) {
     const result = await submitWorkItemAction(auth, match[1], await readJson(req), {
       idempotencyKey: String(req.headers["idempotency-key"] || ""),
       expectedVersion: String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/"/g, ""),
-      hasFreshMfa: hasFreshMfa(auth),
     });
     sendJson(res, result.idempotentReplay ? 200 : 201, { ok: true, ...result });
     return;
@@ -360,7 +330,6 @@ async function route(req, res) {
     sendJson(res, 201, await submitSupplierQuote(auth, await readJson(req), {
       idempotencyKey: String(req.headers["idempotency-key"] || ""),
       expectedVersion: String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/"/g, ""),
-      hasFreshMfa: hasFreshMfa(auth),
     }));
     return;
   }

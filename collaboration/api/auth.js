@@ -2,18 +2,13 @@ import { collaborationConfig } from "./config.js";
 import { withSystem } from "./db.js";
 import {
   clearSessionCookies,
-  createTotpSecret,
   csrfCookie,
-  decryptSecret,
-  encryptSecret,
   parseCookies,
   randomToken,
   safeEqual,
   sessionCookie,
   tokenHash,
-  totpUri,
   verifyPassword,
-  verifyTotp,
 } from "./security.js";
 import { requiresMfaAtLogin } from "./permissions.js";
 
@@ -51,7 +46,7 @@ function membershipFromRow(row) {
     role: row.membership_role,
     status: row.membership_status,
     permissions: Array.isArray(row.permissions) ? row.permissions : [],
-    mfaRequired: Boolean(row.mfa_required),
+    mfaRequired: false,
   };
 }
 
@@ -67,8 +62,8 @@ function publicAuth(row) {
       type: row.organization_type,
     },
     mfaRequired: requiresMfaAtLogin(membership),
-    mfaEnabled: Boolean(row.totp_enabled_at),
-    mfaVerifiedAt: row.mfa_verified_at ? new Date(row.mfa_verified_at).toISOString() : "",
+    mfaEnabled: false,
+    mfaVerifiedAt: "",
     mustChangePassword: Boolean(row.must_change_password),
   };
 }
@@ -138,7 +133,7 @@ export async function login(req, { username, password, organizationCode = "" }) 
   });
 }
 
-export async function authenticate(req, { allowPendingMfa = false } = {}) {
+export async function authenticate(req) {
   const cookies = parseCookies(req.headers.cookie);
   const rawSession = cookies[SESSION_COOKIE];
   if (!rawSession) return null;
@@ -161,8 +156,7 @@ export async function authenticate(req, { allowPendingMfa = false } = {}) {
       || new Date(row.last_seen_at).getTime() + collaborationConfig.sessionIdleMs <= now
       || row.user_status !== "active" || row.membership_status !== "active" || row.organization_status !== "active";
     if (invalid) return null;
-    const auth = { ...publicAuth(row), sessionId: row.session_id, csrfTokenHash: row.csrf_token_hash, totpSecretCiphertext: row.totp_secret_ciphertext };
-    if (auth.mfaRequired && !auth.mfaVerifiedAt && !allowPendingMfa) return { ...auth, pendingMfa: true };
+    const auth = { ...publicAuth(row), sessionId: row.session_id, csrfTokenHash: row.csrf_token_hash };
     await client.query("UPDATE collaboration_sessions SET last_seen_at=now() WHERE id=$1", [row.session_id]);
     return auth;
   });
@@ -170,15 +164,7 @@ export async function authenticate(req, { allowPendingMfa = false } = {}) {
 
 export function assertAuthenticated(auth) {
   if (!auth) throw Object.assign(new Error("请先登录。"), { statusCode: 401, code: "authentication_required" });
-  if (auth.pendingMfa || (auth.mfaRequired && !auth.mfaVerifiedAt)) throw Object.assign(new Error("请先完成二次验证。"), { statusCode: 428, code: "mfa_required" });
   return auth;
-}
-
-export function assertFreshMfa(auth) {
-  assertAuthenticated(auth);
-  if (!auth.mfaVerifiedAt || Date.now() - new Date(auth.mfaVerifiedAt).getTime() > collaborationConfig.mfaFreshMs) {
-    throw Object.assign(new Error("此操作需要重新进行二次验证。"), { statusCode: 428, code: "mfa_step_up_required" });
-  }
 }
 
 export function assertCsrf(req, auth) {
@@ -187,35 +173,6 @@ export function assertCsrf(req, auth) {
   if (!header || !cookies[CSRF_COOKIE] || !safeEqual(header, cookies[CSRF_COOKIE]) || !safeEqual(tokenHash(header), auth?.csrfTokenHash)) {
     throw Object.assign(new Error("请求验证失败，请刷新页面后重试。"), { statusCode: 403, code: "csrf_failed" });
   }
-}
-
-export async function setupMfa(auth) {
-  if (!auth) throw Object.assign(new Error("登录会话已失效。"), { statusCode: 401, code: "authentication_required" });
-  if (auth.mfaEnabled && auth.totpSecretCiphertext) return { configured: true, secret: "", uri: "" };
-  return withSystem(async (client) => {
-    let secret;
-    if (auth.totpSecretCiphertext) secret = decryptSecret(auth.totpSecretCiphertext);
-    else {
-      secret = createTotpSecret();
-      await client.query("UPDATE collaboration_users SET totp_secret_ciphertext=$2 WHERE id=$1", [auth.user.id, encryptSecret(secret)]);
-    }
-    return { configured: false, secret, uri: totpUri(auth.user.username, auth.organization.name, secret) };
-  });
-}
-
-export async function verifyMfa(req, auth, token) {
-  if (!auth?.totpSecretCiphertext) {
-    const refreshed = await authenticate(req, { allowPendingMfa: true });
-    auth = refreshed || auth;
-  }
-  if (!auth?.totpSecretCiphertext) throw Object.assign(new Error("请先配置验证器。"), { statusCode: 409, code: "mfa_setup_required" });
-  const secret = decryptSecret(auth.totpSecretCiphertext);
-  if (!verifyTotp(secret, token)) throw Object.assign(new Error("验证码不正确或已过期。"), { statusCode: 401, code: "invalid_mfa_code" });
-  return withSystem(async (client) => {
-    await client.query("UPDATE collaboration_users SET totp_enabled_at=COALESCE(totp_enabled_at,now()) WHERE id=$1", [auth.user.id]);
-    await client.query("UPDATE collaboration_sessions SET mfa_verified_at=now(),last_seen_at=now() WHERE id=$1", [auth.sessionId]);
-    return { ...auth, pendingMfa: false, mfaEnabled: true, mfaVerifiedAt: new Date().toISOString() };
-  });
 }
 
 export async function logout(req, auth) {

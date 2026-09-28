@@ -1,5 +1,4 @@
 import React from "react";
-import QRCode from "qrcode";
 import {
   AlertTriangle, ArrowLeftRight, Bell, Boxes, Building2, Camera, Check, CheckCircle2,
   BadgeDollarSign, ChevronRight, CircleDot, Clock3, ClipboardCheck, Factory, FileCheck2, FileText, FlaskConical, Inbox, LayoutDashboard,
@@ -8,8 +7,8 @@ import {
 } from "lucide-react";
 import {
   acceptInvitation, ApiError, changeOwnPassword, confirmPasswordReset, createMember, fetchDashboard, fetchInventory, fetchInvitations, fetchMe, fetchMembers, fetchNotifications, fetchWorkItem,
-  fetchWorkItems, login, logout, markNotificationRead, requestPasswordReset, setupMfa, submitAction, submitOemArtifact, submitSupplierQuote, updateProductionMilestone, uploadAttachment,
-  verifyMfa, updateMember, updateOwnProfile, reissueInvitation, revokeInvitation,
+  fetchWorkItems, login, logout, markNotificationRead, requestPasswordReset, submitAction, submitOemArtifact, submitSupplierQuote, updateProductionMilestone, uploadAttachment,
+  updateMember, updateOwnProfile, reissueInvitation, revokeInvitation,
 } from "./api";
 import type { Dashboard, InventoryItem, InvitationDeliveryResult, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, Session, TaskLine, WorkItem, WorkItemDetail, WorkItemStatus } from "./types";
 
@@ -54,13 +53,13 @@ function Toast({ message, tone, onClose }: { message: string; tone: "success" | 
   return <div className={`toast ${tone}`}>{tone === "success" ? <CheckCircle2 size={18} /> : <XCircle size={18} />}<span>{message}</span><button onClick={onClose} aria-label="关闭"><X size={16} /></button></div>;
 }
 
-function LoginPage({ onLogin, onForgot }: { onLogin(session: Session, setupRequired: boolean): void; onForgot(): void }) {
+function LoginPage({ onLogin, onForgot }: { onLogin(session: Session): void; onForgot(): void }) {
   const [form, setForm] = React.useState({ organizationCode: "", username: "", password: "" });
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
-    try { const result = await login(form); onLogin(result.session, result.mfaSetupRequired); }
+    try { const result = await login(form); onLogin(result.session); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "登录失败，请稍后重试。"); }
     finally { setBusy(false); }
   }
@@ -73,7 +72,7 @@ function LoginPage({ onLogin, onForgot }: { onLogin(session: Session, setupRequi
         <p>面向仓库、服务商和委外工厂的安全协作工作台。你只会看到本组织被授权参与的任务与资料。</p>
       </div>
       <div className="route-ribbon" aria-hidden="true"><span>中台发布</span><i /><span>组织接单</span><i /><span>凭证回传</span><i /><span>主账确认</span></div>
-      <div className="login-safety"><ShieldCheck size={18} /><span><b>组织级数据隔离</b> · 全程操作留痕 · 敏感动作二次验证</span></div>
+      <div className="login-safety"><ShieldCheck size={18} /><span><b>组织级数据隔离</b> · 全程操作留痕 · 登录保护与账号锁定</span></div>
     </section>
     <section className="login-panel">
       <form className="login-card" onSubmit={submit}>
@@ -109,23 +108,6 @@ function CredentialFlowPage({ mode, token = "", onDone }: { mode: "invite" | "re
   }
   return <main className="credential-page"><section className="credential-card"><span className="brand-mark"><ShieldCheck size={25} /></span><p className="kicker">SECURE ACCOUNT FLOW</p><h1>{title}</h1><p>{mode === "invite" ? "完成账号资料并设置至少 12 位、同时包含字母和数字的密码。" : mode === "reset" ? "新密码生效后，所有已登录设备会被安全退出。" : "输入组织代码和账号；无论账号是否存在，页面都不会暴露注册状态。"}</p>
     {success ? <div className="credential-success"><CheckCircle2 size={20} /><span>{success}</span><button className="primary-action" onClick={onDone}>返回登录</button></div> : <form onSubmit={submit}>{mode === "request" ? <><label><span>组织代码</span><input value={form.organizationCode} onChange={(event) => setForm({ ...form, organizationCode: event.target.value.toLowerCase() })} required /></label><label><span>账号</span><input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label></> : <>{mode === "invite" ? <label><span>姓名</span><input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} required /></label> : null}<label><span>新密码</span><input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required /></label><label><span>确认新密码</span><input type="password" autoComplete="new-password" minLength={12} value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} required /></label></>}{error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}<button className="primary-action" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}{mode === "request" ? "发送重置邮件" : "安全确认"}</button><button type="button" className="credential-back" onClick={onDone}>返回登录</button></form>}
-  </section></main>;
-}
-
-function MfaGate({ session, setupRequired, onVerified }: { session: Session; setupRequired: boolean; onVerified(session: Session): void }) {
-  const [setup, setSetup] = React.useState<{ secret: string; uri: string } | null>(null);
-  const [qr, setQr] = React.useState("");
-  const [token, setToken] = React.useState("");
-  const [error, setError] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  React.useEffect(() => { if (setupRequired) setupMfa().then((value) => setSetup(value)).catch((reason) => setError(reason.message)); }, [setupRequired]);
-  React.useEffect(() => { if (setup?.uri) QRCode.toDataURL(setup.uri, { width: 220, margin: 1, color: { dark: "#0b2e28", light: "#fffdf5" } }).then(setQr); }, [setup]);
-  async function submit(event: React.FormEvent) { event.preventDefault(); setBusy(true); setError(""); try { const result = await verifyMfa(token); onVerified(result.session); } catch (reason) { setError(reason instanceof Error ? reason.message : "验证失败。"); } finally { setBusy(false); } }
-  return <main className="mfa-page"><section className="mfa-card">
-    <div className="mfa-seal"><ShieldCheck size={34} /></div><p className="kicker">SECURITY CHECKPOINT</p><h1>{setupRequired ? "绑定二次验证" : "完成二次验证"}</h1>
-    <p>你好，{session.user.displayName}。{setupRequired ? "请使用验证器扫描二维码，然后输入 6 位动态码。" : "请输入验证器中的 6 位动态码继续。"}</p>
-    {setupRequired ? <div className="mfa-setup">{qr ? <img src={qr} alt="二次验证二维码" /> : <div className="qr-loading"><LoaderCircle className="spin" /></div>}<div><span>无法扫码时输入</span><code>{setup?.secret || "正在生成…"}</code></div></div> : null}
-    <form onSubmit={submit}><label><span>动态验证码</span><input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={token} onChange={(event) => setToken(event.target.value.replace(/\D/g, ""))} placeholder="000 000" autoFocus required /></label>{error ? <div className="form-error"><AlertTriangle size={16} />{error}</div> : null}<button className="primary-action" disabled={busy || token.length !== 6}>{busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}验证并继续</button></form>
   </section></main>;
 }
 
@@ -212,7 +194,6 @@ function OemWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files 
   const item = detail.item;
   const [quote, setQuote] = React.useState({ currency: item.publicPayload.quoteCurrency || "CNY", amount: "", minimumOrderQuantity: String(item.publicPayload.quantity || ""), leadTimeDays: "", terms: "" });
   const [artifact, setArtifact] = React.useState({ title: "", summary: "", result: "pending" });
-  const [stepUp, setStepUp] = React.useState<{ secret: string; uri: string; qr: string } | null>(null); const [mfaToken, setMfaToken] = React.useState("");
   const isReady = !["pending", "pending_sync", "pending_approval", "completed", "rejected", "cancelled"].includes(item.status);
 
   async function complete(operation: () => Promise<unknown>, success: string) {
@@ -223,18 +204,7 @@ function OemWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files 
       notify(success, "success");
       await reload();
       onChanged();
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") {
-        try { const setup = await setupMfa(); const qr = setup.uri ? await QRCode.toDataURL(setup.uri, { width: 160, margin: 1 }) : ""; setStepUp({ ...setup, qr }); notify("请完成二次验证后再次提交", "error"); }
-        catch (setupError) { notify(setupError instanceof Error ? setupError.message : "无法启动二次验证", "error"); }
-      } else notify(reason instanceof Error ? reason.message : "提交失败", "error");
-    } finally { setBusy(false); }
-  }
-
-  async function confirmStepUp() {
-    setBusy(true);
-    try { await verifyMfa(mfaToken); setStepUp(null); setMfaToken(""); notify("二次验证已完成，请再次确认提交", "success"); }
-    catch (reason) { notify(reason instanceof Error ? reason.message : "验证失败", "error"); }
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "提交失败", "error"); }
     finally { setBusy(false); }
   }
 
@@ -243,9 +213,8 @@ function OemWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files 
     {detail.oem?.quotes?.length ? <div className="submitted-record"><CheckCircle2 size={18} /><div><b>已提交 V{detail.oem.quotes[0].version}</b><span>{detail.oem.quotes[0].currency} {detail.oem.quotes[0].amount.toLocaleString()} · 交期 {detail.oem.quotes[0].leadTimeDays} 天 · {detail.oem.quotes[0].status}</span></div></div> : null}
     <div className="oem-form-grid"><label><span>币种</span><input value={quote.currency} maxLength={3} onChange={(event) => setQuote({ ...quote, currency: event.target.value.toUpperCase() })} /></label><label><span>报价金额</span><input type="number" min="0" step="0.01" value={quote.amount} onChange={(event) => setQuote({ ...quote, amount: event.target.value })} /></label><label><span>最小起订量</span><input type="number" min="0" value={quote.minimumOrderQuantity} onChange={(event) => setQuote({ ...quote, minimumOrderQuantity: event.target.value })} /></label><label><span>交期（天）</span><input type="number" min="0" value={quote.leadTimeDays} onChange={(event) => setQuote({ ...quote, leadTimeDays: event.target.value })} /></label></div>
     <textarea value={quote.terms} onChange={(event) => setQuote({ ...quote, terms: event.target.value })} placeholder="报价条款、打样费、版费、付款条件等" rows={3} />
-    {stepUp ? <div className={`step-up-panel ${stepUp.qr ? "" : "configured"}`}>{stepUp.qr ? <img src={stepUp.qr} alt="二次验证二维码" /> : null}<div><b>敏感操作二次验证</b><span>{stepUp.qr ? "如尚未绑定验证器，请先扫码；然后输入 6 位动态码。" : "请输入已绑定验证器中的 6 位动态码。"}</span>{stepUp.secret ? <code>{stepUp.secret}</code> : null}<div><input inputMode="numeric" maxLength={6} value={mfaToken} onChange={(event) => setMfaToken(event.target.value.replace(/\D/g, ""))} placeholder="000000" /><button disabled={busy || mfaToken.length !== 6} onClick={confirmStepUp}>验证</button></div></div></div> : null}
     <button className="primary-action inline-submit" disabled={busy || !isReady || !quote.amount || !quote.leadTimeDays} onClick={() => complete(() => submitSupplierQuote(item.id, item.version, { currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimumOrderQuantity || 0), leadTimeDays: Number(quote.leadTimeDays), terms: quote.terms }), "密封报价已提交，等待中台比价定标")}><BadgeDollarSign size={18} />确认并提交报价</button>
-    <p className="sensitive-hint"><ShieldCheck size={14} />提交报价属于敏感动作，系统会校验近期二次验证状态。</p>
+    <p className="sensitive-hint"><ShieldCheck size={14} />提交报价时，系统会校验组织权限、任务版本和数据边界。</p>
   </section>;
 
   if (item.itemType === "production_order") return <section className="drawer-section oem-panel">
@@ -321,17 +290,21 @@ function AccountPage({ session, onSessionChange, notify }: { session: Session; o
 
 const memberRoleLabels: Record<OrganizationMemberRole, string> = { organization_admin: "组织管理员", manager: "业务经理", operator: "操作员", finance: "财务", viewer: "只读成员" };
 
+type ProvisionedAccess = { organizationName: string; organizationCode: string; username: string; password: string; portalUrl: string };
+
+function accountHandoffText(access: ProvisionedAccess) {
+  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${access.portalUrl}\n组织名称：${access.organizationName}\n组织代码：${access.organizationCode}\n登录账号：${access.username}\n初始密码：${access.password}\n首次登录后请按页面提示修改初始密码；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
+}
+
 function MembersPage({ session, notify }: { session: Session; notify(message: string, tone: "success" | "error"): void }) {
   const [members, setMembers] = React.useState<OrganizationMember[]>([]);
   const [invitations, setInvitations] = React.useState<OrganizationInvitation[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState("");
   const [activation, setActivation] = React.useState<InvitationDeliveryResult | null>(null);
-  const emptyMemberForm = { username: "", displayName: "", email: "", password: "", confirm: "", role: "operator" as OrganizationMemberRole, mfaRequired: false };
+  const [provisionedAccess, setProvisionedAccess] = React.useState<ProvisionedAccess | null>(null);
+  const emptyMemberForm = { username: "", displayName: "", email: "", password: "", confirm: "", role: "operator" as OrganizationMemberRole };
   const [form, setForm] = React.useState(emptyMemberForm);
-  const [stepUp, setStepUp] = React.useState<{ secret: string; qr: string } | null>(null);
-  const [mfaToken, setMfaToken] = React.useState("");
-  const pendingAction = React.useRef<{ run: () => Promise<unknown>; success: string } | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -344,16 +317,6 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
   }, [notify]);
   React.useEffect(() => { void load(); }, [load]);
 
-  async function requestStepUp(action: { run: () => Promise<unknown>; success: string }) {
-    pendingAction.current = action;
-    try {
-      const setup = await setupMfa();
-      const qr = setup.uri ? await QRCode.toDataURL(setup.uri, { width: 160, margin: 1 }) : "";
-      setStepUp({ secret: setup.secret || "", qr });
-      notify("该操作需要进行一次近期二次验证", "error");
-    } catch (reason) { notify(reason instanceof Error ? reason.message : "无法启动二次验证", "error"); }
-  }
-
   async function runSensitive(id: string, run: () => Promise<unknown>, success: string) {
     setBusy(id);
     try {
@@ -362,43 +325,24 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
       await load();
       return true;
     } catch (reason) {
-      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run, success });
-      else notify(reason instanceof Error ? reason.message : "操作失败", "error");
+      notify(reason instanceof Error ? reason.message : "操作失败", "error");
       return false;
     } finally { setBusy(""); }
-  }
-
-  async function verifyAndRetry() {
-    if (!pendingAction.current) return;
-    setBusy("mfa");
-    try {
-      await verifyMfa(mfaToken);
-      const action = pendingAction.current;
-      pendingAction.current = null;
-      setStepUp(null); setMfaToken("");
-      await action.run();
-      notify(action.success, "success");
-      await load();
-    } catch (reason) { notify(reason instanceof Error ? reason.message : "二次验证失败", "error"); }
-    finally { setBusy(""); }
   }
 
   async function submitInvite(event: React.FormEvent) {
     event.preventDefault();
     if (form.password !== form.confirm) { notify("两次输入的初始密码不一致", "error"); return; }
-    const action = async () => {
-      const result = await createMember({ username: form.username, displayName: form.displayName || undefined, email: form.email, password: form.password, role: form.role, mfaRequired: form.mfaRequired });
-      setForm(emptyMemberForm);
-      return result;
-    };
     setBusy("invite");
     try {
-      await action();
-      notify("成员账号已创建，请将初始密码通过可信渠道交给本人", "success");
+      const access = { organizationName: session.organization.name, organizationCode: session.organization.code, username: form.username, password: form.password, portalUrl: window.location.origin };
+      await createMember({ username: form.username, displayName: form.displayName || undefined, email: form.email, password: form.password, role: form.role, mfaRequired: false });
+      setProvisionedAccess(access);
+      setForm(emptyMemberForm);
+      notify("成员账号已创建，可一键复制完整开户文案", "success");
       await load();
     } catch (reason) {
-      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run: action, success: "成员账号已创建" });
-      else notify(reason instanceof Error ? reason.message : "成员账号创建失败", "error");
+      notify(reason instanceof Error ? reason.message : "成员账号创建失败", "error");
     } finally { setBusy(""); }
   }
 
@@ -410,24 +354,23 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
       notify(result.delivery?.sent ? "激活邮件已重新发送" : "邀请已重签，请复制新激活链接", "success");
       await load();
     } catch (reason) {
-      if (reason instanceof ApiError && reason.code === "mfa_step_up_required") await requestStepUp({ run: async () => { const result = await reissueInvitation(invitation.id); setActivation(result); }, success: "邀请已重新签发" });
-      else notify(reason instanceof Error ? reason.message : "邀请重发失败", "error");
+      notify(reason instanceof Error ? reason.message : "邀请重发失败", "error");
     } finally { setBusy(""); }
   }
 
   const activeCount = members.filter((member) => member.status === "active").length;
-  const mfaCount = members.filter((member) => member.mfaEnabled).length;
+  const emailCount = members.filter((member) => Boolean(member.email)).length;
   const pendingCount = members.filter((member) => member.mustChangePassword).length;
   return <div className="page-stack member-admin-page">
     <section className="page-title"><div><p className="kicker">ORGANIZATION ACCESS</p><h1>成员管理</h1><span>只管理“{session.organization.name}”成员；其他合作组织不会出现在列表或搜索中。</span></div><div className="scope-badge"><ShieldCheck size={16} />组织边界已锁定</div></section>
-    <section className="member-metrics"><article><Users size={20} /><div><strong>{activeCount}</strong><span>有效成员</span></div></article><article><ShieldCheck size={20} /><div><strong>{mfaCount}</strong><span>已启用 MFA</span></div></article><article><KeyRound size={20} /><div><strong>{pendingCount}</strong><span>待首次改密</span></div></article></section>
+    <section className="member-metrics"><article><Users size={20} /><div><strong>{activeCount}</strong><span>有效成员</span></div></article><article><Mail size={20} /><div><strong>{emailCount}</strong><span>已留找回邮箱</span></div></article><article><KeyRound size={20} /><div><strong>{pendingCount}</strong><span>待首次改密</span></div></article></section>
+    {provisionedAccess ? <section className="member-credential"><header><div><CheckCircle2 size={20} /><span><b>账号已创建，可直接发给伙伴</b><small>初始密码只在本页临时保留；关闭或刷新后不再显示。</small></span></div><button type="button" onClick={() => setProvisionedAccess(null)} aria-label="关闭开户文案"><X size={17} /></button></header><pre>{accountHandoffText(provisionedAccess)}</pre><button className="primary-action" type="button" onClick={async () => { try { await navigator.clipboard.writeText(accountHandoffText(provisionedAccess)); notify("开户文案已复制", "success"); } catch { notify("复制失败，请手动选择文案复制", "error"); } }}><Copy size={17} />一键复制开户文案</button></section> : null}
     {activation?.activationUrl ? <section className="activation-strip"><div><KeyRound size={20} /><span><b>一次性激活链接</b><small>48 小时有效，仅在本次创建或重签后显示。</small></span></div><code>{activation.activationUrl}</code><button onClick={async () => { await navigator.clipboard.writeText(activation.activationUrl || ""); notify("激活链接已复制", "success"); }}><Copy size={16} />复制</button></section> : null}
-    {stepUp ? <section className={`member-step-up ${stepUp.qr ? "" : "configured"}`}>{stepUp.qr ? <img src={stepUp.qr} alt="二次验证二维码" /> : <ShieldCheck size={35} />}<div><p className="kicker">SECURITY CHECKPOINT</p><h3>完成二次验证后自动继续</h3><span>{stepUp.qr ? "请先使用验证器扫码绑定，再输入 6 位动态码。" : "请输入验证器中的 6 位动态码。"}</span>{stepUp.secret ? <code>{stepUp.secret}</code> : null}<div><input inputMode="numeric" maxLength={6} value={mfaToken} onChange={(event) => setMfaToken(event.target.value.replace(/\D/g, ""))} placeholder="000000" /><button className="primary-action" disabled={busy === "mfa" || mfaToken.length !== 6} onClick={() => void verifyAndRetry()}>{busy === "mfa" ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}验证并继续</button></div></div></section> : null}
     <section className="member-layout">
-      <form className="invite-panel" onSubmit={submitInvite}><header><span><UserPlus size={19} /></span><div><h2>新增成员账号</h2><p>管理员分配账号和初始密码；成员首次登录后必须改密。</p></div></header><label><span>登录账号</span><input required minLength={3} autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} placeholder="例如 inbound.operator" /></label><label><span>成员姓名（可选）</span><input maxLength={120} autoComplete="off" value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} placeholder="未填写时使用登录账号" /></label><label><span>成员邮箱（可选）</span><input type="email" autoComplete="off" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="可由成员登录后补充" /></label><label><span>初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="至少 12 位，包含字母和数字" /></label><label><span>确认初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} /></label><label><span>组织角色</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as OrganizationMemberRole })}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="mfa-toggle"><input type="checkbox" checked={form.mfaRequired} onChange={(event) => setForm({ ...form, mfaRequired: event.target.checked })} /><span><b>强制启用 MFA</b><small>建议财务、经理和管理员开启</small></span></label><button className="primary-action" disabled={busy === "invite"}>{busy === "invite" ? <LoaderCircle className="spin" size={18} /> : <KeyRound size={18} />}创建成员账号</button><p className="secure-footnote"><ShieldCheck size={13} />初始密码立即哈希，不写入日志；角色、停用与 MFA 变更均进入审计记录。</p></form>
-      <section className="member-list-panel"><header><div><p className="kicker">ACTIVE MEMBERS</p><h2>组织成员</h2></div><button className="secondary-action" onClick={() => void load()}><RefreshCw size={16} />刷新</button></header>{loading ? <div className="loading-state"><LoaderCircle className="spin" />正在读取成员…</div> : <div className="member-list">{members.map((member) => <article key={member.id} className={member.status === "disabled" ? "disabled" : ""}><span className="member-avatar">{member.displayName.slice(0, 1)}</span><div className="member-identity"><b>{member.displayName}{member.id === session.membership.id ? <em>当前账号</em> : null}</b><small>{member.username} · {member.email || "未留邮箱"}</small><span>{member.mustChangePassword ? "等待首次修改密码" : member.lastLoginAt ? `最近登录 ${fullDate(member.lastLoginAt)}` : "尚未登录"}</span></div><select aria-label={`${member.displayName}的角色`} value={member.role} disabled={busy === member.id || member.id === session.membership.id} onChange={(event) => void runSensitive(member.id, () => updateMember(member.id, { role: event.target.value as OrganizationMemberRole }), "成员角色已更新")}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className={`member-security ${member.mfaRequired ? "active" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { mfaRequired: !member.mfaRequired }), member.mfaRequired ? "已取消强制 MFA" : "已要求成员启用 MFA")}><ShieldCheck size={15} />{member.mfaEnabled ? "MFA 已启用" : member.mfaRequired ? "等待 MFA" : "未强制 MFA"}</button><button className={`member-state-action ${member.status === "active" ? "danger" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { status: member.status === "active" ? "disabled" : "active" }), member.status === "active" ? "成员已停用，会话已撤销" : "成员已重新启用")}>{member.status === "active" ? "停用" : "启用"}</button></article>)}</div>}</section>
+      <form className="invite-panel" onSubmit={submitInvite}><header><span><UserPlus size={19} /></span><div><h2>新增成员账号</h2><p>管理员分配账号和初始密码；成员首次登录后必须改密。</p></div></header><label><span>登录账号</span><input required minLength={3} autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} placeholder="例如 inbound.operator" /></label><label><span>成员姓名（可选）</span><input maxLength={120} autoComplete="off" value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} placeholder="未填写时使用登录账号" /></label><label><span>成员邮箱（可选）</span><input type="email" autoComplete="off" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="可由成员登录后补充" /></label><label><span>初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="至少 12 位，包含字母和数字" /></label><label><span>确认初始密码</span><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} /></label><label><span>组织角色</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as OrganizationMemberRole })}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><button className="primary-action" disabled={busy === "invite"}>{busy === "invite" ? <LoaderCircle className="spin" size={18} /> : <KeyRound size={18} />}创建成员账号</button><p className="secure-footnote"><ShieldCheck size={13} />初始密码立即哈希，不写入日志；页面只临时保留本次开户文案，角色与停用变更均进入审计记录。</p></form>
+      <section className="member-list-panel"><header><div><p className="kicker">ACTIVE MEMBERS</p><h2>组织成员</h2></div><button className="secondary-action" onClick={() => void load()}><RefreshCw size={16} />刷新</button></header>{loading ? <div className="loading-state"><LoaderCircle className="spin" />正在读取成员…</div> : <div className="member-list">{members.map((member) => <article key={member.id} className={member.status === "disabled" ? "disabled" : ""}><span className="member-avatar">{member.displayName.slice(0, 1)}</span><div className="member-identity"><b>{member.displayName}{member.id === session.membership.id ? <em>当前账号</em> : null}</b><small>{member.username} · {member.email || "未留邮箱"}</small><span>{member.mustChangePassword ? "等待首次修改密码" : member.lastLoginAt ? `最近登录 ${fullDate(member.lastLoginAt)}` : "尚未登录"}</span></div><select aria-label={`${member.displayName}的角色`} value={member.role} disabled={busy === member.id || member.id === session.membership.id} onChange={(event) => void runSensitive(member.id, () => updateMember(member.id, { role: event.target.value as OrganizationMemberRole }), "成员角色已更新")}>{Object.entries(memberRoleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className={`member-state-action ${member.status === "active" ? "danger" : ""}`} disabled={busy === member.id || member.id === session.membership.id} onClick={() => void runSensitive(member.id, () => updateMember(member.id, { status: member.status === "active" ? "disabled" : "active" }), member.status === "active" ? "成员已停用，会话已撤销" : "成员已重新启用")}>{member.status === "active" ? "停用" : "启用"}</button></article>)}</div>}</section>
     </section>
-    {invitations.length ? <section className="invitation-panel"><header><div><p className="kicker">LEGACY INVITATIONS</p><h2>历史邀请记录</h2></div><span>{invitations.length} 条</span></header><div className="invitation-list">{invitations.map((invitation) => <article key={invitation.id}><div><b>{invitation.username}</b><span>{invitation.email || "未留邮箱"}</span></div><div><b>{memberRoleLabels[invitation.role]}</b><span>{invitation.mfaRequired ? "必须启用 MFA" : "常规验证"}</span></div><div><b>{invitation.status === "pending" ? "待激活" : invitation.status === "accepted" ? "已激活" : "已失效"}</b><span>{invitation.status === "pending" ? `有效期至 ${fullDate(invitation.expiresAt)}` : fullDate(invitation.acceptedAt || invitation.expiresAt)}</span></div><div>{invitation.status !== "accepted" ? <button disabled={busy === invitation.id} onClick={() => void renew(invitation)}>重发</button> : null}{invitation.status === "pending" ? <button className="danger" disabled={busy === invitation.id} onClick={() => void runSensitive(invitation.id, () => revokeInvitation(invitation.id), "邀请已撤销")}>撤销</button> : null}</div></article>)}</div></section> : null}
+    {invitations.length ? <section className="invitation-panel"><header><div><p className="kicker">LEGACY INVITATIONS</p><h2>历史邀请记录</h2></div><span>{invitations.length} 条</span></header><div className="invitation-list">{invitations.map((invitation) => <article key={invitation.id}><div><b>{invitation.username}</b><span>{invitation.email || "未留邮箱"}</span></div><div><b>{memberRoleLabels[invitation.role]}</b><span>账号密码登录</span></div><div><b>{invitation.status === "pending" ? "待激活" : invitation.status === "accepted" ? "已激活" : "已失效"}</b><span>{invitation.status === "pending" ? `有效期至 ${fullDate(invitation.expiresAt)}` : fullDate(invitation.acceptedAt || invitation.expiresAt)}</span></div><div>{invitation.status !== "accepted" ? <button disabled={busy === invitation.id} onClick={() => void renew(invitation)}>重发</button> : null}{invitation.status === "pending" ? <button className="danger" disabled={busy === invitation.id} onClick={() => void runSensitive(invitation.id, () => revokeInvitation(invitation.id), "邀请已撤销")}>撤销</button> : null}</div></article>)}</div></section> : null}
   </div>;
 }
 
@@ -451,14 +394,13 @@ function AppShell({ session, onSessionChange, onLogout }: { session: Session; on
 }
 
 export function App() {
-  const [session, setSession] = React.useState<Session | null>(null); const [loading, setLoading] = React.useState(true); const [setupRequired, setSetupRequired] = React.useState(false);
+  const [session, setSession] = React.useState<Session | null>(null); const [loading, setLoading] = React.useState(true);
   const initialCredential = React.useMemo(() => { const query = new URLSearchParams(location.search); return query.get("invite") ? { mode: "invite" as const, token: query.get("invite") || "" } : query.get("reset") ? { mode: "reset" as const, token: query.get("reset") || "" } : null; }, []);
   const [credentialFlow, setCredentialFlow] = React.useState<{ mode: "invite" | "reset" | "request"; token: string } | null>(initialCredential);
   React.useEffect(() => { fetchMe().then((value) => setSession(value.session)).catch((reason) => { if (!(reason instanceof ApiError) || reason.status !== 401) console.warn(reason); }).finally(() => setLoading(false)); }, []);
   if (credentialFlow) return <CredentialFlowPage mode={credentialFlow.mode} token={credentialFlow.token} onDone={() => { history.replaceState({}, "", location.pathname); setCredentialFlow(null); }} />;
   if (loading) return <main className="boot-screen"><span className="brand-mark"><Boxes size={26} /></span><LoaderCircle className="spin" /><b>正在建立安全工作区</b><small>VERIFYING ORGANIZATION BOUNDARY</small></main>;
-  if (!session) return <LoginPage onLogin={(next, required) => { setSession(next); setSetupRequired(required); }} onForgot={() => setCredentialFlow({ mode: "request", token: "" })} />;
-  if (session.pendingMfa || setupRequired) return <MfaGate session={session} setupRequired={setupRequired} onVerified={(next) => { setSession(next); setSetupRequired(false); }} />;
+  if (!session) return <LoginPage onLogin={setSession} onForgot={() => setCredentialFlow({ mode: "request", token: "" })} />;
   if (session.mustChangePassword) return <ForcedPasswordChangePage session={session} onChanged={setSession} />;
   return <AppShell session={session} onSessionChange={setSession} onLogout={() => logout().finally(() => setSession(null))} />;
 }

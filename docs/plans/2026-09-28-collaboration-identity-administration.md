@@ -1,5 +1,7 @@
 # 协同组织与账号管理实施计划
 
+> 变更说明：本计划中的邀请激活与强制 MFA/TOTP 方案已由 [ADR-0002](../adr/0002-password-only-partner-login.md) 替代；现行方案为管理员直接分配账号密码、首次登录强制改密。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 
 **Goal:** 在内部供应链中台安全创建合作组织和首位组织管理员，并允许外部门户组织管理员维护本组织成员，全程不共享密码、不暴露内部服务令牌。

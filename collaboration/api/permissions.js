@@ -15,6 +15,6 @@ export function canPerformAction(membership, action) {
   return Boolean(actionRoles[action]?.has(membership.role));
 }
 
-export function requiresMfaAtLogin(membership) {
-  return membership?.role === "organization_admin" || membership?.mfa_required === true;
+export function requiresMfaAtLogin() {
+  return false;
 }

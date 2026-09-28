@@ -24,7 +24,7 @@
 
 - PostgreSQL RLS 与 API 组织条件同时生效；`organization_id` 不允许以空值代表全量。
 - 账号密码使用 Argon2id；会话为服务端不透明令牌，Cookie 使用 `HttpOnly`、`Secure`、`SameSite=Lax`；写操作校验 CSRF。
-- 组织管理员登录强制 TOTP；库存调整、成员变更、邀请和报价确认要求近期 TOTP。
+- 组织管理员登录强制 TOTP；库存调整、成员变更、邀请和报价确认要求近期 TOTP。（此项身份决策已由 ADR-0002 替代。）
 - 附件进入私有对象存储，下载时重新鉴权并签发短时地址；生产环境要求恶意文件扫描。
 - 审计日志只追加；门户角色没有更新或删除审计记录的数据库权限。
 - OEM 功能由 `COLLABORATION_OEM_ENABLED` 控制，国内仓试点通过前保持关闭。

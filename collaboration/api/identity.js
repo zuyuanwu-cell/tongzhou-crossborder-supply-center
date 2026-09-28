@@ -114,8 +114,8 @@ function publicMember(row) {
     role: row.role,
     status: row.status,
     permissions: row.permissions || [],
-    mfaRequired: Boolean(row.mfa_required),
-    mfaEnabled: Boolean(row.totp_enabled_at),
+    mfaRequired: false,
+    mfaEnabled: false,
     mustChangePassword: Boolean(row.must_change_password),
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : "",
     createdAt: new Date(row.created_at).toISOString(),
@@ -144,7 +144,7 @@ function publicInvitation(row) {
     username: row.username,
     email: row.email || "",
     role: row.role,
-    mfaRequired: Boolean(row.mfa_required),
+    mfaRequired: false,
     status,
     expiresAt,
     acceptedAt,
@@ -179,12 +179,12 @@ export async function createInvitation(auth, body) {
     const result = await client.query(
       `INSERT INTO collaboration_invitations(organization_id,email,username,role,mfa_required,token_hash,expires_at,created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,username,email,role,mfa_required,expires_at,accepted_at,created_at`,
-      [auth.organization.id, input.email, input.username, input.role, input.mfaRequired, tokenHash(rawToken), expiresAt, auth.user.id],
+      [auth.organization.id, input.email, input.username, input.role, false, tokenHash(rawToken), expiresAt, auth.user.id],
     );
     await client.query(
       `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
        VALUES ($1,$2,$3,'identity.invite','invitation',$4,'created',$5)`,
-      [auth.organization.id, auth.user.id, auth.user.displayName, result.rows[0].id, { username: input.username, role: input.role, mfaRequired: input.mfaRequired }],
+      [auth.organization.id, auth.user.id, auth.user.displayName, result.rows[0].id, { username: input.username, role: input.role, mfaRequired: false }],
     );
     return result.rows[0];
   });
@@ -226,7 +226,7 @@ export async function createMember(auth, body) {
       [input.username, input.email || null, input.displayName || input.username, passwordHash],
     );
     const user = userResult.rows[0];
-    const mfaRequired = input.role === "organization_admin" || input.mfaRequired;
+    const mfaRequired = false;
     const membershipResult = await client.query(
       `INSERT INTO organization_memberships(organization_id,user_id,role,status,mfa_required)
        VALUES ($1,$2,$3,'active',$4)
@@ -305,7 +305,7 @@ export async function acceptInvitation(body) {
       [invitation.username, invitation.email || null, input.displayName, passwordHash],
     );
     const user = userResult.rows[0];
-    const mfaRequired = invitation.role === "organization_admin" || Boolean(invitation.mfa_required);
+    const mfaRequired = false;
     await client.query(
       `INSERT INTO organization_memberships(organization_id,user_id,role,status,mfa_required)
        VALUES ($1,$2,$3,'active',$4)`,
@@ -381,9 +381,9 @@ export async function updateMember(auth, membershipId, body) {
   if (membershipId === auth.membership.id && (input.status === "disabled" || (input.role && input.role !== "organization_admin"))) fail("不能停用或降级当前登录管理员。", 409, "cannot_modify_self");
   const output = await withOrganization(auth.organization.id, async (client) => {
     const result = await client.query(
-      `UPDATE organization_memberships SET role=COALESCE($3,role),status=COALESCE($4,status),mfa_required=COALESCE($5,mfa_required)
+      `UPDATE organization_memberships SET role=COALESCE($3,role),status=COALESCE($4,status),mfa_required=false
         WHERE id=$1 AND organization_id=$2 RETURNING *`,
-      [membershipId, auth.organization.id, input.role || null, input.status || null, input.mfaRequired ?? null],
+      [membershipId, auth.organization.id, input.role || null, input.status || null],
     );
     const membership = result.rows[0];
     if (!membership) fail("成员不存在。", 404, "not_found");
@@ -597,7 +597,7 @@ export async function bootstrapOrganization(body) {
     const administrator = userResult.rows[0];
     const membershipResult = await client.query(
       `INSERT INTO organization_memberships(organization_id,user_id,role,status,mfa_required)
-       VALUES ($1,$2,'organization_admin','active',true)
+       VALUES ($1,$2,'organization_admin','active',false)
        RETURNING id,role,status,mfa_required,created_at`,
       [organization.id, administrator.id],
     );
@@ -623,7 +623,7 @@ export async function bootstrapOrganization(body) {
       displayName: output.administrator.display_name,
       email: output.administrator.email || "",
       role: output.membership.role,
-      mfaRequired: true,
+      mfaRequired: false,
       mustChangePassword: true,
     },
   };

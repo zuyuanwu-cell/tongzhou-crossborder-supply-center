@@ -146,10 +146,9 @@ function assertIdempotencyKey(value) {
   return key;
 }
 
-export async function submitSupplierQuote(auth, body, { idempotencyKey, expectedVersion, hasFreshMfa }) {
+export async function submitSupplierQuote(auth, body, { idempotencyKey, expectedVersion }) {
   assertEnabled();
   assertPartnerRole(auth);
-  if (!hasFreshMfa) fail("报价确认需要重新进行二次验证。", 428, "mfa_step_up_required");
   const input = supplierQuoteSchema.parse(body);
   const key = assertIdempotencyKey(idempotencyKey);
   return withOrganization(auth.organization.id, async (client) => {

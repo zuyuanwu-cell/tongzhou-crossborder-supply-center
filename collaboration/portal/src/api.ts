@@ -30,18 +30,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 let demoSession: Session = {
   user: { id: "demo-user", username: "warehouse.admin", displayName: "仓库负责人", email: "warehouse@example.test" },
-  membership: { id: "demo-membership", organizationId: "demo-org", organizationCode: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", organizationName: demoOem ? "战略包装伙伴" : "华东协同仓", organizationType: demoOem ? "packaging_factory" : "warehouse", role: demoAdmin ? "organization_admin" : "manager", status: "active", permissions: [], mfaRequired: demoAdmin },
+  membership: { id: "demo-membership", organizationId: "demo-org", organizationCode: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", organizationName: demoOem ? "战略包装伙伴" : "华东协同仓", organizationType: demoOem ? "packaging_factory" : "warehouse", role: demoAdmin ? "organization_admin" : "manager", status: "active", permissions: [], mfaRequired: false },
   organization: { id: "demo-org", code: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", name: demoOem ? "战略包装伙伴" : "华东协同仓", type: demoOem ? "packaging_factory" : "warehouse" },
-  mfaRequired: demoAdmin, mfaEnabled: demoOem || demoAdmin, mfaVerifiedAt: demoOem || demoAdmin ? new Date().toISOString() : "", pendingMfa: false, mustChangePassword: false, oemEnabled: demoOem,
+  mfaRequired: false, mfaEnabled: false, mfaVerifiedAt: "", pendingMfa: false, mustChangePassword: false, oemEnabled: demoOem,
 };
 const now = Date.now();
 let demoMembers: OrganizationMember[] = [
-  { id: "demo-membership", userId: "demo-user", username: "warehouse.admin", email: "warehouse@example.test", displayName: "仓库负责人", userStatus: "active", role: "organization_admin", status: "active", permissions: [], mfaRequired: true, mfaEnabled: true, mustChangePassword: false, lastLoginAt: new Date(now - 18e5).toISOString(), createdAt: new Date(now - 30 * 864e5).toISOString() },
+  { id: "demo-membership", userId: "demo-user", username: "warehouse.admin", email: "warehouse@example.test", displayName: "仓库负责人", userStatus: "active", role: "organization_admin", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: new Date(now - 18e5).toISOString(), createdAt: new Date(now - 30 * 864e5).toISOString() },
   { id: "demo-operator", userId: "demo-user-2", username: "warehouse.operator", email: "", displayName: "入库操作员", userStatus: "active", role: "operator", status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: true, lastLoginAt: new Date(now - 864e5).toISOString(), createdAt: new Date(now - 20 * 864e5).toISOString() },
   { id: "demo-viewer", userId: "demo-user-3", username: "warehouse.viewer", email: "viewer@example.test", displayName: "质检查看员", userStatus: "active", role: "viewer", status: "disabled", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: false, lastLoginAt: "", createdAt: new Date(now - 12 * 864e5).toISOString() },
 ];
 let demoInvitations: OrganizationInvitation[] = [
-  { id: "demo-invitation", username: "warehouse.finance", email: "finance@example.test", role: "finance", mfaRequired: true, status: "pending", expiresAt: new Date(now + 36 * 36e5).toISOString(), acceptedAt: "", createdAt: new Date(now - 12 * 36e5).toISOString() },
+  { id: "demo-invitation", username: "warehouse.finance", email: "finance@example.test", role: "finance", mfaRequired: false, status: "pending", expiresAt: new Date(now + 36 * 36e5).toISOString(), acceptedAt: "", createdAt: new Date(now - 12 * 36e5).toISOString() },
 ];
 const demoItems: WorkItem[] = [
   ...(demoOem ? [{ id: "6a77af62-79fa-4e30-a77e-2e5bf82114a4", spaceId: "oem-demo", itemType: "packaging_quote", title: "包装盲报价 · 海盐净润系列", description: "按已批准设计稿，对 500ml 瓶体、泵头和运输外箱进行整套报价。", status: "accepted", priority: "urgent", publicPayload: { projectCode: "OEM-2026-031", productName: "海盐净润洗护套装", productSpec: "500ml × 2", documentVersion: "DESIGN-V4", requirements: "报价需包含开模费、版费、含税到仓价。", quantity: 12000, unit: "套", deliveryDate: "2026-11-20", quoteCurrency: "CNY" }, dueAt: new Date(now + 1728e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
@@ -78,7 +78,7 @@ export async function createInvitation(input: { username: string; email: string;
 }
 export async function createMember(input: { username: string; displayName?: string; email?: string; password: string; role: OrganizationMemberRole; mfaRequired: boolean }) {
   if (demoMode) {
-    const member: OrganizationMember = { id: crypto.randomUUID(), userId: crypto.randomUUID(), username: input.username, email: input.email || "", displayName: input.displayName || input.username, userStatus: "active", role: input.role, status: "active", permissions: [], mfaRequired: input.role === "organization_admin" || input.mfaRequired, mfaEnabled: false, mustChangePassword: true, lastLoginAt: "", createdAt: new Date().toISOString() };
+    const member: OrganizationMember = { id: crypto.randomUUID(), userId: crypto.randomUUID(), username: input.username, email: input.email || "", displayName: input.displayName || input.username, userStatus: "active", role: input.role, status: "active", permissions: [], mfaRequired: false, mfaEnabled: false, mustChangePassword: true, lastLoginAt: "", createdAt: new Date().toISOString() };
     demoMembers = [member, ...demoMembers];
     return { ok: true, member };
   }

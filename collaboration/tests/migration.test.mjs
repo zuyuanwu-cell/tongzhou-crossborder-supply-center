@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 
 const sql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0001_foundation.sql"), "utf8");
 const directAccountSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0002_direct_account_provisioning.sql"), "utf8");
+const noMfaSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0003_disable_mfa_requirement.sql"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
+const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
+const repositorySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "repository.js"), "utf8");
+const oemSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "oem.js"), "utf8");
 const notificationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "notifications.js"), "utf8");
 
 test("all partner-owned tables opt into forced row-level security", () => {
@@ -45,4 +49,12 @@ test("directly provisioned accounts must replace their initial password", () => 
   assert.match(identitySource, /hashPassword\(validateNewPassword\(input\.administrator\.password\)\)/);
   assert.match(identitySource, /generateOrganizationCode\(input\.organizationType\)/);
   assert.match(identitySource, /email: optionalEmailSchema/);
+});
+
+test("authenticator requirements are disabled without removing legacy security columns", () => {
+  assert.match(noMfaSql, /UPDATE organization_memberships[\s\S]*mfa_required = false/);
+  assert.match(noMfaSql, /UPDATE collaboration_invitations[\s\S]*mfa_required = false/);
+  assert.doesNotMatch(serverSource, /collaboration\/auth\/mfa\/(setup|verify)/);
+  assert.doesNotMatch(repositorySource, /mfa_step_up_required/);
+  assert.doesNotMatch(oemSource, /mfa_step_up_required/);
 });
