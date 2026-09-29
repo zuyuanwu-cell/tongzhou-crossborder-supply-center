@@ -66,7 +66,7 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
           const input = await readBody(req);
           const actorName = auth.user?.displayName || auth.user?.username || "供应链中台";
           const result = await bridge.publishWarehouseTask(input, { idempotencyKey: String(req.headers["idempotency-key"] || ""), actorName, warehouseIds, skus });
-          appendActionLog(auth, "发布仓库协同任务", "collaboration_work_item", result.coreRefId, { organizationCode: input.organizationCode || "", warehouseRef: input.warehouseRef || "", itemType: input.itemType || "", eventId: result.eventId, delivery: result.delivery });
+          appendActionLog(auth, "发布伙伴协同任务", "collaboration_work_item", result.coreRefId, { organizationCode: input.organizationCode || "", warehouseRef: input.warehouseRef || "", itemType: input.itemType || "", eventId: result.eventId, delivery: result.delivery });
           sendJson(res, result.idempotentReplay ? 200 : 201, result);
           return true;
         }

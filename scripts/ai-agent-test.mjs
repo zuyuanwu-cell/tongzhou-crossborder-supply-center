@@ -9,7 +9,8 @@ import {
 } from "../server/ai-agent.js";
 
 assert.equal(normalizeAgentRoute("inventory-value?warehouse=1"), "#inventory-value");
-assert.equal(agentPageDefinition("#after-sales").title, "仓库协同");
+assert.equal(agentPageDefinition("#after-sales").title, "海外仓协同");
+assert.equal(agentPageDefinition("#partner-collaboration").title, "伙伴协同");
 assert.ok(agentPageDefinition("#dashboard").resourceTypes.includes("qualification_expiry"));
 
 const context = buildAgentContext({

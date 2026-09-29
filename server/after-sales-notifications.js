@@ -81,7 +81,7 @@ export function buildAfterSalesCreatedMarkdown(ticket = {}, options = {}) {
     `> 补发：${ticket.needsReissue ? `${reissueQuantity} 件` : "无需补发"}`,
     `> 仓库承担：¥${number(ticket.money?.totalWarehouseLiabilityCny).toFixed(2)}`,
     text(options.extraText),
-    linkUrl ? `[进入仓库协同中心](${linkUrl})` : "",
+    linkUrl ? `[进入海外仓协同](${linkUrl})` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -120,7 +120,7 @@ export function buildWarehouseTicketCreatedMarkdown(ticket = {}, options = {}) {
     text(ticket.relatedOrderNumber) ? `> 关联订单：${text(ticket.relatedOrderNumber)}` : "",
     `> 主题：${text(ticket.title) || "-"}`,
     text(options.extraText),
-    linkUrl ? `[进入仓库协同中心](${linkUrl})` : "",
+    linkUrl ? `[进入海外仓协同](${linkUrl})` : "",
   ].filter(Boolean).join("\n");
 }
 

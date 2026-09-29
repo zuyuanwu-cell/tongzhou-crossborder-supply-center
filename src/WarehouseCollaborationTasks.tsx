@@ -171,7 +171,7 @@ function TaskDetailDrawer({ task, onClose }: { task: CollaborationWarehouseTask;
     <header className="cwt-drawer-head"><div><p>{item.coreRefId}</p><h2>{item.title}</h2><span>{item.organizationName} · {item.publicPayload.warehouseName || item.publicPayload.warehouseRef}</span></div><button onClick={onClose} aria-label="关闭"><X size={20} /></button></header>
     <div className="cwt-detail-body">
       <div className="cwt-detail-state"><StatusPill status={item.status} /><span>V{item.version}</span><button onClick={() => void load()}><RefreshCw size={15} />刷新</button></div>
-      <section className={`cwt-progress ${["rejected", "cancelled"].includes(item.status) ? "stopped" : ""}`}>{["待伙伴接单", "仓库处理中", "中台确认", "任务完成"].map((label, index) => <div className={index <= activeStep ? "active" : ""} key={label}><span>{index + 1}</span><b>{label}</b></div>)}</section>
+      <section className={`cwt-progress ${["rejected", "cancelled"].includes(item.status) ? "stopped" : ""}`}>{["待伙伴接单", "伙伴处理中", "中台确认", "任务完成"].map((label, index) => <div className={index <= activeStep ? "active" : ""} key={label}><span>{index + 1}</span><b>{label}</b></div>)}</section>
       <section className="cwt-facts"><div><span>任务类型</span><b>{typeMeta[item.itemType]?.label || item.itemType}</b></div><div><span>关联单号</span><b>{item.publicPayload.referenceNo || "—"}</b></div><div><span>截止时间</span><b>{formatDate(item.dueAt)}</b></div><div><span>最后同步</span><b>{formatDate(item.lastCoreSyncedAt || item.updatedAt)}</b></div></section>
       {item.description ? <section className="cwt-detail-section"><header><h3>作业说明</h3></header><p className="cwt-description">{item.description}</p></section> : null}
       <section className="cwt-detail-section"><header><h3>商品与处理数量</h3><span>{detail?.lines.length || 0} 个 SKU</span></header><div className="cwt-detail-lines">{detail?.lines.map((line) => <article key={line.id}><ProductImage src={line.imageUrl} name={line.productName} /><span><b>{line.productName}</b><small>{line.sku}{line.lotNo ? ` · 批次 ${line.lotNo}` : ""}</small></span><div><strong>{line.completedQuantity.toLocaleString()}</strong><small>/ {line.plannedQuantity.toLocaleString()} {line.unit}</small></div></article>)}</div></section>
@@ -222,7 +222,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
 
   const metrics = [
     { label: "待伙伴接单", value: counts.pending || 0, icon: Send },
-    { label: "仓库处理中", value: (counts.accepted || 0) + (counts.in_progress || 0), icon: Clock3 },
+    { label: "伙伴处理中", value: (counts.accepted || 0) + (counts.in_progress || 0), icon: Clock3 },
     { label: "待中台确认", value: (counts.pending_approval || 0) + (counts.pending_sync || 0), icon: RefreshCw },
     { label: "已完成", value: counts.completed || 0, icon: CheckCircle2 },
   ];
@@ -233,7 +233,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
   }
 
   return <section className="cwt-center">
-    <header className="cwt-page-head"><div><p>PARTNER WORK ORDERS</p><h2>协同任务</h2><span>从中台向国内仓发布任务，并在这里查看接单、处理、凭证和入账进度。</span></div><div><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
+    <header className="cwt-page-head"><div><p>PARTNER COLLABORATION</p><h2>伙伴协同</h2><span>统一连接国内仓、委外工厂、包材供应商等外部组织；当前已开放国内仓任务协同。</span></div><div><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
     <div className="cwt-summary">{metrics.map(({ label, value, icon: Icon }) => <article key={label}><Icon size={20} /><span>{label}</span><strong>{value}</strong></article>)}</div>
     <section className="cwt-panel">
       <div className="cwt-toolbar"><label><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索任务号、标题或关联单号" /></label><select value={organizationCode} onChange={(event) => setOrganizationCode(event.target.value)}><option value="">全部协同组织</option>{options?.organizations.map((item) => <option value={item.code} key={item.code}>{item.name}</option>)}</select><select value={itemType} onChange={(event) => setItemType(event.target.value)}><option value="">全部任务类型</option>{Object.entries(typeMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><button onClick={() => void load()} aria-label="刷新"><RefreshCw size={17} /></button></div>

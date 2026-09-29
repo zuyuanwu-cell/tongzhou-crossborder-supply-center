@@ -1,6 +1,7 @@
 import { collaborationConfig } from "./config.js";
 import { withSystem } from "./db.js";
 import {
+  clearLegacyCsrfCookie,
   clearSessionCookies,
   csrfCookie,
   parseCookies,
@@ -15,6 +16,24 @@ import { requiresMfaAtLogin } from "./permissions.js";
 const SESSION_COOKIE = "tz_collab_session";
 const CSRF_COOKIE = "tz_collab_csrf";
 const loginAttempts = new Map();
+
+function cookieValues(header, name) {
+  return String(header || "").split(";").flatMap((part) => {
+    const separator = part.indexOf("=");
+    if (separator < 0) return [];
+    try {
+      const key = decodeURIComponent(part.slice(0, separator).trim());
+      return key === name ? [decodeURIComponent(part.slice(separator + 1).trim())] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function matchingCsrfToken(req, auth) {
+  return cookieValues(req.headers.cookie, CSRF_COOKIE)
+    .find((value) => safeEqual(tokenHash(value), auth?.csrfTokenHash)) || "";
+}
 
 function clientIp(req) {
   return String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
@@ -167,11 +186,16 @@ export function assertAuthenticated(auth) {
 }
 
 export function assertCsrf(req, auth) {
-  const cookies = parseCookies(req.headers.cookie);
   const header = String(req.headers["x-csrf-token"] || "");
-  if (!header || !cookies[CSRF_COOKIE] || !safeEqual(header, cookies[CSRF_COOKIE]) || !safeEqual(tokenHash(header), auth?.csrfTokenHash)) {
+  const cookieToken = matchingCsrfToken(req, auth);
+  if (!header || !cookieToken || !safeEqual(header, cookieToken)) {
     throw Object.assign(new Error("请求验证失败，请刷新页面后重试。"), { statusCode: 403, code: "csrf_failed" });
   }
+}
+
+export function refreshCsrfCookies(req, auth) {
+  const token = matchingCsrfToken(req, auth);
+  return token ? [csrfCookie(token), clearLegacyCsrfCookie()] : [];
 }
 
 export async function logout(req, auth) {

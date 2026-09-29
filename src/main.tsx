@@ -23,6 +23,7 @@ import {
   Grid2X2,
   Globe2,
   GitBranch,
+  Handshake,
   Image,
   KeyRound,
   LayoutDashboard,
@@ -221,6 +222,7 @@ import {
 import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
+import { WarehouseCollaborationTasks } from "./WarehouseCollaborationTasks";
 import { InventoryValuePage } from "./InventoryValuePage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
@@ -377,6 +379,7 @@ const navSections = [
   { id: "workbench", label: "工作台" },
   { id: "catalog", label: "商品资料" },
   { id: "inventory", label: "库存与履约" },
+  { id: "collaboration", label: "协同管理" },
   { id: "stockup", label: "备货协同" },
   { id: "analysis", label: "经营分析" },
   { id: "settings", label: "工具与设置" },
@@ -394,7 +397,8 @@ const navItems = [
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "国内仓进销存", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
-  { label: "仓库协同", icon: ShieldCheck, hash: "#after-sales", section: "inventory", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "collaboration_task_view", "collaboration_task_publish"] },
+  { label: "伙伴协同", icon: Handshake, hash: "#partner-collaboration", section: "collaboration", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
+  { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
   { label: "供应链执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_request_accept", additionalPermissions: ["stockup_execution_update", "stockup_execution_view"] },
@@ -434,6 +438,7 @@ viewHashMap["#orders"] = "经营总览";
 
 function getInitialView() {
   const routeHash = window.location.hash.split("?", 1)[0];
+  if (routeHash === "#after-sales" && new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("module") === "collaboration_tasks") return "伙伴协同";
   return viewHashMap[routeHash] ?? "经营总览";
 }
 
@@ -2012,7 +2017,9 @@ function App() {
           <MiaoshouPage currentUser={currentUser} />
         ) : activeView === "Ozon 订单" ? (
           <OzonOrderCenter currentUser={currentUser} />
-        ) : activeView === "仓库协同" ? (
+        ) : activeView === "伙伴协同" ? (
+          <WarehouseCollaborationTasks currentUser={currentUser} />
+        ) : activeView === "海外仓协同" ? (
           <WarehouseCollaborationCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
@@ -6961,7 +6968,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
       afterSalesNew: { ...current.afterSalesNew, enabled: afterSalesNewHasRecipients || current.afterSalesNew.enabled },
       afterSalesProgress: { ...current.afterSalesProgress, enabled: afterSalesProgressHasRecipients || current.afterSalesProgress.enabled },
     }));
-    setMessage("已启用已配置接收群的仓库协同通知，请点击“保存场景配置”生效。");
+    setMessage("已启用已配置接收群的海外仓协同通知，请点击“保存场景配置”生效。");
   }
 
   return (
@@ -6970,7 +6977,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
         <div>
           <p className="eyebrow">WeCom Robot Center</p>
           <h2>企业微信机器人通知</h2>
-          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货、库存、资质与仓库协同的场景化提醒。</p>
+          <p>集中管理多个群机器人，支持定时推送、自定义链接，也支持备货、库存、资质与海外仓协同的场景化提醒。</p>
           <div className="source-row">
             <span className={`status-pill ${robots.length ? "good" : "warning"}`}>{robots.length ? "机器人已配置" : "等待配置机器人"}</span>
             <span>{data?.updatedAt ? formatDateTime(data.updatedAt) : "暂无配置"}</span>
@@ -7198,7 +7205,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           </div>
           <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes"}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
         </div>
-        {collaborationNotificationNeedsEnable ? <div className="notice warning wecom-scene-warning"><span><strong>仓库协同接收群已经配置，但通知开关仍处于停用状态。</strong>停用时，运营提交、仓库接单、上传面单和工单回复都不会发送企业微信消息。</span><button type="button" className="ghost-button compact-button" onClick={enableCollaborationNotifications}>启用仓库协同通知</button></div> : null}
+        {collaborationNotificationNeedsEnable ? <div className="notice warning wecom-scene-warning"><span><strong>海外仓协同接收群已经配置，但通知开关仍处于停用状态。</strong>停用时，运营提交、仓库接单、上传面单和工单回复都不会发送企业微信消息。</span><button type="button" className="ghost-button compact-button" onClick={enableCollaborationNotifications}>启用海外仓协同通知</button></div> : null}
         <div className="wecom-scene-grid">
           <article className="wecom-scene-card wecom-after-sales-routing">
             <div className="panel-heading">
@@ -7213,7 +7220,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             </div>
             <div className="wecom-form-grid">
               <label>
-                <span>仓库协同链接</span>
+                <span>海外仓协同链接</span>
                 <input value={sceneForm.afterSalesNew?.linkUrl || "#after-sales"} onChange={(event) => updateAfterSalesNewScene({ linkUrl: event.target.value })} placeholder="#after-sales" />
               </label>
               <label>
@@ -7241,7 +7248,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
-            ["afterSalesProgress", "仓库协同处理进度更新时", "优先按提交人的项目群通知；未配置或发送失败时回退到全局运营群。"],
+            ["afterSalesProgress", "海外仓协同处理进度更新时", "优先按提交人的项目群通知；未配置或发送失败时回退到全局运营群。"],
           ] as Array<[keyof WecomNotificationPayload["scenes"], string, string]>).map(([key, title, description]) => {
             const scene = sceneForm[key] || defaultWecomScene;
             return (

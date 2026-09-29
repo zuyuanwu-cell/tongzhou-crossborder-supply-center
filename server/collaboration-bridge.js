@@ -312,7 +312,7 @@ export function createCollaborationBridge({
       lines,
     });
     const delivery = await flushOutbox();
-    onAudit("发布外部仓库协同任务", { id: eventId, organizationCode: organization.code, coreRefId, commandType: "publish", submittedByName: actorName }, { status: queued.status, delivery });
+    onAudit("发布伙伴协同任务", { id: eventId, organizationCode: organization.code, coreRefId, commandType: "publish", submittedByName: actorName }, { status: queued.status, delivery });
     return { ok: true, eventId, coreRefId, referenceNo, status: queued.status, idempotentReplay: queued.idempotentReplay, delivery };
   }
 

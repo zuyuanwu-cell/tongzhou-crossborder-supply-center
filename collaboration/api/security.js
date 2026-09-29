@@ -89,13 +89,19 @@ export function sessionCookie(value, maxAgeSeconds = 12 * 60 * 60) {
 }
 
 export function csrfCookie(value, maxAgeSeconds = 12 * 60 * 60) {
-  return `tz_collab_csrf=${encodeURIComponent(value)}; Path=/collaboration; SameSite=Lax; Max-Age=${maxAgeSeconds}${collaborationConfig.cookieSecure ? "; Secure" : ""}`;
+  return `tz_collab_csrf=${encodeURIComponent(value)}; Path=/; SameSite=Lax; Max-Age=${maxAgeSeconds}${collaborationConfig.cookieSecure ? "; Secure" : ""}`;
+}
+
+export function clearLegacyCsrfCookie() {
+  const secure = collaborationConfig.cookieSecure ? "; Secure" : "";
+  return `tz_collab_csrf=; Path=/collaboration; SameSite=Lax; Max-Age=0${secure}`;
 }
 
 export function clearSessionCookies() {
   const secure = collaborationConfig.cookieSecure ? "; Secure" : "";
   return [
     `tz_collab_session=; Path=/collaboration; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
-    `tz_collab_csrf=; Path=/collaboration; SameSite=Lax; Max-Age=0${secure}`,
+    `tz_collab_csrf=; Path=/; SameSite=Lax; Max-Age=0${secure}`,
+    clearLegacyCsrfCookie(),
   ];
 }

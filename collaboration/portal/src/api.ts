@@ -17,11 +17,19 @@ function cookie(name: string) {
   return document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix))?.slice(prefix.length) || "";
 }
 
+async function ensureCsrfToken() {
+  let token = cookie("tz_collab_csrf");
+  if (token) return decodeURIComponent(token);
+  await fetch(`${API_BASE}/collaboration/me`, { credentials: "include", cache: "no-store" });
+  token = cookie("tz_collab_csrf");
+  return token ? decodeURIComponent(token) : "";
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = String(init.method || "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (!["GET", "HEAD"].includes(method)) headers.set("X-CSRF-Token", decodeURIComponent(cookie("tz_collab_csrf")));
+  if (!["GET", "HEAD"].includes(method)) headers.set("X-CSRF-Token", await ensureCsrfToken());
   const response = await fetch(`${API_BASE}${path}`, { ...init, headers, credentials: "include" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(payload.message || `请求失败（${response.status}）`, response.status, payload.code);

@@ -11,6 +11,7 @@ import {
   authenticate,
   login,
   logout,
+  refreshCsrfCookies,
 } from "./auth.js";
 import {
   createWarehouseOperation,
@@ -169,7 +170,8 @@ async function route(req, res) {
   const auth = await authenticate(req, { allowPendingMfa: url.pathname === "/collaboration/me" });
   if (url.pathname === "/collaboration/me" && req.method === "GET") {
     if (!auth) { sendJson(res, 401, { ok: false, code: "authentication_required", message: "请先登录。" }); return; }
-    sendJson(res, 200, { ok: true, session: publicSession(auth) });
+    const cookies = refreshCsrfCookies(req, auth);
+    sendJson(res, 200, { ok: true, session: publicSession(auth) }, cookies.length ? { "Set-Cookie": cookies } : {});
     return;
   }
 

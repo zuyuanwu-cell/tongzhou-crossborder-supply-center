@@ -7590,7 +7590,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/warehouse-collaboration/notification-teams" && req.method === "GET") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "after_sales_report") && !hasPermission(auth, "warehouse_ticket_report")) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有仓库协同提报权限。" });
+        sendJson(res, 403, { ok: false, message: "当前账号没有海外仓协同提报权限。" });
         return;
       }
       const teams = normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams)
@@ -8765,7 +8765,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const results = await sendWecomNotification(team.robotIds, [
-        "### 仓库协同项目群通知测试",
+        "### 海外仓协同项目群通知测试",
         `项目团队：${team.name}`,
         "配置成功。后续仓库处理进度会按提报时冻结的项目团队发送到本群。",
       ].join("\n\n"), team.mentionUserIds);

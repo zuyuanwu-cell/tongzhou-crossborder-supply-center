@@ -6,10 +6,10 @@ const PAGE_DEFINITIONS = {
   "#dashboard": {
     id: "dashboard",
     title: "经营工作台",
-    description: "总览库存、动销、备货、仓库协同和资质风险。",
+    description: "总览库存、动销、备货、海外仓协同和资质风险。",
     resourceTypes: ["inventory_value_summary", "movement_item", "stockup_recommendation", "after_sales_ticket", "warehouse_ticket", "qualification_expiry"],
     prompts: ["今天最需要我关注什么？", "哪些异常会影响发货？", "给我一个处理优先级清单"],
-    actions: [{ label: "查看库存风险", href: "#movement" }, { label: "查看仓库协同", href: "#after-sales" }],
+    actions: [{ label: "查看库存风险", href: "#movement" }, { label: "查看海外仓协同", href: "#after-sales" }],
   },
   "#products": {
     id: "products",
@@ -41,7 +41,7 @@ const PAGE_DEFINITIONS = {
     description: "查询仓库地址、时区、营业时间和协作信息。",
     resourceTypes: ["warehouse_info"],
     prompts: ["当前有哪些可用仓库？", "帮我理解仓库时区和工作时间", "哪些仓库信息需要补齐？"],
-    actions: [{ label: "查看仓库协同", href: "#after-sales" }],
+    actions: [{ label: "查看海外仓协同", href: "#after-sales" }],
   },
   "#inventory": {
     id: "inventory",
@@ -149,11 +149,19 @@ const PAGE_DEFINITIONS = {
   },
   "#after-sales": {
     id: "after-sales",
-    title: "仓库协同",
-    description: "理解售后单、仓库工单、责任和处理进度。",
+    title: "海外仓协同",
+    description: "理解海外仓售后单、仓库工单、责任和处理进度。",
     resourceTypes: ["after_sales_ticket", "warehouse_ticket"],
     prompts: ["哪些售后单超时未处理？", "仓库当前最需要处理什么？", "帮我总结驳回和待补发问题"],
     actions: [{ label: "查看库存风险", href: "#movement" }],
+  },
+  "#partner-collaboration": {
+    id: "partner-collaboration",
+    title: "伙伴协同",
+    description: "管理国内仓、委外工厂、包材供应商等外部组织的协同任务。",
+    resourceTypes: [],
+    prompts: ["哪些伙伴任务仍待接单？", "帮我梳理当前协同进度", "哪些任务需要中台确认？"],
+    actions: [{ label: "管理协同组织", href: "#collaboration-accounts" }, { label: "查看海外仓协同", href: "#after-sales" }],
   },
   "#miaoshou": {
     id: "miaoshou",
