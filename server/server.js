@@ -402,6 +402,8 @@ const collaborationBridgeApi = createCollaborationBridgeApi({
   bridge: collaborationBridge,
   getAuth,
   canManage: (auth) => hasPermission(auth, "operations") && hasPermission(auth, "domestic_inventory_manage"),
+  canViewTasks: (auth) => hasPermission(auth, "collaboration_task_view") || (hasPermission(auth, "operations") && hasPermission(auth, "domestic_inventory_manage")),
+  canPublishTasks: (auth) => hasPermission(auth, "collaboration_task_publish") || (hasPermission(auth, "operations") && hasPermission(auth, "domestic_inventory_manage")),
   appendActionLog,
 });
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });

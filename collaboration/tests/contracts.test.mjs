@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collaborationProjectionSchema, inventoryProjectionSchema, oemProjectionSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
+import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { canPerformAction, requiresMfaAtLogin } from "../api/permissions.js";
 
 const validProjection = {
@@ -38,6 +38,24 @@ test("inventory images and partner-created warehouse operations stay on a strict
   assert.equal(warehouseOperationSchema.safeParse(inbound).success, true);
   assert.equal(warehouseOperationSchema.safeParse({ ...inbound, internalCost: 99 }).success, false);
   assert.equal(warehouseOperationSchema.safeParse({ operationType: "stocktake", warehouseRef: "wh-1", note: "月度盘点", lines: [{ sku: "SKU-1", productName: "产品一", countedQuantity: 0, unit: "件" }] }).success, true);
+});
+
+test("internal warehouse task publication only accepts public collaboration fields", () => {
+  const input = {
+    organizationCode: "warehouse-a",
+    warehouseRef: "wh-1",
+    itemType: "warehouse_outbound",
+    referenceNo: "CK-20260929-001",
+    title: "电商订单出库",
+    description: "按附件清单拣货并复核",
+    priority: "urgent",
+    dueAt: "2026-09-30T10:00:00.000+08:00",
+    lines: [{ sku: "SKU-1", plannedQuantity: 12, unit: "盒" }],
+  };
+  assert.equal(internalWarehouseTaskSchema.safeParse(input).success, true);
+  assert.equal(internalWarehouseTaskSchema.safeParse({ ...input, internalCost: 18.5 }).success, false);
+  assert.equal(internalWarehouseTaskSchema.safeParse({ ...input, itemType: "warehouse_stocktake" }).success, false);
+  assert.equal(internalWarehouseTaskSchema.safeParse({ ...input, lines: [{ sku: "SKU-1", plannedQuantity: 0 }] }).success, false);
 });
 
 test("organization jobs enforce role capabilities without an authenticator gate", () => {

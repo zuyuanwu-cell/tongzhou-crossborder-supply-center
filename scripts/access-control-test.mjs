@@ -280,6 +280,16 @@ const domesticManagerPermissions = effectivePermissions({ role: "direct", permis
 assert.equal(domesticManagerPermissions.includes("domestic_inventory_view"), true, "domestic inventory management implies view access");
 const domesticTransferPermissions = effectivePermissions({ role: "direct", permissionOverrides: sanitizePermissionUpdate("direct", { allow: ["domestic_inventory_transfer"], deny: ["domestic_inventory_view"] }) });
 assert.equal(domesticTransferPermissions.includes("domestic_inventory_view"), true, "domestic inventory transfer implies view access");
+assert.equal(effectivePermissions({ role: "admin" }).includes("collaboration_task_publish"), true, "administrators can publish partner collaboration tasks by default");
+assert.equal(effectivePermissions({ role: "direct" }).includes("collaboration_task_view"), false, "direct operators need an explicit collaboration-task grant");
+const directCollaborationPublisher = effectivePermissions({
+  role: "direct",
+  permissionOverrides: sanitizePermissionUpdate("direct", { allow: ["collaboration_task_publish"], deny: ["collaboration_task_view"] }),
+});
+assert.equal(directCollaborationPublisher.includes("collaboration_task_publish"), true, "authorized internal operators can publish partner collaboration tasks");
+assert.equal(directCollaborationPublisher.includes("collaboration_task_view"), true, "publishing collaboration tasks always implies view access");
+assert.equal(effectivePermissions({ role: "warehouse", permissionOverrides: { allow: ["collaboration_task_view", "collaboration_task_publish"], deny: [] } }).some((permission) => permission.startsWith("collaboration_task_")), false, "legacy warehouse accounts cannot access the internal collaboration task console");
+assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["collaboration_task_view", "collaboration_task_publish"], deny: [] } }).some((permission) => permission.startsWith("collaboration_task_")), false, "distributors cannot access the internal collaboration task console");
 assert.equal(publicUser({ id: "wh-1", username: "warehouse", role: "warehouse" }).roleLabel, "仓库操作员");
 assert.throws(() => createLocalUser({
   username: "warehouse-empty",

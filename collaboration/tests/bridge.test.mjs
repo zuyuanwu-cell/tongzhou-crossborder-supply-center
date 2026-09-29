@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -21,6 +21,12 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     }
     if (parsedUrl.pathname.endsWith("/organizations") && (options.method || "GET") === "GET") {
       return new Response(JSON.stringify({ ok: true, organizations }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (parsedUrl.pathname.endsWith("/work-items") && (options.method || "GET") === "GET") {
+      return new Response(JSON.stringify({ ok: true, items: workItems, counts: { pending: workItems.length }, total: workItems.length, limit: 50, offset: 0 }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (/\/work-items\/[0-9a-f-]{36}$/i.test(parsedUrl.pathname) && (options.method || "GET") === "GET") {
+      return new Response(JSON.stringify(workItemDetail || { item: workItems[0], lines: [], events: [], attachments: [], commands: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (String(url).includes("/commands?") && (options.method || "GET") === "GET") {
       return new Response(JSON.stringify({ ok: true, commands, nextCursor: commands.at(-1)?.submittedAt || "" }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -43,9 +49,10 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
         return inventory || { ok: true, warehouses: [], balances: [] };
       },
     },
-    listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", unit: "件" }],
+    listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
     baseUrl: "http://collaboration.test",
     internalToken: "internal-test-token",
+    publicOrigin: "https://partner.example.test",
     fetchImpl,
   });
   return { bridge, movements, requests, store };
@@ -249,4 +256,68 @@ test("identity administration stays behind the server-side collaboration token",
   assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);
   assert.equal(requests[5].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/revoke`);
   assert.ok(requests.every((request) => request.authorization === "Bearer internal-test-token"));
+});
+
+test("internal staff can publish an allowlisted warehouse task and read partner progress", async (t) => {
+  const workItemDetail = {
+    item: { id: "88888888-8888-4888-8888-888888888888", publicPayload: { warehouseRef: "warehouse-1" } },
+    lines: [{ sku: "SKU-1" }],
+    events: [],
+    attachments: [],
+    commands: [],
+  };
+  const accessGrants = [{
+    resourceType: "warehouse",
+    resourceRef: "warehouse-1",
+    resourceName: "一号仓",
+    permissions: ["warehouse.task.view", "warehouse.task.handle", "warehouse.outbound.confirm"],
+  }];
+  const workItems = [{ id: "88888888-8888-4888-8888-888888888888", title: "电商订单出库", status: "pending" }];
+  const { bridge, requests, store } = await fixture(t, {
+    organizations: [{ code: "warehouse-a", name: "一号仓协同组织", organizationType: "warehouse", status: "active" }],
+    accessGrants,
+    inventory: {
+      ok: true,
+      warehouses: [{ id: "warehouse-1", name: "一号仓" }],
+      balances: [{ sku: "SKU-1", productName: "测试产品", imageUrl: "https://files.example.test/product.jpg", availableQty: 20, reservedQty: 2, unit: "件" }],
+    },
+    workItems,
+    workItemDetail,
+  });
+
+  const options = await bridge.listWarehouseTaskOptions();
+  assert.equal(options.portalUrl, "https://partner.example.test");
+  assert.equal(options.organizations[0].warehouses[0].resourceRef, "warehouse-1");
+  assert.equal(options.products[0].availableByWarehouse["warehouse-1"], 20);
+  assert.equal("directCostPrice" in options.products[0], false);
+
+  const published = await bridge.publishWarehouseTask({
+    organizationCode: "warehouse-a",
+    warehouseRef: "warehouse-1",
+    itemType: "warehouse_outbound",
+    referenceNo: "CK-20260929-001",
+    title: "电商订单出库",
+    description: "完成拣货和复核",
+    priority: "urgent",
+    dueAt: "2026-09-30T02:00:00.000Z",
+    lines: [{ sku: "SKU-1", plannedQuantity: 12, unit: "件" }],
+  }, { idempotencyKey: "publish-warehouse-task-1", actorName: "中台管理员" });
+
+  assert.equal(published.delivery.published, 1);
+  assert.equal(store.status().outbox.published, 1);
+  const projectionRequest = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/projections"));
+  assert.ok(projectionRequest);
+  assert.equal(projectionRequest.body.organizationCode, "warehouse-a");
+  assert.equal(projectionRequest.body.publicPayload.warehouseRef, "warehouse-1");
+  assert.equal(projectionRequest.body.lines[0].imageUrl, "https://files.example.test/product.jpg");
+  assert.equal("directCostPrice" in projectionRequest.body.lines[0], false);
+
+  const progress = await bridge.listWarehouseTasks({ organizationCode: "warehouse-a" }, { warehouseIds: ["warehouse-1"], skus: ["SKU-1"] });
+  assert.equal(progress.items[0].status, "pending");
+  assert.match(requests.at(-1).url, /organizationCode=warehouse-a/);
+  assert.match(requests.at(-1).url, /warehouseRefs=warehouse-1/);
+  assert.match(requests.at(-1).url, /skus=SKU-1/);
+  assert.equal((await bridge.getWarehouseTask(workItems[0].id, { warehouseIds: ["warehouse-1"], skus: ["SKU-1"] })).lines[0].sku, "SKU-1");
+  await assert.rejects(() => bridge.getWarehouseTask(workItems[0].id, { warehouseIds: ["warehouse-2"] }), /无权查看该仓库/);
+  await assert.rejects(() => bridge.getWarehouseTask(workItems[0].id, { skus: ["SKU-2"] }), /无权查看该任务中的商品/);
 });

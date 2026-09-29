@@ -1987,7 +1987,7 @@
 .warehouse-collaboration-hero h2 { margin: 4px 0 8px; color: #0c2d5a; font-size: clamp(27px, 2.5vw, 39px); }
 .warehouse-collaboration-hero span { color: #60728d; }
 .warehouse-collaboration-hero > svg { box-sizing: content-box; padding: 18px; color: #fff; border-radius: 18px; background: linear-gradient(145deg, #174b91, #0c2f62); box-shadow: 0 15px 25px rgba(15, 61, 119, .2); }
-.warehouse-module-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 8px; border: 1px solid #d7e2ef; border-radius: 16px; background: #edf3fa; }
+.warehouse-module-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; padding: 8px; border: 1px solid #d7e2ef; border-radius: 16px; background: #edf3fa; }
 .warehouse-module-tabs button { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 66px; padding: 10px 18px; color: #49617f; border: 1px solid transparent; border-radius: 12px; background: transparent; cursor: pointer; }
 .warehouse-module-tabs button span { display: grid; gap: 2px; text-align: left; }
 .warehouse-module-tabs button strong { color: #183c6b; font-size: 16px; }

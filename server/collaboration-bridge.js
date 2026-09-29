@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { collaborationProjectionSchema, inventoryProjectionSchema, oemProjectionSchema } from "../collaboration/shared/contracts.js";
+import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema } from "../collaboration/shared/contracts.js";
 
 const systemUser = Object.freeze({
   id: "collaboration-bridge",
@@ -48,6 +48,10 @@ function publicImageUrl(value) {
   }
 }
 
+function normalizedSku(value) {
+  return String(value || "").replace(/\s+/g, "").toUpperCase();
+}
+
 function inventoryProjectionStateKey(organizationCode, warehouseRef) {
   return `inventory_projection:${organizationCode}:${warehouseRef}`;
 }
@@ -81,6 +85,7 @@ export function createCollaborationBridge({
   inventorySyncIntervalMs = Number(process.env.COLLABORATION_INVENTORY_SYNC_MS || 60_000),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
+  publicOrigin = process.env.COLLABORATION_PUBLIC_ORIGIN || "https://partner.tongzhoukuajing.com",
   fetchImpl = globalThis.fetch,
   onAudit = () => {},
 } = {}) {
@@ -90,7 +95,7 @@ export function createCollaborationBridge({
   let running = false;
   let lastError = "";
 
-  async function internalRequest(path, { method = "GET", body } = {}) {
+  async function internalRequest(path, { method = "GET", body, raw = false } = {}) {
     if (!enabled) fail("协同桥接尚未配置。", 503, "collaboration_bridge_disabled");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
@@ -104,9 +109,12 @@ export function createCollaborationBridge({
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) fail(payload.message || `协同 API 返回 ${response.status}`, response.status, payload.code || "collaboration_api_error");
-      return payload;
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        fail(payload.message || `协同 API 返回 ${response.status}`, response.status, payload.code || "collaboration_api_error");
+      }
+      if (raw) return response;
+      return response.json().catch(() => ({}));
     } finally {
       clearTimeout(timeout);
     }
@@ -116,7 +124,10 @@ export function createCollaborationBridge({
     const withId = { ...input, eventId: input.eventId || projectionId("projection") };
     const projection = collaborationProjectionSchema.parse(withId);
     const row = store.enqueue({ id: projection.eventId, eventType: "projection", payload: projection, now: nowIso() });
-    return { id: row.id, status: row.status, projection };
+    const stored = safeJson(row.payload_json);
+    delete stored._delivery;
+    if (JSON.stringify(stored) !== JSON.stringify(projection)) fail("Idempotency-Key 已用于其他协同任务。", 409, "idempotency_key_conflict");
+    return { id: row.id, status: row.status, projection, idempotentReplay: row.status !== "pending" || row.created_at !== row.next_attempt_at };
   }
 
   function queueInventoryProjection(input) {
@@ -200,6 +211,144 @@ export function createCollaborationBridge({
   function inventoryProjectionSyncDue() {
     const lastScan = Date.parse(store.state("inventory_projection_last_scan_at"));
     return !Number.isFinite(lastScan) || Date.now() - lastScan >= Math.max(10_000, inventorySyncIntervalMs);
+  }
+
+  async function listWarehouseTaskOptions({ warehouseIds = [], skus = [] } = {}) {
+    const allowedWarehouses = new Set((warehouseIds || []).map(String).filter(Boolean));
+    const allowedSkus = new Set((skus || []).map(normalizedSku).filter(Boolean));
+    const response = await listOrganizations({ status: "active" });
+    const warehouseOrganizations = (response.organizations || []).filter((organization) => organization.organizationType === "warehouse" && organization.status === "active");
+    const organizations = [];
+    const availability = new Map();
+    for (const organization of warehouseOrganizations) {
+      const access = await getOrganizationAccessGrants(organization.code);
+      const warehouses = [];
+      for (const grant of (access.grants || []).filter((item) => item.resourceType === "warehouse" && item.permissions?.includes("warehouse.task.view"))) {
+        if (allowedWarehouses.size && !allowedWarehouses.has(String(grant.resourceRef))) continue;
+        const snapshot = inventoryProjectionForGrant(organization.code, grant);
+        warehouses.push({
+          resourceRef: grant.resourceRef,
+          resourceName: snapshot.warehouseName,
+          permissions: grant.permissions || [],
+          skuCount: snapshot.items.length,
+          updatedAt: snapshot.items.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, ""),
+        });
+        if (!availability.has(String(grant.resourceRef))) availability.set(String(grant.resourceRef), new Map());
+        for (const item of snapshot.items) availability.get(String(grant.resourceRef)).set(normalizedSku(item.sku), Number(item.availableQuantity || 0));
+      }
+      if (warehouses.length) organizations.push({ code: organization.code, name: organization.name, warehouses });
+    }
+    const bySku = new Map();
+    for (const item of listProducts()) {
+      const sku = normalizedSku(item.sku || item.skuNo || item.countrySku);
+      if (!sku || (allowedSkus.size && !allowedSkus.has(sku)) || bySku.has(sku)) continue;
+      bySku.set(sku, {
+        sku,
+        productName: String(item.name || item.productName || sku).trim(),
+        imageUrl: publicImageUrl(item.imageUrl),
+        unit: String(item.unit || "件").trim() || "件",
+        availableByWarehouse: Object.fromEntries([...availability.entries()].map(([warehouseRef, balances]) => [warehouseRef, Number(balances.get(sku) || 0)])),
+      });
+    }
+    return {
+      ok: true,
+      portalUrl: String(publicOrigin || "").replace(/\/$/, ""),
+      organizations,
+      products: [...bySku.values()].sort((left, right) => left.sku.localeCompare(right.sku, "zh-CN", { numeric: true })),
+    };
+  }
+
+  async function publishWarehouseTask(input, { idempotencyKey = "", actorName = "供应链中台", warehouseIds = [], skus = [] } = {}) {
+    const parsed = internalWarehouseTaskSchema.safeParse(input);
+    if (!parsed.success) fail(parsed.error.issues[0]?.message || "协同任务内容不正确。", 400, "invalid_task_payload");
+    const safeKey = String(idempotencyKey || "").trim();
+    if (!safeKey || safeKey.length > 160) fail("请提供有效的 Idempotency-Key。", 400, "idempotency_key_required");
+    const options = await listWarehouseTaskOptions({ warehouseIds, skus });
+    const organization = options.organizations.find((item) => item.code === parsed.data.organizationCode);
+    if (!organization) fail("目标协同组织不存在、已停用或不在当前账号范围内。", 404, "organization_not_available");
+    const warehouse = organization.warehouses.find((item) => String(item.resourceRef) === parsed.data.warehouseRef);
+    if (!warehouse) fail("目标仓库未授权给该协同组织或不在当前账号范围内。", 403, "warehouse_not_granted");
+    const products = new Map(options.products.map((item) => [item.sku, item]));
+    const lines = parsed.data.lines.map((line) => {
+      const sku = normalizedSku(line.sku);
+      const product = products.get(sku);
+      if (!product) fail(`SKU ${sku} 不存在或不在当前账号范围内。`, 400, "product_not_available");
+      if (parsed.data.itemType === "warehouse_outbound" && Number(line.plannedQuantity) > Number(product.availableByWarehouse[parsed.data.warehouseRef] || 0)) {
+        fail(`${sku} 可用库存不足，当前可用 ${Number(product.availableByWarehouse[parsed.data.warehouseRef] || 0)} ${product.unit}。`, 409, "insufficient_projected_stock");
+      }
+      return {
+        sku,
+        productName: product.productName,
+        imageUrl: product.imageUrl,
+        plannedQuantity: Number(line.plannedQuantity),
+        completedQuantity: 0,
+        unit: String(line.unit || product.unit || "件"),
+      };
+    });
+    if (new Set(lines.map((line) => line.sku)).size !== lines.length) fail("同一 SKU 不能重复添加。", 400, "duplicate_sku");
+    const digest = createHash("sha256").update(safeKey).digest("hex").slice(0, 10).toUpperCase();
+    const taskDate = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const coreRefId = `CWT-${taskDate}-${digest}`;
+    const eventId = `warehouse-task-${digest.toLowerCase()}-${taskDate}`;
+    const referenceNo = parsed.data.referenceNo || coreRefId;
+    const queued = queueProjection({
+      eventId,
+      organizationCode: organization.code,
+      coreRefType: "internal_warehouse_task",
+      coreRefId,
+      itemType: parsed.data.itemType,
+      title: parsed.data.title,
+      description: parsed.data.description,
+      priority: parsed.data.priority,
+      status: "pending",
+      dueAt: parsed.data.dueAt,
+      version: 1,
+      publicPayload: {
+        referenceNo,
+        warehouseRef: warehouse.resourceRef,
+        warehouseName: warehouse.resourceName,
+        note: parsed.data.description.slice(0, 2_000),
+      },
+      lines,
+    });
+    const delivery = await flushOutbox();
+    onAudit("发布外部仓库协同任务", { id: eventId, organizationCode: organization.code, coreRefId, commandType: "publish", submittedByName: actorName }, { status: queued.status, delivery });
+    return { ok: true, eventId, coreRefId, referenceNo, status: queued.status, idempotentReplay: queued.idempotentReplay, delivery };
+  }
+
+  function listWarehouseTasks(filters = {}, { warehouseIds = [], skus = [] } = {}) {
+    const query = new URLSearchParams();
+    for (const key of ["organizationCode", "status", "itemType", "keyword", "limit", "offset"]) {
+      if (filters[key] !== undefined && String(filters[key]).trim()) query.set(key, String(filters[key]));
+    }
+    if (warehouseIds.length) query.set("warehouseRefs", warehouseIds.map(String).filter(Boolean).join(","));
+    if (skus.length) query.set("skus", skus.map(normalizedSku).filter(Boolean).join(","));
+    const queryString = query.toString();
+    return internalRequest(`/collaboration/internal/v1/work-items${queryString ? `?${queryString}` : ""}`);
+  }
+
+  function assertWarehouseTaskScope(detail, { warehouseIds = [], skus = [] } = {}) {
+    const allowedWarehouses = new Set(warehouseIds.map(String).filter(Boolean));
+    const allowedSkus = new Set(skus.map(normalizedSku).filter(Boolean));
+    if (allowedWarehouses.size && !allowedWarehouses.has(String(detail?.item?.publicPayload?.warehouseRef || ""))) fail("当前账号无权查看该仓库的协同任务。", 403, "warehouse_scope_denied");
+    const taskLines = Array.isArray(detail?.lines) ? detail.lines : [];
+    const hasUnauthorizedSku = !taskLines.length || taskLines.some((line) => !allowedSkus.has(normalizedSku(line.sku)));
+    if (allowedSkus.size && hasUnauthorizedSku) fail("当前账号无权查看该任务中的商品范围。", 403, "sku_scope_denied");
+    return detail;
+  }
+
+  async function getWarehouseTask(workItemId, scopes = {}) {
+    return assertWarehouseTaskScope(await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}`), scopes);
+  }
+
+  async function downloadWarehouseTaskAttachment(workItemId, attachmentId, scopes = {}) {
+    await getWarehouseTask(workItemId, scopes);
+    const response = await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/attachments/${encodeURIComponent(attachmentId)}`, { raw: true });
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") || "application/octet-stream",
+      contentDisposition: response.headers.get("content-disposition") || "attachment",
+    };
   }
 
   function queueOemProjection(input) {
@@ -399,7 +548,8 @@ export function createCollaborationBridge({
     const query = new URLSearchParams();
     if (keyword) query.set("keyword", String(keyword));
     if (status) query.set("status", String(status));
-    const suffix = query.size ? `?${query}` : "";
+    const queryString = query.toString();
+    const suffix = queryString ? `?${queryString}` : "";
     return internalRequest(`/collaboration/internal/v1/organizations${suffix}`);
   }
 
@@ -471,15 +621,20 @@ export function createCollaborationBridge({
 
   return {
     bootstrapOrganization,
+    downloadWarehouseTaskAttachment,
     flushOutbox,
     awardOemQuote,
     getOrganizationAccess,
     getOrganizationAccessGrants,
+    getWarehouseTask,
     listOrganizations,
     listApprovals: () => store.listCommands(["awaiting_approval"], 200),
     listOemQuotes,
+    listWarehouseTaskOptions,
+    listWarehouseTasks,
     pullCommands,
     provisionOrganization,
+    publishWarehouseTask,
     queueInventoryProjection,
     queueOemProjection,
     queueProjection,

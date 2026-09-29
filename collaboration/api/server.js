@@ -27,6 +27,8 @@ import {
   applyInventoryProjection,
   assertInternalRequest,
   completeCommand,
+  getInternalWorkItem,
+  listInternalWorkItems,
   listPendingCommands,
   reviewCommand,
 } from "./integration.js";
@@ -34,6 +36,7 @@ import {
   attachmentDownload,
   completeS3Upload,
   createAttachmentUpload,
+  internalAttachmentDownload,
   receiveLocalUpload,
 } from "./storage.js";
 import { runNotificationDeliveryBatch } from "./notifications.js";
@@ -224,6 +227,23 @@ async function route(req, res) {
     }
     if (url.pathname === "/collaboration/internal/v1/inventory" && req.method === "PUT") {
       sendJson(res, 200, await applyInventoryProjection(await readJson(req)));
+      return;
+    }
+    if (url.pathname === "/collaboration/internal/v1/work-items" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...(await listInternalWorkItems(queryObject(url))) });
+      return;
+    }
+    let internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}$`));
+    if (internalWorkItemMatch && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...(await getInternalWorkItem(internalWorkItemMatch[1])) });
+      return;
+    }
+    internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}/attachments/${uuidPattern}$`));
+    if (internalWorkItemMatch && req.method === "GET") {
+      const download = await internalAttachmentDownload(internalWorkItemMatch[1], internalWorkItemMatch[2]);
+      if (download.redirectUrl) { res.writeHead(302, { Location: download.redirectUrl }); res.end(); return; }
+      res.writeHead(200, { "Content-Type": download.attachment.mime_type, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(download.attachment.file_name)}`, "Content-Length": download.attachment.size_bytes, "Cache-Control": "private, no-store" });
+      download.stream.pipe(res);
       return;
     }
     if (url.pathname === "/collaboration/internal/v1/oem/projections" && req.method === "PUT") {

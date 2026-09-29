@@ -112,3 +112,14 @@ test("warehouse self-service stores allowlisted images and retains approval cont
   assert.match(migrateSource, /GRANT SELECT,INSERT ON collaboration_projects,collaboration_spaces,warehouse_task_lines/);
   assert.match(integrationSource, /partner_warehouse_operation/);
 });
+
+test("internal warehouse progress reads stay behind the integration boundary", () => {
+  assert.match(integrationSource, /export async function listInternalWorkItems/);
+  assert.match(integrationSource, /w\.item_type LIKE 'warehouse_%'/);
+  assert.match(integrationSource, /export async function getInternalWorkItem/);
+  assert.match(serverSource, /collaboration\/internal\/v1\/work-items/);
+  assert.match(serverSource, /assertInternalRequest\(req\)/);
+  assert.match(storageSource, /export async function internalAttachmentDownload/);
+  assert.match(storageSource, /scan_status !== "clean"/);
+  assert.doesNotMatch(integrationSource.match(/function internalWorkItem\(row\)[\s\S]*?\n\}/)?.[0] || "", /password|secret|token|email/i);
+});

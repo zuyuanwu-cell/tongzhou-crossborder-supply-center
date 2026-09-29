@@ -46,6 +46,22 @@ export const collaborationProjectionSchema = z.object({
   lines: z.array(warehouseLineSchema).max(2_000).default([]),
 }).strict();
 
+export const internalWarehouseTaskSchema = z.object({
+  organizationCode: limitedText(64).regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),
+  warehouseRef: limitedText(120).min(1),
+  itemType: z.enum(["warehouse_inbound", "warehouse_outbound", "warehouse_stockup", "warehouse_exception"]),
+  referenceNo: limitedText(120).optional().default(""),
+  title: limitedText(240).min(1),
+  description: limitedText(5_000).optional().default(""),
+  priority: z.enum(["normal", "urgent"]).optional().default("normal"),
+  dueAt: isoDateTime.optional().default(""),
+  lines: z.array(z.object({
+    sku: limitedText(100).min(1),
+    plannedQuantity: z.number().finite().positive(),
+    unit: limitedText(20).optional().default(""),
+  }).strict()).min(1).max(500),
+}).strict();
+
 export const inventoryProjectionSchema = z.object({
   eventId: limitedText(160).min(1),
   organizationCode: limitedText(64).regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),

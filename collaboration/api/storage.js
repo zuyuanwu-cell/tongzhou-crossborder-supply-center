@@ -7,7 +7,7 @@ import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from 
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { z } from "zod";
 import { collaborationConfig } from "./config.js";
-import { withOrganization } from "./db.js";
+import { withOrganization, withSystem } from "./db.js";
 import { assertWorkItemPermission } from "./access.js";
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -162,8 +162,7 @@ export async function completeS3Upload(auth, attachmentId) {
   return scanAttachment(auth, attachmentId);
 }
 
-export async function attachmentDownload(auth, attachmentId) {
-  const attachment = await attachmentForOrg(auth, attachmentId);
+async function downloadForAttachment(attachment) {
   if (attachment.scan_status !== "clean") fail("附件尚未通过安全检查。", 423, "attachment_not_clean");
   if (collaborationConfig.storageDriver === "s3") {
     const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: collaborationConfig.s3.bucket, Key: attachment.object_key, ResponseContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(attachment.file_name)}` }), { expiresIn: 60 });
@@ -172,4 +171,25 @@ export async function attachmentDownload(auth, attachmentId) {
   const path = localPath(attachment.object_key);
   if (!existsSync(path)) fail("附件内容不存在。", 404, "not_found");
   return { stream: createReadStream(path), attachment };
+}
+
+export async function attachmentDownload(auth, attachmentId) {
+  return downloadForAttachment(await attachmentForOrg(auth, attachmentId));
+}
+
+export async function internalAttachmentDownload(workItemId, attachmentId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(workItemId || "")) || !/^[0-9a-f-]{36}$/i.test(String(attachmentId || ""))) {
+    fail("附件编号不正确。", 400, "invalid_attachment_id");
+  }
+  const attachment = await withSystem(async (client) => {
+    const result = await client.query(
+      `SELECT attachments.* FROM attachments
+        JOIN work_items ON work_items.id=attachments.work_item_id
+       WHERE attachments.id=$1 AND attachments.work_item_id=$2 AND work_items.item_type LIKE 'warehouse_%'`,
+      [attachmentId, workItemId],
+    );
+    if (!result.rows[0]) fail("附件不存在。", 404, "not_found");
+    return result.rows[0];
+  });
+  return downloadForAttachment(attachment);
 }

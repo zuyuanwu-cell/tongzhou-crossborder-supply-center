@@ -41,13 +41,53 @@ function publicApproval(row) {
   };
 }
 
-export function createCollaborationBridgeApi({ bridge, getAuth, canManage, appendActionLog = () => {} }) {
+export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canViewTasks = canManage, canPublishTasks = canManage, appendActionLog = () => {} }) {
   return async function handleCollaborationBridgeApi(req, res, url) {
     if (url.pathname !== "/api/collaboration-bridge" && !url.pathname.startsWith("/api/collaboration-bridge/")) return false;
     const auth = getAuth(req);
     try {
-      if (!canManage(auth)) throw Object.assign(new Error("当前账号没有外部协同管控权限。"), { statusCode: 403, code: "forbidden" });
       const suffix = url.pathname.replace("/api/collaboration-bridge", "") || "/";
+      const warehouseTaskRoute = suffix === "/warehouse-tasks" || suffix.startsWith("/warehouse-tasks/");
+      if (warehouseTaskRoute) {
+        const warehouseIds = Array.isArray(auth?.user?.dataScopes?.warehouseIds) ? auth.user.dataScopes.warehouseIds : [];
+        const skus = Array.isArray(auth?.user?.dataScopes?.skus) ? auth.user.dataScopes.skus : [];
+        if (suffix === "/warehouse-tasks/options" && req.method === "GET") {
+          if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务的权限。"), { statusCode: 403, code: "forbidden" });
+          sendJson(res, 200, await bridge.listWarehouseTaskOptions({ warehouseIds, skus }));
+          return true;
+        }
+        if (suffix === "/warehouse-tasks" && req.method === "GET") {
+          if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务的权限。"), { statusCode: 403, code: "forbidden" });
+          sendJson(res, 200, await bridge.listWarehouseTasks(Object.fromEntries(url.searchParams.entries()), { warehouseIds, skus }));
+          return true;
+        }
+        if (suffix === "/warehouse-tasks" && req.method === "POST") {
+          if (!canPublishTasks(auth)) throw Object.assign(new Error("当前账号没有发布协同任务的权限。"), { statusCode: 403, code: "forbidden" });
+          const input = await readBody(req);
+          const actorName = auth.user?.displayName || auth.user?.username || "供应链中台";
+          const result = await bridge.publishWarehouseTask(input, { idempotencyKey: String(req.headers["idempotency-key"] || ""), actorName, warehouseIds, skus });
+          appendActionLog(auth, "发布仓库协同任务", "collaboration_work_item", result.coreRefId, { organizationCode: input.organizationCode || "", warehouseRef: input.warehouseRef || "", itemType: input.itemType || "", eventId: result.eventId, delivery: result.delivery });
+          sendJson(res, result.idempotentReplay ? 200 : 201, result);
+          return true;
+        }
+        const attachmentMatch = suffix.match(/^\/warehouse-tasks\/([0-9a-fA-F-]{36})\/attachments\/([0-9a-fA-F-]{36})$/);
+        if (attachmentMatch && req.method === "GET") {
+          if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务附件的权限。"), { statusCode: 403, code: "forbidden" });
+          const download = await bridge.downloadWarehouseTaskAttachment(attachmentMatch[1], attachmentMatch[2], { warehouseIds, skus });
+          res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
+          res.end(download.buffer);
+          return true;
+        }
+        const taskMatch = suffix.match(/^\/warehouse-tasks\/([0-9a-fA-F-]{36})$/);
+        if (taskMatch && req.method === "GET") {
+          if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务的权限。"), { statusCode: 403, code: "forbidden" });
+          sendJson(res, 200, await bridge.getWarehouseTask(taskMatch[1], { warehouseIds, skus }));
+          return true;
+        }
+        sendJson(res, 404, { ok: false, code: "not_found", message: "协同任务接口不存在。" });
+        return true;
+      }
+      if (!canManage(auth)) throw Object.assign(new Error("当前账号没有外部协同管控权限。"), { statusCode: 403, code: "forbidden" });
       if ((suffix === "/" || suffix === "/status") && req.method === "GET") {
         sendJson(res, 200, bridge.status());
         return true;

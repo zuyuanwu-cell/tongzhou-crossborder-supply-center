@@ -8,6 +8,30 @@ function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
 }
 
+const warehouseItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception"]);
+const workItemStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]);
+
+function internalWorkItem(row) {
+  return {
+    id: row.id,
+    organizationCode: row.organization_code,
+    organizationName: row.organization_name,
+    coreRefType: row.core_ref_type,
+    coreRefId: row.core_ref_id,
+    itemType: row.item_type,
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    priority: row.priority,
+    publicPayload: row.public_payload || {},
+    dueAt: row.due_at ? new Date(row.due_at).toISOString() : "",
+    version: Number(row.version),
+    lastCoreSyncedAt: row.last_core_synced_at ? new Date(row.last_core_synced_at).toISOString() : "",
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
 export function assertInternalRequest(req) {
   const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   if (!safeEqual(token, collaborationConfig.internalToken)) fail("内部集成凭证无效。", 401, "invalid_internal_token");
@@ -130,6 +154,108 @@ export async function applyInventoryProjection(input) {
     }
     await client.query("UPDATE integration_inbox SET status='applied',processed_at=now() WHERE source_event_id=$1", [projection.eventId]);
     return { ok: true, itemCount: projection.items.length, deletedItemCount: deleted.rowCount };
+  });
+}
+
+export async function listInternalWorkItems(filters = {}) {
+  const limit = Math.max(1, Math.min(100, Number(filters.limit || 50)));
+  const offset = Math.max(0, Number(filters.offset || 0));
+  const status = workItemStatuses.has(String(filters.status || "")) ? String(filters.status) : "";
+  const itemType = warehouseItemTypes.has(String(filters.itemType || "")) ? String(filters.itemType) : "";
+  const organizationCode = String(filters.organizationCode || "").trim().slice(0, 64);
+  const keyword = String(filters.keyword || "").trim().slice(0, 100);
+  const warehouseRefs = Array.from(new Set(String(filters.warehouseRefs || "").split(",").map((value) => value.trim().slice(0, 120)).filter(Boolean))).slice(0, 500);
+  const scopedSkus = Array.from(new Set(String(filters.skus || "").split(",").map((value) => value.replace(/\s+/g, "").toUpperCase().slice(0, 100)).filter(Boolean))).slice(0, 2_000);
+  return withSystem(async (client) => {
+    const baseConditions = ["w.item_type LIKE 'warehouse_%'"];
+    const baseParams = [];
+    if (organizationCode) { baseParams.push(organizationCode); baseConditions.push(`o.code=$${baseParams.length}`); }
+    if (itemType) { baseParams.push(itemType); baseConditions.push(`w.item_type=$${baseParams.length}`); }
+    if (warehouseRefs.length) { baseParams.push(warehouseRefs); baseConditions.push(`w.public_payload->>'warehouseRef'=ANY($${baseParams.length}::text[])`); }
+    if (scopedSkus.length) {
+      baseParams.push(scopedSkus);
+      baseConditions.push(`EXISTS (SELECT 1 FROM warehouse_task_lines scoped_line WHERE scoped_line.work_item_id=w.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM warehouse_task_lines scoped_line
+           WHERE scoped_line.work_item_id=w.id
+             AND NOT (upper(regexp_replace(scoped_line.sku,'\\s+','','g'))=ANY($${baseParams.length}::text[]))
+        )`);
+    }
+    if (keyword) {
+      baseParams.push(`%${keyword}%`);
+      baseConditions.push(`(w.title ILIKE $${baseParams.length} OR w.core_ref_id ILIKE $${baseParams.length} OR w.public_payload->>'referenceNo' ILIKE $${baseParams.length} OR o.name ILIKE $${baseParams.length})`);
+    }
+    const listConditions = [...baseConditions];
+    const listParams = [...baseParams];
+    if (status) { listParams.push(status); listConditions.push(`w.status=$${listParams.length}`); }
+    listParams.push(limit, offset);
+    const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name
+                      FROM work_items w JOIN organizations o ON o.id=w.organization_id`;
+    const [rows, countRows, totalRows] = await Promise.all([
+      client.query(
+        `${select} WHERE ${listConditions.join(" AND ")}
+         ORDER BY CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
+         LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+        listParams,
+      ),
+      client.query(
+        `SELECT w.status,count(*)::int AS count
+           FROM work_items w JOIN organizations o ON o.id=w.organization_id
+          WHERE ${baseConditions.join(" AND ")} GROUP BY w.status`,
+        baseParams,
+      ),
+      client.query(
+        `SELECT count(*)::int AS count FROM work_items w JOIN organizations o ON o.id=w.organization_id
+          WHERE ${listConditions.join(" AND ")}`,
+        listParams.slice(0, -2),
+      ),
+    ]);
+    return {
+      items: rows.rows.map(internalWorkItem),
+      counts: Object.fromEntries(countRows.rows.map((row) => [row.status, Number(row.count)])),
+      total: Number(totalRows.rows[0]?.count || 0),
+      limit,
+      offset,
+    };
+  });
+}
+
+export async function getInternalWorkItem(workItemId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(workItemId || ""))) fail("协同任务编号不正确。", 400, "invalid_work_item_id");
+  return withSystem(async (client) => {
+    const itemResult = await client.query(
+      `SELECT w.*,o.code AS organization_code,o.name AS organization_name
+         FROM work_items w JOIN organizations o ON o.id=w.organization_id
+        WHERE w.id=$1 AND w.item_type LIKE 'warehouse_%'`,
+      [workItemId],
+    );
+    const row = itemResult.rows[0];
+    if (!row) fail("协同任务不存在。", 404, "not_found");
+    const [lines, events, attachments, commands] = await Promise.all([
+      client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, row.organization_id]),
+      client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 200", [workItemId, row.organization_id]),
+      client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, row.organization_id]),
+      client.query("SELECT id,command_type,status,risk_level,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 100", [workItemId, row.organization_id]),
+    ]);
+    return {
+      item: internalWorkItem(row),
+      lines: lines.rows.map((line) => ({
+        id: line.id,
+        sku: line.sku,
+        productName: line.product_name,
+        imageUrl: line.image_url || "",
+        plannedQuantity: Number(line.planned_quantity),
+        completedQuantity: Number(line.completed_quantity),
+        unit: line.unit,
+        lotNo: line.lot_no || "",
+        barcode: line.barcode || "",
+        productionDate: line.production_date ? String(line.production_date).slice(0, 10) : "",
+        expiryDate: line.expiry_date ? String(line.expiry_date).slice(0, 10) : "",
+      })),
+      events: events.rows.map((event) => ({ id: event.id, eventType: event.event_type, actorName: event.actor_name, body: event.body, metadata: event.metadata || {}, createdAt: new Date(event.created_at).toISOString() })),
+      attachments: attachments.rows.map((attachment) => ({ id: attachment.id, fileName: attachment.file_name, mimeType: attachment.mime_type, sizeBytes: Number(attachment.size_bytes), scanStatus: attachment.scan_status, createdAt: new Date(attachment.created_at).toISOString() })),
+      commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
+    };
   });
 }
 
