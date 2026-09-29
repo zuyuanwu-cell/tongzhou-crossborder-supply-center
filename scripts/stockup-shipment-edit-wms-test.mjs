@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { initStockupCollaborationStore } from "../server/stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "../server/stockup-collaboration-service.js";
-import { warehouseStockupCreateCapability } from "../server/wms-adapters.js";
+import { resolveYunWarehouseCodeFromList, warehouseStockupCreateCapability } from "../server/wms-adapters.js";
 
 const temp = mkdtempSync(resolve(tmpdir(), "stockup-shipment-edit-wms-"));
 try {
@@ -32,6 +32,15 @@ try {
   assert.equal(service.updateShipment(pushed.id, { version: pushed.version, eta: "2026-10-25" }, context).shipment.eta, "2026-10-25");
   assert.equal(warehouseStockupCreateCapability({ id: "ru-test", providerId: "yunwms_ru" }).documentLabel, "入库单");
   assert.equal(warehouseStockupCreateCapability({ id: "sea-test", providerId: "sea_wms" }).documentLabel, "备货单");
+  const yunWarehouses = [
+    { warehouse_code: "DD001", warehouse_name: "东达001仓" },
+    { warehouse_code: "DD002", warehouse_name: "" },
+  ];
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, yunWarehouses), "DD001");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓" }, yunWarehouses), "DD002");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓", warehouseCode: "DD001" }, yunWarehouses), "DD001");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯仓" }, yunWarehouses), "");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, [{ warehouse_code: "MX001", warehouse_name: "MX001" }]), "MX001");
   console.log("stockup shipment edit and WMS tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });
