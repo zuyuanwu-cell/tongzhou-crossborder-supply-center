@@ -322,6 +322,7 @@ export function createDomesticInventoryService(store) {
         productId: text(line.productId), sku, productName: required(line.productName, `${sku} 产品名称`), imageUrl: text(line.imageUrl), specification: text(line.specification),
         unit: text(line.unit) || "件", quantity: Math.abs(quantity), signedQty, unitCostCny: Math.max(0, number(line.unitCostCny)),
         safetyStockQty: line.safetyStockQty === undefined || line.safetyStockQty === null || line.safetyStockQty === "" ? null : number(line.safetyStockQty),
+        lotId: text(line.lotId), lotNo: text(line.lotNo), barcode: text(line.barcode),
         packaging: signedQty > 0 ? normalizePackaging(line, Math.abs(quantity)) : null,
       };
     });
@@ -344,6 +345,9 @@ export function createDomesticInventoryService(store) {
         unit: line.unit,
         unitCostCny: line.unitCostCny,
         packagingMode: line.packaging?.packagingMode || "piece",
+        lotId: line.lotId,
+        lotNo: line.lotNo,
+        barcode: line.barcode,
       })),
     };
   }
@@ -364,7 +368,10 @@ export function createDomesticInventoryService(store) {
         const beforeQty = number(current?.on_hand_qty);
         if (type === "opening" && current) fail(`${line.sku} 已建立库存台账，不能重复导入期初库存。`, 409, "opening_balance_exists");
         const afterQty = beforeQty + line.signedQty;
-        if (afterQty < 0) fail(`${line.sku} 库存不足：当前 ${beforeQty} ${line.unit}，本次需出库 ${line.quantity} ${line.unit}。`, 409, "insufficient_stock");
+        const reservedQty = number(current?.reserved_qty);
+        if (line.signedQty < 0 && line.quantity > beforeQty - reservedQty) {
+          fail(`${line.sku} 可用库存不足：当前可用 ${Math.max(0, beforeQty - reservedQty)} ${line.unit}，本次需出库 ${line.quantity} ${line.unit}。`, 409, "insufficient_stock");
+        }
         store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,updated_at)
           VALUES (?,?,?,?,?,?,?,?,0,?,?)
           ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,safety_stock_qty=excluded.safety_stock_qty,updated_at=excluded.updated_at`,
@@ -383,14 +390,24 @@ export function createDomesticInventoryService(store) {
               packaging.cartonHeightCm, packaging.cartonWeightKg, line.signedQty, line.signedQty, line.unitCostCny, type, movement.occurredAt, movement.createdAt, movement.createdAt]);
         } else {
           let remainingToAllocate = Math.abs(line.signedQty);
-          const lots = store.all("SELECT id,remaining_qty FROM domestic_inventory_lots WHERE warehouse_id=? AND sku=? AND remaining_qty>0 ORDER BY received_at,created_at,id", [warehouse.id, line.sku]);
+          const lotWhere = ["warehouse_id=?", "sku=?", "remaining_qty>0"];
+          const lotParams = [warehouse.id, line.sku];
+          if (line.lotId) { lotWhere.push("id=?"); lotParams.push(line.lotId); }
+          if (line.lotNo) { lotWhere.push("lot_no=?"); lotParams.push(line.lotNo); }
+          if (line.barcode) { lotWhere.push("barcode=?"); lotParams.push(line.barcode); }
+          const lots = store.all(`SELECT id,remaining_qty FROM domestic_inventory_lots WHERE ${lotWhere.join(" AND ")} ORDER BY received_at,created_at,id`, lotParams);
+          const selectedLot = Boolean(line.lotId || line.lotNo || line.barcode);
+          const selectedAvailable = lots.reduce((sum, lot) => sum + number(lot.remaining_qty), 0);
+          if (selectedLot && selectedAvailable < remainingToAllocate) {
+            fail(`${line.sku} 指定批次库存不足：批次可用 ${selectedAvailable} ${line.unit}，本次需出库 ${line.quantity} ${line.unit}。`, 409, "insufficient_lot_stock");
+          }
           for (const lot of lots) {
             if (remainingToAllocate <= 0) break;
             const allocated = Math.min(remainingToAllocate, number(lot.remaining_qty));
             if (allocated <= 0) continue;
             store.run("UPDATE domestic_inventory_lots SET remaining_qty=remaining_qty-?,updated_at=? WHERE id=?", [allocated, movement.createdAt, text(lot.id)]);
             store.run("INSERT INTO domestic_inventory_lot_allocations (id,movement_line_id,lot_id,quantity,allocation_type,created_at) VALUES (?,?,?,?,?,?)",
-              [id("dla"), movementLineId, text(lot.id), allocated, "fifo", movement.createdAt]);
+              [id("dla"), movementLineId, text(lot.id), allocated, selectedLot ? "selected_lot" : "fifo", movement.createdAt]);
             remainingToAllocate -= allocated;
           }
           if (remainingToAllocate > 0) {

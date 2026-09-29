@@ -80,6 +80,7 @@ import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
 import { createDomesticInventoryService } from "./domestic-inventory-service.js";
 import { createDomesticInventoryApi, domesticInventoryContextForAuth, domesticInventoryProductOptions } from "./domestic-inventory-api.js";
 import { createJiandaoyunDomesticInventoryApi } from "./jiandaoyun-domestic-inventory-api.js";
+import { createJiandaoyunDomesticInventoryOutboundApi } from "./jiandaoyun-domestic-inventory-outbound-api.js";
 import { initBusinessChainStore } from "./business-chain-db.js";
 import { createBusinessChainSyncService } from "./business-chain-sync.js";
 import { createBusinessChainService } from "./business-chain-service.js";
@@ -312,15 +313,25 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   service: stockupCollaborationService,
   getAuth,
   appendActionLog,
-  listWarehouses: () => warehouseConnections
+  listWarehouses: () => {
+    const optionByConnectionId = new Map(currentWmsWarehouseOptions().map((option) => [String(option.connectionId || ""), option]));
+    return warehouseConnections
     .filter((warehouse) => !/(停用|禁用|disabled)/i.test(String(warehouse.status || "")))
-    .map((warehouse) => ({
+    .map((warehouse) => {
+      const option = optionByConnectionId.get(String(warehouse.id || ""));
+      const receiving = parseFirstMileContact(option?.receivingAddress);
+      return {
       id: String(warehouse.id || warehouse.warehouseId || warehouse.resolvedWarehouseId || ""),
-      name: String(warehouse.name || warehouse.warehouseName || ""),
-      country: String(warehouse.country || ""),
+      name: String(option?.warehouseName || warehouse.name || warehouse.warehouseName || ""),
+      country: String(option?.country || warehouse.country || ""),
       status: String(warehouse.status || ""),
-    }))
-    .filter((warehouse) => warehouse.id && warehouse.name),
+      address: receiving.address,
+      contactName: receiving.contactName,
+      contactPhone: receiving.contactPhone,
+      };
+    })
+    .filter((warehouse) => warehouse.id && warehouse.name);
+  },
   listProjectTeams: () => normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams),
   listProducts: (context, filters, auth) => domesticInventoryProductOptions(cachedProducts, {
     ...context,
@@ -362,6 +373,11 @@ const domesticInventoryApi = createDomesticInventoryApi({
 const jiandaoyunDomesticInventoryApi = createJiandaoyunDomesticInventoryApi({
   service: domesticInventoryService,
   token: process.env.JIANYUN_DOMESTIC_INVENTORY_PLUGIN_TOKEN,
+  appendActionLog,
+});
+const jiandaoyunDomesticInventoryOutboundApi = createJiandaoyunDomesticInventoryOutboundApi({
+  service: domesticInventoryService,
+  token: process.env.JIANYUN_DOMESTIC_INVENTORY_OUTBOUND_PLUGIN_TOKEN,
   appendActionLog,
 });
 const businessChainApi = createBusinessChainApi({
@@ -2438,6 +2454,15 @@ function effectiveWarehouseCreateConnection(connection) {
   if (warehouseStockupCreateCapability(connection).configured) return connection;
   const fallback = sameSystemCredentialFallback(connection);
   return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+}
+
+function parseFirstMileContact(value) {
+  const source = String(value || "").trim();
+  const contactName = source.match(/(?:联系人|收件人|contact(?:\s+person)?|consignee)\s*[:：]?\s*([^,，;；|\n\r]+)/i)?.[1]?.trim() || "";
+  const contactPhone = source.match(/(?:电话|手机|tel(?:ephone)?|phone)\s*[:：]?\s*([+()\d][+()\d\s-]{5,}\d)/i)?.[1]?.trim()
+    || source.match(/(?:\+?\d[\d\s()\-]{7,}\d)/)?.[0]?.trim()
+    || "";
+  return { address: source, contactName, contactPhone };
 }
 
 function effectiveWarehouseReturnConnection(connection) {
@@ -7000,6 +7025,7 @@ const server = http.createServer(async (req, res) => {
 
     if (await stockupCollaborationApi(req, res, url)) return;
     if (await jiandaoyunDomesticInventoryApi(req, res, url)) return;
+    if (await jiandaoyunDomesticInventoryOutboundApi(req, res, url)) return;
     if (await domesticInventoryApi(req, res, url)) return;
     if (await collaborationBridgeApi(req, res, url)) return;
     if (await businessChainApi(req, res, url)) return;
