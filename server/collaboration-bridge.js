@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { collaborationProjectionSchema, inventoryProjectionSchema, oemProjectionSchema } from "../collaboration/shared/contracts.js";
 
 const systemUser = Object.freeze({
@@ -39,6 +39,29 @@ function productLookup(products = []) {
   return new Map(products.map((item) => [String(item.sku || "").replace(/\s+/g, "").toUpperCase(), item]));
 }
 
+function inventoryProjectionStateKey(organizationCode, warehouseRef) {
+  return `inventory_projection:${organizationCode}:${warehouseRef}`;
+}
+
+function inventoryProjectionVersion(previous = 0) {
+  // Keep the value inside PostgreSQL int4 while remaining monotonic across restarts.
+  const secondsSince2020 = Math.floor((Date.now() - Date.UTC(2020, 0, 1)) / 1_000);
+  return Math.max(Number(previous || 0) + 1, secondsSince2020, 1);
+}
+
+function inventoryFingerprint(warehouseName, items) {
+  return createHash("sha256").update(JSON.stringify({ warehouseName, items })).digest("hex");
+}
+
+function storedInventoryProjectionState(store, key) {
+  try {
+    const value = JSON.parse(store.state(key, "{}"));
+    return { fingerprint: String(value.fingerprint || ""), version: Number(value.version || 0) };
+  } catch {
+    return { fingerprint: "", version: 0 };
+  }
+}
+
 export function createCollaborationBridge({
   store,
   domesticInventoryService,
@@ -46,6 +69,7 @@ export function createCollaborationBridge({
   baseUrl = process.env.COLLABORATION_API_BASE_URL || "http://127.0.0.1:8790",
   internalToken = process.env.COLLABORATION_INTERNAL_TOKEN || (process.env.NODE_ENV === "production" ? "" : "local-internal-token-change-me"),
   pollIntervalMs = Number(process.env.COLLABORATION_BRIDGE_POLL_MS || 10_000),
+  inventorySyncIntervalMs = Number(process.env.COLLABORATION_INVENTORY_SYNC_MS || 60_000),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
   fetchImpl = globalThis.fetch,
@@ -91,6 +115,76 @@ export function createCollaborationBridge({
     const projection = inventoryProjectionSchema.parse(withId);
     const row = store.enqueue({ id: projection.eventId, eventType: "inventory", payload: projection, now: nowIso() });
     return { id: row.id, status: row.status, projection };
+  }
+
+  function inventoryProjectionForGrant(organizationCode, grant) {
+    if (!domesticInventoryService?.list) fail("国内库存服务不可用。", 503, "domestic_inventory_unavailable");
+    const payload = domesticInventoryService.list({ warehouseId: grant.resourceRef }, systemInventoryContext());
+    const warehouse = (payload.warehouses || []).find((item) => String(item.id) === String(grant.resourceRef));
+    if (!warehouse) fail(`授权仓库不存在：${grant.resourceRef}`, 409, "granted_warehouse_not_found");
+    const items = (payload.balances || []).map((item) => ({
+      sku: String(item.sku || "").trim(),
+      productName: String(item.productName || item.sku || "").trim(),
+      availableQuantity: Math.max(0, Number(item.availableQty || 0)),
+      lockedQuantity: Math.max(0, Number(item.reservedQty || 0)),
+      inTransitQuantity: 0,
+      unit: String(item.unit || "件").trim() || "件",
+    })).filter((item) => item.sku && item.productName).sort((left, right) => left.sku.localeCompare(right.sku));
+    const warehouseName = String(warehouse.name || grant.resourceName || grant.resourceRef).trim();
+    const stateKey = inventoryProjectionStateKey(organizationCode, grant.resourceRef);
+    const previous = storedInventoryProjectionState(store, stateKey);
+    const fingerprint = inventoryFingerprint(warehouseName, items);
+    return { fingerprint, items, previous, stateKey, warehouseName };
+  }
+
+  async function synchronizeInventoryProjections({ force = false, organizationCode = "" } = {}) {
+    if (!enabled) return { scannedOrganizations: 0, queued: 0, unchanged: 0, failed: 0, disabled: true };
+    const organizations = organizationCode
+      ? [{ code: organizationCode, organizationType: "warehouse", status: "active" }]
+      : (await listOrganizations({ status: "active" })).organizations || [];
+    let queued = 0;
+    let unchanged = 0;
+    let failed = 0;
+    const errors = [];
+    for (const organization of organizations.filter((item) => item.organizationType === "warehouse" && item.status !== "suspended" && item.status !== "archived")) {
+      try {
+        const access = await getOrganizationAccessGrants(organization.code);
+        const grants = (access.grants || []).filter((grant) => grant.resourceType === "warehouse" && grant.permissions?.includes("warehouse.inventory.view"));
+        for (const grant of grants) {
+          try {
+            const snapshot = inventoryProjectionForGrant(organization.code, grant);
+            if (!force && snapshot.previous.fingerprint === snapshot.fingerprint) {
+              unchanged += 1;
+              continue;
+            }
+            const version = inventoryProjectionVersion(snapshot.previous.version);
+            queueInventoryProjection({
+              organizationCode: organization.code,
+              warehouseRef: grant.resourceRef,
+              warehouseName: snapshot.warehouseName,
+              version,
+              syncedAt: nowIso(),
+              items: snapshot.items,
+            });
+            store.setState(snapshot.stateKey, JSON.stringify({ fingerprint: snapshot.fingerprint, version }), nowIso());
+            queued += 1;
+          } catch (error) {
+            failed += 1;
+            errors.push(`${organization.code}/${grant.resourceRef}: ${error.message}`);
+          }
+        }
+      } catch (error) {
+        failed += 1;
+        errors.push(`${organization.code}: ${error.message}`);
+      }
+    }
+    if (!failed) store.setState("inventory_projection_last_scan_at", nowIso(), nowIso());
+    return { scannedOrganizations: organizations.length, queued, unchanged, failed, disabled: false, errors };
+  }
+
+  function inventoryProjectionSyncDue() {
+    const lastScan = Date.parse(store.state("inventory_projection_last_scan_at"));
+    return !Number.isFinite(lastScan) || Date.now() - lastScan >= Math.max(10_000, inventorySyncIntervalMs);
   }
 
   function queueOemProjection(input) {
@@ -302,8 +396,11 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`);
   }
 
-  function replaceOrganizationAccessGrants(code, input) {
-    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`, { method: "PUT", body: input });
+  async function replaceOrganizationAccessGrants(code, input) {
+    const result = await internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`, { method: "PUT", body: input });
+    const inventoryProjection = await synchronizeInventoryProjections({ force: true, organizationCode: code });
+    const delivery = await flushOutbox();
+    return { ...result, inventoryProjection: { ...inventoryProjection, delivery } };
   }
 
   function bootstrapOrganization(input) {
@@ -326,12 +423,13 @@ export function createCollaborationBridge({
     if (running) return { ok: true, skipped: true, reason: "already_running" };
     running = true;
     try {
+      const inventoryProjections = inventoryProjectionSyncDue() ? await synchronizeInventoryProjections() : { skipped: true, reason: "not_due" };
       const outbox = await flushOutbox();
       const commandResults = await retryPendingResults();
       const commands = await pullCommands();
       lastError = "";
       if (enabled) store.setState("last_successful_sync_at", nowIso(), nowIso());
-      return { ok: true, outbox, commandResults, commands };
+      return { ok: true, inventoryProjections, outbox, commandResults, commands };
     } catch (error) {
       lastError = error.message;
       return { ok: false, message: error.message, code: error.code || "sync_failed" };
@@ -341,7 +439,7 @@ export function createCollaborationBridge({
   }
 
   function status() {
-    return { ok: true, enabled, oemEnabled, running, baseUrl: normalizedBaseUrl, pollIntervalMs, lastError, ...store.status() };
+    return { ok: true, enabled, oemEnabled, running, baseUrl: normalizedBaseUrl, pollIntervalMs, inventorySyncIntervalMs, lastError, ...store.status() };
   }
 
   function start() {
@@ -378,6 +476,7 @@ export function createCollaborationBridge({
     status,
     stop,
     synchronize,
+    synchronizeInventoryProjections,
     updateOrganizationStatus,
   };
 }

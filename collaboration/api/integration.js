@@ -104,6 +104,13 @@ export async function applyInventoryProjection(input) {
     if (!seen.rows[0]) await client.query("INSERT INTO integration_inbox(source_event_id,event_type,payload,status) VALUES ($1,'core.inventory_projection',$2,'processing')", [projection.eventId, projection]);
     const organization = await organizationByCode(client, projection.organizationCode);
     await assertResourcePermission(client, organization.id, "warehouse", projection.warehouseRef, "warehouse.inventory.view");
+    const projectedSkus = projection.items.map((item) => item.sku);
+    const deleted = await client.query(
+      `DELETE FROM warehouse_inventory_projections
+        WHERE organization_id=$1 AND warehouse_ref=$2 AND version<=$3
+          AND (cardinality($4::text[])=0 OR NOT (sku=ANY($4::text[])))`,
+      [organization.id, projection.warehouseRef, projection.version, projectedSkus],
+    );
     for (const item of projection.items) {
       await client.query(
         `INSERT INTO warehouse_inventory_projections(organization_id,warehouse_ref,warehouse_name,sku,product_name,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version)
@@ -121,7 +128,7 @@ export async function applyInventoryProjection(input) {
       );
     }
     await client.query("UPDATE integration_inbox SET status='applied',processed_at=now() WHERE source_event_id=$1", [projection.eventId]);
-    return { ok: true, itemCount: projection.items.length };
+    return { ok: true, itemCount: projection.items.length, deletedItemCount: deleted.rowCount };
   });
 }
 

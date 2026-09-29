@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0 } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -15,6 +15,13 @@ async function fixture(t, { commands = [], resultFailures = 0 } = {}) {
   let remainingResultFailures = resultFailures;
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url: String(url), method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null, authorization: options.headers?.Authorization });
+    const parsedUrl = new URL(String(url));
+    if (parsedUrl.pathname.endsWith("/access-grants") && (options.method || "GET") === "GET") {
+      return new Response(JSON.stringify({ ok: true, organization: organizations[0] || { code: "warehouse-a", organizationType: "warehouse" }, grants: accessGrants }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (parsedUrl.pathname.endsWith("/organizations") && (options.method || "GET") === "GET") {
+      return new Response(JSON.stringify({ ok: true, organizations }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
     if (String(url).includes("/commands?") && (options.method || "GET") === "GET") {
       return new Response(JSON.stringify({ ok: true, commands, nextCursor: commands.at(-1)?.submittedAt || "" }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
@@ -32,6 +39,9 @@ async function fixture(t, { commands = [], resultFailures = 0 } = {}) {
         return { ok: true, movementId: "movement-1", movementNo: "RK-001" };
       },
       receiveTransfer() { return { ok: true, transfer: { transferNo: "DB-001" } }; },
+      list() {
+        return inventory || { ok: true, warehouses: [], balances: [] };
+      },
     },
     listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", unit: "件" }],
     baseUrl: "http://collaboration.test",
@@ -63,6 +73,61 @@ test("core bridge persists and publishes allowlisted projections", async (t) => 
   assert.equal(requests[0].url, "http://collaboration.test/collaboration/internal/v1/projections");
   assert.equal(requests[0].authorization, "Bearer internal-test-token");
   assert.equal(store.status().outbox.published, 1);
+});
+
+test("saving warehouse access immediately publishes an allowlisted inventory snapshot", async (t) => {
+  const accessGrants = [{
+    resourceType: "warehouse",
+    resourceRef: "warehouse-1",
+    resourceName: "一号仓",
+    permissions: ["warehouse.inventory.view"],
+  }];
+  const { bridge, requests, store } = await fixture(t, {
+    organizations: [{ code: "warehouse-a", organizationType: "warehouse", status: "active" }],
+    accessGrants,
+    inventory: {
+      ok: true,
+      warehouses: [{ id: "warehouse-1", name: "一号仓" }],
+      balances: [{ sku: "SKU-1", productName: "测试产品", availableQty: 8, reservedQty: 2, unit: "件", imageUrl: "private.jpg", unitCostCny: 99 }],
+    },
+  });
+
+  const saved = await bridge.replaceOrganizationAccessGrants("warehouse-a", { grants: accessGrants, actorName: "内部管理员" });
+  assert.equal(saved.inventoryProjection.queued, 1);
+  assert.equal(saved.inventoryProjection.delivery.published, 1);
+  const published = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/inventory"));
+  assert.ok(published);
+  assert.deepEqual(published.body.items, [{ sku: "SKU-1", productName: "测试产品", availableQuantity: 8, lockedQuantity: 2, inTransitQuantity: 0, unit: "件" }]);
+  assert.equal(published.body.warehouseRef, "warehouse-1");
+  assert.equal("imageUrl" in published.body.items[0], false);
+  assert.equal("unitCostCny" in published.body.items[0], false);
+  assert.equal(store.status().outbox.published, 1);
+
+  const unchanged = await bridge.synchronizeInventoryProjections({ organizationCode: "warehouse-a" });
+  assert.equal(unchanged.queued, 0);
+  assert.equal(unchanged.unchanged, 1);
+});
+
+test("background synchronization backfills inventory for grants created before automatic projection", async (t) => {
+  const accessGrants = [{ resourceType: "warehouse", resourceRef: "warehouse-1", resourceName: "一号仓", permissions: ["warehouse.inventory.view"] }];
+  const { bridge, requests } = await fixture(t, {
+    organizations: [{ code: "warehouse-a", organizationType: "warehouse", status: "active" }],
+    accessGrants,
+    inventory: {
+      ok: true,
+      warehouses: [{ id: "warehouse-1", name: "一号仓" }],
+      balances: [{ sku: "SKU-2", productName: "历史授权产品", availableQty: 5, reservedQty: 0, unit: "件" }],
+    },
+  });
+
+  const first = await bridge.synchronize();
+  assert.equal(first.inventoryProjections.queued, 1);
+  assert.equal(first.outbox.published, 1);
+  assert.equal(requests.filter((request) => request.url.endsWith("/collaboration/internal/v1/inventory")).length, 1);
+
+  const second = await bridge.synchronize();
+  assert.deepEqual(second.inventoryProjections, { skipped: true, reason: "not_due" });
+  assert.equal(second.outbox.published, 0);
 });
 
 test("partner inbound command is revalidated and idempotently booked in the core ledger", async (t) => {
