@@ -4255,7 +4255,13 @@ export function fetchStockupCollaborationRequest(requestId: string) {
   return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}`);
 }
 
-export function createStockupCollaborationRequest(payload: Record<string, unknown>, idempotencyKey = crypto.randomUUID()) {
+function createStockupIdempotencyKey() {
+  const browserCrypto = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (browserCrypto && typeof browserCrypto.randomUUID === "function") return browserCrypto.randomUUID();
+  return `stockup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export function createStockupCollaborationRequest(payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
   return requestJson<{ ok: boolean; requestId: string; requestNo: string; status: string }>("/api/stockup/collaboration/requests", {
     method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
