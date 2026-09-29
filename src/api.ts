@@ -4294,6 +4294,14 @@ export function createStockupCollaborationShipment(payload: Record<string, unkno
   return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments", { method: "POST", body: JSON.stringify(payload) });
 }
 
+export function updateStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function createStockupCollaborationWarehouseOrder(shipmentId: string) {
+  return requestJson<{ ok: boolean; alreadyCreated: boolean; documentLabel: string; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/wms-order`, { method: "POST" });
+}
+
 export function dispatchStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {
   return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/dispatch`, { method: "POST", body: JSON.stringify(payload) });
 }

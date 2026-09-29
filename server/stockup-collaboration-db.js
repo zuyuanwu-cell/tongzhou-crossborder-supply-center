@@ -139,6 +139,14 @@ export async function initStockupCollaborationStore(dbPath) {
       note TEXT,
       box_mark TEXT,
       inventory_movement_id TEXT,
+      wms_provider_id TEXT,
+      wms_document_type TEXT,
+      wms_push_status TEXT NOT NULL DEFAULT 'not_created',
+      wms_order_no TEXT,
+      wms_push_error TEXT,
+      wms_push_attempts INTEGER NOT NULL DEFAULT 0,
+      wms_pushed_at TEXT,
+      wms_pushed_by TEXT,
       version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -287,6 +295,14 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_shipments", "origin_address TEXT");
   ensureColumn("stockup_shipments", "box_mark TEXT");
   ensureColumn("stockup_shipments", "inventory_movement_id TEXT");
+  ensureColumn("stockup_shipments", "wms_provider_id TEXT");
+  ensureColumn("stockup_shipments", "wms_document_type TEXT");
+  ensureColumn("stockup_shipments", "wms_push_status TEXT NOT NULL DEFAULT 'not_created'");
+  ensureColumn("stockup_shipments", "wms_order_no TEXT");
+  ensureColumn("stockup_shipments", "wms_push_error TEXT");
+  ensureColumn("stockup_shipments", "wms_push_attempts INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "wms_pushed_at TEXT");
+  ensureColumn("stockup_shipments", "wms_pushed_by TEXT");
   ensureColumn("stockup_shipment_lines", "request_id TEXT");
   ensureColumn("stockup_shipment_lines", "image_url TEXT");
   ensureColumn("stockup_shipment_lines", "carton_count REAL NOT NULL DEFAULT 0");
@@ -304,7 +320,9 @@ export async function initStockupCollaborationStore(dbPath) {
     ), '')
     WHERE COALESCE(image_url, '') = ''
   `);
-  db.run("PRAGMA user_version = 3");
+  db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
+  db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
+  db.run("PRAGMA user_version = 4");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

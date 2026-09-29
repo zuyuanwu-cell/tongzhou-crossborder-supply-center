@@ -328,6 +328,13 @@ const stockupCollaborationApi = createStockupCollaborationApi({
       address: receiving.address,
       contactName: receiving.contactName,
       contactPhone: receiving.contactPhone,
+      providerId: String(option?.providerId || warehouse.providerId || ""),
+      wmsDocumentType: String(option?.documentType || ""),
+      wmsDocumentLabel: String(option?.documentLabel || "仓库单据"),
+      wmsCreateSupported: Boolean(option?.createSupported),
+      wmsCreateConfigured: Boolean(option?.createConfigured),
+      wmsCreateMode: String(option?.createMode || ""),
+      wmsCreateMessage: String(option?.createMessage || ""),
       };
     })
     .filter((warehouse) => warehouse.id && warehouse.name);
@@ -363,6 +370,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
       })),
     }, { ...scoped, warehouseIds: [], countries: [] }, `stockup-shipment:${shipment.id}`);
   },
+  createWarehouseDocument: createCollaborationShipmentWmsOrder,
 });
 const domesticInventoryApi = createDomesticInventoryApi({
   service: domesticInventoryService,
@@ -2479,6 +2487,43 @@ function currentWmsWarehouseOptions() {
     cachedWarehouseInfo.warehouseInfo || [],
     (connection) => warehouseStockupCreateCapability(effectiveWarehouseCreateConnection(connection)),
   );
+}
+
+async function createCollaborationShipmentWmsOrder(shipmentId, context) {
+  const shipment = stockupCollaborationService.getShipment(shipmentId, context);
+  const connection = warehouseConnections.find((item) => [item.id, item.warehouseId, item.resolvedWarehouseId].map(String).includes(String(shipment.destinationWarehouseId || "")));
+  if (!connection) throw Object.assign(new Error("目的仓没有对应的 WMS 连接，请先在仓库信息中完成配置。"), { statusCode: 409, code: "wms_connection_missing" });
+  const effectiveConnection = effectiveWarehouseCreateConnection(connection);
+  const capability = warehouseStockupCreateCapability(effectiveConnection);
+  if (!capability.supported || !capability.configured) throw Object.assign(new Error(capability.message || "该仓库尚未配置建单接口。"), { statusCode: 409, code: "wms_not_configured" });
+
+  const prepared = stockupCollaborationService.beginShipmentWmsPush(shipment.id, { providerId: effectiveConnection.providerId, documentType: capability.documentType }, context);
+  if (prepared.alreadyCreated) return { ok: true, alreadyCreated: true, documentLabel: capability.documentLabel, shipment: prepared.shipment };
+
+  let created;
+  try {
+    created = await createWarehouseStockupOrder(effectiveConnection, {
+      referenceNo: shipment.shipmentNo,
+      carrier: shipment.carrier,
+      trackingNo: shipment.trackingNo,
+      customerNote: `同舟中台发运单 ${shipment.shipmentNo}`.slice(0, 200),
+      lines: (shipment.lines || []).map((line, index) => ({
+        sku: line.sku,
+        productName: line.productName,
+        quantity: line.shippedQty,
+        purchasePrice: line.baseUnitCostCny,
+        purchasePriceCurrency: "CNY",
+        boxSequence: index + 1,
+      })),
+    });
+  } catch (error) {
+    const ambiguous = /避免重复建单|核实后再重试|结果不明确|fetch failed|abort|timeout|timed out|socket|network|ECONN|UND_ERR/i.test(String(error?.message || ""));
+    stockupCollaborationService.failShipmentWmsPush(shipment.id, { message: error?.message || "仓库建单失败", ambiguous }, context);
+    throw error;
+  }
+
+  const completed = stockupCollaborationService.completeShipmentWmsPush(shipment.id, { orderNo: created.orderNo, documentLabel: capability.documentLabel }, context);
+  return { ...completed, documentLabel: capability.documentLabel };
 }
 
 function workflowWithWmsState(workflow) {

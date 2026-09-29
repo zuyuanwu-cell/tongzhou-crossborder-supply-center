@@ -53,6 +53,8 @@ export function buildWmsWarehouseOptions(connections = [], warehouseInfo = [], c
       receivingAddress: text(matched?.firstMileReceivingAddress),
       createSupported: capability.supported === true,
       createConfigured: capability.configured === true,
+      documentType: text(capability.documentType),
+      documentLabel: text(capability.documentLabel, "仓库单据"),
       createMode: text(capability.createMode),
       createMessage: text(capability.message),
     };

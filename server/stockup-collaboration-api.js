@@ -54,7 +54,7 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); } }) {
   return async function handleStockupCollaborationApi(req, res, url) {
     if (!url.pathname.startsWith("/api/stockup/collaboration")) return false;
     const auth = getAuth(req);
@@ -161,6 +161,20 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         const result = service.createShipment(await readBody(req), context);
         appendActionLog(auth, "创建备货发运批次", "stockup_collaboration_shipment", result.shipment.shipmentNo, {});
         sendJson(res, 201, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/shipments\/([^/]+)$/)) && req.method === "PATCH") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有编辑发运批次权限。");
+        const result = service.updateShipment(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "编辑备货发运批次", "stockup_collaboration_shipment", result.shipment.shipmentNo, {});
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/shipments\/([^/]+)\/wms-order$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有创建仓库单据权限。");
+        const result = await createWarehouseDocument(decodeURIComponent(match[1]), context, auth);
+        appendActionLog(auth, `创建${result.documentLabel || "仓库单据"}`, "stockup_collaboration_shipment", result.shipment?.shipmentNo || match[1], { orderNo: result.shipment?.wmsOrderNo || "", alreadyCreated: Boolean(result.alreadyCreated) });
+        sendJson(res, 200, result);
         return true;
       }
       if ((match = suffix.match(/^\/shipments\/([^/]+)\/dispatch$/)) && req.method === "POST") {

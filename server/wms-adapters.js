@@ -287,6 +287,8 @@ export function warehouseStockupCreateCapability(connection) {
     return {
       supported: true,
       configured,
+      documentType: "stockup",
+      documentLabel: "备货单",
       createMode: "草稿备货单",
       message: configured ? "确认后将在 SEA WMS 创建草稿备货单。" : "需要先配置 SEA WMS 授权及仓库 ID。",
     };
@@ -297,6 +299,8 @@ export function warehouseStockupCreateCapability(connection) {
     return {
       supported: true,
       configured,
+      documentType: "inbound",
+      documentLabel: "入库单",
       createMode: "未审核入库单",
       message: configured ? "确认后将在 YunWMS 创建未审核入库单。" : "需要先配置 YunWMS 授权。",
     };
@@ -304,6 +308,8 @@ export function warehouseStockupCreateCapability(connection) {
   return {
     supported: false,
     configured: false,
+    documentType: "",
+    documentLabel: "仓库单据",
     createMode: "",
     message: `当前 WMS 类型 ${connection?.providerId || "未知"} 尚未接入创建接口。`,
   };

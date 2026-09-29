@@ -150,6 +150,10 @@ function shipmentFromRow(row) {
     trackingNo: String(row.tracking_no || ""), etd: String(row.etd || ""), eta: String(row.eta || ""), actualShippedAt: String(row.actual_shipped_at || ""),
     status: String(row.status), packages: number(row.packages), totalWeightKg: number(row.total_weight_kg), totalVolumeM3: number(row.total_volume_m3),
     chargeableWeightKg: number(row.chargeable_weight_kg), note: String(row.note || ""), boxMark: String(row.box_mark || ""), inventoryMovementId: String(row.inventory_movement_id || ""), version: number(row.version, 1),
+    wmsProviderId: String(row.wms_provider_id || ""), wmsDocumentType: String(row.wms_document_type || ""),
+    wmsPushStatus: String(row.wms_push_status || "not_created"), wmsOrderNo: String(row.wms_order_no || ""),
+    wmsPushError: String(row.wms_push_error || ""), wmsPushAttempts: number(row.wms_push_attempts),
+    wmsPushedAt: String(row.wms_pushed_at || ""), wmsPushedBy: String(row.wms_pushed_by || ""),
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
@@ -565,6 +569,91 @@ export function createStockupCollaborationService(store) {
     });
   }
 
+  function updateShipment(shipmentId, payload, context) {
+    const shipment = getShipment(shipmentId, context);
+    if (!["draft", "shipped"].includes(shipment.status)) throw Object.assign(new Error("已到仓或已作废的发运批次不能再修改。"), { statusCode: 409 });
+    if (number(payload.version, shipment.version) !== shipment.version) throw Object.assign(new Error("发运批次已被其他用户更新，请刷新后重试。"), { statusCode: 409, code: "version_conflict", latest: shipment });
+    const requestedCarrier = String(payload.carrier ?? shipment.carrier);
+    const requestedTransportMode = String(payload.transportMode ?? shipment.transportMode);
+    const requestedTrackingNo = String(payload.trackingNo ?? shipment.trackingNo);
+    const requestedEtd = String(payload.etd ?? shipment.etd);
+    if (shipment.wmsOrderNo && (requestedCarrier !== shipment.carrier || requestedTransportMode !== shipment.transportMode || requestedTrackingNo !== shipment.trackingNo || requestedEtd !== shipment.etd)) {
+      throw Object.assign(new Error("仓库单据已经创建，承运商、运输方式、物流单号和发出时间不能再修改。"), { statusCode: 409, code: "wms_order_locked" });
+    }
+
+    const inputLines = Array.isArray(payload.lines) ? payload.lines : null;
+    let totals = { packages: shipment.packages, totalWeightKg: shipment.totalWeightKg, totalVolumeM3: shipment.totalVolumeM3, chargeableWeightKg: shipment.chargeableWeightKg };
+    const updates = [];
+    if (inputLines) {
+      if (inputLines.length !== shipment.lines.length) throw Object.assign(new Error("编辑发运时不能新增或删除产品。"), { statusCode: 400 });
+      const byId = new Map(shipment.lines.map((line) => [line.id, line]));
+      for (const input of inputLines) {
+        const source = byId.get(String(input.id || input.shipmentLineId || ""));
+        if (!source) throw Object.assign(new Error("发运产品与原批次不一致，请刷新后重试。"), { statusCode: 400 });
+        if (input.shippedQty != null && number(input.shippedQty) !== source.shippedQty) throw Object.assign(new Error("已扣减库存的发运数量不能修改。"), { statusCode: 409, code: "inventory_quantity_locked" });
+        const cartonCount = Math.max(0, number(input.cartonCount, source.cartonCount));
+        const unitsPerCarton = Math.max(0, number(input.unitsPerCarton, source.unitsPerCarton));
+        const cartonLengthCm = Math.max(0, number(input.cartonLengthCm, source.cartonLengthCm));
+        const cartonWidthCm = Math.max(0, number(input.cartonWidthCm, source.cartonWidthCm));
+        const cartonHeightCm = Math.max(0, number(input.cartonHeightCm, source.cartonHeightCm));
+        const cartonWeightKg = Math.max(0, number(input.cartonWeightKg, source.cartonWeightKg));
+        const weightKg = cartonCount * cartonWeightKg;
+        const volumeM3 = cartonCount * cartonLengthCm * cartonWidthCm * cartonHeightCm / 1_000_000;
+        updates.push({ id: source.id, cartonCount, unitsPerCarton, cartonLengthCm, cartonWidthCm, cartonHeightCm, cartonWeightKg, weightKg, volumeM3 });
+      }
+      totals = {
+        packages: updates.reduce((sum, line) => sum + line.cartonCount, 0),
+        totalWeightKg: updates.reduce((sum, line) => sum + line.weightKg, 0),
+        totalVolumeM3: updates.reduce((sum, line) => sum + line.volumeM3, 0),
+        chargeableWeightKg: 0,
+      };
+      totals.chargeableWeightKg = Math.max(totals.totalWeightKg, totals.totalVolumeM3 * 167);
+    }
+
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run(`UPDATE stockup_shipments SET carrier=?,transport_mode=?,tracking_no=?,etd=?,eta=?,note=?,box_mark=?,packages=?,total_weight_kg=?,total_volume_m3=?,chargeable_weight_kg=?,version=version+1,updated_at=? WHERE id=?`, [requestedCarrier, requestedTransportMode, requestedTrackingNo, requestedEtd, String(payload.eta ?? shipment.eta), String(payload.note ?? shipment.note), String(payload.boxMark ?? shipment.boxMark), totals.packages, totals.totalWeightKg, totals.totalVolumeM3, totals.chargeableWeightKg, now, shipment.id]);
+      for (const line of updates) store.run(`UPDATE stockup_shipment_lines SET carton_count=?,units_per_carton=?,carton_length_cm=?,carton_width_cm=?,carton_height_cm=?,carton_weight_kg=?,weight_kg=?,volume_m3=? WHERE id=?`, [line.cartonCount, line.unitsPerCarton, line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg, line.weightKg, line.volumeM3, line.id]);
+      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, "shipment_updated", "发运信息已更新", `${shipment.shipmentNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id });
+      return { ok: true, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+    });
+  }
+
+  function beginShipmentWmsPush(shipmentId, metadata, context) {
+    const shipment = getShipment(shipmentId, context);
+    if (shipment.status !== "shipped") throw Object.assign(new Error("只有已发出的批次才能创建仓库单据。"), { statusCode: 409 });
+    if (shipment.wmsOrderNo || shipment.wmsPushStatus === "pushed") return { alreadyCreated: true, shipment };
+    if (shipment.wmsPushStatus === "pushing") throw Object.assign(new Error("仓库单据正在创建，请勿重复点击。"), { statusCode: 409 });
+    if (shipment.wmsPushStatus === "needs_manual_check") throw Object.assign(new Error("上次建单结果不明确，请先到仓库系统按发运单号核对，不能自动重试。"), { statusCode: 409, code: "wms_manual_check_required" });
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run(`UPDATE stockup_shipments SET wms_provider_id=?,wms_document_type=?,wms_push_status='pushing',wms_push_error='',wms_push_attempts=wms_push_attempts+1,version=version+1,updated_at=? WHERE id=?`, [String(metadata.providerId || ""), String(metadata.documentType || ""), now, shipment.id]);
+      return { alreadyCreated: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+    });
+  }
+
+  function completeShipmentWmsPush(shipmentId, result, context) {
+    const shipment = getShipment(shipmentId, context);
+    const orderNo = required(result.orderNo, "仓库单号");
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run(`UPDATE stockup_shipments SET wms_push_status='pushed',wms_order_no=?,wms_push_error='',wms_pushed_at=?,wms_pushed_by=?,version=version+1,updated_at=? WHERE id=?`, [orderNo, now, userOf(context).name, now, shipment.id]);
+      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, "wms_order_created", `${result.documentLabel || "仓库单据"}已创建`, `${orderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo } });
+      return { ok: true, alreadyCreated: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+    });
+  }
+
+  function failShipmentWmsPush(shipmentId, failure, context) {
+    const shipment = getShipment(shipmentId, context);
+    const status = failure.ambiguous ? "needs_manual_check" : "failed";
+    const message = String(failure.message || "仓库建单失败");
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run("UPDATE stockup_shipments SET wms_push_status=?,wms_push_error=?,version=version+1,updated_at=? WHERE id=?", [status, message, now, shipment.id]);
+      return { ok: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+    });
+  }
+
   function listShipments(filters = {}, context = {}) {
     const where = [];
     const params = [];
@@ -734,8 +823,8 @@ export function createStockupCollaborationService(store) {
   }
 
   return {
-    addCostItem, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, getRequest, getShipment,
+    addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
     listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport,
-    saveCostVersion, setRequestStatus, updateRequest, updateTask,
+    saveCostVersion, setRequestStatus, updateRequest, updateShipment, updateTask,
   };
 }

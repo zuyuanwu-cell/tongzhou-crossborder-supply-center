@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CalendarClock, Check, MapPin, PackageOpen, Plus, Printer, Route, Ship, Truck, Warehouse, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, FilePlus2, LoaderCircle, MapPin, PackageOpen, Pencil, Plus, Printer, Route, Ship, Truck, Warehouse, X } from "lucide-react";
 import QRCode from "qrcode";
-import { confirmStockupCollaborationReceipt, createStockupCollaborationShipment, dispatchStockupCollaborationShipment, fetchStockupDomesticAvailability, fetchStockupDomesticWarehouses, type DomesticWarehouse } from "../api";
+import { confirmStockupCollaborationReceipt, createStockupCollaborationShipment, createStockupCollaborationWarehouseOrder, dispatchStockupCollaborationShipment, fetchStockupDomesticAvailability, fetchStockupDomesticWarehouses, updateStockupCollaborationShipment, type DomesticWarehouse } from "../api";
 import type { StockupRequest, StockupShipment } from "./types";
 import { formatStockupDate } from "./status";
 
@@ -14,12 +14,15 @@ type Props = {
   onChanged: () => Promise<void>;
 };
 
-type ShipmentDraftLine = { requestId: string; requestNo: string; taskId: string; sku: string; productName: string; unit: string; shippedQty: number; baseUnitCostCny: number; availableQty: number; cartonCount: number; unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; weightKg: number; volumeM3: number };
+type ShipmentDraftLine = { id?: string; requestId: string; requestNo: string; taskId: string; sku: string; productName: string; unit: string; shippedQty: number; baseUnitCostCny: number; availableQty: number; cartonCount: number; unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; weightKg: number; volumeM3: number };
 
 export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, loadRequest, onChanged }: Props) {
   const [modal, setModal] = useState<"shipment" | "receipt" | "">("");
   const [selectedRequests, setSelectedRequests] = useState<StockupRequest[]>([]);
   const [selectedShipment, setSelectedShipment] = useState<StockupShipment | null>(null);
+  const [editingShipment, setEditingShipment] = useState<StockupShipment | null>(null);
+  const [wmsBusyId, setWmsBusyId] = useState("");
+  const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ originWarehouseId: "", originWarehouse: "", originAddress: "", carrier: "", transportMode: "海运", trackingNo: "", etd: "", eta: "", packages: 0, totalWeightKg: 0, totalVolumeM3: 0, chargeableWeightKg: 0, boxMark: "", note: "" });
@@ -77,7 +80,22 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     if (warehouse && shipLines.length) await applyAvailability(warehouse.id, shipLines);
   }
 
+  async function submitShipmentEdit(shipment: StockupShipment) {
+    if (!form.carrier || !form.trackingNo || !form.eta) { setError("请填写承运商、物流单号和预计到仓时间。" ); return; }
+    if (shipLines.some((line) => [line.cartonCount, line.unitsPerCarton, line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg].some((value) => value <= 0))) { setError("请补齐每个产品的箱数、箱规、外箱长宽高和单箱重量。" ); return; }
+    setBusy(true); setError("");
+    try {
+      const computedLines = shipLines.map((line) => ({ ...line, weightKg: line.cartonCount * line.cartonWeightKg, volumeM3: line.cartonCount * line.cartonLengthCm * line.cartonWidthCm * line.cartonHeightCm / 1_000_000 }));
+      const totals = { packages: computedLines.reduce((sum, line) => sum + line.cartonCount, 0), totalWeightKg: computedLines.reduce((sum, line) => sum + line.weightKg, 0), totalVolumeM3: computedLines.reduce((sum, line) => sum + line.volumeM3, 0) };
+      await updateStockupCollaborationShipment(shipment.id, { ...form, ...totals, version: shipment.version, lines: computedLines });
+      setFeedback({ tone: "success", text: `${shipment.shipmentNo} 已更新。` });
+      setModal(""); setEditingShipment(null); await onChanged();
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "更新发运批次失败"); }
+    finally { setBusy(false); }
+  }
+
   async function submitShipment() {
+    if (editingShipment) { await submitShipmentEdit(editingShipment); return; }
     if (!selectedRequests.length || !shipLines.some((line) => line.shippedQty > 0)) { setError("请选择有已完成数量的需求。" ); return; }
     if (!form.originWarehouseId) { setError("请选择国内发货仓，系统会据此校验并扣减库存。" ); return; }
     if (!form.carrier || !form.trackingNo || !form.eta) { setError("请填写承运商、物流单号和预计到仓时间。" ); return; }
@@ -118,7 +136,28 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     setReceiptLines((current) => current.map((line, itemIndex) => itemIndex === index ? { ...line, [field]: value } : line));
   }
 
-  async function openShipmentEditor() {
+  async function createWarehouseOrder(shipment: StockupShipment) {
+    setWmsBusyId(shipment.id); setFeedback(null);
+    try {
+      const result = await createStockupCollaborationWarehouseOrder(shipment.id);
+      const label = result.documentLabel || warehouseDocumentLabel(shipment);
+      setFeedback({ tone: "success", text: result.alreadyCreated ? `${label}已经存在：${result.shipment.wmsOrderNo}` : `${label}创建成功：${result.shipment.wmsOrderNo}` });
+      await onChanged();
+    } catch (requestError) {
+      setFeedback({ tone: "danger", text: requestError instanceof Error ? requestError.message : "创建仓库单据失败" });
+      await onChanged();
+    } finally { setWmsBusyId(""); }
+  }
+
+  async function openShipmentEditor(shipment?: StockupShipment) {
+    if (shipment) {
+      setError(""); setEditingShipment(shipment); setSelectedRequests([]);
+      setForm({ originWarehouseId: shipment.originWarehouseId, originWarehouse: shipment.originWarehouse, originAddress: shipment.originAddress, carrier: shipment.carrier, transportMode: shipment.transportMode, trackingNo: shipment.trackingNo, etd: shipment.etd, eta: shipment.eta, packages: shipment.packages, totalWeightKg: shipment.totalWeightKg, totalVolumeM3: shipment.totalVolumeM3, chargeableWeightKg: shipment.chargeableWeightKg, boxMark: shipment.boxMark, note: shipment.note });
+      setShipLines((shipment.lines || []).map((line) => ({ id: line.id, requestId: line.requestId || shipment.requestId, requestNo: shipment.requestNos?.[0] || "", taskId: line.taskId, sku: line.sku, productName: line.productName, unit: line.unit, shippedQty: line.shippedQty, baseUnitCostCny: line.baseUnitCostCny, availableQty: line.shippedQty, cartonCount: line.cartonCount, unitsPerCarton: line.unitsPerCarton, cartonLengthCm: line.cartonLengthCm, cartonWidthCm: line.cartonWidthCm, cartonHeightCm: line.cartonHeightCm, cartonWeightKg: line.cartonWeightKg, weightKg: line.weightKg, volumeM3: line.volumeM3 })));
+      setModal("shipment");
+      return;
+    }
+    setEditingShipment(null);
     setError(""); setSelectedRequests([]); setShipLines([]); setModal("shipment");
     try {
       const result = await fetchStockupDomesticWarehouses();
@@ -129,21 +168,32 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
   return <>
     <div className="sc-logistics-summary"><article><Route size={21} /><div><small>待登记发运</small><b>{readyRequests.length}</b></div></article><article><Ship size={21} /><div><small>在途批次</small><b>{inTransit.length}</b></div></article><article><PackageOpen size={21} /><div><small>已到仓批次</small><b>{arrived.length}</b></div></article><article><CalendarClock size={21} /><div><small>7天内预计到仓</small><b>{inTransit.filter((item) => item.eta && item.eta <= new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)).length}</b></div></article></div>
     <section className="sc-panel"><div className="sc-panel-head"><div><span className="sc-eyebrow">LOGISTICS & RECEIVING</span><h3>物流与到仓</h3><p>可合并多个同目的仓需求，从国内仓库存直接发运。</p></div>{canShip ? <button className="sc-button sc-button-primary" onClick={() => void openShipmentEditor()}><Plus size={17} />登记发运</button> : null}</div>
-      <div className="sc-shipment-board"><div><h4>待发运 <span>{drafts.length}</span></h4>{drafts.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} />)}{!drafts.length ? <EmptyLane text="暂无待发运批次" /> : null}</div><div><h4>在途中 <span>{inTransit.length}</span></h4>{inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}{!inTransit.length ? <EmptyLane text="暂无在途批次" /> : null}</div><div><h4>已到仓 <span>{arrived.length}</span></h4>{arrived.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} />)}{!arrived.length ? <EmptyLane text="暂无已到仓批次" /> : null}</div></div>
+      {feedback ? <div className={`sc-shipment-feedback is-${feedback.tone}`}>{feedback.tone === "danger" ? <AlertTriangle size={17} /> : <Check size={17} />}<span>{feedback.text}</span><button type="button" onClick={() => setFeedback(null)}><X size={15} /></button></div> : null}
+      <div className="sc-shipment-board"><div><h4>待发运 <span>{drafts.length}</span></h4>{drafts.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} />)}{!drafts.length ? <EmptyLane text="暂无待发运批次" /> : null}</div><div><h4>在途中 <span>{inTransit.length}</span></h4>{inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} onCreateWarehouseOrder={canShip ? () => void createWarehouseOrder(shipment) : undefined} wmsBusy={wmsBusyId === shipment.id} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}{!inTransit.length ? <EmptyLane text="暂无在途批次" /> : null}</div><div><h4>已到仓 <span>{arrived.length}</span></h4>{arrived.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} />)}{!arrived.length ? <EmptyLane text="暂无已到仓批次" /> : null}</div></div>
     </section>
 
-    {modal === "shipment" ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">DOMESTIC STOCK SHIPMENT</span><h2>从国内仓合并发运</h2><p>可勾选多个相同目的仓的需求，确认发运时自动生成国内仓出库流水。</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
-      <div className="sc-request-checklist"><b>选择待发运需求</b>{readyRequests.map((request) => { const checked = selectedRequests.some((item) => item.id === request.id); const disabled = !checked && selectedRequests.length > 0 && selectedRequests[0].destinationWarehouseId !== request.destinationWarehouseId; return <label className={disabled ? "is-disabled" : ""} key={request.id}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => void toggleRequest(request.id, event.target.checked)} /><span><strong>{request.requestNo}</strong><small>{request.destinationWarehouseName} · {request.lines.map((line) => line.sku).join("、")}</small></span></label>; })}</div>
+    {modal === "shipment" ? <div className={`sc-modal-backdrop${editingShipment ? " is-editing-shipment" : ""}`}><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">DOMESTIC STOCK SHIPMENT</span><h2>{editingShipment ? `编辑发运 ${editingShipment.shipmentNo}` : "从国内仓合并发运"}</h2><p>{editingShipment ? "可修改物流、到仓和装箱信息；已扣减库存的仓库、产品和数量保持锁定。" : "可勾选多个相同目的仓的需求，确认发运时自动生成国内仓出库流水。"}</p></div><button className="sc-icon-button" onClick={() => { setModal(""); setEditingShipment(null); }}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
+      {!editingShipment ? <div className="sc-request-checklist"><b>选择待发运需求</b>{readyRequests.map((request) => { const checked = selectedRequests.some((item) => item.id === request.id); const disabled = !checked && selectedRequests.length > 0 && selectedRequests[0].destinationWarehouseId !== request.destinationWarehouseId; return <label className={disabled ? "is-disabled" : ""} key={request.id}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => void toggleRequest(request.id, event.target.checked)} /><span><strong>{request.requestNo}</strong><small>{request.destinationWarehouseName} · {request.lines.map((line) => line.sku).join("、")}</small></span></label>; })}</div> : <div className="sc-edit-lock-note"><Warehouse size={17} /><span>国内发货仓、SKU 和发货数量已经形成库存流水，编辑时不可变更。</span></div>}
       <div className="sc-form-grid sc-form-grid-4"><label>国内发货仓<select value={form.originWarehouseId} onChange={(event) => void selectOriginWarehouse(event.target.value)}><option value="">请选择有库存的国内仓</option>{domesticWarehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>运输方式<select value={form.transportMode} onChange={(event) => setForm({ ...form, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label><label>承运商<input value={form.carrier} onChange={(event) => setForm({ ...form, carrier: event.target.value })} /></label><label>物流单号 / 提单号<input value={form.trackingNo} onChange={(event) => setForm({ ...form, trackingNo: event.target.value })} /></label><label>计划发运日 ETD<input type="date" value={form.etd} onChange={(event) => setForm({ ...form, etd: event.target.value })} /></label><label>预计到仓日 ETA<input type="date" value={form.eta} onChange={(event) => setForm({ ...form, eta: event.target.value })} /></label><label className="full">发货地址（引用仓库档案）<input value={form.originAddress} readOnly placeholder="选择国内仓后自动带入" /></label><label className="full">箱唛内容<input value={form.boxMark} onChange={(event) => setForm({ ...form, boxMark: event.target.value })} placeholder="例如：项目、目的仓、PO号或客户箱唛要求" /></label></div>
       <div className="sc-pack-table"><div className="head"><span>需求 / 产品</span><span>发货数量 / 库存</span><span>箱数</span><span>箱规</span><span>外箱尺寸 cm</span><span>单箱 kg</span></div>{shipLines.map((line, index) => { const update = (patch: Partial<ShipmentDraftLine>) => setShipLines((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); return <div key={line.taskId}><span><b>{line.sku}</b><small>{line.productName}</small><small>{line.requestNo}</small></span><span><input type="number" min="0" value={line.shippedQty} onChange={(event) => update({ shippedQty: Number(event.target.value) })} /><small className={line.availableQty < line.shippedQty ? "danger" : ""}>可用 {line.availableQty}</small></span><span><input type="number" min="0" value={line.cartonCount} onChange={(event) => update({ cartonCount: Number(event.target.value) })} /></span><span><input type="number" min="0" value={line.unitsPerCarton} onChange={(event) => update({ unitsPerCarton: Number(event.target.value) })} /><small>件/箱</small></span><span className="dims"><input type="number" min="0" value={line.cartonLengthCm} onChange={(event) => update({ cartonLengthCm: Number(event.target.value) })} /><i>×</i><input type="number" min="0" value={line.cartonWidthCm} onChange={(event) => update({ cartonWidthCm: Number(event.target.value) })} /><i>×</i><input type="number" min="0" value={line.cartonHeightCm} onChange={(event) => update({ cartonHeightCm: Number(event.target.value) })} /></span><span><input type="number" min="0" step="0.01" value={line.cartonWeightKg} onChange={(event) => update({ cartonWeightKg: Number(event.target.value) })} /></span></div>; })}</div>
-    </div><footer className="sc-modal-foot"><span><Warehouse size={16} />确认后扣减国内仓库存、生成出库流水，并进入在途状态。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitShipment}><Truck size={17} />确认出库并发运</button></div></footer></div></div> : null}
+    </div><footer className="sc-modal-foot"><span><Warehouse size={16} />{editingShipment ? "保存后更新本批次信息，不会再次扣减库存。" : "确认后扣减国内仓库存、生成出库流水，并进入在途状态。"}</span><div><button className="sc-button sc-button-secondary" onClick={() => { setModal(""); setEditingShipment(null); }}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitShipment}>{editingShipment ? <Pencil size={17} /> : <Truck size={17} />}{editingShipment ? "保存修改" : "确认出库并发运"}</button></div></footer></div></div> : null}
 
     {modal === "receipt" && selectedShipment ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">WAREHOUSE RECEIPT</span><h2>确认到仓</h2><p>{selectedShipment.shipmentNo} · {selectedShipment.destinationWarehouseName}</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}<div className="sc-form-grid sc-form-grid-4"><label>实际到仓日期<input type="date" value={receipt.arrivedAt} onChange={(event) => setReceipt({ ...receipt, arrivedAt: event.target.value })} /></label><label>上架日期<input type="date" value={receipt.shelvedAt} onChange={(event) => setReceipt({ ...receipt, shelvedAt: event.target.value })} /></label><label>WMS 入库单号<input value={receipt.wmsInboundNo} onChange={(event) => setReceipt({ ...receipt, wmsInboundNo: event.target.value })} /></label><label>备注<input value={receipt.note} onChange={(event) => setReceipt({ ...receipt, note: event.target.value })} /></label></div><div className="sc-receipt-table"><div className="head"><span>产品</span><span>应到</span><span>实收</span><span>良品</span><span>破损</span><span>短少</span><span>待处理</span><span>上架</span></div>{receiptLines.map((line, index) => <div key={line.shipmentLineId}><span><b>{line.sku}</b><small>{line.productName}</small></span>{["expectedQty", "receivedQty", "goodQty", "damagedQty", "shortageQty", "pendingQty", "shelvedQty"].map((field) => <span key={field}><input type="number" min="0" value={Number(line[field as keyof typeof line])} onChange={(event) => updateReceiptLine(index, field, Number(event.target.value))} /></span>)}</div>)}</div></div><footer className="sc-modal-foot"><span>短少、破损或待处理数量会自动创建收货异常。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitReceipt}><Check size={17} />确认收货</button></div></footer></div></div> : null}
   </>;
 }
 
-function ShipmentCard({ shipment, action }: { shipment: StockupShipment; action?: React.ReactNode }) {
-  return <article className="sc-shipment-card"><div><span className="sc-route-icon">{shipment.transportMode === "海运" ? <Ship size={18} /> : <Truck size={18} />}</span><div><b>{shipment.shipmentNo}</b><small>{shipment.carrier || "待填写承运商"}</small></div></div><dl><div><dt>物流单号</dt><dd>{shipment.trackingNo || "—"}</dd></div><div><dt>预计到仓</dt><dd>{formatStockupDate(shipment.eta)}</dd></div><div><dt>目的仓</dt><dd><MapPin size={13} />{shipment.destinationWarehouseName}</dd></div><div><dt>来源需求</dt><dd>{shipment.requestNos?.join("、") || "1 个需求"}</dd></div></dl><footer className="sc-shipment-card-actions"><button type="button" onClick={() => void printShipmentDocument(shipment, "packing")}><Printer size={14} />装箱单</button><button type="button" onClick={() => void printShipmentDocument(shipment, "mark")}><Printer size={14} />箱唛</button>{action}</footer></article>;
+function ShipmentCard({ shipment, action, onEdit, onCreateWarehouseOrder, wmsBusy = false }: { shipment: StockupShipment; action?: React.ReactNode; onEdit?: () => void; onCreateWarehouseOrder?: () => void; wmsBusy?: boolean }) {
+  const documentLabel = warehouseDocumentLabel(shipment);
+  const needsManualCheck = shipment.wmsPushStatus === "needs_manual_check";
+  const created = shipment.wmsPushStatus === "pushed" || Boolean(shipment.wmsOrderNo);
+  return <article className="sc-shipment-card"><div><span className="sc-route-icon">{shipment.transportMode === "海运" ? <Ship size={18} /> : <Truck size={18} />}</span><div><b>{shipment.shipmentNo}</b><small>{shipment.carrier || "待填写承运商"}</small></div></div><dl><div><dt>物流单号</dt><dd>{shipment.trackingNo || "—"}</dd></div><div><dt>预计到仓</dt><dd>{formatStockupDate(shipment.eta)}</dd></div><div><dt>目的仓</dt><dd><MapPin size={13} />{shipment.destinationWarehouseName}</dd></div><div><dt>来源需求</dt><dd>{shipment.requestNos?.join("、") || "1 个需求"}</dd></div></dl>
+    {created ? <div className="sc-wms-state is-success"><Check size={14} /><span>{documentLabel}已创建</span><b>{shipment.wmsOrderNo}</b></div> : shipment.wmsPushStatus === "failed" ? <div className="sc-wms-state is-danger"><AlertTriangle size={14} /><span>{documentLabel}创建失败</span><small>{shipment.wmsPushError}</small></div> : needsManualCheck ? <div className="sc-wms-state is-warning"><AlertTriangle size={14} /><span>建单结果待人工核对</span><small>{shipment.wmsPushError}</small></div> : null}
+    <footer className="sc-shipment-card-actions">{onEdit ? <button type="button" onClick={onEdit}><Pencil size={14} />编辑</button> : null}<button type="button" onClick={() => void printShipmentDocument(shipment, "packing")}><Printer size={14} />装箱单</button><button type="button" onClick={() => void printShipmentDocument(shipment, "mark")}><Printer size={14} />箱唛</button>{onCreateWarehouseOrder && !created ? <button type="button" className="is-wms" disabled={wmsBusy || needsManualCheck || shipment.wmsPushStatus === "pushing"} onClick={onCreateWarehouseOrder}>{wmsBusy || shipment.wmsPushStatus === "pushing" ? <LoaderCircle className="is-spinning" size={14} /> : <FilePlus2 size={14} />}{wmsBusy || shipment.wmsPushStatus === "pushing" ? "创建中" : `创建${documentLabel}`}</button> : null}{action}</footer></article>;
+}
+
+function warehouseDocumentLabel(shipment: StockupShipment) {
+  if (shipment.wmsDocumentType === "inbound" || /俄罗斯|Russia|RU/i.test(shipment.destinationCountry)) return "入库单";
+  return "备货单";
 }
 
 function EmptyLane({ text }: { text: string }) { return <div className="sc-lane-empty"><Route size={23} /><span>{text}</span></div>; }
