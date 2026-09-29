@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, Check, FilePlus2, LoaderCircle, MapPin, PackageOpen, Pencil, Plus, Printer, Route, Ship, Truck, Warehouse, X } from "lucide-react";
+import { AlertTriangle, Boxes, CalendarClock, Check, ClipboardCheck, FilePlus2, LoaderCircle, MapPin, PackageOpen, Pencil, Plus, Printer, RotateCcw, Route, ShieldCheck, Ship, Trash2, Truck, Warehouse, X } from "lucide-react";
 import QRCode from "qrcode";
-import { confirmStockupCollaborationReceipt, createStockupCollaborationShipment, createStockupCollaborationWarehouseOrder, dispatchStockupCollaborationShipment, fetchStockupDomesticAvailability, fetchStockupDomesticWarehouses, updateStockupCollaborationShipment, type DomesticWarehouse } from "../api";
+import { cancelStockupCollaborationWarehouseOrder, confirmStockupCollaborationReceipt, createStockupCollaborationShipment, createStockupCollaborationWarehouseOrder, dispatchStockupCollaborationShipment, fetchStockupDomesticAvailability, fetchStockupDomesticWarehouses, previewStockupCollaborationWarehouseOrder, updateStockupCollaborationShipment, type DomesticWarehouse, type StockupWarehouseOrderPreview } from "../api";
 import type { StockupRequest, StockupShipment } from "./types";
 import { formatStockupDate } from "./status";
 
@@ -17,11 +17,12 @@ type Props = {
 type ShipmentDraftLine = { id?: string; requestId: string; requestNo: string; taskId: string; sku: string; productName: string; unit: string; shippedQty: number; baseUnitCostCny: number; availableQty: number; cartonCount: number; unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; weightKg: number; volumeM3: number };
 
 export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, loadRequest, onChanged }: Props) {
-  const [modal, setModal] = useState<"shipment" | "receipt" | "">("");
+  const [modal, setModal] = useState<"shipment" | "receipt" | "wms-preview" | "wms-void" | "">("");
   const [selectedRequests, setSelectedRequests] = useState<StockupRequest[]>([]);
   const [selectedShipment, setSelectedShipment] = useState<StockupShipment | null>(null);
   const [editingShipment, setEditingShipment] = useState<StockupShipment | null>(null);
   const [wmsBusyId, setWmsBusyId] = useState("");
+  const [wmsPreview, setWmsPreview] = useState<StockupWarehouseOrderPreview | null>(null);
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -136,15 +137,45 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     setReceiptLines((current) => current.map((line, itemIndex) => itemIndex === index ? { ...line, [field]: value } : line));
   }
 
-  async function createWarehouseOrder(shipment: StockupShipment) {
-    setWmsBusyId(shipment.id); setFeedback(null);
+  async function openWarehouseOrderPreview(shipment: StockupShipment) {
+    setWmsBusyId(shipment.id); setFeedback(null); setError("");
     try {
-      const result = await createStockupCollaborationWarehouseOrder(shipment.id);
-      const label = result.documentLabel || warehouseDocumentLabel(shipment);
-      setFeedback({ tone: "success", text: result.alreadyCreated ? `${label}已经存在：${result.shipment.wmsOrderNo}` : `${label}创建成功：${result.shipment.wmsOrderNo}` });
+      const preview = await previewStockupCollaborationWarehouseOrder(shipment.id);
+      setSelectedShipment(shipment); setWmsPreview(preview); setModal("wms-preview");
+    } catch (requestError) {
+      setFeedback({ tone: "danger", text: requestError instanceof Error ? requestError.message : "仓库单据预览失败" });
+    } finally { setWmsBusyId(""); }
+  }
+
+  async function createWarehouseOrder(verify: boolean) {
+    if (!selectedShipment) return;
+    setWmsBusyId(selectedShipment.id); setFeedback(null); setError("");
+    try {
+      const result = await createStockupCollaborationWarehouseOrder(selectedShipment.id, wmsPreview?.shipmentVersion ?? selectedShipment.version, verify);
+      const label = result.documentLabel || warehouseDocumentLabel(selectedShipment);
+      setFeedback({ tone: "success", text: result.alreadyCreated ? `${label}已经存在：${result.shipment.wmsOrderNo}` : `${label}${verify ? "提交并审核" : "提交"}成功：${result.shipment.wmsOrderNo}` });
+      setModal(""); setWmsPreview(null); setSelectedShipment(null);
       await onChanged();
     } catch (requestError) {
       setFeedback({ tone: "danger", text: requestError instanceof Error ? requestError.message : "创建仓库单据失败" });
+      await onChanged();
+    } finally { setWmsBusyId(""); }
+  }
+
+  function openWarehouseOrderVoid(shipment: StockupShipment) {
+    setSelectedShipment(shipment); setError(""); setModal("wms-void");
+  }
+
+  async function voidWarehouseOrder() {
+    if (!selectedShipment) return;
+    setWmsBusyId(selectedShipment.id); setError("");
+    try {
+      const result = await cancelStockupCollaborationWarehouseOrder(selectedShipment.id);
+      const label = result.documentLabel || warehouseDocumentLabel(selectedShipment);
+      setFeedback({ tone: "success", text: `${label}${result.alreadyCancelled ? "已在仓库系统中作废" : "撤回并作废成功"}：${result.shipment.wmsOrderNo}` });
+      setModal(""); setSelectedShipment(null); await onChanged();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "作废仓库单据失败");
       await onChanged();
     } finally { setWmsBusyId(""); }
   }
@@ -175,7 +206,7 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
           {!drafts.length ? <EmptyLane text="暂无待发运批次" /> : null}
         </ShipmentLane>
         <ShipmentLane title="在途中" subtitle="跟踪物流、创建仓库单并确认到仓" count={inTransit.length} icon={<Truck size={18} />} tone="transit">
-          {inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} onCreateWarehouseOrder={canShip ? () => void createWarehouseOrder(shipment) : undefined} wmsBusy={wmsBusyId === shipment.id} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}
+          {inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} onCreateWarehouseOrder={canShip ? () => void openWarehouseOrderPreview(shipment) : undefined} onVoidWarehouseOrder={canShip ? () => openWarehouseOrderVoid(shipment) : undefined} wmsBusy={wmsBusyId === shipment.id} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}
           {!inTransit.length ? <EmptyLane text="暂无在途批次" /> : null}
         </ShipmentLane>
         <ShipmentLane title="已到仓" subtitle="已完成收货，可继续核对成本" count={arrived.length} icon={<PackageOpen size={18} />} tone="arrived">
@@ -192,20 +223,25 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     </div><footer className="sc-modal-foot"><span><Warehouse size={16} />{editingShipment ? "保存后更新本批次信息，不会再次扣减库存。" : "确认后扣减国内仓库存、生成出库流水，并进入在途状态。"}</span><div><button className="sc-button sc-button-secondary" onClick={() => { setModal(""); setEditingShipment(null); }}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitShipment}>{editingShipment ? <Pencil size={17} /> : <Truck size={17} />}{editingShipment ? "保存修改" : "确认出库并发运"}</button></div></footer></div></div> : null}
 
     {modal === "receipt" && selectedShipment ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">WAREHOUSE RECEIPT</span><h2>确认到仓</h2><p>{selectedShipment.shipmentNo} · {selectedShipment.destinationWarehouseName}</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}<div className="sc-form-grid sc-form-grid-4"><label>实际到仓日期<input type="date" value={receipt.arrivedAt} onChange={(event) => setReceipt({ ...receipt, arrivedAt: event.target.value })} /></label><label>上架日期<input type="date" value={receipt.shelvedAt} onChange={(event) => setReceipt({ ...receipt, shelvedAt: event.target.value })} /></label><label>WMS 入库单号<input value={receipt.wmsInboundNo} onChange={(event) => setReceipt({ ...receipt, wmsInboundNo: event.target.value })} /></label><label>备注<input value={receipt.note} onChange={(event) => setReceipt({ ...receipt, note: event.target.value })} /></label></div><div className="sc-receipt-table"><div className="head"><span>产品</span><span>应到</span><span>实收</span><span>良品</span><span>破损</span><span>短少</span><span>待处理</span><span>上架</span></div>{receiptLines.map((line, index) => <div key={line.shipmentLineId}><span><b>{line.sku}</b><small>{line.productName}</small></span>{["expectedQty", "receivedQty", "goodQty", "damagedQty", "shortageQty", "pendingQty", "shelvedQty"].map((field) => <span key={field}><input type="number" min="0" value={Number(line[field as keyof typeof line])} onChange={(event) => updateReceiptLine(index, field, Number(event.target.value))} /></span>)}</div>)}</div></div><footer className="sc-modal-foot"><span>短少、破损或待处理数量会自动创建收货异常。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitReceipt}><Check size={17} />确认收货</button></div></footer></div></div> : null}
+
+    {modal === "wms-preview" && selectedShipment && wmsPreview ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wms-preview-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">WMS DOCUMENT PREVIEW</span><h2>{wmsPreview.documentLabel}提交预览</h2><p>{wmsPreview.shipmentNo} · {wmsPreview.warehouseName}</p></div><button className="sc-icon-button" disabled={Boolean(wmsBusyId)} onClick={() => { setModal(""); setWmsPreview(null); }}><X size={20} /></button></header><div className="sc-editor-scroll sc-wms-preview-body"><div className="sc-wms-preview-check"><ShieldCheck size={22} /><div><b>装箱数据校验通过</b><span>实际提交将按 {wmsPreview.totalBoxes} 个独立箱号写入 WMS，不会把总件数合并到一个箱子。</span></div></div><div className="sc-wms-preview-facts"><article><Warehouse size={18} /><small>目的仓</small><b>{wmsPreview.warehouseName}</b><span>{wmsPreview.warehouseCode}</span></article><article><Boxes size={18} /><small>总箱数</small><b>{wmsPreview.totalBoxes} 箱</b><span>{wmsPreview.itemCount} 条逐箱明细</span></article><article><PackageOpen size={18} /><small>总件数</small><b>{wmsPreview.totalQuantity.toLocaleString("zh-CN")}</b><span>与发运数量一致</span></article><article><CalendarClock size={18} /><small>预计到仓</small><b>{formatStockupDate(wmsPreview.eta)}</b><span>{wmsPreview.carrier || "未填写承运商"}</span></article></div><div className="sc-wms-preview-lines"><div className="head"><span>产品 / SKU</span><span>总数量</span><span>箱数</span><span>每箱数量</span><span>校验</span></div>{wmsPreview.lines.map((line) => <div key={line.sku}><span className="product">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <i><PackageOpen size={18} /></i>}<em><b>{line.sku}</b><small>{line.productName}</small></em></span><span><b>{line.quantity.toLocaleString("zh-CN")}</b></span><span><b>{line.cartonCount}</b> 箱</span><span><b>{line.unitsPerCarton}</b> / 箱</span><span className="valid"><Check size={15} />{line.cartonCount * line.unitsPerCarton === line.quantity ? "一致" : "异常"}</span></div>)}</div><div className="sc-wms-submit-note"><ClipboardCheck size={18} /><div><b>请选择提交方式</b><span>“提交入库单”会保留在新建状态；“提交并审核”将直接进入仓库后续流程，审核后可能无法直接撤回。</span></div></div></div><footer className="sc-modal-foot"><span><ShieldCheck size={16} />提交前最后确认：{wmsPreview.totalBoxes} 箱 × 逐箱明细，共 {wmsPreview.totalQuantity.toLocaleString("zh-CN")} 件。</span><div><button className="sc-button sc-button-secondary" disabled={Boolean(wmsBusyId)} onClick={() => setModal("")}>返回修改</button><button className="sc-button sc-button-secondary sc-submit-draft" disabled={Boolean(wmsBusyId)} onClick={() => void createWarehouseOrder(false)}>{wmsBusyId ? <LoaderCircle className="is-spinning" size={17} /> : <FilePlus2 size={17} />}提交{wmsPreview.documentLabel}</button>{wmsPreview.canVerify ? <button className="sc-button sc-button-primary" disabled={Boolean(wmsBusyId)} onClick={() => void createWarehouseOrder(true)}>{wmsBusyId ? <LoaderCircle className="is-spinning" size={17} /> : <ShieldCheck size={17} />}提交并审核{wmsPreview.documentLabel}</button> : null}</div></footer></div></div> : null}
+
+    {modal === "wms-void" && selectedShipment ? <div className="sc-modal-backdrop"><div className="sc-modal sc-wms-void-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">VOID WMS DOCUMENT</span><h2>撤回并作废{warehouseDocumentLabel(selectedShipment)}</h2><p>{selectedShipment.shipmentNo} · {selectedShipment.destinationWarehouseName}</p></div><button className="sc-icon-button" disabled={Boolean(wmsBusyId)} onClick={() => setModal("")}><X size={20} /></button></header><div className="sc-editor-scroll sc-wms-void-body">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}<div className="sc-wms-void-warning"><Trash2 size={24} /><div><b>将同步作废仓库系统中的原单</b><span>入库单号：{selectedShipment.wmsOrderNo}</span><p>系统会先核对入库单参考号和当前状态；只有仓库系统确认作废后，中台才会更新为“已作废”。作废后可修改装箱资料并重新创建。</p></div></div></div><footer className="sc-modal-foot"><span><AlertTriangle size={16} />已审核并进入后续处理的单据可能无法直接撤回。</span><div><button className="sc-button sc-button-secondary" disabled={Boolean(wmsBusyId)} onClick={() => setModal("")}>暂不作废</button><button className="sc-button sc-button-danger" disabled={Boolean(wmsBusyId)} onClick={() => void voidWarehouseOrder()}>{wmsBusyId ? <LoaderCircle className="is-spinning" size={17} /> : <Trash2 size={17} />}确认撤回并作废</button></div></footer></div></div> : null}
   </>;
 }
 
-function ShipmentCard({ shipment, action, onEdit, onCreateWarehouseOrder, wmsBusy = false }: { shipment: StockupShipment; action?: React.ReactNode; onEdit?: () => void; onCreateWarehouseOrder?: () => void; wmsBusy?: boolean }) {
+function ShipmentCard({ shipment, action, onEdit, onCreateWarehouseOrder, onVoidWarehouseOrder, wmsBusy = false }: { shipment: StockupShipment; action?: React.ReactNode; onEdit?: () => void; onCreateWarehouseOrder?: () => void; onVoidWarehouseOrder?: () => void; wmsBusy?: boolean }) {
   const documentLabel = warehouseDocumentLabel(shipment);
   const needsManualCheck = shipment.wmsPushStatus === "needs_manual_check";
-  const created = shipment.wmsPushStatus === "pushed" || Boolean(shipment.wmsOrderNo);
+  const voided = shipment.wmsPushStatus === "voided";
+  const created = !voided && (shipment.wmsPushStatus === "pushed" || Boolean(shipment.wmsOrderNo));
   return <article className="sc-shipment-card">
     <div className="sc-shipment-identity"><span className="sc-route-icon">{shipment.transportMode === "海运" ? <Ship size={18} /> : <Truck size={18} />}</span><div><b>{shipment.shipmentNo}</b><small>{shipment.carrier || "待填写承运商"} · {shipment.transportMode || "运输方式待定"}</small></div></div>
     <dl className="sc-shipment-facts"><div><dt>目的仓</dt><dd><MapPin size={13} />{shipment.destinationWarehouseName}</dd></div><div><dt>预计到仓</dt><dd>{formatStockupDate(shipment.eta)}</dd></div><div><dt>物流单号</dt><dd>{shipment.trackingNo || "—"}</dd></div><div><dt>来源需求</dt><dd title={shipment.requestNos?.join("、")}>{shipment.requestNos?.join("、") || "1 个需求"}</dd></div></dl>
     <div className="sc-shipment-state-column">
-      {created ? <div className="sc-wms-state is-success"><Check size={14} /><span>{documentLabel}已创建</span><b>{shipment.wmsOrderNo}</b></div> : shipment.wmsPushStatus === "failed" ? <div className="sc-wms-state is-danger"><AlertTriangle size={14} /><span>{documentLabel}创建失败</span><small title={shipment.wmsPushError}>{shipment.wmsPushError}</small></div> : needsManualCheck ? <div className="sc-wms-state is-warning"><AlertTriangle size={14} /><span>建单结果待人工核对</span><small title={shipment.wmsPushError}>{shipment.wmsPushError}</small></div> : onCreateWarehouseOrder ? <div className="sc-wms-state is-neutral"><FilePlus2 size={14} /><span>待创建{documentLabel}</span><small>使用发运单号防止重复建单</small></div> : <div className="sc-wms-state is-neutral"><Check size={14} /><span>{action ? "等待后续处理" : "当前阶段已完成"}</span></div>}
+      {created ? <div className="sc-wms-state is-success"><Check size={14} /><span>{documentLabel}已创建</span><b>{shipment.wmsOrderNo}</b></div> : voided ? <div className="sc-wms-state is-voided"><RotateCcw size={14} /><span>{documentLabel}已作废</span><b>{shipment.wmsOrderNo}</b></div> : shipment.wmsPushStatus === "failed" ? <div className="sc-wms-state is-danger"><AlertTriangle size={14} /><span>{documentLabel}创建失败</span><small title={shipment.wmsPushError}>{shipment.wmsPushError}</small></div> : needsManualCheck ? <div className="sc-wms-state is-warning"><AlertTriangle size={14} /><span>建单结果待人工核对</span><small title={shipment.wmsPushError}>{shipment.wmsPushError}</small></div> : onCreateWarehouseOrder ? <div className="sc-wms-state is-neutral"><FilePlus2 size={14} /><span>待创建{documentLabel}</span><small>先预览装箱数据，再提交到 WMS</small></div> : <div className="sc-wms-state is-neutral"><Check size={14} /><span>{action ? "等待后续处理" : "当前阶段已完成"}</span></div>}
     </div>
-    <footer className="sc-shipment-card-actions"><div className="sc-shipment-secondary-actions">{onEdit ? <button type="button" onClick={onEdit}><Pencil size={14} />编辑</button> : null}<button type="button" onClick={() => void printShipmentDocument(shipment, "packing")}><Printer size={14} />装箱单</button><button type="button" onClick={() => void printShipmentDocument(shipment, "mark")}><Printer size={14} />箱唛</button></div><div className="sc-shipment-primary-actions">{onCreateWarehouseOrder && !created ? <button type="button" className="is-wms" disabled={wmsBusy || needsManualCheck || shipment.wmsPushStatus === "pushing"} onClick={onCreateWarehouseOrder}>{wmsBusy || shipment.wmsPushStatus === "pushing" ? <LoaderCircle className="is-spinning" size={14} /> : <FilePlus2 size={14} />}{wmsBusy || shipment.wmsPushStatus === "pushing" ? "创建中" : `创建${documentLabel}`}</button> : null}{action}</div></footer>
+    <footer className="sc-shipment-card-actions"><div className="sc-shipment-secondary-actions">{onEdit ? <button type="button" onClick={onEdit}><Pencil size={14} />编辑</button> : null}<button type="button" onClick={() => void printShipmentDocument(shipment, "packing")}><Printer size={14} />装箱单</button><button type="button" onClick={() => void printShipmentDocument(shipment, "mark")}><Printer size={14} />箱唛</button>{created && documentLabel === "入库单" && onVoidWarehouseOrder ? <button type="button" className="is-void" disabled={wmsBusy} onClick={onVoidWarehouseOrder}><Trash2 size={14} />撤回/作废</button> : null}</div><div className="sc-shipment-primary-actions">{onCreateWarehouseOrder && !created ? <button type="button" className="is-wms" disabled={wmsBusy || needsManualCheck || shipment.wmsPushStatus === "pushing"} onClick={onCreateWarehouseOrder}>{wmsBusy || shipment.wmsPushStatus === "pushing" ? <LoaderCircle className="is-spinning" size={14} /> : voided ? <RotateCcw size={14} /> : <FilePlus2 size={14} />}{wmsBusy || shipment.wmsPushStatus === "pushing" ? "读取中" : voided ? `重新创建${documentLabel}` : `预览并创建${documentLabel}`}</button> : null}{action}</div></footer>
   </article>;
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { initStockupCollaborationStore } from "../server/stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "../server/stockup-collaboration-service.js";
-import { resolveYunWarehouseCodeFromList, warehouseStockupCreateCapability } from "../server/wms-adapters.js";
+import { buildYunAsnItems, buildYunAsnPayload, resolveYunWarehouseCodeFromList, warehouseStockupCreateCapability } from "../server/wms-adapters.js";
 
 const temp = mkdtempSync(resolve(tmpdir(), "stockup-shipment-edit-wms-"));
 try {
@@ -29,7 +29,14 @@ try {
   assert.equal(pushed.wmsOrderNo, "ASN-1001");
   assert.equal(service.beginShipmentWmsPush(updated.id, { providerId: "yunwms_ru", documentType: "inbound" }, context).alreadyCreated, true);
   assert.throws(() => service.updateShipment(pushed.id, { version: pushed.version, carrier: "Changed Carrier" }, context), (error) => error?.code === "wms_order_locked");
-  assert.equal(service.updateShipment(pushed.id, { version: pushed.version, eta: "2026-10-25" }, context).shipment.eta, "2026-10-25");
+  const etaUpdated = service.updateShipment(pushed.id, { version: pushed.version, eta: "2026-10-25" }, context).shipment;
+  assert.equal(etaUpdated.eta, "2026-10-25");
+  const voided = service.voidShipmentWmsOrder(pushed.id, { documentLabel: "入库单", alreadyCancelled: false }, context).shipment;
+  assert.equal(voided.wmsPushStatus, "voided");
+  assert.equal(voided.wmsOrderNo, "ASN-1001");
+  const recreating = service.beginShipmentWmsPush(voided.id, { providerId: "yunwms_ru", documentType: "inbound" }, context).shipment;
+  assert.equal(recreating.wmsPushStatus, "pushing");
+  assert.equal(recreating.wmsOrderNo, "");
   assert.equal(warehouseStockupCreateCapability({ id: "ru-test", providerId: "yunwms_ru" }).documentLabel, "入库单");
   assert.equal(warehouseStockupCreateCapability({ id: "sea-test", providerId: "sea_wms" }).documentLabel, "备货单");
   const yunWarehouses = [
@@ -41,6 +48,26 @@ try {
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓", warehouseCode: "DD001" }, yunWarehouses), "DD001");
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯仓" }, yunWarehouses), "");
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, [{ warehouse_code: "MX001", warehouse_name: "MX001" }]), "MX001");
+  const cartonItems = buildYunAsnItems({ lines: [{ sku: "TZKJ-QL032", quantity: 14_400, cartonCount: 200, unitsPerCarton: 72, purchasePrice: 0, purchasePriceCurrency: "CNY" }] });
+  assert.equal(cartonItems.length, 200);
+  assert.equal(cartonItems[0].box_no, "1");
+  assert.equal(cartonItems[199].box_no, "200");
+  assert.equal(cartonItems.every((item) => item.quantity === 72), true);
+  assert.equal(cartonItems.reduce((sum, item) => sum + item.quantity, 0), 14_400);
+  const multiSkuItems = buildYunAsnItems({ lines: [
+    { sku: "SKU-A", quantity: 20, cartonCount: 2, unitsPerCarton: 10 },
+    { sku: "SKU-B", quantity: 15, cartonCount: 3, unitsPerCarton: 5 },
+  ] });
+  assert.deepEqual(multiSkuItems.map((item) => item.box_no), ["1", "2", "3", "4", "5"]);
+  assert.throws(() => buildYunAsnItems({ lines: [{ sku: "SKU-BAD", quantity: 14_400, cartonCount: 199, unitsPerCarton: 72 }] }), /装箱数据不一致/);
+  const modifyPayload = buildYunAsnPayload({ referenceNo: "FY-20260929-M8P01", eta: "2026-10-15", lines: [{ sku: "TZKJ-QL032", quantity: 14_400, cartonCount: 200, unitsPerCarton: 72 }] }, "DD002", "RVAEE0004-2-410-260930-0001");
+  assert.equal(modifyPayload.receiving_code, "RVAEE0004-2-410-260930-0001");
+  assert.equal(modifyPayload.warehouse_code, "DD002");
+  assert.equal(modifyPayload.eta_date, "2026-10-15");
+  assert.equal(modifyPayload.transit_type, 1);
+  assert.equal(modifyPayload.transit_warehouse_code, "DD002");
+  assert.equal(modifyPayload.receiving_shipping_type, "0");
+  assert.equal(modifyPayload.items.length, 200);
   console.log("stockup shipment edit and WMS tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

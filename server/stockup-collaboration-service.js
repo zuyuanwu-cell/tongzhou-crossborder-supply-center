@@ -622,12 +622,12 @@ export function createStockupCollaborationService(store) {
   function beginShipmentWmsPush(shipmentId, metadata, context) {
     const shipment = getShipment(shipmentId, context);
     if (shipment.status !== "shipped") throw Object.assign(new Error("只有已发出的批次才能创建仓库单据。"), { statusCode: 409 });
-    if (shipment.wmsOrderNo || shipment.wmsPushStatus === "pushed") return { alreadyCreated: true, shipment };
+    if (shipment.wmsPushStatus !== "voided" && (shipment.wmsOrderNo || shipment.wmsPushStatus === "pushed")) return { alreadyCreated: true, shipment };
     if (shipment.wmsPushStatus === "pushing") throw Object.assign(new Error("仓库单据正在创建，请勿重复点击。"), { statusCode: 409 });
     if (shipment.wmsPushStatus === "needs_manual_check") throw Object.assign(new Error("上次建单结果不明确，请先到仓库系统按发运单号核对，不能自动重试。"), { statusCode: 409, code: "wms_manual_check_required" });
     const now = nowIso();
     return store.transaction(() => {
-      store.run(`UPDATE stockup_shipments SET wms_provider_id=?,wms_document_type=?,wms_push_status='pushing',wms_push_error='',wms_push_attempts=wms_push_attempts+1,version=version+1,updated_at=? WHERE id=?`, [String(metadata.providerId || ""), String(metadata.documentType || ""), now, shipment.id]);
+      store.run(`UPDATE stockup_shipments SET wms_provider_id=?,wms_document_type=?,wms_push_status='pushing',wms_order_no=NULL,wms_push_error='',wms_push_attempts=wms_push_attempts+1,version=version+1,updated_at=? WHERE id=?`, [String(metadata.providerId || ""), String(metadata.documentType || ""), now, shipment.id]);
       return { alreadyCreated: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
     });
   }
@@ -651,6 +651,19 @@ export function createStockupCollaborationService(store) {
     return store.transaction(() => {
       store.run("UPDATE stockup_shipments SET wms_push_status=?,wms_push_error=?,version=version+1,updated_at=? WHERE id=?", [status, message, now, shipment.id]);
       return { ok: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+    });
+  }
+
+  function voidShipmentWmsOrder(shipmentId, result, context) {
+    const shipment = getShipment(shipmentId, context);
+    if (!shipment.wmsOrderNo || !["pushed", "voided"].includes(shipment.wmsPushStatus)) {
+      throw Object.assign(new Error("当前发运批次没有可撤回的仓库单据。"), { statusCode: 409 });
+    }
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run("UPDATE stockup_shipments SET wms_push_status='voided',wms_push_error='',version=version+1,updated_at=? WHERE id=?", [now, shipment.id]);
+      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, "wms_order_voided", `${result.documentLabel || "仓库单据"}已作废`, `${shipment.wmsOrderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo: shipment.wmsOrderNo } });
+      return { ok: true, alreadyCancelled: Boolean(result.alreadyCancelled), shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
     });
   }
 
@@ -824,7 +837,7 @@ export function createStockupCollaborationService(store) {
 
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
-    listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport,
+    listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, voidShipmentWmsOrder,
     saveCostVersion, setRequestStatus, updateRequest, updateShipment, updateTask,
   };
 }

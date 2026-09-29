@@ -54,7 +54,7 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); } }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
   return async function handleStockupCollaborationApi(req, res, url) {
     if (!url.pathname.startsWith("/api/stockup/collaboration")) return false;
     const auth = getAuth(req);
@@ -170,10 +170,23 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         sendJson(res, 200, result);
         return true;
       }
+      if ((match = suffix.match(/^\/shipments\/([^/]+)\/wms-order-preview$/)) && req.method === "GET") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有预览仓库单据权限。");
+        sendJson(res, 200, await previewWarehouseDocument(decodeURIComponent(match[1]), context, auth));
+        return true;
+      }
       if ((match = suffix.match(/^\/shipments\/([^/]+)\/wms-order$/)) && req.method === "POST") {
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有创建仓库单据权限。");
-        const result = await createWarehouseDocument(decodeURIComponent(match[1]), context, auth);
-        appendActionLog(auth, `创建${result.documentLabel || "仓库单据"}`, "stockup_collaboration_shipment", result.shipment?.shipmentNo || match[1], { orderNo: result.shipment?.wmsOrderNo || "", alreadyCreated: Boolean(result.alreadyCreated) });
+        const options = await readBody(req);
+        const result = await createWarehouseDocument(decodeURIComponent(match[1]), options, context, auth);
+        appendActionLog(auth, `${options?.verify ? "提交并审核" : "创建"}${result.documentLabel || "仓库单据"}`, "stockup_collaboration_shipment", result.shipment?.shipmentNo || match[1], { orderNo: result.shipment?.wmsOrderNo || "", alreadyCreated: Boolean(result.alreadyCreated), verify: Boolean(options?.verify) });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/shipments\/([^/]+)\/wms-order$/)) && req.method === "DELETE") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有作废仓库单据权限。");
+        const result = await cancelWarehouseDocument(decodeURIComponent(match[1]), context, auth);
+        appendActionLog(auth, `作废${result.documentLabel || "仓库单据"}`, "stockup_collaboration_shipment", result.shipment?.shipmentNo || match[1], { orderNo: result.shipment?.wmsOrderNo || "", alreadyCancelled: Boolean(result.alreadyCancelled) });
         sendJson(res, 200, result);
         return true;
       }

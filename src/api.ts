@@ -4298,8 +4298,37 @@ export function updateStockupCollaborationShipment(shipmentId: string, payload: 
   return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
-export function createStockupCollaborationWarehouseOrder(shipmentId: string) {
-  return requestJson<{ ok: boolean; alreadyCreated: boolean; documentLabel: string; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/wms-order`, { method: "POST" });
+export type StockupWarehouseOrderPreview = {
+  ok: boolean;
+  shipmentId: string;
+  shipmentNo: string;
+  shipmentVersion: number;
+  warehouseName: string;
+  warehouseCode: string;
+  providerId: string;
+  documentLabel: string;
+  createMode: string;
+  canVerify: boolean;
+  referenceNo: string;
+  eta: string;
+  carrier: string;
+  trackingNo: string;
+  totalBoxes: number;
+  totalQuantity: number;
+  itemCount: number;
+  lines: Array<{ sku: string; productName: string; imageUrl: string; quantity: number; cartonCount: number; unitsPerCarton: number }>;
+};
+
+export function previewStockupCollaborationWarehouseOrder(shipmentId: string) {
+  return requestJson<StockupWarehouseOrderPreview>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/wms-order-preview`);
+}
+
+export function createStockupCollaborationWarehouseOrder(shipmentId: string, expectedVersion: number, verify = false) {
+  return requestJson<{ ok: boolean; alreadyCreated: boolean; documentLabel: string; verified?: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/wms-order`, { method: "POST", body: JSON.stringify({ verify, expectedVersion }) });
+}
+
+export function cancelStockupCollaborationWarehouseOrder(shipmentId: string) {
+  return requestJson<{ ok: boolean; alreadyCancelled: boolean; documentLabel: string; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/wms-order`, { method: "DELETE" });
 }
 
 export function dispatchStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {

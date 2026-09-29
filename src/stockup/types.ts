@@ -87,7 +87,7 @@ export type StockupShipment = {
   inventoryMovementId: string;
   wmsProviderId: string;
   wmsDocumentType: "inbound" | "stockup" | "";
-  wmsPushStatus: "not_created" | "pushing" | "pushed" | "failed" | "needs_manual_check";
+  wmsPushStatus: "not_created" | "pushing" | "pushed" | "failed" | "needs_manual_check" | "voided";
   wmsOrderNo: string;
   wmsPushError: string;
   wmsPushAttempts: number;

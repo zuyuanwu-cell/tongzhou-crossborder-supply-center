@@ -27,7 +27,7 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -370,7 +370,9 @@ const stockupCollaborationApi = createStockupCollaborationApi({
       })),
     }, { ...scoped, warehouseIds: [], countries: [] }, `stockup-shipment:${shipment.id}`);
   },
+  previewWarehouseDocument: previewCollaborationShipmentWmsOrder,
   createWarehouseDocument: createCollaborationShipmentWmsOrder,
+  cancelWarehouseDocument: cancelCollaborationShipmentWmsOrder,
 });
 const domesticInventoryApi = createDomesticInventoryApi({
   service: domesticInventoryService,
@@ -2489,33 +2491,59 @@ function currentWmsWarehouseOptions() {
   );
 }
 
-async function createCollaborationShipmentWmsOrder(shipmentId, context) {
-  const shipment = stockupCollaborationService.getShipment(shipmentId, context);
+function collaborationShipmentWmsConnection(shipment) {
   const connection = warehouseConnections.find((item) => [item.id, item.warehouseId, item.resolvedWarehouseId].map(String).includes(String(shipment.destinationWarehouseId || "")));
   if (!connection) throw Object.assign(new Error("目的仓没有对应的 WMS 连接，请先在仓库信息中完成配置。"), { statusCode: 409, code: "wms_connection_missing" });
   const effectiveConnection = effectiveWarehouseCreateConnection(connection);
   const capability = warehouseStockupCreateCapability(effectiveConnection);
   if (!capability.supported || !capability.configured) throw Object.assign(new Error(capability.message || "该仓库尚未配置建单接口。"), { statusCode: 409, code: "wms_not_configured" });
+  return { effectiveConnection, capability };
+}
+
+function collaborationShipmentWmsInput(shipment, options = {}) {
+  return {
+    referenceNo: shipment.shipmentNo,
+    carrier: shipment.carrier,
+    transportMode: shipment.transportMode,
+    trackingNo: shipment.trackingNo,
+    eta: shipment.eta,
+    verify: Boolean(options.verify),
+    customerNote: `同舟中台发运单 ${shipment.shipmentNo}`.slice(0, 200),
+    lines: (shipment.lines || []).map((line, index) => ({
+      sku: line.sku,
+      productName: line.productName,
+      imageUrl: line.imageUrl,
+      quantity: line.shippedQty,
+      purchasePrice: line.baseUnitCostCny,
+      purchasePriceCurrency: "CNY",
+      boxSequence: index + 1,
+      cartonCount: line.cartonCount,
+      unitsPerCarton: line.unitsPerCarton,
+    })),
+  };
+}
+
+async function previewCollaborationShipmentWmsOrder(shipmentId, context) {
+  const shipment = stockupCollaborationService.getShipment(shipmentId, context);
+  if (shipment.status !== "shipped") throw Object.assign(new Error("只有已发出的批次才能预览仓库单据。"), { statusCode: 409 });
+  const { effectiveConnection } = collaborationShipmentWmsConnection(shipment);
+  const preview = await previewWarehouseStockupOrder(effectiveConnection, collaborationShipmentWmsInput(shipment));
+  return { ...preview, shipmentId: shipment.id, shipmentNo: shipment.shipmentNo, shipmentVersion: shipment.version, warehouseName: shipment.destinationWarehouseName };
+}
+
+async function createCollaborationShipmentWmsOrder(shipmentId, options, context) {
+  const shipment = stockupCollaborationService.getShipment(shipmentId, context);
+  if (!Number.isInteger(Number(options?.expectedVersion)) || Number(options.expectedVersion) !== shipment.version) {
+    throw Object.assign(new Error("发运或装箱数据在预览后发生变化，请重新打开预览再提交。"), { statusCode: 409, code: "wms_preview_stale" });
+  }
+  const { effectiveConnection, capability } = collaborationShipmentWmsConnection(shipment);
 
   const prepared = stockupCollaborationService.beginShipmentWmsPush(shipment.id, { providerId: effectiveConnection.providerId, documentType: capability.documentType }, context);
   if (prepared.alreadyCreated) return { ok: true, alreadyCreated: true, documentLabel: capability.documentLabel, shipment: prepared.shipment };
 
   let created;
   try {
-    created = await createWarehouseStockupOrder(effectiveConnection, {
-      referenceNo: shipment.shipmentNo,
-      carrier: shipment.carrier,
-      trackingNo: shipment.trackingNo,
-      customerNote: `同舟中台发运单 ${shipment.shipmentNo}`.slice(0, 200),
-      lines: (shipment.lines || []).map((line, index) => ({
-        sku: line.sku,
-        productName: line.productName,
-        quantity: line.shippedQty,
-        purchasePrice: line.baseUnitCostCny,
-        purchasePriceCurrency: "CNY",
-        boxSequence: index + 1,
-      })),
-    });
+    created = await createWarehouseStockupOrder(effectiveConnection, collaborationShipmentWmsInput(shipment, options));
   } catch (error) {
     const ambiguous = /避免重复建单|核实后再重试|结果不明确|fetch failed|abort|timeout|timed out|socket|network|ECONN|UND_ERR/i.test(String(error?.message || ""));
     stockupCollaborationService.failShipmentWmsPush(shipment.id, { message: error?.message || "仓库建单失败", ambiguous }, context);
@@ -2523,7 +2551,16 @@ async function createCollaborationShipmentWmsOrder(shipmentId, context) {
   }
 
   const completed = stockupCollaborationService.completeShipmentWmsPush(shipment.id, { orderNo: created.orderNo, documentLabel: capability.documentLabel }, context);
-  return { ...completed, documentLabel: capability.documentLabel };
+  return { ...completed, documentLabel: capability.documentLabel, verified: created.createMode === "verified" };
+}
+
+async function cancelCollaborationShipmentWmsOrder(shipmentId, context) {
+  const shipment = stockupCollaborationService.getShipment(shipmentId, context);
+  if (!shipment.wmsOrderNo) throw Object.assign(new Error("当前发运批次没有可撤回的仓库单据。"), { statusCode: 409 });
+  const { effectiveConnection, capability } = collaborationShipmentWmsConnection(shipment);
+  const cancelled = await cancelWarehouseStockupOrder(effectiveConnection, { receivingCode: shipment.wmsOrderNo, referenceNo: shipment.shipmentNo });
+  const result = stockupCollaborationService.voidShipmentWmsOrder(shipment.id, { ...cancelled, documentLabel: capability.documentLabel }, context);
+  return { ...result, documentLabel: capability.documentLabel };
 }
 
 function workflowWithWmsState(workflow) {

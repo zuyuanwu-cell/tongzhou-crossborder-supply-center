@@ -22,6 +22,7 @@
     "test:jiandaoyun-outbound-plugin-function": "node scripts/jiandaoyun-outbound-plugin-function-test.mjs",
     "test:stockup-shipment-receipt": "node scripts/stockup-shipment-receipt-test.mjs",
     "test:stockup-shipment-edit-wms": "node scripts/stockup-shipment-edit-wms-test.mjs",
+    "test:wms-inbound": "node scripts/wms-inbound-order-test.mjs",
     "test:stockup-costing": "node scripts/stockup-costing-test.mjs",
     "test:stockup-notification": "node scripts/stockup-notification-test.mjs",
     "test:stockup-performance": "node scripts/stockup-collaboration-performance.mjs",

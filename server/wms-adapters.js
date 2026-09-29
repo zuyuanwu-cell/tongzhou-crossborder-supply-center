@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { fetch as undiciFetch } from "undici";
+
+if (!globalThis.fetch) globalThis.fetch = undiciFetch;
 
 function md5(input) {
   return crypto.createHash("md5").update(input, "utf8").digest("hex");
@@ -913,8 +916,228 @@ function validateCreateLines(input) {
       purchasePrice: Math.max(0, firstNumber(line.purchasePrice)),
       purchasePriceCurrency: firstText(line.purchasePriceCurrency, "CNY") || "CNY",
       boxSequence: Math.max(1, Math.floor(firstNumber(line.boxSequence, index + 1))),
+      cartonCount: firstNumber(line.cartonCount),
+      unitsPerCarton: firstNumber(line.unitsPerCarton),
     };
   });
+}
+
+export function buildYunAsnItems(input) {
+  const lines = validateCreateLines(input);
+  const items = [];
+  let nextBoxNumber = 1;
+  for (const line of lines) {
+    if (!Number.isInteger(line.cartonCount) || line.cartonCount <= 0) {
+      throw new Error(`${line.sku} 的箱数必须是大于 0 的整数，已停止创建 YunWMS 入库单。`);
+    }
+    if (!Number.isInteger(line.unitsPerCarton) || line.unitsPerCarton <= 0) {
+      throw new Error(`${line.sku} 的每箱件数必须是大于 0 的整数，已停止创建 YunWMS 入库单。`);
+    }
+    const packedQuantity = line.cartonCount * line.unitsPerCarton;
+    if (packedQuantity !== line.quantity) {
+      throw new Error(`${line.sku} 的装箱数据不一致：${line.cartonCount} 箱 × ${line.unitsPerCarton} 件/箱 = ${packedQuantity} 件，但发运数量为 ${line.quantity} 件。`);
+    }
+    for (let cartonIndex = 0; cartonIndex < line.cartonCount; cartonIndex += 1) {
+      items.push({
+        product_sku: line.sku,
+        quantity: line.unitsPerCarton,
+        box_no: String(nextBoxNumber),
+        product_price: line.purchasePrice,
+        currency_code: line.purchasePriceCurrency,
+      });
+      nextBoxNumber += 1;
+    }
+  }
+  return items;
+}
+
+export function buildYunAsnPayload(input, warehouseCode, receivingCode = "") {
+  const eta = firstText(input?.eta);
+  const transportMode = firstText(input?.transportMode);
+  const receivingShippingType = /快递/.test(transportMode) ? "2"
+    : /海运/.test(transportMode) ? "5"
+      : /铁运|铁路|陆运/.test(transportMode) ? "7"
+        : "0";
+  const payload = {
+    reference_no: firstText(input?.referenceNo).slice(0, 50),
+    transit_type: 1,
+    warehouse_code: firstText(warehouseCode),
+    transit_warehouse_code: firstText(warehouseCode),
+    receiving_shipping_type: receivingShippingType,
+    verify: input?.verify ? 1 : 0,
+    income_type: 0,
+    receiving_type: "D",
+    ...(firstText(receivingCode) ? { receiving_code: firstText(receivingCode) } : {}),
+    ...(eta ? { eta_date: eta.slice(0, 10) } : {}),
+    ...(firstText(input?.trackingNo) ? { tracking_number: firstText(input.trackingNo) } : {}),
+    ...(firstText(input?.carrier) ? { shipping_method: firstText(input.carrier) } : {}),
+    ...(firstText(input?.customerNote) ? { receiving_desc: firstText(input.customerNote).slice(0, 200) } : {}),
+    items: buildYunAsnItems(input),
+  };
+  if (!payload.reference_no) throw new Error("缺少外部参考号，不能安全创建或修改 YunWMS 入库单。");
+  if (!payload.warehouse_code) throw new Error("缺少 YunWMS 仓库编码，不能安全创建或修改入库单。");
+  return payload;
+}
+
+function yunAsnRowsMatch(row, expectedItems) {
+  const actualItems = Array.isArray(row?.items) ? row.items : [];
+  const expected = new Map(expectedItems.map((item) => [`${item.product_sku}\u0000${item.box_no}`, Number(item.quantity)]));
+  const actual = new Map(actualItems.map((item) => [`${firstText(item.product_sku)}\u0000${firstText(item.box_no)}`, firstNumber(item.quantity)]));
+  if (expected.size !== expectedItems.length || actual.size !== actualItems.length || expected.size !== actual.size) return false;
+  for (const [key, quantity] of expected) {
+    if (actual.get(key) !== quantity) return false;
+  }
+  const expectedQuantity = expectedItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  return firstNumber(row?.box_total) === new Set(expectedItems.map((item) => item.box_no)).size
+    && firstNumber(row?.sku_total) === expectedQuantity;
+}
+
+async function getYunAsnByReceivingCode(credentials, receivingCode) {
+  const rows = await fetchYunPageList(credentials, "getAsnList", { receiving_code: receivingCode }, 20, 2);
+  const exact = rows.filter((row) => firstText(row?.receiving_code) === receivingCode);
+  if (exact.length !== 1) throw new Error(`YunWMS 入库单 ${receivingCode} 无法被唯一定位，已停止自动修正。`);
+  return exact[0];
+}
+
+function yunAsnSummary(row) {
+  return {
+    receivingCode: firstText(row?.receiving_code),
+    referenceNo: firstText(row?.reference_no),
+    status: firstText(row?.receiving_status),
+    warehouseCode: firstText(row?.warehouse_code),
+    boxTotal: firstNumber(row?.box_total),
+    skuTotal: firstNumber(row?.sku_total),
+    itemCount: Array.isArray(row?.items) ? row.items.length : 0,
+  };
+}
+
+export async function repairYunAsnCartons(connection, input, { apply = false } = {}) {
+  if (connection?.providerId !== "yunwms_ru") throw new Error("仅 YunWMS 入库单支持逐箱原单修正。");
+  const credentials = yunCredentials(connection);
+  if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能修正入库单。");
+  const receivingCode = firstText(input?.receivingCode);
+  if (!receivingCode) throw new Error("缺少 YunWMS 入库单号，不能执行原单修正。");
+  const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
+  if (!configuredText(warehouseCode)) throw new Error("未解析到 YunWMS 仓库编码，不能修正入库单。");
+  const payload = buildYunAsnPayload(input, warehouseCode, receivingCode);
+  const before = await getYunAsnByReceivingCode(credentials, receivingCode);
+  if (firstText(before.reference_no) !== payload.reference_no) throw new Error("YunWMS 入库单参考号与中台发运单号不一致，已停止自动修正。");
+  if (firstText(before.warehouse_code) !== warehouseCode) throw new Error("YunWMS 入库单仓库与中台目标仓不一致，已停止自动修正。");
+  if (yunAsnRowsMatch(before, payload.items)) {
+    return { ok: true, applied: false, alreadyCorrect: true, before: yunAsnSummary(before), after: yunAsnSummary(before) };
+  }
+  if (firstText(before.receiving_status).toUpperCase() !== "C") {
+    throw new Error(`YunWMS 入库单状态为 ${firstText(before.receiving_status) || "未知"}，仅“新建(C)”状态允许自动修正。`);
+  }
+  if (!apply) {
+    return {
+      ok: true,
+      applied: false,
+      alreadyCorrect: false,
+      before: yunAsnSummary(before),
+      expected: {
+        boxTotal: new Set(payload.items.map((item) => item.box_no)).size,
+        skuTotal: payload.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+        itemCount: payload.items.length,
+      },
+    };
+  }
+  const result = await postYun(credentials, "modifyAsn", payload);
+  if (String(result?.ask || "").toLowerCase() !== "success") {
+    throw new Error(`YunWMS 原单修正失败：${firstText(result?.message, result?.error) || "未知错误"}`);
+  }
+  const after = await getYunAsnByReceivingCode(credentials, receivingCode);
+  if (!yunAsnRowsMatch(after, payload.items)) {
+    throw new Error("YunWMS 已接受修改请求，但回读的箱数、箱号或每箱件数不一致，请立即在 WMS 人工核对。");
+  }
+  return { ok: true, applied: true, alreadyCorrect: false, before: yunAsnSummary(before), after: yunAsnSummary(after) };
+}
+
+export async function previewWarehouseStockupOrder(connection, input) {
+  const capability = warehouseStockupCreateCapability(connection);
+  if (!capability.supported || !capability.configured) throw new Error(capability.message);
+  const lines = validateCreateLines(input);
+  if (connection.providerId === "yunwms_ru") {
+    const credentials = yunCredentials(connection);
+    const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
+    if (!configuredText(warehouseCode)) throw new Error("未解析到 YunWMS 仓库编码，不能预览入库单。");
+    const items = buildYunAsnItems(input);
+    return {
+      ok: true,
+      providerId: connection.providerId,
+      documentLabel: capability.documentLabel,
+      createMode: capability.createMode,
+      canVerify: true,
+      warehouseCode,
+      referenceNo: firstText(input.referenceNo),
+      eta: firstText(input.eta),
+      carrier: firstText(input.carrier),
+      trackingNo: firstText(input.trackingNo),
+      totalBoxes: new Set(items.map((item) => item.box_no)).size,
+      totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      itemCount: items.length,
+      lines: lines.map((line) => ({
+        sku: line.sku,
+        productName: line.productName,
+        imageUrl: firstText(input.lines?.find((item) => firstText(item?.sku) === line.sku)?.imageUrl),
+        quantity: line.quantity,
+        cartonCount: line.cartonCount,
+        unitsPerCarton: line.unitsPerCarton,
+      })),
+    };
+  }
+  return {
+    ok: true,
+    providerId: connection.providerId,
+    documentLabel: capability.documentLabel,
+    createMode: capability.createMode,
+    canVerify: false,
+    warehouseCode: firstText(connection.warehouseId, connection.warehouseCode),
+    referenceNo: firstText(input.referenceNo),
+    eta: firstText(input.eta),
+    carrier: firstText(input.carrier),
+    trackingNo: firstText(input.trackingNo),
+    totalBoxes: lines.reduce((sum, line) => sum + Math.max(0, line.cartonCount), 0),
+    totalQuantity: lines.reduce((sum, line) => sum + line.quantity, 0),
+    itemCount: lines.length,
+    lines: lines.map((line) => ({
+      sku: line.sku,
+      productName: line.productName,
+      imageUrl: firstText(input.lines?.find((item) => firstText(item?.sku) === line.sku)?.imageUrl),
+      quantity: line.quantity,
+      cartonCount: line.cartonCount,
+      unitsPerCarton: line.unitsPerCarton,
+    })),
+  };
+}
+
+export async function cancelWarehouseStockupOrder(connection, input) {
+  if (connection?.providerId !== "yunwms_ru") throw new Error("当前仓库系统暂不支持从中台撤回或作废该单据。");
+  const credentials = yunCredentials(connection);
+  if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS 授权，不能撤回入库单。");
+  const receivingCode = firstText(input?.receivingCode);
+  const referenceNo = firstText(input?.referenceNo);
+  if (!receivingCode || !referenceNo) throw new Error("缺少入库单号或发运参考号，不能安全作废。");
+  const before = await getYunAsnByReceivingCode(credentials, receivingCode);
+  if (firstText(before.reference_no) !== referenceNo) throw new Error("YunWMS 入库单参考号与中台发运单号不一致，已停止作废。");
+  const beforeStatus = firstText(before.receiving_status).toUpperCase();
+  if (beforeStatus === "X") return { ok: true, alreadyCancelled: true, before: yunAsnSummary(before), after: yunAsnSummary(before) };
+  if (!new Set(["C", "W"]).has(beforeStatus)) {
+    throw new Error(`YunWMS 入库单状态为 ${beforeStatus || "未知"}，不能直接撤回；请先在 WMS 按当前流程拦截或处理。`);
+  }
+  const result = await postYun(credentials, "cancelAsn", { receiving_code: receivingCode, reference_no: referenceNo });
+  if (String(result?.ask || "").toLowerCase() !== "success") {
+    throw new Error(`YunWMS 作废入库单失败：${firstText(result?.message, result?.error?.errMessage) || "未知错误"}`);
+  }
+  let after = await getYunAsnByReceivingCode(credentials, receivingCode);
+  if (firstText(after.receiving_status).toUpperCase() !== "X") {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+    after = await getYunAsnByReceivingCode(credentials, receivingCode);
+  }
+  if (firstText(after.receiving_status).toUpperCase() !== "X") {
+    throw new Error("YunWMS 已接受作废请求，但回读状态尚未变为废弃(X)，请立即到 WMS 核对。");
+  }
+  return { ok: true, alreadyCancelled: false, before: yunAsnSummary(before), after: yunAsnSummary(after) };
 }
 
 async function createSeaStockupOrder(connection, input) {
@@ -964,24 +1187,7 @@ async function createYunAsn(connection, input) {
   if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能创建入库单。");
   const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
   if (!configuredText(warehouseCode)) throw new Error("未解析到 YunWMS 仓库编码，不能创建入库单。");
-  const lines = validateCreateLines(input);
-  const payload = await postYun(credentials, "createAsn", {
-    reference_no: firstText(input.referenceNo).slice(0, 50),
-    warehouse_code: warehouseCode,
-    verify: 0,
-    income_type: 0,
-    receiving_type: "D",
-    ...(firstText(input.trackingNo) ? { tracking_number: firstText(input.trackingNo) } : {}),
-    ...(firstText(input.carrier) ? { shipping_method: firstText(input.carrier) } : {}),
-    ...(firstText(input.customerNote) ? { receiving_desc: firstText(input.customerNote).slice(0, 200) } : {}),
-    items: lines.map((line) => ({
-      product_sku: line.sku,
-      quantity: line.quantity,
-      box_no: String(line.boxSequence),
-      product_price: line.purchasePrice,
-      currency_code: line.purchasePriceCurrency,
-    })),
-  });
+  const payload = await postYun(credentials, "createAsn", buildYunAsnPayload(input, warehouseCode));
   if (String(payload?.ask || "").toLowerCase() !== "success") {
     throw new Error(`YunWMS 创建未审核入库单失败：${firstText(payload?.message, payload?.error) || "未知错误"}`);
   }
@@ -990,7 +1196,7 @@ async function createYunAsn(connection, input) {
   return {
     ok: true,
     providerId: connection.providerId,
-    createMode: "unverified",
+    createMode: input?.verify ? "verified" : "unverified",
     warehouseId: warehouseCode,
     orderNo,
     raw: payload,
