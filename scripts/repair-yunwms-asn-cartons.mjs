@@ -47,6 +47,7 @@ const result = await repairYunAsnCartons(connection, {
   referenceNo: required(args.reference, "reference"),
   eta: args.eta || "",
   carrier: args.carrier || "",
+  transportMode: args.transport || "",
   trackingNo: args.tracking || "",
   customerNote: args.note || "",
   lines: args.lines.map(parseLine),
