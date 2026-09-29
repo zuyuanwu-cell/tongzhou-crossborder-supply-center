@@ -98,6 +98,17 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   );
   const visibleInventory = await repository.listInventory(signedInAgain.auth);
   assert.deepEqual(visibleInventory.items.map((item) => item.sku), [`VISIBLE-${unique}`]);
+  const clearedInventory = await integrationApi.applyInventoryProjection({
+    eventId: `inventory-cleared-${unique}`,
+    organizationCode: bootstrap.organization.code,
+    warehouseRef: grantedWarehouseRef,
+    warehouseName: "授权仓",
+    version: 2,
+    syncedAt: new Date().toISOString(),
+    items: [],
+  });
+  assert.equal(clearedInventory.deletedItemCount, 1);
+  assert.deepEqual((await repository.listInventory(signedInAgain.auth)).items, []);
   const orgs = await integrationPool.query("INSERT INTO organizations(code,name,organization_type) VALUES ('rls-a','A仓','warehouse'),('rls-b','B仓','warehouse') ON CONFLICT(code) DO UPDATE SET name=excluded.name RETURNING id,code");
   const a = orgs.rows.find((row) => row.code === "rls-a").id;
   const b = orgs.rows.find((row) => row.code === "rls-b").id;
