@@ -1,9 +1,10 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Check, ChevronRight, Copy, KeyRound, LoaderCircle, LockKeyhole, Mail, RefreshCw, Save, Search, ShieldCheck, UserPlus, Users, Warehouse, X } from "lucide-react";
+import { AlertTriangle, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, KeyRound, LoaderCircle, LockKeyhole, Mail, RefreshCw, Save, Search, ShieldCheck, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
 import {
   bootstrapCollaborationOrganization,
   CollaborationAccessGrant,
   CollaborationAccessGrantPayload,
+  CollaborationApproval,
   CollaborationInvitation,
   CollaborationInvitationResult,
   CollaborationOrganization,
@@ -12,10 +13,12 @@ import {
   CollaborationOrganizationType,
   fetchCollaborationOrganizationAccess,
   fetchCollaborationOrganizationAccessGrants,
+  fetchCollaborationApprovals,
   fetchCollaborationOrganizations,
   reissueCollaborationInvitation,
   revokeCollaborationInvitation,
   replaceCollaborationOrganizationAccessGrants,
+  reviewCollaborationCommand,
   updateCollaborationOrganizationStatus,
 } from "./collaboration-identity-admin-api";
 import { DomesticWarehouse, fetchDomesticWarehouses, fetchWarehouses, WarehouseConnection } from "./api";
@@ -94,6 +97,43 @@ function InvitationRows({ invitations, busyId, onReissue, onRevoke }: {
   </table></div>;
 }
 
+const approvalActionLabels: Record<string, string> = { inbound_confirm: "仓库自主入库", outbound_confirm: "仓库自主出库", inventory_adjustment: "库存盘点差异", transfer_receive: "调拨收货" };
+
+function ApprovalQueue({ notify }: { notify(message: string, error?: boolean): void }) {
+  const [items, setItems] = useState<CollaborationApproval[]>([]);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState("");
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { const value = await fetchCollaborationApprovals(); setItems(value.approvals || []); }
+    catch (error) { notify(error instanceof Error ? error.message : "审批队列读取失败", true); }
+    finally { setLoading(false); }
+  }, [notify]);
+  useEffect(() => { void load(); }, [load]);
+  async function review(item: CollaborationApproval, approved: boolean) {
+    const note = String(notes[item.commandId] || "").trim();
+    if (!approved && !note) return notify("驳回时请填写原因。", true);
+    setBusy(item.commandId);
+    try {
+      const result = await reviewCollaborationCommand(item.commandId, approved, note || "审批通过");
+      notify(approved ? `已批准并写入主账${result.coreReference ? `：${result.coreReference}` : ""}` : "申请已驳回");
+      await load();
+    } catch (error) { notify(error instanceof Error ? error.message : "审批失败", true); }
+    finally { setBusy(""); }
+  }
+  return <section className="cia-section cia-approval-section">
+    <div className="cia-section-head"><div><ClipboardCheck size={19} /><div><h4>仓库作业审批</h4><p>仓库自主发起的入库、出库和盘点差异不会直接改主账；批准时还会再次校验库存。</p></div></div><button type="button" className="cia-secondary" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "cia-spin" : ""} />刷新</button></div>
+    {loading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取待审批作业…</div> : items.length ? <div className="cia-approval-list">{items.map((item) => <article key={item.commandId}>
+      <header><span><Warehouse size={17} /></span><div><strong>{approvalActionLabels[item.commandType] || item.commandType}</strong><small>{item.organizationCode} · {item.coreRefId}</small></div><em>高风险 · 待审批</em></header>
+      <div className="cia-approval-lines">{(item.payload.lines || []).slice(0, 4).map((line) => <span key={`${item.commandId}:${line.sku}`}><code>{line.sku}</code><b>{line.direction === "decrease" ? "-" : line.direction === "increase" ? "+" : ""}{Number(line.quantity).toLocaleString()}</b></span>)}{(item.payload.lines?.length || 0) > 4 ? <span>另 {Number(item.payload.lines?.length) - 4} 项</span> : null}</div>
+      <p>{item.payload.reason || item.payload.note || "未填写作业说明"}</p><small>{item.submittedByName || "仓库成员"} · {formatTime(item.submittedAt)}</small>
+      <textarea rows={2} value={notes[item.commandId] || ""} onChange={(event) => setNotes((current) => ({ ...current, [item.commandId]: event.target.value }))} placeholder="审批意见；驳回时必填" />
+      <footer><button type="button" className="cia-danger-button" disabled={busy === item.commandId} onClick={() => void review(item, false)}><XCircle size={15} />驳回</button><button type="button" className="cia-primary" disabled={busy === item.commandId} onClick={() => void review(item, true)}>{busy === item.commandId ? <LoaderCircle size={15} className="cia-spin" /> : <CheckCircle2 size={15} />}批准并入账</button></footer>
+    </article>)}</div> : <div className="cia-empty compact"><CheckCircle2 size={22} /><strong>没有待审批作业</strong><span>仓库提交申请后会进入这里。</span></div>}
+  </section>;
+}
+
 export function CollaborationIdentityAdmin() {
   const [organizations, setOrganizations] = useState<CollaborationOrganization[]>([]);
   const [selectedCode, setSelectedCode] = useState("");
@@ -113,6 +153,7 @@ export function CollaborationIdentityAdmin() {
   const [warehouseOptions, setWarehouseOptions] = useState<WarehouseOption[]>([]);
   const [accessLoading, setAccessLoading] = useState(false);
   const [form, setForm] = useState({ name: "", organizationType: "warehouse" as CollaborationOrganizationType, notificationEmail: "", administratorUsername: "", administratorDisplayName: "", administratorEmail: "", administratorPassword: "", administratorPasswordConfirm: "" });
+  const approvalNotify = useCallback((message: string, isError = false) => { if (isError) setError(message); else setNotice(message); }, []);
 
   const loadOrganizations = useCallback(async (nextKeyword = keyword, nextStatus = status) => {
     setLoading(true);
@@ -331,6 +372,8 @@ export function CollaborationIdentityAdmin() {
       <div className="cia-credential-grid"><span>伙伴网址</span><a href={partnerPortalUrl} target="_blank" rel="noreferrer">{partnerPortalUrl}</a><span>登录账号</span><code>{provisionedAccess.username}</code><span>登录密码</span><code>{provisionedAccess.password}</code></div>
       <button className="cia-copy-credential" type="button" onClick={async () => { await copyText(provisioningMessage(provisionedAccess)); setNotice("完整开户文案已复制，可直接发送给对方。"); }}><Copy size={17} /> 一键复制开户文案</button>
     </section> : null}
+
+    <ApprovalQueue notify={approvalNotify} />
 
     <section className="cia-console">
       <aside className="cia-org-list">

@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { canPerformAction } from "./permissions.js";
-import { riskByAction, workItemActionSchema } from "../shared/contracts.js";
-import { actionPermission, assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
+import { riskByAction, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
+import { actionPermission, assertResourcePermission, assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -13,6 +14,17 @@ function pagination(input) {
   const limit = Math.max(1, Math.min(100, Number(input.limit || 30)));
   const offset = Math.max(0, Number(input.offset || 0));
   return { limit, offset };
+}
+
+function normalizedSku(value) {
+  return String(value || "").replace(/\s+/g, "").toUpperCase();
+}
+
+function operationReference(operationType, supplied = "") {
+  if (String(supplied || "").trim()) return String(supplied).trim();
+  const prefix = { inbound: "WRK-RK", outbound: "WRK-CK", stocktake: "WRK-PD" }[operationType] || "WRK";
+  const date = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return `${prefix}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
 function workItemFromRow(row) {
@@ -134,9 +146,32 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
     }
     if (Number(item.version) !== version) fail("任务已被更新，请刷新后重试。", 409, "version_conflict");
     if (["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续操作。", 409, "invalid_state");
+    const allowedStates = {
+      accept: ["pending"],
+      progress: ["accepted", "in_progress"],
+      report_exception: ["accepted", "in_progress"],
+      inbound_confirm: ["accepted", "in_progress"],
+      outbound_confirm: ["accepted", "in_progress"],
+      transfer_receive: ["accepted", "in_progress"],
+      inventory_adjustment: ["accepted", "in_progress"],
+      complete: ["accepted", "in_progress"],
+    }[action] || [];
+    if (!allowedStates.includes(item.status)) fail("当前工单状态不能执行该操作，请刷新后重试。", 409, "invalid_state");
     if (!collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote", "production_order"].includes(item.item_type)) fail("OEM 协同尚未通过上线门禁。", 403, "feature_disabled");
 
-    const risk = riskByAction[action] || "high";
+    let risk = riskByAction[action] || "high";
+    if (["inbound_confirm", "outbound_confirm", "transfer_receive"].includes(action)) {
+      const lineRows = await client.query("SELECT sku,planned_quantity FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2", [workItemId, auth.organization.id]);
+      const planned = new Map(lineRows.rows.map((line) => [normalizedSku(line.sku), Number(line.planned_quantity)]));
+      const submitted = new Set();
+      for (const line of parsed.data.lines) {
+        const sku = normalizedSku(line.sku);
+        if (submitted.has(sku)) fail("同一 SKU 不能重复提交。", 400, "duplicate_sku");
+        submitted.add(sku);
+        if (!planned.has(sku)) fail(`SKU ${sku} 不在当前工单中。`, 400, "unknown_task_sku");
+        if (Number(line.quantity) > Number(planned.get(sku))) risk = "high";
+      }
+    }
     const status = risk === "high" ? "pending_approval" : "pending_sync";
     const commandResult = await client.query(
       `INSERT INTO partner_commands(organization_id,work_item_id,command_type,idempotency_key,expected_version,payload,risk_level,status,submitted_by)
@@ -145,6 +180,15 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
     );
     const command = commandResult.rows[0];
     if (risk === "high") await client.query("INSERT INTO approvals(organization_id,command_id) VALUES ($1,$2)", [auth.organization.id, command.id]);
+    if (["inbound_confirm", "outbound_confirm", "transfer_receive"].includes(action)) {
+      for (const line of parsed.data.lines) {
+        await client.query(
+          `UPDATE warehouse_task_lines SET completed_quantity=$4,lot_no=NULLIF($5,''),barcode=NULLIF($6,''),production_date=NULLIF($7,'')::date,expiry_date=NULLIF($8,'')::date
+            WHERE work_item_id=$1 AND organization_id=$2 AND upper(regexp_replace(sku,'\\s','','g'))=$3`,
+          [workItemId, auth.organization.id, normalizedSku(line.sku), line.quantity, line.lotNo || "", line.barcode || "", line.productionDate || "", line.expiryDate || ""],
+        );
+      }
+    }
     const updated = await client.query(
       "UPDATE work_items SET status=$3,version=version+1 WHERE id=$1 AND organization_id=$2 RETURNING *",
       [workItemId, auth.organization.id, nextStatus(action, risk)],
@@ -168,6 +212,119 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
   });
 }
 
+export async function createWarehouseOperation(auth, body, { idempotencyKey }) {
+  if (!idempotencyKey || idempotencyKey.length > 160) fail("请提供有效的 Idempotency-Key。", 400, "idempotency_key_required");
+  const parsed = warehouseOperationSchema.safeParse(body);
+  if (!parsed.success) fail(parsed.error.issues[0]?.message || "仓库作业内容不正确。", 400, "invalid_operation_payload");
+  if (auth.organization.type !== "warehouse") fail("只有仓库组织可以发起仓库作业。", 403, "forbidden");
+  const input = parsed.data;
+  const config = {
+    inbound: { action: "inbound_confirm", itemType: "warehouse_inbound", title: "仓库自主入库", permission: "warehouse.inbound.confirm" },
+    outbound: { action: "outbound_confirm", itemType: "warehouse_outbound", title: "仓库自主出库", permission: "warehouse.outbound.confirm" },
+    stocktake: { action: "inventory_adjustment", itemType: "warehouse_exception", title: "库存盘点差异", permission: "warehouse.inventory.adjust.request" },
+  }[input.operationType];
+  if (!canPerformAction(auth.membership, config.action)) fail("当前岗位无权发起此作业。", 403, "forbidden");
+
+  return withOrganization(auth.organization.id, async (client) => {
+    const replay = await client.query("SELECT * FROM partner_commands WHERE organization_id=$1 AND idempotency_key=$2", [auth.organization.id, idempotencyKey]);
+    if (replay.rows[0]) {
+      const itemResult = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2", [replay.rows[0].work_item_id, auth.organization.id]);
+      return { item: workItemFromRow(itemResult.rows[0]), command: { id: replay.rows[0].id, type: replay.rows[0].command_type, status: replay.rows[0].status, riskLevel: replay.rows[0].risk_level }, idempotentReplay: true };
+    }
+    await assertResourcePermission(client, auth.organization.id, "warehouse", input.warehouseRef, "warehouse.task.view");
+    await assertResourcePermission(client, auth.organization.id, "warehouse", input.warehouseRef, config.permission);
+    const grantResult = await client.query("SELECT resource_name FROM organization_access_grants WHERE organization_id=$1 AND resource_type='warehouse' AND resource_ref=$2", [auth.organization.id, input.warehouseRef]);
+    const warehouseName = String(grantResult.rows[0]?.resource_name || input.warehouseRef);
+    const normalizedLines = input.lines.map((line) => ({ ...line, sku: normalizedSku(line.sku) }));
+    if (new Set(normalizedLines.map((line) => line.sku)).size !== normalizedLines.length) fail("同一 SKU 不能重复提交。", 400, "duplicate_sku");
+    const skuValues = normalizedLines.map((line) => line.sku);
+    const projectionResult = await client.query(
+      `SELECT sku,product_name,image_url,available_quantity,locked_quantity,unit
+         FROM warehouse_inventory_projections
+        WHERE organization_id=$1 AND warehouse_ref=$2 AND upper(regexp_replace(sku,'\\s','','g'))=ANY($3::text[])`,
+      [auth.organization.id, input.warehouseRef, skuValues],
+    );
+    const projected = new Map(projectionResult.rows.map((row) => [normalizedSku(row.sku), row]));
+    if (input.operationType !== "inbound") {
+      const missing = skuValues.filter((sku) => !projected.has(sku));
+      if (missing.length) fail(`以下 SKU 不在本仓库存中：${missing.join("、")}`, 409, "inventory_projection_missing");
+    }
+    if (input.operationType === "outbound") {
+      for (const line of normalizedLines) {
+        const available = Number(projected.get(line.sku)?.available_quantity || 0);
+        if (Number(line.quantity) > available) fail(`${line.sku} 可用库存不足，当前投影可用 ${available}。`, 409, "insufficient_projected_stock");
+      }
+    }
+
+    const referenceNo = operationReference(input.operationType, input.referenceNo);
+    const duplicateReference = await client.query("SELECT 1 FROM work_items WHERE organization_id=$1 AND core_ref_type='partner_warehouse_operation' AND core_ref_id=$2", [auth.organization.id, referenceNo]);
+    if (duplicateReference.rows[0]) fail("该外部单号已经提交，请勿重复创建。", 409, "reference_no_exists");
+    await client.query(
+      `INSERT INTO collaboration_projects(organization_id,core_ref_type,core_ref_id,project_type,title,status,public_summary,version)
+       VALUES ($1,'warehouse_self_service',$2,'warehouse',$3,'active',$4,1)
+       ON CONFLICT(organization_id,core_ref_type,core_ref_id) DO NOTHING`,
+      [auth.organization.id, input.warehouseRef, `${warehouseName}自主作业`, { warehouseRef: input.warehouseRef, warehouseName }],
+    );
+    const projectResult = await client.query("SELECT id FROM collaboration_projects WHERE organization_id=$1 AND core_ref_type='warehouse_self_service' AND core_ref_id=$2", [auth.organization.id, input.warehouseRef]);
+    await client.query(
+      `INSERT INTO collaboration_spaces(organization_id,project_id,space_type,title,status,version)
+       VALUES ($1,$2,'warehouse',$3,'open',1)
+       ON CONFLICT(organization_id,project_id,space_type) DO NOTHING`,
+      [auth.organization.id, projectResult.rows[0].id, `${warehouseName}作业空间`],
+    );
+    const spaceResult = await client.query("SELECT id FROM collaboration_spaces WHERE organization_id=$1 AND project_id=$2 AND space_type='warehouse'", [auth.organization.id, projectResult.rows[0].id]);
+    const itemResult = await client.query(
+      `INSERT INTO work_items(organization_id,space_id,core_ref_type,core_ref_id,item_type,title,description,status,priority,public_payload,version)
+       VALUES ($1,$2,'partner_warehouse_operation',$3,$4,$5,$6,'pending_approval','normal',$7,1) RETURNING *`,
+      [auth.organization.id, spaceResult.rows[0].id, referenceNo, config.itemType, `${config.title} · ${referenceNo}`, input.note, { referenceNo, warehouseRef: input.warehouseRef, warehouseName, note: input.note, initiatedBy: "partner" }],
+    );
+    const item = itemResult.rows[0];
+    const commandLines = [];
+    for (const line of normalizedLines) {
+      const snapshot = projected.get(line.sku);
+      const productName = String(snapshot?.product_name || line.productName || line.sku).trim();
+      const imageUrl = String(snapshot?.image_url || "");
+      const unit = String(snapshot?.unit || line.unit || "件");
+      const planned = input.operationType === "stocktake" ? Number(snapshot.available_quantity) + Number(snapshot.locked_quantity) : Number(line.quantity);
+      const completed = input.operationType === "stocktake" ? Number(line.countedQuantity) : Number(line.quantity);
+      await client.query(
+        `INSERT INTO warehouse_task_lines(organization_id,work_item_id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),NULLIF($11,'')::date,NULLIF($12,'')::date,$13)`,
+        [auth.organization.id, item.id, line.sku, productName, imageUrl, planned, completed, unit, line.lotNo || "", line.barcode || "", line.productionDate || "", line.expiryDate || "", input.operationType === "stocktake" ? { countedQuantity: completed, bookQuantity: planned } : {}],
+      );
+      if (input.operationType === "stocktake") {
+        const delta = completed - planned;
+        if (delta) commandLines.push({ sku: line.sku, quantity: Math.abs(delta), direction: delta > 0 ? "increase" : "decrease", lotNo: "", barcode: "", productionDate: "", expiryDate: "" });
+      } else {
+        commandLines.push({ sku: line.sku, quantity: Number(line.quantity), lotNo: line.lotNo || "", barcode: line.barcode || "", productionDate: line.productionDate || "", expiryDate: line.expiryDate || "" });
+      }
+    }
+    if (!commandLines.length) fail("本次盘点与账面库存一致，无需提交调整申请。", 409, "no_inventory_difference");
+    const payload = input.operationType === "stocktake"
+      ? { action: config.action, lines: commandLines, reason: input.note }
+      : { action: config.action, lines: commandLines, note: input.note };
+    const commandResult = await client.query(
+      `INSERT INTO partner_commands(organization_id,work_item_id,command_type,idempotency_key,expected_version,payload,risk_level,status,submitted_by)
+       VALUES ($1,$2,$3,$4,1,$5,'high','pending_approval',$6) RETURNING *`,
+      [auth.organization.id, item.id, config.action, idempotencyKey, payload, auth.user.id],
+    );
+    const command = commandResult.rows[0];
+    await client.query("INSERT INTO approvals(organization_id,command_id) VALUES ($1,$2)", [auth.organization.id, command.id]);
+    await client.query(
+      `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_user_id,actor_name,body,metadata)
+       VALUES ($1,$2,'partner.operation_created',$3,$4,$5,$6)`,
+      [auth.organization.id, item.id, auth.user.id, auth.user.displayName, input.note, { commandId: command.id, operationType: input.operationType, referenceNo }],
+    );
+    await client.query("INSERT INTO integration_outbox(event_type,aggregate_type,aggregate_id,payload) VALUES ('partner.command.created','partner_command',$1,$2)", [command.id, { commandId: command.id, organizationId: auth.organization.id, workItemId: item.id, action: config.action }]);
+    await client.query(
+      `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
+       VALUES ($1,$2,$3,'warehouse.operation.create','work_item',$4,'pending_approval',$5)`,
+      [auth.organization.id, auth.user.id, auth.user.displayName, item.id, { commandId: command.id, operationType: input.operationType, warehouseRef: input.warehouseRef, referenceNo }],
+    );
+    return { item: workItemFromRow(item), command: { id: command.id, type: config.action, status: command.status, riskLevel: "high" }, idempotentReplay: false };
+  });
+}
+
 export async function listInventory(auth, filters = {}) {
   const { limit, offset } = pagination(filters);
   const keyword = String(filters.keyword || "").trim().slice(0, 100);
@@ -177,9 +334,10 @@ export async function listInventory(auth, filters = {}) {
     if (keyword) { params.push(`%${keyword}%`); keywordClause = ` AND (sku ILIKE $2 OR product_name ILIKE $2)`; }
     params.push(limit, offset);
     const result = await client.query(
-      `SELECT warehouse_ref,warehouse_name,sku,product_name,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version
+      `SELECT warehouse_ref,warehouse_name,sku,product_name,image_url,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version
          FROM warehouse_inventory_projections
         WHERE organization_id=$1
+          AND (available_quantity > 0 OR locked_quantity > 0 OR in_transit_quantity > 0)
           AND EXISTS (
             SELECT 1 FROM organization_access_grants access_grant
              WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id
@@ -191,7 +349,7 @@ export async function listInventory(auth, filters = {}) {
       params,
     );
     return {
-      items: result.rows.map((row) => ({ warehouseRef: row.warehouse_ref, warehouseName: row.warehouse_name, sku: row.sku, productName: row.product_name, availableQuantity: Number(row.available_quantity), lockedQuantity: Number(row.locked_quantity), inTransitQuantity: Number(row.in_transit_quantity), unit: row.unit, lastCoreSyncedAt: new Date(row.last_core_synced_at).toISOString(), version: Number(row.version) })),
+      items: result.rows.map((row) => ({ warehouseRef: row.warehouse_ref, warehouseName: row.warehouse_name, sku: row.sku, productName: row.product_name, imageUrl: row.image_url || "", availableQuantity: Number(row.available_quantity), lockedQuantity: Number(row.locked_quantity), inTransitQuantity: Number(row.in_transit_quantity), unit: row.unit, lastCoreSyncedAt: new Date(row.last_core_synced_at).toISOString(), version: Number(row.version) })),
       limit,
       offset,
     };

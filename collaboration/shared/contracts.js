@@ -3,11 +3,15 @@ import { z } from "zod";
 const limitedText = (max) => z.string().trim().max(max);
 const isoDateTime = z.string().datetime({ offset: true }).or(z.literal(""));
 const quantity = z.number().finite().nonnegative();
+const httpsImageUrl = z.string().url().max(2_000).refine((value) => {
+  try { return new URL(value).protocol === "https:"; }
+  catch { return false; }
+}, "图片地址必须使用 HTTPS。");
 
 export const warehouseLineSchema = z.object({
   sku: limitedText(100).min(1),
   productName: limitedText(300).min(1),
-  imageUrl: z.string().url().max(2_000).optional().or(z.literal("")),
+  imageUrl: httpsImageUrl.optional().or(z.literal("")),
   plannedQuantity: quantity,
   completedQuantity: quantity.optional().default(0),
   unit: limitedText(20).default("件"),
@@ -52,12 +56,45 @@ export const inventoryProjectionSchema = z.object({
   items: z.array(z.object({
     sku: limitedText(100).min(1),
     productName: limitedText(300).min(1),
+    imageUrl: httpsImageUrl.optional().or(z.literal("")),
     availableQuantity: quantity,
     lockedQuantity: quantity.optional().default(0),
     inTransitQuantity: quantity.optional().default(0),
     unit: limitedText(20).optional().default("件"),
   }).strict()).max(20_000),
 }).strict();
+
+const warehouseOperationLineSchema = z.object({
+  sku: limitedText(100).min(1),
+  productName: limitedText(300).min(1),
+  imageUrl: httpsImageUrl.optional().or(z.literal("")),
+  quantity: z.number().finite().positive(),
+  unit: limitedText(20).optional().default("件"),
+  lotNo: limitedText(100).optional().default(""),
+  barcode: limitedText(100).optional().default(""),
+  productionDate: limitedText(10).optional().default(""),
+  expiryDate: limitedText(10).optional().default(""),
+}).strict();
+
+const stocktakeLineSchema = z.object({
+  sku: limitedText(100).min(1),
+  productName: limitedText(300).min(1),
+  imageUrl: httpsImageUrl.optional().or(z.literal("")),
+  countedQuantity: quantity,
+  unit: limitedText(20).optional().default("件"),
+}).strict();
+
+const warehouseOperationBase = {
+  warehouseRef: limitedText(120).min(1),
+  referenceNo: limitedText(120).optional().default(""),
+  note: limitedText(2_000).min(1),
+};
+
+export const warehouseOperationSchema = z.discriminatedUnion("operationType", [
+  z.object({ ...warehouseOperationBase, operationType: z.literal("inbound"), lines: z.array(warehouseOperationLineSchema).min(1).max(500) }).strict(),
+  z.object({ ...warehouseOperationBase, operationType: z.literal("outbound"), lines: z.array(warehouseOperationLineSchema).min(1).max(500) }).strict(),
+  z.object({ ...warehouseOperationBase, operationType: z.literal("stocktake"), lines: z.array(stocktakeLineSchema).min(1).max(2_000) }).strict(),
+]);
 
 const oemPublicPayloadSchema = z.object({
   projectCode: limitedText(120).min(1),

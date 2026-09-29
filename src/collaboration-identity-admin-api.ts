@@ -99,6 +99,21 @@ export type CollaborationAccessGrantPayload = {
   defaultResourceRef?: string;
 };
 
+export type CollaborationApproval = {
+  commandId: string;
+  organizationCode: string;
+  workItemId: string;
+  coreRefType: string;
+  coreRefId: string;
+  itemType: string;
+  commandType: string;
+  payload: { action?: string; note?: string; reason?: string; lines?: Array<{ sku: string; quantity: number; direction?: string }> };
+  submittedByName: string;
+  submittedAt: string;
+  riskLevel: string;
+  status: string;
+};
+
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -136,6 +151,17 @@ export function replaceCollaborationOrganizationAccessGrants(code: string, grant
   return request<{ ok: boolean; grants: CollaborationAccessGrant[]; capabilities: CollaborationCapability[]; resources?: CollaborationAccessGrantPayload["resources"] }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/access-grants`, {
     method: "PUT",
     body: JSON.stringify({ grants }),
+  });
+}
+
+export function fetchCollaborationApprovals() {
+  return request<{ ok: boolean; approvals: CollaborationApproval[] }>("/api/collaboration-bridge/approvals");
+}
+
+export function reviewCollaborationCommand(commandId: string, approved: boolean, note: string) {
+  return request<{ ok: boolean; status: string; message?: string; coreReference?: string }>(`/api/collaboration-bridge/commands/${encodeURIComponent(commandId)}/review`, {
+    method: "POST",
+    body: JSON.stringify({ approved, note }),
   });
 }
 

@@ -39,6 +39,15 @@ function productLookup(products = []) {
   return new Map(products.map((item) => [String(item.sku || "").replace(/\s+/g, "").toUpperCase(), item]));
 }
 
+function publicImageUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return url.protocol === "https:" && url.href.length <= 2_000 ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function inventoryProjectionStateKey(organizationCode, warehouseRef) {
   return `inventory_projection:${organizationCode}:${warehouseRef}`;
 }
@@ -122,14 +131,20 @@ export function createCollaborationBridge({
     const payload = domesticInventoryService.list({ warehouseId: grant.resourceRef }, systemInventoryContext());
     const warehouse = (payload.warehouses || []).find((item) => String(item.id) === String(grant.resourceRef));
     if (!warehouse) fail(`授权仓库不存在：${grant.resourceRef}`, 409, "granted_warehouse_not_found");
-    const items = (payload.balances || []).map((item) => ({
-      sku: String(item.sku || "").trim(),
-      productName: String(item.productName || item.sku || "").trim(),
-      availableQuantity: Math.max(0, Number(item.availableQty || 0)),
-      lockedQuantity: Math.max(0, Number(item.reservedQty || 0)),
-      inTransitQuantity: 0,
-      unit: String(item.unit || "件").trim() || "件",
-    })).filter((item) => item.sku && item.productName).sort((left, right) => left.sku.localeCompare(right.sku));
+    const catalog = productLookup(listProducts());
+    const items = (payload.balances || []).map((item) => {
+      const sku = String(item.sku || "").replace(/\s+/g, "").toUpperCase();
+      const product = catalog.get(sku) || {};
+      return {
+        sku,
+        productName: String(item.productName || product.name || product.productName || item.sku || "").trim(),
+        imageUrl: publicImageUrl(item.imageUrl || product.imageUrl),
+        availableQuantity: Math.max(0, Number(item.availableQty || 0)),
+        lockedQuantity: Math.max(0, Number(item.reservedQty || 0)),
+        inTransitQuantity: 0,
+        unit: String(item.unit || product.unit || "件").trim() || "件",
+      };
+    }).filter((item) => item.sku && item.productName).sort((left, right) => left.sku.localeCompare(right.sku));
     const warehouseName = String(warehouse.name || grant.resourceName || grant.resourceRef).trim();
     const stateKey = inventoryProjectionStateKey(organizationCode, grant.resourceRef);
     const previous = storedInventoryProjectionState(store, stateKey);

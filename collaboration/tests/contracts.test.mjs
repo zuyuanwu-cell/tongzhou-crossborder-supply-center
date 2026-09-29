@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collaborationProjectionSchema, oemProjectionSchema, riskByAction, supplierQuoteSchema, workItemActionSchema } from "../shared/contracts.js";
+import { collaborationProjectionSchema, inventoryProjectionSchema, oemProjectionSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { canPerformAction, requiresMfaAtLogin } from "../api/permissions.js";
 
 const validProjection = {
@@ -27,6 +27,17 @@ test("partner action schemas reject unbounded and unknown payload fields", () =>
   assert.equal(workItemActionSchema.safeParse({ action: "inventory_adjustment", reason: "盘点差异", lines: [{ sku: "SKU-1", quantity: 2, direction: "decrease" }] }).success, true);
   assert.equal(workItemActionSchema.safeParse({ action: "inventory_adjustment", reason: "盘点差异", lines: [{ sku: "SKU-1", quantity: 2 }] }).success, false);
   assert.equal(riskByAction.inventory_adjustment, "high");
+});
+
+test("inventory images and partner-created warehouse operations stay on a strict allowlist", () => {
+  const inventory = { eventId: "inventory-1", organizationCode: "warehouse-a", warehouseRef: "wh-1", warehouseName: "一号仓", version: 1, syncedAt: new Date().toISOString(), items: [{ sku: "SKU-1", productName: "产品一", imageUrl: "https://files.example.test/product.jpg", availableQuantity: 8 }] };
+  assert.equal(inventoryProjectionSchema.safeParse(inventory).success, true);
+  assert.equal(inventoryProjectionSchema.safeParse({ ...inventory, items: [{ ...inventory.items[0], imageUrl: "not-a-url" }] }).success, false);
+  assert.equal(inventoryProjectionSchema.safeParse({ ...inventory, items: [{ ...inventory.items[0], imageUrl: "http://files.example.test/product.jpg" }] }).success, false);
+  const inbound = { operationType: "inbound", warehouseRef: "wh-1", referenceNo: "", note: "采购到货", lines: [{ sku: "SKU-1", productName: "产品一", quantity: 3, unit: "件" }] };
+  assert.equal(warehouseOperationSchema.safeParse(inbound).success, true);
+  assert.equal(warehouseOperationSchema.safeParse({ ...inbound, internalCost: 99 }).success, false);
+  assert.equal(warehouseOperationSchema.safeParse({ operationType: "stocktake", warehouseRef: "wh-1", note: "月度盘点", lines: [{ sku: "SKU-1", productName: "产品一", countedQuantity: 0, unit: "件" }] }).success, true);
 });
 
 test("organization jobs enforce role capabilities without an authenticator gate", () => {

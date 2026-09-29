@@ -113,18 +113,19 @@ export async function applyInventoryProjection(input) {
     );
     for (const item of projection.items) {
       await client.query(
-        `INSERT INTO warehouse_inventory_projections(organization_id,warehouse_ref,warehouse_name,sku,product_name,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        `INSERT INTO warehouse_inventory_projections(organization_id,warehouse_ref,warehouse_name,sku,product_name,image_url,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          ON CONFLICT(organization_id,warehouse_ref,sku) DO UPDATE SET
            warehouse_name=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.warehouse_name ELSE warehouse_inventory_projections.warehouse_name END,
            product_name=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.product_name ELSE warehouse_inventory_projections.product_name END,
+           image_url=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.image_url ELSE warehouse_inventory_projections.image_url END,
            available_quantity=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.available_quantity ELSE warehouse_inventory_projections.available_quantity END,
            locked_quantity=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.locked_quantity ELSE warehouse_inventory_projections.locked_quantity END,
            in_transit_quantity=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.in_transit_quantity ELSE warehouse_inventory_projections.in_transit_quantity END,
            unit=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.unit ELSE warehouse_inventory_projections.unit END,
            last_core_synced_at=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.last_core_synced_at ELSE warehouse_inventory_projections.last_core_synced_at END,
            version=GREATEST(warehouse_inventory_projections.version,excluded.version)`,
-        [organization.id, projection.warehouseRef, projection.warehouseName, item.sku, item.productName, item.availableQuantity, item.lockedQuantity, item.inTransitQuantity, item.unit, projection.syncedAt, projection.version],
+        [organization.id, projection.warehouseRef, projection.warehouseName, item.sku, item.productName, item.imageUrl || "", item.availableQuantity, item.lockedQuantity, item.inTransitQuantity, item.unit, projection.syncedAt, projection.version],
       );
     }
     await client.query("UPDATE integration_inbox SET status='applied',processed_at=now() WHERE source_event_id=$1", [projection.eventId]);
@@ -176,6 +177,16 @@ export async function reviewCommand(commandId, { approved, note = "", reviewer =
     await client.query("UPDATE approvals SET status=$2,reviewed_by=$3,reviewed_at=now(),review_note=$4 WHERE command_id=$1", [commandId, approved ? "approved" : "rejected", reviewer, String(note).slice(0, 2_000)]);
     await client.query("UPDATE partner_commands SET status=$2,result_message=$3,processed_at=CASE WHEN $2='rejected' THEN now() ELSE NULL END WHERE id=$1", [commandId, status, approved ? "" : String(note).slice(0, 2_000)]);
     await client.query("UPDATE work_items SET status=$3,version=version+1 WHERE id=$1 AND organization_id=$2", [command.work_item_id, command.organization_id, approved ? "pending_sync" : "rejected"]);
+    await client.query(
+      `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [command.organization_id, command.work_item_id, approved ? "core.approval.approved" : "core.approval.rejected", reviewer, note || (approved ? "内部审批已通过，等待写入主账。" : "内部审批未通过。"), { commandId }],
+    );
+    await client.query(
+      `INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status)
+       VALUES ($1,$2,$3,$4,'in_app','sent')`,
+      [command.organization_id, command.work_item_id, approved ? "作业申请已通过审批" : "作业申请已被驳回", note || (approved ? "系统正在同步主账，请勿重复提交。" : "请打开工单查看处理结果。")],
+    );
     return { ok: true, commandId, status };
   });
 }
@@ -183,7 +194,7 @@ export async function reviewCommand(commandId, { approved, note = "", reviewer =
 export async function completeCommand(commandId, input) {
   const resultPayload = commandResultSchema.parse(input);
   return withSystem(async (client) => {
-    const commandResult = await client.query("SELECT * FROM partner_commands WHERE id=$1 FOR UPDATE", [commandId]);
+    const commandResult = await client.query("SELECT c.*,w.core_ref_type FROM partner_commands c JOIN work_items w ON w.id=c.work_item_id WHERE c.id=$1 FOR UPDATE OF c", [commandId]);
     const command = commandResult.rows[0];
     if (!command) fail("协同指令不存在。", 404, "not_found");
     if (["applied", "rejected", "failed"].includes(command.status)) return { ok: true, idempotentReplay: true, status: command.status };
@@ -192,7 +203,7 @@ export async function completeCommand(commandId, input) {
       `UPDATE partner_commands SET status=$2,result_code=$3,result_message=$4,core_reference=$5,processed_at=now() WHERE id=$1`,
       [commandId, commandStatus, resultPayload.resultCode || null, resultPayload.message || null, resultPayload.coreReference || null],
     );
-    const itemStatus = commandStatus === "applied" ? (command.command_type === "complete" ? "completed" : "in_progress") : commandStatus;
+    const itemStatus = commandStatus === "applied" ? (command.command_type === "complete" || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
     const versionExpression = resultPayload.workItemVersion ? "$4" : "version+1";
     const params = [command.work_item_id, command.organization_id, itemStatus];
     if (resultPayload.workItemVersion) params.push(resultPayload.workItemVersion);

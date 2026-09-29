@@ -10,6 +10,7 @@ const noMfaSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), ".."
 const noForcedPasswordSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0004_disable_forced_password_change.sql"), "utf8");
 const usernameOnlyLoginSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0005_username_only_login.sql"), "utf8");
 const accessGrantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0006_organization_access_grants.sql"), "utf8");
+const warehouseOperationsSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0007_warehouse_operations.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -20,6 +21,7 @@ const notificationSource = readFileSync(join(dirname(fileURLToPath(import.meta.u
 const accessSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "access.js"), "utf8");
 const integrationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "integration.js"), "utf8");
 const storageSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "storage.js"), "utf8");
+const migrateSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "migrate.js"), "utf8");
 
 test("all partner-owned tables opt into forced row-level security", () => {
   const tables = [
@@ -99,4 +101,14 @@ test("resource permissions guard projections, reads, actions and attachments", (
   assert.match(storageSource, /assertWorkItemPermission[\s\S]*attachment\.upload/);
   assert.match(oemSource, /packaging\.quote\.submit/);
   assert.match(oemSource, /production\.progress\.update/);
+});
+
+test("warehouse self-service stores allowlisted images and retains approval controls", () => {
+  assert.match(warehouseOperationsSql, /ADD COLUMN IF NOT EXISTS image_url/);
+  assert.match(repositorySource, /createWarehouseOperation/);
+  assert.match(repositorySource, /pending_approval/);
+  assert.match(repositorySource, /warehouse\.inventory\.adjust\.request/);
+  assert.match(repositorySource, /insufficient_projected_stock/);
+  assert.match(migrateSource, /GRANT SELECT,INSERT ON collaboration_projects,collaboration_spaces,warehouse_task_lines/);
+  assert.match(integrationSource, /partner_warehouse_operation/);
 });

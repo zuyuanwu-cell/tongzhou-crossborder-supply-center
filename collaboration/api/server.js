@@ -13,6 +13,7 @@ import {
   logout,
 } from "./auth.js";
 import {
+  createWarehouseOperation,
   getWorkItem,
   listInventory,
   listNotifications,
@@ -312,6 +313,13 @@ async function route(req, res) {
   }
   if (url.pathname === "/collaboration/v1/work-items" && req.method === "GET") {
     sendJson(res, 200, { ok: true, ...(await listWorkItems(auth, queryObject(url))) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/warehouse-operations" && req.method === "POST") {
+    const result = await createWarehouseOperation(auth, await readJson(req), {
+      idempotencyKey: String(req.headers["idempotency-key"] || ""),
+    });
+    sendJson(res, result.idempotentReplay ? 200 : 201, { ok: true, ...result });
     return;
   }
   let match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}$`));
