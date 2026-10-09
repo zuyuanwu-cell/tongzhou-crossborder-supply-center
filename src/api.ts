@@ -649,6 +649,107 @@ export type ActionLogPayload = {
   entries: ActionLogEntry[];
 };
 
+export type ReviewCenterCount = {
+  label: string;
+  count: number;
+  share?: number;
+};
+
+export type ReviewCenterTicket = {
+  id: string;
+  type: "after_sales" | "warehouse_ticket";
+  typeLabel: string;
+  createdAt: string;
+  updatedAt: string;
+  warehouseId: string;
+  warehouseName: string;
+  status: string;
+  priority: string;
+  subject: string;
+  reason: string;
+  responsibility: string;
+  createdBy: string;
+  responseHours: number | null;
+  closeHours: number | null;
+  open: boolean;
+  overdue: boolean;
+  reminderCount: number;
+  rejectionCount: number;
+  liabilityCny: number;
+};
+
+export type ReviewCenterPayload = {
+  ok: boolean;
+  generatedAt: string;
+  range: { from: string; to: string; days: number; timeZone: string };
+  thresholds: { responseSlaHours: number; closeSlaHours: number };
+  coverage: {
+    actionLogStored: number;
+    actionLogFrom: string;
+    actionLogTo: string;
+    actionLogAtCapacity: boolean;
+  };
+  overview: {
+    activeUsers: number;
+    operations: number;
+    operationsPerUser: number;
+    collaborationTasks: number;
+    openTasks: number;
+    completionRate: number;
+    responseSlaRate: number;
+    medianResponseHours: number;
+    medianCloseHours: number;
+    overdueTasks: number;
+    afterSalesTickets: number;
+    warehouseTickets: number;
+    closeSlaRate: number;
+  };
+  usage: {
+    daily: Array<{ date: string; operations: number; users: number; collaboration: number; afterSales: number }>;
+    actors: Array<{ id: string; name: string; role: string; count: number; loginCount: number; collaborationCount: number; activeDays: number; lastAt: string }>;
+    actions: ReviewCenterCount[];
+    modules: ReviewCenterCount[];
+    heatmap: Array<{ weekday: number; hours: number[] }>;
+    entries: Array<{
+      id: string;
+      createdAt: string;
+      actorId: string;
+      actorName: string;
+      actorRole: string;
+      action: string;
+      targetType: string;
+      targetName: string;
+      module: string;
+    }>;
+  };
+  collaboration: {
+    statuses: Array<ReviewCenterCount & { status: string; tone: string }>;
+    warehouses: Array<{
+      id: string;
+      name: string;
+      total: number;
+      open: number;
+      completed: number;
+      overdue: number;
+      completionRate: number;
+      responseSlaRate: number;
+      avgResponseHours: number;
+      avgCloseHours: number;
+    }>;
+    responseBands: ReviewCenterCount[];
+    tickets: ReviewCenterTicket[];
+  };
+  afterSales: {
+    total: number;
+    reasons: ReviewCenterCount[];
+    secondaryReasons: ReviewCenterCount[];
+    responsibility: ReviewCenterCount[];
+    rejectionCount: number;
+    reminderCount: number;
+    liabilityCny: number;
+  };
+};
+
 export type AiConfigPayload = {
   ok: boolean;
   provider: "tongzhou_canvas";
@@ -3550,6 +3651,14 @@ export function fetchWecomNotifications() {
 
 export function fetchActionLog() {
   return requestJson<ActionLogPayload>("/api/action-log");
+}
+
+export function fetchReviewCenter(filters: { from?: string; to?: string } = {}) {
+  const query = new URLSearchParams();
+  if (filters.from) query.set("from", filters.from);
+  if (filters.to) query.set("to", filters.to);
+  const queryString = query.toString();
+  return requestJson<ReviewCenterPayload>(`/api/review-center${queryString ? `?${queryString}` : ""}`);
 }
 
 export function upsertWecomRobot(input: { id?: string; name: string; webhookUrl?: string; enabled: boolean }) {

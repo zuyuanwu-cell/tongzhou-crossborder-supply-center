@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Activity,
   AlertTriangle,
   ArrowUp,
   ArrowUpRight,
@@ -230,6 +231,7 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
+import ReviewCenter from "./ReviewCenter";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -409,6 +411,7 @@ const navItems = [
   { label: "业务链路", icon: GitBranch, hash: "#business-chain", section: "stockup", childOf: "备货中心", permission: "business_chain_view" },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
   { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
+  { label: "复盘中心", icon: Activity, hash: "#review-center", section: "analysis", permission: "action_log", adminOnly: true },
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "settings", beta: true, permission: "tongzhou_ai" },
   { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "settings", permission: "quick_nav" },
   { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "settings", permission: "miaoshou_alias", additionalPermissions: ["miaoshou_automation", "miaoshou_config"] },
@@ -448,6 +451,7 @@ function hashForView(view: string) {
 
 function visibleNavItems(user: AuthUser) {
   const allowedItems = navItems.filter((item) => {
+    if ("adminOnly" in item && item.adminOnly && user.role !== "admin") return false;
     const permissions = [
       item.permission,
       ...("alternativePermission" in item && item.alternativePermission ? [item.alternativePermission as string] : []),
@@ -2091,6 +2095,8 @@ function App() {
             syncing={syncing}
             canSync={hasUserPermission(currentUser, "order_sync_run")}
           />
+        ) : activeView === "复盘中心" ? (
+          <ReviewCenter />
         ) : activeView === "订单分析" ? (
           <OrderAnalysisPage
             payload={orderAnalysisPayload}

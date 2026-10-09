@@ -45,6 +45,7 @@ import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
 import { createMiaoshouOrderAliasJobService } from "./miaoshou-order-alias-jobs.js";
 import { createAfterSalesService } from "./after-sales.js";
 import { createWarehouseTicketService } from "./warehouse-tickets.js";
+import { buildReviewCenterPayload, canAccessReviewCenter } from "./review-center.js";
 import {
   normalizeWecomProjectTeams,
   normalizeWecomUserId,
@@ -788,7 +789,7 @@ function normalizeActionLog(input = {}) {
         details: sanitizeActionLogDetails(entry.details || {}),
       }))
       .filter((entry) => entry.action)
-      .slice(0, 300),
+      .slice(0, 5000),
   };
 }
 
@@ -7176,6 +7177,25 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, buildDashboardSummary(auth));
+      return;
+    }
+
+    if (url.pathname === "/api/review-center" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessReviewCenter(auth)) {
+        sendJson(res, 403, { ok: false, message: "复盘中心仅管理员可访问。" });
+        return;
+      }
+      const afterSales = afterSalesService.list().tickets;
+      const warehouseTickets = warehouseTicketService.list().tickets;
+      sendJson(res, 200, buildReviewCenterPayload({
+        from: url.searchParams.get("from"),
+        to: url.searchParams.get("to"),
+        actionLogs: cachedActionLog.entries,
+        afterSalesTickets: afterSales,
+        warehouseTickets,
+        actionLogLimit: 5000,
+      }));
       return;
     }
 
