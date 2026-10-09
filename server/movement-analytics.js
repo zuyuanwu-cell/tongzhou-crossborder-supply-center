@@ -338,7 +338,9 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
     ].filter(Boolean));
     const relatedResults = (ordersPayload.results || []).filter((result) => relatedWarehouseIds.has(firstText(result.warehouseId)));
     const partialOrders = relatedResults.some((result) => (
-      result.orderApiReachedPageLimit
+      result.backgroundRunning
+      || result.running
+      || result.orderApiReachedPageLimit
       || (firstNumber(result.orderApiTotal) > 0 && firstNumber(result.orderApiReadRows, result.orderApiReadSkuRows) < firstNumber(result.orderApiTotal))
       || (!result.ok && !result.backgroundRunning && !result.skipped)
     ));
@@ -409,6 +411,14 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
     generatedAt: new Date().toISOString(),
     orderSyncedAt: ordersPayload.syncedAt || "",
     orderDataAvailable: Boolean(ordersPayload.syncedAt && (ordersPayload.orders || []).length),
+    orderDataComplete: Boolean(ordersPayload.syncedAt)
+      && !(ordersPayload.results || []).some((result) => (
+        result.backgroundRunning
+        || result.running
+        || result.orderApiReachedPageLimit
+        || (firstNumber(result.orderApiTotal) > 0 && firstNumber(result.orderApiReadRows, result.orderApiReadSkuRows) < firstNumber(result.orderApiTotal))
+        || (!result.ok && !result.skipped)
+      )),
     inventorySyncedAt: warehousePayload.syncedAt || "",
     windows: [3, 7, 15, 30, 60, 90],
     counts: {

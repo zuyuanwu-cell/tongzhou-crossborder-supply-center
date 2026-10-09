@@ -22,6 +22,7 @@ import { sampleCatalogRecords, sampleProductBaseRecords } from "./sample-data.js
 import { JIANYUN_FORMS } from "./field-mapping.js";
 import { WAREHOUSE_CONNECTIONS, WMS_PROVIDERS } from "./warehouse-config.js";
 import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analytics.js";
+import { buildMovementSnapshotRows, movementSnapshotTotals } from "./movement-snapshot.js";
 import { projectMovementPayload, scopeMovementSources } from "./movement-access.js";
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
@@ -74,6 +75,7 @@ import { withTransientRetry } from "./transient-retry.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
+import { selectSeaThreeWarehouseIds } from "./order-analysis.js";
 import { createOzonIntegrationService } from "./ozon-integration.js";
 import { initStockupCollaborationStore } from "./stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "./stockup-collaboration-service.js";
@@ -113,6 +115,7 @@ function loadEnv() {
 loadEnv();
 
 const port = Number(process.env.API_PORT || 8787);
+const backgroundJobsEnabled = process.env.BACKGROUND_JOBS_ENABLED !== "false";
 const cacheDir = resolve(process.env.CACHE_DIR || resolve(process.cwd(), ".cache"));
 const distDir = resolve(process.cwd(), "dist");
 const productCachePath = resolve(cacheDir, "products.json");
@@ -3611,13 +3614,21 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
     rows,
   };
 
+  const previousSameDay = (cachedInventorySnapshots.snapshots || []).find((item) => item.date === date) || null;
   const snapshots = (cachedInventorySnapshots.snapshots || []).filter((item) => item.date !== date);
   snapshots.unshift(snapshot);
   snapshots.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const versions = [
+    ...(previousSameDay ? [previousSameDay] : []),
+    ...(cachedInventorySnapshots.versions || []),
+  ].filter((item, index, values) => values.findIndex((candidate) => candidate.capturedAt === item.capturedAt) === index)
+    .sort((a, b) => String(b.capturedAt || "").localeCompare(String(a.capturedAt || "")))
+    .slice(0, 120);
   cachedInventorySnapshots = {
     updatedAt: new Date().toISOString(),
     lastSnapshotAt: snapshot.capturedAt,
     snapshots: snapshots.slice(0, 370),
+    versions,
   };
   saveInventorySnapshotCache(cachedInventorySnapshots);
   void notifyInventorySnapshot(snapshot);
@@ -3626,6 +3637,11 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
 
 function inventorySnapshotPayload(date, auth = directAuth) {
   const snapshots = scopedInventorySnapshots(auth);
+  const snapshotVersions = scopedInventorySnapshots(
+    auth,
+    null,
+    cachedInventorySnapshots.versions || [],
+  );
   const selectedDate = date || snapshots[0]?.date || "";
   const selectedSnapshot = snapshots.find((item) => item.date === selectedDate) || null;
 
@@ -3643,6 +3659,18 @@ function inventorySnapshotPayload(date, auth = directAuth) {
     })),
     selectedDate,
     snapshot: selectedSnapshot,
+    versions: [selectedSnapshot, ...snapshotVersions.filter((item) => item.date === selectedDate)]
+      .filter(Boolean)
+      .map((item) => ({
+        date: item.date,
+        capturedAt: item.capturedAt,
+        sourceSyncedAt: item.sourceSyncedAt,
+        reason: item.reason,
+        rowCount: item.rowCount || 0,
+        warehouseCount: item.warehouseCount || 0,
+        skuCount: item.skuCount || 0,
+        totals: item.totals || {},
+      })),
   };
 }
 
@@ -3679,8 +3707,10 @@ function parseRequestBytes(req, maxBytes = 50 * 1024 * 1024) {
   });
 }
 
-function scopedInventorySnapshots(auth = directAuth, activeWarehouseIds = null) {
-  const snapshots = cachedInventorySnapshots.snapshots || [];
+function scopedInventorySnapshots(auth = directAuth, activeWarehouseIds = null, sourceSnapshots = null) {
+  const snapshots = Array.isArray(sourceSnapshots)
+    ? sourceSnapshots
+    : cachedInventorySnapshots.snapshots || [];
   const user = auth?.user || directAuth.user;
   const scopes = normalizeDataScopes(user.dataScopes);
   const activeIds = activeWarehouseIds instanceof Set
@@ -3749,133 +3779,18 @@ function inventorySnapshotCsv(snapshot) {
   return `\uFEFF${lines.join("\r\n")}`;
 }
 
-function movementStatusForSnapshot({ availableQty, sales7, sales30, sales90, dailyWeighted, daysCover, leadDays }) {
-  if (availableQty <= 0 && (sales7 > 0 || sales30 > 0 || sales90 > 0)) return "缺货";
-  if (dailyWeighted > 0 && daysCover <= leadDays + 10) return "补货预警";
-  if (availableQty > 0 && sales30 === 0) return "滞销";
-  if (availableQty > 0 && sales90 <= 2) return "滞销";
-  if (dailyWeighted > 0 && daysCover > 90) return "慢销";
-  if (sales90 === 0 && availableQty <= 0) return "无动销数据";
-  return "健康";
-}
-
-function movementSuggestionForSnapshot(status, row) {
-  if (status === "缺货") return "立即核查库存，确认是否有在途或可调拨库存。";
-  if (status === "补货预警") return `建议按 ${row.targetCoverDays} 天覆盖量安排补货，参考补货量 ${row.replenishQty}。`;
-  if (status === "慢销") return "库存覆盖过高，建议暂停补货并评估促销或调价。";
-  if (status === "滞销") return "近 30 天动销不足，建议检查渠道曝光、价格和是否清仓。";
-  if (status === "无动销数据") return "暂无订单出库数据，先确认订单接口或 SKU 映射。";
-  return "库存和销量处于可控区间。";
-}
-
-function movementSnapshotRows(movementPayload) {
-  const warehouseById = new Map(warehouseConnections.map((warehouse) => [warehouse.id, warehouse]));
-  const rows = [];
-  for (const item of movementPayload.items || []) {
-    const stockRows = new Map((item.warehouseBreakdown || []).map((row) => [row.warehouseId || row.warehouseName, row]));
-    const salesRows = new Map((item.salesWarehouseBreakdown || []).map((row) => [row.warehouseId || row.warehouseName, row]));
-    const keys = new Set([...stockRows.keys(), ...salesRows.keys()].filter(Boolean));
-    if (!keys.size) keys.add("");
-    for (const key of keys) {
-      const stock = stockRows.get(key) || {};
-      const sales = salesRows.get(key) || {};
-      const warehouseId = stock.warehouseId || sales.warehouseId || "";
-      const warehouse = warehouseById.get(warehouseId) || {};
-      const availableQty = numberOrZero(stock.availableQty ?? item.availableQty);
-      const lockedQty = numberOrZero(stock.lockedQty ?? item.lockedQty);
-      const inTransitQty = numberOrZero(stock.inTransitQty ?? item.inTransitQty);
-      const totalQty = numberOrZero(stock.totalQty ?? item.totalQty);
-      const sales3 = numberOrZero(sales.sales3 ?? item.sales3);
-      const sales7 = numberOrZero(sales.sales7 ?? item.sales7);
-      const sales15 = numberOrZero(sales.sales15 ?? item.sales15);
-      const sales30 = numberOrZero(sales.sales30 ?? item.sales30);
-      const sales60 = numberOrZero(sales.sales60 ?? item.sales60);
-      const sales90 = numberOrZero(sales.sales90 ?? item.sales90);
-      const avgDaily3 = numberOrZero(sales.avgDaily3 ?? sales3 / 3);
-      const avgDaily7 = numberOrZero(sales.avgDaily7 ?? sales7 / 7);
-      const avgDaily30 = numberOrZero(sales.avgDaily30 ?? sales30 / 30);
-      const avgDaily90 = numberOrZero(sales.avgDaily90 ?? sales90 / 90);
-      const dailyWeighted = numberOrZero(sales.dailyWeighted ?? (avgDaily7 * 0.5 + avgDaily30 * 0.3 + avgDaily90 * 0.2));
-      const leadDays = numberOrZero(item.leadDays);
-      const targetCoverDays = numberOrZero(item.targetCoverDays);
-      const daysCover = dailyWeighted > 0 ? Math.round((availableQty / dailyWeighted) * 10) / 10 : null;
-      const replenishQty = Math.max(0, Math.ceil(dailyWeighted * targetCoverDays - availableQty - inTransitQty));
-      const status = movementStatusForSnapshot({
-        availableQty,
-        sales7,
-        sales30,
-        sales90,
-        dailyWeighted,
-        daysCover: daysCover ?? 9999,
-        leadDays,
-      });
-      const row = {
-        sku: item.sku || "",
-        countrySku: item.countrySku || "",
-        productName: item.name || item.sku || "",
-        brand: item.brand || "",
-        category: item.category || "",
-        country: warehouse.country || item.country || "",
-        warehouseId,
-        warehouseName: stock.warehouseName || sales.warehouseName || warehouse.name || "未分仓",
-        availableQty,
-        lockedQty,
-        inTransitQty,
-        totalQty,
-        sales3,
-        sales7,
-        sales15,
-        sales30,
-        sales60,
-        sales90,
-        avgDaily3,
-        avgDaily7,
-        avgDaily30,
-        avgDaily90,
-        dailyWeighted,
-        daysCover,
-        leadDays,
-        targetCoverDays,
-        replenishQty,
-        status,
-        suggestion: "",
-        source: item.source || "",
-        dataGap: item.dataGap || "",
-      };
-      row.suggestion = movementSuggestionForSnapshot(status, row);
-      rows.push(row);
-    }
-  }
-  return rows.sort((a, b) => b.sales30 - a.sales30 || b.availableQty - a.availableQty || a.sku.localeCompare(b.sku));
-}
-
-function movementSnapshotTotals(rows) {
-  const statusCounts = rows.reduce((acc, row) => {
-    acc[row.status] = (acc[row.status] || 0) + 1;
-    return acc;
-  }, {});
-  return {
-    rowCount: rows.length,
-    warehouseCount: new Set(rows.map((row) => row.warehouseId).filter(Boolean)).size,
-    skuCount: new Set(rows.map((row) => row.sku).filter(Boolean)).size,
-    availableQty: rows.reduce((sum, row) => sum + numberOrZero(row.availableQty), 0),
-    totalQty: rows.reduce((sum, row) => sum + numberOrZero(row.totalQty), 0),
-    sales3: rows.reduce((sum, row) => sum + numberOrZero(row.sales3), 0),
-    sales7: rows.reduce((sum, row) => sum + numberOrZero(row.sales7), 0),
-    sales30: rows.reduce((sum, row) => sum + numberOrZero(row.sales30), 0),
-    sales90: rows.reduce((sum, row) => sum + numberOrZero(row.sales90), 0),
-    stockout: statusCounts["缺货"] || 0,
-    replenish: statusCounts["补货预警"] || 0,
-    slow: statusCounts["慢销"] || 0,
-    stagnant: statusCounts["滞销"] || 0,
-    noSalesData: statusCounts["无动销数据"] || 0,
-  };
-}
-
 function upsertMovementSnapshot(date = dateKeyInTimezone(new Date(), movementHistoryTimezone), reason = "manual", timeZone = movementHistoryTimezone) {
   const resolvedTimezone = safeTimezone(timeZone, movementHistoryTimezone);
   const movementPayload = movementResponsePayload();
-  const rows = movementSnapshotRows(movementPayload);
+  if (reason !== "manual" && movementPayload?.syncState?.publishReady === false) {
+    return {
+      skipped: true,
+      date,
+      timezone: resolvedTimezone,
+      reason: "order_data_incomplete",
+    };
+  }
+  const rows = buildMovementSnapshotRows(movementPayload, warehouseConnections);
   const snapshot = {
     date,
     timezone: resolvedTimezone,
@@ -3991,6 +3906,9 @@ function movementHistoryPayload(params = {}, auth = directAuth) {
     dates,
     selectedDate,
     snapshot: filteredSnapshot,
+    versions: selectedDate
+      ? movementHistoryStore.listVersions({ date: selectedDate, timezone }).map(({ totals: _totals, ...version }) => version)
+      : [],
     trend,
     warehouseOptions,
   };
@@ -4028,6 +3946,8 @@ function movementComparisonPayload(params = {}, auth = directAuth) {
     if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
     return isWithinDataScope(order, scopes);
   });
+  const latestJob = latestOrderSyncJob();
+  const orderSyncInProgress = Boolean(latestJob && ["queued", "running"].includes(latestJob.status));
   return {
     timezone,
     ...buildMovementComparison({
@@ -4038,6 +3958,8 @@ function movementComparisonPayload(params = {}, auth = directAuth) {
       sku: params.sku || "",
       ordersSyncedAt: cachedOrdersSync.syncedAt || "",
       orderCoverageDaysByWarehouse: movementOrderCoverageDaysByWarehouse(),
+      orderSyncInProgress,
+      timezone,
     }),
   };
 }
@@ -4302,6 +4224,10 @@ function movementResponsePayload(auth = directAuth) {
       lastCompletedAt: cachedOrdersSync.syncedAt || "",
       backgroundRunningWarehouses,
       failedWarehouses,
+      publishReady: Boolean(payload.orderDataComplete)
+        && backgroundRunningWarehouses.length === 0
+        && failedWarehouses.length === 0
+        && !(latestJob && ["queued", "running"].includes(latestJob.status)),
     },
   }, user));
 }
@@ -5415,7 +5341,8 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
     providerId: String(params.providerId || ""),
     keyword: String(params.keyword || ""),
   };
-  const onlyRussia = params.onlyRussia !== false;
+  const scope = ["russia", "shenniu", "all"].includes(params.scope) ? params.scope : params.onlyRussia === false ? "all" : "russia";
+  const onlyRussia = scope === "russia";
   const user = auth?.user || directAuth.user;
   const accessUser = publicUser(user);
   const scopes = normalizeDataScopes(accessUser.dataScopes);
@@ -5428,6 +5355,7 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
     dataVersion: materialization.dataVersion,
     filters,
     onlyRussia,
+    scope,
     role: accessUser.role || auth.role || "anonymous",
     permissions: [...(accessUser.permissions || [])].sort(),
     scopes,
@@ -5446,6 +5374,7 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
       filters,
       scopes,
       onlyRussia,
+      scope,
       limits: { recentOrders: 200 },
     });
   } catch (error) {
@@ -5469,10 +5398,65 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
     ...(directory.projectGroups || []),
     ...(queryResult.payload?.options?.projectGroups || []).map((option) => option.value),
   ]));
+  const seaThreeWarehouseIds = scope === "shenniu" ? selectSeaThreeWarehouseIds(warehouseConnections) : new Set();
+  const relevantConnections = warehouseConnections.filter((connection) => {
+    if (scope === "russia") return connection.providerId === "yunwms_ru";
+    if (scope === "shenniu") return seaThreeWarehouseIds.has(connection.id);
+    return true;
+  }).filter((connection) => {
+    if (filters.country && connection.country !== filters.country) return false;
+    if (filters.warehouseId && connection.id !== filters.warehouseId) return false;
+    return true;
+  });
+  const relevantIds = new Set(relevantConnections.map((connection) => connection.id));
+  const latestJob = latestOrderSyncJob();
+  const jobRunning = Boolean(latestJob
+    && ["queued", "running"].includes(latestJob.status)
+    && (latestJob.warehouseIds || []).some((warehouseId) => relevantIds.has(warehouseId)));
+  const relevantResults = (cachedOrdersSync.results || []).filter((result) => relevantIds.has(result.warehouseId));
+  const analysisWindowDays = Math.max(1, Math.round(
+    (Date.parse(`${range.dateTo}T00:00:00Z`) - Date.parse(`${range.dateFrom}T00:00:00Z`)) / 86400000,
+  ) + 1);
+  const analyzedOrdersByWarehouse = new Map(
+    (queryResult.payload?.byWarehouse || []).map((item) => [item.key, numberOrZero(item.orderCount)]),
+  );
+  const incompleteWarehouses = relevantConnections.filter((connection) => {
+    const result = relevantResults.find((item) => item.warehouseId === connection.id);
+    return !result
+      || result.backgroundRunning
+      || !result.ok
+      || result.orderApiReachedPageLimit
+      || (analysisWindowDays >= 30 && numberOrZero(analyzedOrdersByWarehouse.get(connection.name)) <= 0)
+      || (numberOrZero(result.orderApiTotal) > 0
+        && numberOrZero(result.orderApiReadRows || result.orderApiReadSkuRows) < numberOrZero(result.orderApiTotal));
+  });
+  const warehouseOptions = [...new Map([
+    ...((queryResult.payload?.options?.warehouses || []).map((item) => [item.warehouseId, item])),
+    ...relevantConnections.map((connection) => [connection.id, {
+      warehouseId: connection.id,
+      warehouseName: connection.name,
+      country: connection.country,
+    }]),
+  ]).values()].sort((left, right) => left.warehouseName.localeCompare(right.warehouseName, "zh-CN"));
+  const byWarehouse = [...(queryResult.payload?.byWarehouse || [])];
+  for (const connection of relevantConnections) {
+    if (byWarehouse.some((item) => item.key === connection.name)) continue;
+    byWarehouse.push({
+      key: connection.name,
+      warehouseId: connection.id,
+      orderCount: 0,
+      orderLines: 0,
+      quantity: 0,
+      salesAmount: 0,
+      skuCount: 0,
+    });
+  }
   return cacheOrderAnalysisResponse(cacheKey, {
     ...queryResult.payload,
+    byWarehouse,
     options: {
       ...(queryResult.payload?.options || {}),
+      warehouses: warehouseOptions,
       projectGroups,
     },
     syncedAt: cachedOrdersSync.syncedAt || "",
@@ -5480,6 +5464,24 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
     materializationStale: Boolean(materialization.stale),
     workerQueryDurationMs: queryResult.workerQueryDurationMs,
     scannedFactCount: queryResult.scannedFactCount,
+    syncState: {
+      running: jobRunning,
+      complete: !jobRunning && incompleteWarehouses.length === 0 && !materialization.stale,
+      lastCompletedAt: cachedOrdersSync.syncedAt || "",
+      incompleteWarehouses: incompleteWarehouses.map((connection) => {
+        const result = relevantResults.find((item) => item.warehouseId === connection.id);
+        return {
+          warehouseId: connection.id,
+          warehouseName: connection.name,
+          reason: result
+            && result.ok
+            && analysisWindowDays >= 30
+            && numberOrZero(analyzedOrdersByWarehouse.get(connection.name)) <= 0
+            ? "zero_orders"
+            : "incomplete_sync",
+        };
+      }),
+    },
     shopDirectory: publicShopDirectory(directory, auth),
   });
 }
@@ -10703,7 +10705,7 @@ const server = http.createServer(async (req, res) => {
         projectGroup: url.searchParams.get("projectGroup") || "",
         providerId: url.searchParams.get("providerId") || "",
         keyword: url.searchParams.get("keyword") || "",
-        onlyRussia: url.searchParams.get("scope") !== "all",
+        scope: url.searchParams.get("scope") || "russia",
       }, auth));
       return;
     }
@@ -11357,9 +11359,13 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`Tongzhou API server listening on http://localhost:${port}`);
-  recoverOrphanedOrderSyncJobs("服务重启时发现上次订单同步尚未结束，已关闭旧任务并等待自动重试。");
-  registerBackgroundSyncTasks();
-  syncScheduler.start();
-  collaborationBridge.start();
-  setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
+  if (backgroundJobsEnabled) {
+    recoverOrphanedOrderSyncJobs("服务重启时发现上次订单同步尚未结束，已关闭旧任务并等待自动重试。");
+    registerBackgroundSyncTasks();
+    syncScheduler.start();
+    collaborationBridge.start();
+    setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
+  } else {
+    console.log("Tongzhou background jobs are disabled for this process.");
+  }
 });

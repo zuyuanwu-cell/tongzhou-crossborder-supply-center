@@ -237,9 +237,17 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
       data_gap TEXT,
       PRIMARY KEY (date, timezone, row_index)
     );
+    CREATE TABLE IF NOT EXISTS movement_snapshot_versions (
+      version_id TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_movement_rows_sku ON movement_snapshot_rows (sku);
     CREATE INDEX IF NOT EXISTS idx_movement_rows_warehouse ON movement_snapshot_rows (warehouse_id);
     CREATE INDEX IF NOT EXISTS idx_movement_rows_date_tz ON movement_snapshot_rows (date, timezone);
+    CREATE INDEX IF NOT EXISTS idx_movement_versions_date_tz ON movement_snapshot_versions (date, timezone, captured_at DESC);
   `);
 
   function persist() {
@@ -274,6 +282,18 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
     const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
     db.run("BEGIN TRANSACTION");
     try {
+      db.run(
+        `INSERT OR REPLACE INTO movement_snapshot_versions
+          (version_id, date, timezone, captured_at, snapshot_json)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          `${date}::${timezone}::${capturedAt}`,
+          date,
+          timezone,
+          capturedAt,
+          JSON.stringify({ ...snapshot, date, timezone, capturedAt, rows }),
+        ],
+      );
       db.run(
         `INSERT OR REPLACE INTO movement_snapshots
           (date, timezone, captured_at, order_synced_at, inventory_synced_at, reason, totals_json)
@@ -502,6 +522,39 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
     });
   }
 
+  function listVersions({ date = "", timezone = "" } = {}) {
+    const clauses = [];
+    const params = [];
+    if (date) {
+      clauses.push("date = ?");
+      params.push(date);
+    }
+    if (timezone) {
+      clauses.push("timezone = ?");
+      params.push(timezone);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return all(
+      db,
+      `SELECT version_id, date, timezone, captured_at, snapshot_json
+       FROM movement_snapshot_versions ${where}
+       ORDER BY captured_at DESC`,
+      params,
+    ).map((row) => {
+      const snapshot = jsonParse(row.snapshot_json, {});
+      return {
+        versionId: row.version_id || "",
+        date: row.date || "",
+        timezone: row.timezone || "",
+        capturedAt: row.captured_at || "",
+        reason: snapshot.reason || "",
+        orderSyncedAt: snapshot.orderSyncedAt || "",
+        inventorySyncedAt: snapshot.inventorySyncedAt || "",
+        totals: snapshot.totals || {},
+      };
+    });
+  }
+
   if (!hasSnapshots() && Array.isArray(legacyPayload.snapshots) && legacyPayload.snapshots.length) {
     for (const snapshot of legacyPayload.snapshots) upsertSnapshot(snapshot, { persist: false });
     persist();
@@ -516,6 +569,7 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
     getSnapshots,
     hasSnapshots,
     listDates,
+    listVersions,
     persist,
     summarizeSnapshots,
     upsertSnapshot,

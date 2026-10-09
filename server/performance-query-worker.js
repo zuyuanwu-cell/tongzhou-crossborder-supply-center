@@ -95,6 +95,7 @@ function queryOrderAnalysis(message) {
     facts: scopedFacts,
     filters: message.filters || {},
     onlyRussia: message.onlyRussia !== false,
+    scope: message.scope || "",
     recentLimit: message.limits?.recentOrders || 200,
   });
   return {

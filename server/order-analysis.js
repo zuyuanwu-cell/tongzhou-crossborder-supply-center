@@ -74,8 +74,50 @@ function isRussian(row) {
   return text(row.providerId) === "yunwms_ru" || ["俄罗斯", "俄罗斯联邦", "RU"].includes(text(row.country).toUpperCase());
 }
 
-export function buildOrderAnalysisFromFacts({ facts = [], filters = {}, onlyRussia = true, recentLimit = 200 } = {}) {
-  const sourceRows = (Array.isArray(facts) ? facts : []).filter((row) => !onlyRussia || isRussian(row));
+function seaCountryKey(value) {
+  const country = text(value).toLowerCase();
+  if (/马来|malay|\bmy\b/.test(country)) return "my";
+  if (/印尼|印度尼西亚|indonesia|\bid\b/.test(country)) return "id";
+  if (/越南|vietnam|\bvn\b/.test(country)) return "vn";
+  return "";
+}
+
+export function selectSeaThreeWarehouseIds(rows = []) {
+  const byCountry = new Map(["my", "id", "vn"].map((country) => [country, new Map()]));
+  for (const row of rows || []) {
+    if (text(row.providerId) !== "sea_wms") continue;
+    const country = seaCountryKey(row.country);
+    const warehouseId = text(row.id || row.warehouseId);
+    if (!country || !warehouseId) continue;
+    const warehouses = byCountry.get(country);
+    if (!warehouses.has(warehouseId)) {
+      warehouses.set(warehouseId, {
+        warehouseId,
+        warehouseName: text(row.warehouseName || row.name),
+      });
+    }
+  }
+  const selected = new Set();
+  for (const warehouses of byCountry.values()) {
+    const candidates = [...warehouses.values()];
+    const branded = candidates.filter((row) => /神牛/i.test(row.warehouseName));
+    for (const row of branded.length ? branded : candidates) selected.add(row.warehouseId);
+  }
+  return selected;
+}
+
+function orderCountMatching(rows, pattern) {
+  return new Set(rows.filter((row) => pattern.test(text(row.status))).map(orderIdentity).filter(Boolean)).size;
+}
+
+export function buildOrderAnalysisFromFacts({ facts = [], filters = {}, scope = "", onlyRussia = true, recentLimit = 200 } = {}) {
+  const resolvedScope = ["russia", "shenniu", "all"].includes(scope) ? scope : onlyRussia ? "russia" : "all";
+  const seaThreeWarehouseIds = resolvedScope === "shenniu" ? selectSeaThreeWarehouseIds(facts) : new Set();
+  const sourceRows = (Array.isArray(facts) ? facts : []).filter((row) => {
+    if (resolvedScope === "russia") return isRussian(row);
+    if (resolvedScope === "shenniu") return seaThreeWarehouseIds.has(text(row.warehouseId));
+    return true;
+  });
   const keyword = text(filters.keyword).toLowerCase();
   const dateFrom = text(filters.dateFrom);
   const dateTo = text(filters.dateTo);
@@ -180,7 +222,7 @@ export function buildOrderAnalysisFromFacts({ facts = [], filters = {}, onlyRuss
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    scope: onlyRussia ? "russia" : "all",
+    scope: resolvedScope,
     filters: {
       dateFrom,
       dateTo,
@@ -202,6 +244,9 @@ export function buildOrderAnalysisFromFacts({ facts = [], filters = {}, onlyRuss
       projectGroupCount: new Set(rows.map((row) => text(row.projectGroup)).filter(Boolean)).size,
       platformCount: new Set(rows.map((row) => text(row.platform)).filter(Boolean)).size,
       unrecognizedShopRows: rows.filter((row) => !text(row.shopName)).length,
+      cancelledOrderCount: orderCountMatching(rows, /取消|作废|cancel/i),
+      returnedOrderCount: orderCountMatching(rows, /退货|退款|return|refund/i),
+      exceptionOrderCount: orderCountMatching(rows, /异常|拦截|隔离|exception|intercept|hold/i),
     },
     options,
     daily: aggregate(rows, (row) => text(row.orderDate || row.date).slice(0, 10)).sort((left, right) => left.key.localeCompare(right.key)),

@@ -1243,7 +1243,7 @@ function App() {
     }
   }
 
-  async function loadOrderAnalysis(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" } = {}) {
+  async function loadOrderAnalysis(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "shenniu" | "all" } = {}) {
     try {
       const data = await fetchOrderAnalysis(input);
       setOrderAnalysisPayload(data);
@@ -1495,7 +1495,7 @@ function App() {
         if (hasUserPermission(currentUser, "movement_analysis")) void loadMovementHistory();
         break;
       case "#order-analysis":
-        if (hasUserPermission(currentUser, "order_analysis")) void loadOrderAnalysis();
+        if (hasUserPermission(currentUser, "order_analysis")) void loadOrderAnalysis({ scope: "shenniu" });
         break;
       case "#performance":
         if (hasUserPermission(currentUser, "performance_analysis")) void loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
@@ -1742,7 +1742,7 @@ function App() {
     setError("");
     try {
       await deleteWarehouseConnection(id);
-      await Promise.all([loadWarehouses(), loadProducts(), loadMovement(), loadOrderAnalysis(), loadPerformanceAnalytics(), loadStockup()]);
+      await Promise.all([loadWarehouses(), loadProducts(), loadMovement(), loadOrderAnalysis({ scope: "shenniu" }), loadPerformanceAnalytics(), loadStockup()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "删除仓库失败");
       throw requestError;
@@ -2106,8 +2106,8 @@ function App() {
                 shopName: orderAnalysisPayload.filters.shopName,
                 projectGroup: orderAnalysisPayload.filters.projectGroup,
                 keyword: orderAnalysisPayload.filters.keyword,
-                scope: "russia",
-              } : { scope: "russia" });
+                scope: orderAnalysisPayload.scope === "all" ? "all" : orderAnalysisPayload.scope === "russia" ? "russia" : "shenniu",
+              } : { scope: "shenniu" });
             }}
             onSyncOrders={handleOrderSync}
             syncing={syncing}
@@ -4193,9 +4193,18 @@ function MovementBoard({
     || (movementPayload?.orderSyncResults || []).filter((result) => result.backgroundRunning).map((result) => ({ warehouseId: result.warehouseId, message: result.message, orderCount: result.orderCount }));
   const failedAuthorizedWarehouses = (movementPayload?.orderSyncResults || []).filter((result) => !result.ok && result.hasCredentials && !result.backgroundRunning);
   const retainedWarehouseResults = (movementPayload?.orderSyncResults || []).filter((result) => result.usingPreviousSuccessfulData);
+  const activeJob = orderSyncJob || movementPayload?.orderSyncJob || null;
+  const jobRunning = Boolean(activeJob && ["queued", "running"].includes(activeJob.status));
+  const backgroundSyncRunning = Boolean(backgroundWarehouses.length || jobRunning);
   const hasUsableOrderData = Boolean(movementPayload?.orderSyncedAt)
     && (movementPayload?.orderDataAvailable ?? true);
-  const riskMetricsReady = Boolean(movementPayload && hasUsableOrderData);
+  const riskMetricsReady = Boolean(
+    movementPayload
+    && hasUsableOrderData
+    && !backgroundSyncRunning
+    && (movementPayload.orderDataComplete ?? true)
+    && (movementPayload.syncState?.publishReady ?? true)
+  );
   const inventoryMetricsReady = Boolean(movementPayload?.inventorySyncedAt);
   const orderAgeDays = daysSince(movementPayload?.orderSyncedAt);
   const orderDataStale = riskMetricsReady && orderAgeDays !== null && orderAgeDays >= 2;
@@ -4203,6 +4212,8 @@ function MovementBoard({
     ? "正在读取订单数据"
     : !movementPayload.orderSyncedAt
       ? "订单待同步"
+    : backgroundSyncRunning
+      ? "订单同步中（风险指标暂不发布）"
     : !hasUsableOrderData
       ? "订单数据不可用"
       : orderDataStale
@@ -4210,14 +4221,12 @@ function MovementBoard({
       : retainedWarehouseResults.length
         ? "部分仓库沿用历史数据"
         : "订单已同步";
-  const orderStatusTone = !movementPayload?.orderSyncedAt || orderDataStale || retainedWarehouseResults.length
+  const orderStatusTone = !movementPayload?.orderSyncedAt || backgroundSyncRunning || orderDataStale || retainedWarehouseResults.length
     ? "warning"
     : hasUsableOrderData
       ? "good"
       : "danger";
   const warehouseDiagnostics = movementPayload?.warehouseDiagnostics || [];
-  const activeJob = orderSyncJob || movementPayload?.orderSyncJob || null;
-  const jobRunning = Boolean(activeJob && ["queued", "running"].includes(activeJob.status));
   const selectedWarehouseCountry = warehouseDiagnostics.find((item) => item.warehouseId === warehouse || item.warehouseName === warehouse)?.country || "";
   const scopedItems = React.useMemo(() => (
     warehouse === "全部"
@@ -8905,6 +8914,7 @@ function InventorySnapshotPage({
           <div className="source-row">
             <span className={`status-pill ${snapshot ? "good" : "warning"}`}>{snapshot ? "快照已生成" : "暂无快照"}</span>
             <span>{snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString("zh-CN") : "等待生成库存快照"}</span>
+            {(inventorySnapshotPayload?.versions?.length || 0) > 1 ? <span>同日保留 {formatNumber(inventorySnapshotPayload?.versions?.length || 0)} 个审计版本</span> : null}
           </div>
         </div>
         {canManageActions ? <button className="sync-button" type="button" onClick={captureSnapshot} disabled={snapshotBusy}>
@@ -9699,7 +9709,7 @@ function OrderAnalysisPage({
   canManageSettings,
 }: {
   payload: OrderAnalysisPayload | null;
-  onLoadOrderAnalysis: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" }) => Promise<void>;
+  onLoadOrderAnalysis: (input?: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "shenniu" | "all" }) => Promise<void>;
   onUpdateShopAlias: (shopName: string, alias: string) => Promise<void>;
   onSyncOrders: () => Promise<void>;
   syncing: boolean;
@@ -9708,6 +9718,7 @@ function OrderAnalysisPage({
 }) {
   const [dateFrom, setDateFrom] = React.useState("");
   const [dateTo, setDateTo] = React.useState("");
+  const [scope, setScope] = React.useState<"russia" | "shenniu" | "all">("shenniu");
   const [country, setCountry] = React.useState("");
   const [warehouseId, setWarehouseId] = React.useState("");
   const [platform, setPlatform] = React.useState("");
@@ -9729,7 +9740,7 @@ function OrderAnalysisPage({
   });
   const dailyLinePath = dailyPoints.map((item, index) => `${index === 0 ? "M" : "L"} ${item.x.toFixed(2)} ${item.y.toFixed(2)}`).join(" ");
   const dailyAreaPath = dailyPoints.length ? `${dailyLinePath} L ${dailyPoints[dailyPoints.length - 1].x.toFixed(2)} 96 L ${dailyPoints[0].x.toFixed(2)} 96 Z` : "";
-  const orderAnalysisReady = Boolean(payload && filters);
+  const orderAnalysisReady = Boolean(payload && filters && (payload.syncState?.complete ?? true));
 
   React.useEffect(() => {
     if (!filters) return;
@@ -9741,7 +9752,8 @@ function OrderAnalysisPage({
     setShopName((current) => current || filters.shopName || "");
     setProjectGroup((current) => current || filters.projectGroup || "");
     setKeywordDraft((current) => current || filters.keyword || "");
-  }, [filters?.dateFrom, filters?.dateTo]);
+    setScope(payload?.scope === "all" ? "all" : payload?.scope === "russia" ? "russia" : "shenniu");
+  }, [filters?.dateFrom, filters?.dateTo, payload?.scope]);
 
   React.useEffect(() => {
     if (!aliasEditor) return undefined;
@@ -9756,7 +9768,7 @@ function OrderAnalysisPage({
     event?.preventDefault();
     setLoading(true);
     try {
-      await onLoadOrderAnalysis({ dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, keyword: keywordDraft, scope: "russia" });
+      await onLoadOrderAnalysis({ dateFrom, dateTo, country, warehouseId, platform, shopName, projectGroup, keyword: keywordDraft, scope });
     } finally {
       setLoading(false);
     }
@@ -9774,7 +9786,7 @@ function OrderAnalysisPage({
     setKeywordDraft("");
     setLoading(true);
     try {
-      await onLoadOrderAnalysis({ ...range, scope: "russia" });
+      await onLoadOrderAnalysis({ ...range, scope });
     } finally {
       setLoading(false);
     }
@@ -9786,7 +9798,7 @@ function OrderAnalysisPage({
     setDateTo(range.dateTo);
     setLoading(true);
     try {
-      await onLoadOrderAnalysis({ ...range, country, warehouseId, platform, shopName, projectGroup, keyword: keywordDraft, scope: "russia" });
+      await onLoadOrderAnalysis({ ...range, country, warehouseId, platform, shopName, projectGroup, keyword: keywordDraft, scope });
     } finally {
       setLoading(false);
     }
@@ -9818,9 +9830,9 @@ function OrderAnalysisPage({
         <div>
           <p className="eyebrow">Order Analysis</p>
           <h2>订单分析中心</h2>
-          <p>优先聚焦俄罗斯 YunWMS 两个仓库，按出库时间查看每日订单量、SKU 件数、店铺和平台表现。</p>
+          <p>按同一口径核对订单数、SKU 行和出库件数；默认聚焦马来、越南、印尼三个目标仓，也可切换俄罗斯或全部仓库。</p>
           <div className="source-row">
-            <span className={`status-pill ${payload?.syncedAt ? "good" : "warning"}`}>{payload?.syncedAt ? "订单缓存已同步" : "等待订单同步"}</span>
+            <span className={`status-pill ${payload?.syncState?.complete ? "good" : "warning"}`}>{payload?.syncState?.running ? "订单同步中（临时数据）" : payload?.syncState?.complete ? "订单覆盖完整" : payload?.syncedAt ? "订单覆盖不足" : "等待订单同步"}</span>
             <span>{payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN") : "先同步订单后可查看分析"}</span>
           </div>
         </div>
@@ -9854,6 +9866,14 @@ function OrderAnalysisPage({
             </button>
           ))}
         </div>
+        <label>
+          <span>对账范围</span>
+          <select value={scope} onChange={(event) => { setScope(event.target.value as "russia" | "shenniu" | "all"); setCountry(""); setWarehouseId(""); }}>
+            <option value="shenniu">东南亚三国仓</option>
+            <option value="russia">俄罗斯仓</option>
+            <option value="all">全部仓库</option>
+          </select>
+        </label>
         <label>
           <span>开始日期</span>
           <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
@@ -9906,6 +9926,33 @@ function OrderAnalysisPage({
           <button className="sync-button" type="submit" disabled={loading}>{loading ? "查询中" : "查询"}</button>
         </div>
       </form>
+
+      <section className="panel order-analysis-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Outbound Reconciliation</p>
+            <h2>仓库出库对账</h2>
+            <small>订单数按订单号去重；SKU 行和出库件数分别展示，避免把“单”与“件”混为一谈。</small>
+          </div>
+          <span className="status-pill muted">取消 {formatNumber(counts?.cancelledOrderCount || 0)} · 退货/退款 {formatNumber(counts?.returnedOrderCount || 0)} · 异常/拦截 {formatNumber(counts?.exceptionOrderCount || 0)}</span>
+        </div>
+        <div className="order-rank-list">
+          {(payload?.byWarehouse || []).map((item) => (
+            <div key={item.key}>
+              <strong>{item.key}</strong>
+              <span>{orderAnalysisReady ? "" : "临时值 · "}{formatNumber(item.orderCount)} 单 · {formatNumber(item.orderLines)} SKU 行 · {formatNumber(item.quantity)} 件 · {formatNumber(item.skuCount)} SKU{orderAnalysisReady ? "" : " · 待完整同步后发布"}</span>
+            </div>
+          ))}
+          {!payload?.byWarehouse?.length ? <div className="stockup-empty">当前范围暂无可对账的出库订单。</div> : null}
+        </div>
+      </section>
+
+      {payload?.syncState && !payload.syncState.complete ? (
+        <div className="notice warning" role="status">
+          当前对账结果尚未发布为正式口径；{payload.syncState.running ? "订单后台同步仍在运行" : "存在未完成或分页不完整的仓库"}。
+          {payload.syncState.incompleteWarehouses.length ? ` 待核验：${payload.syncState.incompleteWarehouses.map((item) => `${item.warehouseName}${item.reason === "zero_orders" ? "（近90天为0单）" : ""}`).join("、")}。` : ""}
+        </div>
+      ) : null}
 
       <section className="order-analysis-grid">
         <article className="panel order-analysis-panel order-trend-panel">
@@ -10294,6 +10341,7 @@ function MovementAnalysisPage({
           <div className="source-row">
             <span className={`status-pill ${snapshot ? "good" : "warning"}`}>{snapshot ? "历史快照已生成" : "暂无动销快照"}</span>
             <span>{snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString("zh-CN") : "可先生成今日动销快照"}</span>
+            {(movementHistoryPayload?.versions?.length || 0) > 1 ? <span>同日保留 {formatNumber(movementHistoryPayload?.versions?.length || 0)} 个审计版本</span> : null}
           </div>
         </div>
         {canCapture ? (
@@ -10450,7 +10498,7 @@ function MovementAnalysisPage({
               <ArrowUpRight size={18} />
               <span><small>本期</small><strong>{comparisonPayload.ranges.current.label}</strong><em>{comparisonPayload.currentSnapshot?.date || "无快照"}</em></span>
               <span className={`status-pill ${comparisonPayload.inventorySummary.orderCoverageComplete ? "good" : "warning"}`}>
-                {comparisonPayload.inventorySummary.orderCoverageComplete ? "订单覆盖完整" : "订单覆盖不足"}
+                {comparisonPayload.inventorySummary.orderSyncInProgress ? "订单同步中" : comparisonPayload.inventorySummary.orderCoverageComplete ? "订单覆盖完整" : "订单覆盖不足"}
               </span>
             </div>
 
@@ -10465,7 +10513,7 @@ function MovementAnalysisPage({
               <div>
                 <p className="eyebrow">Inventory Reconciliation</p>
                 <h3>库存消耗对账</h3>
-                <small>在库口径为“可售 + 锁定”，不包含在途；差异中可能包含入库、退货、盘点和库存调整。</small>
+                <small>在库口径为“可售 + 锁定”，不包含在途；仅对比前后两期均存在的仓库 SKU，新接入仓库单独列示。</small>
               </div>
               <div className="inventory-equation">
                 <span><small>期初在库</small><strong>{formatNumber(comparisonPayload.inventorySummary.openingOnHandQty)}</strong></span>
@@ -10474,12 +10522,14 @@ function MovementAnalysisPage({
                 <b>＝</b>
                 <span><small>理论期末</small><strong>{formatNumber(comparisonPayload.inventorySummary.expectedClosingQty)}</strong></span>
                 <b>对比</b>
-                <span><small>实际期末</small><strong>{formatNumber(comparisonPayload.inventorySummary.closingOnHandQty)}</strong></span>
+                <span><small>可比口径实际期末</small><strong>{formatNumber(comparisonPayload.inventorySummary.closingOnHandQty)}</strong></span>
                 <span className={`inventory-variance-total ${comparisonPayload.inventorySummary.varianceQty === 0 ? "balanced" : "warning"}`}>
                   <small>总差异</small><strong>{formatSignedComparisonQty(comparisonPayload.inventorySummary.varianceQty)}</strong>
                 </span>
               </div>
               <div className="comparison-data-quality">
+                <span>全量本期期末 {formatNumber(comparisonPayload.inventorySummary.currentOnHandQty)}</span>
+                <span>新接入/不可比 {formatNumber(comparisonPayload.inventorySummary.excludedCurrentOnHandQty)} 件 · {formatNumber(comparisonPayload.summary.excludedCurrentRows)} 行</span>
                 <span>匹配订单行 {formatNumber(comparisonPayload.inventorySummary.matchedOrderRows)}</span>
                 <span>未匹配订单行 {formatNumber(comparisonPayload.inventorySummary.unmatchedOrderRows)}</span>
                 <span>未匹配出库 {formatNumber(comparisonPayload.inventorySummary.unmatchedOutboundQty)}</span>

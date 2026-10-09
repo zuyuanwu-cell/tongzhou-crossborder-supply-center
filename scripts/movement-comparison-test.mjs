@@ -124,12 +124,16 @@ assert.equal(comparison.summary.removed, 1);
 assert.equal(comparison.summary.inventoryAnomaly, 1);
 assert.equal(comparison.inventorySummary.openingOnHandQty, 150);
 assert.equal(comparison.inventorySummary.closingOnHandQty, 115);
+assert.equal(comparison.inventorySummary.currentOnHandQty, 145);
+assert.equal(comparison.inventorySummary.excludedCurrentOnHandQty, 30);
 assert.equal(comparison.inventorySummary.outboundQty, 25);
 assert.equal(comparison.inventorySummary.expectedClosingQty, 125);
 assert.equal(comparison.inventorySummary.varianceQty, -10);
 assert.equal(comparison.inventorySummary.unmatchedOrderRows, 1);
 assert.equal(comparison.inventorySummary.unmatchedOutboundQty, 3);
 assert.equal(comparison.inventorySummary.orderCoverageComplete, true);
+assert.equal(comparison.summary.comparableRows, 2);
+assert.equal(comparison.summary.excludedCurrentRows, 1);
 
 const skuA = comparison.rows.find((row) => row.sku === "SKU-A");
 assert.equal(skuA.previousStatus, "健康");
@@ -158,6 +162,29 @@ const filtered = buildMovementComparison({
 });
 assert.equal(filtered.rows.length, 1);
 assert.equal(filtered.rows[0].sku, "SKU-A");
+
+const syncingComparison = buildMovementComparison({
+  snapshots,
+  orders,
+  ranges: monthRanges,
+  warehouseId: "warehouse-1",
+  ordersSyncedAt: "2026-08-11T16:00:00.000Z",
+  orderCoverageDaysByWarehouse: { "warehouse-1": 90 },
+  orderSyncInProgress: true,
+});
+assert.equal(syncingComparison.inventorySummary.orderCoverageComplete, false);
+assert.equal(syncingComparison.inventorySummary.orderSyncInProgress, true);
+
+const timezoneComparison = buildMovementComparison({
+  snapshots,
+  orders: [{ warehouseId: "warehouse-1", sku: "SKU-A", quantity: 2, shippedAt: "2026-07-31T17:30:00.000Z" }],
+  ranges: monthRanges,
+  warehouseId: "warehouse-1",
+  ordersSyncedAt: "2026-08-11T16:00:00.000Z",
+  orderCoverageDaysByWarehouse: { "warehouse-1": 90 },
+  timezone: "Asia/Shanghai",
+});
+assert.equal(timezoneComparison.inventorySummary.outboundQty, 2, "explicit timestamps use the selected comparison timezone");
 
 console.log("[ok] movement comparison ranges");
 console.log("[ok] SKU status changes");

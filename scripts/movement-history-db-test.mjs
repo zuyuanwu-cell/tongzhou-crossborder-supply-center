@@ -97,6 +97,16 @@ try {
       rows,
     }, { persist: false });
   }
+  const revisedRows = makeRows(73);
+  revisedRows[0].availableQty = 999;
+  store.upsertSnapshot({
+    date: dateKey(73),
+    timezone: TIMEZONE,
+    capturedAt: `${dateKey(73)}T14:00:00.000Z`,
+    reason: "same_day_restatement",
+    totals: totals(revisedRows),
+    rows: revisedRows,
+  }, { persist: false });
   store.persist();
 
   const metadataStartedAt = Date.now();
@@ -131,6 +141,12 @@ try {
   });
   assert.equal(latest.date, "2026-08-15");
   assert.equal(latest.rows.length, 400);
+  const latestRevision = store.getLatestSnapshot({ date: dateKey(73), timezone: TIMEZONE });
+  assert.equal(latestRevision.capturedAt, `${dateKey(73)}T14:00:00.000Z`);
+  assert.equal(latestRevision.rows[0].availableQty, 999);
+  const versions = store.listVersions({ date: dateKey(73), timezone: TIMEZONE });
+  assert.equal(versions.length, 2, "same-day restatements are retained as immutable audit versions");
+  assert.equal(versions[0].reason, "same_day_restatement");
 
   assert.ok(metadataElapsed < 1_000, `Metadata summary took ${metadataElapsed}ms`);
   assert.ok(scopedElapsed < 3_000, `Scoped summary took ${scopedElapsed}ms`);

@@ -178,12 +178,29 @@ function statusChange(previous, current) {
   return { statusChanged: true, changeType: "changed", changeLabel: "状态变化" };
 }
 
-function orderDateKey(order) {
-  const value = firstText(order?.shippedAt, order?.createdAt);
-  const literal = value.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (literal) return literal[1];
+function dateKeyInTimezone(value, timezone) {
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+  if (Number.isNaN(parsed.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone || "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(parsed);
+    const part = (type) => parts.find((item) => item.type === type)?.value || "";
+    return `${part("year")}-${part("month")}-${part("day")}`;
+  } catch {
+    return parsed.toISOString().slice(0, 10);
+  }
+}
+
+function orderDateKey(order, timezone = "Asia/Shanghai") {
+  const value = firstText(order?.shippedAt, order?.createdAt);
+  const literal = value.match(/^(\d{4}-\d{2}-\d{2})(?:[ T].*)?$/);
+  const hasExplicitOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+  if (literal && !hasExplicitOffset) return literal[1];
+  return dateKeyInTimezone(value, timezone);
 }
 
 function buildOrderAliasIndex(rows) {
@@ -201,7 +218,7 @@ function buildOrderAliasIndex(rows) {
   return new Map(Array.from(candidates.entries()).filter(([, values]) => values.size === 1).map(([key, values]) => [key, Array.from(values)[0]]));
 }
 
-function aggregateOutbound(orders, rows, fromExclusive, toInclusive, warehouseId = "") {
+function aggregateOutbound(orders, rows, fromExclusive, toInclusive, warehouseId = "", timezone = "Asia/Shanghai") {
   const aliasIndex = buildOrderAliasIndex(rows);
   const quantityByRow = new Map();
   let matchedOrderRows = 0;
@@ -209,7 +226,7 @@ function aggregateOutbound(orders, rows, fromExclusive, toInclusive, warehouseId
   let unmatchedOutboundQty = 0;
   for (const order of orders || []) {
     if (warehouseId && order.warehouseId !== warehouseId) continue;
-    const day = orderDateKey(order);
+    const day = orderDateKey(order, timezone);
     if (!day || day <= fromExclusive || day > toInclusive) continue;
     const aliasKey = `${firstText(order.warehouseId, order.warehouseName)}::${normalizeSku(order.sku)}`;
     const rowKey = aliasIndex.get(aliasKey);
@@ -225,12 +242,12 @@ function aggregateOutbound(orders, rows, fromExclusive, toInclusive, warehouseId
   return { quantityByRow, matchedOrderRows, unmatchedOrderRows, unmatchedOutboundQty };
 }
 
-function coverageForWarehouse({ warehouseId, previousDate, currentDate, ordersSyncedAt, orderCoverageDaysByWarehouse = {} }) {
+function coverageForWarehouse({ warehouseId, previousDate, currentDate, ordersSyncedAt, orderCoverageDaysByWarehouse = {}, orderSyncInProgress = false }) {
   const syncedDate = firstText(ordersSyncedAt).slice(0, 10);
   const coverageDays = Math.max(1, numberOrZero(orderCoverageDaysByWarehouse[warehouseId]) || 90);
   const coverageFrom = parseDateKey(syncedDate) ? addDays(syncedDate, -(coverageDays - 1)) : "";
   const requestedFrom = addDays(previousDate, 1);
-  const complete = Boolean(coverageFrom && requestedFrom && coverageFrom <= requestedFrom && syncedDate >= currentDate);
+  const complete = !orderSyncInProgress && Boolean(coverageFrom && requestedFrom && coverageFrom <= requestedFrom && syncedDate >= currentDate);
   return { complete, coverageDays, coverageFrom, coverageTo: syncedDate, requestedFrom, requestedTo: currentDate };
 }
 
@@ -299,6 +316,8 @@ export function buildMovementComparison({
   sku = "",
   ordersSyncedAt = "",
   orderCoverageDaysByWarehouse = {},
+  orderSyncInProgress = false,
+  timezone = "Asia/Shanghai",
   varianceThresholdQty = DEFAULT_VARIANCE_QTY,
   varianceThresholdRate = DEFAULT_VARIANCE_RATE,
 } = {}) {
@@ -311,7 +330,7 @@ export function buildMovementComparison({
   const previousByKey = rowsByKey(previousRows);
   const unionRows = Array.from(new Map([...previousRows, ...currentRows].map((row) => [comparisonRowKey(row), row])).values());
   const outbound = previousSnapshot && currentSnapshot
-    ? aggregateOutbound(orders, unionRows, previousSnapshot.date, currentSnapshot.date, warehouseId)
+    ? aggregateOutbound(orders, unionRows, previousSnapshot.date, currentSnapshot.date, warehouseId, timezone)
     : { quantityByRow: new Map(), matchedOrderRows: 0, unmatchedOrderRows: 0, unmatchedOutboundQty: 0 };
   const coverageCache = new Map();
   const getCoverage = (row) => {
@@ -324,6 +343,7 @@ export function buildMovementComparison({
             currentDate: currentSnapshot.date,
             ordersSyncedAt,
             orderCoverageDaysByWarehouse,
+            orderSyncInProgress,
           })
         : { complete: false, coverageDays: 0, coverageFrom: "", coverageTo: "", requestedFrom: "", requestedTo: "" });
     }
@@ -386,6 +406,10 @@ export function buildMovementComparison({
   }, {});
   const comparableInventoryRows = rows.filter((row) => row.inventoryVarianceQty !== null);
   const coverages = Array.from(coverageCache.values());
+  const currentOnHandQty = round(currentRows.reduce((sum, row) => sum + numberOrZero(row.availableQty) + numberOrZero(row.lockedQty), 0));
+  const comparableClosingOnHandQty = round(comparableInventoryRows.reduce((sum, row) => sum + numberOrZero(row.closingOnHandQty), 0));
+  const excludedCurrentRows = rows.filter((row) => row.changeType === "added");
+  const excludedCurrentOnHandQty = round(Math.max(0, currentOnHandQty - comparableClosingOnHandQty));
   return {
     ok: true,
     ranges,
@@ -411,10 +435,14 @@ export function buildMovementComparison({
       removed: rows.filter((row) => row.changeType === "removed").length,
       inventoryAnomaly: rows.filter((row) => row.inventoryAnomaly).length,
       inventoryUncertain: rows.filter((row) => row.inventorySeverity === "uncertain").length,
+      comparableRows: comparableInventoryRows.length,
+      excludedCurrentRows: excludedCurrentRows.length,
     },
     inventorySummary: {
       openingOnHandQty: round(comparableInventoryRows.reduce((sum, row) => sum + numberOrZero(row.openingOnHandQty), 0)),
-      closingOnHandQty: round(comparableInventoryRows.reduce((sum, row) => sum + numberOrZero(row.closingOnHandQty), 0)),
+      closingOnHandQty: comparableClosingOnHandQty,
+      currentOnHandQty,
+      excludedCurrentOnHandQty,
       outboundQty: round(comparableInventoryRows.reduce((sum, row) => sum + numberOrZero(row.outboundQty), 0)),
       expectedClosingQty: round(comparableInventoryRows.reduce((sum, row) => sum + numberOrZero(row.expectedClosingQty), 0)),
       varianceQty: round(comparableInventoryRows.reduce((sum, row) => sum + numberOrZero(row.inventoryVarianceQty), 0)),
@@ -422,6 +450,7 @@ export function buildMovementComparison({
       unmatchedOrderRows: outbound.unmatchedOrderRows,
       unmatchedOutboundQty: round(outbound.unmatchedOutboundQty),
       orderCoverageComplete: Boolean(coverages.length) && coverages.every((item) => item.complete),
+      orderSyncInProgress,
       ordersSyncedAt,
     },
     rows,

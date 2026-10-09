@@ -23,6 +23,7 @@ const payload = buildMovementPayload(
 
 assert.equal(payload.items.length, 1);
 assert.equal(payload.orderDataAvailable, false, "an empty order snapshot is not treated as usable sales data");
+assert.equal(payload.orderDataComplete, true);
 const [item] = payload.items;
 assert.equal(item.identityScope, "SKU×国家");
 assert.equal(item.dataCompleteness, "complete");
@@ -30,5 +31,16 @@ assert.equal(item.calculation.ruleVersion, "movement-v2");
 assert.equal(item.calculation.window, "3/7/30/90天");
 assert.equal(item.calculation.includesInTransit, false);
 assert.match(item.calculation.formula, /7日均销/);
+
+const runningPayload = buildMovementPayload(
+  { catalog: [], productBase: [] },
+  { inventory: [] },
+  {
+    syncedAt: new Date().toISOString(),
+    orders: [{ warehouseId: "warehouse-1", sku: "SKU-001", quantity: 1, shippedAt: new Date().toISOString() }],
+    results: [{ warehouseId: "warehouse-1", ok: false, backgroundRunning: true }],
+  },
+);
+assert.equal(runningPayload.orderDataComplete, false, "a running background sync is not publish-ready");
 
 console.log("movement explainability tests passed");

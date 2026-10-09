@@ -188,11 +188,11 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
       </section>
 
       <section className="iv-kpis">
-        <article><span>当前在库货值</span><strong>{summary ? money(summary.onHandValueCny) : "—"}</strong><small>{payload?.currentPeriod ? `${payload.currentPeriod.snapshotDate} 快照` : "等待库存快照"}</small></article>
+        <article className={summary?.missingCostSkuCount ? "warning" : ""}><span>{summary?.missingCostSkuCount ? "已计价在库货值（下限）" : "当前在库货值"}</span><strong>{summary ? money(summary.onHandValueCny) : "—"}</strong><small>{payload?.currentPeriod ? `${payload.currentPeriod.snapshotDate} 快照` : "等待库存快照"}</small></article>
         <article className={change > 0 ? "up" : change < 0 ? "down" : ""}><span>较上期变化</span><strong>{summary ? `${change > 0 ? "+" : ""}${money(change)}` : "—"}</strong><small>{summary?.periodChangeRate === null ? "暂无可比上期" : `${change >= 0 ? "增长" : "下降"} ${percent(Math.abs(summary?.periodChangeRate || 0))}`}</small></article>
         <article><span>在途货值</span><strong>{summary ? money(summary.inTransitValueCny) : "—"}</strong><small>{summary ? `${quantity(summary.inTransitQty)} 件在途` : "—"}</small></article>
         <article><span>成本覆盖率</span><strong>{summary ? percent(summary.costCoverageRate) : "—"}</strong><small>{summary ? `${quantity(summary.coveredOnHandQty)} / ${quantity(summary.onHandQty)} 件已估值` : "—"}</small></article>
-        <article className={summary?.missingCostSkuCount ? "warning" : ""}><span>缺失成本</span><strong>{summary ? `${summary.missingCostSkuCount} SKU` : "—"}</strong><small>{summary?.missingCostSkuCount ? "未计入当前货值" : "当前库存均有成本"}</small></article>
+        <article className={summary?.missingCostSkuCount ? "warning" : ""}><span>缺失成本</span><strong>{summary ? `${summary.missingCostSkuCount} SKU` : "—"}</strong><small>{summary?.missingCostSkuCount ? `${quantity(summary.unvaluedOnHandQty)} 件未计价` : "当前库存均有成本"}</small></article>
       </section>
 
       {message ? <div className="iv-message">{message}</div> : null}
@@ -201,7 +201,7 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
         <article className="iv-panel iv-trend-panel">
           <header><div><p className="eyebrow">VALUE TREND</p><h2>周期货值变化</h2></div><span>{payload?.previousPeriod ? `${payload.previousPeriod.snapshotDate} → ${payload.currentPeriod?.snapshotDate}` : "等待形成对比周期"}</span></header>
           {payload ? <ValueTrend payload={payload} /> : <div className="iv-empty"><RefreshCw className={loading ? "spin" : ""} /><strong>正在读取货值</strong></div>}
-          <footer><AlertTriangle size={14} /><span>历史快照按当前直营供货价统一重算，变化主要反映库存数量变化；缺失成本不会按 0 元误计。</span></footer>
+          <footer><AlertTriangle size={14} /><span>该趋势按当前直营供货价统一重算，是恒定成本库存指数，不代表历史账面成本；缺失成本库存不计入金额，当前货值为已计价下限。</span></footer>
         </article>
 
         <article className="iv-panel iv-cost-panel">

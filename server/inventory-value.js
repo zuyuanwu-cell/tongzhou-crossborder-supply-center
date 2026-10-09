@@ -230,6 +230,7 @@ function aggregateSnapshot(snapshot, context) {
     inTransitQty: 0,
     totalQty: 0,
     coveredOnHandQty: 0,
+    unvaluedOnHandQty: 0,
     onHandValueCny: 0,
     inTransitValueCny: 0,
     totalValueCny: 0,
@@ -306,6 +307,7 @@ function aggregateSnapshot(snapshot, context) {
   summary.inTransitValueCny = round(summary.inTransitValueCny);
   summary.totalValueCny = round(summary.totalValueCny);
   summary.missingCostSkuCount = missing.size;
+  summary.unvaluedOnHandQty = Math.max(0, summary.onHandQty - summary.coveredOnHandQty);
   summary.costCoverageRate = summary.onHandQty > 0 ? round(summary.coveredOnHandQty / summary.onHandQty, 4) : 1;
   return {
     summary,

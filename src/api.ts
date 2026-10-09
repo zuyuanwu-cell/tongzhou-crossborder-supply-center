@@ -1020,6 +1020,7 @@ export type InventorySnapshotPayload = {
     totals: InventorySnapshot["totals"];
   }>;
   snapshot: InventorySnapshot | null;
+  versions?: Array<Omit<InventorySnapshot, "rows">>;
 };
 
 export type AiAgentMetric = {
@@ -1116,6 +1117,7 @@ export type InventoryValuePayload = {
   summary: {
     date: string;
     onHandQty: number;
+    unvaluedOnHandQty: number;
     inTransitQty: number;
     totalQty: number;
     coveredOnHandQty: number;
@@ -1317,6 +1319,7 @@ export type MovementPayload = {
   generatedAt: string;
   orderSyncedAt: string;
   orderDataAvailable?: boolean;
+  orderDataComplete?: boolean;
   inventorySyncedAt: string;
   windows: number[];
   counts: {
@@ -1366,6 +1369,7 @@ export type MovementPayload = {
   syncState?: {
     usingCachedOrders: boolean;
     lastCompletedAt: string;
+    publishReady?: boolean;
     backgroundRunningWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
     failedWarehouses: Array<{ warehouseId: string; message: string; orderCount: number }>;
   };
@@ -1450,6 +1454,16 @@ export type MovementHistoryPayload = {
     sales90: number;
   }>;
   snapshot: MovementHistorySnapshot | null;
+  versions?: Array<{
+    versionId: string;
+    date: string;
+    timezone: string;
+    capturedAt: string;
+    reason: string;
+    orderSyncedAt: string;
+    inventorySyncedAt: string;
+    totals: MovementHistorySnapshot["totals"];
+  }>;
   trend: Array<{
     date: string;
     capturedAt: string;
@@ -1542,10 +1556,14 @@ export type MovementComparisonPayload = {
     removed: number;
     inventoryAnomaly: number;
     inventoryUncertain: number;
+    comparableRows: number;
+    excludedCurrentRows: number;
   };
   inventorySummary: {
     openingOnHandQty: number;
     closingOnHandQty: number;
+    currentOnHandQty: number;
+    excludedCurrentOnHandQty: number;
     outboundQty: number;
     expectedClosingQty: number;
     varianceQty: number;
@@ -1553,6 +1571,7 @@ export type MovementComparisonPayload = {
     unmatchedOrderRows: number;
     unmatchedOutboundQty: number;
     orderCoverageComplete: boolean;
+    orderSyncInProgress: boolean;
     ordersSyncedAt: string;
   };
   rows: MovementComparisonRow[];
@@ -1615,7 +1634,13 @@ export type OrderAnalysisPayload = {
   ok: boolean;
   generatedAt: string;
   syncedAt: string;
-  scope: "russia" | "all" | string;
+  scope: "russia" | "shenniu" | "all" | string;
+  syncState?: {
+    running: boolean;
+    complete: boolean;
+    lastCompletedAt: string;
+    incompleteWarehouses: Array<{ warehouseId: string; warehouseName: string; reason?: "zero_orders" | "incomplete_sync" }>;
+  };
   filters: {
     dateFrom: string;
     dateTo: string;
@@ -1637,6 +1662,9 @@ export type OrderAnalysisPayload = {
     projectGroupCount: number;
     platformCount: number;
     unrecognizedShopRows: number;
+    cancelledOrderCount: number;
+    returnedOrderCount: number;
+    exceptionOrderCount: number;
   };
   options: {
     countries: Array<{ value: string; label: string }>;
@@ -3924,7 +3952,7 @@ export function fetchLatestOrderSyncJob() {
   return requestJson<{ ok: boolean; job: OrderSyncJob | null }>("/api/orders/sync-jobs/latest");
 }
 
-export function fetchOrderAnalysis(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "all" } = {}) {
+export function fetchOrderAnalysis(input: { dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopName?: string; projectGroup?: string; keyword?: string; scope?: "russia" | "shenniu" | "all" } = {}) {
   const params = new URLSearchParams();
   if (input.dateFrom) params.set("dateFrom", input.dateFrom);
   if (input.dateTo) params.set("dateTo", input.dateTo);
