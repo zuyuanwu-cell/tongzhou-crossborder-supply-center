@@ -2538,7 +2538,10 @@ async function createCollaborationShipmentWmsOrder(shipmentId, options, context)
   }
   const { effectiveConnection, capability } = collaborationShipmentWmsConnection(shipment);
 
-  const prepared = stockupCollaborationService.beginShipmentWmsPush(shipment.id, { providerId: effectiveConnection.providerId, documentType: capability.documentType }, context);
+  const prepared = stockupCollaborationService.beginShipmentWmsPush(shipment.id, {
+    providerId: effectiveConnection.providerId,
+    documentType: capability.documentType,
+  }, context);
   if (prepared.alreadyCreated) return { ok: true, alreadyCreated: true, documentLabel: capability.documentLabel, shipment: prepared.shipment };
 
   let created;
@@ -3331,6 +3334,10 @@ function canViewMiaoshouWorkspace(auth) {
 
 function canAccessAfterSales(auth) {
   return hasPermission(auth, "after_sales_report") || hasPermission(auth, "after_sales_warehouse");
+}
+
+function canAccessWarehouseLiabilitySettlements(auth) {
+  return hasPermission(auth, "warehouse_liability_settlement");
 }
 
 function canQueryWarehouseReturns(auth) {
@@ -7812,6 +7819,142 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, { ...result, ticket: warehouseTicketService.get(result.ticket.id), notification });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "更新仓库工单失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-liabilities" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseLiabilitySettlements(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库责任费用核销权限。" });
+        return;
+      }
+      sendJson(res, 200, afterSalesService.settlements({
+        keyword: url.searchParams.get("keyword"),
+        warehouseId: url.searchParams.get("warehouseId"),
+        status: url.searchParams.get("status"),
+        dateFrom: url.searchParams.get("dateFrom"),
+        dateTo: url.searchParams.get("dateTo"),
+        dataScopes: warehouseCollaborationDataScopes(auth),
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-liabilities/batches" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseLiabilitySettlements(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有生成仓库费用核销批次的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        payload.idempotencyKey = String(req.headers["idempotency-key"] || payload.idempotencyKey || "").trim();
+        const result = afterSalesService.createSettlementBatch(payload, auth.user, warehouseCollaborationDataScopes(auth));
+        appendActionLog(auth, "生成仓库责任费用核销批次", "warehouse_liability_settlement", result.batch.id, {
+          warehouseId: result.batch.warehouseId,
+          amountCny: result.batch.totalAmountCny,
+          lineCount: result.batch.lines?.length || 0,
+        });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "生成核销批次失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-liabilities/uploads/file" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseLiabilitySettlements(auth)) {
+        req.resume();
+        sendJson(res, 403, { ok: false, message: "当前账号没有上传核销凭证的权限。" });
+        return;
+      }
+      try {
+        const bytes = await parseRequestBytes(req, 8 * 1024 * 1024);
+        const upload = afterSalesService.saveSettlementUploadBytes({
+          fileName: url.searchParams.get("fileName") || "",
+          mimeType: req.headers["content-type"] || "",
+          bytes,
+        }, auth.user, requestOrigin(req));
+        appendActionLog(auth, "上传仓库费用核销凭证", "warehouse_liability_settlement_upload", upload.fileName, {
+          uploadId: upload.id,
+          mimeType: upload.mimeType,
+          size: upload.size,
+        });
+        sendJson(res, 201, { ok: true, upload });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "上传核销凭证失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/warehouse-liabilities/uploads/") && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseLiabilitySettlements(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有查看核销凭证的权限。" });
+        return;
+      }
+      const fileName = basename(decodeURIComponent(url.pathname.replace("/api/warehouse-liabilities/uploads/", "")));
+      if (!afterSalesService.canAccessSettlementUpload(fileName, auth.user?.id, warehouseCollaborationDataScopes(auth))) {
+        sendJson(res, 404, { ok: false, message: "核销凭证不存在或不在当前账号的数据范围内。" });
+        return;
+      }
+      const resolvedUpload = afterSalesService.uploadPath(fileName);
+      if (!resolvedUpload) {
+        sendJson(res, 404, { ok: false, message: "核销凭证不存在。" });
+        return;
+      }
+      serveFile(req, res, resolvedUpload.path);
+      return;
+    }
+
+    const warehouseLiabilityBatchMatch = url.pathname.match(/^\/api\/warehouse-liabilities\/batches\/([^/]+)(?:\/(export|post|reverse))?$/);
+    if (warehouseLiabilityBatchMatch) {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseLiabilitySettlements(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有仓库责任费用核销权限。" });
+        return;
+      }
+      const batchId = decodeURIComponent(warehouseLiabilityBatchMatch[1]);
+      const action = warehouseLiabilityBatchMatch[2] || "";
+      try {
+        if (action === "export" && req.method === "GET") {
+          const file = afterSalesService.exportSettlementBatch(batchId, warehouseCollaborationDataScopes(auth));
+          const content = Buffer.from(file.content, "utf8");
+          res.writeHead(200, {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Length": content.length,
+            "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+          });
+          res.end(content);
+          return;
+        }
+        if (action === "post" && req.method === "POST") {
+          const payload = await parseRequestBody(req);
+          const result = afterSalesService.postSettlementBatch(batchId, payload, auth.user, warehouseCollaborationDataScopes(auth));
+          appendActionLog(auth, "确认仓库责任费用核销", "warehouse_liability_settlement", result.batch.id, {
+            warehouseId: result.batch.warehouseId,
+            amountCny: result.batch.totalAmountCny,
+            method: result.batch.method,
+          });
+          sendJson(res, 200, result);
+          return;
+        }
+        if (action === "reverse" && req.method === "POST") {
+          const payload = await parseRequestBody(req);
+          const result = afterSalesService.reverseSettlementBatch(batchId, payload, auth.user, warehouseCollaborationDataScopes(auth));
+          appendActionLog(auth, "冲销仓库责任费用核销批次", "warehouse_liability_settlement", result.batch.id, {
+            amountCny: result.batch.totalAmountCny,
+            reason: result.reversal.reason,
+          });
+          sendJson(res, 200, result);
+          return;
+        }
+        sendJson(res, 405, { ok: false, message: "不支持的核销批次操作。" });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "核销批次操作失败。" });
       }
       return;
     }

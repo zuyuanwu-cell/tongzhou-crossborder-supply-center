@@ -125,6 +125,9 @@ export async function initStockupCollaborationStore(dbPath) {
       destination_warehouse_id TEXT,
       destination_warehouse_name TEXT NOT NULL,
       destination_country TEXT NOT NULL,
+      destination_address TEXT,
+      destination_contact_name TEXT,
+      destination_contact_phone TEXT,
       carrier TEXT,
       transport_mode TEXT,
       tracking_no TEXT,
@@ -193,6 +196,11 @@ export async function initStockupCollaborationStore(dbPath) {
       shelved_at TEXT,
       status TEXT NOT NULL,
       note TEXT,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      archived_by TEXT,
+      deleted_at TEXT,
+      deleted_by TEXT,
       version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -268,6 +276,16 @@ export async function initStockupCollaborationStore(dbPath) {
     );
     CREATE INDEX IF NOT EXISTS idx_stockup_cost_versions_locked ON stockup_cost_versions(status, locked_at);
 
+    CREATE TABLE IF NOT EXISTS stockup_monthly_cost_periods (
+      month TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      archived_by TEXT,
+      deleted_at TEXT,
+      deleted_by TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS stockup_notifications (
       id TEXT PRIMARY KEY,
       recipient_id TEXT NOT NULL,
@@ -293,6 +311,9 @@ export async function initStockupCollaborationStore(dbPath) {
   };
   ensureColumn("stockup_shipments", "origin_warehouse_id TEXT");
   ensureColumn("stockup_shipments", "origin_address TEXT");
+  ensureColumn("stockup_shipments", "destination_address TEXT");
+  ensureColumn("stockup_shipments", "destination_contact_name TEXT");
+  ensureColumn("stockup_shipments", "destination_contact_phone TEXT");
   ensureColumn("stockup_shipments", "box_mark TEXT");
   ensureColumn("stockup_shipments", "inventory_movement_id TEXT");
   ensureColumn("stockup_shipments", "wms_provider_id TEXT");
@@ -311,6 +332,11 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_shipment_lines", "carton_width_cm REAL NOT NULL DEFAULT 0");
   ensureColumn("stockup_shipment_lines", "carton_height_cm REAL NOT NULL DEFAULT 0");
   ensureColumn("stockup_shipment_lines", "carton_weight_kg REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_receipts", "lifecycle_status TEXT NOT NULL DEFAULT 'active'");
+  ensureColumn("stockup_receipts", "archived_at TEXT");
+  ensureColumn("stockup_receipts", "archived_by TEXT");
+  ensureColumn("stockup_receipts", "deleted_at TEXT");
+  ensureColumn("stockup_receipts", "deleted_by TEXT");
   db.run(`
     UPDATE stockup_shipment_lines
     SET image_url = COALESCE((
@@ -322,7 +348,7 @@ export async function initStockupCollaborationStore(dbPath) {
   `);
   db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
   db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
-  db.run("PRAGMA user_version = 4");
+  db.run("PRAGMA user_version = 5");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

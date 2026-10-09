@@ -25,11 +25,14 @@ try {
   store.run("UPDATE stockup_request_lines SET image_url=? WHERE id=?", ["https://example.test/sku-001.jpg", detail.lines[0].id]);
   store.run("UPDATE stockup_request_lines SET image_url=? WHERE id=?", ["https://example.test/sku-002.jpg", detailTwo.lines[0].id]);
 
-  const shipment = service.createShipment({ requestId: created.requestId, requestIds: [created.requestId, createdTwo.requestId], originWarehouseId: "cn-1", originWarehouse: "广州集货仓", originAddress: "广州市测试路1号", boxMark: "RU-01", carrier: "测试物流", transportMode: "空运", trackingNo: "TRK001", eta: "2026-10-02", lines: [{ requestId: created.requestId, taskId: task.id, shippedQty: 10, baseUnitCostCny: 8, cartonCount: 1, unitsPerCarton: 10, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 5, weightKg: 5 }, { requestId: createdTwo.requestId, taskId: taskTwo.id, shippedQty: 5, baseUnitCostCny: 12, cartonCount: 1, unitsPerCarton: 5, cartonLengthCm: 30, cartonWidthCm: 20, cartonHeightCm: 20, cartonWeightKg: 3, weightKg: 3 }] }, supply).shipment;
+  const shipment = service.createShipment({ requestId: created.requestId, requestIds: [created.requestId, createdTwo.requestId], originWarehouseId: "cn-1", originWarehouse: "广州集货仓", originAddress: "广州市测试路1号", destinationAddress: "Moscow First-mile Warehouse, Test Road 8", destinationContactName: "Ivan", destinationContactPhone: "+7 900 000 0000", boxMark: "RU-01", carrier: "测试物流", transportMode: "空运", trackingNo: "TRK001", eta: "2026-10-02", lines: [{ requestId: created.requestId, taskId: task.id, shippedQty: 10, baseUnitCostCny: 8, cartonCount: 1, unitsPerCarton: 10, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 5, weightKg: 5 }, { requestId: createdTwo.requestId, taskId: taskTwo.id, shippedQty: 5, baseUnitCostCny: 12, cartonCount: 1, unitsPerCarton: 5, cartonLengthCm: 30, cartonWidthCm: 20, cartonHeightCm: 20, cartonWeightKg: 3, weightKg: 3 }] }, supply).shipment;
   assert.deepEqual(shipment.requestIds.sort(), [created.requestId, createdTwo.requestId].sort());
   assert.equal(shipment.lines.length, 2);
   assert.equal(shipment.lines[0].requestId.length > 0, true);
   assert.equal(shipment.lines.every((line) => line.imageUrl.startsWith("https://example.test/")), true, "shipment lines preserve product images for packing list printing");
+  assert.equal(shipment.destinationAddress, "Moscow First-mile Warehouse, Test Road 8", "shipment snapshots first-mile address for historical packing lists");
+  assert.equal(shipment.destinationContactName, "Ivan");
+  assert.equal(shipment.destinationContactPhone, "+7 900 000 0000");
   service.dispatchShipment(shipment.id, { carrier: "测试物流", transportMode: "空运", trackingNo: "TRK001", eta: "2026-10-02", actualShippedAt: "2026-09-29" }, supply);
   const shippedDetail = service.getRequest(created.requestId, supply);
   assert.equal(service.getRequest(createdTwo.requestId, supply).shipments[0].id, shipment.id, "合并发运应同时出现在第二张需求单");

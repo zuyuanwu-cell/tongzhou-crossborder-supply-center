@@ -32,6 +32,24 @@ try {
   const report = service.monthlyCostReport({ month: "2026-10" }, context);
   assert.equal(report.items.length, 2);
   assert.equal(report.totals.totalCostCny, 800);
+  assert.equal(service.listReceipts({}, context).receipts.length, 1);
+  service.updateReceiptLifecycle(receipt.id, "archive", context);
+  assert.equal(service.listReceipts({}, context).receipts.length, 0, "archived receipt leaves the active cost queue");
+  assert.equal(service.listReceipts({ lifecycle: "archived" }, context).receipts.length, 1);
+  assert.equal(service.monthlyCostReport({ month: "2026-10" }, context).totals.totalCostCny, 800, "archiving a receipt does not change financial totals");
+  service.updateReceiptLifecycle(receipt.id, "delete", context);
+  assert.equal(service.monthlyCostReport({ month: "2026-10" }, context).totals.totalCostCny, 0, "recycle-bin receipts no longer participate in monthly totals");
+  service.updateReceiptLifecycle(receipt.id, "restore", context);
+  assert.equal(service.monthlyCostReport({ month: "2026-10" }, context).totals.totalCostCny, 800, "restoring a receipt restores monthly totals");
+  service.updateReceiptLifecycle(receipt.id, "activate", context);
+
+  service.updateMonthlyCostPeriod("2026-10", "archive", context);
+  assert.equal(service.listMonthlyCostPeriods({ lifecycle: "archived" }, context).periods[0].month, "2026-10");
+  service.updateMonthlyCostPeriod("2026-10", "delete", context);
+  assert.equal(service.listMonthlyCostPeriods({ lifecycle: "deleted" }, context).periods[0].month, "2026-10");
+  service.updateMonthlyCostPeriod("2026-10", "restore", context);
+  service.updateMonthlyCostPeriod("2026-10", "activate", context);
+  assert.equal(service.listMonthlyCostPeriods({ lifecycle: "active" }, context).periods[0].month, "2026-10");
   console.log("stockup costing tests passed");
 } finally {
   rmSync(temp, { recursive: true, force: true });

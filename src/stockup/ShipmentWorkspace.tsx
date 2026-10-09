@@ -1,22 +1,25 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Boxes, CalendarClock, Check, ClipboardCheck, FilePlus2, LoaderCircle, MapPin, PackageOpen, Pencil, Plus, Printer, RotateCcw, Route, ShieldCheck, Ship, Trash2, Truck, Warehouse, X } from "lucide-react";
+import { AlertTriangle, Boxes, CalendarClock, Check, CircleDollarSign, ClipboardCheck, FilePlus2, LoaderCircle, MapPin, PackageOpen, Pencil, Plus, Printer, RotateCcw, Route, ShieldCheck, Ship, Trash2, Truck, Warehouse, X } from "lucide-react";
 import QRCode from "qrcode";
 import { cancelStockupCollaborationWarehouseOrder, confirmStockupCollaborationReceipt, createStockupCollaborationShipment, createStockupCollaborationWarehouseOrder, dispatchStockupCollaborationShipment, fetchStockupDomesticAvailability, fetchStockupDomesticWarehouses, previewStockupCollaborationWarehouseOrder, updateStockupCollaborationShipment, type DomesticWarehouse, type StockupWarehouseOrderPreview } from "../api";
-import type { StockupRequest, StockupShipment } from "./types";
+import type { StockupReceipt, StockupRequest, StockupShipment, StockupWarehouseOption } from "./types";
 import { formatStockupDate } from "./status";
 
 type Props = {
   requests: StockupRequest[];
   shipments: StockupShipment[];
+  receipts: StockupReceipt[];
+  warehouses: StockupWarehouseOption[];
   canShip: boolean;
   canReceive: boolean;
   loadRequest: (id: string) => Promise<StockupRequest>;
+  onStartCosting: (receiptId: string) => void;
   onChanged: () => Promise<void>;
 };
 
 type ShipmentDraftLine = { id?: string; requestId: string; requestNo: string; taskId: string; sku: string; productName: string; unit: string; shippedQty: number; baseUnitCostCny: number; availableQty: number; cartonCount: number; unitsPerCarton: number; cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; weightKg: number; volumeM3: number };
 
-export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, loadRequest, onChanged }: Props) {
+export function ShipmentWorkspace({ requests, shipments, receipts, warehouses, canShip, canReceive, loadRequest, onStartCosting, onChanged }: Props) {
   const [modal, setModal] = useState<"shipment" | "receipt" | "wms-preview" | "wms-void" | "">("");
   const [selectedRequests, setSelectedRequests] = useState<StockupRequest[]>([]);
   const [selectedShipment, setSelectedShipment] = useState<StockupShipment | null>(null);
@@ -26,7 +29,7 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ originWarehouseId: "", originWarehouse: "", originAddress: "", carrier: "", transportMode: "海运", trackingNo: "", etd: "", eta: "", packages: 0, totalWeightKg: 0, totalVolumeM3: 0, chargeableWeightKg: 0, boxMark: "", note: "" });
+  const [form, setForm] = useState({ originWarehouseId: "", originWarehouse: "", originAddress: "", destinationAddress: "", destinationContactName: "", destinationContactPhone: "", carrier: "", transportMode: "海运", trackingNo: "", etd: "", eta: "", packages: 0, totalWeightKg: 0, totalVolumeM3: 0, chargeableWeightKg: 0, boxMark: "", note: "" });
   const [shipLines, setShipLines] = useState<ShipmentDraftLine[]>([]);
   const [domesticWarehouses, setDomesticWarehouses] = useState<DomesticWarehouse[]>([]);
   const [receipt, setReceipt] = useState({ arrivedAt: new Date().toISOString().slice(0, 10), shelvedAt: "", wmsInboundNo: "", note: "" });
@@ -57,6 +60,15 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     const detail = await loadRequest(requestId);
     if (selectedRequests.length && selectedRequests[0].destinationWarehouseId !== detail.destinationWarehouseId) { setError("一次发运只能合并相同目的仓的备货需求。"); return; }
     const next = [...selectedRequests, detail];
+    if (!selectedRequests.length) {
+      const destination = warehouses.find((item) => item.id === detail.destinationWarehouseId);
+      setForm((current) => ({
+        ...current,
+        destinationAddress: destination?.address || current.destinationAddress,
+        destinationContactName: destination?.contactName || current.destinationContactName,
+        destinationContactPhone: destination?.contactPhone || current.destinationContactPhone,
+      }));
+    }
     const nextLines = linesFor(next);
     setSelectedRequests(next);
     setShipLines(nextLines);
@@ -83,6 +95,7 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
 
   async function submitShipmentEdit(shipment: StockupShipment) {
     if (!form.carrier || !form.trackingNo || !form.eta) { setError("请填写承运商、物流单号和预计到仓时间。" ); return; }
+    if (!form.destinationAddress.trim() || !form.destinationContactName.trim() || !form.destinationContactPhone.trim()) { setError("请补齐海外仓头程收货地址、联系人和联系电话。" ); return; }
     if (shipLines.some((line) => [line.cartonCount, line.unitsPerCarton, line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg].some((value) => value <= 0))) { setError("请补齐每个产品的箱数、箱规、外箱长宽高和单箱重量。" ); return; }
     setBusy(true); setError("");
     try {
@@ -100,6 +113,7 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
     if (!selectedRequests.length || !shipLines.some((line) => line.shippedQty > 0)) { setError("请选择有已完成数量的需求。" ); return; }
     if (!form.originWarehouseId) { setError("请选择国内发货仓，系统会据此校验并扣减库存。" ); return; }
     if (!form.carrier || !form.trackingNo || !form.eta) { setError("请填写承运商、物流单号和预计到仓时间。" ); return; }
+    if (!form.destinationAddress.trim() || !form.destinationContactName.trim() || !form.destinationContactPhone.trim()) { setError("请补齐海外仓头程收货地址、联系人和联系电话，装箱单会使用这组信息。" ); return; }
     if (shipLines.some((line) => line.shippedQty > 0 && [line.cartonCount, line.unitsPerCarton, line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg].some((value) => value <= 0))) { setError("请补齐每个发运产品的箱数、箱规、外箱长宽高和单箱重量。" ); return; }
     const requestedBySku = new Map<string, number>();
     shipLines.forEach((line) => requestedBySku.set(line.sku, (requestedBySku.get(line.sku) || 0) + line.shippedQty));
@@ -183,13 +197,50 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
   async function openShipmentEditor(shipment?: StockupShipment) {
     if (shipment) {
       setError(""); setEditingShipment(shipment); setSelectedRequests([]);
-      setForm({ originWarehouseId: shipment.originWarehouseId, originWarehouse: shipment.originWarehouse, originAddress: shipment.originAddress, carrier: shipment.carrier, transportMode: shipment.transportMode, trackingNo: shipment.trackingNo, etd: shipment.etd, eta: shipment.eta, packages: shipment.packages, totalWeightKg: shipment.totalWeightKg, totalVolumeM3: shipment.totalVolumeM3, chargeableWeightKg: shipment.chargeableWeightKg, boxMark: shipment.boxMark, note: shipment.note });
-      setShipLines((shipment.lines || []).map((line) => ({ id: line.id, requestId: line.requestId || shipment.requestId, requestNo: shipment.requestNos?.[0] || "", taskId: line.taskId, sku: line.sku, productName: line.productName, unit: line.unit, shippedQty: line.shippedQty, baseUnitCostCny: line.baseUnitCostCny, availableQty: line.shippedQty, cartonCount: line.cartonCount, unitsPerCarton: line.unitsPerCarton, cartonLengthCm: line.cartonLengthCm, cartonWidthCm: line.cartonWidthCm, cartonHeightCm: line.cartonHeightCm, cartonWeightKg: line.cartonWeightKg, weightKg: line.weightKg, volumeM3: line.volumeM3 })));
+      setForm({
+        originWarehouseId: shipment.originWarehouseId,
+        originWarehouse: shipment.originWarehouse,
+        originAddress: shipment.originAddress,
+        destinationAddress: shipment.destinationAddress,
+        destinationContactName: shipment.destinationContactName,
+        destinationContactPhone: shipment.destinationContactPhone,
+        carrier: shipment.carrier,
+        transportMode: shipment.transportMode,
+        trackingNo: shipment.trackingNo,
+        etd: shipment.etd,
+        eta: shipment.eta,
+        packages: shipment.packages,
+        totalWeightKg: shipment.totalWeightKg,
+        totalVolumeM3: shipment.totalVolumeM3,
+        chargeableWeightKg: shipment.chargeableWeightKg,
+        boxMark: shipment.boxMark,
+        note: shipment.note,
+      });
+      setShipLines((shipment.lines || []).map((line) => ({
+        id: line.id,
+        requestId: line.requestId || shipment.requestId,
+        requestNo: shipment.requestNos?.[0] || "",
+        taskId: line.taskId,
+        sku: line.sku,
+        productName: line.productName,
+        unit: line.unit,
+        shippedQty: line.shippedQty,
+        baseUnitCostCny: line.baseUnitCostCny,
+        availableQty: line.shippedQty,
+        cartonCount: line.cartonCount,
+        unitsPerCarton: line.unitsPerCarton,
+        cartonLengthCm: line.cartonLengthCm,
+        cartonWidthCm: line.cartonWidthCm,
+        cartonHeightCm: line.cartonHeightCm,
+        cartonWeightKg: line.cartonWeightKg,
+        weightKg: line.weightKg,
+        volumeM3: line.volumeM3,
+      })));
       setModal("shipment");
       return;
     }
     setEditingShipment(null);
-    setError(""); setSelectedRequests([]); setShipLines([]); setModal("shipment");
+    setError(""); setSelectedRequests([]); setShipLines([]); setForm((current) => ({ ...current, destinationAddress: "", destinationContactName: "", destinationContactPhone: "" })); setModal("shipment");
     try {
       const result = await fetchStockupDomesticWarehouses();
       setDomesticWarehouses((result.warehouses || []).filter((warehouse) => warehouse.status === "active"));
@@ -202,15 +253,18 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
       {feedback ? <div className={`sc-shipment-feedback is-${feedback.tone}`}>{feedback.tone === "danger" ? <AlertTriangle size={17} /> : <Check size={17} />}<span>{feedback.text}</span><button type="button" onClick={() => setFeedback(null)}><X size={15} /></button></div> : null}
       <div className="sc-shipment-board">
         <ShipmentLane title="待发运" subtitle="已登记，等待国内仓发出" count={drafts.length} icon={<Route size={18} />} tone="draft">
-          {drafts.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} />)}
+          {drafts.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} warehouse={warehouses.find((item) => item.id === shipment.destinationWarehouseId)} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} />)}
           {!drafts.length ? <EmptyLane text="暂无待发运批次" /> : null}
         </ShipmentLane>
         <ShipmentLane title="在途中" subtitle="跟踪物流、创建仓库单并确认到仓" count={inTransit.length} icon={<Truck size={18} />} tone="transit">
-          {inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} onCreateWarehouseOrder={canShip ? () => void openWarehouseOrderPreview(shipment) : undefined} onVoidWarehouseOrder={canShip ? () => openWarehouseOrderVoid(shipment) : undefined} wmsBusy={wmsBusyId === shipment.id} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}
+          {inTransit.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} warehouse={warehouses.find((item) => item.id === shipment.destinationWarehouseId)} onEdit={canShip ? () => void openShipmentEditor(shipment) : undefined} onCreateWarehouseOrder={canShip ? () => void openWarehouseOrderPreview(shipment) : undefined} onVoidWarehouseOrder={canShip ? () => openWarehouseOrderVoid(shipment) : undefined} wmsBusy={wmsBusyId === shipment.id} action={canReceive ? <button onClick={() => openReceipt(shipment)}><Check size={15} />确认到仓</button> : undefined} />)}
           {!inTransit.length ? <EmptyLane text="暂无在途批次" /> : null}
         </ShipmentLane>
         <ShipmentLane title="已到仓" subtitle="已完成收货，可继续核对成本" count={arrived.length} icon={<PackageOpen size={18} />} tone="arrived">
-          {arrived.map((shipment) => <ShipmentCard key={shipment.id} shipment={shipment} />)}
+          {arrived.map((shipment) => {
+            const receiptItem = receipts.find((item) => item.shipmentId === shipment.id && item.lifecycleStatus !== "deleted");
+            return <ShipmentCard key={shipment.id} shipment={shipment} warehouse={warehouses.find((item) => item.id === shipment.destinationWarehouseId)} action={receiptItem ? <button className="is-primary" onClick={() => onStartCosting(receiptItem.id)}><CircleDollarSign size={15} />{receiptItem.status === "costed" ? "查看成本" : "结算成本"}</button> : undefined} />;
+          })}
           {!arrived.length ? <EmptyLane text="暂无已到仓批次" /> : null}
         </ShipmentLane>
       </div>
@@ -218,7 +272,7 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
 
     {modal === "shipment" ? <div className={`sc-modal-backdrop${editingShipment ? " is-editing-shipment" : ""}`}><div className="sc-modal sc-wide-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">DOMESTIC STOCK SHIPMENT</span><h2>{editingShipment ? `编辑发运 ${editingShipment.shipmentNo}` : "从国内仓合并发运"}</h2><p>{editingShipment ? "可修改物流、到仓和装箱信息；已扣减库存的仓库、产品和数量保持锁定。" : "可勾选多个相同目的仓的需求，确认发运时自动生成国内仓出库流水。"}</p></div><button className="sc-icon-button" onClick={() => { setModal(""); setEditingShipment(null); }}><X size={20} /></button></header><div className="sc-editor-scroll">{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
       {!editingShipment ? <div className="sc-request-checklist"><b>选择待发运需求</b>{readyRequests.map((request) => { const checked = selectedRequests.some((item) => item.id === request.id); const disabled = !checked && selectedRequests.length > 0 && selectedRequests[0].destinationWarehouseId !== request.destinationWarehouseId; return <label className={disabled ? "is-disabled" : ""} key={request.id}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => void toggleRequest(request.id, event.target.checked)} /><span><strong>{request.requestNo}</strong><small>{request.destinationWarehouseName} · {request.lines.map((line) => line.sku).join("、")}</small></span></label>; })}</div> : <div className="sc-edit-lock-note"><Warehouse size={17} /><span>国内发货仓、SKU 和发货数量已经形成库存流水，编辑时不可变更。</span></div>}
-      <div className="sc-form-grid sc-form-grid-4"><label>国内发货仓<select value={form.originWarehouseId} onChange={(event) => void selectOriginWarehouse(event.target.value)}><option value="">请选择有库存的国内仓</option>{domesticWarehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>运输方式<select value={form.transportMode} onChange={(event) => setForm({ ...form, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label><label>承运商<input value={form.carrier} onChange={(event) => setForm({ ...form, carrier: event.target.value })} /></label><label>物流单号 / 提单号<input value={form.trackingNo} onChange={(event) => setForm({ ...form, trackingNo: event.target.value })} /></label><label>计划发运日 ETD<input type="date" value={form.etd} onChange={(event) => setForm({ ...form, etd: event.target.value })} /></label><label>预计到仓日 ETA<input type="date" value={form.eta} onChange={(event) => setForm({ ...form, eta: event.target.value })} /></label><label className="full">发货地址（引用仓库档案）<input value={form.originAddress} readOnly placeholder="选择国内仓后自动带入" /></label><label className="full">箱唛内容<input value={form.boxMark} onChange={(event) => setForm({ ...form, boxMark: event.target.value })} placeholder="例如：项目、目的仓、PO号或客户箱唛要求" /></label></div>
+      <div className="sc-form-grid sc-form-grid-4"><label>国内发货仓<select value={form.originWarehouseId} onChange={(event) => void selectOriginWarehouse(event.target.value)}><option value="">请选择有库存的国内仓</option>{domesticWarehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><label>运输方式<select value={form.transportMode} onChange={(event) => setForm({ ...form, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label><label>承运商<input value={form.carrier} onChange={(event) => setForm({ ...form, carrier: event.target.value })} /></label><label>物流单号 / 提单号<input value={form.trackingNo} onChange={(event) => setForm({ ...form, trackingNo: event.target.value })} /></label><label>计划发运日 ETD<input type="date" value={form.etd} onChange={(event) => setForm({ ...form, etd: event.target.value })} /></label><label>预计到仓日 ETA<input type="date" value={form.eta} onChange={(event) => setForm({ ...form, eta: event.target.value })} /></label><label className="full">国内发货地址（引用仓库档案）<input value={form.originAddress} readOnly placeholder="选择国内仓后自动带入" /></label><label className="full">海外仓头程收货地址 *<input value={form.destinationAddress} onChange={(event) => setForm({ ...form, destinationAddress: event.target.value })} placeholder="选择需求后自动带入仓库档案，也可在发运前修正" /></label><label>海外仓联系人 *<input value={form.destinationContactName} onChange={(event) => setForm({ ...form, destinationContactName: event.target.value })} /></label><label>联系电话 *<input value={form.destinationContactPhone} onChange={(event) => setForm({ ...form, destinationContactPhone: event.target.value })} /></label><label className="full">箱唛内容<input value={form.boxMark} onChange={(event) => setForm({ ...form, boxMark: event.target.value })} placeholder="例如：项目、目的仓、PO号或客户箱唛要求" /></label></div>
       <div className="sc-pack-table"><div className="head"><span>需求 / 产品</span><span>发货数量 / 库存</span><span>箱数</span><span>箱规</span><span>外箱尺寸 cm</span><span>单箱 kg</span></div>{shipLines.map((line, index) => { const update = (patch: Partial<ShipmentDraftLine>) => setShipLines((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); return <div key={line.taskId}><span><b>{line.sku}</b><small>{line.productName}</small><small>{line.requestNo}</small></span><span><input type="number" min="0" value={line.shippedQty} onChange={(event) => update({ shippedQty: Number(event.target.value) })} /><small className={line.availableQty < line.shippedQty ? "danger" : ""}>可用 {line.availableQty}</small></span><span><input type="number" min="0" value={line.cartonCount} onChange={(event) => update({ cartonCount: Number(event.target.value) })} /></span><span><input type="number" min="0" value={line.unitsPerCarton} onChange={(event) => update({ unitsPerCarton: Number(event.target.value) })} /><small>件/箱</small></span><span className="dims"><input type="number" min="0" value={line.cartonLengthCm} onChange={(event) => update({ cartonLengthCm: Number(event.target.value) })} /><i>×</i><input type="number" min="0" value={line.cartonWidthCm} onChange={(event) => update({ cartonWidthCm: Number(event.target.value) })} /><i>×</i><input type="number" min="0" value={line.cartonHeightCm} onChange={(event) => update({ cartonHeightCm: Number(event.target.value) })} /></span><span><input type="number" min="0" step="0.01" value={line.cartonWeightKg} onChange={(event) => update({ cartonWeightKg: Number(event.target.value) })} /></span></div>; })}</div>
     </div><footer className="sc-modal-foot"><span><Warehouse size={16} />{editingShipment ? "保存后更新本批次信息，不会再次扣减库存。" : "确认后扣减国内仓库存、生成出库流水，并进入在途状态。"}</span><div><button className="sc-button sc-button-secondary" onClick={() => { setModal(""); setEditingShipment(null); }}>取消</button><button className="sc-button sc-button-primary" disabled={busy} onClick={submitShipment}>{editingShipment ? <Pencil size={17} /> : <Truck size={17} />}{editingShipment ? "保存修改" : "确认出库并发运"}</button></div></footer></div></div> : null}
 
@@ -230,8 +284,8 @@ export function ShipmentWorkspace({ requests, shipments, canShip, canReceive, lo
   </>;
 }
 
-function ShipmentCard({ shipment, action, onEdit, onCreateWarehouseOrder, onVoidWarehouseOrder, wmsBusy = false }: { shipment: StockupShipment; action?: React.ReactNode; onEdit?: () => void; onCreateWarehouseOrder?: () => void; onVoidWarehouseOrder?: () => void; wmsBusy?: boolean }) {
-  const documentLabel = warehouseDocumentLabel(shipment);
+function ShipmentCard({ shipment, warehouse, action, onEdit, onCreateWarehouseOrder, onVoidWarehouseOrder, wmsBusy = false }: { shipment: StockupShipment; warehouse?: StockupWarehouseOption; action?: React.ReactNode; onEdit?: () => void; onCreateWarehouseOrder?: () => void; onVoidWarehouseOrder?: () => void; wmsBusy?: boolean }) {
+  const documentLabel = warehouse?.wmsDocumentLabel || warehouseDocumentLabel(shipment);
   const needsManualCheck = shipment.wmsPushStatus === "needs_manual_check";
   const voided = shipment.wmsPushStatus === "voided";
   const created = !voided && (shipment.wmsPushStatus === "pushed" || Boolean(shipment.wmsOrderNo));
@@ -284,8 +338,8 @@ async function printShipmentDocument(shipment: StockupShipment, kind: "packing" 
       : `<span class="product-placeholder" style="display:flex">无图</span>`;
     return `<tr><td>${index + 1}</td><td><div class="product-cell"><span class="product-visual">${productImage}</span><span><b>${html(line.sku)}</b><br><small>${html(line.productName)}</small></span></div></td><td>${html(line.shippedQty)} ${html(line.unit)}</td><td>${html(line.cartonCount)}</td><td>${html(line.unitsPerCarton)} ${html(line.unit)}/箱</td><td>${html(line.cartonLengthCm)} × ${html(line.cartonWidthCm)} × ${html(line.cartonHeightCm)} cm</td><td>${html(line.cartonWeightKg)} kg</td><td>${html(line.volumeM3.toFixed(3))} m³</td></tr>`;
   }).join("");
-  const packing = `<section class="packing"><header><div><span>TONGZHOU SUPPLY CHAIN</span><h1>装 箱 单 / PACKING LIST</h1><p>${html(shipment.shipmentNo)}</p></div><img src="${qrCode}" alt="二维码"></header><dl><div><dt>发货仓 / 地址</dt><dd>${html(shipment.originWarehouse)}<br>${html(shipment.originAddress)}</dd></div><div><dt>目的仓</dt><dd>${html(shipment.destinationWarehouseName)} · ${html(shipment.destinationCountry)}</dd></div><div><dt>关联需求</dt><dd>${html(shipment.requestNos?.join("、") || shipment.requestId)}</dd></div><div><dt>物流信息</dt><dd>${html(shipment.carrier)} · ${html(shipment.transportMode)} · ${html(shipment.trackingNo)}</dd></div></dl><table><thead><tr><th>#</th><th>图片 / SKU / 产品名称</th><th>数量</th><th>箱数</th><th>箱规</th><th>箱子尺寸</th><th>单箱重量</th><th>体积</th></tr></thead><tbody>${tableRows}</tbody><tfoot><tr><td colspan="3">汇总</td><td>${totalCartons} 箱</td><td colspan="2"></td><td>${html(shipment.totalWeightKg.toFixed(2))} kg</td><td>${html(shipment.totalVolumeM3.toFixed(3))} m³</td></tr></tfoot></table><aside><b>箱唛：</b>${html(shipment.boxMark || "无特殊箱唛要求")}</aside><footer>生成时间：${html(new Date().toLocaleString("zh-CN"))}　扫码可进入同舟中台查看发运数据</footer></section>`;
+  const packing = `<section class="packing"><header><div><span>TONGZHOU SUPPLY CHAIN</span><h1>装 箱 单 / PACKING LIST</h1><p>${html(shipment.shipmentNo)}</p></div><img src="${qrCode}" alt="二维码"></header><dl><div><dt>发货仓 / 地址</dt><dd>${html(shipment.originWarehouse)}<br>${html(shipment.originAddress)}</dd></div><div class="destination"><dt>海外仓头程收货信息</dt><dd><b>${html(shipment.destinationWarehouseName)} · ${html(shipment.destinationCountry)}</b><br>联系人：${html(shipment.destinationContactName || "未填写")}　电话：${html(shipment.destinationContactPhone || "未填写")}<br>地址：${html(shipment.destinationAddress || "未填写")}</dd></div><div><dt>关联需求</dt><dd>${html(shipment.requestNos?.join("、") || shipment.requestId)}</dd></div><div><dt>物流信息</dt><dd>${html(shipment.carrier)} · ${html(shipment.transportMode)} · ${html(shipment.trackingNo)}</dd></div></dl><table><thead><tr><th>#</th><th>图片 / SKU / 产品名称</th><th>数量</th><th>箱数</th><th>箱规</th><th>箱子尺寸</th><th>单箱重量</th><th>体积</th></tr></thead><tbody>${tableRows}</tbody><tfoot><tr><td colspan="3">汇总</td><td>${totalCartons} 箱</td><td colspan="2"></td><td>${html(shipment.totalWeightKg.toFixed(2))} kg</td><td>${html(shipment.totalVolumeM3.toFixed(3))} m³</td></tr></tfoot></table><aside><b>箱唛：</b>${html(shipment.boxMark || "无特殊箱唛要求")}</aside><footer>生成时间：${html(new Date().toLocaleString("zh-CN"))}　扫码可进入同舟中台查看发运数据</footer></section>`;
   const marks = Array.from({ length: totalCartons }, (_, index) => `<section class="mark"><div class="mark-head"><b>TONGZHOU</b><span>${index + 1} / ${totalCartons}</span></div><h1>${html(shipment.boxMark || shipment.destinationWarehouseName)}</h1><dl><div><dt>发运单</dt><dd>${html(shipment.shipmentNo)}</dd></div><div><dt>目的仓</dt><dd>${html(shipment.destinationWarehouseName)}</dd></div><div><dt>SKU</dt><dd>${html([...new Set(lines.map((line) => line.sku))].join(" / "))}</dd></div><div><dt>物流单号</dt><dd>${html(shipment.trackingNo || "待填写")}</dd></div></dl><img src="${qrCode}" alt="二维码"><small>扫描查看发运数据</small></section>`).join("");
-  printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${kind === "packing" ? "装箱单" : "箱唛"}-${html(shipment.shipmentNo)}</title><style>${kind === "mark" ? "@page{size:100mm 100mm;margin:0}" : "@page{size:A4 landscape;margin:10mm}"}*{box-sizing:border-box}body{margin:0;color:#102b4e;font-family:'Microsoft YaHei','Noto Sans SC',Arial,sans-serif}.packing{padding:4mm}.packing header{display:flex;justify-content:space-between;border-bottom:3px solid #0b4e91;padding-bottom:4mm}.packing header span{font-size:10px;letter-spacing:2px;color:#f05a16;font-weight:800}.packing h1{margin:2mm 0;font-size:24px}.packing header p{margin:0}.packing header img{width:25mm;height:25mm}.packing dl{display:grid;grid-template-columns:1fr 1fr;gap:2mm 8mm;margin:5mm 0}.packing dl div{display:grid;grid-template-columns:30mm 1fr}.packing dt{color:#667b95}.packing dd{margin:0;font-weight:700}.packing table{width:100%;border-collapse:collapse;font-size:10px}.packing th,.packing td{border:1px solid #99abc0;padding:2mm;text-align:left;vertical-align:middle}.packing th{background:#e8f1fb}.packing tfoot{font-weight:800;background:#fff3ea}.product-cell{display:flex;align-items:center;gap:2.5mm;min-width:48mm}.product-visual{width:15mm;height:15mm;flex:0 0 15mm}.product-image,.product-placeholder{width:15mm;height:15mm;border:1px solid #d5dfeb;border-radius:2mm;object-fit:contain;background:#fff}.product-placeholder{display:none;align-items:center;justify-content:center;color:#8494a8;font-size:8px}.packing aside{margin-top:4mm;padding:3mm;background:#f4f7fb;border-left:3px solid #f05a16}.packing footer{margin-top:4mm;color:#73849a;font-size:9px}.mark{width:100mm;height:100mm;padding:7mm;page-break-after:always;border:2mm solid #0b3c76;display:flex;flex-direction:column;position:relative}.mark:last-child{page-break-after:auto}.mark-head{display:flex;justify-content:space-between;align-items:center}.mark-head b{font-size:16px;color:#f05a16;letter-spacing:2px}.mark-head span{font-size:20px;font-weight:900}.mark h1{font-size:25px;line-height:1.2;margin:7mm 0 5mm;border-bottom:1px solid #94a9c2;padding-bottom:4mm}.mark dl{margin:0;display:grid;gap:2mm}.mark dl div{display:grid;grid-template-columns:22mm 1fr}.mark dt{font-size:10px;color:#667a94}.mark dd{margin:0;font-size:12px;font-weight:800;word-break:break-all}.mark img{position:absolute;width:26mm;height:26mm;right:6mm;bottom:9mm}.mark small{position:absolute;right:7mm;bottom:5mm;font-size:8px}@media print{button{display:none}}</style></head><body>${kind === "packing" ? packing : marks}<script>window.onload=()=>{let printed=false;const printOnce=()=>{if(!printed){printed=true;window.print()}};const images=[...document.images];Promise.all(images.map((image)=>image.complete?Promise.resolve():new Promise((resolve)=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true})}))).then(()=>setTimeout(printOnce,120));setTimeout(printOnce,5000)}<\/script></body></html>`);
+  printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${kind === "packing" ? "装箱单" : "箱唛"}-${html(shipment.shipmentNo)}</title><style>${kind === "mark" ? "@page{size:100mm 100mm;margin:0}" : "@page{size:A4 landscape;margin:10mm}"}*{box-sizing:border-box}body{margin:0;color:#102b4e;font-family:'Microsoft YaHei','Noto Sans SC',Arial,sans-serif}.packing{padding:4mm}.packing header{display:flex;justify-content:space-between;border-bottom:3px solid #0b4e91;padding-bottom:4mm}.packing header span{font-size:10px;letter-spacing:2px;color:#f05a16;font-weight:800}.packing h1{margin:2mm 0;font-size:24px}.packing header p{margin:0}.packing header img{width:25mm;height:25mm}.packing dl{display:grid;grid-template-columns:1fr 1.35fr;gap:2mm 8mm;margin:5mm 0}.packing dl div{display:grid;grid-template-columns:30mm 1fr}.packing dl .destination{grid-template-columns:40mm 1fr;padding:2mm;background:#eef6ff;border:1px solid #bdd2ea;border-radius:2mm}.packing .destination dt{white-space:nowrap}.packing dt{color:#667b95}.packing dd{margin:0;font-weight:700;line-height:1.55}.packing table{width:100%;border-collapse:collapse;font-size:10px}.packing th,.packing td{border:1px solid #99abc0;padding:2mm;text-align:left;vertical-align:middle}.packing th{background:#e8f1fb}.packing tfoot{font-weight:800;background:#fff3ea}.product-cell{display:flex;align-items:center;gap:2.5mm;min-width:48mm}.product-visual{width:15mm;height:15mm;flex:0 0 15mm}.product-image,.product-placeholder{width:15mm;height:15mm;border:1px solid #d5dfeb;border-radius:2mm;object-fit:contain;background:#fff}.product-placeholder{display:none;align-items:center;justify-content:center;color:#8494a8;font-size:8px}.packing aside{margin-top:4mm;padding:3mm;background:#f4f7fb;border-left:3px solid #f05a16}.packing footer{margin-top:4mm;color:#73849a;font-size:9px}.mark{width:100mm;height:100mm;padding:7mm;page-break-after:always;border:2mm solid #0b3c76;display:flex;flex-direction:column;position:relative}.mark:last-child{page-break-after:auto}.mark-head{display:flex;justify-content:space-between;align-items:center}.mark-head b{font-size:16px;color:#f05a16;letter-spacing:2px}.mark-head span{font-size:20px;font-weight:900}.mark h1{font-size:25px;line-height:1.2;margin:7mm 0 5mm;border-bottom:1px solid #94a9c2;padding-bottom:4mm}.mark dl{margin:0;display:grid;gap:2mm}.mark dl div{display:grid;grid-template-columns:22mm 1fr}.mark dt{font-size:10px;color:#667a94}.mark dd{margin:0;font-size:12px;font-weight:800;word-break:break-all}.mark img{position:absolute;width:26mm;height:26mm;right:6mm;bottom:9mm}.mark small{position:absolute;right:7mm;bottom:5mm;font-size:8px}@media print{button{display:none}}</style></head><body>${kind === "packing" ? packing : marks}<script>window.onload=()=>{let printed=false;const printOnce=()=>{if(!printed){printed=true;window.print()}};const images=[...document.images];Promise.all(images.map((image)=>image.complete?Promise.resolve():new Promise((resolve)=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true})}))).then(()=>setTimeout(printOnce,120));setTimeout(printOnce,5000)}<\/script></body></html>`);
   printWindow.document.close();
 }

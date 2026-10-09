@@ -13,7 +13,7 @@ import {
   fetchStockupCollaborationShipments,
   fetchStockupCollaborationWarehouses,
 } from "../api";
-import type { StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment } from "./types";
+import type { StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseOption } from "./types";
 import { CostSettlementWorkspace } from "./CostSettlementWorkspace";
 import { ExecutionQueue } from "./ExecutionQueue";
 import { MonthlyCostReport } from "./MonthlyCostReport";
@@ -42,12 +42,13 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   const [payload, setPayload] = useState<StockupRequestListPayload | null>(null);
   const [shipments, setShipments] = useState<StockupShipment[]>([]);
   const [receipts, setReceipts] = useState<StockupReceipt[]>([]);
+  const [costReceiptId, setCostReceiptId] = useState("");
   const [selected, setSelected] = useState<StockupRequest | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [unread, setUnread] = useState(0);
-  const [warehouseOptions, setWarehouseOptions] = useState<Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">>>(warehouses);
+  const [warehouseOptions, setWarehouseOptions] = useState<StockupWarehouseOption[]>(warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: warehouse.country, status: warehouse.status, address: "", contactName: "", contactPhone: "" })));
   const [projectTeams, setProjectTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [defaultProjectTeamId, setDefaultProjectTeamId] = useState("");
   const [productOptions, setProductOptions] = useState<CatalogProduct[]>(products);
@@ -70,7 +71,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
       const [requestData, shipmentData, receiptData, notificationData, warehouseData, productData] = await Promise.all([
         fetchStockupCollaborationRequests({ pageSize: 100 }),
         fetchStockupCollaborationShipments(),
-        fetchStockupCollaborationReceipts(),
+        fetchStockupCollaborationReceipts({ lifecycle: "all" }),
         fetchStockupCollaborationNotifications(),
         fetchStockupCollaborationWarehouses(),
         fetchStockupCollaborationProducts(),
@@ -91,7 +92,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   }, []);
 
   useEffect(() => { setSection(initialSection); }, [initialSection]);
-  useEffect(() => { if (warehouses.length) setWarehouseOptions(warehouses); }, [warehouses]);
+  useEffect(() => { if (warehouses.length) setWarehouseOptions(warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: warehouse.country, status: warehouse.status, address: "", contactName: "", contactPhone: "" }))); }, [warehouses]);
   useEffect(() => { void loadAll(); }, [loadAll]);
 
   async function loadDetail(requestId: string) {
@@ -130,9 +131,9 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
 
     {section === "requests" ? <MyRequests payload={payload} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
     {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
-    {section === "logistics" ? <ShipmentWorkspace requests={payload?.items || []} shipments={shipments} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
-    {section === "costs" ? <CostSettlementWorkspace receipts={receipts} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
-    {section === "report" ? <MonthlyCostReport /> : null}
+    {section === "logistics" ? <ShipmentWorkspace requests={payload?.items || []} shipments={shipments} receipts={receipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /> : null}
+    {section === "costs" ? <CostSettlementWorkspace receipts={receipts} initialReceiptId={costReceiptId} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
+    {section === "report" ? <MonthlyCostReport canManage={permissions.canLock} /> : null}
 
     <section className="sc-guidance"><Sparkles size={18} /><div><b>无需再记复杂步骤</b><span>系统根据当前角色和单据状态，只展示下一步要处理的动作。</span></div></section>
 

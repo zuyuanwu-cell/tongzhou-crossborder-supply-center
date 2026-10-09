@@ -235,6 +235,48 @@ try {
   assert.match(activated.ticket.timeline.at(-1).label, /售后已激活/);
   assert.match(buildAfterSalesActivatedMarkdown(activated.ticket, { requestOrigin: "https://gyl.example.com", statusLabel: "仓库已受理" }), /售后单重新激活/);
   assert.match(buildAfterSalesActivatedMarkdown(activated.ticket, { requestOrigin: "https://gyl.example.com" }), /view=warehouse/);
+
+  const initialLedger = service.settlements();
+  assert.equal(initialLedger.summary.pendingWriteoffCny, 30.7);
+  assert.equal(initialLedger.items[0].settlementStatus, "pending_writeoff");
+  const firstBatch = service.createSettlementBatch({
+    idempotencyKey: "settlement-test-1",
+    settlementDate: "2026-10-09",
+    method: "monthly_statement_offset",
+    lines: [{ sourceId: created.ticket.id, amountCny: 10 }],
+  }, actor);
+  assert.match(firstBatch.batch.id, /^WHC-\d{8}-0001$/);
+  assert.equal(firstBatch.batch.status, "draft");
+  assert.equal(firstBatch.summary.pendingWriteoffCny, 30.7, "draft batches must not reduce the outstanding balance");
+  assert.equal(service.createSettlementBatch({
+    idempotencyKey: "settlement-test-1",
+    lines: [{ sourceId: created.ticket.id, amountCny: 10 }],
+  }, actor).idempotentReplay, true);
+  const exported = service.exportSettlementBatch(firstBatch.batch.id);
+  assert.match(exported.content, /本次核销\(CNY\)/);
+  assert.match(exported.content, /AS-\d{8}-0001/);
+  assert.throws(() => service.postSettlementBatch(firstBatch.batch.id, {}, actor), /财务凭证号或上传核销凭证/);
+  const postedFirstBatch = service.postSettlementBatch(firstBatch.batch.id, { voucherNo: "VOUCHER-001" }, actor);
+  assert.equal(postedFirstBatch.batch.status, "posted");
+  assert.equal(postedFirstBatch.summary.pendingWriteoffCny, 20.7);
+  assert.equal(service.postSettlementBatch(firstBatch.batch.id, { voucherNo: "VOUCHER-001" }, actor).idempotentReplay, true);
+
+  const secondBatch = service.createSettlementBatch({
+    idempotencyKey: "settlement-test-2",
+    settlementDate: "2026-10-09",
+    method: "warehouse_transfer",
+    voucherNo: "VOUCHER-002",
+    lines: [{ sourceId: created.ticket.id, amountCny: 20.7 }],
+  }, actor);
+  const postedSecondBatch = service.postSettlementBatch(secondBatch.batch.id, {}, actor);
+  assert.equal(postedSecondBatch.summary.pendingWriteoffCny, 0);
+  assert.equal(service.settlements().items[0].settlementStatus, "written_off");
+  assert.throws(() => service.updateWarehouse(created.ticket.id, { action: "cancel", note: "不应允许" }, actor), /请先.*冲销/);
+  const reversed = service.reverseSettlementBatch(secondBatch.batch.id, { reason: "测试冲销" }, actor);
+  assert.equal(reversed.batch.status, "reversed");
+  assert.equal(reversed.summary.pendingWriteoffCny, 20.7);
+  assert.equal(service.reverseSettlementBatch(secondBatch.batch.id, { reason: "重复冲销" }, actor).idempotentReplay, true);
+
   assert.equal(service.deleteDraft(draft.id, actor).id, draft.id);
   assert.equal(service.listDrafts(actor).length, 0);
 

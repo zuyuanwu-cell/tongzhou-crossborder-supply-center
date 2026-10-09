@@ -216,6 +216,14 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         sendJson(res, 201, result);
         return true;
       }
+      if ((match = suffix.match(/^\/receipts\/([^/]+)\/(archive|activate|delete|restore)$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_cost_lock", "stockup_workflow_manage"], "当前账号没有归档成本批次的权限。");
+        const action = match[2];
+        const result = service.updateReceiptLifecycle(decodeURIComponent(match[1]), action, context);
+        appendActionLog(auth, `成本批次：${action}`, "stockup_collaboration_receipt", result.receipt.receiptNo, { lifecycleStatus: result.receipt.lifecycleStatus });
+        sendJson(res, 200, result);
+        return true;
+      }
 
       if (suffix === "/cost-items" && req.method === "POST") {
         requireAny(auth, ["stockup_cost_edit", "stockup_workflow_manage"], "当前账号没有费用录入权限。");
@@ -243,6 +251,20 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       if (suffix === "/reports/monthly-cost" && req.method === "GET") {
         requireAny(auth, ["stockup_cost_report_view", "stockup_workflow_manage"], "当前账号没有月度成本报表权限。");
         sendJson(res, 200, service.monthlyCostReport(queryObject(url), context));
+        return true;
+      }
+      if (suffix === "/reports/monthly-cost-periods" && req.method === "GET") {
+        requireAny(auth, ["stockup_cost_report_view", "stockup_workflow_manage"], "当前账号没有月度成本报表权限。");
+        sendJson(res, 200, service.listMonthlyCostPeriods(queryObject(url), context));
+        return true;
+      }
+      if ((match = suffix.match(/^\/reports\/monthly-cost-periods\/([^/]+)\/(archive|activate|delete|restore)$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_cost_lock", "stockup_workflow_manage"], "当前账号没有管理月度成本归档的权限。");
+        const month = decodeURIComponent(match[1]);
+        const action = match[2];
+        const result = service.updateMonthlyCostPeriod(month, action, context);
+        appendActionLog(auth, `月度成本：${action}`, "stockup_monthly_cost_period", month, { status: result.period.status });
+        sendJson(res, 200, result);
         return true;
       }
       if (suffix === "/notifications" && req.method === "GET") {

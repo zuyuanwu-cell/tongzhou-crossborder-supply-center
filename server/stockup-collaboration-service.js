@@ -146,7 +146,9 @@ function shipmentFromRow(row) {
     id: String(row.id), requestId: String(row.request_id), shipmentNo: String(row.shipment_no), originWarehouse: String(row.origin_warehouse || ""),
     originWarehouseId: String(row.origin_warehouse_id || ""), originAddress: String(row.origin_address || ""),
     destinationWarehouseId: String(row.destination_warehouse_id || ""), destinationWarehouseName: String(row.destination_warehouse_name),
-    destinationCountry: String(row.destination_country), carrier: String(row.carrier || ""), transportMode: String(row.transport_mode || ""),
+    destinationCountry: String(row.destination_country), destinationAddress: String(row.destination_address || ""),
+    destinationContactName: String(row.destination_contact_name || ""), destinationContactPhone: String(row.destination_contact_phone || ""),
+    carrier: String(row.carrier || ""), transportMode: String(row.transport_mode || ""),
     trackingNo: String(row.tracking_no || ""), etd: String(row.etd || ""), eta: String(row.eta || ""), actualShippedAt: String(row.actual_shipped_at || ""),
     status: String(row.status), packages: number(row.packages), totalWeightKg: number(row.total_weight_kg), totalVolumeM3: number(row.total_volume_m3),
     chargeableWeightKg: number(row.chargeable_weight_kg), note: String(row.note || ""), boxMark: String(row.box_mark || ""), inventoryMovementId: String(row.inventory_movement_id || ""), version: number(row.version, 1),
@@ -163,6 +165,8 @@ function receiptFromRow(row) {
     id: String(row.id), requestId: String(row.request_id), shipmentId: String(row.shipment_id), receiptNo: String(row.receipt_no),
     warehouseId: String(row.warehouse_id || ""), warehouseName: String(row.warehouse_name), wmsInboundNo: String(row.wms_inbound_no || ""),
     arrivedAt: String(row.arrived_at), shelvedAt: String(row.shelved_at || ""), status: String(row.status), note: String(row.note || ""),
+    lifecycleStatus: String(row.lifecycle_status || "active"), archivedAt: String(row.archived_at || ""), archivedBy: String(row.archived_by || ""),
+    deletedAt: String(row.deleted_at || ""), deletedBy: String(row.deleted_by || ""),
     version: number(row.version, 1), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
@@ -534,8 +538,8 @@ export function createStockupCollaborationService(store) {
     const now = nowIso();
     return store.transaction(() => {
       store.run(`INSERT INTO stockup_shipments
-        (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,note,box_mark,inventory_movement_id,version,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentId, request.id, businessNo("FY"), String(payload.originWarehouse || ""), String(payload.originWarehouseId || ""), String(payload.originAddress || ""), request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, String(payload.carrier || ""), String(payload.transportMode || "海运"), String(payload.trackingNo || ""), String(payload.etd || ""), String(payload.eta || ""), "", "draft", number(payload.packages), number(payload.totalWeightKg), number(payload.totalVolumeM3), number(payload.chargeableWeightKg), String(payload.note || ""), String(payload.boxMark || ""), "", 1, now, now]);
+        (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,destination_address,destination_contact_name,destination_contact_phone,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,note,box_mark,inventory_movement_id,version,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentId, request.id, businessNo("FY"), String(payload.originWarehouse || ""), String(payload.originWarehouseId || ""), String(payload.originAddress || ""), request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, String(payload.destinationAddress || ""), String(payload.destinationContactName || ""), String(payload.destinationContactPhone || ""), String(payload.carrier || ""), String(payload.transportMode || "海运"), String(payload.trackingNo || ""), String(payload.etd || ""), String(payload.eta || ""), "", "draft", number(payload.packages), number(payload.totalWeightKg), number(payload.totalVolumeM3), number(payload.chargeableWeightKg), String(payload.note || ""), String(payload.boxMark || ""), "", 1, now, now]);
       requests.forEach((item) => store.run("INSERT OR IGNORE INTO stockup_shipment_request_links (shipment_id,request_id,created_at) VALUES (?,?,?)", [shipmentId, item.id, now]));
       for (const input of lines) {
         const taskRow = store.first("SELECT * FROM stockup_execution_tasks WHERE id=?", [String(input.taskId)]);
@@ -571,26 +575,35 @@ export function createStockupCollaborationService(store) {
 
   function updateShipment(shipmentId, payload, context) {
     const shipment = getShipment(shipmentId, context);
-    if (!["draft", "shipped"].includes(shipment.status)) throw Object.assign(new Error("已到仓或已作废的发运批次不能再修改。"), { statusCode: 409 });
-    if (number(payload.version, shipment.version) !== shipment.version) throw Object.assign(new Error("发运批次已被其他用户更新，请刷新后重试。"), { statusCode: 409, code: "version_conflict", latest: shipment });
+    if (!['draft', 'shipped'].includes(shipment.status)) throw Object.assign(new Error('已到仓或已作废的发运批次不能再修改。'), { statusCode: 409 });
+    if (number(payload.version, shipment.version) !== shipment.version) throw Object.assign(new Error('发运批次已被其他用户更新，请刷新后重试。'), { statusCode: 409, code: 'version_conflict', latest: shipment });
+
     const requestedCarrier = String(payload.carrier ?? shipment.carrier);
     const requestedTransportMode = String(payload.transportMode ?? shipment.transportMode);
     const requestedTrackingNo = String(payload.trackingNo ?? shipment.trackingNo);
     const requestedEtd = String(payload.etd ?? shipment.etd);
-    if (shipment.wmsOrderNo && (requestedCarrier !== shipment.carrier || requestedTransportMode !== shipment.transportMode || requestedTrackingNo !== shipment.trackingNo || requestedEtd !== shipment.etd)) {
-      throw Object.assign(new Error("仓库单据已经创建，承运商、运输方式、物流单号和发出时间不能再修改。"), { statusCode: 409, code: "wms_order_locked" });
-    }
+    if (shipment.wmsOrderNo && (
+      requestedCarrier !== shipment.carrier
+      || requestedTransportMode !== shipment.transportMode
+      || requestedTrackingNo !== shipment.trackingNo
+      || requestedEtd !== shipment.etd
+    )) throw Object.assign(new Error('仓库单据已经创建，承运商、运输方式、物流单号和发出时间不能再修改。'), { statusCode: 409, code: 'wms_order_locked' });
 
     const inputLines = Array.isArray(payload.lines) ? payload.lines : null;
-    let totals = { packages: shipment.packages, totalWeightKg: shipment.totalWeightKg, totalVolumeM3: shipment.totalVolumeM3, chargeableWeightKg: shipment.chargeableWeightKg };
+    let totals = {
+      packages: shipment.packages,
+      totalWeightKg: shipment.totalWeightKg,
+      totalVolumeM3: shipment.totalVolumeM3,
+      chargeableWeightKg: shipment.chargeableWeightKg,
+    };
     const updates = [];
     if (inputLines) {
-      if (inputLines.length !== shipment.lines.length) throw Object.assign(new Error("编辑发运时不能新增或删除产品。"), { statusCode: 400 });
+      if (inputLines.length !== shipment.lines.length) throw Object.assign(new Error('编辑发运时不能新增或删除产品。'), { statusCode: 400 });
       const byId = new Map(shipment.lines.map((line) => [line.id, line]));
       for (const input of inputLines) {
-        const source = byId.get(String(input.id || input.shipmentLineId || ""));
-        if (!source) throw Object.assign(new Error("发运产品与原批次不一致，请刷新后重试。"), { statusCode: 400 });
-        if (input.shippedQty != null && number(input.shippedQty) !== source.shippedQty) throw Object.assign(new Error("已扣减库存的发运数量不能修改。"), { statusCode: 409, code: "inventory_quantity_locked" });
+        const source = byId.get(String(input.id || input.shipmentLineId || ''));
+        if (!source) throw Object.assign(new Error('发运产品与原批次不一致，请刷新后重试。'), { statusCode: 400 });
+        if (input.shippedQty != null && number(input.shippedQty) !== source.shippedQty) throw Object.assign(new Error('已扣减库存的发运数量不能修改。'), { statusCode: 409, code: 'inventory_quantity_locked' });
         const cartonCount = Math.max(0, number(input.cartonCount, source.cartonCount));
         const unitsPerCarton = Math.max(0, number(input.unitsPerCarton, source.unitsPerCarton));
         const cartonLengthCm = Math.max(0, number(input.cartonLengthCm, source.cartonLengthCm));
@@ -612,10 +625,14 @@ export function createStockupCollaborationService(store) {
 
     const now = nowIso();
     return store.transaction(() => {
-      store.run(`UPDATE stockup_shipments SET carrier=?,transport_mode=?,tracking_no=?,etd=?,eta=?,note=?,box_mark=?,packages=?,total_weight_kg=?,total_volume_m3=?,chargeable_weight_kg=?,version=version+1,updated_at=? WHERE id=?`, [requestedCarrier, requestedTransportMode, requestedTrackingNo, requestedEtd, String(payload.eta ?? shipment.eta), String(payload.note ?? shipment.note), String(payload.boxMark ?? shipment.boxMark), totals.packages, totals.totalWeightKg, totals.totalVolumeM3, totals.chargeableWeightKg, now, shipment.id]);
+      store.run(`UPDATE stockup_shipments SET destination_address=?,destination_contact_name=?,destination_contact_phone=?,carrier=?,transport_mode=?,tracking_no=?,etd=?,eta=?,note=?,box_mark=?,packages=?,total_weight_kg=?,total_volume_m3=?,chargeable_weight_kg=?,version=version+1,updated_at=? WHERE id=?`, [
+        String(payload.destinationAddress ?? shipment.destinationAddress), String(payload.destinationContactName ?? shipment.destinationContactName), String(payload.destinationContactPhone ?? shipment.destinationContactPhone),
+        requestedCarrier, requestedTransportMode, requestedTrackingNo, requestedEtd, String(payload.eta ?? shipment.eta), String(payload.note ?? shipment.note), String(payload.boxMark ?? shipment.boxMark),
+        totals.packages, totals.totalWeightKg, totals.totalVolumeM3, totals.chargeableWeightKg, now, shipment.id,
+      ]);
       for (const line of updates) store.run(`UPDATE stockup_shipment_lines SET carton_count=?,units_per_carton=?,carton_length_cm=?,carton_width_cm=?,carton_height_cm=?,carton_weight_kg=?,weight_kg=?,volume_m3=? WHERE id=?`, [line.cartonCount, line.unitsPerCarton, line.cartonLengthCm, line.cartonWidthCm, line.cartonHeightCm, line.cartonWeightKg, line.weightKg, line.volumeM3, line.id]);
-      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, "shipment_updated", "发运信息已更新", `${shipment.shipmentNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id });
-      return { ok: true, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, 'shipment_updated', '发运信息已更新', `${shipment.shipmentNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id });
+      return { ok: true, shipment: hydrateShipment(store.first('SELECT * FROM stockup_shipments WHERE id=?', [shipment.id])) };
     });
   }
 
@@ -634,23 +651,23 @@ export function createStockupCollaborationService(store) {
 
   function completeShipmentWmsPush(shipmentId, result, context) {
     const shipment = getShipment(shipmentId, context);
-    const orderNo = required(result.orderNo, "仓库单号");
+    const orderNo = required(result.orderNo, '仓库单号');
     const now = nowIso();
     return store.transaction(() => {
       store.run(`UPDATE stockup_shipments SET wms_push_status='pushed',wms_order_no=?,wms_push_error='',wms_pushed_at=?,wms_pushed_by=?,version=version+1,updated_at=? WHERE id=?`, [orderNo, now, userOf(context).name, now, shipment.id]);
-      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, "wms_order_created", `${result.documentLabel || "仓库单据"}已创建`, `${orderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo } });
-      return { ok: true, alreadyCreated: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, 'wms_order_created', `${result.documentLabel || '仓库单据'}已创建`, `${orderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo } });
+      return { ok: true, alreadyCreated: false, shipment: hydrateShipment(store.first('SELECT * FROM stockup_shipments WHERE id=?', [shipment.id])) };
     });
   }
 
   function failShipmentWmsPush(shipmentId, failure, context) {
     const shipment = getShipment(shipmentId, context);
-    const status = failure.ambiguous ? "needs_manual_check" : "failed";
-    const message = String(failure.message || "仓库建单失败");
+    const status = failure.ambiguous ? 'needs_manual_check' : 'failed';
+    const message = String(failure.message || '仓库建单失败');
     const now = nowIso();
     return store.transaction(() => {
-      store.run("UPDATE stockup_shipments SET wms_push_status=?,wms_push_error=?,version=version+1,updated_at=? WHERE id=?", [status, message, now, shipment.id]);
-      return { ok: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+      store.run('UPDATE stockup_shipments SET wms_push_status=?,wms_push_error=?,version=version+1,updated_at=? WHERE id=?', [status, message, now, shipment.id]);
+      return { ok: false, shipment: hydrateShipment(store.first('SELECT * FROM stockup_shipments WHERE id=?', [shipment.id])) };
     });
   }
 
@@ -722,6 +739,8 @@ export function createStockupCollaborationService(store) {
     const where = [];
     const params = [];
     if (filters.status) { where.push("rc.status=?"); params.push(String(filters.status)); }
+    const lifecycle = String(filters.lifecycle || "active");
+    if (lifecycle !== "all") { where.push("COALESCE(rc.lifecycle_status,'active')=?"); params.push(lifecycle); }
     if (!context.viewAll) { where.push("r.requester_id=?"); params.push(userOf(context).id); }
     if (context.warehouseIds?.length) { where.push(`r.destination_warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); params.push(...context.warehouseIds); }
     if (context.countries?.length) { where.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); params.push(...context.countries); }
@@ -730,9 +749,36 @@ export function createStockupCollaborationService(store) {
     return { ok: true, receipts: store.all(`SELECT rc.* FROM stockup_receipts rc JOIN stockup_requests r ON r.id=rc.request_id ${clause} ORDER BY rc.arrived_at DESC LIMIT 200`, params).map(receiptFromRow) };
   }
 
+  function updateReceiptLifecycle(receiptId, action, context) {
+    const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(receiptId)]));
+    if (!receipt) throw Object.assign(new Error("收货批次不存在。"), { statusCode: 404 });
+    ensureShipmentVisible(receipt.shipmentId, { ...context, viewAll: true, viewCost: true });
+    const transitions = {
+      archive: { from: "active", to: "archived" },
+      activate: { from: "archived", to: "active" },
+      delete: { from: "archived", to: "deleted" },
+      restore: { from: "deleted", to: "archived" },
+    };
+    const transition = transitions[action];
+    if (!transition) throw Object.assign(new Error("不支持的批次状态操作。"), { statusCode: 400 });
+    if (receipt.lifecycleStatus !== transition.from) throw Object.assign(new Error("当前批次状态不允许执行该操作，请刷新后重试。"), { statusCode: 409 });
+    if (action === "archive" && receipt.status !== "costed") throw Object.assign(new Error("只有已完成成本锁定的批次可以归档。"), { statusCode: 409 });
+    const now = nowIso();
+    const actor = userOf(context).id;
+    return store.transaction(() => {
+      if (action === "archive") store.run("UPDATE stockup_receipts SET lifecycle_status='archived',archived_at=?,archived_by=?,deleted_at='',deleted_by='',version=version+1,updated_at=? WHERE id=?", [now, actor, now, receipt.id]);
+      if (action === "activate") store.run("UPDATE stockup_receipts SET lifecycle_status='active',archived_at='',archived_by='',version=version+1,updated_at=? WHERE id=?", [now, receipt.id]);
+      if (action === "delete") store.run("UPDATE stockup_receipts SET lifecycle_status='deleted',deleted_at=?,deleted_by=?,version=version+1,updated_at=? WHERE id=?", [now, actor, now, receipt.id]);
+      if (action === "restore") store.run("UPDATE stockup_receipts SET lifecycle_status='archived',deleted_at='',deleted_by='',version=version+1,updated_at=? WHERE id=?", [now, receipt.id]);
+      addEvent(receipt.requestId, `cost_${action}`, { archive: "成本批次已归档", activate: "成本批次已取消归档", delete: "成本批次已移入回收站", restore: "成本批次已从回收站恢复" }[action], receipt.receiptNo, context, { receiptId: receipt.id, visibility: "cost_only" });
+      return { ok: true, receipt: receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [receipt.id])) };
+    });
+  }
+
   function addCostItem(payload, context) {
     const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(payload.receiptId)]));
     if (!receipt) throw Object.assign(new Error("收货批次不存在。"), { statusCode: 404 });
+    if (receipt.lifecycleStatus !== "active") throw Object.assign(new Error("归档或回收站中的成本批次不能新增费用，请先恢复。"), { statusCode: 409 });
     ensureShipmentVisible(receipt.shipmentId, context);
     const originalAmount = number(payload.originalAmount);
     const exchangeRate = number(payload.exchangeRate, 1);
@@ -777,6 +823,7 @@ export function createStockupCollaborationService(store) {
 
   function saveCostVersion(receiptId, payload, context, lock = false) {
     const preview = costPreview(receiptId, { ...context, viewAll: true, viewCost: true });
+    if (preview.receipt.lifecycleStatus !== "active") throw Object.assign(new Error("归档或回收站中的成本批次不能修改，请先恢复。"), { statusCode: 409 });
     if (lock && !preview.canLock) throw Object.assign(new Error("存在良品数量或货品成本缺失，不能锁定正式成本。"), { statusCode: 409 });
     const latest = number(store.first("SELECT MAX(version) AS value FROM stockup_cost_versions WHERE receipt_id=?", [receiptId])?.value);
     const version = latest + 1;
@@ -796,7 +843,7 @@ export function createStockupCollaborationService(store) {
 
   function monthlyCostReport(filters = {}, context = {}) {
     const month = String(filters.month || new Date().toISOString().slice(0, 7));
-    const reportWhere = ["cv.status='locked'", "substr(rc.arrived_at,1,7)=?"];
+    const reportWhere = ["cv.status='locked'", "substr(rc.arrived_at,1,7)=?", "COALESCE(rc.lifecycle_status,'active')!='deleted'"];
     const reportParams = [month];
     if (context.warehouseIds?.length) { reportWhere.push(`r.destination_warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); reportParams.push(...context.warehouseIds); }
     if (context.countries?.length) { reportWhere.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); reportParams.push(...context.countries); }
@@ -820,7 +867,57 @@ export function createStockupCollaborationService(store) {
       }
     }
     const items = [...groups.values()].map((group) => ({ ...group, goodsUnitCostCny: group.receivedQty ? money(group.goodsCostCny / group.receivedQty) : 0, allocatedUnitCostCny: group.receivedQty ? money(group.allocatedCostCny / group.receivedQty) : 0, weightedUnitCostCny: group.receivedQty ? money(group.totalCostCny / group.receivedQty) : 0 }));
-    return { ok: true, month, generatedAt: nowIso(), items: items.filter((item) => (!filters.country || item.country === filters.country) && (!filters.warehouseId || item.warehouseId === filters.warehouseId) && (!filters.keyword || `${item.sku} ${item.productName}`.toLowerCase().includes(String(filters.keyword).toLowerCase()))), totals: { skuCount: items.length, receivedQty: items.reduce((sum, item) => sum + item.receivedQty, 0), totalCostCny: money(items.reduce((sum, item) => sum + item.totalCostCny, 0)) } };
+    const periodRow = store.first("SELECT * FROM stockup_monthly_cost_periods WHERE month=?", [month]);
+    const period = { month, status: String(periodRow?.status || "active"), batchCount: versions.length, archivedAt: String(periodRow?.archived_at || ""), archivedBy: String(periodRow?.archived_by || ""), deletedAt: String(periodRow?.deleted_at || ""), deletedBy: String(periodRow?.deleted_by || "") };
+    const filteredItems = items.filter((item) => (!filters.country || item.country === filters.country) && (!filters.warehouseId || item.warehouseId === filters.warehouseId) && (!filters.keyword || `${item.sku} ${item.productName}`.toLowerCase().includes(String(filters.keyword).toLowerCase())));
+    return { ok: true, month, period, generatedAt: nowIso(), items: filteredItems, totals: { skuCount: filteredItems.length, receivedQty: filteredItems.reduce((sum, item) => sum + item.receivedQty, 0), totalCostCny: money(filteredItems.reduce((sum, item) => sum + item.totalCostCny, 0)) } };
+  }
+
+  function listMonthlyCostPeriods(filters = {}, context = {}) {
+    const where = ["cv.status='locked'", "COALESCE(rc.lifecycle_status,'active')!='deleted'"];
+    const params = [];
+    if (context.warehouseIds?.length) { where.push(`r.destination_warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); params.push(...context.warehouseIds); }
+    if (context.countries?.length) { where.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); params.push(...context.countries); }
+    if (context.skus?.length) { where.push(`rc.id IN (SELECT receipt_id FROM stockup_receipt_lines WHERE UPPER(sku) IN (${context.skus.map(() => "?").join(",")}))`); params.push(...context.skus); }
+    const costMonths = store.all(`SELECT substr(rc.arrived_at,1,7) AS month,COUNT(DISTINCT rc.id) AS batch_count
+      FROM stockup_cost_versions cv JOIN stockup_receipts rc ON rc.id=cv.receipt_id JOIN stockup_requests r ON r.id=rc.request_id
+      WHERE ${where.join(" AND ")} AND cv.version=(SELECT MAX(v2.version) FROM stockup_cost_versions v2 WHERE v2.receipt_id=cv.receipt_id AND v2.status='locked')
+      GROUP BY substr(rc.arrived_at,1,7)`, params);
+    const periodRows = new Map(store.all("SELECT * FROM stockup_monthly_cost_periods").map((row) => [String(row.month), row]));
+    const allMonths = new Set([...costMonths.map((row) => String(row.month)), ...periodRows.keys()]);
+    const lifecycle = String(filters.lifecycle || "active");
+    const batchCounts = new Map(costMonths.map((row) => [String(row.month), number(row.batch_count)]));
+    const periods = [...allMonths].map((month) => {
+      const row = periodRows.get(month);
+      return { month, status: String(row?.status || "active"), batchCount: batchCounts.get(month) || 0, archivedAt: String(row?.archived_at || ""), archivedBy: String(row?.archived_by || ""), deletedAt: String(row?.deleted_at || ""), deletedBy: String(row?.deleted_by || "") };
+    }).filter((period) => lifecycle === "all" || period.status === lifecycle).sort((a, b) => b.month.localeCompare(a.month));
+    return { ok: true, periods };
+  }
+
+  function updateMonthlyCostPeriod(monthValue, action, context) {
+    const month = String(monthValue || "").trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw Object.assign(new Error("月份格式不正确。"), { statusCode: 400 });
+    const row = store.first("SELECT * FROM stockup_monthly_cost_periods WHERE month=?", [month]);
+    const current = String(row?.status || "active");
+    const transitions = { archive: { from: "active", to: "archived" }, activate: { from: "archived", to: "active" }, delete: { from: "archived", to: "deleted" }, restore: { from: "deleted", to: "archived" } };
+    const transition = transitions[action];
+    if (!transition) throw Object.assign(new Error("不支持的月度报表状态操作。"), { statusCode: 400 });
+    if (current !== transition.from) throw Object.assign(new Error("当前月度报表状态不允许执行该操作，请刷新后重试。"), { statusCode: 409 });
+    if (!row && action === "archive") {
+      const hasCosts = store.first("SELECT 1 AS found FROM stockup_cost_versions cv JOIN stockup_receipts rc ON rc.id=cv.receipt_id WHERE cv.status='locked' AND substr(rc.arrived_at,1,7)=? AND COALESCE(rc.lifecycle_status,'active')!='deleted' LIMIT 1", [month]);
+      if (!hasCosts) throw Object.assign(new Error("该月份暂无已锁定成本，不能归档。"), { statusCode: 409 });
+    }
+    const now = nowIso();
+    const actor = userOf(context).id;
+    return store.transaction(() => {
+      const archivedAt = action === "archive" ? now : action === "activate" ? "" : String(row?.archived_at || "");
+      const archivedBy = action === "archive" ? actor : action === "activate" ? "" : String(row?.archived_by || "");
+      const deletedAt = action === "delete" ? now : action === "restore" ? "" : String(row?.deleted_at || "");
+      const deletedBy = action === "delete" ? actor : action === "restore" ? "" : String(row?.deleted_by || "");
+      store.run(`INSERT INTO stockup_monthly_cost_periods (month,status,archived_at,archived_by,deleted_at,deleted_by,updated_at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(month) DO UPDATE SET status=excluded.status,archived_at=excluded.archived_at,archived_by=excluded.archived_by,deleted_at=excluded.deleted_at,deleted_by=excluded.deleted_by,updated_at=excluded.updated_at`, [month, transition.to, archivedAt, archivedBy, deletedAt, deletedBy, now]);
+      return { ok: true, period: { month, status: transition.to, archivedAt, archivedBy, deletedAt, deletedBy } };
+    });
   }
 
   function listNotifications(context) {
@@ -837,7 +934,7 @@ export function createStockupCollaborationService(store) {
 
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
-    listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, voidShipmentWmsOrder,
-    saveCostVersion, setRequestStatus, updateRequest, updateShipment, updateTask,
+    listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, voidShipmentWmsOrder,
+    saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
   };
 }

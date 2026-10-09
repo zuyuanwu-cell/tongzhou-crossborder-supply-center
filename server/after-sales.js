@@ -228,10 +228,25 @@ function loadJson(path, fallback) {
 }
 
 function createStore(cachePath) {
-  let state = loadJson(cachePath, { version: 1, updatedAt: "", sequenceDate: "", sequence: 0, tickets: [], drafts: [], uploads: [] });
+  let state = loadJson(cachePath, {
+    version: 2,
+    updatedAt: "",
+    sequenceDate: "",
+    sequence: 0,
+    settlementSequenceDate: "",
+    settlementSequence: 0,
+    tickets: [],
+    drafts: [],
+    uploads: [],
+    settlementBatches: [],
+    settlementReversals: [],
+  });
   state.tickets = Array.isArray(state.tickets) ? state.tickets : [];
   state.drafts = Array.isArray(state.drafts) ? state.drafts : [];
   state.uploads = Array.isArray(state.uploads) ? state.uploads : [];
+  state.settlementBatches = Array.isArray(state.settlementBatches) ? state.settlementBatches : [];
+  state.settlementReversals = Array.isArray(state.settlementReversals) ? state.settlementReversals : [];
+  state.version = Math.max(2, number(state.version));
 
   function persist() {
     mkdirSync(resolve(cachePath, ".."), { recursive: true });
@@ -249,6 +264,16 @@ function createStore(cachePath) {
     }
     state.sequence += 1;
     return `AS-${date}-${String(state.sequence).padStart(4, "0")}`;
+  }
+
+  function nextSettlementId() {
+    const date = nowIso().slice(0, 10).replaceAll("-", "");
+    if (state.settlementSequenceDate !== date) {
+      state.settlementSequenceDate = date;
+      state.settlementSequence = 0;
+    }
+    state.settlementSequence += 1;
+    return `WHC-${date}-${String(state.settlementSequence).padStart(4, "0")}`;
   }
 
   return {
@@ -291,6 +316,30 @@ function createStore(cachePath) {
       return upload;
     },
     getUpload(id) { return state.uploads.find((upload) => upload.id === id) || null; },
+    listSettlementBatches() { return state.settlementBatches; },
+    getSettlementBatch(id) { return state.settlementBatches.find((batch) => batch.id === id) || null; },
+    findSettlementBatchByIdempotencyKey(idempotencyKey) {
+      return state.settlementBatches.find((batch) => batch.idempotencyKey && batch.idempotencyKey === idempotencyKey) || null;
+    },
+    createSettlementBatch(batch) {
+      const created = { ...batch, id: nextSettlementId() };
+      state.settlementBatches.unshift(created);
+      persist();
+      return created;
+    },
+    updateSettlementBatch(id, updater) {
+      const index = state.settlementBatches.findIndex((batch) => batch.id === id);
+      if (index < 0) return null;
+      state.settlementBatches[index] = updater({ ...state.settlementBatches[index] });
+      persist();
+      return state.settlementBatches[index];
+    },
+    listSettlementReversals() { return state.settlementReversals; },
+    addSettlementReversal(reversal) {
+      state.settlementReversals.unshift(reversal);
+      persist();
+      return reversal;
+    },
   };
 }
 
@@ -493,7 +542,107 @@ export function isAfterSalesOrderWithinScope(order, dataScopes = {}) {
   return isAfterSalesTicketWithinScope(order, { ...dataScopes, warehouseIds: [] });
 }
 
-function summaryFor(tickets) {
+const WAREHOUSE_LIABILITY_SETTLEMENT_METHODS = Object.freeze([
+  "monthly_statement_offset",
+  "accounts_payable_offset",
+  "deposit_deduction",
+  "warehouse_transfer",
+  "other",
+]);
+
+const WAREHOUSE_LIABILITY_SETTLEMENT_METHOD_LABELS = Object.freeze({
+  monthly_statement_offset: "月结账单冲抵",
+  accounts_payable_offset: "应付账款冲抵",
+  deposit_deduction: "保证金扣除",
+  warehouse_transfer: "仓库转账赔付",
+  other: "其他",
+});
+
+function effectiveSettlementBatches(batches = [], reversals = []) {
+  const reversedBatchIds = new Set(reversals.map((item) => text(item.batchId)).filter(Boolean));
+  return batches.filter((batch) => batch.status === "posted" && !reversedBatchIds.has(batch.id));
+}
+
+function warehouseLiabilityItems(tickets = [], batches = [], reversals = []) {
+  const writtenOffBySource = new Map();
+  for (const batch of effectiveSettlementBatches(batches, reversals)) {
+    for (const line of batch.lines || []) {
+      const sourceId = text(line.sourceId);
+      writtenOffBySource.set(sourceId, money(number(writtenOffBySource.get(sourceId)) + number(line.amountCny)));
+    }
+  }
+  return tickets.flatMap((ticket) => {
+    const originalAmountCny = money(ticket.money?.totalWarehouseLiabilityCny);
+    const warehouseResponsibility = ticket.responsibility?.party === "warehouse";
+    const writtenOffCny = money(writtenOffBySource.get(ticket.id));
+    if ((!warehouseResponsibility || originalAmountCny <= 0) && writtenOffCny <= 0) return [];
+    const outstandingCny = ticket.status === "cancelled" ? 0 : money(originalAmountCny - writtenOffCny);
+    let settlementStatus = "pending_writeoff";
+    if (ticket.status === "cancelled") settlementStatus = "source_voided";
+    else if (ticket.status === "rejected") settlementStatus = "disputed";
+    else if (outstandingCny <= 0) settlementStatus = "written_off";
+    else if (writtenOffCny > 0) settlementStatus = "partially_written_off";
+    return [{
+      id: `after_sales:${ticket.id}`,
+      sourceType: "after_sales",
+      sourceId: ticket.id,
+      sourceNo: ticket.id,
+      sourceStatus: ticket.status,
+      warehouseId: text(ticket.warehouseId),
+      warehouseName: text(ticket.warehouseName) || "未命名仓库",
+      occurredAt: text(ticket.completedAt || ticket.createdAt),
+      originalOrderNumber: text(ticket.originalOrderNumber),
+      reason: [text(ticket.primaryReason), text(ticket.secondaryReason)].filter(Boolean).join(" / "),
+      skuSummary: (ticket.originalItems || []).filter((item) => number(item.affectedQty) > 0).map((item) => `${text(item.sku)}×${quantity(item.affectedQty)}`).join("、"),
+      currency: "CNY",
+      originalAmountCny,
+      writtenOffCny,
+      outstandingCny,
+      settlementStatus,
+      createdBy: text(ticket.createdBy),
+    }];
+  });
+}
+
+function liabilitySummary(items = [], batches = [], reversals = []) {
+  const now = new Date();
+  const currentMonth = now.toISOString().slice(0, 7);
+  const overdueBefore = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+  const effectiveBatches = effectiveSettlementBatches(batches, reversals);
+  const writtenOffThisMonthCny = effectiveBatches
+    .filter((batch) => text(batch.settlementDate || batch.postedAt).slice(0, 7) === currentMonth)
+    .reduce((sum, batch) => sum + (batch.lines || []).reduce((lineSum, line) => lineSum + number(line.amountCny), 0), 0);
+  return items.reduce((summary, item) => {
+    summary.totalOriginalCny = money(summary.totalOriginalCny + item.originalAmountCny);
+    summary.writtenOffCny = money(summary.writtenOffCny + item.writtenOffCny);
+    if (item.settlementStatus === "disputed") summary.disputedCny = money(summary.disputedCny + item.outstandingCny);
+    else if (!["written_off", "source_voided"].includes(item.settlementStatus)) {
+      summary.pendingWriteoffCny = money(summary.pendingWriteoffCny + item.outstandingCny);
+      summary.pendingCount += 1;
+      const occurredAt = Date.parse(item.occurredAt);
+      if (Number.isFinite(occurredAt) && occurredAt < overdueBefore) summary.overdueCny = money(summary.overdueCny + item.outstandingCny);
+    }
+    if (item.settlementStatus === "written_off") summary.writtenOffCount += 1;
+    return summary;
+  }, {
+    totalOriginalCny: 0,
+    pendingWriteoffCny: 0,
+    writtenOffCny: 0,
+    writtenOffThisMonthCny: money(writtenOffThisMonthCny),
+    disputedCny: 0,
+    overdueCny: 0,
+    pendingCount: 0,
+    writtenOffCount: 0,
+  });
+}
+
+function csvCell(value) {
+  const source = String(value ?? "");
+  return /[",\r\n]/.test(source) ? `"${source.replaceAll('"', '""')}"` : source;
+}
+
+function summaryFor(tickets, batches = [], reversals = []) {
+  const liability = liabilitySummary(warehouseLiabilityItems(tickets, batches, reversals), batches, reversals);
   return tickets.reduce((summary, ticket) => {
     summary.total += 1;
     if (ticket.status === "pending_warehouse") summary.pendingWarehouse += 1;
@@ -501,13 +650,28 @@ function summaryFor(tickets) {
     if (ticket.status === "awaiting_reshipment") summary.awaitingReshipment += 1;
     if (ticket.status === "rejected") summary.rejected += 1;
     if (!['completed', 'cancelled'].includes(ticket.status)) summary.open += 1;
-    if (ticket.status !== "cancelled") summary.warehouseLiabilityCny = money(summary.warehouseLiabilityCny + number(ticket.money?.totalWarehouseLiabilityCny));
     return summary;
-  }, { total: 0, open: 0, pendingWarehouse: 0, processing: 0, awaitingReshipment: 0, rejected: 0, warehouseLiabilityCny: 0 });
+  }, {
+    total: 0,
+    open: 0,
+    pendingWarehouse: 0,
+    processing: 0,
+    awaitingReshipment: 0,
+    rejected: 0,
+    warehouseLiabilityCny: money(liability.pendingWriteoffCny + liability.disputedCny),
+    pendingWriteoffCny: liability.pendingWriteoffCny,
+    writtenOffCny: liability.writtenOffCny,
+    writtenOffThisMonthCny: liability.writtenOffThisMonthCny,
+    disputedCny: liability.disputedCny,
+  });
 }
 
 export function createAfterSalesService({ cachePath, uploadDir, performanceStore, connector, getProducts }) {
   const store = createStore(cachePath);
+
+  function currentSummary(tickets = store.list()) {
+    return summaryFor(tickets, store.listSettlementBatches(), store.listSettlementReversals());
+  }
 
   function settings() {
     return performanceStore?.getPerformanceSettings?.() || {};
@@ -527,7 +691,242 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       return [ticket.id, ticket.originalOrderNumber, ticket.shopAlias, ticket.primaryReason, ticket.secondaryReason]
         .some((value) => text(value).toLowerCase().includes(keyword));
     });
-    return { ok: true, updatedAt: nowIso(), summary: summaryFor(visibleTickets), tickets: tickets.map(publicListTicket) };
+    return { ok: true, updatedAt: nowIso(), summary: currentSummary(visibleTickets), tickets: tickets.map(publicListTicket) };
+  }
+
+  function settlementUpload(id) {
+    const upload = store.getUpload(text(id));
+    if (!upload) return null;
+    return {
+      ...upload,
+      url: `/api/warehouse-liabilities/uploads/${encodeURIComponent(upload.id)}`,
+    };
+  }
+
+  function settlementReversalFor(batchId) {
+    return store.listSettlementReversals().find((item) => item.batchId === batchId) || null;
+  }
+
+  function publicSettlementBatch(batch) {
+    const reversal = settlementReversalFor(batch.id);
+    return {
+      ...batch,
+      status: reversal ? "reversed" : batch.status,
+      reversal,
+      voucherAttachments: (batch.voucherAttachmentIds || []).map(settlementUpload).filter(Boolean),
+    };
+  }
+
+  function settlementBatchWithinScope(batch, dataScopes = {}) {
+    return (batch.lines || []).some((line) => {
+      const ticket = store.get(text(line.sourceId));
+      return ticket && isAfterSalesTicketWithinScope(ticket, dataScopes);
+    });
+  }
+
+  function settlements(filters = {}) {
+    const visibleTickets = store.list().filter((ticket) => isAfterSalesTicketWithinScope(ticket, filters.dataScopes));
+    const allItems = warehouseLiabilityItems(visibleTickets, store.listSettlementBatches(), store.listSettlementReversals());
+    const keyword = text(filters.keyword).toLowerCase();
+    const warehouseId = text(filters.warehouseId);
+    const status = text(filters.status);
+    const dateFrom = text(filters.dateFrom);
+    const dateTo = text(filters.dateTo);
+    const items = allItems.filter((item) => {
+      if (warehouseId && item.warehouseId !== warehouseId) return false;
+      if (status && status !== "all" && item.settlementStatus !== status) return false;
+      const dateKey = text(item.occurredAt).slice(0, 10);
+      if (dateFrom && dateKey && dateKey < dateFrom) return false;
+      if (dateTo && dateKey && dateKey > dateTo) return false;
+      if (!keyword) return true;
+      return [item.sourceNo, item.originalOrderNumber, item.warehouseName, item.reason, item.skuSummary]
+        .some((value) => text(value).toLowerCase().includes(keyword));
+    });
+    const batches = store.listSettlementBatches()
+      .filter((batch) => settlementBatchWithinScope(batch, filters.dataScopes))
+      .map(publicSettlementBatch);
+    const warehouses = [...new Map(allItems.filter((item) => item.warehouseId).map((item) => [item.warehouseId, {
+      id: item.warehouseId,
+      name: item.warehouseName,
+    }])).values()];
+    return {
+      ok: true,
+      updatedAt: nowIso(),
+      summary: liabilitySummary(allItems, store.listSettlementBatches(), store.listSettlementReversals()),
+      items,
+      batches,
+      warehouses,
+      settlementMethods: WAREHOUSE_LIABILITY_SETTLEMENT_METHODS.map((value) => ({ value, label: WAREHOUSE_LIABILITY_SETTLEMENT_METHOD_LABELS[value] })),
+    };
+  }
+
+  function validateSettlementVoucherAttachmentIds(ids = []) {
+    return [...new Set((Array.isArray(ids) ? ids : []).map(text).filter(Boolean))].map((id) => {
+      const upload = store.getUpload(id);
+      if (!upload) throw new Error(`核销凭证不存在：${id}`);
+      if (text(upload.mimeType).startsWith("video/")) throw new Error("核销凭证仅支持图片或 PDF。");
+      return id;
+    });
+  }
+
+  function createSettlementBatch(input = {}, actor, dataScopes = {}) {
+    const idempotencyKey = text(input.idempotencyKey).slice(0, 128);
+    if (idempotencyKey) {
+      const existing = store.findSettlementBatchByIdempotencyKey(idempotencyKey);
+      if (existing) return { ok: true, idempotentReplay: true, batch: publicSettlementBatch(existing), summary: settlements({ dataScopes }).summary };
+    }
+    const requestedLines = Array.isArray(input.lines) ? input.lines : [];
+    if (!requestedLines.length) throw new Error("请至少选择一笔待核销责任费用。");
+    if (requestedLines.length > 200) throw new Error("单个核销批次最多包含 200 笔责任费用。");
+    const duplicateSourceIds = requestedLines.map((line) => text(line.sourceId)).filter((sourceId, index, values) => values.indexOf(sourceId) !== index);
+    if (duplicateSourceIds.length) throw new Error("同一责任费用不能在一个批次中重复添加。");
+    const availableItems = new Map(settlements({ dataScopes }).items.map((item) => [item.sourceId, item]));
+    const lines = requestedLines.map((requested) => {
+      const item = availableItems.get(text(requested.sourceId));
+      if (!item) throw new Error(`责任费用不存在或不在当前数据范围：${text(requested.sourceId)}`);
+      if (["disputed", "written_off", "source_voided"].includes(item.settlementStatus)) throw new Error(`${item.sourceNo} 当前状态不能核销。`);
+      const amountCny = money(requested.amountCny ?? item.outstandingCny);
+      if (amountCny <= 0) throw new Error(`${item.sourceNo} 的本次核销金额必须大于 0。`);
+      if (amountCny > item.outstandingCny) throw new Error(`${item.sourceNo} 的本次核销金额不能超过待核销余额。`);
+      return {
+        id: randomUUID(),
+        sourceType: item.sourceType,
+        sourceId: item.sourceId,
+        sourceNo: item.sourceNo,
+        originalOrderNumber: item.originalOrderNumber,
+        warehouseId: item.warehouseId,
+        warehouseName: item.warehouseName,
+        occurredAt: item.occurredAt,
+        reason: item.reason,
+        skuSummary: item.skuSummary,
+        originalAmountCny: item.originalAmountCny,
+        previouslyWrittenOffCny: item.writtenOffCny,
+        outstandingBeforeCny: item.outstandingCny,
+        amountCny,
+      };
+    });
+    const warehouseIds = [...new Set(lines.map((line) => line.warehouseId))];
+    if (warehouseIds.length !== 1 || !warehouseIds[0]) throw new Error("一个核销批次只能包含同一家已配置仓库的责任费用。");
+    const method = text(input.method) || "monthly_statement_offset";
+    if (!WAREHOUSE_LIABILITY_SETTLEMENT_METHODS.includes(method)) throw new Error("请选择有效的核销方式。");
+    const settlementDate = text(input.settlementDate) || nowIso().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(settlementDate)) throw new Error("核销日期格式不正确。");
+    const createdAt = nowIso();
+    const batch = store.createSettlementBatch({
+      status: "draft",
+      idempotencyKey,
+      warehouseId: warehouseIds[0],
+      warehouseName: lines[0].warehouseName,
+      currency: "CNY",
+      totalAmountCny: money(lines.reduce((sum, line) => sum + line.amountCny, 0)),
+      settlementDate,
+      method,
+      methodLabel: WAREHOUSE_LIABILITY_SETTLEMENT_METHOD_LABELS[method],
+      voucherNo: text(input.voucherNo),
+      voucherAttachmentIds: validateSettlementVoucherAttachmentIds(input.voucherAttachmentIds),
+      note: text(input.note),
+      lines,
+      createdAt,
+      createdBy: actorName(actor),
+      createdById: text(actor?.id),
+      postedAt: "",
+      postedBy: "",
+      postedById: "",
+    });
+    return { ok: true, batch: publicSettlementBatch(batch), summary: settlements({ dataScopes }).summary };
+  }
+
+  function postSettlementBatch(id, input = {}, actor, dataScopes = {}) {
+    const batch = store.getSettlementBatch(text(id));
+    if (!batch || !settlementBatchWithinScope(batch, dataScopes)) throw new Error("核销批次不存在或不在当前数据范围内。");
+    if (settlementReversalFor(batch.id)) throw new Error("该核销批次已经冲销，不能再次确认。");
+    if (batch.status === "posted") return { ok: true, idempotentReplay: true, batch: publicSettlementBatch(batch), summary: settlements({ dataScopes }).summary };
+    if (batch.status !== "draft") throw new Error("当前批次状态不能确认核销。");
+    const method = text(input.method || batch.method);
+    if (!WAREHOUSE_LIABILITY_SETTLEMENT_METHODS.includes(method)) throw new Error("请选择有效的核销方式。");
+    const settlementDate = text(input.settlementDate || batch.settlementDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(settlementDate)) throw new Error("核销日期格式不正确。");
+    const voucherAttachmentIds = validateSettlementVoucherAttachmentIds(input.voucherAttachmentIds ?? batch.voucherAttachmentIds);
+    const voucherNo = text(input.voucherNo ?? batch.voucherNo);
+    if (!voucherNo && !voucherAttachmentIds.length) throw new Error("确认核销前，请填写财务凭证号或上传核销凭证。");
+    const currentItems = new Map(warehouseLiabilityItems(store.list(), store.listSettlementBatches(), store.listSettlementReversals()).map((item) => [item.sourceId, item]));
+    for (const line of batch.lines || []) {
+      const item = currentItems.get(text(line.sourceId));
+      if (!item || ["disputed", "source_voided"].includes(item.settlementStatus)) throw new Error(`${line.sourceNo} 已作废、处于争议中或不存在，不能核销。`);
+      if (number(line.amountCny) > number(item.outstandingCny)) throw new Error(`${line.sourceNo} 的待核销余额已变化，请重新生成核销批次。`);
+    }
+    const postedAt = nowIso();
+    const updated = store.updateSettlementBatch(batch.id, (current) => ({
+      ...current,
+      status: "posted",
+      settlementDate,
+      method,
+      methodLabel: WAREHOUSE_LIABILITY_SETTLEMENT_METHOD_LABELS[method],
+      voucherNo,
+      voucherAttachmentIds,
+      note: text(input.note ?? current.note),
+      postedAt,
+      postedBy: actorName(actor),
+      postedById: text(actor?.id),
+    }));
+    return { ok: true, batch: publicSettlementBatch(updated), summary: settlements({ dataScopes }).summary };
+  }
+
+  function reverseSettlementBatch(id, input = {}, actor, dataScopes = {}) {
+    const batch = store.getSettlementBatch(text(id));
+    if (!batch || !settlementBatchWithinScope(batch, dataScopes)) throw new Error("核销批次不存在或不在当前数据范围内。");
+    if (batch.status !== "posted") throw new Error("只有已确认核销的批次可以冲销。");
+    const existing = settlementReversalFor(batch.id);
+    if (existing) return { ok: true, idempotentReplay: true, batch: publicSettlementBatch(batch), reversal: existing, summary: settlements({ dataScopes }).summary };
+    const reason = text(input.reason);
+    if (!reason) throw new Error("冲销时必须填写原因。");
+    const reversedAt = nowIso();
+    const reversal = store.addSettlementReversal({
+      id: `WHR-${reversedAt.slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
+      batchId: batch.id,
+      amountCny: batch.totalAmountCny,
+      reason,
+      reversedAt,
+      reversedBy: actorName(actor),
+      reversedById: text(actor?.id),
+    });
+    return { ok: true, batch: publicSettlementBatch(batch), reversal, summary: settlements({ dataScopes }).summary };
+  }
+
+  function exportSettlementBatch(id, dataScopes = {}) {
+    const batch = store.getSettlementBatch(text(id));
+    if (!batch || !settlementBatchWithinScope(batch, dataScopes)) throw new Error("核销批次不存在或不在当前数据范围内。");
+    const publicBatch = publicSettlementBatch(batch);
+    const rows = [
+      ["核销批次号", publicBatch.id],
+      ["仓库", publicBatch.warehouseName],
+      ["批次状态", publicBatch.status === "draft" ? "待确认" : publicBatch.status === "posted" ? "已核销" : "已冲销"],
+      ["核销方式", publicBatch.methodLabel],
+      ["核销日期", publicBatch.settlementDate],
+      ["财务凭证号", publicBatch.voucherNo],
+      ["批次金额(CNY)", publicBatch.totalAmountCny],
+      ["经办人", publicBatch.postedBy || publicBatch.createdBy],
+      ["备注", publicBatch.note],
+      [],
+      ["责任单号", "来源类型", "原订单号", "仓库", "费用发生日期", "责任原因", "SKU明细", "原责任金额(CNY)", "批次前已核销(CNY)", "本次核销(CNY)", "核销后余额(CNY)"],
+      ...(publicBatch.lines || []).map((line) => [
+        line.sourceNo,
+        line.sourceType === "after_sales" ? "售后单" : line.sourceType,
+        line.originalOrderNumber,
+        line.warehouseName,
+        text(line.occurredAt).slice(0, 10),
+        line.reason,
+        line.skuSummary,
+        line.originalAmountCny,
+        line.previouslyWrittenOffCny,
+        line.amountCny,
+        money(number(line.outstandingBeforeCny) - number(line.amountCny)),
+      ]),
+    ];
+    return {
+      fileName: `海外仓责任费用核销-${publicBatch.id}.csv`,
+      content: `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`,
+    };
   }
 
   function searchProducts(input = {}) {
@@ -704,6 +1103,11 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     }, actor, requestOrigin);
   }
 
+  function saveSettlementUploadBytes(input, actor, requestOrigin) {
+    const upload = saveUploadBytes({ ...input, kind: "evidence" }, actor, requestOrigin);
+    return settlementUpload(upload.id);
+  }
+
   function uploadPath(fileName) {
     const safeName = text(fileName);
     if (!/^as-[a-z0-9-]+\.(?:png|jpg|jpeg|webp|gif|pdf|mp4|mov|webm)$/i.test(safeName)) return null;
@@ -861,7 +1265,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       notifications: [],
       rejectionHistory: [],
     });
-    return { ok: true, ticket, summary: summaryFor(store.list()) };
+    return { ok: true, ticket, summary: currentSummary() };
   }
 
   function updateWarehouse(id, input, actor) {
@@ -878,6 +1282,11 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     };
     const transition = transitions[action];
     if (!transition) throw new Error("不支持的售后处理动作。");
+    if (action === "cancel") {
+      const liability = warehouseLiabilityItems(store.list(), store.listSettlementBatches(), store.listSettlementReversals())
+        .find((item) => item.sourceId === text(id));
+      if (number(liability?.writtenOffCny) > 0) throw new Error("该售后责任费用已经核销，请先在费用核销中冲销对应批次，再作废售后单。");
+    }
     const updated = store.update(id, (ticket) => {
       if (!transition.from.includes(ticket.status)) throw new Error("当前状态不能执行该操作，请刷新后重试。");
       const newLabels = attachments(input.labelUploadIds, "label");
@@ -930,7 +1339,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       return ticket;
     });
     if (!updated) throw new Error("售后单不存在。");
-    return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
+    return { ok: true, ticket: updated, summary: currentSummary() };
   }
 
   function attachLabels(id, labelUploadIds, actor, note = "") {
@@ -951,7 +1360,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       };
     });
     if (!updated) throw new Error("售后单不存在。");
-    return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
+    return { ok: true, ticket: updated, summary: currentSummary() };
   }
 
   function resubmit(id, input, actor) {
@@ -1018,7 +1427,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       };
     });
     if (!updated) throw new Error("售后单不存在。");
-    return { ok: true, ticket: updated, summary: summaryFor(store.list()) };
+    return { ok: true, ticket: updated, summary: currentSummary() };
   }
 
   function remind(id, actor) {
@@ -1052,7 +1461,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return {
       ok: true,
       ticket: updated,
-      summary: summaryFor(store.list()),
+      summary: currentSummary(),
       nextReminderAt: new Date(Date.parse(reminderAt) + REMINDER_COOLDOWN_MS).toISOString(),
     };
   }
@@ -1112,12 +1521,22 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       ));
       return Boolean(text(actorId) && text(upload.uploadedById) === text(actorId));
     },
+    canAccessSettlementUpload(id, actorId = "", dataScopes = {}) {
+      const upload = store.getUpload(id);
+      if (!upload) return false;
+      if (text(actorId) && text(upload.uploadedById) === text(actorId)) return true;
+      return store.listSettlementBatches().some((batch) => (
+        (batch.voucherAttachmentIds || []).includes(text(id))
+        && settlementBatchWithinScope(batch, dataScopes)
+      ));
+    },
     listDrafts,
     saveDraft,
     deleteDraft,
     syncOrder,
     saveUpload,
     saveUploadBytes,
+    saveSettlementUploadBytes,
     uploadPath,
     create,
     updateWarehouse,
@@ -1126,5 +1545,10 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     remind,
     recordNotification,
     assignWarehouse,
+    settlements,
+    createSettlementBatch,
+    postSettlementBatch,
+    reverseSettlementBatch,
+    exportSettlementBatch,
   };
 }

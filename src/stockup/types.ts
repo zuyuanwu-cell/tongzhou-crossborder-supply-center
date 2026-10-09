@@ -71,6 +71,9 @@ export type StockupShipment = {
   destinationWarehouseId: string;
   destinationWarehouseName: string;
   destinationCountry: string;
+  destinationAddress: string;
+  destinationContactName: string;
+  destinationContactPhone: string;
   carrier: string;
   transportMode: string;
   trackingNo: string;
@@ -129,8 +132,30 @@ export type StockupReceipt = {
   shelvedAt: string;
   status: string;
   note: string;
+  lifecycleStatus: "active" | "archived" | "deleted";
+  archivedAt: string;
+  archivedBy: string;
+  deletedAt: string;
+  deletedBy: string;
   version: number;
   lines?: StockupReceiptLine[];
+};
+
+export type StockupWarehouseOption = {
+  id: string;
+  name: string;
+  country: string;
+  status: string;
+  address: string;
+  contactName: string;
+  contactPhone: string;
+  providerId?: string;
+  wmsDocumentType?: "inbound" | "stockup" | "";
+  wmsDocumentLabel?: string;
+  wmsCreateSupported?: boolean;
+  wmsCreateConfigured?: boolean;
+  wmsCreateMode?: string;
+  wmsCreateMessage?: string;
 };
 
 export type StockupProgressEvent = {
@@ -232,4 +257,14 @@ export type StockupMonthlyCostRow = {
   goodsUnitCostCny: number;
   allocatedUnitCostCny: number;
   weightedUnitCostCny: number;
+};
+
+export type StockupMonthlyCostPeriod = {
+  month: string;
+  status: "active" | "archived" | "deleted";
+  batchCount: number;
+  archivedAt: string;
+  archivedBy: string;
+  deletedAt: string;
+  deletedBy: string;
 };

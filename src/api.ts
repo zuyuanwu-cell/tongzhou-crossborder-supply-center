@@ -1,4 +1,4 @@
-import type { StockupMonthlyCostRow, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment } from "./stockup/types";
+import type { StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseOption } from "./stockup/types";
 
 export type CatalogProduct = {
   id: string;
@@ -2187,8 +2187,90 @@ export type AfterSalesPayload = {
     awaitingReshipment: number;
     rejected: number;
     warehouseLiabilityCny: number;
+    pendingWriteoffCny: number;
+    writtenOffCny: number;
+    writtenOffThisMonthCny: number;
+    disputedCny: number;
   };
   tickets: AfterSalesTicket[];
+};
+
+export type WarehouseLiabilitySettlementStatus = "pending_writeoff" | "partially_written_off" | "written_off" | "disputed" | "source_voided" | string;
+
+export type WarehouseLiabilityItem = {
+  id: string;
+  sourceType: "after_sales" | string;
+  sourceId: string;
+  sourceNo: string;
+  sourceStatus: string;
+  warehouseId: string;
+  warehouseName: string;
+  occurredAt: string;
+  originalOrderNumber: string;
+  reason: string;
+  skuSummary: string;
+  currency: "CNY" | string;
+  originalAmountCny: number;
+  writtenOffCny: number;
+  outstandingCny: number;
+  settlementStatus: WarehouseLiabilitySettlementStatus;
+  createdBy: string;
+};
+
+export type WarehouseLiabilitySettlementBatch = {
+  id: string;
+  status: "draft" | "posted" | "reversed" | string;
+  warehouseId: string;
+  warehouseName: string;
+  currency: "CNY" | string;
+  totalAmountCny: number;
+  settlementDate: string;
+  method: string;
+  methodLabel: string;
+  voucherNo: string;
+  voucherAttachmentIds: string[];
+  voucherAttachments: AfterSalesAttachment[];
+  note: string;
+  createdAt: string;
+  createdBy: string;
+  postedAt: string;
+  postedBy: string;
+  reversal?: { id: string; reason: string; amountCny: number; reversedAt: string; reversedBy: string } | null;
+  lines: Array<{
+    id: string;
+    sourceType: string;
+    sourceId: string;
+    sourceNo: string;
+    originalOrderNumber: string;
+    warehouseId: string;
+    warehouseName: string;
+    occurredAt: string;
+    reason: string;
+    skuSummary: string;
+    originalAmountCny: number;
+    previouslyWrittenOffCny: number;
+    outstandingBeforeCny: number;
+    amountCny: number;
+  }>;
+};
+
+export type WarehouseLiabilityPayload = {
+  ok: boolean;
+  updatedAt: string;
+  summary: {
+    totalOriginalCny: number;
+    pendingWriteoffCny: number;
+    writtenOffCny: number;
+    writtenOffThisMonthCny: number;
+    disputedCny: number;
+    overdueCny: number;
+    pendingCount: number;
+    writtenOffCount: number;
+  };
+  items: WarehouseLiabilityItem[];
+  batches: WarehouseLiabilitySettlementBatch[];
+  warehouses: Array<{ id: string; name: string }>;
+  settlementMethods: Array<{ value: string; label: string }>;
 };
 
 export type AfterSalesOrderSyncPayload = {
@@ -4230,7 +4312,7 @@ export function fetchStockupCollaborationRequests(filters: { page?: number; page
 export function fetchStockupCollaborationWarehouses() {
   return requestJson<{
     ok: boolean;
-    warehouses: Array<Pick<WarehouseConnection, "id" | "name" | "country" | "status">>;
+    warehouses: StockupWarehouseOption[];
     projectTeams: Array<{ id: string; name: string }>;
     defaultTeamId: string;
   }>("/api/stockup/collaboration/warehouses");
@@ -4335,9 +4417,10 @@ export function dispatchStockupCollaborationShipment(shipmentId: string, payload
   return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/dispatch`, { method: "POST", body: JSON.stringify(payload) });
 }
 
-export function fetchStockupCollaborationReceipts(status = "") {
-  const query = status ? `?status=${encodeURIComponent(status)}` : "";
-  return requestJson<{ ok: boolean; receipts: StockupReceipt[] }>(`/api/stockup/collaboration/receipts${query}`);
+export function fetchStockupCollaborationReceipts(filters: { status?: string; lifecycle?: "active" | "archived" | "deleted" | "all" } = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
+  return requestJson<{ ok: boolean; receipts: StockupReceipt[] }>(`/api/stockup/collaboration/receipts?${query.toString()}`);
 }
 
 export function confirmStockupCollaborationReceipt(payload: Record<string, unknown>) {
@@ -4356,10 +4439,22 @@ export function saveStockupCollaborationCostVersion(receiptId: string, action: "
   return requestJson<Record<string, any>>(`/api/stockup/collaboration/costs/${encodeURIComponent(receiptId)}/${action}`, { method: "POST", body: JSON.stringify(payload) });
 }
 
+export function changeStockupReceiptLifecycle(receiptId: string, action: "archive" | "activate" | "delete" | "restore") {
+  return requestJson<{ ok: boolean; receipt: StockupReceipt }>(`/api/stockup/collaboration/receipts/${encodeURIComponent(receiptId)}/${action}`, { method: "POST" });
+}
+
 export function fetchStockupMonthlyCostReport(filters: { month?: string; country?: string; warehouseId?: string; keyword?: string } = {}) {
   const query = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
-  return requestJson<{ ok: boolean; month: string; generatedAt: string; items: StockupMonthlyCostRow[]; totals: { skuCount: number; receivedQty: number; totalCostCny: number } }>(`/api/stockup/collaboration/reports/monthly-cost?${query.toString()}`);
+  return requestJson<{ ok: boolean; month: string; period: StockupMonthlyCostPeriod; generatedAt: string; items: StockupMonthlyCostRow[]; totals: { skuCount: number; receivedQty: number; totalCostCny: number } }>(`/api/stockup/collaboration/reports/monthly-cost?${query.toString()}`);
+}
+
+export function fetchStockupMonthlyCostPeriods(lifecycle: "active" | "archived" | "deleted" | "all" = "active") {
+  return requestJson<{ ok: boolean; periods: StockupMonthlyCostPeriod[] }>(`/api/stockup/collaboration/reports/monthly-cost-periods?lifecycle=${encodeURIComponent(lifecycle)}`);
+}
+
+export function changeStockupMonthlyCostPeriod(month: string, action: "archive" | "activate" | "delete" | "restore") {
+  return requestJson<{ ok: boolean; period: StockupMonthlyCostPeriod }>(`/api/stockup/collaboration/reports/monthly-cost-periods/${encodeURIComponent(month)}/${action}`, { method: "POST" });
 }
 
 export function fetchStockupCollaborationNotifications() {
@@ -4405,6 +4500,68 @@ export async function downloadMiaoshouOrderAliasJob(jobId: string) {
       // Keep the default message when the error response is not JSON.
     }
     throw new Error(message);
+  }
+  return response.blob();
+}
+
+export function fetchWarehouseLiabilities(input: { keyword?: string; warehouseId?: string; status?: string; dateFrom?: string; dateTo?: string } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.keyword) params.set("keyword", input.keyword);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.status) params.set("status", input.status);
+  if (input.dateFrom) params.set("dateFrom", input.dateFrom);
+  if (input.dateTo) params.set("dateTo", input.dateTo);
+  return requestJson<WarehouseLiabilityPayload>(`/api/warehouse-liabilities${params.size ? `?${params}` : ""}`, { signal });
+}
+
+export function createWarehouseLiabilitySettlementBatch(input: {
+  lines: Array<{ sourceId: string; amountCny: number }>;
+  settlementDate: string;
+  method: string;
+  voucherNo?: string;
+  voucherAttachmentIds?: string[];
+  note?: string;
+  idempotencyKey?: string;
+}) {
+  const idempotencyKey = input.idempotencyKey || `warehouse-settlement-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; batch: WarehouseLiabilitySettlementBatch; summary: WarehouseLiabilityPayload["summary"] }>("/api/warehouse-liabilities/batches", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ ...input, idempotencyKey }),
+  });
+}
+
+export function postWarehouseLiabilitySettlementBatch(id: string, input: { settlementDate?: string; method?: string; voucherNo?: string; voucherAttachmentIds?: string[]; note?: string }) {
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; batch: WarehouseLiabilitySettlementBatch; summary: WarehouseLiabilityPayload["summary"] }>(`/api/warehouse-liabilities/batches/${encodeURIComponent(id)}/post`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function reverseWarehouseLiabilitySettlementBatch(id: string, reason: string) {
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; batch: WarehouseLiabilitySettlementBatch; summary: WarehouseLiabilityPayload["summary"] }>(`/api/warehouse-liabilities/batches/${encodeURIComponent(id)}/reverse`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function uploadWarehouseLiabilityVoucher(file: File) {
+  const params = new URLSearchParams({ fileName: file.name });
+  const response = await fetch(`${API_BASE}/api/warehouse-liabilities/uploads/file?${params.toString()}`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || "上传核销凭证失败。");
+  return payload as { ok: boolean; upload: AfterSalesAttachment };
+}
+
+export async function downloadWarehouseLiabilitySettlementBatch(id: string) {
+  const response = await fetch(`${API_BASE}/api/warehouse-liabilities/batches/${encodeURIComponent(id)}/export`, { headers: authHeaders() });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "导出核销明细失败。");
   }
   return response.blob();
 }

@@ -1121,7 +1121,7 @@ export function AfterSalesCenter({
         <article><span>{tab === "mine" ? "我的待接单" : "待仓库接单"}</span><strong>{payload ? payload.summary.pendingWarehouse : "—"}</strong><small>{payload ? "需要仓库确认处理" : "数据读取中，不展示为 0"}</small></article>
         <article><span>处理中</span><strong>{payload ? payload.summary.processing : "—"}</strong><small>{payload ? "含待补发工单" : "数据读取中，不展示为 0"}</small></article>
         <article><span>待补发</span><strong>{payload ? payload.summary.awaitingReshipment : "—"}</strong><small>{payload ? "等待面单与发出" : "数据读取中，不展示为 0"}</small></article>
-        <article className="liability"><span>仓库承担金额</span><strong>{payload ? money(payload.summary.warehouseLiabilityCny) : "—"}</strong><small>{payload ? "不含已作废工单" : "数据读取中，不展示为 0"}</small></article>
+        <article className="liability"><span>待核销仓库承担</span><strong>{payload ? money(payload.summary.warehouseLiabilityCny) : "—"}</strong><small>{payload ? `已核销 ${money(payload.summary.writtenOffCny)}；核销后余额自动减少` : "数据读取中，不展示为 0"}</small></article>
       </section> : null}
 
       <div className="after-sales-tabs" role="tablist">

@@ -160,6 +160,9 @@ assert.equal(directMiaoshouPermissions.includes("miaoshou_alias"), true, "direct
 assert.equal(directMiaoshouPermissions.includes("miaoshou_listing"), false, "AI listing requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("business_chain_view"), true, "direct operators can view business-chain fulfillment by default");
 assert.equal(directMiaoshouPermissions.includes("contract_finance_view"), false, "finance ledger requires an explicit grant");
+assert.equal(directMiaoshouPermissions.includes("warehouse_liability_settlement"), false, "warehouse liability settlement requires an explicit finance grant");
+assert.equal(effectivePermissions({ role: "admin" }).includes("warehouse_liability_settlement"), true, "administrators can reconcile warehouse liabilities by default");
+assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["warehouse_liability_settlement"], deny: [] } }).includes("warehouse_liability_settlement"), true, "authorized internal finance users can reconcile warehouse liabilities");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_sync"), true, "authorized operators can run the chain index sync");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_view"), true, "chain sync implies chain view");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_automation"), false, "waybill automation requires an explicit grant");
@@ -272,6 +275,7 @@ assert.equal(warehousePermissions.includes("domestic_inventory_adjust"), true, "
 assert.equal(warehousePermissions.includes("domestic_inventory_manage"), false, "warehouse operators do not manage warehouse masters by default");
 assert.equal(warehousePermissions.includes("stockup_receipt_confirm"), true, "warehouse operators can confirm receipts for their bound warehouses");
 assert.equal(warehousePermissions.includes("warehouse_return_query"), false, "warehouse operators cannot query WMS return data");
+assert.equal(warehousePermissions.includes("warehouse_liability_settlement"), false, "warehouse operators cannot reconcile their own liability charges");
 assert.equal(warehousePermissions.some((permission) => permission.startsWith("ozon_")), false, "warehouse operators cannot access Ozon credentials or order queues");
 assert.equal(effectivePermissions({ role: "direct" }).includes("domestic_inventory_view"), true, "direct operators can view domestic inventory by default");
 assert.equal(effectivePermissions({ role: "direct" }).includes("domestic_inventory_manage"), false, "domestic inventory write access remains separately grantable for direct operators");
