@@ -72,6 +72,18 @@ export const JIANYUN_FORMS = {
       attachments: "_widget_1751342736955",
     },
   },
+  russiaSecondWarehouseCosts: {
+    appId: "6694ed87e77ca045d563d581",
+    entryId: "69a2a3d7b65b51d62337b79b",
+    warehouseCode: "DD001",
+    warehouseName: "俄罗斯2仓",
+    fields: {
+      sku: "_widget_1772266457311",
+      productName: "_widget_1772266457312",
+      weightedSupplyPrice: "_widget_1772266457342",
+      productStatus: "_widget_1772266457355",
+    },
+  },
   qualifications: {
     appId: "6694ed87e77ca045d563d581",
     entryId: "68ee195f8074d5854a7ebfb1",

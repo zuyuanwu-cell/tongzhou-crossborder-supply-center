@@ -28,7 +28,7 @@ import { buildMovementComparison, resolveMovementComparisonRanges } from "./move
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
-import { resolveWarehouseBinding } from "./warehouse-binding.js";
+import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -70,6 +70,7 @@ import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySe
 import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
+import { withTransientRetry } from "./transient-retry.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
@@ -3569,6 +3570,7 @@ function buildInventorySnapshotRows() {
   return (cachedWarehouseSync.inventory || []).map((item) => ({
     warehouseId: item.warehouseId || "",
     warehouseName: item.warehouseName || warehouseConnections.find((warehouse) => warehouse.id === item.warehouseId)?.name || item.warehouseId || "",
+    providerWarehouseCode: item.providerWarehouseCode || warehouseConnections.find((warehouse) => warehouse.id === item.warehouseId)?.resolvedWarehouseId || "",
     country: item.country || "",
     sku: item.sku || "",
     countrySku: item.countrySku || "",
@@ -4109,9 +4111,15 @@ function filterProductPayload(payload, auth) {
     stockSynced,
     warehouseOnlyInventory,
     productMissingWarehouse,
+    warehouseCosts,
     ...publicCounts
   } = mergedPayload.counts || {};
-  const { warehouseOnlyInventory: _warehouseOnlyInventory, ...safeMergedPayload } = mergedPayload;
+  const {
+    warehouseOnlyInventory: _warehouseOnlyInventory,
+    warehouseCosts: _warehouseCosts,
+    warehouseCostScopes: _warehouseCostScopes,
+    ...safeMergedPayload
+  } = mergedPayload;
 
   return {
     ...safeMergedPayload,
@@ -5558,7 +5566,10 @@ async function runOrderSyncJob(jobId) {
       saveOrderSyncJobsCache();
 
       try {
-        const result = await syncCompleteOrderRange(connection, chunk.from, chunk.to);
+        const result = await withTransientRetry(
+          () => syncCompleteOrderRange(connection, chunk.from, chunk.to),
+          { attempts: 3, delayMs: 1500 },
+        );
         const chunkOrders = result.orders || [];
         warehouseSkipped = warehouseSkipped || Boolean(result.skipped);
         warehouseMessage = result.message || warehouseMessage;
@@ -6225,8 +6236,8 @@ async function refreshProductCache() {
     };
   }
 
-  const { baseRecords, catalogRecords } = await fetchAllJdyProducts();
-  cachedProducts = buildProductPayload(baseRecords, catalogRecords, "jiandaoyun");
+  const { baseRecords, catalogRecords, russiaSecondWarehouseCostRecords } = await fetchAllJdyProducts();
+  cachedProducts = buildProductPayload(baseRecords, catalogRecords, "jiandaoyun", russiaSecondWarehouseCostRecords);
   saveProductCache(cachedProducts);
   return filterProductPayload(cachedProducts, directAuth);
 }
@@ -11224,8 +11235,19 @@ const server = http.createServer(async (req, res) => {
       }
 
       const payload = await parseRequestBody(req);
-      const previousWarehouseCode = warehouseConnections[index].warehouseCode || warehouseConnections[index].warehouseId || "";
-      warehouseConnections[index] = buildWarehouseConnection(payload, warehouseConnections[index]);
+      const previousConnection = warehouseConnections[index];
+      const previousWarehouseCode = previousConnection.warehouseCode || previousConnection.warehouseId || "";
+      const nextConnection = buildWarehouseConnection(payload, previousConnection);
+      const bindingChanged = warehouseBindingChanged(previousConnection, nextConnection);
+      if (bindingChanged) {
+        pruneWarehouseCaches([
+          previousConnection.id,
+          previousConnection.warehouseCode,
+          previousConnection.warehouseId,
+          previousConnection.resolvedWarehouseId,
+        ]);
+      }
+      warehouseConnections[index] = nextConnection;
       saveWarehouseConnections();
       appendActionLog(getAuth(req), "更新仓库授权", "warehouse", warehouseConnections[index].name || warehouseConnections[index].id, {
         warehouseId: warehouseConnections[index].id,
@@ -11233,6 +11255,8 @@ const server = http.createServer(async (req, res) => {
         providerId: warehouseConnections[index].providerId,
         previousWarehouseCode,
         warehouseCode: warehouseConnections[index].warehouseCode || warehouseConnections[index].warehouseId || "",
+        bindingChanged,
+        cachedWarehouseDataCleared: bindingChanged,
         credentialsReused: !payload.appKey && !payload.appSecret && !payload.clientId && !payload.clientSecret && !payload.token,
       });
       sendJson(res, 200, { ok: true, warehouse: sanitizeWarehouse(warehouseConnections[index]), warehouses: warehouseConnections.map(sanitizeWarehouse) });

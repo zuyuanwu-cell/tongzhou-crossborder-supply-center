@@ -158,9 +158,38 @@ export function normalizeCatalog(records, baseProducts = []) {
   });
 }
 
-export function buildProductPayload(baseRecords, catalogRecords, source) {
+export function normalizeWarehouseCosts(records, config = JIANYUN_FORMS.russiaSecondWarehouseCosts) {
+  const fields = config?.fields || {};
+  const warehouseCode = text(config?.warehouseCode).toUpperCase();
+  const warehouseName = text(config?.warehouseName);
+  const bySku = new Map();
+
+  for (const record of records || []) {
+    const sku = text(valueOf(record, fields.sku)).toUpperCase();
+    const unitCostCny = number(valueOf(record, fields.weightedSupplyPrice));
+    if (!sku || unitCostCny <= 0) continue;
+    const candidate = {
+      id: record.data_id || record._id || `${warehouseCode}-${sku}`,
+      warehouseCode,
+      warehouseName,
+      sku,
+      productName: text(valueOf(record, fields.productName), sku),
+      unitCostCny,
+      productStatus: text(valueOf(record, fields.productStatus)),
+      effectiveAt: text(record.updateTime || record.updatedAt || record.createTime),
+      source: "jiandaoyun_weighted_supply_price",
+    };
+    const current = bySku.get(sku);
+    if (!current || candidate.effectiveAt >= current.effectiveAt) bySku.set(sku, candidate);
+  }
+
+  return [...bySku.values()];
+}
+
+export function buildProductPayload(baseRecords, catalogRecords, source, warehouseCostRecords = []) {
   const productBase = normalizeProductBase(baseRecords);
   const catalog = normalizeCatalog(catalogRecords, productBase);
+  const warehouseCosts = normalizeWarehouseCosts(warehouseCostRecords);
   return {
     source,
     syncedAt: new Date().toISOString(),
@@ -169,8 +198,15 @@ export function buildProductPayload(baseRecords, catalogRecords, source) {
       catalog: catalog.length,
       directCatalog: catalog.filter((product) => product.directPrice > 0).length,
       distributionCatalog: catalog.filter((product) => product.distributionPrice > 0).length,
+      warehouseCosts: warehouseCosts.length,
     },
     productBase,
     catalog,
+    warehouseCosts,
+    warehouseCostScopes: [{
+      warehouseCode: text(JIANYUN_FORMS.russiaSecondWarehouseCosts.warehouseCode).toUpperCase(),
+      warehouseName: text(JIANYUN_FORMS.russiaSecondWarehouseCosts.warehouseName),
+      source: "jiandaoyun_weighted_supply_price",
+    }],
   };
 }

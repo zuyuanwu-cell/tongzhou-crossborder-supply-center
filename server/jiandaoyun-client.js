@@ -263,12 +263,13 @@ export async function deleteJdyData(formConfig, dataId) {
 }
 
 export async function fetchAllJdyProducts() {
-  const [baseRecords, catalogRecords] = await Promise.all([
+  const [baseRecords, catalogRecords, russiaSecondWarehouseCostRecords] = await Promise.all([
     fetchJdyDataList(JIANYUN_FORMS.productBase),
     fetchJdyDataList(JIANYUN_FORMS.productCatalog),
+    fetchJdyDataList(JIANYUN_FORMS.russiaSecondWarehouseCosts),
   ]);
 
-  return { baseRecords, catalogRecords };
+  return { baseRecords, catalogRecords, russiaSecondWarehouseCostRecords };
 }
 
 export async function fetchAllJdyQualifications() {

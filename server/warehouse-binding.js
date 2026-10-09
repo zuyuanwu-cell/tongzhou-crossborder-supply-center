@@ -31,3 +31,13 @@ export function resolveWarehouseBinding(payload = {}, existingConnection = null)
     resolvedWarehouseId: bindingChanged ? warehouseId : existingResolvedId,
   };
 }
+
+export function warehouseBindingChanged(previous = {}, next = {}) {
+  const normalizeUrl = (value) => text(value).replace(/\/+$/, "").toLowerCase();
+  return [
+    text(previous.providerId).toLowerCase() !== text(next.providerId).toLowerCase(),
+    normalizeUrl(previous.baseUrl) !== normalizeUrl(next.baseUrl),
+    text(previous.warehouseCode).toUpperCase() !== text(next.warehouseCode).toUpperCase(),
+    text(previous.warehouseId).toUpperCase() !== text(next.warehouseId).toUpperCase(),
+  ].some(Boolean);
+}

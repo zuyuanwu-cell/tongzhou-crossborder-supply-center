@@ -1078,7 +1078,7 @@ export type InventoryValueRow = {
   inTransitQty: number;
   totalQty: number;
   unitCostCny: number | null;
-  costSource: "direct_price" | "manual_supplement" | "missing";
+  costSource: "direct_price" | "warehouse_weighted_price" | "manual_supplement" | "missing";
   costSourceLabel: string;
   onHandValueCny: number;
   inTransitValueCny: number;

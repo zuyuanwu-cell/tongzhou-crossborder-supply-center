@@ -78,6 +78,41 @@ const removedRow = payload.rows.find((row) => row.sku === "SKU-D");
 assert.equal(removedRow.onHandQty, 0, "SKUs that leave inventory remain visible in the change detail");
 assert.equal(removedRow.valueChangeCny, -7);
 
+const russiaWarehouseProducts = {
+  productBase: [
+    { sku: "SKU-RU", name: "Russia product" },
+    { sku: "SKU-RU-MISSING", name: "Russia product without warehouse cost" },
+  ],
+  catalog: [
+    { sku: "SKU-RU", name: "Russia product", country: "俄罗斯", directPrice: 99, directCurrency: "CNY" },
+    { sku: "SKU-RU-MISSING", name: "Russia product without warehouse cost", country: "俄罗斯", directPrice: 88, directCurrency: "CNY" },
+  ],
+  warehouseCostScopes: [{ warehouseCode: "DD001", warehouseName: "俄罗斯2仓" }],
+  warehouseCosts: [{ warehouseCode: "DD001", warehouseName: "俄罗斯2仓", sku: "SKU-RU", unitCostCny: 12.5 }],
+};
+const russiaWarehouseSnapshots = [{
+  date: "2026-10-09",
+  rows: [
+    { warehouseId: "WH-RU-2", warehouseName: "俄罗斯2仓", providerWarehouseCode: "DD001", country: "俄罗斯", sku: "SKU-RU", availableQty: 2, totalQty: 2 },
+    { warehouseId: "WH-RU-2", warehouseName: "俄罗斯2仓", providerWarehouseCode: "DD001", country: "俄罗斯", sku: "SKU-RU-MISSING", availableQty: 1, totalQty: 1 },
+    { warehouseId: "WH-RU-1", warehouseName: "俄罗斯1仓", providerWarehouseCode: "DD002", country: "俄罗斯", sku: "SKU-RU", availableQty: 3, totalQty: 3 },
+  ],
+}];
+const russiaSecondWarehouse = buildInventoryValuePayload({
+  snapshots: russiaWarehouseSnapshots,
+  products: russiaWarehouseProducts,
+  filters: { period: "day", warehouseId: "WH-RU-2" },
+});
+assert.equal(russiaSecondWarehouse.summary.onHandValueCny, 25, "DD001 uses the JiandaoYun weighted supply price instead of the generic catalog cost");
+assert.equal(russiaSecondWarehouse.rows.find((row) => row.sku === "SKU-RU")?.costSource, "warehouse_weighted_price");
+assert.equal(russiaSecondWarehouse.missingCosts.find((row) => row.sku === "SKU-RU-MISSING")?.onHandQty, 1, "DD001 does not silently fall back to another cost table when the warehouse price is missing");
+const otherRussiaWarehouse = buildInventoryValuePayload({
+  snapshots: russiaWarehouseSnapshots,
+  products: russiaWarehouseProducts,
+  filters: { period: "day", warehouseId: "WH-RU-1" },
+});
+assert.equal(otherRussiaWarehouse.summary.onHandValueCny, 297, "other Russian warehouses keep their existing product catalog cost rule");
+
 const weekly = buildInventoryValuePayload({ snapshots, products, supplementalCosts: [], filters: { period: "week" } });
 assert.equal(weekly.timeline.length, 2, "weekly mode keeps the latest snapshot in each week");
 

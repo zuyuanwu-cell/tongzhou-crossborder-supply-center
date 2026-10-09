@@ -83,6 +83,42 @@ function buildSupplementalLookup(rows) {
   return lookup;
 }
 
+function buildWarehouseCostLookup(rows, scopes = []) {
+  const byKey = new Map();
+  const scopedWarehouseCodes = new Set((Array.isArray(scopes) ? scopes : [])
+    .map((row) => text(row?.warehouseCode).toUpperCase())
+    .filter(Boolean));
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const warehouseCode = text(row?.warehouseCode).toUpperCase();
+    const unitCostCny = number(row?.unitCostCny);
+    if (!warehouseCode) continue;
+    scopedWarehouseCodes.add(warehouseCode);
+    if (unitCostCny <= 0) continue;
+    for (const skuKey of normalizedSkuKeys(row?.sku)) {
+      byKey.set(`${warehouseCode}|${skuKey}`, { ...row, warehouseCode, unitCostCny });
+    }
+  }
+  return { byKey, scopedWarehouseCodes };
+}
+
+function warehouseCodeForItem(item) {
+  const explicit = text(item?.providerWarehouseCode || item?.warehouseCode).toUpperCase();
+  if (explicit) return explicit;
+  const warehouseName = text(item?.warehouseName).replace(/\s+/g, "");
+  return ["俄罗斯2仓", "俄罗斯二仓"].includes(warehouseName) ? "DD001" : "";
+}
+
+function warehouseCostFor(lookup, item, sku) {
+  const warehouseCode = warehouseCodeForItem(item);
+  if (!warehouseCode || !lookup.scopedWarehouseCodes.has(warehouseCode)) {
+    return { warehouseCode, scoped: false, row: null };
+  }
+  const row = normalizedSkuKeys(sku)
+    .map((skuKey) => lookup.byKey.get(`${warehouseCode}|${skuKey}`))
+    .find(Boolean) || null;
+  return { warehouseCode, scoped: true, row };
+}
+
 function supplementalCostFor(lookup, sku, country, snapshotDate) {
   const countryKey = normalizedCountryKey(country);
   const versions = normalizedSkuKeys(sku).flatMap((skuKey) => lookup.get(`${skuKey}|${countryKey}`) || []);
@@ -127,8 +163,26 @@ function productForCountry(lookup, sku, country) {
   return candidates.find((candidate) => !candidate.countryKey) || null;
 }
 
-function resolveCost({ productLookup, supplementalLookup, rateLookup, sku, country, snapshotDate }) {
+function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, rateLookup, sku, country, snapshotDate, item }) {
   const product = productForCountry(productLookup, sku, country);
+  const warehouseCost = warehouseCostFor(warehouseCostLookup, item, sku);
+  if (number(warehouseCost.row?.unitCostCny) > 0) {
+    return {
+      unitCostCny: round(warehouseCost.row.unitCostCny, 6),
+      source: "warehouse_weighted_price",
+      sourceLabel: "俄罗斯2仓加权供货价",
+      product,
+      warehouseCost: warehouseCost.row,
+    };
+  }
+  if (warehouseCost.scoped) {
+    return {
+      unitCostCny: null,
+      source: "missing",
+      sourceLabel: "俄罗斯2仓加权供货价缺失",
+      product,
+    };
+  }
   const directPrice = number(product?.directCostPrice);
   if (directPrice > 0) {
     const currency = text(product?.directCostCurrency || "CNY").toUpperCase();
@@ -188,13 +242,16 @@ function aggregateSnapshot(snapshot, context) {
     const sku = text(item.sku || item.countrySku).toUpperCase();
     if (!sku) continue;
     const qty = quantities(item);
-    const cost = resolveCost({ ...context, sku, country: item.country, snapshotDate: summary.date });
-    const identity = `${countryKey}|${sku}`;
+    const cost = resolveCost({ ...context, sku, country: item.country, snapshotDate: summary.date, item });
+    const warehouseIdentity = text(item.warehouseId || item.providerWarehouseCode || item.warehouseName);
+    const identity = `${countryKey}|${sku}|${warehouseIdentity}`;
     const current = rows.get(identity) || {
       key: identity,
       sku,
       country: text(item.country),
       countryKey,
+      warehouseId: text(item.warehouseId),
+      providerWarehouseCode: warehouseCodeForItem(item),
       productName: text(item.productName || cost.product?.productName || sku),
       imageUrl: text(cost.product?.imageUrl),
       warehouseNames: new Set(),
@@ -233,6 +290,8 @@ function aggregateSnapshot(snapshot, context) {
         sku,
         country: text(item.country),
         countryKey,
+        warehouseId: text(item.warehouseId),
+        providerWarehouseCode: warehouseCodeForItem(item),
         productName: text(item.productName || cost.product?.productName || sku),
         onHandQty: 0,
         warehouseNames: new Set(),
@@ -333,6 +392,7 @@ export function buildInventoryValuePayload({
   const context = {
     productLookup,
     supplementalLookup: buildSupplementalLookup(supplementalCosts),
+    warehouseCostLookup: buildWarehouseCostLookup(products?.warehouseCosts, products?.warehouseCostScopes),
     rateLookup: buildRateLookup(exchangeRates),
   };
   const valuedPeriods = periods.map((item) => ({ ...item, value: aggregateSnapshot(item.snapshot, context) }));
