@@ -854,20 +854,6 @@ function normalizedWarehouseMatchText(value) {
   return firstText(value).toLowerCase().replace(/[\s|/\\()（）·_\-]+/g, "");
 }
 
-function warehouseOrdinal(value) {
-  const match = firstText(value).match(/(?:^|\D)0*(\d{1,3})\s*(?:号)?(?:仓|warehouse)/i);
-  if (!match) return null;
-  const ordinal = Number(match[1]);
-  return Number.isInteger(ordinal) && ordinal > 0 ? ordinal : null;
-}
-
-function codeOrdinal(value) {
-  const match = firstText(value).match(/(\d{1,3})$/);
-  if (!match) return null;
-  const ordinal = Number(match[1]);
-  return Number.isInteger(ordinal) && ordinal > 0 ? ordinal : null;
-}
-
 export function resolveYunWarehouseCodeFromList(connection, warehouses = []) {
   const codeCandidates = [connection?.warehouseCode, connection?.warehouseId, connection?.resolvedWarehouseId]
     .map((value) => firstText(value))
@@ -883,14 +869,7 @@ export function resolveYunWarehouseCodeFromList(connection, warehouses = []) {
     (targetName && item.name && (item.name === targetName || item.name.includes(targetName) || targetName.includes(item.name)))
   ));
   if (exact) return exact.code;
-
-  // Some YunWMS accounts expose only technical codes (for example DD001/DD002),
-  // while the local connection is named “俄罗斯1仓/俄罗斯2仓”. Use the explicit
-  // warehouse ordinal only when it identifies exactly one provider warehouse.
-  const targetOrdinal = warehouseOrdinal(connection?.name);
-  if (targetOrdinal === null) return "";
-  const ordinalMatches = normalized.filter((item) => codeOrdinal(item.code) === targetOrdinal);
-  return ordinalMatches.length === 1 ? ordinalMatches[0].code : "";
+  return "";
 }
 
 async function resolveYunWarehouseCode(credentials, connection) {

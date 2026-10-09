@@ -43,11 +43,12 @@ try {
     { warehouse_code: "DD001", warehouse_name: "东达001仓" },
     { warehouse_code: "DD002", warehouse_name: "" },
   ];
-  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, yunWarehouses), "DD001");
-  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓" }, yunWarehouses), "DD002");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, yunWarehouses), "");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓" }, yunWarehouses), "");
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓", warehouseCode: "DD001" }, yunWarehouses), "DD001");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓", warehouseId: "DD001" }, yunWarehouses), "DD001");
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯仓" }, yunWarehouses), "");
-  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, [{ warehouse_code: "MX001", warehouse_name: "MX001" }]), "MX001");
+  assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, [{ warehouse_code: "MX001", warehouse_name: "MX001" }]), "");
   const cartonItems = buildYunAsnItems({ lines: [{ sku: "TZKJ-QL032", quantity: 14_400, cartonCount: 200, unitsPerCarton: 72, purchasePrice: 0, purchasePriceCurrency: "CNY" }] });
   assert.equal(cartonItems.length, 200);
   assert.equal(cartonItems[0].box_no, "1");

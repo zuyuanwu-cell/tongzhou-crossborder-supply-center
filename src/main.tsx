@@ -8647,6 +8647,7 @@ function WarehouseBoard({
 
       {authorizationMode && formOpen && canConfigure ? (
         <WarehouseAuthForm
+          key={editingWarehouse?.id || "new-warehouse"}
           providers={providers}
           initialWarehouse={editingWarehouse}
           onCreate={onCreate}
@@ -11437,8 +11438,10 @@ function WarehouseAuthForm({
     country: initialWarehouse?.country || "",
     providerId: initialWarehouse?.providerId || providers[0]?.id || "sea_wms",
     baseUrl: initialWarehouse?.baseUrl || "",
-    warehouseCode: initialWarehouse?.warehouseCode || "",
-    warehouseId: initialWarehouse?.warehouseId || "",
+    warehouseCode: initialWarehouse?.warehouseCode || (initialWarehouse?.providerId === "yunwms_ru" ? initialWarehouse?.warehouseId || initialWarehouse?.resolvedWarehouseId || "" : ""),
+    warehouseId: initialWarehouse?.providerId === "yunwms_ru"
+      ? initialWarehouse?.warehouseCode || initialWarehouse?.warehouseId || initialWarehouse?.resolvedWarehouseId || ""
+      : initialWarehouse?.warehouseId || "",
     appKey: "",
     appSecret: "",
     clientId: "",
@@ -11488,14 +11491,19 @@ function WarehouseAuthForm({
     setForm((current) => ({ ...current, [field]: value }));
   }
 
+  function requestPayload() {
+    if (form.providerId !== "yunwms_ru") return form;
+    return { ...form, warehouseId: form.warehouseCode };
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setSaving(true);
     try {
       if (initialWarehouse) {
-        await onUpdate(initialWarehouse.id, form);
+        await onUpdate(initialWarehouse.id, requestPayload());
       } else {
-        await onCreate(form);
+        await onCreate(requestPayload());
       }
       onClose();
     } finally {
@@ -11507,7 +11515,8 @@ function WarehouseAuthForm({
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await onTest(initialWarehouse ? { ...form, id: initialWarehouse.id } : form);
+      const payload = requestPayload();
+      const result = await onTest(initialWarehouse ? { ...payload, id: initialWarehouse.id } : payload);
       setTestResult(result);
     } finally {
       setTesting(false);
@@ -11566,18 +11575,19 @@ function WarehouseAuthForm({
         </label>
         <label>
           <span>仓库编码</span>
-          <input value={form.warehouseCode} onChange={(event) => updateField("warehouseCode", event.target.value)} placeholder="warehouseCode" />
+          <input required={!isSeaWms || !form.warehouseId} value={form.warehouseCode} onChange={(event) => updateField("warehouseCode", event.target.value)} placeholder={isSeaWms ? "warehouseCode" : "例如 DD001"} />
+          {editing ? <small>修改后库存、订单、动销和新建入库单都会使用该编码。</small> : null}
         </label>
-        <label>
+        {isSeaWms ? <label>
           <span>库存 warehouseId（可选）</span>
           <input value={form.warehouseId} onChange={(event) => updateField("warehouseId", event.target.value)} placeholder="不确定时可先留空" />
-        </label>
+        </label> : null}
         <label>
           <span>{isSeaWms ? "AppKey / ClientId" : "AppKey"}</span>
           <input value={isSeaWms ? form.clientId || form.appKey : form.appKey} onChange={(event) => {
             updateField("appKey", event.target.value);
             updateField("clientId", event.target.value);
-          }} placeholder="只保存在服务端" />
+          }} placeholder={editing && initialWarehouse?.hasCredentials ? "留空则复用已保存的 AppKey" : "只保存在服务端"} />
         </label>
         <label>
           <span>{isSeaWms ? "AppSecret / ClientSecret" : "AppToken"}</span>
@@ -11588,7 +11598,7 @@ function WarehouseAuthForm({
             } else {
               updateField("token", event.target.value);
             }
-          }} placeholder="只保存在服务端" />
+          }} placeholder={editing && initialWarehouse?.hasCredentials ? `留空则复用已保存的 ${isSeaWms ? "AppSecret" : "AppToken"}` : "只保存在服务端"} />
         </label>
         {isSeaWms ? (
           <label>
@@ -11598,7 +11608,9 @@ function WarehouseAuthForm({
         ) : null}
         <div className="warehouse-auth-note">
           <strong>{selectedProvider?.name || "WMS"}</strong>
-          <span>{selectedProvider?.notes || "授权信息保存后可用于库存、出库日报和商品图片同步。"}</span>
+          <span>{editing && initialWarehouse?.hasCredentials
+            ? "现有授权会继续复用；只有填写新的密钥内容时才会替换。"
+            : selectedProvider?.notes || "授权信息保存后可用于库存、出库日报和商品图片同步。"}</span>
         </div>
         {testResult ? (
           <div className={`warehouse-test-result ${testResult.ok ? "good" : "warning"}`}>

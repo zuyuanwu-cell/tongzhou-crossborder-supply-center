@@ -28,6 +28,7 @@ import { buildMovementComparison, resolveMovementComparisonRanges } from "./move
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { resolveWarehouseBinding } from "./warehouse-binding.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -3082,6 +3083,7 @@ function slugifyWarehouseId(name) {
 function buildWarehouseConnection(payload, existingConnection = null) {
   const providerId = payload.providerId || existingConnection?.providerId || "sea_wms";
   const credentials = payload.credentials || {};
+  const warehouseBinding = resolveWarehouseBinding({ ...payload, providerId }, existingConnection);
   return {
     ...(existingConnection || {}),
     id: existingConnection?.id || payload.id || slugifyWarehouseId(payload.name),
@@ -3090,14 +3092,14 @@ function buildWarehouseConnection(payload, existingConnection = null) {
     providerId,
     providerName: providerName(providerId),
     baseUrl: payload.baseUrl || existingConnection?.baseUrl || "待配置",
-    warehouseCode: payload.warehouseCode || existingConnection?.warehouseCode || "",
-    warehouseId: payload.warehouseId || payload.warehouseCode || existingConnection?.warehouseId || existingConnection?.warehouseCode || "",
+    warehouseCode: warehouseBinding.warehouseCode,
+    warehouseId: warehouseBinding.warehouseId,
     status: "已授权",
     lastSyncedAt: existingConnection?.lastSyncedAt || "",
     lastTestAt: existingConnection?.lastTestAt || "",
     lastTestStatus: existingConnection?.lastTestStatus || "",
     lastTestMessage: existingConnection?.lastTestMessage || "",
-    resolvedWarehouseId: payload.resolvedWarehouseId || existingConnection?.resolvedWarehouseId || "",
+    resolvedWarehouseId: warehouseBinding.resolvedWarehouseId,
     orderSyncStrategy: payload.orderSyncStrategy || existingConnection?.orderSyncStrategy || (providerId === "yunwms_ru" ? "date_chunk" : "cursor"),
     skuMatched: existingConnection?.skuMatched || 0,
     syncScope: payload.syncScope?.length ? payload.syncScope : existingConnection?.syncScope || ["库存同步", "订单出库日报", "动销监控"],
@@ -11222,12 +11224,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       const payload = await parseRequestBody(req);
+      const previousWarehouseCode = warehouseConnections[index].warehouseCode || warehouseConnections[index].warehouseId || "";
       warehouseConnections[index] = buildWarehouseConnection(payload, warehouseConnections[index]);
       saveWarehouseConnections();
       appendActionLog(getAuth(req), "更新仓库授权", "warehouse", warehouseConnections[index].name || warehouseConnections[index].id, {
         warehouseId: warehouseConnections[index].id,
         country: warehouseConnections[index].country,
         providerId: warehouseConnections[index].providerId,
+        previousWarehouseCode,
+        warehouseCode: warehouseConnections[index].warehouseCode || warehouseConnections[index].warehouseId || "",
+        credentialsReused: !payload.appKey && !payload.appSecret && !payload.clientId && !payload.clientSecret && !payload.token,
       });
       sendJson(res, 200, { ok: true, warehouse: sanitizeWarehouse(warehouseConnections[index]), warehouses: warehouseConnections.map(sanitizeWarehouse) });
       return;
