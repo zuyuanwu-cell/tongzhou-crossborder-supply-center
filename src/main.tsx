@@ -232,6 +232,7 @@ import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryC
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import ReviewCenter from "./ReviewCenter";
+import QualificationCoveragePage from "./QualificationCoveragePage";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
@@ -391,6 +392,7 @@ const navItems = [
   { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "workbench", permission: "dashboard" },
   { label: "产品库", icon: ShoppingBag, hash: "#products", section: "catalog", permission: "product_view" },
   { label: "资质库", icon: FileText, hash: "#qualifications", section: "catalog", childOf: "产品库", permission: "qualifications" },
+  { label: "资质覆盖", icon: ShieldCheck, hash: "#qualification-coverage", section: "catalog", childOf: "产品库", permission: "qualifications", requiredPermissions: ["qualifications", "inventory"] },
   { label: "素材库", icon: Boxes, hash: "#assets", section: "catalog", childOf: "产品库", permission: "assets" },
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "inventory", permission: "inventory_sync" },
   { label: "动销监控", icon: BarChart3, hash: "#movement", section: "inventory", permission: "movement" },
@@ -452,6 +454,8 @@ function hashForView(view: string) {
 function visibleNavItems(user: AuthUser) {
   const allowedItems = navItems.filter((item) => {
     if ("adminOnly" in item && item.adminOnly && user.role !== "admin") return false;
+    const requiredPermissions = "requiredPermissions" in item && Array.isArray(item.requiredPermissions) ? item.requiredPermissions : [];
+    if (!requiredPermissions.every((permission) => hasUserPermission(user, permission))) return false;
     const permissions = [
       item.permission,
       ...("alternativePermission" in item && item.alternativePermission ? [item.alternativePermission as string] : []),
@@ -1471,6 +1475,10 @@ function App() {
         if (hasUserPermission(currentUser, "qualifications")) void loadQualifications();
         if (canViewPartnerAssets(currentUser)) void loadProductDetails();
         break;
+      case "#qualification-coverage":
+        if (hasUserPermission(currentUser, "qualifications")) void loadQualifications();
+        if (canViewPartnerAssets(currentUser)) void loadProductDetails();
+        break;
       case "#assets":
         if (hasUserPermission(currentUser, "assets")) void loadAssets();
         if (canViewPartnerAssets(currentUser)) void loadProductDetails();
@@ -1991,6 +1999,8 @@ function App() {
           />
         ) : activeView === "资质库" ? (
           <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} canSync={hasUserPermission(currentUser, "qualification_sync")} />
+        ) : activeView === "资质覆盖" ? (
+          <QualificationCoveragePage products={catalog} productBase={payload?.productBase || []} warehouseOnlyInventory={payload?.warehouseOnlyInventory || []} qualificationPayload={qualificationPayload} />
         ) : activeView === "素材库" ? (
           <AssetLibrary
             products={catalog}

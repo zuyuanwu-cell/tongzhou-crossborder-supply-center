@@ -29,6 +29,7 @@ export type CatalogProduct = {
   warehouseBreakdown?: Array<{
     warehouseId: string;
     warehouseName: string;
+    country?: string;
     availableQty: number;
     lockedQty: number;
     inTransitQty: number;
@@ -109,6 +110,22 @@ export type ProductPayload = {
   };
   productBase: ProductBase[];
   catalog: CatalogProduct[];
+  warehouseOnlyInventory?: WarehouseOnlyInventoryItem[];
+};
+
+export type WarehouseOnlyInventoryItem = {
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  sku: string;
+  countrySku?: string;
+  goodsSkuId?: string;
+  availableQty: number;
+  lockedQty: number;
+  waitInQty?: number;
+  inTransitQty: number;
+  totalQty: number;
+  syncedAt?: string;
 };
 
 export type DashboardSummaryPayload = {

@@ -4038,7 +4038,7 @@ function filterProductPayload(payload, auth) {
     ...publicCounts
   } = mergedPayload.counts || {};
   const {
-    warehouseOnlyInventory: _warehouseOnlyInventory,
+    warehouseOnlyInventory: warehouseOnlyItems,
     warehouseCosts: _warehouseCosts,
     warehouseCostScopes: _warehouseCostScopes,
     ...safeMergedPayload
@@ -4057,6 +4057,22 @@ function filterProductPayload(payload, auth) {
     },
     productBase,
     catalog,
+    ...(hasPermission(auth, "inventory") ? {
+      warehouseOnlyInventory: (Array.isArray(warehouseOnlyItems) ? warehouseOnlyItems : []).map((item) => ({
+        warehouseId: item.warehouseId,
+        warehouseName: item.warehouseName,
+        country: item.country,
+        sku: item.sku,
+        countrySku: item.countrySku,
+        goodsSkuId: item.goodsSkuId,
+        availableQty: numberOrZero(item.availableQty),
+        lockedQty: numberOrZero(item.lockedQty),
+        waitInQty: numberOrZero(item.waitInQty),
+        inTransitQty: numberOrZero(item.inTransitQty),
+        totalQty: numberOrZero(item.totalQty),
+        syncedAt: item.syncedAt || "",
+      })),
+    } : {}),
   };
 }
 
@@ -4118,8 +4134,9 @@ function compactProductBase(product) {
 function productResponsePayload(payload, auth, mode = "list") {
   const filtered = filterProductPayload(payload, auth);
   if (mode === "detail") return filtered;
+  const { warehouseOnlyInventory: _warehouseOnlyInventory, ...compactFiltered } = filtered;
   return {
-    ...filtered,
+    ...compactFiltered,
     mode: "list",
     productBase: [],
     catalog: (filtered.catalog || []).map(compactCatalogProduct),
