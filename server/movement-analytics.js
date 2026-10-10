@@ -45,6 +45,14 @@ function dateAfterDays(dateText, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function shiftDateKey(dateText, days) {
+  if (!dateText || !Number.isFinite(Number(days))) return "";
+  const date = new Date(`${dateText}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + Number(days));
+  return date.toISOString().slice(0, 10);
+}
+
 function daysBetween(from, to) {
   const start = new Date(`${from}T00:00:00.000Z`);
   const end = new Date(`${to}T00:00:00.000Z`);
@@ -193,6 +201,19 @@ function addWarehouseSale(target, order, day) {
   }
 }
 
+function addYesterdayWarehouseEvidence(target, record, field, quantity) {
+  const warehouseId = firstText(record.warehouseId);
+  const warehouseName = firstText(record.warehouseName, record.warehouseId);
+  if (!warehouseId && !warehouseName) return;
+  const evidenceRows = target.yesterdayWarehouseBreakdown || (target.yesterdayWarehouseBreakdown = []);
+  let row = evidenceRows.find((item) => item.warehouseId === warehouseId && item.warehouseName === warehouseName);
+  if (!row) {
+    row = { warehouseId, warehouseName, yesterdayOutboundQty: 0, yesterdayReservedQty: 0 };
+    evidenceRows.push(row);
+  }
+  row[field] += firstNumber(quantity);
+}
+
 function salesWindows(dailySales, todayKey) {
   const windows = { sales3: 0, sales7: 0, sales15: 0, sales30: 0, sales60: 0, sales90: 0 };
   for (const [day, quantity] of Object.entries(dailySales)) {
@@ -217,8 +238,27 @@ function sparklineFromDaily(dailySales, todayKey) {
   });
 }
 
-export function buildMovementPayload(productPayload, warehousePayload, ordersPayload = {}) {
-  const todayKey = localDateKey();
+export function buildMovementPayload(productPayload, warehousePayload, ordersPayload = {}, options = {}) {
+  const todayKey = firstText(options.todayKey, localDateKey());
+  const evidenceDate = firstText(options.evidenceDate, shiftDateKey(todayKey, -1));
+  const yesterdaySnapshot = options.yesterdaySnapshot?.date === evidenceDate ? options.yesterdaySnapshot : null;
+  const orderSyncDateKey = firstText(
+    options.orderSyncDateKey,
+    ordersPayload.syncedAt && !Number.isNaN(new Date(ordersPayload.syncedAt).getTime())
+      ? localDateKey(new Date(ordersPayload.syncedAt))
+      : "",
+  );
+  const ordersIncomplete = (ordersPayload.results || []).some((result) => (
+    result.backgroundRunning
+    || result.running
+    || result.orderApiReachedPageLimit
+    || (firstNumber(result.orderApiTotal) > 0 && firstNumber(result.orderApiReadRows, result.orderApiReadSkuRows) < firstNumber(result.orderApiTotal))
+    || (!result.ok && !result.skipped)
+  ));
+  const yesterdayOutboundAvailable = typeof options.yesterdayOutboundAvailable === "boolean"
+    ? options.yesterdayOutboundAvailable
+    : Boolean(ordersPayload.syncedAt && orderSyncDateKey >= todayKey && !ordersIncomplete);
+  const yesterdayReservedAvailable = Boolean(yesterdaySnapshot);
   const itemsByKey = new Map();
   const itemsBySku = new Map();
   const imageByKey = buildImageMap(warehousePayload, productPayload.productBase);
@@ -256,6 +296,9 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
       warehouseBreakdown: Array.isArray(product.warehouseBreakdown) ? [...product.warehouseBreakdown] : [],
       salesWarehouseBreakdown: [],
       dailySales: {},
+      yesterdayOutboundQty: 0,
+      yesterdayReservedQty: 0,
+      yesterdayWarehouseBreakdown: [],
       source: "product",
       dataGap: product.dataGap || "",
     };
@@ -289,6 +332,9 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
         warehouseBreakdown: [],
         salesWarehouseBreakdown: [],
         dailySales: {},
+        yesterdayOutboundQty: 0,
+        yesterdayReservedQty: 0,
+        yesterdayWarehouseBreakdown: [],
         source: "warehouse_only",
         dataGap: "warehouse_only",
       };
@@ -315,9 +361,25 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
     ].filter(Boolean);
     const item = keys.map((key) => itemsByKey.get(key)).find(Boolean) || uniqueSkuCandidate(sku);
     if (!item) continue;
-    item.dailySales[day] = (item.dailySales[day] || 0) + firstNumber(order.quantity);
+    const quantity = firstNumber(order.quantity);
+    item.dailySales[day] = (item.dailySales[day] || 0) + quantity;
+    if (day === evidenceDate) {
+      item.yesterdayOutboundQty += quantity;
+      addYesterdayWarehouseEvidence(item, order, "yesterdayOutboundQty", quantity);
+    }
     const age = daysBetween(day, todayKey);
     if (age >= 0 && age < 90) addWarehouseSale(item, order, day);
+  }
+
+  if (yesterdaySnapshot) {
+    for (const row of yesterdaySnapshot.rows || []) {
+      const keys = inventoryKeys(row);
+      const item = keys.map((key) => itemsByKey.get(key)).find(Boolean) || uniqueSkuCandidate(row.sku);
+      if (!item) continue;
+      const lockedQty = firstNumber(row.lockedQty);
+      item.yesterdayReservedQty += lockedQty;
+      addYesterdayWarehouseEvidence(item, row, "yesterdayReservedQty", lockedQty);
+    }
   }
 
   const items = baseItems.map((item) => {
@@ -363,6 +425,27 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
       leadDays,
       targetCoverDays,
       replenishQty,
+      yesterdayOutboundQty: yesterdayOutboundAvailable ? item.yesterdayOutboundQty : null,
+      yesterdayReservedQty: yesterdayReservedAvailable ? item.yesterdayReservedQty : null,
+      yesterdayWarehouseBreakdown: Array.from(new Map([
+        ...(item.warehouseBreakdown || []).map((row) => [
+          `${firstText(row.warehouseId)}::${firstText(row.warehouseName, row.warehouseId)}`,
+          {
+            warehouseId: firstText(row.warehouseId),
+            warehouseName: firstText(row.warehouseName, row.warehouseId),
+            yesterdayOutboundQty: 0,
+            yesterdayReservedQty: 0,
+          },
+        ]),
+        ...(item.yesterdayWarehouseBreakdown || []).map((row) => [
+          `${firstText(row.warehouseId)}::${firstText(row.warehouseName, row.warehouseId)}`,
+          row,
+        ]),
+      ]).values()).map((row) => ({
+        ...row,
+        yesterdayOutboundQty: yesterdayOutboundAvailable ? firstNumber(row.yesterdayOutboundQty) : null,
+        yesterdayReservedQty: yesterdayReservedAvailable ? firstNumber(row.yesterdayReservedQty) : null,
+      })),
       status,
       suggestion: suggestionFor(status, { ...item, targetCoverDays, replenishQty }),
       identityScope: "SKU×国家",
@@ -410,15 +493,15 @@ export function buildMovementPayload(productPayload, warehousePayload, ordersPay
     ok: true,
     generatedAt: new Date().toISOString(),
     orderSyncedAt: ordersPayload.syncedAt || "",
+    evidence: {
+      date: evidenceDate,
+      outboundAvailable: yesterdayOutboundAvailable,
+      reservedAvailable: yesterdayReservedAvailable,
+      reservedSnapshotAt: yesterdaySnapshot?.capturedAt || "",
+    },
     orderDataAvailable: Boolean(ordersPayload.syncedAt && (ordersPayload.orders || []).length),
     orderDataComplete: Boolean(ordersPayload.syncedAt)
-      && !(ordersPayload.results || []).some((result) => (
-        result.backgroundRunning
-        || result.running
-        || result.orderApiReachedPageLimit
-        || (firstNumber(result.orderApiTotal) > 0 && firstNumber(result.orderApiReadRows, result.orderApiReadSkuRows) < firstNumber(result.orderApiTotal))
-        || (!result.ok && !result.skipped)
-      )),
+      && !ordersIncomplete,
     inventorySyncedAt: warehousePayload.syncedAt || "",
     windows: [3, 7, 15, 30, 60, 90],
     counts: {

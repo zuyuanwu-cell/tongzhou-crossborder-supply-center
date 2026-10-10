@@ -88,14 +88,15 @@ export function projectMovementPayload(payload, user) {
     "leadDays",
     "targetCoverDays",
     "replenishQty",
+    "yesterdayReservedQty",
     "dataGap",
     "source",
   ];
   const items = (payload?.items || []).map((item) => {
     let projected = { ...item };
-    if (!warehouseVisible) projected = omit(projected, ["warehouseBreakdown", "salesWarehouseBreakdown"]);
+    if (!warehouseVisible) projected = omit(projected, ["warehouseBreakdown", "salesWarehouseBreakdown", "yesterdayWarehouseBreakdown"]);
     if (!inventoryVisible) {
-      projected = omit(projected, [...inventoryFields, "warehouseBreakdown"]);
+      projected = omit(projected, [...inventoryFields, "warehouseBreakdown", "yesterdayWarehouseBreakdown"]);
       projected.status = Number(projected.sales90 || 0) > 0 ? "有动销" : "无动销数据";
       projected.suggestion = Number(projected.sales90 || 0) > 0 ? "该账号仅查看销量趋势。" : "近 90 天暂无动销数据。";
     }

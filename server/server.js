@@ -4150,7 +4150,19 @@ function movementResponsePayload(auth = directAuth) {
     orders: cachedOrdersSync,
     connections: warehouseConnections,
   }, user);
-  const payload = buildMovementPayload(scoped.products, scoped.warehouse, scoped.orders);
+  const todayKey = dateKeyInTimezone(new Date(), movementHistoryTimezone);
+  const evidenceDate = dateKeyInTimezone(new Date(Date.now() - 24 * 60 * 60 * 1000), movementHistoryTimezone);
+  const yesterdaySnapshot = movementHistoryStore.getLatestSnapshot({ date: evidenceDate, timezone: movementHistoryTimezone });
+  const orderSyncedAt = new Date(scoped.orders.syncedAt || "");
+  const payload = buildMovementPayload(scoped.products, scoped.warehouse, scoped.orders, {
+    todayKey,
+    evidenceDate,
+    orderSyncDateKey: Number.isNaN(orderSyncedAt.getTime()) ? "" : dateKeyInTimezone(orderSyncedAt, movementHistoryTimezone),
+    yesterdaySnapshot: yesterdaySnapshot ? {
+      ...yesterdaySnapshot,
+      rows: filterMovementHistoryRows(yesterdaySnapshot.rows || [], {}, user),
+    } : null,
+  });
   const latestJob = scopeOrderSyncJob(latestOrderSyncJob(), scoped);
   const warehouseDiagnostics = buildMovementDiagnostics(
     scoped.products,

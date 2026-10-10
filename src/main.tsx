@@ -3306,6 +3306,7 @@ function movementWarehouseScopedItem(
   if (warehouse === "全部") return item;
   const inventoryRows = (item.warehouseBreakdown || []).filter((detail) => movementDetailMatches(detail, warehouse));
   const salesRows = (item.salesWarehouseBreakdown || []).filter((detail) => movementDetailMatches(detail, warehouse));
+  const evidenceRows = (item.yesterdayWarehouseBreakdown || []).filter((detail) => movementDetailMatches(detail, warehouse));
   if (!inventoryRows.length && !salesRows.length) return null;
 
   const availableQty = inventoryRows.reduce((sum, detail) => sum + (detail.availableQty || 0), 0);
@@ -3318,6 +3319,12 @@ function movementWarehouseScopedItem(
   const sales30 = salesRows.reduce((sum, detail) => sum + (detail.sales30 || 0), 0);
   const sales60 = salesRows.reduce((sum, detail) => sum + (detail.sales60 || 0), 0);
   const sales90 = salesRows.reduce((sum, detail) => sum + (detail.sales90 || 0), 0);
+  const yesterdayOutboundQty = evidenceRows.some((detail) => detail.yesterdayOutboundQty !== null)
+    ? evidenceRows.reduce((sum, detail) => sum + (detail.yesterdayOutboundQty || 0), 0)
+    : null;
+  const yesterdayReservedQty = evidenceRows.some((detail) => detail.yesterdayReservedQty !== null)
+    ? evidenceRows.reduce((sum, detail) => sum + (detail.yesterdayReservedQty || 0), 0)
+    : null;
   const avgDaily3 = sales3 / 3;
   const avgDaily7 = sales7 / 7;
   const avgDaily30 = sales30 / 30;
@@ -3352,6 +3359,9 @@ function movementWarehouseScopedItem(
     leadDays,
     targetCoverDays,
     replenishQty,
+    yesterdayOutboundQty,
+    yesterdayReservedQty,
+    yesterdayWarehouseBreakdown: evidenceRows,
     trend30: sumTrend30(salesRows),
   };
   const status = movementStatusFor(scoped);
@@ -4558,6 +4568,16 @@ function MovementBoard({
             <div className="risk-evidence-grid">
               <div><span>可售库存</span><strong>{formatNumber(selectedRiskItem.availableQty)} {selectedRiskItem.unit}</strong><small>在途 {formatNumber(selectedRiskItem.inTransitQty)}</small></div>
               <div><span>7 / 30 日销量</span><strong>{formatNumber(selectedRiskItem.sales7)} / {formatNumber(selectedRiskItem.sales30)}</strong><small>90日 {formatNumber(selectedRiskItem.sales90)}</small></div>
+              <div>
+                <span>昨日出库数量</span>
+                <strong>{selectedRiskItem.yesterdayOutboundQty == null ? "待同步" : `${formatNumber(selectedRiskItem.yesterdayOutboundQty)} ${selectedRiskItem.unit}`}</strong>
+                <small>{movementPayload?.evidence?.outboundAvailable ? `${movementPayload.evidence.date} 已出库订单明细` : "完成今日订单同步后显示"}</small>
+              </div>
+              <div>
+                <span>昨日有效订单预占</span>
+                <strong>{selectedRiskItem.yesterdayReservedQty == null ? "无昨日快照" : `${formatNumber(selectedRiskItem.yesterdayReservedQty)} ${selectedRiskItem.unit}`}</strong>
+                <small>{movementPayload?.evidence?.reservedAvailable ? `${movementPayload.evidence.date} 库存快照锁定量` : "昨日库存快照尚未生成"}</small>
+              </div>
               <div><span>加权日均</span><strong>{formatDecimal(selectedRiskItem.calculation?.dailySalesBasis ?? selectedRiskItem.dailyWeighted)}</strong><small>{selectedRiskItem.calculation?.window || "3/7/30/90天"}</small></div>
               <div><span>预计断货</span><strong>{selectedRiskItem.estimatedStockoutDate || "无法估算"}</strong><small>{selectedRiskItem.daysCover === null ? "当前窗口无有效销量" : `约 ${formatDecimal(selectedRiskItem.daysCover)} 天`}</small></div>
             </div>

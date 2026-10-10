@@ -1372,6 +1372,14 @@ export type MovementItem = {
   leadDays: number;
   targetCoverDays: number;
   replenishQty: number;
+  yesterdayOutboundQty?: number | null;
+  yesterdayReservedQty?: number | null;
+  yesterdayWarehouseBreakdown?: Array<{
+    warehouseId: string;
+    warehouseName: string;
+    yesterdayOutboundQty: number | null;
+    yesterdayReservedQty: number | null;
+  }>;
   status: "缺货" | "补货预警" | "慢销" | "滞销" | "无动销数据" | "健康" | string;
   suggestion: string;
   identityScope?: string;
@@ -1477,6 +1485,12 @@ export type MovementPayload = {
   ok: boolean;
   generatedAt: string;
   orderSyncedAt: string;
+  evidence?: {
+    date: string;
+    outboundAvailable: boolean;
+    reservedAvailable: boolean;
+    reservedSnapshotAt: string;
+  };
   orderDataAvailable?: boolean;
   orderDataComplete?: boolean;
   inventorySyncedAt: string;
