@@ -667,6 +667,42 @@ export type ReviewCenterComparison = {
   direction: "up" | "down" | "flat" | "new";
 };
 
+export type ReviewCenterProductShopRow = {
+  id: string;
+  shopCode: string;
+  shopName: string;
+  shopAlias: string;
+  rawShopName: string;
+  platform: string;
+  currentQty: number;
+  previousQty: number;
+  changeQty: number;
+  changeRate: number | null;
+  direction: ReviewCenterComparison["direction"];
+  currentOrders: number;
+  previousOrders: number;
+  currentShare: number;
+  previousShare: number;
+  changeContribution: number | null;
+};
+
+export type ReviewCenterProductWarehouseRow = {
+  id: string;
+  warehouseId: string;
+  warehouseName: string;
+  currentQty: number;
+  previousQty: number;
+  changeQty: number;
+  changeRate: number | null;
+  direction: ReviewCenterComparison["direction"];
+  currentOrders: number;
+  previousOrders: number;
+  currentShare: number;
+  previousShare: number;
+  changeContribution: number | null;
+  shops: ReviewCenterProductShopRow[];
+};
+
 export type ReviewCenterProductRow = {
   rank: number;
   sku: string;
@@ -681,6 +717,7 @@ export type ReviewCenterProductRow = {
   previousOrders: number;
   share: number;
   trend: "new" | "growing" | "stable" | "declining" | "dormant";
+  warehouses: ReviewCenterProductWarehouseRow[];
 };
 
 export type ReviewCenterTicket = {

@@ -1,3 +1,5 @@
+import { applyShopDirectoryProfile } from "./shop-directory.js";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 const RESPONSE_SLA_HOURS = 24;
@@ -385,6 +387,69 @@ function orderDate(order) {
   return order?.shippedAt || order?.orderDate || order?.date || order?.createdAt || order?.orderedAt || "";
 }
 
+function attributionKey(...values) {
+  return values.map((value) => text(value).toLowerCase()).filter(Boolean).join("::");
+}
+
+function productAttributionRows(currentRow, previousRow, productChangeQty) {
+  const currentWarehouses = currentRow?.warehouses || new Map();
+  const previousWarehouses = previousRow?.warehouses || new Map();
+  const warehouseKeys = [...new Set([...currentWarehouses.keys(), ...previousWarehouses.keys()])];
+
+  function metricRow(currentMetric, previousMetric, currentTotal, previousTotal) {
+    const currentQty = round(currentMetric?.quantity || 0, 2);
+    const previousQty = round(previousMetric?.quantity || 0, 2);
+    const delta = comparison(currentQty, previousQty);
+    return {
+      currentQty,
+      previousQty,
+      changeQty: delta.change,
+      changeRate: delta.changeRate,
+      direction: delta.direction,
+      currentOrders: currentMetric?.orders.size || 0,
+      previousOrders: previousMetric?.orders.size || 0,
+      currentShare: percentage(currentQty, currentTotal),
+      previousShare: percentage(previousQty, previousTotal),
+      changeContribution: productChangeQty ? round((delta.change / productChangeQty) * 100) : null,
+    };
+  }
+
+  function impactSort(left, right) {
+    if (productChangeQty < 0) return left.changeQty - right.changeQty || right.previousQty - left.previousQty;
+    if (productChangeQty > 0) return right.changeQty - left.changeQty || right.currentQty - left.currentQty;
+    return right.currentQty - left.currentQty || right.previousQty - left.previousQty;
+  }
+
+  return warehouseKeys.map((warehouseKey) => {
+    const currentWarehouse = currentWarehouses.get(warehouseKey);
+    const previousWarehouse = previousWarehouses.get(warehouseKey);
+    const warehouseMetric = metricRow(currentWarehouse, previousWarehouse, currentRow?.quantity || 0, previousRow?.quantity || 0);
+    const currentShops = currentWarehouse?.shops || new Map();
+    const previousShops = previousWarehouse?.shops || new Map();
+    const shopKeys = [...new Set([...currentShops.keys(), ...previousShops.keys()])];
+    const shops = shopKeys.map((shopKey) => {
+      const currentShop = currentShops.get(shopKey);
+      const previousShop = previousShops.get(shopKey);
+      return {
+        id: shopKey,
+        shopCode: text(currentShop?.shopCode || previousShop?.shopCode),
+        shopName: text(currentShop?.shopName || previousShop?.shopName) || "未识别店铺",
+        shopAlias: text(currentShop?.shopAlias || previousShop?.shopAlias),
+        rawShopName: text(currentShop?.rawShopName || previousShop?.rawShopName),
+        platform: text(currentShop?.platform || previousShop?.platform) || "未知平台",
+        ...metricRow(currentShop, previousShop, currentRow?.quantity || 0, previousRow?.quantity || 0),
+      };
+    }).sort(impactSort);
+    return {
+      id: warehouseKey,
+      warehouseId: text(currentWarehouse?.warehouseId || previousWarehouse?.warehouseId),
+      warehouseName: text(currentWarehouse?.warehouseName || previousWarehouse?.warehouseName) || "未识别仓库",
+      ...warehouseMetric,
+      shops,
+    };
+  }).sort(impactSort);
+}
+
 function buildProductReview(orders, products, range, previousRange) {
   const metadata = new Map();
   for (const product of products) {
@@ -407,10 +472,42 @@ function buildProductReview(orders, products, range, previousRange) {
       const quantity = Math.max(0, number(order?.quantity || order?.qty || order?.outboundQty));
       if (!sku || quantity <= 0) continue;
       const orderId = text(order?.orderId || order?.orderNo || order?.externalOrderNo) || `${sku}:${date}:${rows.size}`;
-      const row = rows.get(sku) || { sku, quantity: 0, orders: new Set(), name: "" };
+      const row = rows.get(sku) || { sku, quantity: 0, orders: new Set(), name: "", warehouses: new Map() };
       row.quantity += quantity;
       row.orders.add(orderId);
       row.name ||= text(order?.productName || order?.name);
+
+      const warehouseId = text(order?.warehouseId || order?.warehouseCode);
+      const warehouseName = text(order?.warehouseName);
+      const warehouseKey = attributionKey(warehouseId || warehouseName || "未识别仓库");
+      const warehouse = row.warehouses.get(warehouseKey) || {
+        warehouseId,
+        warehouseName,
+        quantity: 0,
+        orders: new Set(),
+        shops: new Map(),
+      };
+      warehouse.warehouseId ||= warehouseId;
+      warehouse.warehouseName ||= warehouseName;
+      warehouse.quantity += quantity;
+      warehouse.orders.add(orderId);
+
+      const platform = text(order?.platform || order?.salesPlatform);
+      const shopCode = text(order?.shopCode || order?.storeCode || order?.shopId || order?.storeId);
+      const shopName = text(order?.shopName || order?.storeName);
+      const shopAlias = text(order?.shopAlias);
+      const rawShopName = text(order?.rawShopName || order?.storeName || order?.shopName);
+      const shopKey = attributionKey(platform || "未知平台", shopCode || rawShopName || shopName || "未识别店铺");
+      const shop = warehouse.shops.get(shopKey) || { shopCode, shopName, shopAlias, rawShopName, platform, quantity: 0, orders: new Set() };
+      shop.shopCode ||= shopCode;
+      shop.shopName ||= shopName;
+      shop.shopAlias ||= shopAlias;
+      shop.rawShopName ||= rawShopName;
+      shop.platform ||= platform;
+      shop.quantity += quantity;
+      shop.orders.add(orderId);
+      warehouse.shops.set(shopKey, shop);
+      row.warehouses.set(warehouseKey, warehouse);
       rows.set(sku, row);
       orderIds.add(orderId);
     }
@@ -450,6 +547,7 @@ function buildProductReview(orders, products, range, previousRange) {
       previousOrders: previousRow?.orders.size || 0,
       share: percentage(currentQty, outboundQty),
       trend,
+      warehouses: productAttributionRows(currentRow, previousRow, delta.change),
     };
   });
   const head = rows.filter((row) => row.currentQty > 0).sort((a, b) => b.currentQty - a.currentQty || a.sku.localeCompare(b.sku)).slice(0, 12).map((row, index) => ({ ...row, rank: index + 1 }));
@@ -566,7 +664,13 @@ export function buildReviewCenterPayload(input = {}) {
   };
   const overviewComparison = Object.fromEntries(Object.keys(overview).map((key) => [key, comparison(overview[key], previousOverview[key])]));
   const productRows = Array.isArray(input.products) ? input.products : [];
-  const products = buildProductReview(Array.isArray(input.outboundOrders) ? input.outboundOrders : [], productRows, range, previousRange);
+  const outboundOrders = Array.isArray(input.outboundOrders) ? input.outboundOrders : [];
+  const reviewOrders = input.shopDirectory?.byKey instanceof Map
+    ? outboundOrders.map((order) => text(order?.providerId).toLowerCase() === "sea_wms"
+      ? applyShopDirectoryProfile(order, input.shopDirectory)
+      : order)
+    : outboundOrders;
+  const products = buildProductReview(reviewOrders, productRows, range, previousRange);
 
   return {
     ok: true,

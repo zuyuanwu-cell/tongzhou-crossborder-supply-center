@@ -6,12 +6,14 @@ import {
   ArrowRight,
   ArrowUpRight,
   CalendarDays,
+  ChevronDown,
   CheckCircle2,
   Clock3,
   MousePointer2,
   PackageSearch,
   RefreshCw,
   RotateCcw,
+  Store,
   Users,
   Warehouse,
 } from "lucide-react";
@@ -37,6 +39,25 @@ function chinaDate(offsetDays = 0) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value || 0);
+}
+
+function formatSignedNumber(value: number) {
+  if (!value) return "0";
+  return `${value > 0 ? "+" : "−"}${formatNumber(Math.abs(value))}`;
+}
+
+function formatContribution(value: number | null) {
+  if (!Number.isFinite(value)) return "—";
+  return `${Number(value) > 0 ? "+" : Number(value) < 0 ? "−" : ""}${formatNumber(Math.abs(Number(value)))}%`;
+}
+
+function changeTone(value: number) {
+  return value > 0 ? "positive" : value < 0 ? "negative" : "neutral";
+}
+
+function platformLabel(value: string) {
+  const labels: Record<string, string> = { tiktok: "TikTok", shopee: "Shopee", ozon: "Ozon", lazada: "Lazada" };
+  return labels[value.toLocaleLowerCase()] || value || "未知平台";
 }
 
 function formatTime(value: string) {
@@ -200,23 +221,94 @@ function Donut({ rows, selected, onSelect }: { rows: ReviewCenterCount[]; select
 }
 
 function ProductRanking({ rows, maxQty }: { rows: ReviewCenterProductRow[]; maxQty: number }) {
+  const [expandedSku, setExpandedSku] = React.useState("");
+  const [expandedWarehouse, setExpandedWarehouse] = React.useState("");
+
+  React.useEffect(() => {
+    if (expandedSku && !rows.some((row) => row.sku === expandedSku)) {
+      setExpandedSku("");
+      setExpandedWarehouse("");
+    }
+  }, [expandedSku, rows]);
+
+  function toggleProduct(row: ReviewCenterProductRow) {
+    if (expandedSku === row.sku) {
+      setExpandedSku("");
+      setExpandedWarehouse("");
+      return;
+    }
+    setExpandedSku(row.sku);
+    setExpandedWarehouse(row.warehouses?.[0]?.id || "");
+  }
+
   if (!rows.length) return <EmptyChart label="当前对比周期暂无产品出库数据" />;
   return (
     <div className="review-product-table">
-      <div className="review-product-head"><span>#</span><span>产品 / SKU</span><span>本期出库</span><span>上期出库</span><span>环比变化</span><span>占比</span></div>
-      {rows.map((row) => (
-        <article key={row.sku} className={`trend-${row.trend}`}>
-          <span className="review-product-rank">{String(row.rank).padStart(2, "0")}</span>
-          <div className="review-product-name">
-            {row.imageUrl ? <img src={row.imageUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span className="review-product-placeholder"><PackageSearch size={17} /></span>}
-            <span><strong>{row.productName}</strong><small>{row.sku}</small></span>
-          </div>
-          <div className="review-product-value"><strong>{formatNumber(row.currentQty)}</strong><i><b style={{ width: `${Math.max(2, row.currentQty / Math.max(1, maxQty) * 100)}%` }} /></i></div>
-          <span>{formatNumber(row.previousQty)}</span>
-          <span><ChangeBadge value={{ previous: row.previousQty, change: row.changeQty, changeRate: row.changeRate, direction: row.direction }} /></span>
-          <strong>{row.share}%</strong>
-        </article>
-      ))}
+      <div className="review-product-head"><span>#</span><span>产品 / SKU</span><span>本期出库</span><span>上期出库</span><span>环比变化</span><span>占比 / 影响</span></div>
+      {rows.map((row) => {
+        const warehouses = row.warehouses || [];
+        const isExpanded = expandedSku === row.sku;
+        const shopCount = new Set(warehouses.flatMap((warehouse) => warehouse.shops.map((shop) => `${warehouse.id}:${shop.id}`))).size;
+        return (
+          <article key={row.sku} className={`trend-${row.trend} ${isExpanded ? "is-expanded" : ""}`}>
+            <button className="review-product-row" type="button" aria-expanded={isExpanded} onClick={() => toggleProduct(row)}>
+              <span className="review-product-rank">{String(row.rank).padStart(2, "0")}</span>
+              <span className="review-product-name">
+                {row.imageUrl ? <img src={row.imageUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span className="review-product-placeholder"><PackageSearch size={17} /></span>}
+                <span><strong>{row.productName}</strong><small>{row.sku}</small></span>
+              </span>
+              <span className="review-product-value"><strong>{formatNumber(row.currentQty)}</strong><i><b style={{ width: `${Math.max(2, row.currentQty / Math.max(1, maxQty) * 100)}%` }} /></i></span>
+              <span>{formatNumber(row.previousQty)}</span>
+              <span><ChangeBadge value={{ previous: row.previousQty, change: row.changeQty, changeRate: row.changeRate, direction: row.direction }} /></span>
+              <span className="review-product-open-cell"><strong>{row.share}%</strong><em>{isExpanded ? "收起" : "看影响"}</em><ChevronDown size={14} /></span>
+            </button>
+            {isExpanded ? (
+              <section className="review-product-attribution" aria-label={`${row.productName}仓库与店铺影响明细`}>
+                <header>
+                  <div><Warehouse size={17} /><span><strong>仓库影响拆解</strong><small>{warehouses.length} 个仓库 · {shopCount} 家店铺</small></span></div>
+                  <p>产品净变化 <b className={changeTone(row.changeQty)}>{formatSignedNumber(row.changeQty)}</b><span>变化贡献可超过 100%，代表被其他仓库或店铺的反向变化抵消</span></p>
+                </header>
+                {warehouses.length ? (
+                  <div className="review-attribution-table">
+                    <div className="review-attribution-head"><span>仓库 / 店铺</span><span>本期</span><span>上期</span><span>增减</span><span>对产品变化贡献</span><span /></div>
+                    {warehouses.map((warehouse) => {
+                      const warehouseExpanded = expandedWarehouse === warehouse.id;
+                      const growingShops = warehouse.shops.filter((shop) => shop.changeQty > 0).length;
+                      const decliningShops = warehouse.shops.filter((shop) => shop.changeQty < 0).length;
+                      return (
+                        <section className="review-warehouse-attribution" key={warehouse.id}>
+                          <button type="button" aria-expanded={warehouseExpanded} onClick={() => setExpandedWarehouse(warehouseExpanded ? "" : warehouse.id)}>
+                            <span className="review-attribution-name"><i><Warehouse size={15} /></i><span><strong>{warehouse.warehouseName}</strong><small>{warehouse.shops.length} 家店铺 · {growingShops} 增长 / {decliningShops} 下滑</small></span></span>
+                            <strong>{formatNumber(warehouse.currentQty)}</strong>
+                            <span>{formatNumber(warehouse.previousQty)}</span>
+                            <span className={`review-attribution-delta ${changeTone(warehouse.changeQty)}`}><b>{formatSignedNumber(warehouse.changeQty)}</b><ChangeBadge value={{ previous: warehouse.previousQty, change: warehouse.changeQty, changeRate: warehouse.changeRate, direction: warehouse.direction }} compact /></span>
+                            <span className={`review-contribution ${changeTone(warehouse.changeQty)}`}>{formatContribution(warehouse.changeContribution)}</span>
+                            <ChevronDown size={15} />
+                          </button>
+                          {warehouseExpanded ? (
+                            <div className="review-shop-attribution">
+                              {warehouse.shops.map((shop) => (
+                                <div key={shop.id}>
+                                  <span className="review-attribution-name"><i><Store size={14} /></i><span><strong>{shop.shopAlias || shop.shopName}</strong><small>{platformLabel(shop.platform)}{shop.shopAlias && shop.rawShopName && shop.rawShopName !== shop.shopAlias ? ` · 原名 ${shop.rawShopName}` : shop.shopCode && shop.shopCode !== shop.shopName ? ` · ${shop.shopCode}` : ""}</small></span></span>
+                                  <strong>{formatNumber(shop.currentQty)}</strong>
+                                  <span>{formatNumber(shop.previousQty)}</span>
+                                  <span className={`review-attribution-delta ${changeTone(shop.changeQty)}`}><b>{formatSignedNumber(shop.changeQty)}</b><ChangeBadge value={{ previous: shop.previousQty, change: shop.changeQty, changeRate: shop.changeRate, direction: shop.direction }} compact /></span>
+                                  <span className={`review-contribution ${changeTone(shop.changeQty)}`}>{formatContribution(shop.changeContribution)}</span>
+                                  <span />
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </section>
+                      );
+                    })}
+                  </div>
+                ) : <EmptyChart label="该产品暂无可穿透的仓库与店铺字段" />}
+              </section>
+            ) : null}
+          </article>
+        );
+      })}
     </div>
   );
 }

@@ -7200,6 +7200,7 @@ const server = http.createServer(async (req, res) => {
       }
       const afterSales = afterSalesService.list().tickets;
       const warehouseTickets = warehouseTicketService.list().tickets;
+      const shopDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       sendJson(res, 200, buildReviewCenterPayload({
         from: url.searchParams.get("from"),
         to: url.searchParams.get("to"),
@@ -7207,6 +7208,7 @@ const server = http.createServer(async (req, res) => {
         afterSalesTickets: afterSales,
         warehouseTickets,
         outboundOrders: cachedOrdersSync.orders,
+        shopDirectory,
         products: [...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])],
         actionLogLimit: 5000,
       }));

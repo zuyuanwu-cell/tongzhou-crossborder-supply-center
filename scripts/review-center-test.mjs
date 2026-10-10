@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { buildReviewCenterPayload, canAccessReviewCenter, resolveReviewRange } from "../server/review-center.js";
+import { buildShopDirectory } from "../server/shop-directory.js";
 
 const now = new Date("2026-10-09T12:00:00.000Z");
 const logs = [
@@ -47,10 +48,12 @@ const afterSales = [{
 }];
 
 const outboundOrders = [
-  { orderId: "O-1", sku: "SKU-A", productName: "头部产品", quantity: 100, shippedAt: "2026-10-08 12:00:00" },
-  { orderId: "O-2", sku: "SKU-B", productName: "新品", quantity: 10, shippedAt: "2026-10-09 12:00:00" },
-  { orderId: "O-P1", sku: "SKU-A", productName: "头部产品", quantity: 50, shippedAt: "2026-10-06 12:00:00" },
-  { orderId: "O-P2", sku: "SKU-C", productName: "休眠产品", quantity: 30, shippedAt: "2026-10-07 12:00:00" },
+  { orderId: "O-1", sku: "SKU-A", productName: "头部产品", quantity: 80, shippedAt: "2026-10-08 12:00:00", warehouseId: "wh-1", warehouseName: "俄罗斯1仓", providerId: "sea_wms", country: "印度尼西亚", platform: "TikTok", shopCode: "SHOP-A", shopName: "店铺A" },
+  { orderId: "O-2", sku: "SKU-A", productName: "头部产品", quantity: 20, shippedAt: "2026-10-09 12:00:00", warehouseId: "wh-2", warehouseName: "俄罗斯2仓", platform: "Ozon", shopCode: "SHOP-B", shopName: "店铺B" },
+  { orderId: "O-3", sku: "SKU-B", productName: "新品", quantity: 10, shippedAt: "2026-10-09 12:00:00", warehouseId: "wh-2", warehouseName: "俄罗斯2仓", platform: "Ozon", shopCode: "SHOP-B", shopName: "店铺B" },
+  { orderId: "O-P1", sku: "SKU-A", productName: "头部产品", quantity: 20, shippedAt: "2026-10-06 12:00:00", warehouseId: "wh-1", warehouseName: "俄罗斯1仓", providerId: "sea_wms", country: "印度尼西亚", platform: "TikTok", shopCode: "SHOP-A", shopName: "店铺A" },
+  { orderId: "O-P2", sku: "SKU-A", productName: "头部产品", quantity: 30, shippedAt: "2026-10-07 12:00:00", warehouseId: "wh-2", warehouseName: "俄罗斯2仓", platform: "Ozon", shopCode: "SHOP-B", shopName: "店铺B" },
+  { orderId: "O-P3", sku: "SKU-C", productName: "休眠产品", quantity: 30, shippedAt: "2026-10-07 12:00:00", warehouseId: "wh-1", warehouseName: "俄罗斯1仓", platform: "Ozon", shopCode: "SHOP-C", shopName: "店铺C" },
 ];
 
 const warehouseTickets = [{
@@ -67,6 +70,11 @@ const warehouseTickets = [{
   timeline: [{ type: "created", createdAt: "2026-10-08T00:00:00.000Z" }],
 }];
 
+const shopDirectory = buildShopDirectory({
+  orders: outboundOrders,
+  miaoshouShops: [{ shopId: "MS-ID-1", platform: "TikTok", site: "ID", platformShopName: "店铺A", shopNick: "印尼美妆旗舰店" }],
+});
+
 assert.equal(canAccessReviewCenter({ role: "admin" }), true);
 assert.equal(canAccessReviewCenter({ role: "direct", user: { permissions: ["action_log", "operations"] } }), false, "普通账号即使有管理权限也不能访问复盘中心");
 
@@ -81,6 +89,7 @@ const payload = buildReviewCenterPayload({
   afterSalesTickets: afterSales,
   warehouseTickets,
   outboundOrders,
+  shopDirectory,
   products: [
     { sku: "SKU-A", name: "头部产品", imageUrl: "https://example.com/a.png" },
     { sku: "SKU-C", name: "休眠产品" },
@@ -110,5 +119,16 @@ assert.equal(payload.products.head[0].sku, "SKU-A");
 assert.equal(payload.products.growth[0].changeQty, 50);
 assert.equal(payload.products.tail[0].trend, "dormant");
 assert.equal(payload.products.tail[0].sku, "SKU-C");
+assert.equal(payload.products.head[0].warehouses.length, 2);
+assert.deepEqual(payload.products.head[0].warehouses.map((row) => row.warehouseName), ["俄罗斯1仓", "俄罗斯2仓"]);
+assert.equal(payload.products.head[0].warehouses[0].changeQty, 60);
+assert.equal(payload.products.head[0].warehouses[0].changeContribution, 120, "仓库拉升可超过产品净增长，体现被其他仓库抵消的部分");
+assert.equal(payload.products.head[0].warehouses[1].changeQty, -10);
+assert.equal(payload.products.head[0].warehouses[1].changeContribution, -20);
+assert.equal(payload.products.head[0].warehouses[0].shops[0].shopName, "印尼美妆旗舰店");
+assert.equal(payload.products.head[0].warehouses[0].shops[0].shopAlias, "印尼美妆旗舰店");
+assert.equal(payload.products.head[0].warehouses[0].shops[0].rawShopName, "店铺A");
+assert.equal(payload.products.head[0].warehouses[1].shops[0].shopAlias, "", "非东南亚 WMS 店铺保持原始名称");
+assert.equal(payload.products.head[0].warehouses.reduce((sum, row) => sum + row.changeContribution, 0), 100);
 
 console.log("review-center tests passed");
