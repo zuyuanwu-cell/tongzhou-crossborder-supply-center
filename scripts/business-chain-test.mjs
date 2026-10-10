@@ -6,6 +6,10 @@ import { BUSINESS_CHAIN_FORMS } from "../server/business-chain-config.js";
 import { initBusinessChainStore } from "../server/business-chain-db.js";
 import { normalizeBusinessChainRecord } from "../server/business-chain-normalize.js";
 import { createBusinessChainService } from "../server/business-chain-service.js";
+import { canAccessBusinessChain } from "../server/business-chain-api.js";
+
+assert.equal(canAccessBusinessChain({ role: "admin" }), true);
+assert.equal(canAccessBusinessChain({ role: "direct", user: { permissionOverrides: { allow: ["business_chain_view"] } } }), false);
 
 function value(raw) {
   return { value: raw };

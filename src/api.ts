@@ -653,6 +653,34 @@ export type ReviewCenterCount = {
   label: string;
   count: number;
   share?: number;
+  previousCount: number;
+  previous: number;
+  change: number;
+  changeRate: number | null;
+  direction: "up" | "down" | "flat" | "new";
+};
+
+export type ReviewCenterComparison = {
+  previous: number;
+  change: number;
+  changeRate: number | null;
+  direction: "up" | "down" | "flat" | "new";
+};
+
+export type ReviewCenterProductRow = {
+  rank: number;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  currentQty: number;
+  previousQty: number;
+  changeQty: number;
+  changeRate: number | null;
+  direction: ReviewCenterComparison["direction"];
+  currentOrders: number;
+  previousOrders: number;
+  share: number;
+  trend: "new" | "growing" | "stable" | "declining" | "dormant";
 };
 
 export type ReviewCenterTicket = {
@@ -682,6 +710,10 @@ export type ReviewCenterPayload = {
   ok: boolean;
   generatedAt: string;
   range: { from: string; to: string; days: number; timeZone: string };
+  comparison: {
+    previousRange: { from: string; to: string; days: number };
+    overview: Record<string, ReviewCenterComparison>;
+  };
   thresholds: { responseSlaHours: number; closeSlaHours: number };
   coverage: {
     actionLogStored: number;
@@ -705,8 +737,8 @@ export type ReviewCenterPayload = {
     closeSlaRate: number;
   };
   usage: {
-    daily: Array<{ date: string; operations: number; users: number; collaboration: number; afterSales: number }>;
-    actors: Array<{ id: string; name: string; role: string; count: number; loginCount: number; collaborationCount: number; activeDays: number; lastAt: string }>;
+    daily: Array<{ date: string; operations: number; users: number; collaboration: number; afterSales: number; previousDate: string; previousOperations: number; previousUsers: number; previousCollaboration: number; previousAfterSales: number }>;
+    actors: Array<{ id: string; name: string; role: string; count: number; previousCount: number; previous: number; change: number; changeRate: number | null; direction: ReviewCenterComparison["direction"]; loginCount: number; collaborationCount: number; activeDays: number; lastAt: string }>;
     actions: ReviewCenterCount[];
     modules: ReviewCenterCount[];
     heatmap: Array<{ weekday: number; hours: number[] }>;
@@ -728,11 +760,18 @@ export type ReviewCenterPayload = {
       id: string;
       name: string;
       total: number;
+      previousTotal: number;
+      previous: number;
+      change: number;
+      changeRate: number | null;
+      direction: ReviewCenterComparison["direction"];
       open: number;
       completed: number;
       overdue: number;
       completionRate: number;
+      previousCompletionRate: number;
       responseSlaRate: number;
+      previousResponseSlaRate: number;
       avgResponseHours: number;
       avgCloseHours: number;
     }>;
@@ -747,6 +786,25 @@ export type ReviewCenterPayload = {
     rejectionCount: number;
     reminderCount: number;
     liabilityCny: number;
+  };
+  products: {
+    source: string;
+    summary: {
+      outboundQty: number;
+      outboundComparison: ReviewCenterComparison;
+      activeSku: number;
+      activeSkuComparison: ReviewCenterComparison;
+      orderCount: number;
+      orderCountComparison: ReviewCenterComparison;
+      headShare: number;
+      headShareComparison: ReviewCenterComparison;
+      newSkuCount: number;
+      dormantSkuCount: number;
+    };
+    head: ReviewCenterProductRow[];
+    growth: ReviewCenterProductRow[];
+    decline: ReviewCenterProductRow[];
+    tail: ReviewCenterProductRow[];
   };
 };
 

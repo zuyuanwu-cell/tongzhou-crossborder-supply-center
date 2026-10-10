@@ -6,6 +6,8 @@ const logs = [
   { id: "1", createdAt: "2026-10-09T01:00:00.000Z", action: "登录系统", targetType: "user", targetName: "张三", actorId: "u1", actorName: "张三", actorRole: "直营运营", details: { loginIp: "10.0.0.1" } },
   { id: "2", createdAt: "2026-10-09T02:00:00.000Z", action: "提交售后单", targetType: "after_sales_ticket", targetName: "AS-1", actorId: "u1", actorName: "张三", actorRole: "直营运营" },
   { id: "3", createdAt: "2026-10-08T03:00:00.000Z", action: "创建仓库工单", targetType: "warehouse_ticket", targetName: "WT-1", actorId: "u2", actorName: "李四", actorRole: "直营运营" },
+  { id: "p1", createdAt: "2026-10-07T03:00:00.000Z", action: "登录系统", targetType: "user", targetName: "张三", actorId: "u1", actorName: "张三", actorRole: "直营运营" },
+  { id: "p2", createdAt: "2026-10-06T03:00:00.000Z", action: "创建仓库工单", targetType: "warehouse_ticket", targetName: "WT-OLD", actorId: "u2", actorName: "李四", actorRole: "直营运营" },
   { id: "old", createdAt: "2026-09-01T03:00:00.000Z", action: "旧操作", targetType: "system", actorId: "u2", actorName: "李四" },
 ];
 
@@ -29,7 +31,27 @@ const afterSales = [{
     { type: "complete", createdAt: "2026-10-09T00:00:00.000Z" },
   ],
   rejectionHistory: [],
+}, {
+  id: "AS-OLD",
+  originalOrderNumber: "ORDER-OLD",
+  warehouseId: "wh-1",
+  warehouseName: "俄罗斯1仓",
+  primaryReason: "仓库错发",
+  secondaryReason: "退款",
+  responsibility: { party: "warehouse", label: "仓库责任" },
+  status: "completed",
+  createdAt: "2026-10-07T00:00:00.000Z",
+  updatedAt: "2026-10-07T08:00:00.000Z",
+  completedAt: "2026-10-07T08:00:00.000Z",
+  timeline: [{ type: "accept", createdAt: "2026-10-07T02:00:00.000Z" }],
 }];
+
+const outboundOrders = [
+  { orderId: "O-1", sku: "SKU-A", productName: "头部产品", quantity: 100, shippedAt: "2026-10-08 12:00:00" },
+  { orderId: "O-2", sku: "SKU-B", productName: "新品", quantity: 10, shippedAt: "2026-10-09 12:00:00" },
+  { orderId: "O-P1", sku: "SKU-A", productName: "头部产品", quantity: 50, shippedAt: "2026-10-06 12:00:00" },
+  { orderId: "O-P2", sku: "SKU-C", productName: "休眠产品", quantity: 30, shippedAt: "2026-10-07 12:00:00" },
+];
 
 const warehouseTickets = [{
   id: "WT-1",
@@ -58,6 +80,11 @@ const payload = buildReviewCenterPayload({
   actionLogs: logs,
   afterSalesTickets: afterSales,
   warehouseTickets,
+  outboundOrders,
+  products: [
+    { sku: "SKU-A", name: "头部产品", imageUrl: "https://example.com/a.png" },
+    { sku: "SKU-C", name: "休眠产品" },
+  ],
 });
 
 assert.equal(payload.overview.operations, 3);
@@ -72,5 +99,16 @@ assert.equal(payload.afterSales.liabilityCny, 128.5);
 assert.equal(payload.collaboration.warehouses.length, 2);
 assert.equal(payload.collaboration.tickets.find((ticket) => ticket.id === "WT-1")?.overdue, true);
 assert.equal("details" in payload.usage.entries[0], false, "复盘接口不能返回登录 IP 或原始详情载荷");
+assert.deepEqual(payload.comparison.previousRange, { from: "2026-10-06", to: "2026-10-07", days: 2 });
+assert.equal(payload.comparison.overview.operations.previous, 2);
+assert.equal(payload.comparison.overview.operations.changeRate, 50);
+assert.equal(payload.usage.daily[0].previousDate, "2026-10-06");
+assert.equal(payload.products.summary.outboundQty, 110);
+assert.equal(payload.products.summary.outboundComparison.previous, 80);
+assert.equal(payload.products.summary.outboundComparison.changeRate, 37.5);
+assert.equal(payload.products.head[0].sku, "SKU-A");
+assert.equal(payload.products.growth[0].changeQty, 50);
+assert.equal(payload.products.tail[0].trend, "dormant");
+assert.equal(payload.products.tail[0].sku, "SKU-C");
 
 console.log("review-center tests passed");

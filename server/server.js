@@ -7194,6 +7194,8 @@ const server = http.createServer(async (req, res) => {
         actionLogs: cachedActionLog.entries,
         afterSalesTickets: afterSales,
         warehouseTickets,
+        outboundOrders: cachedOrdersSync.orders,
+        products: [...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])],
         actionLogLimit: 5000,
       }));
       return;

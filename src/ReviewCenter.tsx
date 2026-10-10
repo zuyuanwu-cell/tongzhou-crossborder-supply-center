@@ -2,17 +2,20 @@ import React from "react";
 import {
   Activity,
   AlertTriangle,
+  ArrowDownRight,
   ArrowRight,
+  ArrowUpRight,
   CalendarDays,
   CheckCircle2,
   Clock3,
   MousePointer2,
+  PackageSearch,
   RefreshCw,
   RotateCcw,
   Users,
   Warehouse,
 } from "lucide-react";
-import { fetchReviewCenter, type ReviewCenterCount, type ReviewCenterPayload } from "./api";
+import { fetchReviewCenter, type ReviewCenterComparison, type ReviewCenterCount, type ReviewCenterPayload, type ReviewCenterProductRow } from "./api";
 import "./review-center.css";
 
 const statusLabels: Record<string, string> = {
@@ -57,6 +60,17 @@ function EmptyChart({ label = "当前周期暂无数据" }: { label?: string }) 
   return <div className="review-empty"><Activity size={22} /><span>{label}</span></div>;
 }
 
+function ChangeBadge({ value, compact = false, inverse = false }: { value: ReviewCenterComparison; compact?: boolean; inverse?: boolean }) {
+  const className = value.direction === "new" || value.direction === "up" ? "up" : value.direction === "down" ? "down" : "flat";
+  const Icon = value.direction === "down" ? ArrowDownRight : ArrowUpRight;
+  const label = value.direction === "new" ? "新增" : value.changeRate === null ? "—" : `${Math.abs(value.changeRate)}%`;
+  return (
+    <span className={`review-change ${className} ${inverse ? "is-inverse" : ""}`} title={`上期 ${formatNumber(value.previous)}，变化 ${value.change > 0 ? "+" : ""}${formatNumber(value.change)}`}>
+      {value.direction === "flat" ? <i>—</i> : <Icon size={compact ? 12 : 14} />}{label}
+    </span>
+  );
+}
+
 function BarList({
   rows,
   selected,
@@ -86,7 +100,7 @@ function BarList({
           <span className="review-bar-rank">{String(index + 1).padStart(2, "0")}</span>
           <span className="review-bar-label">{row.label}</span>
           <span className="review-bar-track"><i style={{ width: `${Math.max(3, row.count / max * 100)}%` }} /></span>
-          <strong>{formatNumber(row.count)}{suffix}</strong>
+          <strong>{formatNumber(row.count)}{suffix}<ChangeBadge value={row} compact /></strong>
         </button>
       ))}
     </div>
@@ -106,10 +120,11 @@ function TrendChart({
   const width = 760;
   const height = 220;
   const pad = { left: 32, right: 18, top: 20, bottom: 32 };
-  const max = Math.max(1, ...rows.map((row) => row.operations));
+  const max = Math.max(1, ...rows.flatMap((row) => [row.operations, row.previousOperations]));
   const x = (index: number) => pad.left + (rows.length <= 1 ? 0 : index / (rows.length - 1) * (width - pad.left - pad.right));
   const y = (value: number) => pad.top + (1 - value / max) * (height - pad.top - pad.bottom);
   const points = rows.map((row, index) => `${x(index)},${y(row.operations)}`).join(" ");
+  const previousPoints = rows.map((row, index) => `${x(index)},${y(row.previousOperations)}`).join(" ");
   const area = rows.length ? `${pad.left},${height - pad.bottom} ${points} ${x(rows.length - 1)},${height - pad.bottom}` : "";
   if (!rows.length) return <EmptyChart />;
   const labelEvery = Math.max(1, Math.ceil(rows.length / 6));
@@ -118,6 +133,7 @@ function TrendChart({
       <svg className="review-trend" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="操作趋势，点击数据点筛选当天明细">
         {[0, .25, .5, .75, 1].map((ratio) => <line key={ratio} x1={pad.left} x2={width - pad.right} y1={y(max * ratio)} y2={y(max * ratio)} className="review-grid-line" />)}
         {area ? <polygon points={area} className="review-area" /> : null}
+        <polyline points={previousPoints} className="review-line-previous" />
         <polyline points={points} className="review-line" />
         {rows.map((row, index) => (
           <g
@@ -129,14 +145,14 @@ function TrendChart({
             onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect(selectedDay === row.date ? "" : row.date); }}
           >
             <circle cx={x(index)} cy={y(row.operations)} r={selectedDay === row.date ? 7 : 4.5} />
-            <title>{`${row.date} · ${row.operations} 次操作 · ${row.users} 位用户`}</title>
+            <title>{`${row.date} · 本期 ${row.operations} 次 · 上期对应日 ${row.previousOperations} 次 · ${row.users} 位用户`}</title>
           </g>
         ))}
         {rows.map((row, index) => (index % labelEvery === 0 || index === rows.length - 1) ? (
           <text key={row.date} x={x(index)} y={height - 8} textAnchor="middle">{row.date.slice(5)}</text>
         ) : null)}
       </svg>
-      <div className="review-chart-legend"><i className="operations" />操作次数 <span>点选日期联动明细</span></div>
+      <div className="review-chart-legend"><i className="operations" />本期 <i className="previous" />上期同期 <span>点选本期日期联动明细</span></div>
     </div>
   );
 }
@@ -175,10 +191,32 @@ function Donut({ rows, selected, onSelect }: { rows: ReviewCenterCount[]; select
       <div className="review-donut-legend">
         {visible.map((row, index) => (
           <button key={row.label} className={selected === row.label ? "is-selected" : ""} type="button" onClick={() => onSelect(selected === row.label ? "" : row.label)}>
-            <i style={{ background: chartColors[index] }} /><span>{row.label}</span><strong>{row.count}</strong>
+            <i style={{ background: chartColors[index] }} /><span>{row.label}</span><strong>{row.count}<ChangeBadge value={row} compact /></strong>
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ProductRanking({ rows, maxQty }: { rows: ReviewCenterProductRow[]; maxQty: number }) {
+  if (!rows.length) return <EmptyChart label="当前对比周期暂无产品出库数据" />;
+  return (
+    <div className="review-product-table">
+      <div className="review-product-head"><span>#</span><span>产品 / SKU</span><span>本期出库</span><span>上期出库</span><span>环比变化</span><span>占比</span></div>
+      {rows.map((row) => (
+        <article key={row.sku} className={`trend-${row.trend}`}>
+          <span className="review-product-rank">{String(row.rank).padStart(2, "0")}</span>
+          <div className="review-product-name">
+            {row.imageUrl ? <img src={row.imageUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span className="review-product-placeholder"><PackageSearch size={17} /></span>}
+            <span><strong>{row.productName}</strong><small>{row.sku}</small></span>
+          </div>
+          <div className="review-product-value"><strong>{formatNumber(row.currentQty)}</strong><i><b style={{ width: `${Math.max(2, row.currentQty / Math.max(1, maxQty) * 100)}%` }} /></i></div>
+          <span>{formatNumber(row.previousQty)}</span>
+          <span><ChangeBadge value={{ previous: row.previousQty, change: row.changeQty, changeRate: row.changeRate, direction: row.direction }} /></span>
+          <strong>{row.share}%</strong>
+        </article>
+      ))}
     </div>
   );
 }
@@ -196,6 +234,7 @@ export default function ReviewCenter() {
   const [selectedStatus, setSelectedStatus] = React.useState("");
   const [selectedReason, setSelectedReason] = React.useState("");
   const [detailMode, setDetailMode] = React.useState<"activity" | "tickets">("activity");
+  const [productMode, setProductMode] = React.useState<"head" | "growth" | "decline" | "tail">("head");
 
   const load = React.useCallback(async (nextFrom = from, nextTo = to) => {
     setLoading(true);
@@ -229,7 +268,7 @@ export default function ReviewCenter() {
     setSelectedReason("");
   }
 
-  const actorRows = React.useMemo(() => payload?.usage.actors.map((actor) => ({ label: actor.name, count: actor.count, share: 0 })) || [], [payload]);
+  const actorRows = React.useMemo(() => payload?.usage.actors.map((actor) => ({ label: actor.name, count: actor.count, share: 0, previousCount: actor.previousCount, previous: actor.previous, change: actor.change, changeRate: actor.changeRate, direction: actor.direction })) || [], [payload]);
   const activityRows = React.useMemo(() => (payload?.usage.entries || []).filter((entry) => (
     (!selectedDay || chinaDateKey(entry.createdAt) === selectedDay)
     && (!selectedActor || entry.actorName === selectedActor)
@@ -249,6 +288,9 @@ export default function ReviewCenter() {
   const overview = payload.overview;
   const maxWarehouseTasks = Math.max(1, ...payload.collaboration.warehouses.map((warehouse) => warehouse.total));
   const activePreset = payload.range.days <= 7 ? 7 : payload.range.days <= 30 ? 30 : payload.range.days <= 90 ? 90 : 0;
+  const productRows = payload.products[productMode];
+  const maxProductQty = Math.max(1, ...productRows.map((row) => row.currentQty));
+  const previousRangeLabel = `${payload.comparison.previousRange.from.slice(5)} 至 ${payload.comparison.previousRange.to.slice(5)}`;
 
   return (
     <main className="review-center-page">
@@ -256,7 +298,7 @@ export default function ReviewCenter() {
         <div className="review-command-title">
           <span><Activity size={17} /> ADMIN REVIEW</span>
           <h2>复盘中心</h2>
-          <p>行为、协同、售后，一屏回看</p>
+          <p>行为、产品、协同、售后，一屏回看</p>
         </div>
         <div className="review-range-controls">
           <div className="review-presets">{[7, 30, 90].map((days) => <button className={activePreset === days ? "active" : ""} type="button" key={days} onClick={() => applyPreset(days)}>{days}天</button>)}</div>
@@ -270,12 +312,12 @@ export default function ReviewCenter() {
       {error ? <div className="review-warning"><AlertTriangle size={16} />{error}，当前保留上一次成功数据。</div> : null}
 
       <section className="review-kpis">
-        <article><span><Users size={17} />活跃用户</span><strong>{overview.activeUsers}</strong><small>{overview.operationsPerUser} 次 / 人</small></article>
-        <article><span><MousePointer2 size={17} />有效操作</span><strong>{formatNumber(overview.operations)}</strong><small>{payload.range.days} 天</small></article>
-        <article><span><Warehouse size={17} />协同任务</span><strong>{overview.collaborationTasks}</strong><small>{overview.openTasks} 待闭环</small></article>
-        <article className={overview.collaborationTasks && overview.responseSlaRate < 80 ? "attention" : "healthy"}><span><Clock3 size={17} />24h 响应</span><strong>{overview.collaborationTasks ? `${overview.responseSlaRate}%` : "—"}</strong><small>中位 {overview.collaborationTasks ? duration(overview.medianResponseHours) : "—"}</small></article>
-        <article className={overview.collaborationTasks && overview.completionRate < 70 ? "attention" : "healthy"}><span><CheckCircle2 size={17} />闭环率</span><strong>{overview.collaborationTasks ? `${overview.completionRate}%` : "—"}</strong><small>72h 达标 {overview.collaborationTasks ? `${overview.closeSlaRate}%` : "—"}</small></article>
-        <article className={overview.overdueTasks ? "danger" : "healthy"}><span><AlertTriangle size={17} />逾期未响应</span><strong>{overview.overdueTasks}</strong><small>需优先跟进</small></article>
+        <article><span><Users size={17} />活跃用户</span><strong>{overview.activeUsers}<ChangeBadge value={payload.comparison.overview.activeUsers} /></strong><small>{overview.operationsPerUser} 次 / 人 · 上期 {payload.comparison.overview.activeUsers.previous}</small></article>
+        <article><span><MousePointer2 size={17} />有效操作</span><strong>{formatNumber(overview.operations)}<ChangeBadge value={payload.comparison.overview.operations} /></strong><small>{payload.range.days} 天 · 上期 {formatNumber(payload.comparison.overview.operations.previous)}</small></article>
+        <article><span><Warehouse size={17} />协同任务</span><strong>{overview.collaborationTasks}<ChangeBadge value={payload.comparison.overview.collaborationTasks} /></strong><small>{overview.openTasks} 待闭环 · 上期 {payload.comparison.overview.collaborationTasks.previous}</small></article>
+        <article className={overview.collaborationTasks && overview.responseSlaRate < 80 ? "attention" : "healthy"}><span><Clock3 size={17} />24h 响应</span><strong>{overview.collaborationTasks ? `${overview.responseSlaRate}%` : "—"}<ChangeBadge value={payload.comparison.overview.responseSlaRate} /></strong><small>中位 {overview.collaborationTasks ? duration(overview.medianResponseHours) : "—"}</small></article>
+        <article className={overview.collaborationTasks && overview.completionRate < 70 ? "attention" : "healthy"}><span><CheckCircle2 size={17} />闭环率</span><strong>{overview.collaborationTasks ? `${overview.completionRate}%` : "—"}<ChangeBadge value={payload.comparison.overview.completionRate} /></strong><small>72h 达标 {overview.collaborationTasks ? `${overview.closeSlaRate}%` : "—"}</small></article>
+        <article className={overview.overdueTasks ? "danger" : "healthy"}><span><AlertTriangle size={17} />逾期未响应</span><strong>{overview.overdueTasks}<ChangeBadge value={payload.comparison.overview.overdueTasks} inverse /></strong><small>上期 {payload.comparison.overview.overdueTasks.previous} · 需优先跟进</small></article>
       </section>
 
       <section className="review-grid review-grid-usage">
@@ -297,6 +339,24 @@ export default function ReviewCenter() {
         </article>
       </section>
 
+      <section className="review-section-heading"><div><span>PRODUCT MOVEMENT</span><h2>产品出库复盘</h2></div><p>{payload.products.source} · 对比 {previousRangeLabel}</p></section>
+      <section className="review-product-kpis">
+        <article><span>出库件数</span><strong>{formatNumber(payload.products.summary.outboundQty)}<ChangeBadge value={payload.products.summary.outboundComparison} /></strong><small>上期 {formatNumber(payload.products.summary.outboundComparison.previous)}</small></article>
+        <article><span>活跃 SKU</span><strong>{payload.products.summary.activeSku}<ChangeBadge value={payload.products.summary.activeSkuComparison} /></strong><small>新增 {payload.products.summary.newSkuCount} · 休眠 {payload.products.summary.dormantSkuCount}</small></article>
+        <article><span>出库订单</span><strong>{formatNumber(payload.products.summary.orderCount)}<ChangeBadge value={payload.products.summary.orderCountComparison} /></strong><small>上期 {formatNumber(payload.products.summary.orderCountComparison.previous)}</small></article>
+        <article><span>TOP10 集中度</span><strong>{payload.products.summary.headShare}%<ChangeBadge value={payload.products.summary.headShareComparison} /></strong><small>头部产品占总出库</small></article>
+      </section>
+      <section className="review-panel review-product-panel">
+        <header>
+          <div><span>SKU COMPARISON</span><h3>产品梯队变化</h3></div>
+          <div className="review-product-tabs">
+            {(["head", "growth", "decline", "tail"] as const).map((mode) => <button type="button" className={productMode === mode ? "active" : ""} key={mode} onClick={() => setProductMode(mode)}>{{ head: "头部", growth: "增长", decline: "下滑", tail: "尾部" }[mode]}<b>{payload.products[mode].length}</b></button>)}
+          </div>
+        </header>
+        <ProductRanking rows={productRows} maxQty={maxProductQty} />
+        <footer><span>{productMode === "tail" ? "尾部包含本期低出库与上期有量、本期归零的 SKU" : "按本期与紧邻等长上期的 WMS 实际出库量计算"}</span></footer>
+      </section>
+
       <section className="review-section-heading"><div><span>OVERSEAS COLLABORATION</span><h2>海外仓协同</h2></div><p>响应 SLA {payload.thresholds.responseSlaHours}h · 闭环 SLA {payload.thresholds.closeSlaHours}h</p></section>
       <section className="review-grid review-grid-collaboration">
         <article className="review-panel">
@@ -304,7 +364,7 @@ export default function ReviewCenter() {
           <div className="review-status-stack">
             {payload.collaboration.statuses.map((row) => (
               <button className={`${row.tone} ${selectedStatus === row.status ? "is-selected" : ""}`} type="button" key={row.label} onClick={() => { setSelectedStatus(selectedStatus === row.status ? "" : row.status); setDetailMode("tickets"); }}>
-                <span>{row.label}</span><strong>{row.count}</strong><i style={{ width: `${Math.max(4, row.share || 0)}%` }} />
+                <span>{row.label}</span><strong>{row.count}<ChangeBadge value={row} compact /></strong><i style={{ width: `${Math.max(4, row.share || 0)}%` }} />
               </button>
             ))}
           </div>
@@ -316,7 +376,7 @@ export default function ReviewCenter() {
             {payload.collaboration.warehouses.slice(0, 8).map((warehouse) => (
               <button type="button" className={selectedWarehouse === warehouse.name ? "is-selected" : ""} key={warehouse.id} onClick={() => { setSelectedWarehouse(selectedWarehouse === warehouse.name ? "" : warehouse.name); setDetailMode("tickets"); }}>
                 <span><strong>{warehouse.name}</strong><i><b style={{ width: `${warehouse.total / maxWarehouseTasks * 100}%` }} /></i></span>
-                <strong>{warehouse.total}</strong><span>{warehouse.responseSlaRate}%</span><span>{warehouse.completionRate}%</span><em className={warehouse.overdue ? "has-risk" : ""}>{warehouse.overdue}</em>
+                <strong>{warehouse.total}<ChangeBadge value={warehouse} compact /></strong><span>{warehouse.responseSlaRate}%</span><span>{warehouse.completionRate}%</span><em className={warehouse.overdue ? "has-risk" : ""}>{warehouse.overdue}</em>
               </button>
             ))}
           </div> : <EmptyChart label="本周期暂无协同任务" />}

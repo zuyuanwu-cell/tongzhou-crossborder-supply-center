@@ -15,6 +15,10 @@ function requirePermission(auth, permission, message) {
   throw Object.assign(new Error(message), { statusCode: 403, code: "forbidden" });
 }
 
+export function canAccessBusinessChain(auth) {
+  return auth?.role === "admin";
+}
+
 function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
@@ -39,6 +43,9 @@ export function createBusinessChainApi({ service, syncService, getAuth, appendAc
     if (!url.pathname.startsWith("/api/business-chain")) return false;
     const auth = getAuth(req);
     try {
+      if (!canAccessBusinessChain(auth)) {
+        throw Object.assign(new Error("业务链路仅管理员可访问。"), { statusCode: 403, code: "forbidden" });
+      }
       const suffix = url.pathname.replace("/api/business-chain", "") || "/";
       if (suffix === "/openapi.json" && req.method === "GET") {
         requirePermission(auth, "api_access", "当前账号没有 API 文档查看权限。");

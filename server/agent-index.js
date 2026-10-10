@@ -376,7 +376,7 @@ const PAGE_DEFINITIONS = [
   ["stockup-cost", "成本结算", "费用归集、分摊、复核和成本锁定。", ["direct", "admin"], ["stockup_cost_edit", "stockup_cost_lock"]],
   ["stockup-cost-report", "月度到仓成本", "按到仓月份查看 SKU 加权到仓成本。", ["direct", "admin"], ["stockup_cost_report_view"]],
   ["production", "生产中心", "生产单、物料齐套和委外进度。", ["direct", "admin"], ["production_view"]],
-  ["business-chain", "业务链路中心", "报价、合同、生产、采购、入库、发货与结算的完整履约链路。", ["direct", "admin"], ["business_chain_view"]],
+  ["business-chain", "业务链路中心", "报价、合同、生产、采购、入库、发货与结算的完整履约链路。", ["admin"], ["business_chain_view"]],
   ["partner-collaboration", "伙伴协同", "国内仓、委外工厂和供应商的外部协同任务。", ["direct", "admin"], ["collaboration_task_view", "collaboration_task_publish"]],
   ["after-sales", "海外仓协同", "海外仓售后单、仓库工单和处理进度。", ["warehouse", "direct", "admin"]],
   ["products", "产品库", "按当前用户权限展示产品目录。", ["guest", "distributor", "direct", "admin"]],

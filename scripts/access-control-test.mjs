@@ -158,13 +158,14 @@ const directMiaoshouPermissions = effectivePermissions({ role: "direct", permiss
 assert.equal(directMiaoshouPermissions.includes("warehouse_return_query"), true, "direct operators can query scoped WMS returns by default");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_alias"), true, "direct operators can match order aliases by default");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_listing"), false, "AI listing requires an explicit grant");
-assert.equal(directMiaoshouPermissions.includes("business_chain_view"), true, "direct operators can view business-chain fulfillment by default");
+assert.equal(directMiaoshouPermissions.includes("business_chain_view"), false, "business-chain fulfillment is administrator-only");
 assert.equal(directMiaoshouPermissions.includes("contract_finance_view"), false, "finance ledger requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("warehouse_liability_settlement"), false, "warehouse liability settlement requires an explicit finance grant");
 assert.equal(effectivePermissions({ role: "admin" }).includes("warehouse_liability_settlement"), true, "administrators can reconcile warehouse liabilities by default");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["warehouse_liability_settlement"], deny: [] } }).includes("warehouse_liability_settlement"), true, "authorized internal finance users can reconcile warehouse liabilities");
-assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_sync"), true, "authorized operators can run the chain index sync");
-assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_view"), true, "chain sync implies chain view");
+assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_sync"), false, "business-chain sync cannot be delegated to non-admins");
+assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_view"), false, "business-chain view cannot be delegated to non-admins");
+assert.equal(effectivePermissions({ role: "admin" }).includes("business_chain_view"), true, "administrators retain business-chain access");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_automation"), false, "waybill automation requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("miaoshou_config"), false, "connection configuration requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("ozon_orders"), true, "direct operators can view and sync Ozon orders by default");

@@ -408,7 +408,7 @@ const navItems = [
   { label: "成本结算", icon: Coins, hash: "#stockup-cost", section: "stockup", childOf: "备货中心", permission: "stockup_cost_edit", additionalPermissions: ["stockup_cost_review", "stockup_cost_lock", "stockup_workflow_manage"] },
   { label: "月度成本", icon: Calculator, hash: "#stockup-cost-report", section: "stockup", childOf: "备货中心", permission: "stockup_cost_report_view", additionalPermissions: ["stockup_workflow_manage"] },
   { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "production_view" },
-  { label: "业务链路", icon: GitBranch, hash: "#business-chain", section: "stockup", childOf: "备货中心", permission: "business_chain_view" },
+  { label: "业务链路", icon: GitBranch, hash: "#business-chain", section: "stockup", childOf: "备货中心", permission: "business_chain_view", adminOnly: true },
   { label: "订单分析", icon: FileText, hash: "#order-analysis", section: "analysis", permission: "order_analysis" },
   { label: "经营贡献", icon: BarChart3, hash: "#performance", section: "analysis", permission: "performance_analysis" },
   { label: "复盘中心", icon: Activity, hash: "#review-center", section: "analysis", permission: "action_log", adminOnly: true },

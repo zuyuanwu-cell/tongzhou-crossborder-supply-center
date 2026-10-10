@@ -201,52 +201,311 @@ function responseBand(hours) {
   return ">48h";
 }
 
+function rangeFromTimestamps(startAt, endAt) {
+  const from = new Date(startAt + SHANGHAI_OFFSET_MS).toISOString().slice(0, 10);
+  const to = new Date(endAt + SHANGHAI_OFFSET_MS).toISOString().slice(0, 10);
+  return {
+    from,
+    to,
+    startAt: Date.parse(`${from}T00:00:00+08:00`),
+    endAt: Date.parse(`${to}T23:59:59.999+08:00`),
+    days: rangeDates(from, to),
+  };
+}
+
+export function resolvePreviousReviewRange(range) {
+  const previousEndAt = range.startAt - DAY_MS;
+  const previousStartAt = previousEndAt - Math.max(0, range.days.length - 1) * DAY_MS;
+  return rangeFromTimestamps(previousStartAt, previousEndAt);
+}
+
+function comparison(current, previous) {
+  const currentValue = number(current);
+  const previousValue = number(previous);
+  const change = round(currentValue - previousValue, 2);
+  return {
+    previous: round(previousValue, 2),
+    change,
+    changeRate: previousValue ? round(change / previousValue * 100) : currentValue ? null : 0,
+    direction: previousValue === 0 && currentValue > 0 ? "new" : change > 0 ? "up" : change < 0 ? "down" : "flat",
+  };
+}
+
+function comparedCounts(currentItems, previousItems, keyOf) {
+  const currentMap = new Map(countBy(currentItems, keyOf).map((row) => [row.label, row]));
+  const previousMap = new Map(countBy(previousItems, keyOf).map((row) => [row.label, row]));
+  return [...new Set([...currentMap.keys(), ...previousMap.keys()])]
+    .map((label) => {
+      const current = currentMap.get(label) || { count: 0, share: 0 };
+      const prior = previousMap.get(label) || { count: 0 };
+      return { label, count: current.count, share: current.share, previousCount: prior.count, ...comparison(current.count, prior.count) };
+    })
+    .sort((a, b) => b.count - a.count || b.previousCount - a.previousCount || a.label.localeCompare(b.label, "zh-CN"));
+}
+
+function actorRows(currentLogs, previousLogs) {
+  function aggregate(logs) {
+    const result = new Map();
+    for (const entry of logs) {
+      const actorKey = text(entry.actorId || entry.actorName) || "unknown";
+      const actor = result.get(actorKey) || {
+        id: actorKey,
+        name: text(entry.actorName) || "未知用户",
+        role: text(entry.actorRole) || "未标角色",
+        count: 0,
+        loginCount: 0,
+        collaborationCount: 0,
+        dates: new Set(),
+        lastAt: "",
+      };
+      actor.count += 1;
+      actor.loginCount += entry.action === "登录系统" ? 1 : 0;
+      actor.collaborationCount += collaborationGroup(entry.targetType) === "其他操作" ? 0 : 1;
+      actor.dates.add(dateKey(entry.createdAt));
+      if (!actor.lastAt || Date.parse(entry.createdAt) > Date.parse(actor.lastAt)) actor.lastAt = entry.createdAt;
+      result.set(actorKey, actor);
+    }
+    return result;
+  }
+  const currentMap = aggregate(currentLogs);
+  const previousMap = aggregate(previousLogs);
+  return [...new Set([...currentMap.keys(), ...previousMap.keys()])]
+    .map((id) => {
+      const current = currentMap.get(id);
+      const prior = previousMap.get(id);
+      const count = current?.count || 0;
+      const previousCount = prior?.count || 0;
+      return {
+        id,
+        name: current?.name || prior?.name || "未知用户",
+        role: current?.role || prior?.role || "未标角色",
+        count,
+        previousCount,
+        ...comparison(count, previousCount),
+        loginCount: current?.loginCount || 0,
+        collaborationCount: current?.collaborationCount || 0,
+        activeDays: current?.dates.size || 0,
+        lastAt: current?.lastAt || "",
+      };
+    })
+    .sort((a, b) => b.count - a.count || b.previousCount - a.previousCount || a.name.localeCompare(b.name, "zh-CN"));
+}
+
+function dailyRows(range, previousRange, logs, previousLogs) {
+  function aggregate(days, source) {
+    const map = new Map(days.map((date) => [date, { date, operations: 0, users: new Set(), collaboration: 0, afterSales: 0 }]));
+    for (const entry of source) {
+      const day = map.get(dateKey(entry.createdAt));
+      if (!day) continue;
+      day.operations += 1;
+      day.users.add(text(entry.actorId || entry.actorName) || "unknown");
+      if (collaborationGroup(entry.targetType) !== "其他操作") day.collaboration += 1;
+      if (text(entry.targetType).includes("after_sales")) day.afterSales += 1;
+    }
+    return [...map.values()].map((day) => ({ ...day, users: day.users.size }));
+  }
+  const current = aggregate(range.days, logs);
+  const previous = aggregate(previousRange.days, previousLogs);
+  return current.map((day, index) => ({
+    ...day,
+    previousDate: previous[index]?.date || "",
+    previousOperations: previous[index]?.operations || 0,
+    previousUsers: previous[index]?.users || 0,
+    previousCollaboration: previous[index]?.collaboration || 0,
+    previousAfterSales: previous[index]?.afterSales || 0,
+  }));
+}
+
+function summarizeTickets(rows) {
+  const responseHours = rows.map((ticket) => ticket.responseHours).filter(Number.isFinite);
+  const closeHours = rows.map((ticket) => ticket.closeHours).filter(Number.isFinite);
+  const responseEligible = rows.filter((ticket) => Number.isFinite(ticket.responseHours) || ticket.overdue);
+  const responseMet = responseEligible.filter((ticket) => Number.isFinite(ticket.responseHours) && ticket.responseHours <= RESPONSE_SLA_HOURS).length;
+  const completed = rows.filter((ticket) => Number.isFinite(ticket.closeHours));
+  const closeMet = completed.filter((ticket) => ticket.closeHours <= CLOSE_SLA_HOURS).length;
+  return {
+    total: rows.length,
+    open: rows.filter((ticket) => ticket.open).length,
+    completed: completed.length,
+    completionRate: percentage(completed.length, rows.length),
+    responseSlaRate: percentage(responseMet, responseEligible.length),
+    medianResponseHours: median(responseHours),
+    medianCloseHours: median(closeHours),
+    overdue: rows.filter((ticket) => ticket.overdue).length,
+    closeSlaRate: percentage(closeMet, completed.length),
+  };
+}
+
+function warehouseRows(currentTickets, previousTickets) {
+  function aggregate(rows) {
+    const map = new Map();
+    for (const ticket of rows) {
+      const key = ticket.warehouseId || ticket.warehouseName;
+      const row = map.get(key) || { id: key, name: ticket.warehouseName, tickets: [] };
+      row.tickets.push(ticket);
+      map.set(key, row);
+    }
+    return map;
+  }
+  const currentMap = aggregate(currentTickets);
+  const previousMap = aggregate(previousTickets);
+  return [...new Set([...currentMap.keys(), ...previousMap.keys()])].map((id) => {
+    const current = currentMap.get(id);
+    const prior = previousMap.get(id);
+    const summary = summarizeTickets(current?.tickets || []);
+    const previousSummary = summarizeTickets(prior?.tickets || []);
+    const currentResponses = (current?.tickets || []).map((ticket) => ticket.responseHours).filter(Number.isFinite);
+    const currentCloses = (current?.tickets || []).map((ticket) => ticket.closeHours).filter(Number.isFinite);
+    return {
+      id,
+      name: current?.name || prior?.name || "未绑定仓库",
+      total: summary.total,
+      previousTotal: previousSummary.total,
+      ...comparison(summary.total, previousSummary.total),
+      open: summary.open,
+      completed: summary.completed,
+      overdue: summary.overdue,
+      completionRate: summary.completionRate,
+      previousCompletionRate: previousSummary.completionRate,
+      responseSlaRate: summary.responseSlaRate,
+      previousResponseSlaRate: previousSummary.responseSlaRate,
+      avgResponseHours: average(currentResponses),
+      avgCloseHours: average(currentCloses),
+    };
+  }).sort((a, b) => b.total - a.total || b.previousTotal - a.previousTotal || a.name.localeCompare(b.name, "zh-CN"));
+}
+
+function businessDateKey(value) {
+  const candidate = text(value);
+  const direct = candidate.match(/^(\d{4}-\d{2}-\d{2})/);
+  return direct?.[1] || dateKey(candidate);
+}
+
+function orderDate(order) {
+  return order?.shippedAt || order?.orderDate || order?.date || order?.createdAt || order?.orderedAt || "";
+}
+
+function buildProductReview(orders, products, range, previousRange) {
+  const metadata = new Map();
+  for (const product of products) {
+    const sku = text(product?.sku || product?.skuNo).toUpperCase();
+    if (!sku) continue;
+    const existing = metadata.get(sku) || {};
+    metadata.set(sku, {
+      name: existing.name || text(product?.name || product?.productName),
+      imageUrl: existing.imageUrl || text(product?.imageUrl || product?.image),
+    });
+  }
+
+  function aggregate(from, to) {
+    const rows = new Map();
+    const orderIds = new Set();
+    for (const order of orders) {
+      const date = businessDateKey(orderDate(order));
+      if (!date || date < from || date > to) continue;
+      const sku = text(order?.sku || order?.skuNo || order?.goodsSku).toUpperCase();
+      const quantity = Math.max(0, number(order?.quantity || order?.qty || order?.outboundQty));
+      if (!sku || quantity <= 0) continue;
+      const orderId = text(order?.orderId || order?.orderNo || order?.externalOrderNo) || `${sku}:${date}:${rows.size}`;
+      const row = rows.get(sku) || { sku, quantity: 0, orders: new Set(), name: "" };
+      row.quantity += quantity;
+      row.orders.add(orderId);
+      row.name ||= text(order?.productName || order?.name);
+      rows.set(sku, row);
+      orderIds.add(orderId);
+    }
+    return { rows, orderCount: orderIds.size };
+  }
+
+  const current = aggregate(range.from, range.to);
+  const previous = aggregate(previousRange.from, previousRange.to);
+  const outboundQty = [...current.rows.values()].reduce((sum, row) => sum + row.quantity, 0);
+  const previousOutboundQty = [...previous.rows.values()].reduce((sum, row) => sum + row.quantity, 0);
+  const rows = [...new Set([...current.rows.keys(), ...previous.rows.keys()])].map((sku) => {
+    const currentRow = current.rows.get(sku);
+    const previousRow = previous.rows.get(sku);
+    const currentQty = round(currentRow?.quantity || 0, 2);
+    const previousQty = round(previousRow?.quantity || 0, 2);
+    const delta = comparison(currentQty, previousQty);
+    const meta = metadata.get(sku) || {};
+    const trend = previousQty === 0 && currentQty > 0
+      ? "new"
+      : currentQty === 0 && previousQty > 0
+        ? "dormant"
+        : (delta.changeRate || 0) >= 20
+          ? "growing"
+          : (delta.changeRate || 0) <= -20
+            ? "declining"
+            : "stable";
+    return {
+      sku,
+      productName: meta.name || currentRow?.name || previousRow?.name || sku,
+      imageUrl: meta.imageUrl || "",
+      currentQty,
+      previousQty,
+      changeQty: delta.change,
+      changeRate: delta.changeRate,
+      direction: delta.direction,
+      currentOrders: currentRow?.orders.size || 0,
+      previousOrders: previousRow?.orders.size || 0,
+      share: percentage(currentQty, outboundQty),
+      trend,
+    };
+  });
+  const head = rows.filter((row) => row.currentQty > 0).sort((a, b) => b.currentQty - a.currentQty || a.sku.localeCompare(b.sku)).slice(0, 12).map((row, index) => ({ ...row, rank: index + 1 }));
+  const growth = rows.filter((row) => row.changeQty > 0).sort((a, b) => b.changeQty - a.changeQty || b.currentQty - a.currentQty).slice(0, 12).map((row, index) => ({ ...row, rank: index + 1 }));
+  const decline = rows.filter((row) => row.changeQty < 0).sort((a, b) => a.changeQty - b.changeQty || b.previousQty - a.previousQty).slice(0, 12).map((row, index) => ({ ...row, rank: index + 1 }));
+  const tail = rows.filter((row) => row.previousQty > 0 || row.currentQty > 0).sort((a, b) => {
+    const aDormant = a.currentQty === 0 && a.previousQty > 0 ? 0 : 1;
+    const bDormant = b.currentQty === 0 && b.previousQty > 0 ? 0 : 1;
+    return aDormant - bDormant || a.currentQty - b.currentQty || b.previousQty - a.previousQty;
+  }).slice(0, 12).map((row, index) => ({ ...row, rank: index + 1 }));
+  const headQty = head.slice(0, 10).reduce((sum, row) => sum + row.currentQty, 0);
+  const previousHeadQty = [...previous.rows.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 10).reduce((sum, row) => sum + row.quantity, 0);
+  const headShare = percentage(headQty, outboundQty);
+  const previousHeadShare = percentage(previousHeadQty, previousOutboundQty);
+  return {
+    source: "WMS 已出库订单",
+    summary: {
+      outboundQty,
+      outboundComparison: comparison(outboundQty, previousOutboundQty),
+      activeSku: current.rows.size,
+      activeSkuComparison: comparison(current.rows.size, previous.rows.size),
+      orderCount: current.orderCount,
+      orderCountComparison: comparison(current.orderCount, previous.orderCount),
+      headShare,
+      headShareComparison: comparison(headShare, previousHeadShare),
+      newSkuCount: rows.filter((row) => row.trend === "new").length,
+      dormantSkuCount: rows.filter((row) => row.trend === "dormant").length,
+    },
+    head,
+    growth,
+    decline,
+    tail,
+  };
+}
+
 export function buildReviewCenterPayload(input = {}) {
   const range = resolveReviewRange(input.range || input, input.now instanceof Date ? input.now : new Date(input.now || Date.now()));
+  const previousRange = resolvePreviousReviewRange(range);
   const nowIso = input.now instanceof Date ? input.now.toISOString() : new Date(input.now || Date.now()).toISOString();
   const allLogs = Array.isArray(input.actionLogs) ? input.actionLogs : [];
   const logs = allLogs.filter((entry) => inRange(entry.createdAt, range));
+  const previousLogs = allLogs.filter((entry) => inRange(entry.createdAt, previousRange));
   const afterSales = (Array.isArray(input.afterSalesTickets) ? input.afterSalesTickets : []).filter((ticket) => inRange(ticket.createdAt, range));
+  const previousAfterSales = (Array.isArray(input.afterSalesTickets) ? input.afterSalesTickets : []).filter((ticket) => inRange(ticket.createdAt, previousRange));
   const warehouseTickets = (Array.isArray(input.warehouseTickets) ? input.warehouseTickets : []).filter((ticket) => inRange(ticket.createdAt, range));
+  const previousWarehouseTickets = (Array.isArray(input.warehouseTickets) ? input.warehouseTickets : []).filter((ticket) => inRange(ticket.createdAt, previousRange));
   const ticketRows = [
     ...afterSales.map((ticket) => ticketRow(ticket, "after_sales", nowIso)),
     ...warehouseTickets.map((ticket) => ticketRow(ticket, "warehouse_ticket", nowIso)),
   ].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-
-  const actorMap = new Map();
-  for (const entry of logs) {
-    const actorKey = text(entry.actorId || entry.actorName) || "unknown";
-    const actor = actorMap.get(actorKey) || {
-      id: actorKey,
-      name: text(entry.actorName) || "未知用户",
-      role: text(entry.actorRole) || "未标角色",
-      count: 0,
-      loginCount: 0,
-      collaborationCount: 0,
-      dates: new Set(),
-      lastAt: "",
-    };
-    actor.count += 1;
-    actor.loginCount += entry.action === "登录系统" ? 1 : 0;
-    actor.collaborationCount += collaborationGroup(entry.targetType) === "其他操作" ? 0 : 1;
-    actor.dates.add(dateKey(entry.createdAt));
-    if (!actor.lastAt || Date.parse(entry.createdAt) > Date.parse(actor.lastAt)) actor.lastAt = entry.createdAt;
-    actorMap.set(actorKey, actor);
-  }
-  const actors = [...actorMap.values()]
-    .map((actor) => ({ ...actor, activeDays: actor.dates.size, dates: undefined }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
-
-  const dailyMap = new Map(range.days.map((date) => [date, { date, operations: 0, users: new Set(), collaboration: 0, afterSales: 0 }]));
-  for (const entry of logs) {
-    const day = dailyMap.get(dateKey(entry.createdAt));
-    if (!day) continue;
-    day.operations += 1;
-    day.users.add(text(entry.actorId || entry.actorName) || "unknown");
-    if (collaborationGroup(entry.targetType) !== "其他操作") day.collaboration += 1;
-    if (text(entry.targetType).includes("after_sales")) day.afterSales += 1;
-  }
-  const daily = [...dailyMap.values()].map((day) => ({ ...day, users: day.users.size }));
+  const previousTicketRows = [
+    ...previousAfterSales.map((ticket) => ticketRow(ticket, "after_sales", nowIso)),
+    ...previousWarehouseTickets.map((ticket) => ticketRow(ticket, "warehouse_ticket", nowIso)),
+  ];
+  const actors = actorRows(logs, previousLogs);
+  const daily = dailyRows(range, previousRange, logs, previousLogs);
 
   const heatmap = Array.from({ length: 7 }, (_, weekday) => ({ weekday, hours: Array(24).fill(0) }));
   for (const entry of logs) {
@@ -254,65 +513,69 @@ export function buildReviewCenterPayload(input = {}) {
     if (clock) heatmap[clock.weekday].hours[clock.hour] += 1;
   }
 
-  const responseHours = ticketRows.map((ticket) => ticket.responseHours).filter(Number.isFinite);
-  const closeHours = ticketRows.map((ticket) => ticket.closeHours).filter(Number.isFinite);
-  const responseEligible = ticketRows.filter((ticket) => Number.isFinite(ticket.responseHours) || ticket.overdue);
-  const responseMet = responseEligible.filter((ticket) => Number.isFinite(ticket.responseHours) && ticket.responseHours <= RESPONSE_SLA_HOURS).length;
-  const completedRows = ticketRows.filter((ticket) => Number.isFinite(ticket.closeHours));
-  const closeMet = completedRows.filter((ticket) => ticket.closeHours <= CLOSE_SLA_HOURS).length;
+  const ticketSummary = summarizeTickets(ticketRows);
+  const previousTicketSummary = summarizeTickets(previousTicketRows);
+  const warehouses = warehouseRows(ticketRows, previousTicketRows);
 
-  const warehouseMap = new Map();
-  for (const ticket of ticketRows) {
-    const key = ticket.warehouseId || ticket.warehouseName;
-    const row = warehouseMap.get(key) || {
-      id: key,
-      name: ticket.warehouseName,
-      total: 0,
-      open: 0,
-      completed: 0,
-      overdue: 0,
-      responseHours: [],
-      closeHours: [],
-    };
-    row.total += 1;
-    row.open += ticket.open ? 1 : 0;
-    row.completed += Number.isFinite(ticket.closeHours) ? 1 : 0;
-    row.overdue += ticket.overdue ? 1 : 0;
-    if (Number.isFinite(ticket.responseHours)) row.responseHours.push(ticket.responseHours);
-    if (Number.isFinite(ticket.closeHours)) row.closeHours.push(ticket.closeHours);
-    warehouseMap.set(key, row);
-  }
-  const warehouses = [...warehouseMap.values()]
-    .map((warehouse) => ({
-      id: warehouse.id,
-      name: warehouse.name,
-      total: warehouse.total,
-      open: warehouse.open,
-      completed: warehouse.completed,
-      overdue: warehouse.overdue,
-      completionRate: percentage(warehouse.completed, warehouse.total),
-      responseSlaRate: percentage(warehouse.responseHours.filter((hours) => hours <= RESPONSE_SLA_HOURS).length, warehouse.responseHours.length),
-      avgResponseHours: average(warehouse.responseHours),
-      avgCloseHours: average(warehouse.closeHours),
-    }))
-    .sort((a, b) => b.total - a.total || b.overdue - a.overdue || a.name.localeCompare(b.name, "zh-CN"));
-
-  const statusCounts = countBy(ticketRows, (ticket) => statusLabel(ticket.status)).map((row) => {
+  const statusCounts = comparedCounts(ticketRows, previousTicketRows, (ticket) => statusLabel(ticket.status)).map((row) => {
     const source = ticketRows.find((ticket) => statusLabel(ticket.status) === row.label);
-    return { ...row, status: source?.status || "", tone: statusTone(source?.status || "") };
+    const previousSource = previousTicketRows.find((ticket) => statusLabel(ticket.status) === row.label);
+    return { ...row, status: source?.status || previousSource?.status || "", tone: statusTone(source?.status || previousSource?.status || "") };
   });
-  const reasonCounts = countBy(afterSales, (ticket) => ticket.primaryReason);
-  const secondaryReasons = countBy(afterSales, (ticket) => ticket.secondaryReason);
-  const responsibility = countBy(afterSales, (ticket) => ticket.responsibility?.label || ticket.responsibility?.party || "未归因");
+  const reasonCounts = comparedCounts(afterSales, previousAfterSales, (ticket) => ticket.primaryReason);
+  const secondaryReasons = comparedCounts(afterSales, previousAfterSales, (ticket) => ticket.secondaryReason);
+  const responsibility = comparedCounts(afterSales, previousAfterSales, (ticket) => ticket.responsibility?.label || ticket.responsibility?.party || "未归因");
   const responseBands = ["≤4h", "4–12h", "12–24h", "24–48h", ">48h", "未响应"].map((label) => ({
     label,
     count: ticketRows.filter((ticket) => responseBand(ticket.responseHours) === label).length,
+    previousCount: previousTicketRows.filter((ticket) => responseBand(ticket.responseHours) === label).length,
+  })).map((row) => ({
+    ...row,
+    ...comparison(row.count, row.previousCount),
   }));
+
+  const overview = {
+    activeUsers: actors.filter((actor) => actor.count > 0).length,
+    operations: logs.length,
+    operationsPerUser: actors.filter((actor) => actor.count > 0).length ? round(logs.length / actors.filter((actor) => actor.count > 0).length) : 0,
+    collaborationTasks: ticketSummary.total,
+    openTasks: ticketSummary.open,
+    completionRate: ticketSummary.completionRate,
+    responseSlaRate: ticketSummary.responseSlaRate,
+    medianResponseHours: ticketSummary.medianResponseHours,
+    medianCloseHours: ticketSummary.medianCloseHours,
+    overdueTasks: ticketSummary.overdue,
+    afterSalesTickets: afterSales.length,
+    warehouseTickets: warehouseTickets.length,
+    closeSlaRate: ticketSummary.closeSlaRate,
+  };
+  const previousOverview = {
+    activeUsers: actors.filter((actor) => actor.previousCount > 0).length,
+    operations: previousLogs.length,
+    operationsPerUser: actors.filter((actor) => actor.previousCount > 0).length ? round(previousLogs.length / actors.filter((actor) => actor.previousCount > 0).length) : 0,
+    collaborationTasks: previousTicketSummary.total,
+    openTasks: previousTicketSummary.open,
+    completionRate: previousTicketSummary.completionRate,
+    responseSlaRate: previousTicketSummary.responseSlaRate,
+    medianResponseHours: previousTicketSummary.medianResponseHours,
+    medianCloseHours: previousTicketSummary.medianCloseHours,
+    overdueTasks: previousTicketSummary.overdue,
+    afterSalesTickets: previousAfterSales.length,
+    warehouseTickets: previousWarehouseTickets.length,
+    closeSlaRate: previousTicketSummary.closeSlaRate,
+  };
+  const overviewComparison = Object.fromEntries(Object.keys(overview).map((key) => [key, comparison(overview[key], previousOverview[key])]));
+  const productRows = Array.isArray(input.products) ? input.products : [];
+  const products = buildProductReview(Array.isArray(input.outboundOrders) ? input.outboundOrders : [], productRows, range, previousRange);
 
   return {
     ok: true,
     generatedAt: nowIso,
     range: { from: range.from, to: range.to, days: range.days.length, timeZone: "Asia/Shanghai" },
+    comparison: {
+      previousRange: { from: previousRange.from, to: previousRange.to, days: previousRange.days.length },
+      overview: overviewComparison,
+    },
     thresholds: { responseSlaHours: RESPONSE_SLA_HOURS, closeSlaHours: CLOSE_SLA_HOURS },
     coverage: {
       actionLogStored: allLogs.length,
@@ -320,26 +583,12 @@ export function buildReviewCenterPayload(input = {}) {
       actionLogTo: allLogs.length ? allLogs.reduce((latest, entry) => !latest || Date.parse(entry.createdAt) > Date.parse(latest) ? entry.createdAt : latest, "") : "",
       actionLogAtCapacity: allLogs.length >= number(input.actionLogLimit || 5000),
     },
-    overview: {
-      activeUsers: actors.length,
-      operations: logs.length,
-      operationsPerUser: actors.length ? round(logs.length / actors.length) : 0,
-      collaborationTasks: ticketRows.length,
-      openTasks: ticketRows.filter((ticket) => ticket.open).length,
-      completionRate: percentage(completedRows.length, ticketRows.length),
-      responseSlaRate: percentage(responseMet, responseEligible.length),
-      medianResponseHours: median(responseHours),
-      medianCloseHours: median(closeHours),
-      overdueTasks: ticketRows.filter((ticket) => ticket.overdue).length,
-      afterSalesTickets: afterSales.length,
-      warehouseTickets: warehouseTickets.length,
-      closeSlaRate: percentage(closeMet, completedRows.length),
-    },
+    overview,
     usage: {
       daily,
       actors,
-      actions: countBy(logs, (entry) => entry.action),
-      modules: countBy(logs, (entry) => collaborationGroup(entry.targetType)),
+      actions: comparedCounts(logs, previousLogs, (entry) => entry.action),
+      modules: comparedCounts(logs, previousLogs, (entry) => collaborationGroup(entry.targetType)),
       heatmap,
       entries: logs.slice(0, 240).map((entry) => ({
         id: text(entry.id),
@@ -368,5 +617,6 @@ export function buildReviewCenterPayload(input = {}) {
       reminderCount: afterSales.reduce((sum, ticket) => sum + (ticket.timeline || []).filter((event) => event.type === "reminder_sent").length, 0),
       liabilityCny: round(ticketRows.filter((ticket) => ticket.type === "after_sales").reduce((sum, ticket) => sum + ticket.liabilityCny, 0), 2),
     },
+    products,
   };
 }
