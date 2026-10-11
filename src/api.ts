@@ -1804,6 +1804,209 @@ export type MovementComparisonPayload = {
   rows: MovementComparisonRow[];
 };
 
+export type OverseasReconciliationMetricDelta = {
+  current: number;
+  previous: number;
+  change: number;
+  rate: number | null;
+};
+
+export type OverseasReconciliationReturnFact = {
+  id: string;
+  source: "wms" | string;
+  providerId: string;
+  providerName: string;
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  returnOrderNumber: string;
+  originalOrderNumber: string;
+  trackingNumber: string;
+  sku: string;
+  productName: string;
+  shopName: string;
+  status: string;
+  statusLabel: string;
+  returnQty: number;
+  expectedQty: number;
+  receivedQty: number;
+  restockedQty: number;
+  scrappedQty: number;
+  pendingQty: number;
+  badQty: number;
+  handlingMethod: string;
+  activityAt: string;
+  activityDate: string;
+  dispositionAt: string;
+  dispositionDate: string;
+  afterSalesTicketId: string;
+  claimStatus: "matched" | "claimed" | "unclaimed" | "conflict" | string;
+  claim: { ownerId: string; ownerName: string; claimedAt: string } | null;
+};
+
+export type OverseasReconciliationSkuRow = {
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  sku: string;
+  productName: string;
+  openingInventoryQty: number;
+  actualInventoryQty: number;
+  theoreticalInventoryQty: number;
+  varianceQty: number;
+  varianceRate: number;
+  differenceTone: "critical" | "warning" | "balanced" | string;
+  inboundQty: number;
+  outboundQty: number;
+  transferInQty: number;
+  transferOutQty: number;
+  adjustmentQty: number;
+  returnReceivedQty: number;
+  restockedQty: number;
+  scrappedQty: number;
+  pendingReturnQty: number;
+  returnQty: number;
+  shopCount: number;
+  returnFactCount: number;
+  returnFacts: OverseasReconciliationReturnFact[];
+  snapshotComparable: boolean;
+};
+
+export type OverseasReconciliationWarehouse = {
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  providerId: string;
+  openingInventoryQty: number;
+  actualInventoryQty: number;
+  theoreticalInventoryQty: number;
+  varianceQty: number;
+  varianceRate: number;
+  differenceTone: "critical" | "warning" | "balanced" | string;
+  inboundQty: number;
+  outboundQty: number;
+  transferInQty: number;
+  transferOutQty: number;
+  adjustmentQty: number;
+  returnQty: number;
+  returnReceivedQty: number;
+  restockedQty: number;
+  scrappedQty: number;
+  pendingReturnQty: number;
+  inTransitReturnQty: number;
+  inboundInTransitQty: number;
+  unclaimedReturnCount: number;
+  unclaimedReturnQty: number;
+  skuCount: number;
+  anomalySkuCount: number;
+  returnFactCount: number;
+  skuRows: OverseasReconciliationSkuRow[];
+  coverage: Record<string, "ready" | "partial" | "missing" | string>;
+  comparison: Record<"actualInventoryQty" | "varianceQty" | "returnQty" | "restockedQty" | "scrappedQty", OverseasReconciliationMetricDelta>;
+};
+
+export type OverseasReconciliationSummary = {
+  openingInventoryQty: number;
+  actualInventoryQty: number;
+  theoreticalInventoryQty: number;
+  varianceQty: number;
+  inboundQty: number;
+  outboundQty: number;
+  transferInQty: number;
+  transferOutQty: number;
+  adjustmentQty: number;
+  returnQty: number;
+  returnReceivedQty: number;
+  inTransitReturnQty: number;
+  pendingReturnQty: number;
+  restockedQty: number;
+  scrappedQty: number;
+  inboundInTransitQty: number;
+  unclaimedReturnCount: number;
+  unclaimedReturnQty: number;
+  matchedReturnQty: number;
+  afterSalesCoverageRate: number;
+  recordedWithoutWmsCount: number;
+  recordedWithoutWmsQty: number;
+  warehouseCount: number;
+  anomalyWarehouseCount: number;
+  anomalySkuCount: number;
+};
+
+export type OverseasReconciliationRanking = {
+  sku?: string;
+  productName?: string;
+  shopName?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  returnQty: number;
+  receivedQty: number;
+  restockedQty: number;
+  scrappedQty: number;
+  pendingQty: number;
+  inTransitQty: number;
+  factCount: number;
+  warehouseCount: number;
+  shopCount: number;
+  skuCount: number;
+  previousReturnQty: number;
+  changeQty: number;
+  changeRate: number | null;
+};
+
+export type OverseasInventoryReconciliationPayload = {
+  ok: boolean;
+  scope: "overseas";
+  generatedAt: string;
+  timezone: string;
+  ranges: {
+    period: MovementComparisonPeriod;
+    anchorDate: string;
+    current: { from: string; to: string; label: string };
+    previous: { from: string; to: string; label: string };
+  };
+  filters: { period: MovementComparisonPeriod; anchorDate: string; from: string; to: string };
+  summary: OverseasReconciliationSummary;
+  comparison: {
+    summary: Record<keyof OverseasReconciliationSummary, OverseasReconciliationMetricDelta>;
+    previousSummary: OverseasReconciliationSummary;
+  };
+  snapshots: {
+    opening: { date: string; capturedAt: string } | null;
+    closing: { date: string; capturedAt: string } | null;
+    previousOpening: { date: string; capturedAt: string } | null;
+    previousClosing: { date: string; capturedAt: string } | null;
+  };
+  warehouses: OverseasReconciliationWarehouse[];
+  returnFacts: OverseasReconciliationReturnFact[];
+  ticketOnlyReturns: Array<{
+    id: string;
+    source: string;
+    ticketId: string;
+    warehouseId: string;
+    warehouseName: string;
+    originalOrderNumber: string;
+    shopName: string;
+    status: string;
+    statusLabel: string;
+    expectedQty: number;
+    activityAt: string;
+    activityDate: string;
+  }>;
+  rankings: {
+    skus: OverseasReconciliationRanking[];
+    shops: OverseasReconciliationRanking[];
+    warehouses: OverseasReconciliationRanking[];
+  };
+  sources: Record<string, {
+    status: "ready" | "partial" | "missing" | string;
+    syncedAt: string;
+    snapshotDate?: string;
+    message?: string;
+    errors?: Array<{ warehouseId?: string; warehouseName?: string; message?: string }>;
+  }>;
+};
+
 export type OrderSyncJob = {
   id: string;
   status: "queued" | "running" | "completed" | "partial" | "failed" | string;
@@ -4135,6 +4338,49 @@ export function fetchMovementComparison(input: {
   if (input.timezone) params.set("timezone", input.timezone);
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<MovementComparisonPayload>(`/api/movement-history/compare${query}`);
+}
+
+export function fetchOverseasInventoryReconciliation(input: {
+  period?: MovementComparisonPeriod;
+  anchorDate?: string;
+  from?: string;
+  to?: string;
+  warehouseId?: string;
+  sku?: string;
+  timezone?: string;
+} = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.period) params.set("period", input.period);
+  if (input.anchorDate) params.set("anchorDate", input.anchorDate);
+  if (input.from) params.set("from", input.from);
+  if (input.to) params.set("to", input.to);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.sku) params.set("sku", input.sku);
+  if (input.timezone) params.set("timezone", input.timezone);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<OverseasInventoryReconciliationPayload>(`/api/overseas-inventory-reconciliation${query}`, { signal });
+}
+
+export function refreshOverseasInventoryReconciliation(input: {
+  period?: MovementComparisonPeriod;
+  anchorDate?: string;
+  from?: string;
+  to?: string;
+  warehouseId?: string;
+  sku?: string;
+  timezone?: string;
+} = {}) {
+  return requestJson<OverseasInventoryReconciliationPayload>("/api/overseas-inventory-reconciliation/refresh", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function claimOverseasReconciliationReturn(factId: string) {
+  return requestJson<{ ok: boolean; claim: { ownerId: string; ownerName: string; claimedAt: string } }>(
+    `/api/overseas-inventory-reconciliation/returns/${encodeURIComponent(factId)}/claim`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
 }
 
 export function captureMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {

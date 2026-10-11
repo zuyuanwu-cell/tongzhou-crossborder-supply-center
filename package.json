@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "smoke:api": "node scripts/smoke-api.mjs",
     "test:movement-comparison": "node scripts/movement-comparison-test.mjs",
+    "test:overseas-reconciliation": "node scripts/overseas-inventory-reconciliation-test.mjs",
     "test:movement-history-db": "node scripts/movement-history-db-test.mjs",
     "test:movement-snapshot": "node scripts/movement-snapshot-test.mjs",
     "test:stockup-workflow": "node scripts/stockup-workflow-test.mjs",

@@ -749,6 +749,51 @@ export function createStockupCollaborationService(store) {
     return { ok: true, receipts: store.all(`SELECT rc.* FROM stockup_receipts rc JOIN stockup_requests r ON r.id=rc.request_id ${clause} ORDER BY rc.arrived_at DESC LIMIT 200`, params).map(receiptFromRow) };
   }
 
+  function reconciliationFacts(filters = {}, context = {}) {
+    const receiptWhere = ["COALESCE(rc.lifecycle_status,'active')!='deleted'"];
+    const receiptParams = [];
+    if (filters.from) { receiptWhere.push("substr(rc.arrived_at,1,10)>=?"); receiptParams.push(String(filters.from)); }
+    if (filters.to) { receiptWhere.push("substr(rc.arrived_at,1,10)<=?"); receiptParams.push(String(filters.to)); }
+    if (context.warehouseIds?.length) { receiptWhere.push(`r.destination_warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); receiptParams.push(...context.warehouseIds); }
+    if (context.countries?.length) { receiptWhere.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); receiptParams.push(...context.countries); }
+    if (context.skus?.length) { receiptWhere.push(`UPPER(rl.sku) IN (${context.skus.map(() => "?").join(",")})`); receiptParams.push(...context.skus); }
+    const inboundReceipts = store.all(`SELECT rc.id,rc.receipt_no,rc.warehouse_id,rc.warehouse_name,rc.wms_inbound_no,rc.arrived_at,rc.shelved_at,rc.status,
+        r.destination_country,rl.sku,rl.product_name,rl.expected_qty,rl.received_qty,rl.good_qty,rl.damaged_qty,rl.shortage_qty,rl.pending_qty,rl.shelved_qty,rl.unit
+      FROM stockup_receipts rc
+      JOIN stockup_requests r ON r.id=rc.request_id
+      JOIN stockup_receipt_lines rl ON rl.receipt_id=rc.id
+      WHERE ${receiptWhere.join(" AND ")}
+      ORDER BY rc.arrived_at DESC,rc.id,rl.sku`, receiptParams).map((row) => ({
+        id: `${String(row.id)}::${String(row.sku)}`,
+        receiptId: String(row.id), receiptNo: String(row.receipt_no), warehouseId: String(row.warehouse_id || ""), warehouseName: String(row.warehouse_name || ""),
+        country: String(row.destination_country || ""), wmsInboundNo: String(row.wms_inbound_no || ""), arrivedAt: String(row.arrived_at || ""), shelvedAt: String(row.shelved_at || ""),
+        status: String(row.status || ""), sku: String(row.sku || ""), productName: String(row.product_name || ""), expectedQty: number(row.expected_qty),
+        receivedQty: number(row.received_qty), goodQty: number(row.good_qty), damagedQty: number(row.damaged_qty), shortageQty: number(row.shortage_qty),
+        pendingQty: number(row.pending_qty), shelvedQty: number(row.shelved_qty), unit: String(row.unit || "件"),
+      }));
+
+    const shipmentWhere = ["s.status='shipped'"];
+    const shipmentParams = [];
+    if (filters.from) { shipmentWhere.push("substr(s.actual_shipped_at,1,10)>=?"); shipmentParams.push(String(filters.from)); }
+    if (filters.to) { shipmentWhere.push("substr(s.actual_shipped_at,1,10)<=?"); shipmentParams.push(String(filters.to)); }
+    if (context.warehouseIds?.length) { shipmentWhere.push(`r.destination_warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); shipmentParams.push(...context.warehouseIds); }
+    if (context.countries?.length) { shipmentWhere.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); shipmentParams.push(...context.countries); }
+    if (context.skus?.length) { shipmentWhere.push(`UPPER(sl.sku) IN (${context.skus.map(() => "?").join(",")})`); shipmentParams.push(...context.skus); }
+    const inboundShipments = store.all(`SELECT s.id,s.shipment_no,s.destination_warehouse_id,s.destination_warehouse_name,s.destination_country,s.tracking_no,s.eta,s.actual_shipped_at,
+        sl.sku,sl.product_name,sl.shipped_qty,sl.unit
+      FROM stockup_shipments s
+      JOIN stockup_requests r ON r.id=s.request_id
+      JOIN stockup_shipment_lines sl ON sl.shipment_id=s.id
+      WHERE ${shipmentWhere.join(" AND ")}
+      ORDER BY s.actual_shipped_at DESC,s.id,sl.sku`, shipmentParams).map((row) => ({
+        id: `${String(row.id)}::${String(row.sku)}`,
+        shipmentId: String(row.id), shipmentNo: String(row.shipment_no), warehouseId: String(row.destination_warehouse_id || ""), warehouseName: String(row.destination_warehouse_name || ""),
+        country: String(row.destination_country || ""), trackingNo: String(row.tracking_no || ""), eta: String(row.eta || ""), actualShippedAt: String(row.actual_shipped_at || ""),
+        sku: String(row.sku || ""), productName: String(row.product_name || ""), quantity: number(row.shipped_qty), unit: String(row.unit || "件"),
+      }));
+    return { inboundReceipts, inboundShipments };
+  }
+
   function updateReceiptLifecycle(receiptId, action, context) {
     const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(receiptId)]));
     if (!receipt) throw Object.assign(new Error("收货批次不存在。"), { statusCode: 404 });
@@ -934,7 +979,7 @@ export function createStockupCollaborationService(store) {
 
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
-    listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, voidShipmentWmsOrder,
+    listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, voidShipmentWmsOrder,
     saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
   };
 }

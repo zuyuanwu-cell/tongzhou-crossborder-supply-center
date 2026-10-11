@@ -74,7 +74,8 @@ import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order
 import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
 import { withTransientRetry } from "./transient-retry.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
-import { automaticPlatformReturnDateRange, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
+import { automaticPlatformReturnDateRange, listWarehouseReturns, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
+import { buildOverseasInventoryReconciliation, resolveOverseasReconciliationRanges } from "./overseas-inventory-reconciliation.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
 import { selectSeaThreeWarehouseIds } from "./order-analysis.js";
 import { createOzonIntegrationService } from "./ozon-integration.js";
@@ -152,6 +153,7 @@ const afterSalesCachePath = resolve(cacheDir, "after-sales.json");
 const afterSalesUploadDir = resolve(cacheDir, "after-sales-uploads");
 const warehouseTicketCachePath = resolve(cacheDir, "warehouse-tickets.json");
 const warehouseTicketUploadDir = resolve(cacheDir, "warehouse-ticket-uploads");
+const overseasInventoryReconciliationCachePath = resolve(cacheDir, "overseas-inventory-reconciliation.json");
 const ozonIntegrationCachePath = resolve(cacheDir, "ozon-integration.json");
 const aiVideoPublicDir = resolve(process.cwd(), "public", "ai-videos");
 const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
@@ -197,6 +199,7 @@ let cachedMovementHistory = loadJsonCache(movementHistoryCachePath) || { updated
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedOrderSyncJobs = loadJsonCache(orderSyncJobsCachePath) || { updatedAt: "", jobs: [] };
 let cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(loadJsonCache(orderAnalysisSettingsPath));
+let cachedOverseasInventoryReconciliation = loadJsonCache(overseasInventoryReconciliationCachePath) || { updatedAt: "", orders: [], warehouseStates: {}, claims: {} };
 let cachedStockupSync = loadJsonCache(stockupCachePath) || { syncedAt: "", orders: [], results: [] };
 let cachedStockupDecisions = loadJsonCache(stockupDecisionCachePath) || { updatedAt: "", decisions: {} };
 let cachedStockupPlans = normalizeStockupPlans(loadJsonCache(stockupPlanCachePath));
@@ -3451,6 +3454,216 @@ function enrichWarehouseReturnOrders(orders, auth) {
       });
     return { ...order, items };
   }).filter((order) => !scopes.skus.length || order.items.length > 0);
+}
+
+function overseasReconciliationWarehouses(auth) {
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  const warehouseIds = new Set(scopes.warehouseIds);
+  const countries = new Set(scopes.countries.map(normalizedCountryKey).filter(Boolean));
+  return warehouseConnections
+    .filter((connection) => normalizedCountryKey(connection.country) !== normalizedCountryKey("中国"))
+    .filter((connection) => !warehouseIds.size || warehouseIds.has(String(connection.id || "").trim()))
+    .filter((connection) => !countries.size || countries.has(normalizedCountryKey(connection.country)))
+    .map((connection) => ({
+      id: String(connection.id || "").trim(),
+      name: String(connection.name || connection.id || "").trim(),
+      country: String(connection.country || "").trim(),
+      providerId: String(connection.providerId || "").trim(),
+      providerName: String(connection.providerName || "").trim(),
+    }))
+    .filter((connection) => connection.id && connection.name);
+}
+
+function reconciliationDateKey(value) {
+  return String(value || "").match(/^(\d{4}-\d{2}-\d{2})/)?.[1] || "";
+}
+
+function reconciliationOrderActivityDate(order) {
+  return reconciliationDateKey(order?.createdAt || order?.submittedAt || order?.signedAt || order?.updatedAt || order?.completedAt);
+}
+
+function splitReconciliationDateRange(from, to, maxDays = 90) {
+  const output = [];
+  let cursor = Date.parse(`${from}T00:00:00.000Z`);
+  const end = Date.parse(`${to}T00:00:00.000Z`);
+  if (!Number.isFinite(cursor) || !Number.isFinite(end) || cursor > end) return output;
+  while (cursor <= end) {
+    const chunkEnd = Math.min(end, cursor + (maxDays - 1) * 24 * 60 * 60 * 1000);
+    output.push({
+      dateFrom: new Date(cursor).toISOString().slice(0, 10),
+      dateTo: new Date(chunkEnd).toISOString().slice(0, 10),
+    });
+    cursor = chunkEnd + 24 * 60 * 60 * 1000;
+  }
+  return output;
+}
+
+function reconciliationSkuAllowed(item, scopes) {
+  if (!scopes.skus.length) return true;
+  return scopes.skus.includes(normalizeReturnIdentifier(item?.sku || item?.countrySku));
+}
+
+function reconciliationWarehouseAllowed(item, allowedWarehouseIds) {
+  return allowedWarehouseIds.has(String(item?.warehouseId || item?.destinationWarehouseId || "").trim());
+}
+
+function overseasReconciliationPayload(auth, input = {}) {
+  const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
+  const ranges = resolveOverseasReconciliationRanges({
+    period,
+    anchorDate: String(input.anchorDate || new Date().toISOString().slice(0, 10)),
+    from: String(input.from || ""),
+    to: String(input.to || ""),
+  });
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  const warehouses = overseasReconciliationWarehouses(auth);
+  const allowedWarehouseIds = new Set(warehouses.map((item) => item.id));
+  const stockupFacts = stockupCollaborationService.reconciliationFacts({ from: ranges.previous.from, to: ranges.current.to }, {
+    auth,
+    viewAll: true,
+    viewCost: false,
+    revealSupplier: false,
+    countries: scopes.countries,
+    warehouseIds: warehouses.length ? warehouses.map((item) => item.id) : ["__no_overseas_warehouse__"],
+    skus: scopes.skus,
+  });
+  const snapshots = movementHistoryStore.getSnapshots({}, { includeRows: true }).map((snapshot) => ({
+    ...snapshot,
+    rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
+  }));
+  const outboundOrders = (cachedOrdersSync.orders || [])
+    .filter((order) => reconciliationWarehouseAllowed(order, allowedWarehouseIds) && reconciliationSkuAllowed(order, scopes));
+  const returnOrders = enrichWarehouseReturnOrders((cachedOverseasInventoryReconciliation.orders || [])
+    .filter((order) => allowedWarehouseIds.has(String(order.warehouseId || "").trim())), auth);
+  const afterSalesTickets = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth) }).tickets;
+  const relevantStates = warehouses.map((warehouse) => cachedOverseasInventoryReconciliation.warehouseStates?.[warehouse.id]).filter(Boolean);
+  const returnErrors = relevantStates.filter((state) => state.error).map((state) => ({
+    warehouseId: state.warehouseId,
+    warehouseName: state.warehouseName,
+    message: state.error,
+  }));
+  const orderComplete = !(cachedOrdersSync.results || []).some((result) => allowedWarehouseIds.has(String(result.warehouseId || "")) && (result.ok === false || result.orderApiComplete === false || result.orderApiReachedPageLimit));
+  const inboundSyncedAt = [...(stockupFacts.inboundReceipts || []), ...(stockupFacts.inboundShipments || [])]
+    .map((item) => String(item.arrivedAt || item.actualShippedAt || ""))
+    .sort()
+    .at(-1) || "";
+  return buildOverseasInventoryReconciliation({
+    ranges,
+    period,
+    anchorDate: String(input.anchorDate || ""),
+    from: String(input.from || ""),
+    to: String(input.to || ""),
+    timezone: String(input.timezone || movementHistoryTimezone || "Asia/Shanghai"),
+    snapshots,
+    warehouses,
+    outboundOrders,
+    inboundReceipts: stockupFacts.inboundReceipts || [],
+    inboundShipments: stockupFacts.inboundShipments || [],
+    inventoryMovements: [],
+    wmsReturnOrders: returnOrders,
+    afterSalesTickets,
+    claimMap: cachedOverseasInventoryReconciliation.claims || {},
+    sources: {
+      inventorySyncedAt: cachedWarehouseSync.syncedAt || movementHistoryStore.getMetadata().lastSnapshotAt || "",
+      ordersSyncedAt: cachedOrdersSync.syncedAt || "",
+      orderComplete,
+      inboundSyncedAt,
+      returnsSyncedAt: cachedOverseasInventoryReconciliation.updatedAt || "",
+      returnComplete: relevantStates.length > 0 && relevantStates.every((state) => state.complete && !state.error),
+      returnErrors,
+    },
+  });
+}
+
+async function refreshOverseasReconciliationReturns(auth, input = {}) {
+  const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
+  const ranges = resolveOverseasReconciliationRanges({
+    period,
+    anchorDate: String(input.anchorDate || new Date().toISOString().slice(0, 10)),
+    from: String(input.from || ""),
+    to: String(input.to || ""),
+  });
+  const dateFrom = ranges.previous.from;
+  const dateTo = ranges.current.to;
+  const chunks = splitReconciliationDateRange(dateFrom, dateTo);
+  const options = warehouseReturnOptions(auth);
+  const optionIds = new Set(options.map((item) => item.id));
+  const targetConnections = warehouseConnections.filter((connection) => optionIds.has(String(connection.id || "")));
+  const nextStates = { ...(cachedOverseasInventoryReconciliation.warehouseStates || {}) };
+  let nextOrders = [...(cachedOverseasInventoryReconciliation.orders || [])];
+  for (const connection of targetConnections) {
+    const startedAt = new Date().toISOString();
+    try {
+      const orders = [];
+      let complete = true;
+      let pagesRead = 0;
+      for (const chunk of chunks) {
+        const result = await listWarehouseReturns(effectiveWarehouseReturnConnection(connection), {
+          warehouseId: connection.id,
+          ...chunk,
+        }, {
+          timeoutMs: Math.min(25_000, warehouseReturnQueryTimeoutMs),
+          maxPages: warehouseReturnQueryMaxPages,
+        });
+        orders.push(...(result.orders || []));
+        complete &&= result.complete !== false;
+        pagesRead += Number(result.pagesRead || 0);
+      }
+      const uniqueOrders = [...new Map(orders.map((order) => [String(order.id || `${order.warehouseId}:${order.returnOrderNumber}`), order])).values()];
+      nextOrders = nextOrders.filter((order) => {
+        if (String(order.warehouseId || "") !== String(connection.id || "")) return true;
+        const activityDate = reconciliationOrderActivityDate(order);
+        return activityDate && (activityDate < dateFrom || activityDate > dateTo);
+      });
+      nextOrders.push(...uniqueOrders);
+      nextStates[connection.id] = {
+        warehouseId: connection.id,
+        warehouseName: connection.name,
+        country: connection.country,
+        attemptedAt: startedAt,
+        syncedAt: new Date().toISOString(),
+        from: dateFrom,
+        to: dateTo,
+        count: uniqueOrders.length,
+        pagesRead,
+        complete,
+        error: "",
+      };
+    } catch (error) {
+      nextStates[connection.id] = {
+        ...(nextStates[connection.id] || {}),
+        warehouseId: connection.id,
+        warehouseName: connection.name,
+        country: connection.country,
+        attemptedAt: startedAt,
+        from: dateFrom,
+        to: dateTo,
+        complete: false,
+        error: error?.message || "WMS 退货事实同步失败。",
+      };
+    }
+  }
+  cachedOverseasInventoryReconciliation = {
+    ...cachedOverseasInventoryReconciliation,
+    updatedAt: new Date().toISOString(),
+    orders: nextOrders,
+    warehouseStates: nextStates,
+    claims: cachedOverseasInventoryReconciliation.claims || {},
+  };
+  saveJsonCache(overseasInventoryReconciliationCachePath, cachedOverseasInventoryReconciliation);
+  return overseasReconciliationPayload(auth, input);
+}
+
+function reconciliationReturnFactExists(factId) {
+  for (const order of cachedOverseasInventoryReconciliation.orders || []) {
+    const items = Array.isArray(order.items) && order.items.length ? order.items : [{ id: "unknown", sku: "" }];
+    for (const item of items) {
+      const sku = normalizeReturnIdentifier(item.sku || item.skuNo || item.id);
+      const candidate = `${String(order.id || order.returnOrderNumber || "")}::${sku || String(item.id || "unknown")}`;
+      if (candidate === factId) return order;
+    }
+  }
+  return null;
 }
 
 function warehouseReturnQueryErrorStatus(error) {
@@ -7468,6 +7681,81 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, detail);
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "读取订单店铺别名任务失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/overseas-inventory-reconciliation" && req.method === "GET") {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "inventory_reconciliation")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有海外仓库存对账查看权限。" });
+        return;
+      }
+      try {
+        sendJson(res, 200, overseasReconciliationPayload(auth, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "海外仓库存对账读取失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/overseas-inventory-reconciliation/refresh" && req.method === "POST") {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "inventory_reconciliation") || !hasPermission(auth, "inventory_sync_run") || !canQueryWarehouseReturns(auth)) {
+        sendJson(res, 403, { ok: false, message: "同步退货事实需要海外仓库存对账、库存同步和 WMS 退货查询权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const result = await refreshOverseasReconciliationReturns(auth, payload);
+        appendActionLog(auth, "同步海外仓退货事实", "overseas_inventory_reconciliation", `${result.ranges.current.from}_${result.ranges.current.to}`, {
+          from: result.ranges.previous.from,
+          to: result.ranges.current.to,
+          returnFacts: result.returnFacts.length,
+          warehouses: result.warehouses.length,
+        });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, warehouseReturnQueryErrorStatus(error), { ok: false, code: error?.code || "refresh_failed", message: error?.message || "海外仓退货事实同步失败。" });
+      }
+      return;
+    }
+
+    const reconciliationClaimMatch = url.pathname.match(/^\/api\/overseas-inventory-reconciliation\/returns\/([^/]+)\/claim$/);
+    if (reconciliationClaimMatch && req.method === "POST") {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "inventory_reconciliation") || !hasPermission(auth, "after_sales_report")) {
+        sendJson(res, 403, { ok: false, message: "认领退货需要库存对账查看和售后运营填报权限。" });
+        return;
+      }
+      try {
+        const factId = decodeURIComponent(reconciliationClaimMatch[1]);
+        const order = reconciliationReturnFactExists(factId);
+        const allowedWarehouseIds = new Set(overseasReconciliationWarehouses(auth).map((item) => item.id));
+        if (!order || !allowedWarehouseIds.has(String(order.warehouseId || ""))) {
+          sendJson(res, 404, { ok: false, message: "待认领退货不存在或不在当前数据范围内。" });
+          return;
+        }
+        const claim = {
+          ownerId: String(auth.user?.id || auth.user?.username || "").trim(),
+          ownerName: String(auth.user?.displayName || auth.user?.username || "运营").trim(),
+          claimedAt: new Date().toISOString(),
+        };
+        cachedOverseasInventoryReconciliation = {
+          ...cachedOverseasInventoryReconciliation,
+          claims: { ...(cachedOverseasInventoryReconciliation.claims || {}), [factId]: claim },
+        };
+        saveJsonCache(overseasInventoryReconciliationCachePath, cachedOverseasInventoryReconciliation);
+        appendActionLog(auth, "认领海外仓退货", "overseas_return_fact", factId, {
+          warehouseId: order.warehouseId,
+          returnOrderNumber: order.returnOrderNumber,
+        });
+        sendJson(res, 200, { ok: true, factId, claim });
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "退货认领失败。" });
       }
       return;
     }

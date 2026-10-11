@@ -522,6 +522,101 @@ async function queryYunReturns(connection, input, options) {
   return { orders, complete: detailComplete, needsDateRange: false, pagesRead, method: targeted ? "targeted" : "bounded_scan" };
 }
 
+async function listSeaReturns(connection, input, options) {
+  const credentials = seaCredentials(connection);
+  validateCredentials(connection, credentials);
+  const warehouseId = await resolveSeaWarehouseId(options.fetchImpl, credentials, connection, options);
+  if (!warehouseId) throw new WarehouseReturnQueryError("unconfigured", `${connection.name} 缺少WMS仓库ID。`);
+  let cursor = "";
+  let pagesRead = 0;
+  let reachedPageLimit = false;
+  const orders = [];
+  for (let page = 0; page < options.maxPages; page += 1) {
+    const body = {
+      warehouseId,
+      pageSize: PAGE_SIZE,
+      searchTimeField: "create",
+      searchTimeFrom: dateTimeStart(input.dateFrom),
+      searchTimeTo: dateTimeEnd(input.dateTo),
+      ...(cursor ? { cursor } : {}),
+    };
+    const payload = await postSea(options.fetchImpl, credentials, "/warehouse_return_order/search_page", body, options);
+    const rows = seaRows(payload);
+    pagesRead = page + 1;
+    orders.push(...rows.map((row) => normalizeSeaReturnOrder(row, connection)));
+    const nextCursor = firstText(payload?.data?.cursor);
+    if (!nextCursor || nextCursor === cursor || !rows.length) break;
+    cursor = nextCursor;
+    if (page === options.maxPages - 1) reachedPageLimit = true;
+  }
+  return { orders, complete: !reachedPageLimit, needsDateRange: false, pagesRead, method: "period_list" };
+}
+
+async function listYunReturns(connection, input, options) {
+  const credentials = yunCredentials(connection);
+  validateCredentials(connection, credentials);
+  const baseParams = {
+    ...(credentials.warehouseCode ? { warehouse_code: credentials.warehouseCode } : {}),
+    spo_update_time_from: dateTimeStart(input.dateFrom),
+    spo_update_time_to: dateTimeEnd(input.dateTo),
+  };
+  let pagesRead = 0;
+  let reachedPageLimit = false;
+  const rows = [];
+  for (let page = 1; page <= options.maxPages; page += 1) {
+    const payload = await postYun(options.fetchImpl, credentials, "getSpecialOrdersList", { pageSize: PAGE_SIZE, page, ...baseParams }, options);
+    const pageRows = Array.isArray(payload?.data) ? payload.data : [];
+    rows.push(...pageRows);
+    pagesRead = page;
+    const hasNext = text(payload?.nextPage).toLowerCase() === "true" && pageRows.length > 0;
+    if (!hasNext) break;
+    if (page === options.maxPages) reachedPageLimit = true;
+  }
+  let detailComplete = true;
+  const orders = [];
+  for (const row of rows) {
+    let detail = row;
+    const returnCode = firstText(row.return_code, row.spo_code, row.code);
+    if (returnCode) {
+      try {
+        const detailPayload = await postYun(options.fetchImpl, credentials, "getReturnBill", { return_code: returnCode }, options);
+        const detailData = Array.isArray(detailPayload?.data) ? detailPayload.data[0] : detailPayload?.data;
+        if (detailData && typeof detailData === "object") detail = { ...row, ...detailData };
+      } catch (error) {
+        if (error?.code === "cancelled" || error?.code === "timeout") throw error;
+        detailComplete = false;
+      }
+    }
+    orders.push(normalizeYunReturnOrder(detail, connection));
+  }
+  return { orders, complete: !reachedPageLimit && detailComplete, needsDateRange: false, pagesRead, method: "period_list" };
+}
+
+export async function listWarehouseReturns(connection, input, {
+  fetchImpl = globalThis.fetch,
+  signal,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxPages = DEFAULT_PAGE_LIMIT,
+} = {}) {
+  const safeInput = {
+    warehouseId: text(input?.warehouseId),
+    dateFrom: text(input?.dateFrom),
+    dateTo: text(input?.dateTo),
+  };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(safeInput.dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(safeInput.dateTo) || safeInput.dateFrom > safeInput.dateTo) {
+    throw new WarehouseReturnQueryError("invalid_input", "批量同步退货事实需要有效的开始和结束日期。");
+  }
+  const options = {
+    fetchImpl,
+    signal,
+    timeoutMs: Math.max(3_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS),
+    maxPages: Math.max(1, Math.min(50, Number(maxPages) || DEFAULT_PAGE_LIMIT)),
+  };
+  if (connection?.providerId === "sea_wms") return listSeaReturns(connection, safeInput, options);
+  if (connection?.providerId === "yunwms_ru") return listYunReturns(connection, safeInput, options);
+  throw new WarehouseReturnQueryError("unsupported", `${providerLabel(connection) || "当前WMS"}暂不支持退货批量同步。`);
+}
+
 export async function queryWarehouseReturns(connection, input, {
   fetchImpl = globalThis.fetch,
   signal,

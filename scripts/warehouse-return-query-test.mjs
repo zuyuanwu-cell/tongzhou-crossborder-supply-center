@@ -4,6 +4,7 @@ import {
   normalizeReturnIdentifier,
   normalizeSeaReturnOrder,
   normalizeYunReturnOrder,
+  listWarehouseReturns,
   queryWarehouseReturns,
 } from "../server/warehouse-return-query.js";
 
@@ -225,5 +226,42 @@ const yunMultiple = await queryWarehouseReturns(yunConnection, {
 });
 assert.equal(yunMultiple.orders.length, 2, "all exact matches on the located page are returned for operator review");
 assert.equal(yunMultiDetails, 2);
+
+let seaListPage = 0;
+const seaList = await listWarehouseReturns(seaConnection, {
+  dateFrom: "2026-09-01",
+  dateTo: "2026-09-30",
+}, {
+  maxPages: 3,
+  fetchImpl: async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (!body.cursor && !body.searchTimeFrom) return jsonResponse({ result: "success", data: { list: [{ warehouseId: "90001", warehouseCode: "ID-SN-JKT" }] } });
+    seaListPage += 1;
+    if (seaListPage === 1) return jsonResponse({ result: "success", data: { list: [{ returnSn: "RET-LIST-1", platformOrderSn: "ORDER-LIST-1", tab: "on_way", goodsSkuList: [{ goodsSkuOuterId: "SKU-LIST-1", quantity: 2 }] }], cursor: "next-1" } });
+    return jsonResponse({ result: "success", data: { list: [{ returnSn: "RET-LIST-2", platformOrderSn: "ORDER-LIST-2", tab: "finish", goodsSkuList: [{ goodsSkuOuterId: "SKU-LIST-2", quantity: 1, signQuantity: 1, inStorageQuantity: 1 }] }] } });
+  },
+});
+assert.equal(seaList.orders.length, 2, "SEA period listing returns all rows instead of identifier matches only");
+assert.equal(seaList.orders[0].status, "in_transit");
+assert.equal(seaList.complete, true);
+
+let yunListDetails = 0;
+const yunList = await listWarehouseReturns(yunConnection, {
+  dateFrom: "2026-09-01",
+  dateTo: "2026-09-30",
+}, {
+  fetchImpl: async (_url, init) => {
+    const service = init.body.match(/<service>(.*?)<\/service>/)?.[1] || "";
+    if (service === "getSpecialOrdersList") return soapResponse({ ask: "Success", nextPage: "false", data: [
+      { return_code: "R-LIST-1", refrence_no_platform: "ORDER-RU-1", spo_status: "3" },
+      { return_code: "R-LIST-2", refrence_no_platform: "ORDER-RU-2", spo_status: "5" },
+    ] });
+    yunListDetails += 1;
+    const returnCode = init.body.match(/R-LIST-[12]/)?.[0] || "";
+    return soapResponse({ ask: "Success", data: { return_code: returnCode, items: [{ product_sku: `${returnCode}-SKU`, received_qty: 1, ok_qty: 1, exception_process_instruction: 1 }] } });
+  },
+});
+assert.equal(yunList.orders.length, 2, "YunWMS period listing hydrates every return detail");
+assert.equal(yunListDetails, 2);
 
 console.log("warehouse-return-query tests passed");

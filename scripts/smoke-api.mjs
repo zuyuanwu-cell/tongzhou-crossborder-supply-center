@@ -183,6 +183,20 @@ async function main() {
   }
   console.log("[ok] /api/me admin session");
 
+  const overseasReconciliation = await expectJson("/api/overseas-inventory-reconciliation?period=month&anchorDate=2026-08-31", { headers: authHeaders });
+  if (overseasReconciliation.scope !== "overseas"
+    || !Array.isArray(overseasReconciliation.warehouses)
+    || !Array.isArray(overseasReconciliation.returnFacts)
+    || overseasReconciliation.ranges?.current?.from !== "2026-08-01"
+    || typeof overseasReconciliation.summary?.varianceQty !== "number") {
+    throw new Error(`Overseas inventory reconciliation payload is incomplete: ${JSON.stringify(overseasReconciliation).slice(0, 700)}`);
+  }
+  const anonymousOverseasReconciliation = await fetch(`${baseUrl}/api/overseas-inventory-reconciliation`);
+  if (anonymousOverseasReconciliation.status !== 403) {
+    throw new Error(`Anonymous overseas inventory reconciliation was not blocked: ${anonymousOverseasReconciliation.status}`);
+  }
+  console.log("[ok] overseas inventory reconciliation scope, ranges and authorization");
+
   const collaborationWarehouses = await expectJson("/api/stockup/collaboration/warehouses", { headers: authHeaders });
   if (!Array.isArray(collaborationWarehouses.warehouses) || !collaborationWarehouses.warehouses.length) {
     throw new Error("Stockup collaboration did not expose scoped warehouse options.");

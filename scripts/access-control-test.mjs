@@ -162,6 +162,10 @@ assert.equal(directMiaoshouPermissions.includes("business_chain_view"), false, "
 assert.equal(directMiaoshouPermissions.includes("contract_finance_view"), false, "finance ledger requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("warehouse_liability_settlement"), false, "warehouse liability settlement requires an explicit finance grant");
 assert.equal(effectivePermissions({ role: "admin" }).includes("warehouse_liability_settlement"), true, "administrators can reconcile warehouse liabilities by default");
+assert.equal(effectivePermissions({ role: "admin" }).includes("inventory_reconciliation"), true, "administrators can view overseas inventory reconciliation by default");
+assert.equal(effectivePermissions({ role: "direct" }).includes("inventory_reconciliation"), false, "overseas inventory reconciliation requires an explicit operator grant");
+assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["inventory_reconciliation"], deny: [] } }).includes("inventory_reconciliation"), true, "authorized internal operators can view overseas inventory reconciliation");
+assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { allow: ["inventory_reconciliation"], deny: [] } }).includes("inventory_reconciliation"), false, "distributors cannot receive overseas inventory reconciliation access");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["warehouse_liability_settlement"], deny: [] } }).includes("warehouse_liability_settlement"), true, "authorized internal finance users can reconcile warehouse liabilities");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_sync"), false, "business-chain sync cannot be delegated to non-admins");
 assert.equal(effectivePermissions({ role: "direct", permissionOverrides: { allow: ["business_chain_sync"], deny: [] } }).includes("business_chain_view"), false, "business-chain view cannot be delegated to non-admins");

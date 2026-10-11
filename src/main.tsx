@@ -225,6 +225,7 @@ import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import { WarehouseCollaborationTasks } from "./WarehouseCollaborationTasks";
 import { InventoryValuePage } from "./InventoryValuePage";
+import { OverseasInventoryReconciliationPage } from "./OverseasInventoryReconciliationPage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { AiAgentWidget } from "./AiAgentWidget";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
@@ -397,6 +398,7 @@ const navItems = [
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "inventory", permission: "inventory_sync" },
   { label: "动销监控", icon: BarChart3, hash: "#movement", section: "inventory", permission: "movement" },
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
+  { label: "海外仓库存对账", icon: Activity, hash: "#inventory-reconciliation", section: "inventory", permission: "inventory_reconciliation" },
   { label: "仓库货值", icon: Coins, hash: "#inventory-value", section: "inventory", permission: "inventory_value" },
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
@@ -1500,6 +1502,9 @@ function App() {
         if (hasUserPermission(currentUser, "inventory_snapshots")) void loadInventorySnapshots();
         if (hasUserPermission(currentUser, "warehouses") || hasUserPermission(currentUser, "inventory_sync")) void loadWarehouses();
         break;
+      case "#inventory-reconciliation":
+        // The reconciliation page owns its date filters and refresh lifecycle.
+        break;
       case "#inventory-value":
         if (hasUserPermission(currentUser, "inventory_value")) void loadInventoryValue(inventoryValuePayload?.filters || {});
         break;
@@ -2042,6 +2047,8 @@ function App() {
             onCaptureInventorySnapshot={handleCaptureInventorySnapshot}
             canManageActions={hasUserPermission(currentUser, "inventory_snapshot_manage")}
           />
+        ) : activeView === "海外仓库存对账" ? (
+          <OverseasInventoryReconciliationPage currentUser={currentUser} />
         ) : activeView === "仓库货值" ? (
           <InventoryValuePage
             payload={inventoryValuePayload}
