@@ -95,6 +95,8 @@ import { BUSINESS_CHAIN_SYNC_INTERVAL_MS } from "./business-chain-config.js";
 import { initCollaborationBridgeStore } from "./collaboration-bridge-db.js";
 import { createCollaborationBridge } from "./collaboration-bridge.js";
 import { createCollaborationBridgeApi } from "./collaboration-bridge-api.js";
+import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
+import { createSystemBackupService } from "./system-backup-service.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -439,6 +441,17 @@ const syncScheduler = createSyncScheduler({
   laneLimits: { light: 4, jdy: 1, wms: 1, miaoshou: 1, compute: 1, publicApi: 1 },
   restoredState: loadJsonCache(syncSchedulerCachePath) || {},
   persist: (payload) => saveJsonCache(syncSchedulerCachePath, payload, 0),
+});
+const systemMaintenanceGate = createSystemMaintenanceGate();
+const systemBackupService = createSystemBackupService({
+  projectRoot: process.cwd(),
+  cacheDir,
+  envPath: resolve(process.env.SYSTEM_BACKUP_ENV_PATH || resolve(process.cwd(), ".env")),
+  scheduler: syncScheduler,
+  collaborationBridge,
+  maintenanceGate: systemMaintenanceGate,
+  resumeBackgroundJobs: backgroundJobsEnabled,
+  waitForApplicationIdle: waitForSystemBackupApplicationIdle,
 });
 const performanceAnalyticsResponseCache = new Map();
 const performanceAnalyticsResponseCacheTtlMs = 5 * 60 * 1000;
@@ -3140,13 +3153,25 @@ function pruneWarehouseCaches(warehouseIds) {
   saveOrderCache(cachedOrdersSync);
 }
 
-function parseRequestBody(req) {
+function parseRequestBody(req, maxBytes = Number.POSITIVE_INFINITY) {
   return new Promise((resolveBody, rejectBody) => {
     let body = "";
+    let bytes = 0;
+    let overflow = false;
     req.on("data", (chunk) => {
-      body += chunk;
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        overflow = true;
+        body = "";
+        return;
+      }
+      if (!overflow) body += chunk;
     });
     req.on("end", () => {
+      if (overflow) {
+        rejectBody(Object.assign(new Error("请求内容超过允许大小。"), { statusCode: 413 }));
+        return;
+      }
       try {
         resolveBody(body ? JSON.parse(body) : {});
       } catch (error) {
@@ -3161,8 +3186,8 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key,X-Backup-Upload-Token,X-Backup-Download-Ticket",
   });
   res.end(JSON.stringify(payload));
 }
@@ -3265,6 +3290,51 @@ function getAuth(req) {
     };
   }
   return { role: "guest", user: null };
+}
+
+function systemBackupAdmin(req, res) {
+  const auth = getAuth(req);
+  if (auth.role === "guest" || !auth.user?.id) {
+    sendJson(res, 401, { ok: false, message: "请先登录管理员账号。" });
+    return null;
+  }
+  if (auth.role !== "admin" || !hasPermission(auth, "system_backup") || ["system", "legacy-internal"].includes(auth.user.id)) {
+    sendJson(res, 403, { ok: false, message: "系统备份仅允许使用账号密码登录的管理员操作。" });
+    return null;
+  }
+  return auth;
+}
+
+const systemBackupReauthFailures = new Map();
+
+function reauthenticateSystemBackupAdmin(auth, password) {
+  const key = String(auth?.user?.id || "");
+  const now = Date.now();
+  const previous = systemBackupReauthFailures.get(key);
+  if (previous?.blockedUntil > now) {
+    throw Object.assign(new Error("管理员密码连续校验失败，请 15 分钟后重试。"), { statusCode: 429 });
+  }
+  if (String(password || "").length > 512) {
+    throw Object.assign(new Error("管理员密码校验失败。"), { statusCode: 401 });
+  }
+  const user = (cachedUsers.users || []).find((item) => item.id === auth?.user?.id && item.status !== "disabled");
+  if (!user || !authenticateLocalUser([user], user.username, String(password || ""))) {
+    const recent = previous && now - previous.startedAt < 15 * 60_000 ? previous : { count: 0, startedAt: now, blockedUntil: 0 };
+    recent.count += 1;
+    if (recent.count >= 5) recent.blockedUntil = now + 15 * 60_000;
+    systemBackupReauthFailures.set(key, recent);
+    throw Object.assign(new Error("管理员密码校验失败。"), { statusCode: 401 });
+  }
+  systemBackupReauthFailures.delete(key);
+  return user;
+}
+
+async function waitForSystemBackupApplicationIdle() {
+  if (activeOrderSyncJobPromise) await Promise.resolve(activeOrderSyncJobPromise).catch(() => {});
+  if (performanceAnalyticsMaterializationJob?.promise) await Promise.resolve(performanceAnalyticsMaterializationJob.promise).catch(() => {});
+  while (scheduledInventorySnapshotRunning || activeWarehouseReturnQueries.size || activeAiAgentChats.size) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
 }
 
 function getAgentAuth(req) {
@@ -7362,6 +7432,7 @@ function aiAgentContext(auth, route, query = "") {
 }
 
 const server = http.createServer(async (req, res) => {
+  let maintenanceRequest = null;
   try {
     if (req.method === "OPTIONS") {
       sendJson(res, 200, { ok: true });
@@ -7369,6 +7440,141 @@ const server = http.createServer(async (req, res) => {
     }
 
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    maintenanceRequest = systemMaintenanceGate.beginRequest(req.method);
+    if (!maintenanceRequest.allowed) {
+      res.setHeader("Retry-After", String(maintenanceRequest.retryAfterSeconds || 5));
+      sendJson(res, 503, {
+        ok: false,
+        code: "system_maintenance",
+        message: "系统正在创建一致性备份快照，请稍后重试。",
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/system-backup/status" && req.method === "GET") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      sendJson(res, 200, systemBackupService.status());
+      return;
+    }
+
+    if (url.pathname === "/api/system-backup/export" && req.method === "POST") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const payload = await parseRequestBody(req, 32 * 1024);
+      reauthenticateSystemBackupAdmin(auth, payload.reauthPassword);
+      const password = Buffer.from(String(payload.packagePassword || ""), "utf8");
+      try {
+        if (password.length < 12 || password.length > 1024) {
+          sendJson(res, 400, { ok: false, message: "备份包密码需要 12 至 1024 个字节。" });
+          return;
+        }
+        const job = systemBackupService.createExport({ actor: auth.user, password });
+        appendActionLog(auth, "创建系统备份", "system_backup", job.id, { jobId: job.id });
+        sendJson(res, 202, { ok: true, job });
+      } finally {
+        password.fill(0);
+      }
+      return;
+    }
+
+    const systemBackupJobMatch = url.pathname.match(/^\/api\/system-backup\/jobs\/([a-f0-9-]{36})(?:\/(download-ticket))?$/);
+    if (systemBackupJobMatch && req.method === "GET" && !systemBackupJobMatch[2]) {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const job = systemBackupService.getJob(systemBackupJobMatch[1]);
+      if (!job) {
+        sendJson(res, 404, { ok: false, message: "备份任务不存在。" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, job });
+      return;
+    }
+
+    if (systemBackupJobMatch && systemBackupJobMatch[2] === "download-ticket" && req.method === "POST") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const ticket = systemBackupService.createDownloadTicket(systemBackupJobMatch[1], auth.user);
+      sendJson(res, 201, { ok: true, ...ticket });
+      return;
+    }
+
+    if (url.pathname === "/api/system-backup/download" && req.method === "GET") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const download = systemBackupService.consumeDownloadTicket(req.headers["x-backup-download-ticket"], auth.user);
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": download.bytes,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(download.fileName)}`,
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+      });
+      const stream = createReadStream(download.path);
+      stream.on("error", (error) => res.destroy(error));
+      res.once("finish", () => {
+        try { systemBackupService.markDownloadFinished(download.id); }
+        catch (error) { console.error("[system-backup] failed to remove downloaded artifact", error); }
+      });
+      stream.pipe(res);
+      return;
+    }
+
+    if (url.pathname === "/api/system-backup/import" && req.method === "POST") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const payload = await parseRequestBody(req, 32 * 1024);
+      reauthenticateSystemBackupAdmin(auth, payload.reauthPassword);
+      const password = Buffer.from(String(payload.packagePassword || ""), "utf8");
+      try {
+        if (password.length < 12 || password.length > 1024) {
+          sendJson(res, 400, { ok: false, message: "备份包密码需要 12 至 1024 个字节。" });
+          return;
+        }
+        const created = systemBackupService.createImport({
+          actor: auth.user,
+          password,
+          fileName: payload.fileName,
+          fileSize: payload.fileSize,
+          envMode: payload.envMode,
+        });
+        appendActionLog(auth, "创建系统导入校验", "system_backup", created.job.id, { jobId: created.job.id, envMode: created.job.envMode, fileSize: created.job.fileSize });
+        sendJson(res, 201, { ok: true, ...created });
+      } finally {
+        password.fill(0);
+      }
+      return;
+    }
+
+    const systemBackupImportMatch = url.pathname.match(/^\/api\/system-backup\/import\/([a-f0-9-]{36})\/(file|apply)$/);
+    if (systemBackupImportMatch && systemBackupImportMatch[2] === "file" && req.method === "PUT") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const job = await systemBackupService.receiveImportUpload({
+        id: systemBackupImportMatch[1],
+        token: req.headers["x-backup-upload-token"],
+        stream: req,
+        contentLength: req.headers["content-length"],
+      });
+      sendJson(res, 202, { ok: true, job });
+      return;
+    }
+
+    if (systemBackupImportMatch && systemBackupImportMatch[2] === "apply" && req.method === "POST") {
+      const auth = systemBackupAdmin(req, res);
+      if (!auth) return;
+      const payload = await parseRequestBody(req, 8 * 1024);
+      reauthenticateSystemBackupAdmin(auth, payload.reauthPassword);
+      if (String(payload.confirmation || "").trim() !== "确认恢复") {
+        sendJson(res, 400, { ok: false, message: "请输入“确认恢复”后再执行。" });
+        return;
+      }
+      const job = systemBackupService.applyImport({ id: systemBackupImportMatch[1], actor: auth.user });
+      appendActionLog(auth, "确认应用系统备份", "system_backup", job.id, { jobId: job.id, envMode: job.envMode });
+      sendJson(res, 202, { ok: true, job });
+      return;
+    }
 
     if (await agentIndexLayer.handle(req, res, url)) return;
 
@@ -11694,7 +11900,10 @@ const server = http.createServer(async (req, res) => {
     if (serveDistFallback(req, res, url)) return;
     sendJson(res, 404, { ok: false, message: "Not found" });
   } catch (error) {
-    sendJson(res, 500, { ok: false, message: error.message });
+    if (!res.headersSent) sendJson(res, Number(error.statusCode) || 500, { ok: false, message: error.message });
+    else res.destroy(error);
+  } finally {
+    maintenanceRequest?.release?.();
   }
 });
 

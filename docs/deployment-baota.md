@@ -45,6 +45,22 @@ location /api/ {
 }
 ```
 
+系统备份采用流式大文件上传。请在通用 `/api/` 规则之前增加专用规则，避免 Nginx 默认 50MB 限制和请求体落盘缓冲：
+
+```nginx
+location ~ ^/api/system-backup/import/[a-f0-9-]+/file$ {
+  client_max_body_size 4096m;
+  proxy_request_buffering off;
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
+  proxy_pass http://127.0.0.1:8787;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
 ## 日常更新
 
 如果暂时不使用 Nginx 托管 `dist` 静态目录，也可以在 `npm run build` 后只让 PM2 启动后端服务。后端会在检测到 `dist/index.html` 时为 `/` 和前端路由返回应用首页，`/api/*` 仍保持 API 响应。
@@ -55,6 +71,7 @@ git pull origin main
 npm ci
 npm run build
 pm2 restart tongzhou-supply-api --update-env
+pm2 startOrReload ecosystem.config.cjs --only tongzhou-system-restore --update-env
 pm2 save
 ```
 
@@ -84,7 +101,14 @@ PERFORMANCE_FX_SYNC_INTERVAL_MS=86400000
 PERFORMANCE_FX_BACKFILL_DAYS=120
 PERFORMANCE_FX_ENDPOINT=https://api.frankfurter.dev/v2/rates
 AI_CREDENTIAL_ENCRYPTION_KEY=
+SYSTEM_BACKUP_DIR=.system-backup
+SYSTEM_BACKUP_MAX_BYTES=4294967296
+ALLOW_SYSTEM_IMPORT=0
+SYSTEM_BACKUP_PM2_APP=tongzhou-supply-api
+SYSTEM_RESTORE_POLL_MS=3000
 ```
+
+首次启用恢复前，先确认 `pm2 status tongzhou-system-restore` 为 online，并在“工具与设置 → 系统备份”看到恢复代理在线。完成一次临时数据演练后，再把 `ALLOW_SYSTEM_IMPORT` 改为 `1`。`.system-backup` 必须与 `.cache` 分离，且不能放在 `dist` 静态目录内。
 
 修改 `.env` 后必须使用 `pm2 restart tongzhou-supply-api --update-env`，否则 PM2 仍可能沿用旧环境变量。
 

@@ -6,6 +6,7 @@ PROJECT_DIR="${DEPLOY_PROJECT_DIR:-/www/wwwroot/gyl.tongzhoukuajing.com}"
 BACKUP_BASE="${DEPLOY_BACKUP_BASE:-/www/backup/tongzhou-supply}"
 HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8787/api/health}"
 PM2_APP="${DEPLOY_PM2_APP:-tongzhou-supply-api}"
+PM2_RESTORE_APP="${DEPLOY_PM2_RESTORE_APP:-tongzhou-system-restore}"
 
 if [[ ! -d "$PROJECT_DIR/.git" ]]; then
   echo "[deploy] project git directory not found: $PROJECT_DIR" >&2
@@ -58,6 +59,11 @@ npm run build
 test -s dist/index.html
 
 echo "__RESTART__"
+if pm2 describe "$PM2_RESTORE_APP" >/dev/null 2>&1; then
+  pm2 restart "$PM2_RESTORE_APP" --update-env
+else
+  pm2 start ecosystem.config.cjs --only "$PM2_RESTORE_APP" --update-env
+fi
 pm2 restart "$PM2_APP" --update-env
 pm2 save
 

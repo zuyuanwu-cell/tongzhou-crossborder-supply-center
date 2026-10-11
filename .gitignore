@@ -8,6 +8,10 @@ dist-collaboration/
 
 # Runtime cache and generated files
 .cache/
+.cache.next-import-*/
+.cache.pre-import-*/
+.cache.failed-import-*/
+.system-backup/
 .cache-test-stockup/
 artifacts/
 .cache/collaboration-objects/

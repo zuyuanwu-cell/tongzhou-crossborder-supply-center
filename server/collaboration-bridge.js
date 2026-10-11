@@ -619,6 +619,14 @@ export function createCollaborationBridge({
     timer = null;
   }
 
+  async function waitForIdle({ timeoutMs = 60_000 } = {}) {
+    const startedAt = Date.now();
+    while (running) {
+      if (Date.now() - startedAt >= timeoutMs) throw new Error("Timed out waiting for collaboration bridge to become idle");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   return {
     bootstrapOrganization,
     downloadWarehouseTaskAttachment,
@@ -648,5 +656,6 @@ export function createCollaborationBridge({
     synchronize,
     synchronizeInventoryProjections,
     updateOrganizationStatus,
+    waitForIdle,
   };
 }

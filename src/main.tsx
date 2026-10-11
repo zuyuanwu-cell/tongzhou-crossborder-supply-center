@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Activity,
   AlertTriangle,
+  ArchiveRestore,
   ArrowUp,
   ArrowUpRight,
   BarChart3,
@@ -232,6 +233,7 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
+import { SystemBackupPage } from "./SystemBackupPage";
 import ReviewCenter from "./ReviewCenter";
 import QualificationCoveragePage from "./QualificationCoveragePage";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
@@ -425,6 +427,7 @@ const navItems = [
   { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
   { label: "协同组织与账号", icon: ShieldCheck, hash: "#collaboration-accounts", section: "settings", permission: "operations" },
   { label: "操作日志", icon: List, hash: "#action-log", section: "settings", permission: "action_log" },
+  { label: "系统备份", icon: ArchiveRestore, hash: "#system-backup", section: "settings", permission: "system_backup", adminOnly: true },
   { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "settings", permission: "api_access" },
 ];
 
@@ -1505,6 +1508,9 @@ function App() {
       case "#inventory-reconciliation":
         // The reconciliation page owns its date filters and refresh lifecycle.
         break;
+      case "#system-backup":
+        // The backup page owns its job polling and credentials lifecycle.
+        break;
       case "#inventory-value":
         if (hasUserPermission(currentUser, "inventory_value")) void loadInventoryValue(inventoryValuePayload?.filters || {});
         break;
@@ -2219,6 +2225,8 @@ function App() {
           <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
+        ) : activeView === "系统备份" ? (
+          <SystemBackupPage />
         ) : activeView === "用户管理" ? (
           <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} warehousePayload={warehousePayload} />
         ) : activeView === "协同组织与账号" ? (

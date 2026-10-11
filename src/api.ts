@@ -3873,6 +3873,146 @@ export function resolveApiUrl(value: string) {
   return value;
 }
 
+export type SystemBackupJob = {
+  id: string;
+  type: "export" | "import";
+  status: string;
+  phase: string;
+  progress: number;
+  message: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  currentPath?: string;
+  downloadName?: string;
+  packageBytes?: number;
+  fileName?: string;
+  fileSize?: number;
+  uploadedBytes?: number;
+  envMode?: "migration" | "full";
+  rollbackAvailable?: boolean;
+  artifactRemoved?: boolean;
+  manifest?: {
+    gitSha: string;
+    createdAt: string;
+    fileCount: number;
+    totalBytes: number;
+    collaborationIncluded: boolean;
+  };
+  preview?: {
+    gitSha: string;
+    createdAt: string;
+    fileCount: number;
+    totalBytes: number;
+    envMode: "migration" | "full";
+    importedEnvKeyCount: number;
+    preservedEnvKeys: string[];
+    omittedHostKeys: string[];
+    collaborationIncluded: boolean;
+    warnings: string[];
+  };
+};
+
+export type SystemBackupAuditEntry = {
+  id?: string;
+  createdAt: string;
+  action: string;
+  actorId: string;
+  actorName: string;
+  details?: Record<string, unknown>;
+};
+
+export type SystemBackupStatus = {
+  ok: boolean;
+  gitSha: string;
+  data: { bytes: number; files: number; envPresent: boolean };
+  scope: { included: string[]; excluded: string[] };
+  importEnabled: boolean;
+  maxUploadBytes: number;
+  maintenance: { active: boolean; reason: string; startedAt: string; activeMutations: number };
+  restoreAgent: { healthy: boolean; updatedAt?: string; ageMs?: number | null; message: string };
+  jobs: SystemBackupJob[];
+  audit: SystemBackupAuditEntry[];
+};
+
+export function fetchSystemBackupStatus() {
+  return requestJson<SystemBackupStatus>("/api/system-backup/status");
+}
+
+export function fetchSystemBackupJob(id: string) {
+  return requestJson<{ ok: boolean; job: SystemBackupJob }>(`/api/system-backup/jobs/${encodeURIComponent(id)}`);
+}
+
+export function createSystemBackupExport(input: { reauthPassword: string; packagePassword: string }) {
+  return requestJson<{ ok: boolean; job: SystemBackupJob }>("/api/system-backup/export", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createSystemBackupImport(input: {
+  reauthPassword: string;
+  packagePassword: string;
+  fileName: string;
+  fileSize: number;
+  envMode: "migration" | "full";
+}) {
+  return requestJson<{ ok: boolean; job: SystemBackupJob; uploadToken: string }>("/api/system-backup/import", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function uploadSystemBackupFile(
+  jobId: string,
+  uploadToken: string,
+  file: File,
+  onProgress?: (progress: number) => void,
+) {
+  return new Promise<SystemBackupJob>((resolveUpload, rejectUpload) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", `${API_BASE}/api/system-backup/import/${encodeURIComponent(jobId)}/file`);
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) request.setRequestHeader("Authorization", `Bearer ${token}`);
+    request.setRequestHeader("Content-Type", "application/octet-stream");
+    request.setRequestHeader("X-Backup-Upload-Token", uploadToken);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onerror = () => rejectUpload(new Error("备份文件上传失败，请检查网络后重试。"));
+    request.onload = () => {
+      let payload: { message?: string; job?: SystemBackupJob } = {};
+      try { payload = request.responseText ? JSON.parse(request.responseText) : {}; } catch { /* handled below */ }
+      if (request.status < 200 || request.status >= 300 || !payload.job) {
+        rejectUpload(new Error(payload.message || `备份文件上传失败（HTTP ${request.status}）。`));
+        return;
+      }
+      resolveUpload(payload.job);
+    };
+    request.send(file);
+  });
+}
+
+export function applySystemBackupImport(id: string, input: { reauthPassword: string; confirmation: string }) {
+  return requestJson<{ ok: boolean; job: SystemBackupJob }>(`/api/system-backup/import/${encodeURIComponent(id)}/apply`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function downloadSystemBackup(id: string) {
+  const ticket = await requestJson<{ ok: boolean; token: string; expiresAt: string }>(`/api/system-backup/jobs/${encodeURIComponent(id)}/download-ticket`, { method: "POST" });
+  const response = await fetch(`${API_BASE}/api/system-backup/download`, {
+    headers: { ...authHeaders(), "X-Backup-Download-Ticket": ticket.token },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "备份包下载失败。");
+  }
+  return response.blob();
+}
+
 export function fetchDashboardSummary() {
   return requestJson<DashboardSummaryPayload>("/api/dashboard-summary");
 }

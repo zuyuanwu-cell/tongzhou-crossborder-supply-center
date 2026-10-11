@@ -13,8 +13,9 @@ const distIndexPath = resolve(repoRoot, "dist", "index.html");
 const port = String(22000 + Math.floor(Math.random() * 10000));
 const baseUrl = `http://127.0.0.1:${port}`;
 const accessCode = "smoke-internal-code";
-const timeoutMs = 30000;
+const timeoutMs = 60000;
 const smokeCacheDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-"));
+const smokeBackupDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-backup-"));
 const movementHistoryDbPath = resolve(smokeCacheDir, "movement-history.sqlite");
 const webhookPayloads = [];
 const webhookServer = createServer((req, res) => {
@@ -83,6 +84,8 @@ const child = spawn(process.execPath, ["server/server.js"], {
     STOCKUP_COLLABORATION_DB_PATH: resolve(smokeCacheDir, "stockup-collaboration.sqlite"),
     DOMESTIC_INVENTORY_DB_PATH: resolve(smokeCacheDir, "domestic-inventory.sqlite"),
     CACHE_DIR: smokeCacheDir,
+    SYSTEM_BACKUP_DIR: smokeBackupDir,
+    SYSTEM_BACKUP_ENV_PATH: resolve(smokeBackupDir, "target.env"),
     SKIP_ENV_FILE: "true",
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -147,6 +150,17 @@ async function expectHtmlRoot() {
   }
 }
 
+async function waitForSystemBackupJob(id, headers, acceptedStatuses, waitMs = 15000) {
+  const accepted = new Set(acceptedStatuses);
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const response = await expectJson(`/api/system-backup/jobs/${id}`, { headers });
+    if (accepted.has(response.job?.status)) return response.job;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  throw new Error(`System backup job ${id} timed out.`);
+}
+
 function containsObjectKey(value, targetKey) {
   if (!value || typeof value !== "object") return false;
   if (Object.prototype.hasOwnProperty.call(value, targetKey)) return true;
@@ -163,13 +177,23 @@ async function main() {
   }
   console.log("[ok] Setup status");
 
+  const adminUsername = "smoke-admin";
+  const adminPassword = "smoke-admin-password";
+  if (setup.setupRequired) {
+    await expectJson("/api/setup/admin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: adminUsername, password: adminPassword, displayName: "Smoke Admin" }),
+    });
+  }
+
   await expectHtmlRoot();
   console.log("[ok] Root frontend fallback");
 
   const login = await expectJson("/api/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code: accessCode }),
+    body: JSON.stringify({ username: adminUsername, password: adminPassword }),
   });
   if (login.user?.role !== "admin" || !login.token) {
     throw new Error(`/api/login did not return an admin user token: ${JSON.stringify(login).slice(0, 500)}`);
@@ -182,6 +206,58 @@ async function main() {
     throw new Error(`/api/me did not preserve admin role: ${JSON.stringify(me).slice(0, 500)}`);
   }
   console.log("[ok] /api/me admin session");
+
+  const anonymousBackupStatus = await fetch(`${baseUrl}/api/system-backup/status`);
+  if (anonymousBackupStatus.status !== 401) throw new Error(`Anonymous system backup status was not blocked: ${anonymousBackupStatus.status}`);
+  const legacyBackupStatus = await fetch(`${baseUrl}/api/system-backup/status`, { headers: { Authorization: `Bearer ${accessCode}` } });
+  if (legacyBackupStatus.status !== 403) throw new Error(`Legacy access code unexpectedly reached system backup: ${legacyBackupStatus.status}`);
+  const backupStatus = await expectJson("/api/system-backup/status", { headers: authHeaders });
+  if (!backupStatus.gitSha || backupStatus.scope?.excluded?.length < 2 || backupStatus.importEnabled !== false) {
+    throw new Error(`System backup status is incomplete: ${JSON.stringify(backupStatus).slice(0, 500)}`);
+  }
+  const packagePassword = "smoke-backup-password";
+  const exportCreated = await expectJson("/api/system-backup/export", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ reauthPassword: adminPassword, packagePassword }),
+  });
+  const exportJob = await waitForSystemBackupJob(exportCreated.job.id, authHeaders, ["completed", "failed"]);
+  if (exportJob.status !== "completed") throw new Error(`System backup export failed: ${exportJob.error}`);
+  const downloadTicket = await expectJson(`/api/system-backup/jobs/${exportJob.id}/download-ticket`, { method: "POST", headers: authHeaders });
+  const downloadResponse = await fetch(`${baseUrl}/api/system-backup/download`, {
+    headers: { ...authHeaders, "X-Backup-Download-Ticket": downloadTicket.token },
+  });
+  const packageBytes = Buffer.from(await downloadResponse.arrayBuffer());
+  if (!downloadResponse.ok || packageBytes.subarray(0, 7).toString("ascii") !== "TZBAK01") {
+    throw new Error("System backup download did not return an encrypted .tzbak package.");
+  }
+  const importCreated = await expectJson("/api/system-backup/import", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      reauthPassword: adminPassword,
+      packagePassword,
+      fileName: "smoke-backup.tzbak",
+      fileSize: packageBytes.length,
+      envMode: "migration",
+    }),
+  });
+  await expectJson(`/api/system-backup/import/${importCreated.job.id}/file`, {
+    method: "PUT",
+    headers: { ...authHeaders, "Content-Type": "application/octet-stream", "X-Backup-Upload-Token": importCreated.uploadToken },
+    body: packageBytes,
+  });
+  const importJob = await waitForSystemBackupJob(importCreated.job.id, authHeaders, ["validated", "failed"]);
+  if (importJob.status !== "validated" || importJob.preview?.gitSha !== backupStatus.gitSha) {
+    throw new Error(`System backup import validation failed: ${JSON.stringify(importJob).slice(0, 600)}`);
+  }
+  const disabledApply = await fetch(`${baseUrl}/api/system-backup/import/${importJob.id}/apply`, {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ reauthPassword: adminPassword, confirmation: "确认恢复" }),
+  });
+  if (disabledApply.status !== 409) throw new Error(`System restore was not blocked while disabled: ${disabledApply.status}`);
+  console.log("[ok] encrypted system backup export, download, import validation and restore safety gate");
 
   const overseasReconciliation = await expectJson("/api/overseas-inventory-reconciliation?period=month&anchorDate=2026-08-31", { headers: authHeaders });
   if (overseasReconciliation.scope !== "overseas"
@@ -829,4 +905,5 @@ try {
   child.kill();
   webhookServer.close();
   rmSync(smokeCacheDir, { recursive: true, force: true });
+  rmSync(smokeBackupDir, { recursive: true, force: true });
 }

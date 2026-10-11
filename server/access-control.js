@@ -84,6 +84,7 @@ const permissionDefinitions = [
   ["users", "用户与权限", "系统管理"],
   ["notifications", "企业微信通知", "系统管理"],
   ["action_log", "操作日志", "系统管理"],
+  ["system_backup", "系统备份与恢复", "工具与设置"],
   ["operations", "全局同步与管理操作", "系统管理"],
 ];
 
@@ -202,7 +203,7 @@ const INTERNAL_SYNC_DENIED_ROLES = new Set(["distributor", "guest"]);
 const DOMESTIC_INVENTORY_DENIED_ROLES = new Set(["distributor", "guest"]);
 const DOMESTIC_INVENTORY_PERMISSION_KEYS = Object.freeze(["domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage"]);
 const COLLABORATION_TASK_PERMISSION_KEYS = Object.freeze(["collaboration_task_view", "collaboration_task_publish"]);
-const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync"]);
+const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync", "system_backup"]);
 const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
