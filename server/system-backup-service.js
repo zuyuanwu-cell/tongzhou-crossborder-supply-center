@@ -43,6 +43,10 @@ function withTimeout(promise, timeoutMs, message) {
   ]).finally(() => clearTimeout(timer));
 }
 
+function wait(milliseconds) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
+}
+
 function isInside(parent, child) {
   const parentPath = resolve(parent);
   const childPath = resolve(child);
@@ -148,6 +152,9 @@ export function createSystemBackupService({
   resumeBackgroundJobs = true,
   gitSha = currentGitSha(projectRoot),
   maxUploadBytes = Math.max(64 * 1024 * 1024, Number(process.env.SYSTEM_BACKUP_MAX_BYTES || 4 * 1024 * 1024 * 1024)),
+  backgroundIdleTimeoutMs = Math.max(120_000, Number(process.env.SYSTEM_BACKUP_QUIESCE_TIMEOUT_MS || 2 * 60 * 60_000)),
+  backgroundStatusIntervalMs = 5_000,
+  maintenanceTimeoutMs = 120_000,
 } = {}) {
   if (isInside(cacheDir, backupRoot)) throw new Error("SYSTEM_BACKUP_DIR must be outside CACHE_DIR");
   const jobsDir = resolve(backupRoot, "jobs");
@@ -287,19 +294,70 @@ export function createSystemBackupService({
     return listJobs(100).find((job) => job.type === type && ACTIVE_JOB_STATUSES.has(job.status));
   }
 
+  function runningBackgroundTaskLabels() {
+    try {
+      return (scheduler?.status?.().tasks || [])
+        .filter((task) => task.running)
+        .map((task) => String(task.label || task.id || "").trim())
+        .filter(Boolean)
+        .slice(0, 6);
+    } catch {
+      return [];
+    }
+  }
+
+  async function waitForBackgroundIdle(jobId) {
+    const startedAt = Date.now();
+    const timeoutMs = Math.max(100, Number(backgroundIdleTimeoutMs) || 2 * 60 * 60_000);
+    const intervalMs = Math.max(10, Math.min(timeoutMs, Number(backgroundStatusIntervalMs) || 5_000));
+    const completion = Promise.all([
+      Promise.resolve(scheduler?.waitForIdle?.()),
+      Promise.resolve(collaborationBridge?.waitForIdle?.()),
+      Promise.resolve(waitForApplicationIdle()),
+    ]).then(
+      () => ({ ok: true }),
+      (error) => ({ ok: false, error }),
+    );
+
+    while (true) {
+      const labels = runningBackgroundTaskLabels();
+      updateJob(jobId, {
+        status: "snapshotting",
+        phase: "waiting_background_tasks",
+        progress: 5,
+        message: labels.length
+          ? `正在等待后台任务安全收尾（业务可正常使用）：${labels.join("、")}`
+          : "正在等待后台写入安全收尾，期间业务可正常使用",
+      });
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        throw new Error(`等待后台同步任务完成超时${labels.length ? `：${labels.join("、")}` : ""}`);
+      }
+      const result = await Promise.race([completion, wait(Math.min(intervalMs, remainingMs))]);
+      if (!result) continue;
+      if (!result.ok) throw result.error;
+      return;
+    }
+  }
+
   async function snapshotForExport(job) {
     const snapshotDir = resolve(workDir, job.id, "snapshot");
     const snapshotCache = resolve(snapshotDir, "cache");
     const snapshotEnv = resolve(snapshotDir, ".env");
     const wasSchedulerRunning = Boolean(scheduler?.status?.().enabled);
-    await maintenanceGate.enter("system_backup_snapshot");
+    let maintenanceEntered = false;
+    scheduler?.stop?.();
+    collaborationBridge?.stop?.();
     try {
-      updateJob(job.id, { status: "snapshotting", phase: "draining_writes", progress: 8, message: "正在等待写入任务结束" });
-      scheduler?.stop?.();
-      collaborationBridge?.stop?.();
-      await withTimeout(scheduler?.waitForIdle?.(), 120_000, "Timed out waiting for scheduled writes to finish");
-      await withTimeout(collaborationBridge?.waitForIdle?.(), 120_000, "Timed out waiting for collaboration writes to finish");
-      await withTimeout(waitForApplicationIdle(), 120_000, "Timed out waiting for application writes to finish");
+      await waitForBackgroundIdle(job.id);
+      updateJob(job.id, { status: "snapshotting", phase: "draining_writes", progress: 8, message: "正在短暂停止写入并排空当前请求" });
+      await maintenanceGate.enter("system_backup_snapshot", { timeoutMs: maintenanceTimeoutMs });
+      maintenanceEntered = true;
+      await withTimeout(Promise.all([
+        Promise.resolve(scheduler?.waitForIdle?.()),
+        Promise.resolve(collaborationBridge?.waitForIdle?.()),
+        Promise.resolve(waitForApplicationIdle()),
+      ]), maintenanceTimeoutMs, "进入快照窗口后仍有写入任务未完成");
       rmSync(snapshotDir, { recursive: true, force: true });
       mkdirSync(snapshotDir, { recursive: true, mode: 0o700 });
       updateJob(job.id, { phase: "copying_snapshot", progress: 15, message: "正在创建一致性数据快照" });
@@ -309,11 +367,11 @@ export function createSystemBackupService({
       else writeFileSync(snapshotEnv, "", { encoding: "utf8", mode: 0o600 });
       return { snapshotDir, snapshotCache, snapshotEnv };
     } finally {
+      if (maintenanceEntered) maintenanceGate.leave();
       if (resumeBackgroundJobs || wasSchedulerRunning) {
         scheduler?.start?.();
         collaborationBridge?.start?.();
       }
-      maintenanceGate.leave();
     }
   }
 

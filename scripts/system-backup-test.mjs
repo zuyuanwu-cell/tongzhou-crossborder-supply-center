@@ -119,6 +119,52 @@ try {
   unitGate.leave();
   assert.equal(unitGate.status().active, false);
 
+  const slowRoot = resolve(root, "slow-service");
+  const slowCache = resolve(slowRoot, ".cache");
+  const slowEnv = resolve(slowRoot, ".env");
+  mkdirSync(slowCache, { recursive: true });
+  writeFileSync(resolve(slowCache, "state.json"), JSON.stringify({ slow: true }));
+  writeFileSync(slowEnv, "API_PORT=8787\nAUTH_SESSION_SECRET=slow-secret\n");
+  const slowGate = createSystemMaintenanceGate();
+  let schedulerIdle = false;
+  let finishScheduledWrite;
+  const scheduledWrite = new Promise((resolveWrite) => { finishScheduledWrite = resolveWrite; });
+  const slowScheduler = {
+    status: () => ({ enabled: true, tasks: [{ id: "slow-sync", label: "慢速同步", running: !schedulerIdle }] }),
+    stop: () => {},
+    start: () => {},
+    waitForIdle: () => schedulerIdle ? Promise.resolve() : scheduledWrite,
+  };
+  const idleBridge = { stop: () => {}, start: () => {}, waitForIdle: async () => {} };
+  const slowService = createSystemBackupService({
+    projectRoot: slowRoot,
+    cacheDir: slowCache,
+    envPath: slowEnv,
+    backupRoot: resolve(slowRoot, ".system-backup"),
+    scheduler: slowScheduler,
+    collaborationBridge: idleBridge,
+    maintenanceGate: slowGate,
+    gitSha: "fedcba9876543210",
+    maxUploadBytes: 64 * 1024 * 1024,
+    backgroundIdleTimeoutMs: 1_000,
+    backgroundStatusIntervalMs: 10,
+    maintenanceTimeoutMs: 1_000,
+  });
+  const slowActor = { id: "admin-slow", username: "admin-slow", displayName: "Slow Admin" };
+  const slowExport = slowService.createExport({ actor: slowActor, password });
+  const waitingExport = await waitForJob(slowService, slowExport.id, ["snapshotting"]);
+  assert.equal(waitingExport.phase, "waiting_background_tasks");
+  assert.match(waitingExport.message, /业务可正常使用/);
+  assert.equal(slowGate.status().active, false);
+  const writeWhileWaiting = slowGate.beginRequest("POST");
+  assert.equal(writeWhileWaiting.allowed, true);
+  writeWhileWaiting.release();
+  schedulerIdle = true;
+  finishScheduledWrite();
+  const slowCompleted = await waitForJob(slowService, slowExport.id, ["completed", "failed"]);
+  assert.equal(slowCompleted.status, "completed", slowCompleted.error);
+  assert.equal(slowGate.status().active, false);
+
   const serviceRoot = resolve(root, "service");
   const serviceCache = resolve(serviceRoot, ".cache");
   const serviceEnv = resolve(serviceRoot, ".env");
@@ -150,7 +196,7 @@ try {
   const exported = await waitForJob(service, exportJob.id, ["completed", "failed"]);
   assert.equal(exported.status, "completed", exported.error);
   assert.equal(gate.status().active, false);
-  assert.deepEqual(lifecycle, ["stop", "stop", "idle", "idle", "start", "start"]);
+  assert.deepEqual(lifecycle, ["stop", "stop", "idle", "idle", "idle", "idle", "start", "start"]);
   const ticket = service.createDownloadTicket(exportJob.id, actor);
   const download = service.consumeDownloadTicket(ticket.token, actor);
   assert.equal(statSync(download.path).size, exported.packageBytes);
