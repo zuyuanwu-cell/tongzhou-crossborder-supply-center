@@ -1,4 +1,5 @@
 import type { StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseOption } from "./stockup/types";
+import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType } from "./container-loading/types";
 
 export type CatalogProduct = {
   id: string;
@@ -5104,6 +5105,49 @@ export function fetchStockupMonthlyCostPeriods(lifecycle: "active" | "archived" 
 
 export function changeStockupMonthlyCostPeriod(month: string, action: "archive" | "activate" | "delete" | "restore") {
   return requestJson<{ ok: boolean; period: StockupMonthlyCostPeriod }>(`/api/stockup/collaboration/reports/monthly-cost-periods/${encodeURIComponent(month)}/${action}`, { method: "POST" });
+}
+
+export function fetchContainerLoadingBootstrap() {
+  return requestJson<ContainerLoadingBootstrap>("/api/container-loading/bootstrap");
+}
+
+export function fetchContainerLoadingPlans(filters: { status?: string; shipmentId?: string } = {}) {
+  const query = new URLSearchParams();
+  if (filters.status) query.set("status", filters.status);
+  if (filters.shipmentId) query.set("shipmentId", filters.shipmentId);
+  return requestJson<{ ok: boolean; plans: ContainerLoadingPlanSummary[] }>(`/api/container-loading/plans${query.size ? `?${query}` : ""}`);
+}
+
+export function fetchContainerLoadingPlan(planId: string) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}`);
+}
+
+export function createContainerLoadingPlan(payload: {
+  name?: string;
+  sourceShipmentId?: string;
+  containerType: string;
+  container?: ContainerType;
+  selectedStrategy?: ContainerLoadingStrategy;
+  items?: ContainerLoadingItem[];
+  savePackagingProfiles?: boolean;
+}) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>("/api/container-loading/plans", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function saveContainerLoadingVersion(planId: string, payload: { expectedVersion: number; strategy: ContainerLoadingStrategy; placements: ContainerPlacement[]; versionType?: "selection" | "manual_adjustment" }) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/versions`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function recalculateContainerLoadingPlan(planId: string, payload: { expectedVersion: number; selectedStrategy: ContainerLoadingStrategy; container?: ContainerType; items?: ContainerLoadingItem[]; savePackagingProfiles?: boolean }) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/recalculate`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function confirmContainerLoadingPlan(planId: string, payload: { expectedVersion: number; strategy: ContainerLoadingStrategy }) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/confirm`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function voidContainerLoadingPlan(planId: string, payload: { expectedVersion: number; reason?: string }) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/void`, { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function fetchStockupCollaborationNotifications() {

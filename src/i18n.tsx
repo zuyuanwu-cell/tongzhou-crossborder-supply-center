@@ -74,6 +74,7 @@ const messages: Record<string, Translation> = {
   "备货中心": { en: "Stock Preparation", id: "Pusat Persediaan" },
   "备货建议": { en: "Stock Recommendations", id: "Rekomendasi Persediaan" },
   "备货执行": { en: "Stock Execution", id: "Eksekusi Persediaan" },
+  "智能装柜": { en: "Smart Container Loading", id: "Pemuatan Kontainer Cerdas" },
   "生产中心": { en: "Production Center", id: "Pusat Produksi" },
   "订单分析": { en: "Order Analytics", id: "Analisis Pesanan" },
   "经营贡献": { en: "Contribution Analytics", id: "Analisis Kontribusi" },

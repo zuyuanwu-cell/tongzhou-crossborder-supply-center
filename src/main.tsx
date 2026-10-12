@@ -16,6 +16,7 @@ import {
   Calculator,
   ClipboardList,
   Coins,
+  Container as ContainerIcon,
   Copy,
   DatabaseZap,
   Download,
@@ -31,6 +32,7 @@ import {
   LayoutDashboard,
   List,
   Lock,
+  LoaderCircle,
   LogOut,
   Menu,
   Minus,
@@ -241,6 +243,8 @@ import { getQualificationExpiryInfo, qualificationExpiryRank, type Qualification
 import "./styles.css";
 import "./theme-refresh.css";
 
+const ContainerLoadingPage = React.lazy(() => import("./container-loading/ContainerLoadingPage"));
+
 type AlertType = "补货" | "断货" | "健康" | "滞销";
 type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
 type SortDirection = "asc" | "desc";
@@ -411,6 +415,7 @@ const navItems = [
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
   { label: "供应链执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_request_accept", additionalPermissions: ["stockup_execution_update", "stockup_execution_view"] },
   { label: "物流与到仓", icon: Truck, hash: "#stockup-logistics", section: "stockup", childOf: "备货中心", permission: "stockup_shipment_update", additionalPermissions: ["stockup_receipt_confirm", "stockup_execution_manage"] },
+  { label: "智能装柜", icon: ContainerIcon, hash: "#container-loading", section: "stockup", childOf: "备货中心", permission: "container_loading_view", additionalPermissions: ["container_loading_manage", "container_loading_confirm"] },
   { label: "成本结算", icon: Coins, hash: "#stockup-cost", section: "stockup", childOf: "备货中心", permission: "stockup_cost_edit", additionalPermissions: ["stockup_cost_review", "stockup_cost_lock", "stockup_workflow_manage"] },
   { label: "月度成本", icon: Calculator, hash: "#stockup-cost-report", section: "stockup", childOf: "备货中心", permission: "stockup_cost_report_view", additionalPermissions: ["stockup_workflow_manage"] },
   { label: "生产中心", icon: Factory, hash: "#production", section: "stockup", childOf: "备货中心", permission: "production_view" },
@@ -2213,6 +2218,8 @@ function App() {
           <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="execution" />
         ) : activeView === "物流与到仓" ? (
           <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="logistics" />
+        ) : activeView === "智能装柜" ? (
+          <React.Suspense fallback={<div className="loading-screen"><LoaderCircle className="spinning" size={24} /><span>正在加载3D装柜工作台…</span></div>}><ContainerLoadingPage currentUser={currentUser} products={catalog} /></React.Suspense>
         ) : activeView === "成本结算" ? (
           <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="costs" />
         ) : activeView === "月度成本" ? (

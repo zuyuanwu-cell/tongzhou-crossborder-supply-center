@@ -82,6 +82,8 @@ import { createOzonIntegrationService } from "./ozon-integration.js";
 import { initStockupCollaborationStore } from "./stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "./stockup-collaboration-service.js";
 import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
+import { createContainerLoadingService } from "./container-loading-service.js";
+import { createContainerLoadingApi } from "./container-loading-api.js";
 import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
 import { createDomesticInventoryService } from "./domestic-inventory-service.js";
 import { createDomesticInventoryApi, domesticInventoryContextForAuth, domesticInventoryProductOptions } from "./domestic-inventory-api.js";
@@ -230,6 +232,7 @@ const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPat
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore);
+const containerLoadingService = createContainerLoadingService({ store: stockupCollaborationStore, stockupService: stockupCollaborationService });
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
 const collaborationBridgeStore = await initCollaborationBridgeStore(collaborationBridgeDbPath);
@@ -441,6 +444,11 @@ const syncScheduler = createSyncScheduler({
   laneLimits: { light: 4, jdy: 1, wms: 1, miaoshou: 1, compute: 1, publicApi: 1 },
   restoredState: loadJsonCache(syncSchedulerCachePath) || {},
   persist: (payload) => saveJsonCache(syncSchedulerCachePath, payload, 0),
+});
+const containerLoadingApi = createContainerLoadingApi({
+  service: containerLoadingService,
+  getAuth,
+  appendActionLog,
 });
 const systemMaintenanceGate = createSystemMaintenanceGate();
 const systemBackupService = createSystemBackupService({
@@ -7578,6 +7586,7 @@ const server = http.createServer(async (req, res) => {
 
     if (await agentIndexLayer.handle(req, res, url)) return;
 
+    if (await containerLoadingApi(req, res, url)) return;
     if (await stockupCollaborationApi(req, res, url)) return;
     if (await jiandaoyunDomesticInventoryApi(req, res, url)) return;
     if (await jiandaoyunDomesticInventoryOutboundApi(req, res, url)) return;

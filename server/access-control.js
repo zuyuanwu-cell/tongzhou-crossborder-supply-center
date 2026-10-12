@@ -44,6 +44,9 @@ const permissionDefinitions = [
   ["stockup_execution_update", "采购生产进度维护", "备货协同"],
   ["stockup_shipment_update", "备货发运维护", "备货协同"],
   ["stockup_receipt_confirm", "备货到仓确认", "备货协同"],
+  ["container_loading_view", "智能装柜查看", "备货协同"],
+  ["container_loading_manage", "智能装柜创建与调整", "备货协同"],
+  ["container_loading_confirm", "智能装柜确认与作废", "备货协同"],
   ["stockup_cost_edit", "备货费用录入与试算", "备货协同"],
   ["stockup_cost_review", "备货成本复核", "备货协同"],
   ["stockup_cost_lock", "备货成本锁定与调整", "备货协同"],
@@ -104,6 +107,7 @@ export const STOCKUP_VIEW_PERMISSION_KEYS = Object.freeze([
   "stockup_request_view_own",
   "stockup_request_view_all",
   "stockup_cost_report_view",
+  "container_loading_view",
   "production_view",
 ]);
 export const STOCKUP_MANAGE_PERMISSION_KEYS = Object.freeze([
@@ -115,6 +119,8 @@ export const STOCKUP_MANAGE_PERMISSION_KEYS = Object.freeze([
   "stockup_execution_update",
   "stockup_shipment_update",
   "stockup_receipt_confirm",
+  "container_loading_manage",
+  "container_loading_confirm",
   "stockup_cost_edit",
   "stockup_cost_review",
   "stockup_cost_lock",
@@ -306,8 +312,13 @@ export function effectivePermissions(user) {
   }
   if (effective.has("stockup_execution_view")) effective.add("stockup_request_view_all");
   if (effective.has("stockup_execution_manage")) {
-    for (const permission of ["stockup_request_view_all", "stockup_execution_update", "stockup_shipment_update", "stockup_receipt_confirm", "stockup_supplier_view"]) effective.add(permission);
+    for (const permission of ["stockup_request_view_all", "stockup_execution_update", "stockup_shipment_update", "stockup_receipt_confirm", "container_loading_view", "container_loading_manage", "container_loading_confirm", "stockup_supplier_view"]) effective.add(permission);
   }
+  if (effective.has("stockup_shipment_update")) {
+    effective.add("container_loading_view");
+    effective.add("container_loading_manage");
+  }
+  if (effective.has("container_loading_manage") || effective.has("container_loading_confirm")) effective.add("container_loading_view");
   for (const permission of overrides.deny) effective.delete(permission);
 
   if (DIRECT_PRICE_DENIED_ROLES.has(role)) effective.delete("direct_price");
@@ -398,6 +409,8 @@ export function sanitizePermissionUpdate(role, input) {
     ["stockup_execution_update", "stockup_request_view_all"],
     ["stockup_shipment_update", "stockup_request_view_all"],
     ["stockup_receipt_confirm", "stockup_request_view_all"],
+    ["container_loading_manage", "container_loading_view"],
+    ["container_loading_confirm", "container_loading_view"],
     ["stockup_cost_edit", "stockup_request_view_all"],
     ["stockup_cost_review", "stockup_request_view_all"],
     ["stockup_cost_lock", "stockup_request_view_all"],

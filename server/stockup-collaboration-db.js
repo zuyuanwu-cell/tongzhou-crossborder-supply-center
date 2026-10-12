@@ -303,6 +303,62 @@ export async function initStockupCollaborationStore(dbPath) {
       response_json TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS container_loading_plans (
+      id TEXT PRIMARY KEY,
+      plan_no TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_shipment_id TEXT,
+      source_shipment_no TEXT,
+      destination_warehouse_id TEXT,
+      destination_warehouse_name TEXT,
+      container_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      selected_strategy TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      confirmed_version INTEGER,
+      confirmed_at TEXT,
+      confirmed_by TEXT,
+      snapshot_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_container_loading_plans_source ON container_loading_plans(source_shipment_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_container_loading_plans_status ON container_loading_plans(status, updated_at);
+    CREATE TABLE IF NOT EXISTS container_loading_plan_versions (
+      id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      version_type TEXT NOT NULL,
+      strategy TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(plan_id, version),
+      FOREIGN KEY(plan_id) REFERENCES container_loading_plans(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_container_loading_versions_plan ON container_loading_plan_versions(plan_id, version DESC);
+    CREATE TABLE IF NOT EXISTS container_packaging_profiles (
+      id TEXT PRIMARY KEY,
+      sku TEXT NOT NULL,
+      profile_name TEXT NOT NULL,
+      units_per_carton INTEGER NOT NULL,
+      carton_length_cm REAL NOT NULL,
+      carton_width_cm REAL NOT NULL,
+      carton_height_cm REAL NOT NULL,
+      carton_weight_kg REAL NOT NULL,
+      orientation TEXT NOT NULL,
+      fragile INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(sku, profile_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_container_packaging_profiles_sku ON container_packaging_profiles(sku, enabled);
   `);
 
   const ensureColumn = (table, definition) => {
@@ -348,7 +404,7 @@ export async function initStockupCollaborationStore(dbPath) {
   `);
   db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
   db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
-  db.run("PRAGMA user_version = 5");
+  db.run("PRAGMA user_version = 6");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

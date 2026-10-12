@@ -24,6 +24,7 @@
     "test:jiandaoyun-outbound-plugin-function": "node scripts/jiandaoyun-outbound-plugin-function-test.mjs",
     "test:stockup-shipment-receipt": "node scripts/stockup-shipment-receipt-test.mjs",
     "test:stockup-shipment-edit-wms": "node scripts/stockup-shipment-edit-wms-test.mjs",
+    "test:container-loading": "node scripts/container-loading-test.mjs",
     "test:wms-inbound": "node scripts/wms-inbound-order-test.mjs",
     "test:warehouse-binding": "node scripts/warehouse-binding-test.mjs",
     "test:stockup-costing": "node scripts/stockup-costing-test.mjs",
@@ -96,6 +97,7 @@
     "react-markdown": "^9.0.3",
     "remark-gfm": "^4.0.1",
     "sql.js": "^1.14.1",
+    "three": "^0.160.1",
     "typescript": "^5.7.2",
     "undici": "^5.28.4",
     "vite": "^4.5.3",
@@ -104,6 +106,7 @@
   "devDependencies": {
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3"
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.160.0"
   }
 }
