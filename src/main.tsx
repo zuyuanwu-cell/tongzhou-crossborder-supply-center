@@ -1964,7 +1964,7 @@ function App() {
             </label>
             {currentUser.role !== "guest" ? (
               <>
-                {hasUserPermission(currentUser, "product_sync") ? (
+                {hashForView(activeView) !== "#dashboard" && hasUserPermission(currentUser, "product_sync") ? (
                   <button className="sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
                     {translate(currentLocale, syncing ? "同步中" : "同步产品数据")}
@@ -2278,6 +2278,8 @@ function App() {
               handleViewChange("动销监控");
             }}
             onOpenWarehouses={() => handleViewChange("仓库授权")}
+            onSyncProducts={() => void handleSync()}
+            syncing={syncing}
           />
         )}
         </div>
@@ -2707,6 +2709,8 @@ function Dashboard({
   onOpenWecom,
   onOpenMovementWarehouse,
   onOpenWarehouses,
+  onSyncProducts,
+  syncing,
 }: {
   currentUser: AuthUser;
   products: CatalogProduct[];
@@ -2724,6 +2728,8 @@ function Dashboard({
   onOpenWecom: () => void;
   onOpenMovementWarehouse: (warehouseId: string) => void;
   onOpenWarehouses: () => void;
+  onSyncProducts: () => void;
+  syncing: boolean;
 }) {
   const [heatmapPeriod, setHeatmapPeriod] = React.useState<HeatmapPeriod>("day");
   const [attentionCopyMessage, setAttentionCopyMessage] = React.useState("");
@@ -2958,18 +2964,26 @@ function Dashboard({
     window.setTimeout(() => setAttentionCopyMessage(""), 1800);
   }
 
+  const riskBreakdown = [
+    { id: "stockout", label: "缺货", detail: "有销量但可售为 0", value: summary?.counts.stockout ?? 0, tone: "danger" },
+    { id: "replenish", label: "补货预警", detail: "可售天数低于补货周期", value: summary?.counts.replenish ?? 0, tone: "warning" },
+    { id: "slow", label: "慢销 / 滞销", detail: "库存覆盖过高或无销量", value: (summary?.counts.slow ?? 0) + (summary?.counts.stagnant ?? 0), tone: "muted" },
+    { id: "warehouse-only", label: "仓库未建档", detail: "仓库有库存但产品库缺失", value: warehouseOnlySkuCount, tone: "blue" },
+  ];
+  const priorityProducts = products.filter((product) => product.alert !== "健康").slice(0, 6);
+
   return (
-    <main className="dashboard-grid">
+    <main className="dashboard-grid dashboard-overview">
       <section className="dashboard-command-center" aria-labelledby="dashboard-command-title">
         <div className="dashboard-command-grid" aria-hidden="true" />
         <header className="dashboard-command-header">
           <div className="dashboard-command-copy">
             <p className="dashboard-command-kicker">
-              <span>经营快照</span>
+              <span>快照</span>
               <time>{summary?.generatedAt ? formatDateTime(summary.generatedAt) : "等待数据同步"}</time>
             </p>
             <h2 id="dashboard-command-title">欢迎回来，{currentUser.displayName || currentUser.username || currentUser.roleLabel}。</h2>
-            <p>先处理阻断项，再关注库存、订单与经营风险；关键状态已经汇总到同一视图。</p>
+            <p>今天有几项需要你处理。先看待办，再看经营数据，同步诊断收在状态面板里。</p>
           </div>
           <div className="dashboard-command-actions">
             <button
@@ -2978,29 +2992,37 @@ function Dashboard({
               onClick={onOpenWarehouses}
             >
               <span className="dashboard-health-dot" />
-              <span>
-                <strong>{dataHealth?.label || "等待数据状态"}</strong>
-                <small>{dataHealth ? `${formatNumber(dataHealth.completeCount)} / ${formatNumber(dataHealth.warehouseCount)} 个仓库完整` : "同步后生成可信度结论"}</small>
+              <span className="dashboard-health-copy">
+                <strong>{dataHealth?.label || "等待数据状态"}{dataHealth ? ` · ${formatNumber(dataHealth.completeCount)}/${formatNumber(dataHealth.warehouseCount)} 仓` : ""}</strong>
+                <small>更新于 <time>{summary?.generatedAt ? new Date(summary.generatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "--:--"}</time></small>
               </span>
-              <ChevronRight size={16} />
+              {attentionItems.length ? <em>{formatNumber(attentionItems.length)} 项提示</em> : null}
             </button>
-            <button
-              className="dashboard-attention-jump"
-              type="button"
-              disabled={!attentionItems.length}
-              onClick={() => document.getElementById("dashboard-attention")?.scrollIntoView({ behavior: "smooth", block: "start" })}
-            >
-              {attentionItems.length ? `${formatNumber(attentionItems.length)} 项待处理` : "暂无阻断"}
-              <ArrowUpRight size={16} />
-            </button>
+            {hasUserPermission(currentUser, "product_sync") ? (
+              <button className="dashboard-sync-action" type="button" onClick={onSyncProducts} disabled={syncing}>
+                <RefreshCw size={16} className={syncing ? "spinning" : ""} />
+                {syncing ? "同步中" : "同步产品数据"}
+              </button>
+            ) : null}
           </div>
         </header>
 
         <section className="metric-strip dashboard-command-metrics" aria-label="经营核心指标">
-          <Metric title="已建档商品可售库存" value={formatNumber(totalInventory)} note={`${formatNumber(products.length)} 个可见商品 · 不含仓库孤儿 SKU`} icon={Boxes} tone="blue" />
+          <Metric title="已建档可售库存" value={formatNumber(totalInventory)} note={`${formatNumber(products.length)} 个可见商品 · 不含孤儿 SKU`} icon={Boxes} tone="blue" />
           <Metric title="今日出库订单" value={formatNumber(totalOrders)} note={todayOrderNote} icon={PackageCheck} tone="green" />
-          <Metric title="90天订单金额" value={salesMetricValue} note={salesMetricNote} icon={BarChart3} tone="orange" />
-          <Metric title="风险 SKU（SKU×国家）" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} / 未建档 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
+          <article className="metric-card orange dashboard-sales-metric">
+            <div className="metric-icon"><Coins size={20} /></div>
+            <span>近 90 天订单金额</span>
+            {salesDisplay?.displayMode === "multiple" && salesDisplay.amountsByCurrency?.length ? (
+              <div className="dashboard-currency-list">
+                {salesDisplay.amountsByCurrency.slice(0, 3).map((item) => (
+                  <div key={item.currency}><small>{item.currency}</small><strong>{formatCurrencyAmount(item.amount, item.currency).replace(`${item.currency} `, "")}</strong></div>
+                ))}
+              </div>
+            ) : <strong>{salesMetricValue}</strong>}
+            <small>{salesDisplay?.excludedLines ? `${formatNumber(salesDisplay.excludedLines)} 条订单未纳入统计` : salesMetricNote}</small>
+          </article>
+          <Metric title="风险 SKU（SKU × 国家）" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} · 未建档 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
         </section>
       </section>
 
@@ -3013,77 +3035,18 @@ function Dashboard({
         </section>
       ) : null}
 
-      <section className="panel sync-health-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Sync Health</p>
-            <h2>同步健康度</h2>
-          </div>
-          <span className="status-pill muted">下一次：{nextAutoSync}</span>
-        </div>
-        <div className="sync-health-grid">
-          {syncHealthRows.map((row) => (
-            <article className="sync-health-row" key={row.id}>
-              <div className="sync-health-title">
-                <strong>{row.label}</strong>
-                <span className={`status-pill ${row.tone}`}>{row.status}</span>
-              </div>
-              <dl>
-                <div>
-                  <dt>最后成功</dt>
-                  <dd>{row.last ? formatDateTime(row.last) : "未同步"}</dd>
-                </div>
-                <div>
-                  <dt>下一次自动</dt>
-                  <dd>{row.next}</dd>
-                </div>
-              </dl>
-              <p>{row.reason}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel notification-health-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Notification Health</p>
-            <h2>通知配置健康度</h2>
-          </div>
-          <span className={`status-pill ${wecomHealthTone}`}>{wecomHealthLabel}</span>
-        </div>
-        <div className="notification-health-body">
-          <div className="notification-health-icon">
-            <BellRing size={20} />
-          </div>
-          <div>
-            <strong>企业微信主动提醒</strong>
-            <span>{wecomHealthDetail}</span>
-          </div>
-          <button className="ghost-button" type="button" onClick={onOpenWecom}>
-            配置通知
-            <ArrowUpRight size={15} />
-          </button>
-        </div>
-      </section>
-
       <section className="panel attention-panel" id="dashboard-attention">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Action Queue</p>
-            <h2>需要处理</h2>
+        <div className="panel-heading dashboard-section-heading">
+          <div className="dashboard-title-with-count">
+            <h2>今天需要处理</h2>
+            <span>{formatNumber(attentionItems.length)}</span>
           </div>
           <div className="attention-toolbar">
-            <span className={`status-pill ${attentionItems.length ? "warning" : "good"}`}>
-              {attentionItems.length ? `${attentionItems.length} 项待处理` : "暂无阻断"}
-            </span>
-            <button className="ghost-button compact-button" type="button" onClick={() => void copyAttentionQueue()} disabled={!attentionItems.length}>
-              <Copy size={14} />
-              复制待办
+            <button className="dashboard-text-action" type="button" onClick={() => void copyAttentionQueue()} disabled={!attentionItems.length}>
+              <Copy size={14} />复制待办
             </button>
-            <button className="ghost-button compact-button" type="button" onClick={downloadAttentionQueueCsv} disabled={!attentionItems.length}>
-              <Download size={14} />
-              下载CSV
+            <button className="dashboard-text-action" type="button" onClick={downloadAttentionQueueCsv} disabled={!attentionItems.length}>
+              <Download size={14} />下载 CSV
             </button>
           </div>
         </div>
@@ -3093,17 +3056,13 @@ function Dashboard({
             {attentionItems.map((item) => (
               <article className={`attention-item ${item.tone}`} key={item.id}>
                 <div className="attention-marker" />
-                <div>
-                  <strong>{item.title}</strong>
+                <div className="attention-copy">
+                  <div><strong>{item.title}</strong><em>{item.metric}</em></div>
                   <span>{item.detail}</span>
                 </div>
-                <div className="attention-action">
-                  <em>{item.metric}</em>
-                  <button className="ghost-button" type="button" onClick={item.onAction}>
-                    {item.actionLabel}
-                    <ArrowUpRight size={15} />
-                  </button>
-                </div>
+                <button className="attention-link" type="button" onClick={item.onAction}>
+                  {item.actionLabel}<ArrowUpRight size={15} />
+                </button>
               </article>
             ))}
           </div>
@@ -3115,131 +3074,124 @@ function Dashboard({
         )}
       </section>
 
-      <section className="panel metric-definition-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Metric Definitions</p>
-            <h2>经营指标口径</h2>
+      <section className="dashboard-insight-grid" aria-label="经营洞察">
+        <section className="panel movement-overview-panel">
+          <WarehouseMovementHeatmap summary={summary} period={heatmapPeriod} onPeriodChange={setHeatmapPeriod} onWarehouseClick={onOpenMovementWarehouse} />
+        </section>
+
+        <section className="panel risk-distribution-panel">
+          <div className="panel-heading dashboard-section-heading">
+            <div>
+              <h2>库存风险分布</h2>
+              <p>{formatNumber(movementSkuCount)} 个分析 SKU 中 {formatNumber(riskCount)} 个存在风险</p>
+            </div>
+            <button className="dashboard-panel-link" type="button" onClick={onOpenMovement}>风险工作台<ArrowUpRight size={14} /></button>
           </div>
-          <span className="status-pill muted">避免跨集合误读</span>
-        </div>
-        <div className="metric-definition-grid">
-          <div>
-            <strong>{formatNumber(catalogSkuCount)}</strong>
-            <span>产品库 SKU</span>
-            <small>来自产品目录，是当前页面可见商品集合。</small>
+          <div className="risk-distribution-bar" aria-label="库存风险占比">
+            {riskBreakdown.map((item) => <span key={item.id} className={item.tone} style={{ flexGrow: Math.max(item.value, 0.5) }} />)}
           </div>
-          <div>
-            <strong>{formatNumber(movementSkuCount)}</strong>
-            <span>动销分析 SKU</span>
-            <small>合并产品库、仓库库存和近 90 天订单后的分析集合。</small>
+          <div className="risk-distribution-list">
+            {riskBreakdown.map((item) => (
+              <button type="button" key={item.id} onClick={onOpenMovement}>
+                <span className={`risk-dot ${item.tone}`} />
+                <span><strong>{item.label}</strong><small>{item.detail}</small></span>
+                <em>{formatNumber(item.value)}</em>
+              </button>
+            ))}
           </div>
-          <div>
-            <strong>{formatNumber(warehouseOnlySkuCount)}</strong>
-            <span>仓库孤儿 SKU</span>
-            <small>仓库有库存但产品库未建档，需补档或确认 SKU 映射。</small>
-          </div>
-          <div>
-            <strong>{formatNumber(riskCount)}</strong>
-            <span>风险 SKU</span>
-            <small>缺货、补货预警、慢销、滞销与仓库孤儿风险合计。</small>
-          </div>
-        </div>
+        </section>
       </section>
 
-      <section className="panel sales-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">System Sync</p>
-            <h2>产品数据同步</h2>
+      <section className="dashboard-support-grid" aria-label="经营支持信息">
+        <section className="panel priority-products-panel">
+          <div className="panel-heading dashboard-section-heading">
+            <div><h2>优先关注的 SKU</h2><p>按库存风险优先级展示，完整明细进入动销监控查看</p></div>
+            <button className="dashboard-panel-link" type="button" onClick={onOpenMovement}>查看全部<ArrowUpRight size={14} /></button>
           </div>
-          <span className={`status-pill ${payload?.source === "jiandaoyun" ? "good" : "warning"}`}>
-            {payload?.source === "jiandaoyun" ? "真实数据" : "样例数据"}
+          {priorityProducts.length ? (
+            <div className="priority-product-list">
+              {priorityProducts.map((product) => (
+                <button type="button" key={product.id} onClick={onOpenMovement}>
+                  <span><strong>{product.name}</strong><small>{product.sku} · {product.country}</small></span>
+                  <span><strong>{formatNumber(product.stockQty ?? 0)}</strong><small>可售库存</small></span>
+                  <em className={`status-pill ${alertClass(product.alert)}`}>{product.alert}</em>
+                </button>
+              ))}
+            </div>
+          ) : <div className="dashboard-empty-state"><Check size={18} />当前产品没有库存风险提醒</div>}
+        </section>
+
+        <section className="panel product-sync-panel">
+          <div className="panel-heading dashboard-section-heading">
+            <div><h2>产品数据同步</h2><p>{payload?.source === "jiandaoyun" ? "当前为真实业务数据" : "当前为样例数据"}</p></div>
+            <span className={`status-pill ${payload?.source === "jiandaoyun" ? "good" : "warning"}`}>{payload?.source === "jiandaoyun" ? "已连接" : "待连接"}</span>
+          </div>
+          <div className="sync-summary dashboard-sync-summary">
+            <div><strong>{payload?.counts.productBase ?? 0}</strong><span>产品基础信息</span></div>
+            <div><strong>{payload?.counts.catalog ?? products.length}</strong><span>产品库记录</span></div>
+            <div><strong>{payload?.counts.distributionCatalog ?? products.filter((product) => product.channel === "分销").length}</strong><span>分销公开</span></div>
+            <div><strong>{payload?.counts.directCatalog ?? products.filter((product) => product.channel === "直营").length}</strong><span>{internal ? "直营内部" : "直营隐藏"}</span></div>
+          </div>
+          <details className="dashboard-metric-details">
+            <summary><ChevronRight size={14} />指标口径说明</summary>
+            <div className="metric-definition-grid">
+              <div><strong>{formatNumber(catalogSkuCount)}</strong><span>产品库 SKU</span><small>当前页面可见商品集合</small></div>
+              <div><strong>{formatNumber(movementSkuCount)}</strong><span>动销分析 SKU</span><small>库存与订单合并分析集合</small></div>
+              <div><strong>{formatNumber(warehouseOnlySkuCount)}</strong><span>仓库孤儿 SKU</span><small>库存存在但产品库未建档</small></div>
+              <div><strong>{formatNumber(riskCount)}</strong><span>风险 SKU</span><small>全部风险口径合计</small></div>
+            </div>
+          </details>
+        </section>
+      </section>
+
+      <details className="panel dashboard-diagnostics">
+        <summary>
+          <span className="dashboard-diagnostics-title"><Activity size={18} /><span><strong>系统诊断</strong><small>同步健康、通知配置与仓库连接状态</small></span></span>
+          <span className="dashboard-diagnostics-status">
+            <span className={`status-pill ${schedulerFailedTasks.length ? "danger" : "good"}`}>{schedulerFailedTasks.length ? `${schedulerFailedTasks.length} 项同步异常` : "同步正常"}</span>
+            <span className={`status-pill ${wecomHealthTone}`}>{wecomHealthLabel}</span>
+            <ChevronDown size={17} />
           </span>
+        </summary>
+        <div className="dashboard-diagnostics-body">
+          <section className="dashboard-diagnostic-section">
+            <div className="panel-heading dashboard-section-heading"><div><h3>同步健康度</h3><p>下一次自动更新：{nextAutoSync}</p></div></div>
+            <div className="sync-health-grid">
+              {syncHealthRows.map((row) => (
+                <article className="sync-health-row" key={row.id}>
+                  <div className="sync-health-title"><strong>{row.label}</strong><span className={`status-pill ${row.tone}`}>{row.status}</span></div>
+                  <dl><div><dt>最后成功</dt><dd>{row.last ? formatDateTime(row.last) : "未同步"}</dd></div><div><dt>下一次自动</dt><dd>{row.next}</dd></div></dl>
+                  <p>{row.reason}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className="dashboard-diagnostic-section dashboard-diagnostic-split">
+            <div>
+              <div className="panel-heading dashboard-section-heading"><div><h3>通知配置</h3><p>{wecomHealthDetail}</p></div></div>
+              <div className="notification-health-body">
+                <div className="notification-health-icon"><BellRing size={20} /></div>
+                <div><strong>企业微信主动提醒</strong><span>{enabledWecomRobots.length} 个机器人 · {enabledWecomSchedules.length} 个定时任务</span></div>
+                <button className="ghost-button" type="button" onClick={onOpenWecom}>配通知<ArrowUpRight size={15} /></button>
+              </div>
+            </div>
+            <div>
+              <div className="panel-heading dashboard-section-heading"><div><h3>仓库连接</h3><p>{summary?.warehouses?.length || warehouses.length} 个仓库连接</p></div><button className="dashboard-panel-link" type="button" onClick={onOpenWarehouses}>管理仓库<ArrowUpRight size={14} /></button></div>
+              <div className="warehouse-list dashboard-warehouse-list">
+                {(summary?.warehouses?.length ? summary.warehouses : warehouses).map((warehouse) => (
+                  <article key={"id" in warehouse ? warehouse.id : warehouse.name} className="warehouse-row">
+                    <div><strong>{warehouse.name}</strong><span>{"providerName" in warehouse ? `${warehouse.providerName} · ${warehouse.country}` : `${warehouse.provider} · ${warehouse.baseUrl}`}</span></div>
+                    <div className="warehouse-meta">
+                      {"orderOk" in warehouse ? <span className={`status-pill ${warehouse.dataState?.complete ? "good" : warehouse.dataState?.completeness === "failed" ? "danger" : "warning"}`}>{warehouse.dataState?.completenessLabel || (warehouse.backgroundRunning ? "同步中" : "待同步")}</span> : <span className={`status-pill ${warehouse.status === "正常" ? "good" : "warning"}`}>{warehouse.status}</span>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </section>
         </div>
-        <div className="sync-summary">
-          <div>
-            <strong>{payload?.counts.productBase ?? 0}</strong>
-            <span>产品基础信息</span>
-          </div>
-          <div>
-            <strong>{payload?.counts.catalog ?? products.length}</strong>
-            <span>产品库记录</span>
-          </div>
-          <div>
-            <strong>{payload?.counts.distributionCatalog ?? products.filter((product) => product.channel === "分销").length}</strong>
-            <span>分销公开</span>
-          </div>
-          <div>
-            <strong>{payload?.counts.directCatalog ?? products.filter((product) => product.channel === "直营").length}</strong>
-            <span>{internal ? "直营内部" : "直营隐藏"}</span>
-          </div>
-        </div>
-        <WarehouseMovementHeatmap summary={summary} period={heatmapPeriod} onPeriodChange={setHeatmapPeriod} onWarehouseClick={onOpenMovementWarehouse} />
-      </section>
+      </details>
 
-      <section className="panel warehouse-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">WMS Sync</p>
-            <h2>仓库连接状态</h2>
-          </div>
-          <button className="icon-button" type="button" aria-label="新增仓库授权" onClick={onOpenWarehouses}>
-            <ArrowUpRight size={18} />
-          </button>
-        </div>
-        <div className="warehouse-list">
-          {(summary?.warehouses?.length ? summary.warehouses : warehouses).map((warehouse) => (
-            <article key={"id" in warehouse ? warehouse.id : warehouse.name} className="warehouse-row">
-              <div>
-                <strong>{warehouse.name}</strong>
-                <span>
-                  {"providerName" in warehouse ? `${warehouse.providerName} · ${warehouse.country}` : `${warehouse.provider} · ${warehouse.baseUrl}`}
-                </span>
-              </div>
-              <div className="warehouse-meta">
-                {"orderOk" in warehouse ? (
-                  <>
-                    <span className={`status-pill ${warehouse.dataState?.complete ? "good" : warehouse.dataState?.completeness === "failed" ? "danger" : "warning"}`}>
-                      {warehouse.dataState?.completenessLabel || (warehouse.backgroundRunning ? "同步中" : "待同步")}
-                    </span>
-                    <small>{warehouse.message || `${formatNumber(warehouse.orderCount)} 条订单`}</small>
-                  </>
-                ) : (
-                  <>
-                    <span className={`status-pill ${warehouse.status === "正常" ? "good" : "warning"}`}>{warehouse.status}</span>
-                    <small>{warehouse.lastSyncedAt}</small>
-                  </>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel alert-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Movement Alert</p>
-            <h2>动销监控</h2>
-          </div>
-          <button className="ghost-button">安全库存 21 天</button>
-        </div>
-        <div className="risk-table">
-          {products.map((product) => (
-            <article key={product.id} className="risk-row">
-              <div>
-                <strong>{product.name}</strong>
-                <CopyableSku sku={product.sku} className="risk-sku" />
-              </div>
-              <span>{product.country}</span>
-              <span>{stockLabel(product)}</span>
-              <span>{product.channel}</span>
-              <span className={`status-pill ${alertClass(product.alert)}`}>{product.alert}</span>
-            </article>
-          ))}
-        </div>
-      </section>
     </main>
   );
 }
@@ -3252,11 +3204,6 @@ function periodMultiplier(period: HeatmapPeriod) {
 
 function periodLabel(period: HeatmapPeriod) {
   return { day: "日", week: "周", month: "月" }[period];
-}
-
-function heatLevel(value: number, max: number) {
-  if (!max || value <= 0) return 0;
-  return Math.min(5, Math.max(1, Math.ceil((value / max) * 5)));
 }
 
 function WarehouseMovementHeatmap({
@@ -3278,59 +3225,33 @@ function WarehouseMovementHeatmap({
     turnoverScore: warehouse.inventoryCount > 0 ? ((warehouse.orderCount || 0) * multiplier) / warehouse.inventoryCount : 0,
   }));
   const maxOrders = Math.max(...rows.map((row) => row.periodOrders), 1);
-  const maxTurnover = Math.max(...rows.map((row) => row.turnoverScore), 0.01);
   const totalPeriodOrders = rows.reduce((sum, row) => sum + row.periodOrders, 0);
 
   return (
-    <div className="warehouse-heatmap" aria-label="仓库动销热力图">
+    <div className="warehouse-heatmap" aria-label="仓库动销">
       <div className="heatmap-toolbar">
         <div>
-          <strong>仓库动销热力图</strong>
-          <span>{periodLabel(period)}维度估算，基于近 90 天出库缓存</span>
+          <strong>仓库动销</strong>
+          <span>基于近 90 天出库估算 · 预计{periodLabel(period)}出库 {formatNumber(totalPeriodOrders)}</span>
         </div>
-        <div className="heatmap-tabs" role="group" aria-label="热力图周期">
+        <div className="heatmap-tabs" role="group" aria-label="统计周期">
           {(["day", "week", "month"] as const).map((item) => (
-            <button key={item} className={period === item ? "active" : ""} type="button" onClick={() => onPeriodChange(item)}>
+            <button key={item} className={period === item ? "active" : ""} type="button" aria-pressed={period === item} onClick={() => onPeriodChange(item)}>
               {periodLabel(item)}
             </button>
           ))}
         </div>
       </div>
-      <div className="heatmap-summary">
-        <span>预计{periodLabel(period)}出库 <strong>{formatNumber(totalPeriodOrders)}</strong></span>
-        <span>覆盖仓库 <strong>{formatNumber(rows.length)}</strong></span>
-        <span>最近订单同步 <strong>{summary?.sync.orderSyncedAt ? formatDateTime(summary.sync.orderSyncedAt) : "未同步"}</strong></span>
-      </div>
-      <div className="heatmap-grid">
-        <span className="heatmap-head">仓库</span>
-        <span className="heatmap-head">出库热度</span>
-        <span className="heatmap-head">周转热度</span>
-        <span className="heatmap-head">状态</span>
-        {rows.length ? rows.map((row) => {
-          const orderLevel = heatLevel(row.periodOrders, maxOrders);
-          const turnoverLevel = heatLevel(row.turnoverScore, maxTurnover);
-          return (
-            <React.Fragment key={row.id}>
-              <button className="heatmap-name heatmap-link" type="button" onClick={() => onWarehouseClick(row.id)}>
-                <strong>{row.name}</strong>
-                <small>{row.providerName} · {row.country}</small>
-              </button>
-              <div className={`heat-cell level-${orderLevel}`}>
-                <strong>{formatNumber(row.periodOrders)}</strong>
-                <small>{periodLabel(period)}出库</small>
-              </div>
-              <div className={`heat-cell level-${turnoverLevel}`}>
-                <strong>{row.turnoverScore.toFixed(3)}</strong>
-                <small>出库/库存</small>
-              </div>
-              <span className={`status-pill ${row.backgroundRunning ? "warning" : row.orderOk || row.inventoryOk ? "good" : "muted"}`}>
-                {row.backgroundRunning ? "后台同步中" : row.orderOk || row.inventoryOk ? "正常" : "待同步"}
-              </span>
-            </React.Fragment>
-          );
-        }) : (
-          <div className="heatmap-empty">暂无仓库动销数据，请先完成仓库和订单同步。</div>
-        )}
+      <div className="movement-table">
+        <div className="movement-table-head"><span>仓库</span><span>{periodLabel(period)}出库</span><span>出库 / 库存</span><span>90 天订单</span></div>
+        {rows.length ? rows.map((row) => (
+          <button className="movement-table-row" type="button" key={row.id} onClick={() => onWarehouseClick(row.id)}>
+            <span className="movement-warehouse"><strong>{row.name}</strong><small>{row.country} · {row.providerName}</small></span>
+            <span className="movement-volume"><span><i style={{ width: `${Math.max(2, (row.periodOrders / maxOrders) * 100)}%` }} /></span><strong>{formatNumber(row.periodOrders)}</strong></span>
+            <span className="movement-ratio">{row.turnoverScore.toFixed(2)}</span>
+            <span className="movement-orders">{formatNumber(row.orderCount || 0)}</span>
+          </button>
+        )) : <div className="heatmap-empty">暂无仓库动销数据，请先完成仓库和订单同步。</div>}
       </div>
     </div>
   );
