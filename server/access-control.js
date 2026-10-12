@@ -290,7 +290,10 @@ export function normalizeDataScopes(value) {
 export function effectivePermissions(user) {
   const role = roleOf(user);
   const overrides = sanitizePermissionUpdate(role, user?.permissionOverrides);
-  const effective = new Set(ROLE_DEFAULT_PERMISSIONS[role] || ROLE_DEFAULT_PERMISSIONS.guest);
+  const rolePermissions = Array.isArray(user?.rolePermissions)
+    ? uniqueStrings(user.rolePermissions).filter((key) => permissionKeySet.has(key))
+    : (ROLE_DEFAULT_PERMISSIONS[role] || ROLE_DEFAULT_PERMISSIONS.guest);
+  const effective = new Set(rolePermissions);
   for (const permission of overrides.allow) effective.add(permission);
 
   // 兼容历史“妙手 ERP”总权限：原先普通账号可使用别名匹配，只有同时具备
@@ -380,14 +383,17 @@ export function hasPermission(authOrUser, permission) {
 }
 
 export function permissionConfiguration() {
+  const deniedForRole = (role) => PERMISSION_CATALOG
+    .map((item) => item.key)
+    .filter((permission) => !sanitizePermissionUpdate(role, { allow: [permission], deny: [] }).allow.includes(permission));
   return {
     permissionCatalog: PERMISSION_CATALOG,
     roleDefaults: ROLE_DEFAULT_PERMISSIONS,
     hardRules: {
-      directDenied: ["users", "operations"],
-      warehouseDenied: PERMISSION_KEYS.filter((key) => !WAREHOUSE_ALLOWED_PERMISSIONS.has(key)),
-      distributorDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "inventory_reconciliation", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_liability_settlement", ...COLLABORATION_TASK_PERMISSION_KEYS, "users", "operations", ...DOMESTIC_INVENTORY_PERMISSION_KEYS, ...INTERNAL_SYNC_PERMISSION_KEYS, ...INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS, ...STOCKUP_PERMISSION_KEYS, ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
-      guestDenied: ["direct_price", "performance_cost", "performance_profit", "inventory_value", "inventory_reconciliation", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_liability_settlement", ...COLLABORATION_TASK_PERMISSION_KEYS, "users", "operations", ...DOMESTIC_INVENTORY_PERMISSION_KEYS, ...INTERNAL_SYNC_PERMISSION_KEYS, ...INTERNAL_ANALYSIS_MANAGE_PERMISSION_KEYS, ...STOCKUP_PERMISSION_KEYS, ...MIAOSHOU_PERMISSION_KEYS, ...OZON_PERMISSION_KEYS],
+      directDenied: deniedForRole("direct"),
+      warehouseDenied: deniedForRole("warehouse"),
+      distributorDenied: deniedForRole("distributor"),
+      guestDenied: deniedForRole("guest"),
       adminRequired: Array.from(REQUIRED_ADMIN_PERMISSIONS),
       adminOnly: ADMIN_ONLY_PERMISSION_KEYS,
     },

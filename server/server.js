@@ -33,6 +33,7 @@ import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-bi
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
+import { BUILTIN_ROLE_IDS, createUserRole, deleteUserRole, normalizeUserRoles, projectUserRoles, replaceUserRole, resolveUserRole, updateUserRole } from "./user-roles.js";
 import { createAgentIndexLayer } from "./agent-index.js";
 import { agentPageDefinition, buildAgentContext, buildAgentSystemPrompt, normalizeAgentChatMessages, publicAgentContext } from "./ai-agent.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
@@ -317,12 +318,17 @@ const directAuth = {
     username: "system",
     displayName: "系统",
     role: "admin",
+    roleId: BUILTIN_ROLE_IDS.admin,
     roleLabel: "管理员",
   },
 };
 assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
 directAuth.user.locale = normalizeUiLocale(cachedUsers.systemPreferences?.locale);
+
+function publicAccessUser(user) {
+  return publicUser(user, cachedUsers.roles || []);
+}
 const stockupCollaborationApi = createStockupCollaborationApi({
   service: stockupCollaborationService,
   getAuth,
@@ -492,7 +498,7 @@ function invalidateDerivedResponses() {
 
 function derivedResponseKey(kind, auth = directAuth) {
   const user = auth?.user || directAuth.user;
-  const accessUser = publicUser(user);
+  const accessUser = publicAccessUser(user);
   return JSON.stringify({
     kind,
     revision: derivedDataRevision,
@@ -857,7 +863,7 @@ function requestUserAgent(req) {
 }
 
 function appendLoginActionLog(req, user, method) {
-  const safeUser = publicUser(user);
+  const safeUser = publicAccessUser(user);
   appendActionLog({ role: safeUser.role, user: safeUser }, "登录系统", "user", safeUser.displayName || safeUser.username || "未知用户", {
     loginMethod: method,
     loginIp: requestClientIp(req),
@@ -2307,12 +2313,14 @@ function loadUsersCache() {
   const payload = loadJsonCache(usersCachePath);
   if (payload && Array.isArray(payload.users)) {
     const migrated = migrateLegacyAdminUser(payload);
+    const roles = normalizeUserRoles(migrated.roles, migrated.users || []);
     return {
       ...migrated,
       systemPreferences: {
         locale: normalizeUiLocale(migrated.systemPreferences?.locale),
       },
-      users: (migrated.users || []).map(normalizeStoredUser).filter(Boolean),
+      roles,
+      users: (migrated.users || []).map((user) => normalizeStoredUser(user, roles)).filter(Boolean),
     };
   }
   return {
@@ -2320,6 +2328,7 @@ function loadUsersCache() {
     source: "local",
     syncedAt: "",
     systemPreferences: { locale: "zh-CN" },
+    roles: normalizeUserRoles(undefined, []),
     users: [],
   };
 }
@@ -2336,6 +2345,7 @@ function migrateLegacyAdminUser(payload) {
   if (!legacyAdmin) return payload;
 
   legacyAdmin.role = "admin";
+  legacyAdmin.roleId = BUILTIN_ROLE_IDS.admin;
   legacyAdmin.roleLabel = "管理员";
   legacyAdmin.updatedAt = new Date().toISOString();
   payload.syncedAt = legacyAdmin.updatedAt;
@@ -2365,6 +2375,7 @@ function saveUsersCache() {
     systemPreferences: {
       locale: normalizeUiLocale(cachedUsers.systemPreferences?.locale),
     },
+    roles: cachedUsers.roles,
     users: cachedUsers.users,
   });
 }
@@ -2382,13 +2393,14 @@ function userCounts(users) {
 }
 
 function publicUsersPayload() {
-  const users = (cachedUsers.users || []).map(publicUser);
+  const users = (cachedUsers.users || []).map((user) => publicAccessUser(user));
   return {
     ok: true,
     source: "local",
     syncedAt: cachedUsers.syncedAt || "",
     counts: userCounts(users),
     users,
+    roles: projectUserRoles(cachedUsers.roles || [], cachedUsers.users || []),
     ...userPermissionConfiguration(),
   };
 }
@@ -2440,6 +2452,8 @@ function createInitialAdmin(payload = {}) {
     password,
     displayName: payload.displayName || payload.username,
     role: "admin",
+    roleId: BUILTIN_ROLE_IDS.admin,
+    roles: cachedUsers.roles,
   });
   cachedUsers.users = [user, ...(cachedUsers.users || [])];
   cachedUsers.syncedAt = new Date().toISOString();
@@ -3279,11 +3293,11 @@ function getAuth(req) {
   const sessionUser = verifySessionToken(token, sessionSecret);
   if (sessionUser) {
     if (sessionUser.id === directAuth.user.id && sessionUser.username === directAuth.user.username) {
-      return { role: directAuth.role, user: publicUser(directAuth.user) };
+      return { role: directAuth.role, user: publicAccessUser(directAuth.user) };
     }
     const currentUser = (cachedUsers.users || []).find((user) => user.id === sessionUser.id);
     if (!currentUser || currentUser.status === "disabled") return { role: "guest", user: null };
-    return { role: currentUser.role, user: publicUser(currentUser) };
+    return { role: currentUser.role, user: publicAccessUser(currentUser) };
   }
   if (internalAccessCode && token === internalAccessCode) {
     return {
@@ -3326,7 +3340,7 @@ function reauthenticateSystemBackupAdmin(auth, password) {
     throw Object.assign(new Error("管理员密码校验失败。"), { statusCode: 401 });
   }
   const user = (cachedUsers.users || []).find((item) => item.id === auth?.user?.id && item.status !== "disabled");
-  if (!user || !authenticateLocalUser([user], user.username, String(password || ""))) {
+  if (!user || !authenticateLocalUser([user], user.username, String(password || ""), cachedUsers.roles)) {
     const recent = previous && now - previous.startedAt < 15 * 60_000 ? previous : { count: 0, startedAt: now, blockedUntil: 0 };
     recent.count += 1;
     if (recent.count >= 5) recent.blockedUntil = now + 15 * 60_000;
@@ -3354,7 +3368,7 @@ function getAgentAuth(req) {
   if ([directAuth.user.id, "legacy-internal"].includes(apiKey.userId)) {
     return {
       role: directAuth.role,
-      user: publicUser(directAuth.user),
+      user: publicAccessUser(directAuth.user),
       credentialType: "agent_api_key",
       apiKeyId: apiKey.id,
     };
@@ -3364,7 +3378,7 @@ function getAgentAuth(req) {
   if (!currentUser || currentUser.status === "disabled" || currentUser.role === "guest") return sessionAuth;
   return {
     role: currentUser.role,
-    user: publicUser(currentUser),
+    user: publicAccessUser(currentUser),
     credentialType: "agent_api_key",
     apiKeyId: apiKey.id,
   };
@@ -4338,7 +4352,7 @@ function filterProductPayload(payload, auth) {
   return {
     ...safeMergedPayload,
     internal: canViewInternalCatalog(auth),
-    user: publicUser(auth.user),
+    user: publicAccessUser(auth.user),
     counts: {
       ...publicCounts,
       ...(hasPermission(auth, "direct_price") ? { directCatalog } : {}),
@@ -4592,7 +4606,7 @@ function buildDashboardSummary(auth) {
     ok: true,
     generatedAt: new Date().toISOString(),
     internal: canViewInternalCatalog(auth),
-    user: publicUser(auth.user),
+    user: publicAccessUser(auth.user),
     counts: {
       visibleCatalog: visibleCatalog.length,
       totalInventory: canViewInventory ? visibleCatalog.reduce((sum, product) => sum + numberOrZero(product.stockQty), 0) : 0,
@@ -5665,7 +5679,7 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
   const scope = ["russia", "shenniu", "all"].includes(params.scope) ? params.scope : params.onlyRussia === false ? "all" : "russia";
   const onlyRussia = scope === "russia";
   const user = auth?.user || directAuth.user;
-  const accessUser = publicUser(user);
+  const accessUser = publicAccessUser(user);
   const scopes = normalizeDataScopes(accessUser.dataScopes);
   const exchangeRates = performanceAnalyticsStore.listExchangeRates();
   const settings = performanceAnalyticsStore.getPerformanceSettings();
@@ -7280,7 +7294,7 @@ function agentSourceForType(type, auth) {
   if (type === "user") {
     return {
       records: (cachedUsers.users || []).map((user) => ({
-        ...publicUser(user),
+        ...publicAccessUser(user),
         createdAt: user.createdAt || "",
         updatedAt: user.updatedAt || "",
       })),
@@ -7705,7 +7719,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/me" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, user: publicUser(getAuth(req).user) });
+      sendJson(res, 200, { ok: true, user: publicAccessUser(getAuth(req).user) });
       return;
     }
 
@@ -7745,7 +7759,7 @@ const server = http.createServer(async (req, res) => {
         userId: user.id,
         locale,
       });
-      sendJson(res, 200, { ok: true, user: publicUser(user) });
+      sendJson(res, 200, { ok: true, user: publicAccessUser(user) });
       return;
     }
 
@@ -10311,6 +10325,73 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/roles" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "users")) {
+        sendJson(res, 401, { ok: false, message: "创建角色需要用户管理权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const role = createUserRole(cachedUsers.roles || [], payload);
+      cachedUsers.roles = [...(cachedUsers.roles || []), role];
+      cachedUsers.syncedAt = new Date().toISOString();
+      saveUsersCache();
+      appendActionLog(auth, "创建角色", "user_role", role.name, {
+        roleId: role.id,
+        roleType: role.type,
+        permissionCount: role.permissions.length,
+      });
+      const result = publicUsersPayload();
+      sendJson(res, 201, {
+        ...result,
+        role: result.roles.find((item) => item.id === role.id),
+      });
+      return;
+    }
+
+    const roleMatch = url.pathname.match(/^\/api\/roles\/([^/]+)$/);
+    if (roleMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "users")) {
+        sendJson(res, 401, { ok: false, message: "修改角色需要用户管理权限。" });
+        return;
+      }
+      const roleId = decodeURIComponent(roleMatch[1]);
+      const payload = await parseRequestBody(req);
+      const updatedRole = updateUserRole(cachedUsers.roles || [], roleId, payload);
+      cachedUsers.roles = replaceUserRole(cachedUsers.roles || [], updatedRole);
+      cachedUsers.syncedAt = new Date().toISOString();
+      saveUsersCache();
+      appendActionLog(auth, "更新角色", "user_role", updatedRole.name, {
+        roleId: updatedRole.id,
+        roleType: updatedRole.type,
+        permissionCount: updatedRole.permissions.length,
+        status: updatedRole.status,
+      });
+      const result = publicUsersPayload();
+      sendJson(res, 200, {
+        ...result,
+        role: result.roles.find((item) => item.id === updatedRole.id),
+      });
+      return;
+    }
+
+    if (roleMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "users")) {
+        sendJson(res, 401, { ok: false, message: "删除角色需要用户管理权限。" });
+        return;
+      }
+      const roleId = decodeURIComponent(roleMatch[1]);
+      const role = (cachedUsers.roles || []).find((item) => item.id === roleId);
+      cachedUsers.roles = deleteUserRole(cachedUsers.roles || [], roleId, cachedUsers.users || []);
+      cachedUsers.syncedAt = new Date().toISOString();
+      saveUsersCache();
+      appendActionLog(auth, "删除角色", "user_role", role?.name || roleId, { roleId });
+      sendJson(res, 200, { ...publicUsersPayload(), deletedRoleId: roleId });
+      return;
+    }
+
     if (url.pathname === "/api/users" && req.method === "GET") {
       if (!hasPermission(getAuth(req), "users")) {
         sendJson(res, 401, { ok: false, message: "当前账号没有用户管理权限。" });
@@ -10332,7 +10413,18 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const requestedRole = normalizeRole(payload.role);
+      const requestedAssignedRole = payload.roleId
+        ? (cachedUsers.roles || []).find((role) => role.id === String(payload.roleId || "").trim())
+        : resolveUserRole({ role: payload.role }, cachedUsers.roles || []);
+      if (payload.roleId && !requestedAssignedRole) {
+        sendJson(res, 400, { ok: false, message: "选择的角色不存在，请刷新后重试。" });
+        return;
+      }
+      if (requestedAssignedRole?.status === "disabled") {
+        sendJson(res, 400, { ok: false, message: "选择的角色已停用，不能分配给新用户。" });
+        return;
+      }
+      const requestedRole = requestedAssignedRole?.type || normalizeRole(payload.role);
       if (requestedRole === "guest") {
         sendJson(res, 400, { ok: false, message: "请选择有效角色。" });
         return;
@@ -10362,6 +10454,8 @@ const server = http.createServer(async (req, res) => {
         password: payload.password,
         displayName: payload.displayName,
         role: requestedRole,
+        roleId: requestedAssignedRole?.id || payload.roleId,
+        roles: cachedUsers.roles,
         permissionOverrides: payload.permissionOverrides,
         dataScopes: requestedDataScopes,
         notificationTeamId,
@@ -10388,10 +10482,71 @@ const server = http.createServer(async (req, res) => {
 
       sendJson(res, user.jdySyncError ? 202 : 201, {
         ok: true,
-        user: publicUser(user),
+        user: publicAccessUser(user),
         warning: user.jdySyncError || "",
         ...publicUsersPayload(),
       });
+      return;
+    }
+
+    const userRoleMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/role$/);
+    if (userRoleMatch && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "users")) {
+        sendJson(res, 401, { ok: false, message: "调整用户角色需要用户管理权限。" });
+        return;
+      }
+      const userId = decodeURIComponent(userRoleMatch[1]);
+      const user = (cachedUsers.users || []).find((item) => item.id === userId);
+      if (!user) {
+        sendJson(res, 404, { ok: false, message: "用户不存在。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const nextRoleId = String(payload.roleId || "").trim();
+      const nextRole = (cachedUsers.roles || []).find((role) => role.id === nextRoleId);
+      if (!nextRole) {
+        sendJson(res, 400, { ok: false, message: "选择的角色不存在，请刷新后重试。" });
+        return;
+      }
+      if (nextRole.status === "disabled") {
+        sendJson(res, 400, { ok: false, message: "选择的角色已停用，不能分配给用户。" });
+        return;
+      }
+      if (auth.user?.id === user.id && user.role === "admin" && nextRole.type !== "admin") {
+        sendJson(res, 409, { ok: false, message: "不能修改自己当前的系统管理员角色，请由另一位管理员操作。" });
+        return;
+      }
+      if (user.role === "admin" && nextRole.type !== "admin" && user.status !== "disabled" && activeAdminCount(cachedUsers.users || []) <= 1) {
+        sendJson(res, 409, { ok: false, message: "系统必须至少保留一名启用中的管理员。" });
+        return;
+      }
+      const nextDataScopes = Object.prototype.hasOwnProperty.call(payload, "dataScopes")
+        ? normalizeDataScopes(payload.dataScopes)
+        : normalizeDataScopes(user.dataScopes);
+      const scopeError = warehouseAccountScopeError(nextRole.type, nextDataScopes);
+      if (scopeError) {
+        sendJson(res, 400, { ok: false, message: scopeError });
+        return;
+      }
+
+      const previousRoleId = user.roleId || BUILTIN_ROLE_IDS[user.role];
+      user.roleId = nextRole.id;
+      user.role = nextRole.type;
+      user.roleLabel = nextRole.name;
+      user.permissionOverrides = sanitizePermissionUpdate(nextRole.type, user.permissionOverrides);
+      user.dataScopes = nextDataScopes;
+      user.updatedAt = new Date().toISOString();
+      cachedUsers.syncedAt = user.updatedAt;
+      saveUsersCache();
+      appendActionLog(auth, "调整用户角色", "user", user.displayName || user.username, {
+        userId: user.id,
+        username: user.username,
+        previousRoleId,
+        roleId: nextRole.id,
+        roleType: nextRole.type,
+      });
+      sendJson(res, 200, { ok: true, user: publicAccessUser(user), ...publicUsersPayload() });
       return;
     }
 
@@ -10438,7 +10593,7 @@ const server = http.createServer(async (req, res) => {
       });
       sendJson(res, 200, {
         ok: true,
-        user: publicUser(user),
+        user: publicAccessUser(user),
         ...publicUsersPayload(),
       });
       return;
@@ -10482,7 +10637,7 @@ const server = http.createServer(async (req, res) => {
         hasWecomUserId: Boolean(user.wecomUserId),
         mentionOnProgress: user.mentionOnProgress,
       });
-      sendJson(res, 200, { ok: true, user: publicUser(user), ...publicUsersPayload() });
+      sendJson(res, 200, { ok: true, user: publicAccessUser(user), ...publicUsersPayload() });
       return;
     }
 
@@ -10531,7 +10686,7 @@ const server = http.createServer(async (req, res) => {
       });
       sendJson(res, user.jdySyncError ? 202 : 200, {
         ok: true,
-        user: publicUser(user),
+        user: publicAccessUser(user),
         warning: user.jdySyncError || "",
         ...publicUsersPayload(),
       });
@@ -11860,8 +12015,8 @@ const server = http.createServer(async (req, res) => {
       appendLoginActionLog(req, user, "setup_admin");
       sendJson(res, 201, {
         ok: true,
-        token: createSessionToken(user, sessionSecret),
-        user: publicUser(user),
+        token: createSessionToken(user, sessionSecret, undefined, cachedUsers.roles),
+        user: publicAccessUser(user),
         setup: setupStatusPayload(),
       });
       return;
@@ -11874,8 +12029,8 @@ const server = http.createServer(async (req, res) => {
         appendLoginActionLog(req, user, "internal_code");
         sendJson(res, 200, {
           ok: true,
-          token: createSessionToken(user, sessionSecret),
-          user: publicUser(user),
+          token: createSessionToken(user, sessionSecret, undefined, cachedUsers.roles),
+          user: publicAccessUser(user),
         });
         return;
       }
@@ -11891,7 +12046,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const user = authenticateLocalUser(cachedUsers.users || [], username, password);
+      const user = authenticateLocalUser(cachedUsers.users || [], username, password, cachedUsers.roles);
       if (!user || user.role === "guest") {
         sendJson(res, 401, { ok: false, message: "账号、密码或角色无效。" });
         return;
@@ -11900,8 +12055,8 @@ const server = http.createServer(async (req, res) => {
       appendLoginActionLog(req, user, "account_password");
       sendJson(res, 200, {
         ok: true,
-        token: createSessionToken(user, sessionSecret),
-        user: publicUser(user),
+        token: createSessionToken(user, sessionSecret, undefined, cachedUsers.roles),
+        user: publicAccessUser(user),
       });
       return;
     }

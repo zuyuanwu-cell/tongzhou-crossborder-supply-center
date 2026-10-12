@@ -52,6 +52,7 @@
     "test:agent": "node scripts/agent-index-test.mjs",
     "test:assistant": "node scripts/ai-agent-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",
+    "test:user-roles": "node scripts/user-roles-test.mjs && node scripts/user-roles-api-test.mjs",
     "test:system-backup": "node scripts/system-backup-test.mjs",
     "test:system-restore": "node scripts/system-restore-transaction-test.mjs",
     "test:user-locale": "node scripts/user-locale-test.mjs",

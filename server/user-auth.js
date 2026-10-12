@@ -2,6 +2,7 @@ import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypt
 import { JIANYUN_FORMS } from "./field-mapping.js";
 import { effectivePermissions, normalizeDataScopes, normalizePermissionOverrides, permissionConfiguration, sanitizePermissionUpdate } from "./access-control.js";
 import { normalizeWecomUserId } from "./wecom-project-routing.js";
+import { BUILTIN_ROLE_IDS, migrateUserRoleAssignment, resolveUserRole } from "./user-roles.js";
 
 function valueOf(record, fieldId) {
   if (!fieldId) return undefined;
@@ -95,13 +96,13 @@ export function normalizeUiLocale(value) {
   return "zh-CN";
 }
 
-export function authenticateLocalUser(users, username, password) {
+export function authenticateLocalUser(users, username, password, roles = []) {
   const normalizedUsername = text(username).toLowerCase();
   if (!normalizedUsername || !password) return null;
 
   const user = users.find((item) => String(item.username || "").toLowerCase() === normalizedUsername && item.status !== "disabled");
   if (!user || !verifyPassword(password, user.passwordHash)) return null;
-  return publicUser(user);
+  return publicUser(user, roles);
 }
 
 function normalizeNotificationTeamId(value) {
@@ -109,10 +110,13 @@ function normalizeNotificationTeamId(value) {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(teamId) ? teamId : "";
 }
 
-export function createLocalUser({ username, password, displayName, role, permissionOverrides, dataScopes, notificationTeamId, wecomUserId, mentionOnProgress, locale }) {
+export function createLocalUser({ username, password, displayName, role, roleId, roles = [], permissionOverrides, dataScopes, notificationTeamId, wecomUserId, mentionOnProgress, locale }) {
   const safeUsername = text(username);
   const safeDisplayName = text(displayName, safeUsername);
-  const safeRole = normalizeRole(role);
+  const assignedRole = resolveUserRole({ roleId, role }, roles);
+  if (roleId && !assignedRole) throw new Error("选择的角色不存在，请刷新后重试。");
+  if (assignedRole?.status === "disabled") throw new Error("选择的角色已停用，不能分配给新用户。");
+  const safeRole = assignedRole?.type || normalizeRole(role);
   if (!safeUsername) throw new Error("账号不能为空。");
   if (String(password || "").length < 4) throw new Error("密码至少需要 4 位。");
   if (safeRole === "guest") throw new Error("请选择有效角色。");
@@ -125,7 +129,8 @@ export function createLocalUser({ username, password, displayName, role, permiss
     username: safeUsername,
     displayName: safeDisplayName,
     role: safeRole,
-    roleLabel: roleLabel(safeRole),
+    roleId: assignedRole?.id || BUILTIN_ROLE_IDS[safeRole],
+    roleLabel: assignedRole?.name || roleLabel(safeRole),
     permissionOverrides: sanitizePermissionUpdate(safeRole, permissionOverrides),
     dataScopes: safeDataScopes,
     notificationTeamId: normalizeNotificationTeamId(notificationTeamId),
@@ -142,13 +147,16 @@ export function createLocalUser({ username, password, displayName, role, permiss
   };
 }
 
-export function normalizeStoredUser(user) {
+export function normalizeStoredUser(user, roles = []) {
   if (!user || typeof user !== "object") return null;
-  const role = normalizeRole(user.role);
+  const migratedUser = migrateUserRoleAssignment(user, roles);
+  const assignedRole = resolveUserRole(migratedUser, roles);
+  const role = assignedRole?.type || normalizeRole(migratedUser.role);
   return {
-    ...user,
+    ...migratedUser,
     role,
-    roleLabel: roleLabel(role),
+    roleId: assignedRole?.id || migratedUser.roleId || BUILTIN_ROLE_IDS[role],
+    roleLabel: assignedRole?.name || roleLabel(role),
     status: user.status === "disabled" ? "disabled" : "active",
     permissionOverrides: sanitizePermissionUpdate(role, normalizePermissionOverrides(user.permissionOverrides)),
     dataScopes: normalizeDataScopes(user.dataScopes),
@@ -159,25 +167,37 @@ export function normalizeStoredUser(user) {
   };
 }
 
-export function publicUser(user) {
+export function publicUser(user, roles = []) {
   if (!user) {
     const guest = { role: "guest", roleLabel: "游客", locale: "zh-CN", permissionOverrides: { allow: [], deny: [] }, dataScopes: normalizeDataScopes() };
     return { ...guest, permissions: effectivePermissions(guest) };
   }
-  const role = normalizeRole(user.role);
+  const assignedRole = resolveUserRole(user, roles);
+  const role = assignedRole?.type || normalizeRole(user.role);
+  const rolePermissions = assignedRole?.permissions || (Array.isArray(user.rolePermissions) ? user.rolePermissions : undefined);
   const permissionOverrides = sanitizePermissionUpdate(role, user.permissionOverrides);
   const dataScopes = normalizeDataScopes(user.dataScopes);
-  const permissions = effectivePermissions({ ...user, role, permissionOverrides });
+  const permissions = effectivePermissions({ ...user, role, rolePermissions, permissionOverrides });
+  const inheritedPermissions = effectivePermissions({ ...user, role, rolePermissions, permissionOverrides: { allow: [], deny: [] } });
+  const inheritedPermissionSet = new Set(inheritedPermissions);
   return {
     id: user.id,
     username: user.username,
     displayName: user.displayName || user.username,
     role,
-    roleLabel: roleLabel(role),
+    roleId: assignedRole?.id || user.roleId || BUILTIN_ROLE_IDS[role],
+    roleLabel: assignedRole?.name || user.roleLabel || roleLabel(role),
+    roleTypeLabel: assignedRole?.typeLabel || roleLabel(role),
     status: user.status === "disabled" ? "disabled" : "active",
     statusLabel: userStatusLabel(user.status),
     permissions,
+    rolePermissions: inheritedPermissions,
     permissionOverrides,
+    permissionSources: {
+      inherited: permissions.filter((permission) => inheritedPermissionSet.has(permission)),
+      added: permissions.filter((permission) => !inheritedPermissionSet.has(permission)),
+      denied: permissionOverrides.deny.filter((permission) => !permissions.includes(permission)),
+    },
     dataScopes,
     notificationTeamId: normalizeNotificationTeamId(user.notificationTeamId),
     wecomUserId: normalizeWecomUserId(user.wecomUserId),
@@ -192,8 +212,8 @@ export function userPermissionConfiguration() {
   return permissionConfiguration();
 }
 
-export function createSessionToken(user, secret, ttlMs = 7 * 24 * 60 * 60 * 1000) {
-  const safeUser = publicUser(user);
+export function createSessionToken(user, secret, ttlMs = 7 * 24 * 60 * 60 * 1000, roles = []) {
+  const safeUser = publicUser(user, roles);
   const payload = base64Url(JSON.stringify({
     id: safeUser.id,
     username: safeUser.username,

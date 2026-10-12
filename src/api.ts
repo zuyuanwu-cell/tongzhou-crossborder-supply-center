@@ -252,9 +252,17 @@ export type AuthUser = {
   username?: string;
   displayName?: string;
   role: UserRole;
+  roleId?: string;
   roleLabel: string;
+  roleTypeLabel?: string;
   permissions: string[];
+  rolePermissions?: string[];
   permissionOverrides?: PermissionOverrides;
+  permissionSources?: {
+    inherited: string[];
+    added: string[];
+    denied: string[];
+  };
   dataScopes?: UserDataScopes;
   status?: UserStatus;
   statusLabel?: string;
@@ -262,6 +270,21 @@ export type AuthUser = {
   wecomUserId?: string;
   mentionOnProgress?: boolean;
   locale?: UiLocale;
+};
+
+export type UserRoleDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  type: "admin" | "direct" | "warehouse" | "distributor";
+  typeLabel: string;
+  permissions: string[];
+  status: UserStatus;
+  system: boolean;
+  builtin: boolean;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type BusinessChainFreshness = {
@@ -403,6 +426,7 @@ export type UserManagementPayload = {
     jdySyncedAt?: string;
     jdySyncError?: string;
   }>;
+  roles: UserRoleDefinition[];
   permissionCatalog: PermissionDefinition[];
   roleDefaults: Record<UserRole, string[]>;
   hardRules: {
@@ -411,6 +435,7 @@ export type UserManagementPayload = {
     distributorDenied: string[];
     guestDenied: string[];
     adminRequired: string[];
+    adminOnly?: string[];
   };
 };
 
@@ -4362,9 +4387,36 @@ export function updateDistributorApplicationStatus(id: string, status: Distribut
   });
 }
 
-export function createUser(input: { username: string; password: string; displayName: string; role: UserRole; permissionOverrides?: PermissionOverrides; dataScopes?: UserDataScopes; notificationTeamId?: string; wecomUserId?: string; mentionOnProgress?: boolean }) {
+export function createUser(input: { username: string; password: string; displayName: string; role: UserRole; roleId?: string; permissionOverrides?: PermissionOverrides; dataScopes?: UserDataScopes; notificationTeamId?: string; wecomUserId?: string; mentionOnProgress?: boolean }) {
   return requestJson<UserManagementPayload & { user: AuthUser }>("/api/users", {
     method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createRole(input: { name: string; description?: string; type: "direct" | "warehouse" | "distributor"; permissions: string[] }) {
+  return requestJson<UserManagementPayload & { role: UserRoleDefinition }>("/api/roles", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateRole(id: string, input: { name?: string; description?: string; permissions?: string[]; status?: UserStatus }) {
+  return requestJson<UserManagementPayload & { role: UserRoleDefinition }>(`/api/roles/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteRole(id: string) {
+  return requestJson<UserManagementPayload & { deletedRoleId: string }>(`/api/roles/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function updateUserRole(id: string, input: { roleId: string; dataScopes?: UserDataScopes }) {
+  return requestJson<UserManagementPayload & { user: AuthUser }>(`/api/users/${encodeURIComponent(id)}/role`, {
+    method: "PATCH",
     body: JSON.stringify(input),
   });
 }

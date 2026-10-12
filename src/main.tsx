@@ -12,6 +12,7 @@ import {
   Boxes,
   CalendarDays,
   ChevronDown,
+  ChevronRight,
   Check,
   Calculator,
   ClipboardList,
@@ -31,8 +32,8 @@ import {
   KeyRound,
   LayoutDashboard,
   List,
-  Lock,
   LoaderCircle,
+  Lock,
   LogOut,
   Menu,
   Minus,
@@ -92,6 +93,7 @@ import {
   StockupCostPreview,
   StockupWorkflowPayload,
   UserManagementPayload,
+  UserRoleDefinition,
   WecomNotificationPayload,
   WecomProjectTeam,
   WecomRobot,
@@ -121,6 +123,7 @@ import {
   createQuickNavCategory,
   createQuickNavLink,
   createAgentApiKey,
+  createRole,
   createUser,
   deleteWecomRobot,
   deleteWecomSchedule,
@@ -129,6 +132,7 @@ import {
   captureInventorySnapshot,
   captureMovementHistory as captureMovementHistoryRequest,
   deleteUser,
+  deleteRole,
   deleteWarehouseConnection,
   exportWarehouseConnections,
   fetchAssets,
@@ -198,6 +202,8 @@ import {
   updateShopProjectGroup,
   updateStockupPlanStatus,
   updateUserPermissions,
+  updateUserRole,
+  updateRole,
   updateUserNotificationProfile,
   updateUserStatus,
   updateCurrentUserPreferences,
@@ -1910,12 +1916,15 @@ function App() {
 
   const currentLocale = normalizeUiLocale(currentUser.locale);
   const canRenderActiveView = authReady && visibleNavItems(currentUser).some((item) => item.label === activeView);
+  const currentNavItem = visibleNavItems(currentUser).find((item) => item.label === activeView);
+  const currentNavSection = navSections.find((section) => section.id === currentNavItem?.section);
 
   return (
     <I18nProvider locale={currentLocale}>
     <ConfirmContext.Provider value={confirmAction}>
       <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
         <Sidebar
+          key={`${currentUser.id || currentUser.role}-${permissionSignature}`}
           activeView={activeView}
           currentUser={currentUser}
           collapsed={sidebarCollapsed}
@@ -1929,8 +1938,12 @@ function App() {
           <button className="icon-button mobile-only" onClick={() => setMobileNavOpen(true)} aria-label="打开导航">
             <Menu size={20} />
           </button>
-          <div>
-            <p className="eyebrow">Tongzhou Control Tower</p>
+          <div className="topbar-context">
+            <div className="topbar-breadcrumb" aria-label="当前位置">
+              <span>{translate(currentLocale, currentNavSection?.label || "工作台")}</span>
+              <ChevronRight size={13} />
+              <strong>{translate(currentLocale, navigationDisplayLabel(activeView))}</strong>
+            </div>
             <h1>{translate(currentLocale, navigationDisplayLabel(activeView))}</h1>
           </div>
           <div className="topbar-actions">
@@ -1957,9 +1970,15 @@ function App() {
                     {translate(currentLocale, syncing ? "同步中" : "同步产品数据")}
                   </button>
                 ) : null}
-                <button className="ghost-button" onClick={handleLogout}>
+                <button className="account-button" onClick={handleLogout} aria-label={`${translate(currentLocale, "退出")} ${currentUser.displayName || currentUser.roleLabel}`}>
+                  <span className="account-avatar" aria-hidden="true">
+                    {String(currentUser.displayName || currentUser.username || currentUser.roleLabel || "用").slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="account-copy">
+                    <strong>{currentUser.displayName || currentUser.username || translate(currentLocale, currentUser.roleLabel)}</strong>
+                    <small>{translate(currentLocale, currentUser.roleLabel)}</small>
+                  </span>
                   <LogOut size={16} />
-                  {translate(currentLocale, "退出")} {translate(currentLocale, currentUser.roleLabel)}
                 </button>
               </>
             ) : (
@@ -2240,6 +2259,7 @@ function App() {
           <CollaborationIdentityAdmin />
         ) : (
           <Dashboard
+            currentUser={currentUser}
             products={catalog}
             payload={payload}
             stockupPayload={stockupPayload}
@@ -2558,13 +2578,26 @@ function Sidebar({
 }) {
   const { t } = useI18n();
   const items = visibleNavItems(currentUser);
+  const activeSectionId = items.find((item) => item.label === activeView)?.section || "";
   const CollapseIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
   const activeItemRef = React.useRef<HTMLButtonElement | null>(null);
-  const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(() => new Set());
+  const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(() => new Set(
+    navSections.map((section) => section.id).filter((sectionId) => sectionId !== activeSectionId),
+  ));
 
   React.useEffect(() => {
     activeItemRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeView, open]);
+
+  React.useEffect(() => {
+    if (!activeSectionId) return;
+    setCollapsedSections((current) => {
+      if (!current.has(activeSectionId)) return current;
+      const next = new Set(current);
+      next.delete(activeSectionId);
+      return next;
+    });
+  }, [activeSectionId]);
 
   function toggleSection(sectionId: string) {
     setCollapsedSections((current) => {
@@ -2658,6 +2691,7 @@ function Sidebar({
 }
 
 function Dashboard({
+  currentUser,
   products,
   payload,
   stockupPayload,
@@ -2674,6 +2708,7 @@ function Dashboard({
   onOpenMovementWarehouse,
   onOpenWarehouses,
 }: {
+  currentUser: AuthUser;
   products: CatalogProduct[];
   payload: ProductPayload | null;
   stockupPayload: StockupPayload | null;
@@ -2925,20 +2960,50 @@ function Dashboard({
 
   return (
     <main className="dashboard-grid">
-      {dataHealth ? (
-        <section className={`notice data-health-banner ${dataHealth.complete ? "good" : dataHealth.code === "failed" ? "danger" : "warning"}`}>
-          <div>
-            <strong>{dataHealth.label}</strong>
-            <span>覆盖 {formatNumber(dataHealth.completeCount)} / {formatNumber(dataHealth.warehouseCount)} 个仓库；当前结论以最弱依赖为准。</span>
+      <section className="dashboard-command-center" aria-labelledby="dashboard-command-title">
+        <div className="dashboard-command-grid" aria-hidden="true" />
+        <header className="dashboard-command-header">
+          <div className="dashboard-command-copy">
+            <p className="dashboard-command-kicker">
+              <span>经营快照</span>
+              <time>{summary?.generatedAt ? formatDateTime(summary.generatedAt) : "等待数据同步"}</time>
+            </p>
+            <h2 id="dashboard-command-title">欢迎回来，{currentUser.displayName || currentUser.username || currentUser.roleLabel}。</h2>
+            <p>先处理阻断项，再关注库存、订单与经营风险；关键状态已经汇总到同一视图。</p>
           </div>
-          <div className="data-health-facts">
-            {dataHealth.failedCount ? <span>{formatNumber(dataHealth.failedCount)} 个阻断</span> : null}
-            {dataHealth.partialCount ? <span>{formatNumber(dataHealth.partialCount)} 个不完整</span> : null}
-            {dataHealth.syncingCount ? <span>{formatNumber(dataHealth.syncingCount)} 个同步中</span> : null}
-            <small>生成于 {summary?.generatedAt ? formatDateTime(summary.generatedAt) : "未提供"}</small>
+          <div className="dashboard-command-actions">
+            <button
+              className={`dashboard-health-signal ${dataHealth?.complete ? "good" : dataHealth?.code === "failed" ? "danger" : "warning"}`}
+              type="button"
+              onClick={onOpenWarehouses}
+            >
+              <span className="dashboard-health-dot" />
+              <span>
+                <strong>{dataHealth?.label || "等待数据状态"}</strong>
+                <small>{dataHealth ? `${formatNumber(dataHealth.completeCount)} / ${formatNumber(dataHealth.warehouseCount)} 个仓库完整` : "同步后生成可信度结论"}</small>
+              </span>
+              <ChevronRight size={16} />
+            </button>
+            <button
+              className="dashboard-attention-jump"
+              type="button"
+              disabled={!attentionItems.length}
+              onClick={() => document.getElementById("dashboard-attention")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            >
+              {attentionItems.length ? `${formatNumber(attentionItems.length)} 项待处理` : "暂无阻断"}
+              <ArrowUpRight size={16} />
+            </button>
           </div>
+        </header>
+
+        <section className="metric-strip dashboard-command-metrics" aria-label="经营核心指标">
+          <Metric title="已建档商品可售库存" value={formatNumber(totalInventory)} note={`${formatNumber(products.length)} 个可见商品 · 不含仓库孤儿 SKU`} icon={Boxes} tone="blue" />
+          <Metric title="今日出库订单" value={formatNumber(totalOrders)} note={todayOrderNote} icon={PackageCheck} tone="green" />
+          <Metric title="90天订单金额" value={salesMetricValue} note={salesMetricNote} icon={BarChart3} tone="orange" />
+          <Metric title="风险 SKU（SKU×国家）" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} / 未建档 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
         </section>
-      ) : null}
+      </section>
+
       {staleSources.length ? (
         <section className="notice danger data-freshness-notice">
           <strong>数据可能已过期</strong>
@@ -2947,13 +3012,6 @@ function Dashboard({
           </span>
         </section>
       ) : null}
-
-      <section className="metric-strip">
-        <Metric title="已建档商品可售库存" value={formatNumber(totalInventory)} note={`${formatNumber(products.length)} 个可见商品 · 不含仓库孤儿 SKU`} icon={Boxes} tone="blue" />
-        <Metric title="今日出库订单" value={formatNumber(totalOrders)} note={todayOrderNote} icon={PackageCheck} tone="green" />
-        <Metric title="90天订单金额" value={salesMetricValue} note={salesMetricNote} icon={BarChart3} tone="orange" />
-        <Metric title="风险 SKU（SKU×国家）" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} / 未建档 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
-      </section>
 
       <section className="panel sync-health-panel">
         <div className="panel-heading">
@@ -3009,7 +3067,7 @@ function Dashboard({
         </div>
       </section>
 
-      <section className="panel attention-panel">
+      <section className="panel attention-panel" id="dashboard-attention">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Action Queue</p>
@@ -7890,7 +7948,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   );
 }
 
-function UserManagement({ userPayload, projectTeams, warehousePayload }: { userPayload: UserManagementPayload | null; projectTeams: WecomProjectTeam[]; warehousePayload: WarehousePayload | null }) {
+function LegacyUserManagement({ userPayload, projectTeams, warehousePayload }: { userPayload: UserManagementPayload | null; projectTeams: WecomProjectTeam[]; warehousePayload: WarehousePayload | null }) {
   const confirm = useConfirm();
   const users = userPayload?.users ?? [];
   const [form, setForm] = React.useState({ username: "", password: "", displayName: "", role: "distributor" as "distributor" | "direct" | "warehouse" | "admin", warehouseIds: [] as string[], notificationTeamId: "", wecomUserId: "", mentionOnProgress: true });
@@ -8501,6 +8559,570 @@ function UserManagement({ userPayload, projectTeams, warehousePayload }: { userP
           )}
         </div>
       </section>
+    </main>
+  );
+}
+
+type AccessManagedUser = UserManagementPayload["users"][number];
+type RoleDraft = {
+  id: string;
+  name: string;
+  description: string;
+  type: "admin" | "direct" | "warehouse" | "distributor";
+  permissions: string[];
+  system: boolean;
+};
+
+function UserManagement({ userPayload, projectTeams, warehousePayload }: { userPayload: UserManagementPayload | null; projectTeams: WecomProjectTeam[]; warehousePayload: WarehousePayload | null }) {
+  const confirm = useConfirm();
+  const [workspace, setWorkspace] = React.useState<"users" | "roles">("users");
+  const [localPayload, setLocalPayload] = React.useState<UserManagementPayload | null>(null);
+  const [message, setMessage] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [actionUserId, setActionUserId] = React.useState("");
+  const [actionRoleId, setActionRoleId] = React.useState("");
+  const [actionApplicationId, setActionApplicationId] = React.useState("");
+  const [editingUserId, setEditingUserId] = React.useState("");
+  const [editingRoleId, setEditingRoleId] = React.useState("");
+  const [sourceApplicationId, setSourceApplicationId] = React.useState("");
+  const [applicationPayload, setApplicationPayload] = React.useState<DistributorApplicationPayload | null>(null);
+  const [domesticWarehouseOptions, setDomesticWarehouseOptions] = React.useState<Array<{ id: string; name: string; country: string }>>([]);
+  const [form, setForm] = React.useState({
+    username: "",
+    password: "",
+    displayName: "",
+    roleId: "",
+    role: "distributor" as "distributor" | "direct" | "warehouse" | "admin",
+    warehouseIds: [] as string[],
+    notificationTeamId: "",
+    wecomUserId: "",
+    mentionOnProgress: true,
+  });
+  const [permissionDraft, setPermissionDraft] = React.useState({
+    roleId: "",
+    allow: [] as string[],
+    deny: [] as string[],
+    countries: "",
+    warehouseIds: [] as string[],
+    skus: "",
+    notificationTeamId: "",
+    wecomUserId: "",
+    mentionOnProgress: true,
+  });
+  const [roleDraft, setRoleDraft] = React.useState<RoleDraft>({
+    id: "",
+    name: "",
+    description: "",
+    type: "direct",
+    permissions: [],
+    system: false,
+  });
+
+  const visiblePayload = localPayload || userPayload;
+  const users = visiblePayload?.users || [];
+  const roles = visiblePayload?.roles || [];
+  const permissionCatalog = visiblePayload?.permissionCatalog || [];
+  const applications = applicationPayload?.applications || [];
+  const pendingApplications = applications.filter((application) => application.status === "pending");
+  const editingUser = users.find((user) => user.id === editingUserId) || null;
+  const selectedCreateRole = roles.find((role) => role.id === form.roleId) || null;
+  const selectedEditRole = roles.find((role) => role.id === permissionDraft.roleId) || null;
+  const warehouseOptions = React.useMemo(() => {
+    const merged = new Map<string, { id: string; name: string; country: string }>();
+    (warehousePayload?.warehouses || []).forEach((warehouse) => merged.set(warehouse.id, { id: warehouse.id, name: warehouse.name, country: warehouse.country }));
+    domesticWarehouseOptions.forEach((warehouse) => merged.set(warehouse.id, warehouse));
+    return [...merged.values()];
+  }, [warehousePayload?.warehouses, domesticWarehouseOptions]);
+
+  React.useEffect(() => {
+    setLocalPayload(null);
+  }, [userPayload]);
+
+  React.useEffect(() => {
+    void fetchDistributorApplications().then(setApplicationPayload).catch(() => setApplicationPayload(null));
+    void fetchDomesticWarehouses()
+      .then((data) => setDomesticWarehouseOptions(data.warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: "中国 · 国内成品仓" }))))
+      .catch(() => setDomesticWarehouseOptions([]));
+  }, []);
+
+  React.useEffect(() => {
+    if (form.roleId || !roles.length) return;
+    const defaultRole = roles.find((role) => role.id === "role-distributor" && role.status === "active") || roles.find((role) => role.status === "active" && !role.system);
+    if (defaultRole) setForm((current) => ({ ...current, roleId: defaultRole.id, role: defaultRole.type }));
+  }, [form.roleId, roles]);
+
+  function hardDeniedForType(type: string) {
+    if (type === "direct") return visiblePayload?.hardRules.directDenied || [];
+    if (type === "warehouse") return visiblePayload?.hardRules.warehouseDenied || [];
+    if (type === "distributor") return visiblePayload?.hardRules.distributorDenied || [];
+    if (type === "guest") return visiblePayload?.hardRules.guestDenied || [];
+    return [];
+  }
+
+  function roleTone(role: UserRoleDefinition) {
+    if (role.system) return "good";
+    if (role.type === "direct") return "warning";
+    if (role.type === "warehouse") return "muted";
+    return "danger";
+  }
+
+  function parseScopeInput(value: string) {
+    return Array.from(new Set(value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean)));
+  }
+
+  function scopeSummary(user: AccessManagedUser) {
+    const countries = user.dataScopes?.countries || [];
+    const warehouseIds = user.dataScopes?.warehouseIds || [];
+    const skus = user.dataScopes?.skus || [];
+    if (!countries.length && !warehouseIds.length && !skus.length) return user.role === "warehouse" ? "未绑定仓库 · 当前无数据" : "全部数据";
+    const parts = [];
+    if (countries.length) parts.push(`${countries.length} 个国家`);
+    if (warehouseIds.length) parts.push(`${warehouseIds.length} 个仓库`);
+    if (skus.length) parts.push(`${skus.length} 个 SKU`);
+    return parts.join(" × ");
+  }
+
+  function permissionsForPreview(role: UserRoleDefinition | null, allow: string[], deny: string[]) {
+    const effective = new Set(role?.permissions || []);
+    allow.forEach((permission) => effective.add(permission));
+    const implications: Array<[string, string]> = [
+      ["inventory_snapshot_manage", "inventory_snapshots"], ["inventory_value_manage", "inventory_value"],
+      ["order_analysis_manage", "order_analysis"], ["performance_manage", "performance_analysis"],
+      ["stockup_workflow_manage", "stockup_workflow_view"], ["stockup_recommendations_manage", "stockup_recommendations_view"],
+      ["stockup_execution_manage", "stockup_execution_view"], ["container_loading_manage", "container_loading_view"],
+      ["container_loading_confirm", "container_loading_view"], ["production_sync", "production_view"],
+      ["domestic_inventory_receive", "domestic_inventory_view"], ["domestic_inventory_issue", "domestic_inventory_view"],
+      ["domestic_inventory_transfer", "domestic_inventory_view"], ["domestic_inventory_adjust", "domestic_inventory_view"],
+      ["domestic_inventory_manage", "domestic_inventory_view"], ["collaboration_task_publish", "collaboration_task_view"],
+    ];
+    implications.forEach(([operation, view]) => { if (effective.has(operation)) effective.add(view); });
+    deny.forEach((permission) => effective.delete(permission));
+    hardDeniedForType(role?.type || "guest").forEach((permission) => effective.delete(permission));
+    if (role?.type === "admin") (visiblePayload?.hardRules.adminRequired || []).forEach((permission) => effective.add(permission));
+    return permissionCatalog.map((permission) => permission.key).filter((permission) => effective.has(permission));
+  }
+
+  const userPreviewPermissions = permissionsForPreview(selectedEditRole, permissionDraft.allow, permissionDraft.deny);
+  const userPreviewMenus = editingUser
+    ? visibleNavItems({ ...editingUser, role: selectedEditRole?.type || editingUser.role, permissions: userPreviewPermissions }).map((item) => navigationDisplayLabel(item.label))
+    : [];
+  const rolePreviewMenus = visibleNavItems({ role: roleDraft.type, roleLabel: roleDraft.name, permissions: roleDraft.permissions }).map((item) => navigationDisplayLabel(item.label));
+
+  function resetCreateForm() {
+    const defaultRole = roles.find((role) => role.id === "role-distributor" && role.status === "active") || roles.find((role) => role.status === "active" && !role.system);
+    setForm({
+      username: "",
+      password: "",
+      displayName: "",
+      roleId: defaultRole?.id || "",
+      role: defaultRole?.type || "distributor",
+      warehouseIds: [],
+      notificationTeamId: "",
+      wecomUserId: "",
+      mentionOnProgress: true,
+    });
+  }
+
+  async function submitUser(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedCreateRole) {
+      setMessage("请先选择一个启用中的角色。");
+      return;
+    }
+    if (selectedCreateRole.type === "warehouse" && !form.warehouseIds.length) {
+      setMessage("仓库协作方账号必须至少绑定一个负责仓库。");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const result = await createUser({
+        username: form.username,
+        password: form.password,
+        displayName: form.displayName,
+        roleId: selectedCreateRole.id,
+        role: selectedCreateRole.type,
+        dataScopes: { countries: [], warehouseIds: selectedCreateRole.type === "warehouse" ? form.warehouseIds : [], skus: [] },
+        notificationTeamId: form.notificationTeamId,
+        wecomUserId: form.wecomUserId,
+        mentionOnProgress: form.mentionOnProgress,
+      });
+      setLocalPayload(result);
+      let nextMessage = result.warning || `用户已创建并分配“${selectedCreateRole.name}”角色。`;
+      if (sourceApplicationId) {
+        try {
+          const applicationResult = await updateDistributorApplicationStatus(sourceApplicationId, "approved");
+          setApplicationPayload(applicationResult);
+          nextMessage += " 对应分销申请已标记为通过。";
+        } catch (error) {
+          nextMessage += ` 但申请状态更新失败：${error instanceof Error ? error.message : "请手动处理"}`;
+        }
+      }
+      setSourceApplicationId("");
+      resetCreateForm();
+      setMessage(nextMessage);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "创建用户失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function fillUserFromApplication(application: DistributorApplicationPayload["applications"][number]) {
+    const distributorRole = roles.find((role) => role.type === "distributor" && role.status === "active");
+    const raw = application.phone || application.wechat || application.email.split("@")[0] || application.contactName || application.companyName;
+    const username = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "").slice(0, 32) || `partner${Date.now().toString(36)}`;
+    setWorkspace("users");
+    setForm({
+      username,
+      password: "",
+      displayName: application.companyName || application.contactName,
+      roleId: distributorRole?.id || "",
+      role: distributorRole?.type || "distributor",
+      warehouseIds: [],
+      notificationTeamId: "",
+      wecomUserId: "",
+      mentionOnProgress: true,
+    });
+    setSourceApplicationId(application.id);
+    setMessage("已带入申请资料，请设置初始密码后创建账号。");
+    window.setTimeout(() => document.getElementById("create-user-form")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
+  async function handleApplicationStatus(applicationId: string, status: "pending" | "contacted" | "approved" | "rejected") {
+    setActionApplicationId(applicationId);
+    setMessage("");
+    try {
+      const result = await updateDistributorApplicationStatus(applicationId, status);
+      setApplicationPayload(result);
+      setMessage("分销申请状态已更新。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "分销申请状态更新失败。");
+    } finally {
+      setActionApplicationId("");
+    }
+  }
+
+  function openRoleEditor(role?: UserRoleDefinition, copy = false) {
+    if (!role) {
+      setEditingRoleId("new");
+      setRoleDraft({ id: "", name: "", description: "", type: "direct", permissions: [], system: false });
+    } else {
+      setEditingRoleId(copy ? "new" : role.id);
+      setRoleDraft({
+        id: copy ? "" : role.id,
+        name: copy ? `${role.name} 副本` : role.name,
+        description: role.description,
+        type: role.type,
+        permissions: [...role.permissions],
+        system: copy ? false : role.system,
+      });
+    }
+    setMessage("");
+  }
+
+  function toggleRolePermission(permission: string) {
+    if (roleDraft.system || hardDeniedForType(roleDraft.type).includes(permission)) return;
+    setRoleDraft((current) => ({
+      ...current,
+      permissions: current.permissions.includes(permission)
+        ? current.permissions.filter((item) => item !== permission)
+        : [...current.permissions, permission],
+    }));
+  }
+
+  async function saveRoleEditor() {
+    if (!roleDraft.name.trim()) {
+      setMessage("角色名称不能为空。");
+      return;
+    }
+    setActionRoleId(roleDraft.id || "new");
+    setMessage("");
+    try {
+      const result = roleDraft.id
+        ? await updateRole(roleDraft.id, { name: roleDraft.name, description: roleDraft.description, permissions: roleDraft.permissions })
+        : await createRole({ name: roleDraft.name, description: roleDraft.description, type: roleDraft.type === "admin" ? "direct" : roleDraft.type, permissions: roleDraft.permissions });
+      setLocalPayload(result);
+      setEditingRoleId("");
+      setMessage(`角色“${result.role.name}”已保存，所属用户的新请求立即按新模板生效。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存角色失败。");
+    } finally {
+      setActionRoleId("");
+    }
+  }
+
+  async function handleDeleteRole(role: UserRoleDefinition) {
+    const confirmed = await confirm({
+      title: `删除角色「${role.name}」`,
+      body: "只有没有成员的非系统角色可以删除。删除后不能恢复。",
+      confirmText: "删除角色",
+      tone: "danger",
+      details: [`安全类型：${role.typeLabel}`, `当前成员：${role.memberCount} 人`, `默认权限：${role.permissions.length} 项`],
+    });
+    if (!confirmed) return;
+    setActionRoleId(role.id);
+    setMessage("");
+    try {
+      const result = await deleteRole(role.id);
+      setLocalPayload(result);
+      if (editingRoleId === role.id) setEditingRoleId("");
+      setMessage(`角色“${role.name}”已删除。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除角色失败。");
+    } finally {
+      setActionRoleId("");
+    }
+  }
+
+  function openPermissionEditor(user: AccessManagedUser) {
+    if (editingUserId === user.id) {
+      setEditingUserId("");
+      return;
+    }
+    setEditingUserId(user.id);
+    setPermissionDraft({
+      roleId: user.roleId || roles.find((role) => role.type === user.role)?.id || "",
+      allow: [...(user.permissionOverrides?.allow || [])],
+      deny: [...(user.permissionOverrides?.deny || [])],
+      countries: (user.dataScopes?.countries || []).join(", "),
+      warehouseIds: [...(user.dataScopes?.warehouseIds || [])],
+      skus: (user.dataScopes?.skus || []).join(", "),
+      notificationTeamId: user.notificationTeamId || "",
+      wecomUserId: user.wecomUserId || "",
+      mentionOnProgress: user.mentionOnProgress !== false,
+    });
+    setMessage("");
+  }
+
+  function toggleUserPermission(permission: string) {
+    if (!selectedEditRole || hardDeniedForType(selectedEditRole.type).includes(permission)) return;
+    const inherited = selectedEditRole.permissions.includes(permission);
+    setPermissionDraft((current) => {
+      if (inherited) {
+        return {
+          ...current,
+          allow: current.allow.filter((item) => item !== permission),
+          deny: current.deny.includes(permission) ? current.deny.filter((item) => item !== permission) : [...current.deny, permission],
+        };
+      }
+      return {
+        ...current,
+        deny: current.deny.filter((item) => item !== permission),
+        allow: current.allow.includes(permission) ? current.allow.filter((item) => item !== permission) : [...current.allow, permission],
+      };
+    });
+  }
+
+  async function savePermissionEditor(user: AccessManagedUser) {
+    if (!selectedEditRole) {
+      setMessage("请选择一个启用中的角色。");
+      return;
+    }
+    if (selectedEditRole.type === "warehouse" && !permissionDraft.warehouseIds.length) {
+      setMessage("仓库协作方账号必须至少绑定一个仓库。");
+      return;
+    }
+    const dataScopes = {
+      countries: parseScopeInput(permissionDraft.countries),
+      warehouseIds: permissionDraft.warehouseIds,
+      skus: parseScopeInput(permissionDraft.skus),
+    };
+    const configurable = new Set(permissionCatalog.map((permission) => permission.key));
+    const hardDenied = new Set(hardDeniedForType(selectedEditRole.type));
+    const permissionOverrides = {
+      allow: permissionDraft.allow.filter((permission) => configurable.has(permission) && !hardDenied.has(permission) && !selectedEditRole.permissions.includes(permission)),
+      deny: permissionDraft.deny.filter((permission) => configurable.has(permission) && !hardDenied.has(permission)),
+    };
+    setActionUserId(user.id);
+    setMessage("");
+    try {
+      let result: UserManagementPayload & { user: AuthUser };
+      if (user.roleId !== selectedEditRole.id) {
+        result = await updateUserRole(user.id, { roleId: selectedEditRole.id, dataScopes });
+      } else {
+        result = { ...(visiblePayload as UserManagementPayload), user };
+      }
+      result = await updateUserPermissions(user.id, { permissionOverrides, dataScopes });
+      if (selectedEditRole.type !== "warehouse") {
+        result = await updateUserNotificationProfile(user.id, {
+          notificationTeamId: permissionDraft.notificationTeamId,
+          wecomUserId: permissionDraft.wecomUserId,
+          mentionOnProgress: permissionDraft.mentionOnProgress,
+        });
+      }
+      setLocalPayload(result);
+      setEditingUserId("");
+      setMessage(`已保存 ${user.displayName || user.username} 的角色、特殊权限和数据范围；新请求立即生效。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存用户权限失败。");
+    } finally {
+      setActionUserId("");
+    }
+  }
+
+  async function handleStatusChange(user: AccessManagedUser) {
+    setActionUserId(user.id);
+    setMessage("");
+    try {
+      const status = user.status === "disabled" ? "active" : "disabled";
+      const result = await updateUserStatus(user.id, status);
+      setLocalPayload(result);
+      setMessage(status === "disabled" ? "用户已停用。" : "用户已启用。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "更新用户状态失败。");
+    } finally {
+      setActionUserId("");
+    }
+  }
+
+  async function handleDeleteUser(user: AccessManagedUser) {
+    const confirmed = await confirm({
+      title: `删除用户「${user.displayName || user.username}」`,
+      body: "删除后该账号将无法登录系统。",
+      confirmText: "删除用户",
+      tone: "danger",
+      details: [`账号：${user.username}`, `主角色：${user.roleLabel}`],
+    });
+    if (!confirmed) return;
+    setActionUserId(user.id);
+    setMessage("");
+    try {
+      const result = await deleteUser(user.id);
+      setLocalPayload(result);
+      setMessage(result.warning || "用户已删除。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除用户失败。");
+    } finally {
+      setActionUserId("");
+    }
+  }
+
+  const restrictedUserCount = users.filter((user) => (user.dataScopes?.countries.length || user.dataScopes?.warehouseIds.length || user.dataScopes?.skus.length)).length;
+  const activeRoleCount = roles.filter((role) => role.status === "active").length;
+
+  return (
+    <main className="movement-page access-admin-page">
+      <section className="library-hero movement-hero access-admin-hero">
+        <div>
+          <p className="eyebrow">Identity & Access</p>
+          <h2>用户与权限</h2>
+          <p>角色定义岗位的通用能力，用户只保留少量特殊差异；数据范围独立控制实际可见记录。</p>
+          <div className="source-row">
+            <span className={`status-pill ${visiblePayload?.syncedAt ? "good" : "warning"}`}>{visiblePayload?.syncedAt ? "权限配置已读取" : "正在读取权限配置"}</span>
+            <span>{visiblePayload?.syncedAt ? new Date(visiblePayload.syncedAt).toLocaleString("zh-CN") : "登录后自动读取"}</span>
+          </div>
+        </div>
+        <div className="access-model-diagram" aria-label="权限计算顺序">
+          <span>系统边界</span><i>→</i><span>主角色</span><i>→</i><span>个人加权</span><i>→</i><span>数据范围</span>
+        </div>
+      </section>
+
+      <section className="metric-strip movement-metrics access-metrics">
+        <Metric title="用户" value={formatNumber(users.length)} note={`${visiblePayload?.counts.active || 0} 个启用中`} icon={Lock} tone="blue" />
+        <Metric title="角色模板" value={formatNumber(roles.length)} note={`${activeRoleCount} 个可分配`} icon={ShieldCheck} tone="green" />
+        <Metric title="个人特权" value={formatNumber(users.filter((user) => user.permissionOverrides?.allow.length || user.permissionOverrides?.deny.length).length)} note="存在额外允许或单独禁止" icon={Settings} tone="orange" />
+        <Metric title="受限数据范围" value={formatNumber(restrictedUserCount)} note="国家、仓库、SKU 至少一项受限" icon={Globe2} tone="red" />
+      </section>
+
+      <nav className="access-workspace-tabs" aria-label="用户权限管理工作区">
+        <button type="button" className={workspace === "users" ? "active" : ""} onClick={() => setWorkspace("users")}><Lock size={16} />用户账号<span>{users.length}</span></button>
+        <button type="button" className={workspace === "roles" ? "active" : ""} onClick={() => setWorkspace("roles")}><ShieldCheck size={16} />角色模板<span>{roles.length}</span></button>
+      </nav>
+
+      {message ? <div className={`notice access-global-notice ${/失败|不能|不存在|不能为空|必须/.test(message) ? "warning" : ""}`} role="status">{message}</div> : null}
+
+      {workspace === "roles" ? (
+        <>
+          <section className="panel access-role-panel">
+            <div className="panel-heading">
+              <div><p className="eyebrow">Role Library</p><h2>角色模板</h2><p>修改模板后，所有成员的新请求立即继承，无需逐个保存。</p></div>
+              <button type="button" className="sync-button" onClick={() => openRoleEditor()}><Plus size={15} />新增角色</button>
+            </div>
+            <div className="access-role-grid">
+              {roles.map((role) => (
+                <article className={`access-role-card ${editingRoleId === role.id ? "editing" : ""}`} key={role.id}>
+                  <header><span className={`status-pill ${roleTone(role)}`}>{role.typeLabel}</span>{role.system ? <span className="access-system-mark">受保护</span> : null}</header>
+                  <div><h3>{role.name}</h3><p>{role.description || "暂无角色说明"}</p></div>
+                  <dl><div><dt>成员</dt><dd>{role.memberCount}</dd></div><div><dt>默认权限</dt><dd>{role.permissions.length}</dd></div><div><dt>状态</dt><dd>{role.status === "active" ? "启用" : "停用"}</dd></div></dl>
+                  <footer>
+                    <button type="button" className="ghost-button compact-button" onClick={() => openRoleEditor(role)}><Settings size={14} />编辑</button>
+                    {!role.system ? <button type="button" className="ghost-button compact-button" onClick={() => openRoleEditor(role, true)}><Copy size={14} />复制</button> : null}
+                    {!role.system ? <button type="button" className="ghost-button compact-button danger-button" disabled={actionRoleId === role.id || role.memberCount > 0} onClick={() => void handleDeleteRole(role)}><Trash2 size={14} />删除</button> : null}
+                  </footer>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          {editingRoleId ? (
+            <section className="permission-editor access-role-editor">
+              <div className="permission-editor-heading">
+                <div><p className="eyebrow">Role Builder</p><h3>{roleDraft.id ? `编辑 ${roleDraft.name}` : "创建角色模板"}</h3><span>角色只配置岗位共性权限；个别人员的差异请到用户账号中设置。</span></div>
+                <span className="status-pill warning">{roleDraft.permissions.length} 项默认权限</span>
+              </div>
+              <div className="access-role-meta">
+                <label><span>角色名称 *</span><input value={roleDraft.name} onChange={(event) => setRoleDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：备货跟单" /></label>
+                <label><span>安全类型</span><select value={roleDraft.type} disabled={Boolean(roleDraft.id)} onChange={(event) => setRoleDraft((current) => ({ ...current, type: event.target.value as RoleDraft["type"], permissions: [] }))}><option value="direct">内部员工</option><option value="warehouse">仓库协作方</option><option value="distributor">分销合作方</option>{roleDraft.system ? <option value="admin">系统管理员</option> : null}</select></label>
+                <label className="wide-field"><span>角色说明</span><textarea value={roleDraft.description} onChange={(event) => setRoleDraft((current) => ({ ...current, description: event.target.value }))} placeholder="说明适用岗位和职责边界" /></label>
+              </div>
+              <div className="permission-groups">
+                {Array.from(new Set(permissionCatalog.map((item) => item.group))).map((group) => (
+                  <fieldset className="permission-group" key={group}>
+                    <legend>{group}</legend>
+                    {permissionCatalog.filter((item) => item.group === group).map((permission) => {
+                      const locked = roleDraft.system || hardDeniedForType(roleDraft.type).includes(permission.key);
+                      const checked = roleDraft.system || roleDraft.permissions.includes(permission.key);
+                      return <label className={`permission-toggle ${locked && !checked ? "locked" : ""}`} key={permission.key}><input type="checkbox" checked={checked} disabled={locked} onChange={() => toggleRolePermission(permission.key)} /><span><strong>{permission.label}</strong><small>{roleDraft.system ? "系统管理员固有权限" : locked ? "该安全类型不可获得" : checked ? "角色默认授予" : "角色未授予"}</small></span></label>;
+                    })}
+                  </fieldset>
+                ))}
+              </div>
+              <div className="permission-guardrail"><ShieldCheck size={18} /><span><strong>角色可见菜单：</strong>{rolePreviewMenus.length ? rolePreviewMenus.join("、") : "无"}。安全类型用于隔离内部、仓库与外部合作方，创建后不可修改。</span></div>
+              <div className="permission-editor-actions"><button type="button" className="ghost-button" onClick={() => setEditingRoleId("")}>取消</button><button type="button" className="sync-button" disabled={Boolean(actionRoleId)} onClick={() => void saveRoleEditor()}><ShieldCheck size={15} />{actionRoleId ? "保存中" : "保存角色"}</button></div>
+            </section>
+          ) : null}
+        </>
+      ) : (
+        <>
+          {applications.length ? <section className="panel distributor-application-panel access-application-panel">
+            <div className="panel-heading"><div><p className="eyebrow">Partner Requests</p><h2>分销账号申请</h2></div><span className={`status-pill ${pendingApplications.length ? "warning" : "good"}`}>{pendingApplications.length ? `${pendingApplications.length} 条待处理` : "暂无待处理"}</span></div>
+            <div className="distributor-application-list">{applications.map((application) => <article className="distributor-application-item" key={application.id}><div><strong>{application.companyName}</strong><span>{application.contactName} · {application.market || "未填写市场"}</span><small>{[application.phone, application.wechat, application.email].filter(Boolean).join(" / ") || "未填写联系方式"}</small></div><span className={`status-pill ${application.status === "pending" ? "warning" : application.status === "approved" ? "good" : application.status === "rejected" ? "danger" : "muted"}`}>{application.status === "pending" ? "待处理" : application.status === "contacted" ? "已联系" : application.status === "approved" ? "已通过" : "已拒绝"}</span><div className="distributor-application-actions"><button type="button" className="sync-button compact-button" disabled={actionApplicationId === application.id} onClick={() => fillUserFromApplication(application)}><Plus size={14} />建账号</button><button type="button" className="ghost-button compact-button" disabled={actionApplicationId === application.id} onClick={() => void handleApplicationStatus(application.id, "contacted")}>已联系</button><button type="button" className="ghost-button compact-button danger-button" disabled={actionApplicationId === application.id} onClick={() => void handleApplicationStatus(application.id, "rejected")}>拒绝</button></div></article>)}</div>
+          </section> : null}
+
+          <section className="panel warehouse-auth-form access-create-user" id="create-user-form">
+            <div className="panel-heading"><div><p className="eyebrow">Create Account</p><h2>创建用户</h2><p>先选择主角色，账号会自动继承该角色的默认权限。</p></div>{sourceApplicationId ? <span className="status-pill warning">来自分销申请</span> : null}</div>
+            <form onSubmit={submitUser}>
+              <label><span>账号</span><input value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} placeholder="登录账号" /></label>
+              <label><span>姓名</span><input value={form.displayName} onChange={(event) => setForm((current) => ({ ...current, displayName: event.target.value }))} placeholder="显示名称" /></label>
+              <label><span>初始密码</span><input type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder="至少 4 位" /></label>
+              <label><span>主角色</span><select value={form.roleId} onChange={(event) => { const role = roles.find((item) => item.id === event.target.value); if (role) setForm((current) => ({ ...current, roleId: role.id, role: role.type, warehouseIds: role.type === "warehouse" ? current.warehouseIds : [] })); }}><option value="">请选择角色</option>{roles.filter((role) => role.status === "active").map((role) => <option key={role.id} value={role.id}>{role.name} · {role.typeLabel}</option>)}</select></label>
+              {selectedCreateRole?.type === "warehouse" ? <fieldset className="warehouse-account-scope warehouse-auth-wide"><legend>负责仓库 *</legend><p>仓库协作方必须绑定至少一个仓库，数据和操作都会按仓库隔离。</p><div className="warehouse-account-options">{warehouseOptions.map((warehouse) => <label className={form.warehouseIds.includes(warehouse.id) ? "selected" : ""} key={warehouse.id}><input type="checkbox" checked={form.warehouseIds.includes(warehouse.id)} onChange={() => setForm((current) => ({ ...current, warehouseIds: current.warehouseIds.includes(warehouse.id) ? current.warehouseIds.filter((id) => id !== warehouse.id) : [...current.warehouseIds, warehouse.id] }))} /><span><strong>{warehouse.name}</strong><small>{warehouse.country || "未配置国家"}</small></span></label>)}</div></fieldset> : <><label><span>默认项目通知群</span><select value={form.notificationTeamId} onChange={(event) => setForm((current) => ({ ...current, notificationTeamId: event.target.value }))}><option value="">全局运营群</option>{projectTeams.filter((team) => team.enabled).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><label><span>企业微信 UserID</span><input value={form.wecomUserId} onChange={(event) => setForm((current) => ({ ...current, wecomUserId: event.target.value }))} placeholder="用于群内 @本人" /></label></>}
+              <div className="warehouse-auth-actions"><button type="submit" className="sync-button" disabled={saving || !selectedCreateRole}><Lock size={16} />{saving ? "创建中" : "创建用户"}</button></div>
+            </form>
+          </section>
+
+          <section className="panel stockup-panel access-user-panel">
+            <div className="panel-heading"><div><p className="eyebrow">Accounts</p><h2>账号与权限来源</h2><p>角色变化统一继承，个人只保存额外允许和单独禁止。</p></div><span className="status-pill muted">{users.length} 个账号</span></div>
+            <div className="stockup-table">
+              <div className="stockup-row stockup-head user-row access-user-row"><span>账号</span><span>姓名</span><span>主角色</span><span>状态</span><span>权限与数据范围</span><span>操作</span></div>
+              {users.map((user) => <React.Fragment key={user.id}>
+                <article className={`stockup-row user-row access-user-row ${editingUserId === user.id ? "editing" : ""}`}><strong>{user.username}</strong><span>{user.displayName || "-"}</span><span><span className={`status-pill ${user.role === "admin" ? "good" : user.role === "direct" ? "warning" : user.role === "distributor" ? "danger" : "muted"}`}>{user.roleLabel}</span><small className="access-role-type">{user.roleTypeLabel || user.role}</small></span><span className={`status-pill ${user.status === "disabled" ? "danger" : "good"}`}>{user.statusLabel || (user.status === "disabled" ? "停用" : "启用")}</span><span className="user-permission-summary"><strong>{user.permissions.length} 项有效权限</strong><small>角色 {user.permissionSources?.inherited.length || user.rolePermissions?.length || 0} · 加权 {user.permissionSources?.added.length || 0} · 禁止 {user.permissionSources?.denied.length || 0}</small><small>数据：{scopeSummary(user)}</small></span><span className="user-actions"><button type="button" className="sync-button compact-button" disabled={actionUserId === user.id} onClick={() => openPermissionEditor(user)}><ShieldCheck size={14} />{editingUserId === user.id ? "收起" : "配置"}</button><button type="button" className="ghost-button compact-button" disabled={actionUserId === user.id} onClick={() => void handleStatusChange(user)}>{user.status === "disabled" ? "启用" : "停用"}</button><button type="button" className="ghost-button compact-button danger-button" disabled={actionUserId === user.id} onClick={() => void handleDeleteUser(user)}>删除</button></span></article>
+                {editingUserId === user.id ? <section className="permission-editor access-user-editor" aria-label={`配置 ${user.displayName || user.username} 的权限`}>
+                  <div className="permission-editor-heading"><div><p className="eyebrow">Effective Access</p><h3>{user.displayName || user.username} · 权限控制台</h3><span>先选择主角色，再配置这个账号独有的例外和数据范围。</span></div><span className="status-pill warning">最终 {userPreviewPermissions.length} 项</span></div>
+                  <div className="access-user-role-picker"><label><span>主角色</span><select value={permissionDraft.roleId} onChange={(event) => setPermissionDraft((current) => ({ ...current, roleId: event.target.value }))}>{roles.filter((role) => role.status === "active" || role.id === user.roleId).map((role) => <option value={role.id} key={role.id}>{role.name} · {role.typeLabel}</option>)}</select></label><div><strong>{selectedEditRole?.permissions.length || 0}</strong><span>角色继承</span></div><div><strong>{permissionDraft.allow.filter((permission) => !selectedEditRole?.permissions.includes(permission)).length}</strong><span>额外允许</span></div><div><strong>{permissionDraft.deny.length}</strong><span>单独禁止</span></div></div>
+                  <div className="permission-groups">{Array.from(new Set(permissionCatalog.map((item) => item.group))).map((group) => <fieldset className="permission-group" key={group}><legend>{group}</legend>{permissionCatalog.filter((item) => item.group === group).map((permission) => { const hardDenied = hardDeniedForType(selectedEditRole?.type || user.role).includes(permission.key); const inherited = Boolean(selectedEditRole?.permissions.includes(permission.key)); const denied = permissionDraft.deny.includes(permission.key); const added = permissionDraft.allow.includes(permission.key) && !inherited; const checked = !hardDenied && !denied && (inherited || added); const source = hardDenied ? "系统边界" : denied ? "个人禁止" : added ? "个人加权" : inherited ? "角色继承" : "未授予"; return <label className={`permission-toggle access-source-${hardDenied ? "locked" : denied ? "denied" : added ? "added" : inherited ? "inherited" : "none"} ${hardDenied ? "locked" : ""}`} key={permission.key}><input type="checkbox" checked={checked} disabled={hardDenied} onChange={() => toggleUserPermission(permission.key)} /><span><strong>{permission.label}</strong><small>{source} · {/_manage|_sync|_run/.test(permission.key) ? "操作" : "查看"}</small></span></label>; })}</fieldset>)}</div>
+                  <div className="permission-guardrail"><ShieldCheck size={18} /><span><strong>最终可见菜单：</strong>{userPreviewMenus.length ? userPreviewMenus.join("、") : "无"}。绿色为角色继承，蓝色为个人加权，红色为个人禁止。</span></div>
+                  <section className="access-data-scope"><header><div><p className="eyebrow">Data Boundary</p><h4>数据范围</h4></div><span>国家 ∩ 仓库 ∩ SKU</span></header><p>三类条件会同时生效。任何一个已填写条件不匹配，页面即使有权限也会显示无数据；全部留空表示查看全部。</p><div className="permission-scope-grid"><label><span>国家范围</span><textarea value={permissionDraft.countries} onChange={(event) => setPermissionDraft((current) => ({ ...current, countries: event.target.value }))} placeholder="留空=全部；多个国家用逗号分隔" /></label><label><span>SKU 范围</span><textarea value={permissionDraft.skus} onChange={(event) => setPermissionDraft((current) => ({ ...current, skus: event.target.value }))} placeholder="留空=全部；多个 SKU 用逗号或换行分隔" /></label><fieldset className="permission-warehouse-scope"><legend>{selectedEditRole?.type === "warehouse" ? "可处理仓库 *" : "仓库范围"}</legend><p>{selectedEditRole?.type === "warehouse" ? "仓库协作方至少选择一个仓库。" : "不选择表示全部仓库。"}</p><div className="warehouse-account-options compact">{warehouseOptions.map((warehouse) => <label className={permissionDraft.warehouseIds.includes(warehouse.id) ? "selected" : ""} key={warehouse.id}><input type="checkbox" checked={permissionDraft.warehouseIds.includes(warehouse.id)} onChange={() => setPermissionDraft((current) => ({ ...current, warehouseIds: current.warehouseIds.includes(warehouse.id) ? current.warehouseIds.filter((id) => id !== warehouse.id) : [...current.warehouseIds, warehouse.id] }))} /><span><strong>{warehouse.name}</strong><small>{warehouse.country || "未配置国家"}</small></span></label>)}</div>{permissionDraft.warehouseIds.some((id) => !warehouseOptions.some((warehouse) => warehouse.id === id)) ? <div className="warehouse-account-warning">包含已移除的仓库绑定，请重新选择。</div> : null}</fieldset></div></section>
+                  {selectedEditRole?.type !== "warehouse" ? <div className="notification-profile-grid"><div className="notification-profile-copy"><p className="eyebrow">Project Notification</p><h4>项目群通知身份</h4><span>仅影响该用户提交工单后的默认通知路由。</span></div><label><span>默认项目团队</span><select value={permissionDraft.notificationTeamId} onChange={(event) => setPermissionDraft((current) => ({ ...current, notificationTeamId: event.target.value }))}><option value="">全局运营群</option>{projectTeams.filter((team) => team.enabled).map((team) => <option value={team.id} key={team.id}>{team.name}</option>)}</select></label><label><span>企业微信 UserID</span><input value={permissionDraft.wecomUserId} onChange={(event) => setPermissionDraft((current) => ({ ...current, wecomUserId: event.target.value }))} placeholder="例如：zhangsan_01" /></label></div> : null}
+                  <div className="permission-editor-actions"><button type="button" className="ghost-button" onClick={() => setEditingUserId("")}>取消</button><button type="button" className="sync-button" disabled={actionUserId === user.id || !selectedEditRole} onClick={() => void savePermissionEditor(user)}><ShieldCheck size={15} />{actionUserId === user.id ? "保存中" : "保存并立即生效"}</button></div>
+                </section> : null}
+              </React.Fragment>)}
+              {!users.length ? <div className="stockup-empty">暂无用户，请先创建账号。</div> : null}
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 }
