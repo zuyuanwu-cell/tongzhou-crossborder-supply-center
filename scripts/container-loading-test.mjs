@@ -78,6 +78,23 @@ try {
   }, context);
   assert.equal(workerCreated.plan.candidates.length, 3, "large plans should be calculated in a worker thread");
 
+  const autoCreated = await service.createPlan({ containerType: "AUTO", items }, context);
+  assert.equal(autoCreated.plan.containerRecommendation.mode, "auto");
+  assert.equal(autoCreated.plan.container.code, "20GP", "auto mode should choose the smallest standard container that fits all cartons");
+  assert.ok(autoCreated.plan.containerRecommendation.reason.includes("最小标准柜型"));
+
+  const voided = service.voidPlan(autoCreated.plan.id, { expectedVersion: autoCreated.plan.version, reason: "测试归档" }, context);
+  const archived = service.archivePlan(voided.plan.id, { expectedVersion: voided.plan.version }, context);
+  assert.equal(archived.plan.lifecycleStatus, "archived");
+  assert.equal(service.listPlans({}, context).plans.some((plan) => plan.id === archived.plan.id), false, "archived plans must be hidden from the default list");
+  assert.equal(service.listPlans({ lifecycle: "archived" }, context).plans.some((plan) => plan.id === archived.plan.id), true);
+  const restored = service.restorePlan(archived.plan.id, { expectedVersion: archived.plan.version }, context);
+  assert.equal(restored.plan.lifecycleStatus, "active");
+  const deleted = service.deletePlan(restored.plan.id, { expectedVersion: restored.plan.version }, context);
+  assert.equal(deleted.deletedPlan.id, restored.plan.id);
+  assert.throws(() => service.getPlan(restored.plan.id, context), /未找到装柜方案/);
+  assert.throws(() => service.deletePlan(workerCreated.plan.id, { expectedVersion: workerCreated.plan.version }, context), /只有已作废方案/);
+
   const selected = created.plan.candidates.find((candidate) => candidate.strategy === "balanced");
   const saved = service.saveVersion(created.plan.id, { expectedVersion: created.plan.version, strategy: "balanced", placements: selected.placements }, context);
   assert.equal(saved.plan.version, 2);

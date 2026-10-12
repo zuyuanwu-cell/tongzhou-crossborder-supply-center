@@ -5111,10 +5111,11 @@ export function fetchContainerLoadingBootstrap() {
   return requestJson<ContainerLoadingBootstrap>("/api/container-loading/bootstrap");
 }
 
-export function fetchContainerLoadingPlans(filters: { status?: string; shipmentId?: string } = {}) {
+export function fetchContainerLoadingPlans(filters: { status?: string; shipmentId?: string; lifecycle?: "active" | "archived" | "all" } = {}) {
   const query = new URLSearchParams();
   if (filters.status) query.set("status", filters.status);
   if (filters.shipmentId) query.set("shipmentId", filters.shipmentId);
+  if (filters.lifecycle) query.set("lifecycle", filters.lifecycle);
   return requestJson<{ ok: boolean; plans: ContainerLoadingPlanSummary[] }>(`/api/container-loading/plans${query.size ? `?${query}` : ""}`);
 }
 
@@ -5138,7 +5139,7 @@ export function saveContainerLoadingVersion(planId: string, payload: { expectedV
   return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/versions`, { method: "POST", body: JSON.stringify(payload) });
 }
 
-export function recalculateContainerLoadingPlan(planId: string, payload: { expectedVersion: number; selectedStrategy: ContainerLoadingStrategy; container?: ContainerType; items?: ContainerLoadingItem[]; savePackagingProfiles?: boolean }) {
+export function recalculateContainerLoadingPlan(planId: string, payload: { expectedVersion: number; selectedStrategy: ContainerLoadingStrategy; containerType?: string; container?: ContainerType; items?: ContainerLoadingItem[]; savePackagingProfiles?: boolean }) {
   return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/recalculate`, { method: "POST", body: JSON.stringify(payload) });
 }
 
@@ -5148,6 +5149,18 @@ export function confirmContainerLoadingPlan(planId: string, payload: { expectedV
 
 export function voidContainerLoadingPlan(planId: string, payload: { expectedVersion: number; reason?: string }) {
   return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/void`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function archiveContainerLoadingPlan(planId: string, payload: { expectedVersion: number }) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/archive`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function restoreContainerLoadingPlan(planId: string, payload: { expectedVersion: number }) {
+  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/restore`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function deleteContainerLoadingPlan(planId: string, payload: { expectedVersion: number }) {
+  return requestJson<{ ok: boolean; deletedPlan: ContainerLoadingPlanSummary }>(`/api/container-loading/plans/${encodeURIComponent(planId)}`, { method: "DELETE", body: JSON.stringify(payload) });
 }
 
 export function fetchStockupCollaborationNotifications() {

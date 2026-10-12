@@ -1,4 +1,5 @@
 export type ContainerLoadingStrategy = "max_load" | "balanced" | "sku_complete";
+export type ContainerLoadingLifecycle = "active" | "archived";
 
 export type ContainerType = {
   code: string;
@@ -78,6 +79,19 @@ export type ContainerLoadingCandidate = {
   manuallyAdjusted?: boolean;
 };
 
+export type ContainerRecommendation = {
+  mode: "auto" | "manual";
+  selectedCode: string;
+  selectedName: string;
+  reason: string;
+  alternatives: Array<{
+    container: ContainerType;
+    bestStrategy: ContainerLoadingStrategy;
+    fullFit: boolean;
+    metrics: Partial<ContainerLoadingMetrics>;
+  }>;
+};
+
 export type ContainerLoadingPlanSummary = {
   id: string;
   planNo: string;
@@ -89,6 +103,9 @@ export type ContainerLoadingPlanSummary = {
   destinationWarehouseName: string;
   containerType: string;
   status: "draft" | "confirmed" | "loaded" | "voided";
+  lifecycleStatus: ContainerLoadingLifecycle;
+  archivedAt: string;
+  archivedBy: string;
   selectedStrategy: ContainerLoadingStrategy;
   version: number;
   confirmedVersion: number | null;
@@ -112,6 +129,7 @@ export type ContainerLoadingPlan = ContainerLoadingPlanSummary & {
   candidates: ContainerLoadingCandidate[];
   sourceVersion: number;
   warnings: string[];
+  containerRecommendation: ContainerRecommendation | null;
 };
 
 export type ContainerLoadingVersion = {

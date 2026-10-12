@@ -314,6 +314,9 @@ export async function initStockupCollaborationStore(dbPath) {
       destination_warehouse_name TEXT,
       container_type TEXT NOT NULL,
       status TEXT NOT NULL,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      archived_by TEXT,
       selected_strategy TEXT NOT NULL,
       version INTEGER NOT NULL DEFAULT 1,
       confirmed_version INTEGER,
@@ -393,6 +396,9 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_receipts", "archived_by TEXT");
   ensureColumn("stockup_receipts", "deleted_at TEXT");
   ensureColumn("stockup_receipts", "deleted_by TEXT");
+  ensureColumn("container_loading_plans", "lifecycle_status TEXT NOT NULL DEFAULT 'active'");
+  ensureColumn("container_loading_plans", "archived_at TEXT");
+  ensureColumn("container_loading_plans", "archived_by TEXT");
   db.run(`
     UPDATE stockup_shipment_lines
     SET image_url = COALESCE((
@@ -404,7 +410,8 @@ export async function initStockupCollaborationStore(dbPath) {
   `);
   db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
   db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
-  db.run("PRAGMA user_version = 6");
+  db.run("UPDATE container_loading_plans SET lifecycle_status='active' WHERE COALESCE(lifecycle_status,'')=''");
+  db.run("PRAGMA user_version = 7");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));
