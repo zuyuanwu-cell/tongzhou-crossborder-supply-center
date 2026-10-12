@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
+import { fetch as undiciFetch } from "undici";
 import { recoverRestoreTransaction, runRestoreTransaction } from "./system-restore-transaction.js";
 
 const execFileAsync = promisify(execFile);
@@ -91,13 +92,17 @@ function operationsFor(request) {
       const deadline = Date.now() + Math.max(10_000, Number(request.healthTimeoutMs || 90_000));
       let lastMessage = "";
       while (Date.now() < deadline) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5_000);
         try {
-          const response = await fetch(request.healthUrl, { signal: AbortSignal.timeout(5_000) });
+          const response = await undiciFetch(request.healthUrl, { signal: controller.signal });
           const payload = await response.json().catch(() => ({}));
           if (response.ok && payload.ok) return;
           lastMessage = `HTTP ${response.status}`;
         } catch (error) {
           lastMessage = error.message;
+        } finally {
+          clearTimeout(timeout);
         }
         await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
       }
