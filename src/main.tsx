@@ -12962,166 +12962,361 @@ function groupCatalogProductFamilies(products: CatalogProduct[]) {
   }));
 }
 
-function catalogProductPriceRows(
-  product: CatalogProduct,
-  channel: "全部" | "直营" | "分销",
-  showDistributionPrice: boolean,
-  showDirectPrice: boolean,
-  showSalesPrice: boolean,
-) {
-  const rows: Array<{ key: string; label: string; currency: string; price: number }> = [];
-  if (showDistributionPrice && channel !== "直营") {
-    rows.push({
-      key: "distribution",
+type CatalogPriceMode = "distribution" | "direct" | "sales";
+
+const catalogPriceModes: Array<{ key: CatalogPriceMode; label: string; shortLabel: string }> = [
+  { key: "distribution", label: "分销成本价", shortLabel: "分销价" },
+  { key: "direct", label: "直营成本价", shortLabel: "直营价" },
+  { key: "sales", label: "销售价", shortLabel: "销售价" },
+];
+
+function catalogProductPrice(product: CatalogProduct, mode: CatalogPriceMode) {
+  if (mode === "distribution") {
+    return {
+      key: mode,
       label: "分销成本价",
       currency: product.distributionCostCurrency || product.distributionCurrency || "CNY",
       price: product.distributionCostPrice ?? product.distributionCost ?? product.distributionPrice ?? 0,
-    });
+    };
   }
-  if (showDirectPrice && channel !== "分销") {
-    rows.push({
-      key: "direct",
+  if (mode === "direct") {
+    return {
+      key: mode,
       label: "直营成本价",
       currency: product.directCostCurrency || product.directCurrency || product.distributionCurrency || "CNY",
       price: product.directCostPrice ?? product.directPrice ?? 0,
-    });
+    };
   }
-  if (showSalesPrice) {
-    const sales = salesPriceFor(product);
-    rows.push({ key: "sales", label: sales.label, currency: sales.currency || "CNY", price: sales.price });
-  }
-  return rows;
+  const sales = salesPriceFor(product);
+  return { key: mode, label: sales.label, currency: sales.currency || "CNY", price: sales.price };
+}
+
+function catalogAvailablePriceModes({
+  channel,
+  showDistributionPrice,
+  showDirectPrice,
+  showSalesPrice,
+}: {
+  channel: "全部" | "直营" | "分销";
+  showDistributionPrice: boolean;
+  showDirectPrice: boolean;
+  showSalesPrice: boolean;
+}) {
+  return catalogPriceModes.filter((mode) => {
+    if (mode.key === "distribution") return showDistributionPrice && channel !== "直营";
+    if (mode.key === "direct") return showDirectPrice && channel !== "分销";
+    return showSalesPrice;
+  });
+}
+
+function catalogCountryCode(country: string) {
+  if (/印度尼西亚|印尼/.test(country)) return "ID";
+  if (/马来西亚|马来/.test(country)) return "MY";
+  if (/越南/.test(country)) return "VN";
+  if (/俄罗斯/.test(country)) return "RU";
+  if (/中国/.test(country)) return "CN";
+  return country.slice(0, 2).toLocaleUpperCase();
+}
+
+function catalogStockSummary(product: CatalogProduct) {
+  const stock = Number(product.stockQty || 0);
+  if (product.dataGap === "warehouse_missing") return { label: "仓库待配置", tone: "muted" };
+  if (product.alert === "断货" || stock <= 0) return { label: "缺货", tone: "danger" };
+  if (product.alert === "补货") return { label: `仅剩 ${formatNumber(stock)}`, tone: "warning" };
+  return { label: `库存 ${formatNumber(stock)}`, tone: "good" };
+}
+
+function catalogFamilyVisibleVariants(family: CatalogProductFamily, selectedCountry: string) {
+  return selectedCountry === "全部"
+    ? family.variants
+    : family.variants.filter((variant) => variant.country === selectedCountry);
 }
 
 function ProductFamilyCard({
   family,
   selectedCountry,
-  viewMode,
-  gridColumns,
-  channel,
-  showDistributionPrice,
-  showDirectPrice,
-  showSalesPrice,
+  priceMode,
   showInventory,
   bundleItems,
   onAddToBundle,
+  onOpenComparison,
   onOpenDetails,
   onApplyForAccess,
   index,
 }: {
   family: CatalogProductFamily;
   selectedCountry: string;
-  viewMode: "grid" | "list";
-  gridColumns: 4 | 6 | 8;
-  channel: "全部" | "直营" | "分销";
-  showDistributionPrice: boolean;
-  showDirectPrice: boolean;
-  showSalesPrice: boolean;
+  priceMode: CatalogPriceMode | null;
   showInventory: boolean;
   bundleItems: BundleSkuItem[];
   onAddToBundle: (product: CatalogProduct) => void;
+  onOpenComparison: (family: CatalogProductFamily) => void;
   onOpenDetails: (product: CatalogProduct) => void;
   onApplyForAccess: (sku: string) => void;
   index: number;
 }) {
-  const preferred = family.variants.find((variant) => selectedCountry !== "全部" && variant.country === selectedCountry) || family.variants[0];
-  const [activeProductId, setActiveProductId] = React.useState(preferred?.id || "");
-  const activeProduct = family.variants.find((variant) => variant.id === activeProductId) || preferred;
-
-  React.useEffect(() => {
-    const next = family.variants.find((variant) => selectedCountry !== "全部" && variant.country === selectedCountry)
-      || family.variants.find((variant) => variant.id === activeProductId)
-      || family.variants[0];
-    if (next && next.id !== activeProductId) setActiveProductId(next.id);
-  }, [activeProductId, family.variants, selectedCountry]);
-
-  if (!activeProduct) return null;
-  const priceRows = catalogProductPriceRows(activeProduct, channel, showDistributionPrice, showDirectPrice, showSalesPrice);
-  const inBundle = bundleItems.some((item) => item.product.id === activeProduct.id);
-  const imageUrl = activeProduct.imageUrl || family.variants.find((variant) => variant.imageUrl)?.imageUrl;
+  const visibleVariants = catalogFamilyVisibleVariants(family, selectedCountry);
+  const previewVariants = visibleVariants.slice(0, 3);
+  const preferred = previewVariants[0] || family.variants[0];
+  if (!preferred) return null;
+  const remainingCount = Math.max(0, visibleVariants.length - previewVariants.length);
+  const inBundle = bundleItems.some((item) => item.product.id === preferred.id);
+  const imageUrl = preferred.imageUrl || family.variants.find((variant) => variant.imageUrl)?.imageUrl;
 
   return (
     <article
-      className={`product-card product-family-card ${viewMode === "grid" && gridColumns > 4 ? "dense-card" : ""}`}
+      className="product-card product-family-card"
       style={{ "--family-delay": `${Math.min(index, 12) * 0.04}s` } as React.CSSProperties}
     >
       {imageUrl ? (
-        <div className="product-photo product-family-photo">
-          <img src={imageUrl} alt={activeProduct.name} loading="lazy" decoding="async" />
-          <span>{family.variants.length} 个国家/地区</span>
-        </div>
+        <button className="catalog-family-media product-family-photo" type="button" onClick={() => onOpenComparison(family)} aria-label={`查看 ${preferred.name} 全部国家价格`}>
+          <img src={imageUrl} alt={preferred.name} loading="lazy" decoding="async" />
+          <span>{family.variants.length} 国在售</span>
+        </button>
       ) : (
-        <div className={`product-visual ${activeProduct.visualTone}`} aria-label={`${activeProduct.name} 产品视觉`}>
-          <span>{activeProduct.category}</span>
-          <strong>{activeProduct.name.slice(0, 2)}</strong>
-          <em>{family.variants.length} 个国家/地区</em>
-        </div>
+        <button className={`catalog-family-media product-visual ${preferred.visualTone}`} type="button" onClick={() => onOpenComparison(family)} aria-label={`查看 ${preferred.name} 全部国家价格`}>
+          <span>{preferred.category}</span>
+          <strong>{preferred.name.slice(0, 2)}</strong>
+          <em>{family.variants.length} 国在售</em>
+        </button>
       )}
       <div className="product-body">
-        <div className="product-title-row">
-          <div>
-            <CopyableSku sku={activeProduct.sku || activeProduct.skuNo} />
-            <h3>{activeProduct.name}</h3>
-            <small>{activeProduct.brand || "未配置品牌"} · {activeProduct.category || "未配置分类"} · {activeProduct.unit || "件"}</small>
-          </div>
-          <button
-            className={`bundle-add-button ${inBundle ? "active" : ""}`}
-            type="button"
-            title="将当前国家商品加入组合 SKU 计算器"
-            aria-label={`加入组合 SKU 计算器：${activeProduct.name}，${activeProduct.country}`}
-            onClick={() => onAddToBundle(activeProduct)}
-          >
-            <Plus size={18} />
-          </button>
+        <div className="catalog-family-heading">
+          <small>{preferred.brand || "未配置品牌"} <i>·</i> {preferred.category || "未配置分类"} <i>·</i> {preferred.unit || "件"}</small>
+          <h3><button type="button" onClick={() => onOpenComparison(family)}>{preferred.name}</button></h3>
+          <CopyableSku sku={preferred.sku || preferred.skuNo} />
         </div>
 
-        <div className="product-country-tabs" role="tablist" aria-label={`${activeProduct.name} 国家版本`}>
-          {family.variants.map((variant) => (
-            <button
-              key={variant.id}
-              type="button"
-              role="tab"
-              aria-selected={variant.id === activeProduct.id}
-              className={variant.id === activeProduct.id ? "active" : ""}
-              onClick={() => setActiveProductId(variant.id)}
-              title={`${variant.country} · ${variant.countrySku || variant.skuNo || variant.sku}`}
-            >
-              <span className={`flag-icon flag-${flagCodeForCountry(variant.country)}`} role="img" aria-label={`${variant.country}国旗`} />
-              <span>{variant.country}</span>
+        <div className="catalog-family-prices">
+          {priceMode ? (
+            <button className="catalog-country-price-list" type="button" onClick={() => onOpenComparison(family)} aria-label={`查看 ${preferred.name} 全部国家价格`}>
+              {previewVariants.map((variant) => {
+                const price = catalogProductPrice(variant, priceMode);
+                const stock = catalogStockSummary(variant);
+                return (
+                  <span className="catalog-country-price-row" key={variant.id}>
+                    <span className="catalog-country-identity">
+                      <span className={`flag-icon flag-${flagCodeForCountry(variant.country)}`} role="img" aria-label={`${variant.country}国旗`} />
+                      <strong>{catalogCountryCode(variant.country)}</strong>
+                      <small>{variant.country}</small>
+                    </span>
+                    <span className="catalog-country-price-value">
+                      <strong>{price.price > 0 ? <><small>{price.currency}</small>{formatMoney(price.price)}</> : "待维护"}</strong>
+                      {showInventory ? <small className={stock.tone}>{stock.label}</small> : null}
+                    </span>
+                  </span>
+                );
+              })}
+              {remainingCount ? <span className="catalog-country-more">另有 {remainingCount} 个国家 · 点击查看全部</span> : null}
             </button>
-          ))}
-        </div>
-
-        <div className="product-facts product-family-facts">
-          <span><Globe2 size={15} />{activeProduct.country}</span>
-          {showInventory ? <StockFact product={activeProduct} /> : null}
-          <span><ShoppingBag size={15} />{activeProduct.channel}</span>
-        </div>
-
-        <div className="product-family-price-area">
-          {priceRows.length ? (
-            <div className="product-price-matrix" aria-label={`${activeProduct.country} 价格`}>
-              {priceRows.map((row) => (
-                <div className={`product-price-cell ${row.key}`} key={row.key}>
-                  <small>{row.label}</small>
-                  <strong><span>{row.currency}</span>{formatMoney(row.price)}</strong>
-                </div>
-              ))}
-            </div>
           ) : (
             <div className="locked-price product-family-locked">
               <small>价格与库存</small>
               <strong>登录后可见</strong>
-              <button type="button" onClick={() => onApplyForAccess(activeProduct.sku)}>申请分销账号后查看</button>
+              <button type="button" onClick={() => onApplyForAccess(preferred.sku)}>申请分销账号后查看</button>
             </div>
           )}
-          <button className="product-detail-button" type="button" onClick={() => onOpenDetails(activeProduct)}>
-            <ExternalLink size={16} />
-            <span>资料</span>
+        </div>
+
+        <div className="catalog-family-actions">
+          <button className={inBundle ? "active" : ""} type="button" onClick={() => onAddToBundle(preferred)}>
+            <Plus size={15} />
+            {inBundle ? "继续添加" : "加入计算器"}
+          </button>
+          <button type="button" onClick={() => onOpenDetails(preferred)}>
+            <FileText size={14} />
+            资料
           </button>
         </div>
       </div>
     </article>
+  );
+}
+
+function CatalogFamilyPriceDialog({
+  family,
+  showDistributionPrice,
+  showDirectPrice,
+  showSalesPrice,
+  showInventory,
+  onAddToBundle,
+  onOpenDetails,
+  onClose,
+}: {
+  family: CatalogProductFamily;
+  showDistributionPrice: boolean;
+  showDirectPrice: boolean;
+  showSalesPrice: boolean;
+  showInventory: boolean;
+  onAddToBundle: (product: CatalogProduct) => void;
+  onOpenDetails: (product: CatalogProduct) => void;
+  onClose: () => void;
+}) {
+  const representative = family.variants[0];
+  const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const visibleModes = catalogPriceModes.filter((mode) => (
+    mode.key === "distribution" ? showDistributionPrice : mode.key === "direct" ? showDirectPrice : showSalesPrice
+  ));
+
+  React.useEffect(() => {
+    const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    return () => restoreFocus?.focus();
+  }, []);
+
+  if (!representative) return null;
+  const imageUrl = representative.imageUrl || family.variants.find((variant) => variant.imageUrl)?.imageUrl;
+
+  return (
+    <div className="modal-layer catalog-family-modal-layer" role="presentation">
+      <button className="modal-backdrop" type="button" onClick={onClose} aria-label="关闭国家价格对比" />
+      <section
+        className="catalog-family-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="catalog-family-dialog-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+      >
+        <header className="catalog-family-dialog-head">
+          <div className="catalog-family-dialog-product">
+            {imageUrl ? <img src={imageUrl} alt={representative.name} /> : <span className={`product-visual ${representative.visualTone}`}>{representative.name.slice(0, 2)}</span>}
+            <div>
+              <p>{representative.brand || "未配置品牌"} · {representative.category || "未配置分类"} · {representative.unit || "件"}</p>
+              <h2 id="catalog-family-dialog-title">{representative.name}</h2>
+              <CopyableSku sku={representative.sku || representative.skuNo} />
+            </div>
+          </div>
+          <button ref={closeButtonRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭国家价格对比">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="catalog-family-dialog-summary">
+          <div><strong>{family.variants.length}</strong><span>个国家版本</span></div>
+          <p>同一基础 SKU 的国家价格、库存与国家 SKU 集中对比。金额按各记录原币种展示。</p>
+        </div>
+
+        <div className="catalog-family-dialog-table-wrap">
+          <table className="catalog-family-dialog-table">
+            <thead>
+              <tr>
+                <th>国家</th>
+                <th>国家 SKU</th>
+                {visibleModes.map((mode) => <th key={mode.key}>{mode.label}</th>)}
+                {showInventory ? <th>库存</th> : null}
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {family.variants.map((variant) => {
+                const stock = catalogStockSummary(variant);
+                return (
+                  <tr key={variant.id}>
+                    <th scope="row">
+                      <span className={`flag-icon flag-${flagCodeForCountry(variant.country)}`} role="img" aria-label={`${variant.country}国旗`} />
+                      <span><strong>{catalogCountryCode(variant.country)}</strong><small>{variant.country}</small></span>
+                    </th>
+                    <td><code>{variant.countrySku || variant.skuNo || "—"}</code></td>
+                    {visibleModes.map((mode) => {
+                      const price = catalogProductPrice(variant, mode.key);
+                      return <td key={mode.key}>{price.price > 0 ? <><small>{price.currency}</small><strong>{formatMoney(price.price)}</strong></> : <span>待维护</span>}</td>;
+                    })}
+                    {showInventory ? <td><span className={`catalog-stock-pill ${stock.tone}`}>{stock.label}</span></td> : null}
+                    <td>
+                      <button type="button" onClick={() => onAddToBundle(variant)} aria-label={`将 ${variant.country} 版本加入组合计算器`}><Plus size={14} /></button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <footer className="catalog-family-dialog-actions">
+          <span>价格权限沿用当前账号角色配置</span>
+          <button className="ghost-button" type="button" onClick={() => onOpenDetails(representative)}>
+            <FileText size={15} />
+            查看完整资料
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function CatalogPriceMatrix({
+  families,
+  countries,
+  selectedCountry,
+  priceMode,
+  showInventory,
+  onAddToBundle,
+  onOpenComparison,
+  onOpenDetails,
+}: {
+  families: CatalogProductFamily[];
+  countries: string[];
+  selectedCountry: string;
+  priceMode: CatalogPriceMode | null;
+  showInventory: boolean;
+  onAddToBundle: (product: CatalogProduct) => void;
+  onOpenComparison: (family: CatalogProductFamily) => void;
+  onOpenDetails: (product: CatalogProduct) => void;
+}) {
+  const visibleCountries = selectedCountry === "全部" ? countries : countries.filter((country) => country === selectedCountry);
+  return (
+    <section className="catalog-price-matrix-panel" aria-label="SKU 与国家价格矩阵">
+      <div className="catalog-price-matrix-scroll">
+        <table>
+          <caption>SKU 与国家价格矩阵</caption>
+          <thead>
+            <tr>
+              <th>商品</th>
+              {visibleCountries.map((country) => (
+                <th key={country}>
+                  <span className={`flag-icon flag-${flagCodeForCountry(country)}`} />
+                  <span><strong>{catalogCountryCode(country)}</strong><small>{country}</small></span>
+                </th>
+              ))}
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {families.map((family) => {
+              const representative = family.variants[0];
+              return (
+                <tr key={family.key}>
+                  <th scope="row">
+                    <button type="button" onClick={() => onOpenComparison(family)}>{representative.name}</button>
+                    <CopyableSku sku={representative.sku || representative.skuNo} />
+                  </th>
+                  {visibleCountries.map((country) => {
+                    const variant = family.variants.find((item) => item.country === country);
+                    if (!variant) return <td className="empty" key={country}>—</td>;
+                    const price = priceMode ? catalogProductPrice(variant, priceMode) : null;
+                    const stock = catalogStockSummary(variant);
+                    return (
+                      <td key={country}>
+                        <button type="button" onClick={() => onOpenComparison(family)}>
+                          {price?.price ? <strong><small>{price.currency}</small>{formatMoney(price.price)}</strong> : <strong>登录后可见</strong>}
+                          {showInventory ? <span className={stock.tone}>{stock.label}</span> : null}
+                        </button>
+                      </td>
+                    );
+                  })}
+                  <td>
+                    <button type="button" onClick={() => onAddToBundle(catalogFamilyVisibleVariants(family, selectedCountry)[0] || representative)} aria-label={`将 ${representative.name} 加入组合计算器`}><Plus size={15} /></button>
+                    <button type="button" onClick={() => onOpenDetails(representative)} aria-label={`查看 ${representative.name} 资料`}><FileText size={15} /></button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -13402,14 +13597,14 @@ function ProductLibrary({
   const [keywordInput, setKeywordInput] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
   const [detailProduct, setDetailProduct] = React.useState<CatalogProduct | null>(null);
+  const [comparisonFamily, setComparisonFamily] = React.useState<CatalogProductFamily | null>(null);
   const [showBackTop, setShowBackTop] = React.useState(false);
-  const [viewMode, setViewMode] = React.useState<"grid" | "list">("grid");
-  const [gridColumns, setGridColumns] = React.useState<4 | 6 | 8>(4);
+  const [viewMode, setViewMode] = React.useState<"cards" | "matrix">("cards");
+  const [priceMode, setPriceMode] = React.useState<CatalogPriceMode | null>("distribution");
   const [bundleItems, setBundleItems] = React.useState<BundleSkuItem[]>([]);
   const [bundleOpen, setBundleOpen] = React.useState(false);
   const [partnerCtaVisible, setPartnerCtaVisible] = React.useState(true);
   const [partnerApplicationSku, setPartnerApplicationSku] = React.useState("");
-  const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
   const [visibleProductCount, setVisibleProductCount] = React.useState(24);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showDistributionPrice = hasUserPermission(currentUser, "distribution_price");
@@ -13417,6 +13612,12 @@ function ProductLibrary({
   const showSalesPrice = hasUserPermission(currentUser, "sales_price");
   const showPrices = showDistributionPrice || showDirectPrice || showSalesPrice;
   const showInventory = canViewInventory(currentUser);
+  const availablePriceModes = React.useMemo(() => catalogAvailablePriceModes({
+    channel,
+    showDistributionPrice,
+    showDirectPrice,
+    showSalesPrice,
+  }), [channel, showDirectPrice, showDistributionPrice, showSalesPrice]);
   const countries = React.useMemo(() => uniqueSorted(products.map((product) => product.country))
     .sort((left, right) => catalogCountryRank(left) - catalogCountryRank(right) || left.localeCompare(right, "zh-CN")), [products]);
   const brands = React.useMemo(() => {
@@ -13430,22 +13631,38 @@ function ProductLibrary({
     return Array.from(labels.values()).sort((left, right) => left.localeCompare(right, "zh-CN"));
   }, [products]);
   const productFamilies = React.useMemo(() => groupCatalogProductFamilies(products), [products]);
-  const filteredFamilies = React.useMemo(() => productFamilies.flatMap((family) => {
+  const eligibleFamilies = React.useMemo(() => productFamilies.flatMap((family) => {
     const eligibleVariants = family.variants.filter((product) => {
       const channelMatched = channel === "全部" || channel === "直营" || product.channel === channel;
       const brandMatched = brand === "全部" || String(product.brand || "").trim().toLocaleLowerCase() === brand.toLocaleLowerCase();
       return channelMatched && brandMatched;
     });
     if (!eligibleVariants.length || !eligibleVariants.some((product) => includesFuzzy(product, keyword))) return [];
-    if (country !== "全部" && !eligibleVariants.some((product) => product.country === country)) return [];
     return [{ ...family, variants: eligibleVariants }];
-  }), [brand, channel, country, keyword, productFamilies]);
+  }), [brand, channel, keyword, productFamilies]);
+  const filteredFamilies = React.useMemo(() => (
+    country === "全部" ? eligibleFamilies : eligibleFamilies.filter((family) => family.variants.some((product) => product.country === country))
+  ), [country, eligibleFamilies]);
+  const countryCounts = React.useMemo(() => new Map(countries.map((item) => [
+    item,
+    eligibleFamilies.filter((family) => family.variants.some((variant) => variant.country === item)).length,
+  ])), [countries, eligibleFamilies]);
   const visibleFamilies = filteredFamilies.slice(0, visibleProductCount);
-  const visibleVariantCount = filteredFamilies.reduce((sum, family) => sum + family.variants.length, 0);
-  const activeFilterCount = Number(country !== "全部") + Number(brand !== "全部") + Number(keyword.trim().length > 0);
+  const visibleVariantCount = filteredFamilies.reduce((sum, family) => (
+    sum + (country === "全部" ? family.variants.length : family.variants.filter((variant) => variant.country === country).length)
+  ), 0);
+  const activeFilterCount = Number(country !== "全部") + Number(brand !== "全部") + Number(channel !== defaultChannel) + Number(keyword.trim().length > 0);
   React.useEffect(() => {
     if (!internal) setChannel("分销");
   }, [internal]);
+
+  React.useEffect(() => {
+    if (!availablePriceModes.length) {
+      if (priceMode !== null) setPriceMode(null);
+      return;
+    }
+    if (!priceMode || !availablePriceModes.some((mode) => mode.key === priceMode)) setPriceMode(availablePriceModes[0].key);
+  }, [availablePriceModes, priceMode]);
 
   React.useEffect(() => {
     if (!externalKeyword) return;
@@ -13456,6 +13673,12 @@ function ProductLibrary({
   React.useEffect(() => {
     setVisibleProductCount(24);
   }, [brand, channel, country, keyword]);
+
+  function openProductDetails(product: CatalogProduct) {
+    setComparisonFamily(null);
+    setDetailProduct(product);
+    void onNeedDetails();
+  }
 
   function addToBundle(product: CatalogProduct) {
     setBundleItems((items) => {
@@ -13488,98 +13711,92 @@ function ProductLibrary({
 
   return (
     <main className="library-page">
-      <section className="library-hero">
+      <section className="catalog-page-heading">
         <div>
-          <p className="eyebrow">Product Center</p>
-          <h2>产品中心</h2>
-          <p>
-            按国家、品牌、SKU 和产品名称快速浏览在售产品，查看产品价格、品类、单位和基础资料。
-          </p>
-          <div className="source-row">
-            <span className={`status-pill ${payload?.source === "jiandaoyun" ? "good" : "warning"}`}>
-              {payload?.source === "jiandaoyun" ? "系统已同步" : "样例数据"}
-            </span>
-            <span>{payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN") : "等待同步"}</span>
-          </div>
+          <h1>产品库</h1>
+          <span className={`catalog-sync-state ${payload?.source === "jiandaoyun" ? "ready" : "waiting"}`}>
+            {payload?.source === "jiandaoyun" ? "已同步" : "样例数据"}
+            <i>·</i>
+            {payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "等待同步"}
+          </span>
         </div>
-        <div className="catalog-actions">
-          {visibleChannels.map((item) => (
-            <button key={item} className={channel === item ? "active" : ""} onClick={() => setChannel(item)}>
-              {item}
-            </button>
-          ))}
+        <div className="catalog-heading-count">
+          <strong>{formatNumber(filteredFamilies.length)}</strong>
+          <span>个基础 SKU</span>
         </div>
       </section>
 
-      <form
-        className="catalog-search-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setKeyword(keywordInput);
-        }}
-      >
-        <label className="catalog-search large">
-          <Search size={17} />
-          <input value={keywordInput} onChange={(event) => setKeywordInput(event.target.value)} placeholder="搜索 SKU、产品名称、分类、品牌" />
-        </label>
-        <button className="sync-button catalog-search-button" type="submit">
-          <Search size={16} />
-          搜索
-        </button>
-      </form>
+      <section className="catalog-control-shelf" aria-label="产品筛选和显示方式">
+        <form className="catalog-control-primary" onSubmit={(event) => { event.preventDefault(); setKeyword(keywordInput); }}>
+          <label className="catalog-reference-search">
+            <Search size={17} />
+            <input
+              value={keywordInput}
+              onChange={(event) => {
+                setKeywordInput(event.target.value);
+                setKeyword(event.target.value);
+              }}
+              placeholder="搜索商品名称或 SKU"
+            />
+          </label>
+          <label className="catalog-reference-select">
+            <span>品牌</span>
+            <select value={brand} onChange={(event) => setBrand(event.target.value)}>
+              <option value="全部">全部品牌</option>
+              {brands.map((item) => <option value={item} key={item}>{item}</option>)}
+            </select>
+          </label>
+          {internal ? (
+            <label className="catalog-reference-select channel-select">
+              <span>渠道</span>
+              <select value={channel} onChange={(event) => setChannel(event.target.value as "全部" | "直营" | "分销")}>
+                {visibleChannels.map((item) => <option value={item} key={item}>{item === "全部" ? "全部渠道" : item}</option>)}
+              </select>
+            </label>
+          ) : null}
+          <div className="catalog-segment-group" role="group" aria-label="价格口径">
+            {availablePriceModes.length ? availablePriceModes.map((mode) => (
+              <button key={mode.key} className={priceMode === mode.key ? "active" : ""} type="button" aria-pressed={priceMode === mode.key} onClick={() => setPriceMode(mode.key)}>
+                {mode.shortLabel}
+              </button>
+            )) : <span><Lock size={13} />价格需登录</span>}
+          </div>
+          <div className="catalog-segment-group view-mode-group" role="group" aria-label="视图">
+            <button className={viewMode === "cards" ? "active" : ""} type="button" aria-pressed={viewMode === "cards"} onClick={() => setViewMode("cards")} title="卡片视图">
+              <Grid2X2 size={14} /><span>卡片</span>
+            </button>
+            <button className={viewMode === "matrix" ? "active" : ""} type="button" aria-pressed={viewMode === "matrix"} onClick={() => setViewMode("matrix")} title="价格矩阵">
+              <List size={14} /><span>价格矩阵</span>
+            </button>
+          </div>
+        </form>
 
-      <button
-        className={`catalog-mobile-filter-toggle ${mobileFiltersOpen ? "open" : ""}`}
-        type="button"
-        onClick={() => setMobileFiltersOpen((value) => !value)}
-        aria-expanded={mobileFiltersOpen}
-      >
-        <span>
-          筛选
-          {activeFilterCount ? <small>{activeFilterCount}</small> : null}
-        </span>
-        <strong>{formatNumber(filteredFamilies.length)} 个 SKU</strong>
-        <ChevronDown size={16} />
-      </button>
-
-      <section className={`catalog-filter-panel ${mobileFiltersOpen ? "open" : ""}`}>
-        <div className="filter-block country-filter">
-          <span>国家</span>
-          <div>
-            <button type="button" className={country === "全部" ? "active" : ""} onClick={() => setCountry("全部")}>
+        <div className="catalog-control-secondary">
+          <div className="catalog-country-filters" role="group" aria-label="按国家筛选">
+            <button type="button" className={country === "全部" ? "active" : ""} aria-pressed={country === "全部"} onClick={() => setCountry("全部")}>
               <span className="flag-icon flag-global" />
-              全部
+              <span>全部国家</span>
+              <small>{eligibleFamilies.length}</small>
             </button>
             {countries.map((item) => (
-              <button key={item} type="button" className={country === item ? "active" : ""} onClick={() => setCountry(item)}>
+              <button key={item} type="button" className={country === item ? "active" : ""} aria-pressed={country === item} onClick={() => setCountry(item)}>
                 <span className={`flag-icon flag-${flagCodeForCountry(item)}`} />
-                {item}
+                <strong>{catalogCountryCode(item)}</strong>
+                <span>{item}</span>
+                <small>{countryCounts.get(item) || 0}</small>
               </button>
             ))}
           </div>
-        </div>
-        <div className="filter-block">
-          <span>品牌</span>
-          <select value={brand} onChange={(event) => setBrand(event.target.value)}>
-            <option value="全部">全部品牌</option>
-            {brands.map((item) => (
-              <option value={item} key={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="filter-result">
-          <strong>{formatNumber(filteredFamilies.length)}</strong>
-          <span>个 SKU · {formatNumber(visibleVariantCount)} 个国家版本</span>
-        </div>
-        <div className="mobile-filter-actions">
-          <button className="ghost-button compact-button" type="button" onClick={() => { setCountry("全部"); setBrand("全部"); setKeyword(""); setKeywordInput(""); }}>
-            清除筛选
-          </button>
-          <button className="sync-button compact-button" type="button" onClick={() => setMobileFiltersOpen(false)}>
-            查看结果
-          </button>
+          <div className="catalog-result-count">
+            <strong>{formatNumber(filteredFamilies.length)}</strong>
+            <span>个 SKU</span>
+            <small>{formatNumber(visibleVariantCount)} 个国家版本</small>
+          </div>
+          {activeFilterCount ? (
+            <button className="catalog-clear-filters" type="button" onClick={() => { setCountry("全部"); setBrand("全部"); setChannel(defaultChannel); setKeyword(""); setKeywordInput(""); }}>
+              清除筛选
+            </button>
+          ) : null}
         </div>
       </section>
 
@@ -13607,62 +13824,36 @@ function ProductLibrary({
 
       {loading ? <div className="notice">正在读取产品库...</div> : null}
 
-      <section className="catalog-view-toolbar" aria-label="产品库显示方式">
-        <div className="catalog-view-group" role="group" aria-label="视图">
-          <button className={viewMode === "grid" ? "active" : ""} type="button" onClick={() => setViewMode("grid")} title="卡片视图">
-            <Grid2X2 size={16} />
-            <span>卡片</span>
-          </button>
-          <button className={viewMode === "list" ? "active" : ""} type="button" onClick={() => setViewMode("list")} title="列表视图">
-            <List size={16} />
-            <span>列表</span>
-          </button>
-        </div>
-        <div className="catalog-view-group density-group" role="group" aria-label="每行产品数">
-          {([4, 6, 8] as const).map((count) => (
-            <button
-              key={count}
-              className={viewMode === "grid" && gridColumns === count ? "active" : ""}
-              type="button"
-              onClick={() => {
-                setViewMode("grid");
-                setGridColumns(count);
-              }}
-              title={`每行 ${count} 个产品`}
-            >
-              {count}/行
-            </button>
+      {viewMode === "cards" ? (
+        <section className="catalog-grid catalog-family-grid">
+          {visibleFamilies.map((family, index) => (
+            <ProductFamilyCard
+              key={family.key}
+              family={family}
+              selectedCountry={country}
+              priceMode={priceMode}
+              showInventory={showInventory}
+              bundleItems={bundleItems}
+              onAddToBundle={addToBundle}
+              onOpenComparison={setComparisonFamily}
+              onOpenDetails={openProductDetails}
+              onApplyForAccess={setPartnerApplicationSku}
+              index={index}
+            />
           ))}
-        </div>
-      </section>
-
-      <section
-        className={viewMode === "list" ? "catalog-list" : "catalog-grid"}
-        style={viewMode === "grid" ? ({ "--catalog-columns": gridColumns } as React.CSSProperties) : undefined}
-      >
-        {visibleFamilies.map((family, index) => (
-          <ProductFamilyCard
-            key={family.key}
-            family={family}
-            selectedCountry={country}
-            viewMode={viewMode}
-            gridColumns={gridColumns}
-            channel={channel}
-            showDistributionPrice={showDistributionPrice}
-            showDirectPrice={showDirectPrice}
-            showSalesPrice={showSalesPrice}
-            showInventory={showInventory}
-            bundleItems={bundleItems}
-            onAddToBundle={addToBundle}
-            onOpenDetails={(product) => {
-              setDetailProduct(product);
-              void onNeedDetails();
-            }}
-            onApplyForAccess={setPartnerApplicationSku}
-            index={index}
-          />
-        ))}
-      </section>
+        </section>
+      ) : (
+        <CatalogPriceMatrix
+          families={visibleFamilies}
+          countries={countries}
+          selectedCountry={country}
+          priceMode={priceMode}
+          showInventory={showInventory}
+          onAddToBundle={addToBundle}
+          onOpenComparison={setComparisonFamily}
+          onOpenDetails={openProductDetails}
+        />
+      )}
       <section className="catalog-load-more" aria-live="polite">
         <span>已显示 <strong>{formatNumber(visibleFamilies.length)}</strong> / {formatNumber(filteredFamilies.length)} 个基础 SKU，共 {formatNumber(visibleVariantCount)} 个国家版本</span>
         {visibleFamilies.length < filteredFamilies.length ? (
@@ -13671,6 +13862,21 @@ function ProductLibrary({
           </button>
         ) : null}
       </section>
+      {comparisonFamily ? (
+        <CatalogFamilyPriceDialog
+          family={comparisonFamily}
+          showDistributionPrice={showDistributionPrice}
+          showDirectPrice={showDirectPrice}
+          showSalesPrice={showSalesPrice}
+          showInventory={showInventory}
+          onAddToBundle={(product) => {
+            setComparisonFamily(null);
+            addToBundle(product);
+          }}
+          onOpenDetails={openProductDetails}
+          onClose={() => setComparisonFamily(null)}
+        />
+      ) : null}
       {detailProduct ? (
         <ProductDetailModal
           product={detailProduct}
