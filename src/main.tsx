@@ -16,6 +16,7 @@ import {
   Check,
   Calculator,
   ClipboardList,
+  Clock3,
   Coins,
   Container as ContainerIcon,
   Copy,
@@ -3026,6 +3027,8 @@ function Dashboard({
         </section>
       </section>
 
+      <GlobalMarketClock snapshot={summary?.marketSnapshot} />
+
       {staleSources.length ? (
         <section className="notice danger data-freshness-notice">
           <strong>数据可能已过期</strong>
@@ -3193,6 +3196,89 @@ function Dashboard({
       </details>
 
     </main>
+  );
+}
+
+const dashboardMarketFallbacks: NonNullable<DashboardSummaryPayload["marketSnapshot"]>["items"] = [
+  { country: "俄罗斯", countryCode: "RU", city: "莫斯科", currency: "RUB", timeZone: "Europe/Moscow", rateToCny: null, effectiveDate: "", source: "", updatedAt: "" },
+  { country: "印度尼西亚", countryCode: "ID", city: "雅加达", currency: "IDR", timeZone: "Asia/Jakarta", rateToCny: null, effectiveDate: "", source: "", updatedAt: "" },
+  { country: "越南", countryCode: "VN", city: "胡志明市", currency: "VND", timeZone: "Asia/Ho_Chi_Minh", rateToCny: null, effectiveDate: "", source: "", updatedAt: "" },
+  { country: "马来西亚", countryCode: "MY", city: "吉隆坡", currency: "MYR", timeZone: "Asia/Kuala_Lumpur", rateToCny: null, effectiveDate: "", source: "", updatedAt: "" },
+];
+
+function marketDateTime(timestamp: number, timeZone: string) {
+  const value = new Date(timestamp);
+  return {
+    time: new Intl.DateTimeFormat("zh-CN", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      hourCycle: "h23",
+    }).format(value),
+    date: new Intl.DateTimeFormat("zh-CN", {
+      timeZone,
+      month: "2-digit",
+      day: "2-digit",
+      weekday: "short",
+    }).format(value),
+  };
+}
+
+function marketRateText(currency: string, rateToCny: number | null) {
+  if (!(Number(rateToCny) > 0)) return "等待同步";
+  const unit = ["IDR", "VND"].includes(currency) ? 1000 : 1;
+  const cny = Number(rateToCny) * unit;
+  const digits = cny >= 10 ? 2 : cny >= 1 ? 3 : 4;
+  return `${unit.toLocaleString("zh-CN")} ${currency} = ¥${cny.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: digits })}`;
+}
+
+function GlobalMarketClock({ snapshot }: { snapshot?: DashboardSummaryPayload["marketSnapshot"] }) {
+  const [timestamp, setTimestamp] = React.useState(() => Date.now());
+  const markets = snapshot?.items?.length ? snapshot.items : dashboardMarketFallbacks;
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setTimestamp(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <section className="panel dashboard-market-panel" aria-labelledby="dashboard-market-title">
+      <div className="panel-heading dashboard-section-heading dashboard-market-heading">
+        <div>
+          <h2 id="dashboard-market-title">全球市场时间与汇率</h2>
+          <p>当地时间实时更新 · 外币兑人民币汇率按可读单位展示，每日同步</p>
+        </div>
+        <span className="dashboard-market-source">
+          <Clock3 size={14} />
+          {snapshot?.lastRateDate ? `汇率日期 ${snapshot.lastRateDate}` : "等待汇率同步"}
+        </span>
+      </div>
+      <div className="dashboard-market-grid">
+        {markets.map((market, index) => {
+          const local = marketDateTime(timestamp, market.timeZone);
+          return (
+            <article className="dashboard-market-card" key={market.countryCode} style={{ "--market-delay": `${0.49 + index * 0.065}s` } as React.CSSProperties}>
+              <div className="dashboard-market-identity">
+                <span className={`flag-icon flag-${flagCodeForCountry(market.country)}`} role="img" aria-label={`${market.country}国旗`} />
+                <span><strong>{market.country}</strong><small>{market.city} · {market.currency}</small></span>
+              </div>
+              <time dateTime={new Date(timestamp).toISOString()}>{local.time}</time>
+              <span className="dashboard-market-date">{local.date}</span>
+              <div className={`dashboard-market-rate ${market.rateToCny ? "ready" : "waiting"}`}>
+                <small>兑人民币</small>
+                <strong>{marketRateText(market.currency, market.rateToCny)}</strong>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <div className="dashboard-market-footnote">
+        <span>汇率来源：{snapshot?.provider || "Frankfurter"}</span>
+        <span>汇率仅作经营换算参考，以实际结算为准</span>
+      </div>
+    </section>
   );
 }
 
@@ -12844,6 +12930,201 @@ function filterAssetRecords(records: AssetRecord[], keyword: string, assetType: 
   });
 }
 
+type CatalogProductFamily = {
+  key: string;
+  variants: CatalogProduct[];
+};
+
+function catalogProductFamilyKey(product: CatalogProduct) {
+  return String(product.sku || product.skuNo || product.id).trim().toLocaleUpperCase();
+}
+
+function catalogCountryRank(country: string) {
+  if (/印度尼西亚|印尼/.test(country)) return 0;
+  if (/马来西亚|马来/.test(country)) return 1;
+  if (/越南/.test(country)) return 2;
+  if (/俄罗斯/.test(country)) return 3;
+  if (/中国/.test(country)) return 4;
+  return 20;
+}
+
+function groupCatalogProductFamilies(products: CatalogProduct[]) {
+  const groups = new Map<string, CatalogProduct[]>();
+  for (const product of products) {
+    const key = catalogProductFamilyKey(product);
+    const variants = groups.get(key) || [];
+    variants.push(product);
+    groups.set(key, variants);
+  }
+  return Array.from(groups, ([key, variants]) => ({
+    key,
+    variants: variants.sort((left, right) => catalogCountryRank(left.country) - catalogCountryRank(right.country) || left.country.localeCompare(right.country, "zh-CN")),
+  }));
+}
+
+function catalogProductPriceRows(
+  product: CatalogProduct,
+  channel: "全部" | "直营" | "分销",
+  showDistributionPrice: boolean,
+  showDirectPrice: boolean,
+  showSalesPrice: boolean,
+) {
+  const rows: Array<{ key: string; label: string; currency: string; price: number }> = [];
+  if (showDistributionPrice && channel !== "直营") {
+    rows.push({
+      key: "distribution",
+      label: "分销成本价",
+      currency: product.distributionCostCurrency || product.distributionCurrency || "CNY",
+      price: product.distributionCostPrice ?? product.distributionCost ?? product.distributionPrice ?? 0,
+    });
+  }
+  if (showDirectPrice && channel !== "分销") {
+    rows.push({
+      key: "direct",
+      label: "直营成本价",
+      currency: product.directCostCurrency || product.directCurrency || product.distributionCurrency || "CNY",
+      price: product.directCostPrice ?? product.directPrice ?? 0,
+    });
+  }
+  if (showSalesPrice) {
+    const sales = salesPriceFor(product);
+    rows.push({ key: "sales", label: sales.label, currency: sales.currency || "CNY", price: sales.price });
+  }
+  return rows;
+}
+
+function ProductFamilyCard({
+  family,
+  selectedCountry,
+  viewMode,
+  gridColumns,
+  channel,
+  showDistributionPrice,
+  showDirectPrice,
+  showSalesPrice,
+  showInventory,
+  bundleItems,
+  onAddToBundle,
+  onOpenDetails,
+  onApplyForAccess,
+  index,
+}: {
+  family: CatalogProductFamily;
+  selectedCountry: string;
+  viewMode: "grid" | "list";
+  gridColumns: 4 | 6 | 8;
+  channel: "全部" | "直营" | "分销";
+  showDistributionPrice: boolean;
+  showDirectPrice: boolean;
+  showSalesPrice: boolean;
+  showInventory: boolean;
+  bundleItems: BundleSkuItem[];
+  onAddToBundle: (product: CatalogProduct) => void;
+  onOpenDetails: (product: CatalogProduct) => void;
+  onApplyForAccess: (sku: string) => void;
+  index: number;
+}) {
+  const preferred = family.variants.find((variant) => selectedCountry !== "全部" && variant.country === selectedCountry) || family.variants[0];
+  const [activeProductId, setActiveProductId] = React.useState(preferred?.id || "");
+  const activeProduct = family.variants.find((variant) => variant.id === activeProductId) || preferred;
+
+  React.useEffect(() => {
+    const next = family.variants.find((variant) => selectedCountry !== "全部" && variant.country === selectedCountry)
+      || family.variants.find((variant) => variant.id === activeProductId)
+      || family.variants[0];
+    if (next && next.id !== activeProductId) setActiveProductId(next.id);
+  }, [activeProductId, family.variants, selectedCountry]);
+
+  if (!activeProduct) return null;
+  const priceRows = catalogProductPriceRows(activeProduct, channel, showDistributionPrice, showDirectPrice, showSalesPrice);
+  const inBundle = bundleItems.some((item) => item.product.id === activeProduct.id);
+  const imageUrl = activeProduct.imageUrl || family.variants.find((variant) => variant.imageUrl)?.imageUrl;
+
+  return (
+    <article
+      className={`product-card product-family-card ${viewMode === "grid" && gridColumns > 4 ? "dense-card" : ""}`}
+      style={{ "--family-delay": `${Math.min(index, 12) * 0.04}s` } as React.CSSProperties}
+    >
+      {imageUrl ? (
+        <div className="product-photo product-family-photo">
+          <img src={imageUrl} alt={activeProduct.name} loading="lazy" decoding="async" />
+          <span>{family.variants.length} 个国家/地区</span>
+        </div>
+      ) : (
+        <div className={`product-visual ${activeProduct.visualTone}`} aria-label={`${activeProduct.name} 产品视觉`}>
+          <span>{activeProduct.category}</span>
+          <strong>{activeProduct.name.slice(0, 2)}</strong>
+          <em>{family.variants.length} 个国家/地区</em>
+        </div>
+      )}
+      <div className="product-body">
+        <div className="product-title-row">
+          <div>
+            <CopyableSku sku={activeProduct.sku || activeProduct.skuNo} />
+            <h3>{activeProduct.name}</h3>
+            <small>{activeProduct.brand || "未配置品牌"} · {activeProduct.category || "未配置分类"} · {activeProduct.unit || "件"}</small>
+          </div>
+          <button
+            className={`bundle-add-button ${inBundle ? "active" : ""}`}
+            type="button"
+            title="将当前国家商品加入组合 SKU 计算器"
+            aria-label={`加入组合 SKU 计算器：${activeProduct.name}，${activeProduct.country}`}
+            onClick={() => onAddToBundle(activeProduct)}
+          >
+            <Plus size={18} />
+          </button>
+        </div>
+
+        <div className="product-country-tabs" role="tablist" aria-label={`${activeProduct.name} 国家版本`}>
+          {family.variants.map((variant) => (
+            <button
+              key={variant.id}
+              type="button"
+              role="tab"
+              aria-selected={variant.id === activeProduct.id}
+              className={variant.id === activeProduct.id ? "active" : ""}
+              onClick={() => setActiveProductId(variant.id)}
+              title={`${variant.country} · ${variant.countrySku || variant.skuNo || variant.sku}`}
+            >
+              <span className={`flag-icon flag-${flagCodeForCountry(variant.country)}`} role="img" aria-label={`${variant.country}国旗`} />
+              <span>{variant.country}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="product-facts product-family-facts">
+          <span><Globe2 size={15} />{activeProduct.country}</span>
+          {showInventory ? <StockFact product={activeProduct} /> : null}
+          <span><ShoppingBag size={15} />{activeProduct.channel}</span>
+        </div>
+
+        <div className="product-family-price-area">
+          {priceRows.length ? (
+            <div className="product-price-matrix" aria-label={`${activeProduct.country} 价格`}>
+              {priceRows.map((row) => (
+                <div className={`product-price-cell ${row.key}`} key={row.key}>
+                  <small>{row.label}</small>
+                  <strong><span>{row.currency}</span>{formatMoney(row.price)}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="locked-price product-family-locked">
+              <small>价格与库存</small>
+              <strong>登录后可见</strong>
+              <button type="button" onClick={() => onApplyForAccess(activeProduct.sku)}>申请分销账号后查看</button>
+            </div>
+          )}
+          <button className="product-detail-button" type="button" onClick={() => onOpenDetails(activeProduct)}>
+            <ExternalLink size={16} />
+            <span>资料</span>
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function QualificationLibrary({
   products,
   qualificationPayload,
@@ -13136,7 +13417,8 @@ function ProductLibrary({
   const showSalesPrice = hasUserPermission(currentUser, "sales_price");
   const showPrices = showDistributionPrice || showDirectPrice || showSalesPrice;
   const showInventory = canViewInventory(currentUser);
-  const countries = React.useMemo(() => uniqueSorted(products.map((product) => product.country)), [products]);
+  const countries = React.useMemo(() => uniqueSorted(products.map((product) => product.country))
+    .sort((left, right) => catalogCountryRank(left) - catalogCountryRank(right) || left.localeCompare(right, "zh-CN")), [products]);
   const brands = React.useMemo(() => {
     const labels = new Map<string, string>();
     for (const product of products) {
@@ -13147,13 +13429,19 @@ function ProductLibrary({
     }
     return Array.from(labels.values()).sort((left, right) => left.localeCompare(right, "zh-CN"));
   }, [products]);
-  const filteredProducts = React.useMemo(() => products.filter((product) => {
-    const channelMatched = channel === "全部" || channel === "直营" || product.channel === channel;
-    const countryMatched = country === "全部" || product.country === country;
-    const brandMatched = brand === "全部" || String(product.brand || "").trim().toLocaleLowerCase() === brand.toLocaleLowerCase();
-    return channelMatched && countryMatched && brandMatched && includesFuzzy(product, keyword);
-  }), [brand, channel, country, keyword, products]);
-  const visibleProducts = filteredProducts.slice(0, visibleProductCount);
+  const productFamilies = React.useMemo(() => groupCatalogProductFamilies(products), [products]);
+  const filteredFamilies = React.useMemo(() => productFamilies.flatMap((family) => {
+    const eligibleVariants = family.variants.filter((product) => {
+      const channelMatched = channel === "全部" || channel === "直营" || product.channel === channel;
+      const brandMatched = brand === "全部" || String(product.brand || "").trim().toLocaleLowerCase() === brand.toLocaleLowerCase();
+      return channelMatched && brandMatched;
+    });
+    if (!eligibleVariants.length || !eligibleVariants.some((product) => includesFuzzy(product, keyword))) return [];
+    if (country !== "全部" && !eligibleVariants.some((product) => product.country === country)) return [];
+    return [{ ...family, variants: eligibleVariants }];
+  }), [brand, channel, country, keyword, productFamilies]);
+  const visibleFamilies = filteredFamilies.slice(0, visibleProductCount);
+  const visibleVariantCount = filteredFamilies.reduce((sum, family) => sum + family.variants.length, 0);
   const activeFilterCount = Number(country !== "全部") + Number(brand !== "全部") + Number(keyword.trim().length > 0);
   React.useEffect(() => {
     if (!internal) setChannel("分销");
@@ -13250,7 +13538,7 @@ function ProductLibrary({
           筛选
           {activeFilterCount ? <small>{activeFilterCount}</small> : null}
         </span>
-        <strong>{formatNumber(filteredProducts.length)} 个产品</strong>
+        <strong>{formatNumber(filteredFamilies.length)} 个 SKU</strong>
         <ChevronDown size={16} />
       </button>
 
@@ -13282,8 +13570,8 @@ function ProductLibrary({
           </select>
         </div>
         <div className="filter-result">
-          <strong>{formatNumber(filteredProducts.length)}</strong>
-          <span>个产品</span>
+          <strong>{formatNumber(filteredFamilies.length)}</strong>
+          <span>个 SKU · {formatNumber(visibleVariantCount)} 个国家版本</span>
         </div>
         <div className="mobile-filter-actions">
           <button className="ghost-button compact-button" type="button" onClick={() => { setCountry("全部"); setBrand("全部"); setKeyword(""); setKeywordInput(""); }}>
@@ -13352,90 +13640,33 @@ function ProductLibrary({
         className={viewMode === "list" ? "catalog-list" : "catalog-grid"}
         style={viewMode === "grid" ? ({ "--catalog-columns": gridColumns } as React.CSSProperties) : undefined}
       >
-        {visibleProducts.map((product) => {
-          const price = priceFor(product, channel, internal);
-          const salesPrice = salesPriceFor(product);
-          const showProductCost = canShowCostPrice(product, channel, showDistributionPrice, showDirectPrice);
-          const showProductPrices = showProductCost || showSalesPrice;
-          return (
-            <article className={`product-card ${viewMode === "grid" && gridColumns > 4 ? "dense-card" : ""}`} key={product.id}>
-              {product.imageUrl ? (
-                <div className="product-photo">
-                  <img src={product.imageUrl} alt={product.name} loading="lazy" decoding="async" />
-                  <span>{product.imageSource === "wms" ? "仓库图片" : "产品图片"}</span>
-                </div>
-              ) : (
-                <div className={`product-visual ${product.visualTone}`} aria-label={`${product.name} 产品视觉`}>
-                  <span>{product.category}</span>
-                  <strong>{product.name.slice(0, 2)}</strong>
-                </div>
-              )}
-              <div className="product-body">
-                <div className="product-title-row">
-                  <div>
-                    <CopyableSku sku={product.sku} />
-                    <h3>{product.name}</h3>
-                  </div>
-                  <button
-                    className={`bundle-add-button ${bundleItems.some((item) => item.product.id === product.id) ? "active" : ""}`}
-                    type="button"
-                    title="加入组合 SKU 计算器"
-                    aria-label={`加入组合 SKU 计算器：${product.name}`}
-                    onClick={() => addToBundle(product)}
-                  >
-                    <Plus size={18} />
-                  </button>
-                </div>
-                <div className="product-facts">
-                  <span>
-                    <Globe2 size={15} />
-                    {product.country}
-                  </span>
-                  {showInventory ? <StockFact product={product} /> : null}
-                  <span>
-                    <ShoppingBag size={15} />
-                    {product.channel}
-                  </span>
-                </div>
-                <div className="price-row">
-                  {showProductPrices ? (
-                    <>
-                      {showProductCost ? <div>
-                        <small>{price.label}</small>
-                        <strong>
-                          {price.currency} {formatMoney(price.price)}
-                        </strong>
-                      </div> : null}
-                      {showSalesPrice ? <div className="sales-price">
-                        <small>{salesPrice.label}</small>
-                        <strong>
-                          {salesPrice.currency} {formatMoney(salesPrice.price)}
-                        </strong>
-                      </div> : null}
-                    </>
-                  ) : (
-                    <div className="locked-price">
-                      <small>价格与库存</small>
-                      <strong>登录后可见</strong>
-                      <button type="button" onClick={() => setPartnerApplicationSku(product.sku)}>申请分销账号后查看</button>
-                    </div>
-                  )}
-                  <button className="icon-button" type="button" aria-label="查看产品关联资料" onClick={() => {
-                    setDetailProduct(product);
-                    void onNeedDetails();
-                  }}>
-                    <ExternalLink size={17} />
-                  </button>
-                </div>
-              </div>
-            </article>
-          );
-        })}
+        {visibleFamilies.map((family, index) => (
+          <ProductFamilyCard
+            key={family.key}
+            family={family}
+            selectedCountry={country}
+            viewMode={viewMode}
+            gridColumns={gridColumns}
+            channel={channel}
+            showDistributionPrice={showDistributionPrice}
+            showDirectPrice={showDirectPrice}
+            showSalesPrice={showSalesPrice}
+            showInventory={showInventory}
+            bundleItems={bundleItems}
+            onAddToBundle={addToBundle}
+            onOpenDetails={(product) => {
+              setDetailProduct(product);
+              void onNeedDetails();
+            }}
+            onApplyForAccess={setPartnerApplicationSku}
+            index={index}
+          />
+        ))}
       </section>
       <section className="catalog-load-more" aria-live="polite">
-        <span>已显示 <strong>{formatNumber(visibleProducts.length)}</strong> / {formatNumber(filteredProducts.length)} 个产品</span>
-        {visibleProducts.length < filteredProducts.length ? (
-          <button className="ghost-button" type="button" onClick={() => setVisibleProductCount((count) => Math.min(filteredProducts.length, count + 24))}>
+        <span>已显示 <strong>{formatNumber(visibleFamilies.length)}</strong> / {formatNumber(filteredFamilies.length)} 个基础 SKU，共 {formatNumber(visibleVariantCount)} 个国家版本</span>
+        {visibleFamilies.length < filteredFamilies.length ? (
+          <button className="ghost-button" type="button" onClick={() => setVisibleProductCount((count) => Math.min(filteredFamilies.length, count + 24))}>
             再加载 24 个
           </button>
         ) : null}

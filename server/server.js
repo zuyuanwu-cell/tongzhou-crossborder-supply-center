@@ -70,7 +70,7 @@ import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalize
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
-import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
+import { buildDashboardMarketSnapshot, buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
 import { withTransientRetry } from "./transient-retry.js";
@@ -135,7 +135,7 @@ const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "f
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
 const performanceFxEndpoint = String(process.env.PERFORMANCE_FX_ENDPOINT || "").trim() || undefined;
-const performanceFxConfiguredCurrencies = String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean);
+const performanceFxConfiguredCurrencies = ["RUB", "IDR", "VND", "MYR", ...String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean)];
 const performanceMiaoshouAutoSyncEnabled = process.env.MIAOSHOU_PERFORMANCE_AUTO_SYNC !== "false";
 const performanceMiaoshouSyncIntervalMs = Math.max(5 * 60 * 1000, Number(process.env.MIAOSHOU_PERFORMANCE_SYNC_INTERVAL_MS || 15 * 60 * 1000));
 const performanceMiaoshouBackfillDays = Math.max(7, Math.min(365, Number(process.env.MIAOSHOU_PERFORMANCE_BACKFILL_DAYS || 90)));
@@ -4635,6 +4635,10 @@ function buildDashboardSummary(auth) {
       failedWarehouses: movementPayload?.syncState?.failedWarehouses || [],
       dataHealth,
     },
+    marketSnapshot: buildDashboardMarketSnapshot(
+      performanceAnalyticsStore.listExchangeRates(),
+      performanceExchangeRateSync.status(),
+    ),
     movementDiagnostics: canViewSync ? (movementPayload?.warehouseDiagnostics || []) : [],
     warehouses: scoped.connections.map((connection) => {
       const result = warehouseResults.find((item) => item.warehouseId === connection.id);
@@ -7003,8 +7007,12 @@ function registerBackgroundSyncTasks() {
     enabled: performanceFxAutoSyncEnabled,
     priority: 20,
     intervalMs: performanceFxSyncIntervalMs,
-    initialDelayMs: 24 * minute,
-    run: () => performanceExchangeRateSync.run({ reason: "scheduled" }),
+    initialDelayMs: minute / 2,
+    run: async () => {
+      const result = await performanceExchangeRateSync.run({ reason: "scheduled" });
+      if (!result.skipped) invalidateDerivedResponses();
+      return result;
+    },
   });
   console.log(`[sync-scheduler] registered ${syncScheduler.status().counts.tasks} staggered tasks; heartbeat ${Math.round(syncSchedulerHeartbeatMs / 1000)}s`);
 }
@@ -11390,6 +11398,7 @@ const server = http.createServer(async (req, res) => {
       }
       const sync = await performanceExchangeRateSync.run({ force: true, reason: `manual:${auth.user?.username || auth.user?.id || "admin"}` });
       clearPerformanceAnalyticsResponseCache();
+      invalidateDerivedResponses();
       void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "立即同步经营汇率", "performance_exchange_rate", sync.provider || "Frankfurter", {
         updatedCount: sync.lastUpdatedCount || 0,

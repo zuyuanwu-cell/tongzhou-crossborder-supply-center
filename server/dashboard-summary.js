@@ -7,6 +7,48 @@ function number(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export const DASHBOARD_MARKETS = Object.freeze([
+  { country: "俄罗斯", countryCode: "RU", city: "莫斯科", currency: "RUB", timeZone: "Europe/Moscow" },
+  { country: "印度尼西亚", countryCode: "ID", city: "雅加达", currency: "IDR", timeZone: "Asia/Jakarta" },
+  { country: "越南", countryCode: "VN", city: "胡志明市", currency: "VND", timeZone: "Asia/Ho_Chi_Minh" },
+  { country: "马来西亚", countryCode: "MY", city: "吉隆坡", currency: "MYR", timeZone: "Asia/Kuala_Lumpur" },
+]);
+
+export function buildDashboardMarketSnapshot(exchangeRates = [], syncStatus = {}) {
+  const latestRates = new Map();
+  for (const rate of Array.isArray(exchangeRates) ? exchangeRates : []) {
+    const currency = text(rate?.currency).toUpperCase();
+    const effectiveDate = text(rate?.effectiveDate).slice(0, 10);
+    const rateToCny = Number(rate?.rateToCny);
+    if (!currency || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || !Number.isFinite(rateToCny) || rateToCny <= 0) continue;
+    const current = latestRates.get(currency);
+    if (!current || effectiveDate > current.effectiveDate) {
+      latestRates.set(currency, {
+        currency,
+        effectiveDate,
+        rateToCny,
+        source: text(rate?.source),
+        updatedAt: text(rate?.updatedAt),
+      });
+    }
+  }
+
+  return {
+    baseCurrency: "CNY",
+    provider: text(syncStatus?.provider) || "Frankfurter",
+    providerUrl: text(syncStatus?.providerUrl),
+    lastSuccessAt: text(syncStatus?.lastSuccessAt),
+    lastRateDate: text(syncStatus?.lastRateDate),
+    items: DASHBOARD_MARKETS.map((market) => ({
+      ...market,
+      rateToCny: latestRates.get(market.currency)?.rateToCny ?? null,
+      effectiveDate: latestRates.get(market.currency)?.effectiveDate || "",
+      source: latestRates.get(market.currency)?.source || "",
+      updatedAt: latestRates.get(market.currency)?.updatedAt || "",
+    })),
+  };
+}
+
 export function summarizeOrderAmounts(orders = []) {
   const totals = new Map();
   let excludedLines = 0;

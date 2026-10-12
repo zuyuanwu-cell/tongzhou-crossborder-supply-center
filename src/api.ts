@@ -199,6 +199,24 @@ export type DashboardSummaryPayload = {
       syncingCount: number;
     };
   };
+  marketSnapshot?: {
+    baseCurrency: "CNY" | string;
+    provider: string;
+    providerUrl: string;
+    lastSuccessAt: string;
+    lastRateDate: string;
+    items: Array<{
+      country: string;
+      countryCode: string;
+      city: string;
+      currency: string;
+      timeZone: string;
+      rateToCny: number | null;
+      effectiveDate: string;
+      source: string;
+      updatedAt: string;
+    }>;
+  };
   movementDiagnostics?: MovementWarehouseDiagnostic[];
   warehouses: Array<{
     id: string;

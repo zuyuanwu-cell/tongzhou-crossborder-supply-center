@@ -43,6 +43,7 @@ const fetchImpl = async (url) => {
     json: async () => [
       { date: "2026-08-28", base: "CNY", quote: "IDR", rate: 2500 },
       { date: "2026-08-28", base: "CNY", quote: "MYR", rate: 0.625 },
+      { date: "2026-08-28", base: "CNY", quote: "RUB", rate: 12.5 },
       { date: "2026-08-28", base: "CNY", quote: "VND", rate: 4000 },
     ],
   };
@@ -63,6 +64,18 @@ assert.equal(storedRates.length, 3);
 assert.equal(new URL(capturedUrl).searchParams.get("from"), "2026-04-30");
 const secondRun = await service.run({ reason: "test" });
 assert.equal(secondRun.skipped, true, "a fresh successful sync should not call the provider again");
+
+const expandedService = createExchangeRateSyncService({
+  store: fakeStore,
+  fetchImpl,
+  configuredCurrencies: ["RUB"],
+  intervalMs: 24 * 60 * 60 * 1000,
+  now: () => fixedNow,
+});
+const expandedRun = await expandedService.run({ reason: "configured-currency-added" });
+assert.equal(expandedRun.skipped, false, "a newly configured market currency should sync without waiting for the old interval");
+assert.ok(expandedRun.currencies.includes("RUB"));
+assert.equal(storedRates.find((rate) => rate.currency === "RUB")?.rateToCny, 0.08);
 
 const previousRates = structuredClone(storedRates);
 const failingService = createExchangeRateSyncService({
