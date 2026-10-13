@@ -209,6 +209,31 @@ export const partnerOrderProjectionSchema = z.object({
   if (value.orderType === "production" && value.lines.some((line) => line.unitPrice !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["lines"], message: "生产加工单不得向工厂投影价格字段。" });
 });
 
+export const internalPartnerTaskSchema = z.object({
+  taskType: z.enum(["production_order", "purchase_order", "sampling_task"]),
+  documentNo: limitedText(120).min(1),
+  title: limitedText(240).min(1),
+  productName: limitedText(300).min(1),
+  productSpec: limitedText(1_000).optional().default(""),
+  description: limitedText(5_000).optional().default(""),
+  requirements: limitedText(5_000).optional().default(""),
+  priority: z.enum(["normal", "urgent"]).optional().default("normal"),
+  dueAt: isoDateTime.optional().default(""),
+  quantity: quantity,
+  unit: limitedText(20).optional().default("件"),
+  fulfillmentMode: z.enum(["labor_only", "turnkey"]).optional().default("turnkey"),
+  deliveryAddress: limitedText(500).optional().default(""),
+  lines: z.array(z.object({
+    sku: limitedText(100).min(1),
+    productName: limitedText(300).min(1),
+    specification: limitedText(1_000).optional().default(""),
+    imageUrl: httpsImageUrl.optional().or(z.literal("")),
+    plannedQuantity: quantity,
+    unit: limitedText(20).optional().default("件"),
+    lineType: z.enum(["finished_product", "raw_material", "packaging"]).optional(),
+  }).strict()).min(1).max(500),
+}).strict();
+
 export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
   z.object({
     reportType: z.literal("production_progress"),

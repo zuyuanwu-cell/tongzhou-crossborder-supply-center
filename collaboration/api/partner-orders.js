@@ -26,7 +26,7 @@ function orderResource(itemType) {
 function assertOrganizationType(organization, itemType) {
   const allowed = itemType === "production_order"
     ? new Set(["production_factory"])
-    : new Set(["material_supplier", "packaging_factory"]);
+    : new Set(["material_supplier", "packaging_factory", "production_factory"]);
   if (!allowed.has(organization.organization_type)) fail("目标组织类型与订单协同类型不匹配。", 409, "organization_type_mismatch");
 }
 

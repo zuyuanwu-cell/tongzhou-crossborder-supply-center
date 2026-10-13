@@ -36,7 +36,7 @@ const allowedByOrganizationType = Object.freeze({
   filing_service: ["filing.task.view", "filing.task.handle", "filing.artifact.submit", "attachment.upload"],
   sampling_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "attachment.upload"],
   packaging_factory: ["packaging.quote.view", "packaging.quote.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
-  production_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "production.order.view", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "production.artifact.submit", "attachment.upload"],
+  production_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "production.order.view", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "production.artifact.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
   material_supplier: ["procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
   internal: [],
 });
@@ -59,6 +59,7 @@ const organizationResources = Object.freeze({
   production_factory: [
     { ref: "sampling", name: "打样协同", permissionPrefixes: ["sampling."] },
     { ref: "production", name: "委外生产工单", permissionPrefixes: ["production."] },
+    { ref: "procurement", name: "物料采购单", permissionPrefixes: ["procurement."] },
   ],
   material_supplier: [{ ref: "procurement", name: "物料采购单", permissionPrefixes: ["procurement."] }],
 });
@@ -113,6 +114,14 @@ function resourceCatalogForType(organizationType) {
     resourceName: resource.name,
     capabilities: capabilitiesForResource(organizationType, resource.ref),
   }));
+}
+
+export function organizationAccessCatalog(organizationType) {
+  return {
+    capabilities: catalogForType(organizationType),
+    resources: resourceCatalogForType(organizationType),
+    defaultResourceRef: defaultResourceRef[organizationType] || "",
+  };
 }
 
 function validateGrantForOrganization(organization, grant) {

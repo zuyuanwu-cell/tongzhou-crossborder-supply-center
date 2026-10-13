@@ -114,6 +114,44 @@ export type CollaborationApproval = {
   status: string;
 };
 
+export type CollaborationPartnerTaskType = "production_order" | "purchase_order" | "sampling_task";
+
+export type CollaborationPartnerWorkItem = {
+  id: string;
+  organizationCode: string;
+  organizationName: string;
+  coreRefType: string;
+  coreRefId: string;
+  itemType: CollaborationPartnerTaskType;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  publicPayload: Record<string, string | number | boolean | undefined>;
+  dueAt: string;
+  version: number;
+  lastCoreSyncedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CollaborationPartnerTaskInput = {
+  taskType: CollaborationPartnerTaskType;
+  documentNo: string;
+  title: string;
+  productName: string;
+  productSpec?: string;
+  description?: string;
+  requirements?: string;
+  priority?: "normal" | "urgent";
+  dueAt?: string;
+  quantity: number;
+  unit?: string;
+  fulfillmentMode?: "labor_only" | "turnkey";
+  deliveryAddress?: string;
+  lines: Array<{ sku: string; productName: string; specification?: string; imageUrl?: string; plannedQuantity: number; unit?: string; lineType?: "finished_product" | "raw_material" | "packaging" }>;
+};
+
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -151,6 +189,17 @@ export function replaceCollaborationOrganizationAccessGrants(code: string, grant
   return request<{ ok: boolean; grants: CollaborationAccessGrant[]; capabilities: CollaborationCapability[]; resources?: CollaborationAccessGrantPayload["resources"] }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/access-grants`, {
     method: "PUT",
     body: JSON.stringify({ grants }),
+  });
+}
+
+export function fetchCollaborationOrganizationWorkItems(code: string) {
+  return request<{ ok: boolean; items: CollaborationPartnerWorkItem[]; counts: Record<string, number>; total: number }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items?limit=100`);
+}
+
+export function publishCollaborationPartnerTask(code: string, input: CollaborationPartnerTaskInput) {
+  return request<{ ok: boolean; eventId: string; coreRefId: string; status: string; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items`, {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

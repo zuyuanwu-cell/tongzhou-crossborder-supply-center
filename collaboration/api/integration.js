@@ -8,7 +8,7 @@ function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
 }
 
-const warehouseItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception"]);
+const internalItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception", "filing_task", "sampling_task", "packaging_quote", "production_order", "purchase_order"]);
 const workItemStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]);
 
 function internalWorkItem(row) {
@@ -161,13 +161,13 @@ export async function listInternalWorkItems(filters = {}) {
   const limit = Math.max(1, Math.min(100, Number(filters.limit || 50)));
   const offset = Math.max(0, Number(filters.offset || 0));
   const status = workItemStatuses.has(String(filters.status || "")) ? String(filters.status) : "";
-  const itemType = warehouseItemTypes.has(String(filters.itemType || "")) ? String(filters.itemType) : "";
+  const itemType = internalItemTypes.has(String(filters.itemType || "")) ? String(filters.itemType) : "";
   const organizationCode = String(filters.organizationCode || "").trim().slice(0, 64);
   const keyword = String(filters.keyword || "").trim().slice(0, 100);
   const warehouseRefs = Array.from(new Set(String(filters.warehouseRefs || "").split(",").map((value) => value.trim().slice(0, 120)).filter(Boolean))).slice(0, 500);
   const scopedSkus = Array.from(new Set(String(filters.skus || "").split(",").map((value) => value.replace(/\s+/g, "").toUpperCase().slice(0, 100)).filter(Boolean))).slice(0, 2_000);
   return withSystem(async (client) => {
-    const baseConditions = ["w.item_type LIKE 'warehouse_%'"];
+    const baseConditions = organizationCode ? [] : ["w.item_type LIKE 'warehouse_%'"];
     const baseParams = [];
     if (organizationCode) { baseParams.push(organizationCode); baseConditions.push(`o.code=$${baseParams.length}`); }
     if (itemType) { baseParams.push(itemType); baseConditions.push(`w.item_type=$${baseParams.length}`); }
@@ -183,7 +183,7 @@ export async function listInternalWorkItems(filters = {}) {
     }
     if (keyword) {
       baseParams.push(`%${keyword}%`);
-      baseConditions.push(`(w.title ILIKE $${baseParams.length} OR w.core_ref_id ILIKE $${baseParams.length} OR w.public_payload->>'referenceNo' ILIKE $${baseParams.length} OR o.name ILIKE $${baseParams.length})`);
+      baseConditions.push(`(w.title ILIKE $${baseParams.length} OR w.core_ref_id ILIKE $${baseParams.length} OR w.public_payload->>'referenceNo' ILIKE $${baseParams.length} OR w.public_payload->>'orderNo' ILIKE $${baseParams.length} OR w.public_payload->>'projectCode' ILIKE $${baseParams.length} OR o.name ILIKE $${baseParams.length})`);
     }
     const listConditions = [...baseConditions];
     const listParams = [...baseParams];

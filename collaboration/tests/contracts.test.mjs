@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema, partnerOrderReportSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { canPerformAction, requiresMfaAtLogin } from "../api/permissions.js";
+import { organizationAccessCatalog } from "../api/access.js";
 
 const validProjection = {
   eventId: "evt-1",
@@ -112,4 +113,16 @@ test("turnkey material tests require an explanation when testing fails", () => {
   assert.equal(partnerOrderReportSchema.safeParse(report).success, false);
   assert.equal(partnerOrderReportSchema.safeParse({ ...report, exceptionDescription: "瓶盖密封测试漏液" }).success, true);
   assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "filling", progressPercent: 101, completedQuantity: 10, expectedCompletionDate: "2026-10-20", note: "灌装中" }).success, false);
+});
+
+test("full-service production factories can be explicitly granted production, procurement and sampling", () => {
+  const catalog = organizationAccessCatalog("production_factory");
+  assert.deepEqual(catalog.resources.map((resource) => resource.resourceRef), ["sampling", "production", "procurement"]);
+  const procurement = catalog.resources.find((resource) => resource.resourceRef === "procurement");
+  assert.deepEqual(procurement.capabilities.map((capability) => capability.key), [
+    "procurement.order.view",
+    "procurement.fulfillment.update",
+    "procurement.exception.report",
+    "attachment.upload",
+  ]);
 });
