@@ -191,25 +191,23 @@ export async function listInternalWorkItems(filters = {}) {
     listParams.push(limit, offset);
     const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name
                       FROM work_items w JOIN organizations o ON o.id=w.organization_id`;
-    const [rows, countRows, totalRows] = await Promise.all([
-      client.query(
-        `${select} WHERE ${listConditions.join(" AND ")}
-         ORDER BY CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
-         LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
-        listParams,
-      ),
-      client.query(
-        `SELECT w.status,count(*)::int AS count
-           FROM work_items w JOIN organizations o ON o.id=w.organization_id
-          WHERE ${baseConditions.join(" AND ")} GROUP BY w.status`,
-        baseParams,
-      ),
-      client.query(
-        `SELECT count(*)::int AS count FROM work_items w JOIN organizations o ON o.id=w.organization_id
-          WHERE ${listConditions.join(" AND ")}`,
-        listParams.slice(0, -2),
-      ),
-    ]);
+    const rows = await client.query(
+      `${select} WHERE ${listConditions.join(" AND ")}
+       ORDER BY CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
+       LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+      listParams,
+    );
+    const countRows = await client.query(
+      `SELECT w.status,count(*)::int AS count
+         FROM work_items w JOIN organizations o ON o.id=w.organization_id
+        WHERE ${baseConditions.join(" AND ")} GROUP BY w.status`,
+      baseParams,
+    );
+    const totalRows = await client.query(
+      `SELECT count(*)::int AS count FROM work_items w JOIN organizations o ON o.id=w.organization_id
+        WHERE ${listConditions.join(" AND ")}`,
+      listParams.slice(0, -2),
+    );
     return {
       items: rows.rows.map(internalWorkItem),
       counts: Object.fromEntries(countRows.rows.map((row) => [row.status, Number(row.count)])),

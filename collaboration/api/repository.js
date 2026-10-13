@@ -411,19 +411,17 @@ export async function markNotificationRead(auth, notificationId) {
 
 export async function organizationDashboard(auth) {
   return withOrganization(auth.organization.id, async (client) => {
-    const [work, unread, stock, orders, exceptions] = await Promise.all([
-      client.query(`SELECT count(*) FILTER (WHERE status NOT IN ('completed','cancelled','rejected'))::int AS open,count(*) FILTER (WHERE priority='urgent' AND status NOT IN ('completed','cancelled','rejected'))::int AS urgent,count(*) FILTER (WHERE status IN ('pending_sync','pending_approval'))::int AS waiting FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]),
-      client.query(`SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND read_at IS NULL AND (work_item_id IS NULL OR EXISTS (SELECT 1 FROM work_items WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}))`, [auth.organization.id, auth.user.id]),
-      client.query("SELECT count(DISTINCT sku)::int AS sku_count,max(last_core_synced_at) AS synced_at FROM warehouse_inventory_projections WHERE organization_id=$1 AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id AND access_grant.resource_type='warehouse' AND access_grant.resource_ref=warehouse_inventory_projections.warehouse_ref AND access_grant.permissions ? 'warehouse.inventory.view')", [auth.organization.id]),
-      client.query(`SELECT
-          count(*) FILTER (WHERE item_type='production_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS production_orders,
-          count(*) FILTER (WHERE item_type='purchase_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS purchase_orders,
-          count(*) FILTER (WHERE due_at IS NOT NULL AND due_at<=now()+interval '7 days' AND status NOT IN ('completed','cancelled','rejected'))::int AS due_soon
-        FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]),
-      client.query(`SELECT count(*)::int AS count FROM partner_order_reports report
-        JOIN work_items ON work_items.id=report.work_item_id
-        WHERE report.organization_id=$1 AND report.report_type='exception' AND ${workItemAccessPredicate}`, [auth.organization.id]),
-    ]);
+    const work = await client.query(`SELECT count(*) FILTER (WHERE status NOT IN ('completed','cancelled','rejected'))::int AS open,count(*) FILTER (WHERE priority='urgent' AND status NOT IN ('completed','cancelled','rejected'))::int AS urgent,count(*) FILTER (WHERE status IN ('pending_sync','pending_approval'))::int AS waiting FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]);
+    const unread = await client.query(`SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND read_at IS NULL AND (work_item_id IS NULL OR EXISTS (SELECT 1 FROM work_items WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}))`, [auth.organization.id, auth.user.id]);
+    const stock = await client.query("SELECT count(DISTINCT sku)::int AS sku_count,max(last_core_synced_at) AS synced_at FROM warehouse_inventory_projections WHERE organization_id=$1 AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id AND access_grant.resource_type='warehouse' AND access_grant.resource_ref=warehouse_inventory_projections.warehouse_ref AND access_grant.permissions ? 'warehouse.inventory.view')", [auth.organization.id]);
+    const orders = await client.query(`SELECT
+        count(*) FILTER (WHERE item_type='production_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS production_orders,
+        count(*) FILTER (WHERE item_type='purchase_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS purchase_orders,
+        count(*) FILTER (WHERE due_at IS NOT NULL AND due_at<=now()+interval '7 days' AND status NOT IN ('completed','cancelled','rejected'))::int AS due_soon
+      FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]);
+    const exceptions = await client.query(`SELECT count(*)::int AS count FROM partner_order_reports report
+      JOIN work_items ON work_items.id=report.work_item_id
+      WHERE report.organization_id=$1 AND report.report_type='exception' AND ${workItemAccessPredicate}`, [auth.organization.id]);
     return {
       openTasks: work.rows[0].open, urgentTasks: work.rows[0].urgent, waitingTasks: work.rows[0].waiting,
       unreadNotifications: unread.rows[0].count, inventorySkuCount: stock.rows[0].sku_count,
