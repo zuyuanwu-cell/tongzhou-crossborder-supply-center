@@ -115,10 +115,46 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 201, { ok: true, ...result });
         return true;
       }
+      const organizationOutsourcingBindingMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/outsourcing-source$/);
+      if (organizationOutsourcingBindingMatch && req.method === "GET") {
+        const code = decodeURIComponent(organizationOutsourcingBindingMatch[1]);
+        sendJson(res, 200, await bridge.getOutsourcingSourceBinding(code, { refresh: url.searchParams.get("refresh") === "1" }));
+        return true;
+      }
+      if (organizationOutsourcingBindingMatch && req.method === "PUT") {
+        const code = decodeURIComponent(organizationOutsourcingBindingMatch[1]);
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.saveOutsourcingSourceBinding(code, input, { actorName });
+        appendActionLog(auth, "绑定千顷ERP委外加工工厂", "collaboration_organization", code, { factoryId: result.binding.factoryId, factoryName: result.binding.factoryName, synchronization: result.synchronization });
+        sendJson(res, 200, result);
+        return true;
+      }
+      const organizationOutsourcingSyncMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/outsourcing-source\/sync$/);
+      if (organizationOutsourcingSyncMatch && req.method === "POST") {
+        const code = decodeURIComponent(organizationOutsourcingSyncMatch[1]);
+        const synchronization = await bridge.synchronizeOutsourcingProjections({ organizationCode: code });
+        const delivery = await bridge.flushOutbox();
+        appendActionLog(auth, "同步千顷ERP委外加工单", "collaboration_organization", code, { synchronization, delivery });
+        sendJson(res, 200, { ok: true, synchronization, delivery });
+        return true;
+      }
       const organizationWorkItemsMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items$/);
       if (organizationWorkItemsMatch && req.method === "GET") {
         const code = decodeURIComponent(organizationWorkItemsMatch[1]);
         sendJson(res, 200, { ok: true, ...(await bridge.listOrganizationWorkItems(code, Object.fromEntries(url.searchParams.entries()))) });
+        return true;
+      }
+      const organizationWorkItemAttachmentMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})\/attachments\/([0-9a-fA-F-]{36})$/);
+      if (organizationWorkItemAttachmentMatch && req.method === "GET") {
+        const download = await bridge.downloadOrganizationWorkItemAttachment(decodeURIComponent(organizationWorkItemAttachmentMatch[1]), organizationWorkItemAttachmentMatch[2], organizationWorkItemAttachmentMatch[3]);
+        res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
+        res.end(download.buffer);
+        return true;
+      }
+      const organizationWorkItemMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})$/);
+      if (organizationWorkItemMatch && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationWorkItem(decodeURIComponent(organizationWorkItemMatch[1]), organizationWorkItemMatch[2])) });
         return true;
       }
       if (organizationWorkItemsMatch && req.method === "POST") {
@@ -201,6 +237,15 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         const input = await readBody(req);
         const result = await bridge.awardOemQuote(decodeURIComponent(awardMatch[1]), { ...input, reviewer: auth.user?.displayName || auth.user?.username || "供应链中台" });
         appendActionLog(auth, "审批并定标包装报价", "supplier_quote", decodeURIComponent(awardMatch[1]), { approvalReference: input.approvalReference || "" });
+        sendJson(res, 200, result);
+        return true;
+      }
+      const sampleReviewMatch = suffix.match(/^\/oem\/artifacts\/([0-9a-fA-F-]{36})\/review$/);
+      if (sampleReviewMatch && req.method === "POST") {
+        const input = await readBody(req);
+        const reviewer = auth.user?.displayName || auth.user?.username || "供应链中台";
+        const result = await bridge.reviewSampleArtifact(sampleReviewMatch[1], { ...input, reviewer });
+        appendActionLog(auth, input.approved ? "确认最终样" : "要求重新打样", "oem_artifact", sampleReviewMatch[1], { note: input.note || "", version: result.version });
         sendJson(res, 200, result);
         return true;
       }

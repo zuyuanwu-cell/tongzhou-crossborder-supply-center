@@ -25,6 +25,7 @@ import {
   ExternalLink,
   Factory,
   FileText,
+  FlaskConical,
   Grid2X2,
   Globe2,
   GitBranch,
@@ -52,6 +53,7 @@ import {
   Video,
   Truck,
   Upload,
+  Users,
   Warehouse as WarehouseIcon,
   X,
 } from "lucide-react";
@@ -250,6 +252,7 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
+import { PartnerCollaborationOverview, PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
 import { SystemBackupPage } from "./SystemBackupPage";
 import ReviewCenter from "./ReviewCenter";
 import QualificationCoveragePage from "./QualificationCoveragePage";
@@ -424,7 +427,12 @@ const navItems = [
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "国内仓进销存", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
-  { label: "伙伴协同", icon: Handshake, hash: "#partner-collaboration", section: "collaboration", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
+  { label: "协同总览", icon: Handshake, hash: "#partner-collaboration", section: "collaboration", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish", additionalPermissions: ["operations"] },
+  { label: "国内仓协同", icon: WarehouseIcon, hash: "#domestic-collaboration", section: "collaboration", childOf: "协同总览", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
+  { label: "委外加工协同", icon: Factory, hash: "#outsourcing-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
+  { label: "物料采购协同", icon: PackageCheck, hash: "#procurement-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
+  { label: "打样协同", icon: FlaskConical, hash: "#sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
+  { label: "伙伴与权限", icon: Users, hash: "#collaboration-accounts", section: "collaboration", childOf: "协同总览", permission: "operations" },
   { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_liability_settlement"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
@@ -445,7 +453,6 @@ const navItems = [
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
   { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
-  { label: "协同组织与账号", icon: ShieldCheck, hash: "#collaboration-accounts", section: "settings", permission: "operations" },
   { label: "操作日志", icon: List, hash: "#action-log", section: "settings", permission: "action_log" },
   { label: "系统备份", icon: ArchiveRestore, hash: "#system-backup", section: "settings", permission: "system_backup", adminOnly: true },
   { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "settings", permission: "api_access" },
@@ -468,7 +475,7 @@ viewHashMap["#orders"] = "经营总览";
 
 function getInitialView() {
   const routeHash = window.location.hash.split("?", 1)[0];
-  if (routeHash === "#after-sales" && new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("module") === "collaboration_tasks") return "伙伴协同";
+  if (routeHash === "#after-sales" && new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("module") === "collaboration_tasks") return "国内仓协同";
   return viewHashMap[routeHash] ?? "经营总览";
 }
 
@@ -2075,8 +2082,18 @@ function App() {
           <MiaoshouPage currentUser={currentUser} />
         ) : activeView === "Ozon 订单" ? (
           <OzonOrderCenter currentUser={currentUser} />
-        ) : activeView === "伙伴协同" ? (
+        ) : activeView === "协同总览" ? (
+          <PartnerCollaborationOverview />
+        ) : activeView === "国内仓协同" ? (
           <WarehouseCollaborationTasks currentUser={currentUser} />
+        ) : activeView === "委外加工协同" ? (
+          <PartnerCollaborationWorkspace taskType="production_order" />
+        ) : activeView === "物料采购协同" ? (
+          <PartnerCollaborationWorkspace taskType="purchase_order" />
+        ) : activeView === "打样协同" ? (
+          <PartnerCollaborationWorkspace taskType="sampling_task" />
+        ) : activeView === "伙伴与权限" ? (
+          <CollaborationIdentityAdmin />
         ) : activeView === "海外仓协同" ? (
           <WarehouseCollaborationCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (
@@ -2264,8 +2281,6 @@ function App() {
           <SystemBackupPage />
         ) : activeView === "用户管理" ? (
           <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} warehousePayload={warehousePayload} />
-        ) : activeView === "协同组织与账号" ? (
-          <CollaborationIdentityAdmin />
         ) : (
           <Dashboard
             currentUser={currentUser}

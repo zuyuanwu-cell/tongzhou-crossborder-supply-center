@@ -17,6 +17,7 @@ const permissionDefinitions = Object.freeze({
   "sampling.task.view": ["查看打样任务", "查看本组织打样协同任务"],
   "sampling.task.handle": ["处理打样任务", "接单并更新打样进度"],
   "sampling.artifact.submit": ["提交打样结果", "按版本回传样品结果"],
+  "sampling.quote.submit": ["提交定版报价", "仅对中台已确认的最终样版本提交报价"],
   "packaging.quote.view": ["查看询价", "查看本组织的私有询价"],
   "packaging.quote.submit": ["提交报价", "提交本组织报价，不能查看竞争方"],
   "production.order.view": ["查看生产工单", "查看批准版本的委外生产工单"],
@@ -34,10 +35,10 @@ const permissionDefinitions = Object.freeze({
 const allowedByOrganizationType = Object.freeze({
   warehouse: Object.keys(permissionDefinitions).filter((key) => key.startsWith("warehouse.") || key === "attachment.upload"),
   filing_service: ["filing.task.view", "filing.task.handle", "filing.artifact.submit", "attachment.upload"],
-  sampling_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "attachment.upload"],
-  packaging_factory: ["packaging.quote.view", "packaging.quote.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
-  production_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "production.order.view", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "production.artifact.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
-  material_supplier: ["procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
+  sampling_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "sampling.quote.submit", "attachment.upload"],
+  packaging_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "sampling.quote.submit", "packaging.quote.view", "packaging.quote.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
+  production_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "sampling.quote.submit", "production.order.view", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "production.artifact.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
+  material_supplier: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "sampling.quote.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
   internal: [],
 });
 
@@ -53,6 +54,7 @@ const organizationResources = Object.freeze({
   filing_service: [{ ref: "filing", name: "备案协同", permissionPrefixes: ["filing."] }],
   sampling_factory: [{ ref: "sampling", name: "打样协同", permissionPrefixes: ["sampling."] }],
   packaging_factory: [
+    { ref: "sampling", name: "包材打样", permissionPrefixes: ["sampling."] },
     { ref: "packaging_quote", name: "包装询报价", permissionPrefixes: ["packaging."] },
     { ref: "procurement", name: "包材采购单", permissionPrefixes: ["procurement."] },
   ],
@@ -61,7 +63,10 @@ const organizationResources = Object.freeze({
     { ref: "production", name: "委外生产工单", permissionPrefixes: ["production."] },
     { ref: "procurement", name: "物料采购单", permissionPrefixes: ["procurement."] },
   ],
-  material_supplier: [{ ref: "procurement", name: "物料采购单", permissionPrefixes: ["procurement."] }],
+  material_supplier: [
+    { ref: "sampling", name: "内料打样", permissionPrefixes: ["sampling."] },
+    { ref: "procurement", name: "物料采购单", permissionPrefixes: ["procurement."] },
+  ],
 });
 
 const grantSchema = z.object({

@@ -11,7 +11,8 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   process.env.COLLABORATION_INTEGRATION_DATABASE_URL = integrationDatabaseUrl;
   process.env.COLLABORATION_SECRET_KEY = "test-secret-key-at-least-thirty-two-characters";
   process.env.COLLABORATION_INTERNAL_TOKEN = "test-internal-token-at-least-thirty-two-characters";
-  const [{ migrate }, { integrationPool, portalPool, closePools }, identity, authApi, integrationApi, repository] = await Promise.all([import("../api/migrate.js"), import("../api/db.js"), import("../api/identity.js"), import("../api/auth.js"), import("../api/integration.js"), import("../api/repository.js")]);
+  process.env.COLLABORATION_OEM_ENABLED = "true";
+  const [{ migrate }, { integrationPool, portalPool, closePools }, identity, authApi, integrationApi, repository, partnerOrders] = await Promise.all([import("../api/migrate.js"), import("../api/db.js"), import("../api/identity.js"), import("../api/auth.js"), import("../api/integration.js"), import("../api/repository.js"), import("../api/partner-orders.js")]);
   t.after(closePools);
   await migrate();
   const unique = Date.now().toString(36);
@@ -109,6 +110,88 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   });
   assert.equal(clearedInventory.deletedItemCount, 1);
   assert.deepEqual((await repository.listInventory(signedInAgain.auth)).items, []);
+
+  const factoryPassword = `Factory${unique}7`;
+  const factory = await identity.bootstrapOrganization({
+    name: `委外工厂 ${unique}`,
+    organizationType: "production_factory",
+    notificationEmail: "",
+    administrator: { username: `factory-${unique}`, displayName: "工厂负责人", email: "", password: factoryPassword },
+    actorName: "集成测试",
+  });
+  await integrationPool.query(
+    `INSERT INTO organization_access_grants(organization_id,resource_type,resource_ref,resource_name,permissions,created_by_name)
+     VALUES ($1,'organization','production','委外加工',$2::jsonb,'集成测试')`,
+    [factory.organization.id, JSON.stringify(["production.order.view", "production.order.accept", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "attachment.upload"])],
+  );
+  const projectedOrder = await partnerOrders.applyPartnerOrderProjection({
+    eventId: `partner-order-${unique}`,
+    organizationCode: factory.organization.code,
+    coreRefType: "jiandaoyun_outsourcing_order",
+    coreRefId: `JG-${unique}`,
+    orderType: "production",
+    itemType: "production_order",
+    title: `委外加工单 JG-${unique}`,
+    description: "端到端联动测试",
+    priority: "urgent",
+    status: "pending",
+    dueAt: "2026-10-30T08:00:00.000Z",
+    version: 1,
+    publicPayload: { orderNo: `JG-${unique}`, productName: "测试乳液", productSpec: "375ml 光银软管", barcode: "6970000000001", productionProcess: "灌装,打码,装盒", cartonType: "专用箱", piecesPerCarton: 48, factoryExpectedDeliveryDate: "2026-10-28", fulfillmentMode: "turnkey", requirements: "包材测试通过后生产", quantity: 12000, unit: "支", deliveryDate: "2026-10-30", currency: "CNY" },
+    lines: [
+      { lineRef: "finished", lineType: "finished_product", sku: `SKU-${unique}`, productName: "测试乳液", specification: "375ml 光银软管", plannedQuantity: 12000, unit: "支", responsibility: "factory" },
+      { lineRef: "carton", lineType: "packaging", sku: `PACK-${unique}`, productName: "运输外箱", specification: "48支/箱", plannedQuantity: 250, unit: "个", responsibility: "factory" },
+    ],
+    milestones: [{ milestoneType: "material_ready", title: "物料到齐", status: "pending", publicPayload: { note: "" } }],
+  });
+  const factoryLogin = await authApi.login(request, { username: `factory-${unique}`, password: factoryPassword });
+  const accepted = await repository.submitWorkItemAction(factoryLogin.auth, projectedOrder.workItemId, { action: "accept", note: "已接单" }, { idempotencyKey: `accept-${unique}`, expectedVersion: "1" });
+  assert.equal(accepted.item.status, "accepted");
+  const acceptCommand = (await integrationApi.listPendingCommands({ limit: 100 })).commands.find((command) => command.id === accepted.command.id);
+  assert.ok(acceptCommand);
+  await integrationApi.completeCommand(acceptCommand.id, { status: "applied", resultCode: "applied", message: "接单已同步", coreReference: `JG-${unique}` });
+  const acceptedDetail = await repository.getWorkItem(factoryLogin.auth, projectedOrder.workItemId);
+  await assert.rejects(() => repository.getWorkItem(signedInAgain.auth, projectedOrder.workItemId), (error) => error?.code === "not_found");
+  await assert.rejects(() => partnerOrders.submitPartnerOrderReport(factoryLogin.auth, projectedOrder.workItemId, { reportType: "production_progress", stage: "filling", progressPercent: 50, completedQuantity: 13000, expectedCompletionDate: "2026-10-28", note: "超量测试" }, { idempotencyKey: `progress-over-${unique}`, expectedVersion: String(acceptedDetail.item.version) }), (error) => error?.code === "quantity_exceeded");
+  const reportBody = { reportType: "production_progress", stage: "filling", progressPercent: 35, completedQuantity: 4200, expectedCompletionDate: "2026-10-28", note: "首批灌装与密封测试已完成" };
+  const report = await partnerOrders.submitPartnerOrderReport(factoryLogin.auth, projectedOrder.workItemId, reportBody, { idempotencyKey: `progress-${unique}`, expectedVersion: String(acceptedDetail.item.version) });
+  assert.equal(report.report.progressPercent, 35);
+  const replay = await partnerOrders.submitPartnerOrderReport(factoryLogin.auth, projectedOrder.workItemId, reportBody, { idempotencyKey: `progress-${unique}`, expectedVersion: String(acceptedDetail.item.version) });
+  assert.equal(replay.idempotentReplay, true);
+  const reportCommand = (await integrationApi.listPendingCommands({ limit: 100 })).commands.find((command) => command.id === report.commandId);
+  assert.equal(reportCommand.payload.note, "首批灌装与密封测试已完成");
+  await integrationApi.completeCommand(reportCommand.id, { status: "applied", resultCode: "applied", message: "工厂反馈已同步到千顷 ERP", coreReference: `JG-${unique}` });
+  const internalDetail = await integrationApi.getInternalWorkItem(projectedOrder.workItemId);
+  assert.equal(internalDetail.item.organizationCode, factory.organization.code);
+  assert.equal(internalDetail.partnerOrder.lines.length, 2);
+  assert.equal(internalDetail.partnerOrder.reports.length, 1);
+  assert.equal(internalDetail.partnerOrder.reports[0].submittedByName, "工厂负责人");
+  assert.equal(internalDetail.commands.find((command) => command.id === report.commandId).status, "applied");
+  const sourceMilestoneUpdate = await partnerOrders.applyPartnerOrderProjection({
+    eventId: `partner-order-update-${unique}`,
+    organizationCode: factory.organization.code,
+    coreRefType: "jiandaoyun_outsourcing_order",
+    coreRefId: `JG-${unique}`,
+    orderType: "production",
+    itemType: "production_order",
+    title: `委外加工单 JG-${unique}`,
+    description: "端到端联动测试",
+    priority: "urgent",
+    status: "in_progress",
+    dueAt: "2026-10-30T08:00:00.000Z",
+    version: internalDetail.item.version + 1,
+    publicPayload: { orderNo: `JG-${unique}`, productName: "测试乳液", productSpec: "375ml 光银软管", barcode: "6970000000001", productionProcess: "灌装,打码,装盒", cartonType: "专用箱", piecesPerCarton: 48, factoryExpectedDeliveryDate: "2026-10-28", fulfillmentMode: "turnkey", requirements: "包材测试通过后生产", quantity: 12000, unit: "支", deliveryDate: "2026-10-30", currency: "CNY" },
+    lines: [
+      { lineRef: "finished", lineType: "finished_product", sku: `SKU-${unique}`, productName: "测试乳液", specification: "375ml 光银软管", plannedQuantity: 12000, unit: "支", responsibility: "factory" },
+      { lineRef: "carton", lineType: "packaging", sku: `PACK-${unique}`, productName: "运输外箱", specification: "48支/箱", plannedQuantity: 250, unit: "个", responsibility: "factory" },
+    ],
+    milestones: [{ milestoneType: "material_ready", title: "物料到齐", status: "completed", publicPayload: { note: "已到齐" } }],
+  });
+  assert.equal(sourceMilestoneUpdate.ignoredStaleVersion, undefined);
+  const updatedInternalDetail = await integrationApi.getInternalWorkItem(projectedOrder.workItemId);
+  assert.equal(updatedInternalDetail.partnerOrder.milestones[0].status, "completed");
+  assert.ok(updatedInternalDetail.partnerOrder.milestones[0].completedAt);
+
   const orgs = await integrationPool.query("INSERT INTO organizations(code,name,organization_type) VALUES ('rls-a','A仓','warehouse'),('rls-b','B仓','warehouse') ON CONFLICT(code) DO UPDATE SET name=excluded.name RETURNING id,code");
   const a = orgs.rows.find((row) => row.code === "rls-a").id;
   const b = orgs.rows.find((row) => row.code === "rls-b").id;

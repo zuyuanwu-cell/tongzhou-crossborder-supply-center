@@ -1,8 +1,8 @@
 import React from "react";
 import {
-  AlertTriangle, ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Bell, Boxes, Building2, Camera, Check, CheckCircle2,
+  AlertTriangle, ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Bell, Boxes, Building2, CalendarDays, Camera, Check, CheckCircle2,
   BadgeDollarSign, ChevronRight, CircleDot, Clock3, ClipboardCheck, Factory, FileCheck2, FileText, FlaskConical, Inbox, LayoutDashboard,
-  LoaderCircle, LogOut, MapPin, Menu, PackageCheck, Plus, ReceiptText, RefreshCw, Ruler, Scale, ScanLine, Search, ShieldCheck, Stamp,
+  LoaderCircle, LockKeyhole, LogOut, MapPin, Menu, PackageCheck, Plus, ReceiptText, RefreshCw, Ruler, Scale, ScanLine, Search, ShieldCheck, Stamp,
   Trash2, Truck, Upload, UserPlus, UserRound, Users, Warehouse, X, XCircle, Copy, KeyRound, Mail,
 } from "lucide-react";
 import {
@@ -41,16 +41,20 @@ function organizationMode(session: Session) {
 function routeLabel(session: Session, route: Route) {
   if (route !== "tasks") return routeMeta[route].label;
   const mode = organizationMode(session);
-  return mode === "production" ? "生产协同" : mode === "procurement" ? "采购协同" : "协同任务";
+  return mode === "production" ? "加工与采购" : mode === "procurement" ? "采购协同" : "协同任务";
 }
 
 function formatDate(value: string, withTime = true) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", ...(withTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}) }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", ...(withTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}) }).format(date);
 }
 function fullDate(value: string) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 function useRoute() {
   const read = () => (Object.keys(routeMeta).includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview") as Route;
@@ -139,12 +143,116 @@ function TaskCard({ item, onOpen }: { item: WorkItem; onOpen(item: WorkItem): vo
   </button>;
 }
 
+type OverviewFocus = "all" | "normal" | "urgent" | "overdue" | "dueSoon" | "unscheduled" | `day:${string}`;
+const terminalWorkItemStatuses = new Set<WorkItemStatus>(["completed", "rejected", "cancelled"]);
+
+function workItemDeadline(item: WorkItem) {
+  const raw = item.dueAt || (typeof item.publicPayload.deliveryDate === "string" ? item.publicPayload.deliveryDate : "");
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function localDayKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function deadlineClass(item: WorkItem, now = new Date()) {
+  const deadline = workItemDeadline(item);
+  if (!deadline) return "unscheduled" as const;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dueDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+  const dayDifference = Math.round((dueDay.getTime() - today.getTime()) / 86400000);
+  if (dayDifference < 0) return "overdue" as const;
+  if (dayDifference <= 7) return "dueSoon" as const;
+  return "scheduled" as const;
+}
+
+function orderRiskLabel(item: WorkItem) {
+  const deadline = workItemDeadline(item);
+  const classification = deadlineClass(item);
+  if (classification === "overdue" && deadline) {
+    const today = new Date();
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const dueDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+    return `已逾期 ${Math.max(1, Math.ceil((start.getTime() - dueDay.getTime()) / 86400000))} 天`;
+  }
+  if (classification === "dueSoon" && deadline) {
+    const today = new Date();
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const dueDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+    const days = Math.max(0, Math.round((dueDay.getTime() - start.getTime()) / 86400000));
+    return days === 0 ? "今天到期" : `${days} 天后到期`;
+  }
+  return classification === "unscheduled" ? "未设置交期" : `交期 ${formatDate(deadline?.toISOString() || "", false)}`;
+}
+
+function PriorityControlBoard({ tasks, focus, entityLabel, onFocus }: { tasks: WorkItem[]; focus: OverviewFocus; entityLabel: string; onFocus(focus: OverviewFocus): void }) {
+  const overdue = tasks.filter((item) => deadlineClass(item) === "overdue");
+  const urgent = tasks.filter((item) => item.priority === "urgent" && deadlineClass(item) !== "overdue");
+  const standard = Math.max(0, tasks.length - overdue.length - urgent.length);
+  const total = Math.max(1, tasks.length);
+  const overdueEnd = overdue.length / total * 100;
+  const urgentEnd = overdueEnd + urgent.length / total * 100;
+  const ringStyle = { background: `conic-gradient(#c23c2a 0 ${overdueEnd}%, #f45b0b ${overdueEnd}% ${urgentEnd}%, #2451a4 ${urgentEnd}% 100%)` };
+  const rows: Array<{ key: OverviewFocus; label: string; count: number; tone: string }> = [
+    { key: "overdue", label: "已经逾期", count: overdue.length, tone: "danger" },
+    { key: "urgent", label: "紧急优先", count: urgent.length, tone: "signal" },
+    { key: "normal", label: "常规进行", count: standard, tone: "ink" },
+  ];
+  return <section className="priority-board control-panel">
+    <header><div><p className="kicker">ORDER PRIORITY</p><h2>订单优先级</h2></div><span>{tasks.length} 个进行中{entityLabel}</span></header>
+    <div className="priority-visual">
+      <button className={`priority-ring ${focus === "all" ? "selected" : ""}`} style={ringStyle} onClick={() => onFocus("all")} aria-label={`查看全部 ${tasks.length} 个${entityLabel}`}><span><strong>{tasks.length}</strong><small>进行中</small></span></button>
+      <div className="priority-legend">{rows.map((row) => <button key={row.key} className={focus === row.key ? "selected" : ""} onClick={() => onFocus(row.key)}><i className={row.tone} /><span>{row.label}</span><strong>{row.count}</strong><ChevronRight size={15} /></button>)}</div>
+    </div>
+  </section>;
+}
+
+function DeliveryControlBoard({ tasks, focus, entityLabel, onFocus, onOpenTask }: { tasks: WorkItem[]; focus: OverviewFocus; entityLabel: string; onFocus(focus: OverviewFocus): void; onOpenTask(item: WorkItem): void }) {
+  const today = React.useMemo(() => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()); }, []);
+  const buckets = React.useMemo(() => Array.from({ length: 14 }, (_, index) => {
+    const date = new Date(today); date.setDate(today.getDate() + index);
+    const key = localDayKey(date);
+    const items = tasks.filter((item) => { const deadline = workItemDeadline(item); return deadline ? localDayKey(deadline) === key : false; });
+    return { date, key, items, urgent: items.filter((item) => item.priority === "urgent").length };
+  }), [tasks, today]);
+  const overdue = tasks.filter((item) => deadlineClass(item) === "overdue");
+  const dueSoon = tasks.filter((item) => deadlineClass(item) === "dueSoon");
+  const unscheduled = tasks.filter((item) => deadlineClass(item) === "unscheduled");
+  const maxCount = Math.max(1, ...buckets.map((bucket) => bucket.items.length));
+  const selectedTasks = focus.startsWith("day:") ? buckets.find((bucket) => `day:${bucket.key}` === focus)?.items || [] : focus === "overdue" ? overdue : focus === "dueSoon" ? dueSoon : focus === "unscheduled" ? unscheduled : focus === "normal" ? tasks.filter((item) => item.priority === "normal" && deadlineClass(item) !== "overdue") : tasks.filter((item) => item.priority === "urgent");
+  const riskItems = [...selectedTasks].sort((a, b) => {
+    const rank = (entry: WorkItem) => deadlineClass(entry) === "overdue" ? 0 : deadlineClass(entry) === "dueSoon" ? 1 : entry.priority === "urgent" ? 2 : deadlineClass(entry) === "unscheduled" ? 4 : 3;
+    const rankDifference = rank(a) - rank(b);
+    if (rankDifference) return rankDifference;
+    return (workItemDeadline(a)?.getTime() || Number.MAX_SAFE_INTEGER) - (workItemDeadline(b)?.getTime() || Number.MAX_SAFE_INTEGER);
+  }).slice(0, 4);
+  return <section className="delivery-board control-panel">
+    <header><div><p className="kicker">14-DAY DELIVERY</p><h2>14 天交期时间轴</h2></div><span>点击日期查看对应{entityLabel}</span></header>
+    <div className="deadline-alerts">
+      <button className={`deadline-alert danger ${focus === "overdue" ? "selected" : ""}`} onClick={() => onFocus("overdue")}><AlertTriangle size={19} /><span><b>{overdue.length}</b><small>逾期{entityLabel}</small></span></button>
+      <button className={`deadline-alert warning ${focus === "dueSoon" ? "selected" : ""}`} onClick={() => onFocus("dueSoon")}><Clock3 size={19} /><span><b>{dueSoon.length}</b><small>7 天内到期</small></span></button>
+      <button className={`deadline-alert neutral ${focus === "unscheduled" ? "selected" : ""}`} onClick={() => onFocus("unscheduled")}><CalendarDays size={19} /><span><b>{unscheduled.length}</b><small>待补交期</small></span></button>
+    </div>
+    <div className="delivery-timeline" role="group" aria-label="未来十四天订单交期分布">{buckets.map((bucket, index) => <button key={bucket.key} className={focus === `day:${bucket.key}` ? "selected" : ""} onClick={() => onFocus(`day:${bucket.key}`)} title={`${bucket.key}：${bucket.items.length} 个${entityLabel}`}>
+      <span className="timeline-bar"><i style={{ height: `${Math.max(bucket.items.length ? 18 : 3, bucket.items.length / maxCount * 100)}%` }} />{bucket.urgent ? <em>{bucket.urgent}</em> : null}</span>
+      <b>{bucket.date.getDate()}</b><small>{index === 0 ? "今天" : new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(bucket.date)}</small>
+    </button>)}</div>
+    <div className="risk-order-list"><div className="risk-list-head"><b>{focus === "overdue" ? "逾期订单" : focus === "dueSoon" ? "即将到期" : focus === "unscheduled" ? "未设交期" : focus === "normal" ? "常规进行" : focus.startsWith("day:") ? "当日交期" : "优先关注"}</b><span>{selectedTasks.length} 个{entityLabel}</span></div>{riskItems.length ? riskItems.map((item) => <button key={item.id} onClick={() => onOpenTask(item)}><span className={`risk-marker ${deadlineClass(item)}`} /><span><b>{item.title}</b><small>{item.publicPayload.orderNo || item.publicPayload.referenceNo || item.publicPayload.projectCode || itemTypeMeta[item.itemType]?.label}</small></span><strong>{orderRiskLabel(item)}</strong><ChevronRight size={16} /></button>) : <div className="risk-empty"><CheckCircle2 size={18} />当前筛选没有风险订单</div>}</div>
+  </section>;
+}
+
 function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; onOpenTask(item: WorkItem): void; onNavigate(route: Route): void }) {
   const [dashboard, setDashboard] = React.useState<Dashboard | null>(null);
   const [tasks, setTasks] = React.useState<WorkItem[]>([]);
   const [stockupDetails, setStockupDetails] = React.useState<WorkItemDetail[]>([]);
+  const [focus, setFocus] = React.useState<OverviewFocus>("all");
   const mode = organizationMode(session);
-  React.useEffect(() => { Promise.all([fetchDashboard(), fetchWorkItems()]).then(async ([summary, work]) => { setDashboard(summary.dashboard); setTasks(mode === "warehouse" ? work.items : work.items.slice(0, 4)); if (mode === "warehouse") { const details = await Promise.all(work.items.filter((item) => item.itemType === "warehouse_stockup").slice(0, 12).map((item) => fetchWorkItem(item.id).catch(() => null))); setStockupDetails(details.filter(Boolean) as WorkItemDetail[]); } }); }, [mode]);
+  React.useEffect(() => { Promise.all([fetchDashboard(), fetchWorkItems({ limit: 100 })]).then(async ([summary, work]) => { setDashboard(summary.dashboard); setTasks(work.items); if (mode === "warehouse") { const details = await Promise.all(work.items.filter((item) => item.itemType === "warehouse_stockup").slice(0, 12).map((item) => fetchWorkItem(item.id).catch(() => null))); setStockupDetails(details.filter(Boolean) as WorkItemDetail[]); } }); }, [mode]);
   const stockupTasks = tasks.filter((item) => item.itemType === "warehouse_stockup");
   const waitingProducts = stockupDetails.filter((detail) => ["pending", "accepted", "in_progress"].includes(detail.item.status)).flatMap((detail) => detail.lines.map((line) => ({ item: detail.item, line })));
   const funnel = [
@@ -158,10 +266,26 @@ function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; o
   const routeTotal = Object.values(routeTotals).reduce((sum, value) => sum + value, 0);
   const submittedExpenses = stockupDetails.flatMap((detail) => detail.commands.flatMap((command) => Array.isArray(command.payload?.expenses) ? command.payload.expenses as Array<{ category?: string; amountCny?: number }> : []));
   const expenseTotals = submittedExpenses.reduce((totals, expense) => ({ ...totals, [expense.category || "其他"]: Number(totals[expense.category || "其他"] || 0) + Number(expense.amountCny || 0) }), {} as Record<string, number>);
+  const entityLabel = mode === "warehouse" ? "任务" : "订单";
+  const activeTasks = tasks.filter((item) => !terminalWorkItemStatuses.has(item.status));
+  const dueSoonCount = activeTasks.filter((item) => deadlineClass(item) === "dueSoon").length;
+  const focusedTasks = activeTasks.filter((item) => {
+    if (focus === "all") return true;
+    if (focus === "normal") return item.priority === "normal" && deadlineClass(item) !== "overdue";
+    if (focus === "urgent") return item.priority === "urgent" && deadlineClass(item) !== "overdue";
+    if (focus === "overdue" || focus === "dueSoon" || focus === "unscheduled") return deadlineClass(item) === focus;
+    if (focus.startsWith("day:")) { const deadline = workItemDeadline(item); return deadline ? localDayKey(deadline) === focus.slice(4) : false; }
+    return true;
+  }).sort((a, b) => {
+    const priorityDifference = (a.priority === "urgent" ? 0 : 1) - (b.priority === "urgent" ? 0 : 1);
+    if (priorityDifference) return priorityDifference;
+    return (workItemDeadline(a)?.getTime() || Number.MAX_SAFE_INTEGER) - (workItemDeadline(b)?.getTime() || Number.MAX_SAFE_INTEGER);
+  });
   if (mode !== "warehouse") return <div className="page-stack">
-    <section className="work-brief"><div><p className="kicker">TODAY'S HANDOFF</p><h1>{mode === "production" ? "生产进度、包材测试和异常，" : "交期、备货和发运，"}<br />都要<strong>清楚、准确、有回音。</strong></h1></div><div className="sync-stamp"><RefreshCw size={18} /><span>订单状态<b>实时留痕</b></span></div></section>
-    <section className="metric-grid">{mode === "production" ? <><MetricCard label="在产加工单" value={dashboard?.productionOrders ?? "—"} note="仅本组织订单" icon={Factory} /><MetricCard label="临期订单" value={dashboard?.dueSoonTasks ?? "—"} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></> : <><MetricCard label="采购单" value={dashboard?.purchaseOrders ?? "—"} note="仅本组织订单" icon={PackageCheck} /><MetricCard label="临期交付" value={dashboard?.dueSoonTasks ?? "—"} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></>}</section>
-    <section className="section-block"><header><div><p className="kicker">ACTIVE QUEUE</p><h2>当前作业队列</h2></div><button className="text-action" onClick={() => onNavigate("tasks")}>查看全部 <ChevronRight size={16} /></button></header><div className="task-grid">{tasks.map((item) => <TaskCard key={item.id} item={item} onOpen={onOpenTask} />)}</div></section>
+    <section className="work-brief"><div><p className="kicker">TODAY'S HANDOFF</p><h1>{mode === "production" ? "加工、采购、打样与异常，" : "交期、备货和发运，"}<br />都要<strong>清楚、准确、有回音。</strong></h1></div><div className="sync-stamp"><RefreshCw size={18} /><span>订单状态<b>实时留痕</b></span></div></section>
+    <section className="metric-grid">{mode === "production" ? <><MetricCard label="在产加工单" value={dashboard?.productionOrders ?? "—"} note="仅本组织订单" icon={Factory} /><MetricCard label="物料采购单" value={dashboard?.purchaseOrders ?? "—"} note="兼任供应商订单" icon={PackageCheck} tone="green" /><MetricCard label="临期订单" value={dueSoonCount} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /></> : <><MetricCard label="采购单" value={dashboard?.purchaseOrders ?? "—"} note="仅本组织订单" icon={PackageCheck} /><MetricCard label="临期交付" value={dueSoonCount} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></>}</section>
+    <section className="overview-control-grid"><PriorityControlBoard tasks={activeTasks} focus={focus} entityLabel={entityLabel} onFocus={setFocus} /><DeliveryControlBoard tasks={activeTasks} focus={focus} entityLabel={entityLabel} onFocus={setFocus} onOpenTask={onOpenTask} /></section>
+    <section className="section-block"><header><div><p className="kicker">ACTIVE QUEUE</p><h2>{focus === "all" ? "当前作业队列" : "筛选后的优先队列"}</h2><span className="section-subtitle">{focusedTasks.length} 个{entityLabel}{focus !== "all" ? " · 点击上方“进行中”圆环恢复全部" : ""}</span></div><button className="text-action" onClick={() => onNavigate("tasks")}>查看全部 <ChevronRight size={16} /></button></header>{focusedTasks.length ? <div className="task-grid">{focusedTasks.slice(0, 6).map((entry) => <TaskCard key={entry.id} item={entry} onOpen={onOpenTask} />)}</div> : <div className="compact-empty"><CheckCircle2 size={22} /><span>当前筛选下没有待处理{entityLabel}</span></div>}</section>
     <section className="safety-banner"><div className="safety-symbol"><ShieldCheck size={28} /></div><div><b>你正处于“{session.organization.name || "本组织"}”数据边界</b><span>页面、搜索、附件和订单均只包含当前组织被授权的数据；所有操作会记录操作者与时间。</span></div></section>
   </div>;
   return <div className="page-stack">
@@ -266,6 +390,53 @@ function NotificationsPage({ onOpenTask }: { onOpenTask(id: string): void }) {
   return <div className="page-stack"><section className="page-title"><div><p className="kicker">INBOX</p><h1>消息中心</h1><span>站内消息是协同通知的权威记录。</span></div></section><section className="message-list">{items.map((item) => <button key={item.id} className={!item.readAt ? "unread" : ""} onClick={() => open(item)}><span className="message-dot" /><div><b>{item.title}</b><p>{item.body}</p><small>{fullDate(item.createdAt)}</small></div><ChevronRight size={18} /></button>)}</section></div>;
 }
 
+function processSteps(value = "") {
+  return [...new Set(value.split(/[,，、;；>→\n]+/).map((step) => step.trim()).filter(Boolean))].slice(0, 24);
+}
+
+function latestReport(reports: NonNullable<WorkItemDetail["partnerOrder"]>["reports"], type: string) {
+  return reports.filter((report) => report.reportType === type).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+}
+
+function ProductionProcessFlow({ value, reports }: { value?: string; reports: NonNullable<WorkItemDetail["partnerOrder"]>["reports"] }) {
+  const steps = processSteps(value);
+  const progress = latestReport(reports, "production_progress");
+  const exception = latestReport(reports, "exception");
+  const percent = Math.max(0, Math.min(100, Number(progress?.progressPercent || 0)));
+  const stageKeywords: Record<string, string[]> = { filling: ["灌装"], packaging: ["包装", "装盒", "装箱", "贴标", "打码"], quality_check: ["质检", "检验", "测试"], ready_to_ship: ["发货", "出库"] };
+  const stageIndex = steps.findIndex((step) => (stageKeywords[progress?.stage || ""] || []).some((keyword) => step.includes(keyword)));
+  const currentIndex = percent >= 100 ? steps.length : stageIndex >= 0 ? stageIndex : Math.min(steps.length - 1, Math.floor(percent / Math.max(1, 100 / steps.length)));
+  const blocked = Boolean(exception && (!progress || Date.parse(exception.createdAt) > Date.parse(progress.createdAt)) && percent < 100);
+  const [selected, setSelected] = React.useState(Math.max(0, currentIndex));
+  React.useEffect(() => setSelected(Math.max(0, currentIndex)), [value, currentIndex]);
+  if (!steps.length) return <section className="production-flow empty"><header><div><span>PRODUCTION ROUTE</span><h4>生产工序</h4></div></header><p>首件档案和加工单中暂未填写生产工序。</p></section>;
+  return <section className="production-flow">
+    <header><div><span>PRODUCTION ROUTE</span><h4>生产工序流程</h4></div><strong className={blocked ? "blocked" : ""}>{blocked ? "当前有异常" : percent ? `整体进度 ${percent}%` : "等待工厂更新"}</strong></header>
+    <ol>{steps.map((step, index) => { const state = percent >= 100 || index < currentIndex ? "completed" : index === currentIndex ? (blocked ? "blocked" : "current") : "pending"; return <li className={`${state} ${selected === index ? "selected" : ""}`} key={`${step}-${index}`}><button type="button" onClick={() => setSelected(index)} aria-label={`查看工序：${step}`}><span>{state === "completed" ? <Check size={14} /> : state === "blocked" ? <AlertTriangle size={14} /> : index + 1}</span><b>{step}</b><small>{state === "completed" ? "已完成" : state === "current" ? "当前工序" : state === "blocked" ? "异常待处理" : "待开始"}</small></button></li>; })}</ol>
+    <footer><div><span>当前查看</span><b>{steps[selected]}</b></div><p>{selected === currentIndex && progress?.note ? progress.note : selected === currentIndex && blocked ? (exception?.note || exception?.title || "存在待处理异常") : selected < currentIndex || percent >= 100 ? "该工序已按当前整体进度完成。" : "等待前序工序完成后开始。"}</p></footer>
+  </section>;
+}
+
+const firstArticleImageLabels: Record<string, string> = { packaging: "包装六面", inner_pack: "内托内包", coding: "打码位置", finished: "成品效果", carton: "外箱装箱" };
+const firstArticleMatchLabels: Record<string, string> = { barcode: "条码精确关联", sku: "SKU 精确关联", product_name: "产品名精确关联" };
+
+function FirstArticlePanel({ record }: { record: NonNullable<WorkItem["publicPayload"]["firstArticle"]> | undefined }) {
+  const [category, setCategory] = React.useState("all");
+  const [selectedImage, setSelectedImage] = React.useState<NonNullable<typeof record>["images"][number] | null>(null);
+  const [showBom, setShowBom] = React.useState(false);
+  if (!record) return <section className="first-article-panel empty"><header><div><span>FIRST ARTICLE</span><h4>首件档案</h4></div><em>未关联</em></header><p>当前产品未找到可精确匹配的首件记录，不会自动展示其他产品资料。</p></section>;
+  const categories = [...new Set(record.images.map((image) => image.category))];
+  const images = category === "all" ? record.images : record.images.filter((image) => image.category === category);
+  return <section className="first-article-panel">
+    <header><div><span>FIRST ARTICLE</span><h4>首件档案 · {record.version || "当前版"}</h4></div><em>{firstArticleMatchLabels[record.matchedBy]}</em></header>
+    <div className="first-article-summary"><div><span>档案号</span><b>{record.documentNo || "—"}</b></div><div><span>产品 / SKU</span><b>{record.productName || "—"}</b><small>{record.productSku || "未填写 SKU"}</small></div><div><span>规格 / 条码</span><b>{record.specification || "—"}</b><small>{record.barcode || "未填写条码"}</small></div><div><span>备案 / BPOM</span><b>{record.filingName || "—"}</b><small>{record.bpom || "未填写 BPOM"}</small></div></div>
+    {record.cartonSpecification ? <p className="first-article-carton"><Boxes size={15} /><span><b>装箱规格</b>{record.cartonSpecification}</span></p> : null}
+    {record.images.length ? <><nav className="first-article-tabs"><button type="button" className={category === "all" ? "active" : ""} onClick={() => setCategory("all")}>全部 {record.images.length}</button>{categories.map((key) => <button type="button" className={category === key ? "active" : ""} key={key} onClick={() => setCategory(key)}>{firstArticleImageLabels[key] || key} {record.images.filter((image) => image.category === key).length}</button>)}</nav><div className="first-article-gallery">{images.map((image, index) => <button type="button" key={`${image.url}-${index}`} onClick={() => setSelectedImage(image)}><img src={image.url} alt={`${image.label}：${image.name}`} loading="lazy" /><span>{image.label}</span></button>)}</div></> : <div className="first-article-no-images"><Camera size={18} />首件记录中暂无图片</div>}
+    {record.bom.length ? <div className="first-article-bom"><button type="button" onClick={() => setShowBom((current) => !current)}><Boxes size={16} /><span>首件 BOM 明细</span><b>{record.bom.length} 项</b><ChevronRight className={showBom ? "open" : ""} size={16} /></button>{showBom ? <div className="first-article-bom-table"><div className="head"><span>分类</span><span>物料</span><span>料体编号</span><span>组成 / 净含量</span></div>{record.bom.map((line, index) => <div key={`${line.materialCode}-${index}`}><span>{line.category || "—"}</span><b>{line.name || "—"}</b><code>{line.materialCode || "—"}</code><span>{[line.composition, line.netContent, line.unit].filter(Boolean).join(" · ") || "—"}</span></div>)}</div> : null}</div> : null}
+    {selectedImage ? <div className="first-article-lightbox" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedImage(null); }}><button type="button" onClick={() => setSelectedImage(null)} aria-label="关闭图片"><X size={20} /></button><img src={selectedImage.url} alt={selectedImage.name} /><p>{selectedImage.label} · {selectedImage.name}</p></div> : null}
+  </section>;
+}
+
 function PartnerOrderWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files, clearFiles }: {
   detail: WorkItemDetail; busy: boolean; setBusy(value: boolean): void; reload(): Promise<void>; onChanged(): void;
   notify(message: string, tone: "success" | "error"): void; files: FileList | null; clearFiles(): void;
@@ -309,6 +480,9 @@ function PartnerOrderWorkspace({ detail, busy, setBusy, reload, onChanged, notif
 
   return <section className="drawer-section partner-order-panel">
     <header><div><h3>{production ? "加工单协同台" : "采购单履约台"}</h3><span>{production ? (turnkey ? "全包模式 · 生产、物料与包材测试均需反馈" : "来料加工 · 按节点反馈生产进度") : "订单确认、备货、发货与异常全程留痕"}</span></div><ShieldCheck size={18} /></header>
+    {production ? <ProductionProcessFlow value={item.publicPayload.productionProcess || item.publicPayload.firstArticle?.productionProcess} reports={order?.reports || []} /> : null}
+    {production && (item.publicPayload.cartonType || item.publicPayload.barcode) ? <div className="partner-source-facts"><div><span>外箱与箱规</span><b>{[item.publicPayload.cartonType, item.publicPayload.piecesPerCarton ? `${item.publicPayload.piecesPerCarton} ${item.publicPayload.unit || "件"}/箱` : ""].filter(Boolean).join(" · ") || "未填写"}</b></div><div><span>商品条码</span><b>{item.publicPayload.barcode || "未填写"}</b></div></div> : null}
+    {production ? <FirstArticlePanel record={item.publicPayload.firstArticle} /> : null}
     <div className="order-line-list">{(order?.lines || []).map((line) => <article key={line.id}><ProductImage src={line.imageUrl} name={line.productName} /><div><span>{lineTypeLabel[line.lineType]}</span><b>{line.productName}</b><code>{line.sku}{line.specification ? ` · ${line.specification}` : ""}</code></div><strong>{line.plannedQuantity.toLocaleString()} <small>{line.unit}</small></strong></article>)}</div>
     <nav className="order-report-tabs">{tabs.map(({ key, label, icon: Icon }) => <button key={key} className={panel === key ? "active" : ""} onClick={() => setPanel(key as typeof panel)}><Icon size={16} />{label}</button>)}</nav>
 
@@ -318,7 +492,7 @@ function PartnerOrderWorkspace({ detail, busy, setBusy, reload, onChanged, notif
 
     {panel === "fulfillment" ? <div className="order-report-form"><div className="form-grid two"><label><span>履约阶段</span><select value={fulfillment.stage} onChange={(event) => setFulfillment({ ...fulfillment, stage: event.target.value })}><option value="confirmed">订单已确认</option><option value="preparing">备料生产中</option><option value="ready_to_ship">待发货</option><option value="shipped">已发货</option><option value="delivered">已交付</option></select></label><label><span>已完成数量</span><input type="number" min="0" value={fulfillment.completedQuantity} onChange={(event) => setFulfillment({ ...fulfillment, completedQuantity: event.target.value })} /></label><label><span>预计交付日期</span><input type="date" value={fulfillment.expectedDeliveryDate} onChange={(event) => setFulfillment({ ...fulfillment, expectedDeliveryDate: event.target.value })} /></label><label><span>进度说明</span><input value={fulfillment.note} onChange={(event) => setFulfillment({ ...fulfillment, note: event.target.value })} placeholder="填写备货、生产或交付情况" /></label></div><button className="primary-action inline-submit" disabled={busy || !actionable || !fulfillment.note} onClick={() => void submit({ reportType: "purchase_fulfillment", stage: fulfillment.stage as "confirmed", expectedDeliveryDate: fulfillment.expectedDeliveryDate, completedQuantity: Number(fulfillment.completedQuantity), note: fulfillment.note }, "采购履约进度已反馈")}>提交履约进度</button></div> : null}
 
-    {panel === "shipment" ? <div className="order-report-form"><div className="form-grid two"><label><span>本次发货数量</span><input type="number" min="0.0001" value={shipment.shippedQuantity} onChange={(event) => setShipment({ ...shipment, shippedQuantity: event.target.value })} /></label><label><span>发货日期</span><input type="date" value={shipment.shippedAt} onChange={(event) => setShipment({ ...shipment, shippedAt: event.target.value })} /></label><label><span>物流承运商</span><input value={shipment.carrier} onChange={(event) => setShipment({ ...shipment, carrier: event.target.value })} /></label><label><span>物流单号</span><input value={shipment.trackingNo} onChange={(event) => setShipment({ ...shipment, trackingNo: event.target.value })} /></label><label className="span-two"><span>发货说明</span><input value={shipment.note} onChange={(event) => setShipment({ ...shipment, note: event.target.value })} /></label></div><button className="primary-action inline-submit" disabled={busy || !actionable || !Number(shipment.shippedQuantity)} onClick={() => void submit({ reportType: "shipment", shippedQuantity: Number(shipment.shippedQuantity), shippedAt: shipment.shippedAt, carrier: shipment.carrier, trackingNo: shipment.trackingNo, note: shipment.note }, "发货信息已提交")}>提交发货信息</button></div> : null}
+    {panel === "shipment" ? <div className="order-report-form"><div className="form-grid two"><label><span>累计发货数量</span><input type="number" min="0.0001" max={item.publicPayload.quantity ? Number(item.publicPayload.quantity) : undefined} value={shipment.shippedQuantity} onChange={(event) => setShipment({ ...shipment, shippedQuantity: event.target.value })} /></label><label><span>最近发货日期</span><input type="date" value={shipment.shippedAt} onChange={(event) => setShipment({ ...shipment, shippedAt: event.target.value })} /></label><label><span>物流承运商</span><input value={shipment.carrier} onChange={(event) => setShipment({ ...shipment, carrier: event.target.value })} /></label><label><span>物流单号</span><input value={shipment.trackingNo} onChange={(event) => setShipment({ ...shipment, trackingNo: event.target.value })} /></label><label className="span-two"><span>发货说明</span><input value={shipment.note} onChange={(event) => setShipment({ ...shipment, note: event.target.value })} placeholder="多批发货时填写最新一批情况，数量填写累计值" /></label></div><button className="primary-action inline-submit" disabled={busy || !actionable || !Number(shipment.shippedQuantity) || Number(shipment.shippedQuantity) > Number(item.publicPayload.quantity || Infinity)} onClick={() => void submit({ reportType: "shipment", shippedQuantity: Number(shipment.shippedQuantity), shippedAt: shipment.shippedAt, carrier: shipment.carrier, trackingNo: shipment.trackingNo, note: shipment.note }, "发货信息已提交")}>提交发货信息</button></div> : null}
 
     {panel === "exception" ? <div className="order-report-form exception-form"><div className="form-grid two"><label><span>异常类型</span><select value={exception.category} onChange={(event) => setException({ ...exception, category: event.target.value })}><option value="material_shortage">物料短缺</option><option value="material_quality">物料质量</option><option value="packaging_test">包材测试</option><option value="production_delay">生产延期</option><option value="quality_issue">品质异常</option><option value="delivery_delay">交付延期</option><option value="other">其他</option></select></label><label><span>影响等级</span><select value={exception.severity} onChange={(event) => setException({ ...exception, severity: event.target.value })}><option value="notice">提示</option><option value="warning">警告</option><option value="critical">严重</option></select></label><label className="span-two"><span>异常标题</span><input value={exception.title} onChange={(event) => setException({ ...exception, title: event.target.value })} placeholder="一句话说明问题" /></label><label className="span-two"><span>异常详情</span><textarea rows={3} value={exception.description} onChange={(event) => setException({ ...exception, description: event.target.value })} placeholder="说明现象、已采取措施及需要中台协助的事项" /></label><label><span>影响数量</span><input type="number" min="0" value={exception.affectedQuantity} onChange={(event) => setException({ ...exception, affectedQuantity: event.target.value })} /></label><label><span>预计解决日期</span><input type="date" value={exception.expectedResolutionDate} onChange={(event) => setException({ ...exception, expectedResolutionDate: event.target.value })} /></label></div><button className="danger-action inline-submit" disabled={busy || !actionable || !exception.title || !exception.description} onClick={() => void submit({ reportType: "exception", category: exception.category as "other", severity: exception.severity as "warning", title: exception.title, description: exception.description, affectedQuantity: Number(exception.affectedQuantity), expectedResolutionDate: exception.expectedResolutionDate }, "异常已上报，中台将收到提醒")}>确认上报异常</button></div> : null}
 
@@ -332,7 +506,7 @@ function OemWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files 
 }) {
   const item = detail.item;
   const [quote, setQuote] = React.useState({ currency: item.publicPayload.quoteCurrency || "CNY", amount: "", minimumOrderQuantity: String(item.publicPayload.quantity || ""), leadTimeDays: "", terms: "" });
-  const [artifact, setArtifact] = React.useState({ title: "", summary: "", result: "pending" });
+  const [artifact, setArtifact] = React.useState({ title: "", summary: "", result: "pending", sampleQuantity: String(item.publicPayload.quantity || ""), unit: item.publicPayload.unit || "件", specificationVersion: "", supplierConclusion: "", nextPlan: "" });
   const isReady = !["pending", "pending_sync", "pending_approval", "completed", "rejected", "cancelled"].includes(item.status);
 
   async function complete(operation: () => Promise<unknown>, success: string) {
@@ -355,6 +529,22 @@ function OemWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files 
     <button className="primary-action inline-submit" disabled={busy || !isReady || !quote.amount || !quote.leadTimeDays} onClick={() => complete(() => submitSupplierQuote(item.id, item.version, { currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimumOrderQuantity || 0), leadTimeDays: Number(quote.leadTimeDays), terms: quote.terms }), "密封报价已提交，等待中台比价定标")}><BadgeDollarSign size={18} />确认并提交报价</button>
     <p className="sensitive-hint"><ShieldCheck size={14} />提交报价时，系统会校验组织权限、任务版本和数据边界。</p>
   </section>;
+
+  if (item.itemType === "sampling_task") {
+    const rounds = detail.oem?.artifacts || [];
+    const approved = rounds.find((entry) => entry.status === "approved");
+    const latestQuote = detail.oem?.quotes?.[0];
+    const categoryLabel = item.publicPayload.sampleCategory === "inner_material" ? "内料打样" : "包材打样";
+    const subjectLabel = ({ formula: "配方 / 内料", raw_material: "原料", packaging_box: "包装盒", packaging_bottle: "包装瓶" } as Record<string, string>)[item.publicPayload.sampleSubject || ""] || "样品";
+    return <section className="drawer-section oem-panel sampling-panel">
+      <header><div><h3>{categoryLabel}闭环</h3><span>{subjectLabel} · 多轮送样不覆盖历史，定版后才开放报价</span></div><FlaskConical size={18} /></header>
+      <div className="sampling-route">{[{ label: "接收需求", done: item.status !== "pending" }, { label: "送样评审", done: rounds.length > 0 }, { label: "最终定版", done: Boolean(approved) }, { label: "提交报价", done: Boolean(latestQuote) }, { label: "报价确认", done: latestQuote?.status === "awarded" }].map((step, index) => <React.Fragment key={step.label}><div className={step.done ? "done" : ""}><span>{step.done ? <Check size={12} /> : index + 1}</span><b>{step.label}</b></div>{index < 4 ? <i /> : null}</React.Fragment>)}</div>
+      <div className="sampling-brief"><div><span>本轮目标</span><b>{item.publicPayload.sampleGoal || "按发布要求完成可评审样品"}</b></div><div><span>评审标准</span><b>{item.publicPayload.evaluationCriteria || item.publicPayload.requirements || "以中台评审意见为准"}</b></div></div>
+      {rounds.length ? <div className="sampling-round-history">{rounds.map((entry) => <article className={entry.status} key={entry.id}><span>R{entry.version}</span><div><b>{entry.title}</b><small>{entry.publicPayload.specificationVersion || "未标注规格版本"} · {entry.publicPayload.sampleQuantity || 0} {entry.publicPayload.unit || item.publicPayload.unit || "件"}</small><p>{entry.publicPayload.summary || entry.publicPayload.supplierConclusion || "未填写摘要"}</p>{entry.publicPayload.reviewNote ? <em>{entry.publicPayload.reviewNote}</em> : null}</div><strong>{entry.status === "submitted" ? "中台评审中" : entry.status === "approved" ? "最终样" : "需修改"}</strong></article>)}</div> : <div className="empty-inline">尚未提交样品结果；请在首轮送样完成后登记。</div>}
+      {!approved ? <div className="sampling-round-form"><h4>提交第 {rounds.length + 1} 轮样品</h4><div className="oem-form-grid"><label className="span-two"><span>轮次标题</span><input value={artifact.title} onChange={(event) => setArtifact({ ...artifact, title: event.target.value })} placeholder={`例如：第 ${rounds.length + 1} 轮${subjectLabel}送样`} /></label><label><span>规格 / 配方版本</span><input value={artifact.specificationVersion} onChange={(event) => setArtifact({ ...artifact, specificationVersion: event.target.value })} placeholder="例如：Formula V3" /></label><label><span>供应商自检结论</span><select value={artifact.result} onChange={(event) => setArtifact({ ...artifact, result: event.target.value })}><option value="pending">待中台确认</option><option value="passed">自检通过</option><option value="revision_required">建议继续调整</option><option value="failed">本轮失败</option></select></label><label><span>送样数量</span><input type="number" min="0" step="0.0001" value={artifact.sampleQuantity} onChange={(event) => setArtifact({ ...artifact, sampleQuantity: event.target.value })} /></label><label><span>单位</span><input value={artifact.unit} maxLength={20} onChange={(event) => setArtifact({ ...artifact, unit: event.target.value })} /></label></div><textarea value={artifact.summary} onChange={(event) => setArtifact({ ...artifact, summary: event.target.value })} placeholder="样品表现、测试数据、与上一轮的差异" rows={3} /><div className="oem-form-grid"><label><span>供应商结论</span><input value={artifact.supplierConclusion} onChange={(event) => setArtifact({ ...artifact, supplierConclusion: event.target.value })} placeholder="本轮是否达到发布标准" /></label><label><span>后续计划</span><input value={artifact.nextPlan} onChange={(event) => setArtifact({ ...artifact, nextPlan: event.target.value })} placeholder="如需修改，说明预计下一轮时间" /></label></div><button className="primary-action inline-submit" disabled={busy || !isReady || !artifact.title || !artifact.summary} onClick={() => complete(() => submitOemArtifact(item.id, item.version, { artifactType: "sample_result", title: artifact.title, artifactVersion: rounds.length + 1, publicPayload: { summary: artifact.summary, result: artifact.result, sampleQuantity: Number(artifact.sampleQuantity || 0), unit: artifact.unit, specificationVersion: artifact.specificationVersion, supplierConclusion: artifact.supplierConclusion, nextPlan: artifact.nextPlan } }), `第 ${rounds.length + 1} 轮样品已提交，等待中台评审`)}><FileCheck2 size={18} />提交本轮样品结果</button></div> : null}
+      {approved ? <div className="sampling-quote-gate"><header><div><CheckCircle2 size={18} /><span><b>最终样 R{approved.version} 已锁定</b><small>后续报价将永久绑定此版本</small></span></div><em>QUOTE OPEN</em></header>{latestQuote ? <div className="submitted-record"><BadgeDollarSign size={18} /><div><b>{latestQuote.currency} {latestQuote.amount.toLocaleString()} · 报价 V{latestQuote.version}</b><span>绑定最终样 R{latestQuote.sampleVersion || approved.version} · 交期 {latestQuote.leadTimeDays} 天 · {latestQuote.status === "awarded" ? "中台已确认" : "等待中台确认"}</span></div></div> : <><div className="oem-form-grid"><label><span>币种</span><input value={quote.currency} maxLength={3} onChange={(event) => setQuote({ ...quote, currency: event.target.value.toUpperCase() })} /></label><label><span>报价金额</span><input type="number" min="0" step="0.01" value={quote.amount} onChange={(event) => setQuote({ ...quote, amount: event.target.value })} /></label><label><span>最小起订量</span><input type="number" min="0" value={quote.minimumOrderQuantity} onChange={(event) => setQuote({ ...quote, minimumOrderQuantity: event.target.value })} /></label><label><span>量产交期（天）</span><input type="number" min="0" value={quote.leadTimeDays} onChange={(event) => setQuote({ ...quote, leadTimeDays: event.target.value })} /></label></div><textarea value={quote.terms} onChange={(event) => setQuote({ ...quote, terms: event.target.value })} placeholder="单价/总价口径、税费、运费、付款条件、版费或模具费等" rows={3} /><button className="primary-action inline-submit" disabled={busy || !isReady || !quote.amount || !quote.leadTimeDays} onClick={() => complete(() => submitSupplierQuote(item.id, item.version, { currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimumOrderQuantity || 0), leadTimeDays: Number(quote.leadTimeDays), terms: quote.terms, sampleArtifactId: approved.id }), `已基于最终样 R${approved.version} 提交报价`)}><BadgeDollarSign size={18} />提交最终样报价</button></>}</div> : <div className="sampling-quote-locked"><LockKeyhole size={17} /><span>等待中台确认最终样后，系统自动开放报价入口。</span></div>}
+    </section>;
+  }
 
   const artifactType = item.itemType === "filing_task" ? "filing_document" : "sample_result";
   return <section className="drawer-section oem-panel">

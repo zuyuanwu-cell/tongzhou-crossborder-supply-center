@@ -12,7 +12,7 @@ const internalItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "w
 const workItemStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]);
 
 function internalWorkItem(row) {
-  return {
+  const item = {
     id: row.id,
     organizationCode: row.organization_code,
     organizationName: row.organization_name,
@@ -30,6 +30,16 @@ function internalWorkItem(row) {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
+  if (row.item_type === "sampling_task") {
+    item.sampling = {
+      roundCount: Number(row.sample_round_count || 0),
+      pendingReviewCount: Number(row.sample_pending_review_count || 0),
+      approvedVersion: row.sample_approved_version == null ? null : Number(row.sample_approved_version),
+      quoteCount: Number(row.sample_quote_count || 0),
+      awardedQuoteCount: Number(row.sample_awarded_quote_count || 0),
+    };
+  }
+  return item;
 }
 
 export function assertInternalRequest(req) {
@@ -189,27 +199,30 @@ export async function listInternalWorkItems(filters = {}) {
     const listParams = [...baseParams];
     if (status) { listParams.push(status); listConditions.push(`w.status=$${listParams.length}`); }
     listParams.push(limit, offset);
-    const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name
+    const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name,
+                            (SELECT count(*) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result')::int AS sample_round_count,
+                            (SELECT count(*) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result' AND a.status='submitted')::int AS sample_pending_review_count,
+                            (SELECT max(a.version) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result' AND a.status='approved') AS sample_approved_version,
+                            (SELECT count(*) FROM supplier_quotes q WHERE q.organization_id=w.organization_id AND q.work_item_id=w.id)::int AS sample_quote_count,
+                            (SELECT count(*) FROM supplier_quotes q WHERE q.organization_id=w.organization_id AND q.work_item_id=w.id AND q.status='awarded')::int AS sample_awarded_quote_count
                       FROM work_items w JOIN organizations o ON o.id=w.organization_id`;
-    const [rows, countRows, totalRows] = await Promise.all([
-      client.query(
-        `${select} WHERE ${listConditions.join(" AND ")}
-         ORDER BY CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
-         LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
-        listParams,
-      ),
-      client.query(
-        `SELECT w.status,count(*)::int AS count
-           FROM work_items w JOIN organizations o ON o.id=w.organization_id
-          WHERE ${baseConditions.join(" AND ")} GROUP BY w.status`,
-        baseParams,
-      ),
-      client.query(
-        `SELECT count(*)::int AS count FROM work_items w JOIN organizations o ON o.id=w.organization_id
-          WHERE ${listConditions.join(" AND ")}`,
-        listParams.slice(0, -2),
-      ),
-    ]);
+    const rows = await client.query(
+      `${select} WHERE ${listConditions.join(" AND ")}
+       ORDER BY CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
+       LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+      listParams,
+    );
+    const countRows = await client.query(
+      `SELECT w.status,count(*)::int AS count
+         FROM work_items w JOIN organizations o ON o.id=w.organization_id
+        WHERE ${baseConditions.join(" AND ")} GROUP BY w.status`,
+      baseParams,
+    );
+    const totalRows = await client.query(
+      `SELECT count(*)::int AS count FROM work_items w JOIN organizations o ON o.id=w.organization_id
+        WHERE ${listConditions.join(" AND ")}`,
+      listParams.slice(0, -2),
+    );
     return {
       items: rows.rows.map(internalWorkItem),
       counts: Object.fromEntries(countRows.rows.map((row) => [row.status, Number(row.count)])),
@@ -226,7 +239,7 @@ export async function getInternalWorkItem(workItemId) {
     const itemResult = await client.query(
       `SELECT w.*,o.code AS organization_code,o.name AS organization_name
          FROM work_items w JOIN organizations o ON o.id=w.organization_id
-        WHERE w.id=$1 AND w.item_type LIKE 'warehouse_%'`,
+        WHERE w.id=$1`,
       [workItemId],
     );
     const row = itemResult.rows[0];
@@ -235,8 +248,25 @@ export async function getInternalWorkItem(workItemId) {
       client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, row.organization_id]),
       client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 200", [workItemId, row.organization_id]),
       client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, row.organization_id]),
-      client.query("SELECT id,command_type,status,risk_level,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 100", [workItemId, row.organization_id]),
+      client.query("SELECT id,command_type,status,risk_level,payload,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 100", [workItemId, row.organization_id]),
     ]);
+    const partnerOrder = ["production_order", "purchase_order"].includes(row.item_type)
+      ? [
+        await client.query("SELECT id,line_ref,line_type,sku,product_name,specification,image_url,planned_quantity,completed_quantity,unit,required_at,responsibility,unit_price,currency FROM partner_order_lines WHERE work_item_id=$1 AND organization_id=$2 AND active=true ORDER BY CASE line_type WHEN 'finished_product' THEN 0 WHEN 'raw_material' THEN 1 ELSE 2 END,created_at,id", [workItemId, row.organization_id]),
+        await client.query(`SELECT r.id,r.work_item_id,r.line_id,r.command_id,r.report_type,r.stage,r.progress_percent,r.result,r.quantity,r.expected_at,r.severity,r.title,r.note,r.details,r.submitted_by,
+                             COALESCE(u.display_name,'') AS submitted_by_name,r.created_at
+                        FROM partner_order_reports r
+                        LEFT JOIN collaboration_users u ON u.id=r.submitted_by
+                       WHERE r.work_item_id=$1 AND r.organization_id=$2 ORDER BY r.created_at DESC LIMIT 300`, [workItemId, row.organization_id]),
+        await client.query("SELECT id,milestone_type,title,planned_at,completed_at,status,public_payload,version,updated_at FROM production_milestones WHERE work_item_id=$1 AND organization_id=$2 ORDER BY planned_at NULLS LAST,created_at", [workItemId, row.organization_id]),
+      ]
+      : null;
+    const oem = ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
+      ? [
+        await client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC,created_at DESC", [workItemId, row.organization_id]),
+        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,sample_artifact_id,sample_version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, row.organization_id]),
+      ]
+      : null;
     return {
       item: internalWorkItem(row),
       lines: lines.rows.map((line) => ({
@@ -255,7 +285,32 @@ export async function getInternalWorkItem(workItemId) {
       })),
       events: events.rows.map((event) => ({ id: event.id, eventType: event.event_type, actorName: event.actor_name, body: event.body, metadata: event.metadata || {}, createdAt: new Date(event.created_at).toISOString() })),
       attachments: attachments.rows.map((attachment) => ({ id: attachment.id, fileName: attachment.file_name, mimeType: attachment.mime_type, sizeBytes: Number(attachment.size_bytes), scanStatus: attachment.scan_status, createdAt: new Date(attachment.created_at).toISOString() })),
-      commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
+      commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, payload: command.payload || {}, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
+      oem: oem ? {
+        artifacts: oem[0].rows.map((artifact) => ({ id: artifact.id, artifactType: artifact.artifact_type, title: artifact.title, version: Number(artifact.version), status: artifact.status, publicPayload: artifact.public_payload || {}, createdAt: new Date(artifact.created_at).toISOString(), updatedAt: new Date(artifact.updated_at).toISOString() })),
+        quotes: oem[1].rows.map((quote) => ({ id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: Number(quote.lead_time_days), terms: quote.terms, status: quote.status, version: Number(quote.version), sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version == null ? null : Number(quote.sample_version), submittedAt: new Date(quote.submitted_at).toISOString() })),
+      } : null,
+      partnerOrder: partnerOrder ? {
+        lines: partnerOrder[0].rows.map((line) => ({
+          id: line.id, lineRef: line.line_ref, lineType: line.line_type, sku: line.sku, productName: line.product_name,
+          specification: line.specification || "", imageUrl: line.image_url || "", plannedQuantity: Number(line.planned_quantity),
+          completedQuantity: Number(line.completed_quantity), unit: line.unit, requiredAt: line.required_at ? String(line.required_at).slice(0, 10) : "",
+          responsibility: line.responsibility, unitPrice: line.unit_price == null ? null : Number(line.unit_price), currency: line.currency,
+        })),
+        reports: partnerOrder[1].rows.map((report) => ({
+          id: report.id, workItemId: report.work_item_id, lineId: report.line_id || "", commandId: report.command_id,
+          reportType: report.report_type, stage: report.stage, progressPercent: report.progress_percent == null ? null : Number(report.progress_percent),
+          result: report.result, quantity: report.quantity == null ? null : Number(report.quantity), expectedAt: report.expected_at ? new Date(report.expected_at).toISOString() : "",
+          severity: report.severity, title: report.title, note: report.note, details: report.details || {}, submittedBy: report.submitted_by,
+          submittedByName: report.submitted_by_name || "", createdAt: new Date(report.created_at).toISOString(),
+        })),
+        milestones: partnerOrder[2].rows.map((milestone) => ({
+          id: milestone.id, milestoneType: milestone.milestone_type, title: milestone.title,
+          plannedAt: milestone.planned_at ? new Date(milestone.planned_at).toISOString() : "",
+          completedAt: milestone.completed_at ? new Date(milestone.completed_at).toISOString() : "", status: milestone.status,
+          publicPayload: milestone.public_payload || {}, version: Number(milestone.version), updatedAt: new Date(milestone.updated_at).toISOString(),
+        })),
+      } : null,
     };
   });
 }

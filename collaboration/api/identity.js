@@ -533,19 +533,17 @@ export async function getOrganizationAccess(code) {
     );
     const organization = organizationResult.rows[0];
     if (!organization) fail("协作组织不存在。", 404, "organization_not_found");
-    const [members, invitations] = await Promise.all([
-      client.query(
-        `SELECT m.id,m.role,m.status,m.permissions,m.mfa_required,m.created_at,u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.must_change_password,u.last_login_at
-           FROM organization_memberships m JOIN collaboration_users u ON u.id=m.user_id
-          WHERE m.organization_id=$1 ORDER BY CASE m.role WHEN 'organization_admin' THEN 0 ELSE 1 END,u.display_name,u.username`,
-        [organization.id],
-      ),
-      client.query(
-        `SELECT id,username,email,role,mfa_required,expires_at,accepted_at,created_at
-           FROM collaboration_invitations WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 100`,
-        [organization.id],
-      ),
-    ]);
+    const members = await client.query(
+      `SELECT m.id,m.role,m.status,m.permissions,m.mfa_required,m.created_at,u.id AS user_id,u.username,u.email,u.display_name,u.status AS user_status,u.totp_enabled_at,u.must_change_password,u.last_login_at
+         FROM organization_memberships m JOIN collaboration_users u ON u.id=m.user_id
+        WHERE m.organization_id=$1 ORDER BY CASE m.role WHEN 'organization_admin' THEN 0 ELSE 1 END,u.display_name,u.username`,
+      [organization.id],
+    );
+    const invitations = await client.query(
+      `SELECT id,username,email,role,mfa_required,expires_at,accepted_at,created_at
+         FROM collaboration_invitations WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 100`,
+      [organization.id],
+    );
     return {
       organization: {
         id: organization.id,
