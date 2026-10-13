@@ -4,6 +4,7 @@ import {
   ExternalLink, FileText, LoaderCircle, PackageOpen, Plus, RefreshCw, Search, Send, Trash2, Warehouse, X,
 } from "lucide-react";
 import { AuthUser, resolveApiUrl } from "./api";
+import { ApprovalQueue } from "./CollaborationIdentityAdmin";
 import {
   CollaborationTaskOptions, CollaborationTaskProduct, CollaborationWarehouseTask, CollaborationWarehouseTaskDetail,
   CollaborationWarehouseTaskStatus, CollaborationWarehouseTaskType, downloadCollaborationTaskAttachment,
@@ -233,7 +234,8 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
   }
 
   return <section className="cwt-center">
-    <header className="cwt-page-head"><div><p>PARTNER COLLABORATION</p><h2>伙伴协同</h2><span>统一连接国内仓、委外工厂、包材供应商等外部组织；当前已开放国内仓任务协同。</span></div><div><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
+    <header className="cwt-page-head"><div><p>DOMESTIC WAREHOUSE</p><h2>国内仓协同</h2><span>集中发布国内仓入库、出库、调拨、盘点与异常任务，并追踪伙伴处理和主账确认结果。</span></div><div><button className="secondary" onClick={() => { window.location.hash = "#partner-collaboration"; }}>协同总览</button><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
+    {currentUser.permissions?.includes("operations") ? <ApprovalQueue notify={(notice, isError) => { if (isError) setError(notice); else setMessage(notice); }} /> : null}
     <div className="cwt-summary">{metrics.map(({ label, value, icon: Icon }) => <article key={label}><Icon size={20} /><span>{label}</span><strong>{value}</strong></article>)}</div>
     <section className="cwt-panel">
       <div className="cwt-toolbar"><label><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索任务号、标题或关联单号" /></label><select value={organizationCode} onChange={(event) => setOrganizationCode(event.target.value)}><option value="">全部协同组织</option>{options?.organizations.map((item) => <option value={item.code} key={item.code}>{item.name}</option>)}</select><select value={itemType} onChange={(event) => setItemType(event.target.value)}><option value="">全部任务类型</option>{Object.entries(typeMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><button onClick={() => void load()} aria-label="刷新"><RefreshCw size={17} /></button></div>

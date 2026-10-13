@@ -123,6 +123,11 @@ const oemPublicPayloadSchema = z.object({
   unit: limitedText(20).optional().default("件"),
   deliveryDate: limitedText(10).optional().default(""),
   quoteCurrency: limitedText(3).regex(/^[A-Z]{3}$/).optional().default("CNY"),
+  sampleCategory: z.enum(["inner_material", "packaging"]).optional(),
+  sampleSubject: z.enum(["formula", "raw_material", "packaging_box", "packaging_bottle"]).optional(),
+  sampleGoal: limitedText(2_000).optional().default(""),
+  evaluationCriteria: limitedText(5_000).optional().default(""),
+  quoteRequired: z.boolean().optional().default(true),
 }).strict();
 
 export const oemProjectionSchema = z.object({
@@ -149,6 +154,7 @@ export const oemProjectionSchema = z.object({
 }).strict().superRefine((value, context) => {
   const expected = { filing: "filing_task", sampling: "sampling_task", packaging_quote: "packaging_quote", production: "production_order" }[value.spaceType];
   if (value.itemType !== expected) context.addIssue({ code: z.ZodIssueCode.custom, path: ["itemType"], message: "OEM 空间类型与任务类型不匹配。" });
+  if (value.spaceType === "sampling" && (!value.publicPayload.sampleCategory || !value.publicPayload.sampleSubject)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["publicPayload"], message: "打样任务必须明确打样大类与对象。" });
 });
 
 export const partnerOrderLineSchema = z.object({
@@ -267,6 +273,11 @@ export const internalPartnerTaskSchema = z.object({
   unit: limitedText(20).optional().default("件"),
   fulfillmentMode: z.enum(["labor_only", "turnkey"]).optional().default("turnkey"),
   deliveryAddress: limitedText(500).optional().default(""),
+  sampleCategory: z.enum(["inner_material", "packaging"]).optional(),
+  sampleSubject: z.enum(["formula", "raw_material", "packaging_box", "packaging_bottle"]).optional(),
+  sampleGoal: limitedText(2_000).optional().default(""),
+  evaluationCriteria: limitedText(5_000).optional().default(""),
+  quoteRequired: z.boolean().optional().default(true),
   lines: z.array(z.object({
     sku: limitedText(100).min(1),
     productName: limitedText(300).min(1),
@@ -276,7 +287,13 @@ export const internalPartnerTaskSchema = z.object({
     unit: limitedText(20).optional().default("件"),
     lineType: z.enum(["finished_product", "raw_material", "packaging"]).optional(),
   }).strict()).min(1).max(500),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.taskType !== "sampling_task") return;
+  if (!value.sampleCategory) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleCategory"], message: "请选择内料打样或包材打样。" });
+  if (!value.sampleSubject) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleSubject"], message: "请选择具体打样对象。" });
+  if (value.sampleCategory === "inner_material" && !["formula", "raw_material"].includes(value.sampleSubject || "")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleSubject"], message: "内料打样对象必须是配方或原料。" });
+  if (value.sampleCategory === "packaging" && !["packaging_box", "packaging_bottle"].includes(value.sampleSubject || "")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleSubject"], message: "包材打样对象必须是包装盒或包装瓶。" });
+});
 
 export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
   z.object({
@@ -332,6 +349,7 @@ export const supplierQuoteSchema = z.object({
   minimumOrderQuantity: quantity.optional().default(0),
   leadTimeDays: z.number().int().min(0).max(3650),
   terms: limitedText(5_000).optional().default(""),
+  sampleArtifactId: z.string().uuid().optional(),
 }).strict();
 
 export const oemArtifactSchema = z.object({
@@ -342,8 +360,24 @@ export const oemArtifactSchema = z.object({
   publicPayload: z.object({
     summary: limitedText(5_000).optional().default(""),
     result: z.enum(["pending", "passed", "failed", "revision_required"]).optional().default("pending"),
+    roundNo: z.number().int().positive().optional(),
+    sampleCategory: z.enum(["inner_material", "packaging"]).optional(),
+    sampleSubject: z.enum(["formula", "raw_material", "packaging_box", "packaging_bottle"]).optional(),
+    sampleQuantity: quantity.optional().default(0),
+    unit: limitedText(20).optional().default("件"),
+    specificationVersion: limitedText(120).optional().default(""),
+    supplierConclusion: limitedText(2_000).optional().default(""),
+    nextPlan: limitedText(2_000).optional().default(""),
   }).strict(),
 }).strict();
+
+export const sampleArtifactReviewSchema = z.object({
+  approved: z.boolean(),
+  note: limitedText(2_000).optional().default(""),
+  reviewer: limitedText(200).optional().default("供应链中台"),
+}).strict().superRefine((value, context) => {
+  if (!value.approved && !value.note) context.addIssue({ code: z.ZodIssueCode.custom, path: ["note"], message: "要求返样时必须填写修改意见。" });
+});
 
 export const milestoneUpdateSchema = z.object({
   status: z.enum(["pending", "in_progress", "completed", "blocked"]),

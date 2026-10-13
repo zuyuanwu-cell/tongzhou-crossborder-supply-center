@@ -141,6 +141,7 @@ export type CollaborationPartnerWorkItem = {
   lastCoreSyncedAt: string;
   createdAt: string;
   updatedAt: string;
+  sampling?: { roundCount: number; pendingReviewCount: number; approvedVersion: number | null; quoteCount: number; awardedQuoteCount: number };
 };
 
 export type CollaborationPartnerOrderLine = {
@@ -166,6 +167,10 @@ export type CollaborationPartnerWorkItemDetail = {
     reports: CollaborationPartnerOrderReport[];
     milestones: Array<{ id: string; milestoneType: string; title: string; plannedAt: string; completedAt: string; status: string; publicPayload: { note?: string }; version: number; updatedAt: string }>;
   };
+  oem: null | {
+    artifacts: Array<{ id: string; artifactType: string; title: string; version: number; status: string; publicPayload: { summary?: string; result?: string; reviewNote?: string; supplierConclusion?: string; nextPlan?: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; reviewedBy?: string; reviewedAt?: string }; createdAt: string; updatedAt: string }>;
+    quotes: Array<{ id: string; currency: string; amount: number; minimumOrderQuantity: number; leadTimeDays: number; terms: string; status: string; version: number; sampleArtifactId: string; sampleVersion: number | null; submittedAt: string }>;
+  };
 };
 
 export type CollaborationPartnerTaskInput = {
@@ -182,6 +187,11 @@ export type CollaborationPartnerTaskInput = {
   unit?: string;
   fulfillmentMode?: "labor_only" | "turnkey";
   deliveryAddress?: string;
+  sampleCategory?: "inner_material" | "packaging";
+  sampleSubject?: "formula" | "raw_material" | "packaging_box" | "packaging_bottle";
+  sampleGoal?: string;
+  evaluationCriteria?: string;
+  quoteRequired?: boolean;
   lines: Array<{ sku: string; productName: string; specification?: string; imageUrl?: string; plannedQuantity: number; unit?: string; lineType?: "finished_product" | "raw_material" | "packaging" }>;
 };
 
@@ -242,8 +252,10 @@ export function replaceCollaborationOrganizationAccessGrants(code: string, grant
   });
 }
 
-export function fetchCollaborationOrganizationWorkItems(code: string) {
-  return request<{ ok: boolean; items: CollaborationPartnerWorkItem[]; counts: Record<string, number>; total: number }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items?limit=100`);
+export function fetchCollaborationOrganizationWorkItems(code: string, itemType?: CollaborationPartnerTaskType) {
+  const query = new URLSearchParams({ limit: "100" });
+  if (itemType) query.set("itemType", itemType);
+  return request<{ ok: boolean; items: CollaborationPartnerWorkItem[]; counts: Record<string, number>; total: number }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items?${query}`);
 }
 
 export function fetchCollaborationOrganizationWorkItem(code: string, workItemId: string) {
@@ -266,6 +278,20 @@ export function publishCollaborationPartnerTask(code: string, input: Collaborati
   return request<{ ok: boolean; eventId: string; coreRefId: string; status: string; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items`, {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export function reviewCollaborationSampleArtifact(artifactId: string, approved: boolean, note: string) {
+  return request<{ ok: boolean; artifactId: string; workItemId: string; status: "approved" | "rejected"; version: number; workItemVersion: number }>(`/api/collaboration-bridge/oem/artifacts/${encodeURIComponent(artifactId)}/review`, {
+    method: "POST",
+    body: JSON.stringify({ approved, note }),
+  });
+}
+
+export function awardCollaborationSupplierQuote(quoteId: string, approvalReference: string) {
+  return request<{ ok: boolean; quoteId: string; status: string; coreRefId: string }>(`/api/collaboration-bridge/oem/quotes/${encodeURIComponent(quoteId)}/award`, {
+    method: "POST",
+    body: JSON.stringify({ approvalReference }),
   });
 }
 

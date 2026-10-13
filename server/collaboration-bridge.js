@@ -596,6 +596,10 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/oem/quotes/${encodeURIComponent(quoteId)}/award`, { method: "POST", body: input });
   }
 
+  function reviewSampleArtifact(artifactId, input) {
+    return internalRequest(`/collaboration/internal/v1/oem/artifacts/${encodeURIComponent(artifactId)}/review`, { method: "POST", body: input });
+  }
+
   function provisionOrganization(input) {
     return internalRequest("/collaboration/internal/v1/organizations", { method: "POST", body: input });
   }
@@ -834,6 +838,11 @@ export function createCollaborationBridge({
           quantity: task.quantity,
           unit: task.unit,
           deliveryDate,
+          sampleCategory: task.sampleCategory,
+          sampleSubject: task.sampleSubject,
+          sampleGoal: task.sampleGoal,
+          evaluationCriteria: task.evaluationCriteria,
+          quoteRequired: task.quoteRequired,
         },
         milestones: [],
       });
@@ -976,6 +985,7 @@ export function createCollaborationBridge({
     reissueInvitation,
     replaceOrganizationAccessGrants,
     reviewCommand,
+    reviewSampleArtifact,
     revokeInvitation,
     saveOutsourcingSourceBinding,
     start,

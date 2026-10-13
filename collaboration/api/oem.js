@@ -1,6 +1,6 @@
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
-import { milestoneUpdateSchema, oemArtifactSchema, oemProjectionSchema, supplierQuoteSchema } from "../shared/contracts.js";
+import { milestoneUpdateSchema, oemArtifactSchema, oemProjectionSchema, sampleArtifactReviewSchema, supplierQuoteSchema } from "../shared/contracts.js";
 import { assertResourcePermission, assertWorkItemPermission } from "./access.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
@@ -24,7 +24,7 @@ async function activeOrganizationByCode(client, code) {
 function assertOrganizationType(organization, spaceType) {
   const allowed = {
     filing: new Set(["filing_service"]),
-    sampling: new Set(["sampling_factory", "production_factory"]),
+    sampling: new Set(["sampling_factory", "production_factory", "packaging_factory", "material_supplier"]),
     packaging_quote: new Set(["packaging_factory"]),
     production: new Set(["production_factory"]),
   };
@@ -124,7 +124,8 @@ async function lockedOemItem(client, auth, workItemId, itemType, { allowTerminal
   const result = await client.query("SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 FOR UPDATE", [workItemId, auth.organization.id]);
   const item = result.rows[0];
   if (!item) fail("OEM 任务不存在。", 404, "not_found");
-  if (item.item_type !== itemType) fail("OEM 提交类型与当前任务不匹配。", 409, "item_type_mismatch");
+  const acceptedTypes = Array.isArray(itemType) ? itemType : [itemType];
+  if (!acceptedTypes.includes(item.item_type)) fail("OEM 提交类型与当前任务不匹配。", 409, "item_type_mismatch");
   if (!allowTerminal && ["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续提交。", 409, "invalid_state");
   return item;
 }
@@ -167,20 +168,32 @@ export async function submitSupplierQuote(auth, body, { idempotencyKey, expected
   const key = assertIdempotencyKey(idempotencyKey);
   return withOrganization(auth.organization.id, async (client) => {
     const replay = await existingCommand(client, auth.organization.id, key);
-    const item = await lockedOemItem(client, auth, input.workItemId, "packaging_quote", { allowTerminal: Boolean(replay) });
-    await assertWorkItemPermission(client, auth.organization.id, item, "packaging.quote.submit");
+    const item = await lockedOemItem(client, auth, input.workItemId, ["packaging_quote", "sampling_task"], { allowTerminal: Boolean(replay) });
+    const isSamplingQuote = item.item_type === "sampling_task";
+    await assertWorkItemPermission(client, auth.organization.id, item, isSamplingQuote ? "sampling.quote.submit" : "packaging.quote.submit");
     const replayed = replayResult(replay, item.id, "quote_submit");
     if (replayed) return replayed;
+    let sampleArtifact = null;
+    if (isSamplingQuote) {
+      if (!input.sampleArtifactId) fail("请基于中台已确认的最终样版本报价。", 428, "approved_sample_required");
+      const approved = await client.query(
+        `SELECT id,version FROM oem_artifacts
+          WHERE id=$1 AND organization_id=$2 AND work_item_id=$3 AND artifact_type='sample_result' AND status='approved'`,
+        [input.sampleArtifactId, auth.organization.id, item.id],
+      );
+      sampleArtifact = approved.rows[0] || null;
+      if (!sampleArtifact) fail("最终样版本不存在或尚未通过中台评审。", 409, "approved_sample_required");
+    }
     const versionResult = await client.query("SELECT COALESCE(MAX(version),0)::int+1 AS version FROM supplier_quotes WHERE organization_id=$1 AND work_item_id=$2", [auth.organization.id, item.id]);
     const quoteResult = await client.query(
-      `INSERT INTO supplier_quotes(organization_id,space_id,work_item_id,currency,amount,minimum_order_quantity,lead_time_days,terms,version,submitted_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [auth.organization.id, item.space_id, item.id, input.currency, input.amount, input.minimumOrderQuantity, input.leadTimeDays, input.terms, versionResult.rows[0].version, auth.user.id],
+      `INSERT INTO supplier_quotes(organization_id,space_id,work_item_id,currency,amount,minimum_order_quantity,lead_time_days,terms,version,submitted_by,sample_artifact_id,sample_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [auth.organization.id, item.space_id, item.id, input.currency, input.amount, input.minimumOrderQuantity, input.leadTimeDays, input.terms, versionResult.rows[0].version, auth.user.id, sampleArtifact?.id || null, sampleArtifact?.version || null],
     );
     const quote = quoteResult.rows[0];
     const command = await createOemCommand(client, auth, item, { commandType: "quote_submit", idempotencyKey: key, expectedVersion, payload: { ...input, quoteId: quote.id, quoteVersion: quote.version } });
-    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_user_id,actor_name,body,metadata) VALUES ($1,$2,'partner.quote_submit',$3,$4,'已提交密封报价',$5)", [auth.organization.id, item.id, auth.user.id, auth.user.displayName, { commandId: command.id, quoteId: quote.id, version: quote.version }]);
-    return { ok: true, idempotentReplay: false, commandId: command.id, quote: { id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: quote.lead_time_days, terms: quote.terms, status: quote.status, version: quote.version } };
+    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_user_id,actor_name,body,metadata) VALUES ($1,$2,'partner.quote_submit',$3,$4,$5,$6)", [auth.organization.id, item.id, auth.user.id, auth.user.displayName, isSamplingQuote ? `已基于第 ${sampleArtifact.version} 轮最终样提交报价` : "已提交密封报价", { commandId: command.id, quoteId: quote.id, version: quote.version, sampleArtifactId: sampleArtifact?.id || "", sampleVersion: sampleArtifact?.version || null }]);
+    return { ok: true, idempotentReplay: false, commandId: command.id, quote: { id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: quote.lead_time_days, terms: quote.terms, status: quote.status, version: quote.version, sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version || null } };
   });
 }
 
@@ -203,15 +216,61 @@ export async function submitOemArtifact(auth, body, { idempotencyKey, expectedVe
     const replayed = replayResult(replay, item.id, "artifact_submit");
     if (replayed) return replayed;
     if (["completed", "cancelled", "rejected"].includes(item.status)) fail("当前任务状态不允许继续提交。", 409, "invalid_state");
+    if (item.item_type === "sampling_task" && input.artifactType !== "sample_result") fail("打样任务只能提交样品结果。", 409, "artifact_type_mismatch");
+    const sampleVersionResult = item.item_type === "sampling_task"
+      ? await client.query("SELECT COALESCE(MAX(version),0)::int+1 AS version FROM oem_artifacts WHERE organization_id=$1 AND work_item_id=$2 AND artifact_type='sample_result'", [auth.organization.id, item.id])
+      : null;
+    const artifactVersion = sampleVersionResult?.rows[0]?.version || input.version;
+    const publicPayload = item.item_type === "sampling_task"
+      ? { ...input.publicPayload, roundNo: artifactVersion, sampleCategory: item.public_payload?.sampleCategory, sampleSubject: item.public_payload?.sampleSubject }
+      : input.publicPayload;
     const artifactResult = await client.query(
-      `INSERT INTO oem_artifacts(organization_id,space_id,artifact_type,title,version,status,public_payload,submitted_by)
-       VALUES ($1,$2,$3,$4,$5,'submitted',$6,$7) RETURNING *`,
-      [auth.organization.id, item.space_id, input.artifactType, input.title, input.version, input.publicPayload, auth.user.id],
+      `INSERT INTO oem_artifacts(organization_id,space_id,work_item_id,artifact_type,title,version,status,public_payload,submitted_by)
+       VALUES ($1,$2,$3,$4,$5,$6,'submitted',$7,$8) RETURNING *`,
+      [auth.organization.id, item.space_id, item.id, input.artifactType, input.title, artifactVersion, publicPayload, auth.user.id],
     );
     const artifact = artifactResult.rows[0];
-    const command = await createOemCommand(client, auth, item, { commandType: "artifact_submit", idempotencyKey: key, expectedVersion, payload: { ...input, artifactId: artifact.id } });
+    const command = await createOemCommand(client, auth, item, { commandType: "artifact_submit", idempotencyKey: key, expectedVersion, payload: { ...input, version: artifact.version, publicPayload: artifact.public_payload, artifactId: artifact.id } });
     await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_user_id,actor_name,body,metadata) VALUES ($1,$2,'partner.artifact_submit',$3,$4,$5,$6)", [auth.organization.id, item.id, auth.user.id, auth.user.displayName, input.title, { commandId: command.id, artifactId: artifact.id, artifactType: input.artifactType }]);
     return { ok: true, idempotentReplay: false, commandId: command.id, artifact: { id: artifact.id, artifactType: artifact.artifact_type, title: artifact.title, version: artifact.version, status: artifact.status, publicPayload: artifact.public_payload } };
+  });
+}
+
+export async function reviewInternalSampleArtifact(artifactId, body) {
+  assertEnabled();
+  const input = sampleArtifactReviewSchema.parse(body);
+  return withSystem(async (client) => {
+    const result = await client.query(
+      `SELECT a.*,w.id AS target_work_item_id,w.item_type,w.status AS work_item_status,w.version AS work_item_version
+         FROM oem_artifacts a JOIN work_items w ON w.id=a.work_item_id
+        WHERE a.id=$1 FOR UPDATE`,
+      [artifactId],
+    );
+    const artifact = result.rows[0];
+    if (!artifact || artifact.item_type !== "sampling_task" || artifact.artifact_type !== "sample_result") fail("打样轮次不存在。", 404, "not_found");
+    const requestedStatus = input.approved ? "approved" : "rejected";
+    if (["approved", "rejected"].includes(artifact.status)) {
+      if (artifact.status !== requestedStatus) fail("该打样轮次已完成评审，不能反向修改结论。", 409, "review_already_finalized");
+      return { ok: true, idempotentReplay: true, artifactId, status: artifact.status, version: artifact.version };
+    }
+    if (artifact.status !== "submitted") fail("该打样轮次当前不可评审。", 409, "invalid_state");
+    if (input.approved) {
+      const locked = await client.query("SELECT id,version FROM oem_artifacts WHERE organization_id=$1 AND work_item_id=$2 AND artifact_type='sample_result' AND status='approved' AND id<>$3 LIMIT 1", [artifact.organization_id, artifact.target_work_item_id, artifact.id]);
+      if (locked.rows[0]) fail(`该任务已锁定第 ${locked.rows[0].version} 轮最终样，不可重复定版。`, 409, "sample_already_approved");
+    }
+    const status = requestedStatus;
+    await client.query(
+      `UPDATE oem_artifacts
+          SET status=$2,updated_at=now(),public_payload=public_payload || $3::jsonb
+        WHERE id=$1`,
+      [artifact.id, status, JSON.stringify({ reviewNote: input.note, reviewedBy: input.reviewer, reviewedAt: new Date().toISOString() })],
+    );
+    await client.query("UPDATE work_items SET status='in_progress',version=version+1,last_core_synced_at=now() WHERE id=$1", [artifact.target_work_item_id]);
+    const bodyText = input.approved ? `第 ${artifact.version} 轮样品已确认为最终样，等待供应商报价` : `第 ${artifact.version} 轮样品需修改并重新送样：${input.note}`;
+    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata) VALUES ($1,$2,$3,$4,$5,$6)", [artifact.organization_id, artifact.target_work_item_id, input.approved ? "core.sample_approved" : "core.sample_revision_requested", input.reviewer, bodyText, { artifactId: artifact.id, version: artifact.version, reviewNote: input.note }]);
+    await client.query("INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status) VALUES ($1,$2,$3,$4,'in_app','sent')", [artifact.organization_id, artifact.target_work_item_id, input.approved ? "最终样已确认，请提交报价" : "样品评审需修改", bodyText]);
+    await client.query("INSERT INTO audit_log(organization_id,actor_name,action,object_type,object_id,result,metadata) VALUES ($1,$2,$3,'oem_artifact',$4,$5,$6)", [artifact.organization_id, input.reviewer, input.approved ? "sample.approve" : "sample.reject", artifact.id, status, { workItemId: artifact.target_work_item_id, version: artifact.version, note: input.note }]);
+    return { ok: true, artifactId: artifact.id, workItemId: artifact.target_work_item_id, status, version: artifact.version, workItemVersion: Number(artifact.work_item_version) + 1 };
   });
 }
 
@@ -253,7 +312,7 @@ export async function listInternalQuotes({ coreRefId = "" } = {}) {
       `SELECT q.id,q.currency,q.amount,q.minimum_order_quantity,q.lead_time_days,q.terms,q.status,q.version,q.submitted_at,
               o.code AS organization_code,o.name AS organization_name,w.core_ref_id,w.title
          FROM supplier_quotes q JOIN organizations o ON o.id=q.organization_id JOIN work_items w ON w.id=q.work_item_id
-        WHERE w.core_ref_id=$1 AND w.item_type='packaging_quote' ORDER BY q.amount,q.lead_time_days,q.submitted_at`,
+        WHERE w.core_ref_id=$1 AND w.item_type IN ('packaging_quote','sampling_task') ORDER BY q.amount,q.lead_time_days,q.submitted_at`,
       [ref],
     );
     return { quotes: result.rows.map((row) => ({ id: row.id, organizationCode: row.organization_code, organizationName: row.organization_name, coreRefId: row.core_ref_id, title: row.title, currency: row.currency, amount: Number(row.amount), minimumOrderQuantity: Number(row.minimum_order_quantity), leadTimeDays: row.lead_time_days, terms: row.terms, status: row.status, version: row.version, submittedAt: new Date(row.submitted_at).toISOString() })) };
@@ -265,7 +324,7 @@ export async function awardInternalQuote(quoteId, { approvalReference, reviewer 
   if (!String(approvalReference || "").trim()) fail("定标前必须提供内部审批单号。", 428, "approval_reference_required");
   return withSystem(async (client) => {
     const quoteResult = await client.query(
-      `SELECT q.*,w.core_ref_id,w.id AS target_work_item_id FROM supplier_quotes q JOIN work_items w ON w.id=q.work_item_id
+      `SELECT q.*,w.core_ref_id,w.item_type,w.id AS target_work_item_id FROM supplier_quotes q JOIN work_items w ON w.id=q.work_item_id
         WHERE q.id=$1 FOR UPDATE`,
       [quoteId],
     );
@@ -273,20 +332,26 @@ export async function awardInternalQuote(quoteId, { approvalReference, reviewer 
     if (!quote) fail("报价不存在。", 404, "not_found");
     if (quote.status === "awarded") return { ok: true, idempotentReplay: true, quoteId, status: "awarded" };
     if (quote.status !== "submitted") fail("该报价当前不可定标。", 409, "invalid_state");
-    await client.query(
-      `UPDATE supplier_quotes q SET status=CASE WHEN q.id=$2 THEN 'awarded' ELSE 'declined' END
-        FROM work_items w WHERE w.id=q.work_item_id AND w.core_ref_id=$1 AND w.item_type='packaging_quote' AND q.status='submitted'`,
-      [quote.core_ref_id, quoteId],
-    );
-    await client.query(
-      `UPDATE work_items SET status=CASE WHEN id=$2 THEN 'completed' ELSE 'rejected' END,version=version+1,last_core_synced_at=now()
-        WHERE core_ref_id=$1 AND item_type='packaging_quote'`,
-      [quote.core_ref_id, quote.target_work_item_id],
-    );
+    const samplingQuote = quote.item_type === "sampling_task";
+    if (samplingQuote) {
+      await client.query("UPDATE supplier_quotes SET status=CASE WHEN id=$2 THEN 'awarded' ELSE 'declined' END WHERE work_item_id=$1 AND status='submitted'", [quote.target_work_item_id, quoteId]);
+      await client.query("UPDATE work_items SET status='completed',version=version+1,last_core_synced_at=now() WHERE id=$1", [quote.target_work_item_id]);
+    } else {
+      await client.query(
+        `UPDATE supplier_quotes q SET status=CASE WHEN q.id=$2 THEN 'awarded' ELSE 'declined' END
+          FROM work_items w WHERE w.id=q.work_item_id AND w.core_ref_id=$1 AND w.item_type='packaging_quote' AND q.status='submitted'`,
+        [quote.core_ref_id, quoteId],
+      );
+      await client.query(
+        `UPDATE work_items SET status=CASE WHEN id=$2 THEN 'completed' ELSE 'rejected' END,version=version+1,last_core_synced_at=now()
+          WHERE core_ref_id=$1 AND item_type='packaging_quote'`,
+        [quote.core_ref_id, quote.target_work_item_id],
+      );
+    }
     await client.query(
       `INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status)
-       VALUES ($1,$2,'包装报价已中标',$3,'in_app','sent')`,
-      [quote.organization_id, quote.target_work_item_id, `内部审批 ${String(approvalReference).slice(0, 160)} 已完成，供应链中台已确认贵司报价。`],
+       VALUES ($1,$2,$3,$4,'in_app','sent')`,
+      [quote.organization_id, quote.target_work_item_id, samplingQuote ? "最终样报价已确认" : "包装报价已中标", `内部审批 ${String(approvalReference).slice(0, 160)} 已完成，供应链中台已确认贵司报价。`],
     );
     await client.query(
       `INSERT INTO audit_log(organization_id,actor_name,action,object_type,object_id,result,metadata)

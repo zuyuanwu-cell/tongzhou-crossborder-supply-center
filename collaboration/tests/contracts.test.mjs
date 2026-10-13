@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema, partnerOrderReportSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
+import { collaborationProjectionSchema, internalPartnerTaskSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemArtifactSchema, oemProjectionSchema, partnerOrderProjectionSchema, partnerOrderReportSchema, riskByAction, sampleArtifactReviewSchema, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { canPerformAction, requiresMfaAtLogin } from "../api/permissions.js";
 import { organizationAccessCatalog } from "../api/access.js";
 
@@ -91,6 +91,22 @@ test("blind quote contract accepts business terms but no competitor metadata", (
   assert.equal(supplierQuoteSchema.safeParse({ ...quote, competitorName: "另一家包装厂" }).success, false);
 });
 
+test("sampling contracts enforce typed rounds, review reasons and exact approved-version quote binding", () => {
+  const sampling = {
+    taskType: "sampling_task", documentNo: "DY-001", title: "洗发水内料打样", productName: "洗发水", quantity: 6, unit: "瓶",
+    sampleCategory: "inner_material", sampleSubject: "formula", sampleGoal: "确认香型与肤感", evaluationCriteria: "稳定性和气味合格", quoteRequired: true,
+    lines: [{ sku: "SAMPLE-1", productName: "洗发水内料", plannedQuantity: 6, unit: "瓶", lineType: "raw_material" }],
+  };
+  assert.equal(internalPartnerTaskSchema.safeParse(sampling).success, true);
+  assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, sampleCategory: "packaging", sampleSubject: "formula" }).success, false);
+  assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, internalTargetCost: 5.2 }).success, false);
+  const artifact = { workItemId: "11111111-1111-4111-8111-111111111111", artifactType: "sample_result", title: "第2轮样品", version: 2, publicPayload: { summary: "黏度已调整", result: "passed", roundNo: 2, sampleCategory: "inner_material", sampleSubject: "formula", sampleQuantity: 6, unit: "瓶", specificationVersion: "Formula V2", supplierConclusion: "自检通过", nextPlan: "等待中台评审" } };
+  assert.equal(oemArtifactSchema.safeParse(artifact).success, true);
+  assert.equal(sampleArtifactReviewSchema.safeParse({ approved: false, note: "" }).success, false);
+  assert.equal(sampleArtifactReviewSchema.safeParse({ approved: false, note: "香型需要继续减弱" }).success, true);
+  assert.equal(supplierQuoteSchema.safeParse({ workItemId: artifact.workItemId, sampleArtifactId: "22222222-2222-4222-8222-222222222222", currency: "CNY", amount: 26000, minimumOrderQuantity: 10000, leadTimeDays: 20, terms: "含税" }).success, true);
+});
+
 test("partner order projections expose only one organization's production or purchase order", () => {
   const projection = {
     eventId: "partner-order-1", organizationCode: "pf-factory-a", coreRefType: "outsourcing_order", coreRefId: "MO-001",
@@ -127,4 +143,8 @@ test("full-service production factories can be explicitly granted production, pr
     "procurement.exception.report",
     "attachment.upload",
   ]);
+  const sampling = catalog.resources.find((resource) => resource.resourceRef === "sampling");
+  assert.equal(sampling.capabilities.some((capability) => capability.key === "sampling.quote.submit"), true);
+  assert.deepEqual(organizationAccessCatalog("material_supplier").resources.map((resource) => resource.resourceRef), ["sampling", "procurement"]);
+  assert.deepEqual(organizationAccessCatalog("packaging_factory").resources.map((resource) => resource.resourceRef), ["sampling", "packaging_quote", "procurement"]);
 });

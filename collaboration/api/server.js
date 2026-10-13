@@ -45,6 +45,7 @@ import {
   applyOemProjection,
   awardInternalQuote,
   listInternalQuotes,
+  reviewInternalSampleArtifact,
   submitOemArtifact,
   submitSupplierQuote,
   updateProductionMilestone,
@@ -264,6 +265,11 @@ async function route(req, res) {
     let oemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/oem/quotes/${uuidPattern}/award$`));
     if (oemMatch && req.method === "POST") {
       sendJson(res, 200, await awardInternalQuote(oemMatch[1], await readJson(req)));
+      return;
+    }
+    oemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/oem/artifacts/${uuidPattern}/review$`));
+    if (oemMatch && req.method === "POST") {
+      sendJson(res, 200, await reviewInternalSampleArtifact(oemMatch[1], await readJson(req)));
       return;
     }
     if (url.pathname === "/collaboration/internal/v1/commands" && req.method === "GET") {

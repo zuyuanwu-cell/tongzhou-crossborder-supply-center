@@ -12,7 +12,7 @@ const internalItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "w
 const workItemStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]);
 
 function internalWorkItem(row) {
-  return {
+  const item = {
     id: row.id,
     organizationCode: row.organization_code,
     organizationName: row.organization_name,
@@ -30,6 +30,16 @@ function internalWorkItem(row) {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
+  if (row.item_type === "sampling_task") {
+    item.sampling = {
+      roundCount: Number(row.sample_round_count || 0),
+      pendingReviewCount: Number(row.sample_pending_review_count || 0),
+      approvedVersion: row.sample_approved_version == null ? null : Number(row.sample_approved_version),
+      quoteCount: Number(row.sample_quote_count || 0),
+      awardedQuoteCount: Number(row.sample_awarded_quote_count || 0),
+    };
+  }
+  return item;
 }
 
 export function assertInternalRequest(req) {
@@ -189,7 +199,12 @@ export async function listInternalWorkItems(filters = {}) {
     const listParams = [...baseParams];
     if (status) { listParams.push(status); listConditions.push(`w.status=$${listParams.length}`); }
     listParams.push(limit, offset);
-    const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name
+    const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name,
+                            (SELECT count(*) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result')::int AS sample_round_count,
+                            (SELECT count(*) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result' AND a.status='submitted')::int AS sample_pending_review_count,
+                            (SELECT max(a.version) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result' AND a.status='approved') AS sample_approved_version,
+                            (SELECT count(*) FROM supplier_quotes q WHERE q.organization_id=w.organization_id AND q.work_item_id=w.id)::int AS sample_quote_count,
+                            (SELECT count(*) FROM supplier_quotes q WHERE q.organization_id=w.organization_id AND q.work_item_id=w.id AND q.status='awarded')::int AS sample_awarded_quote_count
                       FROM work_items w JOIN organizations o ON o.id=w.organization_id`;
     const rows = await client.query(
       `${select} WHERE ${listConditions.join(" AND ")}
@@ -244,6 +259,12 @@ export async function getInternalWorkItem(workItemId) {
         await client.query("SELECT id,milestone_type,title,planned_at,completed_at,status,public_payload,version,updated_at FROM production_milestones WHERE work_item_id=$1 AND organization_id=$2 ORDER BY planned_at NULLS LAST,created_at", [workItemId, row.organization_id]),
       ]
       : null;
+    const oem = ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
+      ? [
+        await client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC,created_at DESC", [workItemId, row.organization_id]),
+        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,sample_artifact_id,sample_version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, row.organization_id]),
+      ]
+      : null;
     return {
       item: internalWorkItem(row),
       lines: lines.rows.map((line) => ({
@@ -262,6 +283,10 @@ export async function getInternalWorkItem(workItemId) {
       events: events.rows.map((event) => ({ id: event.id, eventType: event.event_type, actorName: event.actor_name, body: event.body, metadata: event.metadata || {}, createdAt: new Date(event.created_at).toISOString() })),
       attachments: attachments.rows.map((attachment) => ({ id: attachment.id, fileName: attachment.file_name, mimeType: attachment.mime_type, sizeBytes: Number(attachment.size_bytes), scanStatus: attachment.scan_status, createdAt: new Date(attachment.created_at).toISOString() })),
       commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
+      oem: oem ? {
+        artifacts: oem[0].rows.map((artifact) => ({ id: artifact.id, artifactType: artifact.artifact_type, title: artifact.title, version: Number(artifact.version), status: artifact.status, publicPayload: artifact.public_payload || {}, createdAt: new Date(artifact.created_at).toISOString(), updatedAt: new Date(artifact.updated_at).toISOString() })),
+        quotes: oem[1].rows.map((quote) => ({ id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: Number(quote.lead_time_days), terms: quote.terms, status: quote.status, version: Number(quote.version), sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version == null ? null : Number(quote.sample_version), submittedAt: new Date(quote.submitted_at).toISOString() })),
+      } : null,
       partnerOrder: partnerOrder ? {
         lines: partnerOrder[0].rows.map((line) => ({
           id: line.id, lineRef: line.line_ref, lineType: line.line_type, sku: line.sku, productName: line.product_name,

@@ -129,7 +129,7 @@ test("internal administrators manually publish only procurement and sampling tas
   };
 
   for (const taskType of ["purchase_order", "sampling_task"]) {
-    const result = await bridge.publishPartnerTask("mf-songyu", { ...common, taskType }, { actorName: "中台管理员" });
+    const result = await bridge.publishPartnerTask("mf-songyu", { ...common, taskType, ...(taskType === "sampling_task" ? { sampleCategory: "inner_material", sampleSubject: "formula", sampleGoal: "确认最终配方", evaluationCriteria: "气味与稳定性通过", quoteRequired: true } : {}) }, { actorName: "中台管理员" });
     assert.equal(result.delivery.published, 1);
   }
 
@@ -137,6 +137,9 @@ test("internal administrators manually publish only procurement and sampling tas
   const sampling = requests.find((request) => request.url.endsWith("/oem/projections") && request.body.itemType === "sampling_task");
   assert.equal(purchase.body.publicPayload.fulfillmentMode, "supplier");
   assert.equal(sampling.body.publicPayload.projectCode, "SY-20261013-001");
+  assert.equal(sampling.body.publicPayload.sampleCategory, "inner_material");
+  assert.equal(sampling.body.publicPayload.sampleSubject, "formula");
+  assert.equal("internalCost" in sampling.body.publicPayload, false);
   await assert.rejects(() => bridge.publishPartnerTask("mf-songyu", { ...common, taskType: "production_order" }, { actorName: "中台管理员" }), /千顷 ERP 自动同步/);
 
   const listing = await bridge.listOrganizationWorkItems("mf-songyu", { itemType: "production_order" });
@@ -254,6 +257,8 @@ test("partner task publication is denied until the target organization has the m
     quantity: 2,
     unit: "件",
     requirements: "提交样品结果",
+    sampleCategory: "inner_material",
+    sampleSubject: "formula",
     lines: [{ sku: "SKU-1", productName: "测试产品", plannedQuantity: 2, unit: "件" }],
   }), /尚未开通/);
 });

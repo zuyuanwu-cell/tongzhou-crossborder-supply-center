@@ -240,6 +240,15 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 200, result);
         return true;
       }
+      const sampleReviewMatch = suffix.match(/^\/oem\/artifacts\/([0-9a-fA-F-]{36})\/review$/);
+      if (sampleReviewMatch && req.method === "POST") {
+        const input = await readBody(req);
+        const reviewer = auth.user?.displayName || auth.user?.username || "供应链中台";
+        const result = await bridge.reviewSampleArtifact(sampleReviewMatch[1], { ...input, reviewer });
+        appendActionLog(auth, input.approved ? "确认最终样" : "要求重新打样", "oem_artifact", sampleReviewMatch[1], { note: input.note || "", version: result.version });
+        sendJson(res, 200, result);
+        return true;
+      }
       if (suffix === "/sync" && req.method === "POST") {
         const result = await bridge.synchronize();
         appendActionLog(auth, "执行外部协同同步", "collaboration_bridge", "协同 API", result);
