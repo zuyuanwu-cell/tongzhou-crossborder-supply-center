@@ -1,5 +1,5 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, KeyRound, LoaderCircle, LockKeyhole, Mail, RefreshCw, Save, Search, ShieldCheck, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
+import { AlertTriangle, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, Factory, FlaskConical, KeyRound, LoaderCircle, LockKeyhole, Mail, PackageCheck, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Trash2, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
 import {
   bootstrapCollaborationOrganization,
   CollaborationAccessGrant,
@@ -11,10 +11,15 @@ import {
   CollaborationOrganizationAccess,
   CollaborationOrganizationStatus,
   CollaborationOrganizationType,
+  CollaborationPartnerTaskInput,
+  CollaborationPartnerTaskType,
+  CollaborationPartnerWorkItem,
   fetchCollaborationOrganizationAccess,
   fetchCollaborationOrganizationAccessGrants,
   fetchCollaborationApprovals,
   fetchCollaborationOrganizations,
+  fetchCollaborationOrganizationWorkItems,
+  publishCollaborationPartnerTask,
   reissueCollaborationInvitation,
   revokeCollaborationInvitation,
   replaceCollaborationOrganizationAccessGrants,
@@ -132,6 +137,129 @@ function ApprovalQueue({ notify }: { notify(message: string, error?: boolean): v
       <textarea rows={2} value={notes[item.commandId] || ""} onChange={(event) => setNotes((current) => ({ ...current, [item.commandId]: event.target.value }))} placeholder="审批意见；驳回时必填" />
       <footer><button type="button" className="cia-danger-button" disabled={busy === item.commandId} onClick={() => void review(item, false)}><XCircle size={15} />驳回</button><button type="button" className="cia-primary" disabled={busy === item.commandId} onClick={() => void review(item, true)}>{busy === item.commandId ? <LoaderCircle size={15} className="cia-spin" /> : <CheckCircle2 size={15} />}批准并入账</button></footer>
     </article>)}</div> : <div className="cia-empty compact"><CheckCircle2 size={22} /><strong>没有待审批作业</strong><span>仓库提交申请后会进入这里。</span></div>}
+  </section>;
+}
+
+const partnerTaskTypes: Array<{ value: CollaborationPartnerTaskType; label: string; resourceRef: string; permission: string; icon: typeof Factory }> = [
+  { value: "production_order", label: "委外加工单", resourceRef: "production", permission: "production.order.view", icon: Factory },
+  { value: "purchase_order", label: "物料采购单", resourceRef: "procurement", permission: "procurement.order.view", icon: PackageCheck },
+  { value: "sampling_task", label: "打样单", resourceRef: "sampling", permission: "sampling.task.view", icon: FlaskConical },
+];
+
+const partnerTaskStatusLabels: Record<string, string> = {
+  pending: "待接单", accepted: "已接单", in_progress: "处理中", pending_approval: "待审批", pending_sync: "待同步",
+  completed: "已完成", rejected: "已驳回", cancelled: "已取消",
+};
+
+type PartnerTaskLineDraft = { sku: string; productName: string; specification: string; plannedQuantity: string; unit: string };
+type PartnerTaskDraft = {
+  taskType: CollaborationPartnerTaskType; documentNo: string; title: string; dueDate: string; priority: "normal" | "urgent";
+  fulfillmentMode: "labor_only" | "turnkey"; requirements: string; deliveryAddress: string; lines: PartnerTaskLineDraft[];
+};
+
+function emptyPartnerTaskDraft(): PartnerTaskDraft {
+  return {
+    taskType: "production_order", documentNo: "", title: "", dueDate: "", priority: "normal", fulfillmentMode: "turnkey",
+    requirements: "", deliveryAddress: "", lines: [{ sku: "", productName: "", specification: "", plannedQuantity: "", unit: "件" }],
+  };
+}
+
+function PartnerTaskPanel({ organization, access, notify }: {
+  organization: CollaborationOrganization;
+  access: CollaborationAccessGrantPayload | null;
+  notify(message: string, error?: boolean): void;
+}) {
+  const [items, setItems] = useState<CollaborationPartnerWorkItem[]>([]);
+  const [draft, setDraft] = useState<PartnerTaskDraft>(emptyPartnerTaskDraft);
+  const [loading, setLoading] = useState(true);
+  const [publishing, setPublishing] = useState(false);
+  const selectedType = partnerTaskTypes.find((item) => item.value === draft.taskType) || partnerTaskTypes[0];
+  const enabled = Boolean(access?.grants.some((grant) => grant.resourceRef === selectedType.resourceRef && grant.permissions.includes(selectedType.permission)));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await fetchCollaborationOrganizationWorkItems(organization.code);
+      setItems((result.items || []).filter((item) => partnerTaskTypes.some((type) => type.value === item.itemType)));
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "协同单据读取失败", true);
+    } finally { setLoading(false); }
+  }, [organization.code, notify]);
+
+  useEffect(() => { setDraft(emptyPartnerTaskDraft()); void load(); }, [organization.code, load]);
+
+  function patchLine(index: number, patch: Partial<PartnerTaskLineDraft>) {
+    setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line) }));
+  }
+
+  async function publish(event: FormEvent) {
+    event.preventDefault();
+    if (!enabled) return notify(`请先保存“${selectedType.label}”业务权限。`, true);
+    const lines = draft.lines.map((line) => ({
+      sku: line.sku.trim().toUpperCase(), productName: line.productName.trim(), specification: line.specification.trim(),
+      plannedQuantity: Number(line.plannedQuantity), unit: line.unit.trim() || "件",
+      lineType: draft.taskType === "purchase_order" ? "raw_material" as const : "finished_product" as const,
+    }));
+    if (lines.some((line) => !line.sku || !line.productName || !(line.plannedQuantity > 0))) return notify("请完整填写每一行的 SKU、品名和数量。", true);
+    const totalQuantity = lines.reduce((sum, line) => sum + line.plannedQuantity, 0);
+    const payload: CollaborationPartnerTaskInput = {
+      taskType: draft.taskType,
+      documentNo: draft.documentNo.trim(),
+      title: draft.title.trim(),
+      productName: lines[0].productName,
+      productSpec: lines[0].specification,
+      requirements: draft.requirements.trim(),
+      description: draft.requirements.trim(),
+      priority: draft.priority,
+      dueAt: draft.dueDate ? new Date(`${draft.dueDate}T12:00:00+08:00`).toISOString() : undefined,
+      quantity: totalQuantity,
+      unit: lines.length === 1 ? lines[0].unit : "项",
+      fulfillmentMode: draft.fulfillmentMode,
+      deliveryAddress: draft.deliveryAddress.trim(),
+      lines,
+    };
+    setPublishing(true);
+    try {
+      const result = await publishCollaborationPartnerTask(organization.code, payload);
+      notify(result.delivery.failed ? "单据已进入重试队列，伙伴端稍后可见。" : `${selectedType.label}已发布给 ${organization.name}。`);
+      setDraft(emptyPartnerTaskDraft());
+      await load();
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "协同单据发布失败", true);
+    } finally { setPublishing(false); }
+  }
+
+  return <section className="cia-section cia-partner-tasks">
+    <div className="cia-section-head"><div><ClipboardCheck size={18} /><div><h4>协同单据</h4><p>只有明确发布到“{organization.name}”的单据才会进入该组织，松雨等伙伴无法按单号越权搜索其他组织的数据。</p></div></div><button type="button" className="cia-secondary" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "cia-spin" : ""} />刷新进度</button></div>
+    <div className="cia-task-type-tabs">{partnerTaskTypes.map(({ value, label, icon: Icon }) => <button type="button" key={value} className={draft.taskType === value ? "active" : ""} onClick={() => setDraft((current) => ({ ...current, taskType: value }))}><Icon size={16} />{label}<em>{items.filter((item) => item.itemType === value).length}</em></button>)}</div>
+    {!enabled ? <div className="cia-task-permission-warning"><LockKeyhole size={17} /><span>当前组织尚未开通“{selectedType.label}”。请先在上方勾选对应业务空间、使用推荐权限并保存。</span></div> : null}
+    <form className="cia-partner-task-form" onSubmit={publish}>
+      <div className="cia-task-form-grid">
+        <label><span>单据编号</span><input required maxLength={120} value={draft.documentNo} onChange={(event) => setDraft({ ...draft, documentNo: event.target.value })} placeholder={draft.taskType === "sampling_task" ? "例如：DY-20261013-001" : draft.taskType === "purchase_order" ? "例如：CG-20261013-001" : "例如：WW-20261013-001"} /></label>
+        <label><span>对外标题</span><input required maxLength={240} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder={`${selectedType.label}标题`} /></label>
+        <label><span>要求完成日期</span><input type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
+        <label><span>优先级</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as PartnerTaskDraft["priority"] })}><option value="normal">常规</option><option value="urgent">紧急</option></select></label>
+        {draft.taskType === "production_order" ? <label><span>加工模式</span><select value={draft.fulfillmentMode} onChange={(event) => setDraft({ ...draft, fulfillmentMode: event.target.value as PartnerTaskDraft["fulfillmentMode"] })}><option value="turnkey">全包（工厂供料）</option><option value="labor_only">来料加工</option></select></label> : null}
+        {draft.taskType !== "sampling_task" ? <label className="wide"><span>交付地址（可选）</span><input maxLength={500} value={draft.deliveryAddress} onChange={(event) => setDraft({ ...draft, deliveryAddress: event.target.value })} placeholder="仅填写伙伴执行所需的交付地址" /></label> : null}
+      </div>
+      <div className="cia-task-lines-head"><strong>产品 / 物料明细</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { sku: "", productName: "", specification: "", plannedQuantity: "", unit: "件" }] }))}><Plus size={14} />增加一行</button></div>
+      <div className="cia-task-lines">{draft.lines.map((line, index) => <div key={index}>
+        <span>{String(index + 1).padStart(2, "0")}</span>
+        <input required value={line.sku} onChange={(event) => patchLine(index, { sku: event.target.value })} placeholder="SKU" />
+        <input required value={line.productName} onChange={(event) => patchLine(index, { productName: event.target.value })} placeholder="产品/物料名称" />
+        <input value={line.specification} onChange={(event) => patchLine(index, { specification: event.target.value })} placeholder="规格（可选）" />
+        <input required type="number" min="0.0001" step="0.0001" value={line.plannedQuantity} onChange={(event) => patchLine(index, { plannedQuantity: event.target.value })} placeholder="数量" />
+        <input required value={line.unit} onChange={(event) => patchLine(index, { unit: event.target.value })} placeholder="单位" />
+        <button type="button" aria-label="删除明细" disabled={draft.lines.length === 1} onClick={() => setDraft((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}><Trash2 size={15} /></button>
+      </div>)}</div>
+      <label className="cia-task-requirements"><span>对外要求与注意事项</span><textarea rows={3} maxLength={5000} value={draft.requirements} onChange={(event) => setDraft({ ...draft, requirements: event.target.value })} placeholder={draft.taskType === "sampling_task" ? "样品规格、轮次、需提交的测试结果和附件" : "生产/交付要求、包材测试标准及异常上报要求"} /></label>
+      <footer><span><ShieldCheck size={15} />不会发送成本、客户、店铺、其他供应商或内部备注</span><button type="submit" className="cia-primary" disabled={!enabled || publishing}>{publishing ? <LoaderCircle size={16} className="cia-spin" /> : <Send size={16} />}发布给 {organization.name}</button></footer>
+    </form>
+    <div className="cia-task-progress-head"><strong>本组织单据与进度</strong><span>{items.length} 单</span></div>
+    {loading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取伙伴反馈进度…</div> : items.length ? <div className="cia-task-progress-list">{items.map((item) => {
+      const meta = partnerTaskTypes.find((type) => type.value === item.itemType) || partnerTaskTypes[0]; const Icon = meta.icon;
+      return <article key={item.id}><span><Icon size={17} /></span><div><strong>{item.title}</strong><small>{meta.label} · {item.coreRefId}</small></div><div><b>{partnerTaskStatusLabels[item.status] || item.status}</b><small>{item.dueAt ? `交期 ${formatTime(item.dueAt)}` : "未设交期"}</small></div><div><b>V{item.version}</b><small>{item.updatedAt ? `更新 ${formatTime(item.updatedAt)}` : "等待更新"}</small></div></article>;
+    })}</div> : <div className="cia-empty compact"><ClipboardCheck size={22} /><strong>尚未发布协同单据</strong><span>选择上方类型并发布后，伙伴端会立即进入对应任务队列。</span></div>}
   </section>;
 }
 
@@ -419,6 +547,7 @@ export function CollaborationIdentityAdmin() {
               </div>
             </> : <div className="cia-empty"><AlertTriangle size={22} /><strong>资源权限暂不可用</strong><span>请刷新页面；在权限载入前不会扩大任何组织的访问范围。</span></div>}
           </section>
+          {access?.resources?.some((resource) => ["production", "procurement", "sampling"].includes(resource.resourceRef)) ? <PartnerTaskPanel organization={detail.organization} access={access} notify={approvalNotify} /> : null}
           <section className="cia-section">
             <div className="cia-section-head"><div><Users size={18} /><div><h4>已激活成员</h4><p>这里只查看状态。日常新增和角色调整由组织管理员在外部门户完成。</p></div></div><span>{detail.members.length} 人</span></div>
             {detail.members.length ? <div className="cia-table-wrap"><table className="cia-table"><thead><tr><th>成员</th><th>角色</th><th>账号状态</th><th>最近登录</th></tr></thead><tbody>{detail.members.map((member) => <tr key={member.id}><td><strong>{member.displayName}</strong><small>{member.username} · {member.email || "未留邮箱"}</small></td><td>{roleLabels[member.role] || member.role}</td><td><span className={`cia-state ${member.status === "active" ? "cia-state-accepted" : "cia-state-expired"}`}>{member.status === "active" ? "正常" : "已停用"}</span><small>账号密码直接登录</small></td><td>{formatTime(member.lastLoginAt)}</td></tr>)}</tbody></table></div> : <div className="cia-empty"><Users size={22} /><strong>暂无管理员账号</strong><span>创建组织时会同步建立首位管理员账号。</span></div>}
