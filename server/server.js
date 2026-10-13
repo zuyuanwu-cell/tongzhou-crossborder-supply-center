@@ -28,9 +28,11 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseProductCreateCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
+import { createSkuCodingRegistry } from "./sku-coding-registry.js";
+import { createSkuCodingService } from "./sku-coding-service.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { BUILTIN_ROLE_IDS, createUserRole, deleteUserRole, normalizeUserRoles, projectUserRoles, replaceUserRole, resolveUserRole, updateUserRole } from "./user-roles.js";
@@ -165,6 +167,7 @@ const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
+const skuCodingRegistryPath = resolve(cacheDir, "sku-coding.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
 const businessChainDbPath = resolve(process.env.BUSINESS_CHAIN_DB_PATH || resolve(cacheDir, "business-chain.sqlite"));
@@ -216,6 +219,16 @@ let cachedStockupWorkflow = loadJsonCache(stockupWorkflowCachePath) || {
 let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
+const skuCodingRegistry = createSkuCodingRegistry({ filePath: skuCodingRegistryPath });
+const skuCodingService = createSkuCodingService({
+  registry: skuCodingRegistry,
+  completeProductCodingFn: completeProductCoding,
+  createWarehouseProductFn: createWarehouseProduct,
+  resolveConnection: (connectionId) => {
+    const connection = warehouseConnections.find((item) => String(item.id) === String(connectionId));
+    return connection ? effectiveWarehouseProductConnection(connection) : null;
+  },
+});
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
@@ -2512,6 +2525,12 @@ function effectiveWarehouseCreateConnection(connection) {
   return fallback ? { ...connection, credentials: fallback.credentials } : connection;
 }
 
+function effectiveWarehouseProductConnection(connection) {
+  if (warehouseProductCreateCapability(connection).configured) return connection;
+  const fallback = sameSystemCredentialFallback(connection);
+  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+}
+
 function parseFirstMileContact(value) {
   const source = String(value || "").trim();
   const contactName = source.match(/(?:联系人|收件人|contact(?:\s+person)?|consignee)\s*[:：]?\s*([^,，;；|\n\r]+)/i)?.[1]?.trim() || "";
@@ -2532,7 +2551,18 @@ function currentWmsWarehouseOptions() {
     warehouseConnections,
     cachedWarehouseInfo.warehouseInfo || [],
     (connection) => warehouseStockupCreateCapability(effectiveWarehouseCreateConnection(connection)),
-  );
+  ).map((option) => {
+    const connection = warehouseConnections.find((item) => item.id === option.connectionId);
+    const productCapability = warehouseProductCreateCapability(connection ? effectiveWarehouseProductConnection(connection) : null);
+    return {
+      ...option,
+      productCreateSupported: productCapability.supported,
+      productCreateConfigured: productCapability.configured,
+      productCreateMode: productCapability.createMode,
+      productCreateMessage: productCapability.message,
+      productRequiredFields: productCapability.requiredFields,
+    };
+  });
 }
 
 function collaborationShipmentWmsConnection(shipment) {
@@ -2617,8 +2647,23 @@ function workflowWithWmsState(workflow) {
     ...workflow,
     warehouseOptions,
     wmsPushTasks,
+    codingCenter: skuCodingService.snapshot(workflow, warehouseOptions),
     productionTimelines: buildProductionTimelines(workflow, cachedActionLog, wmsPushTasks),
   };
+}
+
+function skuCodingActor(auth) {
+  return {
+    id: String(auth?.user?.id || auth?.user?.username || "system"),
+    name: String(auth?.user?.displayName || auth?.user?.name || auth?.user?.username || "系统"),
+  };
+}
+
+async function workflowForSkuCoding() {
+  if (!hasJdyCredentials()) return cachedStockupWorkflow;
+  const fresh = await loadStockupWorkflow();
+  const failed = (fresh.warnings || []).some((warning) => /读取失败/.test(String(warning)));
+  return failed ? cachedStockupWorkflow : fresh;
 }
 
 function listingNumber(value) {
@@ -11698,6 +11743,71 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasAnyPermission(auth, stockupViewPermissions)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
+        return;
+      }
+      sendJson(res, 200, skuCodingService.snapshot(cachedStockupWorkflow, currentWmsWarehouseOptions()));
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/product-coding/rules" && req.method === "PUT") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有 SKU 编码规则维护权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const rule = skuCodingService.upsertRule(payload, skuCodingActor(auth));
+      appendActionLog(auth, "维护 SKU 编码规则", "sku_coding_rule", rule.id, { prefix: rule.prefix, name: rule.name, enabled: rule.enabled });
+      sendJson(res, 200, { ok: true, rule, codingCenter: skuCodingService.snapshot(cachedStockupWorkflow, currentWmsWarehouseOptions()) });
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/product-coding/reservations" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有新品编码权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const workflow = await workflowForSkuCoding();
+      const reservation = skuCodingService.reserve(payload, workflow, skuCodingActor(auth));
+      appendActionLog(auth, "预占新品 SKU", "product_coding", reservation.sku, { reservationId: reservation.id, productRecordId: reservation.productRecordId, ruleId: reservation.ruleId });
+      sendJson(res, 201, { ok: true, reservation });
+      return;
+    }
+
+    const codingRetryMatch = url.pathname.match(/^\/api\/stockup\/workflow\/product-coding\/reservations\/([^/]+)\/retry$/);
+    if (codingRetryMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有 WMS 商品建档重试权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const result = await skuCodingService.retry({ ...payload, reservationId: decodeURIComponent(codingRetryMatch[1]) }, skuCodingActor(auth));
+      appendActionLog(auth, "重试 WMS 商品建档", "product_coding", result.sku, { reservationId: result.id, status: result.status });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const codingReservationMatch = url.pathname.match(/^\/api\/stockup\/workflow\/product-coding\/reservations\/([^/]+)$/);
+    if (codingReservationMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有新品编码权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const reservation = skuCodingService.cancel({ ...payload, reservationId: decodeURIComponent(codingReservationMatch[1]) }, skuCodingActor(auth));
+      appendActionLog(auth, "撤销 SKU 预占", "product_coding", reservation.sku, { reservationId: reservation.id, reason: reservation.cancelReason });
+      sendJson(res, 200, { ok: true, reservation });
+      return;
+    }
+
     if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "POST") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "stockup_workflow_manage")) {
@@ -11705,8 +11815,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      const workflow = await loadStockupWorkflow();
-      const result = await completeProductCoding(payload, workflow);
+      const workflow = await workflowForSkuCoding();
+      const result = await skuCodingService.complete(payload, workflow, skuCodingActor(auth));
       if (!payload.dryRun) appendActionLog(auth, "完成新品编码", "product_coding", result.sku, { productRecordId: result.productRecordId, demandRecordId: result.demandRecordId });
       if (!payload.dryRun) queueStockupWorkflowRefresh("product_coded");
       sendJson(res, 200, result);

@@ -93,6 +93,8 @@ import {
   StockupPayload,
   StockupCostPreview,
   StockupWorkflowPayload,
+  SkuCodingReservation,
+  SkuCodingRule,
   UserManagementPayload,
   UserRoleDefinition,
   WecomNotificationPayload,
@@ -116,6 +118,10 @@ import {
   confirmWorkflowWmsPush,
   cancelWorkflowExecution,
   completeWorkflowProductCoding,
+  reserveWorkflowSku,
+  cancelWorkflowSkuReservation,
+  retryWorkflowWmsProduct,
+  updateSkuCodingRule,
   rollbackWorkflowExecutionLine,
   updateWorkflowExecutionLine,
   voidWorkflowShipment,
@@ -4748,6 +4754,8 @@ function StockupCenter({
   const [inboundLimit, setInboundLimit] = React.useState(100);
   const [inboundLoading, setInboundLoading] = React.useState(false);
   const isRecommendationPage = pageMode === "recommendations";
+  const [recommendationWorkspace, setRecommendationWorkspace] = React.useState<"recommendations" | "coding">("recommendations");
+  const isCodingWorkspace = isRecommendationPage && recommendationWorkspace === "coding";
   const inboundTotal = stockupPayload?.pagination?.inbound?.total ?? inboundOrders.length;
 
   async function loadMoreInbound() {
@@ -4858,14 +4866,20 @@ function StockupCenter({
       {isRecommendationPage ? (
         <section className="stockup-command-bar">
           <div>
-            <p className="eyebrow">Replenishment Planning</p>
-            <h2>备货建议</h2>
-            <p>根据库存、销量、在途和委外在产数量生成建议；采纳后送入正式备货需求与供应执行流程。</p>
+            <p className="eyebrow">{isCodingWorkspace ? "SKU Coding Center" : "Replenishment Planning"}</p>
+            <h2>{isCodingWorkspace ? "新品编码中心" : "备货建议"}</h2>
+            <p>{isCodingWorkspace ? "统一管理 SKU 规则与流水号，并把新品一次建档到简道云和指定 WMS。" : "根据库存、销量、在途和委外在产数量生成建议；采纳后送入正式备货需求与供应执行流程。"}</p>
           </div>
           <div className="stockup-command-actions">
-            <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
-            <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
-            {canManage ? <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button> : <span className="status-pill muted">只读查看</span>}
+            <div className="stockup-workspace-switch" role="tablist" aria-label="备货建议工作区">
+              <button className={!isCodingWorkspace ? "active" : ""} type="button" role="tab" aria-selected={!isCodingWorkspace} onClick={() => setRecommendationWorkspace("recommendations")}>备货建议</button>
+              <button className={isCodingWorkspace ? "active" : ""} type="button" role="tab" aria-selected={isCodingWorkspace} onClick={() => setRecommendationWorkspace("coding")}>新品编码<strong>{workflowPayload?.counts.codingQueue || ""}</strong></button>
+            </div>
+            {!isCodingWorkspace ? <>
+              <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
+              <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
+              {canManage ? <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button> : <span className="status-pill muted">只读查看</span>}
+            </> : <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新编码数据</button>}
           </div>
         </section>
       ) : <>
@@ -4911,7 +4925,8 @@ function StockupCenter({
         {canManage && workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
       </section>
       </>}
-      {isRecommendationPage && acceptedRecommendations.length ? (
+      {isCodingWorkspace ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
+      {isRecommendationPage && !isCodingWorkspace && acceptedRecommendations.length ? (
         <section className="panel stockup-panel accepted-stockup-panel">
           <div className="panel-heading">
             <div>
@@ -5000,7 +5015,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && activePlans.length ? (
+      {isRecommendationPage && !isCodingWorkspace && activePlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel active-plan-panel">
           <div className="panel-heading">
             <div>
@@ -5060,7 +5075,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && arrivedPlans.length ? (
+      {isRecommendationPage && !isCodingWorkspace && arrivedPlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel arrived-review-panel">
           <div className="panel-heading">
             <div>
@@ -5114,7 +5129,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && abandonedRecommendations.length ? (
+      {isRecommendationPage && !isCodingWorkspace && abandonedRecommendations.length ? (
         <section className="panel stockup-panel dismissed-queue-panel">
           <div className="panel-heading">
             <div>
@@ -5135,7 +5150,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage ? <section className="panel stockup-panel recommendation-queue-panel">
+      {isRecommendationPage && !isCodingWorkspace ? <section className="panel stockup-panel recommendation-queue-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Replenishment Queue</p>
@@ -5190,7 +5205,7 @@ function StockupCenter({
         </div>
       </section> : null}
 
-      {isRecommendationPage ? <section className="panel stockup-panel stockup-wms-panel">
+      {isRecommendationPage && !isCodingWorkspace ? <section className="panel stockup-panel stockup-wms-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">WMS Inbound Orders</p>
@@ -6670,23 +6685,288 @@ function StockupCostLedger({ payload }: { payload: StockupWorkflowPayload | null
   );
 }
 
+type ProductCodingDraft = {
+  ruleId: string;
+  productName: string;
+  productNameEn: string;
+  unit: string;
+  brand: string;
+  category: string;
+  functionCategory: string;
+  productType: string;
+  skuAttribute: string;
+  specification: string;
+  barcode: string;
+  supplier: string;
+  supplierCode: string;
+  purchasePrice: number;
+  warningQty: number;
+  purchaseLeadDays: number;
+  minOrderQty: number;
+  weightKg: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
+  hsCode: string;
+  origin: string;
+  cartonSpecification: string;
+  declaredNameEn: string;
+  declaredValueUsd: number;
+  destinationCountry: string;
+};
+
+const emptyCodingDraft: ProductCodingDraft = {
+  ruleId: "", productName: "", productNameEn: "", unit: "件", brand: "", category: "", functionCategory: "", productType: "外采品", skuAttribute: "单品",
+  specification: "", barcode: "", supplier: "", supplierCode: "", purchasePrice: 0, warningQty: 0, purchaseLeadDays: 0, minOrderQty: 0,
+  weightKg: 0, lengthCm: 0, widthCm: 0, heightCm: 0, hsCode: "", origin: "中国", cartonSpecification: "", declaredNameEn: "", declaredValueUsd: 0, destinationCountry: "",
+};
+
 function ProductCodingWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
-  const queue = payload?.productCodingQueue ?? [];
-  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
+  const center = payload?.codingCenter;
+  const queue = center?.queue ?? payload?.productCodingQueue ?? [];
+  const rules = center?.rules ?? [];
+  const reservations = center?.reservations ?? [];
+  const warehouseOptions = center?.warehouseOptions ?? payload?.warehouseOptions ?? [];
+  const [activeId, setActiveId] = React.useState("");
+  const [draft, setDraft] = React.useState<ProductCodingDraft>(emptyCodingDraft);
+  const [selectedWarehouses, setSelectedWarehouses] = React.useState<string[]>([]);
   const [busy, setBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
-  async function submit(item: StockupWorkflowPayload["productCodingQueue"][number]) {
-    setBusy(true); setMessage("");
-    try { const result = await completeWorkflowProductCoding({ productRecordId: item.id, sku: drafts[item.id] || "" }); await onRefresh(); setMessage(`正式 SKU ${result.sku} 已回写产品档案和来源需求。`); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "编码保存失败"); } finally { setBusy(false); }
+  const [showDetails, setShowDetails] = React.useState(true);
+  const [showRules, setShowRules] = React.useState(false);
+  const [ruleForm, setRuleForm] = React.useState<Partial<SkuCodingRule>>({ name: "", prefix: "TZKJ-", digits: 3, kind: "自主品牌", brand: "", country: "", description: "", enabled: true });
+  const active = queue.find((item) => item.id === activeId) ?? queue[0];
+  const sourceDemand = payload?.demands.find((item) => item.id === active?.sourceDemandRecordId);
+  const activeReservation = reservations.find((item) => item.productRecordId === active?.id && item.status !== "cancelled");
+  const selectedRule = rules.find((item) => item.id === (activeReservation?.ruleId || draft.ruleId));
+  const selectedWarehouseOptions = warehouseOptions.filter((item) => selectedWarehouses.includes(item.connectionId));
+  const yunSelected = selectedWarehouseOptions.some((item) => item.providerId === "yunwms_ru");
+  const missingYunFields = yunSelected ? [
+    !draft.weightKg ? "重量" : "",
+    !draft.lengthCm ? "长度" : "",
+    !draft.widthCm ? "宽度" : "",
+    !draft.heightCm ? "高度" : "",
+    !draft.declaredNameEn.trim() ? "英文申报名" : "",
+    !draft.declaredValueUsd ? "申报价值(USD)" : "",
+  ].filter(Boolean) : [];
+
+  React.useEffect(() => {
+    if (!queue.length) { setActiveId(""); return; }
+    if (!queue.some((item) => item.id === activeId)) setActiveId(queue[0].id);
+  }, [activeId, queue]);
+
+  React.useEffect(() => {
+    if (!active) return;
+    const demand = payload?.demands.find((item) => item.id === active.sourceDemandRecordId);
+    const suggested = rules.find((item) => item.enabled && active.brand && item.brand.toLowerCase() === active.brand.toLowerCase())
+      || rules.find((item) => item.enabled && /印尼|印度尼西亚/.test(demand?.destinationCountry || "") && item.prefix === "TZKJ-IDWG")
+      || rules.find((item) => item.enabled);
+    setDraft({
+      ...emptyCodingDraft,
+      ruleId: activeReservation?.ruleId || suggested?.id || "",
+      productName: active.productName || demand?.productName || "",
+      productNameEn: active.productNameEn || "",
+      unit: active.unit || "件",
+      brand: active.brand || suggested?.brand || "",
+      category: active.category || "",
+      functionCategory: active.functionCategory || "",
+      productType: active.productType || (suggested?.kind === "自主品牌" ? "自主品" : "外采品"),
+      skuAttribute: active.skuAttribute || "单品",
+      specification: active.specification || "",
+      barcode: active.barcode || "",
+      supplier: active.supplier || "",
+      supplierCode: active.supplierCode || "",
+      purchasePrice: active.purchasePrice || 0,
+      warningQty: active.warningQty || 0,
+      weightKg: active.weightKg || 0,
+      lengthCm: active.lengthCm || 0,
+      widthCm: active.widthCm || 0,
+      heightCm: active.heightCm || 0,
+      hsCode: active.hsCode || "",
+      origin: active.origin || "中国",
+      cartonSpecification: active.cartonSpecification || "",
+      declaredNameEn: active.productNameEn || "",
+      destinationCountry: demand?.destinationCountry || "",
+    });
+    setSelectedWarehouses([]);
+    setMessage("");
+  }, [active?.id]);
+
+  function patchDraft(values: Partial<ProductCodingDraft>) {
+    setDraft((current) => ({ ...current, ...values }));
   }
+
+  async function reserve() {
+    if (!active || !draft.ruleId) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await reserveWorkflowSku({ productRecordId: active.id, ruleId: draft.ruleId });
+      await onRefresh();
+      setMessage(`已安全预占 ${result.reservation.sku}；该号码不会再分配给其他新品。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "SKU 预占失败"); } finally { setBusy(false); }
+  }
+
+  async function cancelReservation() {
+    if (!activeReservation) return;
+    setBusy(true); setMessage("");
+    try {
+      await cancelWorkflowSkuReservation(activeReservation.id, "编码规则调整");
+      await onRefresh();
+      setMessage(`${activeReservation.sku} 已撤销；为保证追溯，该号码不会回收。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "撤销预占失败"); } finally { setBusy(false); }
+  }
+
+  async function submit() {
+    if (!active || !activeReservation) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await completeWorkflowProductCoding({
+        productRecordId: active.id,
+        reservationId: activeReservation.id,
+        warehouseConnectionIds: selectedWarehouses,
+        product: { ...draft, purchasePriceCurrency: "CNY" },
+      });
+      await onRefresh();
+      setMessage(result.status === "partial"
+        ? `${result.sku} 已在简道云建档；部分 WMS 失败，已保留为可重试任务。`
+        : `${result.sku} 已完成简道云${selectedWarehouses.length ? "及所选 WMS" : ""}建档。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "产品建档失败"); } finally { setBusy(false); }
+  }
+
+  async function retryWms(reservation: SkuCodingReservation) {
+    setBusy(true); setMessage("");
+    try {
+      const result = await retryWorkflowWmsProduct(reservation.id);
+      await onRefresh();
+      setMessage(result.status === "completed" ? `${reservation.sku} 的 WMS 建档已全部完成。` : `${reservation.sku} 仍有 WMS 建档失败，请核对配置。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "WMS 重试失败"); } finally { setBusy(false); }
+  }
+
+  function editRule(rule?: SkuCodingRule) {
+    setRuleForm(rule ? { ...rule } : { name: "", prefix: "TZKJ-", digits: 3, kind: "自主品牌", brand: "", country: "", description: "", enabled: true });
+  }
+
+  async function saveRule() {
+    if (!ruleForm.name || !ruleForm.prefix) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await updateSkuCodingRule({
+        ...ruleForm,
+        name: ruleForm.name,
+        prefix: ruleForm.prefix,
+        digits: Number(ruleForm.digits || 3),
+      });
+      await onRefresh();
+      editRule();
+      setMessage(`编码规则 ${result.rule.prefix} 已保存，下一号为 ${result.rule.nextSku}。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "编码规则保存失败"); } finally { setBusy(false); }
+  }
+
+  function toggleWarehouse(connectionId: string) {
+    setSelectedWarehouses((current) => current.includes(connectionId) ? current.filter((id) => id !== connectionId) : [...current, connectionId]);
+  }
+
+  const recentReservations = reservations.filter((item) => item.status !== "reserved").slice(0, 8);
   return (
-    <section className="panel workflow-panel">
-      <div className="panel-heading"><div><p className="eyebrow">Product Coding</p><h2>外采新品编码队列</h2></div><span className={`status-pill ${queue.length ? "warning" : "good"}`}>{queue.length ? `${queue.length} 个待处理` : "无待办"}</span></div>
-      {message ? <div className="notice compact-notice">{message}</div> : null}
-      <div className="coding-queue-grid">
-        {queue.length ? queue.map((item) => <article key={item.id}><div className="coding-sequence">{item.temporaryProductNo || "临时号待生成"}</div><strong>{item.productName || "未填写产品名称"}</strong><span>{item.sourceDemandBatchNo ? `来源需求 ${item.sourceDemandBatchNo}` : "来自运营新品需求"}</span><dl><div><dt>编码状态</dt><dd>{item.skuCodingStatus || "待编码"}</dd></div><div><dt>正式 SKU</dt><dd>{item.officialSku || "尚未分配"}</dd></div><div><dt>申请时间</dt><dd>{item.codingAppliedAt ? formatDate(item.codingAppliedAt) : "未记录"}</dd></div></dl><div className="coding-action"><input value={drafts[item.id] || ""} onChange={(event) => setDrafts({ ...drafts, [item.id]: event.target.value.toUpperCase() })} placeholder="输入正式 SKU" /><button className="sync-button compact-button" type="button" disabled={busy || !drafts[item.id]} onClick={() => void submit(item)}>完成编码</button></div><small>{item.id.startsWith("demand:") ? "提交后会自动建立正式产品档案，并把 SKU 回写到来源需求。" : "提交后同步回写产品档案与来源需求，历史临时号继续保留追溯。"}</small></article>) : <div className="stockup-empty">当前没有等待人工编码的新品。</div>}
+    <section className="panel workflow-panel sku-coding-center">
+      <div className="panel-heading sku-coding-heading">
+        <div><p className="eyebrow">SKU Coding Center</p><h2>新品编码与一键建档</h2><small>一个完整前缀共用一个全球序号池；国家和仓库只决定建档目标，不改变 SKU。</small></div>
+        <div className="workflow-heading-actions"><span className={`status-pill ${queue.length ? "warning" : "good"}`}>{queue.length ? `${queue.length} 个待处理` : "队列已清空"}</span><button className="ghost-button compact-button" type="button" onClick={() => setShowRules((value) => !value)}><Settings size={14} />编码规则</button></div>
       </div>
+      {message ? <div className="notice compact-notice">{message}</div> : null}
+
+      <div className="sku-coding-metrics">
+        <article><span>可用规则</span><strong>{rules.filter((item) => item.enabled).length}</strong><small>可新增、自定义、停用</small></article>
+        <article><span>待编码新品</span><strong>{queue.length}</strong><small>来源于备货需求</small></article>
+        <article><span>已预占</span><strong>{reservations.filter((item) => item.status === "reserved").length}</strong><small>号码锁定，防止撞号</small></article>
+        <article><span>待重试</span><strong>{reservations.filter((item) => item.status === "partial").length}</strong><small>简道云已成功，WMS 可重试</small></article>
+      </div>
+
+      {showRules ? <div className="sku-rule-workbench">
+        <div className="sku-rule-list">
+          {rules.map((rule) => <button type="button" key={rule.id} className={ruleForm.id === rule.id ? "active" : ""} onClick={() => editRule(rule)}><span>{rule.name}<small>{rule.kind}{rule.brand ? ` · ${rule.brand}` : ""}</small></span><strong>{rule.nextSku}</strong><em className={rule.enabled ? "enabled" : "disabled"}>{rule.enabled ? "启用" : "停用"}</em></button>)}
+          <button type="button" className="sku-rule-add" onClick={() => editRule()}><Plus size={16} />新增编码规则</button>
+        </div>
+        <div className="sku-rule-form">
+          <label><span>规则名称</span><input value={ruleForm.name || ""} onChange={(event) => setRuleForm({ ...ruleForm, name: event.target.value })} placeholder="例如：WET 自主品牌" /></label>
+          <label><span>完整前缀</span><input value={ruleForm.prefix || ""} onChange={(event) => setRuleForm({ ...ruleForm, prefix: event.target.value.toUpperCase() })} placeholder="TZKJ-WET" disabled={Boolean(ruleForm.id && (ruleForm.issuedMax || 0) > 0)} /></label>
+          <label><span>数字位数</span><input type="number" min="2" max="8" value={ruleForm.digits || 3} onChange={(event) => setRuleForm({ ...ruleForm, digits: Number(event.target.value) })} /></label>
+          <label><span>规则类型</span><select value={ruleForm.kind || "自主品牌"} onChange={(event) => setRuleForm({ ...ruleForm, kind: event.target.value })}><option>自主品牌</option><option>外采品</option><option>历史规则</option><option>其他</option></select></label>
+          <label><span>品牌</span><input value={ruleForm.brand || ""} onChange={(event) => setRuleForm({ ...ruleForm, brand: event.target.value })} placeholder="品牌缩写或品牌名" /></label>
+          <label><span>国家标签</span><input value={ruleForm.country || ""} onChange={(event) => setRuleForm({ ...ruleForm, country: event.target.value })} placeholder="仅用于提示，不参与序号" /></label>
+          <label className="wide-field"><span>说明</span><input value={ruleForm.description || ""} onChange={(event) => setRuleForm({ ...ruleForm, description: event.target.value })} placeholder="编码适用范围" /></label>
+          <label className="sku-rule-toggle"><input type="checkbox" checked={ruleForm.enabled !== false} onChange={(event) => setRuleForm({ ...ruleForm, enabled: event.target.checked })} /><span>允许继续发号</span></label>
+          <div className="workflow-form-actions"><button className="ghost-button compact-button" type="button" onClick={() => editRule()}>清空</button><button className="sync-button compact-button" type="button" disabled={busy || !ruleForm.name || !ruleForm.prefix} onClick={() => void saveRule()}>保存规则</button></div>
+        </div>
+      </div> : null}
+
+      {queue.length && active ? <div className="sku-coding-layout">
+        <aside className="sku-coding-queue">
+          <div className="sku-coding-section-title"><div><span>01</span><strong>选择新品</strong></div><small>{queue.length} 项</small></div>
+          {queue.map((item) => {
+            const reservation = reservations.find((entry) => entry.productRecordId === item.id && entry.status !== "cancelled");
+            return <button type="button" key={item.id} className={item.id === active.id ? "active" : ""} onClick={() => setActiveId(item.id)}><span className="coding-sequence">{reservation?.sku || item.temporaryProductNo || "待取号"}</span><strong>{item.productName || "未填写产品名称"}</strong><small>{item.sourceDemandBatchNo || "运营新品需求"}</small><em className={reservation ? "reserved" : "pending"}>{reservation ? "已预占" : "待编码"}</em></button>;
+          })}
+        </aside>
+
+        <div className="sku-coding-editor">
+          <div className="sku-code-console">
+            <div className="sku-coding-section-title"><div><span>02</span><strong>确认编码</strong></div><small>全局防重</small></div>
+            <label><span>编码规则</span><select value={activeReservation?.ruleId || draft.ruleId} disabled={Boolean(activeReservation)} onChange={(event) => { const rule = rules.find((item) => item.id === event.target.value); patchDraft({ ruleId: event.target.value, brand: draft.brand || rule?.brand || "", productType: rule?.kind === "自主品牌" ? "自主品" : draft.productType }); }}><option value="">请选择编码规则</option>{rules.filter((item) => item.enabled || item.id === activeReservation?.ruleId).map((rule) => <option value={rule.id} key={rule.id}>{rule.name} · 下一号 {rule.nextSku}</option>)}</select></label>
+            <div className={`sku-next-code ${activeReservation ? "locked" : ""}`}><span>{activeReservation ? "已预占正式 SKU" : "系统建议下一编码"}</span><strong>{activeReservation?.sku || selectedRule?.nextSku || "选择规则后生成"}</strong><small>{selectedRule ? `当前已到 ${selectedRule.currentSku || "尚未发号"} · ${selectedRule.digits} 位序号` : "每个完整前缀独立递增"}</small></div>
+            <div className="sku-code-actions">{activeReservation ? <><button className="ghost-button compact-button danger-button" type="button" disabled={busy} onClick={() => void cancelReservation()}><X size={14} />撤销预占</button><span><Lock size={14} />号码已锁定，不会重复分配</span></> : <button className="sync-button" type="button" disabled={busy || !draft.ruleId} onClick={() => void reserve()}><KeyRound size={16} />获取并预占下一编码</button>}</div>
+          </div>
+
+          <div className="sku-archive-form">
+            <div className="sku-coding-section-title"><div><span>03</span><strong>完善产品档案</strong></div><button className="ghost-button compact-button" type="button" onClick={() => setShowDetails((value) => !value)}>{showDetails ? "收起字段" : "展开字段"}<ChevronDown size={14} /></button></div>
+            <div className="sku-core-fields">
+              <label className="wide-field"><span>中文名称 *</span><input value={draft.productName} onChange={(event) => patchDraft({ productName: event.target.value })} /></label>
+              <label><span>品牌</span><input value={draft.brand} onChange={(event) => patchDraft({ brand: event.target.value })} /></label>
+              <label><span>单位</span><input value={draft.unit} onChange={(event) => patchDraft({ unit: event.target.value })} /></label>
+              <label><span>产品类型</span><select value={draft.productType} onChange={(event) => patchDraft({ productType: event.target.value })}><option>外采品</option><option>自主品</option><option>组合品</option><option>其他</option></select></label>
+              <label><span>SKU 属性</span><select value={draft.skuAttribute} onChange={(event) => patchDraft({ skuAttribute: event.target.value })}><option>单品</option><option>组合品</option><option>赠品</option><option>其他</option></select></label>
+            </div>
+            {showDetails ? <div className="sku-detail-fields">
+              <label className="wide-field"><span>英文名称</span><input value={draft.productNameEn} onChange={(event) => patchDraft({ productNameEn: event.target.value, declaredNameEn: draft.declaredNameEn || event.target.value })} /></label>
+              <label><span>产品分类</span><input value={draft.category} onChange={(event) => patchDraft({ category: event.target.value })} /></label>
+              <label><span>功效分类</span><input value={draft.functionCategory} onChange={(event) => patchDraft({ functionCategory: event.target.value })} /></label>
+              <label><span>规格</span><input value={draft.specification} onChange={(event) => patchDraft({ specification: event.target.value })} placeholder="如 50g / 100ml" /></label>
+              <label><span>条码</span><input value={draft.barcode} onChange={(event) => patchDraft({ barcode: event.target.value })} /></label>
+              <label><span>供应商</span><input value={draft.supplier} onChange={(event) => patchDraft({ supplier: event.target.value })} /></label>
+              <label><span>供应商编码</span><input value={draft.supplierCode} onChange={(event) => patchDraft({ supplierCode: event.target.value })} /></label>
+              <label><span>采购成本 CNY</span><input type="number" min="0" step="0.01" value={draft.purchasePrice || ""} onChange={(event) => patchDraft({ purchasePrice: Number(event.target.value) })} /></label>
+              <label><span>库存预警值</span><input type="number" min="0" value={draft.warningQty || ""} onChange={(event) => patchDraft({ warningQty: Number(event.target.value) })} /></label>
+              <label><span>采购周期（天）</span><input type="number" min="0" value={draft.purchaseLeadDays || ""} onChange={(event) => patchDraft({ purchaseLeadDays: Number(event.target.value) })} /></label>
+              <label><span>最小起订量</span><input type="number" min="0" value={draft.minOrderQty || ""} onChange={(event) => patchDraft({ minOrderQty: Number(event.target.value) })} /></label>
+              <label><span>重量 kg</span><input type="number" min="0" step="0.001" value={draft.weightKg || ""} onChange={(event) => patchDraft({ weightKg: Number(event.target.value) })} /></label>
+              <label><span>长 cm</span><input type="number" min="0" step="0.01" value={draft.lengthCm || ""} onChange={(event) => patchDraft({ lengthCm: Number(event.target.value) })} /></label>
+              <label><span>宽 cm</span><input type="number" min="0" step="0.01" value={draft.widthCm || ""} onChange={(event) => patchDraft({ widthCm: Number(event.target.value) })} /></label>
+              <label><span>高 cm</span><input type="number" min="0" step="0.01" value={draft.heightCm || ""} onChange={(event) => patchDraft({ heightCm: Number(event.target.value) })} /></label>
+              <label><span>HS 编码</span><input value={draft.hsCode} onChange={(event) => patchDraft({ hsCode: event.target.value })} /></label>
+              <label><span>原产地</span><input value={draft.origin} onChange={(event) => patchDraft({ origin: event.target.value })} /></label>
+              <label><span>箱规</span><input value={draft.cartonSpecification} onChange={(event) => patchDraft({ cartonSpecification: event.target.value })} /></label>
+              <label><span>英文申报名</span><input value={draft.declaredNameEn} onChange={(event) => patchDraft({ declaredNameEn: event.target.value })} /></label>
+              <label><span>申报价值 USD</span><input type="number" min="0" step="0.01" value={draft.declaredValueUsd || ""} onChange={(event) => patchDraft({ declaredValueUsd: Number(event.target.value) })} /></label>
+            </div> : null}
+          </div>
+
+          <div className="sku-warehouse-picker">
+            <div className="sku-coding-section-title"><div><span>04</span><strong>选择 WMS 建档目标</strong></div><small>可不选，稍后再建</small></div>
+            <div className="sku-warehouse-grid">
+              {warehouseOptions.map((warehouse) => <label key={warehouse.connectionId} className={`${selectedWarehouses.includes(warehouse.connectionId) ? "selected" : ""} ${!warehouse.productCreateConfigured ? "disabled" : ""}`}><input type="checkbox" checked={selectedWarehouses.includes(warehouse.connectionId)} disabled={!warehouse.productCreateConfigured} onChange={() => toggleWarehouse(warehouse.connectionId)} /><span><strong>{warehouse.warehouseName}</strong><small>{warehouse.country} · {warehouse.providerName}</small></span><em>{warehouse.productCreateConfigured ? warehouse.productCreateMode || "可建档" : warehouse.productCreateMessage || "未配置"}</em></label>)}
+              {!warehouseOptions.length ? <div className="stockup-empty">还没有可选择的仓库连接；可以先完成简道云建档。</div> : null}
+            </div>
+            {missingYunFields.length ? <div className="sku-field-warning"><AlertTriangle size={16} /><span>俄罗斯 YunWMS 还需要：{missingYunFields.join("、")}</span></div> : null}
+          </div>
+
+          <div className="sku-submit-bar"><div><strong>{activeReservation?.sku || "请先预占 SKU"}</strong><span>先创建/完善简道云产品基础档案，再逐个创建所选 WMS 商品档案。</span></div><button className="sync-button" type="button" disabled={busy || !activeReservation || !draft.productName.trim() || missingYunFields.length > 0} onClick={() => void submit()}>{busy ? <LoaderCircle className="spinning" size={16} /> : <PackageCheck size={16} />}一键完成建档</button></div>
+        </div>
+      </div> : <div className="stockup-empty sku-coding-empty"><PackageCheck size={30} /><strong>当前没有等待编码的新品</strong><span>在备货需求中选择“外采新品”，提交后会自动进入这里。</span></div>}
+
+      {recentReservations.length ? <div className="sku-coding-history">
+        <div className="sku-coding-section-title"><div><span>05</span><strong>最近建档记录</strong></div><small>失败目标可单独重试</small></div>
+        <div className="sku-history-list">{recentReservations.map((reservation) => <article key={reservation.id}><div><span className="coding-sequence">{reservation.sku}</span><strong>{reservation.productName || "未填写产品名称"}</strong><small>{formatDateTime(reservation.updatedAt)}</small></div><div className="sku-archive-progress"><span className={reservation.jdyStatus === "success" ? "done" : "pending"}><Check size={13} />简道云</span>{reservation.warehouseResults.map((result) => <span key={result.connectionId} className={result.status === "success" ? "done" : "failed"} title={result.message}>{result.status === "success" ? <Check size={13} /> : <AlertTriangle size={13} />}{result.warehouseName || result.connectionId}</span>)}</div><div className="sku-history-status"><b className={`status-pill ${reservation.status === "completed" ? "good" : reservation.status === "partial" ? "warning" : "muted"}`}>{reservation.status === "completed" ? "建档完成" : reservation.status === "partial" ? "部分失败" : "已撤销"}</b>{reservation.status === "partial" ? <button className="ghost-button compact-button" type="button" disabled={busy} onClick={() => void retryWms(reservation)}><RefreshCw size={13} />重试 WMS</button> : null}</div></article>)}</div>
+      </div> : null}
     </section>
   );
 }
