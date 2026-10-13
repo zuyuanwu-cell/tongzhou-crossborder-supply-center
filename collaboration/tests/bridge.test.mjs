@@ -12,6 +12,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
   const requests = [];
   const movements = [];
+  const sourceFeedback = [];
   let remainingResultFailures = resultFailures;
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url: String(url), method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null, authorization: options.headers?.Authorization });
@@ -56,9 +57,10 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     oemEnabled,
     listActiveOutsourcingOrders: async () => outsourcingRecords,
     listOutsourcingFactoryOrders: async (factoryId) => outsourcingRecords.filter((record) => String(record._widget_1741698535338?.value || "") === String(factoryId)),
+    recordOutsourcingPartnerFeedback: async (feedback) => { sourceFeedback.push(feedback); return { ok: true, skipped: false }; },
     fetchImpl,
   });
-  return { bridge, movements, requests, store };
+  return { bridge, movements, requests, sourceFeedback, store };
 }
 
 const projection = {
@@ -156,6 +158,11 @@ test("JiandaoYun factory binding projects only the exact factory active outsourc
         _widget_1690015838240: "进行中",
         _widget_1753770713537: "CD26063656",
         _widget_1666513866235: "DEVNEN 防晒美白乳液",
+        _widget_1741575793630: "375ml 光银软管配内托",
+        _widget_1666513866239: "6970000000215",
+        _widget_1705027350738: "灌装,打码,装盒,包材测试",
+        _widget_1743344141428: "专用箱（印箱唛）",
+        _widget_1742959598371: 48,
         _widget_1666513866237: 10000,
         _widget_1741671761933: "瓶",
         _widget_1666522275282: "2026-10-30T16:00:00.000Z",
@@ -191,6 +198,12 @@ test("JiandaoYun factory binding projects only the exact factory active outsourc
   const projection = requests.find((request) => request.url.endsWith("/partner-orders/projections"));
   assert.equal(projection.body.coreRefId, "JG26092902");
   assert.equal(projection.body.publicPayload.fulfillmentMode, "labor_only");
+  assert.equal(projection.body.publicPayload.productSpec, "375ml 光银软管配内托");
+  assert.equal(projection.body.publicPayload.barcode, "6970000000215");
+  assert.equal(projection.body.publicPayload.productionProcess, "灌装,打码,装盒,包材测试");
+  assert.equal(projection.body.publicPayload.cartonType, "专用箱（印箱唛）");
+  assert.equal(projection.body.publicPayload.piecesPerCarton, 48);
+  assert.equal(projection.body.lines[0].specification, "375ml 光银软管配内托");
   assert.equal(projection.body.lines.length, 2);
   assert.equal(projection.body.lines.some((line) => line.productName === "外购玻璃瓶"), false);
   assert.equal(JSON.stringify(projection.body).includes("sensitive-customer"), false);
@@ -357,6 +370,41 @@ test("a result callback outage never replays an already-booked inventory movemen
   assert.equal(store.command(command.id).local_status, "applied");
 });
 
+test("factory production feedback is written back to the JiandaoYun source once", async (t) => {
+  const command = {
+    id: "95555555-5555-4555-8555-555555555555",
+    organizationCode: "mf-songyu",
+    workItemId: "96666666-6666-4666-8666-666666666666",
+    coreRefType: "jiandaoyun_outsourcing_order",
+    coreRefId: "JG26101301",
+    itemType: "production_order",
+    publicPayload: { orderNo: "JG26101301", productName: "测试产品", fulfillmentMode: "turnkey" },
+    commandType: "order_production_progress",
+    idempotencyKey: "production-progress-1",
+    expectedVersion: 2,
+    payload: { reportType: "production_progress", stage: "filling", progressPercent: 35, completedQuantity: 3500, expectedCompletionDate: "2026-10-20", note: "首批灌装完成" },
+    riskLevel: "medium",
+    status: "pending_sync",
+    submittedByName: "松雨生产负责人",
+    submittedAt: "2026-10-13T12:00:00.000Z",
+  };
+  const { bridge, sourceFeedback, store } = await fixture(t, { commands: [command] });
+  assert.equal((await bridge.pullCommands()).processed, 1);
+  assert.equal(sourceFeedback.length, 1);
+  assert.deepEqual(sourceFeedback[0], { orderNo: "JG26101301", commandType: "order_production_progress", payload: command.payload, submittedByName: "松雨生产负责人", submittedAt: command.submittedAt });
+  assert.match(store.command(command.id).result.message, /千顷 ERP/);
+  await bridge.pullCommands();
+  assert.equal(sourceFeedback.length, 1, "applied command must never be written back twice");
+});
+
+test("organization order detail is scoped to its organization and cannot leak through warehouse routes", async (t) => {
+  const item = { id: "98888888-8888-4888-8888-888888888888", organizationCode: "mf-songyu", itemType: "production_order", publicPayload: { orderNo: "JG26101302" } };
+  const { bridge } = await fixture(t, { workItems: [item], workItemDetail: { item, lines: [], events: [], attachments: [], commands: [], partnerOrder: { lines: [], reports: [], milestones: [] } } });
+  assert.equal((await bridge.getOrganizationWorkItem("mf-songyu", item.id)).item.id, item.id);
+  await assert.rejects(() => bridge.getOrganizationWorkItem("mf-other", item.id), (error) => error?.code === "organization_scope_denied");
+  await assert.rejects(() => bridge.getWarehouseTask(item.id), (error) => error?.code === "warehouse_task_type_denied");
+});
+
 test("identity administration stays behind the server-side collaboration token", async (t) => {
   const { bridge, requests } = await fixture(t);
   const invitationId = "77777777-7777-4777-8777-777777777777";
@@ -396,7 +444,7 @@ test("identity administration stays behind the server-side collaboration token",
 
 test("internal staff can publish an allowlisted warehouse task and read partner progress", async (t) => {
   const workItemDetail = {
-    item: { id: "88888888-8888-4888-8888-888888888888", publicPayload: { warehouseRef: "warehouse-1" } },
+    item: { id: "88888888-8888-4888-8888-888888888888", itemType: "warehouse_inbound", publicPayload: { warehouseRef: "warehouse-1" } },
     lines: [{ sku: "SKU-1" }],
     events: [],
     attachments: [],

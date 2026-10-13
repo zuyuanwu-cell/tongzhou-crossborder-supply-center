@@ -1,5 +1,5 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, Factory, FlaskConical, KeyRound, LoaderCircle, LockKeyhole, Mail, PackageCheck, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Trash2, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
+import { AlertTriangle, Boxes, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, Download, Factory, FileText, FlaskConical, KeyRound, LoaderCircle, LockKeyhole, Mail, PackageCheck, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Trash2, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
 import {
   bootstrapCollaborationOrganization,
   CollaborationAccessGrant,
@@ -15,11 +15,14 @@ import {
   CollaborationPartnerTaskInput,
   CollaborationPartnerTaskType,
   CollaborationPartnerWorkItem,
+  CollaborationPartnerWorkItemDetail,
+  downloadCollaborationOrganizationWorkItemAttachment,
   fetchCollaborationOrganizationAccess,
   fetchCollaborationOrganizationAccessGrants,
   fetchCollaborationApprovals,
   fetchCollaborationOrganizations,
   fetchCollaborationOrganizationWorkItems,
+  fetchCollaborationOrganizationWorkItem,
   fetchCollaborationOutsourcingSource,
   publishCollaborationPartnerTask,
   reissueCollaborationInvitation,
@@ -168,6 +171,43 @@ function emptyPartnerTaskDraft(): PartnerTaskDraft {
   };
 }
 
+const partnerReportLabels: Record<string, string> = {
+  production_progress: "生产进度", material_readiness: "物料与包材", purchase_fulfillment: "采购履约", exception: "异常上报", shipment: "发货反馈",
+};
+const partnerMilestoneLabels: Record<string, string> = { pending: "待完成", in_progress: "进行中", completed: "已完成", blocked: "有异常" };
+
+function PartnerTaskDetailModal({ organizationCode, detail, loading, onClose, notify }: {
+  organizationCode: string; detail: CollaborationPartnerWorkItemDetail | null; loading: boolean; onClose(): void; notify(message: string, error?: boolean): void;
+}) {
+  async function download(workItemId: string, attachment: CollaborationPartnerWorkItemDetail["attachments"][number]) {
+    try {
+      const { blob } = await downloadCollaborationOrganizationWorkItemAttachment(organizationCode, workItemId, attachment.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = attachment.fileName; anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "附件下载失败", true); }
+  }
+  const item = detail?.item; const order = detail?.partnerOrder;
+  const latestProgress = order?.reports.find((report) => report.reportType === "production_progress");
+  return <div className="cia-modal-layer cia-task-detail-layer" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><article className="cia-modal cia-task-detail-modal">
+    <header><div><span className="cia-eyebrow">PARTNER ORDER TRACE</span><h3>{item?.title || "协同单据详情"}</h3><p>{item ? `${item.coreRefId} · ${partnerTaskStatusLabels[item.status] || item.status} · V${item.version}` : "读取伙伴反馈与中台处理结果"}</p></div><button type="button" onClick={onClose}><X size={18} /></button></header>
+    {loading || !detail || !item ? <div className="cia-loading"><LoaderCircle size={22} className="cia-spin" />正在读取工厂反馈明细…</div> : <div className="cia-task-detail-body">
+      <section className="cia-task-detail-facts">
+        <div><span>订单产品</span><strong>{String(item.publicPayload.productName || "—")}</strong><small>{String(item.publicPayload.productSpec || "未填写规格")}</small></div>
+        <div><span>计划数量</span><strong>{Number(item.publicPayload.quantity || 0).toLocaleString()} {String(item.publicPayload.unit || "件")}</strong><small>{item.publicPayload.piecesPerCarton ? `${Number(item.publicPayload.piecesPerCarton)} ${String(item.publicPayload.unit || "件")}/箱` : "未填写箱规"}</small></div>
+        <div><span>要求交期</span><strong>{item.publicPayload.deliveryDate || (item.dueAt ? formatTime(item.dueAt) : "—")}</strong><small>{item.publicPayload.factoryExpectedDeliveryDate ? `工厂回复 ${item.publicPayload.factoryExpectedDeliveryDate}` : "等待工厂回复"}</small></div>
+        <div><span>最新进度</span><strong>{latestProgress?.progressPercent == null ? "尚未反馈" : `${latestProgress.progressPercent}%`}</strong><small>{latestProgress?.note || "接单后由工厂更新"}</small></div>
+      </section>
+      {item.publicPayload.productionProcess || item.publicPayload.cartonType || item.publicPayload.barcode ? <section className="cia-task-source-brief"><div><span>生产工序</span><p>{String(item.publicPayload.productionProcess || "未填写")}</p></div><div><span>外箱 / 条码</span><p>{[item.publicPayload.cartonType, item.publicPayload.barcode].filter(Boolean).join(" · ") || "未填写"}</p></div></section> : null}
+      <section className="cia-task-detail-section"><div className="cia-task-detail-title"><Boxes size={17} /><strong>成品、物料与包材</strong><span>{order?.lines.length || 0} 项</span></div><div className="cia-task-detail-lines">{order?.lines.map((line) => <article key={line.id}><em>{line.lineType === "finished_product" ? "成品" : line.lineType === "packaging" ? "包材" : "原料"}</em><div><strong>{line.productName}</strong><small>{line.sku}{line.specification ? ` · ${line.specification}` : ""}</small></div><b>{line.plannedQuantity.toLocaleString()} {line.unit}</b></article>)}</div></section>
+      {order?.milestones.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><ClipboardCheck size={17} /><strong>关键节点</strong></div><div className="cia-task-milestones">{order.milestones.map((milestone) => <article className={milestone.status} key={milestone.id}><span>{milestone.title}</span><b>{partnerMilestoneLabels[milestone.status] || milestone.status}</b><small>{milestone.plannedAt ? `计划 ${formatTime(milestone.plannedAt)}` : "未设计划日期"}</small></article>)}</div></section> : null}
+      <section className="cia-task-detail-section"><div className="cia-task-detail-title"><Factory size={17} /><strong>工厂反馈</strong><span>{order?.reports.length || 0} 条</span></div>{order?.reports.length ? <div className="cia-task-report-list">{order.reports.map((report) => <article className={report.result === "failed" || report.severity === "critical" ? "danger" : ""} key={report.id}><span /><div><strong>{report.title || partnerReportLabels[report.reportType] || report.reportType}</strong><p>{report.note || `${report.stage} · ${report.result}`}</p><small>{report.submittedByName || "工厂成员"} · {formatTime(report.createdAt)}{report.quantity != null ? ` · 数量 ${report.quantity.toLocaleString()}` : ""}</small></div>{report.progressPercent != null ? <b>{report.progressPercent}%</b> : <em>{partnerReportLabels[report.reportType] || "反馈"}</em>}</article>)}</div> : <div className="cia-empty compact"><Factory size={20} /><strong>工厂尚未汇报进度</strong><span>接单已联通；提交生产、物料测试、异常或发货反馈后会显示在这里。</span></div>}</section>
+      {detail.attachments.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><FileText size={17} /><strong>凭证附件</strong><span>{detail.attachments.length} 个</span></div><div className="cia-task-attachments">{detail.attachments.map((attachment) => <button type="button" key={attachment.id} onClick={() => void download(item.id, attachment)}><FileText size={16} /><span><b>{attachment.fileName}</b><small>{attachment.scanStatus === "clean" ? "已安全校验" : attachment.scanStatus}</small></span><Download size={15} /></button>)}</div></section> : null}
+      <section className="cia-task-detail-section"><div className="cia-task-detail-title"><RefreshCw size={17} /><strong>中台处理与审计</strong><span>{detail.commands.length + detail.events.length} 条</span></div><div className="cia-task-audit-list">{detail.commands.slice(0, 10).map((command) => <article key={command.id}><strong>{partnerReportLabels[command.commandType.replace(/^order_/, "")] || (command.commandType === "accept" ? "接受任务" : command.commandType)}</strong><span>{command.status === "applied" ? "中台已接收" : command.status}</span><small>{command.resultMessage || "等待处理结果"} · {formatTime(command.submittedAt)}</small></article>)}</div></section>
+    </div>}
+  </article></div>;
+}
+
 function PartnerTaskPanel({ organization, access, notify }: {
   organization: CollaborationOrganization;
   access: CollaborationAccessGrantPayload | null;
@@ -181,6 +221,9 @@ function PartnerTaskPanel({ organization, access, notify }: {
   const [selectedFactoryId, setSelectedFactoryId] = useState("");
   const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceBusy, setSourceBusy] = useState(false);
+  const [selectedItemId, setSelectedItemId] = useState("");
+  const [selectedDetail, setSelectedDetail] = useState<CollaborationPartnerWorkItemDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const selectedType = partnerTaskTypes.find((item) => item.value === draft.taskType) || partnerTaskTypes[0];
   const enabled = Boolean(access?.grants.some((grant) => grant.resourceRef === selectedType.resourceRef && grant.permissions.includes(selectedType.permission)));
   const productionEnabled = Boolean(access?.grants.some((grant) => grant.resourceRef === "production" && grant.permissions.includes("production.order.view")));
@@ -274,12 +317,19 @@ function PartnerTaskPanel({ organization, access, notify }: {
     } finally { setSourceBusy(false); }
   }
 
+  async function openDetail(item: CollaborationPartnerWorkItem) {
+    setSelectedItemId(item.id); setSelectedDetail(null); setDetailLoading(true);
+    try { setSelectedDetail(await fetchCollaborationOrganizationWorkItem(organization.code, item.id)); }
+    catch (reason) { notify(reason instanceof Error ? reason.message : "协同单据详情读取失败", true); setSelectedItemId(""); }
+    finally { setDetailLoading(false); }
+  }
+
   return <section className="cia-section cia-partner-tasks">
     <div className="cia-section-head"><div><ClipboardCheck size={18} /><div><h4>协同单据</h4><p>只有明确发布到“{organization.name}”的单据才会进入该组织，松雨等伙伴无法按单号越权搜索其他组织的数据。</p></div></div><button type="button" className="cia-secondary" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "cia-spin" : ""} />刷新进度</button></div>
     <div className="cia-task-type-tabs">{partnerTaskTypes.map(({ value, label, icon: Icon }) => <button type="button" key={value} className={draft.taskType === value ? "active" : ""} onClick={() => setDraft((current) => ({ ...current, taskType: value }))}><Icon size={16} />{label}<em>{items.filter((item) => item.itemType === value).length}</em></button>)}</div>
     {!enabled ? <div className="cia-task-permission-warning"><LockKeyhole size={17} /><span>当前组织尚未开通“{selectedType.label}”。请先在上方勾选对应业务空间、使用推荐权限并保存。</span></div> : null}
     {draft.taskType === "production_order" ? <div className="cia-outsourcing-source">
-      <div className="cia-outsourcing-source-head"><div><Factory size={18} /><div><strong>千顷 ERP · 委外加工单</strong><span>绑定工厂编号后自动同步，不在中台重复录单</span></div></div><em>只读数据投影</em></div>
+      <div className="cia-outsourcing-source-head"><div><Factory size={18} /><div><strong>千顷 ERP · 委外加工单</strong><span>绑定工厂编号后自动同步，不在中台重复录单；伙伴进度会回写源单</span></div></div><em>源单只读 · 反馈回写</em></div>
       {sourceLoading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取简道云工厂与订单…</div> : <>
         <div className="cia-outsourcing-source-grid">
           <label><span>委外灌装工厂</span><select value={selectedFactoryId} onChange={(event) => setSelectedFactoryId(event.target.value)} disabled={!enabled || sourceBusy}>{outsourcingSource?.options.map((item) => <option key={item.factoryId} value={item.factoryId}>{item.factoryName || item.factoryFullName} · 编号 {item.factoryId} · {item.activeOrderCount} 单进行中</option>)}</select></label>
@@ -313,8 +363,9 @@ function PartnerTaskPanel({ organization, access, notify }: {
     <div className="cia-task-progress-head"><strong>本组织单据与进度</strong><span>{items.length} 单</span></div>
     {loading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取伙伴反馈进度…</div> : items.length ? <div className="cia-task-progress-list">{items.map((item) => {
       const meta = partnerTaskTypes.find((type) => type.value === item.itemType) || partnerTaskTypes[0]; const Icon = meta.icon;
-      return <article key={item.id}><span><Icon size={17} /></span><div><strong>{item.title}</strong><small>{meta.label} · {item.coreRefId}</small></div><div><b>{partnerTaskStatusLabels[item.status] || item.status}</b><small>{item.dueAt ? `交期 ${formatTime(item.dueAt)}` : "未设交期"}</small></div><div><b>V{item.version}</b><small>{item.updatedAt ? `更新 ${formatTime(item.updatedAt)}` : "等待更新"}</small></div></article>;
+      return <button type="button" key={item.id} onClick={() => void openDetail(item)}><span><Icon size={17} /></span><div><strong>{item.title}</strong><small>{meta.label} · {item.coreRefId}</small></div><div><b>{partnerTaskStatusLabels[item.status] || item.status}</b><small>{item.dueAt ? `交期 ${formatTime(item.dueAt)}` : "未设交期"}</small></div><div><b>V{item.version}</b><small>{item.updatedAt ? `更新 ${formatTime(item.updatedAt)}` : "等待更新"}</small></div><ChevronRight size={17} /></button>;
     })}</div> : <div className="cia-empty compact"><ClipboardCheck size={22} /><strong>尚无协同单据</strong><span>{draft.taskType === "production_order" ? "绑定千顷 ERP 委外灌装工厂后，进行中的加工单会自动进入伙伴端。" : "选择上方类型并发布后，伙伴端会立即进入对应任务队列。"}</span></div>}
+    {selectedItemId ? <PartnerTaskDetailModal organizationCode={organization.code} detail={selectedDetail} loading={detailLoading} onClose={() => { setSelectedItemId(""); setSelectedDetail(null); }} notify={notify} /> : null}
   </section>;
 }
 

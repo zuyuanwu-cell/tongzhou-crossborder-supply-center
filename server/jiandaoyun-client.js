@@ -328,6 +328,18 @@ export async function fetchJdyOutsourcingOrdersByFactoryId(factoryId) {
   });
 }
 
+export async function updateJdyOutsourcingOrderByNo(orderNo, values = {}) {
+  const normalizedOrderNo = String(orderNo || "").trim();
+  if (!normalizedOrderNo) throw new Error("缺少委外加工单号，无法回写工厂反馈。");
+  const records = await fetchJdyDataByValues(JIANYUN_FORMS.outsourcingOrders, JIANYUN_FORMS.outsourcingOrders.fields.orderNo, [normalizedOrderNo], { maxPages: 2 });
+  const exact = records.filter((record) => String(record?.[JIANYUN_FORMS.outsourcingOrders.fields.orderNo]?.value || record?.[JIANYUN_FORMS.outsourcingOrders.fields.orderNo] || "").trim() === normalizedOrderNo);
+  if (exact.length !== 1) throw new Error(exact.length ? `委外加工单号 ${normalizedOrderNo} 存在重复记录，已停止回写。` : `未找到委外加工单 ${normalizedOrderNo}，无法回写工厂反馈。`);
+  const dataId = exact[0]?._id || exact[0]?.data_id || exact[0]?.id;
+  const data = Object.fromEntries(Object.entries(values).filter(([fieldId, value]) => fieldId && value !== undefined).map(([fieldId, value]) => [fieldId, { value }]));
+  if (!Object.keys(data).length) return { ok: true, skipped: true, dataId };
+  return { ok: true, skipped: false, dataId, result: await updateJdyData(JIANYUN_FORMS.outsourcingOrders, dataId, data) };
+}
+
 export async function fetchAllJdyProductionMaterials(outsourcingOrderNos = []) {
   const purchaseRecords = await fetchJdyDataByValues(
     JIANYUN_FORMS.purchaseOrders,

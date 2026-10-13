@@ -130,7 +130,9 @@ export async function applyPartnerOrderProjection(input) {
             `INSERT INTO production_milestones(organization_id,space_id,work_item_id,milestone_type,title,planned_at,status,public_payload,version)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
              ON CONFLICT(organization_id,work_item_id,milestone_type) DO UPDATE SET
-               title=excluded.title,planned_at=excluded.planned_at,public_payload=excluded.public_payload,
+               title=excluded.title,planned_at=excluded.planned_at,status=excluded.status,
+               completed_at=CASE WHEN excluded.status='completed' THEN COALESCE(production_milestones.completed_at,now()) ELSE NULL END,
+               public_payload=excluded.public_payload,
                version=GREATEST(production_milestones.version,excluded.version)`,
             [organization.id, spaceResult.rows[0].id, item.id, milestone.milestoneType, milestone.title, milestone.plannedAt || null, milestone.status, milestone.publicPayload, projection.version],
           );
@@ -217,6 +219,9 @@ export async function submitPartnerOrderReport(auth, workItemId, body, { idempot
     if (!item || !["production_order", "purchase_order"].includes(item.item_type)) fail("协同订单不存在。", 404, "not_found");
     if (!["accepted", "in_progress", "pending_sync"].includes(item.status)) fail("请先接单，或等待当前状态恢复后再提交。", 409, "invalid_state");
     if (Number(item.version) !== version) fail("订单已更新，请刷新后重试。", 409, "version_conflict");
+    const plannedQuantity = Number(item.public_payload?.quantity || 0);
+    const reportedQuantity = input.reportType === "production_progress" ? Number(input.completedQuantity || 0) : input.reportType === "shipment" ? Number(input.shippedQuantity || 0) : 0;
+    if (plannedQuantity > 0 && reportedQuantity > plannedQuantity) fail("反馈数量不能超过订单计划数量；超量请通过异常上报。", 400, "quantity_exceeded");
     const permission = reportPermission(item.item_type, input.reportType);
     if (!permission) fail("当前订单不支持此类反馈。", 403, "forbidden");
     await assertWorkItemPermission(client, auth.organization.id, item, permission);
@@ -232,10 +237,11 @@ export async function submitPartnerOrderReport(auth, workItemId, body, { idempot
       if (Number(input.arrivedQuantity) > Number(line.planned_quantity)) fail("到齐数量不能超过订单计划数量；超量请通过异常上报。", 400, "quantity_exceeded");
     }
     const columns = reportColumns(input, line);
+    const commandPayload = line ? { ...input, line: { lineRef: line.line_ref, lineType: line.line_type, sku: line.sku, productName: line.product_name } } : input;
     const commandResult = await client.query(
       `INSERT INTO partner_commands(organization_id,work_item_id,command_type,idempotency_key,expected_version,payload,risk_level,status,submitted_by)
        VALUES ($1,$2,$3,$4,$5,$6,'medium','pending_sync',$7) RETURNING *`,
-      [auth.organization.id, workItemId, `order_${input.reportType}`, key, version, input, auth.user.id],
+      [auth.organization.id, workItemId, `order_${input.reportType}`, key, version, commandPayload, auth.user.id],
     );
     const command = commandResult.rows[0];
     const reportResult = await client.query(

@@ -95,13 +95,14 @@ test("partner order projections expose only one organization's production or pur
   const projection = {
     eventId: "partner-order-1", organizationCode: "pf-factory-a", coreRefType: "outsourcing_order", coreRefId: "MO-001",
     orderType: "production", itemType: "production_order", title: "委外灌装加工单 MO-001", version: 1,
-    publicPayload: { orderNo: "MO-001", projectCode: "OEM-001", productName: "洗护套装", fulfillmentMode: "turnkey", quantity: 10000, unit: "套", deliveryDate: "2026-11-20" },
+    publicPayload: { orderNo: "MO-001", projectCode: "OEM-001", productName: "洗护套装", productSpec: "500ml × 2", barcode: "6970000000001", productionProcess: "灌装,贴标,装盒", cartonType: "专用箱", piecesPerCarton: 24, factoryExpectedDeliveryDate: "2026-11-18", fulfillmentMode: "turnkey", quantity: 10000, unit: "套", deliveryDate: "2026-11-20" },
     lines: [
       { lineRef: "finished-1", lineType: "finished_product", sku: "SKU-F", productName: "洗护套装", plannedQuantity: 10000, unit: "套", responsibility: "factory" },
       { lineRef: "pack-1", lineType: "packaging", sku: "PACK-1", productName: "500ml 瓶体", plannedQuantity: 10500, unit: "个", responsibility: "factory" },
     ],
   };
   assert.equal(partnerOrderProjectionSchema.safeParse(projection).success, true);
+  assert.equal(partnerOrderProjectionSchema.parse(projection).publicPayload.piecesPerCarton, 24);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, internalCost: 12 } }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, lines: projection.lines.map((line, index) => index ? { ...line, unitPrice: 1.2 } : line) }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, orderType: "purchase" }).success, false);

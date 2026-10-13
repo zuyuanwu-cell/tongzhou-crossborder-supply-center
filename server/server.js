@@ -5,7 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
-import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData, updateJdyOutsourcingOrderByNo } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
@@ -435,6 +435,28 @@ const collaborationBridge = createCollaborationBridge({
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
   listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
   listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
+  recordOutsourcingPartnerFeedback: async ({ orderNo, commandType, payload, submittedByName, submittedAt }) => {
+    const fields = JIANYUN_FORMS.outsourcingOrders.fields;
+    const actor = String(submittedByName || "委外工厂").trim();
+    const at = submittedAt || new Date().toISOString();
+    const patch = { [fields.lastFollowedAt]: at };
+    if (commandType === "accept") patch[fields.progressSummary] = `${actor}已在协同门户接单`;
+    if (commandType === "order_production_progress") {
+      patch[fields.progressSummary] = `${actor}反馈生产进度 ${Number(payload.progressPercent || 0)}%：${String(payload.note || payload.stage || "").slice(0, 1500)}`;
+      if (payload.expectedCompletionDate) patch[fields.factoryExpectedFinishedAt] = payload.expectedCompletionDate;
+    }
+    if (commandType === "order_material_readiness") {
+      const lineName = String(payload.line?.productName || payload.line?.sku || "物料/包材").slice(0, 200);
+      patch[fields.progressSummary] = `${actor}反馈${lineName}：${payload.readiness || ""}，测试${payload.testResult || ""}${payload.exceptionDescription ? `；异常：${String(payload.exceptionDescription).slice(0, 1000)}` : ""}`;
+    }
+    if (commandType === "order_exception") patch[fields.progressSummary] = `${actor}上报${payload.severity || ""}异常：${String(payload.title || "").slice(0, 240)}；${String(payload.description || "").slice(0, 1200)}`;
+    if (commandType === "order_shipment") {
+      patch[fields.progressSummary] = `${actor}反馈累计发货 ${Number(payload.shippedQuantity || 0)}：${[payload.carrier, payload.trackingNo, payload.note].filter(Boolean).join(" · ").slice(0, 1200)}`;
+      patch[fields.producedQty] = Number(payload.shippedQuantity || 0);
+      if (payload.shippedAt) patch[fields.finishedShippedAt] = payload.shippedAt;
+    }
+    return updateJdyOutsourcingOrderByNo(orderNo, patch);
+  },
   onAudit: (action, command, result) => appendActionLog(
     directAuth,
     action,

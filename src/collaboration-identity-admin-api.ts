@@ -135,6 +135,31 @@ export type CollaborationPartnerWorkItem = {
   updatedAt: string;
 };
 
+export type CollaborationPartnerOrderLine = {
+  id: string; lineRef: string; lineType: "finished_product" | "raw_material" | "packaging"; sku: string; productName: string;
+  specification: string; imageUrl: string; plannedQuantity: number; completedQuantity: number; unit: string; requiredAt: string;
+  responsibility: "tongzhou" | "factory" | "supplier"; unitPrice: number | null; currency: string;
+};
+
+export type CollaborationPartnerOrderReport = {
+  id: string; workItemId: string; lineId: string; commandId: string; reportType: "production_progress" | "material_readiness" | "purchase_fulfillment" | "exception" | "shipment";
+  stage: string; progressPercent: number | null; result: string; quantity: number | null; expectedAt: string; severity: string; title: string; note: string;
+  details: Record<string, string | number | boolean | null>; submittedBy: string; submittedByName: string; createdAt: string;
+};
+
+export type CollaborationPartnerWorkItemDetail = {
+  item: CollaborationPartnerWorkItem;
+  lines: Array<{ id: string; sku: string; productName: string; imageUrl: string; plannedQuantity: number; completedQuantity: number; unit: string }>;
+  events: Array<{ id: string; eventType: string; actorName: string; body: string; metadata: Record<string, unknown>; createdAt: string }>;
+  attachments: Array<{ id: string; fileName: string; mimeType: string; sizeBytes: number; scanStatus: string; createdAt: string }>;
+  commands: Array<{ id: string; commandType: string; status: string; riskLevel: string; submittedAt: string; processedAt: string; resultCode: string; resultMessage: string; coreReference: string }>;
+  partnerOrder: null | {
+    lines: CollaborationPartnerOrderLine[];
+    reports: CollaborationPartnerOrderReport[];
+    milestones: Array<{ id: string; milestoneType: string; title: string; plannedAt: string; completedAt: string; status: string; publicPayload: { note?: string }; version: number; updatedAt: string }>;
+  };
+};
+
 export type CollaborationPartnerTaskInput = {
   taskType: CollaborationPartnerTaskType;
   documentNo: string;
@@ -211,6 +236,22 @@ export function replaceCollaborationOrganizationAccessGrants(code: string, grant
 
 export function fetchCollaborationOrganizationWorkItems(code: string) {
   return request<{ ok: boolean; items: CollaborationPartnerWorkItem[]; counts: Record<string, number>; total: number }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items?limit=100`);
+}
+
+export function fetchCollaborationOrganizationWorkItem(code: string, workItemId: string) {
+  return request<{ ok: boolean } & CollaborationPartnerWorkItemDetail>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items/${encodeURIComponent(workItemId)}`);
+}
+
+export async function downloadCollaborationOrganizationWorkItemAttachment(code: string, workItemId: string, attachmentId: string) {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  const response = await fetch(resolveApiUrl(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items/${encodeURIComponent(workItemId)}/attachments/${encodeURIComponent(attachmentId)}`), {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || `附件下载失败（HTTP ${response.status}）`);
+  }
+  return { blob: await response.blob(), disposition: response.headers.get("content-disposition") || "" };
 }
 
 export function publishCollaborationPartnerTask(code: string, input: CollaborationPartnerTaskInput) {

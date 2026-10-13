@@ -76,24 +76,22 @@ export async function getWorkItem(auth, workItemId) {
     const itemResult = await client.query(`SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 AND ${workItemAccessPredicate}`, [workItemId, auth.organization.id]);
     const row = itemResult.rows[0];
     if (!row) fail("任务不存在。", 404, "not_found");
-    const [lines, events, attachments, commands] = await Promise.all([
-      client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, auth.organization.id]),
-      client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 100", [workItemId, auth.organization.id]),
-      client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, auth.organization.id]),
-      client.query("SELECT id,command_type,status,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 50", [workItemId, auth.organization.id]),
-    ]);
+    const lines = await client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, auth.organization.id]);
+    const events = await client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 100", [workItemId, auth.organization.id]);
+    const attachments = await client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, auth.organization.id]);
+    const commands = await client.query("SELECT id,command_type,status,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 50", [workItemId, auth.organization.id]);
     const oem = collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
-      ? await Promise.all([
-        client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE space_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [row.space_id, auth.organization.id]),
-        client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, auth.organization.id]),
-        client.query("SELECT id,milestone_type,title,planned_at,completed_at,status,public_payload,version,updated_at FROM production_milestones WHERE work_item_id=$1 AND organization_id=$2 ORDER BY planned_at NULLS LAST,created_at", [workItemId, auth.organization.id]),
-      ])
+      ? [
+        await client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE space_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [row.space_id, auth.organization.id]),
+        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, auth.organization.id]),
+        await client.query("SELECT id,milestone_type,title,planned_at,completed_at,status,public_payload,version,updated_at FROM production_milestones WHERE work_item_id=$1 AND organization_id=$2 ORDER BY planned_at NULLS LAST,created_at", [workItemId, auth.organization.id]),
+      ]
       : null;
     const partnerOrder = collaborationConfig.oemEnabled && ["production_order", "purchase_order"].includes(row.item_type)
-      ? await Promise.all([
-        client.query("SELECT id,line_ref,line_type,sku,product_name,specification,image_url,planned_quantity,completed_quantity,unit,required_at,responsibility,unit_price,currency FROM partner_order_lines WHERE work_item_id=$1 AND organization_id=$2 AND active=true ORDER BY CASE line_type WHEN 'finished_product' THEN 0 WHEN 'raw_material' THEN 1 ELSE 2 END,created_at,id", [workItemId, auth.organization.id]),
-        client.query("SELECT id,work_item_id,line_id,command_id,report_type,stage,progress_percent,result,quantity,expected_at,severity,title,note,details,submitted_by,created_at FROM partner_order_reports WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 300", [workItemId, auth.organization.id]),
-      ])
+      ? [
+        await client.query("SELECT id,line_ref,line_type,sku,product_name,specification,image_url,planned_quantity,completed_quantity,unit,required_at,responsibility,unit_price,currency FROM partner_order_lines WHERE work_item_id=$1 AND organization_id=$2 AND active=true ORDER BY CASE line_type WHEN 'finished_product' THEN 0 WHEN 'raw_material' THEN 1 ELSE 2 END,created_at,id", [workItemId, auth.organization.id]),
+        await client.query("SELECT id,work_item_id,line_id,command_id,report_type,stage,progress_percent,result,quantity,expected_at,severity,title,note,details,submitted_by,created_at FROM partner_order_reports WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 300", [workItemId, auth.organization.id]),
+      ]
       : null;
     return {
       item: workItemFromRow(row),

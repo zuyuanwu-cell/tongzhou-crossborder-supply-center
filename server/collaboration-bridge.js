@@ -115,6 +115,7 @@ export function createCollaborationBridge({
   outsourcingSyncIntervalMs = Number(process.env.COLLABORATION_OUTSOURCING_SYNC_MS || 5 * 60_000),
   listActiveOutsourcingOrders = async () => [],
   listOutsourcingFactoryOrders = async () => [],
+  recordOutsourcingPartnerFeedback = async () => ({ ok: true, skipped: true }),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
   publicOrigin = process.env.COLLABORATION_PUBLIC_ORIGIN || "https://partner.tongzhoukuajing.com",
@@ -361,6 +362,7 @@ export function createCollaborationBridge({
   }
 
   function assertWarehouseTaskScope(detail, { warehouseIds = [], skus = [] } = {}) {
+    if (!String(detail?.item?.itemType || "").startsWith("warehouse_")) fail("该任务不属于仓库协同范围。", 403, "warehouse_task_type_denied");
     const allowedWarehouses = new Set(warehouseIds.map(String).filter(Boolean));
     const allowedSkus = new Set(skus.map(normalizedSku).filter(Boolean));
     if (allowedWarehouses.size && !allowedWarehouses.has(String(detail?.item?.publicPayload?.warehouseRef || ""))) fail("当前账号无权查看该仓库的协同任务。", 403, "warehouse_scope_denied");
@@ -462,7 +464,7 @@ export function createCollaborationBridge({
     });
   }
 
-  function applyToCore(command) {
+  async function applyToCore(command) {
     assertCommandShape(command);
     const context = systemInventoryContext();
     const idempotencyKey = `collaboration:${command.id}:${command.idempotencyKey}`;
@@ -487,6 +489,16 @@ export function createCollaborationBridge({
         lines: movementLines(command, { adjustment: true }),
       }, context, idempotencyKey);
     }
+    if (command.coreRefType === "jiandaoyun_outsourcing_order" && ["accept", "order_production_progress", "order_material_readiness", "order_exception", "order_shipment"].includes(command.commandType)) {
+      const sourceResult = await recordOutsourcingPartnerFeedback({
+        orderNo: command.coreRefId,
+        commandType: command.commandType,
+        payload: command.payload || {},
+        submittedByName: command.submittedByName,
+        submittedAt: command.submittedAt,
+      });
+      return { ok: true, eventOnly: true, sourceUpdated: !sourceResult?.skipped, reference: command.coreRefId };
+    }
     return { ok: true, eventOnly: true, reference: command.coreRefId };
   }
 
@@ -498,11 +510,11 @@ export function createCollaborationBridge({
     if (stored.local_status === "awaiting_result") return reportStoredResult(stored);
     store.markCommand(commandId, "processing");
     try {
-      const coreResult = applyToCore(stored.command);
+      const coreResult = await applyToCore(stored.command);
       const result = {
         status: "applied",
         resultCode: coreResult.idempotentReplay ? "idempotent_replay" : "applied",
-        message: coreResult.eventOnly ? "协同进度已写入内部审计记录。" : "协同操作已通过内部校验并入账。",
+        message: coreResult.sourceUpdated ? "工厂反馈已同步到千顷 ERP，并写入内部审计记录。" : coreResult.eventOnly ? "协同进度已写入内部审计记录。" : "协同操作已通过内部校验并入账。",
         coreReference: coreResult.movementNo || coreResult.movementId || coreResult.transfer?.transferNo || coreResult.reference || stored.command.coreRefId,
       };
       store.markCommand(commandId, "awaiting_result", { result });
@@ -712,7 +724,7 @@ export function createCollaborationBridge({
           const existingItem = existingByOrderNo.get(identity.orderNo);
           const stateKey = outsourcingProjectionStateKey(organization.code, identity.orderNo);
           const previous = parsedState(store, stateKey, { fingerprint: "", version: 0 });
-          const version = inventoryProjectionVersion(previous.version);
+          const version = inventoryProjectionVersion(Math.max(Number(previous.version || 0), Number(existingItem?.version || 0)));
           const eventHash = createHash("sha256").update(`${organization.code}:${identity.orderNo}:${version}`).digest("hex").slice(0, 24);
           let projection = outsourcingProjectionFromRecord(record, {
             organizationCode: organization.code,
@@ -752,6 +764,23 @@ export function createCollaborationBridge({
       if (filters[key] !== undefined && String(filters[key]).trim()) query.set(key, String(filters[key]));
     }
     return internalRequest(`/collaboration/internal/v1/work-items?${query.toString()}`);
+  }
+
+  async function getOrganizationWorkItem(code, workItemId) {
+    const detail = await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}`);
+    if (String(detail?.item?.organizationCode || "") !== String(code || "")) fail("该协同单据不属于当前组织。", 403, "organization_scope_denied");
+    if (!["production_order", "purchase_order", "sampling_task"].includes(String(detail?.item?.itemType || ""))) fail("该单据不属于伙伴生产协同范围。", 403, "partner_task_type_denied");
+    return detail;
+  }
+
+  async function downloadOrganizationWorkItemAttachment(code, workItemId, attachmentId) {
+    await getOrganizationWorkItem(code, workItemId);
+    const response = await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/attachments/${encodeURIComponent(attachmentId)}`, { raw: true });
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") || "application/octet-stream",
+      contentDisposition: response.headers.get("content-disposition") || "attachment",
+    };
   }
 
   async function publishPartnerTask(code, input, { actorName = "供应链中台管理员" } = {}) {
@@ -912,11 +941,13 @@ export function createCollaborationBridge({
 
   return {
     bootstrapOrganization,
+    downloadOrganizationWorkItemAttachment,
     downloadWarehouseTaskAttachment,
     flushOutbox,
     awardOemQuote,
     getOrganizationAccess,
     getOrganizationAccessGrants,
+    getOrganizationWorkItem,
     getOutsourcingSourceBinding,
     getWarehouseTask,
     listOrganizations,

@@ -145,6 +145,18 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 200, { ok: true, ...(await bridge.listOrganizationWorkItems(code, Object.fromEntries(url.searchParams.entries()))) });
         return true;
       }
+      const organizationWorkItemAttachmentMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})\/attachments\/([0-9a-fA-F-]{36})$/);
+      if (organizationWorkItemAttachmentMatch && req.method === "GET") {
+        const download = await bridge.downloadOrganizationWorkItemAttachment(decodeURIComponent(organizationWorkItemAttachmentMatch[1]), organizationWorkItemAttachmentMatch[2], organizationWorkItemAttachmentMatch[3]);
+        res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
+        res.end(download.buffer);
+        return true;
+      }
+      const organizationWorkItemMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})$/);
+      if (organizationWorkItemMatch && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationWorkItem(decodeURIComponent(organizationWorkItemMatch[1]), organizationWorkItemMatch[2])) });
+        return true;
+      }
       if (organizationWorkItemsMatch && req.method === "POST") {
         const code = decodeURIComponent(organizationWorkItemsMatch[1]);
         const input = await readBody(req);

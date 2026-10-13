@@ -120,6 +120,11 @@ export function outsourcingProjectionFromRecord(record, {
   if (!identity.factoryId || !identity.orderNo) return null;
   const sku = text(valueOf(record, fields.tongzhouSku)) || text(valueOf(record, fields.productSku)) || identity.orderNo;
   const productName = text(valueOf(record, fields.productName), sku);
+  const productSpec = text(valueOf(record, fields.productSpec));
+  const barcode = text(valueOf(record, fields.barcode));
+  const productionProcess = text(valueOf(record, fields.productionProcess));
+  const cartonType = text(valueOf(record, fields.cartonType));
+  const piecesPerCarton = number(valueOf(record, fields.piecesPerCarton));
   const quantity = number(valueOf(record, fields.plannedQty));
   const unit = text(valueOf(record, fields.unit), "件");
   const rawDetails = valueOf(record, fields.details);
@@ -136,7 +141,7 @@ export function outsourcingProjectionFromRecord(record, {
     lineType: "finished_product",
     sku: sku.slice(0, 100),
     productName: productName.slice(0, 300),
-    specification: "",
+    specification: productSpec.slice(0, 1_000),
     imageUrl,
     plannedQuantity: quantity,
     unit: unit.slice(0, 20),
@@ -151,7 +156,7 @@ export function outsourcingProjectionFromRecord(record, {
       lineType: isPackagingMaterial(valueOf(item, detailFields.category), materialName) ? "packaging" : "raw_material",
       sku: materialSku.slice(0, 100),
       productName: materialName.slice(0, 300),
-      specification: "",
+      specification: text(valueOf(item, detailFields.category)).slice(0, 1_000),
       imageUrl: "",
       plannedQuantity: number(valueOf(item, detailFields.requiredQty)),
       unit: text(valueOf(item, detailFields.unit), "件").slice(0, 20),
@@ -160,7 +165,13 @@ export function outsourcingProjectionFromRecord(record, {
     });
   });
   const dueAt = date(valueOf(record, fields.expectedFinishedAt));
+  const factoryExpectedDeliveryDate = dateOnly(valueOf(record, fields.factoryExpectedFinishedAt));
   const dueSoon = dueAt && new Date(dueAt).getTime() - Date.now() <= 3 * 24 * 60 * 60 * 1000;
+  const executionNotes = [
+    productSpec ? `规格：${productSpec}` : "",
+    productionProcess ? `生产工序：${productionProcess}` : "",
+    cartonType ? `外箱：${cartonType}${piecesPerCarton ? `，${piecesPerCarton} ${unit}/箱` : ""}` : piecesPerCarton ? `装箱：${piecesPerCarton} ${unit}/箱` : "",
+  ].filter(Boolean).join("；");
   return {
     eventId,
     organizationCode,
@@ -178,10 +189,16 @@ export function outsourcingProjectionFromRecord(record, {
       orderNo: identity.orderNo,
       projectCode: "",
       productName,
+      productSpec,
+      barcode,
       fulfillmentMode,
       requirements: fulfillmentMode === "turnkey"
-        ? "本单由工厂负责供料；请逐项反馈物料/包材到齐及测试结果，异常须及时上报。"
-        : "请按千顷 ERP 委外加工单执行，并反馈工厂负责物料、生产与交付进度。",
+        ? `本单由工厂负责供料；请逐项反馈物料/包材到齐及测试结果，异常须及时上报。${executionNotes ? ` ${executionNotes}` : ""}`
+        : `请按千顷 ERP 委外加工单执行，并反馈工厂负责物料、生产与交付进度。${executionNotes ? ` ${executionNotes}` : ""}`,
+      productionProcess,
+      cartonType,
+      piecesPerCarton,
+      factoryExpectedDeliveryDate,
       quantity,
       unit,
       deliveryDate: dueAt.slice(0, 10),
