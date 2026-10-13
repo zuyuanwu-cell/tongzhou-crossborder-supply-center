@@ -318,6 +318,168 @@ export function warehouseStockupCreateCapability(connection) {
   };
 }
 
+export function warehouseProductCreateCapability(connection) {
+  if (connection?.providerId === "sea_wms") {
+    const configured = hasSeaCredentials(seaCredentials(connection));
+    return {
+      supported: true,
+      configured,
+      createMode: "商品 SKU",
+      message: configured ? "可在 SEA WMS 保存商品 SKU。" : "需要先配置 SEA WMS 授权。",
+      requiredFields: ["sku", "productName"],
+    };
+  }
+  if (connection?.providerId === "yunwms_ru") {
+    const configured = hasYunCredentials(yunCredentials(connection));
+    return {
+      supported: true,
+      configured,
+      createMode: "草稿产品",
+      message: configured ? "可在 YunWMS 创建草稿产品。" : "需要先配置 YunWMS 授权。",
+      requiredFields: ["sku", "productName", "weightKg", "lengthCm", "widthCm", "heightCm", "declaredValueUsd", "declaredNameEn"],
+    };
+  }
+  return {
+    supported: false,
+    configured: false,
+    createMode: "",
+    message: `当前 WMS 类型 ${connection?.providerId || "未知"} 尚未接入商品建档接口。`,
+    requiredFields: [],
+  };
+}
+
+function validateWarehouseProductInput(input, providerId) {
+  const product = {
+    sku: firstText(input?.sku).toUpperCase(),
+    productName: firstText(input?.productName),
+    productNameEn: firstText(input?.productNameEn),
+    barcode: firstText(input?.barcode),
+    specification: firstText(input?.specification),
+    brand: firstText(input?.brand),
+    imageUrl: firstText(input?.imageUrl),
+    purchasePrice: Math.max(0, firstNumber(input?.purchasePrice)),
+    purchasePriceCurrency: firstText(input?.purchasePriceCurrency, "CNY").toUpperCase(),
+    weightKg: Math.max(0, firstNumber(input?.weightKg)),
+    lengthCm: Math.max(0, firstNumber(input?.lengthCm)),
+    widthCm: Math.max(0, firstNumber(input?.widthCm)),
+    heightCm: Math.max(0, firstNumber(input?.heightCm)),
+    hsCode: firstText(input?.hsCode),
+    declaredValueUsd: Math.max(0, firstNumber(input?.declaredValueUsd)),
+    declaredNameEn: firstText(input?.declaredNameEn, input?.productNameEn),
+    material: firstText(input?.material),
+    purposeEn: firstText(input?.purposeEn),
+    origin: firstText(input?.origin),
+    warningQty: Math.max(0, Math.floor(firstNumber(input?.warningQty))),
+    cartonSpecification: firstText(input?.cartonSpecification),
+  };
+  const missing = [];
+  if (!product.sku) missing.push("SKU");
+  if (!product.productName) missing.push("产品名称");
+  if (providerId === "yunwms_ru") {
+    if (!product.weightKg) missing.push("重量");
+    if (!product.lengthCm) missing.push("长度");
+    if (!product.widthCm) missing.push("宽度");
+    if (!product.heightCm) missing.push("高度");
+    if (!product.declaredValueUsd) missing.push("申报价值(USD)");
+    if (!product.declaredNameEn) missing.push("英文申报名称");
+  }
+  if (missing.length) throw new Error(`WMS 商品建档缺少：${missing.join("、")}。`);
+  return product;
+}
+
+function compactFields(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== "" && field !== undefined && field !== null));
+}
+
+async function createSeaWarehouseProduct(connection, input) {
+  const credentials = seaCredentials(connection);
+  if (!hasSeaCredentials(credentials)) throw new Error("缺少 SEA WMS baseUrl / AppKey / AppSecret，不能创建商品档案。");
+  const product = validateWarehouseProductInput(input, connection.providerId);
+  const payload = await postSea(credentials, "/goods/save_single_sku_goods", compactFields({
+    goodsName: product.productName,
+    foreignGoodsName: product.productNameEn,
+    goodsSkuOuterId: product.sku,
+    goodsSkuCustomCode: product.barcode || product.sku,
+    goodsSkuSubName: product.specification,
+    logoUrl: product.imageUrl,
+    ...(product.purchasePrice > 0 ? { purchasePrice: product.purchasePrice, purchasePriceCurrency: product.purchasePriceCurrency } : {}),
+    ...(product.weightKg > 0 ? { weight: product.weightKg, productWeight: product.weightKg } : {}),
+    ...(product.lengthCm > 0 ? { length: product.lengthCm } : {}),
+    ...(product.widthCm > 0 ? { width: product.widthCm } : {}),
+    ...(product.heightCm > 0 ? { height: product.heightCm } : {}),
+    hsCode: product.hsCode,
+    productChineseName: product.productName,
+    productEnglishName: product.declaredNameEn || product.productNameEn,
+    ...(product.declaredValueUsd > 0 ? { productPrice: product.declaredValueUsd } : {}),
+    productMaterial: product.material,
+    productPurpose: product.purposeEn,
+  }));
+  if (!isSuccessfulPayload(payload) || payload?.success === false) {
+    throw new Error(`SEA WMS 保存商品 SKU 失败：${payloadMessage(payload)}`);
+  }
+  return {
+    ok: true,
+    providerId: connection.providerId,
+    connectionId: connection.id,
+    sku: product.sku,
+    externalId: firstText(payload?.data?.goodsSkuId, payload?.data?.id, payload?.goodsSkuId, product.sku),
+    createMode: "upsert",
+    raw: payload,
+  };
+}
+
+async function createYunWarehouseProduct(connection, input) {
+  const credentials = yunCredentials(connection);
+  if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能创建商品档案。");
+  const product = validateWarehouseProductInput(input, connection.providerId);
+  const params = compactFields({
+    product_sku: product.sku,
+    reference_no: product.barcode || product.sku,
+    product_title: product.productName,
+    product_title_en: product.productNameEn || product.declaredNameEn,
+    product_weight: product.weightKg,
+    product_length: product.lengthCm,
+    product_width: product.widthCm,
+    product_height: product.heightCm,
+    contain_battery: 0,
+    product_declared_value: product.declaredValueUsd,
+    product_declared_name: product.declaredNameEn,
+    product_declared_name_zh: product.productName,
+    hs_code: product.hsCode,
+    verify: 0,
+    warning_qty: product.warningQty,
+    product_brand: product.brand,
+    product_origin: product.origin,
+    product_material: product.material,
+    product_use_en: product.purposeEn,
+    product_material_en: product.material,
+    is_serialized: 0,
+    shared_product: 0,
+    product_carton_specification: product.cartonSpecification,
+  });
+  const payload = await postYun(credentials, "createProduct", params);
+  if (String(payload?.ask || "").toLowerCase() !== "success") {
+    throw new Error(`YunWMS 创建草稿产品失败：${firstText(payload?.message, payload?.Error?.errMessage, payload?.error) || "未知错误"}`);
+  }
+  return {
+    ok: true,
+    providerId: connection.providerId,
+    connectionId: connection.id,
+    sku: product.sku,
+    externalId: firstText(payload?.product_sku, payload?.data?.product_sku, product.sku),
+    createMode: "draft",
+    raw: payload,
+  };
+}
+
+export async function createWarehouseProduct(connection, input) {
+  const capability = warehouseProductCreateCapability(connection);
+  if (!capability.supported || !capability.configured) throw new Error(capability.message);
+  if (connection.providerId === "sea_wms") return createSeaWarehouseProduct(connection, input);
+  if (connection.providerId === "yunwms_ru") return createYunWarehouseProduct(connection, input);
+  throw new Error(capability.message);
+}
+
 function yunEnvelope(credentials, service, params = {}) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://www.example.org/Ec/">

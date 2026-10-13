@@ -445,6 +445,26 @@ function normalizeCodingProduct(record) {
     skuCodingStatus,
     archiveStatus: readText(record, fields.archiveStatus),
     productName: readText(record, fields.productName),
+    productNameEn: readText(record, fields.productNameEn),
+    unit: readText(record, fields.unit, "件"),
+    category: readText(record, fields.category),
+    functionCategory: readText(record, fields.functionCategory),
+    productType: readText(record, fields.productType),
+    skuAttribute: readText(record, fields.skuAttribute),
+    brand: readText(record, fields.brand),
+    supplier: readText(record, fields.supplier),
+    supplierCode: readText(record, fields.supplierCode),
+    barcode: readText(record, fields.barcode),
+    specification: readText(record, fields.specification),
+    weightKg: readNumber(record, fields.weight),
+    lengthCm: readNumber(record, fields.length),
+    widthCm: readNumber(record, fields.width),
+    heightCm: readNumber(record, fields.height),
+    purchasePrice: readNumber(record, fields.purchaseCostTaxed, readNumber(record, fields.purchaseCostUntaxed)),
+    warningQty: readNumber(record, fields.warningQty),
+    hsCode: readText(record, fields.hsCode),
+    origin: readText(record, fields.origin),
+    cartonSpecification: readText(record, fields.cartonSpecification),
     sourceDemandRecordId: readText(record, fields.sourceDemandRecordId),
     sourceDemandBatchNo: readText(record, fields.sourceDemandBatchNo),
     codingAppliedAt: readDate(record, fields.codingAppliedAt),
@@ -1860,7 +1880,7 @@ export async function voidWorkflowShipment(input, workflow) {
   };
 }
 
-export async function completeProductCoding(input, workflow) {
+export async function completeProductCoding(input, workflow, dependencies = {}) {
   const product = workflow.productCodingQueue.find((item) => item.id === input.productRecordId);
   if (!product) throw new Error("未找到待编码新品，请刷新后重试。");
   const sku = textValue(input.sku).toUpperCase();
@@ -1870,11 +1890,39 @@ export async function completeProductCoding(input, workflow) {
   const productFields = JIANYUN_FORMS.productBase.fields;
   const sourceDemand = workflow.demands.find((item) => item.id === product.sourceDemandRecordId || `demand:${item.id}` === product.id);
   const temporaryProductNo = product.temporaryProductNo && !product.temporaryProductNo.startsWith("历史需求-") ? product.temporaryProductNo : businessNo("TMP");
+  const details = input.product && typeof input.product === "object" ? input.product : input;
+  const optionalField = (name, transform = (value) => value) => Object.prototype.hasOwnProperty.call(details, name)
+    ? jdyField(transform(details[name]))
+    : undefined;
   const productData = compactJdyData({
     [productFields.sku]: jdyField(sku),
     [productFields.officialSku]: jdyField(sku),
-    [productFields.productName]: jdyField(product.productName || sourceDemand?.productName || ""),
-    [productFields.unit]: jdyField("件"),
+    [productFields.productName]: jdyField(textValue(details.productName, product.productName || sourceDemand?.productName || "")),
+    [productFields.productNameEn]: optionalField("productNameEn", textValue),
+    [productFields.unit]: jdyField(textValue(details.unit, product.unit || "件")),
+    [productFields.category]: optionalField("category", textValue),
+    [productFields.functionCategory]: optionalField("functionCategory", textValue),
+    [productFields.productType]: optionalField("productType", textValue),
+    [productFields.skuAttribute]: optionalField("skuAttribute", textValue),
+    [productFields.brand]: optionalField("brand", textValue),
+    [productFields.supplier]: optionalField("supplier", textValue),
+    [productFields.supplierCode]: optionalField("supplierCode", textValue),
+    [productFields.barcode]: optionalField("barcode", textValue),
+    [productFields.specification]: optionalField("specification", textValue),
+    [productFields.weight]: optionalField("weightKg", numberValue),
+    [productFields.length]: optionalField("lengthCm", numberValue),
+    [productFields.width]: optionalField("widthCm", numberValue),
+    [productFields.height]: optionalField("heightCm", numberValue),
+    [productFields.cartonSpecification]: optionalField("cartonSpecification", textValue),
+    [productFields.purchaseCostUntaxed]: optionalField("purchaseCostUntaxed", numberValue),
+    [productFields.taxRate]: optionalField("taxRate", textValue),
+    [productFields.purchaseCostTaxed]: optionalField("purchasePrice", numberValue),
+    [productFields.warningQty]: optionalField("warningQty", numberValue),
+    [productFields.purchaseLeadDays]: optionalField("purchaseLeadDays", numberValue),
+    [productFields.minOrderQty]: optionalField("minOrderQty", numberValue),
+    [productFields.origin]: optionalField("origin", textValue),
+    [productFields.hsCode]: optionalField("hsCode", textValue),
+    [productFields.destinationCountry]: optionalField("destinationCountry", textValue),
     [productFields.project]: jdyField(sourceDemand?.project || ""),
     [productFields.temporaryProductNo]: jdyField(temporaryProductNo),
     [productFields.skuCodingStatus]: jdyField("已编码"),
@@ -1893,14 +1941,16 @@ export async function completeProductCoding(input, workflow) {
     [demandFields.businessStatus]: jdyField("待受理"),
   });
   if (input.dryRun) return { ok: true, dryRun: true, productData, demandData };
+  const createData = dependencies.createJdyData || createJdyData;
+  const updateData = dependencies.updateJdyData || updateJdyData;
   let productRecordId = product.id;
   if (product.id.startsWith("demand:")) {
-    productRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.productBase, productData));
+    productRecordId = createdDataId(await createData(JIANYUN_FORMS.productBase, productData));
     demandData[demandFields.productRecordId] = jdyField(productRecordId);
   } else {
-    await updateJdyData(JIANYUN_FORMS.productBase, product.id, productData);
+    await updateData(JIANYUN_FORMS.productBase, product.id, productData);
   }
   const demandRecordId = sourceDemand?.id || product.sourceDemandRecordId;
-  if (demandRecordId) await updateJdyData(JIANYUN_FORMS.stockupDemands, demandRecordId, demandData);
+  if (demandRecordId) await updateData(JIANYUN_FORMS.stockupDemands, demandRecordId, demandData);
   return { ok: true, dryRun: false, productRecordId, demandRecordId, sku };
 }

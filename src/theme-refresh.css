@@ -1577,6 +1577,7 @@
   --workflow-accent-soft: #fff1e8;
 }
 .stockup-recommendation-page > .stockup-command-bar { order: 1; }
+.stockup-recommendation-page > .sku-coding-center { order: 2; }
 .stockup-recommendation-page > .recommendation-queue-panel { order: 2; }
 .stockup-recommendation-page > .active-plan-panel { order: 3; }
 .stockup-recommendation-page > .arrived-review-panel { order: 4; }
