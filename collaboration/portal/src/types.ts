@@ -12,9 +12,16 @@ export type Session = {
 };
 export type Dashboard = { openTasks: number; urgentTasks: number; waitingTasks: number; unreadNotifications: number; inventorySkuCount: number; inventorySyncedAt: string; productionOrders: number; purchaseOrders: number; dueSoonTasks: number; exceptionReports: number };
 export type WorkItemStatus = "pending" | "accepted" | "in_progress" | "pending_approval" | "pending_sync" | "completed" | "rejected" | "cancelled";
+export type FirstArticleBomItem = { category: string; name: string; materialCode: string; netContent: string; unit: string; composition: string };
+export type FirstArticleImage = { category: "packaging" | "inner_pack" | "coding" | "finished" | "carton"; label: string; name: string; url: string; mime: string; size: number };
+export type FirstArticleRecord = {
+  matchedBy: "barcode" | "sku" | "product_name"; documentNo: string; version: string; productSku: string; productName: string;
+  specification: string; brandName: string; unit: string; barcode: string; filingName: string; bpom: string;
+  productionProcess: string; cartonSpecification: string; updatedAt: string; bom: FirstArticleBomItem[]; images: FirstArticleImage[];
+};
 export type WorkItem = {
   id: string; spaceId: string; itemType: string; title: string; description: string; status: WorkItemStatus; priority: "normal" | "urgent";
-  publicPayload: { referenceNo?: string; warehouseRef?: string; warehouseName?: string; sourceWarehouseName?: string; destinationWarehouseName?: string; note?: string; projectCode?: string; productName?: string; productSpec?: string; barcode?: string; productionProcess?: string; cartonType?: string; piecesPerCarton?: number; factoryExpectedDeliveryDate?: string; documentVersion?: string; requirements?: string; quantity?: number; unit?: string; deliveryDate?: string; quoteCurrency?: string; orderNo?: string; fulfillmentMode?: "labor_only" | "turnkey" | "supplier"; deliveryAddress?: string; paymentTerms?: string; currency?: string };
+  publicPayload: { referenceNo?: string; warehouseRef?: string; warehouseName?: string; sourceWarehouseName?: string; destinationWarehouseName?: string; note?: string; projectCode?: string; productName?: string; productSpec?: string; barcode?: string; productionProcess?: string; cartonType?: string; piecesPerCarton?: number; factoryExpectedDeliveryDate?: string; documentVersion?: string; requirements?: string; quantity?: number; unit?: string; deliveryDate?: string; quoteCurrency?: string; orderNo?: string; fulfillmentMode?: "labor_only" | "turnkey" | "supplier"; deliveryAddress?: string; paymentTerms?: string; currency?: string; firstArticle?: FirstArticleRecord };
   dueAt: string; version: number; lastCoreSyncedAt: string; createdAt: string; updatedAt: string;
 };
 export type TaskLine = { id: string; sku: string; productName: string; imageUrl: string; plannedQuantity: number; completedQuantity: number; unit: string; lotNo: string; barcode: string; productionDate: string; expiryDate: string };

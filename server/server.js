@@ -5,7 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
-import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData, updateJdyOutsourcingOrderByNo } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, fetchJdyFirstArticleRecordsForOrders, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData, updateJdyOutsourcingOrderByNo } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
@@ -435,6 +435,7 @@ const collaborationBridge = createCollaborationBridge({
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
   listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
   listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
+  listFirstArticleRecords: fetchJdyFirstArticleRecordsForOrders,
   recordOutsourcingPartnerFeedback: async ({ orderNo, commandType, payload, submittedByName, submittedAt }) => {
     const fields = JIANYUN_FORMS.outsourcingOrders.fields;
     const actor = String(submittedByName || "委外工厂").trim();

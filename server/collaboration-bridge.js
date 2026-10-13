@@ -115,6 +115,7 @@ export function createCollaborationBridge({
   outsourcingSyncIntervalMs = Number(process.env.COLLABORATION_OUTSOURCING_SYNC_MS || 5 * 60_000),
   listActiveOutsourcingOrders = async () => [],
   listOutsourcingFactoryOrders = async () => [],
+  listFirstArticleRecords = async () => [],
   recordOutsourcingPartnerFeedback = async () => ({ ok: true, skipped: true }),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
@@ -708,12 +709,19 @@ export function createCollaborationBridge({
     let skipped = 0;
     let failed = 0;
     const errors = [];
+    const warnings = [];
     for (const organization of productionOrganizations) {
       try {
         const access = await assertOutsourcingOrganization(organization.code);
         const binding = await resolveOutsourcingBinding(organization.code, access.organization || organization);
         if (!binding) { skipped += 1; continue; }
         const records = await listOutsourcingFactoryOrders(binding.factoryId);
+        let firstArticleRecords = [];
+        try {
+          firstArticleRecords = await listFirstArticleRecords(records);
+        } catch (error) {
+          warnings.push(`${organization.code}: 首件记录读取失败，委外工单已继续同步（${error.message}）`);
+        }
         const tracked = new Set(parsedState(store, outsourcingTrackedStateKey(organization.code), []));
         const workItems = await listOrganizationWorkItems(organization.code, { itemType: "production_order", limit: 100 });
         const existingByOrderNo = new Map((workItems.items || []).map((item) => [String(item.coreRefId || ""), item]));
@@ -730,6 +738,7 @@ export function createCollaborationBridge({
             organizationCode: organization.code,
             version,
             currentStatus: existingItem?.status || "",
+            firstArticleRecords,
             eventId: `jdy-outsourcing-${eventHash}`,
           });
           if (!projection) continue;
@@ -750,7 +759,7 @@ export function createCollaborationBridge({
       }
     }
     if (!failed) store.setState("outsourcing_projection_last_scan_at", nowIso(), nowIso());
-    return { scannedOrganizations: productionOrganizations.length, queued, unchanged, skipped, failed, disabled: false, errors };
+    return { scannedOrganizations: productionOrganizations.length, queued, unchanged, skipped, failed, disabled: false, errors, warnings };
   }
 
   function outsourcingProjectionSyncDue() {

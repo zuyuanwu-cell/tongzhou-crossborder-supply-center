@@ -306,6 +306,15 @@ export async function fetchAllJdyOutsourcingOrders() {
   return mergeJdyRecords([...defaultRecords, ...inProductionRecords]);
 }
 
+function jdyFieldText(record, fieldId) {
+  const field = record?.[fieldId];
+  const value = field && typeof field === "object" && "value" in field ? field.value : field;
+  if (value === undefined || value === null) return "";
+  if (Array.isArray(value)) return value.map((item) => jdyFieldText({ value: item }, "value")).filter(Boolean).join(",");
+  if (typeof value === "object") return String(value.name || value.title || value.value || value.id || "").trim();
+  return String(value).trim();
+}
+
 export async function fetchAllJdyActiveOutsourcingOrders() {
   return fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders, {
     filter: {
@@ -326,6 +335,23 @@ export async function fetchJdyOutsourcingOrdersByFactoryId(factoryId) {
     },
     maxPages: 20,
   });
+}
+
+export async function fetchJdyFirstArticleRecordsForOrders(orderRecords = []) {
+  const orderFields = JIANYUN_FORMS.outsourcingOrders.fields;
+  const firstArticle = JIANYUN_FORMS.firstArticleRecords;
+  const barcodes = orderRecords.map((record) => jdyFieldText(record, orderFields.barcode)).filter(Boolean);
+  const skus = orderRecords.flatMap((record) => [
+    jdyFieldText(record, orderFields.tongzhouSku),
+    jdyFieldText(record, orderFields.productSku),
+  ]).filter(Boolean);
+  const productNames = orderRecords.map((record) => jdyFieldText(record, orderFields.productName)).filter(Boolean);
+  const [byBarcode, bySku, byProductName] = await Promise.all([
+    fetchJdyDataByValues(firstArticle, firstArticle.fields.barcode, barcodes, { maxPages: 10 }),
+    fetchJdyDataByValues(firstArticle, firstArticle.fields.productSku, skus, { maxPages: 10 }),
+    fetchJdyDataByValues(firstArticle, firstArticle.fields.productName, productNames, { maxPages: 10 }),
+  ]);
+  return mergeJdyRecords([...byBarcode, ...bySku, ...byProductName]);
 }
 
 export async function updateJdyOutsourcingOrderByNo(orderNo, values = {}) {

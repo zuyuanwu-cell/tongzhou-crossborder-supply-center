@@ -166,6 +166,43 @@ export const partnerOrderLineSchema = z.object({
   currency: limitedText(3).regex(/^[A-Z]{3}$/).optional().default("CNY"),
 }).strict();
 
+const firstArticleBomItemSchema = z.object({
+  category: limitedText(120).optional().default(""),
+  name: limitedText(300).optional().default(""),
+  materialCode: limitedText(120).optional().default(""),
+  netContent: limitedText(120).optional().default(""),
+  unit: limitedText(20).optional().default(""),
+  composition: limitedText(120).optional().default(""),
+}).strict();
+
+const firstArticleImageSchema = z.object({
+  category: z.enum(["packaging", "inner_pack", "coding", "finished", "carton"]),
+  label: limitedText(80).min(1),
+  name: limitedText(240).min(1),
+  url: httpsImageUrl,
+  mime: limitedText(100).optional().default("image/jpeg"),
+  size: quantity.optional().default(0),
+}).strict();
+
+const firstArticleRecordSchema = z.object({
+  matchedBy: z.enum(["barcode", "sku", "product_name"]),
+  documentNo: limitedText(120).optional().default(""),
+  version: limitedText(80).optional().default(""),
+  productSku: limitedText(120).optional().default(""),
+  productName: limitedText(300).optional().default(""),
+  specification: limitedText(1_000).optional().default(""),
+  brandName: limitedText(120).optional().default(""),
+  unit: limitedText(20).optional().default(""),
+  barcode: limitedText(120).optional().default(""),
+  filingName: limitedText(300).optional().default(""),
+  bpom: limitedText(300).optional().default(""),
+  productionProcess: limitedText(2_000).optional().default(""),
+  cartonSpecification: limitedText(1_000).optional().default(""),
+  updatedAt: isoDateTime.optional().default(""),
+  bom: z.array(firstArticleBomItemSchema).max(100).optional().default([]),
+  images: z.array(firstArticleImageSchema).max(40).optional().default([]),
+}).strict();
+
 const partnerOrderPublicPayloadSchema = z.object({
   orderNo: limitedText(120).min(1),
   projectCode: limitedText(120).optional().default(""),
@@ -184,6 +221,7 @@ const partnerOrderPublicPayloadSchema = z.object({
   deliveryAddress: limitedText(500).optional().default(""),
   paymentTerms: limitedText(1_000).optional().default(""),
   currency: limitedText(3).regex(/^[A-Z]{3}$/).optional().default("CNY"),
+  firstArticle: firstArticleRecordSchema.optional(),
 }).strict();
 
 export const partnerOrderProjectionSchema = z.object({

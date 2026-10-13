@@ -12,6 +12,7 @@ import {
   CollaborationOrganizationStatus,
   CollaborationOrganizationType,
   CollaborationOutsourcingSource,
+  CollaborationPartnerOrderReport,
   CollaborationPartnerTaskInput,
   CollaborationPartnerTaskType,
   CollaborationPartnerWorkItem,
@@ -176,9 +177,30 @@ const partnerReportLabels: Record<string, string> = {
 };
 const partnerMilestoneLabels: Record<string, string> = { pending: "待完成", in_progress: "进行中", completed: "已完成", blocked: "有异常" };
 
+function partnerProductionSteps(value: unknown) {
+  return [...new Set(String(value || "").split(/[,，、;；>→\n]+/).map((step) => step.trim()).filter(Boolean))].slice(0, 24);
+}
+
+function PartnerProductionFlow({ value, progress, exception }: {
+  value: unknown; progress?: CollaborationPartnerOrderReport; exception?: CollaborationPartnerOrderReport;
+}) {
+  const steps = partnerProductionSteps(value);
+  if (!steps.length) return null;
+  const percent = Math.max(0, Math.min(100, Number(progress?.progressPercent || 0)));
+  const stageKeywords: Record<string, string[]> = { filling: ["灌装"], packaging: ["包装", "装盒", "装箱", "贴标", "打码"], quality_check: ["质检", "检验", "测试"], ready_to_ship: ["发货", "出库"] };
+  const stageIndex = steps.findIndex((step) => (stageKeywords[String(progress?.stage || "")] || []).some((keyword) => step.includes(keyword)));
+  const currentIndex = percent >= 100 ? steps.length : stageIndex >= 0 ? stageIndex : Math.min(steps.length - 1, Math.floor(percent / Math.max(1, 100 / steps.length)));
+  const blocked = Boolean(exception && (!progress || Date.parse(exception.createdAt) > Date.parse(progress.createdAt)) && percent < 100);
+  return <section className="cia-process-flow"><div className="cia-task-detail-title"><Factory size={17} /><strong>生产工序流程</strong><span>{blocked ? "当前有异常" : percent ? `${percent}%` : "等待工厂更新"}</span></div><ol>{steps.map((step, index) => { const state = percent >= 100 || index < currentIndex ? "completed" : index === currentIndex ? (blocked ? "blocked" : "current") : "pending"; return <li className={state} key={`${step}-${index}`}><span>{state === "completed" ? <Check size={13} /> : state === "blocked" ? <AlertTriangle size={13} /> : index + 1}</span><b>{step}</b><small>{state === "completed" ? "已完成" : state === "current" ? "当前工序" : state === "blocked" ? "异常待处理" : "待开始"}</small></li>; })}</ol>{progress?.note || exception?.note ? <p>{blocked ? exception?.note : progress?.note}</p> : null}</section>;
+}
+
+const adminFirstArticleImageLabels: Record<string, string> = { packaging: "包装六面", inner_pack: "内托内包", coding: "打码位置", finished: "成品效果", carton: "外箱装箱" };
+
 function PartnerTaskDetailModal({ organizationCode, detail, loading, onClose, notify }: {
   organizationCode: string; detail: CollaborationPartnerWorkItemDetail | null; loading: boolean; onClose(): void; notify(message: string, error?: boolean): void;
 }) {
+  const [articleImage, setArticleImage] = useState<{ url: string; name: string; label: string } | null>(null);
+  const [showArticleBom, setShowArticleBom] = useState(false);
   async function download(workItemId: string, attachment: CollaborationPartnerWorkItemDetail["attachments"][number]) {
     try {
       const { blob } = await downloadCollaborationOrganizationWorkItemAttachment(organizationCode, workItemId, attachment.id);
@@ -189,6 +211,8 @@ function PartnerTaskDetailModal({ organizationCode, detail, loading, onClose, no
   }
   const item = detail?.item; const order = detail?.partnerOrder;
   const latestProgress = order?.reports.find((report) => report.reportType === "production_progress");
+  const latestException = order?.reports.find((report) => report.reportType === "exception");
+  const firstArticle = item?.publicPayload.firstArticle;
   return <div className="cia-modal-layer cia-task-detail-layer" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><article className="cia-modal cia-task-detail-modal">
     <header><div><span className="cia-eyebrow">PARTNER ORDER TRACE</span><h3>{item?.title || "协同单据详情"}</h3><p>{item ? `${item.coreRefId} · ${partnerTaskStatusLabels[item.status] || item.status} · V${item.version}` : "读取伙伴反馈与中台处理结果"}</p></div><button type="button" onClick={onClose}><X size={18} /></button></header>
     {loading || !detail || !item ? <div className="cia-loading"><LoaderCircle size={22} className="cia-spin" />正在读取工厂反馈明细…</div> : <div className="cia-task-detail-body">
@@ -198,13 +222,16 @@ function PartnerTaskDetailModal({ organizationCode, detail, loading, onClose, no
         <div><span>要求交期</span><strong>{item.publicPayload.deliveryDate || (item.dueAt ? formatTime(item.dueAt) : "—")}</strong><small>{item.publicPayload.factoryExpectedDeliveryDate ? `工厂回复 ${item.publicPayload.factoryExpectedDeliveryDate}` : "等待工厂回复"}</small></div>
         <div><span>最新进度</span><strong>{latestProgress?.progressPercent == null ? "尚未反馈" : `${latestProgress.progressPercent}%`}</strong><small>{latestProgress?.note || "接单后由工厂更新"}</small></div>
       </section>
-      {item.publicPayload.productionProcess || item.publicPayload.cartonType || item.publicPayload.barcode ? <section className="cia-task-source-brief"><div><span>生产工序</span><p>{String(item.publicPayload.productionProcess || "未填写")}</p></div><div><span>外箱 / 条码</span><p>{[item.publicPayload.cartonType, item.publicPayload.barcode].filter(Boolean).join(" · ") || "未填写"}</p></div></section> : null}
+      <PartnerProductionFlow value={item.publicPayload.productionProcess || firstArticle?.productionProcess} progress={latestProgress} exception={latestException} />
+      {item.publicPayload.cartonType || item.publicPayload.barcode ? <section className="cia-task-source-brief"><div><span>外箱与箱规</span><p>{[item.publicPayload.cartonType, item.publicPayload.piecesPerCarton ? `${item.publicPayload.piecesPerCarton} ${item.publicPayload.unit || "件"}/箱` : ""].filter(Boolean).join(" · ") || "未填写"}</p></div><div><span>商品条码</span><p>{String(item.publicPayload.barcode || "未填写")}</p></div></section> : null}
+      {firstArticle ? <section className="cia-first-article"><div className="cia-task-detail-title"><CheckCircle2 size={17} /><strong>首件档案 · {firstArticle.version || "当前版"}</strong><span>{firstArticle.documentNo || "精确关联"}</span></div><div className="cia-first-article-facts"><div><span>产品 / SKU</span><b>{firstArticle.productName || "—"}</b><small>{firstArticle.productSku || "未填写 SKU"}</small></div><div><span>规格 / 条码</span><b>{firstArticle.specification || "—"}</b><small>{firstArticle.barcode || "未填写条码"}</small></div><div><span>备案 / BPOM</span><b>{firstArticle.filingName || "—"}</b><small>{firstArticle.bpom || "未填写 BPOM"}</small></div><div><span>装箱规格</span><b>{firstArticle.cartonSpecification || "—"}</b><small>{firstArticle.updatedAt ? `更新 ${formatTime(firstArticle.updatedAt)}` : "未记录更新时间"}</small></div></div>{firstArticle.images.length ? <div className="cia-first-article-gallery">{firstArticle.images.map((image, index) => <button type="button" key={`${image.url}-${index}`} onClick={() => setArticleImage(image)}><img src={image.url} alt={`${image.label}：${image.name}`} loading="lazy" /><span>{adminFirstArticleImageLabels[image.category] || image.label}</span></button>)}</div> : <div className="cia-first-article-empty">首件记录中暂无图片</div>}{firstArticle.bom.length ? <><button type="button" className="cia-first-article-bom-toggle" onClick={() => setShowArticleBom((current) => !current)}><Boxes size={15} />首件 BOM {firstArticle.bom.length} 项<ChevronRight size={15} className={showArticleBom ? "open" : ""} /></button>{showArticleBom ? <div className="cia-first-article-bom">{firstArticle.bom.map((line, index) => <div key={`${line.materialCode}-${index}`}><span>{line.category || "—"}</span><b>{line.name || "—"}</b><code>{line.materialCode || "—"}</code><small>{[line.composition, line.netContent, line.unit].filter(Boolean).join(" · ") || "—"}</small></div>)}</div> : null}</> : null}</section> : <section className="cia-first-article cia-first-article-empty-state"><div className="cia-task-detail-title"><CheckCircle2 size={17} /><strong>首件档案</strong><span>未关联</span></div><p>当前产品未找到条码、SKU 或产品名完全一致的首件记录。</p></section>}
       <section className="cia-task-detail-section"><div className="cia-task-detail-title"><Boxes size={17} /><strong>成品、物料与包材</strong><span>{order?.lines.length || 0} 项</span></div><div className="cia-task-detail-lines">{order?.lines.map((line) => <article key={line.id}><em>{line.lineType === "finished_product" ? "成品" : line.lineType === "packaging" ? "包材" : "原料"}</em><div><strong>{line.productName}</strong><small>{line.sku}{line.specification ? ` · ${line.specification}` : ""}</small></div><b>{line.plannedQuantity.toLocaleString()} {line.unit}</b></article>)}</div></section>
       {order?.milestones.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><ClipboardCheck size={17} /><strong>关键节点</strong></div><div className="cia-task-milestones">{order.milestones.map((milestone) => <article className={milestone.status} key={milestone.id}><span>{milestone.title}</span><b>{partnerMilestoneLabels[milestone.status] || milestone.status}</b><small>{milestone.plannedAt ? `计划 ${formatTime(milestone.plannedAt)}` : "未设计划日期"}</small></article>)}</div></section> : null}
       <section className="cia-task-detail-section"><div className="cia-task-detail-title"><Factory size={17} /><strong>工厂反馈</strong><span>{order?.reports.length || 0} 条</span></div>{order?.reports.length ? <div className="cia-task-report-list">{order.reports.map((report) => <article className={report.result === "failed" || report.severity === "critical" ? "danger" : ""} key={report.id}><span /><div><strong>{report.title || partnerReportLabels[report.reportType] || report.reportType}</strong><p>{report.note || `${report.stage} · ${report.result}`}</p><small>{report.submittedByName || "工厂成员"} · {formatTime(report.createdAt)}{report.quantity != null ? ` · 数量 ${report.quantity.toLocaleString()}` : ""}</small></div>{report.progressPercent != null ? <b>{report.progressPercent}%</b> : <em>{partnerReportLabels[report.reportType] || "反馈"}</em>}</article>)}</div> : <div className="cia-empty compact"><Factory size={20} /><strong>工厂尚未汇报进度</strong><span>接单已联通；提交生产、物料测试、异常或发货反馈后会显示在这里。</span></div>}</section>
       {detail.attachments.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><FileText size={17} /><strong>凭证附件</strong><span>{detail.attachments.length} 个</span></div><div className="cia-task-attachments">{detail.attachments.map((attachment) => <button type="button" key={attachment.id} onClick={() => void download(item.id, attachment)}><FileText size={16} /><span><b>{attachment.fileName}</b><small>{attachment.scanStatus === "clean" ? "已安全校验" : attachment.scanStatus}</small></span><Download size={15} /></button>)}</div></section> : null}
       <section className="cia-task-detail-section"><div className="cia-task-detail-title"><RefreshCw size={17} /><strong>中台处理与审计</strong><span>{detail.commands.length + detail.events.length} 条</span></div><div className="cia-task-audit-list">{detail.commands.slice(0, 10).map((command) => <article key={command.id}><strong>{partnerReportLabels[command.commandType.replace(/^order_/, "")] || (command.commandType === "accept" ? "接受任务" : command.commandType)}</strong><span>{command.status === "applied" ? "中台已接收" : command.status}</span><small>{command.resultMessage || "等待处理结果"} · {formatTime(command.submittedAt)}</small></article>)}</div></section>
     </div>}
+    {articleImage ? <div className="cia-article-lightbox" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setArticleImage(null); }}><button type="button" onClick={() => setArticleImage(null)} aria-label="关闭图片"><X size={20} /></button><img src={articleImage.url} alt={articleImage.name} /><p>{articleImage.label} · {articleImage.name}</p></div> : null}
   </article></div>;
 }
 

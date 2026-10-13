@@ -364,6 +364,53 @@ function NotificationsPage({ onOpenTask }: { onOpenTask(id: string): void }) {
   return <div className="page-stack"><section className="page-title"><div><p className="kicker">INBOX</p><h1>消息中心</h1><span>站内消息是协同通知的权威记录。</span></div></section><section className="message-list">{items.map((item) => <button key={item.id} className={!item.readAt ? "unread" : ""} onClick={() => open(item)}><span className="message-dot" /><div><b>{item.title}</b><p>{item.body}</p><small>{fullDate(item.createdAt)}</small></div><ChevronRight size={18} /></button>)}</section></div>;
 }
 
+function processSteps(value = "") {
+  return [...new Set(value.split(/[,，、;；>→\n]+/).map((step) => step.trim()).filter(Boolean))].slice(0, 24);
+}
+
+function latestReport(reports: NonNullable<WorkItemDetail["partnerOrder"]>["reports"], type: string) {
+  return reports.filter((report) => report.reportType === type).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+}
+
+function ProductionProcessFlow({ value, reports }: { value?: string; reports: NonNullable<WorkItemDetail["partnerOrder"]>["reports"] }) {
+  const steps = processSteps(value);
+  const progress = latestReport(reports, "production_progress");
+  const exception = latestReport(reports, "exception");
+  const percent = Math.max(0, Math.min(100, Number(progress?.progressPercent || 0)));
+  const stageKeywords: Record<string, string[]> = { filling: ["灌装"], packaging: ["包装", "装盒", "装箱", "贴标", "打码"], quality_check: ["质检", "检验", "测试"], ready_to_ship: ["发货", "出库"] };
+  const stageIndex = steps.findIndex((step) => (stageKeywords[progress?.stage || ""] || []).some((keyword) => step.includes(keyword)));
+  const currentIndex = percent >= 100 ? steps.length : stageIndex >= 0 ? stageIndex : Math.min(steps.length - 1, Math.floor(percent / Math.max(1, 100 / steps.length)));
+  const blocked = Boolean(exception && (!progress || Date.parse(exception.createdAt) > Date.parse(progress.createdAt)) && percent < 100);
+  const [selected, setSelected] = React.useState(Math.max(0, currentIndex));
+  React.useEffect(() => setSelected(Math.max(0, currentIndex)), [value, currentIndex]);
+  if (!steps.length) return <section className="production-flow empty"><header><div><span>PRODUCTION ROUTE</span><h4>生产工序</h4></div></header><p>首件档案和加工单中暂未填写生产工序。</p></section>;
+  return <section className="production-flow">
+    <header><div><span>PRODUCTION ROUTE</span><h4>生产工序流程</h4></div><strong className={blocked ? "blocked" : ""}>{blocked ? "当前有异常" : percent ? `整体进度 ${percent}%` : "等待工厂更新"}</strong></header>
+    <ol>{steps.map((step, index) => { const state = percent >= 100 || index < currentIndex ? "completed" : index === currentIndex ? (blocked ? "blocked" : "current") : "pending"; return <li className={`${state} ${selected === index ? "selected" : ""}`} key={`${step}-${index}`}><button type="button" onClick={() => setSelected(index)} aria-label={`查看工序：${step}`}><span>{state === "completed" ? <Check size={14} /> : state === "blocked" ? <AlertTriangle size={14} /> : index + 1}</span><b>{step}</b><small>{state === "completed" ? "已完成" : state === "current" ? "当前工序" : state === "blocked" ? "异常待处理" : "待开始"}</small></button></li>; })}</ol>
+    <footer><div><span>当前查看</span><b>{steps[selected]}</b></div><p>{selected === currentIndex && progress?.note ? progress.note : selected === currentIndex && blocked ? (exception?.note || exception?.title || "存在待处理异常") : selected < currentIndex || percent >= 100 ? "该工序已按当前整体进度完成。" : "等待前序工序完成后开始。"}</p></footer>
+  </section>;
+}
+
+const firstArticleImageLabels: Record<string, string> = { packaging: "包装六面", inner_pack: "内托内包", coding: "打码位置", finished: "成品效果", carton: "外箱装箱" };
+const firstArticleMatchLabels: Record<string, string> = { barcode: "条码精确关联", sku: "SKU 精确关联", product_name: "产品名精确关联" };
+
+function FirstArticlePanel({ record }: { record: NonNullable<WorkItem["publicPayload"]["firstArticle"]> | undefined }) {
+  const [category, setCategory] = React.useState("all");
+  const [selectedImage, setSelectedImage] = React.useState<NonNullable<typeof record>["images"][number] | null>(null);
+  const [showBom, setShowBom] = React.useState(false);
+  if (!record) return <section className="first-article-panel empty"><header><div><span>FIRST ARTICLE</span><h4>首件档案</h4></div><em>未关联</em></header><p>当前产品未找到可精确匹配的首件记录，不会自动展示其他产品资料。</p></section>;
+  const categories = [...new Set(record.images.map((image) => image.category))];
+  const images = category === "all" ? record.images : record.images.filter((image) => image.category === category);
+  return <section className="first-article-panel">
+    <header><div><span>FIRST ARTICLE</span><h4>首件档案 · {record.version || "当前版"}</h4></div><em>{firstArticleMatchLabels[record.matchedBy]}</em></header>
+    <div className="first-article-summary"><div><span>档案号</span><b>{record.documentNo || "—"}</b></div><div><span>产品 / SKU</span><b>{record.productName || "—"}</b><small>{record.productSku || "未填写 SKU"}</small></div><div><span>规格 / 条码</span><b>{record.specification || "—"}</b><small>{record.barcode || "未填写条码"}</small></div><div><span>备案 / BPOM</span><b>{record.filingName || "—"}</b><small>{record.bpom || "未填写 BPOM"}</small></div></div>
+    {record.cartonSpecification ? <p className="first-article-carton"><Boxes size={15} /><span><b>装箱规格</b>{record.cartonSpecification}</span></p> : null}
+    {record.images.length ? <><nav className="first-article-tabs"><button type="button" className={category === "all" ? "active" : ""} onClick={() => setCategory("all")}>全部 {record.images.length}</button>{categories.map((key) => <button type="button" className={category === key ? "active" : ""} key={key} onClick={() => setCategory(key)}>{firstArticleImageLabels[key] || key} {record.images.filter((image) => image.category === key).length}</button>)}</nav><div className="first-article-gallery">{images.map((image, index) => <button type="button" key={`${image.url}-${index}`} onClick={() => setSelectedImage(image)}><img src={image.url} alt={`${image.label}：${image.name}`} loading="lazy" /><span>{image.label}</span></button>)}</div></> : <div className="first-article-no-images"><Camera size={18} />首件记录中暂无图片</div>}
+    {record.bom.length ? <div className="first-article-bom"><button type="button" onClick={() => setShowBom((current) => !current)}><Boxes size={16} /><span>首件 BOM 明细</span><b>{record.bom.length} 项</b><ChevronRight className={showBom ? "open" : ""} size={16} /></button>{showBom ? <div className="first-article-bom-table"><div className="head"><span>分类</span><span>物料</span><span>料体编号</span><span>组成 / 净含量</span></div>{record.bom.map((line, index) => <div key={`${line.materialCode}-${index}`}><span>{line.category || "—"}</span><b>{line.name || "—"}</b><code>{line.materialCode || "—"}</code><span>{[line.composition, line.netContent, line.unit].filter(Boolean).join(" · ") || "—"}</span></div>)}</div> : null}</div> : null}
+    {selectedImage ? <div className="first-article-lightbox" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedImage(null); }}><button type="button" onClick={() => setSelectedImage(null)} aria-label="关闭图片"><X size={20} /></button><img src={selectedImage.url} alt={selectedImage.name} /><p>{selectedImage.label} · {selectedImage.name}</p></div> : null}
+  </section>;
+}
+
 function PartnerOrderWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files, clearFiles }: {
   detail: WorkItemDetail; busy: boolean; setBusy(value: boolean): void; reload(): Promise<void>; onChanged(): void;
   notify(message: string, tone: "success" | "error"): void; files: FileList | null; clearFiles(): void;
@@ -407,7 +454,9 @@ function PartnerOrderWorkspace({ detail, busy, setBusy, reload, onChanged, notif
 
   return <section className="drawer-section partner-order-panel">
     <header><div><h3>{production ? "加工单协同台" : "采购单履约台"}</h3><span>{production ? (turnkey ? "全包模式 · 生产、物料与包材测试均需反馈" : "来料加工 · 按节点反馈生产进度") : "订单确认、备货、发货与异常全程留痕"}</span></div><ShieldCheck size={18} /></header>
-    {production && (item.publicPayload.productionProcess || item.publicPayload.cartonType || item.publicPayload.barcode) ? <div className="partner-source-facts"><div><span>生产工序</span><b>{item.publicPayload.productionProcess || "未填写"}</b></div><div><span>外箱与箱规</span><b>{[item.publicPayload.cartonType, item.publicPayload.piecesPerCarton ? `${item.publicPayload.piecesPerCarton} ${item.publicPayload.unit || "件"}/箱` : ""].filter(Boolean).join(" · ") || "未填写"}</b></div><div><span>商品条码</span><b>{item.publicPayload.barcode || "未填写"}</b></div></div> : null}
+    {production ? <ProductionProcessFlow value={item.publicPayload.productionProcess || item.publicPayload.firstArticle?.productionProcess} reports={order?.reports || []} /> : null}
+    {production && (item.publicPayload.cartonType || item.publicPayload.barcode) ? <div className="partner-source-facts"><div><span>外箱与箱规</span><b>{[item.publicPayload.cartonType, item.publicPayload.piecesPerCarton ? `${item.publicPayload.piecesPerCarton} ${item.publicPayload.unit || "件"}/箱` : ""].filter(Boolean).join(" · ") || "未填写"}</b></div><div><span>商品条码</span><b>{item.publicPayload.barcode || "未填写"}</b></div></div> : null}
+    {production ? <FirstArticlePanel record={item.publicPayload.firstArticle} /> : null}
     <div className="order-line-list">{(order?.lines || []).map((line) => <article key={line.id}><ProductImage src={line.imageUrl} name={line.productName} /><div><span>{lineTypeLabel[line.lineType]}</span><b>{line.productName}</b><code>{line.sku}{line.specification ? ` · ${line.specification}` : ""}</code></div><strong>{line.plannedQuantity.toLocaleString()} <small>{line.unit}</small></strong></article>)}</div>
     <nav className="order-report-tabs">{tabs.map(({ key, label, icon: Icon }) => <button key={key} className={panel === key ? "active" : ""} onClick={() => setPanel(key as typeof panel)}><Icon size={16} />{label}</button>)}</nav>
 

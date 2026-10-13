@@ -116,6 +116,14 @@ export type CollaborationApproval = {
 
 export type CollaborationPartnerTaskType = "production_order" | "purchase_order" | "sampling_task";
 
+export type CollaborationFirstArticleRecord = {
+  matchedBy: "barcode" | "sku" | "product_name"; documentNo: string; version: string; productSku: string; productName: string;
+  specification: string; brandName: string; unit: string; barcode: string; filingName: string; bpom: string;
+  productionProcess: string; cartonSpecification: string; updatedAt: string;
+  bom: Array<{ category: string; name: string; materialCode: string; netContent: string; unit: string; composition: string }>;
+  images: Array<{ category: "packaging" | "inner_pack" | "coding" | "finished" | "carton"; label: string; name: string; url: string; mime: string; size: number }>;
+};
+
 export type CollaborationPartnerWorkItem = {
   id: string;
   organizationCode: string;
@@ -127,7 +135,7 @@ export type CollaborationPartnerWorkItem = {
   description: string;
   status: string;
   priority: string;
-  publicPayload: Record<string, string | number | boolean | undefined>;
+  publicPayload: Record<string, any> & { firstArticle?: CollaborationFirstArticleRecord };
   dueAt: string;
   version: number;
   lastCoreSyncedAt: string;

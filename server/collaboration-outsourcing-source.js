@@ -34,6 +34,108 @@ function compact(value) {
   return text(value).replace(/\s+/g, "").toLowerCase();
 }
 
+function exactKey(value) {
+  return text(value).normalize("NFKC").replace(/[\s\-_—·・,，。()（）/\\]+/g, "").toLowerCase();
+}
+
+function safeFirstArticleImage(value, category, label) {
+  const url = text(value?.url || value?.download_url || value?.downloadUrl || value);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || !(parsed.hostname === "jiandaoyun.com" || parsed.hostname.endsWith(".jiandaoyun.com")) || parsed.href.length > 2_000) return null;
+    return {
+      category,
+      label,
+      name: text(value?.name || value?.filename, label).slice(0, 240),
+      url: parsed.href,
+      mime: text(value?.mime || value?.type, "image/jpeg").slice(0, 100),
+      size: number(value?.size),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeFirstArticle(record, matchedBy) {
+  const config = JIANYUN_FORMS.firstArticleRecords;
+  const fields = config.fields;
+  const bomFields = config.bomFields;
+  const rawBom = valueOf(record, fields.bom);
+  const imageGroups = [
+    [fields.packagingImages, "packaging", "产品包装六面图"],
+    [fields.innerPackImages, "inner_pack", "内托与内包"],
+    [fields.codingImages, "coding", "打码位置"],
+    [fields.finishedImages, "finished", "成品效果"],
+    [fields.cartonImages, "carton", "外箱与装箱"],
+  ];
+  const images = imageGroups.flatMap(([fieldId, category, label]) => {
+    const files = valueOf(record, fieldId);
+    return (Array.isArray(files) ? files : files ? [files] : [])
+      .map((file) => safeFirstArticleImage(file, category, label))
+      .filter(Boolean);
+  }).slice(0, 40);
+  return {
+    matchedBy,
+    documentNo: text(valueOf(record, fields.documentNo)).slice(0, 120),
+    version: text(valueOf(record, fields.version)).slice(0, 80),
+    productSku: text(valueOf(record, fields.productSku)).slice(0, 120),
+    productName: text(valueOf(record, fields.productName)).slice(0, 300),
+    specification: text(valueOf(record, fields.specification)).slice(0, 1_000),
+    brandName: text(valueOf(record, fields.brandName)).slice(0, 120),
+    unit: text(valueOf(record, fields.unit)).slice(0, 20),
+    barcode: text(valueOf(record, fields.barcode)).slice(0, 120),
+    filingName: text(valueOf(record, fields.filingName)).slice(0, 300),
+    bpom: text(valueOf(record, fields.bpom)).slice(0, 300),
+    productionProcess: text(valueOf(record, fields.productionProcess)).slice(0, 2_000),
+    cartonSpecification: text(valueOf(record, fields.cartonSpecification)).slice(0, 1_000),
+    updatedAt: date(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at),
+    bom: (Array.isArray(rawBom) ? rawBom : []).slice(0, 100).map((item) => ({
+      category: text(valueOf(item, bomFields.category)).slice(0, 120),
+      name: text(valueOf(item, bomFields.name)).slice(0, 300),
+      materialCode: text(valueOf(item, bomFields.materialCode)).slice(0, 120),
+      netContent: text(valueOf(item, bomFields.netContent)).slice(0, 120),
+      unit: text(valueOf(item, bomFields.unit)).slice(0, 20),
+      composition: text(valueOf(item, bomFields.composition)).slice(0, 120),
+    })).filter((item) => item.name || item.materialCode),
+    images,
+  };
+}
+
+export function matchOutsourcingFirstArticle(orderRecord, firstArticleRecords = []) {
+  const orderFields = JIANYUN_FORMS.outsourcingOrders.fields;
+  const articleFields = JIANYUN_FORMS.firstArticleRecords.fields;
+  const orderBarcode = exactKey(valueOf(orderRecord, orderFields.barcode));
+  const orderSkus = new Set([
+    exactKey(valueOf(orderRecord, orderFields.tongzhouSku)),
+    exactKey(valueOf(orderRecord, orderFields.productSku)),
+  ].filter(Boolean));
+  const orderProductName = exactKey(valueOf(orderRecord, orderFields.productName));
+  const orderFactoryNames = new Set([
+    exactKey(valueOf(orderRecord, orderFields.supplier)),
+    exactKey(valueOf(orderRecord, orderFields.factoryFullName)),
+  ].filter(Boolean));
+  const matches = firstArticleRecords.map((record) => {
+    const articleBarcode = exactKey(valueOf(record, articleFields.barcode));
+    const articleSku = exactKey(valueOf(record, articleFields.productSku));
+    const articleProductName = exactKey(valueOf(record, articleFields.productName));
+    const articleFactoryName = exactKey(valueOf(record, articleFields.factoryName));
+    const matchedBy = orderBarcode && articleBarcode === orderBarcode
+      ? "barcode"
+      : articleSku && orderSkus.has(articleSku)
+        ? "sku"
+        : orderProductName && articleProductName === orderProductName
+          ? "product_name"
+          : "";
+    if (!matchedBy) return null;
+    const baseScore = matchedBy === "barcode" ? 300 : matchedBy === "sku" ? 200 : 100;
+    const factoryScore = articleFactoryName && orderFactoryNames.has(articleFactoryName) ? 10 : 0;
+    const updatedAt = Date.parse(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at || "") || 0;
+    return { record, matchedBy, score: baseScore + factoryScore, updatedAt };
+  }).filter(Boolean).sort((left, right) => right.score - left.score || right.updatedAt - left.updatedAt);
+  return matches[0] ? normalizeFirstArticle(matches[0].record, matches[0].matchedBy) : null;
+}
+
 function safeLineRef(orderNo, type, sku, index) {
   const readable = `${orderNo}-${type}-${sku || "line"}-${index + 1}`.replace(/\s+/g, "-");
   if (readable.length <= 120) return readable;
@@ -112,6 +214,7 @@ export function outsourcingProjectionFromRecord(record, {
   version,
   currentStatus = "",
   imageUrl = "",
+  firstArticleRecords = [],
   eventId,
 } = {}) {
   const fields = JIANYUN_FORMS.outsourcingOrders.fields;
@@ -122,7 +225,8 @@ export function outsourcingProjectionFromRecord(record, {
   const productName = text(valueOf(record, fields.productName), sku);
   const productSpec = text(valueOf(record, fields.productSpec));
   const barcode = text(valueOf(record, fields.barcode));
-  const productionProcess = text(valueOf(record, fields.productionProcess));
+  const firstArticle = matchOutsourcingFirstArticle(record, firstArticleRecords);
+  const productionProcess = text(valueOf(record, fields.productionProcess)) || firstArticle?.productionProcess || "";
   const cartonType = text(valueOf(record, fields.cartonType));
   const piecesPerCarton = number(valueOf(record, fields.piecesPerCarton));
   const quantity = number(valueOf(record, fields.plannedQty));
@@ -205,6 +309,7 @@ export function outsourcingProjectionFromRecord(record, {
       deliveryAddress: "",
       paymentTerms: "",
       currency: "CNY",
+      ...(firstArticle ? { firstArticle } : {}),
     },
     lines,
     milestones: [
