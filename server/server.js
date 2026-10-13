@@ -11751,7 +11751,8 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
         return;
       }
-      sendJson(res, 200, skuCodingService.snapshot(cachedStockupWorkflow, currentWmsWarehouseOptions()));
+      const workflow = await workflowForSkuCoding();
+      sendJson(res, 200, skuCodingService.snapshot(workflow, currentWmsWarehouseOptions()));
       return;
     }
 
@@ -11764,7 +11765,8 @@ const server = http.createServer(async (req, res) => {
       const payload = await parseRequestBody(req);
       const rule = skuCodingService.upsertRule(payload, skuCodingActor(auth));
       appendActionLog(auth, "维护 SKU 编码规则", "sku_coding_rule", rule.id, { prefix: rule.prefix, name: rule.name, enabled: rule.enabled });
-      sendJson(res, 200, { ok: true, rule, codingCenter: skuCodingService.snapshot(cachedStockupWorkflow, currentWmsWarehouseOptions()) });
+      const workflow = await workflowForSkuCoding();
+      sendJson(res, 200, { ok: true, rule, codingCenter: skuCodingService.snapshot(workflow, currentWmsWarehouseOptions()) });
       return;
     }
 

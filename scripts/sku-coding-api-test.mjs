@@ -16,21 +16,50 @@ try {
     productCodingQueue: [{ id: "product-1", productName: "新品 A", sourceDemandRecordId: "demand-1", sourceDemandBatchNo: "XQ-001" }],
   };
   const calls = [];
+  const createWarehouseProductFn = async (connection, product) => {
+    calls.push({ connection: connection.id, product });
+    if (connection.id === "bad-wms") throw new Error("模拟 WMS 失败");
+    return { ok: true, externalId: `${connection.id}:${product.sku}` };
+  };
   const service = createSkuCodingService({
     registry,
-    completeProductCodingFn: async (input) => ({ ok: true, productRecordId: "jdy-product-1", demandRecordId: "demand-1", sku: input.sku }),
-    createWarehouseProductFn: async (connection, product) => {
-      calls.push({ connection: connection.id, product });
-      if (connection.id === "bad-wms") throw new Error("模拟 WMS 失败");
-      return { ok: true, externalId: `${connection.id}:${product.sku}` };
-    },
+    completeProductCodingFn: async (input) => ({ ok: true, productRecordId: "jdy-product-1", demandRecordId: input.mode === "direct" ? "" : "demand-1", sku: input.sku }),
+    createWarehouseProductFn,
     resolveConnection: (id) => ({ id, providerId: id === "ru-wms" ? "yunwms_ru" : "sea_wms" }),
   });
   const snapshot = service.snapshot(workflow, []);
   const idwg = snapshot.rules.find((item) => item.prefix === "TZKJ-IDWG");
-  const reservation = service.reserve({ ruleId: idwg.id, productRecordId: "product-1" }, workflow, { id: "admin", name: "管理员" });
+  const directReservation = service.reserve({
+    ruleId: idwg.id,
+    productRecordId: "manual:direct-product-1",
+    productName: "直接建档新品",
+    mode: "direct",
+  }, {
+    ...workflow,
+    productOptions: [{ id: "old", sku: "TZKJ-IDWG146", productName: "基础库现有产品" }],
+  }, { id: "admin", name: "管理员" });
+  assert.equal(directReservation.sku, "TZKJ-IDWG147", "直接建档必须延续基础信息库实时最大流水");
+  const directArchived = await service.complete({
+    reservationId: directReservation.id,
+    productRecordId: "manual:direct-product-1",
+    mode: "direct",
+    product: { productName: "直接建档新品", unit: "件" },
+    warehouseConnectionIds: [],
+  }, workflow, { id: "admin", name: "管理员" });
+  assert.equal(directArchived.productRecordId, "jdy-product-1");
+  assert.equal(directArchived.demandRecordId, "", "直接建档不能依赖或更新备货需求");
+
+  const secondRegistry = createSkuCodingRegistry({ filePath: join(unitDir, "queue-registry.json") });
+  const queueService = createSkuCodingService({
+    registry: secondRegistry,
+    completeProductCodingFn: async (input) => ({ ok: true, productRecordId: "jdy-product-queue", demandRecordId: "demand-1", sku: input.sku }),
+    createWarehouseProductFn,
+    resolveConnection: (id) => ({ id, providerId: id === "ru-wms" ? "yunwms_ru" : "sea_wms" }),
+  });
+  const queueIdwg = queueService.snapshot(workflow, []).rules.find((item) => item.prefix === "TZKJ-IDWG");
+  const reservation = queueService.reserve({ ruleId: queueIdwg.id, productRecordId: "product-1" }, workflow, { id: "admin", name: "管理员" });
   assert.equal(reservation.sku, "TZKJ-IDWG034");
-  const archived = await service.complete({
+  const archived = await queueService.complete({
     reservationId: reservation.id,
     productRecordId: "product-1",
     warehouseConnectionIds: ["good-wms", "bad-wms"],
@@ -40,9 +69,9 @@ try {
   assert.equal(archived.warehouseResults.filter((item) => item.status === "success").length, 1);
   assert.equal(archived.warehouseResults.filter((item) => item.status === "failed").length, 1);
   assert.equal(calls[0].product.sku, "TZKJ-IDWG034");
-  assert.equal(registry.getReservation(reservation.id).jdyRecordId, "jdy-product-1");
+  assert.equal(secondRegistry.getReservation(reservation.id).jdyRecordId, "jdy-product-queue");
 
-  const retried = await service.retry({ reservationId: reservation.id, warehouseConnectionIds: ["bad-wms"] }, { id: "admin", name: "管理员" }, {
+  const retried = await queueService.retry({ reservationId: reservation.id, warehouseConnectionIds: ["bad-wms"] }, { id: "admin", name: "管理员" }, {
     createWarehouseProductFn: async (connection, product) => ({ ok: true, externalId: `${connection.id}:${product.sku}` }),
   });
   assert.equal(retried.status, "completed");
@@ -135,17 +164,35 @@ try {
   assert.equal(custom.response.status, 200);
   assert.equal(custom.payload.rule.nextSku, "TZKJ-ABC001");
 
+  const directReserved = await jsonRequest("/api/stockup/workflow/product-coding/reservations", {
+    token, method: "POST", body: { ruleId: "rule-idwg", productRecordId: "manual:api-direct-1", productName: "API 直接新品", mode: "direct" },
+  });
+  assert.equal(directReserved.response.status, 201);
+  assert.equal(directReserved.payload.reservation.sku, "TZKJ-IDWG034");
+
+  const directDryRun = await jsonRequest("/api/stockup/workflow/product-coding", {
+    token, method: "POST", body: { reservationId: directReserved.payload.reservation.id, productRecordId: "manual:api-direct-1", mode: "direct", product: { productName: "API 直接新品", unit: "件" }, dryRun: true },
+  });
+  assert.equal(directDryRun.response.status, 200);
+  assert.equal(directDryRun.payload.sku, "TZKJ-IDWG034");
+  assert.equal(directDryRun.payload.demandRecordId || "", "");
+
+  await jsonRequest(`/api/stockup/workflow/product-coding/reservations/${encodeURIComponent(directReserved.payload.reservation.id)}`, {
+    token, method: "DELETE", body: { reason: "释放测试草稿" },
+  });
+
   const reserved = await jsonRequest("/api/stockup/workflow/product-coding/reservations", {
     token, method: "POST", body: { ruleId: "rule-idwg", productRecordId: "product-api" },
   });
   assert.equal(reserved.response.status, 201);
-  assert.equal(reserved.payload.reservation.sku, "TZKJ-IDWG034");
+  assert.equal(reserved.payload.reservation.sku, "TZKJ-IDWG035");
 
   const dryRun = await jsonRequest("/api/stockup/workflow/product-coding", {
     token, method: "POST", body: { reservationId: reserved.payload.reservation.id, productRecordId: "product-api", product: { productName: "API 新品", brand: "测试品牌" }, dryRun: true },
   });
   assert.equal(dryRun.response.status, 200);
-  assert.equal(dryRun.payload.sku, "TZKJ-IDWG034");
+  assert.equal(dryRun.payload.sku, "TZKJ-IDWG035");
+  assert.equal(dryRun.payload.demandRecordId, "demand-api");
 
   const cancelled = await jsonRequest(`/api/stockup/workflow/product-coding/reservations/${encodeURIComponent(reserved.payload.reservation.id)}`, {
     token, method: "DELETE", body: { reason: "测试撤销" },

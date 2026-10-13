@@ -17,6 +17,25 @@ function queueProduct(workflow, productRecordId) {
   return (workflow?.productCodingQueue || []).find((item) => item.id === text(productRecordId));
 }
 
+function isDirectDraft(input = {}) {
+  return text(input.mode).toLowerCase() === "direct" && /^manual:/i.test(text(input.productRecordId));
+}
+
+function directDraftProduct(input = {}) {
+  if (!isDirectDraft(input)) return null;
+  const productName = text(input.productName || input.product?.productName);
+  if (!productName) throw new Error("请先填写新品中文名称。");
+  return {
+    id: text(input.productRecordId),
+    productName,
+    productNameEn: text(input.product?.productNameEn),
+    brand: text(input.product?.brand),
+    specification: text(input.product?.specification),
+    barcode: text(input.product?.barcode),
+    unit: text(input.product?.unit || "件"),
+  };
+}
+
 function publicWarehouseResult(connectionId, status, values = {}) {
   return {
     connectionId,
@@ -40,11 +59,15 @@ export function createSkuCodingService({
   if (typeof createWarehouseProductFn !== "function") throw new Error("缺少 WMS 商品建档处理器。");
 
   function snapshot(workflow = {}, warehouseOptions = []) {
+    const skus = existingSkus(workflow);
     return {
       ok: true,
-      ...registry.snapshot(existingSkus(workflow)),
+      ...registry.snapshot(skus),
       queue: workflow.productCodingQueue || [],
       warehouseOptions,
+      catalogSkuCount: skus.length,
+      catalogSyncedAt: text(workflow.syncedAt),
+      catalogSource: "jiandaoyun-product-base",
     };
   }
 
@@ -53,8 +76,8 @@ export function createSkuCodingService({
   }
 
   function reserve(input, workflow, actor) {
-    const product = queueProduct(workflow, input.productRecordId);
-    if (!product) throw new Error("未找到待编码新品，请刷新编码队列后重试。");
+    const product = queueProduct(workflow, input.productRecordId) || directDraftProduct(input);
+    if (!product) throw new Error("未找到待编码新品，请刷新编码队列后重试，或使用“直接新建”。");
     return registry.reserve({
       ruleId: input.ruleId,
       productRecordId: product.id,
@@ -115,12 +138,14 @@ export function createSkuCodingService({
     if (reservation.productRecordId !== text(input.productRecordId)) throw new Error("SKU 预占记录与当前新品不一致。");
     if (reservation.status === "cancelled") throw new Error(`SKU ${reservation.sku} 已撤销，不能继续建档。`);
     if (reservation.status === "completed") return { ok: true, alreadyCompleted: true, ...reservation };
-    const product = queueProduct(workflow, input.productRecordId);
-    if (!product) throw new Error("未找到待编码新品，请刷新编码队列后重试。");
+    const direct = isDirectDraft(input);
+    const product = queueProduct(workflow, input.productRecordId) || directDraftProduct(input);
+    if (!product) throw new Error("未找到待编码新品，请刷新编码队列后重试，或使用“直接新建”。");
     const normalizedProduct = productInput(input, product, reservation.sku);
     const targetConnectionIds = unique(input.warehouseConnectionIds);
     const jdy = await completeProductCodingFn({
       ...input,
+      mode: direct ? "direct" : "queue",
       sku: reservation.sku,
       product: normalizedProduct,
     }, workflow);
@@ -140,7 +165,7 @@ export function createSkuCodingService({
       completedById: text(actor?.id),
       completedByName: text(actor?.name),
     });
-    return { ok: true, productRecordId: jdy.productRecordId, demandRecordId: jdy.demandRecordId, sku: reservation.sku, ...saved };
+    return { ok: true, ...saved, productRecordId: jdy.productRecordId, sourceProductRecordId: saved.productRecordId, demandRecordId: jdy.demandRecordId, sku: reservation.sku };
   }
 
   async function retry(input, actor, overrides = {}) {

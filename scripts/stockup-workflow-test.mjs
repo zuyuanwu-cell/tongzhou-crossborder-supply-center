@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildExecutionCancellationPlan, buildExecutionDemandReconciliationPlan, buildExecutionLineRollbackPlan, buildShipmentVoidPlan, buildStockupWorkflowPayload, buildWorkflowStageCounts, calculateShipmentCosts, completeProductCoding, deriveExecutionLineStatus, deriveExecutionOrderStatus, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowLineAvailableToShip, workflowShipmentJdyData } from "../server/stockup-workflow.js";
+import { buildExecutionCancellationPlan, buildExecutionDemandReconciliationPlan, buildExecutionLineRollbackPlan, buildShipmentVoidPlan, buildStockupWorkflowPayload, buildWorkflowStageCounts, calculateShipmentCosts, completeProductCoding, createStockupDemand, deriveExecutionLineStatus, deriveExecutionOrderStatus, findStockupOrderLinkField, shipmentFeeJdyData, stockupDemandJdyData, stockupExecutionJdyData, updateStockupExecutionLine, workflowLineAvailableToShip, workflowShipmentJdyData } from "../server/stockup-workflow.js";
 import { JIANYUN_FORMS } from "../server/field-mapping.js";
 
 function shipment(lines) {
@@ -101,6 +101,13 @@ const demandPrepared = stockupDemandJdyData({
   destinationCountry: "印度尼西亚",
   stockupMethod: "外采成品",
 });
+await assert.rejects(() => createStockupDemand({
+  productSourceType: "外采新品",
+  productName: "应先建档的新品",
+  requestedQty: 10,
+  destinationCountry: "印度尼西亚",
+  dryRun: true,
+}), /先在新品编码中心建立 SKU/);
 assert.match(demandPrepared.demandBatchNo, /^XQ-/);
 assert.match(demandPrepared.temporaryProductNo, /^TMP-/);
 assert.equal(demandPrepared.data[JIANYUN_FORMS.stockupDemands.fields.skuCodingStatus].value, "待编码");
