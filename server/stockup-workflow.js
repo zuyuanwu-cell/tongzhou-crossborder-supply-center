@@ -1407,42 +1407,13 @@ export async function createStockupDemand(input) {
   if (!input.productName) throw new Error("请填写产品名称。");
   if (numberValue(input.requestedQty) <= 0) throw new Error("备货数量必须大于 0。");
   if (!input.destinationCountry && !input.destinationWarehouseName) throw new Error("请填写目的国或目的仓。");
-  if (input.productSourceType !== "外采新品" && (!input.productRecordId || !input.sku)) {
-    throw new Error("已有产品需求必须选择正式 SKU。");
-  }
+  if (input.productSourceType === "外采新品") throw new Error("请先在新品编码中心建立 SKU 和产品基础档案，再提交备货需求。");
+  if (!input.productRecordId || !input.sku) throw new Error("备货需求必须选择产品基础信息库中的正式 SKU。");
   const prepared = stockupDemandJdyData(input);
   if (input.dryRun) return { ok: true, dryRun: true, ...prepared };
   const result = await createJdyData(JIANYUN_FORMS.stockupDemands, prepared.data);
   const demandRecordId = createdDataId(result);
-  let productRecordId = input.productRecordId || "";
-  let warning = "";
-  if (input.productSourceType === "外采新品") {
-    const fields = JIANYUN_FORMS.productBase.fields;
-    const productData = compactJdyData({
-      [fields.productName]: jdyField(input.productName),
-      [fields.unit]: jdyField(input.unit || "件"),
-      [fields.project]: jdyField(input.project || ""),
-      [fields.temporaryProductNo]: jdyField(prepared.temporaryProductNo),
-      [fields.archiveStatus]: jdyField("临时档案"),
-      [fields.skuCodingStatus]: jdyField("待编码"),
-      [fields.sourceDemandRecordId]: jdyField(demandRecordId),
-      [fields.sourceDemandBatchNo]: jdyField(prepared.demandBatchNo),
-      [fields.codingAppliedAt]: jdyField(new Date().toISOString()),
-      [fields.duplicateCheckKey]: jdyField(`${input.productName}|${input.specification || ""}`.toLowerCase()),
-    });
-    try {
-      productRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.productBase, productData));
-      if (productRecordId) {
-        const demandFields = JIANYUN_FORMS.stockupDemands.fields;
-        await updateJdyData(JIANYUN_FORMS.stockupDemands, demandRecordId, {
-          [demandFields.productRecordId]: jdyField(productRecordId),
-        });
-      }
-    } catch (error) {
-      warning = `需求已创建，但临时产品档案创建失败：${error.message || String(error)}。编码队列仍会根据需求显示。`;
-    }
-  }
-  return { ok: true, dryRun: false, demandRecordId, productRecordId, demandBatchNo: prepared.demandBatchNo, temporaryProductNo: prepared.temporaryProductNo, warning };
+  return { ok: true, dryRun: false, demandRecordId, productRecordId: input.productRecordId, demandBatchNo: prepared.demandBatchNo, temporaryProductNo: "", warning: "" };
 }
 
 export function stockupExecutionJdyData(input, demand) {
@@ -1881,16 +1852,29 @@ export async function voidWorkflowShipment(input, workflow) {
 }
 
 export async function completeProductCoding(input, workflow, dependencies = {}) {
-  const product = workflow.productCodingQueue.find((item) => item.id === input.productRecordId);
-  if (!product) throw new Error("未找到待编码新品，请刷新后重试。");
+  const directCreate = textValue(input.mode).toLowerCase() === "direct" && /^manual:/i.test(textValue(input.productRecordId));
+  const details = input.product && typeof input.product === "object" ? input.product : input;
+  const product = directCreate ? {
+    id: textValue(input.productRecordId),
+    productName: textValue(details.productName),
+    productNameEn: textValue(details.productNameEn),
+    unit: textValue(details.unit, "件"),
+    brand: textValue(details.brand),
+    specification: textValue(details.specification),
+    barcode: textValue(details.barcode),
+    sourceDemandRecordId: "",
+    sourceDemandBatchNo: "",
+    codingAppliedAt: new Date().toISOString(),
+  } : workflow.productCodingQueue.find((item) => item.id === input.productRecordId);
+  if (!product) throw new Error("未找到待编码新品，请刷新后重试，或使用“直接新建”。");
+  if (!textValue(details.productName, product.productName)) throw new Error("请填写新品中文名称。");
   const sku = textValue(input.sku).toUpperCase();
   if (!sku) throw new Error("请输入正式 SKU。");
-  const duplicate = workflow.productOptions?.find((item) => item.sku.toUpperCase() === sku && item.id !== product.id);
+  const duplicate = workflow.productOptions?.find((item) => item.sku.toUpperCase() === sku && (directCreate || item.id !== product.id));
   if (duplicate) throw new Error(`SKU ${sku} 已被 ${duplicate.productName || duplicate.id} 使用。`);
   const productFields = JIANYUN_FORMS.productBase.fields;
-  const sourceDemand = workflow.demands.find((item) => item.id === product.sourceDemandRecordId || `demand:${item.id}` === product.id);
-  const temporaryProductNo = product.temporaryProductNo && !product.temporaryProductNo.startsWith("历史需求-") ? product.temporaryProductNo : businessNo("TMP");
-  const details = input.product && typeof input.product === "object" ? input.product : input;
+  const sourceDemand = directCreate ? null : workflow.demands.find((item) => item.id === product.sourceDemandRecordId || `demand:${item.id}` === product.id);
+  const temporaryProductNo = directCreate ? "" : (product.temporaryProductNo && !product.temporaryProductNo.startsWith("历史需求-") ? product.temporaryProductNo : businessNo("TMP"));
   const optionalField = (name, transform = (value) => value) => Object.prototype.hasOwnProperty.call(details, name)
     ? jdyField(transform(details[name]))
     : undefined;
@@ -1923,34 +1907,34 @@ export async function completeProductCoding(input, workflow, dependencies = {}) 
     [productFields.origin]: optionalField("origin", textValue),
     [productFields.hsCode]: optionalField("hsCode", textValue),
     [productFields.destinationCountry]: optionalField("destinationCountry", textValue),
-    [productFields.project]: jdyField(sourceDemand?.project || ""),
-    [productFields.temporaryProductNo]: jdyField(temporaryProductNo),
+    [productFields.project]: directCreate ? undefined : jdyField(sourceDemand?.project || ""),
+    [productFields.temporaryProductNo]: directCreate ? undefined : jdyField(temporaryProductNo),
     [productFields.skuCodingStatus]: jdyField("已编码"),
     [productFields.archiveStatus]: jdyField("正式档案"),
-    [productFields.sourceDemandRecordId]: jdyField(sourceDemand?.id || product.sourceDemandRecordId || ""),
-    [productFields.sourceDemandBatchNo]: jdyField(sourceDemand?.demandBatchNo || product.sourceDemandBatchNo || ""),
+    [productFields.sourceDemandRecordId]: directCreate ? undefined : jdyField(sourceDemand?.id || product.sourceDemandRecordId || ""),
+    [productFields.sourceDemandBatchNo]: directCreate ? undefined : jdyField(sourceDemand?.demandBatchNo || product.sourceDemandBatchNo || ""),
     [productFields.codingAppliedAt]: jdyField(product.codingAppliedAt || new Date().toISOString()),
     [productFields.codingCompletedAt]: jdyField(new Date().toISOString()),
   });
   const demandFields = JIANYUN_FORMS.stockupDemands.fields;
-  const demandData = compactJdyData({
+  const demandData = directCreate ? {} : compactJdyData({
     [demandFields.productRecordId]: jdyField(product.id.startsWith("demand:") ? "" : product.id),
     [demandFields.temporaryProductNo]: jdyField(temporaryProductNo),
     [demandFields.officialSku]: jdyField(sku),
     [demandFields.skuCodingStatus]: jdyField("已编码"),
     [demandFields.businessStatus]: jdyField("待受理"),
   });
-  if (input.dryRun) return { ok: true, dryRun: true, productData, demandData };
+  const demandRecordId = directCreate ? "" : (sourceDemand?.id || product.sourceDemandRecordId);
+  if (input.dryRun) return { ok: true, dryRun: true, productData, demandData, demandRecordId };
   const createData = dependencies.createJdyData || createJdyData;
   const updateData = dependencies.updateJdyData || updateJdyData;
   let productRecordId = product.id;
-  if (product.id.startsWith("demand:")) {
+  if (directCreate || product.id.startsWith("demand:")) {
     productRecordId = createdDataId(await createData(JIANYUN_FORMS.productBase, productData));
-    demandData[demandFields.productRecordId] = jdyField(productRecordId);
+    if (!directCreate) demandData[demandFields.productRecordId] = jdyField(productRecordId);
   } else {
     await updateData(JIANYUN_FORMS.productBase, product.id, productData);
   }
-  const demandRecordId = sourceDemand?.id || product.sourceDemandRecordId;
   if (demandRecordId) await updateData(JIANYUN_FORMS.stockupDemands, demandRecordId, demandData);
   return { ok: true, dryRun: false, productRecordId, demandRecordId, sku };
 }

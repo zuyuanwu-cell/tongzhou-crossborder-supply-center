@@ -8,6 +8,12 @@
 
 **Tech Stack:** Node.js ESM API, React 19 + TypeScript, existing Jiandaoyun client, YunWMS SOAP adapter, SEA WMS signed JSON adapter, Node assertion scripts, Vite.
 
+## 2026-10-13 workflow correction: direct product creation
+
+The coding center is the entry point for a new SKU; a stock-up demand is not a prerequisite. The default workbench therefore starts with a blank product draft, lets the user select a coding rule, reserves the next globally unique number, creates the Jiandaoyun product-base record, and optionally creates product masters in selected WMS connections. The former demand-derived queue remains available only as a compatibility path for records already created by the earlier workflow.
+
+Every coding-center refresh and every reservation request must derive the observed maximum from the complete live Jiandaoyun product-base SKU list. Seed examples and locally persisted counters are only safety floors; they can never lower or replace the live maximum. Completion performs the duplicate check again. A direct draft uses a `manual:` identifier until Jiandaoyun returns the permanent product record ID, and it never writes or updates a stock-up demand. New stock-up demands must select a formal SKU from the product base; previously created demand-derived coding records remain readable and processable for compatibility. WMS creation remains optional and follows Jiandaoyun success, with existing per-warehouse retry semantics.
+
 ---
 
 ### Task 1: Persistent coding rules and reservations

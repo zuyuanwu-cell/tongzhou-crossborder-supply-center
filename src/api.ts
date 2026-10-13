@@ -3752,6 +3752,9 @@ export type SkuCodingCenterPayload = {
   queue: StockupWorkflowPayload["productCodingQueue"];
   warehouseOptions: StockupWmsWarehouseOption[];
   updatedAt: string;
+  catalogSkuCount: number;
+  catalogSyncedAt: string;
+  catalogSource: string;
 };
 
 export type StockupWmsPushTask = {
@@ -4949,7 +4952,7 @@ export function updateSkuCodingRule(input: Partial<SkuCodingRule> & { name: stri
   return requestJson<{ ok: boolean; rule: SkuCodingRule; codingCenter: SkuCodingCenterPayload }>("/api/stockup/workflow/product-coding/rules", { method: "PUT", body: JSON.stringify(input) });
 }
 
-export function reserveWorkflowSku(input: { productRecordId: string; ruleId: string }) {
+export function reserveWorkflowSku(input: { productRecordId: string; ruleId: string; mode?: "direct" | "queue"; productName?: string }) {
   return requestJson<{ ok: boolean; reservation: SkuCodingReservation }>("/api/stockup/workflow/product-coding/reservations", { method: "POST", body: JSON.stringify(input) });
 }
 
@@ -4960,6 +4963,7 @@ export function cancelWorkflowSkuReservation(reservationId: string, reason = "")
 export function completeWorkflowProductCoding(input: {
   productRecordId: string;
   reservationId?: string;
+  mode?: "direct" | "queue";
   sku?: string;
   warehouseConnectionIds?: string[];
   product?: Record<string, string | number>;
