@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  AlertTriangle, ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Bell, Boxes, Building2, Camera, Check, CheckCircle2,
+  AlertTriangle, ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Bell, Boxes, Building2, CalendarDays, Camera, Check, CheckCircle2,
   BadgeDollarSign, ChevronRight, CircleDot, Clock3, ClipboardCheck, Factory, FileCheck2, FileText, FlaskConical, Inbox, LayoutDashboard,
   LoaderCircle, LogOut, Menu, PackageCheck, Plus, RefreshCw, ScanLine, Search, ShieldCheck, Stamp,
   Trash2, Truck, Upload, UserPlus, UserRound, Users, Warehouse, X, XCircle, Copy, KeyRound, Mail,
@@ -46,11 +46,15 @@ function routeLabel(session: Session, route: Route) {
 
 function formatDate(value: string, withTime = true) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", ...(withTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}) }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", ...(withTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}) }).format(date);
 }
 function fullDate(value: string) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 function useRoute() {
   const read = () => (Object.keys(routeMeta).includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview") as Route;
@@ -139,15 +143,135 @@ function TaskCard({ item, onOpen }: { item: WorkItem; onOpen(item: WorkItem): vo
   </button>;
 }
 
+type OverviewFocus = "all" | "normal" | "urgent" | "overdue" | "dueSoon" | "unscheduled" | `day:${string}`;
+const terminalWorkItemStatuses = new Set<WorkItemStatus>(["completed", "rejected", "cancelled"]);
+
+function workItemDeadline(item: WorkItem) {
+  const raw = item.dueAt || (typeof item.publicPayload.deliveryDate === "string" ? item.publicPayload.deliveryDate : "");
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function localDayKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function deadlineClass(item: WorkItem, now = new Date()) {
+  const deadline = workItemDeadline(item);
+  if (!deadline) return "unscheduled" as const;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dueDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+  const dayDifference = Math.round((dueDay.getTime() - today.getTime()) / 86400000);
+  if (dayDifference < 0) return "overdue" as const;
+  if (dayDifference <= 7) return "dueSoon" as const;
+  return "scheduled" as const;
+}
+
+function orderRiskLabel(item: WorkItem) {
+  const deadline = workItemDeadline(item);
+  const classification = deadlineClass(item);
+  if (classification === "overdue" && deadline) {
+    const today = new Date();
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const dueDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+    return `已逾期 ${Math.max(1, Math.ceil((start.getTime() - dueDay.getTime()) / 86400000))} 天`;
+  }
+  if (classification === "dueSoon" && deadline) {
+    const today = new Date();
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const dueDay = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+    const days = Math.max(0, Math.round((dueDay.getTime() - start.getTime()) / 86400000));
+    return days === 0 ? "今天到期" : `${days} 天后到期`;
+  }
+  return classification === "unscheduled" ? "未设置交期" : `交期 ${formatDate(deadline?.toISOString() || "", false)}`;
+}
+
+function PriorityControlBoard({ tasks, focus, entityLabel, onFocus }: { tasks: WorkItem[]; focus: OverviewFocus; entityLabel: string; onFocus(focus: OverviewFocus): void }) {
+  const overdue = tasks.filter((item) => deadlineClass(item) === "overdue");
+  const urgent = tasks.filter((item) => item.priority === "urgent" && deadlineClass(item) !== "overdue");
+  const standard = Math.max(0, tasks.length - overdue.length - urgent.length);
+  const total = Math.max(1, tasks.length);
+  const overdueEnd = overdue.length / total * 100;
+  const urgentEnd = overdueEnd + urgent.length / total * 100;
+  const ringStyle = { background: `conic-gradient(#c23c2a 0 ${overdueEnd}%, #f45b0b ${overdueEnd}% ${urgentEnd}%, #2451a4 ${urgentEnd}% 100%)` };
+  const rows: Array<{ key: OverviewFocus; label: string; count: number; tone: string }> = [
+    { key: "overdue", label: "已经逾期", count: overdue.length, tone: "danger" },
+    { key: "urgent", label: "紧急优先", count: urgent.length, tone: "signal" },
+    { key: "normal", label: "常规进行", count: standard, tone: "ink" },
+  ];
+  return <section className="priority-board control-panel">
+    <header><div><p className="kicker">ORDER PRIORITY</p><h2>订单优先级</h2></div><span>{tasks.length} 个进行中{entityLabel}</span></header>
+    <div className="priority-visual">
+      <button className={`priority-ring ${focus === "all" ? "selected" : ""}`} style={ringStyle} onClick={() => onFocus("all")} aria-label={`查看全部 ${tasks.length} 个${entityLabel}`}><span><strong>{tasks.length}</strong><small>进行中</small></span></button>
+      <div className="priority-legend">{rows.map((row) => <button key={row.key} className={focus === row.key ? "selected" : ""} onClick={() => onFocus(row.key)}><i className={row.tone} /><span>{row.label}</span><strong>{row.count}</strong><ChevronRight size={15} /></button>)}</div>
+    </div>
+  </section>;
+}
+
+function DeliveryControlBoard({ tasks, focus, entityLabel, onFocus, onOpenTask }: { tasks: WorkItem[]; focus: OverviewFocus; entityLabel: string; onFocus(focus: OverviewFocus): void; onOpenTask(item: WorkItem): void }) {
+  const today = React.useMemo(() => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()); }, []);
+  const buckets = React.useMemo(() => Array.from({ length: 14 }, (_, index) => {
+    const date = new Date(today); date.setDate(today.getDate() + index);
+    const key = localDayKey(date);
+    const items = tasks.filter((item) => { const deadline = workItemDeadline(item); return deadline ? localDayKey(deadline) === key : false; });
+    return { date, key, items, urgent: items.filter((item) => item.priority === "urgent").length };
+  }), [tasks, today]);
+  const overdue = tasks.filter((item) => deadlineClass(item) === "overdue");
+  const dueSoon = tasks.filter((item) => deadlineClass(item) === "dueSoon");
+  const unscheduled = tasks.filter((item) => deadlineClass(item) === "unscheduled");
+  const maxCount = Math.max(1, ...buckets.map((bucket) => bucket.items.length));
+  const selectedTasks = focus.startsWith("day:") ? buckets.find((bucket) => `day:${bucket.key}` === focus)?.items || [] : focus === "overdue" ? overdue : focus === "dueSoon" ? dueSoon : focus === "unscheduled" ? unscheduled : focus === "normal" ? tasks.filter((item) => item.priority === "normal" && deadlineClass(item) !== "overdue") : tasks.filter((item) => item.priority === "urgent");
+  const riskItems = [...selectedTasks].sort((a, b) => {
+    const rank = (entry: WorkItem) => deadlineClass(entry) === "overdue" ? 0 : deadlineClass(entry) === "dueSoon" ? 1 : entry.priority === "urgent" ? 2 : deadlineClass(entry) === "unscheduled" ? 4 : 3;
+    const rankDifference = rank(a) - rank(b);
+    if (rankDifference) return rankDifference;
+    return (workItemDeadline(a)?.getTime() || Number.MAX_SAFE_INTEGER) - (workItemDeadline(b)?.getTime() || Number.MAX_SAFE_INTEGER);
+  }).slice(0, 4);
+  return <section className="delivery-board control-panel">
+    <header><div><p className="kicker">14-DAY DELIVERY</p><h2>14 天交期时间轴</h2></div><span>点击日期查看对应{entityLabel}</span></header>
+    <div className="deadline-alerts">
+      <button className={`deadline-alert danger ${focus === "overdue" ? "selected" : ""}`} onClick={() => onFocus("overdue")}><AlertTriangle size={19} /><span><b>{overdue.length}</b><small>逾期{entityLabel}</small></span></button>
+      <button className={`deadline-alert warning ${focus === "dueSoon" ? "selected" : ""}`} onClick={() => onFocus("dueSoon")}><Clock3 size={19} /><span><b>{dueSoon.length}</b><small>7 天内到期</small></span></button>
+      <button className={`deadline-alert neutral ${focus === "unscheduled" ? "selected" : ""}`} onClick={() => onFocus("unscheduled")}><CalendarDays size={19} /><span><b>{unscheduled.length}</b><small>待补交期</small></span></button>
+    </div>
+    <div className="delivery-timeline" role="group" aria-label="未来十四天订单交期分布">{buckets.map((bucket, index) => <button key={bucket.key} className={focus === `day:${bucket.key}` ? "selected" : ""} onClick={() => onFocus(`day:${bucket.key}`)} title={`${bucket.key}：${bucket.items.length} 个${entityLabel}`}>
+      <span className="timeline-bar"><i style={{ height: `${Math.max(bucket.items.length ? 18 : 3, bucket.items.length / maxCount * 100)}%` }} />{bucket.urgent ? <em>{bucket.urgent}</em> : null}</span>
+      <b>{bucket.date.getDate()}</b><small>{index === 0 ? "今天" : new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(bucket.date)}</small>
+    </button>)}</div>
+    <div className="risk-order-list"><div className="risk-list-head"><b>{focus === "overdue" ? "逾期订单" : focus === "dueSoon" ? "即将到期" : focus === "unscheduled" ? "未设交期" : focus === "normal" ? "常规进行" : focus.startsWith("day:") ? "当日交期" : "优先关注"}</b><span>{selectedTasks.length} 个{entityLabel}</span></div>{riskItems.length ? riskItems.map((item) => <button key={item.id} onClick={() => onOpenTask(item)}><span className={`risk-marker ${deadlineClass(item)}`} /><span><b>{item.title}</b><small>{item.publicPayload.orderNo || item.publicPayload.referenceNo || item.publicPayload.projectCode || itemTypeMeta[item.itemType]?.label}</small></span><strong>{orderRiskLabel(item)}</strong><ChevronRight size={16} /></button>) : <div className="risk-empty"><CheckCircle2 size={18} />当前筛选没有风险订单</div>}</div>
+  </section>;
+}
+
 function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; onOpenTask(item: WorkItem): void; onNavigate(route: Route): void }) {
   const [dashboard, setDashboard] = React.useState<Dashboard | null>(null);
   const [tasks, setTasks] = React.useState<WorkItem[]>([]);
-  React.useEffect(() => { Promise.all([fetchDashboard(), fetchWorkItems()]).then(([summary, work]) => { setDashboard(summary.dashboard); setTasks(work.items.slice(0, 4)); }); }, []);
+  const [focus, setFocus] = React.useState<OverviewFocus>("all");
+  React.useEffect(() => { Promise.all([fetchDashboard(), fetchWorkItems({ limit: 100 })]).then(([summary, work]) => { setDashboard(summary.dashboard); setTasks(work.items); }); }, []);
   const mode = organizationMode(session);
+  const entityLabel = mode === "warehouse" ? "任务" : "订单";
+  const activeTasks = tasks.filter((item) => !terminalWorkItemStatuses.has(item.status));
+  const dueSoonCount = activeTasks.filter((item) => deadlineClass(item) === "dueSoon").length;
+  const focusedTasks = activeTasks.filter((item) => {
+    if (focus === "all") return true;
+    if (focus === "normal") return item.priority === "normal" && deadlineClass(item) !== "overdue";
+    if (focus === "urgent") return item.priority === "urgent" && deadlineClass(item) !== "overdue";
+    if (focus === "overdue" || focus === "dueSoon" || focus === "unscheduled") return deadlineClass(item) === focus;
+    if (focus.startsWith("day:")) { const deadline = workItemDeadline(item); return deadline ? localDayKey(deadline) === focus.slice(4) : false; }
+    return true;
+  }).sort((a, b) => {
+    const priorityDifference = (a.priority === "urgent" ? 0 : 1) - (b.priority === "urgent" ? 0 : 1);
+    if (priorityDifference) return priorityDifference;
+    return (workItemDeadline(a)?.getTime() || Number.MAX_SAFE_INTEGER) - (workItemDeadline(b)?.getTime() || Number.MAX_SAFE_INTEGER);
+  });
   return <div className="page-stack">
     <section className="work-brief"><div><p className="kicker">TODAY'S HANDOFF</p><h1>{mode === "production" ? "生产进度、包材测试和异常，" : mode === "procurement" ? "交期、备货和发运，" : "今天，把每一次交接"}<br />都要<strong>清楚、准确、有回音。</strong></h1></div><div className="sync-stamp"><RefreshCw size={18} /><span>{mode === "warehouse" ? "库存最近同步" : "订单状态"}<b>{mode === "warehouse" ? (dashboard?.inventorySyncedAt ? formatDate(dashboard.inventorySyncedAt) : "同步中") : "实时留痕"}</b></span></div></section>
-    <section className="metric-grid">{mode === "production" ? <><MetricCard label="在产加工单" value={dashboard?.productionOrders ?? "—"} note="仅本组织订单" icon={Factory} /><MetricCard label="临期订单" value={dashboard?.dueSoonTasks ?? "—"} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></> : mode === "procurement" ? <><MetricCard label="采购单" value={dashboard?.purchaseOrders ?? "—"} note="仅本组织订单" icon={PackageCheck} /><MetricCard label="临期交付" value={dashboard?.dueSoonTasks ?? "—"} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></> : <><MetricCard label="进行中任务" value={dashboard?.openTasks ?? "—"} note="本组织待处理" icon={ClipboardCheck} /><MetricCard label="紧急任务" value={dashboard?.urgentTasks ?? "—"} note="请优先处理" icon={AlertTriangle} tone="amber" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="已提交，勿重复操作" icon={RefreshCw} tone="violet" /><MetricCard label="可见 SKU" value={dashboard?.inventorySkuCount ?? "—"} note="仅限本仓范围" icon={Boxes} tone="green" /></>}</section>
-    <section className="section-block"><header><div><p className="kicker">ACTIVE QUEUE</p><h2>当前作业队列</h2></div><button className="text-action" onClick={() => onNavigate("tasks")}>查看全部 <ChevronRight size={16} /></button></header><div className="task-grid">{tasks.map((item) => <TaskCard key={item.id} item={item} onOpen={onOpenTask} />)}</div></section>
+    <section className="metric-grid">{mode === "production" ? <><MetricCard label="在产加工单" value={dashboard?.productionOrders ?? "—"} note="仅本组织订单" icon={Factory} /><MetricCard label="临期订单" value={dueSoonCount} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></> : mode === "procurement" ? <><MetricCard label="采购单" value={dashboard?.purchaseOrders ?? "—"} note="仅本组织订单" icon={PackageCheck} /><MetricCard label="临期交付" value={dueSoonCount} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></> : <><MetricCard label="进行中任务" value={dashboard?.openTasks ?? "—"} note="本组织待处理" icon={ClipboardCheck} /><MetricCard label="紧急任务" value={dashboard?.urgentTasks ?? "—"} note="请优先处理" icon={AlertTriangle} tone="amber" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="已提交，勿重复操作" icon={RefreshCw} tone="violet" /><MetricCard label="可见 SKU" value={dashboard?.inventorySkuCount ?? "—"} note="仅限本仓范围" icon={Boxes} tone="green" /></>}</section>
+    <section className="overview-control-grid"><PriorityControlBoard tasks={activeTasks} focus={focus} entityLabel={entityLabel} onFocus={setFocus} /><DeliveryControlBoard tasks={activeTasks} focus={focus} entityLabel={entityLabel} onFocus={setFocus} onOpenTask={onOpenTask} /></section>
+    <section className="section-block"><header><div><p className="kicker">ACTIVE QUEUE</p><h2>{focus === "all" ? "当前作业队列" : "筛选后的优先队列"}</h2><span className="section-subtitle">{focusedTasks.length} 个{entityLabel}{focus !== "all" ? " · 点击上方“进行中”圆环恢复全部" : ""}</span></div><button className="text-action" onClick={() => onNavigate("tasks")}>查看全部 <ChevronRight size={16} /></button></header>{focusedTasks.length ? <div className="task-grid">{focusedTasks.slice(0, 6).map((entry) => <TaskCard key={entry.id} item={entry} onOpen={onOpenTask} />)}</div> : <div className="compact-empty"><CheckCircle2 size={22} /><span>当前筛选下没有待处理{entityLabel}</span></div>}</section>
     <section className="safety-banner"><div className="safety-symbol"><ShieldCheck size={28} /></div><div><b>你正处于“{tasks[0]?.publicPayload.warehouseName || "本组织"}”数据边界</b><span>页面、搜索、附件和{mode === "warehouse" ? "库存" : "订单"}均只包含当前组织被授权的数据；所有操作会记录操作者与时间。</span></div></section>
   </div>;
 }
