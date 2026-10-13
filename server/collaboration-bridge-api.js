@@ -115,6 +115,21 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 201, { ok: true, ...result });
         return true;
       }
+      const organizationWorkItemsMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items$/);
+      if (organizationWorkItemsMatch && req.method === "GET") {
+        const code = decodeURIComponent(organizationWorkItemsMatch[1]);
+        sendJson(res, 200, { ok: true, ...(await bridge.listOrganizationWorkItems(code, Object.fromEntries(url.searchParams.entries()))) });
+        return true;
+      }
+      if (organizationWorkItemsMatch && req.method === "POST") {
+        const code = decodeURIComponent(organizationWorkItemsMatch[1]);
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.publishPartnerTask(code, input, { actorName });
+        appendActionLog(auth, "发布伙伴生产/采购/打样单", "collaboration_work_item", result.coreRefId, { organizationCode: code, taskType: input.taskType || "", eventId: result.eventId, delivery: result.delivery });
+        sendJson(res, 201, result);
+        return true;
+      }
       const organizationMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})$/);
       if (organizationMatch && req.method === "GET") {
         sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationAccess(decodeURIComponent(organizationMatch[1]))) });

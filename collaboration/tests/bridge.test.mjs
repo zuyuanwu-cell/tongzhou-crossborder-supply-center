@@ -100,6 +100,67 @@ test("core bridge publishes production and purchase orders through the private o
   assert.equal(requests[0].body.publicPayload.orderNo, "MO-001");
 });
 
+test("internal administrators publish only granted production, procurement and sampling tasks to one organization", async (t) => {
+  const accessGrants = [
+    { resourceType: "organization", resourceRef: "production", permissions: ["production.order.view"] },
+    { resourceType: "organization", resourceRef: "procurement", permissions: ["procurement.order.view"] },
+    { resourceType: "organization", resourceRef: "sampling", permissions: ["sampling.task.view"] },
+  ];
+  const { bridge, requests } = await fixture(t, {
+    oemEnabled: true,
+    organizations: [{ code: "mf-songyu", name: "松雨", organizationType: "production_factory", status: "active" }],
+    accessGrants,
+    workItems: [{ id: "99999999-9999-4999-8999-999999999999", itemType: "production_order", status: "in_progress" }],
+  });
+  const common = {
+    documentNo: "SY-20261013-001",
+    title: "松雨协同单",
+    productName: "测试产品",
+    quantity: 1000,
+    unit: "件",
+    dueAt: "2026-10-30T10:00:00.000Z",
+    requirements: "按确认版本执行",
+    lines: [{ sku: "SKU-1", productName: "测试产品", plannedQuantity: 1000, unit: "件" }],
+  };
+
+  for (const taskType of ["production_order", "purchase_order", "sampling_task"]) {
+    const result = await bridge.publishPartnerTask("mf-songyu", { ...common, taskType }, { actorName: "中台管理员" });
+    assert.equal(result.delivery.published, 1);
+  }
+
+  const production = requests.find((request) => request.url.endsWith("/partner-orders/projections") && request.body.itemType === "production_order");
+  const purchase = requests.find((request) => request.url.endsWith("/partner-orders/projections") && request.body.itemType === "purchase_order");
+  const sampling = requests.find((request) => request.url.endsWith("/oem/projections") && request.body.itemType === "sampling_task");
+  assert.equal(production.body.organizationCode, "mf-songyu");
+  assert.equal(production.body.publicPayload.fulfillmentMode, "turnkey");
+  assert.equal(purchase.body.publicPayload.fulfillmentMode, "supplier");
+  assert.equal(sampling.body.publicPayload.projectCode, "SY-20261013-001");
+  assert.equal("internalCost" in production.body.publicPayload, false);
+
+  const listing = await bridge.listOrganizationWorkItems("mf-songyu", { itemType: "production_order" });
+  assert.equal(listing.items[0].status, "in_progress");
+  assert.match(requests.at(-1).url, /organizationCode=mf-songyu/);
+  assert.match(requests.at(-1).url, /itemType=production_order/);
+});
+
+test("partner task publication is denied until the target organization has the matching grant", async (t) => {
+  const { bridge } = await fixture(t, {
+    oemEnabled: true,
+    organizations: [{ code: "mf-songyu", name: "松雨", organizationType: "production_factory", status: "active" }],
+    accessGrants: [{ resourceType: "organization", resourceRef: "production", permissions: ["production.order.view"] }],
+  });
+  await assert.rejects(() => bridge.publishPartnerTask("mf-songyu", {
+    taskType: "sampling_task",
+    documentNo: "SAMPLE-001",
+    title: "打样",
+    productName: "测试产品",
+    quantity: 2,
+    unit: "件",
+    requirements: "提交样品结果",
+    lines: [{ sku: "SKU-1", productName: "测试产品", plannedQuantity: 2, unit: "件" }],
+  }), /尚未开通/);
+});
+
 test("saving warehouse access immediately publishes an allowlisted inventory snapshot", async (t) => {
   const accessGrants = [{
     resourceType: "warehouse",

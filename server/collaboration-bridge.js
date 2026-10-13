@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema } from "../collaboration/shared/contracts.js";
+import { collaborationProjectionSchema, internalPartnerTaskSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema } from "../collaboration/shared/contracts.js";
 
 const systemUser = Object.freeze({
   id: "collaboration-bridge",
@@ -60,6 +60,10 @@ function inventoryProjectionVersion(previous = 0) {
   // Keep the value inside PostgreSQL int4 while remaining monotonic across restarts.
   const secondsSince2020 = Math.floor((Date.now() - Date.UTC(2020, 0, 1)) / 1_000);
   return Math.max(Number(previous || 0) + 1, secondsSince2020, 1);
+}
+
+function collaborationProjectionVersion() {
+  return Math.max(1, Math.floor((Date.now() - Date.UTC(2020, 0, 1)) / 1_000));
 }
 
 function inventoryFingerprint(warehouseName, items) {
@@ -571,6 +575,102 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`);
   }
 
+  function listOrganizationWorkItems(code, filters = {}) {
+    const query = new URLSearchParams({ organizationCode: String(code) });
+    for (const key of ["status", "itemType", "keyword", "limit", "offset"]) {
+      if (filters[key] !== undefined && String(filters[key]).trim()) query.set(key, String(filters[key]));
+    }
+    return internalRequest(`/collaboration/internal/v1/work-items?${query.toString()}`);
+  }
+
+  async function publishPartnerTask(code, input, { actorName = "供应链中台管理员" } = {}) {
+    if (!oemEnabled) fail("生产、采购与打样协同尚未启用。", 403, "feature_disabled");
+    const task = internalPartnerTaskSchema.parse(input);
+    const access = await getOrganizationAccessGrants(code);
+    const required = {
+      production_order: { resourceRef: "production", permission: "production.order.view" },
+      purchase_order: { resourceRef: "procurement", permission: "procurement.order.view" },
+      sampling_task: { resourceRef: "sampling", permission: "sampling.task.view" },
+    }[task.taskType];
+    const grant = (access.grants || []).find((item) => item.resourceType === "organization" && item.resourceRef === required.resourceRef);
+    if (!grant?.permissions?.includes(required.permission)) {
+      const label = required.resourceRef === "production" ? "委外加工" : required.resourceRef === "procurement" ? "物料采购" : "打样";
+      fail(`目标组织尚未开通${label}权限。`, 403, "resource_not_granted");
+    }
+    const version = collaborationProjectionVersion();
+    const eventId = projectionId(task.taskType === "sampling_task" ? "sampling" : "partner-order");
+    const deliveryDate = task.dueAt ? task.dueAt.slice(0, 10) : "";
+    let queued;
+    if (task.taskType === "sampling_task") {
+      queued = queueOemProjection({
+        eventId,
+        organizationCode: code,
+        coreRefType: "sampling_order",
+        coreRefId: task.documentNo,
+        spaceType: "sampling",
+        itemType: "sampling_task",
+        title: task.title,
+        description: task.description || task.requirements,
+        priority: task.priority,
+        status: "pending",
+        dueAt: task.dueAt,
+        version,
+        publicPayload: {
+          projectCode: task.documentNo,
+          productName: task.productName,
+          productSpec: task.productSpec,
+          documentVersion: `V${version}`,
+          requirements: task.requirements,
+          quantity: task.quantity,
+          unit: task.unit,
+          deliveryDate,
+        },
+        milestones: [],
+      });
+    } else {
+      const production = task.taskType === "production_order";
+      queued = queuePartnerOrderProjection({
+        eventId,
+        organizationCode: code,
+        coreRefType: production ? "outsourcing_order" : "material_purchase_order",
+        coreRefId: task.documentNo,
+        orderType: production ? "production" : "purchase",
+        itemType: task.taskType,
+        title: task.title,
+        description: task.description || task.requirements,
+        priority: task.priority,
+        status: "pending",
+        dueAt: task.dueAt,
+        version,
+        publicPayload: {
+          orderNo: task.documentNo,
+          productName: task.productName,
+          fulfillmentMode: production ? task.fulfillmentMode : "supplier",
+          requirements: task.requirements,
+          quantity: task.quantity,
+          unit: task.unit,
+          deliveryDate,
+          deliveryAddress: task.deliveryAddress,
+        },
+        lines: task.lines.map((line, index) => ({
+          lineRef: `${task.documentNo}-${String(index + 1).padStart(3, "0")}`.slice(0, 120),
+          lineType: line.lineType || (production ? "finished_product" : "raw_material"),
+          sku: normalizedSku(line.sku),
+          productName: line.productName,
+          specification: line.specification,
+          imageUrl: publicImageUrl(line.imageUrl),
+          plannedQuantity: line.plannedQuantity,
+          unit: line.unit,
+          responsibility: production ? "factory" : "supplier",
+        })),
+        milestones: [],
+      });
+    }
+    const delivery = await flushOutbox();
+    onAudit("发布伙伴生产/采购/打样单", { id: eventId, organizationCode: code, coreRefId: task.documentNo, commandType: "publish", submittedByName: actorName }, { taskType: task.taskType, status: queued.status, delivery });
+    return { ok: true, eventId, coreRefId: task.documentNo, status: queued.status, delivery };
+  }
+
   async function replaceOrganizationAccessGrants(code, input) {
     const result = await internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`, { method: "PUT", body: input });
     const inventoryProjection = await synchronizeInventoryProjections({ force: true, organizationCode: code });
@@ -646,12 +746,14 @@ export function createCollaborationBridge({
     getOrganizationAccessGrants,
     getWarehouseTask,
     listOrganizations,
+    listOrganizationWorkItems,
     listApprovals: () => store.listCommands(["awaiting_approval"], 200),
     listOemQuotes,
     listWarehouseTaskOptions,
     listWarehouseTasks,
     pullCommands,
     provisionOrganization,
+    publishPartnerTask,
     publishWarehouseTask,
     queueInventoryProjection,
     queueOemProjection,
