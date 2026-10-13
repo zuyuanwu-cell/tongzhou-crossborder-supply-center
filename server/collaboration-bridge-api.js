@@ -171,6 +171,12 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 202, { ok: true, eventId: result.id, status: result.status });
         return true;
       }
+      if (suffix === "/partner-orders/projections" && req.method === "POST") {
+        const result = bridge.queuePartnerOrderProjection(await readBody(req));
+        appendActionLog(auth, "发布伙伴生产/采购订单", "partner_order_projection", result.projection.publicPayload.orderNo, { eventId: result.id, organizationCode: result.projection.organizationCode, coreRefId: result.projection.coreRefId, orderType: result.projection.orderType });
+        sendJson(res, 202, { ok: true, eventId: result.id, status: result.status });
+        return true;
+      }
       if (suffix === "/oem/quotes" && req.method === "GET") {
         sendJson(res, 200, await bridge.listOemQuotes(url.searchParams.get("coreRefId") || ""));
         return true;

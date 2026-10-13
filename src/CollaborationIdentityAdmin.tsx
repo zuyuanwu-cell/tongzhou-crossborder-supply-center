@@ -30,6 +30,7 @@ const organizationTypes: Array<{ value: CollaborationOrganizationType; label: st
   { value: "sampling_factory", label: "打样工厂", hint: "样品轮次、修改意见与确认协同" },
   { value: "packaging_factory", label: "包装厂", hint: "私有询报价与定标结果协同" },
   { value: "production_factory", label: "委外生产工厂", hint: "工单、排期、质检与交付协同" },
+  { value: "material_supplier", label: "物料供应商", hint: "采购单、交期、备货、发货与异常协同" },
 ];
 
 const statusLabels: Record<CollaborationOrganizationStatus, string> = { active: "使用中", suspended: "已停用", archived: "已归档" };

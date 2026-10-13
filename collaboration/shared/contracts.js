@@ -3,6 +3,7 @@ import { z } from "zod";
 const limitedText = (max) => z.string().trim().max(max);
 const isoDateTime = z.string().datetime({ offset: true }).or(z.literal(""));
 const quantity = z.number().finite().nonnegative();
+const dateOnly = limitedText(10).regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal(""));
 const httpsImageUrl = z.string().url().max(2_000).refine((value) => {
   try { return new URL(value).protocol === "https:"; }
   catch { return false; }
@@ -149,6 +150,111 @@ export const oemProjectionSchema = z.object({
   const expected = { filing: "filing_task", sampling: "sampling_task", packaging_quote: "packaging_quote", production: "production_order" }[value.spaceType];
   if (value.itemType !== expected) context.addIssue({ code: z.ZodIssueCode.custom, path: ["itemType"], message: "OEM 空间类型与任务类型不匹配。" });
 });
+
+export const partnerOrderLineSchema = z.object({
+  lineRef: limitedText(120).min(1),
+  lineType: z.enum(["finished_product", "raw_material", "packaging"]),
+  sku: limitedText(100).min(1),
+  productName: limitedText(300).min(1),
+  specification: limitedText(1_000).optional().default(""),
+  imageUrl: httpsImageUrl.optional().or(z.literal("")),
+  plannedQuantity: quantity,
+  unit: limitedText(20).optional().default("件"),
+  requiredDate: dateOnly.optional().default(""),
+  responsibility: z.enum(["tongzhou", "factory", "supplier"]),
+  unitPrice: quantity.optional(),
+  currency: limitedText(3).regex(/^[A-Z]{3}$/).optional().default("CNY"),
+}).strict();
+
+const partnerOrderPublicPayloadSchema = z.object({
+  orderNo: limitedText(120).min(1),
+  projectCode: limitedText(120).optional().default(""),
+  productName: limitedText(300).optional().default(""),
+  fulfillmentMode: z.enum(["labor_only", "turnkey", "supplier"]),
+  requirements: limitedText(5_000).optional().default(""),
+  quantity: quantity.optional().default(0),
+  unit: limitedText(20).optional().default("件"),
+  deliveryDate: dateOnly.optional().default(""),
+  deliveryAddress: limitedText(500).optional().default(""),
+  paymentTerms: limitedText(1_000).optional().default(""),
+  currency: limitedText(3).regex(/^[A-Z]{3}$/).optional().default("CNY"),
+}).strict();
+
+export const partnerOrderProjectionSchema = z.object({
+  eventId: limitedText(160).min(1),
+  organizationCode: limitedText(64).regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),
+  coreRefType: limitedText(80).min(1),
+  coreRefId: limitedText(160).min(1),
+  orderType: z.enum(["production", "purchase"]),
+  itemType: z.enum(["production_order", "purchase_order"]),
+  title: limitedText(240).min(1),
+  description: limitedText(5_000).optional().default(""),
+  priority: z.enum(["normal", "urgent"]).optional().default("normal"),
+  status: z.enum(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]).optional().default("pending"),
+  dueAt: isoDateTime.optional().default(""),
+  version: z.number().int().positive(),
+  publicPayload: partnerOrderPublicPayloadSchema,
+  lines: z.array(partnerOrderLineSchema).min(1).max(500),
+  milestones: z.array(z.object({
+    milestoneType: limitedText(80).min(1),
+    title: limitedText(240).min(1),
+    plannedAt: isoDateTime.optional().default(""),
+    status: z.enum(["pending", "in_progress", "completed", "blocked"]).optional().default("pending"),
+    publicPayload: z.object({ note: limitedText(2_000).optional().default("") }).strict().optional().default({ note: "" }),
+  }).strict()).max(100).optional().default([]),
+}).strict().superRefine((value, context) => {
+  const expectedType = value.orderType === "production" ? "production_order" : "purchase_order";
+  if (value.itemType !== expectedType) context.addIssue({ code: z.ZodIssueCode.custom, path: ["itemType"], message: "订单类型与任务类型不匹配。" });
+  if (value.orderType === "purchase" && value.publicPayload.fulfillmentMode !== "supplier") context.addIssue({ code: z.ZodIssueCode.custom, path: ["publicPayload", "fulfillmentMode"], message: "采购单必须使用供应商履约模式。" });
+  if (value.orderType === "production" && value.lines.some((line) => line.unitPrice !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["lines"], message: "生产加工单不得向工厂投影价格字段。" });
+});
+
+export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
+  z.object({
+    reportType: z.literal("production_progress"),
+    stage: z.enum(["planning", "material_preparation", "filling", "packaging", "quality_check", "ready_to_ship"]),
+    progressPercent: z.number().int().min(0).max(100),
+    completedQuantity: quantity.optional().default(0),
+    expectedCompletionDate: dateOnly.optional().default(""),
+    note: limitedText(2_000).min(1),
+  }).strict(),
+  z.object({
+    reportType: z.literal("material_readiness"),
+    lineId: z.string().uuid(),
+    readiness: z.enum(["not_arrived", "partial", "arrived"]),
+    arrivedQuantity: quantity,
+    testResult: z.enum(["pending", "passed", "failed", "not_required"]),
+    testedAt: dateOnly.optional().default(""),
+    exceptionDescription: limitedText(2_000).optional().default(""),
+    note: limitedText(2_000).optional().default(""),
+  }).strict().superRefine((value, context) => {
+    if (value.testResult === "failed" && !value.exceptionDescription) context.addIssue({ code: z.ZodIssueCode.custom, path: ["exceptionDescription"], message: "测试不合格时必须填写异常说明。" });
+  }),
+  z.object({
+    reportType: z.literal("purchase_fulfillment"),
+    stage: z.enum(["confirmed", "preparing", "ready_to_ship", "shipped", "delivered"]),
+    expectedDeliveryDate: dateOnly.optional().default(""),
+    completedQuantity: quantity.optional().default(0),
+    note: limitedText(2_000).min(1),
+  }).strict(),
+  z.object({
+    reportType: z.literal("exception"),
+    category: z.enum(["material_shortage", "material_quality", "packaging_test", "production_delay", "quality_issue", "delivery_delay", "other"]),
+    severity: z.enum(["notice", "warning", "critical"]),
+    title: limitedText(240).min(1),
+    description: limitedText(5_000).min(1),
+    affectedQuantity: quantity.optional().default(0),
+    expectedResolutionDate: dateOnly.optional().default(""),
+  }).strict(),
+  z.object({
+    reportType: z.literal("shipment"),
+    shippedQuantity: z.number().finite().positive(),
+    shippedAt: dateOnly,
+    carrier: limitedText(200).optional().default(""),
+    trackingNo: limitedText(200).optional().default(""),
+    note: limitedText(2_000).optional().default(""),
+  }).strict(),
+]);
 
 export const supplierQuoteSchema = z.object({
   workItemId: z.string().uuid(),

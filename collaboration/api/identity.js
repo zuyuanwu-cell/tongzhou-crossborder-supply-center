@@ -5,7 +5,7 @@ import { sendSecurityEmail } from "./notifications.js";
 import { hashPassword, randomToken, tokenHash, validateNewPassword, verifyPassword } from "./security.js";
 
 const roles = ["organization_admin", "manager", "operator", "finance", "viewer"];
-const organizationTypes = ["internal", "warehouse", "filing_service", "sampling_factory", "packaging_factory", "production_factory"];
+const organizationTypes = ["internal", "warehouse", "filing_service", "sampling_factory", "packaging_factory", "production_factory", "material_supplier"];
 const resetAttempts = new Map();
 const usernameSchema = z.string().trim().min(3).max(80).regex(/^[A-Za-z0-9._-]+$/);
 const optionalEmailSchema = z.union([z.string().trim().email().max(320), z.literal("")]).optional().default("");
@@ -93,6 +93,7 @@ const organizationCodePrefixes = {
   sampling_factory: "sf",
   packaging_factory: "pf",
   production_factory: "mf",
+  material_supplier: "ms",
 };
 
 export function generateOrganizationCode(organizationType, entropy = randomToken(6)) {

@@ -21,7 +21,13 @@ const permissionDefinitions = Object.freeze({
   "packaging.quote.submit": ["提交报价", "提交本组织报价，不能查看竞争方"],
   "production.order.view": ["查看生产工单", "查看批准版本的委外生产工单"],
   "production.progress.update": ["更新生产进度", "更新里程碑、异常与交付状态"],
+  "production.material.update": ["反馈物料与包材", "反馈到齐数量、测试结果与异常"],
+  "production.exception.report": ["上报生产异常", "上报物料、生产、质量或交期异常"],
+  "production.shipment.submit": ["反馈生产发货", "提交成品发货数量、物流和凭证"],
   "production.artifact.submit": ["提交生产资料", "提交质检报告等生产资料"],
+  "procurement.order.view": ["查看采购单", "查看发布给本组织的采购订单"],
+  "procurement.fulfillment.update": ["更新采购履约", "确认交期、备货、发货和到货状态"],
+  "procurement.exception.report": ["上报采购异常", "上报物料质量、数量或交期异常"],
   "attachment.upload": ["上传附件", "在已授权任务中上传附件"],
 });
 
@@ -29,8 +35,9 @@ const allowedByOrganizationType = Object.freeze({
   warehouse: Object.keys(permissionDefinitions).filter((key) => key.startsWith("warehouse.") || key === "attachment.upload"),
   filing_service: ["filing.task.view", "filing.task.handle", "filing.artifact.submit", "attachment.upload"],
   sampling_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "attachment.upload"],
-  packaging_factory: ["packaging.quote.view", "packaging.quote.submit", "attachment.upload"],
-  production_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "production.order.view", "production.progress.update", "production.artifact.submit", "attachment.upload"],
+  packaging_factory: ["packaging.quote.view", "packaging.quote.submit", "procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
+  production_factory: ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "production.order.view", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "production.artifact.submit", "attachment.upload"],
+  material_supplier: ["procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"],
   internal: [],
 });
 
@@ -39,16 +46,21 @@ const defaultResourceRef = Object.freeze({
   sampling_factory: "sampling",
   packaging_factory: "packaging_quote",
   production_factory: "production",
+  material_supplier: "procurement",
 });
 
 const organizationResources = Object.freeze({
   filing_service: [{ ref: "filing", name: "备案协同", permissionPrefixes: ["filing."] }],
   sampling_factory: [{ ref: "sampling", name: "打样协同", permissionPrefixes: ["sampling."] }],
-  packaging_factory: [{ ref: "packaging_quote", name: "包装询报价", permissionPrefixes: ["packaging."] }],
+  packaging_factory: [
+    { ref: "packaging_quote", name: "包装询报价", permissionPrefixes: ["packaging."] },
+    { ref: "procurement", name: "包材采购单", permissionPrefixes: ["procurement."] },
+  ],
   production_factory: [
     { ref: "sampling", name: "打样协同", permissionPrefixes: ["sampling."] },
     { ref: "production", name: "委外生产工单", permissionPrefixes: ["production."] },
   ],
+  material_supplier: [{ ref: "procurement", name: "物料采购单", permissionPrefixes: ["procurement."] }],
 });
 
 const grantSchema = z.object({
@@ -191,12 +203,13 @@ export function workItemViewPermission(itemType) {
     sampling_task: "sampling.task.view",
     packaging_quote: "packaging.quote.view",
     production_order: "production.order.view",
+    purchase_order: "procurement.order.view",
   }[itemType] || "";
 }
 
 export function workItemResource(item) {
   if (String(item.item_type).startsWith("warehouse_")) return { resourceType: "warehouse", resourceRef: String(item.public_payload?.warehouseRef || "") };
-  const resourceRef = { filing_task: "filing", sampling_task: "sampling", packaging_quote: "packaging_quote", production_order: "production" }[item.item_type] || "";
+  const resourceRef = { filing_task: "filing", sampling_task: "sampling", packaging_quote: "packaging_quote", production_order: "production", purchase_order: "procurement" }[item.item_type] || "";
   return { resourceType: "organization", resourceRef };
 }
 
@@ -219,7 +232,14 @@ export function actionPermission(itemType, action) {
   }[action] || "";
   if (itemType === "filing_task") return ["accept", "progress", "complete"].includes(action) ? "filing.task.handle" : "";
   if (itemType === "sampling_task") return ["accept", "progress", "complete"].includes(action) ? "sampling.task.handle" : "";
-  if (itemType === "production_order") return ["accept", "progress", "report_exception", "complete"].includes(action) ? "production.progress.update" : "";
+  if (itemType === "production_order") {
+    if (action === "report_exception") return "production.exception.report";
+    return ["accept", "progress", "complete"].includes(action) ? "production.progress.update" : "";
+  }
+  if (itemType === "purchase_order") {
+    if (action === "report_exception") return "procurement.exception.report";
+    return ["accept", "progress", "complete"].includes(action) ? "procurement.fulfillment.update" : "";
+  }
   return "";
 }
 
@@ -234,5 +254,6 @@ export const workItemAccessPredicate = `(
   (work_items.item_type='filing_task' AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=work_items.organization_id AND access_grant.resource_type='organization' AND access_grant.resource_ref='filing' AND access_grant.permissions ? 'filing.task.view')) OR
   (work_items.item_type='sampling_task' AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=work_items.organization_id AND access_grant.resource_type='organization' AND access_grant.resource_ref='sampling' AND access_grant.permissions ? 'sampling.task.view')) OR
   (work_items.item_type='packaging_quote' AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=work_items.organization_id AND access_grant.resource_type='organization' AND access_grant.resource_ref='packaging_quote' AND access_grant.permissions ? 'packaging.quote.view')) OR
-  (work_items.item_type='production_order' AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=work_items.organization_id AND access_grant.resource_type='organization' AND access_grant.resource_ref='production' AND access_grant.permissions ? 'production.order.view'))
+  (work_items.item_type='production_order' AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=work_items.organization_id AND access_grant.resource_type='organization' AND access_grant.resource_ref='production' AND access_grant.permissions ? 'production.order.view')) OR
+  (work_items.item_type='purchase_order' AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=work_items.organization_id AND access_grant.resource_type='organization' AND access_grant.resource_ref='procurement' AND access_grant.permissions ? 'procurement.order.view'))
 )`;

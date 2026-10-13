@@ -1,7 +1,7 @@
 import { resolveApiUrl } from "./api";
 
 export type CollaborationOrganizationStatus = "active" | "suspended" | "archived";
-export type CollaborationOrganizationType = "warehouse" | "filing_service" | "sampling_factory" | "packaging_factory" | "production_factory" | "internal";
+export type CollaborationOrganizationType = "warehouse" | "filing_service" | "sampling_factory" | "packaging_factory" | "production_factory" | "material_supplier" | "internal";
 
 export type CollaborationOrganization = {
   id: string;

@@ -54,7 +54,7 @@ export async function listWorkItems(auth, filters = {}) {
     const conditions = ["organization_id=$1", workItemAccessPredicate];
     const params = [auth.organization.id];
     if (status) { params.push(status); conditions.push(`status=$${params.length}`); }
-    if (keyword) { params.push(`%${keyword}%`); conditions.push(`(title ILIKE $${params.length} OR public_payload->>'referenceNo' ILIKE $${params.length})`); }
+    if (keyword) { params.push(`%${keyword}%`); conditions.push(`(title ILIKE $${params.length} OR public_payload->>'referenceNo' ILIKE $${params.length} OR public_payload->>'orderNo' ILIKE $${params.length} OR public_payload->>'productName' ILIKE $${params.length})`); }
     params.push(limit, offset);
     const rows = await client.query(
       `SELECT * FROM work_items WHERE ${conditions.join(" AND ")}
@@ -82,11 +82,17 @@ export async function getWorkItem(auth, workItemId) {
       client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, auth.organization.id]),
       client.query("SELECT id,command_type,status,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 50", [workItemId, auth.organization.id]),
     ]);
-    const oem = collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote", "production_order"].includes(row.item_type)
+    const oem = collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
       ? await Promise.all([
         client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE space_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [row.space_id, auth.organization.id]),
         client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, auth.organization.id]),
         client.query("SELECT id,milestone_type,title,planned_at,completed_at,status,public_payload,version,updated_at FROM production_milestones WHERE work_item_id=$1 AND organization_id=$2 ORDER BY planned_at NULLS LAST,created_at", [workItemId, auth.organization.id]),
+      ])
+      : null;
+    const partnerOrder = collaborationConfig.oemEnabled && ["production_order", "purchase_order"].includes(row.item_type)
+      ? await Promise.all([
+        client.query("SELECT id,line_ref,line_type,sku,product_name,specification,image_url,planned_quantity,completed_quantity,unit,required_at,responsibility,unit_price,currency FROM partner_order_lines WHERE work_item_id=$1 AND organization_id=$2 AND active=true ORDER BY CASE line_type WHEN 'finished_product' THEN 0 WHEN 'raw_material' THEN 1 ELSE 2 END,created_at,id", [workItemId, auth.organization.id]),
+        client.query("SELECT id,work_item_id,line_id,command_id,report_type,stage,progress_percent,result,quantity,expected_at,severity,title,note,details,submitted_by,created_at FROM partner_order_reports WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 300", [workItemId, auth.organization.id]),
       ])
       : null;
     return {
@@ -103,6 +109,21 @@ export async function getWorkItem(auth, workItemId) {
         artifacts: oem[0].rows.map((item) => ({ id: item.id, artifactType: item.artifact_type, title: item.title, version: item.version, status: item.status, publicPayload: item.public_payload, createdAt: new Date(item.created_at).toISOString(), updatedAt: new Date(item.updated_at).toISOString() })),
         quotes: oem[1].rows.map((item) => ({ id: item.id, currency: item.currency, amount: Number(item.amount), minimumOrderQuantity: Number(item.minimum_order_quantity), leadTimeDays: item.lead_time_days, terms: item.terms, status: item.status, version: item.version, submittedAt: new Date(item.submitted_at).toISOString() })),
         milestones: oem[2].rows.map((item) => ({ id: item.id, milestoneType: item.milestone_type, title: item.title, plannedAt: item.planned_at ? new Date(item.planned_at).toISOString() : "", completedAt: item.completed_at ? new Date(item.completed_at).toISOString() : "", status: item.status, publicPayload: item.public_payload, version: item.version, updatedAt: new Date(item.updated_at).toISOString() })),
+      } : null,
+      partnerOrder: partnerOrder ? {
+        lines: partnerOrder[0].rows.map((line) => ({
+          id: line.id, lineRef: line.line_ref, lineType: line.line_type, sku: line.sku, productName: line.product_name,
+          specification: line.specification, imageUrl: line.image_url, plannedQuantity: Number(line.planned_quantity), completedQuantity: Number(line.completed_quantity),
+          unit: line.unit, requiredAt: line.required_at ? String(line.required_at) : "", responsibility: line.responsibility,
+          unitPrice: line.unit_price == null ? null : Number(line.unit_price), currency: line.currency,
+        })),
+        reports: partnerOrder[1].rows.map((report) => ({
+          id: report.id, workItemId: report.work_item_id, lineId: report.line_id || "", commandId: report.command_id,
+          reportType: report.report_type, stage: report.stage, progressPercent: report.progress_percent == null ? null : Number(report.progress_percent),
+          result: report.result, quantity: report.quantity == null ? null : Number(report.quantity), expectedAt: report.expected_at ? new Date(report.expected_at).toISOString() : "",
+          severity: report.severity, title: report.title, note: report.note, details: report.details || {}, submittedBy: report.submitted_by,
+          createdAt: new Date(report.created_at).toISOString(),
+        })),
       } : null,
     };
   });
@@ -157,7 +178,7 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
       complete: ["accepted", "in_progress"],
     }[action] || [];
     if (!allowedStates.includes(item.status)) fail("当前工单状态不能执行该操作，请刷新后重试。", 409, "invalid_state");
-    if (!collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote", "production_order"].includes(item.item_type)) fail("OEM 协同尚未通过上线门禁。", 403, "feature_disabled");
+    if (!collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote", "production_order", "purchase_order"].includes(item.item_type)) fail("生产与采购协同尚未通过上线门禁。", 403, "feature_disabled");
 
     let risk = riskByAction[action] || "high";
     if (["inbound_confirm", "outbound_confirm", "transfer_receive"].includes(action)) {
@@ -392,12 +413,26 @@ export async function markNotificationRead(auth, notificationId) {
 
 export async function organizationDashboard(auth) {
   return withOrganization(auth.organization.id, async (client) => {
-    const [work, unread, stock] = await Promise.all([
+    const [work, unread, stock, orders, exceptions] = await Promise.all([
       client.query(`SELECT count(*) FILTER (WHERE status NOT IN ('completed','cancelled','rejected'))::int AS open,count(*) FILTER (WHERE priority='urgent' AND status NOT IN ('completed','cancelled','rejected'))::int AS urgent,count(*) FILTER (WHERE status IN ('pending_sync','pending_approval'))::int AS waiting FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]),
       client.query(`SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND read_at IS NULL AND (work_item_id IS NULL OR EXISTS (SELECT 1 FROM work_items WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}))`, [auth.organization.id, auth.user.id]),
       client.query("SELECT count(DISTINCT sku)::int AS sku_count,max(last_core_synced_at) AS synced_at FROM warehouse_inventory_projections WHERE organization_id=$1 AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id AND access_grant.resource_type='warehouse' AND access_grant.resource_ref=warehouse_inventory_projections.warehouse_ref AND access_grant.permissions ? 'warehouse.inventory.view')", [auth.organization.id]),
+      client.query(`SELECT
+          count(*) FILTER (WHERE item_type='production_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS production_orders,
+          count(*) FILTER (WHERE item_type='purchase_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS purchase_orders,
+          count(*) FILTER (WHERE due_at IS NOT NULL AND due_at<=now()+interval '7 days' AND status NOT IN ('completed','cancelled','rejected'))::int AS due_soon
+        FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]),
+      client.query(`SELECT count(*)::int AS count FROM partner_order_reports report
+        JOIN work_items ON work_items.id=report.work_item_id
+        WHERE report.organization_id=$1 AND report.report_type='exception' AND ${workItemAccessPredicate}`, [auth.organization.id]),
     ]);
-    return { openTasks: work.rows[0].open, urgentTasks: work.rows[0].urgent, waitingTasks: work.rows[0].waiting, unreadNotifications: unread.rows[0].count, inventorySkuCount: stock.rows[0].sku_count, inventorySyncedAt: stock.rows[0].synced_at ? new Date(stock.rows[0].synced_at).toISOString() : "" };
+    return {
+      openTasks: work.rows[0].open, urgentTasks: work.rows[0].urgent, waitingTasks: work.rows[0].waiting,
+      unreadNotifications: unread.rows[0].count, inventorySkuCount: stock.rows[0].sku_count,
+      inventorySyncedAt: stock.rows[0].synced_at ? new Date(stock.rows[0].synced_at).toISOString() : "",
+      productionOrders: orders.rows[0].production_orders, purchaseOrders: orders.rows[0].purchase_orders,
+      dueSoonTasks: orders.rows[0].due_soon, exceptionReports: exceptions.rows[0].count,
+    };
   });
 }
 

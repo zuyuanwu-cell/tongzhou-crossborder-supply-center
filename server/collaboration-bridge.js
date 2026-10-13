@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema } from "../collaboration/shared/contracts.js";
+import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema } from "../collaboration/shared/contracts.js";
 
 const systemUser = Object.freeze({
   id: "collaboration-bridge",
@@ -359,6 +359,14 @@ export function createCollaborationBridge({
     return { id: row.id, status: row.status, projection };
   }
 
+  function queuePartnerOrderProjection(input) {
+    if (!oemEnabled) fail("生产与采购伙伴协同尚未启用。", 403, "feature_disabled");
+    const withId = { ...input, eventId: input.eventId || projectionId("partner-order") };
+    const projection = partnerOrderProjectionSchema.parse(withId);
+    const row = store.enqueue({ id: projection.eventId, eventType: "partner_order", payload: projection, now: nowIso() });
+    return { id: row.id, status: row.status, projection };
+  }
+
   async function flushOutbox() {
     if (!enabled) return { published: 0, failed: 0, disabled: true };
     const ready = store.readyOutbox(nowIso(), 50);
@@ -371,7 +379,9 @@ export function createCollaborationBridge({
           ? "/collaboration/internal/v1/inventory"
           : row.event_type === "oem"
             ? "/collaboration/internal/v1/oem/projections"
-            : "/collaboration/internal/v1/projections";
+            : row.event_type === "partner_order"
+              ? "/collaboration/internal/v1/partner-orders/projections"
+              : "/collaboration/internal/v1/projections";
         const result = await internalRequest(path, { method: "PUT", body: payload });
         store.markPublished(row.id, result, nowIso());
         published += 1;
@@ -645,6 +655,7 @@ export function createCollaborationBridge({
     publishWarehouseTask,
     queueInventoryProjection,
     queueOemProjection,
+    queuePartnerOrderProjection,
     queueProjection,
     reissueInvitation,
     replaceOrganizationAccessGrants,

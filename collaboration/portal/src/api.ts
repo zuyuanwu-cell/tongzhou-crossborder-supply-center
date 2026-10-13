@@ -1,10 +1,27 @@
 import type { Dashboard, InvitationDeliveryResult, InventoryItem, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, Session, WarehouseOperationLine, WarehouseOperationType, WorkItem, WorkItemDetail } from "./types";
 
+export type PartnerOrderReportInput =
+  | { reportType: "production_progress"; stage: "planning" | "material_preparation" | "filling" | "packaging" | "quality_check" | "ready_to_ship"; progressPercent: number; completedQuantity: number; expectedCompletionDate: string; note: string }
+  | { reportType: "material_readiness"; lineId: string; readiness: "not_arrived" | "partial" | "arrived"; arrivedQuantity: number; testResult: "pending" | "passed" | "failed" | "not_required"; testedAt: string; exceptionDescription: string; note: string }
+  | { reportType: "purchase_fulfillment"; stage: "confirmed" | "preparing" | "ready_to_ship" | "shipped" | "delivered"; expectedDeliveryDate: string; completedQuantity: number; note: string }
+  | { reportType: "exception"; category: "material_shortage" | "material_quality" | "packaging_test" | "production_delay" | "quality_issue" | "delivery_delay" | "other"; severity: "notice" | "warning" | "critical"; title: string; description: string; affectedQuantity: number; expectedResolutionDate: string }
+  | { reportType: "shipment"; shippedQuantity: number; shippedAt: string; carrier: string; trackingNo: string; note: string };
+
 const API_BASE = String(import.meta.env.VITE_COLLABORATION_API_URL || "").replace(/\/$/, "");
 const demoVariant = new URLSearchParams(window.location.search).get("demo");
 const demoMode = import.meta.env.DEV && demoVariant !== null;
 const demoOem = demoVariant === "oem";
+const demoProduction = demoVariant === "production";
+const demoSupplier = demoVariant === "supplier";
+const demoPartnerOrder = demoProduction || demoSupplier;
 const demoAdmin = demoVariant === "admin";
+const demoOrganization = demoProduction
+  ? { code: "pf-factory-demo", name: "华南灌装协同工厂", type: "production_factory" }
+  : demoSupplier
+    ? { code: "ms-supplier-demo", name: "恒信包材供应商", type: "material_supplier" }
+    : demoOem
+      ? { code: "packaging-partner-demo", name: "战略包装伙伴", type: "packaging_factory" }
+      : { code: "cn-warehouse-demo", name: "华东协同仓", type: "warehouse" };
 
 export class ApiError extends Error {
   status: number;
@@ -37,10 +54,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 let demoSession: Session = {
-  user: { id: "demo-user", username: "warehouse.admin", displayName: "仓库负责人", email: "warehouse@example.test" },
-  membership: { id: "demo-membership", organizationId: "demo-org", organizationCode: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", organizationName: demoOem ? "战略包装伙伴" : "华东协同仓", organizationType: demoOem ? "packaging_factory" : "warehouse", role: demoAdmin ? "organization_admin" : "manager", status: "active", permissions: [], mfaRequired: false },
-  organization: { id: "demo-org", code: demoOem ? "packaging-partner-demo" : "cn-warehouse-demo", name: demoOem ? "战略包装伙伴" : "华东协同仓", type: demoOem ? "packaging_factory" : "warehouse" },
-  mfaRequired: false, mfaEnabled: false, mfaVerifiedAt: "", pendingMfa: false, mustChangePassword: false, oemEnabled: demoOem,
+  user: { id: "demo-user", username: "partner.manager", displayName: demoProduction ? "工厂生产负责人" : demoSupplier ? "供应商跟单员" : "仓库负责人", email: "partner@example.test" },
+  membership: { id: "demo-membership", organizationId: "demo-org", organizationCode: demoOrganization.code, organizationName: demoOrganization.name, organizationType: demoOrganization.type, role: demoAdmin ? "organization_admin" : "manager", status: "active", permissions: [], mfaRequired: false },
+  organization: { id: "demo-org", ...demoOrganization },
+  mfaRequired: false, mfaEnabled: false, mfaVerifiedAt: "", pendingMfa: false, mustChangePassword: false, oemEnabled: demoOem || demoPartnerOrder,
 };
 const now = Date.now();
 let demoMembers: OrganizationMember[] = [
@@ -53,9 +70,13 @@ let demoInvitations: OrganizationInvitation[] = [
 ];
 const demoItems: WorkItem[] = [
   ...(demoOem ? [{ id: "6a77af62-79fa-4e30-a77e-2e5bf82114a4", spaceId: "oem-demo", itemType: "packaging_quote", title: "包装盲报价 · 海盐净润系列", description: "按已批准设计稿，对 500ml 瓶体、泵头和运输外箱进行整套报价。", status: "accepted", priority: "urgent", publicPayload: { projectCode: "OEM-2026-031", productName: "海盐净润洗护套装", productSpec: "500ml × 2", documentVersion: "DESIGN-V4", requirements: "报价需包含开模费、版费、含税到仓价。", quantity: 12000, unit: "套", deliveryDate: "2026-11-20", quoteCurrency: "CNY" }, dueAt: new Date(now + 1728e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
+  ...(demoProduction ? [{ id: "7a77af62-79fa-4e30-a77e-2e5bf82114a5", spaceId: "production-demo", itemType: "production_order", title: "委外灌装加工单 · MO-202610-018", description: "全包生产 500ml 洗护套装，工厂负责料体、瓶体、泵头、标签与外箱。", status: "in_progress", priority: "urgent", publicPayload: { orderNo: "MO-202610-018", projectCode: "OEM-2026-041", productName: "海盐净润洗护套装", productSpec: "500ml × 2", fulfillmentMode: "turnkey", requirements: "包材到齐后先完成密封、跌落及相容性测试，合格后方可批量灌装。", quantity: 12000, unit: "套", deliveryDate: "2026-11-20", deliveryAddress: "杭州总仓" }, dueAt: new Date(now + 12 * 864e5).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 2 * 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
+  ...(demoSupplier ? [{ id: "8a77af62-79fa-4e30-a77e-2e5bf82114a6", spaceId: "procurement-demo", itemType: "purchase_order", title: "包材采购单 · PO-202610-063", description: "采购 500ml PET 瓶体与配套泵头，按批准样封样生产。", status: "accepted", priority: "normal", publicPayload: { orderNo: "PO-202610-063", projectCode: "OEM-2026-041", productName: "500ml PET 瓶体与泵头", fulfillmentMode: "supplier", requirements: "按封样颜色及尺寸生产，出货附批次质检报告。", quantity: 24000, unit: "套", deliveryDate: "2026-10-30", deliveryAddress: "华南灌装协同工厂", paymentTerms: "月结 30 天" }, dueAt: new Date(now + 17 * 864e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
+  ...(!demoOem && !demoPartnerOrder ? [
   { id: "8b3c9150-a854-4d0e-b61f-2d75fc56c705", spaceId: "demo", itemType: "warehouse_transfer", title: "华东仓调拨收货 · DB-202609-001", description: "核对到货箱数、批次和外箱状态后确认收货。", status: "pending", priority: "urgent", publicPayload: { referenceNo: "DB-202609-001", warehouseName: "华东协同仓", sourceWarehouseName: "杭州总仓", destinationWarehouseName: "华东协同仓", note: "到货后请拍摄托盘和封箱标签。" }, dueAt: new Date(now + 7.2e7).toISOString(), version: 1, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 36e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() },
   { id: "ea69fd79-f2a6-45e4-a117-a4432996ce7a", spaceId: "demo", itemType: "warehouse_inbound", title: "采购入库 · RK-202609-118", description: "新批次商品入库并补充生产日期。", status: "in_progress", priority: "normal", publicPayload: { referenceNo: "RK-202609-118", warehouseName: "华东协同仓" }, dueAt: new Date(now + 17.2e7).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 36e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 36e4).toISOString() },
   { id: "dd312a54-3c1d-44a7-bf5a-cef9774e880e", spaceId: "demo", itemType: "warehouse_outbound", title: "备货出库 · BH-202609-042", description: "按批次拣货并回传装箱凭证。", status: "pending_sync", priority: "normal", publicPayload: { referenceNo: "BH-202609-042", warehouseName: "华东协同仓" }, dueAt: new Date(now + 26e7).toISOString(), version: 5, lastCoreSyncedAt: new Date(now - 9e4).toISOString(), createdAt: new Date(now - 1728e5).toISOString(), updatedAt: new Date(now - 9e4).toISOString() },
+  ] as WorkItem[] : []),
 ];
 
 export async function fetchMe() { if (demoMode) return { ok: true, session: demoSession }; return request<{ ok: boolean; session: Session }>("/collaboration/me"); }
@@ -104,10 +125,31 @@ export async function revokeInvitation(id: string) {
   if (demoMode) { demoInvitations = demoInvitations.map((item) => item.id === id ? { ...item, status: "expired", expiresAt: new Date().toISOString() } : item); return { ok: true, invitation: demoInvitations.find((item) => item.id === id)! }; }
   return request<{ ok: boolean; invitation: OrganizationInvitation }>(`/collaboration/v1/admin/invitations/${encodeURIComponent(id)}/revoke`, { method: "POST" });
 }
-export async function fetchDashboard() { if (demoMode) return { ok: true, dashboard: { openTasks: 3, urgentTasks: 1, waitingTasks: 1, unreadNotifications: 2, inventorySkuCount: 186, inventorySyncedAt: new Date(now - 9e4).toISOString() } satisfies Dashboard }; return request<{ ok: boolean; dashboard: Dashboard }>("/collaboration/v1/dashboard"); }
+export async function fetchDashboard() { if (demoMode) return { ok: true, dashboard: { openTasks: demoItems.length, urgentTasks: demoItems.filter((item) => item.priority === "urgent").length, waitingTasks: 0, unreadNotifications: 2, inventorySkuCount: demoPartnerOrder ? 0 : 186, inventorySyncedAt: new Date(now - 9e4).toISOString(), productionOrders: demoProduction ? 1 : 0, purchaseOrders: demoSupplier ? 1 : 0, dueSoonTasks: 1, exceptionReports: 1 } satisfies Dashboard }; return request<{ ok: boolean; dashboard: Dashboard }>("/collaboration/v1/dashboard"); }
 export async function fetchWorkItems(filters: { status?: string; keyword?: string } = {}) { if (demoMode) return { ok: true, items: demoItems, counts: { pending: 1, in_progress: 1, pending_sync: 1 }, limit: 30, offset: 0 }; const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value).map(([key, value]) => [key, String(value)])); return request<{ ok: boolean; items: WorkItem[]; counts: Record<string, number>; limit: number; offset: number }>(`/collaboration/v1/work-items?${query}`); }
-export async function fetchWorkItem(id: string) { if (demoMode) { const item = demoItems.find((entry) => entry.id === id) || demoItems[0]; const oem = item.itemType === "packaging_quote" ? { artifacts: [], quotes: [], milestones: [] } : null; return { ok: true, item, lines: oem ? [] : [{ id: "line-1", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", imageUrl: "", plannedQuantity: 240, completedQuantity: 0, unit: "件", lotNo: "LOT-260920-A", barcode: "697000000001", productionDate: "2026-09-20", expiryDate: "2029-09-19" }, { id: "line-2", sku: "TZKJ-DEMO-002", productName: "森系修护发膜", imageUrl: "", plannedQuantity: 120, completedQuantity: 0, unit: "件", lotNo: "LOT-260921-B", barcode: "697000000002", productionDate: "2026-09-21", expiryDate: "2029-09-20" }], events: [{ id: "event-1", eventType: oem ? "core.oem_projection" : "core.projection", actorName: "供应链中台", body: oem ? "包装询价已发布至贵司私有空间" : "任务已发布到华东协同仓", metadata: {}, createdAt: item.createdAt }], attachments: [], commands: [], oem } as { ok: true } & WorkItemDetail; } return request<{ ok: boolean } & WorkItemDetail>(`/collaboration/v1/work-items/${id}`); }
+export async function fetchWorkItem(id: string) {
+  if (demoMode) {
+    const item = demoItems.find((entry) => entry.id === id) || demoItems[0];
+    const oem = item.itemType === "packaging_quote" ? { artifacts: [], quotes: [], milestones: [] } : null;
+    const partnerOrder = ["production_order", "purchase_order"].includes(item.itemType) ? {
+      lines: item.itemType === "production_order" ? [
+        { id: "11111111-1111-4111-8111-111111111111", lineRef: "finished", lineType: "finished_product" as const, sku: "TZKJ-SEA-001", productName: "海盐净润洗护套装", specification: "500ml × 2", imageUrl: "", plannedQuantity: 12000, completedQuantity: 3600, unit: "套", requiredAt: "2026-11-20", responsibility: "factory" as const, unitPrice: null, currency: "CNY" },
+        { id: "22222222-2222-4222-8222-222222222222", lineRef: "bottle", lineType: "packaging" as const, sku: "PACK-BOTTLE-500", productName: "500ml PET 瓶体", specification: "透明琥珀色", imageUrl: "", plannedQuantity: 24500, completedQuantity: 0, unit: "个", requiredAt: "2026-10-18", responsibility: "factory" as const, unitPrice: null, currency: "CNY" },
+        { id: "33333333-3333-4333-8333-333333333333", lineRef: "pump", lineType: "packaging" as const, sku: "PACK-PUMP-24", productName: "24 牙泵头", specification: "黑色哑光", imageUrl: "", plannedQuantity: 24500, completedQuantity: 0, unit: "个", requiredAt: "2026-10-18", responsibility: "factory" as const, unitPrice: null, currency: "CNY" },
+        { id: "44444444-4444-4444-8444-444444444444", lineRef: "formula", lineType: "raw_material" as const, sku: "RAW-SEA-01", productName: "海盐净润料体", specification: "两款共 12 吨", imageUrl: "", plannedQuantity: 12000, completedQuantity: 0, unit: "kg", requiredAt: "2026-10-20", responsibility: "factory" as const, unitPrice: null, currency: "CNY" },
+      ] : [
+        { id: "55555555-5555-4555-8555-555555555555", lineRef: "bottle", lineType: "packaging" as const, sku: "PACK-BOTTLE-500", productName: "500ml PET 瓶体", specification: "透明琥珀色", imageUrl: "", plannedQuantity: 24000, completedQuantity: 8000, unit: "个", requiredAt: "2026-10-30", responsibility: "supplier" as const, unitPrice: 1.26, currency: "CNY" },
+        { id: "66666666-6666-4666-8666-666666666666", lineRef: "pump", lineType: "packaging" as const, sku: "PACK-PUMP-24", productName: "24 牙泵头", specification: "黑色哑光", imageUrl: "", plannedQuantity: 24000, completedQuantity: 8000, unit: "个", requiredAt: "2026-10-30", responsibility: "supplier" as const, unitPrice: 0.72, currency: "CNY" },
+      ],
+      reports: item.itemType === "production_order" ? [{ id: "report-1", workItemId: item.id, lineId: "22222222-2222-4222-8222-222222222222", commandId: "command-1", reportType: "material_readiness" as const, stage: "arrived", progressPercent: null, result: "passed", quantity: 24500, expectedAt: "2026-10-12T00:00:00.000Z", severity: "", title: "500ml PET 瓶体到齐与测试", note: "密封与跌落测试合格", details: { testResult: "passed" }, submittedBy: "demo-user", createdAt: new Date(now - 864e5).toISOString() }] : [],
+    } : null;
+    const warehouseLines = partnerOrder || oem ? [] : [{ id: "line-1", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", imageUrl: "", plannedQuantity: 240, completedQuantity: 0, unit: "件", lotNo: "LOT-260920-A", barcode: "697000000001", productionDate: "2026-09-20", expiryDate: "2029-09-19" }];
+    return { ok: true, item, lines: warehouseLines, events: [{ id: "event-1", eventType: partnerOrder ? "core.partner_order_projection" : oem ? "core.oem_projection" : "core.projection", actorName: "供应链中台", body: partnerOrder ? "订单已发布到本组织工作台" : oem ? "包装询价已发布至贵司私有空间" : "任务已发布到华东协同仓", metadata: {}, createdAt: item.createdAt }], attachments: [], commands: [], oem, partnerOrder } as { ok: true } & WorkItemDetail;
+  }
+  return request<{ ok: boolean } & WorkItemDetail>(`/collaboration/v1/work-items/${id}`);
+}
 export async function submitAction(id: string, version: number, body: Record<string, unknown>) { if (demoMode) return { ok: true, item: { ...demoItems[0], status: body.action === "accept" ? "accepted" : "pending_sync", version: version + 1 } }; return request<{ ok: boolean; item: WorkItem }>(`/collaboration/v1/work-items/${id}/actions`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID(), "If-Match": String(version) }, body: JSON.stringify(body) }); }
+export async function submitPartnerOrderReport(workItemId: string, version: number, body: PartnerOrderReportInput) { if (demoMode) return { ok: true, workItemVersion: version + 1 }; return request<{ ok: boolean; workItemVersion: number }>(`/collaboration/v1/partner-orders/${workItemId}/reports`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID(), "If-Match": String(version) }, body: JSON.stringify(body) }); }
 export async function submitSupplierQuote(workItemId: string, version: number, body: { currency: string; amount: number; minimumOrderQuantity: number; leadTimeDays: number; terms: string }) { if (demoMode) return { ok: true }; return request(`/collaboration/v1/oem/quotes`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID(), "If-Match": String(version) }, body: JSON.stringify({ workItemId, ...body }) }); }
 export async function submitOemArtifact(workItemId: string, version: number, body: { artifactType: string; title: string; publicPayload: { summary: string; result: string }; artifactVersion?: number }) { if (demoMode) return { ok: true }; return request(`/collaboration/v1/oem/artifacts`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID(), "If-Match": String(version) }, body: JSON.stringify({ workItemId, artifactType: body.artifactType, title: body.title, version: body.artifactVersion || 1, publicPayload: body.publicPayload }) }); }
 export async function updateProductionMilestone(milestoneId: string, version: number, body: { status: string; note: string }) { if (demoMode) return { ok: true }; return request(`/collaboration/v1/oem/milestones/${milestoneId}`, { method: "PATCH", headers: { "Idempotency-Key": crypto.randomUUID(), "If-Match": String(version) }, body: JSON.stringify(body) }); }

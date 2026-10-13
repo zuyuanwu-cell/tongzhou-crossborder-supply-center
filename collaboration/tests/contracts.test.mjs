@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
+import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema, partnerOrderReportSchema, riskByAction, supplierQuoteSchema, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { canPerformAction, requiresMfaAtLogin } from "../api/permissions.js";
 
 const validProjection = {
@@ -88,4 +88,28 @@ test("blind quote contract accepts business terms but no competitor metadata", (
   const quote = { workItemId: "11111111-1111-4111-8111-111111111111", currency: "CNY", amount: 12000, minimumOrderQuantity: 1000, leadTimeDays: 21, terms: "含税到仓" };
   assert.equal(supplierQuoteSchema.safeParse(quote).success, true);
   assert.equal(supplierQuoteSchema.safeParse({ ...quote, competitorName: "另一家包装厂" }).success, false);
+});
+
+test("partner order projections expose only one organization's production or purchase order", () => {
+  const projection = {
+    eventId: "partner-order-1", organizationCode: "pf-factory-a", coreRefType: "outsourcing_order", coreRefId: "MO-001",
+    orderType: "production", itemType: "production_order", title: "委外灌装加工单 MO-001", version: 1,
+    publicPayload: { orderNo: "MO-001", projectCode: "OEM-001", productName: "洗护套装", fulfillmentMode: "turnkey", quantity: 10000, unit: "套", deliveryDate: "2026-11-20" },
+    lines: [
+      { lineRef: "finished-1", lineType: "finished_product", sku: "SKU-F", productName: "洗护套装", plannedQuantity: 10000, unit: "套", responsibility: "factory" },
+      { lineRef: "pack-1", lineType: "packaging", sku: "PACK-1", productName: "500ml 瓶体", plannedQuantity: 10500, unit: "个", responsibility: "factory" },
+    ],
+  };
+  assert.equal(partnerOrderProjectionSchema.safeParse(projection).success, true);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, internalCost: 12 } }).success, false);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, lines: projection.lines.map((line, index) => index ? { ...line, unitPrice: 1.2 } : line) }).success, false);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, orderType: "purchase" }).success, false);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, organizationCode: "" }).success, false);
+});
+
+test("turnkey material tests require an explanation when testing fails", () => {
+  const report = { reportType: "material_readiness", lineId: "11111111-1111-4111-8111-111111111111", readiness: "arrived", arrivedQuantity: 100, testResult: "failed", testedAt: "2026-10-13", exceptionDescription: "", note: "" };
+  assert.equal(partnerOrderReportSchema.safeParse(report).success, false);
+  assert.equal(partnerOrderReportSchema.safeParse({ ...report, exceptionDescription: "瓶盖密封测试漏液" }).success, true);
+  assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "filling", progressPercent: 101, completedQuantity: 10, expectedCompletionDate: "2026-10-20", note: "灌装中" }).success, false);
 });

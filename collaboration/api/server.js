@@ -49,6 +49,7 @@ import {
   submitSupplierQuote,
   updateProductionMilestone,
 } from "./oem.js";
+import { applyPartnerOrderProjection, submitPartnerOrderReport } from "./partner-orders.js";
 import {
   acceptInvitation,
   bootstrapOrganization,
@@ -252,6 +253,10 @@ async function route(req, res) {
       sendJson(res, 200, await applyOemProjection(await readJson(req)));
       return;
     }
+    if (url.pathname === "/collaboration/internal/v1/partner-orders/projections" && req.method === "PUT") {
+      sendJson(res, 200, await applyPartnerOrderProjection(await readJson(req)));
+      return;
+    }
     if (url.pathname === "/collaboration/internal/v1/oem/quotes" && req.method === "GET") {
       sendJson(res, 200, { ok: true, ...(await listInternalQuotes(queryObject(url))) });
       return;
@@ -356,6 +361,15 @@ async function route(req, res) {
       expectedVersion: String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/"/g, ""),
     });
     sendJson(res, result.idempotentReplay ? 200 : 201, { ok: true, ...result });
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/partner-orders/${uuidPattern}/reports$`));
+  if (match && req.method === "POST") {
+    const result = await submitPartnerOrderReport(auth, match[1], await readJson(req), {
+      idempotencyKey: String(req.headers["idempotency-key"] || ""),
+      expectedVersion: String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/"/g, ""),
+    });
+    sendJson(res, result.idempotentReplay ? 200 : 201, result);
     return;
   }
   if (url.pathname === "/collaboration/v1/inventory" && req.method === "GET") {

@@ -10,11 +10,11 @@ export type Session = {
   mustChangePassword: boolean;
   oemEnabled: boolean;
 };
-export type Dashboard = { openTasks: number; urgentTasks: number; waitingTasks: number; unreadNotifications: number; inventorySkuCount: number; inventorySyncedAt: string };
+export type Dashboard = { openTasks: number; urgentTasks: number; waitingTasks: number; unreadNotifications: number; inventorySkuCount: number; inventorySyncedAt: string; productionOrders: number; purchaseOrders: number; dueSoonTasks: number; exceptionReports: number };
 export type WorkItemStatus = "pending" | "accepted" | "in_progress" | "pending_approval" | "pending_sync" | "completed" | "rejected" | "cancelled";
 export type WorkItem = {
   id: string; spaceId: string; itemType: string; title: string; description: string; status: WorkItemStatus; priority: "normal" | "urgent";
-  publicPayload: { referenceNo?: string; warehouseRef?: string; warehouseName?: string; sourceWarehouseName?: string; destinationWarehouseName?: string; note?: string; projectCode?: string; productName?: string; productSpec?: string; documentVersion?: string; requirements?: string; quantity?: number; unit?: string; deliveryDate?: string; quoteCurrency?: string };
+  publicPayload: { referenceNo?: string; warehouseRef?: string; warehouseName?: string; sourceWarehouseName?: string; destinationWarehouseName?: string; note?: string; projectCode?: string; productName?: string; productSpec?: string; documentVersion?: string; requirements?: string; quantity?: number; unit?: string; deliveryDate?: string; quoteCurrency?: string; orderNo?: string; fulfillmentMode?: "labor_only" | "turnkey" | "supplier"; deliveryAddress?: string; paymentTerms?: string; currency?: string };
   dueAt: string; version: number; lastCoreSyncedAt: string; createdAt: string; updatedAt: string;
 };
 export type TaskLine = { id: string; sku: string; productName: string; imageUrl: string; plannedQuantity: number; completedQuantity: number; unit: string; lotNo: string; barcode: string; productionDate: string; expiryDate: string };
@@ -24,7 +24,9 @@ export type WorkCommand = { id: string; commandType: string; status: string; sub
 export type OemArtifact = { id: string; artifactType: string; title: string; version: number; status: string; publicPayload: { summary?: string; result?: string }; createdAt: string; updatedAt: string };
 export type SupplierQuote = { id: string; currency: string; amount: number; minimumOrderQuantity: number; leadTimeDays: number; terms: string; status: string; version: number; submittedAt: string };
 export type ProductionMilestone = { id: string; milestoneType: string; title: string; plannedAt: string; completedAt: string; status: "pending" | "in_progress" | "completed" | "blocked"; publicPayload: { note?: string }; version: number; updatedAt: string };
-export type WorkItemDetail = { item: WorkItem; lines: TaskLine[]; events: WorkEvent[]; attachments: Attachment[]; commands: WorkCommand[]; oem?: { artifacts: OemArtifact[]; quotes: SupplierQuote[]; milestones: ProductionMilestone[] } | null };
+export type PartnerOrderLine = { id: string; lineRef: string; lineType: "finished_product" | "raw_material" | "packaging"; sku: string; productName: string; specification: string; imageUrl: string; plannedQuantity: number; completedQuantity: number; unit: string; requiredAt: string; responsibility: "tongzhou" | "factory" | "supplier"; unitPrice: number | null; currency: string };
+export type PartnerOrderReport = { id: string; workItemId: string; lineId: string; commandId: string; reportType: "production_progress" | "material_readiness" | "purchase_fulfillment" | "exception" | "shipment"; stage: string; progressPercent: number | null; result: string; quantity: number | null; expectedAt: string; severity: string; title: string; note: string; details: Record<string, string | number | boolean | null>; submittedBy: string; createdAt: string };
+export type WorkItemDetail = { item: WorkItem; lines: TaskLine[]; events: WorkEvent[]; attachments: Attachment[]; commands: WorkCommand[]; oem?: { artifacts: OemArtifact[]; quotes: SupplierQuote[]; milestones: ProductionMilestone[] } | null; partnerOrder?: { lines: PartnerOrderLine[]; reports: PartnerOrderReport[] } | null };
 export type InventoryItem = { warehouseRef: string; warehouseName: string; sku: string; productName: string; imageUrl: string; availableQuantity: number; lockedQuantity: number; inTransitQuantity: number; unit: string; lastCoreSyncedAt: string; version: number };
 export type WarehouseOperationType = "inbound" | "outbound" | "stocktake";
 export type WarehouseOperationLine = { sku: string; productName: string; imageUrl?: string; quantity?: number; countedQuantity?: number; unit: string; lotNo?: string; barcode?: string; productionDate?: string; expiryDate?: string };

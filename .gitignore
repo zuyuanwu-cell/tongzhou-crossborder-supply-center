@@ -14,6 +14,8 @@ dist-collaboration/
 .system-backup/
 .cache-test-stockup/
 artifacts/
+output/playwright/
+.playwright-cli/
 .cache/collaboration-objects/
 .cache/collaboration-antivirus/
 

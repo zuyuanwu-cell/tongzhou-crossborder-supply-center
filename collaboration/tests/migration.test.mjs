@@ -11,6 +11,7 @@ const noForcedPasswordSql = readFileSync(join(dirname(fileURLToPath(import.meta.
 const usernameOnlyLoginSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0005_username_only_login.sql"), "utf8");
 const accessGrantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0006_organization_access_grants.sql"), "utf8");
 const warehouseOperationsSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0007_warehouse_operations.sql"), "utf8");
+const partnerOrderSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0008_partner_order_collaboration.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -22,6 +23,7 @@ const accessSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 
 const integrationSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "integration.js"), "utf8");
 const storageSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "storage.js"), "utf8");
 const migrateSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "migrate.js"), "utf8");
+const partnerOrderSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "partner-orders.js"), "utf8");
 
 test("all partner-owned tables opt into forced row-level security", () => {
   const tables = [
@@ -122,4 +124,18 @@ test("internal warehouse progress reads stay behind the integration boundary", (
   assert.match(storageSource, /export async function internalAttachmentDownload/);
   assert.match(storageSource, /scan_status !== "clean"/);
   assert.doesNotMatch(integrationSource.match(/function internalWorkItem\(row\)[\s\S]*?\n\}/)?.[0] || "", /password|secret|token|email/i);
+});
+
+test("production and procurement collaboration is tenant isolated and append-only", () => {
+  for (const table of ["partner_order_lines", "partner_order_reports"]) {
+    assert.match(partnerOrderSql, new RegExp(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`));
+    assert.match(partnerOrderSql, new RegExp(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`));
+    assert.match(partnerOrderSql, new RegExp(`CREATE POLICY tenant_isolation ON ${table}`));
+  }
+  assert.match(partnerOrderSql, /REVOKE UPDATE, DELETE ON partner_order_reports/);
+  assert.match(partnerOrderSource, /assertResourcePermission/);
+  assert.match(partnerOrderSource, /assertWorkItemPermission/);
+  assert.match(partnerOrderSource, /organization_id=\$1 AND work_item_id=\$2/);
+  assert.match(serverSource, /partner-orders\/projections/);
+  assert.match(serverSource, /partner-orders\/\$\{uuidPattern\}\/reports/);
 });

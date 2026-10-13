@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -53,6 +53,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     baseUrl: "http://collaboration.test",
     internalToken: "internal-test-token",
     publicOrigin: "https://partner.example.test",
+    oemEnabled,
     fetchImpl,
   });
   return { bridge, movements, requests, store };
@@ -69,6 +70,13 @@ const projection = {
   lines: [{ sku: "SKU-1", productName: "测试产品", plannedQuantity: 10 }],
 };
 
+const partnerOrderProjection = {
+  organizationCode: "pf-factory-a", coreRefType: "outsourcing_order", coreRefId: "MO-001", orderType: "production", itemType: "production_order",
+  title: "委外加工单 MO-001", version: 1,
+  publicPayload: { orderNo: "MO-001", productName: "洗护套装", fulfillmentMode: "turnkey", quantity: 1000, unit: "套" },
+  lines: [{ lineRef: "finished-1", lineType: "finished_product", sku: "SKU-1", productName: "测试产品", plannedQuantity: 1000, unit: "套", responsibility: "factory" }],
+};
+
 test("core bridge persists and publishes allowlisted projections", async (t) => {
   const { bridge, requests, store } = await fixture(t);
   const queued = bridge.queueProjection(projection);
@@ -80,6 +88,16 @@ test("core bridge persists and publishes allowlisted projections", async (t) => 
   assert.equal(requests[0].url, "http://collaboration.test/collaboration/internal/v1/projections");
   assert.equal(requests[0].authorization, "Bearer internal-test-token");
   assert.equal(store.status().outbox.published, 1);
+});
+
+test("core bridge publishes production and purchase orders through the private order endpoint", async (t) => {
+  const { bridge, requests } = await fixture(t, { oemEnabled: true });
+  const queued = bridge.queuePartnerOrderProjection(partnerOrderProjection);
+  assert.equal(queued.status, "pending");
+  assert.throws(() => bridge.queuePartnerOrderProjection({ ...partnerOrderProjection, customerName: "敏感客户" }));
+  assert.deepEqual(await bridge.flushOutbox(), { published: 1, failed: 0, disabled: false });
+  assert.equal(requests[0].url, "http://collaboration.test/collaboration/internal/v1/partner-orders/projections");
+  assert.equal(requests[0].body.publicPayload.orderNo, "MO-001");
 });
 
 test("saving warehouse access immediately publishes an allowlisted inventory snapshot", async (t) => {
