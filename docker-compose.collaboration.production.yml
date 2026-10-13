@@ -58,7 +58,7 @@ services:
       COLLABORATION_STORAGE_DIR: /var/lib/tongzhou-collaboration/objects
       COLLABORATION_CLAMSCAN_PATH: /usr/bin/clamscan
       COLLABORATION_AUTO_MIGRATE: "false"
-      COLLABORATION_OEM_ENABLED: "false"
+      COLLABORATION_OEM_ENABLED: "${COLLABORATION_OEM_ENABLED:-false}"
     command: ["node", "collaboration/api/migrate.js"]
     networks: [collaboration_private]
 
