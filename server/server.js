@@ -346,6 +346,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   service: stockupCollaborationService,
   getAuth,
   appendActionLog,
+  publishWarehouseTask: (...args) => collaborationBridge.publishWarehouseTask(...args),
   listWarehouses: () => {
     const optionByConnectionId = new Map(currentWmsWarehouseOptions().map((option) => [String(option.connectionId || ""), option]));
     return warehouseConnections
@@ -432,6 +433,7 @@ const businessChainApi = createBusinessChainApi({
 const collaborationBridge = createCollaborationBridge({
   store: collaborationBridgeStore,
   domesticInventoryService,
+  stockupCollaborationService,
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
   onAudit: (action, command, result) => appendActionLog(
     directAuth,

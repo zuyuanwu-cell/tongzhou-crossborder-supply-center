@@ -54,7 +54,7 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
   return async function handleStockupCollaborationApi(req, res, url) {
     if (!url.pathname.startsWith("/api/stockup/collaboration")) return false;
     const auth = getAuth(req);
@@ -95,6 +95,79 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
           ? String(auth.user.notificationTeamId)
           : "";
         sendJson(res, 200, { ok: true, warehouses, projectTeams, defaultTeamId });
+        return true;
+      }
+
+      if (suffix === "/warehouse-work-orders/dashboard" && req.method === "GET") {
+        requireAny(auth, ["stockup_execution_view", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有查看国内仓作业看板的权限。");
+        sendJson(res, 200, service.warehouseWorkOrderDashboard(queryObject(url), context));
+        return true;
+      }
+      if (suffix === "/warehouse-work-orders" && req.method === "GET") {
+        requireAny(auth, ["stockup_execution_view", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有查看国内仓工单的权限。");
+        sendJson(res, 200, service.listWarehouseWorkOrders(queryObject(url), context));
+        return true;
+      }
+      if (suffix === "/warehouse-work-orders" && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有创建国内仓工单的权限。");
+        const result = service.createWarehouseWorkOrder(await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, "创建国内仓备货工单", "stockup_warehouse_work_order", result.workOrder.workOrderNo, { requestId: result.workOrder.requestId, warehouseId: result.workOrder.domesticWarehouseId });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/warehouse-work-orders\/([^/]+)\/publish$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage", "collaboration_task_publish"], "当前账号没有推送国内仓工单的权限。");
+        const workOrder = service.getWarehouseWorkOrder(decodeURIComponent(match[1]), context);
+        const dueAt = workOrder.expectedArrivalAt
+          ? (/T/.test(workOrder.expectedArrivalAt) ? workOrder.expectedArrivalAt : `${workOrder.expectedArrivalAt.slice(0, 10)}T23:59:59.000Z`)
+          : "";
+        const result = await publishWarehouseTask({
+          organizationCode: workOrder.organizationCode,
+          warehouseRef: workOrder.domesticWarehouseId,
+          itemType: "warehouse_stockup",
+          coreRefType: "stockup_warehouse_work_order",
+          coreRefId: workOrder.id,
+          referenceNo: workOrder.workOrderNo,
+          title: `${workOrder.workOrderNo} · 待签收验货`,
+          description: workOrder.instructions,
+          priority: workOrder.priority === "urgent" ? "urgent" : "normal",
+          dueAt,
+          lines: workOrder.lines.map((line) => ({ sourceLineId: line.id, sku: line.sku, plannedQuantity: line.expectedQty, unit: line.unit })),
+          workOrder: {
+            workOrderId: workOrder.id,
+            requestNo: workOrder.requestNo,
+            expectedArrivalAt: dueAt,
+            senderName: workOrder.senderName,
+            senderContact: workOrder.senderContact,
+            inboundCarrier: workOrder.inboundCarrier,
+            inboundTrackingNo: workOrder.inboundTrackingNo,
+            instructions: workOrder.instructions,
+            destinationCountry: workOrder.destinationCountry,
+            destinationWarehouseName: workOrder.destinationWarehouseName,
+            expenseCategories: ["换箱费", "贴标费", "装卸费", "包装耗材", "仓储费", "货拉拉费", "其他"],
+          },
+        }, {
+          idempotencyKey: String(req.headers["idempotency-key"] || `stockup-work-order:${workOrder.id}`),
+          actorName: String(auth?.user?.displayName || auth?.user?.username || "供应链中台"),
+          warehouseIds: context.warehouseIds,
+          skus: context.skus,
+        });
+        const marked = service.markWarehouseWorkOrderPublished(workOrder.id, { ...result, deliveryMessage: result.delivery?.failed ? "任务已进入重试队列" : "伙伴门户已收到任务" }, context);
+        appendActionLog(auth, "推送国内仓备货工单", "stockup_warehouse_work_order", workOrder.workOrderNo, { organizationCode: workOrder.organizationCode, eventId: result.eventId });
+        sendJson(res, 200, { ok: true, workOrder: marked.workOrder, collaboration: result });
+        return true;
+      }
+      if ((match = suffix.match(/^\/warehouse-work-orders\/([^/]+)\/actions$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage", "stockup_cost_edit", "stockup_cost_review"], "当前账号没有更新国内仓工单的权限。");
+        const payload = await readBody(req);
+        const result = service.applyWarehouseWorkOrderAction(decodeURIComponent(match[1]), payload, context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, `国内仓工单：${payload.action || "update"}`, "stockup_warehouse_work_order", result.workOrder.workOrderNo, { status: result.workOrder.status });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/warehouse-work-orders\/([^/]+)$/)) && req.method === "GET") {
+        requireAny(auth, ["stockup_execution_view", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有查看国内仓工单的权限。");
+        sendJson(res, 200, { ok: true, workOrder: service.getWarehouseWorkOrder(decodeURIComponent(match[1]), context) });
         return true;
       }
 

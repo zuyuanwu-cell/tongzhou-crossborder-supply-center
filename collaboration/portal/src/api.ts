@@ -73,6 +73,7 @@ const demoItems: WorkItem[] = [
   ...(demoProduction ? [{ id: "7a77af62-79fa-4e30-a77e-2e5bf82114a5", spaceId: "production-demo", itemType: "production_order", title: "委外灌装加工单 · MO-202610-018", description: "全包生产 500ml 洗护套装，工厂负责料体、瓶体、泵头、标签与外箱。", status: "in_progress", priority: "urgent", publicPayload: { orderNo: "MO-202610-018", projectCode: "OEM-2026-041", productName: "海盐净润洗护套装", productSpec: "500ml × 2", fulfillmentMode: "turnkey", requirements: "包材到齐后先完成密封、跌落及相容性测试，合格后方可批量灌装。", quantity: 12000, unit: "套", deliveryDate: "2026-11-20", deliveryAddress: "杭州总仓" }, dueAt: new Date(now + 12 * 864e5).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 2 * 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
   ...(demoSupplier ? [{ id: "8a77af62-79fa-4e30-a77e-2e5bf82114a6", spaceId: "procurement-demo", itemType: "purchase_order", title: "包材采购单 · PO-202610-063", description: "采购 500ml PET 瓶体与配套泵头，按批准样封样生产。", status: "accepted", priority: "normal", publicPayload: { orderNo: "PO-202610-063", projectCode: "OEM-2026-041", productName: "500ml PET 瓶体与泵头", fulfillmentMode: "supplier", requirements: "按封样颜色及尺寸生产，出货附批次质检报告。", quantity: 24000, unit: "套", deliveryDate: "2026-10-30", deliveryAddress: "华南灌装协同工厂", paymentTerms: "月结 30 天" }, dueAt: new Date(now + 17 * 864e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
   ...(!demoOem && !demoPartnerOrder ? [
+  { id: "193c9150-a854-4d0e-b61f-2d75fc56c706", spaceId: "demo", itemType: "warehouse_stockup", title: "DWO-20261013-A7K2 · 待签收验货", description: "签收后核对数量与外观，完成换箱、批号条码、箱规称重，并按计划分别发往海外仓和国内客户。", status: "in_progress", priority: "urgent", publicPayload: { referenceNo: "DWO-20261013-A7K2", warehouseRef: "dwh-east-01", warehouseName: "华东协同仓", destinationWarehouseName: "莫斯科主仓", note: "到货后先拍摄外箱与破损位置。", workOrder: { workOrderId: "swwo-demo-1", requestNo: "BH-202610-042", expectedArrivalAt: new Date(now + 7.2e7).toISOString(), senderName: "宁波海盐日化", senderContact: "王师傅 138****7721", inboundCarrier: "顺丰重货", inboundTrackingNo: "SF163006888", instructions: "1. 核对到货箱数；2. 开箱抽检；3. 破损隔离；4. 更换破损纸箱；5. 登记批号与商品条码；6. 测量箱规和重量；7. 按路线安排货拉拉或国内快递。", destinationCountry: "俄罗斯", destinationWarehouseName: "莫斯科主仓", expenseCategories: ["换箱费", "贴标费", "装卸费", "包装耗材", "仓储费", "货拉拉费", "其他"] } }, dueAt: new Date(now + 7.2e7).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 6 * 36e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() },
   { id: "8b3c9150-a854-4d0e-b61f-2d75fc56c705", spaceId: "demo", itemType: "warehouse_transfer", title: "华东仓调拨收货 · DB-202609-001", description: "核对到货箱数、批次和外箱状态后确认收货。", status: "pending", priority: "urgent", publicPayload: { referenceNo: "DB-202609-001", warehouseName: "华东协同仓", sourceWarehouseName: "杭州总仓", destinationWarehouseName: "华东协同仓", note: "到货后请拍摄托盘和封箱标签。" }, dueAt: new Date(now + 7.2e7).toISOString(), version: 1, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 36e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() },
   { id: "ea69fd79-f2a6-45e4-a117-a4432996ce7a", spaceId: "demo", itemType: "warehouse_inbound", title: "采购入库 · RK-202609-118", description: "新批次商品入库并补充生产日期。", status: "in_progress", priority: "normal", publicPayload: { referenceNo: "RK-202609-118", warehouseName: "华东协同仓" }, dueAt: new Date(now + 17.2e7).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 36e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 36e4).toISOString() },
   { id: "dd312a54-3c1d-44a7-bf5a-cef9774e880e", spaceId: "demo", itemType: "warehouse_outbound", title: "备货出库 · BH-202609-042", description: "按批次拣货并回传装箱凭证。", status: "pending_sync", priority: "normal", publicPayload: { referenceNo: "BH-202609-042", warehouseName: "华东协同仓" }, dueAt: new Date(now + 26e7).toISOString(), version: 5, lastCoreSyncedAt: new Date(now - 9e4).toISOString(), createdAt: new Date(now - 1728e5).toISOString(), updatedAt: new Date(now - 9e4).toISOString() },
@@ -125,8 +126,33 @@ export async function revokeInvitation(id: string) {
   if (demoMode) { demoInvitations = demoInvitations.map((item) => item.id === id ? { ...item, status: "expired", expiresAt: new Date().toISOString() } : item); return { ok: true, invitation: demoInvitations.find((item) => item.id === id)! }; }
   return request<{ ok: boolean; invitation: OrganizationInvitation }>(`/collaboration/v1/admin/invitations/${encodeURIComponent(id)}/revoke`, { method: "POST" });
 }
-export async function fetchDashboard() { if (demoMode) return { ok: true, dashboard: { openTasks: demoItems.length, urgentTasks: demoItems.filter((item) => item.priority === "urgent").length, waitingTasks: 0, unreadNotifications: 2, inventorySkuCount: demoPartnerOrder ? 0 : 186, inventorySyncedAt: new Date(now - 9e4).toISOString(), productionOrders: demoProduction ? 1 : 0, purchaseOrders: demoSupplier ? 1 : 0, dueSoonTasks: 1, exceptionReports: 1 } satisfies Dashboard }; return request<{ ok: boolean; dashboard: Dashboard }>("/collaboration/v1/dashboard"); }
-export async function fetchWorkItems(filters: { status?: string; keyword?: string } = {}) { if (demoMode) return { ok: true, items: demoItems, counts: { pending: 1, in_progress: 1, pending_sync: 1 }, limit: 30, offset: 0 }; const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value).map(([key, value]) => [key, String(value)])); return request<{ ok: boolean; items: WorkItem[]; counts: Record<string, number>; limit: number; offset: number }>(`/collaboration/v1/work-items?${query}`); }
+export async function fetchDashboard() {
+  if (demoMode) {
+    const warehouseItems = demoItems.filter((item) => item.itemType.startsWith("warehouse_"));
+    return { ok: true, dashboard: {
+      openTasks: demoItems.length,
+      urgentTasks: demoItems.filter((item) => item.priority === "urgent").length,
+      waitingTasks: warehouseItems.filter((item) => ["pending_approval", "pending_sync"].includes(item.status)).length,
+      unreadNotifications: 2,
+      inventorySkuCount: demoPartnerOrder ? 0 : 186,
+      inventorySyncedAt: new Date(now - 9e4).toISOString(),
+      productionOrders: demoProduction ? 1 : 0,
+      purchaseOrders: demoSupplier ? 1 : 0,
+      dueSoonTasks: 1,
+      exceptionReports: 1,
+    } satisfies Dashboard };
+  }
+  return request<{ ok: boolean; dashboard: Dashboard }>("/collaboration/v1/dashboard");
+}
+export async function fetchWorkItems(filters: { status?: string; keyword?: string } = {}) {
+  if (demoMode) {
+    const items = demoItems.filter((item) => (!filters.status || item.status === filters.status) && (!filters.keyword || `${item.title} ${item.publicPayload.referenceNo || item.publicPayload.orderNo || ""}`.includes(filters.keyword)));
+    const counts = demoItems.reduce<Record<string, number>>((result, item) => ({ ...result, [item.status]: Number(result[item.status] || 0) + 1 }), {});
+    return { ok: true, items, counts, limit: 30, offset: 0 };
+  }
+  const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value).map(([key, value]) => [key, String(value)]));
+  return request<{ ok: boolean; items: WorkItem[]; counts: Record<string, number>; limit: number; offset: number }>(`/collaboration/v1/work-items?${query}`);
+}
 export async function fetchWorkItem(id: string) {
   if (demoMode) {
     const item = demoItems.find((entry) => entry.id === id) || demoItems[0];
@@ -143,7 +169,16 @@ export async function fetchWorkItem(id: string) {
       ],
       reports: item.itemType === "production_order" ? [{ id: "report-1", workItemId: item.id, lineId: "22222222-2222-4222-8222-222222222222", commandId: "command-1", reportType: "material_readiness" as const, stage: "arrived", progressPercent: null, result: "passed", quantity: 24500, expectedAt: "2026-10-12T00:00:00.000Z", severity: "", title: "500ml PET 瓶体到齐与测试", note: "密封与跌落测试合格", details: { testResult: "passed" }, submittedBy: "demo-user", createdAt: new Date(now - 864e5).toISOString() }] : [],
     } : null;
-    const warehouseLines = partnerOrder || oem ? [] : [{ id: "line-1", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", imageUrl: "", plannedQuantity: 240, completedQuantity: 0, unit: "件", lotNo: "LOT-260920-A", barcode: "697000000001", productionDate: "2026-09-20", expiryDate: "2029-09-19" }];
+    const isStockup = item.itemType === "warehouse_stockup";
+    const warehouseLines = partnerOrder || oem ? [] : isStockup
+      ? [
+        { id: "portal-line-1", sourceLineId: "swwl-demo-1", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", imageUrl: "", plannedQuantity: 240, completedQuantity: 0, unit: "件", lotNo: "", barcode: "697000000001", productionDate: "", expiryDate: "" },
+        { id: "portal-line-2", sourceLineId: "swwl-demo-2", sku: "TZKJ-DEMO-002", productName: "森系修护发膜", imageUrl: "", plannedQuantity: 120, completedQuantity: 0, unit: "件", lotNo: "", barcode: "697000000002", productionDate: "", expiryDate: "" },
+      ]
+      : [
+        { id: "line-1", sourceLineId: "", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", imageUrl: "", plannedQuantity: 240, completedQuantity: 0, unit: "件", lotNo: "LOT-260920-A", barcode: "697000000001", productionDate: "2026-09-20", expiryDate: "2029-09-19" },
+        { id: "line-2", sourceLineId: "", sku: "TZKJ-DEMO-002", productName: "森系修护发膜", imageUrl: "", plannedQuantity: 120, completedQuantity: 0, unit: "件", lotNo: "LOT-260921-B", barcode: "697000000002", productionDate: "2026-09-21", expiryDate: "2029-09-20" },
+      ];
     return { ok: true, item, lines: warehouseLines, events: [{ id: "event-1", eventType: partnerOrder ? "core.partner_order_projection" : oem ? "core.oem_projection" : "core.projection", actorName: "供应链中台", body: partnerOrder ? "订单已发布到本组织工作台" : oem ? "包装询价已发布至贵司私有空间" : "任务已发布到华东协同仓", metadata: {}, createdAt: item.createdAt }], attachments: [], commands: [], oem, partnerOrder } as { ok: true } & WorkItemDetail;
   }
   return request<{ ok: boolean } & WorkItemDetail>(`/collaboration/v1/work-items/${id}`);

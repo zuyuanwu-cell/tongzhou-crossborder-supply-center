@@ -12,6 +12,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
   const requests = [];
   const movements = [];
+  const stockupActions = [];
   let remainingResultFailures = resultFailures;
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url: String(url), method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null, authorization: options.headers?.Authorization });
@@ -49,6 +50,12 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
         return inventory || { ok: true, warehouses: [], balances: [] };
       },
     },
+    stockupCollaborationService: {
+      applyWarehouseWorkOrderAction(workOrderId, payload, context, idempotencyKey) {
+        stockupActions.push({ workOrderId, payload, context, idempotencyKey });
+        return { ok: true, workOrder: { id: workOrderId, workOrderNo: "DWO-001", status: "completed" } };
+      },
+    },
     listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
     baseUrl: "http://collaboration.test",
     internalToken: "internal-test-token",
@@ -56,7 +63,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     oemEnabled,
     fetchImpl,
   });
-  return { bridge, movements, requests, store };
+  return { bridge, movements, requests, stockupActions, store };
 }
 
 const projection = {
@@ -243,6 +250,35 @@ test("partner inbound command is revalidated and idempotently booked in the core
   assert.equal(movements[0].idempotencyKey, `collaboration:${command.id}:warehouse-submit-1`);
   assert.equal(store.command(command.id).local_status, "applied");
   assert.equal(requests.at(-1).url, `http://collaboration.test/collaboration/internal/v1/commands/${command.id}/result`);
+});
+
+test("partner stockup processing updates the domestic warehouse work order idempotently", async (t) => {
+  const command = {
+    id: "12121212-1212-4121-8121-121212121212",
+    organizationCode: "warehouse-a",
+    workItemId: "23232323-2323-4232-8232-232323232323",
+    coreRefType: "stockup_warehouse_work_order",
+    coreRefId: "swwo-test-1",
+    itemType: "warehouse_stockup",
+    publicPayload: { ...projection.publicPayload, workOrder: { workOrderId: "swwo-test-1" } },
+    commandType: "stockup_process",
+    idempotencyKey: "stockup-process-1",
+    expectedVersion: 2,
+    payload: { action: "stockup_process", note: "已验收并发货", lines: [], expenses: [], routes: [] },
+    riskLevel: "medium",
+    status: "pending_sync",
+    submittedByName: "仓库操作员",
+    submittedAt: "2026-10-13T08:00:00.000Z",
+  };
+  const { bridge, stockupActions, store } = await fixture(t, { commands: [command] });
+  const result = await bridge.pullCommands();
+  assert.equal(result.processed, 1);
+  assert.equal(stockupActions.length, 1);
+  assert.equal(stockupActions[0].workOrderId, "swwo-test-1");
+  assert.equal(stockupActions[0].payload.action, "process");
+  assert.equal(stockupActions[0].context.viewAll, true);
+  assert.equal(stockupActions[0].idempotencyKey, `collaboration:${command.id}:stockup-process-1`);
+  assert.equal(store.command(command.id).local_status, "applied");
 });
 
 test("high-risk adjustment remains local approval work until reviewed", async (t) => {

@@ -28,6 +28,16 @@ test("partner action schemas reject unbounded and unknown payload fields", () =>
   assert.equal(workItemActionSchema.safeParse({ action: "inventory_adjustment", reason: "盘点差异", lines: [{ sku: "SKU-1", quantity: 2, direction: "decrease" }] }).success, true);
   assert.equal(workItemActionSchema.safeParse({ action: "inventory_adjustment", reason: "盘点差异", lines: [{ sku: "SKU-1", quantity: 2 }] }).success, false);
   assert.equal(riskByAction.inventory_adjustment, "high");
+  const stockupProcess = {
+    action: "stockup_process",
+    note: "验收并完成分流",
+    lines: [{ workOrderLineId: "line-1", sku: "SKU-1", receivedQty: 10, goodQty: 9, damagedQty: 1, shortageQty: 0, pendingQty: 0, requiresRepack: true, replacementCartonCount: 1, lotNo: "LOT-1", barcode: "6970001", cartonCount: 1, unitsPerCarton: 9, cartonLengthCm: 50, cartonWidthCm: 40, cartonHeightCm: 30, cartonWeightKg: 12 }],
+    expenses: [{ category: "换箱费", name: "换箱", amountCny: 10, occurredAt: "2026-10-13" }],
+    routes: [{ routeType: "overseas_warehouse", destinationName: "莫斯科仓", destinationCountry: "俄罗斯", status: "dispatched", lines: [{ workOrderLineId: "line-1", quantity: 6 }] }, { routeType: "domestic_customer", destinationName: "上海客户", destinationCountry: "中国", status: "dispatched", lines: [{ workOrderLineId: "line-1", quantity: 3 }] }],
+  };
+  assert.equal(workItemActionSchema.safeParse(stockupProcess).success, true);
+  assert.equal(workItemActionSchema.safeParse({ ...stockupProcess, lines: [{ ...stockupProcess.lines[0], unitCost: 99 }] }).success, false);
+  assert.equal(riskByAction.stockup_process, "medium");
 });
 
 test("inventory images and partner-created warehouse operations stay on a strict allowlist", () => {
@@ -57,6 +67,16 @@ test("internal warehouse task publication only accepts public collaboration fiel
   assert.equal(internalWarehouseTaskSchema.safeParse({ ...input, internalCost: 18.5 }).success, false);
   assert.equal(internalWarehouseTaskSchema.safeParse({ ...input, itemType: "warehouse_stocktake" }).success, false);
   assert.equal(internalWarehouseTaskSchema.safeParse({ ...input, lines: [{ sku: "SKU-1", plannedQuantity: 0 }] }).success, false);
+  const stockup = {
+    ...input,
+    itemType: "warehouse_stockup",
+    coreRefType: "stockup_warehouse_work_order",
+    coreRefId: "work-order-1",
+    lines: [{ sourceLineId: "line-1", sku: "SKU-1", plannedQuantity: 12, unit: "盒" }],
+    workOrder: { workOrderId: "work-order-1", requestNo: "BH-001", expectedArrivalAt: "2026-09-30T10:00:00.000+08:00", instructions: "验货、换箱并登记箱规", expenseCategories: ["换箱费", "货拉拉费"] },
+  };
+  assert.equal(internalWarehouseTaskSchema.safeParse(stockup).success, true);
+  assert.equal(internalWarehouseTaskSchema.safeParse({ ...stockup, workOrder: { ...stockup.workOrder, supplierUnitCost: 8 } }).success, false);
 });
 
 test("organization jobs enforce role capabilities without an authenticator gate", () => {
@@ -65,6 +85,7 @@ test("organization jobs enforce role capabilities without an authenticator gate"
   assert.equal(canPerformAction(operator, "transfer_receive"), true);
   assert.equal(canPerformAction(operator, "inventory_adjustment"), false);
   assert.equal(canPerformAction(manager, "inventory_adjustment"), true);
+  assert.equal(canPerformAction(operator, "stockup_process"), true);
   assert.equal(requiresMfaAtLogin({ role: "organization_admin", mfa_required: true }), false);
 });
 

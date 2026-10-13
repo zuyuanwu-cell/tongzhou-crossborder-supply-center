@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { BellRing, Calculator, ClipboardList, CircleDollarSign, PackageCheck, Plus, RefreshCw, Route, Sparkles, Truck } from "lucide-react";
+import { BellRing, Calculator, ClipboardList, CircleDollarSign, PackageCheck, Plus, RefreshCw, Route, Sparkles, Truck, Warehouse } from "lucide-react";
 import {
   AuthUser,
   CatalogProduct,
@@ -21,9 +21,11 @@ import { MyRequests } from "./MyRequests";
 import { RequestCreatePanel } from "./RequestCreatePanel";
 import { RequestDetailDrawer } from "./RequestDetailDrawer";
 import { ShipmentWorkspace } from "./ShipmentWorkspace";
+import { WarehouseOperationsWorkbench } from "./WarehouseOperationsWorkbench";
 import "./stockup-collaboration.css";
+import "./warehouse-operations.css";
 
-export type StockupCollaborationSection = "requests" | "execution" | "logistics" | "costs" | "report";
+export type StockupCollaborationSection = "requests" | "execution" | "warehouse" | "logistics" | "costs" | "report";
 
 type Props = {
   user: AuthUser;
@@ -57,6 +59,8 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     canCreate: allowed(user, "stockup_request_create", ["stockup_workflow_manage"]),
     canAccept: allowed(user, "stockup_request_accept", ["stockup_workflow_manage"]),
     canExecute: allowed(user, "stockup_execution_update", ["stockup_execution_manage"]),
+    canWarehouseView: allowed(user, "stockup_execution_view", ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"]),
+    canWarehouseManage: allowed(user, "stockup_execution_update", ["stockup_execution_manage", "stockup_workflow_manage"]),
     canShip: allowed(user, "stockup_shipment_update", ["stockup_execution_manage"]),
     canReceive: allowed(user, "stockup_receipt_confirm", ["stockup_execution_manage"]),
     canCost: allowed(user, "stockup_cost_edit", ["stockup_workflow_manage"]),
@@ -114,6 +118,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   const sections = [
     { id: "requests" as const, label: "我的需求", detail: "提交与查看进度", icon: ClipboardList, visible: true },
     { id: "execution" as const, label: "供应链执行", detail: "受理、采购与生产", icon: PackageCheck, visible: permissions.canAccept || permissions.canExecute },
+    { id: "warehouse" as const, label: "国内仓作业", detail: "签收、验货与发运分流", icon: Warehouse, visible: permissions.canWarehouseView || permissions.canCost },
     { id: "logistics" as const, label: "物流与到仓", detail: "发运、ETA与收货", icon: Truck, visible: permissions.canShip || permissions.canReceive },
     { id: "costs" as const, label: "成本结算", detail: "费用归集与锁定", icon: CircleDollarSign, visible: permissions.canCost || permissions.canLock },
     { id: "report" as const, label: "月度成本", detail: "SKU加权到仓成本", icon: Calculator, visible: permissions.canReport },
@@ -131,6 +136,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
 
     {section === "requests" ? <MyRequests payload={payload} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
     {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
+    {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} onChanged={() => loadAll(true)} /> : null}
     {section === "logistics" ? <ShipmentWorkspace requests={payload?.items || []} shipments={shipments} receipts={receipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /> : null}
     {section === "costs" ? <CostSettlementWorkspace receipts={receipts} initialReceiptId={costReceiptId} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
     {section === "report" ? <MonthlyCostReport canManage={permissions.canLock} /> : null}

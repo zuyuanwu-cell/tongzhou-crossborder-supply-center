@@ -96,9 +96,9 @@ export async function applyCollaborationProjection(input) {
       await client.query("DELETE FROM warehouse_task_lines WHERE organization_id=$1 AND work_item_id=$2", [organization.id, item.id]);
       for (const line of projection.lines) {
         await client.query(
-          `INSERT INTO warehouse_task_lines(organization_id,work_item_id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-          [organization.id, item.id, line.sku, line.productName, line.imageUrl || null, line.plannedQuantity, line.completedQuantity, line.unit, line.lotNo || null, line.barcode || null, line.productionDate || null, line.expiryDate || null],
+          `INSERT INTO warehouse_task_lines(organization_id,work_item_id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          [organization.id, item.id, line.sku, line.productName, line.imageUrl || null, line.plannedQuantity, line.completedQuantity, line.unit, line.lotNo || null, line.barcode || null, line.productionDate || null, line.expiryDate || null, { sourceLineId: line.sourceLineId || "" }],
         );
       }
       await client.query(
@@ -232,7 +232,7 @@ export async function getInternalWorkItem(workItemId) {
     const row = itemResult.rows[0];
     if (!row) fail("协同任务不存在。", 404, "not_found");
     const [lines, events, attachments, commands] = await Promise.all([
-      client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, row.organization_id]),
+      client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, row.organization_id]),
       client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 200", [workItemId, row.organization_id]),
       client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, row.organization_id]),
       client.query("SELECT id,command_type,status,risk_level,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 100", [workItemId, row.organization_id]),
@@ -241,6 +241,7 @@ export async function getInternalWorkItem(workItemId) {
       item: internalWorkItem(row),
       lines: lines.rows.map((line) => ({
         id: line.id,
+        sourceLineId: line.metadata?.sourceLineId || "",
         sku: line.sku,
         productName: line.product_name,
         imageUrl: line.image_url || "",
@@ -329,7 +330,7 @@ export async function completeCommand(commandId, input) {
       `UPDATE partner_commands SET status=$2,result_code=$3,result_message=$4,core_reference=$5,processed_at=now() WHERE id=$1`,
       [commandId, commandStatus, resultPayload.resultCode || null, resultPayload.message || null, resultPayload.coreReference || null],
     );
-    const itemStatus = commandStatus === "applied" ? (command.command_type === "complete" || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
+    const itemStatus = commandStatus === "applied" ? (["complete", "stockup_process"].includes(command.command_type) || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
     const versionExpression = resultPayload.workItemVersion ? "$4" : "version+1";
     const params = [command.work_item_id, command.organization_id, itemStatus];
     if (resultPayload.workItemVersion) params.push(resultPayload.workItemVersion);

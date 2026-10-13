@@ -18,6 +18,7 @@
     "test:sku-coding-registry": "node scripts/sku-coding-registry-test.mjs",
     "test:sku-coding-api": "node scripts/sku-coding-api-test.mjs",
     "test:stockup-collaboration": "node scripts/stockup-collaboration-test.mjs",
+    "test:stockup-warehouse-work-orders": "node scripts/stockup-warehouse-work-orders-test.mjs",
     "test:domestic-inventory": "node scripts/domestic-inventory-test.mjs",
     "test:domestic-inventory-api": "node scripts/domestic-inventory-api-test.mjs",
     "test:jiandaoyun-domestic-inventory": "node scripts/jiandaoyun-domestic-inventory-api-test.mjs",
