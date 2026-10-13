@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { collaborationProjectionSchema, internalPartnerTaskSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema } from "../collaboration/shared/contracts.js";
+import {
+  inferOutsourcingFactoryBinding,
+  isActiveOutsourcingStatus,
+  outsourcingFactoryOptions,
+  outsourcingOrderIdentity,
+  outsourcingProjectionFingerprint,
+  outsourcingProjectionFromRecord,
+} from "./collaboration-outsourcing-source.js";
 
 const systemUser = Object.freeze({
   id: "collaboration-bridge",
@@ -79,6 +87,23 @@ function storedInventoryProjectionState(store, key) {
   }
 }
 
+function parsedState(store, key, fallback) {
+  try { return JSON.parse(store.state(key, JSON.stringify(fallback))); }
+  catch { return fallback; }
+}
+
+function outsourcingBindingStateKey(organizationCode) {
+  return `outsourcing_binding:${organizationCode}`;
+}
+
+function outsourcingTrackedStateKey(organizationCode) {
+  return `outsourcing_tracked:${organizationCode}`;
+}
+
+function outsourcingProjectionStateKey(organizationCode, orderNo) {
+  return `outsourcing_projection:${organizationCode}:${createHash("sha256").update(String(orderNo)).digest("hex").slice(0, 24)}`;
+}
+
 export function createCollaborationBridge({
   store,
   domesticInventoryService,
@@ -87,6 +112,9 @@ export function createCollaborationBridge({
   internalToken = process.env.COLLABORATION_INTERNAL_TOKEN || (process.env.NODE_ENV === "production" ? "" : "local-internal-token-change-me"),
   pollIntervalMs = Number(process.env.COLLABORATION_BRIDGE_POLL_MS || 10_000),
   inventorySyncIntervalMs = Number(process.env.COLLABORATION_INVENTORY_SYNC_MS || 60_000),
+  outsourcingSyncIntervalMs = Number(process.env.COLLABORATION_OUTSOURCING_SYNC_MS || 5 * 60_000),
+  listActiveOutsourcingOrders = async () => [],
+  listOutsourcingFactoryOrders = async () => [],
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
   publicOrigin = process.env.COLLABORATION_PUBLIC_ORIGIN || "https://partner.tongzhoukuajing.com",
@@ -98,6 +126,7 @@ export function createCollaborationBridge({
   let timer = null;
   let running = false;
   let lastError = "";
+  let factoryOptionsCache = { loadedAt: 0, options: [] };
 
   async function internalRequest(path, { method = "GET", body, raw = false } = {}) {
     if (!enabled) fail("协同桥接尚未配置。", 503, "collaboration_bridge_disabled");
@@ -575,6 +604,148 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`);
   }
 
+  async function activeOutsourcingFactoryOptions({ force = false } = {}) {
+    if (!force && factoryOptionsCache.loadedAt && Date.now() - factoryOptionsCache.loadedAt < 5 * 60_000) return factoryOptionsCache.options;
+    const records = await listActiveOutsourcingOrders();
+    const options = outsourcingFactoryOptions(records);
+    factoryOptionsCache = { loadedAt: Date.now(), options };
+    return options;
+  }
+
+  function storedOutsourcingBinding(code) {
+    const binding = parsedState(store, outsourcingBindingStateKey(code), null);
+    return binding?.factoryId ? binding : null;
+  }
+
+  async function assertOutsourcingOrganization(code) {
+    const access = await getOrganizationAccessGrants(code);
+    if (access.organization?.organizationType !== "production_factory") fail("只有委外生产工厂组织可以绑定简道云委外加工单。", 409, "organization_type_mismatch");
+    const productionGrant = (access.grants || []).find((grant) => grant.resourceType === "organization" && grant.resourceRef === "production");
+    if (!productionGrant?.permissions?.includes("production.order.view")) fail("请先为该组织开通委外加工单查看权限。", 403, "resource_not_granted");
+    return access;
+  }
+
+  async function resolveOutsourcingBinding(code, organization, { infer = true, forceOptions = false } = {}) {
+    const stored = storedOutsourcingBinding(code);
+    if (stored || !infer) return stored;
+    const suggestion = inferOutsourcingFactoryBinding(organization?.name, await activeOutsourcingFactoryOptions({ force: forceOptions }));
+    if (!suggestion) return null;
+    const binding = {
+      factoryId: suggestion.factoryId,
+      factoryName: suggestion.factoryName,
+      factoryFullName: suggestion.factoryFullName,
+      inferred: true,
+      boundAt: nowIso(),
+      boundBy: "系统按组织名称精确匹配",
+    };
+    store.setState(outsourcingBindingStateKey(code), JSON.stringify(binding), nowIso());
+    return binding;
+  }
+
+  async function getOutsourcingSourceBinding(code, { refresh = false } = {}) {
+    const access = await assertOutsourcingOrganization(code);
+    const options = await activeOutsourcingFactoryOptions({ force: refresh });
+    const binding = await resolveOutsourcingBinding(code, access.organization, { forceOptions: refresh });
+    const selected = binding ? options.find((item) => item.factoryId === binding.factoryId) : null;
+    return {
+      ok: true,
+      source: { appName: "千顷 ERP", formName: "委外加工单", mode: "read_only_projection" },
+      binding,
+      options,
+      activeOrderCount: selected?.activeOrderCount || 0,
+      trackedOrderCount: parsedState(store, outsourcingTrackedStateKey(code), []).length,
+      lastSyncedAt: store.state(`outsourcing_last_sync:${code}`),
+    };
+  }
+
+  async function saveOutsourcingSourceBinding(code, input, { actorName = "供应链中台管理员" } = {}) {
+    const access = await assertOutsourcingOrganization(code);
+    const factoryId = String(input?.factoryId || "").trim().slice(0, 80);
+    if (!factoryId) fail("请选择千顷 ERP 中的委外灌装工厂。", 400, "factory_required");
+    const options = await activeOutsourcingFactoryOptions({ force: true });
+    const option = options.find((item) => item.factoryId === factoryId);
+    if (!option) fail("所选工厂当前没有进行中的委外加工单，或工厂编号已失效。", 409, "factory_not_available");
+    const existing = storedOutsourcingBinding(code);
+    const tracked = parsedState(store, outsourcingTrackedStateKey(code), []);
+    if (existing && existing.factoryId !== factoryId && tracked.length) {
+      fail("该组织已经同步过委外加工单。为防止跨工厂数据残留，请新建组织后绑定新的工厂。", 409, "binding_locked");
+    }
+    const binding = {
+      factoryId: option.factoryId,
+      factoryName: option.factoryName,
+      factoryFullName: option.factoryFullName,
+      inferred: false,
+      boundAt: nowIso(),
+      boundBy: String(actorName).slice(0, 200),
+    };
+    store.setState(outsourcingBindingStateKey(code), JSON.stringify(binding), nowIso());
+    const synchronization = await synchronizeOutsourcingProjections({ organizationCode: code, organizations: [access.organization] });
+    const delivery = await flushOutbox();
+    onAudit("绑定千顷ERP委外加工工厂", { id: factoryId, organizationCode: code, coreRefId: factoryId, commandType: "bind", submittedByName: actorName }, { binding, synchronization, delivery });
+    return { ok: true, binding, synchronization, delivery };
+  }
+
+  async function synchronizeOutsourcingProjections({ force = false, organizationCode = "", organizations: suppliedOrganizations = null } = {}) {
+    if (!enabled || !oemEnabled) return { scannedOrganizations: 0, queued: 0, unchanged: 0, skipped: 0, failed: 0, disabled: true };
+    const organizations = suppliedOrganizations || (organizationCode
+      ? [(await getOrganizationAccessGrants(organizationCode)).organization]
+      : ((await listOrganizations({ status: "active" })).organizations || []));
+    const productionOrganizations = organizations.filter((item) => item?.organizationType === "production_factory" && item.status !== "suspended" && item.status !== "archived");
+    let queued = 0;
+    let unchanged = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+    for (const organization of productionOrganizations) {
+      try {
+        const access = await assertOutsourcingOrganization(organization.code);
+        const binding = await resolveOutsourcingBinding(organization.code, access.organization || organization);
+        if (!binding) { skipped += 1; continue; }
+        const records = await listOutsourcingFactoryOrders(binding.factoryId);
+        const tracked = new Set(parsedState(store, outsourcingTrackedStateKey(organization.code), []));
+        const workItems = await listOrganizationWorkItems(organization.code, { itemType: "production_order", limit: 100 });
+        const existingByOrderNo = new Map((workItems.items || []).map((item) => [String(item.coreRefId || ""), item]));
+        const catalog = productLookup(listProducts());
+        for (const record of records) {
+          const identity = outsourcingOrderIdentity(record);
+          if (!identity.orderNo || (!isActiveOutsourcingStatus(identity.status) && !tracked.has(identity.orderNo))) continue;
+          const existingItem = existingByOrderNo.get(identity.orderNo);
+          const stateKey = outsourcingProjectionStateKey(organization.code, identity.orderNo);
+          const previous = parsedState(store, stateKey, { fingerprint: "", version: 0 });
+          const version = inventoryProjectionVersion(previous.version);
+          const eventHash = createHash("sha256").update(`${organization.code}:${identity.orderNo}:${version}`).digest("hex").slice(0, 24);
+          let projection = outsourcingProjectionFromRecord(record, {
+            organizationCode: organization.code,
+            version,
+            currentStatus: existingItem?.status || "",
+            eventId: `jdy-outsourcing-${eventHash}`,
+          });
+          if (!projection) continue;
+          const product = catalog.get(normalizedSku(projection.lines[0]?.sku)) || {};
+          if (product.imageUrl) projection = { ...projection, lines: projection.lines.map((line, index) => index === 0 ? { ...line, imageUrl: publicImageUrl(product.imageUrl) } : line) };
+          const fingerprint = outsourcingProjectionFingerprint(projection);
+          if (!force && previous.fingerprint === fingerprint) { unchanged += 1; tracked.add(identity.orderNo); continue; }
+          queuePartnerOrderProjection(projection);
+          store.setState(stateKey, JSON.stringify({ fingerprint, version, sourceUpdatedAt: identity.updatedAt }), nowIso());
+          tracked.add(identity.orderNo);
+          queued += 1;
+        }
+        store.setState(outsourcingTrackedStateKey(organization.code), JSON.stringify([...tracked].sort()), nowIso());
+        store.setState(`outsourcing_last_sync:${organization.code}`, nowIso(), nowIso());
+      } catch (error) {
+        failed += 1;
+        errors.push(`${organization.code}: ${error.message}`);
+      }
+    }
+    if (!failed) store.setState("outsourcing_projection_last_scan_at", nowIso(), nowIso());
+    return { scannedOrganizations: productionOrganizations.length, queued, unchanged, skipped, failed, disabled: false, errors };
+  }
+
+  function outsourcingProjectionSyncDue() {
+    const lastScan = Date.parse(store.state("outsourcing_projection_last_scan_at"));
+    return !Number.isFinite(lastScan) || Date.now() - lastScan >= Math.max(60_000, outsourcingSyncIntervalMs);
+  }
+
   function listOrganizationWorkItems(code, filters = {}) {
     const query = new URLSearchParams({ organizationCode: String(code) });
     for (const key of ["status", "itemType", "keyword", "limit", "offset"]) {
@@ -586,6 +757,7 @@ export function createCollaborationBridge({
   async function publishPartnerTask(code, input, { actorName = "供应链中台管理员" } = {}) {
     if (!oemEnabled) fail("生产、采购与打样协同尚未启用。", 403, "feature_disabled");
     const task = internalPartnerTaskSchema.parse(input);
+    if (task.taskType === "production_order") fail("委外加工单由千顷 ERP 自动同步，请先绑定委外灌装工厂，不要重复手工录单。", 409, "source_managed_task");
     const access = await getOrganizationAccessGrants(code);
     const required = {
       production_order: { resourceRef: "production", permission: "production.order.view" },
@@ -699,12 +871,13 @@ export function createCollaborationBridge({
     running = true;
     try {
       const inventoryProjections = inventoryProjectionSyncDue() ? await synchronizeInventoryProjections() : { skipped: true, reason: "not_due" };
+      const outsourcingProjections = outsourcingProjectionSyncDue() ? await synchronizeOutsourcingProjections() : { skipped: true, reason: "not_due" };
       const outbox = await flushOutbox();
       const commandResults = await retryPendingResults();
       const commands = await pullCommands();
       lastError = "";
       if (enabled) store.setState("last_successful_sync_at", nowIso(), nowIso());
-      return { ok: true, inventoryProjections, outbox, commandResults, commands };
+      return { ok: true, inventoryProjections, outsourcingProjections, outbox, commandResults, commands };
     } catch (error) {
       lastError = error.message;
       return { ok: false, message: error.message, code: error.code || "sync_failed" };
@@ -714,7 +887,7 @@ export function createCollaborationBridge({
   }
 
   function status() {
-    return { ok: true, enabled, oemEnabled, running, baseUrl: normalizedBaseUrl, pollIntervalMs, inventorySyncIntervalMs, lastError, ...store.status() };
+    return { ok: true, enabled, oemEnabled, running, baseUrl: normalizedBaseUrl, pollIntervalMs, inventorySyncIntervalMs, outsourcingSyncIntervalMs, lastError, ...store.status() };
   }
 
   function start() {
@@ -744,6 +917,7 @@ export function createCollaborationBridge({
     awardOemQuote,
     getOrganizationAccess,
     getOrganizationAccessGrants,
+    getOutsourcingSourceBinding,
     getWarehouseTask,
     listOrganizations,
     listOrganizationWorkItems,
@@ -763,11 +937,13 @@ export function createCollaborationBridge({
     replaceOrganizationAccessGrants,
     reviewCommand,
     revokeInvitation,
+    saveOutsourcingSourceBinding,
     start,
     status,
     stop,
     synchronize,
     synchronizeInventoryProjections,
+    synchronizeOutsourcingProjections,
     updateOrganizationStatus,
     waitForIdle,
   };

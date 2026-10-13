@@ -5,7 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
-import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
@@ -433,6 +433,8 @@ const collaborationBridge = createCollaborationBridge({
   store: collaborationBridgeStore,
   domesticInventoryService,
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
+  listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
+  listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
   onAudit: (action, command, result) => appendActionLog(
     directAuth,
     action,

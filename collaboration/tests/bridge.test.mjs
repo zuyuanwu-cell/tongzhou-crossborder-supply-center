@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [] } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -54,6 +54,8 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     internalToken: "internal-test-token",
     publicOrigin: "https://partner.example.test",
     oemEnabled,
+    listActiveOutsourcingOrders: async () => outsourcingRecords,
+    listOutsourcingFactoryOrders: async (factoryId) => outsourcingRecords.filter((record) => String(record._widget_1741698535338?.value || "") === String(factoryId)),
     fetchImpl,
   });
   return { bridge, movements, requests, store };
@@ -100,7 +102,7 @@ test("core bridge publishes production and purchase orders through the private o
   assert.equal(requests[0].body.publicPayload.orderNo, "MO-001");
 });
 
-test("internal administrators publish only granted production, procurement and sampling tasks to one organization", async (t) => {
+test("internal administrators manually publish only procurement and sampling tasks", async (t) => {
   const accessGrants = [
     { resourceType: "organization", resourceRef: "production", permissions: ["production.order.view"] },
     { resourceType: "organization", resourceRef: "procurement", permissions: ["procurement.order.view"] },
@@ -123,24 +125,79 @@ test("internal administrators publish only granted production, procurement and s
     lines: [{ sku: "SKU-1", productName: "测试产品", plannedQuantity: 1000, unit: "件" }],
   };
 
-  for (const taskType of ["production_order", "purchase_order", "sampling_task"]) {
+  for (const taskType of ["purchase_order", "sampling_task"]) {
     const result = await bridge.publishPartnerTask("mf-songyu", { ...common, taskType }, { actorName: "中台管理员" });
     assert.equal(result.delivery.published, 1);
   }
 
-  const production = requests.find((request) => request.url.endsWith("/partner-orders/projections") && request.body.itemType === "production_order");
   const purchase = requests.find((request) => request.url.endsWith("/partner-orders/projections") && request.body.itemType === "purchase_order");
   const sampling = requests.find((request) => request.url.endsWith("/oem/projections") && request.body.itemType === "sampling_task");
-  assert.equal(production.body.organizationCode, "mf-songyu");
-  assert.equal(production.body.publicPayload.fulfillmentMode, "turnkey");
   assert.equal(purchase.body.publicPayload.fulfillmentMode, "supplier");
   assert.equal(sampling.body.publicPayload.projectCode, "SY-20261013-001");
-  assert.equal("internalCost" in production.body.publicPayload, false);
+  await assert.rejects(() => bridge.publishPartnerTask("mf-songyu", { ...common, taskType: "production_order" }, { actorName: "中台管理员" }), /千顷 ERP 自动同步/);
 
   const listing = await bridge.listOrganizationWorkItems("mf-songyu", { itemType: "production_order" });
   assert.equal(listing.items[0].status, "in_progress");
   assert.match(requests.at(-1).url, /organizationCode=mf-songyu/);
   assert.match(requests.at(-1).url, /itemType=production_order/);
+});
+
+test("JiandaoYun factory binding projects only the exact factory active outsourcing orders", async (t) => {
+  const fields = (values) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { value }]));
+  const outsourcingRecords = [
+    {
+      data_id: "jdy-active-songyu",
+      updateTime: "2026-10-13T09:42:01.811Z",
+      ...fields({
+        _widget_1741698535338: "215",
+        _widget_1666521891102: "松雨",
+        _widget_1744031628891: "广州市婉兮生物科技有限公司",
+        out_order_id: "JG26092902",
+        _widget_1690015838240: "进行中",
+        _widget_1753770713537: "CD26063656",
+        _widget_1666513866235: "DEVNEN 防晒美白乳液",
+        _widget_1666513866237: 10000,
+        _widget_1741671761933: "瓶",
+        _widget_1666522275282: "2026-10-30T16:00:00.000Z",
+        _widget_1742543391241: "否",
+        _widget_1742797820565: "否",
+        _widget_1742797820567: "否",
+        _widget_1742797820569: "否",
+        _widget_1689752535149: "sensitive-customer",
+      }),
+      _widget_1666513866246: { value: [
+        fields({ _widget_1667632334265: "GY26061586B1", _widget_1666513866248: "乳液料体", _widget_1666519610456: "215", _widget_1666513866251: "松雨", _widget_1666513866261: 10000, _widget_1690004171630: "瓶" }),
+        fields({ _widget_1667632334265: "GY26061586B2", _widget_1666513866248: "外购玻璃瓶", _widget_1666519610456: "55", _widget_1666513866251: "其他供应商", _widget_1666513866261: 10000, _widget_1690004171630: "个" }),
+      ] },
+    },
+    { data_id: "jdy-completed-songyu", ...fields({ _widget_1741698535338: "215", _widget_1666521891102: "松雨", _widget_1744031628891: "广州市婉兮生物科技有限公司", out_order_id: "JG25010001", _widget_1690015838240: "已完成", _widget_1753770713537: "CD25000001", _widget_1666513866235: "历史产品", _widget_1666513866237: 100, _widget_1741671761933: "件" }) },
+    { data_id: "jdy-active-other", ...fields({ _widget_1741698535338: "58", _widget_1666521891102: "广州雅顿", _widget_1744031628891: "广州市白云区雅顿化妆品厂", out_order_id: "JG26000002", _widget_1690015838240: "进行中", _widget_1753770713537: "CD26000002", _widget_1666513866235: "其他工厂产品", _widget_1666513866237: 200, _widget_1741671761933: "件" }) },
+  ];
+  const accessGrants = [{ resourceType: "organization", resourceRef: "production", permissions: ["production.order.view", "production.progress.update", "production.material.update"] }];
+  const { bridge, requests } = await fixture(t, {
+    oemEnabled: true,
+    organizations: [{ code: "mf-songyu", name: "松雨", organizationType: "production_factory", status: "active" }],
+    accessGrants,
+    outsourcingRecords,
+  });
+
+  const source = await bridge.getOutsourcingSourceBinding("mf-songyu");
+  assert.equal(source.binding.factoryId, "215");
+  assert.equal(source.activeOrderCount, 1);
+  const sync = await bridge.synchronizeOutsourcingProjections({ organizationCode: "mf-songyu" });
+  assert.equal(sync.queued, 1);
+  assert.equal(sync.failed, 0);
+  assert.equal((await bridge.flushOutbox()).published, 1);
+  const projection = requests.find((request) => request.url.endsWith("/partner-orders/projections"));
+  assert.equal(projection.body.coreRefId, "JG26092902");
+  assert.equal(projection.body.publicPayload.fulfillmentMode, "labor_only");
+  assert.equal(projection.body.lines.length, 2);
+  assert.equal(projection.body.lines.some((line) => line.productName === "外购玻璃瓶"), false);
+  assert.equal(JSON.stringify(projection.body).includes("sensitive-customer"), false);
+  assert.equal(JSON.stringify(projection.body).includes("其他供应商"), false);
+  const unchanged = await bridge.synchronizeOutsourcingProjections({ organizationCode: "mf-songyu" });
+  assert.equal(unchanged.queued, 0);
+  assert.equal(unchanged.unchanged, 1);
 });
 
 test("partner task publication is denied until the target organization has the matching grant", async (t) => {

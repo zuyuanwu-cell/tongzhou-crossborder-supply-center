@@ -152,6 +152,23 @@ export type CollaborationPartnerTaskInput = {
   lines: Array<{ sku: string; productName: string; specification?: string; imageUrl?: string; plannedQuantity: number; unit?: string; lineType?: "finished_product" | "raw_material" | "packaging" }>;
 };
 
+export type CollaborationOutsourcingFactoryOption = {
+  factoryId: string;
+  factoryName: string;
+  factoryFullName: string;
+  activeOrderCount: number;
+};
+
+export type CollaborationOutsourcingSource = {
+  ok: boolean;
+  source: { appName: string; formName: string; mode: "read_only_projection" };
+  binding: null | (CollaborationOutsourcingFactoryOption & { inferred: boolean; boundAt: string; boundBy: string });
+  options: CollaborationOutsourcingFactoryOption[];
+  activeOrderCount: number;
+  trackedOrderCount: number;
+  lastSyncedAt: string;
+};
+
 const AUTH_TOKEN_KEY = "tongzhou_auth_token";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -200,6 +217,24 @@ export function publishCollaborationPartnerTask(code: string, input: Collaborati
   return request<{ ok: boolean; eventId: string; coreRefId: string; status: string; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items`, {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export function fetchCollaborationOutsourcingSource(code: string, refresh = false) {
+  return request<CollaborationOutsourcingSource>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/outsourcing-source${refresh ? "?refresh=1" : ""}`);
+}
+
+export function saveCollaborationOutsourcingSource(code: string, factoryId: string) {
+  return request<{ ok: boolean; binding: NonNullable<CollaborationOutsourcingSource["binding"]>; synchronization: { queued: number; unchanged: number; failed: number }; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/outsourcing-source`, {
+    method: "PUT",
+    body: JSON.stringify({ factoryId }),
+  });
+}
+
+export function syncCollaborationOutsourcingSource(code: string) {
+  return request<{ ok: boolean; synchronization: { queued: number; unchanged: number; failed: number }; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/outsourcing-source/sync`, {
+    method: "POST",
+    body: "{}",
   });
 }
 

@@ -11,6 +11,7 @@ import {
   CollaborationOrganizationAccess,
   CollaborationOrganizationStatus,
   CollaborationOrganizationType,
+  CollaborationOutsourcingSource,
   CollaborationPartnerTaskInput,
   CollaborationPartnerTaskType,
   CollaborationPartnerWorkItem,
@@ -19,11 +20,14 @@ import {
   fetchCollaborationApprovals,
   fetchCollaborationOrganizations,
   fetchCollaborationOrganizationWorkItems,
+  fetchCollaborationOutsourcingSource,
   publishCollaborationPartnerTask,
   reissueCollaborationInvitation,
   revokeCollaborationInvitation,
   replaceCollaborationOrganizationAccessGrants,
   reviewCollaborationCommand,
+  saveCollaborationOutsourcingSource,
+  syncCollaborationOutsourcingSource,
   updateCollaborationOrganizationStatus,
 } from "./collaboration-identity-admin-api";
 import { DomesticWarehouse, fetchDomesticWarehouses, fetchWarehouses, WarehouseConnection } from "./api";
@@ -173,8 +177,13 @@ function PartnerTaskPanel({ organization, access, notify }: {
   const [draft, setDraft] = useState<PartnerTaskDraft>(emptyPartnerTaskDraft);
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
+  const [outsourcingSource, setOutsourcingSource] = useState<CollaborationOutsourcingSource | null>(null);
+  const [selectedFactoryId, setSelectedFactoryId] = useState("");
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceBusy, setSourceBusy] = useState(false);
   const selectedType = partnerTaskTypes.find((item) => item.value === draft.taskType) || partnerTaskTypes[0];
   const enabled = Boolean(access?.grants.some((grant) => grant.resourceRef === selectedType.resourceRef && grant.permissions.includes(selectedType.permission)));
+  const productionEnabled = Boolean(access?.grants.some((grant) => grant.resourceRef === "production" && grant.permissions.includes("production.order.view")));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -186,7 +195,19 @@ function PartnerTaskPanel({ organization, access, notify }: {
     } finally { setLoading(false); }
   }, [organization.code, notify]);
 
-  useEffect(() => { setDraft(emptyPartnerTaskDraft()); void load(); }, [organization.code, load]);
+  const loadOutsourcingSource = useCallback(async (refresh = false) => {
+    if (!productionEnabled) { setOutsourcingSource(null); return; }
+    setSourceLoading(true);
+    try {
+      const result = await fetchCollaborationOutsourcingSource(organization.code, refresh);
+      setOutsourcingSource(result);
+      setSelectedFactoryId(result.binding?.factoryId || result.options[0]?.factoryId || "");
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "千顷 ERP 委外加工单来源读取失败", true);
+    } finally { setSourceLoading(false); }
+  }, [organization.code, productionEnabled, notify]);
+
+  useEffect(() => { setDraft(emptyPartnerTaskDraft()); void load(); void loadOutsourcingSource(); }, [organization.code, load, loadOutsourcingSource]);
 
   function patchLine(index: number, patch: Partial<PartnerTaskLineDraft>) {
     setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line) }));
@@ -229,17 +250,51 @@ function PartnerTaskPanel({ organization, access, notify }: {
     } finally { setPublishing(false); }
   }
 
+  async function saveOutsourcingBinding() {
+    if (!selectedFactoryId) return notify("请选择千顷 ERP 中的委外灌装工厂。", true);
+    setSourceBusy(true);
+    try {
+      const result = await saveCollaborationOutsourcingSource(organization.code, selectedFactoryId);
+      notify(result.delivery.failed ? "绑定已保存，委外加工单正在后台重试同步。" : `已绑定并同步 ${result.synchronization.queued} 张委外加工单。`);
+      await Promise.all([loadOutsourcingSource(), load()]);
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "委外加工工厂绑定失败", true);
+    } finally { setSourceBusy(false); }
+  }
+
+  async function syncOutsourcingOrders() {
+    if (!outsourcingSource?.binding) return notify("请先绑定千顷 ERP 委外灌装工厂。", true);
+    setSourceBusy(true);
+    try {
+      const result = await syncCollaborationOutsourcingSource(organization.code);
+      notify(result.delivery.failed ? "同步任务已进入重试队列。" : `同步完成：更新 ${result.synchronization.queued} 张，未变化 ${result.synchronization.unchanged} 张。`);
+      await Promise.all([loadOutsourcingSource(), load()]);
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "委外加工单同步失败", true);
+    } finally { setSourceBusy(false); }
+  }
+
   return <section className="cia-section cia-partner-tasks">
     <div className="cia-section-head"><div><ClipboardCheck size={18} /><div><h4>协同单据</h4><p>只有明确发布到“{organization.name}”的单据才会进入该组织，松雨等伙伴无法按单号越权搜索其他组织的数据。</p></div></div><button type="button" className="cia-secondary" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "cia-spin" : ""} />刷新进度</button></div>
     <div className="cia-task-type-tabs">{partnerTaskTypes.map(({ value, label, icon: Icon }) => <button type="button" key={value} className={draft.taskType === value ? "active" : ""} onClick={() => setDraft((current) => ({ ...current, taskType: value }))}><Icon size={16} />{label}<em>{items.filter((item) => item.itemType === value).length}</em></button>)}</div>
     {!enabled ? <div className="cia-task-permission-warning"><LockKeyhole size={17} /><span>当前组织尚未开通“{selectedType.label}”。请先在上方勾选对应业务空间、使用推荐权限并保存。</span></div> : null}
-    <form className="cia-partner-task-form" onSubmit={publish}>
+    {draft.taskType === "production_order" ? <div className="cia-outsourcing-source">
+      <div className="cia-outsourcing-source-head"><div><Factory size={18} /><div><strong>千顷 ERP · 委外加工单</strong><span>绑定工厂编号后自动同步，不在中台重复录单</span></div></div><em>只读数据投影</em></div>
+      {sourceLoading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取简道云工厂与订单…</div> : <>
+        <div className="cia-outsourcing-source-grid">
+          <label><span>委外灌装工厂</span><select value={selectedFactoryId} onChange={(event) => setSelectedFactoryId(event.target.value)} disabled={!enabled || sourceBusy}>{outsourcingSource?.options.map((item) => <option key={item.factoryId} value={item.factoryId}>{item.factoryName || item.factoryFullName} · 编号 {item.factoryId} · {item.activeOrderCount} 单进行中</option>)}</select></label>
+          <div><span>当前绑定</span><strong>{outsourcingSource?.binding ? `${outsourcingSource.binding.factoryName || outsourcingSource.binding.factoryFullName}（${outsourcingSource.binding.factoryId}）` : "尚未绑定"}</strong><small>{outsourcingSource?.binding?.factoryFullName || "按稳定工厂编号隔离，名称变化不会串单"}</small></div>
+          <div><span>同步范围</span><strong>{outsourcingSource?.activeOrderCount || 0} 单进行中</strong><small>已纳管 {outsourcingSource?.trackedOrderCount || 0} 单 · 完结后保留进度记录</small></div>
+          <div><span>最近同步</span><strong>{formatTime(outsourcingSource?.lastSyncedAt)}</strong><small>后台每 5 分钟检查一次更新</small></div>
+        </div>
+        <div className="cia-outsourcing-source-actions"><span><ShieldCheck size={15} />仅投影本工厂订单、负责物料和执行字段；不发送成本、客户、合同及其他供应商</span><div><button type="button" className="cia-secondary" onClick={() => void loadOutsourcingSource(true)} disabled={!enabled || sourceBusy}><RefreshCw size={15} />刷新工厂</button><button type="button" className="cia-secondary" onClick={() => void syncOutsourcingOrders()} disabled={!enabled || sourceBusy || !outsourcingSource?.binding}><RefreshCw size={15} className={sourceBusy ? "cia-spin" : ""} />立即同步</button><button type="button" className="cia-primary" onClick={() => void saveOutsourcingBinding()} disabled={!enabled || sourceBusy || !selectedFactoryId}>{sourceBusy ? <LoaderCircle size={15} className="cia-spin" /> : <Save size={15} />}保存绑定并同步</button></div></div>
+      </>}
+    </div> : <form className="cia-partner-task-form" onSubmit={publish}>
       <div className="cia-task-form-grid">
         <label><span>单据编号</span><input required maxLength={120} value={draft.documentNo} onChange={(event) => setDraft({ ...draft, documentNo: event.target.value })} placeholder={draft.taskType === "sampling_task" ? "例如：DY-20261013-001" : draft.taskType === "purchase_order" ? "例如：CG-20261013-001" : "例如：WW-20261013-001"} /></label>
         <label><span>对外标题</span><input required maxLength={240} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder={`${selectedType.label}标题`} /></label>
         <label><span>要求完成日期</span><input type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
         <label><span>优先级</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as PartnerTaskDraft["priority"] })}><option value="normal">常规</option><option value="urgent">紧急</option></select></label>
-        {draft.taskType === "production_order" ? <label><span>加工模式</span><select value={draft.fulfillmentMode} onChange={(event) => setDraft({ ...draft, fulfillmentMode: event.target.value as PartnerTaskDraft["fulfillmentMode"] })}><option value="turnkey">全包（工厂供料）</option><option value="labor_only">来料加工</option></select></label> : null}
         {draft.taskType !== "sampling_task" ? <label className="wide"><span>交付地址（可选）</span><input maxLength={500} value={draft.deliveryAddress} onChange={(event) => setDraft({ ...draft, deliveryAddress: event.target.value })} placeholder="仅填写伙伴执行所需的交付地址" /></label> : null}
       </div>
       <div className="cia-task-lines-head"><strong>产品 / 物料明细</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { sku: "", productName: "", specification: "", plannedQuantity: "", unit: "件" }] }))}><Plus size={14} />增加一行</button></div>
@@ -254,12 +309,12 @@ function PartnerTaskPanel({ organization, access, notify }: {
       </div>)}</div>
       <label className="cia-task-requirements"><span>对外要求与注意事项</span><textarea rows={3} maxLength={5000} value={draft.requirements} onChange={(event) => setDraft({ ...draft, requirements: event.target.value })} placeholder={draft.taskType === "sampling_task" ? "样品规格、轮次、需提交的测试结果和附件" : "生产/交付要求、包材测试标准及异常上报要求"} /></label>
       <footer><span><ShieldCheck size={15} />不会发送成本、客户、店铺、其他供应商或内部备注</span><button type="submit" className="cia-primary" disabled={!enabled || publishing}>{publishing ? <LoaderCircle size={16} className="cia-spin" /> : <Send size={16} />}发布给 {organization.name}</button></footer>
-    </form>
+    </form>}
     <div className="cia-task-progress-head"><strong>本组织单据与进度</strong><span>{items.length} 单</span></div>
     {loading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取伙伴反馈进度…</div> : items.length ? <div className="cia-task-progress-list">{items.map((item) => {
       const meta = partnerTaskTypes.find((type) => type.value === item.itemType) || partnerTaskTypes[0]; const Icon = meta.icon;
       return <article key={item.id}><span><Icon size={17} /></span><div><strong>{item.title}</strong><small>{meta.label} · {item.coreRefId}</small></div><div><b>{partnerTaskStatusLabels[item.status] || item.status}</b><small>{item.dueAt ? `交期 ${formatTime(item.dueAt)}` : "未设交期"}</small></div><div><b>V{item.version}</b><small>{item.updatedAt ? `更新 ${formatTime(item.updatedAt)}` : "等待更新"}</small></div></article>;
-    })}</div> : <div className="cia-empty compact"><ClipboardCheck size={22} /><strong>尚未发布协同单据</strong><span>选择上方类型并发布后，伙伴端会立即进入对应任务队列。</span></div>}
+    })}</div> : <div className="cia-empty compact"><ClipboardCheck size={22} /><strong>尚无协同单据</strong><span>{draft.taskType === "production_order" ? "绑定千顷 ERP 委外灌装工厂后，进行中的加工单会自动进入伙伴端。" : "选择上方类型并发布后，伙伴端会立即进入对应任务队列。"}</span></div>}
   </section>;
 }
 

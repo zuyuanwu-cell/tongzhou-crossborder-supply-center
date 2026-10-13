@@ -306,6 +306,28 @@ export async function fetchAllJdyOutsourcingOrders() {
   return mergeJdyRecords([...defaultRecords, ...inProductionRecords]);
 }
 
+export async function fetchAllJdyActiveOutsourcingOrders() {
+  return fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders, {
+    filter: {
+      rel: "and",
+      cond: [{ field: JIANYUN_FORMS.outsourcingOrders.fields.status, method: "eq", value: ["进行中"] }],
+    },
+    maxPages: 20,
+  });
+}
+
+export async function fetchJdyOutsourcingOrdersByFactoryId(factoryId) {
+  const value = String(factoryId || "").trim();
+  if (!value) return [];
+  return fetchJdyDataList(JIANYUN_FORMS.outsourcingOrders, {
+    filter: {
+      rel: "and",
+      cond: [{ field: JIANYUN_FORMS.outsourcingOrders.fields.factoryId, method: "eq", value: [value] }],
+    },
+    maxPages: 20,
+  });
+}
+
 export async function fetchAllJdyProductionMaterials(outsourcingOrderNos = []) {
   const purchaseRecords = await fetchJdyDataByValues(
     JIANYUN_FORMS.purchaseOrders,
