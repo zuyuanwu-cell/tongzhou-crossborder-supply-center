@@ -6,6 +6,7 @@ const actionRoles = Object.freeze({
   outbound_confirm: new Set(["organization_admin", "manager", "operator"]),
   transfer_receive: new Set(["organization_admin", "manager", "operator"]),
   inventory_adjustment: new Set(["organization_admin", "manager"]),
+  stockup_process: new Set(["organization_admin", "manager", "operator"]),
   complete: new Set(["organization_admin", "manager"]),
 });
 

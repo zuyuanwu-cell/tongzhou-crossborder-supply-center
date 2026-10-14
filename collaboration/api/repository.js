@@ -76,10 +76,12 @@ export async function getWorkItem(auth, workItemId) {
     const itemResult = await client.query(`SELECT * FROM work_items WHERE id=$1 AND organization_id=$2 AND ${workItemAccessPredicate}`, [workItemId, auth.organization.id]);
     const row = itemResult.rows[0];
     if (!row) fail("任务不存在。", 404, "not_found");
-    const lines = await client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, auth.organization.id]);
-    const events = await client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 100", [workItemId, auth.organization.id]);
-    const attachments = await client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, auth.organization.id]);
-    const commands = await client.query("SELECT id,command_type,status,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 50", [workItemId, auth.organization.id]);
+    const [lines, events, attachments, commands] = await Promise.all([
+      client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, auth.organization.id]),
+      client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 100", [workItemId, auth.organization.id]),
+      client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, auth.organization.id]),
+      client.query("SELECT id,command_type,status,payload,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 50", [workItemId, auth.organization.id]),
+    ]);
     const oem = collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
       ? [
         await client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC,created_at DESC", [workItemId, auth.organization.id]),
@@ -96,13 +98,13 @@ export async function getWorkItem(auth, workItemId) {
     return {
       item: workItemFromRow(row),
       lines: lines.rows.map((line) => ({
-        id: line.id, sku: line.sku, productName: line.product_name, imageUrl: line.image_url || "",
+        id: line.id, sourceLineId: line.metadata?.sourceLineId || "", sku: line.sku, productName: line.product_name, imageUrl: line.image_url || "",
         plannedQuantity: Number(line.planned_quantity), completedQuantity: Number(line.completed_quantity), unit: line.unit,
         lotNo: line.lot_no || "", barcode: line.barcode || "", productionDate: line.production_date || "", expiryDate: line.expiry_date || "",
       })),
       events: events.rows.map((event) => ({ ...event, eventType: event.event_type, actorName: event.actor_name, createdAt: new Date(event.created_at).toISOString(), event_type: undefined, actor_name: undefined, created_at: undefined })),
       attachments: attachments.rows.map((item) => ({ id: item.id, fileName: item.file_name, mimeType: item.mime_type, sizeBytes: Number(item.size_bytes), scanStatus: item.scan_status, createdAt: new Date(item.created_at).toISOString() })),
-      commands: commands.rows.map((item) => ({ id: item.id, commandType: item.command_type, status: item.status, submittedAt: new Date(item.submitted_at).toISOString(), processedAt: item.processed_at ? new Date(item.processed_at).toISOString() : "", resultCode: item.result_code || "", resultMessage: item.result_message || "", coreReference: item.core_reference || "" })),
+      commands: commands.rows.map((item) => ({ id: item.id, commandType: item.command_type, status: item.status, payload: item.payload || {}, submittedAt: new Date(item.submitted_at).toISOString(), processedAt: item.processed_at ? new Date(item.processed_at).toISOString() : "", resultCode: item.result_code || "", resultMessage: item.result_message || "", coreReference: item.core_reference || "" })),
       oem: oem ? {
         artifacts: oem[0].rows.map((item) => ({ id: item.id, artifactType: item.artifact_type, title: item.title, version: item.version, status: item.status, publicPayload: item.public_payload, createdAt: new Date(item.created_at).toISOString(), updatedAt: new Date(item.updated_at).toISOString() })),
         quotes: oem[1].rows.map((item) => ({ id: item.id, currency: item.currency, amount: Number(item.amount), minimumOrderQuantity: Number(item.minimum_order_quantity), leadTimeDays: item.lead_time_days, terms: item.terms, status: item.status, version: item.version, sampleArtifactId: item.sample_artifact_id || "", sampleVersion: item.sample_version == null ? null : Number(item.sample_version), sampleVariantCode: item.sample_variant_code || "", submittedAt: new Date(item.submitted_at).toISOString() })),
@@ -129,7 +131,7 @@ export async function getWorkItem(auth, workItemId) {
 
 function nextStatus(action, risk) {
   if (risk === "high") return "pending_approval";
-  if (["inbound_confirm", "outbound_confirm", "transfer_receive", "complete"].includes(action)) return "pending_sync";
+  if (["inbound_confirm", "outbound_confirm", "transfer_receive", "stockup_process", "complete"].includes(action)) return "pending_sync";
   if (action === "accept") return "accepted";
   return "in_progress";
 }
@@ -173,6 +175,7 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
       outbound_confirm: ["accepted", "in_progress"],
       transfer_receive: ["accepted", "in_progress"],
       inventory_adjustment: ["accepted", "in_progress"],
+      stockup_process: ["accepted", "in_progress"],
       complete: ["accepted", "in_progress"],
     }[action] || [];
     if (!allowedStates.includes(item.status)) fail("当前工单状态不能执行该操作，请刷新后重试。", 409, "invalid_state");

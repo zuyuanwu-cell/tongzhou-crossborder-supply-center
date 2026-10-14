@@ -8,6 +8,7 @@ import {
   CollaborationApproval,
   CollaborationInvitation,
   CollaborationInvitationResult,
+  CollaborationMember,
   CollaborationOrganization,
   CollaborationOrganizationAccess,
   CollaborationOrganizationStatus,
@@ -35,6 +36,7 @@ import {
   saveCollaborationOutsourcingSource,
   syncCollaborationOutsourcingSource,
   updateCollaborationOrganizationStatus,
+  updateCollaborationMemberCredentials,
 } from "./collaboration-identity-admin-api";
 import { DomesticWarehouse, fetchDomesticWarehouses, fetchWarehouses, WarehouseConnection } from "./api";
 import { organizationRoleLabels } from "./collaboration-role-model";
@@ -57,7 +59,7 @@ type ProvisionedAccess = { organizationName: string; username: string; password:
 type WarehouseOption = { ref: string; name: string; meta: string; capabilities?: CollaborationAccessGrantPayload["capabilities"] };
 
 function provisioningMessage(access: ProvisionedAccess) {
-  return `您好，已为您开通同舟伙伴协同账号。\n伙伴登录网址：${partnerPortalUrl}\n组织名称：${access.organizationName}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
+  return `您好，已为您更新同舟伙伴协同登录凭据。\n伙伴登录网址：${partnerPortalUrl}\n组织名称：${access.organizationName}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
 }
 
 function formatTime(value?: string) {
@@ -523,6 +525,8 @@ export function CollaborationIdentityAdmin() {
   const [showCreate, setShowCreate] = useState(false);
   const [activation, setActivation] = useState<CollaborationInvitationResult | null>(null);
   const [provisionedAccess, setProvisionedAccess] = useState<ProvisionedAccess | null>(null);
+  const [credentialMember, setCredentialMember] = useState<CollaborationMember | null>(null);
+  const [credentialForm, setCredentialForm] = useState({ username: "", password: "", confirm: "" });
   const [access, setAccess] = useState<CollaborationAccessGrantPayload | null>(null);
   const [draftGrants, setDraftGrants] = useState<CollaborationAccessGrant[]>([]);
   const [warehouseOptions, setWarehouseOptions] = useState<WarehouseOption[]>([]);
@@ -716,6 +720,36 @@ export function CollaborationIdentityAdmin() {
     } finally { setBusyId(""); }
   }
 
+  function openCredentialEditor(member: CollaborationMember) {
+    setCredentialMember(member);
+    setCredentialForm({ username: member.username, password: "", confirm: "" });
+    setError("");
+  }
+
+  async function saveCredentials(event: FormEvent) {
+    event.preventDefault();
+    if (!detail || !credentialMember) return;
+    if (credentialForm.password !== credentialForm.confirm) { setError("两次输入的新密码不一致。"); return; }
+    if (credentialForm.username === credentialMember.username && !credentialForm.password) { setError("登录账号没有变化，也没有填写新密码。"); return; }
+    setBusyId(`credentials:${credentialMember.id}`);
+    setError("");
+    try {
+      const result = await updateCollaborationMemberCredentials(detail.organization.code, credentialMember.id, {
+        username: credentialForm.username.trim(),
+        ...(credentialForm.password ? { password: credentialForm.password } : {}),
+      });
+      setProvisionedAccess(credentialForm.password ? { organizationName: detail.organization.name, username: result.member.username, password: credentialForm.password } : null);
+      setNotice(`${result.member.displayName} 的登录账号${result.passwordReset ? "和密码" : ""}已更新，${result.sessionsRevoked ? `并撤销 ${result.sessionsRevoked} 个登录会话。` : "下次登录立即生效。"}`);
+      setCredentialMember(null);
+      setCredentialForm({ username: "", password: "", confirm: "" });
+      await loadDetail(detail.organization.code);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "伙伴账号更新失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
   return <div className="cia-page">
     <section className="cia-hero">
       <div>
@@ -741,7 +775,7 @@ export function CollaborationIdentityAdmin() {
       <button type="button" onClick={async () => { await copyText(activation.activationUrl || ""); setNotice("激活链接已复制，请通过可信渠道发送给管理员本人。"); }}><Copy size={16} /> 复制链接</button>
     </section> : null}
     {provisionedAccess ? <section className="cia-credential" aria-live="polite">
-      <header><div><KeyRound size={20} /><div><strong>开户信息已生成</strong><span>用户收到后可直接登录；明文密码仅保留在当前页面。</span></div></div><button type="button" aria-label="关闭并清除开户信息" onClick={() => setProvisionedAccess(null)}><X size={16} /></button></header>
+      <header><div><KeyRound size={20} /><div><strong>登录凭据已生成</strong><span>用户收到后可直接登录；明文密码仅保留在当前页面。</span></div></div><button type="button" aria-label="关闭并清除登录凭据" onClick={() => setProvisionedAccess(null)}><X size={16} /></button></header>
       <div className="cia-credential-grid"><span>伙伴网址</span><a href={partnerPortalUrl} target="_blank" rel="noreferrer">{partnerPortalUrl}</a><span>登录账号</span><code>{provisionedAccess.username}</code><span>登录密码</span><code>{provisionedAccess.password}</code></div>
       <button className="cia-copy-credential" type="button" onClick={async () => { await copyText(provisioningMessage(provisionedAccess)); setNotice("完整开户文案已复制，可直接发送给对方。"); }}><Copy size={17} /> 一键复制开户文案</button>
     </section> : null}
@@ -791,8 +825,8 @@ export function CollaborationIdentityAdmin() {
           </section>
           {access?.resources?.some((resource) => ["production", "procurement", "sampling"].includes(resource.resourceRef)) ? <section className="cia-role-routing"><div><Handshake size={18} /><span><strong>业务协同已按角色分区</strong><small>组织和权限在这里统一维护；加工单、采购单与打样单请进入对应业务工作台。</small></span></div><div>{organizationRoleLabels(detail.organization.organizationType).map((label) => <em key={label}>{label}</em>)}</div><button type="button" onClick={() => { window.location.hash = "#partner-collaboration"; }}>进入协同总览<ChevronRight size={15} /></button></section> : null}
           <section className="cia-section">
-            <div className="cia-section-head"><div><Users size={18} /><div><h4>已激活成员</h4><p>这里只查看状态。日常新增和角色调整由组织管理员在外部门户完成。</p></div></div><span>{detail.members.length} 人</span></div>
-            {detail.members.length ? <div className="cia-table-wrap"><table className="cia-table"><thead><tr><th>成员</th><th>角色</th><th>账号状态</th><th>最近登录</th></tr></thead><tbody>{detail.members.map((member) => <tr key={member.id}><td><strong>{member.displayName}</strong><small>{member.username} · {member.email || "未留邮箱"}</small></td><td>{roleLabels[member.role] || member.role}</td><td><span className={`cia-state ${member.status === "active" ? "cia-state-accepted" : "cia-state-expired"}`}>{member.status === "active" ? "正常" : "已停用"}</span><small>账号密码直接登录</small></td><td>{formatTime(member.lastLoginAt)}</td></tr>)}</tbody></table></div> : <div className="cia-empty"><Users size={22} /><strong>暂无管理员账号</strong><span>创建组织时会同步建立首位管理员账号。</span></div>}
+            <div className="cia-section-head"><div><Users size={18} /><div><h4>已激活成员</h4><p>中台管理员可修改登录账号或直接重置密码；保存后会撤销该成员现有登录会话。</p></div></div><span>{detail.members.length} 人</span></div>
+            {detail.members.length ? <div className="cia-table-wrap"><table className="cia-table"><thead><tr><th>成员</th><th>角色</th><th>账号状态</th><th>最近登录</th><th aria-label="账号操作" /></tr></thead><tbody>{detail.members.map((member) => <tr key={member.id}><td><strong>{member.displayName}</strong><small>{member.username} · {member.email || "未留邮箱"}</small></td><td>{roleLabels[member.role] || member.role}</td><td><span className={`cia-state ${member.status === "active" ? "cia-state-accepted" : "cia-state-expired"}`}>{member.status === "active" ? "正常" : "已停用"}</span><small>账号密码直接登录</small></td><td>{formatTime(member.lastLoginAt)}</td><td><button className="cia-account-action" type="button" onClick={() => openCredentialEditor(member)}><KeyRound size={14} />账号与密码</button></td></tr>)}</tbody></table></div> : <div className="cia-empty"><Users size={22} /><strong>暂无管理员账号</strong><span>创建组织时会同步建立首位管理员账号。</span></div>}
           </section>
           <section className="cia-section">
             <div className="cia-section-head"><div><Mail size={18} /><div><h4>邀请记录</h4><p>重发会轮换令牌；旧链接立即失效。激活完成后不允许继续撤销。</p></div></div><span>{detail.invitations.length} 条</span></div>
@@ -821,6 +855,19 @@ export function CollaborationIdentityAdmin() {
         </div>
         <div className="cia-modal-note"><KeyRound size={18} /><span>用户收到账号和密码后可直接登录。服务端只保存 Argon2id 密码哈希；关闭凭证卡或刷新页面后明文密码即被清除。</span></div>
         <footer><button className="cia-secondary" type="button" onClick={() => setShowCreate(false)} disabled={busyId === "create"}>取消</button><button className="cia-primary" type="submit" disabled={busyId === "create"}>{busyId === "create" ? <LoaderCircle size={17} className="cia-spin" /> : <UserPlus size={17} />}{busyId === "create" ? "正在创建…" : "创建组织与账号"}</button></footer>
+      </form>
+    </div> : null}
+    {credentialMember ? <div className="cia-modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busyId.startsWith("credentials:")) setCredentialMember(null); }}>
+      <form className="cia-modal cia-credential-modal" onSubmit={saveCredentials} role="dialog" aria-modal="true" aria-labelledby="cia-credential-title">
+        <header><div><span className="cia-kicker"><KeyRound size={14} /> 管理员重置</span><h3 id="cia-credential-title">修改账号与密码</h3><p>{detail?.organization.name} · {credentialMember.displayName}。系统不会显示旧密码，密码留空表示只修改登录账号。</p></div><button type="button" aria-label="关闭" onClick={() => setCredentialMember(null)} disabled={busyId.startsWith("credentials:")}><X size={18} /></button></header>
+        <div className="cia-form-grid">
+          <label className="wide"><span>登录账号</span><input required minLength={3} maxLength={80} autoComplete="off" value={credentialForm.username} onChange={(event) => setCredentialForm({ ...credentialForm, username: event.target.value.replace(/[^A-Za-z0-9._-]/g, "") })} /><small>可使用字母、数字、点、下划线和短横线；保存后旧账号立即失效。</small></label>
+          <label><span>新密码（可选）</span><input type="password" minLength={12} maxLength={128} autoComplete="new-password" value={credentialForm.password} onChange={(event) => setCredentialForm({ ...credentialForm, password: event.target.value })} placeholder="至少 12 位，包含字母和数字" /></label>
+          <label><span>确认新密码</span><input type="password" minLength={12} maxLength={128} autoComplete="new-password" value={credentialForm.confirm} onChange={(event) => setCredentialForm({ ...credentialForm, confirm: event.target.value })} placeholder="再次输入新密码" /></label>
+        </div>
+        {error ? <div className="cia-modal-error"><AlertTriangle size={17} /><span>{error}</span></div> : null}
+        <div className="cia-modal-note"><ShieldCheck size={18} /><span>保存后会撤销该账号的全部现有会话，并记录操作人、旧账号、新账号及是否重置密码；审计记录不会保存明文密码。</span></div>
+        <footer><button className="cia-secondary" type="button" onClick={() => setCredentialMember(null)} disabled={busyId.startsWith("credentials:")}>取消</button><button className="cia-primary" type="submit" disabled={busyId.startsWith("credentials:")}>{busyId.startsWith("credentials:") ? <LoaderCircle size={17} className="cia-spin" /> : <Save size={17} />}{busyId.startsWith("credentials:") ? "正在保存…" : "保存并撤销旧会话"}</button></footer>
       </form>
     </div> : null}
   </div>;

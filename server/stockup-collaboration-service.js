@@ -190,6 +190,52 @@ function costItemFromRow(row) {
   };
 }
 
+function warehouseWorkOrderLineFromRow(row) {
+  return {
+    id: String(row.id), workOrderId: String(row.work_order_id), requestLineId: String(row.request_line_id), sku: String(row.sku),
+    productName: String(row.product_name), imageUrl: String(row.image_url || ""), expectedQty: number(row.expected_qty), receivedQty: number(row.received_qty),
+    goodQty: number(row.good_qty), damagedQty: number(row.damaged_qty), shortageQty: number(row.shortage_qty), pendingQty: number(row.pending_qty), unit: String(row.unit),
+    requiresRepack: Boolean(row.requires_repack), replacementCartonCount: number(row.replacement_carton_count), lotNo: String(row.lot_no || ""), barcode: String(row.barcode || ""),
+    cartonCount: number(row.carton_count), unitsPerCarton: number(row.units_per_carton), cartonLengthCm: number(row.carton_length_cm), cartonWidthCm: number(row.carton_width_cm),
+    cartonHeightCm: number(row.carton_height_cm), cartonWeightKg: number(row.carton_weight_kg), inspectionNote: String(row.inspection_note || ""),
+    status: String(row.status), updatedAt: String(row.updated_at),
+  };
+}
+
+function warehouseExpenseFromRow(row) {
+  return {
+    id: String(row.id), workOrderId: String(row.work_order_id), category: String(row.category), name: String(row.name), amountCny: number(row.amount_cny),
+    occurredAt: String(row.occurred_at), vendor: String(row.vendor || ""), invoiceNo: String(row.invoice_no || ""), voucherUrl: String(row.voucher_url || ""),
+    note: String(row.note || ""), reviewStatus: String(row.review_status), includedInCost: Boolean(row.included_in_cost),
+    createdBy: String(row.created_by), createdByName: String(row.created_by_name), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  };
+}
+
+function warehouseRouteFromRow(row) {
+  return {
+    id: String(row.id), workOrderId: String(row.work_order_id), routeNo: String(row.route_no), routeType: String(row.route_type), destinationId: String(row.destination_id || ""),
+    destinationName: String(row.destination_name), destinationCountry: String(row.destination_country || ""), destinationAddress: String(row.destination_address || ""),
+    contactName: String(row.contact_name || ""), contactPhone: String(row.contact_phone || ""), carrier: String(row.carrier || ""), transportMode: String(row.transport_mode || ""),
+    trackingNo: String(row.tracking_no || ""), freightForwarder: String(row.freight_forwarder || ""), status: String(row.status),
+    plannedPickupAt: String(row.planned_pickup_at || ""), dispatchedAt: String(row.dispatched_at || ""), deliveredAt: String(row.delivered_at || ""),
+    note: String(row.note || ""), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  };
+}
+
+function warehouseWorkOrderFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id), requestId: String(row.request_id), workOrderNo: String(row.work_order_no), organizationCode: String(row.organization_code),
+    domesticWarehouseId: String(row.domestic_warehouse_id), domesticWarehouseName: String(row.domestic_warehouse_name), expectedArrivalAt: String(row.expected_arrival_at || ""),
+    senderName: String(row.sender_name || ""), senderContact: String(row.sender_contact || ""), inboundCarrier: String(row.inbound_carrier || ""),
+    inboundTrackingNo: String(row.inbound_tracking_no || ""), instructions: String(row.instructions || ""), priority: String(row.priority || "normal"), status: String(row.status),
+    collaborationEventId: String(row.collaboration_event_id || ""), collaborationCoreRefId: String(row.collaboration_core_ref_id || ""), publishedAt: String(row.published_at || ""),
+    publishedBy: String(row.published_by || ""), acceptedAt: String(row.accepted_at || ""), completedAt: String(row.completed_at || ""),
+    exceptionCount: number(row.exception_count), version: number(row.version, 1), createdBy: String(row.created_by), createdByName: String(row.created_by_name),
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  };
+}
+
 export function createStockupCollaborationService(store) {
   function shipmentLineFromRow(line) {
     return {
@@ -965,6 +1011,340 @@ export function createStockupCollaborationService(store) {
     });
   }
 
+  function hydrateWarehouseWorkOrder(row, context = {}) {
+    const workOrder = warehouseWorkOrderFromRow(row);
+    if (!workOrder) return null;
+    const request = requestFromRow(store.first("SELECT * FROM stockup_requests WHERE id=?", [workOrder.requestId]));
+    if (!request) throw Object.assign(new Error("备货需求不存在。"), { statusCode: 404, code: "stockup_request_not_found" });
+    const user = userOf(context);
+    const warehouseAllowed = !context.warehouseIds?.length || context.warehouseIds.includes(workOrder.domesticWarehouseId) || context.warehouseIds.includes(request.destinationWarehouseId);
+    const countryAllowed = !context.countries?.length || context.countries.includes(request.destinationCountry);
+    const ownerAllowed = context.viewAll || request.requesterId === user.id;
+    if (!warehouseAllowed || !countryAllowed || !ownerAllowed) throw Object.assign(new Error("该国内仓工单不在当前账号的数据范围内。"), { statusCode: 403, code: "warehouse_work_order_scope_denied" });
+    const scopedSkus = context.skus?.length ? new Set(context.skus.map((sku) => String(sku).trim().toUpperCase())) : null;
+    workOrder.requestNo = request.requestNo;
+    workOrder.project = request.project;
+    workOrder.destinationCountry = request.destinationCountry;
+    workOrder.destinationWarehouseId = request.destinationWarehouseId;
+    workOrder.destinationWarehouseName = request.destinationWarehouseName;
+    workOrder.lines = store.all("SELECT * FROM stockup_warehouse_work_order_lines WHERE work_order_id=? ORDER BY sku,id", [workOrder.id])
+      .map(warehouseWorkOrderLineFromRow)
+      .filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
+    const visibleLineIds = new Set(workOrder.lines.map((line) => line.id));
+    const routes = store.all("SELECT * FROM stockup_warehouse_routes WHERE work_order_id=? ORDER BY created_at,id", [workOrder.id]).map(warehouseRouteFromRow);
+    workOrder.routes = routes.map((route) => ({
+      ...route,
+      lines: store.all("SELECT * FROM stockup_warehouse_route_lines WHERE route_id=? ORDER BY id", [route.id])
+        .map((line) => ({ id: String(line.id), routeId: String(line.route_id), workOrderLineId: String(line.work_order_line_id), quantity: number(line.quantity) }))
+        .filter((line) => visibleLineIds.has(line.workOrderLineId)),
+    })).filter((route) => route.lines.length > 0);
+    const allocatedByLine = new Map();
+    for (const route of workOrder.routes) for (const line of route.lines) allocatedByLine.set(line.workOrderLineId, number(allocatedByLine.get(line.workOrderLineId)) + line.quantity);
+    workOrder.lines = workOrder.lines.map((line) => ({ ...line, allocatedQty: number(allocatedByLine.get(line.id)), unallocatedQty: Math.max(0, line.goodQty - number(allocatedByLine.get(line.id))) }));
+    workOrder.expenses = scopedSkus ? [] : store.all("SELECT * FROM stockup_warehouse_expenses WHERE work_order_id=? ORDER BY occurred_at DESC,created_at DESC", [workOrder.id]).map(warehouseExpenseFromRow);
+    workOrder.events = store.all("SELECT * FROM stockup_warehouse_work_order_events WHERE work_order_id=? ORDER BY occurred_at DESC", [workOrder.id]).map((event) => ({
+      id: String(event.id), workOrderId: String(event.work_order_id), eventType: String(event.event_type), title: String(event.title), description: String(event.description || ""),
+      payload: parseJson(event.payload_json, {}), actorId: String(event.actor_id), actorName: String(event.actor_name), occurredAt: String(event.occurred_at),
+    }));
+    workOrder.expectedQty = workOrder.lines.reduce((sum, line) => sum + line.expectedQty, 0);
+    workOrder.receivedQty = workOrder.lines.reduce((sum, line) => sum + line.receivedQty, 0);
+    workOrder.goodQty = workOrder.lines.reduce((sum, line) => sum + line.goodQty, 0);
+    workOrder.damagedQty = workOrder.lines.reduce((sum, line) => sum + line.damagedQty, 0);
+    workOrder.shortageQty = workOrder.lines.reduce((sum, line) => sum + line.shortageQty, 0);
+    workOrder.pendingQty = workOrder.lines.reduce((sum, line) => sum + line.pendingQty, 0);
+    workOrder.allocatedQty = workOrder.lines.reduce((sum, line) => sum + line.allocatedQty, 0);
+    workOrder.expenseTotalCny = money(workOrder.expenses.reduce((sum, expense) => sum + (expense.includedInCost ? expense.amountCny : 0), 0));
+    return workOrder;
+  }
+
+  function addWarehouseWorkOrderEvent(workOrderId, eventType, title, description, context, payload = {}) {
+    const actor = userOf(context);
+    const eventId = id("swwe");
+    const occurredAt = nowIso();
+    store.run(`INSERT INTO stockup_warehouse_work_order_events
+      (id,work_order_id,event_type,title,description,payload_json,actor_id,actor_name,occurred_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+      [eventId, workOrderId, eventType, title, String(description || ""), JSON.stringify(payload || {}), actor.id, actor.name, occurredAt]);
+    return eventId;
+  }
+
+  function createWarehouseWorkOrder(payload, context, idempotencyKey = "") {
+    const actor = userOf(context);
+    const storedKey = idempotencyKey ? `warehouse-work-order:create:${actor.id}:${String(idempotencyKey)}` : "";
+    if (storedKey) {
+      const existing = store.first("SELECT response_json FROM stockup_idempotency WHERE key=?", [storedKey]);
+      if (existing) {
+        const replay = parseJson(existing.response_json, {});
+        return { ok: true, idempotentReplay: true, workOrder: hydrateWarehouseWorkOrder(store.first("SELECT * FROM stockup_warehouse_work_orders WHERE id=?", [replay.workOrderId]), context) };
+      }
+    }
+    const request = getRequest(required(payload.requestId, "备货需求"), context);
+    const organizationCode = required(payload.organizationCode, "仓库伙伴组织");
+    const domesticWarehouseId = required(payload.domesticWarehouseId, "国内仓库");
+    const domesticWarehouseName = required(payload.domesticWarehouseName, "国内仓库名称");
+    const requestedLines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : request.lines.map((line) => ({ requestLineId: line.id, expectedQty: line.requestedQty }));
+    const seen = new Set();
+    const lines = requestedLines.map((input) => {
+      const requestLine = request.lines.find((line) => line.id === String(input.requestLineId || ""));
+      if (!requestLine) throw Object.assign(new Error("国内仓工单包含不属于当前备货需求的商品。"), { statusCode: 400, code: "warehouse_line_not_found" });
+      if (seen.has(requestLine.id)) throw Object.assign(new Error(`商品 ${requestLine.sku} 不能重复添加。`), { statusCode: 400, code: "duplicate_warehouse_line" });
+      seen.add(requestLine.id);
+      const expectedQty = number(input.expectedQty);
+      if (expectedQty <= 0) throw Object.assign(new Error(`${requestLine.sku} 的预计到货数量必须大于 0。`), { statusCode: 400, code: "invalid_warehouse_quantity" });
+      const alreadyPlanned = number(store.first(`SELECT SUM(l.expected_qty) AS qty FROM stockup_warehouse_work_order_lines l
+        JOIN stockup_warehouse_work_orders w ON w.id=l.work_order_id WHERE l.request_line_id=? AND w.status!='cancelled'`, [requestLine.id])?.qty);
+      if (money(alreadyPlanned + expectedQty) > requestLine.requestedQty) throw Object.assign(new Error(`${requestLine.sku} 累计推送国内仓数量不能超过备货需求 ${requestLine.requestedQty} ${requestLine.unit}。`), { statusCode: 409, code: "warehouse_quantity_exceeds_request" });
+      return { requestLine, expectedQty };
+    });
+    const now = nowIso();
+    const workOrderId = id("swwo");
+    const status = payload.submit === false ? "draft" : "waiting_receipt";
+    const priority = ["urgent", "high", "normal"].includes(String(payload.priority)) ? String(payload.priority) : request.priority === "加急" || request.priority === "紧急" ? "urgent" : "normal";
+    return store.transaction(() => {
+      store.run(`INSERT INTO stockup_warehouse_work_orders
+        (id,request_id,work_order_no,organization_code,domestic_warehouse_id,domestic_warehouse_name,expected_arrival_at,sender_name,sender_contact,inbound_carrier,inbound_tracking_no,instructions,priority,status,collaboration_event_id,collaboration_core_ref_id,published_at,published_by,accepted_at,completed_at,exception_count,version,created_by,created_by_name,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [workOrderId, request.id, businessNo("DWO"), organizationCode, domesticWarehouseId, domesticWarehouseName,
+        String(payload.expectedArrivalAt || ""), String(payload.senderName || ""), String(payload.senderContact || ""), String(payload.inboundCarrier || ""), String(payload.inboundTrackingNo || ""),
+        String(payload.instructions || "签收并核对数量；验收质量；登记批号与商品条码；按要求换箱；登记箱数、箱规、长宽高和重量；完成费用及发运登记。"), priority, status,
+        "", workOrderId, "", "", "", "", 0, 1, actor.id, actor.name, now, now]);
+      for (const line of lines) {
+        store.run(`INSERT INTO stockup_warehouse_work_order_lines
+          (id,work_order_id,request_line_id,sku,product_name,image_url,expected_qty,received_qty,good_qty,damaged_qty,shortage_qty,pending_qty,unit,requires_repack,replacement_carton_count,lot_no,barcode,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,inspection_note,status,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id("swwl"), workOrderId, line.requestLine.id, line.requestLine.sku, line.requestLine.productName, line.requestLine.imageUrl,
+          line.expectedQty, 0, 0, 0, 0, 0, line.requestLine.unit, 0, 0, "", "", 0, 0, 0, 0, 0, 0, "", "waiting_receipt", now]);
+      }
+      addWarehouseWorkOrderEvent(workOrderId, "created", status === "draft" ? "国内仓工单已保存" : "国内仓工单待签收", `${domesticWarehouseName} · ${lines.length} 个 SKU`, context, { requestNo: request.requestNo });
+      if (storedKey) store.run("INSERT INTO stockup_idempotency (key,user_id,response_json,created_at) VALUES (?,?,?,?)", [storedKey, actor.id, JSON.stringify({ workOrderId }), now]);
+      return { ok: true, idempotentReplay: false, workOrder: hydrateWarehouseWorkOrder(store.first("SELECT * FROM stockup_warehouse_work_orders WHERE id=?", [workOrderId]), context) };
+    });
+  }
+
+  function listWarehouseWorkOrders(filters = {}, context = {}) {
+    const where = [];
+    const params = [];
+    if (!context.viewAll) { where.push("r.requester_id=?"); params.push(userOf(context).id); }
+    if (context.warehouseIds?.length) {
+      const placeholders = context.warehouseIds.map(() => "?").join(",");
+      where.push(`(w.domestic_warehouse_id IN (${placeholders}) OR r.destination_warehouse_id IN (${placeholders}))`);
+      params.push(...context.warehouseIds, ...context.warehouseIds);
+    }
+    if (context.countries?.length) { where.push(`r.destination_country IN (${context.countries.map(() => "?").join(",")})`); params.push(...context.countries); }
+    if (context.skus?.length) { where.push(`w.id IN (SELECT work_order_id FROM stockup_warehouse_work_order_lines WHERE UPPER(sku) IN (${context.skus.map(() => "?").join(",")}))`); params.push(...context.skus); }
+    if (filters.requestId) { where.push("w.request_id=?"); params.push(String(filters.requestId)); }
+    if (filters.status && filters.status !== "all") { where.push("w.status=?"); params.push(String(filters.status)); }
+    if (filters.warehouseId) { where.push("w.domestic_warehouse_id=?"); params.push(String(filters.warehouseId)); }
+    if (filters.keyword) {
+      const keyword = `%${String(filters.keyword).trim()}%`;
+      where.push("(w.work_order_no LIKE ? OR r.request_no LIKE ? OR w.domestic_warehouse_name LIKE ? OR w.id IN (SELECT work_order_id FROM stockup_warehouse_work_order_lines WHERE sku LIKE ? OR product_name LIKE ?))");
+      params.push(keyword, keyword, keyword, keyword, keyword);
+    }
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const total = number(store.first(`SELECT COUNT(*) AS count FROM stockup_warehouse_work_orders w JOIN stockup_requests r ON r.id=w.request_id ${clause}`, params)?.count);
+    const rows = store.all(`SELECT w.* FROM stockup_warehouse_work_orders w JOIN stockup_requests r ON r.id=w.request_id ${clause}
+      ORDER BY CASE w.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, CASE WHEN w.expected_arrival_at<datetime('now') AND w.status NOT IN ('completed','cancelled') THEN 0 ELSE 1 END, w.updated_at DESC LIMIT 300`, params);
+    return { ok: true, total, workOrders: rows.map((row) => hydrateWarehouseWorkOrder(row, context)) };
+  }
+
+  function getWarehouseWorkOrder(workOrderId, context = {}) {
+    const row = store.first("SELECT * FROM stockup_warehouse_work_orders WHERE id=?", [String(workOrderId || "")]);
+    if (!row) throw Object.assign(new Error("国内仓工单不存在。"), { statusCode: 404, code: "warehouse_work_order_not_found" });
+    return hydrateWarehouseWorkOrder(row, context);
+  }
+
+  function warehouseWorkOrderStatus(workOrderId) {
+    const lines = store.all("SELECT * FROM stockup_warehouse_work_order_lines WHERE work_order_id=?", [workOrderId]).map(warehouseWorkOrderLineFromRow);
+    const routes = store.all("SELECT * FROM stockup_warehouse_routes WHERE work_order_id=?", [workOrderId]).map(warehouseRouteFromRow);
+    const routeLines = store.all("SELECT rl.*,r.status,r.route_type FROM stockup_warehouse_route_lines rl JOIN stockup_warehouse_routes r ON r.id=rl.route_id WHERE r.work_order_id=? AND r.status!='cancelled'", [workOrderId]);
+    const inspected = lines.length > 0 && lines.every((line) => line.status === "inspected");
+    const terminalStatuses = new Set(["dispatched", "in_transit", "delivered", "received", "shelved", "held"]);
+    const terminalByLine = new Map();
+    for (const line of routeLines) if (terminalStatuses.has(String(line.status))) terminalByLine.set(String(line.work_order_line_id), number(terminalByLine.get(String(line.work_order_line_id))) + number(line.quantity));
+    const allHandled = inspected && lines.every((line) => money(number(terminalByLine.get(line.id))) >= money(line.goodQty));
+    const anyHandled = [...terminalByLine.values()].some((qty) => qty > 0);
+    return { status: allHandled ? "completed" : inspected ? (anyHandled ? "partially_shipped" : "ready_to_ship") : "inspecting", completed: allHandled, routes };
+  }
+
+  function replaceWarehouseProcessing(workOrder, payload, context, now) {
+    const currentLines = new Map(store.all("SELECT * FROM stockup_warehouse_work_order_lines WHERE work_order_id=?", [workOrder.id]).map((line) => [String(line.id), warehouseWorkOrderLineFromRow(line)]));
+    const submittedLines = Array.isArray(payload.lines) ? payload.lines : [];
+    if (submittedLines.length !== currentLines.size || submittedLines.some((line) => !currentLines.has(String(line.id || line.workOrderLineId || "")))) {
+      throw Object.assign(new Error("请完整填写本工单全部商品的验收结果。"), { statusCode: 400, code: "warehouse_inspection_incomplete" });
+    }
+    for (const input of submittedLines) {
+      const line = currentLines.get(String(input.id || input.workOrderLineId));
+      const values = Object.fromEntries(["receivedQty", "goodQty", "damagedQty", "shortageQty", "pendingQty", "replacementCartonCount", "cartonCount", "unitsPerCarton", "cartonLengthCm", "cartonWidthCm", "cartonHeightCm", "cartonWeightKg"].map((key) => [key, number(input[key])]));
+      if (Object.values(values).some((value) => value < 0)) throw Object.assign(new Error(`${line.sku} 的验收和包装数据不能为负数。`), { statusCode: 400, code: "invalid_warehouse_inspection" });
+      if (money(values.receivedQty) !== money(values.goodQty + values.damagedQty + values.pendingQty)) throw Object.assign(new Error(`${line.sku} 的实收数量必须等于良品、破损和待判数量之和。`), { statusCode: 400, code: "warehouse_receipt_quantity_mismatch" });
+      if (money(line.expectedQty) !== money(values.receivedQty + values.shortageQty)) throw Object.assign(new Error(`${line.sku} 的预计数量必须等于实收与短缺数量之和。`), { statusCode: 400, code: "warehouse_expected_quantity_mismatch" });
+      if (values.goodQty > 0 && [values.cartonCount, values.unitsPerCarton, values.cartonLengthCm, values.cartonWidthCm, values.cartonHeightCm, values.cartonWeightKg].some((value) => value <= 0)) {
+        throw Object.assign(new Error(`${line.sku} 请补齐箱数、箱规、长宽高和单箱重量。`), { statusCode: 400, code: "warehouse_package_required" });
+      }
+      if (values.goodQty > 0 && (!String(input.lotNo || "").trim() || !String(input.barcode || "").trim())) throw Object.assign(new Error(`${line.sku} 请登记批号和商品条码。`), { statusCode: 400, code: "warehouse_traceability_required" });
+      store.run(`UPDATE stockup_warehouse_work_order_lines SET received_qty=?,good_qty=?,damaged_qty=?,shortage_qty=?,pending_qty=?,requires_repack=?,replacement_carton_count=?,lot_no=?,barcode=?,carton_count=?,units_per_carton=?,carton_length_cm=?,carton_width_cm=?,carton_height_cm=?,carton_weight_kg=?,inspection_note=?,status='inspected',updated_at=? WHERE id=?`,
+        [values.receivedQty, values.goodQty, values.damagedQty, values.shortageQty, values.pendingQty, input.requiresRepack ? 1 : 0, values.replacementCartonCount,
+          String(input.lotNo || ""), String(input.barcode || ""), values.cartonCount, values.unitsPerCarton, values.cartonLengthCm, values.cartonWidthCm, values.cartonHeightCm,
+          values.cartonWeightKg, String(input.inspectionNote || ""), now, line.id]);
+      currentLines.set(line.id, { ...line, ...values });
+    }
+    if (Array.isArray(payload.expenses)) {
+      store.run("DELETE FROM stockup_warehouse_expenses WHERE work_order_id=?", [workOrder.id]);
+      for (const expense of payload.expenses) {
+        const amountCny = money(expense.amountCny);
+        if (amountCny <= 0) throw Object.assign(new Error("仓内费用金额必须大于 0。"), { statusCode: 400, code: "invalid_warehouse_expense" });
+        store.run(`INSERT INTO stockup_warehouse_expenses
+          (id,work_order_id,category,name,amount_cny,occurred_at,vendor,invoice_no,voucher_url,note,review_status,included_in_cost,created_by,created_by_name,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id("swwe"), workOrder.id, required(expense.category, "费用类型"), required(expense.name || expense.category, "费用名称"), amountCny,
+          String(expense.occurredAt || now.slice(0, 10)), String(expense.vendor || ""), String(expense.invoiceNo || ""), String(expense.voucherUrl || ""), String(expense.note || ""),
+          "pending_review", expense.includedInCost === false ? 0 : 1, userOf(context).id, userOf(context).name, now, now]);
+      }
+    }
+    if (Array.isArray(payload.routes)) {
+      const routeTypes = new Set(["overseas_warehouse", "domestic_customer", "hold"]);
+      const routeStatuses = new Set(["planned", "ready", "dispatched", "in_transit", "delivered", "received", "shelved", "held", "cancelled"]);
+      const totals = new Map();
+      for (const route of payload.routes) {
+        if (!routeTypes.has(String(route.routeType))) throw Object.assign(new Error("发运去向类型不正确。"), { statusCode: 400, code: "invalid_warehouse_route" });
+        if (route.routeType !== "hold" && !String(route.destinationName || "").trim()) throw Object.assign(new Error("请填写发运目的地。"), { statusCode: 400, code: "warehouse_route_destination_required" });
+        if (!routeStatuses.has(String(route.status || "planned"))) throw Object.assign(new Error("发运状态不正确。"), { statusCode: 400, code: "invalid_warehouse_route_status" });
+        for (const routeLine of Array.isArray(route.lines) ? route.lines : []) {
+          const lineId = String(routeLine.workOrderLineId || "");
+          if (!currentLines.has(lineId)) throw Object.assign(new Error("发运清单包含不属于本工单的商品。"), { statusCode: 400, code: "warehouse_route_line_not_found" });
+          const quantity = number(routeLine.quantity);
+          if (quantity <= 0) throw Object.assign(new Error("发运数量必须大于 0。"), { statusCode: 400, code: "invalid_warehouse_route_quantity" });
+          totals.set(lineId, number(totals.get(lineId)) + quantity);
+        }
+      }
+      for (const [lineId, allocated] of totals) if (money(allocated) > money(currentLines.get(lineId).goodQty)) throw Object.assign(new Error(`${currentLines.get(lineId).sku} 的累计分配数量不能超过验收良品数量。`), { statusCode: 409, code: "warehouse_route_overallocated" });
+      store.run("DELETE FROM stockup_warehouse_route_lines WHERE route_id IN (SELECT id FROM stockup_warehouse_routes WHERE work_order_id=?)", [workOrder.id]);
+      store.run("DELETE FROM stockup_warehouse_routes WHERE work_order_id=?", [workOrder.id]);
+      for (const route of payload.routes) {
+        const routeId = id("swwr");
+        const status = String(route.status || (route.routeType === "hold" ? "held" : "planned"));
+        store.run(`INSERT INTO stockup_warehouse_routes
+          (id,work_order_id,route_no,route_type,destination_id,destination_name,destination_country,destination_address,contact_name,contact_phone,carrier,transport_mode,tracking_no,freight_forwarder,status,planned_pickup_at,dispatched_at,delivered_at,note,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [routeId, workOrder.id, businessNo("DWR"), String(route.routeType), String(route.destinationId || ""),
+          String(route.destinationName || (route.routeType === "hold" ? workOrder.domesticWarehouseName : "")), String(route.destinationCountry || ""), String(route.destinationAddress || ""),
+          String(route.contactName || ""), String(route.contactPhone || ""), String(route.carrier || ""), String(route.transportMode || ""), String(route.trackingNo || ""),
+          String(route.freightForwarder || ""), status, String(route.plannedPickupAt || ""), String(route.dispatchedAt || (status === "dispatched" ? now : "")),
+          String(route.deliveredAt || ""), String(route.note || ""), now, now]);
+        for (const routeLine of Array.isArray(route.lines) ? route.lines : []) store.run("INSERT INTO stockup_warehouse_route_lines (id,route_id,work_order_line_id,quantity) VALUES (?,?,?,?)", [id("swwrl"), routeId, String(routeLine.workOrderLineId), number(routeLine.quantity)]);
+      }
+    }
+  }
+
+  function applyWarehouseWorkOrderAction(workOrderId, payload, context, idempotencyKey = "") {
+    const safeId = String(workOrderId || "");
+    if (idempotencyKey) {
+      const receipt = store.first("SELECT response_json FROM stockup_warehouse_command_receipts WHERE idempotency_key=?", [String(idempotencyKey)]);
+      if (receipt) return { ...parseJson(receipt.response_json, {}), idempotentReplay: true };
+    }
+    const current = getWarehouseWorkOrder(safeId, context);
+    if (payload.expectedVersion !== undefined && number(payload.expectedVersion) !== current.version) throw Object.assign(new Error("国内仓工单已被其他人更新，请刷新后重试。"), { statusCode: 409, code: "warehouse_work_order_version_conflict", latest: current });
+    const action = String(payload.action || "");
+    const now = nowIso();
+    return store.transaction(() => {
+      if (action === "accept") {
+        if (!["draft", "waiting_receipt"].includes(current.status)) throw Object.assign(new Error("当前工单状态不能接单。"), { statusCode: 409, code: "warehouse_work_order_transition" });
+        store.run("UPDATE stockup_warehouse_work_orders SET status='inspecting',accepted_at=?,version=version+1,updated_at=? WHERE id=?", [now, now, safeId]);
+        addWarehouseWorkOrderEvent(safeId, "accepted", "国内仓已接单", String(payload.note || "仓库已确认待收货商品"), context);
+      } else if (action === "process") {
+        if (!["waiting_receipt", "inspecting", "ready_to_ship", "partially_shipped", "completed"].includes(current.status)) throw Object.assign(new Error("当前工单状态不能登记仓库作业。"), { statusCode: 409, code: "warehouse_work_order_transition" });
+        replaceWarehouseProcessing(current, payload, context, now);
+        const state = warehouseWorkOrderStatus(safeId);
+        if (payload.requireComplete && !state.completed) throw Object.assign(new Error("请将全部验收良品发出或明确登记留仓后再完结工单。"), { statusCode: 409, code: "warehouse_work_order_not_fully_handled" });
+        const lineRows = store.all("SELECT * FROM stockup_warehouse_work_order_lines WHERE work_order_id=?", [safeId]).map(warehouseWorkOrderLineFromRow);
+        const exceptionCount = lineRows.reduce((sum, line) => sum + (line.damagedQty > 0 ? 1 : 0) + (line.shortageQty > 0 ? 1 : 0) + (line.pendingQty > 0 ? 1 : 0), 0);
+        store.run("UPDATE stockup_warehouse_work_orders SET status=?,exception_count=?,completed_at=?,version=version+1,updated_at=? WHERE id=?", [state.status, exceptionCount, state.completed ? now : "", now, safeId]);
+        addWarehouseWorkOrderEvent(safeId, "processed", state.completed ? "国内仓作业已完结" : "国内仓作业已更新", String(payload.note || "验收、包装、费用与发运数据已登记"), context, { status: state.status, exceptionCount });
+      } else if (action === "route_status") {
+        const route = store.first("SELECT * FROM stockup_warehouse_routes WHERE id=? AND work_order_id=?", [String(payload.routeId || ""), safeId]);
+        const nextStatus = String(payload.status || "");
+        if (!route || !["planned", "ready", "dispatched", "in_transit", "delivered", "received", "shelved", "held", "cancelled"].includes(nextStatus)) throw Object.assign(new Error("发运线路或状态不正确。"), { statusCode: 400, code: "invalid_warehouse_route_status" });
+        store.run("UPDATE stockup_warehouse_routes SET status=?,tracking_no=COALESCE(NULLIF(?,''),tracking_no),dispatched_at=CASE WHEN ?='dispatched' AND COALESCE(dispatched_at,'')='' THEN ? ELSE dispatched_at END,delivered_at=CASE WHEN ? IN ('delivered','received','shelved') THEN ? ELSE delivered_at END,note=COALESCE(NULLIF(?,''),note),updated_at=? WHERE id=?", [nextStatus, String(payload.trackingNo || ""), nextStatus, now, nextStatus, now, String(payload.note || ""), now, route.id]);
+        const state = warehouseWorkOrderStatus(safeId);
+        store.run("UPDATE stockup_warehouse_work_orders SET status=?,completed_at=?,version=version+1,updated_at=? WHERE id=?", [state.status, state.completed ? (current.completedAt || now) : "", now, safeId]);
+        addWarehouseWorkOrderEvent(safeId, "route_updated", "发运进度已更新", `${route.destination_name} · ${nextStatus}`, context, { routeId: route.id, status: nextStatus });
+      } else if (action === "review_expense") {
+        const reviewStatus = String(payload.reviewStatus || "");
+        if (!["approved", "rejected"].includes(reviewStatus)) throw Object.assign(new Error("费用复核状态不正确。"), { statusCode: 400, code: "invalid_warehouse_expense_review" });
+        const expense = store.first("SELECT * FROM stockup_warehouse_expenses WHERE id=? AND work_order_id=?", [String(payload.expenseId || ""), safeId]);
+        if (!expense) throw Object.assign(new Error("仓内费用不存在。"), { statusCode: 404, code: "warehouse_expense_not_found" });
+        const includedInCost = reviewStatus === "approved" && payload.includedInCost !== false;
+        store.run("UPDATE stockup_warehouse_expenses SET review_status=?,included_in_cost=?,note=CASE WHEN ?='' THEN note ELSE ? END,updated_at=? WHERE id=?", [reviewStatus, includedInCost ? 1 : 0, String(payload.note || ""), String(payload.note || ""), now, expense.id]);
+        const costItemId = `warehouse-expense:${expense.id}`;
+        if (includedInCost) {
+          const actor = userOf(context);
+          store.run(`INSERT INTO stockup_cost_items
+            (id,request_id,shipment_id,receipt_id,category,name,stage,vendor,invoice_no,occurred_at,original_amount,currency,exchange_rate,amount_cny,included,allocation_method,note,status,created_by,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET category=excluded.category,name=excluded.name,stage=excluded.stage,vendor=excluded.vendor,invoice_no=excluded.invoice_no,occurred_at=excluded.occurred_at,original_amount=excluded.original_amount,amount_cny=excluded.amount_cny,included=1,note=excluded.note,status='recorded',updated_at=excluded.updated_at`,
+          [costItemId, current.requestId, "", "", String(expense.category), String(expense.name), "国内仓", String(expense.vendor || ""), String(expense.invoice_no || ""), String(expense.occurred_at || now.slice(0, 10)), number(expense.amount_cny), "CNY", 1, money(expense.amount_cny), 1, "quantity", `${current.workOrderNo} · ${String(expense.note || "")}`.trim(), "recorded", actor.id, now, now]);
+        } else {
+          store.run("UPDATE stockup_cost_items SET included=0,status='excluded',updated_at=? WHERE id=?", [now, costItemId]);
+        }
+        store.run("UPDATE stockup_warehouse_work_orders SET version=version+1,updated_at=? WHERE id=?", [now, safeId]);
+        addWarehouseWorkOrderEvent(safeId, "expense_reviewed", reviewStatus === "approved" ? "仓内费用已计入成本" : "仓内费用已驳回", `${expense.category} · ¥${money(expense.amount_cny)}`, context, { expenseId: expense.id, reviewStatus });
+      } else if (action === "cancel") {
+        if (current.status === "completed") throw Object.assign(new Error("已完结工单不能取消。"), { statusCode: 409, code: "warehouse_work_order_transition" });
+        store.run("UPDATE stockup_warehouse_work_orders SET status='cancelled',version=version+1,updated_at=? WHERE id=?", [now, safeId]);
+        addWarehouseWorkOrderEvent(safeId, "cancelled", "国内仓工单已取消", String(payload.note || ""), context);
+      } else {
+        throw Object.assign(new Error("不支持的国内仓工单操作。"), { statusCode: 400, code: "unsupported_warehouse_work_order_action" });
+      }
+      const response = { ok: true, idempotentReplay: false, workOrder: getWarehouseWorkOrder(safeId, context) };
+      if (idempotencyKey) store.run("INSERT INTO stockup_warehouse_command_receipts (idempotency_key,work_order_id,response_json,created_at) VALUES (?,?,?,?)", [String(idempotencyKey), safeId, JSON.stringify(response), now]);
+      return response;
+    });
+  }
+
+  function markWarehouseWorkOrderPublished(workOrderId, result, context) {
+    const current = getWarehouseWorkOrder(workOrderId, context);
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run("UPDATE stockup_warehouse_work_orders SET collaboration_event_id=?,collaboration_core_ref_id=?,published_at=?,published_by=?,status=CASE WHEN status='draft' THEN 'waiting_receipt' ELSE status END,version=version+1,updated_at=? WHERE id=?",
+        [String(result.eventId || ""), String(result.coreRefId || current.id), now, userOf(context).name, now, current.id]);
+      addWarehouseWorkOrderEvent(current.id, "published", "工单已推送国内仓", String(result.deliveryMessage || "伙伴门户已收到任务"), context, { eventId: result.eventId, coreRefId: result.coreRefId });
+      return { ok: true, workOrder: getWarehouseWorkOrder(current.id, context) };
+    });
+  }
+
+  function warehouseWorkOrderDashboard(filters = {}, context = {}) {
+    const listed = listWarehouseWorkOrders(filters, context);
+    const workOrders = listed.workOrders;
+    const statuses = ["draft", "waiting_receipt", "inspecting", "ready_to_ship", "partially_shipped", "completed", "exception", "cancelled"];
+    const counts = Object.fromEntries(statuses.map((status) => [status, workOrders.filter((item) => item.status === status).length]));
+    counts.overdue = workOrders.filter((item) => !["completed", "cancelled"].includes(item.status) && item.expectedArrivalAt && Date.parse(item.expectedArrivalAt) < Date.now()).length;
+    const routeBreakdown = { overseas_warehouse: 0, domestic_customer: 0, hold: 0 };
+    const expenseBreakdown = {};
+    const waitingProducts = [];
+    for (const workOrder of workOrders) {
+      for (const route of workOrder.routes) for (const line of route.lines) routeBreakdown[route.routeType] = number(routeBreakdown[route.routeType]) + line.quantity;
+      for (const expense of workOrder.expenses) if (expense.includedInCost) expenseBreakdown[expense.category] = money(number(expenseBreakdown[expense.category]) + expense.amountCny);
+      if (["waiting_receipt", "inspecting"].includes(workOrder.status)) for (const line of workOrder.lines) waitingProducts.push({
+        workOrderId: workOrder.id, workOrderNo: workOrder.workOrderNo, requestNo: workOrder.requestNo, domesticWarehouseId: workOrder.domesticWarehouseId,
+        domesticWarehouseName: workOrder.domesticWarehouseName, expectedArrivalAt: workOrder.expectedArrivalAt, status: workOrder.status, priority: workOrder.priority,
+        sku: line.sku, productName: line.productName, imageUrl: line.imageUrl, expectedQty: line.expectedQty, receivedQty: line.receivedQty, unit: line.unit,
+      });
+    }
+    return {
+      ok: true,
+      generatedAt: nowIso(),
+      counts,
+      totals: {
+        workOrders: workOrders.length,
+        expectedQty: workOrders.reduce((sum, item) => sum + item.expectedQty, 0),
+        receivedQty: workOrders.reduce((sum, item) => sum + item.receivedQty, 0),
+        goodQty: workOrders.reduce((sum, item) => sum + item.goodQty, 0),
+        damagedQty: workOrders.reduce((sum, item) => sum + item.damagedQty, 0),
+        shortageQty: workOrders.reduce((sum, item) => sum + item.shortageQty, 0),
+        expenseCny: money(workOrders.reduce((sum, item) => sum + item.expenseTotalCny, 0)),
+      },
+      routeBreakdown,
+      expenseBreakdown,
+      waitingProducts: waitingProducts.sort((left, right) => String(left.expectedArrivalAt).localeCompare(String(right.expectedArrivalAt))).slice(0, 300),
+      workOrders,
+    };
+  }
+
   function listNotifications(context) {
     const recipientId = userOf(context).id;
     const items = store.all("SELECT * FROM stockup_notifications WHERE recipient_id=? ORDER BY created_at DESC LIMIT 100", [recipientId]).map((row) => ({ id: String(row.id), requestId: String(row.request_id), title: String(row.title), message: String(row.message), createdAt: String(row.created_at), readAt: String(row.read_at || "") }));
@@ -980,6 +1360,7 @@ export function createStockupCollaborationService(store) {
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
     listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, voidShipmentWmsOrder,
+    applyWarehouseWorkOrderAction, createWarehouseWorkOrder, getWarehouseWorkOrder, listWarehouseWorkOrders, markWarehouseWorkOrderPublished, warehouseWorkOrderDashboard,
     saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
   };
 }

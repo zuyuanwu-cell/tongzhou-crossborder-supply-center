@@ -242,6 +242,7 @@ export function actionPermission(itemType, action) {
     outbound_confirm: "warehouse.outbound.confirm",
     transfer_receive: "warehouse.transfer.receive",
     inventory_adjustment: "warehouse.inventory.adjust.request",
+    stockup_process: "warehouse.task.complete",
     complete: "warehouse.task.complete",
   }[action] || "";
   if (itemType === "filing_task") return ["accept", "progress", "complete"].includes(action) ? "filing.task.handle" : "";

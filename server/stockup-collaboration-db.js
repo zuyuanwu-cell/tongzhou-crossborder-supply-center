@@ -303,6 +303,149 @@ export async function initStockupCollaborationStore(dbPath) {
       response_json TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_work_orders (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      work_order_no TEXT NOT NULL UNIQUE,
+      organization_code TEXT NOT NULL,
+      domestic_warehouse_id TEXT NOT NULL,
+      domestic_warehouse_name TEXT NOT NULL,
+      expected_arrival_at TEXT,
+      sender_name TEXT,
+      sender_contact TEXT,
+      inbound_carrier TEXT,
+      inbound_tracking_no TEXT,
+      instructions TEXT,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL,
+      collaboration_event_id TEXT,
+      collaboration_core_ref_id TEXT,
+      published_at TEXT,
+      published_by TEXT,
+      accepted_at TEXT,
+      completed_at TEXT,
+      exception_count INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(request_id) REFERENCES stockup_requests(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_orders_status ON stockup_warehouse_work_orders(status, expected_arrival_at, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_orders_request ON stockup_warehouse_work_orders(request_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_orders_warehouse ON stockup_warehouse_work_orders(domestic_warehouse_id, status);
+
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_work_order_lines (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      request_line_id TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      image_url TEXT,
+      expected_qty REAL NOT NULL,
+      received_qty REAL NOT NULL DEFAULT 0,
+      good_qty REAL NOT NULL DEFAULT 0,
+      damaged_qty REAL NOT NULL DEFAULT 0,
+      shortage_qty REAL NOT NULL DEFAULT 0,
+      pending_qty REAL NOT NULL DEFAULT 0,
+      unit TEXT NOT NULL,
+      requires_repack INTEGER NOT NULL DEFAULT 0,
+      replacement_carton_count REAL NOT NULL DEFAULT 0,
+      lot_no TEXT,
+      barcode TEXT,
+      carton_count REAL NOT NULL DEFAULT 0,
+      units_per_carton REAL NOT NULL DEFAULT 0,
+      carton_length_cm REAL NOT NULL DEFAULT 0,
+      carton_width_cm REAL NOT NULL DEFAULT 0,
+      carton_height_cm REAL NOT NULL DEFAULT 0,
+      carton_weight_kg REAL NOT NULL DEFAULT 0,
+      inspection_note TEXT,
+      status TEXT NOT NULL DEFAULT 'waiting_receipt',
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id),
+      FOREIGN KEY(request_line_id) REFERENCES stockup_request_lines(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_order_lines_order ON stockup_warehouse_work_order_lines(work_order_id, sku);
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_order_lines_request_line ON stockup_warehouse_work_order_lines(request_line_id, work_order_id);
+
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_expenses (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      name TEXT NOT NULL,
+      amount_cny REAL NOT NULL,
+      occurred_at TEXT NOT NULL,
+      vendor TEXT,
+      invoice_no TEXT,
+      voucher_url TEXT,
+      note TEXT,
+      review_status TEXT NOT NULL DEFAULT 'pending_review',
+      included_in_cost INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_expenses_order ON stockup_warehouse_expenses(work_order_id, review_status);
+
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_routes (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      route_no TEXT NOT NULL UNIQUE,
+      route_type TEXT NOT NULL,
+      destination_id TEXT,
+      destination_name TEXT NOT NULL,
+      destination_country TEXT,
+      destination_address TEXT,
+      contact_name TEXT,
+      contact_phone TEXT,
+      carrier TEXT,
+      transport_mode TEXT,
+      tracking_no TEXT,
+      freight_forwarder TEXT,
+      status TEXT NOT NULL,
+      planned_pickup_at TEXT,
+      dispatched_at TEXT,
+      delivered_at TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_routes_order ON stockup_warehouse_routes(work_order_id, status);
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_route_lines (
+      id TEXT PRIMARY KEY,
+      route_id TEXT NOT NULL,
+      work_order_line_id TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      FOREIGN KEY(route_id) REFERENCES stockup_warehouse_routes(id),
+      FOREIGN KEY(work_order_line_id) REFERENCES stockup_warehouse_work_order_lines(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_route_lines_route ON stockup_warehouse_route_lines(route_id);
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_route_lines_order_line ON stockup_warehouse_route_lines(work_order_line_id);
+
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_work_order_events (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      payload_json TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      actor_name TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_warehouse_events_order ON stockup_warehouse_work_order_events(work_order_id, occurred_at);
+    CREATE TABLE IF NOT EXISTS stockup_warehouse_command_receipts (
+      idempotency_key TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id)
+    );
     CREATE TABLE IF NOT EXISTS container_loading_plans (
       id TEXT PRIMARY KEY,
       plan_no TEXT NOT NULL UNIQUE,

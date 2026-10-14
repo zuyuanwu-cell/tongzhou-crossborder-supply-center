@@ -179,6 +179,17 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 200, { ok: true, ...result });
         return true;
       }
+      const memberCredentialsMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/members\/([0-9a-fA-F-]{36})\/credentials$/);
+      if (memberCredentialsMatch && req.method === "PATCH") {
+        const input = await readBody(req);
+        const code = decodeURIComponent(memberCredentialsMatch[1]);
+        const membershipId = memberCredentialsMatch[2];
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.updateMemberCredentials(code, membershipId, { ...input, actorName });
+        appendActionLog(auth, input.password ? "重置协同伙伴账号与密码" : "修改协同伙伴登录账号", "collaboration_membership", membershipId, { organizationCode: code, username: input.username || "", passwordReset: Boolean(input.password) });
+        sendJson(res, 200, { ok: true, ...result });
+        return true;
+      }
       const accessGrantMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/access-grants$/);
       if (accessGrantMatch && req.method === "GET") {
         sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationAccessGrants(decodeURIComponent(accessGrantMatch[1]))) });

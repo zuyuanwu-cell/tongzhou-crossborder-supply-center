@@ -12,6 +12,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
   const requests = [];
   const movements = [];
+  const stockupActions = [];
   const sourceFeedback = [];
   let remainingResultFailures = resultFailures;
   const fetchImpl = async (url, options = {}) => {
@@ -50,6 +51,12 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
         return inventory || { ok: true, warehouses: [], balances: [] };
       },
     },
+    stockupCollaborationService: {
+      applyWarehouseWorkOrderAction(workOrderId, payload, context, idempotencyKey) {
+        stockupActions.push({ workOrderId, payload, context, idempotencyKey });
+        return { ok: true, workOrder: { id: workOrderId, workOrderNo: "DWO-001", status: "completed" } };
+      },
+    },
     listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
     baseUrl: "http://collaboration.test",
     internalToken: "internal-test-token",
@@ -61,7 +68,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     recordOutsourcingPartnerFeedback: async (feedback) => { sourceFeedback.push(feedback); return { ok: true, skipped: false }; },
     fetchImpl,
   });
-  return { bridge, movements, requests, sourceFeedback, store };
+  return { bridge, movements, requests, stockupActions, sourceFeedback, store };
 }
 
 const projection = {
@@ -349,6 +356,35 @@ test("partner inbound command is revalidated and idempotently booked in the core
   assert.equal(requests.at(-1).url, `http://collaboration.test/collaboration/internal/v1/commands/${command.id}/result`);
 });
 
+test("partner stockup processing updates the domestic warehouse work order idempotently", async (t) => {
+  const command = {
+    id: "12121212-1212-4121-8121-121212121212",
+    organizationCode: "warehouse-a",
+    workItemId: "23232323-2323-4232-8232-232323232323",
+    coreRefType: "stockup_warehouse_work_order",
+    coreRefId: "swwo-test-1",
+    itemType: "warehouse_stockup",
+    publicPayload: { ...projection.publicPayload, workOrder: { workOrderId: "swwo-test-1" } },
+    commandType: "stockup_process",
+    idempotencyKey: "stockup-process-1",
+    expectedVersion: 2,
+    payload: { action: "stockup_process", note: "已验收并发货", lines: [], expenses: [], routes: [] },
+    riskLevel: "medium",
+    status: "pending_sync",
+    submittedByName: "仓库操作员",
+    submittedAt: "2026-10-13T08:00:00.000Z",
+  };
+  const { bridge, stockupActions, store } = await fixture(t, { commands: [command] });
+  const result = await bridge.pullCommands();
+  assert.equal(result.processed, 1);
+  assert.equal(stockupActions.length, 1);
+  assert.equal(stockupActions[0].workOrderId, "swwo-test-1");
+  assert.equal(stockupActions[0].payload.action, "process");
+  assert.equal(stockupActions[0].context.viewAll, true);
+  assert.equal(stockupActions[0].idempotencyKey, `collaboration:${command.id}:stockup-process-1`);
+  assert.equal(store.command(command.id).local_status, "applied");
+});
+
 test("high-risk adjustment remains local approval work until reviewed", async (t) => {
   const command = {
     id: "33333333-3333-4333-8333-333333333333",
@@ -442,6 +478,7 @@ test("organization order detail is scoped to its organization and cannot leak th
 test("identity administration stays behind the server-side collaboration token", async (t) => {
   const { bridge, requests } = await fixture(t);
   const invitationId = "77777777-7777-4777-8777-777777777777";
+  const membershipId = "66666666-6666-4666-8666-666666666666";
 
   await bridge.listOrganizations({ keyword: "华东", status: "active" });
   await bridge.bootstrapOrganization({
@@ -457,10 +494,11 @@ test("identity administration stays behind the server-side collaboration token",
   });
   await bridge.getOrganizationAccess("cn-east-warehouse");
   await bridge.updateOrganizationStatus("cn-east-warehouse", { status: "suspended", actorName: "内部管理员" });
+  await bridge.updateMemberCredentials("cn-east-warehouse", membershipId, { username: "warehouse-owner", password: "Replacement123!", actorName: "内部管理员" });
   await bridge.reissueInvitation(invitationId, { actorName: "内部管理员" });
   await bridge.revokeInvitation(invitationId, { actorName: "内部管理员" });
 
-  assert.equal(requests.length, 6);
+  assert.equal(requests.length, 7);
   assert.match(requests[0].url, /^http:\/\/collaboration\.test\/collaboration\/internal\/v1\/organizations\?/);
   assert.match(requests[0].url, /keyword=%E5%8D%8E%E4%B8%9C/);
   assert.match(requests[0].url, /status=active/);
@@ -471,8 +509,11 @@ test("identity administration stays behind the server-side collaboration token",
   assert.equal(requests[1].body.administrator.password, "Temporary123!");
   assert.equal(requests[2].url, "http://collaboration.test/collaboration/internal/v1/organizations/cn-east-warehouse");
   assert.equal(requests[3].method, "PATCH");
-  assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);
-  assert.equal(requests[5].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/revoke`);
+  assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/organizations/cn-east-warehouse/members/${membershipId}/credentials`);
+  assert.equal(requests[4].method, "PATCH");
+  assert.deepEqual(requests[4].body, { username: "warehouse-owner", password: "Replacement123!", actorName: "内部管理员" });
+  assert.equal(requests[5].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);
+  assert.equal(requests[6].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/revoke`);
   assert.ok(requests.every((request) => request.authorization === "Bearer internal-test-token"));
 });
 

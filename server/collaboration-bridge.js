@@ -21,6 +21,10 @@ function systemInventoryContext() {
   return { auth: { role: "admin", user: systemUser }, warehouseIds: [], countries: [], skus: [] };
 }
 
+function systemStockupContext() {
+  return { ...systemInventoryContext(), viewAll: true, viewCost: true, revealSupplier: true };
+}
+
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
 }
@@ -114,6 +118,7 @@ function outsourcingProjectionStateKey(organizationCode, orderNo) {
 export function createCollaborationBridge({
   store,
   domesticInventoryService,
+  stockupCollaborationService,
   listProducts = () => [],
   baseUrl = process.env.COLLABORATION_API_BASE_URL || "http://127.0.0.1:8790",
   internalToken = process.env.COLLABORATION_INTERNAL_TOKEN || (process.env.NODE_ENV === "production" ? "" : "local-internal-token-change-me"),
@@ -319,6 +324,7 @@ export function createCollaborationBridge({
         fail(`${sku} 可用库存不足，当前可用 ${Number(product.availableByWarehouse[parsed.data.warehouseRef] || 0)} ${product.unit}。`, 409, "insufficient_projected_stock");
       }
       return {
+        sourceLineId: String(line.sourceLineId || ""),
         sku,
         productName: product.productName,
         imageUrl: product.imageUrl,
@@ -330,13 +336,13 @@ export function createCollaborationBridge({
     if (new Set(lines.map((line) => line.sku)).size !== lines.length) fail("同一 SKU 不能重复添加。", 400, "duplicate_sku");
     const digest = createHash("sha256").update(safeKey).digest("hex").slice(0, 10).toUpperCase();
     const taskDate = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    const coreRefId = `CWT-${taskDate}-${digest}`;
+    const coreRefId = parsed.data.coreRefId || `CWT-${taskDate}-${digest}`;
     const eventId = `warehouse-task-${digest.toLowerCase()}-${taskDate}`;
     const referenceNo = parsed.data.referenceNo || coreRefId;
     const queued = queueProjection({
       eventId,
       organizationCode: organization.code,
-      coreRefType: "internal_warehouse_task",
+      coreRefType: parsed.data.coreRefType || "internal_warehouse_task",
       coreRefId,
       itemType: parsed.data.itemType,
       title: parsed.data.title,
@@ -350,6 +356,7 @@ export function createCollaborationBridge({
         warehouseRef: warehouse.resourceRef,
         warehouseName: warehouse.resourceName,
         note: parsed.data.description.slice(0, 2_000),
+        ...(parsed.data.workOrder ? { workOrder: parsed.data.workOrder } : {}),
       },
       lines,
     });
@@ -442,6 +449,7 @@ export function createCollaborationBridge({
       inbound_confirm: "warehouse_inbound",
       outbound_confirm: "warehouse_outbound",
       transfer_receive: "warehouse_transfer",
+      stockup_process: "warehouse_stockup",
     };
     const requiredType = validItemTypes[command.commandType];
     if (requiredType && command.itemType !== requiredType) fail("协同动作与内部任务类型不匹配。", 409, "command_task_mismatch");
@@ -476,6 +484,15 @@ export function createCollaborationBridge({
     assertCommandShape(command);
     const context = systemInventoryContext();
     const idempotencyKey = `collaboration:${command.id}:${command.idempotencyKey}`;
+    if (command.commandType === "stockup_process") {
+      if (!stockupCollaborationService?.applyWarehouseWorkOrderAction) fail("备货国内仓主账服务不可用。", 503, "stockup_service_unavailable");
+      const result = stockupCollaborationService.applyWarehouseWorkOrderAction(command.coreRefId, {
+        ...command.payload,
+        action: "process",
+        requireComplete: true,
+      }, systemStockupContext(), idempotencyKey);
+      return { ...result, reference: result.workOrder?.workOrderNo || command.coreRefId };
+    }
     if (command.commandType === "transfer_receive") {
       return domesticInventoryService.receiveTransfer(command.coreRefId, context);
     }
@@ -914,6 +931,10 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`, { method: "PATCH", body: input });
   }
 
+  function updateMemberCredentials(code, membershipId, input) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/members/${encodeURIComponent(membershipId)}/credentials`, { method: "PATCH", body: input });
+  }
+
   function reissueInvitation(invitationId, input) {
     return internalRequest(`/collaboration/internal/v1/invitations/${encodeURIComponent(invitationId)}/reissue`, { method: "POST", body: input });
   }
@@ -1004,6 +1025,7 @@ export function createCollaborationBridge({
     synchronizeInventoryProjections,
     synchronizeOutsourcingProjections,
     updateOrganizationStatus,
+    updateMemberCredentials,
     waitForIdle,
   };
 }

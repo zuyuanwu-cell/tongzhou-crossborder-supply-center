@@ -106,9 +106,9 @@ export async function applyCollaborationProjection(input) {
       await client.query("DELETE FROM warehouse_task_lines WHERE organization_id=$1 AND work_item_id=$2", [organization.id, item.id]);
       for (const line of projection.lines) {
         await client.query(
-          `INSERT INTO warehouse_task_lines(organization_id,work_item_id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-          [organization.id, item.id, line.sku, line.productName, line.imageUrl || null, line.plannedQuantity, line.completedQuantity, line.unit, line.lotNo || null, line.barcode || null, line.productionDate || null, line.expiryDate || null],
+          `INSERT INTO warehouse_task_lines(organization_id,work_item_id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          [organization.id, item.id, line.sku, line.productName, line.imageUrl || null, line.plannedQuantity, line.completedQuantity, line.unit, line.lotNo || null, line.barcode || null, line.productionDate || null, line.expiryDate || null, { sourceLineId: line.sourceLineId || "" }],
         );
       }
       await client.query(
@@ -244,10 +244,12 @@ export async function getInternalWorkItem(workItemId) {
     );
     const row = itemResult.rows[0];
     if (!row) fail("协同任务不存在。", 404, "not_found");
-    const lines = await client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, row.organization_id]);
-    const events = await client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 200", [workItemId, row.organization_id]);
-    const attachments = await client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, row.organization_id]);
-    const commands = await client.query("SELECT id,command_type,status,risk_level,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 100", [workItemId, row.organization_id]);
+    const [lines, events, attachments, commands] = await Promise.all([
+      client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, row.organization_id]),
+      client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 200", [workItemId, row.organization_id]),
+      client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, row.organization_id]),
+      client.query("SELECT id,command_type,status,risk_level,payload,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 100", [workItemId, row.organization_id]),
+    ]);
     const partnerOrder = ["production_order", "purchase_order"].includes(row.item_type)
       ? [
         await client.query("SELECT id,line_ref,line_type,sku,product_name,specification,image_url,planned_quantity,completed_quantity,unit,required_at,responsibility,unit_price,currency FROM partner_order_lines WHERE work_item_id=$1 AND organization_id=$2 AND active=true ORDER BY CASE line_type WHEN 'finished_product' THEN 0 WHEN 'raw_material' THEN 1 ELSE 2 END,created_at,id", [workItemId, row.organization_id]),
@@ -269,6 +271,7 @@ export async function getInternalWorkItem(workItemId) {
       item: internalWorkItem(row),
       lines: lines.rows.map((line) => ({
         id: line.id,
+        sourceLineId: line.metadata?.sourceLineId || "",
         sku: line.sku,
         productName: line.product_name,
         imageUrl: line.image_url || "",
@@ -282,7 +285,7 @@ export async function getInternalWorkItem(workItemId) {
       })),
       events: events.rows.map((event) => ({ id: event.id, eventType: event.event_type, actorName: event.actor_name, body: event.body, metadata: event.metadata || {}, createdAt: new Date(event.created_at).toISOString() })),
       attachments: attachments.rows.map((attachment) => ({ id: attachment.id, fileName: attachment.file_name, mimeType: attachment.mime_type, sizeBytes: Number(attachment.size_bytes), scanStatus: attachment.scan_status, createdAt: new Date(attachment.created_at).toISOString() })),
-      commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
+      commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, payload: command.payload || {}, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
       oem: oem ? {
         artifacts: oem[0].rows.map((artifact) => ({ id: artifact.id, artifactType: artifact.artifact_type, title: artifact.title, version: Number(artifact.version), status: artifact.status, publicPayload: artifact.public_payload || {}, createdAt: new Date(artifact.created_at).toISOString(), updatedAt: new Date(artifact.updated_at).toISOString() })),
         quotes: oem[1].rows.map((quote) => ({ id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: Number(quote.lead_time_days), terms: quote.terms, status: quote.status, version: Number(quote.version), sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version == null ? null : Number(quote.sample_version), sampleVariantCode: quote.sample_variant_code || "", submittedAt: new Date(quote.submitted_at).toISOString() })),
@@ -382,7 +385,7 @@ export async function completeCommand(commandId, input) {
       `UPDATE partner_commands SET status=$2,result_code=$3,result_message=$4,core_reference=$5,processed_at=now() WHERE id=$1`,
       [commandId, commandStatus, resultPayload.resultCode || null, resultPayload.message || null, resultPayload.coreReference || null],
     );
-    const itemStatus = commandStatus === "applied" ? (command.command_type === "complete" || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
+    const itemStatus = commandStatus === "applied" ? (["complete", "stockup_process"].includes(command.command_type) || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
     const versionExpression = resultPayload.workItemVersion ? "$4" : "version+1";
     const params = [command.work_item_id, command.organization_id, itemStatus];
     if (resultPayload.workItemVersion) params.push(resultPayload.workItemVersion);
