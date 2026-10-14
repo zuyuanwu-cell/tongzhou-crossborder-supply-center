@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Boxes, CheckCircle2, ChevronRight, Clock3, Download,
+  AlertTriangle, ArrowDownToLine, ArrowUpFromLine, BellRing, Boxes, CheckCircle2, ChevronRight, Clock3, Download,
   ExternalLink, FileText, LoaderCircle, PackageOpen, Plus, RefreshCw, Search, Send, Trash2, Warehouse, X,
 } from "lucide-react";
 import { AuthUser, resolveApiUrl } from "./api";
@@ -9,7 +9,7 @@ import {
   CollaborationTaskOptions, CollaborationTaskProduct, CollaborationWarehouseTask, CollaborationWarehouseTaskDetail,
   CollaborationWarehouseTaskStatus, CollaborationWarehouseTaskType, downloadCollaborationTaskAttachment,
   fetchCollaborationTaskOptions, fetchCollaborationWarehouseTask, fetchCollaborationWarehouseTasks,
-  publishCollaborationWarehouseTask,
+  publishCollaborationWarehouseTask, remindCollaborationWarehouseTask,
 } from "./warehouse-collaboration-task-api";
 import "./warehouse-collaboration-tasks.css";
 
@@ -36,6 +36,22 @@ function formatDate(value?: string) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+const terminalStatuses = new Set<CollaborationWarehouseTaskStatus>(["completed", "rejected", "cancelled"]);
+
+function overdueDays(task: Pick<CollaborationWarehouseTask, "dueAt" | "status">) {
+  if (!task.dueAt || terminalStatuses.has(task.status)) return 0;
+  const due = Date.parse(task.dueAt);
+  if (!Number.isFinite(due) || due >= Date.now()) return 0;
+  return Math.max(1, Math.ceil((Date.now() - due) / 86_400_000));
+}
+
+function defaultDueAt() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  date.setHours(18, 0, 0, 0);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
 function makeIdempotencyKey() {
@@ -67,7 +83,7 @@ function TaskCreateDrawer({ options, onClose, onCreated }: {
   const [title, setTitle] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [priority, setPriority] = React.useState<"normal" | "urgent">("normal");
-  const [dueAt, setDueAt] = React.useState("");
+  const [dueAt, setDueAt] = React.useState(defaultDueAt);
   const [productKeyword, setProductKeyword] = React.useState("");
   const [lines, setLines] = React.useState<DraftLine[]>([]);
   const [busy, setBusy] = React.useState(false);
@@ -94,7 +110,7 @@ function TaskCreateDrawer({ options, onClose, onCreated }: {
     event.preventDefault();
     setError("");
     if (!organizationCode || !warehouseRef) return setError("请先选择协同组织和作业仓库。");
-    if (!title.trim()) return setError("请填写任务标题。");
+    if (!dueAt) return setError("请设置要求完成时间，便于系统识别逾期任务。");
     if (!lines.length) return setError("请至少添加一个商品明细。");
     if (lines.some((line) => !Number.isFinite(line.plannedQuantity) || line.plannedQuantity <= 0)) return setError("任务数量必须大于 0。");
     if (itemType === "warehouse_outbound") {
@@ -103,12 +119,14 @@ function TaskCreateDrawer({ options, onClose, onCreated }: {
     }
     setBusy(true);
     try {
+      const warehouseName = selectedOrganization?.warehouses.find((item) => item.resourceRef === warehouseRef)?.resourceName || "国内仓";
+      const generatedTitle = `${warehouseName} · ${typeMeta[itemType]?.label || "协同任务"} · ${new Date().toLocaleDateString("zh-CN")}`;
       const result = await publishCollaborationWarehouseTask({
         organizationCode,
         warehouseRef,
         itemType,
         referenceNo: referenceNo.trim(),
-        title: title.trim(),
+        title: title.trim() || generatedTitle,
         description: description.trim(),
         priority,
         dueAt: dueAt ? new Date(dueAt).toISOString() : "",
@@ -131,11 +149,12 @@ function TaskCreateDrawer({ options, onClose, onCreated }: {
         <label><span>作业仓库</span><select value={warehouseRef} onChange={(event) => { setWarehouseRef(event.target.value); setLines([]); }} required><option value="">请选择</option>{selectedOrganization?.warehouses.map((item) => <option value={item.resourceRef} key={item.resourceRef}>{item.resourceName}</option>)}</select></label>
         <label><span>任务类型</span><select value={itemType} onChange={(event) => setItemType(event.target.value as CollaborationWarehouseTaskType)}><option value="warehouse_inbound">入库任务</option><option value="warehouse_outbound">出库任务</option><option value="warehouse_stockup">备货任务</option><option value="warehouse_exception">异常处理</option></select></label>
         <label><span>优先级</span><select value={priority} onChange={(event) => setPriority(event.target.value as "normal" | "urgent")}><option value="normal">普通</option><option value="urgent">紧急</option></select></label>
-        <label className="wide"><span>任务标题</span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} placeholder="例如：9 月 29 日到货入库" required /></label>
+        <label className="wide"><span>任务标题（可选）</span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} placeholder="留空时系统按仓库、任务类型和日期自动生成" /></label>
         <label><span>关联单号（可选）</span><input value={referenceNo} maxLength={120} onChange={(event) => setReferenceNo(event.target.value)} placeholder="采购单、销售单或内部单号" /></label>
-        <label><span>要求完成时间（可选）</span><input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /></label>
+        <label><span>要求完成时间</span><input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} required /></label>
         <label className="wide"><span>作业说明（可选）</span><textarea rows={3} value={description} maxLength={5000} onChange={(event) => setDescription(event.target.value)} placeholder="填写收货要求、发货要求、包装方式或异常处理说明" /></label>
       </div>
+      <p className="cwt-form-note"><AlertTriangle size={15} />调拨收货必须从真实调拨单生成；盘点差异由伙伴在库存页发起并进入中台审批，避免产生没有主账依据的任务。</p>
       <section className="cwt-line-builder">
         <header><div><h3>商品明细</h3><span>{lines.length} 个 SKU</span></div></header>
         <div className="cwt-product-search"><Search size={17} /><input value={productKeyword} onChange={(event) => setProductKeyword(event.target.value)} placeholder="输入 SKU 或商品名称后选择" /></div>
@@ -149,7 +168,7 @@ function TaskCreateDrawer({ options, onClose, onCreated }: {
   </div>;
 }
 
-function TaskDetailDrawer({ task, onClose }: { task: CollaborationWarehouseTask; onClose(): void }) {
+function TaskDetailDrawer({ task, canRemind, onClose, onReminded }: { task: CollaborationWarehouseTask; canRemind: boolean; onClose(): void; onReminded(message: string): void }) {
   const [detail, setDetail] = React.useState<CollaborationWarehouseTaskDetail | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState("");
@@ -168,12 +187,25 @@ function TaskDetailDrawer({ task, onClose }: { task: CollaborationWarehouseTask;
     catch (reason) { setError(reason instanceof Error ? reason.message : "附件下载失败。"); }
     finally { setBusy(""); }
   }
+  async function remind() {
+    setBusy("remind");
+    setError("");
+    try {
+      await remindCollaborationWarehouseTask(task.id);
+      onReminded("已向伙伴发送站内催办，并写入协同时间线。");
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "催办发送失败。");
+    } finally { setBusy(""); }
+  }
+  const daysOverdue = overdueDays(item);
   return <div className="cwt-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside className="cwt-detail-drawer">
     <header className="cwt-drawer-head"><div><p>{item.coreRefId}</p><h2>{item.title}</h2><span>{item.organizationName} · {item.publicPayload.warehouseName || item.publicPayload.warehouseRef}</span></div><button onClick={onClose} aria-label="关闭"><X size={20} /></button></header>
     <div className="cwt-detail-body">
-      <div className="cwt-detail-state"><StatusPill status={item.status} /><span>V{item.version}</span><button onClick={() => void load()}><RefreshCw size={15} />刷新</button></div>
+      <div className="cwt-detail-state"><StatusPill status={item.status} /><span>V{item.version}</span>{canRemind && !terminalStatuses.has(item.status) ? <button className="cwt-remind" disabled={busy === "remind"} onClick={() => void remind()}>{busy === "remind" ? <LoaderCircle className="spin" size={15} /> : <BellRing size={15} />}催办伙伴</button> : null}<button className="cwt-refresh" onClick={() => void load()}><RefreshCw size={15} />刷新</button></div>
+      {daysOverdue ? <div className="cwt-overdue-banner"><AlertTriangle size={17} /><span><b>任务已逾期 {daysOverdue} 天</b>请优先催办；如无法继续，应在线下确认后关闭或重新安排。</span></div> : null}
       <section className={`cwt-progress ${["rejected", "cancelled"].includes(item.status) ? "stopped" : ""}`}>{["待伙伴接单", "伙伴处理中", "中台确认", "任务完成"].map((label, index) => <div className={index <= activeStep ? "active" : ""} key={label}><span>{index + 1}</span><b>{label}</b></div>)}</section>
-      <section className="cwt-facts"><div><span>任务类型</span><b>{typeMeta[item.itemType]?.label || item.itemType}</b></div><div><span>关联单号</span><b>{item.publicPayload.referenceNo || "—"}</b></div><div><span>截止时间</span><b>{formatDate(item.dueAt)}</b></div><div><span>最后同步</span><b>{formatDate(item.lastCoreSyncedAt || item.updatedAt)}</b></div></section>
+      <section className="cwt-facts"><div><span>任务类型</span><b>{typeMeta[item.itemType]?.label || item.itemType}</b></div><div><span>关联单号</span><b>{item.publicPayload.referenceNo || "—"}</b></div><div><span>截止时间</span><b>{formatDate(item.dueAt)}</b></div><div><span>主账最后变更</span><b>{formatDate(item.lastCoreSyncedAt || item.updatedAt)}</b></div></section>
       {item.description ? <section className="cwt-detail-section"><header><h3>作业说明</h3></header><p className="cwt-description">{item.description}</p></section> : null}
       <section className="cwt-detail-section"><header><h3>商品与处理数量</h3><span>{detail?.lines.length || 0} 个 SKU</span></header><div className="cwt-detail-lines">{detail?.lines.map((line) => <article key={line.id}><ProductImage src={line.imageUrl} name={line.productName} /><span><b>{line.productName}</b><small>{line.sku}{line.lotNo ? ` · 批次 ${line.lotNo}` : ""}</small></span><div><strong>{line.completedQuantity.toLocaleString()}</strong><small>/ {line.plannedQuantity.toLocaleString()} {line.unit}</small></div></article>)}</div></section>
       {detail?.attachments.length ? <section className="cwt-detail-section"><header><h3>伙伴上传凭证</h3><span>{detail.attachments.length} 个附件</span></header><div className="cwt-files">{detail.attachments.map((attachment) => <button key={attachment.id} disabled={busy === attachment.id || attachment.scanStatus !== "clean"} onClick={() => void download(attachment)}><FileText size={17} /><span><b>{attachment.fileName}</b><small>{attachment.scanStatus === "clean" ? `${Math.max(1, Math.ceil(attachment.sizeBytes / 1024))} KB` : "安全检查中"}</small></span>{busy === attachment.id ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>)}</div></section> : null}
@@ -194,6 +226,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
   const [status, setStatus] = React.useState("");
   const [itemType, setItemType] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
+  const [overdueOnly, setOverdueOnly] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
@@ -206,7 +239,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
     try {
       const [nextOptions, result] = await Promise.all([
         fetchCollaborationTaskOptions(),
-        fetchCollaborationWarehouseTasks({ organizationCode, status, itemType, keyword: keyword.trim(), limit: 100 }),
+        fetchCollaborationWarehouseTasks({ organizationCode, status, itemType, keyword: keyword.trim(), overdue: overdueOnly || undefined, limit: 100 }),
       ]);
       setOptions(nextOptions);
       setItems(result.items || []);
@@ -217,7 +250,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
     } finally {
       setLoading(false);
     }
-  }, [organizationCode, status, itemType, keyword]);
+  }, [organizationCode, status, itemType, keyword, overdueOnly]);
 
   React.useEffect(() => { const timer = window.setTimeout(() => void load(), 180); return () => window.clearTimeout(timer); }, [load]);
 
@@ -225,6 +258,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
     { label: "待伙伴接单", value: counts.pending || 0, icon: Send },
     { label: "伙伴处理中", value: (counts.accepted || 0) + (counts.in_progress || 0), icon: Clock3 },
     { label: "待中台确认", value: (counts.pending_approval || 0) + (counts.pending_sync || 0), icon: RefreshCw },
+    { label: "已逾期", value: counts.overdue || 0, icon: AlertTriangle },
     { label: "已完成", value: counts.completed || 0, icon: CheckCircle2 },
   ];
 
@@ -234,17 +268,17 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
   }
 
   return <section className="cwt-center">
-    <header className="cwt-page-head"><div><p>DOMESTIC WAREHOUSE</p><h2>国内仓协同</h2><span>集中发布国内仓入库、出库、调拨、盘点与异常任务，并追踪伙伴处理和主账确认结果。</span></div><div><button className="secondary" onClick={() => { window.location.hash = "#partner-collaboration"; }}>协同总览</button><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
+    <header className="cwt-page-head"><div><p>DOMESTIC WAREHOUSE</p><h2>国内仓协同</h2><span>集中发布国内仓入库、出库、备货与异常任务；调拨和盘点必须绑定真实主账单据。</span></div><div><button className="secondary" onClick={() => { window.location.hash = "#partner-collaboration"; }}>协同总览</button><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
     {currentUser.permissions?.includes("operations") ? <ApprovalQueue notify={(notice, isError) => { if (isError) setError(notice); else setMessage(notice); }} /> : null}
     <div className="cwt-summary">{metrics.map(({ label, value, icon: Icon }) => <article key={label}><Icon size={20} /><span>{label}</span><strong>{value}</strong></article>)}</div>
     <section className="cwt-panel">
       <div className="cwt-toolbar"><label><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索任务号、标题或关联单号" /></label><select value={organizationCode} onChange={(event) => setOrganizationCode(event.target.value)}><option value="">全部协同组织</option>{options?.organizations.map((item) => <option value={item.code} key={item.code}>{item.name}</option>)}</select><select value={itemType} onChange={(event) => setItemType(event.target.value)}><option value="">全部任务类型</option>{Object.entries(typeMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><button onClick={() => void load()} aria-label="刷新"><RefreshCw size={17} /></button></div>
-      <div className="cwt-list-head"><span>共 {total} 个任务</span><small>进度来自独立协同门户，库存真值仍以中台主账为准。</small></div>
-      {loading ? <div className="cwt-empty"><LoaderCircle className="spin" size={24} />正在读取协同任务…</div> : items.length ? <div className="cwt-task-list">{items.map((task) => { const TypeIcon = typeMeta[task.itemType]?.icon || Boxes; return <button key={task.id} onClick={() => setSelected(task)}><span className="cwt-type-icon"><TypeIcon size={20} /></span><span className="cwt-main-cell"><b>{task.title}</b><small>{task.coreRefId} · {task.organizationName}</small></span><span><b>{task.publicPayload.warehouseName || "未标记仓库"}</b><small>{task.publicPayload.referenceNo || "无关联单号"}</small></span><span><b>{typeMeta[task.itemType]?.label || task.itemType}</b><small>{task.priority === "urgent" ? "紧急" : formatDate(task.dueAt)}</small></span><StatusPill status={task.status} /><ChevronRight size={17} /></button>; })}</div> : <div className="cwt-empty"><Boxes size={26} />当前筛选范围内没有协同任务</div>}
+      <div className="cwt-list-head"><span>共 {total} 个任务</span><button className={overdueOnly ? "active" : ""} onClick={() => setOverdueOnly((value) => !value)}><AlertTriangle size={14} />{overdueOnly ? "正在只看逾期" : "只看逾期"}</button><small>进度来自独立协同门户，库存真值仍以中台主账为准。</small></div>
+      {loading ? <div className="cwt-empty"><LoaderCircle className="spin" size={24} />正在读取协同任务…</div> : items.length ? <div className="cwt-task-list">{items.map((task) => { const TypeIcon = typeMeta[task.itemType]?.icon || Boxes; const daysOverdue = overdueDays(task); return <button className={daysOverdue ? "overdue" : ""} key={task.id} onClick={() => setSelected(task)}><span className="cwt-type-icon"><TypeIcon size={20} /></span><span className="cwt-main-cell"><b>{task.title}</b><small>{task.coreRefId} · {task.organizationName}</small></span><span><b>{task.publicPayload.warehouseName || "未标记仓库"}</b><small>{task.publicPayload.referenceNo || "无关联单号"}</small></span><span><b>{typeMeta[task.itemType]?.label || task.itemType}</b><small className={daysOverdue ? "cwt-overdue-text" : ""}>{daysOverdue ? `已逾期 ${daysOverdue} 天` : task.priority === "urgent" ? "紧急" : formatDate(task.dueAt)}</small></span><StatusPill status={task.status} /><ChevronRight size={17} /></button>; })}</div> : <div className="cwt-empty"><Boxes size={26} />当前筛选范围内没有协同任务</div>}
     </section>
     {error ? <div className="cwt-alert error"><AlertTriangle size={17} />{error}</div> : null}
     {message ? <div className="cwt-alert success"><CheckCircle2 size={17} />{message}<button onClick={() => setMessage("")}><X size={15} /></button></div> : null}
     {creating && options ? <TaskCreateDrawer options={options} onClose={() => setCreating(false)} onCreated={(notice) => { setCreating(false); setMessage(notice); void load(); }} /> : null}
-    {selected ? <TaskDetailDrawer task={selected} onClose={() => { setSelected(null); void load(); }} /> : null}
+    {selected ? <TaskDetailDrawer task={selected} canRemind={Boolean(canPublish)} onReminded={(notice) => { setMessage(notice); void load(); }} onClose={() => { setSelected(null); void load(); }} /> : null}
   </section>;
 }

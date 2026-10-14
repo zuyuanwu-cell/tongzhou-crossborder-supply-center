@@ -76,12 +76,26 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
     description: "权限集成测试",
     priority: "normal",
     status: "pending",
-    dueAt: "",
+    dueAt: "2026-01-01T00:00:00.000Z",
     version: 1,
     publicPayload: { referenceNo: `IN-${unique}`, warehouseRef: grantedWarehouseRef, warehouseName: "授权仓", sourceWarehouseName: "", destinationWarehouseName: "", note: "" },
     lines: [],
   });
   assert.equal((await repository.listWorkItems(signedInAgain.auth)).items.length, 1);
+  const overdue = await integrationApi.listInternalWorkItems({ organizationCode: bootstrap.organization.code, overdue: "true" });
+  assert.equal(overdue.counts.overdue, 1);
+  assert.equal(overdue.items[0].id, projectedTask.workItemId);
+  const reminder = await integrationApi.remindInternalWorkItem(projectedTask.workItemId, { actorName: "集成测试", note: "请尽快处理并反馈差异。" });
+  assert.equal(reminder.ok, true);
+  const reminderRows = await integrationPool.query(
+    "SELECT event_type FROM work_item_events WHERE organization_id=$1 AND work_item_id=$2 AND event_type='core.reminder'",
+    [bootstrap.organization.id, projectedTask.workItemId],
+  );
+  assert.equal(reminderRows.rowCount, 1);
+  await assert.rejects(
+    () => integrationApi.remindInternalWorkItem(projectedTask.workItemId, { actorName: "集成测试" }),
+    (error) => error?.code === "reminder_cooldown",
+  );
   await integrationPool.query(
     "UPDATE organization_access_grants SET permissions=$3::jsonb WHERE organization_id=$1 AND resource_ref=$2",
     [bootstrap.organization.id, grantedWarehouseRef, JSON.stringify(["warehouse.inventory.view", "warehouse.task.view"])],
@@ -150,6 +164,7 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   const acceptCommand = (await integrationApi.listPendingCommands({ limit: 100 })).commands.find((command) => command.id === accepted.command.id);
   assert.ok(acceptCommand);
   await integrationApi.completeCommand(acceptCommand.id, { status: "applied", resultCode: "applied", message: "接单已同步", coreReference: `JG-${unique}` });
+  assert.equal((await integrationPool.query("SELECT status FROM integration_outbox WHERE aggregate_type='partner_command' AND aggregate_id=$1", [acceptCommand.id])).rows[0].status, "sent");
   const acceptedDetail = await repository.getWorkItem(factoryLogin.auth, projectedOrder.workItemId);
   await assert.rejects(() => repository.getWorkItem(signedInAgain.auth, projectedOrder.workItemId), (error) => error?.code === "not_found");
   await assert.rejects(() => partnerOrders.submitPartnerOrderReport(factoryLogin.auth, projectedOrder.workItemId, { reportType: "production_progress", stage: "filling", progressPercent: 50, completedQuantity: 13000, expectedCompletionDate: "2026-10-28", note: "超量测试" }, { idempotencyKey: `progress-over-${unique}`, expectedVersion: String(acceptedDetail.item.version) }), (error) => error?.code === "quantity_exceeded");
@@ -161,6 +176,7 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   const reportCommand = (await integrationApi.listPendingCommands({ limit: 100 })).commands.find((command) => command.id === report.commandId);
   assert.equal(reportCommand.payload.note, "首批灌装与密封测试已完成");
   await integrationApi.completeCommand(reportCommand.id, { status: "applied", resultCode: "applied", message: "工厂反馈已同步到千顷 ERP", coreReference: `JG-${unique}` });
+  assert.equal((await integrationPool.query("SELECT status FROM integration_outbox WHERE aggregate_type='partner_command' AND aggregate_id=$1", [reportCommand.id])).rows[0].status, "sent");
   const internalDetail = await integrationApi.getInternalWorkItem(projectedOrder.workItemId);
   assert.equal(internalDetail.item.organizationCode, factory.organization.code);
   assert.equal(internalDetail.partnerOrder.lines.length, 2);

@@ -174,10 +174,12 @@ export async function listInternalWorkItems(filters = {}) {
   const itemType = internalItemTypes.has(String(filters.itemType || "")) ? String(filters.itemType) : "";
   const organizationCode = String(filters.organizationCode || "").trim().slice(0, 64);
   const keyword = String(filters.keyword || "").trim().slice(0, 100);
+  const overdueOnly = ["1", "true"].includes(String(filters.overdue || "").toLowerCase());
+  const warehouseOnly = ["1", "true"].includes(String(filters.warehouseOnly || "").toLowerCase());
   const warehouseRefs = Array.from(new Set(String(filters.warehouseRefs || "").split(",").map((value) => value.trim().slice(0, 120)).filter(Boolean))).slice(0, 500);
   const scopedSkus = Array.from(new Set(String(filters.skus || "").split(",").map((value) => value.replace(/\s+/g, "").toUpperCase().slice(0, 100)).filter(Boolean))).slice(0, 2_000);
   return withSystem(async (client) => {
-    const baseConditions = organizationCode ? [] : ["w.item_type LIKE 'warehouse_%'"];
+    const baseConditions = warehouseOnly || !organizationCode ? ["w.item_type LIKE 'warehouse_%'"] : [];
     const baseParams = [];
     if (organizationCode) { baseParams.push(organizationCode); baseConditions.push(`o.code=$${baseParams.length}`); }
     if (itemType) { baseParams.push(itemType); baseConditions.push(`w.item_type=$${baseParams.length}`); }
@@ -198,6 +200,7 @@ export async function listInternalWorkItems(filters = {}) {
     const listConditions = [...baseConditions];
     const listParams = [...baseParams];
     if (status) { listParams.push(status); listConditions.push(`w.status=$${listParams.length}`); }
+    if (overdueOnly) listConditions.push("w.due_at IS NOT NULL AND w.due_at<now() AND w.status IN ('pending','accepted','in_progress','pending_approval','pending_sync')");
     listParams.push(limit, offset);
     const select = `SELECT w.*,o.code AS organization_code,o.name AS organization_name,
                             (SELECT count(*) FROM oem_artifacts a WHERE a.organization_id=w.organization_id AND a.work_item_id=w.id AND a.artifact_type='sample_result')::int AS sample_round_count,
@@ -208,7 +211,8 @@ export async function listInternalWorkItems(filters = {}) {
                       FROM work_items w JOIN organizations o ON o.id=w.organization_id`;
     const rows = await client.query(
       `${select} WHERE ${listConditions.join(" AND ")}
-       ORDER BY CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
+       ORDER BY CASE WHEN w.due_at IS NOT NULL AND w.due_at<now() AND w.status IN ('pending','accepted','in_progress','pending_approval','pending_sync') THEN 0 ELSE 1 END,
+                CASE w.priority WHEN 'urgent' THEN 0 ELSE 1 END,w.updated_at DESC,w.id
        LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
       listParams,
     );
@@ -223,13 +227,53 @@ export async function listInternalWorkItems(filters = {}) {
         WHERE ${listConditions.join(" AND ")}`,
       listParams.slice(0, -2),
     );
+    const overdueRows = await client.query(
+      `SELECT count(*)::int AS count FROM work_items w JOIN organizations o ON o.id=w.organization_id
+        WHERE ${baseConditions.join(" AND ")}
+          AND w.due_at IS NOT NULL AND w.due_at<now()
+          AND w.status IN ('pending','accepted','in_progress','pending_approval','pending_sync')`,
+      baseParams,
+    );
     return {
       items: rows.rows.map(internalWorkItem),
-      counts: Object.fromEntries(countRows.rows.map((row) => [row.status, Number(row.count)])),
+      counts: { ...Object.fromEntries(countRows.rows.map((row) => [row.status, Number(row.count)])), overdue: Number(overdueRows.rows[0]?.count || 0) },
       total: Number(totalRows.rows[0]?.count || 0),
       limit,
       offset,
     };
+  });
+}
+
+export async function remindInternalWorkItem(workItemId, input = {}) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(workItemId || ""))) fail("协同任务编号不正确。", 400, "invalid_work_item_id");
+  const actorName = String(input.actorName || "供应链中台").trim().slice(0, 120) || "供应链中台";
+  const note = String(input.note || "").trim().slice(0, 1_000);
+  return withSystem(async (client) => {
+    const result = await client.query(
+      `SELECT w.*,o.name AS organization_name FROM work_items w JOIN organizations o ON o.id=w.organization_id WHERE w.id=$1 FOR UPDATE OF w`,
+      [workItemId],
+    );
+    const item = result.rows[0];
+    if (!item) fail("协同任务不存在。", 404, "not_found");
+    if (["completed", "rejected", "cancelled"].includes(item.status)) fail("已结束的协同任务无需催办。", 409, "work_item_closed");
+    const recent = await client.query(
+      `SELECT created_at FROM work_item_events WHERE organization_id=$1 AND work_item_id=$2 AND event_type='core.reminder' ORDER BY created_at DESC LIMIT 1`,
+      [item.organization_id, item.id],
+    );
+    const lastReminderAt = recent.rows[0]?.created_at ? new Date(recent.rows[0].created_at).getTime() : 0;
+    if (lastReminderAt && Date.now() - lastReminderAt < 15 * 60_000) fail("该任务刚刚催办过，请 15 分钟后再试。", 429, "reminder_cooldown");
+    const body = note || `任务“${item.title}”仍待处理，请尽快更新进度；如有异常请在任务内上报。`;
+    const event = await client.query(
+      `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
+       VALUES ($1,$2,'core.reminder',$3,$4,$5) RETURNING created_at`,
+      [item.organization_id, item.id, actorName, body, { source: "internal_console", status: item.status }],
+    );
+    await client.query(
+      `INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status)
+       VALUES ($1,$2,$3,$4,'in_app','sent')`,
+      [item.organization_id, item.id, `中台催办：${item.title}`.slice(0, 240), body],
+    );
+    return { ok: true, workItemId: item.id, status: item.status, remindedAt: new Date(event.rows[0].created_at).toISOString() };
   });
 }
 
@@ -358,6 +402,7 @@ export async function reviewCommand(commandId, { approved, note = "", reviewer =
     const status = approved ? "pending_sync" : "rejected";
     await client.query("UPDATE approvals SET status=$2,reviewed_by=$3,reviewed_at=now(),review_note=$4 WHERE command_id=$1", [commandId, approved ? "approved" : "rejected", reviewer, String(note).slice(0, 2_000)]);
     await client.query("UPDATE partner_commands SET status=$2,result_message=$3,processed_at=CASE WHEN $2='rejected' THEN now() ELSE NULL END WHERE id=$1", [commandId, status, approved ? "" : String(note).slice(0, 2_000)]);
+    if (!approved) await client.query("UPDATE integration_outbox SET status='sent',sent_at=COALESCE(sent_at,now()),last_error=NULL WHERE aggregate_type='partner_command' AND aggregate_id=$1", [commandId]);
     await client.query("UPDATE work_items SET status=$3,version=version+1 WHERE id=$1 AND organization_id=$2", [command.work_item_id, command.organization_id, approved ? "pending_sync" : "rejected"]);
     await client.query(
       `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
@@ -385,6 +430,7 @@ export async function completeCommand(commandId, input) {
       `UPDATE partner_commands SET status=$2,result_code=$3,result_message=$4,core_reference=$5,processed_at=now() WHERE id=$1`,
       [commandId, commandStatus, resultPayload.resultCode || null, resultPayload.message || null, resultPayload.coreReference || null],
     );
+    await client.query("UPDATE integration_outbox SET status='sent',sent_at=COALESCE(sent_at,now()),last_error=NULL WHERE aggregate_type='partner_command' AND aggregate_id=$1", [commandId]);
     const itemStatus = commandStatus === "applied" ? (["complete", "stockup_process"].includes(command.command_type) || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
     const versionExpression = resultPayload.workItemVersion ? "$4" : "version+1";
     const params = [command.work_item_id, command.organization_id, itemStatus];

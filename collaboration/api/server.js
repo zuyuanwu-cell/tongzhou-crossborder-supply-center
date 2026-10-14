@@ -31,6 +31,7 @@ import {
   getInternalWorkItem,
   listInternalWorkItems,
   listPendingCommands,
+  remindInternalWorkItem,
   reviewCommand,
 } from "./integration.js";
 import {
@@ -258,6 +259,11 @@ async function route(req, res) {
     let internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}$`));
     if (internalWorkItemMatch && req.method === "GET") {
       sendJson(res, 200, { ok: true, ...(await getInternalWorkItem(internalWorkItemMatch[1])) });
+      return;
+    }
+    internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}/remind$`));
+    if (internalWorkItemMatch && req.method === "POST") {
+      sendJson(res, 200, await remindInternalWorkItem(internalWorkItemMatch[1], await readJson(req)));
       return;
     }
     internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}/attachments$`));

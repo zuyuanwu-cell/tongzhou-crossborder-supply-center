@@ -13,6 +13,7 @@ const accessGrantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url))
 const warehouseOperationsSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0007_warehouse_operations.sql"), "utf8");
 const partnerOrderSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0008_partner_order_collaboration.sql"), "utf8");
 const samplingVariantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0010_sampling_variants.sql"), "utf8");
+const commandOutboxReconciliationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0011_command_outbox_reconciliation.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -114,6 +115,10 @@ test("warehouse self-service stores allowlisted images and retains approval cont
   assert.match(repositorySource, /insufficient_projected_stock/);
   assert.match(migrateSource, /GRANT SELECT,INSERT ON collaboration_projects,collaboration_spaces,warehouse_task_lines/);
   assert.match(integrationSource, /partner_warehouse_operation/);
+  const taskDrawer = portalSource.match(/function TaskDetailDrawer[\s\S]*?function AccountPage/)?.[0] || "";
+  assert.match(taskDrawer, /completedQuantity: line\.completedQuantity > 0 \? line\.completedQuantity : ""/);
+  assert.match(taskDrawer, /hasInvalidActualQuantity/);
+  assert.doesNotMatch(taskDrawer, /completedQuantity: line\.completedQuantity \|\| line\.plannedQuantity/);
 });
 
 test("internal warehouse progress reads stay behind the integration boundary", () => {
@@ -127,6 +132,22 @@ test("internal warehouse progress reads stay behind the integration boundary", (
   assert.doesNotMatch(storageSource.match(/export async function internalAttachmentDownload[\s\S]*?\n\}/)?.[0] || "", /item_type LIKE 'warehouse_%'/);
   assert.match(storageSource, /scan_status !== "clean"/);
   assert.doesNotMatch(integrationSource.match(/function internalWorkItem\(row\)[\s\S]*?\n\}/)?.[0] || "", /password|secret|token|email/i);
+});
+
+test("overdue warehouse work can be filtered and safely reminded", () => {
+  assert.match(integrationSource, /export async function remindInternalWorkItem/);
+  assert.match(integrationSource, /event_type='core\.reminder'/);
+  assert.match(integrationSource, /15 \* 60_000/);
+  assert.match(integrationSource, /delivery_status\)\s*\n\s*VALUES \(\$1,\$2,\$3,\$4,'in_app','sent'\)/);
+  assert.match(serverSource, /work-items\/\$\{uuidPattern\}\/remind/);
+  assert.match(integrationSource, /w\.due_at<now\(\)/);
+});
+
+test("terminal partner commands reconcile their integration outbox rows", () => {
+  assert.match(commandOutboxReconciliationSql, /UPDATE integration_outbox AS outbox/);
+  assert.match(commandOutboxReconciliationSql, /command\.status IN \('applied', 'rejected', 'failed'\)/);
+  assert.match(commandOutboxReconciliationSql, /idx_work_items_overdue/);
+  assert.match(integrationSource, /UPDATE integration_outbox SET status='sent'/);
 });
 
 test("production and procurement collaboration is tenant isolated and append-only", () => {

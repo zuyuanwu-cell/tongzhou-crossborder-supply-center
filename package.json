@@ -62,6 +62,7 @@
     "test:user-locale": "node scripts/user-locale-test.mjs",
     "test:user-locale-api": "node scripts/user-locale-api-test.mjs",
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
+    "test:performance-cache-writer": "node scripts/performance-cache-writer-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",
     "test:order-cache-policy": "node scripts/order-cache-policy-test.mjs",
     "test:order-analysis": "node scripts/order-analysis-test.mjs",

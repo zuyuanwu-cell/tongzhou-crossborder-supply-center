@@ -9,7 +9,7 @@
 .cwt-center .primary, .cwt-create-drawer .primary { color: #fff; border: 1px solid #ef5a17; background: linear-gradient(135deg, #f24f08, #ff742b); box-shadow: 0 8px 18px rgba(242, 79, 8, .2); }
 .cwt-center .secondary, .cwt-create-drawer .secondary { color: #174b8c; border: 1px solid #b9cde5; background: #fff; }
 .cwt-center button:disabled, .cwt-create-drawer button:disabled { opacity: .55; cursor: not-allowed; }
-.cwt-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
+.cwt-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 11px; }
 .cwt-summary article { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 3px 10px; min-height: 90px; padding: 17px; border: 1px solid #d9e4f0; border-radius: 14px; background: #fff; }
 .cwt-summary svg { grid-row: span 2; box-sizing: content-box; padding: 8px; color: #18549b; border-radius: 10px; background: #edf5ff; }
 .cwt-summary span { color: #6b7f98; font-size: 13px; }
@@ -20,11 +20,17 @@
 .cwt-toolbar input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; }
 .cwt-toolbar select, .cwt-toolbar > button { min-height: 42px; padding: 0 10px; color: #294c72; border: 1px solid #cbd9e9; border-radius: 10px; background: #fff; }
 .cwt-toolbar > button { display: grid; place-items: center; padding: 0; cursor: pointer; }
-.cwt-list-head { display: flex; justify-content: space-between; gap: 10px; padding: 16px 2px 10px; color: #496482; }
+.cwt-list-head { display: flex; align-items: center; gap: 10px; padding: 16px 2px 10px; color: #496482; }
+.cwt-list-head button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; color: #8a5a12; border: 1px solid #ead09e; border-radius: 999px; background: #fff9eb; cursor: pointer; }
+.cwt-list-head button.active { color: #a43822; border-color: #eeaa97; background: #fff0eb; }
+.cwt-list-head small { margin-left: auto; }
 .cwt-list-head small { color: #8a99aa; }
 .cwt-task-list { display: grid; gap: 8px; }
 .cwt-task-list > button { display: grid; grid-template-columns: 46px minmax(260px, 1.4fr) minmax(170px, 1fr) 160px 90px 18px; align-items: center; gap: 13px; width: 100%; padding: 13px 14px; text-align: left; color: #203b5d; border: 1px solid #dce5ef; border-radius: 12px; background: #fff; cursor: pointer; transition: border-color .16s, transform .16s, box-shadow .16s; }
 .cwt-task-list > button:hover { border-color: #9eb9d8; box-shadow: 0 8px 20px rgba(22, 63, 113, .08); transform: translateY(-1px); }
+.cwt-task-list > button.overdue { border-color: #efb09e; background: linear-gradient(90deg, #fff7f3, #fff 38%); }
+.cwt-task-list > button.overdue .cwt-type-icon { color: #bc442e; background: #ffebe5; }
+.cwt-overdue-text { color: #bd402b !important; font-weight: 800; }
 .cwt-task-list > button > span:not(.cwt-type-icon):not(.cwt-status) { display: grid; gap: 3px; min-width: 0; }
 .cwt-task-list b, .cwt-task-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cwt-task-list small { color: #7c8ea4; font-size: 12px; }
@@ -54,6 +60,8 @@
 .cwt-form-grid label > span, .cwt-draft-lines label em { color: #506984; font-size: 12px; font-style: normal; font-weight: 800; }
 .cwt-form-grid input, .cwt-form-grid select, .cwt-form-grid textarea { width: 100%; min-height: 43px; padding: 9px 11px; color: #17385f; border: 1px solid #cbd9e9; border-radius: 9px; outline: 0; background: #fff; }
 .cwt-form-grid textarea { resize: vertical; }
+.cwt-form-note { display: flex; align-items: flex-start; gap: 7px; margin: -7px 25px 18px; padding: 10px 12px; color: #765a2b; border: 1px solid #ead7b1; border-radius: 9px; background: #fffaf0; font-size: 12px; line-height: 1.6; }
+.cwt-form-note svg { flex: 0 0 auto; margin-top: 2px; }
 .cwt-form-grid input:focus, .cwt-form-grid select:focus, .cwt-form-grid textarea:focus, .cwt-product-search:focus-within { border-color: #4b82c5; box-shadow: 0 0 0 3px rgba(59, 120, 192, .1); }
 .cwt-line-builder { margin: 0 25px 22px; padding: 18px; border: 1px solid #d8e3ef; border-radius: 13px; background: #fff; }
 .cwt-line-builder > header, .cwt-detail-section > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -82,7 +90,11 @@
 .cwt-detail-body { display: grid; gap: 13px; padding: 20px 24px 38px; }
 .cwt-detail-state { display: flex; align-items: center; gap: 9px; }
 .cwt-detail-state > span:not(.cwt-status) { color: #7b8da4; font-size: 12px; }
-.cwt-detail-state button { display: flex; align-items: center; gap: 5px; margin-left: auto; padding: 7px 9px; color: #24568c; border: 1px solid #cbd9e9; border-radius: 8px; background: #fff; cursor: pointer; }
+.cwt-detail-state button { display: flex; align-items: center; gap: 5px; padding: 7px 9px; color: #24568c; border: 1px solid #cbd9e9; border-radius: 8px; background: #fff; cursor: pointer; }
+.cwt-detail-state .cwt-remind { margin-left: auto; color: #a24b13; border-color: #efc294; background: #fff8eb; }
+.cwt-detail-state .cwt-refresh { margin-left: 0; }
+.cwt-overdue-banner { display: flex; align-items: center; gap: 10px; padding: 11px 13px; color: #9e3826; border: 1px solid #f0ad9d; border-radius: 10px; background: #fff1ec; }
+.cwt-overdue-banner span { display: flex; gap: 7px; flex-wrap: wrap; }
 .cwt-progress { display: grid; grid-template-columns: repeat(4, 1fr); padding: 17px; border: 1px solid #d9e4ef; border-radius: 13px; background: #fff; }
 .cwt-progress div { position: relative; display: grid; justify-items: center; gap: 6px; color: #92a0b1; }
 .cwt-progress div:not(:last-child)::after { position: absolute; top: 14px; left: calc(50% + 17px); width: calc(100% - 34px); height: 2px; background: #dfe6ee; content: ""; }
@@ -121,6 +133,7 @@
 .cwt-timeline small { color: #8a99aa; }
 
 @media (max-width: 1050px) {
+  .cwt-summary { grid-template-columns: repeat(3, 1fr); }
   .cwt-toolbar { grid-template-columns: minmax(220px, 1fr) 160px 140px 42px; }
   .cwt-toolbar select:nth-of-type(2) { display: none; }
   .cwt-task-list > button { grid-template-columns: 46px minmax(230px, 1.4fr) minmax(150px, 1fr) 90px 18px; }

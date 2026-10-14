@@ -99,6 +99,16 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
           res.end(download.buffer);
           return true;
         }
+        const reminderMatch = suffix.match(/^\/warehouse-tasks\/([0-9a-fA-F-]{36})\/remind$/);
+        if (reminderMatch && req.method === "POST") {
+          if (!canPublishTasks(auth)) throw Object.assign(new Error("当前账号没有催办协同任务的权限。"), { statusCode: 403, code: "forbidden" });
+          const input = await readBody(req);
+          const actorName = auth.user?.displayName || auth.user?.username || "供应链中台";
+          const result = await bridge.remindWarehouseTask(reminderMatch[1], { note: input.note, actorName }, { warehouseIds, skus });
+          appendActionLog(auth, "催办伙伴协同任务", "collaboration_work_item", reminderMatch[1], { remindedAt: result.remindedAt || "" });
+          sendJson(res, 200, result);
+          return true;
+        }
         const taskMatch = suffix.match(/^\/warehouse-tasks\/([0-9a-fA-F-]{36})$/);
         if (taskMatch && req.method === "GET") {
           if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务的权限。"), { statusCode: 403, code: "forbidden" });

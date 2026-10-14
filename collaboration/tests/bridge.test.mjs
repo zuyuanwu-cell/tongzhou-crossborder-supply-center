@@ -589,9 +589,24 @@ test("internal staff can publish an allowlisted warehouse task and read partner 
   const progress = await bridge.listWarehouseTasks({ organizationCode: "warehouse-a" }, { warehouseIds: ["warehouse-1"], skus: ["SKU-1"] });
   assert.equal(progress.items[0].status, "pending");
   assert.match(requests.at(-1).url, /organizationCode=warehouse-a/);
+  assert.match(requests.at(-1).url, /warehouseOnly=true/);
   assert.match(requests.at(-1).url, /warehouseRefs=warehouse-1/);
   assert.match(requests.at(-1).url, /skus=SKU-1/);
   assert.equal((await bridge.getWarehouseTask(workItems[0].id, { warehouseIds: ["warehouse-1"], skus: ["SKU-1"] })).lines[0].sku, "SKU-1");
   await assert.rejects(() => bridge.getWarehouseTask(workItems[0].id, { warehouseIds: ["warehouse-2"] }), /无权查看该仓库/);
   await assert.rejects(() => bridge.getWarehouseTask(workItems[0].id, { skus: ["SKU-2"] }), /无权查看该任务中的商品/);
+
+  const reminded = await bridge.remindWarehouseTask(
+    workItems[0].id,
+    { actorName: "中台管理员", note: "请今天完成入库并反馈差异。" },
+    { warehouseIds: ["warehouse-1"], skus: ["SKU-1"] },
+  );
+  assert.equal(reminded.ok, true);
+  assert.equal(requests.at(-1).method, "POST");
+  assert.equal(requests.at(-1).url, `http://collaboration.test/collaboration/internal/v1/work-items/${workItems[0].id}/remind`);
+  assert.deepEqual(requests.at(-1).body, { actorName: "中台管理员", note: "请今天完成入库并反馈差异。" });
+  await assert.rejects(
+    () => bridge.remindWarehouseTask(workItems[0].id, { actorName: "中台管理员" }, { warehouseIds: ["warehouse-2"] }),
+    /无权查看该仓库/,
+  );
 });

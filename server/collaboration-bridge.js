@@ -367,8 +367,8 @@ export function createCollaborationBridge({
   }
 
   function listWarehouseTasks(filters = {}, { warehouseIds = [], skus = [] } = {}) {
-    const query = new URLSearchParams();
-    for (const key of ["organizationCode", "status", "itemType", "keyword", "limit", "offset"]) {
+    const query = new URLSearchParams({ warehouseOnly: "true" });
+    for (const key of ["organizationCode", "status", "itemType", "keyword", "overdue", "limit", "offset"]) {
       if (filters[key] !== undefined && String(filters[key]).trim()) query.set(key, String(filters[key]));
     }
     if (warehouseIds.length) query.set("warehouseRefs", warehouseIds.map(String).filter(Boolean).join(","));
@@ -390,6 +390,15 @@ export function createCollaborationBridge({
 
   async function getWarehouseTask(workItemId, scopes = {}) {
     return assertWarehouseTaskScope(await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}`), scopes);
+  }
+
+  async function remindWarehouseTask(workItemId, { note = "", actorName = "供应链中台" } = {}, scopes = {}) {
+    const detail = await getWarehouseTask(workItemId, scopes);
+    if (["completed", "rejected", "cancelled"].includes(detail.item.status)) fail("已结束的协同任务无需催办。", 409, "work_item_closed");
+    return internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/remind`, {
+      method: "POST",
+      body: { note: String(note || "").trim().slice(0, 1_000), actorName: String(actorName || "供应链中台").trim().slice(0, 120) },
+    });
   }
 
   async function downloadWarehouseTaskAttachment(workItemId, attachmentId, scopes = {}) {
@@ -1038,6 +1047,7 @@ export function createCollaborationBridge({
     queuePartnerOrderProjection,
     queueProjection,
     reissueInvitation,
+    remindWarehouseTask,
     replaceOrganizationAccessGrants,
     reviewCommand,
     reviewSampleArtifact,
