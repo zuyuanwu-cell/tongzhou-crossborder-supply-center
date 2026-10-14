@@ -23,6 +23,27 @@ function readBody(req) {
   });
 }
 
+function readBinaryBody(req, maxBytes = 50 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    req.on("data", (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        settled = true;
+        reject(Object.assign(new Error("附件不能超过 50MB。"), { statusCode: 413, code: "attachment_too_large" }));
+        req.resume();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => { if (!settled) resolve(Buffer.concat(chunks, size)); });
+    req.on("error", (error) => { if (!settled) reject(error); });
+  });
+}
+
 function publicApproval(row) {
   const command = row.command || {};
   return {
@@ -150,6 +171,18 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         const download = await bridge.downloadOrganizationWorkItemAttachment(decodeURIComponent(organizationWorkItemAttachmentMatch[1]), organizationWorkItemAttachmentMatch[2], organizationWorkItemAttachmentMatch[3]);
         res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
         res.end(download.buffer);
+        return true;
+      }
+      const organizationWorkItemUploadMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})\/attachments$/);
+      if (organizationWorkItemUploadMatch && req.method === "PUT") {
+        const code = decodeURIComponent(organizationWorkItemUploadMatch[1]);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const fileName = decodeURIComponent(String(req.headers["x-file-name"] || ""));
+        const mimeType = String(req.headers["content-type"] || "").split(";")[0].trim();
+        const buffer = await readBinaryBody(req);
+        const result = await bridge.uploadOrganizationWorkItemAttachment(code, organizationWorkItemUploadMatch[2], { fileName, mimeType, buffer }, { actorName });
+        appendActionLog(auth, "上传伙伴协同需求附件", "collaboration_work_item", organizationWorkItemUploadMatch[2], { organizationCode: code, fileName, sizeBytes: buffer.length });
+        sendJson(res, 201, { ok: true, ...result });
         return true;
       }
       const organizationWorkItemMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})$/);

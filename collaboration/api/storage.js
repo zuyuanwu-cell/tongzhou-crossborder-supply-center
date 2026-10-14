@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
@@ -162,6 +162,65 @@ export async function completeS3Upload(auth, attachmentId) {
   return scanAttachment(auth, attachmentId);
 }
 
+export async function internalAttachmentUpload(workItemId, { fileName, mimeType, buffer, actorName = "供应链中台管理员" }) {
+  const parsed = uploadSchema.parse({ workItemId, fileName, mimeType, sizeBytes: buffer?.length || 0 });
+  if (!Buffer.isBuffer(buffer)) fail("附件内容不正确。", 400, "invalid_attachment");
+  if (!allowedMimeTypes.has(parsed.mimeType)) fail("不支持该附件类型。", 415, "unsupported_media_type");
+  const context = await withSystem(async (client) => {
+    const result = await client.query(
+      `SELECT work_items.id,work_items.organization_id,work_items.item_type,
+              (SELECT memberships.user_id FROM memberships JOIN users ON users.id=memberships.user_id
+                WHERE memberships.organization_id=work_items.organization_id AND memberships.status='active' AND users.status='active'
+                ORDER BY CASE WHEN memberships.role='organization_admin' THEN 0 ELSE 1 END,memberships.created_at LIMIT 1) AS uploader_id
+         FROM work_items WHERE work_items.id=$1`,
+      [workItemId],
+    );
+    const row = result.rows[0];
+    if (!row || !["production_order", "purchase_order", "sampling_task"].includes(row.item_type)) fail("伙伴协同任务不存在。", 404, "not_found");
+    if (!row.uploader_id) fail("目标组织没有可用于记录附件归属的有效成员。", 409, "organization_member_required");
+    return row;
+  });
+  const id = randomUUID();
+  const objectKey = `${context.organization_id}/${workItemId}/${id}-${safeName(parsed.fileName)}`;
+  const sha256 = createHash("sha256").update(buffer).digest("hex");
+  let temporary = "";
+  let finalPath = "";
+  try {
+    if (!collaborationConfig.trustLocalUploads) {
+      mkdirSync(collaborationConfig.storageDir, { recursive: true });
+      temporary = resolve(collaborationConfig.storageDir, `internal-scan-${id}`);
+      writeFileSync(temporary, buffer, { flag: "wx" });
+      const scan = await runClamScan(temporary);
+      if (!scan.clean) fail(scan.infected ? "附件安全检查未通过。" : "附件安全检查失败。", 422, scan.infected ? "attachment_rejected" : "scan_failed");
+    }
+    if (collaborationConfig.storageDriver === "s3") {
+      await s3.send(new PutObjectCommand({ Bucket: collaborationConfig.s3.bucket, Key: objectKey, Body: buffer, ContentType: parsed.mimeType, ContentLength: parsed.sizeBytes }));
+    } else {
+      finalPath = localPath(objectKey);
+      mkdirSync(resolve(finalPath, ".."), { recursive: true });
+      writeFileSync(finalPath, buffer, { flag: "wx" });
+    }
+    await withSystem(async (client) => {
+      await client.query(
+        `INSERT INTO attachments(id,organization_id,work_item_id,object_key,file_name,mime_type,size_bytes,sha256,scan_status,uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'clean',$9)`,
+        [id, context.organization_id, workItemId, objectKey, parsed.fileName, parsed.mimeType, parsed.sizeBytes, sha256, context.uploader_id],
+      );
+      await client.query(
+        `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
+         VALUES ($1,$2,'core.attachment_uploaded',$3,$4,$5)`,
+        [context.organization_id, workItemId, String(actorName || "供应链中台管理员").slice(0, 160), `已上传需求附件：${parsed.fileName}`, { attachmentId: id, mimeType: parsed.mimeType, sizeBytes: parsed.sizeBytes }],
+      );
+    });
+    return { attachmentId: id, fileName: parsed.fileName, mimeType: parsed.mimeType, sizeBytes: parsed.sizeBytes, scanStatus: "clean" };
+  } catch (error) {
+    if (finalPath && existsSync(finalPath)) unlinkSync(finalPath);
+    throw error;
+  } finally {
+    if (temporary && existsSync(temporary)) unlinkSync(temporary);
+  }
+}
+
 async function downloadForAttachment(attachment) {
   if (attachment.scan_status !== "clean") fail("附件尚未通过安全检查。", 423, "attachment_not_clean");
   if (collaborationConfig.storageDriver === "s3") {
@@ -185,7 +244,7 @@ export async function internalAttachmentDownload(workItemId, attachmentId) {
     const result = await client.query(
       `SELECT attachments.* FROM attachments
         JOIN work_items ON work_items.id=attachments.work_item_id
-       WHERE attachments.id=$1 AND attachments.work_item_id=$2 AND work_items.item_type LIKE 'warehouse_%'`,
+       WHERE attachments.id=$1 AND attachments.work_item_id=$2`,
       [attachmentId, workItemId],
     );
     if (!result.rows[0]) fail("附件不存在。", 404, "not_found");

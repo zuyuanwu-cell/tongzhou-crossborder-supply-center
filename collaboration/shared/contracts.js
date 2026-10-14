@@ -295,7 +295,7 @@ export const partnerOrderProjectionSchema = z.object({
 export const internalPartnerTaskSchema = z.object({
   taskType: z.enum(["production_order", "purchase_order", "sampling_task"]),
   documentNo: limitedText(120).optional().default(""),
-  title: limitedText(240).min(1),
+  title: limitedText(240).optional().default(""),
   productName: limitedText(300).min(1),
   productSpec: limitedText(1_000).optional().default(""),
   description: limitedText(5_000).optional().default(""),
@@ -332,10 +332,12 @@ export const internalPartnerTaskSchema = z.object({
     plannedQuantity: quantity,
     unit: limitedText(20).optional().default("件"),
     lineType: z.enum(["finished_product", "raw_material", "packaging"]).optional(),
-  }).strict()).min(1).max(500),
+  }).strict()).max(500).optional().default([]),
 }).strict().superRefine((value, context) => {
   if (value.taskType !== "sampling_task") {
     if (!value.documentNo) context.addIssue({ code: z.ZodIssueCode.custom, path: ["documentNo"], message: "请填写单据编号。" });
+    if (!value.title) context.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "请填写单据标题。" });
+    if (!value.lines.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["lines"], message: "请至少填写一行产品或物料。" });
     return;
   }
   if (!value.sampleCategory) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleCategory"], message: "请选择内料打样或包材打样。" });
@@ -346,6 +348,7 @@ export const internalPartnerTaskSchema = z.object({
 
 const sampleVariantSchema = z.object({
   name: limitedText(160).min(1),
+  supplierMaterialCode: limitedText(160).optional().default(""),
   sampleQuantity: quantity.optional().default(0),
   unit: limitedText(20).optional().default("件"),
   specificationVersion: limitedText(120).optional().default(""),

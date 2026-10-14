@@ -142,7 +142,7 @@ export function createCollaborationBridge({
   let lastError = "";
   let factoryOptionsCache = { loadedAt: 0, options: [] };
 
-  async function internalRequest(path, { method = "GET", body, raw = false } = {}) {
+  async function internalRequest(path, { method = "GET", body, rawBody, headers = {}, raw = false } = {}) {
     if (!enabled) fail("协同桥接尚未配置。", 503, "collaboration_bridge_disabled");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
@@ -151,9 +151,10 @@ export function createCollaborationBridge({
         method,
         headers: {
           Authorization: `Bearer ${internalToken}`,
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(body === undefined || rawBody !== undefined ? {} : { "Content-Type": "application/json" }),
+          ...headers,
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: rawBody !== undefined ? rawBody : body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -820,10 +821,29 @@ export function createCollaborationBridge({
     };
   }
 
+  async function uploadOrganizationWorkItemAttachment(code, workItemId, file, { actorName = "供应链中台管理员" } = {}) {
+    await getOrganizationWorkItem(code, workItemId);
+    const fileName = String(file?.fileName || "").trim();
+    const mimeType = String(file?.mimeType || "").trim();
+    const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.from(file?.buffer || "");
+    if (!fileName || !mimeType || !buffer.length) fail("附件名称、类型和内容不能为空。", 400, "invalid_attachment");
+    return internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/attachments`, {
+      method: "PUT",
+      rawBody: buffer,
+      headers: {
+        "Content-Type": mimeType,
+        "Content-Length": String(buffer.length),
+        "X-File-Name": encodeURIComponent(fileName),
+        "X-Actor-Name": encodeURIComponent(actorName),
+      },
+    });
+  }
+
   async function publishPartnerTask(code, input, { actorName = "供应链中台管理员" } = {}) {
     if (!oemEnabled) fail("生产、采购与打样协同尚未启用。", 403, "feature_disabled");
     const task = internalPartnerTaskSchema.parse(input);
     const documentNo = task.taskType === "sampling_task" ? (task.documentNo || generatedSamplingDocumentNo(task.sampleCategory)) : task.documentNo;
+    const taskTitle = task.title || `${task.productName} · ${task.sampleCategory === "packaging" ? "包材打样" : "料体打样"}`;
     if (task.taskType === "production_order") fail("委外加工单由千顷 ERP 自动同步，请先绑定委外灌装工厂，不要重复手工录单。", 409, "source_managed_task");
     const access = await getOrganizationAccessGrants(code);
     const required = {
@@ -848,7 +868,7 @@ export function createCollaborationBridge({
         coreRefId: documentNo,
         spaceType: "sampling",
         itemType: "sampling_task",
-        title: task.title,
+        title: taskTitle,
         description: task.description || task.requirements,
         priority: task.priority,
         status: "pending",
@@ -881,7 +901,7 @@ export function createCollaborationBridge({
         coreRefId: task.documentNo,
         orderType: production ? "production" : "purchase",
         itemType: task.taskType,
-        title: task.title,
+        title: taskTitle,
         description: task.description || task.requirements,
         priority: task.priority,
         status: "pending",
@@ -913,7 +933,12 @@ export function createCollaborationBridge({
     }
     const delivery = await flushOutbox();
     onAudit("发布伙伴生产/采购/打样单", { id: eventId, organizationCode: code, coreRefId: documentNo, commandType: "publish", submittedByName: actorName }, { taskType: task.taskType, status: queued.status, delivery });
-    return { ok: true, eventId, coreRefId: documentNo, status: queued.status, delivery };
+    let workItemId = "";
+    if (delivery.published > 0 && delivery.failed === 0) {
+      const published = await listOrganizationWorkItems(code, { itemType: task.taskType, keyword: documentNo, limit: 20 });
+      workItemId = published.items.find((item) => item.coreRefId === documentNo)?.id || "";
+    }
+    return { ok: true, eventId, coreRefId: documentNo, workItemId, status: queued.status, delivery };
   }
 
   async function replaceOrganizationAccessGrants(code, input) {
@@ -1026,6 +1051,7 @@ export function createCollaborationBridge({
     synchronizeOutsourcingProjections,
     updateOrganizationStatus,
     updateMemberCredentials,
+    uploadOrganizationWorkItemAttachment,
     waitForIdle,
   };
 }

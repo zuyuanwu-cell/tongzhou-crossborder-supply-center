@@ -229,6 +229,13 @@ export async function submitOemArtifact(auth, body, { idempotencyKey, expectedVe
       : null;
     const artifactVersion = sampleVersionResult?.rows[0]?.version || input.version;
     if (item.item_type === "sampling_task" && !input.publicPayload.sampleVariants?.length) fail("每轮打样至少登记一个本轮样品。", 400, "sample_variants_required");
+    if (item.item_type === "sampling_task" && item.public_payload?.sampleCategory === "inner_material" && input.publicPayload.sampleVariants.some((variant) => !variant.supplierMaterialCode?.trim())) {
+      fail("请为每个已完成的料体填写供应商内部料体编码。", 400, "supplier_material_code_required");
+    }
+    if (item.item_type === "sampling_task" && item.public_payload?.sampleCategory === "inner_material") {
+      const supplierCodes = input.publicPayload.sampleVariants.map((variant) => variant.supplierMaterialCode.trim().toUpperCase());
+      if (new Set(supplierCodes).size !== supplierCodes.length) fail("同一轮中的供应商料体编码不能重复。", 409, "duplicate_supplier_material_code");
+    }
     const attachmentIds = [...new Set(input.publicPayload.attachmentIds || [])];
     if (attachmentIds.length) {
       const attachments = await client.query(
@@ -288,7 +295,7 @@ export async function reviewInternalSampleArtifact(artifactId, body) {
       `UPDATE oem_artifacts
           SET status=$2,updated_at=now(),public_payload=public_payload || $3::jsonb
         WHERE id=$1`,
-      [artifact.id, status, JSON.stringify({ reviewNote: input.note, reviewedBy: input.reviewer, reviewedAt: new Date().toISOString(), approvedVariantCode: input.approved ? input.approvedVariantCode : "" })],
+      [artifact.id, status, JSON.stringify({ reviewNote: input.note, reviewedBy: input.reviewer, reviewedAt: new Date().toISOString(), approvedVariantCode: input.approved ? input.approvedVariantCode : "", approvedSupplierMaterialCode: input.approved ? (artifact.public_payload?.sampleVariants || []).find((variant) => variant.variantCode === input.approvedVariantCode)?.supplierMaterialCode || "" : "" })],
     );
     await client.query("UPDATE work_items SET status='in_progress',version=version+1,last_core_synced_at=now() WHERE id=$1", [artifact.target_work_item_id]);
     const bodyText = input.approved ? `第 ${artifact.version} 轮样品 ${input.approvedVariantCode || ""} 已确认为最终样，等待供应商报价` : `第 ${artifact.version} 轮样品需修改并重新送样：${input.note}`;

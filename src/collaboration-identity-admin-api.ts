@@ -168,7 +168,7 @@ export type CollaborationPartnerWorkItemDetail = {
     milestones: Array<{ id: string; milestoneType: string; title: string; plannedAt: string; completedAt: string; status: string; publicPayload: { note?: string }; version: number; updatedAt: string }>;
   };
   oem: null | {
-    artifacts: Array<{ id: string; artifactType: string; title: string; version: number; status: string; publicPayload: { summary?: string; result?: string; reviewNote?: string; supplierConclusion?: string; nextPlan?: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; reviewedBy?: string; reviewedAt?: string; approvedVariantCode?: string; attachmentIds?: string[]; sampleVariants?: Array<{ variantCode: string; name: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; description?: string; material?: string; process?: string; structureType?: string; lengthMm?: number; widthMm?: number; heightMm?: number; diameterMm?: number; capacityMl?: number; colorPrinting?: string }> }; createdAt: string; updatedAt: string }>;
+    artifacts: Array<{ id: string; artifactType: string; title: string; version: number; status: string; publicPayload: { summary?: string; result?: string; reviewNote?: string; supplierConclusion?: string; nextPlan?: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; reviewedBy?: string; reviewedAt?: string; approvedVariantCode?: string; approvedSupplierMaterialCode?: string; attachmentIds?: string[]; sampleVariants?: Array<{ variantCode: string; supplierMaterialCode?: string; name: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; description?: string; material?: string; process?: string; structureType?: string; lengthMm?: number; widthMm?: number; heightMm?: number; diameterMm?: number; capacityMl?: number; colorPrinting?: string }> }; createdAt: string; updatedAt: string }>;
     quotes: Array<{ id: string; currency: string; amount: number; minimumOrderQuantity: number; leadTimeDays: number; terms: string; status: string; version: number; sampleArtifactId: string; sampleVersion: number | null; sampleVariantCode?: string; submittedAt: string }>;
   };
 };
@@ -176,7 +176,7 @@ export type CollaborationPartnerWorkItemDetail = {
 export type CollaborationPartnerTaskInput = {
   taskType: CollaborationPartnerTaskType;
   documentNo?: string;
-  title: string;
+  title?: string;
   productName: string;
   productSpec?: string;
   description?: string;
@@ -193,7 +193,7 @@ export type CollaborationPartnerTaskInput = {
   evaluationCriteria?: string;
   quoteRequired?: boolean;
   packagingSpec?: { material?: string; process?: string; structureType?: string; lengthMm?: number; widthMm?: number; heightMm?: number; diameterMm?: number; capacityMl?: number; colorPrinting?: string; designVersion?: string; fileRequirements?: string };
-  lines: Array<{ sku: string; productName: string; specification?: string; imageUrl?: string; plannedQuantity: number; unit?: string; lineType?: "finished_product" | "raw_material" | "packaging" }>;
+  lines?: Array<{ sku: string; productName: string; specification?: string; imageUrl?: string; plannedQuantity: number; unit?: string; lineType?: "finished_product" | "raw_material" | "packaging" }>;
 };
 
 export type CollaborationOutsourcingFactoryOption = {
@@ -275,8 +275,26 @@ export async function downloadCollaborationOrganizationWorkItemAttachment(code: 
   return { blob: await response.blob(), disposition: response.headers.get("content-disposition") || "" };
 }
 
+export async function uploadCollaborationOrganizationWorkItemAttachment(code: string, workItemId: string, file: File) {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  const extension = file.name.split(".").pop()?.toLowerCase() || "";
+  const mimeType = file.type || ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", pdf: "application/pdf", csv: "text/csv", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" } as Record<string, string>)[extension] || "application/octet-stream";
+  const response = await fetch(resolveApiUrl(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items/${encodeURIComponent(workItemId)}/attachments`), {
+    method: "PUT",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Content-Type": mimeType,
+      "X-File-Name": encodeURIComponent(file.name),
+    },
+    body: file,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || `附件上传失败（HTTP ${response.status}）`);
+  return payload as { ok: boolean; attachmentId: string; fileName: string; mimeType: string; sizeBytes: number; scanStatus: string };
+}
+
 export function publishCollaborationPartnerTask(code: string, input: CollaborationPartnerTaskInput) {
-  return request<{ ok: boolean; eventId: string; coreRefId: string; status: string; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items`, {
+  return request<{ ok: boolean; eventId: string; coreRefId: string; workItemId: string; status: string; delivery: { published: number; failed: number; disabled: boolean } }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/work-items`, {
     method: "POST",
     body: JSON.stringify(input),
   });

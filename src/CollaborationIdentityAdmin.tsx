@@ -1,5 +1,5 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BadgeDollarSign, Boxes, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, Download, Factory, FileText, FlaskConical, Handshake, KeyRound, LoaderCircle, LockKeyhole, Mail, PackageCheck, Plus, RefreshCw, RotateCcw, Save, Search, Send, ShieldCheck, Target, Trash2, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
+import { AlertTriangle, BadgeDollarSign, Boxes, Building2, Check, CheckCircle2, ChevronRight, ClipboardCheck, Copy, Download, Factory, FileText, FlaskConical, Handshake, Image as ImageIcon, KeyRound, LoaderCircle, LockKeyhole, Mail, PackageCheck, Paperclip, Plus, RefreshCw, RotateCcw, Save, Search, Send, ShieldCheck, Target, Trash2, Upload, UserPlus, Users, Warehouse, X, XCircle } from "lucide-react";
 import {
   bootstrapCollaborationOrganization,
   awardCollaborationSupplierQuote,
@@ -37,6 +37,7 @@ import {
   syncCollaborationOutsourcingSource,
   updateCollaborationOrganizationStatus,
   updateCollaborationMemberCredentials,
+  uploadCollaborationOrganizationWorkItemAttachment,
 } from "./collaboration-identity-admin-api";
 import { DomesticWarehouse, fetchDomesticWarehouses, fetchWarehouses, WarehouseConnection } from "./api";
 import { organizationRoleLabels } from "./collaboration-role-model";
@@ -208,8 +209,19 @@ function PartnerProductionFlow({ value, progress, exception }: {
 }
 
 const adminFirstArticleImageLabels: Record<string, string> = { packaging: "包装六面", inner_pack: "内托内包", coding: "打码位置", finished: "成品效果", carton: "外箱装箱" };
-const sampleCategoryLabels: Record<string, string> = { inner_material: "内料打样", packaging: "包材打样" };
-const sampleSubjectLabels: Record<string, string> = { formula: "配方 / 内料", raw_material: "原料", packaging_box: "包装盒", packaging_bottle: "包装瓶" };
+const sampleCategoryLabels: Record<string, string> = { inner_material: "料体打样", packaging: "包材打样" };
+const sampleSubjectLabels: Record<string, string> = { formula: "配方 / 料体", raw_material: "原料", packaging_box: "包装盒", packaging_bottle: "包装瓶" };
+
+function LocalFilePreview({ file }: { file: File }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) return;
+    const nextUrl = URL.createObjectURL(file);
+    setUrl(nextUrl);
+    return () => URL.revokeObjectURL(nextUrl);
+  }, [file]);
+  return url ? <img src={url} alt={file.name} /> : <FileText size={20} />;
+}
 
 type SamplingFilter = "all" | "pending_review" | "multi_round" | "pending_quote" | "overdue";
 
@@ -271,6 +283,7 @@ function SamplingReviewPanel({ detail, onReload, notify }: { detail: Collaborati
     finally { setBusy(""); }
   }
   return <>
+    {artifacts.some((artifact) => artifact.publicPayload.sampleVariants?.some((variant) => variant.supplierMaterialCode)) ? <section className="cia-supplier-material-register"><header><FlaskConical size={17} /><div><strong>供应商料体编码台账</strong><span>供应商打出料体后登记；平台追踪号与供应商内部编码双向留档。</span></div></header><div>{artifacts.flatMap((artifact) => (artifact.publicPayload.sampleVariants || []).filter((variant) => variant.supplierMaterialCode).map((variant) => ({ artifact, variant }))).map(({ artifact, variant }) => <article key={`${artifact.id}-${variant.variantCode}`}><span>R{artifact.version}</span><div><b>{variant.supplierMaterialCode}</b><small>{variant.name} · 平台追踪号 {variant.variantCode}</small></div><em className={artifact.status}>{artifact.status === "approved" ? "已定版" : artifact.status === "rejected" ? "需返样" : "待评审"}</em></article>)}</div></section> : null}
     <section className="cia-sample-route">
       {[{ label: "需求发布", done: true }, { label: "多轮送样", done: artifacts.length > 0 }, { label: "内部定版", done: Boolean(approved) }, { label: "供应商报价", done: quotes.length > 0 }, { label: "报价确认", done: quotes.some((quote) => quote.status === "awarded") }].map((step, index) => <React.Fragment key={step.label}><div className={step.done ? "done" : ""}><span>{step.done ? <Check size={13} /> : index + 1}</span><b>{step.label}</b></div>{index < 4 ? <i /> : null}</React.Fragment>)}</section>
     <section className="cia-task-detail-section cia-sample-rounds"><div className="cia-task-detail-title"><FlaskConical size={17} /><strong>送样与评审轮次</strong><span>{artifacts.length} 轮 · 历史不可覆盖</span></div>{artifacts.length ? <div>{artifacts.map((artifact) => { const variants = artifact.publicPayload.sampleVariants || []; return <article className={artifact.status} key={artifact.id}><header><span>R{artifact.version}</span><div><strong>{artifact.title}</strong><small>{formatTime(artifact.createdAt)} · {variants.length || 1} 个样品</small></div><em>{artifact.status === "submitted" ? "待评审" : artifact.status === "approved" ? `最终样 ${artifact.publicPayload.approvedVariantCode || ""}` : "需返样"}</em></header><p>{artifact.publicPayload.summary || artifact.publicPayload.supplierConclusion || "伙伴未填写结果摘要"}</p>{variants.length ? <div className="cia-sample-variants">{variants.map((variant) => <label className={artifact.publicPayload.approvedVariantCode === variant.variantCode ? "approved" : ""} key={variant.variantCode}>{artifact.status === "submitted" ? <input type="radio" name={`variant-${artifact.id}`} checked={selectedVariants[artifact.id] === variant.variantCode} onChange={() => setSelectedVariants((current) => ({ ...current, [artifact.id]: variant.variantCode }))} /> : <CheckCircle2 size={15} />}<span><code>{variant.variantCode}</code><b>{variant.name}</b><small>{variant.specificationVersion || "未标注版本"} · {Number(variant.sampleQuantity || 0).toLocaleString()} {variant.unit || "件"}</small>{variant.description ? <em>{variant.description}</em> : null}</span></label>)}</div> : null}<div className="cia-sample-round-facts"><span>供应商判断 <b>{artifact.publicPayload.result || "pending"}</b></span>{artifact.publicPayload.attachmentIds?.length ? <span>本轮文件 <b>{artifact.publicPayload.attachmentIds.length} 个</b></span> : null}{artifact.publicPayload.nextPlan ? <span>下一步 <b>{artifact.publicPayload.nextPlan}</b></span> : null}</div>{artifact.publicPayload.reviewNote ? <aside><ClipboardCheck size={14} /><span>{artifact.publicPayload.reviewNote}</span></aside> : null}{artifact.status === "submitted" ? <footer><textarea rows={2} value={notes[artifact.id] || ""} onChange={(event) => setNotes((current) => ({ ...current, [artifact.id]: event.target.value }))} placeholder="通过可补充定版说明；要求返样时必须写明修改点" /><div><button type="button" className="cia-danger-button" disabled={busy === artifact.id} onClick={() => void review(artifact.id, false)}><RotateCcw size={14} />要求返样</button><button type="button" className="cia-primary" disabled={busy === artifact.id} onClick={() => void review(artifact.id, true)}>{busy === artifact.id ? <LoaderCircle size={14} className="cia-spin" /> : <CheckCircle2 size={14} />}确认所选最终样</button></div></footer> : null}</article>; })}</div> : <div className="cia-empty compact"><FlaskConical size={21} /><strong>等待首轮送样</strong><span>伙伴提交后即可在这里评审；要求修改会生成下一轮，不覆盖上一轮。</span></div>}</section>
@@ -282,14 +295,44 @@ function PartnerTaskDetailModal({ organizationCode, detail, loading, onClose, on
   organizationCode: string; detail: CollaborationPartnerWorkItemDetail | null; loading: boolean; onClose(): void; onReload(): Promise<void>; notify(message: string, error?: boolean): void;
 }) {
   const [articleImage, setArticleImage] = useState<{ url: string; name: string; label: string } | null>(null);
+  const [attachmentImage, setAttachmentImage] = useState<{ url: string; name: string } | null>(null);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [showArticleBom, setShowArticleBom] = useState(false);
   async function download(workItemId: string, attachment: CollaborationPartnerWorkItemDetail["attachments"][number]) {
     try {
       const { blob } = await downloadCollaborationOrganizationWorkItemAttachment(organizationCode, workItemId, attachment.id);
       const url = URL.createObjectURL(blob);
+      if (attachment.mimeType.startsWith("image/")) {
+        if (attachmentImage?.url) URL.revokeObjectURL(attachmentImage.url);
+        setAttachmentImage({ url, name: attachment.fileName });
+        return;
+      }
       const anchor = document.createElement("a"); anchor.href = url; anchor.download = attachment.fileName; anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 1_000);
     } catch (reason) { notify(reason instanceof Error ? reason.message : "附件下载失败", true); }
+  }
+  function closeAttachmentImage() {
+    if (attachmentImage?.url) URL.revokeObjectURL(attachmentImage.url);
+    setAttachmentImage(null);
+  }
+  async function uploadAttachments(workItemId: string, files: File[]) {
+    const accepted = files.filter((file) => file.size <= 50 * 1024 * 1024).slice(0, 20);
+    if (!accepted.length) return notify("请选择不超过 50MB 的图片或文件。", true);
+    setAttachmentUploading(true);
+    let uploaded = 0;
+    try {
+      for (const file of accepted) {
+        await uploadCollaborationOrganizationWorkItemAttachment(organizationCode, workItemId, file);
+        uploaded += 1;
+      }
+      notify(`已补充上传 ${uploaded} 个附件。`);
+      await onReload();
+    } catch (reason) {
+      notify(`已上传 ${uploaded}/${accepted.length} 个附件；${reason instanceof Error ? reason.message : "其余附件上传失败"}`, true);
+      await onReload();
+    } finally {
+      setAttachmentUploading(false);
+    }
   }
   const item = detail?.item; const order = detail?.partnerOrder;
   const latestProgress = order?.reports.find((report) => report.reportType === "production_progress");
@@ -311,10 +354,11 @@ function PartnerTaskDetailModal({ organizationCode, detail, loading, onClose, on
       <section className="cia-task-detail-section"><div className="cia-task-detail-title"><Boxes size={17} /><strong>成品、物料与包材</strong><span>{order?.lines.length || 0} 项</span></div><div className="cia-task-detail-lines">{order?.lines.map((line) => <article key={line.id}><em>{line.lineType === "finished_product" ? "成品" : line.lineType === "packaging" ? "包材" : "原料"}</em><div><strong>{line.productName}</strong><small>{line.sku}{line.specification ? ` · ${line.specification}` : ""}</small></div><b>{line.plannedQuantity.toLocaleString()} {line.unit}</b></article>)}</div></section>
       {order?.milestones.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><ClipboardCheck size={17} /><strong>关键节点</strong></div><div className="cia-task-milestones">{order.milestones.map((milestone) => <article className={milestone.status} key={milestone.id}><span>{milestone.title}</span><b>{partnerMilestoneLabels[milestone.status] || milestone.status}</b><small>{milestone.plannedAt ? `计划 ${formatTime(milestone.plannedAt)}` : "未设计划日期"}</small></article>)}</div></section> : null}
       <section className="cia-task-detail-section"><div className="cia-task-detail-title"><Factory size={17} /><strong>工厂反馈</strong><span>{order?.reports.length || 0} 条</span></div>{order?.reports.length ? <div className="cia-task-report-list">{order.reports.map((report) => <article className={report.result === "failed" || report.severity === "critical" ? "danger" : ""} key={report.id}><span /><div><strong>{report.title || partnerReportLabels[report.reportType] || report.reportType}</strong><p>{report.note || `${report.stage} · ${report.result}`}</p><small>{report.submittedByName || "工厂成员"} · {formatTime(report.createdAt)}{report.quantity != null ? ` · 数量 ${report.quantity.toLocaleString()}` : ""}</small></div>{report.progressPercent != null ? <b>{report.progressPercent}%</b> : <em>{partnerReportLabels[report.reportType] || "反馈"}</em>}</article>)}</div> : <div className="cia-empty compact"><Factory size={20} /><strong>工厂尚未汇报进度</strong><span>接单已联通；提交生产、物料测试、异常或发货反馈后会显示在这里。</span></div>}</section></>}
-      {detail.attachments.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><FileText size={17} /><strong>凭证附件</strong><span>{detail.attachments.length} 个</span></div><div className="cia-task-attachments">{detail.attachments.map((attachment) => <button type="button" key={attachment.id} onClick={() => void download(item.id, attachment)}><FileText size={16} /><span><b>{attachment.fileName}</b><small>{attachment.scanStatus === "clean" ? "已安全校验" : attachment.scanStatus}</small></span><Download size={15} /></button>)}</div></section> : null}
+      {isSampling || detail.attachments.length ? <section className="cia-task-detail-section"><div className="cia-task-detail-title"><FileText size={17} /><strong>需求与送样附件</strong><span>{detail.attachments.length} 个</span>{isSampling ? <label className="cia-task-detail-upload"><Upload size={14} />{attachmentUploading ? "上传中…" : "补充附件"}<input type="file" multiple disabled={attachmentUploading} accept="image/jpeg,image/png,image/webp,application/pdf,.xlsx,.docx,.csv" onChange={(event) => { const files = Array.from(event.target.files || []); event.currentTarget.value = ""; void uploadAttachments(item.id, files); }} /></label> : null}</div>{detail.attachments.length ? <div className="cia-task-attachments">{detail.attachments.map((attachment) => <button type="button" key={attachment.id} onClick={() => void download(item.id, attachment)}>{attachment.mimeType.startsWith("image/") ? <ImageIcon size={16} /> : <FileText size={16} />}<span><b>{attachment.fileName}</b><small>{attachment.mimeType.startsWith("image/") ? "点击预览图片" : "点击下载文件"} · {attachment.scanStatus === "clean" ? "已安全校验" : attachment.scanStatus}</small></span>{attachment.mimeType.startsWith("image/") ? <Search size={15} /> : <Download size={15} />}</button>)}</div> : <div className="cia-empty compact"><Paperclip size={20} /><strong>暂无附件</strong><span>可补充上传需求图片或文件，图片支持直接预览。</span></div>}</section> : null}
       <section className="cia-task-detail-section"><div className="cia-task-detail-title"><RefreshCw size={17} /><strong>中台处理与审计</strong><span>{detail.commands.length + detail.events.length} 条</span></div><div className="cia-task-audit-list">{detail.commands.slice(0, 10).map((command) => <article key={command.id}><strong>{partnerReportLabels[command.commandType.replace(/^order_/, "")] || (command.commandType === "accept" ? "接受任务" : command.commandType)}</strong><span>{command.status === "applied" ? "中台已接收" : command.status}</span><small>{command.resultMessage || "等待处理结果"} · {formatTime(command.submittedAt)}</small></article>)}</div></section>
     </div>}
     {articleImage ? <div className="cia-article-lightbox" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setArticleImage(null); }}><button type="button" onClick={() => setArticleImage(null)} aria-label="关闭图片"><X size={20} /></button><img src={articleImage.url} alt={articleImage.name} /><p>{articleImage.label} · {articleImage.name}</p></div> : null}
+    {attachmentImage ? <div className="cia-article-lightbox" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAttachmentImage(); }}><button type="button" onClick={closeAttachmentImage} aria-label="关闭图片"><X size={20} /></button><img src={attachmentImage.url} alt={attachmentImage.name} /><p>需求 / 送样附件 · {attachmentImage.name}</p></div> : null}
   </article></div>;
 }
 
@@ -337,6 +381,7 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
   const [selectedDetail, setSelectedDetail] = useState<CollaborationPartnerWorkItemDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [samplingFilter, setSamplingFilter] = useState<SamplingFilter>("all");
+  const [taskFiles, setTaskFiles] = useState<File[]>([]);
   const selectedType = partnerTaskTypes.find((item) => item.value === (fixedTaskType || draft.taskType)) || partnerTaskTypes[0];
   const baseVisibleItems = fixedTaskType ? items.filter((item) => item.itemType === fixedTaskType && (!fixedSampleCategory || item.publicPayload.sampleCategory === fixedSampleCategory)) : items;
   const visibleItems = fixedTaskType === "sampling_task" && samplingFilter !== "all" ? baseVisibleItems.filter((item) => {
@@ -370,7 +415,7 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
     } finally { setSourceLoading(false); }
   }, [organization.code, productionEnabled, notify]);
 
-  useEffect(() => { setDraft(emptyPartnerTaskDraft(fixedTaskType, fixedSampleCategory)); setSamplingFilter("all"); void load(); void loadOutsourcingSource(); }, [organization.code, fixedTaskType, fixedSampleCategory, load, loadOutsourcingSource]);
+  useEffect(() => { setDraft(emptyPartnerTaskDraft(fixedTaskType, fixedSampleCategory)); setTaskFiles([]); setSamplingFilter("all"); void load(); void loadOutsourcingSource(); }, [organization.code, fixedTaskType, fixedSampleCategory, load, loadOutsourcingSource]);
 
   function patchLine(index: number, patch: Partial<PartnerTaskLineDraft>) {
     setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line) }));
@@ -379,25 +424,28 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
   async function publish(event: FormEvent) {
     event.preventDefault();
     if (!enabled) return notify(`请先保存“${selectedType.label}”业务权限。`, true);
-    const lines = draft.lines.map((line) => ({
+    const simpleMaterialSampling = draft.taskType === "sampling_task" && draft.sampleCategory === "inner_material";
+    const lines = simpleMaterialSampling ? [] : draft.lines.map((line) => ({
       sku: line.sku.trim().toUpperCase(), productName: line.productName.trim(), specification: line.specification.trim(),
       plannedQuantity: Number(line.plannedQuantity), unit: line.unit.trim() || "件",
       lineType: draft.taskType === "purchase_order" || (draft.taskType === "sampling_task" && draft.sampleCategory === "inner_material") ? "raw_material" as const : draft.taskType === "sampling_task" ? "packaging" as const : "finished_product" as const,
     }));
-    if (lines.some((line) => !line.sku || !line.productName || !(line.plannedQuantity > 0))) return notify("请完整填写每一行的 SKU、品名和数量。", true);
-    const totalQuantity = lines.reduce((sum, line) => sum + line.plannedQuantity, 0);
+    const samplingProductName = draft.lines[0]?.productName.trim() || "";
+    if (simpleMaterialSampling && !samplingProductName) return notify("请填写要打样的产品或项目名称。", true);
+    if (!simpleMaterialSampling && lines.some((line) => !line.sku || !line.productName || !(line.plannedQuantity > 0))) return notify("请完整填写每一行的 SKU、品名和数量。", true);
+    const totalQuantity = simpleMaterialSampling ? 1 : lines.reduce((sum, line) => sum + line.plannedQuantity, 0);
     const payload: CollaborationPartnerTaskInput = {
       taskType: draft.taskType,
       documentNo: draft.documentNo.trim(),
-      title: draft.title.trim(),
-      productName: lines[0].productName,
-      productSpec: lines[0].specification,
+      title: draft.taskType === "sampling_task" ? "" : draft.title.trim(),
+      productName: simpleMaterialSampling ? samplingProductName : lines[0].productName,
+      productSpec: simpleMaterialSampling ? "" : lines[0].specification,
       requirements: draft.requirements.trim(),
       description: draft.requirements.trim(),
       priority: draft.priority,
       dueAt: draft.dueDate ? new Date(`${draft.dueDate}T12:00:00+08:00`).toISOString() : undefined,
       quantity: totalQuantity,
-      unit: lines.length === 1 ? lines[0].unit : "项",
+      unit: simpleMaterialSampling ? "轮" : lines.length === 1 ? lines[0].unit : "项",
       fulfillmentMode: draft.fulfillmentMode,
       deliveryAddress: draft.deliveryAddress.trim(),
       sampleCategory: draft.taskType === "sampling_task" ? draft.sampleCategory : undefined,
@@ -416,8 +464,25 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
     setPublishing(true);
     try {
       const result = await publishCollaborationPartnerTask(organization.code, payload);
-      notify(result.delivery.failed ? "单据已进入重试队列，伙伴端稍后可见。" : `${selectedType.label}已发布给 ${organization.name}。`);
+      let uploadWarning = "";
+      if (taskFiles.length) {
+        if (!result.workItemId) {
+          uploadWarning = "打样单已经发布，但协同端仍在同步，附件暂未写入。请勿重复创建，可稍后从单据详情补传。";
+        } else {
+          let uploaded = 0;
+          try {
+            for (const file of taskFiles) {
+              await uploadCollaborationOrganizationWorkItemAttachment(organization.code, result.workItemId, file);
+              uploaded += 1;
+            }
+          } catch {
+            uploadWarning = `打样单已经发布，附件已上传 ${uploaded}/${taskFiles.length} 个。请勿重复创建，可稍后从单据详情补传。`;
+          }
+        }
+      }
+      notify(uploadWarning || (result.delivery.failed ? "单据已进入重试队列，伙伴端稍后可见。" : `${selectedType.label}已发布给 ${organization.name}${taskFiles.length ? `，并附带 ${taskFiles.length} 个文件` : ""}。`), Boolean(uploadWarning));
       setDraft(emptyPartnerTaskDraft(fixedTaskType, fixedSampleCategory));
+      setTaskFiles([]);
       await load();
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : "协同单据发布失败", true);
@@ -480,15 +545,15 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
     </div> : <form className="cia-partner-task-form" onSubmit={publish}>
       <div className="cia-task-form-grid">
         {draft.taskType === "sampling_task" ? <div className="cia-auto-number"><span>打样单号</span><strong>发布后自动生成</strong><small>{draft.sampleCategory === "packaging" ? "DY-BC-日期-序号" : "DY-LT-日期-序号"}</small></div> : <label><span>单据编号</span><input required maxLength={120} value={draft.documentNo} onChange={(event) => setDraft({ ...draft, documentNo: event.target.value })} placeholder={draft.taskType === "purchase_order" ? "例如：CG-20261013-001" : "例如：WW-20261013-001"} /></label>}
-        <label><span>对外标题</span><input required maxLength={240} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder={`${selectedType.label}标题`} /></label>
+        {draft.taskType === "sampling_task" ? <div className="cia-auto-number"><span>对外标题</span><strong>按打样对象自动生成</strong><small>无需手工填写，伙伴端会直接看到清晰标题</small></div> : <label><span>对外标题</span><input required maxLength={240} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder={`${selectedType.label}标题`} /></label>}
         <label><span>要求完成日期</span><input type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
         <label><span>优先级</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as PartnerTaskDraft["priority"] })}><option value="normal">常规</option><option value="urgent">紧急</option></select></label>
-        {draft.taskType === "sampling_task" ? <><label><span>具体对象</span><select value={draft.sampleSubject} onChange={(event) => setDraft({ ...draft, sampleSubject: event.target.value as PartnerTaskDraft["sampleSubject"] })}>{draft.sampleCategory === "inner_material" ? <><option value="formula">配方 / 料体</option><option value="raw_material">原料</option></> : <><option value="packaging_box">包装盒</option><option value="packaging_bottle">包装瓶 / 容器</option></>}</select></label><label className="wide"><span>本轮目标</span><input maxLength={2000} value={draft.sampleGoal} onChange={(event) => setDraft({ ...draft, sampleGoal: event.target.value })} placeholder={draft.sampleCategory === "inner_material" ? "例如：确认香型、肤感与稳定性；供应商可一轮提交多个料体" : "例如：确认结构、材质、颜色与量产可行性"} /></label></> : null}
+        {draft.taskType === "sampling_task" ? <>{draft.sampleCategory === "inner_material" ? <label className="wide cia-material-subject"><span>打样对象 / 产品名称 <em>必填</em></span><input required maxLength={240} value={draft.lines[0]?.productName || ""} onChange={(event) => patchLine(0, { productName: event.target.value })} placeholder="例如：DEVNEN 胶原蛋白面霜（无需填写 SKU）" /><small>只写大家都能识别的产品或项目名称即可。</small></label> : null}<label><span>具体对象</span><select value={draft.sampleSubject} onChange={(event) => setDraft({ ...draft, sampleSubject: event.target.value as PartnerTaskDraft["sampleSubject"] })}>{draft.sampleCategory === "inner_material" ? <><option value="formula">配方 / 料体</option><option value="raw_material">原料</option></> : <><option value="packaging_box">包装盒</option><option value="packaging_bottle">包装瓶 / 容器</option></>}</select></label><label className="wide"><span>希望这次解决什么</span><input maxLength={2000} value={draft.sampleGoal} onChange={(event) => setDraft({ ...draft, sampleGoal: event.target.value })} placeholder={draft.sampleCategory === "inner_material" ? "例如：清爽不黏、淡香；可一次提供多个料体供确认" : "例如：确认结构、材质、颜色与量产可行性"} /></label></> : null}
         {draft.taskType !== "sampling_task" ? <label className="wide"><span>交付地址（可选）</span><input maxLength={500} value={draft.deliveryAddress} onChange={(event) => setDraft({ ...draft, deliveryAddress: event.target.value })} placeholder="仅填写伙伴执行所需的交付地址" /></label> : null}
       </div>
       {draft.taskType === "sampling_task" && draft.sampleCategory === "packaging" ? <section className="cia-packaging-spec"><header><div><Boxes size={17} /><span><b>包材规格</b><small>材质、工艺、结构和尺寸直接进入伙伴端，不再混在备注里</small></span></div><em>文件由伙伴在每轮送样时上传并绑定</em></header><div><label><span>材质</span><input value={draft.packagingMaterial} onChange={(event) => setDraft({ ...draft, packagingMaterial: event.target.value })} placeholder="如 350g 白卡 / PETG" /></label><label><span>盒型 / 瓶型</span><input value={draft.packagingStructureType} onChange={(event) => setDraft({ ...draft, packagingStructureType: event.target.value })} placeholder="如天地盖、插口盒、圆肩瓶" /></label><label className="wide"><span>表面工艺</span><input value={draft.packagingProcess} onChange={(event) => setDraft({ ...draft, packagingProcess: event.target.value })} placeholder="覆膜、烫金、击凸、UV、丝印等" /></label><label><span>长 mm</span><input type="number" min="0" value={draft.packagingLengthMm} onChange={(event) => setDraft({ ...draft, packagingLengthMm: event.target.value })} /></label><label><span>宽 mm</span><input type="number" min="0" value={draft.packagingWidthMm} onChange={(event) => setDraft({ ...draft, packagingWidthMm: event.target.value })} /></label><label><span>高 mm</span><input type="number" min="0" value={draft.packagingHeightMm} onChange={(event) => setDraft({ ...draft, packagingHeightMm: event.target.value })} /></label><label><span>口径 mm</span><input type="number" min="0" value={draft.packagingDiameterMm} onChange={(event) => setDraft({ ...draft, packagingDiameterMm: event.target.value })} /></label><label><span>容量 ml</span><input type="number" min="0" value={draft.packagingCapacityMl} onChange={(event) => setDraft({ ...draft, packagingCapacityMl: event.target.value })} /></label><label className="wide"><span>颜色 / 印刷</span><input value={draft.packagingColorPrinting} onChange={(event) => setDraft({ ...draft, packagingColorPrinting: event.target.value })} placeholder="色号、印刷方式、专色及打样偏差要求" /></label><label><span>设计稿版本</span><input value={draft.packagingDesignVersion} onChange={(event) => setDraft({ ...draft, packagingDesignVersion: event.target.value })} placeholder="如 Artwork V3" /></label><label className="wide"><span>需回传文件</span><input value={draft.packagingFileRequirements} onChange={(event) => setDraft({ ...draft, packagingFileRequirements: event.target.value })} placeholder="如刀模图、3D 效果图、材质证明、测试报告" /></label></div></section> : null}
       {draft.taskType === "sampling_task" ? <div className="cia-sampling-requirements"><label><span>评审标准（伙伴可见）</span><textarea rows={3} maxLength={5000} value={draft.evaluationCriteria} onChange={(event) => setDraft({ ...draft, evaluationCriteria: event.target.value })} placeholder={draft.sampleCategory === "inner_material" ? "气味、颜色、黏度、肤感、稳定性等" : "材质、结构、颜色、尺寸公差、跌落与相容性等"} /></label><label className="cia-quote-switch"><input type="checkbox" checked={draft.quoteRequired} onChange={(event) => setDraft({ ...draft, quoteRequired: event.target.checked })} /><span><b>最终定版后要求报价</b><small>报价会永久绑定选中的具体样品编码。</small></span></label></div> : null}
-      <div className="cia-task-lines-head"><strong>产品 / 物料明细</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { sku: "", productName: "", specification: "", plannedQuantity: "", unit: "件" }] }))}><Plus size={14} />增加一行</button></div>
+      {!(draft.taskType === "sampling_task" && draft.sampleCategory === "inner_material") ? <><div className="cia-task-lines-head"><strong>产品 / 物料明细</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { sku: "", productName: "", specification: "", plannedQuantity: "", unit: "件" }] }))}><Plus size={14} />增加一行</button></div>
       <div className="cia-task-lines">{draft.lines.map((line, index) => <div key={index}>
         <span>{String(index + 1).padStart(2, "0")}</span>
         <input required value={line.sku} onChange={(event) => patchLine(index, { sku: event.target.value })} placeholder="SKU" />
@@ -497,8 +562,9 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
         <input required type="number" min="0.0001" step="0.0001" value={line.plannedQuantity} onChange={(event) => patchLine(index, { plannedQuantity: event.target.value })} placeholder="数量" />
         <input required value={line.unit} onChange={(event) => patchLine(index, { unit: event.target.value })} placeholder="单位" />
         <button type="button" aria-label="删除明细" disabled={draft.lines.length === 1} onClick={() => setDraft((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}><Trash2 size={15} /></button>
-      </div>)}</div>
+      </div>)}</div></> : <div className="cia-material-sampling-note"><FlaskConical size={18} /><span><strong>料体编号由供应商送样时填写</strong><small>现在不用填 SKU、料体编码、数量或标题；供应商每轮可登记多个不同料体及其内部编码。</small></span></div>}
       <label className="cia-task-requirements"><span>对外要求与注意事项</span><textarea rows={3} maxLength={5000} value={draft.requirements} onChange={(event) => setDraft({ ...draft, requirements: event.target.value })} placeholder={draft.taskType === "sampling_task" ? "样品规格、轮次、需提交的测试结果和附件" : "生产/交付要求、包材测试标准及异常上报要求"} /></label>
+      {draft.taskType === "sampling_task" ? <section className="cia-task-file-picker"><header><div><Paperclip size={17} /><span><b>需求附件</b><small>可上传参考图、配方说明、客户反馈或测试文件；图片可直接预览。</small></span></div><label><Upload size={15} />选择图片或文件<input type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf,.xlsx,.docx,.csv" onChange={(event) => { const selected = Array.from(event.target.files || []); const tooLarge = selected.find((file) => file.size > 50 * 1024 * 1024); if (tooLarge) notify(`${tooLarge.name} 超过 50MB，未加入附件。`, true); setTaskFiles((current) => [...current, ...selected.filter((file) => file.size <= 50 * 1024 * 1024)].slice(0, 20)); event.currentTarget.value = ""; }} /></label></header>{taskFiles.length ? <div>{taskFiles.map((file, index) => <article key={`${file.name}-${file.lastModified}-${index}`}><span><LocalFilePreview file={file} /></span><div><b>{file.name}</b><small>{file.type.startsWith("image/") ? "图片 · 发布后伙伴可预览" : "文件附件"} · {(file.size / 1024 / 1024).toFixed(2)} MB</small></div><button type="button" onClick={() => setTaskFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} aria-label={`移除 ${file.name}`}><X size={15} /></button></article>)}</div> : <p>未选择附件（可选）</p>}</section> : null}
       <footer><span><ShieldCheck size={15} />不会发送成本、客户、店铺、其他供应商或内部备注</span><button type="submit" className="cia-primary" disabled={!enabled || publishing}>{publishing ? <LoaderCircle size={16} className="cia-spin" /> : <Send size={16} />}发布给 {organization.name}</button></footer>
     </form>}
     <div className="cia-task-progress-head"><strong>本组织{fixedTaskType ? selectedType.label : "单据"}与进度</strong><span>{visibleItems.length} 单</span></div>

@@ -16,7 +16,8 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
   const sourceFeedback = [];
   let remainingResultFailures = resultFailures;
   const fetchImpl = async (url, options = {}) => {
-    requests.push({ url: String(url), method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null, authorization: options.headers?.Authorization });
+    const contentType = options.headers?.["Content-Type"] || options.headers?.get?.("Content-Type") || "";
+    requests.push({ url: String(url), method: options.method || "GET", body: options.body ? (contentType === "application/json" ? JSON.parse(options.body) : options.body) : null, headers: options.headers || {}, authorization: options.headers?.Authorization });
     const parsedUrl = new URL(String(url));
     if (parsedUrl.pathname.endsWith("/access-grants") && (options.method || "GET") === "GET") {
       return new Response(JSON.stringify({ ok: true, organization: organizations[0] || { code: "warehouse-a", organizationType: "warehouse" }, grants: accessGrants }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -155,6 +156,20 @@ test("internal administrators manually publish only procurement and sampling tas
   assert.equal(listing.items[0].status, "in_progress");
   assert.match(requests.at(-1).url, /organizationCode=mf-songyu/);
   assert.match(requests.at(-1).url, /itemType=production_order/);
+});
+
+test("internal requirement attachments stay scoped to the exact partner work item", async (t) => {
+  const workItemId = "99999999-9999-4999-8999-999999999999";
+  const workItem = { id: workItemId, organizationCode: "mf-songyu", itemType: "sampling_task", status: "pending" };
+  const { bridge, requests } = await fixture(t, { oemEnabled: true, workItems: [workItem], workItemDetail: { item: workItem, lines: [], events: [], attachments: [], commands: [] } });
+  const buffer = Buffer.from("sample-image-content");
+  await bridge.uploadOrganizationWorkItemAttachment("mf-songyu", workItemId, { fileName: "客户参考图.png", mimeType: "image/png", buffer }, { actorName: "中台打样员" });
+  const upload = requests.at(-1);
+  assert.equal(upload.method, "PUT");
+  assert.match(upload.url, new RegExp(`/work-items/${workItemId}/attachments$`));
+  assert.equal(Buffer.compare(upload.body, buffer), 0);
+  assert.equal(upload.headers["Content-Type"], "image/png");
+  await assert.rejects(() => bridge.uploadOrganizationWorkItemAttachment("another-organization", workItemId, { fileName: "客户参考图.png", mimeType: "image/png", buffer }), /不属于当前组织/);
 });
 
 test("JiandaoYun factory binding projects only the exact factory active outsourcing orders", async (t) => {

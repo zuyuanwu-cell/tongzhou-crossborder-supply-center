@@ -123,6 +123,8 @@ test("internal warehouse progress reads stay behind the integration boundary", (
   assert.match(serverSource, /collaboration\/internal\/v1\/work-items/);
   assert.match(serverSource, /assertInternalRequest\(req\)/);
   assert.match(storageSource, /export async function internalAttachmentDownload/);
+  assert.match(storageSource, /export async function internalAttachmentUpload/);
+  assert.doesNotMatch(storageSource.match(/export async function internalAttachmentDownload[\s\S]*?\n\}/)?.[0] || "", /item_type LIKE 'warehouse_%'/);
   assert.match(storageSource, /scan_status !== "clean"/);
   assert.doesNotMatch(integrationSource.match(/function internalWorkItem\(row\)[\s\S]*?\n\}/)?.[0] || "", /password|secret|token|email/i);
 });

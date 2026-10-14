@@ -37,6 +37,7 @@ import {
   attachmentDownload,
   completeS3Upload,
   createAttachmentUpload,
+  internalAttachmentUpload,
   internalAttachmentDownload,
   receiveLocalUpload,
 } from "./storage.js";
@@ -119,6 +120,17 @@ async function readJson(req) {
   } catch {
     throw Object.assign(new Error("请求不是有效的 JSON。"), { statusCode: 400, code: "invalid_json" });
   }
+}
+
+async function readRawBody(req, maxBytes = 50 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw Object.assign(new Error("附件不能超过 50MB。"), { statusCode: 413, code: "attachment_too_large" });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size);
 }
 
 function queryObject(url) {
@@ -246,6 +258,15 @@ async function route(req, res) {
     let internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}$`));
     if (internalWorkItemMatch && req.method === "GET") {
       sendJson(res, 200, { ok: true, ...(await getInternalWorkItem(internalWorkItemMatch[1])) });
+      return;
+    }
+    internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}/attachments$`));
+    if (internalWorkItemMatch && req.method === "PUT") {
+      const fileName = decodeURIComponent(String(req.headers["x-file-name"] || ""));
+      const actorName = decodeURIComponent(String(req.headers["x-actor-name"] || "供应链中台管理员"));
+      const mimeType = String(req.headers["content-type"] || "").split(";")[0].trim();
+      const buffer = await readRawBody(req);
+      sendJson(res, 201, { ok: true, ...(await internalAttachmentUpload(internalWorkItemMatch[1], { fileName, mimeType, buffer, actorName })) });
       return;
     }
     internalWorkItemMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/work-items/${uuidPattern}/attachments/${uuidPattern}$`));

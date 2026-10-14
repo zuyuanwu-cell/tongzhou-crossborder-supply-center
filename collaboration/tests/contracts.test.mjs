@@ -119,11 +119,12 @@ test("sampling contracts enforce typed rounds, review reasons and exact approved
     lines: [{ sku: "SAMPLE-1", productName: "洗发水内料", plannedQuantity: 6, unit: "瓶", lineType: "raw_material" }],
   };
   assert.equal(internalPartnerTaskSchema.safeParse(sampling).success, true);
+  assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, title: "", documentNo: "", quantity: 1, unit: "轮", lines: [] }).success, true);
   assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, documentNo: "" }).success, true);
   assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, taskType: "purchase_order", documentNo: "", sampleCategory: undefined, sampleSubject: undefined }).success, false);
   assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, sampleCategory: "packaging", sampleSubject: "formula" }).success, false);
   assert.equal(internalPartnerTaskSchema.safeParse({ ...sampling, internalTargetCost: 5.2 }).success, false);
-  const artifact = { workItemId: "11111111-1111-4111-8111-111111111111", artifactType: "sample_result", title: "第2轮样品", version: 2, publicPayload: { summary: "黏度已调整", result: "passed", roundNo: 2, sampleCategory: "inner_material", sampleSubject: "formula", sampleQuantity: 6, unit: "瓶", specificationVersion: "Formula V2", supplierConclusion: "自检通过", nextPlan: "等待中台评审", sampleVariants: [{ name: "清爽型 A", sampleQuantity: 3, unit: "瓶", description: "清爽、低香" }, { name: "滋润型 B", sampleQuantity: 3, unit: "瓶", description: "滋润度更高" }], attachmentIds: [] } };
+  const artifact = { workItemId: "11111111-1111-4111-8111-111111111111", artifactType: "sample_result", title: "第2轮样品", version: 2, publicPayload: { summary: "黏度已调整", result: "passed", roundNo: 2, sampleCategory: "inner_material", sampleSubject: "formula", sampleQuantity: 6, unit: "瓶", specificationVersion: "Formula V2", supplierConclusion: "自检通过", nextPlan: "等待中台评审", sampleVariants: [{ supplierMaterialCode: "SY-A-2601", name: "清爽型 A", sampleQuantity: 3, unit: "瓶", description: "清爽、低香" }, { supplierMaterialCode: "SY-B-2601", name: "滋润型 B", sampleQuantity: 3, unit: "瓶", description: "滋润度更高" }], attachmentIds: [] } };
   assert.equal(oemArtifactSchema.safeParse(artifact).success, true);
   assert.equal(oemArtifactSchema.safeParse({ ...artifact, publicPayload: { ...artifact.publicPayload, sampleVariants: [{ ...artifact.publicPayload.sampleVariants[0], variantCode: "MANUAL-CODE" }] } }).success, false);
   assert.equal(sampleArtifactReviewSchema.safeParse({ approved: false, note: "" }).success, false);
