@@ -74,6 +74,12 @@ const organizationStatusSchema = z.object({
   actorName: z.string().trim().min(1).max(120).optional().default("供应链中台管理员"),
 }).strict();
 
+const internalMemberCredentialsSchema = z.object({
+  username: usernameSchema.optional(),
+  password: z.string().max(512).optional(),
+  actorName: z.string().trim().min(1).max(120).optional().default("供应链中台管理员"),
+}).strict().refine((value) => value.username || value.password, "请至少修改登录账号或重置密码。");
+
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
 }
@@ -650,6 +656,81 @@ export async function updateOrganizationStatus(code, body) {
       [organization.id, input.actorName, { status: input.status }, organization.id],
     );
     return { organization: { id: organization.id, code: organization.code, name: organization.name, organizationType: organization.organization_type, status: organization.status, updatedAt: new Date(organization.updated_at).toISOString() } };
+  });
+}
+
+export async function updateMemberCredentialsInternally(code, membershipId, body) {
+  const input = internalMemberCredentialsSchema.parse(body);
+  const normalizedCode = String(code || "").trim().toLowerCase();
+  const passwordHash = input.password ? await hashPassword(validateNewPassword(input.password)) : null;
+  return withSystem(async (client) => {
+    const identityResult = await client.query(
+      `SELECT o.id AS organization_id,m.id AS membership_id,u.id AS user_id,u.username,u.email,u.display_name,
+              u.status AS user_status,u.last_login_at,m.role,m.status,m.permissions,m.mfa_required,m.created_at
+         FROM organizations o
+         JOIN organization_memberships m ON m.organization_id=o.id
+         JOIN collaboration_users u ON u.id=m.user_id
+        WHERE o.code=$1 AND m.id=$2
+        FOR UPDATE OF u,m`,
+      [normalizedCode, membershipId],
+    );
+    const current = identityResult.rows[0];
+    if (!current) fail("协作成员不存在。", 404, "member_not_found");
+    const nextUsername = input.username || current.username;
+    const duplicate = await client.query(
+      `SELECT 1 FROM collaboration_users WHERE id<>$1 AND lower(username)=lower($2)
+       UNION ALL
+       SELECT 1 FROM collaboration_invitations WHERE accepted_at IS NULL AND expires_at>now() AND lower(username)=lower($2)
+       LIMIT 1`,
+      [current.user_id, nextUsername],
+    );
+    if (duplicate.rows[0]) fail("登录账号已被使用。", 409, "identity_exists");
+    await client.query(
+      `UPDATE collaboration_users
+          SET username=$2,
+              password_hash=COALESCE($3,password_hash),
+              password_changed_at=CASE WHEN $3::text IS NULL THEN password_changed_at ELSE now() END,
+              must_change_password=false,
+              failed_login_count=CASE WHEN $3::text IS NULL THEN failed_login_count ELSE 0 END,
+              locked_until=CASE WHEN $3::text IS NULL THEN locked_until ELSE NULL END,
+              status=CASE WHEN $3::text IS NULL THEN status ELSE 'active' END,
+              updated_at=now()
+        WHERE id=$1`,
+      [current.user_id, nextUsername, passwordHash],
+    );
+    if (passwordHash) await client.query("UPDATE collaboration_password_resets SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [current.user_id]);
+    const revoked = await client.query("UPDATE collaboration_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [current.user_id]);
+    await client.query(
+      `INSERT INTO audit_log(organization_id,actor_user_id,actor_name,action,object_type,object_id,result,metadata)
+       VALUES ($1,NULL,$2,'identity.member.credentials.internal','membership',$3,'success',$4)`,
+      [current.organization_id, input.actorName, membershipId, {
+        previousUsername: current.username,
+        username: nextUsername,
+        usernameChanged: nextUsername !== current.username,
+        passwordReset: Boolean(passwordHash),
+        sessionsRevoked: revoked.rowCount || 0,
+      }],
+    );
+    return {
+      member: {
+        id: current.membership_id,
+        userId: current.user_id,
+        username: nextUsername,
+        email: current.email || "",
+        displayName: current.display_name,
+        userStatus: passwordHash ? "active" : current.user_status,
+        role: current.role,
+        status: current.status,
+        permissions: current.permissions || [],
+        mfaRequired: false,
+        mfaEnabled: false,
+        mustChangePassword: false,
+        lastLoginAt: current.last_login_at ? new Date(current.last_login_at).toISOString() : "",
+        createdAt: new Date(current.created_at).toISOString(),
+      },
+      passwordReset: Boolean(passwordHash),
+      sessionsRevoked: revoked.rowCount || 0,
+    };
   });
 }
 

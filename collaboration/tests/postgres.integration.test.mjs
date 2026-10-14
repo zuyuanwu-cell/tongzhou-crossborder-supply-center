@@ -192,6 +192,23 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   assert.equal(updatedInternalDetail.partnerOrder.milestones[0].status, "completed");
   assert.ok(updatedInternalDetail.partnerOrder.milestones[0].completedAt);
 
+  const resetPassword = `Reset${unique}7!`;
+  const renamedUsername = `owner-${unique}`;
+  const credentialUpdate = await identity.updateMemberCredentialsInternally(bootstrap.organization.code, bootstrap.administrator.membershipId, {
+    username: renamedUsername,
+    password: resetPassword,
+    actorName: "中台账号管理员",
+  });
+  assert.equal(credentialUpdate.member.username, renamedUsername);
+  assert.equal(credentialUpdate.passwordReset, true);
+  assert.ok(credentialUpdate.sessionsRevoked >= 1);
+  await assert.rejects(() => authApi.login(request, { username: `admin-${unique}`, password: nextPassword }), (error) => error?.code === "invalid_credentials");
+  const renamedLogin = await authApi.login(request, { username: renamedUsername, password: resetPassword });
+  assert.equal(renamedLogin.auth.user.username, renamedUsername);
+  const credentialAudit = await integrationPool.query("SELECT metadata FROM audit_log WHERE action='identity.member.credentials.internal' AND object_id=$1 ORDER BY created_at DESC LIMIT 1", [bootstrap.administrator.membershipId]);
+  assert.equal(credentialAudit.rows[0].metadata.passwordReset, true);
+  assert.equal(credentialAudit.rows[0].metadata.password, undefined);
+
   const orgs = await integrationPool.query("INSERT INTO organizations(code,name,organization_type) VALUES ('rls-a','A仓','warehouse'),('rls-b','B仓','warehouse') ON CONFLICT(code) DO UPDATE SET name=excluded.name RETURNING id,code");
   const a = orgs.rows.find((row) => row.code === "rls-a").id;
   const b = orgs.rows.find((row) => row.code === "rls-b").id;

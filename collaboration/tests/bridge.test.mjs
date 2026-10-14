@@ -476,6 +476,7 @@ test("organization order detail is scoped to its organization and cannot leak th
 test("identity administration stays behind the server-side collaboration token", async (t) => {
   const { bridge, requests } = await fixture(t);
   const invitationId = "77777777-7777-4777-8777-777777777777";
+  const membershipId = "66666666-6666-4666-8666-666666666666";
 
   await bridge.listOrganizations({ keyword: "华东", status: "active" });
   await bridge.bootstrapOrganization({
@@ -491,10 +492,11 @@ test("identity administration stays behind the server-side collaboration token",
   });
   await bridge.getOrganizationAccess("cn-east-warehouse");
   await bridge.updateOrganizationStatus("cn-east-warehouse", { status: "suspended", actorName: "内部管理员" });
+  await bridge.updateMemberCredentials("cn-east-warehouse", membershipId, { username: "warehouse-owner", password: "Replacement123!", actorName: "内部管理员" });
   await bridge.reissueInvitation(invitationId, { actorName: "内部管理员" });
   await bridge.revokeInvitation(invitationId, { actorName: "内部管理员" });
 
-  assert.equal(requests.length, 6);
+  assert.equal(requests.length, 7);
   assert.match(requests[0].url, /^http:\/\/collaboration\.test\/collaboration\/internal\/v1\/organizations\?/);
   assert.match(requests[0].url, /keyword=%E5%8D%8E%E4%B8%9C/);
   assert.match(requests[0].url, /status=active/);
@@ -505,8 +507,11 @@ test("identity administration stays behind the server-side collaboration token",
   assert.equal(requests[1].body.administrator.password, "Temporary123!");
   assert.equal(requests[2].url, "http://collaboration.test/collaboration/internal/v1/organizations/cn-east-warehouse");
   assert.equal(requests[3].method, "PATCH");
-  assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);
-  assert.equal(requests[5].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/revoke`);
+  assert.equal(requests[4].url, `http://collaboration.test/collaboration/internal/v1/organizations/cn-east-warehouse/members/${membershipId}/credentials`);
+  assert.equal(requests[4].method, "PATCH");
+  assert.deepEqual(requests[4].body, { username: "warehouse-owner", password: "Replacement123!", actorName: "内部管理员" });
+  assert.equal(requests[5].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/reissue`);
+  assert.equal(requests[6].url, `http://collaboration.test/collaboration/internal/v1/invitations/${invitationId}/revoke`);
   assert.ok(requests.every((request) => request.authorization === "Bearer internal-test-token"));
 });
 

@@ -71,6 +71,7 @@ import {
   revokeInvitationInternally,
   revokeOwnSession,
   updateMember,
+  updateMemberCredentialsInternally,
   updateOwnProfile,
   updateOrganizationStatus,
 } from "./identity.js";
@@ -205,6 +206,11 @@ async function route(req, res) {
     }
     if (organizationMatch && req.method === "PATCH") {
       sendJson(res, 200, { ok: true, ...(await updateOrganizationStatus(organizationMatch[1], await readJson(req))) });
+      return;
+    }
+    const internalMemberCredentialsMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/organizations/${organizationCodePattern}/members/${uuidPattern}/credentials$`));
+    if (internalMemberCredentialsMatch && req.method === "PATCH") {
+      sendJson(res, 200, { ok: true, ...(await updateMemberCredentialsInternally(internalMemberCredentialsMatch[1], internalMemberCredentialsMatch[2], await readJson(req))) });
       return;
     }
     const accessGrantMatch = url.pathname.match(new RegExp(`^/collaboration/internal/v1/organizations/${organizationCodePattern}/access-grants$`));

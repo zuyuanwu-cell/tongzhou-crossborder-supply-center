@@ -2,7 +2,7 @@ import React from "react";
 import {
   AlertTriangle, ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Bell, Boxes, Building2, CalendarDays, Camera, Check, CheckCircle2,
   BadgeDollarSign, ChevronRight, CircleDot, Clock3, ClipboardCheck, Factory, FileCheck2, FileText, FlaskConical, Inbox, LayoutDashboard,
-  LoaderCircle, LockKeyhole, LogOut, MapPin, Menu, PackageCheck, Plus, ReceiptText, RefreshCw, Ruler, Scale, ScanLine, Search, ShieldCheck, Stamp,
+  LoaderCircle, LockKeyhole, LogOut, MapPin, PackageCheck, Plus, ReceiptText, RefreshCw, Ruler, Scale, ScanLine, Search, ShieldCheck, Stamp,
   Trash2, Truck, Upload, UserPlus, UserRound, Users, Warehouse, X, XCircle, Copy, KeyRound, Mail,
 } from "lucide-react";
 import {
@@ -778,7 +778,7 @@ function MembersPage({ session, notify }: { session: Session; notify(message: st
 }
 
 function AppShell({ session, onSessionChange, onLogout }: { session: Session; onSessionChange(session: Session): void; onLogout(): void }) {
-  const [route, navigate] = useRoute(); const [mobileNav, setMobileNav] = React.useState(false); const [selected, setSelected] = React.useState<WorkItem | null>(null); const [toast, setToast] = React.useState<{ message: string; tone: "success" | "error" } | null>(null); const [refreshKey, setRefreshKey] = React.useState(0);
+  const [route, navigate] = useRoute(); const [selected, setSelected] = React.useState<WorkItem | null>(null); const [toast, setToast] = React.useState<{ message: string; tone: "success" | "error" } | null>(null); const [refreshKey, setRefreshKey] = React.useState(0);
   const canManageMembers = session.membership.role === "organization_admin";
   const showToast = React.useCallback((message: string, tone: "success" | "error") => setToast({ message, tone }), []);
   const mode = organizationMode(session);
@@ -788,9 +788,15 @@ function AppShell({ session, onSessionChange, onLogout }: { session: Session; on
   const mobileRoutes = visibleRoutes.filter(([key]) => key !== "account");
   const page = route === "overview" ? <OverviewPage key={refreshKey} session={session} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} /> : route === "inventory" && mode === "warehouse" ? <InventoryPage key={refreshKey} session={session} onOpenTask={setSelected} notify={showToast} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : route === "account" ? <AccountPage session={session} onSessionChange={onSessionChange} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
   return <div className="portal-shell">
-    <aside className={`sidebar ${mobileNav ? "open" : ""}`}><div className="sidebar-brand"><span><Boxes size={23} /></span><div><b>同舟协同</b><small>PARTNER PORTAL</small></div></div><div className="org-card"><span><Building2 size={17} /></span><div><small>当前组织</small><b>{session.organization.name}</b><code>{session.organization.code}</code></div><ShieldCheck size={17} /></div><nav>{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => { navigate(key); setMobileNav(false); }}><Icon size={20} /><span>{routeLabel(session, key)}</span>{key === "notifications" ? <i /> : null}</button>; })}</nav><div className="sidebar-scope"><ShieldCheck size={18} /><div><b>数据边界已锁定</b><span>仅访问本组织资料</span></div></div><button className="profile-card" onClick={() => navigate("account")}><span><UserRound size={19} /></span><div><b>{session.user.displayName}</b><small>{session.user.email || "未设置找回邮箱"}</small></div><ChevronRight size={17} /></button><button className="sidebar-logout" onClick={onLogout}><LogOut size={16} />退出登录</button></aside>
-    {mobileNav ? <button className="nav-scrim" onClick={() => setMobileNav(false)} aria-label="关闭导航" /> : null}
-    <main className="main-stage"><header className="topbar"><button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={21} /></button><div><span>{routeLabel(session, route)}</span><small>组织级安全协同 · {session.organization.code}</small></div><div className="topbar-actions"><button onClick={() => navigate("notifications")} aria-label="消息"><Bell size={19} /><i /></button><span className="online-mark"><i />在线</span></div></header><div className="page-content">{page}</div></main>
+    <header className="portal-header">
+      <div className="portal-header-main">
+        <button className="portal-brand" type="button" aria-label="返回作业总览" onClick={() => navigate("overview")}><span><Boxes size={22} /></span><div><b>同舟协同</b><small>PARTNER WORKSPACE</small></div></button>
+        <div className="portal-organization"><Building2 size={17} /><div><small>当前组织</small><b>{session.organization.name}</b></div><code>{session.organization.code}</code><span><ShieldCheck size={14} />边界已锁定</span></div>
+        <div className="portal-account-actions"><button className="portal-notification" type="button" onClick={() => navigate("notifications")} aria-label="消息中心"><Bell size={18} /><i /></button><button className={`portal-profile ${route === "account" ? "active" : ""}`} type="button" aria-label="账号安全" onClick={() => navigate("account")}><span><UserRound size={18} /></span><div><b>{session.user.displayName}</b><small>{session.user.email || "账号安全"}</small></div></button><button className="portal-logout" type="button" aria-label="退出登录" onClick={onLogout}><LogOut size={16} /><span>退出</span></button></div>
+      </div>
+      <nav className="portal-primary-nav" aria-label="伙伴工作台导航">{visibleRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} type="button" className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={18} /><span>{routeLabel(session, key)}</span>{key === "notifications" ? <i /> : null}</button>; })}<div className="portal-route-context"><span>{routeLabel(session, route)}</span><small>组织级安全协同</small></div></nav>
+    </header>
+    <main className="main-stage"><div className="page-content">{page}</div></main>
     <nav className={`mobile-tabs ${canManageMembers ? "with-members" : ""}`}>{mobileRoutes.map(([key, meta]) => { const Icon = meta.icon; return <button key={key} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={21} /><span>{routeLabel(session, key).slice(0, 2)}</span></button>; })}</nav>
     {selected ? <TaskDetailDrawer item={selected} onClose={() => setSelected(null)} onChanged={() => setRefreshKey((key) => key + 1)} notify={(message, tone) => setToast({ message, tone })} /> : null}
     {toast ? <Toast {...toast} onClose={() => setToast(null)} /> : null}

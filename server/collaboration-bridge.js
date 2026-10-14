@@ -922,6 +922,10 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`, { method: "PATCH", body: input });
   }
 
+  function updateMemberCredentials(code, membershipId, input) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/members/${encodeURIComponent(membershipId)}/credentials`, { method: "PATCH", body: input });
+  }
+
   function reissueInvitation(invitationId, input) {
     return internalRequest(`/collaboration/internal/v1/invitations/${encodeURIComponent(invitationId)}/reissue`, { method: "POST", body: input });
   }
@@ -1012,6 +1016,7 @@ export function createCollaborationBridge({
     synchronizeInventoryProjections,
     synchronizeOutsourcingProjections,
     updateOrganizationStatus,
+    updateMemberCredentials,
     waitForIdle,
   };
 }

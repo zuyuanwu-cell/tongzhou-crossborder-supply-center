@@ -344,6 +344,13 @@ export function updateCollaborationOrganizationStatus(code: string, status: Coll
   });
 }
 
+export function updateCollaborationMemberCredentials(code: string, membershipId: string, input: { username?: string; password?: string }) {
+  return request<{ ok: boolean; member: CollaborationMember; passwordReset: boolean; sessionsRevoked: number }>(`/api/collaboration-bridge/organizations/${encodeURIComponent(code)}/members/${encodeURIComponent(membershipId)}/credentials`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export function reissueCollaborationInvitation(invitationId: string) {
   return request<{ ok: boolean } & CollaborationInvitationResult>(`/api/collaboration-bridge/invitations/${encodeURIComponent(invitationId)}/reissue`, { method: "POST", body: "{}" });
 }
