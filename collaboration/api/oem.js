@@ -161,6 +161,12 @@ function assertIdempotencyKey(value) {
   return key;
 }
 
+function generatedSampleVariantCode(item, roundNo, index) {
+  const prefix = item.public_payload?.sampleCategory === "packaging" ? "BC" : "LT";
+  const reference = String(item.core_ref_id || "SAMPLE").replace(/[^A-Za-z0-9]/g, "").slice(-10).toUpperCase() || "SAMPLE";
+  return `${prefix}-${reference}-R${String(roundNo).padStart(2, "0")}-${String(index + 1).padStart(2, "0")}`;
+}
+
 export async function submitSupplierQuote(auth, body, { idempotencyKey, expectedVersion }) {
   assertEnabled();
   assertPartnerRole(auth);
@@ -177,23 +183,24 @@ export async function submitSupplierQuote(auth, body, { idempotencyKey, expected
     if (isSamplingQuote) {
       if (!input.sampleArtifactId) fail("请基于中台已确认的最终样版本报价。", 428, "approved_sample_required");
       const approved = await client.query(
-        `SELECT id,version FROM oem_artifacts
+        `SELECT id,version,public_payload FROM oem_artifacts
           WHERE id=$1 AND organization_id=$2 AND work_item_id=$3 AND artifact_type='sample_result' AND status='approved'`,
         [input.sampleArtifactId, auth.organization.id, item.id],
       );
       sampleArtifact = approved.rows[0] || null;
       if (!sampleArtifact) fail("最终样版本不存在或尚未通过中台评审。", 409, "approved_sample_required");
     }
+    const sampleVariantCode = String(sampleArtifact?.public_payload?.approvedVariantCode || "");
     const versionResult = await client.query("SELECT COALESCE(MAX(version),0)::int+1 AS version FROM supplier_quotes WHERE organization_id=$1 AND work_item_id=$2", [auth.organization.id, item.id]);
     const quoteResult = await client.query(
-      `INSERT INTO supplier_quotes(organization_id,space_id,work_item_id,currency,amount,minimum_order_quantity,lead_time_days,terms,version,submitted_by,sample_artifact_id,sample_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [auth.organization.id, item.space_id, item.id, input.currency, input.amount, input.minimumOrderQuantity, input.leadTimeDays, input.terms, versionResult.rows[0].version, auth.user.id, sampleArtifact?.id || null, sampleArtifact?.version || null],
+      `INSERT INTO supplier_quotes(organization_id,space_id,work_item_id,currency,amount,minimum_order_quantity,lead_time_days,terms,version,submitted_by,sample_artifact_id,sample_version,sample_variant_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [auth.organization.id, item.space_id, item.id, input.currency, input.amount, input.minimumOrderQuantity, input.leadTimeDays, input.terms, versionResult.rows[0].version, auth.user.id, sampleArtifact?.id || null, sampleArtifact?.version || null, sampleVariantCode],
     );
     const quote = quoteResult.rows[0];
     const command = await createOemCommand(client, auth, item, { commandType: "quote_submit", idempotencyKey: key, expectedVersion, payload: { ...input, quoteId: quote.id, quoteVersion: quote.version } });
-    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_user_id,actor_name,body,metadata) VALUES ($1,$2,'partner.quote_submit',$3,$4,$5,$6)", [auth.organization.id, item.id, auth.user.id, auth.user.displayName, isSamplingQuote ? `已基于第 ${sampleArtifact.version} 轮最终样提交报价` : "已提交密封报价", { commandId: command.id, quoteId: quote.id, version: quote.version, sampleArtifactId: sampleArtifact?.id || "", sampleVersion: sampleArtifact?.version || null }]);
-    return { ok: true, idempotentReplay: false, commandId: command.id, quote: { id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: quote.lead_time_days, terms: quote.terms, status: quote.status, version: quote.version, sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version || null } };
+    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_user_id,actor_name,body,metadata) VALUES ($1,$2,'partner.quote_submit',$3,$4,$5,$6)", [auth.organization.id, item.id, auth.user.id, auth.user.displayName, isSamplingQuote ? `已基于第 ${sampleArtifact.version} 轮最终样${sampleVariantCode ? `（${sampleVariantCode}）` : ""}提交报价` : "已提交密封报价", { commandId: command.id, quoteId: quote.id, version: quote.version, sampleArtifactId: sampleArtifact?.id || "", sampleVersion: sampleArtifact?.version || null, sampleVariantCode }]);
+    return { ok: true, idempotentReplay: false, commandId: command.id, quote: { id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: quote.lead_time_days, terms: quote.terms, status: quote.status, version: quote.version, sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version || null, sampleVariantCode: quote.sample_variant_code || "" } };
   });
 }
 
@@ -221,8 +228,24 @@ export async function submitOemArtifact(auth, body, { idempotencyKey, expectedVe
       ? await client.query("SELECT COALESCE(MAX(version),0)::int+1 AS version FROM oem_artifacts WHERE organization_id=$1 AND work_item_id=$2 AND artifact_type='sample_result'", [auth.organization.id, item.id])
       : null;
     const artifactVersion = sampleVersionResult?.rows[0]?.version || input.version;
+    if (item.item_type === "sampling_task" && !input.publicPayload.sampleVariants?.length) fail("每轮打样至少登记一个本轮样品。", 400, "sample_variants_required");
+    const attachmentIds = [...new Set(input.publicPayload.attachmentIds || [])];
+    if (attachmentIds.length) {
+      const attachments = await client.query(
+        "SELECT id FROM attachments WHERE organization_id=$1 AND work_item_id=$2 AND id=ANY($3::uuid[]) AND scan_status='clean'",
+        [auth.organization.id, item.id, attachmentIds],
+      );
+      if (attachments.rowCount !== attachmentIds.length) fail("本轮附件不存在、越权或尚未通过安全检查。", 409, "sample_attachment_invalid");
+    }
     const publicPayload = item.item_type === "sampling_task"
-      ? { ...input.publicPayload, roundNo: artifactVersion, sampleCategory: item.public_payload?.sampleCategory, sampleSubject: item.public_payload?.sampleSubject }
+      ? {
+        ...input.publicPayload,
+        roundNo: artifactVersion,
+        sampleCategory: item.public_payload?.sampleCategory,
+        sampleSubject: item.public_payload?.sampleSubject,
+        sampleVariants: input.publicPayload.sampleVariants.map((variant, index) => ({ ...variant, variantCode: generatedSampleVariantCode(item, artifactVersion, index) })),
+        attachmentIds,
+      }
       : input.publicPayload;
     const artifactResult = await client.query(
       `INSERT INTO oem_artifacts(organization_id,space_id,work_item_id,artifact_type,title,version,status,public_payload,submitted_by)
@@ -257,17 +280,19 @@ export async function reviewInternalSampleArtifact(artifactId, body) {
     if (input.approved) {
       const locked = await client.query("SELECT id,version FROM oem_artifacts WHERE organization_id=$1 AND work_item_id=$2 AND artifact_type='sample_result' AND status='approved' AND id<>$3 LIMIT 1", [artifact.organization_id, artifact.target_work_item_id, artifact.id]);
       if (locked.rows[0]) fail(`该任务已锁定第 ${locked.rows[0].version} 轮最终样，不可重复定版。`, 409, "sample_already_approved");
+      const variants = Array.isArray(artifact.public_payload?.sampleVariants) ? artifact.public_payload.sampleVariants : [];
+      if (variants.length && !variants.some((variant) => variant.variantCode === input.approvedVariantCode)) fail("请选择本轮中要定版的具体样品。", 400, "approved_variant_required");
     }
     const status = requestedStatus;
     await client.query(
       `UPDATE oem_artifacts
           SET status=$2,updated_at=now(),public_payload=public_payload || $3::jsonb
         WHERE id=$1`,
-      [artifact.id, status, JSON.stringify({ reviewNote: input.note, reviewedBy: input.reviewer, reviewedAt: new Date().toISOString() })],
+      [artifact.id, status, JSON.stringify({ reviewNote: input.note, reviewedBy: input.reviewer, reviewedAt: new Date().toISOString(), approvedVariantCode: input.approved ? input.approvedVariantCode : "" })],
     );
     await client.query("UPDATE work_items SET status='in_progress',version=version+1,last_core_synced_at=now() WHERE id=$1", [artifact.target_work_item_id]);
-    const bodyText = input.approved ? `第 ${artifact.version} 轮样品已确认为最终样，等待供应商报价` : `第 ${artifact.version} 轮样品需修改并重新送样：${input.note}`;
-    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata) VALUES ($1,$2,$3,$4,$5,$6)", [artifact.organization_id, artifact.target_work_item_id, input.approved ? "core.sample_approved" : "core.sample_revision_requested", input.reviewer, bodyText, { artifactId: artifact.id, version: artifact.version, reviewNote: input.note }]);
+    const bodyText = input.approved ? `第 ${artifact.version} 轮样品 ${input.approvedVariantCode || ""} 已确认为最终样，等待供应商报价` : `第 ${artifact.version} 轮样品需修改并重新送样：${input.note}`;
+    await client.query("INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata) VALUES ($1,$2,$3,$4,$5,$6)", [artifact.organization_id, artifact.target_work_item_id, input.approved ? "core.sample_approved" : "core.sample_revision_requested", input.reviewer, bodyText, { artifactId: artifact.id, version: artifact.version, reviewNote: input.note, approvedVariantCode: input.approvedVariantCode }]);
     await client.query("INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status) VALUES ($1,$2,$3,$4,'in_app','sent')", [artifact.organization_id, artifact.target_work_item_id, input.approved ? "最终样已确认，请提交报价" : "样品评审需修改", bodyText]);
     await client.query("INSERT INTO audit_log(organization_id,actor_name,action,object_type,object_id,result,metadata) VALUES ($1,$2,$3,'oem_artifact',$4,$5,$6)", [artifact.organization_id, input.reviewer, input.approved ? "sample.approve" : "sample.reject", artifact.id, status, { workItemId: artifact.target_work_item_id, version: artifact.version, note: input.note }]);
     return { ok: true, artifactId: artifact.id, workItemId: artifact.target_work_item_id, status, version: artifact.version, workItemVersion: Number(artifact.work_item_version) + 1 };

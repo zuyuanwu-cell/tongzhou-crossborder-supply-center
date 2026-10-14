@@ -83,7 +83,7 @@ export async function getWorkItem(auth, workItemId) {
     const oem = collaborationConfig.oemEnabled && ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
       ? [
         await client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC,created_at DESC", [workItemId, auth.organization.id]),
-        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,sample_artifact_id,sample_version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, auth.organization.id]),
+        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,sample_artifact_id,sample_version,sample_variant_code,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, auth.organization.id]),
         await client.query("SELECT id,milestone_type,title,planned_at,completed_at,status,public_payload,version,updated_at FROM production_milestones WHERE work_item_id=$1 AND organization_id=$2 ORDER BY planned_at NULLS LAST,created_at", [workItemId, auth.organization.id]),
       ]
       : null;
@@ -105,7 +105,7 @@ export async function getWorkItem(auth, workItemId) {
       commands: commands.rows.map((item) => ({ id: item.id, commandType: item.command_type, status: item.status, submittedAt: new Date(item.submitted_at).toISOString(), processedAt: item.processed_at ? new Date(item.processed_at).toISOString() : "", resultCode: item.result_code || "", resultMessage: item.result_message || "", coreReference: item.core_reference || "" })),
       oem: oem ? {
         artifacts: oem[0].rows.map((item) => ({ id: item.id, artifactType: item.artifact_type, title: item.title, version: item.version, status: item.status, publicPayload: item.public_payload, createdAt: new Date(item.created_at).toISOString(), updatedAt: new Date(item.updated_at).toISOString() })),
-        quotes: oem[1].rows.map((item) => ({ id: item.id, currency: item.currency, amount: Number(item.amount), minimumOrderQuantity: Number(item.minimum_order_quantity), leadTimeDays: item.lead_time_days, terms: item.terms, status: item.status, version: item.version, sampleArtifactId: item.sample_artifact_id || "", sampleVersion: item.sample_version == null ? null : Number(item.sample_version), submittedAt: new Date(item.submitted_at).toISOString() })),
+        quotes: oem[1].rows.map((item) => ({ id: item.id, currency: item.currency, amount: Number(item.amount), minimumOrderQuantity: Number(item.minimum_order_quantity), leadTimeDays: item.lead_time_days, terms: item.terms, status: item.status, version: item.version, sampleArtifactId: item.sample_artifact_id || "", sampleVersion: item.sample_version == null ? null : Number(item.sample_version), sampleVariantCode: item.sample_variant_code || "", submittedAt: new Date(item.submitted_at).toISOString() })),
         milestones: oem[2].rows.map((item) => ({ id: item.id, milestoneType: item.milestone_type, title: item.title, plannedAt: item.planned_at ? new Date(item.planned_at).toISOString() : "", completedAt: item.completed_at ? new Date(item.completed_at).toISOString() : "", status: item.status, publicPayload: item.public_payload, version: item.version, updatedAt: new Date(item.updated_at).toISOString() })),
       } : null,
       partnerOrder: partnerOrder ? {

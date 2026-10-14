@@ -431,7 +431,8 @@ const navItems = [
   { label: "国内仓协同", icon: WarehouseIcon, hash: "#domestic-collaboration", section: "collaboration", childOf: "协同总览", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
   { label: "委外加工协同", icon: Factory, hash: "#outsourcing-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
   { label: "物料采购协同", icon: PackageCheck, hash: "#procurement-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "打样协同", icon: FlaskConical, hash: "#sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
+  { label: "料体打样", icon: FlaskConical, hash: "#material-sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
+  { label: "包材打样", icon: Boxes, hash: "#packaging-sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
   { label: "伙伴与权限", icon: Users, hash: "#collaboration-accounts", section: "collaboration", childOf: "协同总览", permission: "operations" },
   { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_liability_settlement"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
@@ -2090,8 +2091,10 @@ function App() {
           <PartnerCollaborationWorkspace taskType="production_order" />
         ) : activeView === "物料采购协同" ? (
           <PartnerCollaborationWorkspace taskType="purchase_order" />
-        ) : activeView === "打样协同" ? (
-          <PartnerCollaborationWorkspace taskType="sampling_task" />
+        ) : activeView === "料体打样" ? (
+          <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="inner_material" />
+        ) : activeView === "包材打样" ? (
+          <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="packaging" />
         ) : activeView === "伙伴与权限" ? (
           <CollaborationIdentityAdmin />
         ) : activeView === "海外仓协同" ? (

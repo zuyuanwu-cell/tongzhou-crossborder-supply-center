@@ -74,6 +74,13 @@ function collaborationProjectionVersion() {
   return Math.max(1, Math.floor((Date.now() - Date.UTC(2020, 0, 1)) / 1_000));
 }
 
+function generatedSamplingDocumentNo(sampleCategory) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const day = `${value.year}${value.month}${value.day}`;
+  return `DY-${sampleCategory === "packaging" ? "BC" : "LT"}-${day}-${randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+}
+
 function inventoryFingerprint(warehouseName, items) {
   return createHash("sha256").update(JSON.stringify({ warehouseName, items })).digest("hex");
 }
@@ -799,6 +806,7 @@ export function createCollaborationBridge({
   async function publishPartnerTask(code, input, { actorName = "供应链中台管理员" } = {}) {
     if (!oemEnabled) fail("生产、采购与打样协同尚未启用。", 403, "feature_disabled");
     const task = internalPartnerTaskSchema.parse(input);
+    const documentNo = task.taskType === "sampling_task" ? (task.documentNo || generatedSamplingDocumentNo(task.sampleCategory)) : task.documentNo;
     if (task.taskType === "production_order") fail("委外加工单由千顷 ERP 自动同步，请先绑定委外灌装工厂，不要重复手工录单。", 409, "source_managed_task");
     const access = await getOrganizationAccessGrants(code);
     const required = {
@@ -820,7 +828,7 @@ export function createCollaborationBridge({
         eventId,
         organizationCode: code,
         coreRefType: "sampling_order",
-        coreRefId: task.documentNo,
+        coreRefId: documentNo,
         spaceType: "sampling",
         itemType: "sampling_task",
         title: task.title,
@@ -830,7 +838,7 @@ export function createCollaborationBridge({
         dueAt: task.dueAt,
         version,
         publicPayload: {
-          projectCode: task.documentNo,
+          projectCode: documentNo,
           productName: task.productName,
           productSpec: task.productSpec,
           documentVersion: `V${version}`,
@@ -843,6 +851,7 @@ export function createCollaborationBridge({
           sampleGoal: task.sampleGoal,
           evaluationCriteria: task.evaluationCriteria,
           quoteRequired: task.quoteRequired,
+          packagingSpec: task.sampleCategory === "packaging" ? task.packagingSpec : undefined,
         },
         milestones: [],
       });
@@ -862,7 +871,7 @@ export function createCollaborationBridge({
         dueAt: task.dueAt,
         version,
         publicPayload: {
-          orderNo: task.documentNo,
+          orderNo: documentNo,
           productName: task.productName,
           fulfillmentMode: production ? task.fulfillmentMode : "supplier",
           requirements: task.requirements,
@@ -872,7 +881,7 @@ export function createCollaborationBridge({
           deliveryAddress: task.deliveryAddress,
         },
         lines: task.lines.map((line, index) => ({
-          lineRef: `${task.documentNo}-${String(index + 1).padStart(3, "0")}`.slice(0, 120),
+          lineRef: `${documentNo}-${String(index + 1).padStart(3, "0")}`.slice(0, 120),
           lineType: line.lineType || (production ? "finished_product" : "raw_material"),
           sku: normalizedSku(line.sku),
           productName: line.productName,
@@ -886,8 +895,8 @@ export function createCollaborationBridge({
       });
     }
     const delivery = await flushOutbox();
-    onAudit("发布伙伴生产/采购/打样单", { id: eventId, organizationCode: code, coreRefId: task.documentNo, commandType: "publish", submittedByName: actorName }, { taskType: task.taskType, status: queued.status, delivery });
-    return { ok: true, eventId, coreRefId: task.documentNo, status: queued.status, delivery };
+    onAudit("发布伙伴生产/采购/打样单", { id: eventId, organizationCode: code, coreRefId: documentNo, commandType: "publish", submittedByName: actorName }, { taskType: task.taskType, status: queued.status, delivery });
+    return { ok: true, eventId, coreRefId: documentNo, status: queued.status, delivery };
   }
 
   async function replaceOrganizationAccessGrants(code, input) {

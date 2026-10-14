@@ -12,6 +12,7 @@ const usernameOnlyLoginSql = readFileSync(join(dirname(fileURLToPath(import.meta
 const accessGrantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0006_organization_access_grants.sql"), "utf8");
 const warehouseOperationsSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0007_warehouse_operations.sql"), "utf8");
 const partnerOrderSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0008_partner_order_collaboration.sql"), "utf8");
+const samplingVariantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0010_sampling_variants.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -138,4 +139,11 @@ test("production and procurement collaboration is tenant isolated and append-onl
   assert.match(partnerOrderSource, /organization_id=\$1 AND work_item_id=\$2/);
   assert.match(serverSource, /partner-orders\/projections/);
   assert.match(serverSource, /partner-orders\/\$\{uuidPattern\}\/reports/);
+});
+
+test("sampling quotes bind the exact system-generated final sample variant", () => {
+  assert.match(samplingVariantSql, /sample_variant_code text NOT NULL DEFAULT ''/);
+  assert.match(oemSource, /generatedSampleVariantCode/);
+  assert.match(oemSource, /approvedVariantCode/);
+  assert.match(oemSource, /sample_variant_code/);
 });

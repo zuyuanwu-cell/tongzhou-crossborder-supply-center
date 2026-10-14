@@ -168,14 +168,14 @@ export type CollaborationPartnerWorkItemDetail = {
     milestones: Array<{ id: string; milestoneType: string; title: string; plannedAt: string; completedAt: string; status: string; publicPayload: { note?: string }; version: number; updatedAt: string }>;
   };
   oem: null | {
-    artifacts: Array<{ id: string; artifactType: string; title: string; version: number; status: string; publicPayload: { summary?: string; result?: string; reviewNote?: string; supplierConclusion?: string; nextPlan?: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; reviewedBy?: string; reviewedAt?: string }; createdAt: string; updatedAt: string }>;
-    quotes: Array<{ id: string; currency: string; amount: number; minimumOrderQuantity: number; leadTimeDays: number; terms: string; status: string; version: number; sampleArtifactId: string; sampleVersion: number | null; submittedAt: string }>;
+    artifacts: Array<{ id: string; artifactType: string; title: string; version: number; status: string; publicPayload: { summary?: string; result?: string; reviewNote?: string; supplierConclusion?: string; nextPlan?: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; reviewedBy?: string; reviewedAt?: string; approvedVariantCode?: string; attachmentIds?: string[]; sampleVariants?: Array<{ variantCode: string; name: string; sampleQuantity?: number; unit?: string; specificationVersion?: string; description?: string; material?: string; process?: string; structureType?: string; lengthMm?: number; widthMm?: number; heightMm?: number; diameterMm?: number; capacityMl?: number; colorPrinting?: string }> }; createdAt: string; updatedAt: string }>;
+    quotes: Array<{ id: string; currency: string; amount: number; minimumOrderQuantity: number; leadTimeDays: number; terms: string; status: string; version: number; sampleArtifactId: string; sampleVersion: number | null; sampleVariantCode?: string; submittedAt: string }>;
   };
 };
 
 export type CollaborationPartnerTaskInput = {
   taskType: CollaborationPartnerTaskType;
-  documentNo: string;
+  documentNo?: string;
   title: string;
   productName: string;
   productSpec?: string;
@@ -192,6 +192,7 @@ export type CollaborationPartnerTaskInput = {
   sampleGoal?: string;
   evaluationCriteria?: string;
   quoteRequired?: boolean;
+  packagingSpec?: { material?: string; process?: string; structureType?: string; lengthMm?: number; widthMm?: number; heightMm?: number; diameterMm?: number; capacityMl?: number; colorPrinting?: string; designVersion?: string; fileRequirements?: string };
   lines: Array<{ sku: string; productName: string; specification?: string; imageUrl?: string; plannedQuantity: number; unit?: string; lineType?: "finished_product" | "raw_material" | "packaging" }>;
 };
 
@@ -281,10 +282,10 @@ export function publishCollaborationPartnerTask(code: string, input: Collaborati
   });
 }
 
-export function reviewCollaborationSampleArtifact(artifactId: string, approved: boolean, note: string) {
+export function reviewCollaborationSampleArtifact(artifactId: string, approved: boolean, note: string, approvedVariantCode = "") {
   return request<{ ok: boolean; artifactId: string; workItemId: string; status: "approved" | "rejected"; version: number; workItemVersion: number }>(`/api/collaboration-bridge/oem/artifacts/${encodeURIComponent(artifactId)}/review`, {
     method: "POST",
-    body: JSON.stringify({ approved, note }),
+    body: JSON.stringify({ approved, note, approvedVariantCode }),
   });
 }
 

@@ -262,7 +262,7 @@ export async function getInternalWorkItem(workItemId) {
     const oem = ["filing_task", "sampling_task", "packaging_quote"].includes(row.item_type)
       ? [
         await client.query("SELECT id,artifact_type,title,version,status,public_payload,created_at,updated_at FROM oem_artifacts WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC,created_at DESC", [workItemId, row.organization_id]),
-        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,sample_artifact_id,sample_version,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, row.organization_id]),
+        await client.query("SELECT id,currency,amount,minimum_order_quantity,lead_time_days,terms,status,version,sample_artifact_id,sample_version,sample_variant_code,submitted_at FROM supplier_quotes WHERE work_item_id=$1 AND organization_id=$2 ORDER BY version DESC", [workItemId, row.organization_id]),
       ]
       : null;
     return {
@@ -285,7 +285,7 @@ export async function getInternalWorkItem(workItemId) {
       commands: commands.rows.map((command) => ({ id: command.id, commandType: command.command_type, status: command.status, riskLevel: command.risk_level, submittedAt: new Date(command.submitted_at).toISOString(), processedAt: command.processed_at ? new Date(command.processed_at).toISOString() : "", resultCode: command.result_code || "", resultMessage: command.result_message || "", coreReference: command.core_reference || "" })),
       oem: oem ? {
         artifacts: oem[0].rows.map((artifact) => ({ id: artifact.id, artifactType: artifact.artifact_type, title: artifact.title, version: Number(artifact.version), status: artifact.status, publicPayload: artifact.public_payload || {}, createdAt: new Date(artifact.created_at).toISOString(), updatedAt: new Date(artifact.updated_at).toISOString() })),
-        quotes: oem[1].rows.map((quote) => ({ id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: Number(quote.lead_time_days), terms: quote.terms, status: quote.status, version: Number(quote.version), sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version == null ? null : Number(quote.sample_version), submittedAt: new Date(quote.submitted_at).toISOString() })),
+        quotes: oem[1].rows.map((quote) => ({ id: quote.id, currency: quote.currency, amount: Number(quote.amount), minimumOrderQuantity: Number(quote.minimum_order_quantity), leadTimeDays: Number(quote.lead_time_days), terms: quote.terms, status: quote.status, version: Number(quote.version), sampleArtifactId: quote.sample_artifact_id || "", sampleVersion: quote.sample_version == null ? null : Number(quote.sample_version), sampleVariantCode: quote.sample_variant_code || "", submittedAt: new Date(quote.submitted_at).toISOString() })),
       } : null,
       partnerOrder: partnerOrder ? {
         lines: partnerOrder[0].rows.map((line) => ({

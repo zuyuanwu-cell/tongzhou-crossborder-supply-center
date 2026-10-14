@@ -128,6 +128,19 @@ const oemPublicPayloadSchema = z.object({
   sampleGoal: limitedText(2_000).optional().default(""),
   evaluationCriteria: limitedText(5_000).optional().default(""),
   quoteRequired: z.boolean().optional().default(true),
+  packagingSpec: z.object({
+    material: limitedText(500).optional().default(""),
+    process: limitedText(1_000).optional().default(""),
+    structureType: limitedText(300).optional().default(""),
+    lengthMm: quantity.optional().default(0),
+    widthMm: quantity.optional().default(0),
+    heightMm: quantity.optional().default(0),
+    diameterMm: quantity.optional().default(0),
+    capacityMl: quantity.optional().default(0),
+    colorPrinting: limitedText(1_000).optional().default(""),
+    designVersion: limitedText(120).optional().default(""),
+    fileRequirements: limitedText(2_000).optional().default(""),
+  }).strict().optional(),
 }).strict();
 
 export const oemProjectionSchema = z.object({
@@ -261,7 +274,7 @@ export const partnerOrderProjectionSchema = z.object({
 
 export const internalPartnerTaskSchema = z.object({
   taskType: z.enum(["production_order", "purchase_order", "sampling_task"]),
-  documentNo: limitedText(120).min(1),
+  documentNo: limitedText(120).optional().default(""),
   title: limitedText(240).min(1),
   productName: limitedText(300).min(1),
   productSpec: limitedText(1_000).optional().default(""),
@@ -278,6 +291,19 @@ export const internalPartnerTaskSchema = z.object({
   sampleGoal: limitedText(2_000).optional().default(""),
   evaluationCriteria: limitedText(5_000).optional().default(""),
   quoteRequired: z.boolean().optional().default(true),
+  packagingSpec: z.object({
+    material: limitedText(500).optional().default(""),
+    process: limitedText(1_000).optional().default(""),
+    structureType: limitedText(300).optional().default(""),
+    lengthMm: quantity.optional().default(0),
+    widthMm: quantity.optional().default(0),
+    heightMm: quantity.optional().default(0),
+    diameterMm: quantity.optional().default(0),
+    capacityMl: quantity.optional().default(0),
+    colorPrinting: limitedText(1_000).optional().default(""),
+    designVersion: limitedText(120).optional().default(""),
+    fileRequirements: limitedText(2_000).optional().default(""),
+  }).strict().optional(),
   lines: z.array(z.object({
     sku: limitedText(100).min(1),
     productName: limitedText(300).min(1),
@@ -288,12 +314,32 @@ export const internalPartnerTaskSchema = z.object({
     lineType: z.enum(["finished_product", "raw_material", "packaging"]).optional(),
   }).strict()).min(1).max(500),
 }).strict().superRefine((value, context) => {
-  if (value.taskType !== "sampling_task") return;
+  if (value.taskType !== "sampling_task") {
+    if (!value.documentNo) context.addIssue({ code: z.ZodIssueCode.custom, path: ["documentNo"], message: "请填写单据编号。" });
+    return;
+  }
   if (!value.sampleCategory) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleCategory"], message: "请选择内料打样或包材打样。" });
   if (!value.sampleSubject) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleSubject"], message: "请选择具体打样对象。" });
   if (value.sampleCategory === "inner_material" && !["formula", "raw_material"].includes(value.sampleSubject || "")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleSubject"], message: "内料打样对象必须是配方或原料。" });
   if (value.sampleCategory === "packaging" && !["packaging_box", "packaging_bottle"].includes(value.sampleSubject || "")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sampleSubject"], message: "包材打样对象必须是包装盒或包装瓶。" });
 });
+
+const sampleVariantSchema = z.object({
+  name: limitedText(160).min(1),
+  sampleQuantity: quantity.optional().default(0),
+  unit: limitedText(20).optional().default("件"),
+  specificationVersion: limitedText(120).optional().default(""),
+  description: limitedText(3_000).optional().default(""),
+  material: limitedText(500).optional().default(""),
+  process: limitedText(1_000).optional().default(""),
+  structureType: limitedText(300).optional().default(""),
+  lengthMm: quantity.optional().default(0),
+  widthMm: quantity.optional().default(0),
+  heightMm: quantity.optional().default(0),
+  diameterMm: quantity.optional().default(0),
+  capacityMl: quantity.optional().default(0),
+  colorPrinting: limitedText(1_000).optional().default(""),
+}).strict();
 
 export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
   z.object({
@@ -368,11 +414,14 @@ export const oemArtifactSchema = z.object({
     specificationVersion: limitedText(120).optional().default(""),
     supplierConclusion: limitedText(2_000).optional().default(""),
     nextPlan: limitedText(2_000).optional().default(""),
+    sampleVariants: z.array(sampleVariantSchema).min(1).max(20).optional(),
+    attachmentIds: z.array(z.string().uuid()).max(30).optional().default([]),
   }).strict(),
 }).strict();
 
 export const sampleArtifactReviewSchema = z.object({
   approved: z.boolean(),
+  approvedVariantCode: limitedText(120).optional().default(""),
   note: limitedText(2_000).optional().default(""),
   reviewer: limitedText(200).optional().default("供应链中台"),
 }).strict().superRefine((value, context) => {

@@ -129,14 +129,16 @@ test("internal administrators manually publish only procurement and sampling tas
   };
 
   for (const taskType of ["purchase_order", "sampling_task"]) {
-    const result = await bridge.publishPartnerTask("mf-songyu", { ...common, taskType, ...(taskType === "sampling_task" ? { sampleCategory: "inner_material", sampleSubject: "formula", sampleGoal: "确认最终配方", evaluationCriteria: "气味与稳定性通过", quoteRequired: true } : {}) }, { actorName: "中台管理员" });
+    const input = { ...common, taskType, ...(taskType === "sampling_task" ? { documentNo: "", sampleCategory: "inner_material", sampleSubject: "formula", sampleGoal: "确认最终配方", evaluationCriteria: "气味与稳定性通过", quoteRequired: true } : {}) };
+    const result = await bridge.publishPartnerTask("mf-songyu", input, { actorName: "中台管理员" });
     assert.equal(result.delivery.published, 1);
   }
 
   const purchase = requests.find((request) => request.url.endsWith("/partner-orders/projections") && request.body.itemType === "purchase_order");
   const sampling = requests.find((request) => request.url.endsWith("/oem/projections") && request.body.itemType === "sampling_task");
   assert.equal(purchase.body.publicPayload.fulfillmentMode, "supplier");
-  assert.equal(sampling.body.publicPayload.projectCode, "SY-20261013-001");
+  assert.match(sampling.body.publicPayload.projectCode, /^DY-LT-\d{8}-[A-F0-9]{6}$/);
+  assert.equal(sampling.body.coreRefId, sampling.body.publicPayload.projectCode);
   assert.equal(sampling.body.publicPayload.sampleCategory, "inner_material");
   assert.equal(sampling.body.publicPayload.sampleSubject, "formula");
   assert.equal("internalCost" in sampling.body.publicPayload, false);
