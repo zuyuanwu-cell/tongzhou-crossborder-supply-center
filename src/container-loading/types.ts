@@ -181,3 +181,44 @@ export type ContainerLoadingBootstrap = {
   limits: { maxCartons: number; detailedRenderCartons: number };
 };
 
+export type SingleCartonCapacityInput = {
+  unitsPerCarton: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
+  orientation: "fixed" | "upright" | "any";
+};
+
+export type ContainerCapacityAlternative = {
+  container: ContainerType;
+  usable: { lengthCm: number; widthCm: number; heightCm: number; doorWidthCm: number; doorHeightCm: number };
+  orientation: { lengthCm: number; widthCm: number; heightCm: number };
+  layout: { alongLength: number; acrossWidth: number; layers: number };
+  geometricCapacity: number;
+  spaceCapacity: number;
+  payloadCapacity: number;
+  maxCartons: number;
+  maxUnits: number;
+  loadedWeightKg: number;
+  loadedVolumeM3: number;
+  volumeUtilization: number;
+  usableVolumeUtilization: number;
+  weightUtilization: number;
+  limitingFactor: "space" | "weight" | "space_weight" | "door_or_space";
+  targetCartons: number;
+  targetFits: boolean | null;
+  canCreate3d: boolean;
+  max3dCartons: number;
+  warnings: string[];
+};
+
+export type SingleCartonCapacityEstimate = {
+  carton: SingleCartonCapacityInput;
+  reserve: { doorReserveCm: number; sideClearanceCm: number; topClearanceCm: number; spaceReservePercent: number; payloadReservePercent: number };
+  targetCartons: number;
+  selected: ContainerCapacityAlternative;
+  alternatives: ContainerCapacityAlternative[];
+  reason: string;
+};
+

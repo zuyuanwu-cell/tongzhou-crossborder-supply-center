@@ -5,6 +5,7 @@ import {
   ArchiveX,
   Boxes,
   BoxSelect,
+  Calculator,
   CheckCircle2,
   ChevronRight,
   Container,
@@ -40,6 +41,7 @@ import {
   confirmContainerLoadingPlan,
   createContainerLoadingPlan,
   deleteContainerLoadingPlan,
+  estimateContainerLoadingCapacity,
   fetchContainerLoadingBootstrap,
   fetchContainerLoadingPlan,
   fetchContainerLoadingPlans,
@@ -62,6 +64,8 @@ import type {
   ContainerLoadingVersion,
   ContainerPlacement,
   ContainerType,
+  SingleCartonCapacityEstimate,
+  SingleCartonCapacityInput,
 } from "./types";
 import "./container-loading.css";
 
@@ -87,6 +91,23 @@ const defaultCustomContainer: ContainerType = {
   doorWidthCm: 234,
   doorHeightCm: 258,
   maxPayloadKg: 26600,
+};
+
+const defaultCapacityCarton: SingleCartonCapacityInput = {
+  unitsPerCarton: 1,
+  cartonLengthCm: 0,
+  cartonWidthCm: 0,
+  cartonHeightCm: 0,
+  cartonWeightKg: 0,
+  orientation: "upright",
+};
+
+const defaultCapacityReserve = {
+  doorReserveCm: 20,
+  sideClearanceCm: 3,
+  topClearanceCm: 5,
+  spaceReservePercent: 3,
+  payloadReservePercent: 2,
 };
 
 type Props = {
@@ -183,6 +204,12 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
   const [productToAdd, setProductToAdd] = React.useState("");
   const [planLifecycle, setPlanLifecycle] = React.useState<"active" | "archived">("active");
   const [sceneFullscreen, setSceneFullscreen] = React.useState(false);
+  const [capacityOpen, setCapacityOpen] = React.useState(false);
+  const [capacityContainerCode, setCapacityContainerCode] = React.useState("40HQ");
+  const [capacityCarton, setCapacityCarton] = React.useState<SingleCartonCapacityInput>(defaultCapacityCarton);
+  const [capacityTargetCartons, setCapacityTargetCartons] = React.useState(0);
+  const [capacityReserve, setCapacityReserve] = React.useState(defaultCapacityReserve);
+  const [capacityEstimate, setCapacityEstimate] = React.useState<SingleCartonCapacityEstimate | null>(null);
   const scenePanelRef = React.useRef<HTMLElement | null>(null);
   const queryHandledRef = React.useRef(false);
   const canManage = hasPermission(currentUser, "container_loading_manage");
@@ -257,6 +284,7 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
   const selectedPlacement = workingPlacements.find((placement) => placement.placementId === selectedPlacementId);
   const selectedIssue = selectedPlacementIssue(selectedPlacement, workingPlacements, plan);
   const editable = Boolean(canManage && plan?.status === "draft");
+  const capacityResult = capacityEstimate?.selected || null;
 
   async function changePlanLifecycle(nextLifecycle: "active" | "archived") {
     setPlanLifecycle(nextLifecycle);
@@ -311,6 +339,7 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
   }
 
   function openComposer(mode: "shipment" | "manual") {
+    setCapacityOpen(false);
     setComposerMode(mode);
     setComposerOpen(true);
     setError("");
@@ -322,6 +351,59 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
       setSourceShipmentId("");
       setDraftItems([]);
     }
+  }
+
+  function updateCapacityCarton(key: keyof SingleCartonCapacityInput, value: string | number) {
+    setCapacityCarton((current) => ({ ...current, [key]: value }));
+    setCapacityEstimate(null);
+  }
+
+  function updateCapacityReserve(key: keyof typeof defaultCapacityReserve, value: number) {
+    setCapacityReserve((current) => ({ ...current, [key]: value }));
+    setCapacityEstimate(null);
+  }
+
+  async function calculateCapacity() {
+    setBusy("capacity");
+    setError("");
+    try {
+      const result = await estimateContainerLoadingCapacity({
+        containerType: capacityContainerCode,
+        container: capacityContainerCode === "CUSTOM" ? customContainer : undefined,
+        carton: capacityCarton,
+        targetCartons: capacityTargetCartons,
+        reserve: capacityReserve,
+      });
+      setCapacityEstimate(result.estimate);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "单箱装满数量测算失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function useCapacityForPlan() {
+    const estimate = capacityEstimate;
+    if (!estimate || !estimate.selected.canCreate3d) return;
+    const selected = estimate.selected;
+    const presetExists = Boolean(bootstrap?.containerTypes.some((container) => container.code === selected.container.code));
+    setComposerMode("manual");
+    setSourceShipmentId("");
+    setContainerCode(presetExists ? selected.container.code : "CUSTOM");
+    if (!presetExists) setCustomContainer({ ...selected.container, code: "CUSTOM", name: "自定义柜型" });
+    setDraftItems([{
+      id: `quick-${Date.now().toString(36)}`,
+      sku: "QUICK-CALC",
+      productName: "单箱快速测算货物",
+      imageUrl: "",
+      cartonCount: selected.maxCartons,
+      ...estimate.carton,
+      priority: 5,
+      fragile: false,
+    }]);
+    setCapacityOpen(false);
+    setComposerOpen(true);
+    setNotice(`已带入 ${selected.container.name} · ${formatNumber(selected.maxCartons)} 箱，可复核后生成正式 3D 方案。`);
   }
 
   function selectShipment(shipmentId: string) {
@@ -578,6 +660,7 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
     <section className="cl-hero">
       <div><p>3D CONTAINER LOADING</p><h2>智能装柜</h2><span>从备货发运数据生成可执行的散箱装柜方案，比较装载量、重心与SKU完整度。</span></div>
       <div className="cl-hero-actions">
+        <button type="button" className="cl-button secondary" onClick={() => { setComposerOpen(false); setCapacityOpen(true); setError(""); }}><Calculator size={17} />单箱装满测算</button>
         {canManage ? <button type="button" className="cl-button secondary" onClick={() => openComposer("manual")}><PackagePlus size={17} />自由模拟</button> : null}
         {canManage ? <button type="button" className="cl-button primary" onClick={() => openComposer("shipment")}><Truck size={17} />从发运单生成</button> : null}
       </div>
@@ -585,6 +668,48 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
 
     {error ? <div className="cl-message danger"><AlertTriangle size={17} /><span>{error}</span><button type="button" onClick={() => setError("")}><X size={15} /></button></div> : null}
     {notice ? <div className="cl-message success"><CheckCircle2 size={17} /><span>{notice}</span><button type="button" onClick={() => setNotice("")}><X size={15} /></button></div> : null}
+
+    {capacityOpen ? <section className="cl-capacity-calculator">
+      <header><div><span>QUICK CAPACITY</span><h3>单箱装满柜快速测算</h3><p>先扣除现场作业与安全余量，再比较空间排布和最大载重。</p></div><button type="button" onClick={() => setCapacityOpen(false)}><X size={18} /></button></header>
+      <div className="cl-capacity-body">
+        <form className="cl-capacity-form" onSubmit={(event) => { event.preventDefault(); void calculateCapacity(); }}>
+          <div className="cl-capacity-section-title"><b>01 · 柜型与箱规</b><span>目标箱数可不填</span></div>
+          <div className="cl-capacity-fields">
+            <label className="wide"><span>柜型</span><select value={capacityContainerCode} onChange={(event) => { setCapacityContainerCode(event.target.value); setCapacityEstimate(null); }}><option value="AUTO">自动对比全部标准柜型</option>{bootstrap?.containerTypes.map((container) => <option key={container.code} value={container.code}>{container.name} · {container.lengthCm}×{container.widthCm}×{container.heightCm}cm</option>)}<option value="CUSTOM">自定义柜型 / 车辆</option></select></label>
+            <label><span>箱规</span><div className="cl-unit-input"><input type="number" min="1" value={capacityCarton.unitsPerCarton || ""} onChange={(event) => updateCapacityCarton("unitsPerCarton", Number(event.target.value))} /><em>件/箱</em></div></label>
+            <label><span>计划目标（可选）</span><div className="cl-unit-input"><input type="number" min="0" value={capacityTargetCartons || ""} placeholder="用于自动选柜" onChange={(event) => { setCapacityTargetCartons(Number(event.target.value)); setCapacityEstimate(null); }} /><em>箱</em></div></label>
+            <label className="wide"><span>外箱尺寸</span><div className="cl-capacity-dimensions"><input aria-label="外箱长度" type="number" min="0.1" step="0.1" placeholder="长" value={capacityCarton.cartonLengthCm || ""} onChange={(event) => updateCapacityCarton("cartonLengthCm", Number(event.target.value))} /><i>×</i><input aria-label="外箱宽度" type="number" min="0.1" step="0.1" placeholder="宽" value={capacityCarton.cartonWidthCm || ""} onChange={(event) => updateCapacityCarton("cartonWidthCm", Number(event.target.value))} /><i>×</i><input aria-label="外箱高度" type="number" min="0.1" step="0.1" placeholder="高" value={capacityCarton.cartonHeightCm || ""} onChange={(event) => updateCapacityCarton("cartonHeightCm", Number(event.target.value))} /><em>cm</em></div></label>
+            <label><span>单箱重量</span><div className="cl-unit-input"><input type="number" min="0.01" step="0.01" value={capacityCarton.cartonWeightKg || ""} onChange={(event) => updateCapacityCarton("cartonWeightKg", Number(event.target.value))} /><em>kg</em></div></label>
+            <label><span>摆放方向</span><select value={capacityCarton.orientation} onChange={(event) => updateCapacityCarton("orientation", event.target.value)}><option value="upright">保持直立，可水平旋转</option><option value="any">允许翻转，六面择优</option><option value="fixed">固定当前长宽高方向</option></select></label>
+          </div>
+          {capacityContainerCode === "CUSTOM" ? <div className="cl-capacity-custom">
+            {([['lengthCm', '柜内长'], ['widthCm', '柜内宽'], ['heightCm', '柜内高'], ['doorWidthCm', '柜门宽'], ['doorHeightCm', '柜门高'], ['maxPayloadKg', '最大载重']] as const).map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="1" value={customContainer[key]} onChange={(event) => { setCustomContainer((current) => ({ ...current, [key]: Number(event.target.value) })); setCapacityEstimate(null); }} /></label>)}
+          </div> : null}
+          <details className="cl-capacity-reserve">
+            <summary><span>02 · 安全预留</span><small>已启用合理默认值，可按现场调整</small></summary>
+            <div>{([['doorReserveCm', '柜门作业带', 'cm'], ['sideClearanceCm', '单侧间隙', 'cm'], ['topClearanceCm', '顶部间隙', 'cm'], ['spaceReservePercent', '机动箱位', '%'], ['payloadReservePercent', '载重误差', '%']] as const).map(([key, label, unit]) => <label key={key}><span>{label}</span><div className="cl-unit-input"><input type="number" min="0" step="1" value={capacityReserve[key]} onChange={(event) => updateCapacityReserve(key, Number(event.target.value))} /><em>{unit}</em></div></label>)}</div>
+          </details>
+          <button type="submit" className="cl-capacity-calculate" disabled={busy === "capacity"}>{busy === "capacity" ? <LoaderCircle size={17} className="is-spinning" /> : <Calculator size={17} />}{busy === "capacity" ? "正在测算" : "一键测算装满数量"}</button>
+        </form>
+
+        <section className={`cl-capacity-result ${capacityResult ? "has-result" : ""}`}>
+          {capacityResult && capacityEstimate ? <>
+            <div className="cl-capacity-result-hero"><span>{capacityResult.container.code}</span><div><small>安全建议最大装载</small><strong>{formatNumber(capacityResult.maxCartons)}<em>箱</em></strong><p>合计 {formatNumber(capacityResult.maxUnits)} 件 · {formatNumber(capacityResult.loadedWeightKg, 1)} kg</p></div></div>
+            <p className="cl-capacity-reason"><Sparkles size={16} />{capacityEstimate.reason}</p>
+            <div className="cl-capacity-metrics">
+              <article><span>限制因素</span><b>{({ space: "空间排布", weight: "安全载重", space_weight: "空间与载重", door_or_space: "柜门/尺寸" } as const)[capacityResult.limitingFactor]}</b><small>{capacityResult.targetFits === null ? "未设置目标箱数" : capacityResult.targetFits ? "目标数量可装下" : "目标数量超出单柜"}</small></article>
+              <article><span>建议排布</span><b>{capacityResult.layout.alongLength} × {capacityResult.layout.acrossWidth} × {capacityResult.layout.layers}</b><small>长向 × 横向 × 层数</small></article>
+              <article><span>体积利用率</span><b>{formatNumber(capacityResult.volumeUtilization, 1)}%</b><i><em style={{ width: `${Math.min(100, capacityResult.volumeUtilization)}%` }} /></i></article>
+              <article><span>载重利用率</span><b>{formatNumber(capacityResult.weightUtilization, 1)}%</b><i><em style={{ width: `${Math.min(100, capacityResult.weightUtilization)}%` }} /></i></article>
+            </div>
+            <div className="cl-capacity-orientation"><span>采用箱体方向</span><b>{capacityResult.orientation.lengthCm} × {capacityResult.orientation.widthCm} × {capacityResult.orientation.heightCm} cm</b><small>可用柜内 {formatNumber(capacityResult.usable.lengthCm, 1)} × {formatNumber(capacityResult.usable.widthCm, 1)} × {formatNumber(capacityResult.usable.heightCm, 1)} cm</small></div>
+            {capacityEstimate.alternatives.length > 1 ? <div className="cl-capacity-comparison"><header><b>柜型对比</b><span>均按相同安全预留</span></header><div>{capacityEstimate.alternatives.map((item) => <article className={item.container.code === capacityResult.container.code ? "selected" : ""} key={item.container.code}><span>{item.container.code}</span><strong>{formatNumber(item.maxCartons)} 箱</strong><small>{formatNumber(item.maxUnits)} 件 · {item.limitingFactor === "weight" ? "载重受限" : "空间受限"}</small></article>)}</div></div> : null}
+            {capacityResult.warnings.length ? <div className="cl-capacity-warnings">{capacityResult.warnings.map((warning) => <p key={warning}><AlertTriangle size={14} />{warning}</p>)}</div> : <div className="cl-capacity-ok"><CheckCircle2 size={15} />尺寸、柜门与安全载重校验通过</div>}
+            {canManage ? <button type="button" className="cl-capacity-to-plan" disabled={!capacityResult.canCreate3d} onClick={useCapacityForPlan}><PackagePlus size={17} />{capacityResult.canCreate3d ? "带入正式 3D 方案" : `超过 ${formatNumber(capacityResult.max3dCartons)} 箱，暂不支持逐箱3D`}</button> : null}
+          </> : <div className="cl-capacity-empty"><Calculator size={42} /><h4>输入一个箱子的资料</h4><p>系统会先扣除作业通道、箱体间隙和载重误差，再给出可执行的装满数量。</p><div><span>空间排布</span><i /> <span>载重校验</span><i /> <span>柜型对比</span></div></div>}
+        </section>
+      </div>
+    </section> : null}
 
     {composerOpen ? <section className="cl-composer">
       <header><div><span>NEW LOADING PLAN</span><h3>{composerMode === "shipment" ? "从发运单生成装柜方案" : "自由模拟装柜"}</h3></div><button type="button" onClick={() => setComposerOpen(false)}><X size={18} /></button></header>

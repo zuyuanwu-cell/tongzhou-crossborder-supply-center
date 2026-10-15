@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import { calculateLoadingMetrics, generateLoadingCandidates, normalizeContainer, normalizeLoadingItems, validateContainerPlacements } from "./container-loading-engine.js";
+import { calculateLoadingMetrics, estimateSingleCartonCapacity, generateLoadingCandidates, normalizeContainer, normalizeLoadingItems, validateContainerPlacements } from "./container-loading-engine.js";
 
 export const CONTAINER_TYPES = Object.freeze([
   { code: "20GP", name: "20GP 普柜", lengthCm: 589, widthCm: 235, heightCm: 239, doorWidthCm: 234, doorHeightCm: 228, maxPayloadKg: 28200 },
@@ -251,6 +251,20 @@ async function resolveContainerSelection(payload, items) {
 }
 
 export function createContainerLoadingService({ store, stockupService }) {
+  function quickEstimate(payload = {}) {
+    return {
+      ok: true,
+      estimate: estimateSingleCartonCapacity({
+        containers: CONTAINER_TYPES,
+        containerType: payload.containerType,
+        container: payload.container,
+        carton: payload.carton,
+        reserve: payload.reserve,
+        targetCartons: payload.targetCartons,
+      }),
+    };
+  }
+
   function canSeeRow(row, context) {
     const actor = actorOf(context);
     if (!context.viewAll && String(row.created_by) !== actor.id) return false;
@@ -560,5 +574,5 @@ export function createContainerLoadingService({ store, stockupService }) {
     });
   }
 
-  return { archivePlan, bootstrap, confirmPlan, createPlan, deletePlan, getPlan, listPlans, recalculate, restorePlan, saveVersion, voidPlan };
+  return { archivePlan, bootstrap, confirmPlan, createPlan, deletePlan, getPlan, listPlans, quickEstimate, recalculate, restorePlan, saveVersion, voidPlan };
 }

@@ -1,5 +1,5 @@
 import type { StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
-import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType } from "./container-loading/types";
+import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType, SingleCartonCapacityEstimate, SingleCartonCapacityInput } from "./container-loading/types";
 
 export type CatalogProduct = {
   id: string;
@@ -5336,6 +5336,16 @@ export function updateStockupWarehouseWorkOrder(workOrderId: string, payload: Re
 
 export function fetchContainerLoadingBootstrap() {
   return requestJson<ContainerLoadingBootstrap>("/api/container-loading/bootstrap");
+}
+
+export function estimateContainerLoadingCapacity(payload: {
+  containerType: string;
+  container?: ContainerType;
+  carton: SingleCartonCapacityInput;
+  targetCartons?: number;
+  reserve?: { doorReserveCm?: number; sideClearanceCm?: number; topClearanceCm?: number; spaceReservePercent?: number; payloadReservePercent?: number };
+}) {
+  return requestJson<{ ok: boolean; estimate: SingleCartonCapacityEstimate }>("/api/container-loading/quick-estimate", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function fetchContainerLoadingPlans(filters: { status?: string; shipmentId?: string; lifecycle?: "active" | "archived" | "all" } = {}) {

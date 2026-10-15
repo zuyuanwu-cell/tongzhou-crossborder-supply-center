@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateLoadingCandidates, simulateContainerLoading } from "../server/container-loading-engine.js";
+import { estimateSingleCartonCapacity, generateLoadingCandidates, simulateContainerLoading } from "../server/container-loading-engine.js";
 import { initStockupCollaborationStore } from "../server/stockup-collaboration-db.js";
 import { createContainerLoadingService } from "../server/container-loading-service.js";
 
@@ -34,6 +34,44 @@ const overweight = simulateContainerLoading({
 assert.ok(overweight.metrics.loadedCartons <= 28);
 assert.ok(overweight.metrics.loadedWeightKg <= container.maxPayloadKg);
 
+const quickEstimate = estimateSingleCartonCapacity({
+  containers: [container],
+  containerType: "20GP",
+  carton: { unitsPerCarton: 24, cartonLengthCm: 60, cartonWidthCm: 40, cartonHeightCm: 40, cartonWeightKg: 10, orientation: "upright" },
+});
+assert.equal(quickEstimate.selected.container.code, "20GP");
+assert.equal(quickEstimate.selected.maxCartons, 218, "default safety reserve should reduce the raw 225-carton grid");
+assert.equal(quickEstimate.selected.maxUnits, 5232);
+assert.equal(quickEstimate.selected.limitingFactor, "space");
+assert.deepEqual(quickEstimate.selected.layout, { alongLength: 9, acrossWidth: 5, layers: 5 });
+
+const targetEstimate = estimateSingleCartonCapacity({
+  containers: [
+    container,
+    { code: "40GP", name: "40GP", lengthCm: 1203, widthCm: 235, heightCm: 239, doorWidthCm: 234, doorHeightCm: 228, maxPayloadKg: 26700 },
+    { code: "40HQ", name: "40HQ", lengthCm: 1203, widthCm: 235, heightCm: 269, doorWidthCm: 234, doorHeightCm: 258, maxPayloadKg: 26480 },
+  ],
+  containerType: "AUTO",
+  targetCartons: 500,
+  carton: { unitsPerCarton: 24, cartonLengthCm: 60, cartonWidthCm: 40, cartonHeightCm: 40, cartonWeightKg: 10, orientation: "upright" },
+});
+assert.equal(targetEstimate.selected.container.code, "40HQ", "auto selection should choose the smallest container that fits the target");
+assert.equal(targetEstimate.selected.targetFits, true);
+
+const heavyEstimate = estimateSingleCartonCapacity({
+  containers: [container], containerType: "20GP",
+  carton: { unitsPerCarton: 1, cartonLengthCm: 60, cartonWidthCm: 40, cartonHeightCm: 40, cartonWeightKg: 1000, orientation: "upright" },
+});
+assert.equal(heavyEstimate.selected.maxCartons, 27);
+assert.equal(heavyEstimate.selected.limitingFactor, "weight");
+
+const blockedEstimate = estimateSingleCartonCapacity({
+  containers: [container], containerType: "20GP",
+  carton: { unitsPerCarton: 1, cartonLengthCm: 100, cartonWidthCm: 240, cartonHeightCm: 100, cartonWeightKg: 10, orientation: "fixed" },
+});
+assert.equal(blockedEstimate.selected.maxCartons, 0);
+assert.ok(blockedEstimate.selected.warnings.some((warning) => warning.includes("柜门")));
+
 const directory = await mkdtemp(join(tmpdir(), "tongzhou-container-loading-"));
 try {
   const store = await initStockupCollaborationStore(join(directory, "stockup.sqlite"));
@@ -62,6 +100,12 @@ try {
   const bootstrap = service.bootstrap(context);
   assert.equal(bootstrap.shipments.length, 1);
   assert.equal(bootstrap.containerTypes.length, 4);
+  const serviceEstimate = service.quickEstimate({
+    containerType: "20GP",
+    carton: { unitsPerCarton: 12, cartonLengthCm: 50, cartonWidthCm: 40, cartonHeightCm: 30, cartonWeightKg: 8 },
+  }, context);
+  assert.equal(serviceEstimate.ok, true);
+  assert.ok(serviceEstimate.estimate.selected.maxCartons > 0);
 
   const created = await service.createPlan({ sourceShipmentId: shipment.id, containerType: "20GP", selectedStrategy: "balanced" }, context);
   assert.equal(created.plan.sourceShipmentNo, shipment.shipmentNo);

@@ -134,6 +134,7 @@ export function createCollaborationBridge({
   listActiveOutsourcingOrders = async () => [],
   listOutsourcingFactoryOrders = async () => [],
   listFirstArticleRecords = async () => [],
+  listCraftOrderRecords = async () => [],
   listOutsourcingPurchaseDocuments = async () => ({ purchaseRecords: [], inboundRecords: [] }),
   recordOutsourcingPartnerFeedback = async () => ({ ok: true, skipped: true }),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
@@ -763,10 +764,16 @@ export function createCollaborationBridge({
         if (!binding) { skipped += 1; continue; }
         const records = await listOutsourcingFactoryOrders(binding.factoryId);
         let firstArticleRecords = [];
+        let craftOrderRecords = [];
         try {
           firstArticleRecords = await listFirstArticleRecords(records);
         } catch (error) {
           warnings.push(`${organization.code}: 首件记录读取失败，委外工单已继续同步（${error.message}）`);
+        }
+        try {
+          craftOrderRecords = await listCraftOrderRecords(records);
+        } catch (error) {
+          warnings.push(`${organization.code}: 工艺单产品封面读取失败，委外工单已继续同步（${error.message}）`);
         }
         const tracked = new Set(parsedState(store, outsourcingTrackedStateKey(organization.code), []));
         const workItems = await listOrganizationWorkItems(organization.code, { itemType: "production_order", limit: 100 });
@@ -786,11 +793,19 @@ export function createCollaborationBridge({
             version,
             currentStatus: existingItem?.status || "",
             firstArticleRecords,
+            craftOrderRecords,
             eventId: `jdy-outsourcing-${eventHash}`,
           });
           if (!projection) continue;
           const product = catalog.get(normalizedSku(projection.lines[0]?.sku)) || {};
-          if (product.imageUrl) projection = { ...projection, lines: projection.lines.map((line, index) => index === 0 ? { ...line, imageUrl: publicImageUrl(product.imageUrl) } : line) };
+          if (!projection.lines[0]?.imageUrl && product.imageUrl) {
+            const imageUrl = publicImageUrl(product.imageUrl);
+            projection = {
+              ...projection,
+              publicPayload: { ...projection.publicPayload, productImageUrl: imageUrl },
+              lines: projection.lines.map((line, index) => index === 0 ? { ...line, imageUrl } : line),
+            };
+          }
           productionDueAt.set(identity.orderNo, projection.dueAt || "");
           const fingerprint = outsourcingProjectionFingerprint(projection);
           if (!force && previous.fingerprint === fingerprint) { unchanged += 1; tracked.add(identity.orderNo); continue; }

@@ -148,6 +148,8 @@ test("partner order projections expose only one organization's production or pur
   assert.equal(partnerOrderProjectionSchema.parse(projection).publicPayload.piecesPerCarton, 24);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, internalCost: 12 } }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, firstArticle: { ...projection.publicPayload.firstArticle, supplierName: "不应外发" } } }).success, false);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, productImageUrl: "https://files.jiandaoyun.com/craft/cover.jpg" } }).success, true);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, productImageUrl: "http://files.jiandaoyun.com/craft/cover.jpg" } }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, lines: projection.lines.map((line, index) => index ? { ...line, unitPrice: 1.2 } : line) }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, orderType: "purchase" }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, organizationCode: "" }).success, false);

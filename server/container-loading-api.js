@@ -62,6 +62,11 @@ export function createContainerLoadingApi({ service, getAuth, appendActionLog = 
         sendJson(res, 200, service.bootstrap(context));
         return true;
       }
+      if (suffix === "/quick-estimate" && req.method === "POST") {
+        const result = service.quickEstimate(await readBody(req), context);
+        sendJson(res, 200, result);
+        return true;
+      }
       if (suffix === "/plans" && req.method === "GET") {
         sendJson(res, 200, service.listPlans(Object.fromEntries(url.searchParams.entries()), context));
         return true;

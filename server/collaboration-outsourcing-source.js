@@ -57,6 +57,58 @@ function safeFirstArticleImage(value, category, label) {
   }
 }
 
+function safeCraftCoverUrl(value) {
+  const files = Array.isArray(value) ? value : value ? [value] : [];
+  for (const file of files) {
+    const url = text(file?.url || file?.download_url || file?.downloadUrl || file);
+    if (!url) continue;
+    try {
+      const parsed = new URL(url);
+      const trustedHost = parsed.hostname === "jiandaoyun.com" || parsed.hostname.endsWith(".jiandaoyun.com");
+      const mime = text(file?.mime || file?.type);
+      if (parsed.protocol === "https:" && trustedHost && parsed.href.length <= 2_000 && (!mime || mime.startsWith("image/"))) return parsed.href;
+    } catch {
+      // Ignore malformed or non-public image values and keep the normal placeholder.
+    }
+  }
+  return "";
+}
+
+function inactiveCraftRecord(record) {
+  const fields = JIANYUN_FORMS.craftOrders.fields;
+  return [fields.versionValid, fields.valid]
+    .map((field) => text(valueOf(record, field)).trim())
+    .filter(Boolean)
+    .some((status) => /无效|失效|作废|已删除/i.test(status) || /^(?:否|N)$/i.test(status));
+}
+
+export function matchOutsourcingCraftCover(orderRecord, craftRecords = []) {
+  const orderFields = JIANYUN_FORMS.outsourcingOrders.fields;
+  const craftFields = JIANYUN_FORMS.craftOrders.fields;
+  const orderCraftNo = exactKey(valueOf(orderRecord, orderFields.craftOrderNo));
+  const orderTongzhouSku = exactKey(valueOf(orderRecord, orderFields.tongzhouSku));
+  const orderProductSku = exactKey(valueOf(orderRecord, orderFields.productSku));
+  const matches = craftRecords.map((record) => {
+    const imageUrl = safeCraftCoverUrl(valueOf(record, craftFields.productCover));
+    if (!imageUrl || inactiveCraftRecord(record)) return null;
+    const craftNo = exactKey(valueOf(record, craftFields.craftOrderNo));
+    const tongzhouSku = exactKey(valueOf(record, craftFields.tongzhouSku));
+    const productSku = exactKey(valueOf(record, craftFields.productSku));
+    const matchedBy = orderCraftNo && craftNo === orderCraftNo
+      ? "craft_order_no"
+      : orderTongzhouSku && tongzhouSku === orderTongzhouSku
+        ? "tongzhou_sku"
+        : orderProductSku && productSku === orderProductSku
+          ? "product_sku"
+          : "";
+    if (!matchedBy) return null;
+    const score = matchedBy === "craft_order_no" ? 300 : matchedBy === "tongzhou_sku" ? 200 : 100;
+    const updatedAt = Date.parse(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at || valueOf(record, craftFields.submittedAt) || "") || 0;
+    return { imageUrl, score, updatedAt };
+  }).filter(Boolean).sort((left, right) => right.score - left.score || right.updatedAt - left.updatedAt);
+  return matches[0]?.imageUrl || "";
+}
+
 function normalizeFirstArticle(record, matchedBy) {
   const config = JIANYUN_FORMS.firstArticleRecords;
   const fields = config.fields;
@@ -355,6 +407,7 @@ export function outsourcingProjectionFromRecord(record, {
   currentStatus = "",
   imageUrl = "",
   firstArticleRecords = [],
+  craftOrderRecords = [],
   eventId,
 } = {}) {
   const fields = JIANYUN_FORMS.outsourcingOrders.fields;
@@ -366,6 +419,7 @@ export function outsourcingProjectionFromRecord(record, {
   const productSpec = text(valueOf(record, fields.productSpec));
   const barcode = text(valueOf(record, fields.barcode));
   const firstArticle = matchOutsourcingFirstArticle(record, firstArticleRecords);
+  const productImageUrl = matchOutsourcingCraftCover(record, craftOrderRecords) || imageUrl;
   const productionProcess = text(valueOf(record, fields.productionProcess)) || firstArticle?.productionProcess || "";
   const cartonType = text(valueOf(record, fields.cartonType));
   const piecesPerCarton = number(valueOf(record, fields.piecesPerCarton));
@@ -386,7 +440,7 @@ export function outsourcingProjectionFromRecord(record, {
     sku: sku.slice(0, 100),
     productName: productName.slice(0, 300),
     specification: productSpec.slice(0, 1_000),
-    imageUrl,
+    imageUrl: productImageUrl,
     plannedQuantity: quantity,
     unit: unit.slice(0, 20),
     requiredDate: dateOnly(valueOf(record, fields.expectedFinishedAt)),
@@ -433,6 +487,7 @@ export function outsourcingProjectionFromRecord(record, {
       orderNo: identity.orderNo,
       projectCode: "",
       productName,
+      productImageUrl,
       productSpec,
       barcode,
       fulfillmentMode,

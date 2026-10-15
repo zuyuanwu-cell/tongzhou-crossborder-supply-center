@@ -89,6 +89,136 @@ export function normalizeLoadingItems(input = []) {
   return items;
 }
 
+function boundedNumber(value, fallback, minimum, maximum, label) {
+  const parsed = value === "" || value === null || value === undefined ? fallback : finiteNumber(value, Number.NaN);
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    throw Object.assign(new Error(`${label}必须在 ${minimum} 到 ${maximum} 之间。`), { statusCode: 400, code: "invalid_reserve" });
+  }
+  return parsed;
+}
+
+function singleCartonInput(input = {}) {
+  return {
+    unitsPerCarton: Math.floor(positive(input.unitsPerCarton ?? 1, "箱规（件/箱）")),
+    cartonLengthCm: positive(input.cartonLengthCm, "外箱长度"),
+    cartonWidthCm: positive(input.cartonWidthCm, "外箱宽度"),
+    cartonHeightCm: positive(input.cartonHeightCm, "外箱高度"),
+    cartonWeightKg: positive(input.cartonWeightKg, "单箱重量"),
+    orientation: String(input.orientation) === "any" ? "any" : String(input.orientation) === "fixed" ? "fixed" : "upright",
+  };
+}
+
+function capacityReserve(input = {}) {
+  return {
+    doorReserveCm: boundedNumber(input.doorReserveCm, 20, 0, 150, "柜门作业预留"),
+    sideClearanceCm: boundedNumber(input.sideClearanceCm, 3, 0, 30, "单侧安全间隙"),
+    topClearanceCm: boundedNumber(input.topClearanceCm, 5, 0, 50, "顶部安全间隙"),
+    spaceReservePercent: boundedNumber(input.spaceReservePercent, 3, 0, 25, "空间机动预留"),
+    payloadReservePercent: boundedNumber(input.payloadReservePercent, 2, 0, 20, "载重误差预留"),
+  };
+}
+
+function capacityForContainer(containerInput, carton, reserve, targetCartons = 0) {
+  const container = normalizeContainer(containerInput);
+  const usable = {
+    lengthCm: container.lengthCm - reserve.doorReserveCm,
+    widthCm: container.widthCm - reserve.sideClearanceCm * 2,
+    heightCm: container.heightCm - reserve.topClearanceCm,
+    doorWidthCm: container.doorWidthCm - reserve.sideClearanceCm * 2,
+    doorHeightCm: container.doorHeightCm - reserve.topClearanceCm,
+  };
+  if (usable.lengthCm <= 0 || usable.widthCm <= 0 || usable.heightCm <= 0 || usable.doorWidthCm <= 0 || usable.doorHeightCm <= 0) {
+    throw Object.assign(new Error("预留空间超过当前柜型可用尺寸，请减少安全间隙。"), { statusCode: 400, code: "reserve_exceeds_container" });
+  }
+  const orientations = uniqueOrientations({ ...carton, sku: "快速测算货物" });
+  const payloadCapacity = Math.max(0, Math.floor(container.maxPayloadKg * (1 - reserve.payloadReservePercent / 100) / carton.cartonWeightKg));
+  const containerVolumeCm3 = container.lengthCm * container.widthCm * container.heightCm;
+  const usableVolumeCm3 = usable.lengthCm * usable.widthCm * usable.heightCm;
+  const cartonVolumeCm3 = carton.cartonLengthCm * carton.cartonWidthCm * carton.cartonHeightCm;
+  const candidates = orientations.map((orientation) => {
+    const doorFit = orientation.widthCm <= usable.doorWidthCm + EPSILON && orientation.heightCm <= usable.doorHeightCm + EPSILON;
+    const layout = {
+      alongLength: doorFit ? Math.floor((usable.lengthCm + EPSILON) / orientation.lengthCm) : 0,
+      acrossWidth: doorFit ? Math.floor((usable.widthCm + EPSILON) / orientation.widthCm) : 0,
+      layers: doorFit ? Math.floor((usable.heightCm + EPSILON) / orientation.heightCm) : 0,
+    };
+    const geometricCapacity = layout.alongLength * layout.acrossWidth * layout.layers;
+    const spaceCapacity = Math.max(0, Math.floor(geometricCapacity * (1 - reserve.spaceReservePercent / 100)));
+    const maxCartons = Math.min(spaceCapacity, payloadCapacity);
+    const loadedVolumeCm3 = maxCartons * cartonVolumeCm3;
+    const loadedWeightKg = maxCartons * carton.cartonWeightKg;
+    return {
+      orientation,
+      doorFit,
+      layout,
+      geometricCapacity,
+      spaceCapacity,
+      payloadCapacity,
+      maxCartons,
+      maxUnits: maxCartons * carton.unitsPerCarton,
+      loadedWeightKg: round(loadedWeightKg, 1),
+      loadedVolumeM3: round(loadedVolumeCm3 / 1_000_000, 3),
+      volumeUtilization: round(loadedVolumeCm3 / containerVolumeCm3 * 100, 1),
+      usableVolumeUtilization: round(loadedVolumeCm3 / usableVolumeCm3 * 100, 1),
+      weightUtilization: round(loadedWeightKg / container.maxPayloadKg * 100, 1),
+    };
+  });
+  const best = candidates.sort((left, right) => right.maxCartons - left.maxCartons
+    || right.volumeUtilization - left.volumeUtilization
+    || right.layout.layers - left.layout.layers)[0];
+  const maxCartons = best?.maxCartons || 0;
+  const limitingFactor = maxCartons <= 0 ? "door_or_space"
+    : best.payloadCapacity < best.spaceCapacity ? "weight"
+      : best.payloadCapacity === best.spaceCapacity ? "space_weight" : "space";
+  const warnings = [];
+  if (!candidates.some((item) => item.doorFit)) warnings.push("当前外箱允许方向无法通过预留安全间隙后的柜门。请核对尺寸、减少间隙或允许翻转。");
+  if (limitingFactor === "weight") warnings.push("本次由最大安全载重限制箱数；继续增加箱体会超过预留载重余量。");
+  if (maxCartons > MAX_CARTONS) warnings.push(`快速测算可装 ${maxCartons} 箱，超过当前 3D 精细排布上限 ${MAX_CARTONS} 箱；测算结果仍有效，但不能直接生成逐箱 3D 方案。`);
+  if (maxCartons > 0 && best.volumeUtilization < 65 && limitingFactor !== "weight") warnings.push("外箱尺寸与柜内尺寸形成较多边角余量，建议结合托盘、加固和现场通道再次复核。");
+  return {
+    container,
+    usable,
+    ...best,
+    limitingFactor,
+    targetCartons,
+    targetFits: targetCartons > 0 ? maxCartons >= targetCartons : null,
+    canCreate3d: maxCartons > 0 && maxCartons <= MAX_CARTONS,
+    max3dCartons: MAX_CARTONS,
+    warnings,
+  };
+}
+
+export function estimateSingleCartonCapacity({ containers = [], containerType = "AUTO", container: customContainer, carton: cartonInput, reserve: reserveInput, targetCartons: targetInput = 0 } = {}) {
+  const carton = singleCartonInput(cartonInput);
+  const reserve = capacityReserve(reserveInput);
+  const targetCartons = Math.max(0, Math.floor(finiteNumber(targetInput)));
+  const requestedCode = String(containerType || "AUTO").toUpperCase();
+  const normalizedContainers = requestedCode === "CUSTOM"
+    ? [normalizeContainer(customContainer)]
+    : (Array.isArray(containers) ? containers : [])
+      .filter((item) => requestedCode === "AUTO" || String(item.code).toUpperCase() === requestedCode)
+      .map(normalizeContainer);
+  if (!normalizedContainers.length) throw Object.assign(new Error("未找到可用于快速测算的柜型。"), { statusCode: 400, code: "container_not_found" });
+  const alternatives = normalizedContainers.map((item) => capacityForContainer(item, carton, reserve, targetCartons));
+  const byVolume = (item) => item.container.lengthCm * item.container.widthCm * item.container.heightCm;
+  let selected;
+  if (targetCartons > 0) {
+    selected = alternatives.filter((item) => item.targetFits).sort((left, right) => byVolume(left) - byVolume(right)
+      || left.maxCartons - right.maxCartons)[0];
+  }
+  selected ||= [...alternatives].sort((left, right) => right.maxCartons - left.maxCartons
+    || right.volumeUtilization - left.volumeUtilization
+    || byVolume(left) - byVolume(right))[0];
+  const reason = targetCartons > 0 && selected.targetFits
+    ? `${selected.container.name} 是可安全装下目标 ${targetCartons} 箱的最小标准柜型。`
+    : targetCartons > 0
+      ? `现有标准柜型均无法装下目标 ${targetCartons} 箱，${selected.container.name} 的单柜安全装载量最高。`
+      : requestedCode === "AUTO"
+        ? `未填写目标箱数，已推荐单柜安全装载箱数最多的 ${selected.container.name}。`
+        : `已按指定的 ${selected.container.name} 计算安全装满数量。`;
+  return { carton, reserve, targetCartons, selected, alternatives, reason };
+}
+
 function intersects(a, b) {
   return a.x < b.x + b.lengthCm - EPSILON
     && a.x + a.lengthCm > b.x + EPSILON

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], purchaseRecords = [], purchaseInboundRecords = [] } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [] } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -66,6 +66,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     listActiveOutsourcingOrders: async () => outsourcingRecords,
     listOutsourcingFactoryOrders: async (factoryId) => outsourcingRecords.filter((record) => String(record._widget_1741698535338?.value || "") === String(factoryId)),
     listFirstArticleRecords: async () => firstArticleRecords,
+    listCraftOrderRecords: async () => craftOrderRecords,
     listOutsourcingPurchaseDocuments: async () => ({ purchaseRecords, inboundRecords: purchaseInboundRecords }),
     recordOutsourcingPartnerFeedback: async (feedback) => { sourceFeedback.push(feedback); return { ok: true, skipped: false }; },
     fetchImpl,
@@ -186,6 +187,7 @@ test("JiandaoYun factory binding projects only the exact factory active outsourc
         out_order_id: "JG26092902",
         _widget_1690015838240: "进行中",
         _widget_1753770713537: "CD26063656",
+        _widget_1667299725051: "GYD-CD26063656-V3",
         _widget_1666513866235: "DEVNEN 防晒美白乳液",
         _widget_1741575793630: "375ml 光银软管配内托",
         _widget_1666513866239: "6970000000215",
@@ -229,12 +231,35 @@ test("JiandaoYun factory binding projects only the exact factory active outsourc
     _widget_1748966576651: { value: [fields({ _widget_1748966576655: "包材", _widget_1748966576657: "光银软管", _widget_1748966576658: "GY26061586B1", _widget_1748966576659: "375", _widget_1748966576661: "ml", _widget_1748966576663: "1", _widget_1748966576668: "敏感供应商", _widget_1748966576670: "SECRET-55" })] },
     _widget_1748966576708: { value: [{ name: "产品六面图.jpg", mime: "image/jpeg", size: 1024, url: "https://files.jiandaoyun.com/first-article/product.jpg" }] },
   }];
+  const craftOrderRecords = [{
+    data_id: "craft-order-cover-1",
+    updateTime: "2026-10-14T10:00:00.000Z",
+    ...fields({
+      _widget_1742013908586: "GYD-CD26063656-V3",
+      _widget_1682150219809: "CD26063656",
+      _widget_1749207071580: "CD26063656",
+      _widget_1665850602487: "DEVNEN PRODUCT",
+      _widget_1741419138382: "有效",
+      _widget_1741234046688: "是",
+    }),
+    _widget_1792074334607: { value: [{ name: "product-white-background-cover.jpg", mime: "image/jpeg", size: 2048, url: "https://files.jiandaoyun.com/craft/product-cover.jpg" }] },
+  }, {
+    data_id: "craft-order-cover-invalid",
+    updateTime: "2026-10-15T10:00:00.000Z",
+    ...fields({
+      _widget_1742013908586: "GYD-CD26063656-V3",
+      _widget_1749207071580: "CD26063656",
+      _widget_1741419138382: "无效",
+    }),
+    _widget_1792074334607: { value: [{ name: "invalid-cover.jpg", mime: "image/jpeg", url: "https://files.jiandaoyun.com/craft/invalid-cover.jpg" }] },
+  }];
   const { bridge, requests } = await fixture(t, {
     oemEnabled: true,
     organizations: [{ code: "mf-songyu", name: "松雨", organizationType: "production_factory", status: "active" }],
     accessGrants,
     outsourcingRecords,
     firstArticleRecords,
+    craftOrderRecords,
   });
 
   const source = await bridge.getOutsourcingSourceBinding("mf-songyu");
@@ -256,6 +281,8 @@ test("JiandaoYun factory binding projects only the exact factory active outsourc
   assert.equal(projection.body.publicPayload.firstArticle.matchedBy, "barcode");
   assert.equal(projection.body.publicPayload.firstArticle.images[0].label, "产品包装六面图");
   assert.equal(projection.body.publicPayload.firstArticle.bom[0].materialCode, "GY26061586B1");
+  assert.equal(projection.body.publicPayload.productImageUrl, "https://files.jiandaoyun.com/craft/product-cover.jpg");
+  assert.equal(projection.body.lines[0].imageUrl, "https://files.jiandaoyun.com/craft/product-cover.jpg");
   assert.equal(projection.body.lines[0].specification, "375ml 光银软管配内托");
   assert.equal(projection.body.lines.length, 2);
   assert.equal(projection.body.lines.some((line) => line.productName === "外购玻璃瓶"), false);

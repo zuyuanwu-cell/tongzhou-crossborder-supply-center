@@ -354,6 +354,20 @@ export async function fetchJdyFirstArticleRecordsForOrders(orderRecords = []) {
   return mergeJdyRecords([...byBarcode, ...bySku, ...byProductName]);
 }
 
+export async function fetchJdyCraftOrderRecordsForOrders(orderRecords = []) {
+  const orderFields = JIANYUN_FORMS.outsourcingOrders.fields;
+  const craftOrder = JIANYUN_FORMS.craftOrders;
+  const craftOrderNos = orderRecords.map((record) => jdyFieldText(record, orderFields.craftOrderNo)).filter(Boolean);
+  const tongzhouSkus = orderRecords.map((record) => jdyFieldText(record, orderFields.tongzhouSku)).filter(Boolean);
+  const productSkus = orderRecords.map((record) => jdyFieldText(record, orderFields.productSku)).filter(Boolean);
+  const [byCraftOrderNo, byTongzhouSku, byProductSku] = await Promise.all([
+    fetchJdyDataByValues(craftOrder, craftOrder.fields.craftOrderNo, craftOrderNos, { maxPages: 10 }),
+    fetchJdyDataByValues(craftOrder, craftOrder.fields.tongzhouSku, tongzhouSkus, { maxPages: 10 }),
+    fetchJdyDataByValues(craftOrder, craftOrder.fields.productSku, productSkus, { maxPages: 10 }),
+  ]);
+  return mergeJdyRecords([...byCraftOrderNo, ...byTongzhouSku, ...byProductSku]);
+}
+
 export async function updateJdyOutsourcingOrderByNo(orderNo, values = {}) {
   const normalizedOrderNo = String(orderNo || "").trim();
   if (!normalizedOrderNo) throw new Error("缺少委外加工单号，无法回写工厂反馈。");

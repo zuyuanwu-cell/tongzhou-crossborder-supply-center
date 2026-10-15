@@ -255,6 +255,7 @@ const partnerOrderPublicPayloadSchema = z.object({
   orderNo: limitedText(120).min(1),
   projectCode: limitedText(120).optional().default(""),
   productName: limitedText(300).optional().default(""),
+  productImageUrl: httpsImageUrl.optional().or(z.literal("")),
   productSpec: limitedText(1_000).optional().default(""),
   barcode: limitedText(120).optional().default(""),
   fulfillmentMode: z.enum(["labor_only", "turnkey", "supplier"]),
