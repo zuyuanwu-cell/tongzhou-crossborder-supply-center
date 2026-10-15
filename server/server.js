@@ -100,6 +100,7 @@ import { BUSINESS_CHAIN_SYNC_INTERVAL_MS } from "./business-chain-config.js";
 import { initCollaborationBridgeStore } from "./collaboration-bridge-db.js";
 import { createCollaborationBridge } from "./collaboration-bridge.js";
 import { createCollaborationBridgeApi } from "./collaboration-bridge-api.js";
+import { createMobileAdminApi } from "./mobile-admin-api.js";
 import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
 import { createSystemBackupService } from "./system-backup-service.js";
 
@@ -318,6 +319,7 @@ const isProductionRuntime = process.env.NODE_ENV === "production";
 const allowInsecureInternalAccessCode = process.env.ALLOW_INSECURE_INTERNAL_ACCESS_CODE === "true";
 const internalAccessCode = configuredInternalAccessCode || (isProductionRuntime ? "" : defaultInternalAccessCode);
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
+const mobileAdminSessionSecret = createHash("sha256").update(`tongzhou-mobile-admin:${sessionSecret}`).digest("hex");
 const canvasCredentialSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY
   || (isProductionRuntime ? sessionSecret : createHash("sha256").update(`tongzhou-canvas-local:${sessionSecret}`).digest("hex"));
 const tongzhouCanvasAi = initTongzhouCanvasAi({
@@ -495,6 +497,19 @@ const syncScheduler = createSyncScheduler({
 const containerLoadingApi = createContainerLoadingApi({
   service: containerLoadingService,
   getAuth,
+  appendActionLog,
+});
+const mobileAdminApi = createMobileAdminApi({
+  bridge: collaborationBridge,
+  authenticateCredentials: (username, password) => authenticateLocalUser(cachedUsers.users || [], username, password, cachedUsers.roles),
+  issueToken: (user) => createSessionToken(user, mobileAdminSessionSecret, 12 * 60 * 60 * 1000, cachedUsers.roles, { audience: "mobile-admin" }),
+  resolveAuth: (req) => {
+    const sessionUser = verifySessionToken(bearerToken(req), mobileAdminSessionSecret, { audience: "mobile-admin" });
+    if (!sessionUser?.id) return { role: "guest", user: null };
+    const currentUser = (cachedUsers.users || []).find((item) => item.id === sessionUser.id && item.status !== "disabled");
+    if (!currentUser) return { role: "guest", user: null };
+    return { role: currentUser.role, user: publicAccessUser(currentUser) };
+  },
   appendActionLog,
 });
 const systemMaintenanceGate = createSystemMaintenanceGate();
@@ -7686,6 +7701,7 @@ const server = http.createServer(async (req, res) => {
     if (await jiandaoyunDomesticInventoryApi(req, res, url)) return;
     if (await jiandaoyunDomesticInventoryOutboundApi(req, res, url)) return;
     if (await domesticInventoryApi(req, res, url)) return;
+    if (await mobileAdminApi(req, res, url)) return;
     if (await collaborationBridgeApi(req, res, url)) return;
     if (await businessChainApi(req, res, url)) return;
 

@@ -61,6 +61,7 @@
     "test:system-restore": "node scripts/system-restore-transaction-test.mjs",
     "test:user-locale": "node scripts/user-locale-test.mjs",
     "test:user-locale-api": "node scripts/user-locale-api-test.mjs",
+    "test:mobile-admin": "node scripts/mobile-admin-api-test.mjs && node scripts/mobile-admin-session-api-test.mjs",
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
     "test:performance-cache-writer": "node scripts/performance-cache-writer-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",

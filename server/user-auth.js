@@ -212,25 +212,27 @@ export function userPermissionConfiguration() {
   return permissionConfiguration();
 }
 
-export function createSessionToken(user, secret, ttlMs = 7 * 24 * 60 * 60 * 1000, roles = []) {
+export function createSessionToken(user, secret, ttlMs = 7 * 24 * 60 * 60 * 1000, roles = [], options = {}) {
   const safeUser = publicUser(user, roles);
   const payload = base64Url(JSON.stringify({
     id: safeUser.id,
     username: safeUser.username,
     displayName: safeUser.displayName,
     role: safeUser.role,
+    ...(options.audience ? { aud: text(options.audience, "") } : {}),
     exp: Date.now() + ttlMs,
   }));
   return `${payload}.${signPayload(payload, secret)}`;
 }
 
-export function verifySessionToken(token, secret) {
+export function verifySessionToken(token, secret, options = {}) {
   const [payload, signature] = String(token || "").split(".");
   if (!payload || !signature) return null;
   if (!safeEqual(signature, signPayload(payload, secret))) return null;
   try {
     const user = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (!user.exp || user.exp < Date.now()) return null;
+    if (options.audience && user.aud !== text(options.audience, "")) return null;
     return publicUser(user);
   } catch {
     return null;
