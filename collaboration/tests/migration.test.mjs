@@ -130,6 +130,16 @@ test("warehouse inventory barcode lookup is projected and indexed", () => {
   assert.match(portalSource, /扫描条码或输入 SKU 后回车/);
 });
 
+test("receiving barcode capture writes the physical code to the selected line without product lookup", () => {
+  const captureComponent = portalSource.match(/function BarcodeCameraDialog[\s\S]*?function LoginPage/)?.[0] || "";
+  assert.match(captureComponent, /BarcodeDetector/);
+  assert.match(captureComponent, /getUserMedia/);
+  assert.match(captureComponent, /扫描结果只写入当前商品，不要求商品主档已有条码/);
+  assert.match(captureComponent, /event\.preventDefault\(\)/, "扫码枪回车不得误提交整个收货表单");
+  assert.doesNotMatch(captureComponent, /fetchInventory|productLookup/, "收货条码采集不得依赖库存或商品主档反查");
+  assert.match(portalSource, /实际到货条码[\s\S]*BarcodeCaptureInput/);
+});
+
 test("internal warehouse progress reads stay behind the integration boundary", () => {
   assert.match(integrationSource, /export async function listInternalWorkItems/);
   assert.match(integrationSource, /w\.item_type LIKE 'warehouse_%'/);

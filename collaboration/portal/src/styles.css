@@ -281,6 +281,27 @@ code, .kicker, .portal-version { font-family: "DIN Alternate", Bahnschrift, Cons
 .waiting-note { display: flex; align-items: center; gap: 9px; padding: 12px 14px; color: #655486; background: #ece8f4; font-size: 10px; }
 .toast { position: fixed; z-index: 100; right: 24px; bottom: 24px; min-width: 280px; max-width: 440px; padding: 13px 14px; display: grid; grid-template-columns: 20px 1fr 20px; align-items: center; gap: 9px; color: white; background: var(--ink); box-shadow: 0 16px 40px rgba(7,25,58,.22); font-size: 11px; animation: toastIn .25s ease; }.toast.error { background: #a83c22; }.toast button { border: 0; color: white; background: transparent; cursor: pointer; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(12px); } }
+
+/* Receiving barcode capture: the scanned value belongs to the current receipt line.
+   It is deliberately independent from inventory/product-master barcode lookup. */
+.barcode-capture { min-width: 0; position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; }
+.barcode-capture > input { width: 100% !important; min-width: 0; padding-right: 10px !important; border-radius: 8px 0 0 8px !important; }
+.barcode-capture > button { height: 42px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: #fff; background: #2451a4; border: 1px solid #2451a4; border-radius: 0 8px 8px 0; font-size: 12px; font-weight: 750; white-space: nowrap; cursor: pointer; }
+.barcode-capture.compact > button { height: 38px; padding: 0 9px; font-size: 11px; }
+.barcode-capture > button:hover { background: #173f7e; }.barcode-capture > button:disabled { cursor: not-allowed; opacity: .55; }
+.barcode-capture > em { position: absolute; right: 68px; top: -18px; display: flex; align-items: center; gap: 3px; color: #18704d; font-size: 10px; font-style: normal; font-weight: 750; }
+.barcode-capture.captured > input { border-color: #65ad89 !important; background: #f4fcf7 !important; }
+.operation-barcode-field,.trace-barcode-field { min-width: 0; display: grid; gap: 4px; }
+.operation-barcode-field > span,.trace-barcode-field > span { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.line-metadata .barcode-capture { width: min(245px,100%); }.line-metadata .barcode-capture > input { height: 38px; font-size: 12px; }
+.trace-barcode-field .barcode-capture > input,.trace-barcode-field .barcode-capture > button { height: 42px; }
+.barcode-camera-layer { position: fixed; inset: 0; z-index: 2200; padding: 20px; display: grid; place-items: center; background: rgba(5,21,47,.82); backdrop-filter: blur(5px); }
+.barcode-camera-dialog { width: min(480px,calc(100vw - 30px)); padding: 18px; color: var(--ink); background: #fff; border-radius: 15px; box-shadow: 0 28px 90px rgba(0,0,0,.4); }
+.barcode-camera-dialog > header { margin-bottom: 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.barcode-camera-dialog > header > div { display: flex; align-items: flex-start; gap: 9px; color: #2451a4; }.barcode-camera-dialog > header span { display: grid; gap: 4px; }.barcode-camera-dialog > header b { color: var(--ink); font-size: 16px; }.barcode-camera-dialog > header small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.barcode-camera-dialog > header > button { width: 34px; height: 34px; display: grid; place-items: center; color: #62758d; background: #eef3f9; border: 0; border-radius: 8px; cursor: pointer; }
+.barcode-camera-view { aspect-ratio: 4 / 3; position: relative; overflow: hidden; background: #071a34; border-radius: 12px; }.barcode-camera-view video { width: 100%; height: 100%; object-fit: cover; }.barcode-camera-view > i { position: absolute; inset: 24% 12%; border: 2px solid #ff7a33; border-radius: 10px; box-shadow: 0 0 0 999px rgba(3,16,35,.32); }.barcode-camera-view > span { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(255,255,255,.82); pointer-events: none; }.barcode-camera-view.unsupported { display: grid; place-items: center; background: #eef3f9; }.barcode-camera-view.unsupported video,.barcode-camera-view.unsupported i { display: none; }.barcode-camera-view.unsupported > span { color: #9b4b32; }
+.barcode-camera-dialog > p { margin: 12px 0; color: #566b84; font-size: 12px; text-align: center; }.barcode-camera-dialog > .secondary-action { width: 100%; height: 42px; border: 1px solid #b9c9dc; border-radius: 8px; color: #24518c; background: #fff; cursor: pointer; }
 .mobile-tabs { display: none; }.nav-scrim { display: none; }
 
 @media (max-width: 1100px) {
