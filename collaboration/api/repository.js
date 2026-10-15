@@ -353,10 +353,10 @@ export async function listInventory(auth, filters = {}) {
   return withOrganization(auth.organization.id, async (client) => {
     const params = [auth.organization.id];
     let keywordClause = "";
-    if (keyword) { params.push(`%${keyword}%`); keywordClause = ` AND (sku ILIKE $2 OR product_name ILIKE $2)`; }
+    if (keyword) { params.push(`%${keyword}%`); keywordClause = ` AND (sku ILIKE $2 OR product_name ILIKE $2 OR barcode ILIKE $2)`; }
     params.push(limit, offset);
     const result = await client.query(
-      `SELECT warehouse_ref,warehouse_name,sku,product_name,image_url,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version
+      `SELECT warehouse_ref,warehouse_name,sku,product_name,barcode,image_url,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version
          FROM warehouse_inventory_projections
         WHERE organization_id=$1
           AND (available_quantity > 0 OR locked_quantity > 0 OR in_transit_quantity > 0)
@@ -371,7 +371,7 @@ export async function listInventory(auth, filters = {}) {
       params,
     );
     return {
-      items: result.rows.map((row) => ({ warehouseRef: row.warehouse_ref, warehouseName: row.warehouse_name, sku: row.sku, productName: row.product_name, imageUrl: row.image_url || "", availableQuantity: Number(row.available_quantity), lockedQuantity: Number(row.locked_quantity), inTransitQuantity: Number(row.in_transit_quantity), unit: row.unit, lastCoreSyncedAt: new Date(row.last_core_synced_at).toISOString(), version: Number(row.version) })),
+      items: result.rows.map((row) => ({ warehouseRef: row.warehouse_ref, warehouseName: row.warehouse_name, sku: row.sku, productName: row.product_name, barcode: row.barcode || "", imageUrl: row.image_url || "", availableQuantity: Number(row.available_quantity), lockedQuantity: Number(row.locked_quantity), inTransitQuantity: Number(row.in_transit_quantity), unit: row.unit, lastCoreSyncedAt: new Date(row.last_core_synced_at).toISOString(), version: Number(row.version) })),
       limit,
       offset,
     };

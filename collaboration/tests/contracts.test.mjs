@@ -41,8 +41,9 @@ test("partner action schemas reject unbounded and unknown payload fields", () =>
 });
 
 test("inventory images and partner-created warehouse operations stay on a strict allowlist", () => {
-  const inventory = { eventId: "inventory-1", organizationCode: "warehouse-a", warehouseRef: "wh-1", warehouseName: "一号仓", version: 1, syncedAt: new Date().toISOString(), items: [{ sku: "SKU-1", productName: "产品一", imageUrl: "https://files.example.test/product.jpg", availableQuantity: 8 }] };
+  const inventory = { eventId: "inventory-1", organizationCode: "warehouse-a", warehouseRef: "wh-1", warehouseName: "一号仓", version: 1, syncedAt: new Date().toISOString(), items: [{ sku: "SKU-1", productName: "产品一", barcode: "697000000001", imageUrl: "https://files.example.test/product.jpg", availableQuantity: 8 }] };
   assert.equal(inventoryProjectionSchema.safeParse(inventory).success, true);
+  assert.equal(inventoryProjectionSchema.parse(inventory).items[0].barcode, "697000000001");
   assert.equal(inventoryProjectionSchema.safeParse({ ...inventory, items: [{ ...inventory.items[0], imageUrl: "not-a-url" }] }).success, false);
   assert.equal(inventoryProjectionSchema.safeParse({ ...inventory, items: [{ ...inventory.items[0], imageUrl: "http://files.example.test/product.jpg" }] }).success, false);
   const inbound = { operationType: "inbound", warehouseRef: "wh-1", referenceNo: "", note: "采购到货", lines: [{ sku: "SKU-1", productName: "产品一", quantity: 3, unit: "件" }] };

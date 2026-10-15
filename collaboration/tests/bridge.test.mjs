@@ -58,7 +58,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
         return { ok: true, workOrder: { id: workOrderId, workOrderNo: "DWO-001", status: "completed" } };
       },
     },
-    listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
+    listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", barcode: "697000000001", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
     baseUrl: "http://collaboration.test",
     internalToken: "internal-test-token",
     publicOrigin: "https://partner.example.test",
@@ -309,7 +309,7 @@ test("saving warehouse access immediately publishes an allowlisted inventory sna
   assert.equal(saved.inventoryProjection.delivery.published, 1);
   const published = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/inventory"));
   assert.ok(published);
-  assert.deepEqual(published.body.items, [{ sku: "SKU-1", productName: "测试产品", imageUrl: "https://files.jiandaoyun.com/product.jpg", availableQuantity: 8, lockedQuantity: 2, inTransitQuantity: 0, unit: "件" }]);
+  assert.deepEqual(published.body.items, [{ sku: "SKU-1", productName: "测试产品", barcode: "697000000001", imageUrl: "https://files.jiandaoyun.com/product.jpg", availableQuantity: 8, lockedQuantity: 2, inTransitQuantity: 0, unit: "件" }]);
   assert.equal(published.body.warehouseRef, "warehouse-1");
   assert.equal(published.body.items[0].imageUrl.startsWith("https://"), true);
   assert.equal("unitCostCny" in published.body.items[0], false);

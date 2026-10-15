@@ -197,6 +197,7 @@ export function createCollaborationBridge({
       return {
         sku,
         productName: String(item.productName || product.name || product.productName || item.sku || "").trim(),
+        barcode: String(item.barcode || product.barcode || "").trim().slice(0, 160),
         imageUrl: publicImageUrl(item.imageUrl || product.imageUrl),
         availableQuantity: Math.max(0, Number(item.availableQty || 0)),
         lockedQuantity: Math.max(0, Number(item.reservedQty || 0)),

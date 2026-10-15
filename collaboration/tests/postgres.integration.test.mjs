@@ -64,7 +64,7 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
     warehouseName: "授权仓",
     version: 1,
     syncedAt: new Date().toISOString(),
-    items: [{ sku: `VISIBLE-${unique}`, productName: "可见商品", availableQuantity: 2, lockedQuantity: 0, inTransitQuantity: 0, unit: "件" }],
+    items: [{ sku: `VISIBLE-${unique}`, productName: "可见商品", barcode: `697${unique.slice(-10)}`, availableQuantity: 2, lockedQuantity: 0, inTransitQuantity: 0, unit: "件" }],
   });
   const projectedTask = await integrationApi.applyCollaborationProjection({
     eventId: `task-granted-${unique}`,
@@ -113,6 +113,8 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
   );
   const visibleInventory = await repository.listInventory(signedInAgain.auth);
   assert.deepEqual(visibleInventory.items.map((item) => item.sku), [`VISIBLE-${unique}`]);
+  const barcodeInventory = await repository.listInventory(signedInAgain.auth, { keyword: `697${unique.slice(-10)}` });
+  assert.deepEqual(barcodeInventory.items.map((item) => item.sku), [`VISIBLE-${unique}`]);
   const clearedInventory = await integrationApi.applyInventoryProjection({
     eventId: `inventory-cleared-${unique}`,
     organizationCode: bootstrap.organization.code,

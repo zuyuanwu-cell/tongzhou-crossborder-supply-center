@@ -14,6 +14,7 @@ const warehouseOperationsSql = readFileSync(join(dirname(fileURLToPath(import.me
 const partnerOrderSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0008_partner_order_collaboration.sql"), "utf8");
 const samplingVariantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0010_sampling_variants.sql"), "utf8");
 const commandOutboxReconciliationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0011_command_outbox_reconciliation.sql"), "utf8");
+const inventoryBarcodeSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0012_inventory_barcode_lookup.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -119,6 +120,14 @@ test("warehouse self-service stores allowlisted images and retains approval cont
   assert.match(taskDrawer, /completedQuantity: line\.completedQuantity > 0 \? line\.completedQuantity : ""/);
   assert.match(taskDrawer, /hasInvalidActualQuantity/);
   assert.doesNotMatch(taskDrawer, /completedQuantity: line\.completedQuantity \|\| line\.plannedQuantity/);
+});
+
+test("warehouse inventory barcode lookup is projected and indexed", () => {
+  assert.match(inventoryBarcodeSql, /ADD COLUMN IF NOT EXISTS barcode text NOT NULL DEFAULT ''/);
+  assert.match(inventoryBarcodeSql, /organization_id, warehouse_ref, barcode/);
+  assert.match(repositorySource, /product_name ILIKE \$2 OR barcode ILIKE \$2/);
+  assert.match(repositorySource, /barcode: row\.barcode \|\| ""/);
+  assert.match(portalSource, /扫描条码或输入 SKU 后回车/);
 });
 
 test("internal warehouse progress reads stay behind the integration boundary", () => {

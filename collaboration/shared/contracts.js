@@ -93,6 +93,7 @@ export const inventoryProjectionSchema = z.object({
   items: z.array(z.object({
     sku: limitedText(100).min(1),
     productName: limitedText(300).min(1),
+    barcode: limitedText(160).optional().default(""),
     imageUrl: httpsImageUrl.optional().or(z.literal("")),
     availableQuantity: quantity,
     lockedQuantity: quantity.optional().default(0),

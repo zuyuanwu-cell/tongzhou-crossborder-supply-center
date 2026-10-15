@@ -330,6 +330,10 @@ function ProductImage({ src, name, className = "" }: { src?: string; name: strin
 
 type OperationDraftLine = WarehouseOperationLine & { key: string };
 
+function inventoryLookupKey(value: string) {
+  return value.trim().replace(/\s+/g, "").toUpperCase();
+}
+
 function WarehouseOperationModal({ operationType, inventory, canStocktake, onClose, onCreated, notify }: {
   operationType: WarehouseOperationType; inventory: InventoryItem[]; canStocktake: boolean; onClose(): void; onCreated(item: WorkItem): void; notify(message: string, tone: "success" | "error"): void;
 }) {
@@ -337,14 +341,33 @@ function WarehouseOperationModal({ operationType, inventory, canStocktake, onClo
   const meta = labels[operationType]; const Icon = meta.icon;
   const warehouses = React.useMemo(() => [...new Map(inventory.map((item) => [item.warehouseRef, { ref: item.warehouseRef, name: item.warehouseName }])).values()], [inventory]);
   const [warehouseRef, setWarehouseRef] = React.useState(warehouses[0]?.ref || "");
-  const [selectedSku, setSelectedSku] = React.useState(""); const [referenceNo, setReferenceNo] = React.useState(""); const [note, setNote] = React.useState(""); const [lines, setLines] = React.useState<OperationDraftLine[]>([]); const [busy, setBusy] = React.useState(false);
+  const [selectedSku, setSelectedSku] = React.useState(""); const [productLookup, setProductLookup] = React.useState(""); const [lookupBusy, setLookupBusy] = React.useState(false); const [referenceNo, setReferenceNo] = React.useState(""); const [note, setNote] = React.useState(""); const [lines, setLines] = React.useState<OperationDraftLine[]>([]); const [busy, setBusy] = React.useState(false);
+  const productLookupRef = React.useRef<HTMLInputElement>(null);
   const options = inventory.filter((item) => item.warehouseRef === warehouseRef);
-  React.useEffect(() => { setLines([]); setSelectedSku(""); }, [warehouseRef, operationType]);
-  function addProjectedLine() {
-    const item = options.find((entry) => entry.sku === selectedSku);
+  React.useEffect(() => { setLines([]); setSelectedSku(""); setProductLookup(""); }, [warehouseRef, operationType]);
+  function addProjectedItem(item?: InventoryItem) {
     if (!item || lines.some((line) => line.sku === item.sku)) return;
-    setLines((current) => [...current, { key: crypto.randomUUID(), sku: item.sku, productName: item.productName, imageUrl: item.imageUrl, unit: item.unit, ...(operationType === "stocktake" ? { countedQuantity: item.availableQuantity + item.lockedQuantity } : { quantity: 1 }) }]);
+    setLines((current) => [...current, { key: crypto.randomUUID(), sku: item.sku, productName: item.productName, imageUrl: item.imageUrl, unit: item.unit, barcode: item.barcode, ...(operationType === "stocktake" ? { countedQuantity: item.availableQuantity + item.lockedQuantity } : { quantity: 1 }) }]);
     setSelectedSku("");
+    setProductLookup("");
+    requestAnimationFrame(() => productLookupRef.current?.focus());
+  }
+  function addProjectedLine() { addProjectedItem(options.find((entry) => entry.sku === selectedSku)); }
+  async function addLookupLine() {
+    const lookup = inventoryLookupKey(productLookup);
+    if (!lookup) return;
+    setLookupBusy(true);
+    try {
+      const result = await fetchInventory(productLookup.trim());
+      const candidates = result.items.filter((item) => item.warehouseRef === warehouseRef);
+      const exact = candidates.filter((item) => inventoryLookupKey(item.sku) === lookup || inventoryLookupKey(item.barcode) === lookup);
+      const matches = exact.length ? exact : candidates;
+      if (matches.length !== 1) return notify(matches.length ? "匹配到多个商品，请补充完整条码或 SKU。" : "本仓有库存商品中未找到该条码，请核对商品条码或先同步库存。", "error");
+      if (lines.some((line) => line.sku === matches[0].sku)) return notify("该商品已经在作业明细中。", "error");
+      addProjectedItem(matches[0]);
+      notify(`已识别 ${matches[0].productName}`, "success");
+    } catch (reason) { notify(reason instanceof Error ? reason.message : "条码查询失败，请稍后重试。", "error"); }
+    finally { setLookupBusy(false); }
   }
   function addManualLine() { setLines((current) => [...current, { key: crypto.randomUUID(), sku: "", productName: "", imageUrl: "", unit: "件", quantity: 1 }]); }
   function updateLine(key: string, patch: Partial<OperationDraftLine>) { setLines((current) => current.map((line) => line.key === key ? { ...line, ...patch } : line)); }
@@ -367,7 +390,7 @@ function WarehouseOperationModal({ operationType, inventory, canStocktake, onClo
   return <div className="operation-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}><form className="operation-modal" onSubmit={submit}>
     <header><span><Icon size={20} /></span><div><p className="kicker">WAREHOUSE OPERATION</p><h2>{meta.title}</h2><small>提交后进入内部中台审批，审批通过并校验库存后才会写入主账。</small></div><button type="button" className="icon-button" onClick={onClose}><X size={20} /></button></header>
     <div className="operation-form-grid"><label><span>作业仓库</span><select value={warehouseRef} onChange={(event) => setWarehouseRef(event.target.value)} required>{warehouses.map((warehouse) => <option key={warehouse.ref} value={warehouse.ref}>{warehouse.name}</option>)}</select></label><label><span>外部单号（可选）</span><input value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} placeholder="不填则由系统自动生成" /></label></div>
-    <section className="operation-lines"><header><div><h3>商品明细</h3><span>{lines.length} 个 SKU</span></div><div><select value={selectedSku} onChange={(event) => setSelectedSku(event.target.value)}><option value="">选择本仓商品</option>{options.filter((item) => !lines.some((line) => line.sku === item.sku)).map((item) => <option key={item.sku} value={item.sku}>{item.sku} · {item.productName}</option>)}</select><button type="button" onClick={addProjectedLine} disabled={!selectedSku}><Plus size={15} />添加</button>{operationType === "inbound" ? <button type="button" onClick={addManualLine}><Plus size={15} />手动 SKU</button> : null}</div></header>
+    <section className="operation-lines"><header><div><h3>商品明细</h3><span>{lines.length} 个 SKU</span></div><div className="operation-product-controls"><label className="operation-scan-field"><ScanLine size={16} /><input ref={productLookupRef} value={productLookup} onChange={(event) => setProductLookup(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void addLookupLine(); } }} inputMode="search" autoComplete="off" placeholder="扫描条码或输入 SKU 后回车" /></label><button type="button" onClick={() => void addLookupLine()} disabled={lookupBusy || !productLookup.trim()}>{lookupBusy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{lookupBusy ? "识别中" : "识别添加"}</button><select value={selectedSku} onChange={(event) => setSelectedSku(event.target.value)}><option value="">也可选择本仓商品</option>{options.filter((item) => !lines.some((line) => line.sku === item.sku)).map((item) => <option key={item.sku} value={item.sku}>{item.sku} · {item.productName}</option>)}</select><button type="button" onClick={addProjectedLine} disabled={!selectedSku}><Plus size={15} />添加</button>{operationType === "inbound" ? <button type="button" onClick={addManualLine}><Plus size={15} />手动 SKU</button> : null}</div></header>
       <div className="operation-line-list">{lines.map((line) => { const stock = options.find((item) => item.sku === line.sku); return <article key={line.key}><ProductImage src={line.imageUrl} name={line.productName || line.sku || "商品"} /><div className="operation-product">{operationType === "inbound" && !stock ? <><input value={line.sku} onChange={(event) => updateLine(line.key, { sku: event.target.value.toUpperCase().replace(/\s/g, "") })} placeholder="SKU" /><input value={line.productName} onChange={(event) => updateLine(line.key, { productName: event.target.value })} placeholder="商品名称" /></> : <><b>{line.productName}</b><code>{line.sku}</code></>}</div><label><span>{operationType === "stocktake" ? `账面 ${stock ? stock.availableQuantity + stock.lockedQuantity : 0}` : `${meta.verb}数量`}</span><input type="number" min="0" step="0.0001" value={operationType === "stocktake" ? line.countedQuantity : line.quantity} onChange={(event) => updateLine(line.key, operationType === "stocktake" ? { countedQuantity: Number(event.target.value) } : { quantity: Number(event.target.value) })} /></label>{operationType === "inbound" ? <><label><span>批次号</span><input value={line.lotNo || ""} onChange={(event) => updateLine(line.key, { lotNo: event.target.value })} /></label><label><span>条码</span><input value={line.barcode || ""} onChange={(event) => updateLine(line.key, { barcode: event.target.value })} /></label></> : null}<button type="button" className="remove-line" onClick={() => setLines((current) => current.filter((entry) => entry.key !== line.key))} aria-label="删除明细"><Trash2 size={16} /></button>{operationType === "inbound" ? <div className="operation-dates"><label><span>生产日期</span><input type="date" value={line.productionDate || ""} onChange={(event) => updateLine(line.key, { productionDate: event.target.value })} /></label><label><span>有效期至</span><input type="date" value={line.expiryDate || ""} onChange={(event) => updateLine(line.key, { expiryDate: event.target.value })} /></label></div> : null}</article>; })}</div>
       {!lines.length ? <div className="operation-empty"><Boxes size={26} /><span>从本仓商品中添加作业明细{operationType === "inbound" ? "，也可以手动录入新 SKU" : ""}</span></div> : null}
     </section>
@@ -379,14 +402,18 @@ function WarehouseOperationModal({ operationType, inventory, canStocktake, onClo
 
 function InventoryPage({ session, onOpenTask, notify }: { session: Session; onOpenTask(item: WorkItem): void; notify(message: string, tone: "success" | "error"): void }) {
   const [items, setItems] = React.useState<InventoryItem[]>([]); const [keyword, setKeyword] = React.useState(""); const [loading, setLoading] = React.useState(true);
-  const [operation, setOperation] = React.useState<WarehouseOperationType | null>(null);
+  const [operation, setOperation] = React.useState<WarehouseOperationType | null>(null); const [operationInventory, setOperationInventory] = React.useState<InventoryItem[]>([]);
   const load = React.useCallback(() => { setLoading(true); fetchInventory(keyword).then((value) => setItems(value.items)).finally(() => setLoading(false)); }, [keyword]);
   React.useEffect(() => { const timer = setTimeout(load, 180); return () => clearTimeout(timer); }, [load]);
   const canStocktake = ["organization_admin", "manager"].includes(session.membership.role);
-  return <div className="page-stack"><section className="page-title inventory-title"><div><p className="kicker">WAREHOUSE SNAPSHOT</p><h1>本仓库存</h1><span>展示有库存商品；实际主账仍以内部供应链中台为准。</span></div><div className="inventory-actions"><button onClick={() => setOperation("inbound")}><ArrowDownToLine size={16} />发起入库</button><button onClick={() => setOperation("outbound")}><ArrowUpFromLine size={16} />发起出库</button>{canStocktake ? <button className="accent" onClick={() => setOperation("stocktake")}><ClipboardCheck size={16} />库存盘点</button> : null}</div></section>
-    <section className="filter-bar"><label className="search-field"><Search size={18} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索 SKU 或商品名称" /></label><span className="table-count">{items.length} 个 SKU</span></section>
-    <section className="inventory-table-wrap">{loading ? <div className="loading-state"><LoaderCircle className="spin" />同步库存视图…</div> : <table className="inventory-table"><thead><tr><th>商品 / SKU</th><th>可用</th><th>锁定</th><th>在途</th><th title="该商品在内部主账中的最后变更时间，不代表门户轮询时间">源账变更时间</th></tr></thead><tbody>{items.map((item) => <tr key={`${item.warehouseRef}:${item.sku}`}><td><div className="inventory-product"><ProductImage src={item.imageUrl} name={item.productName} /><span><b>{item.productName}</b><code>{item.sku}</code></span></div></td><td><strong>{item.availableQuantity.toLocaleString()}</strong> {item.unit}</td><td>{item.lockedQuantity.toLocaleString()}</td><td className={item.inTransitQuantity ? "in-transit" : ""}>{item.inTransitQuantity.toLocaleString()}</td><td>{formatDate(item.lastCoreSyncedAt)}</td></tr>)}</tbody></table>}</section>
-    {operation ? <WarehouseOperationModal operationType={operation} inventory={items} canStocktake={canStocktake} onClose={() => setOperation(null)} notify={notify} onCreated={(item) => { setOperation(null); load(); onOpenTask(item); }} /> : null}
+  async function openOperation(type: WarehouseOperationType) {
+    try { const result = keyword ? await fetchInventory("") : { items }; setOperationInventory(result.items); setOperation(type); }
+    catch (reason) { notify(reason instanceof Error ? reason.message : "本仓商品读取失败。", "error"); }
+  }
+  return <div className="page-stack"><section className="page-title inventory-title"><div><p className="kicker">WAREHOUSE SNAPSHOT</p><h1>本仓库存</h1><span>展示有库存商品；实际主账仍以内部供应链中台为准。</span></div><div className="inventory-actions"><button onClick={() => void openOperation("inbound")}><ArrowDownToLine size={16} />发起入库</button><button onClick={() => void openOperation("outbound")}><ArrowUpFromLine size={16} />发起出库</button>{canStocktake ? <button className="accent" onClick={() => void openOperation("stocktake")}><ClipboardCheck size={16} />库存盘点</button> : null}</div></section>
+    <section className="filter-bar"><label className="search-field"><ScanLine size={18} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} inputMode="search" autoComplete="off" placeholder="扫描条码，或搜索 SKU / 商品名称" /></label><span className="table-count">{items.length} 个 SKU</span></section>
+    <section className="inventory-table-wrap">{loading ? <div className="loading-state"><LoaderCircle className="spin" />同步库存视图…</div> : <table className="inventory-table"><thead><tr><th>商品 / SKU / 条码</th><th>可用</th><th>锁定</th><th>在途</th><th title="该商品在内部主账中的最后变更时间，不代表门户轮询时间">源账变更时间</th></tr></thead><tbody>{items.map((item) => <tr key={`${item.warehouseRef}:${item.sku}`}><td><div className="inventory-product"><ProductImage src={item.imageUrl} name={item.productName} /><span><b>{item.productName}</b><code>{item.sku}</code>{item.barcode ? <small>条码 {item.barcode}</small> : null}</span></div></td><td><strong>{item.availableQuantity.toLocaleString()}</strong> {item.unit}</td><td>{item.lockedQuantity.toLocaleString()}</td><td className={item.inTransitQuantity ? "in-transit" : ""}>{item.inTransitQuantity.toLocaleString()}</td><td>{formatDate(item.lastCoreSyncedAt)}</td></tr>)}</tbody></table>}</section>
+    {operation ? <WarehouseOperationModal operationType={operation} inventory={operationInventory} canStocktake={canStocktake} onClose={() => setOperation(null)} notify={notify} onCreated={(item) => { setOperation(null); load(); onOpenTask(item); }} /> : null}
   </div>;
 }
 
