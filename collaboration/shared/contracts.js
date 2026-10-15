@@ -243,6 +243,14 @@ const firstArticleRecordSchema = z.object({
   images: z.array(firstArticleImageSchema).max(40).optional().default([]),
 }).strict();
 
+const purchaseInboundDocumentSchema = z.object({
+  inboundNo: limitedText(120).min(1),
+  inboundAt: isoDateTime.optional().default(""),
+  receivedQuantity: quantity.optional().default(0),
+  payableAmount: quantity.optional().default(0),
+  settlementStatus: limitedText(120).optional().default(""),
+}).strict();
+
 const partnerOrderPublicPayloadSchema = z.object({
   orderNo: limitedText(120).min(1),
   projectCode: limitedText(120).optional().default(""),
@@ -261,6 +269,15 @@ const partnerOrderPublicPayloadSchema = z.object({
   deliveryAddress: limitedText(500).optional().default(""),
   paymentTerms: limitedText(1_000).optional().default(""),
   currency: limitedText(3).regex(/^[A-Z]{3}$/).optional().default("CNY"),
+  linkedProductionOrderNo: limitedText(120).optional().default(""),
+  orderedAt: isoDateTime.optional().default(""),
+  settlementBasis: z.enum(["", "purchase_inbound"]).optional().default(""),
+  orderAmount: quantity.optional().default(0),
+  receivedQuantity: quantity.optional().default(0),
+  pendingReceiptQuantity: quantity.optional().default(0),
+  payableAmount: quantity.optional().default(0),
+  settlementStatus: limitedText(120).optional().default(""),
+  inboundDocuments: z.array(purchaseInboundDocumentSchema).max(200).optional().default([]),
   firstArticle: firstArticleRecordSchema.optional(),
 }).strict();
 
@@ -291,6 +308,7 @@ export const partnerOrderProjectionSchema = z.object({
   if (value.itemType !== expectedType) context.addIssue({ code: z.ZodIssueCode.custom, path: ["itemType"], message: "订单类型与任务类型不匹配。" });
   if (value.orderType === "purchase" && value.publicPayload.fulfillmentMode !== "supplier") context.addIssue({ code: z.ZodIssueCode.custom, path: ["publicPayload", "fulfillmentMode"], message: "采购单必须使用供应商履约模式。" });
   if (value.orderType === "production" && value.lines.some((line) => line.unitPrice !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["lines"], message: "生产加工单不得向工厂投影价格字段。" });
+  if (value.orderType === "production" && (value.publicPayload.orderAmount > 0 || value.publicPayload.payableAmount > 0 || value.publicPayload.inboundDocuments.length > 0)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["publicPayload"], message: "生产加工单不得包含采购结算字段。" });
 });
 
 export const internalPartnerTaskSchema = z.object({

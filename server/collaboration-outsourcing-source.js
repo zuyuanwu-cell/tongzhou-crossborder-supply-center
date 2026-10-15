@@ -169,6 +169,12 @@ function isPackagingMaterial(category, name) {
   return /包材|瓶|盖|盒|箱|袋|膜|标|贴|卡|内托|卷膜|泵头|喷头/.test(`${text(category)} ${text(name)}`);
 }
 
+function purchaseLineType(category, name) {
+  if (isPackagingMaterial(category, name)) return "packaging";
+  if (/内料|原料|料体|膏体|液体|粉体|香精|原液/.test(`${text(category)} ${text(name)}`)) return "raw_material";
+  return "finished_product";
+}
+
 export function outsourcingFactoryOptions(records = []) {
   const fields = JIANYUN_FORMS.outsourcingOrders.fields;
   const factories = new Map();
@@ -206,6 +212,140 @@ export function outsourcingOrderIdentity(record) {
     orderNo: text(valueOf(record, fields.orderNo)),
     status: text(valueOf(record, fields.status)),
     updatedAt: date(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at),
+  };
+}
+
+function supplierOwnedByFactory(record, fields, factoryId, factoryNames = []) {
+  const supplierId = text(valueOf(record, fields.supplierId));
+  const expectedId = text(factoryId);
+  if (supplierId && expectedId) return supplierId === expectedId;
+  const supplierName = exactKey(valueOf(record, fields.supplier));
+  const expectedNames = new Set(factoryNames.map(exactKey).filter(Boolean));
+  return Boolean(supplierName && expectedNames.has(supplierName));
+}
+
+function purchaseStatus(sourceStatus, receivedQuantity, orderedQuantity, currentStatus = "") {
+  const source = text(sourceStatus);
+  if (/作废|取消|已取消|终止/.test(source)) return "cancelled";
+  if ((orderedQuantity > 0 && receivedQuantity >= orderedQuantity) || /已完成|已入库|已结清/.test(source)) return "completed";
+  if (/执行|进行|备货|生产|待入库|部分/.test(source)) return ["accepted", "in_progress", "pending_sync"].includes(currentStatus) ? currentStatus : "in_progress";
+  return currentStatus || "pending";
+}
+
+export function purchaseOrderIdentity(record) {
+  const fields = JIANYUN_FORMS.purchaseOrders.fields;
+  return {
+    recordId: text(record?.data_id || record?._id || record?.id),
+    orderNo: text(valueOf(record, fields.orderNo)),
+    outsourcingOrderNo: text(valueOf(record, fields.outsourcingOrderNo)),
+    supplierId: text(valueOf(record, fields.supplierId)),
+    supplierName: text(valueOf(record, fields.supplier)),
+    status: text(valueOf(record, fields.status)),
+    updatedAt: date(record?.updateTime || record?.update_time || record?.updatedAt || record?.updated_at),
+  };
+}
+
+export function purchaseProjectionFromRecord(record, {
+  organizationCode,
+  factoryId,
+  factoryNames = [],
+  inboundRecords = [],
+  version,
+  currentStatus = "",
+  dueAt = "",
+  eventId,
+} = {}) {
+  const config = JIANYUN_FORMS.purchaseOrders;
+  const fields = config.fields;
+  const detailFields = config.detailFields;
+  if (!supplierOwnedByFactory(record, fields, factoryId, factoryNames)) return null;
+  const orderNo = text(valueOf(record, fields.orderNo));
+  const linkedProductionOrderNo = text(valueOf(record, fields.outsourcingOrderNo));
+  if (!orderNo || !linkedProductionOrderNo) return null;
+
+  const rawLines = valueOf(record, fields.details);
+  const purchaseLines = (Array.isArray(rawLines) ? rawLines : []).map((line, index) => {
+    const sku = text(valueOf(line, detailFields.sku)) || `${orderNo}-${index + 1}`;
+    const productName = text(valueOf(line, detailFields.name), sku);
+    const plannedQuantity = number(valueOf(line, detailFields.purchaseQty), number(valueOf(line, detailFields.requiredQty)));
+    const amount = number(valueOf(line, detailFields.amount));
+    const lineRef = text(valueOf(line, detailFields.uuid)) || safeLineRef(orderNo, "purchase", sku, index);
+    return {
+      lineRef: lineRef.slice(0, 120),
+      lineType: purchaseLineType(valueOf(line, detailFields.category), productName),
+      sku: sku.slice(0, 100),
+      productName: productName.slice(0, 300),
+      specification: text(valueOf(line, detailFields.category)).slice(0, 1_000),
+      imageUrl: "",
+      plannedQuantity,
+      unit: text(valueOf(line, detailFields.unit), "件").slice(0, 20),
+      requiredDate: "",
+      responsibility: "supplier",
+      ...(plannedQuantity > 0 && amount > 0 ? { unitPrice: Number((amount / plannedQuantity).toFixed(4)) } : {}),
+      currency: "CNY",
+    };
+  }).filter((line) => line.plannedQuantity > 0);
+  if (!purchaseLines.length) return null;
+
+  const inboundConfig = JIANYUN_FORMS.purchaseInboundOrders;
+  const inboundFields = inboundConfig.fields;
+  const documents = inboundRecords.filter((inbound) => {
+    if (text(valueOf(inbound, inboundFields.purchaseOrderNo)) !== orderNo) return false;
+    return supplierOwnedByFactory(inbound, inboundFields, factoryId, factoryNames);
+  }).map((inbound) => ({
+    inboundNo: text(valueOf(inbound, inboundFields.inboundNo)).slice(0, 120),
+    inboundAt: date(valueOf(inbound, inboundFields.inboundAt)),
+    receivedQuantity: number(valueOf(inbound, inboundFields.totalQty)),
+    payableAmount: number(valueOf(inbound, inboundFields.payableAmount), number(valueOf(inbound, inboundFields.totalAmount))),
+    settlementStatus: text(valueOf(inbound, inboundFields.settlementStatus)).slice(0, 120),
+  })).filter((inbound) => inbound.inboundNo).sort((left, right) => left.inboundAt.localeCompare(right.inboundAt));
+
+  const orderedQuantity = number(valueOf(record, fields.totalQty), purchaseLines.reduce((sum, line) => sum + line.plannedQuantity, 0));
+  const receivedQuantity = documents.reduce((sum, item) => sum + item.receivedQuantity, 0);
+  const payableAmount = documents.reduce((sum, item) => sum + item.payableAmount, 0);
+  const orderAmount = number(valueOf(record, fields.totalAmount));
+  const productName = text(valueOf(record, fields.productName), purchaseLines[0].productName);
+  const orderedAt = date(valueOf(record, fields.orderedAt));
+  const latestSettlementStatus = documents[documents.length - 1]?.settlementStatus || (documents.length ? "待核对" : "未入库");
+  return {
+    eventId,
+    organizationCode,
+    coreRefType: "jiandaoyun_purchase_order",
+    coreRefId: orderNo,
+    orderType: "purchase",
+    itemType: "purchase_order",
+    title: `采购单 ${orderNo} · ${productName}`.slice(0, 240),
+    description: "数据来源：千顷 ERP 采购单及采购入库单。采购入库累计实收数量和应付金额是本单结算依据。",
+    priority: dueAt && new Date(dueAt).getTime() - Date.now() <= 3 * 24 * 60 * 60 * 1000 ? "urgent" : "normal",
+    status: purchaseStatus(valueOf(record, fields.status), receivedQuantity, orderedQuantity, currentStatus),
+    dueAt,
+    version,
+    publicPayload: {
+      orderNo,
+      projectCode: linkedProductionOrderNo,
+      productName,
+      productSpec: "",
+      barcode: "",
+      fulfillmentMode: "supplier",
+      requirements: "按采购单履约；最终结算数量与应付金额以采购入库单为准。",
+      quantity: orderedQuantity,
+      unit: purchaseLines[0].unit,
+      deliveryDate: dueAt.slice(0, 10),
+      deliveryAddress: "",
+      paymentTerms: "按采购入库单结算",
+      currency: "CNY",
+      linkedProductionOrderNo,
+      orderedAt,
+      settlementBasis: "purchase_inbound",
+      orderAmount,
+      receivedQuantity,
+      pendingReceiptQuantity: Math.max(0, orderedQuantity - receivedQuantity),
+      payableAmount,
+      settlementStatus: latestSettlementStatus,
+      inboundDocuments: documents,
+    },
+    lines: purchaseLines,
+    milestones: [],
   };
 }
 

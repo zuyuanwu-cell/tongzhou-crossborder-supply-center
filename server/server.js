@@ -438,6 +438,7 @@ const collaborationBridge = createCollaborationBridge({
   listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
   listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
   listFirstArticleRecords: fetchJdyFirstArticleRecordsForOrders,
+  listOutsourcingPurchaseDocuments: fetchAllJdyProductionMaterials,
   recordOutsourcingPartnerFeedback: async ({ orderNo, commandType, payload, submittedByName, submittedAt }) => {
     const fields = JIANYUN_FORMS.outsourcingOrders.fields;
     const actor = String(submittedByName || "委外工厂").trim();

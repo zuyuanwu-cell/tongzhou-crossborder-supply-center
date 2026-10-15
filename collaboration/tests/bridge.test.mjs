@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [] } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], purchaseRecords = [], purchaseInboundRecords = [] } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -66,6 +66,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     listActiveOutsourcingOrders: async () => outsourcingRecords,
     listOutsourcingFactoryOrders: async (factoryId) => outsourcingRecords.filter((record) => String(record._widget_1741698535338?.value || "") === String(factoryId)),
     listFirstArticleRecords: async () => firstArticleRecords,
+    listOutsourcingPurchaseDocuments: async () => ({ purchaseRecords, inboundRecords: purchaseInboundRecords }),
     recordOutsourcingPartnerFeedback: async (feedback) => { sourceFeedback.push(feedback); return { ok: true, skipped: false }; },
     fetchImpl,
   });
@@ -265,6 +266,75 @@ test("JiandaoYun factory binding projects only the exact factory active outsourc
   const unchanged = await bridge.synchronizeOutsourcingProjections({ organizationCode: "mf-songyu" });
   assert.equal(unchanged.queued, 0);
   assert.equal(unchanged.unchanged, 1);
+});
+
+test("turnkey outsourcing sync publishes the factory purchase order with purchase inbound settlement facts", async (t) => {
+  const fields = (values) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { value }]));
+  const outsourcingRecords = [{
+    data_id: "jdy-turnkey-songyu",
+    updateTime: "2026-10-15T09:00:00.000Z",
+    ...fields({
+      _widget_1741698535338: "215", _widget_1666521891102: "松雨", _widget_1744031628891: "广州市婉兮生物科技有限公司",
+      out_order_id: "JG26101501", _widget_1690015838240: "进行中", _widget_1753770713537: "TZKJ-TEST-01",
+      _widget_1666513866235: "全包测试产品", _widget_1666513866237: 1000, _widget_1741671761933: "瓶", _widget_1666522275282: "2026-10-30T16:00:00.000Z",
+    }),
+    _widget_1666513866246: { value: [
+      fields({ _widget_1667632334265: "MAT-01", _widget_1689748852742: "内料", _widget_1666513866248: "全包料体", _widget_1666519610456: "215", _widget_1666513866251: "松雨", _widget_1666513866261: 1000, _widget_1690004171630: "kg" }),
+      fields({ _widget_1667632334265: "PKG-01", _widget_1689748852742: "包材", _widget_1666513866248: "全包瓶器", _widget_1666519610456: "215", _widget_1666513866251: "松雨", _widget_1666513866261: 1000, _widget_1690004171630: "个" }),
+    ] },
+  }];
+  const purchaseRecords = [{
+    data_id: "purchase-songyu-1", updateTime: "2026-10-15T09:10:00.000Z",
+    ...fields({ _widget_1690032758345: "CG26101501", _widget_1741689808043: "2026-10-15T09:10:00.000Z", out_order_id: "JG26101501", bom_vendor_id: "215", bom_vendor_name: "松雨", _widget_1699618605970: "执行中", _widget_1767853975697: "全包测试产品", _widget_1690034202881: 1000, _widget_1690033192936: 12000 }),
+    bom: { value: [fields({ bom_sku: "TZKJ-TEST-01", bom_fenlei: "成品", bom_sku_name: "全包测试产品", bom_unit: "瓶", _widget_1741951692582: 1000, _widget_1742032700930: 12000, _widget_1741951692573: "line-1" })] },
+  }, {
+    data_id: "purchase-foreign-1",
+    ...fields({ _widget_1690032758345: "CG-FOREIGN", out_order_id: "JG26101501", bom_vendor_id: "999", bom_vendor_name: "其他供应商", _widget_1699618605970: "执行中", _widget_1690034202881: 1000, _widget_1690033192936: 1 }),
+    bom: { value: [fields({ bom_sku: "SECRET-SKU", bom_sku_name: "其他供应商物料", bom_unit: "个", _widget_1741951692582: 1000, _widget_1742032700930: 1 })] },
+  }];
+  const purchaseInboundRecords = [{
+    data_id: "inbound-songyu-1",
+    ...fields({ _widget_1690032758345: "RK26101501", _widget_1741850722101: "2026-10-16T10:00:00.000Z", _widget_1696603667734: "CG26101501", _widget_1741692696557: "215", _widget_1690032758338: "松雨", _widget_1742188045764: "JG26101501", _widget_1699618605970: "待结算", _widget_1741850722127: 400, _widget_1767098207320: 4800, _widget_1744544426799: 4800 }),
+    _widget_1741756513043: { value: [fields({ _widget_1741756513046: "TZKJ-TEST-01", _widget_1741756513090: "全包测试产品", _widget_1741756513093: "瓶", _widget_1741756513162: 1000, _widget_1741850722077: 400, _widget_1741756513153: 4800 })] },
+  }, {
+    data_id: "inbound-songyu-2",
+    ...fields({ _widget_1690032758345: "RK26101502", _widget_1741850722101: "2026-10-17T10:00:00.000Z", _widget_1696603667734: "CG26101501", _widget_1741692696557: "215", _widget_1690032758338: "松雨", _widget_1742188045764: "JG26101501", _widget_1699618605970: "已核对", _widget_1741850722127: 600, _widget_1767098207320: 7200, _widget_1744544426799: 7200 }),
+    _widget_1741756513043: { value: [fields({ _widget_1741756513046: "TZKJ-TEST-01", _widget_1741756513090: "全包测试产品", _widget_1741756513093: "瓶", _widget_1741756513162: 1000, _widget_1741850722077: 600, _widget_1741756513153: 7200 })] },
+  }, {
+    data_id: "inbound-foreign-1",
+    ...fields({ _widget_1690032758345: "RK-SECRET", _widget_1696603667734: "CG-FOREIGN", _widget_1741692696557: "999", _widget_1690032758338: "其他供应商", _widget_1741850722127: 1000, _widget_1744544426799: 999999 }),
+  }];
+  const { bridge, requests } = await fixture(t, {
+    oemEnabled: true,
+    organizations: [{ code: "mf-songyu", name: "松雨", organizationType: "production_factory", status: "active" }],
+    accessGrants: [
+      { resourceType: "organization", resourceRef: "production", permissions: ["production.order.view"] },
+      { resourceType: "organization", resourceRef: "procurement", permissions: ["procurement.order.view", "procurement.fulfillment.update"] },
+    ],
+    outsourcingRecords, purchaseRecords, purchaseInboundRecords,
+  });
+
+  const sync = await bridge.synchronizeOutsourcingProjections({ organizationCode: "mf-songyu" });
+  assert.equal(sync.queued, 2);
+  assert.equal(sync.failed, 0);
+  assert.equal((await bridge.flushOutbox()).published, 2);
+  const purchase = requests.find((request) => request.body?.coreRefType === "jiandaoyun_purchase_order");
+  assert.ok(purchase);
+  assert.equal(purchase.body.coreRefId, "CG26101501");
+  assert.equal(purchase.body.itemType, "purchase_order");
+  assert.equal(purchase.body.publicPayload.linkedProductionOrderNo, "JG26101501");
+  assert.equal(purchase.body.publicPayload.settlementBasis, "purchase_inbound");
+  assert.equal(purchase.body.publicPayload.receivedQuantity, 1000);
+  assert.equal(purchase.body.publicPayload.pendingReceiptQuantity, 0);
+  assert.equal(purchase.body.publicPayload.payableAmount, 12000);
+  assert.equal(purchase.body.publicPayload.inboundDocuments.length, 2);
+  assert.equal(purchase.body.lines[0].unitPrice, 12);
+  assert.equal(JSON.stringify(purchase.body).includes("其他供应商"), false);
+  assert.equal(JSON.stringify(purchase.body).includes("SECRET-SKU"), false);
+  assert.equal(JSON.stringify(purchase.body).includes("999999"), false);
+  const unchanged = await bridge.synchronizeOutsourcingProjections({ organizationCode: "mf-songyu" });
+  assert.equal(unchanged.queued, 0);
+  assert.equal(unchanged.unchanged, 2);
 });
 
 test("partner task publication is denied until the target organization has the matching grant", async (t) => {

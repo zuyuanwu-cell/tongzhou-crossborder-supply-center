@@ -151,6 +151,36 @@ test("partner order projections expose only one organization's production or pur
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, lines: projection.lines.map((line, index) => index ? { ...line, unitPrice: 1.2 } : line) }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, orderType: "purchase" }).success, false);
   assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, organizationCode: "" }).success, false);
+
+  const purchaseProjection = {
+    ...projection,
+    eventId: "partner-purchase-1",
+    coreRefType: "jiandaoyun_purchase_order",
+    coreRefId: "CG-001",
+    orderType: "purchase",
+    itemType: "purchase_order",
+    title: "采购单 CG-001",
+    publicPayload: {
+      orderNo: "CG-001",
+      projectCode: "MO-001",
+      productName: "洗护套装",
+      fulfillmentMode: "supplier",
+      quantity: 10000,
+      unit: "套",
+      linkedProductionOrderNo: "MO-001",
+      settlementBasis: "purchase_inbound",
+      orderAmount: 120000,
+      receivedQuantity: 6000,
+      pendingReceiptQuantity: 4000,
+      payableAmount: 72000,
+      settlementStatus: "部分入库",
+      inboundDocuments: [{ inboundNo: "RK-001", receivedQuantity: 6000, payableAmount: 72000, settlementStatus: "待结算" }],
+    },
+    lines: [{ lineRef: "purchase-1", lineType: "finished_product", sku: "SKU-F", productName: "洗护套装", plannedQuantity: 10000, unit: "套", responsibility: "supplier", unitPrice: 12, currency: "CNY" }],
+  };
+  assert.equal(partnerOrderProjectionSchema.safeParse(purchaseProjection).success, true);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...purchaseProjection, publicPayload: { ...purchaseProjection.publicPayload, customerName: "敏感客户" } }).success, false);
+  assert.equal(partnerOrderProjectionSchema.safeParse({ ...projection, publicPayload: { ...projection.publicPayload, payableAmount: 1 } }).success, false);
 });
 
 test("turnkey material tests require an explanation when testing fails", () => {

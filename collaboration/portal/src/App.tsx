@@ -81,6 +81,9 @@ function Toast({ message, tone, onClose }: { message: string; tone: "success" | 
   React.useEffect(() => { const timer = setTimeout(onClose, 4500); return () => clearTimeout(timer); }, [onClose]);
   return <div className={`toast ${tone}`}>{tone === "success" ? <CheckCircle2 size={18} /> : <XCircle size={18} />}<span>{message}</span><button onClick={onClose} aria-label="关闭"><X size={16} /></button></div>;
 }
+function formatCurrency(value = 0, currency = "CNY") {
+  return new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format(Number(value || 0));
+}
 
 type BrowserBarcodeDetector = { detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>> };
 type BrowserBarcodeDetectorConstructor = {
@@ -215,10 +218,11 @@ function MetricCard({ label, value, note, icon: Icon, tone = "ink" }: { label: s
 
 function TaskCard({ item, onOpen }: { item: WorkItem; onOpen(item: WorkItem): void }) {
   const oem = ["filing_task", "sampling_task", "packaging_quote", "production_order", "purchase_order"].includes(item.itemType);
+  const purchase = item.itemType === "purchase_order";
   return <button className={`task-card ${item.priority === "urgent" ? "urgent" : ""}`} onClick={() => onOpen(item)}>
     <div className="task-card-top"><TaskType type={item.itemType} /><StatusPill status={item.status} /></div>
     <h3>{item.title}</h3><p>{item.description}</p>
-    <div className="task-route"><span>{oem ? (item.publicPayload.orderNo || item.publicPayload.projectCode) : (item.publicPayload.sourceWarehouseName || "供应链中台")}</span><ChevronRight size={14} /><span>{oem ? item.publicPayload.productName : (item.publicPayload.destinationWarehouseName || item.publicPayload.warehouseName)}</span></div>
+    <div className="task-route"><span>{oem ? (item.publicPayload.orderNo || item.publicPayload.projectCode) : (item.publicPayload.sourceWarehouseName || "供应链中台")}</span><ChevronRight size={14} /><span>{purchase && item.publicPayload.linkedProductionOrderNo ? `关联加工 ${item.publicPayload.linkedProductionOrderNo}` : oem ? item.publicPayload.productName : (item.publicPayload.destinationWarehouseName || item.publicPayload.warehouseName)}</span></div>
     <footer><span><Clock3 size={14} />截止 {formatDate(item.dueAt)}</span><span>{item.publicPayload.referenceNo || item.publicPayload.orderNo || item.publicPayload.documentVersion || `V${item.version}`}<ChevronRight size={16} /></span></footer>
   </button>;
 }
@@ -595,6 +599,14 @@ function PartnerOrderWorkspace({ detail, busy, setBusy, reload, onChanged, notif
 
   return <section className="drawer-section partner-order-panel">
     <header><div><h3>{production ? "加工单协同台" : "采购单履约台"}</h3><span>{production ? (turnkey ? "全包模式 · 生产、物料与包材测试均需反馈" : "来料加工 · 按节点反馈生产进度") : "订单确认、备货、发货与异常全程留痕"}</span></div><ShieldCheck size={18} /></header>
+    {!production ? <section className="purchase-settlement-panel">
+      <header><div><span>PURCHASE & RECEIPT</span><h4>采购入库结算依据</h4></div><em>{item.publicPayload.settlementStatus || "未入库"}</em></header>
+      <div className="purchase-linkage"><span>关联委外加工单</span><b>{item.publicPayload.linkedProductionOrderNo || "未关联"}</b><small>采购单 {item.publicPayload.orderNo || "—"} · 下单 {fullDate(item.publicPayload.orderedAt || "")}</small></div>
+      <div className="purchase-settlement-metrics"><div><span>采购数量</span><b>{Number(item.publicPayload.quantity || 0).toLocaleString()} {item.publicPayload.unit || "件"}</b></div><div><span>累计采购入库</span><b>{Number(item.publicPayload.receivedQuantity || 0).toLocaleString()} {item.publicPayload.unit || "件"}</b></div><div><span>待入库</span><b>{Number(item.publicPayload.pendingReceiptQuantity || 0).toLocaleString()} {item.publicPayload.unit || "件"}</b></div><div><span>入库应付</span><b>{formatCurrency(item.publicPayload.payableAmount, item.publicPayload.currency)}</b></div></div>
+      <div className="purchase-order-lines"><div className="head"><span>采购明细</span><span>数量</span><span>单价</span><span>金额</span></div>{(order?.lines || []).map((line) => <div key={line.id}><span><b>{line.productName}</b><code>{line.sku}</code></span><span>{line.plannedQuantity.toLocaleString()} {line.unit}</span><span>{line.unitPrice == null ? "—" : formatCurrency(line.unitPrice, line.currency)}</span><strong>{line.unitPrice == null ? "—" : formatCurrency(line.unitPrice * line.plannedQuantity, line.currency)}</strong></div>)}</div>
+      {item.publicPayload.inboundDocuments?.length ? <div className="purchase-inbound-list"><header><b>采购入库记录</b><span>{item.publicPayload.inboundDocuments.length} 个批次 · 以此作为结算依据</span></header>{item.publicPayload.inboundDocuments.map((receipt) => <article key={receipt.inboundNo}><span><b>{receipt.inboundNo}</b><small>{fullDate(receipt.inboundAt)}</small></span><span><b>{receipt.receivedQuantity.toLocaleString()} {item.publicPayload.unit || "件"}</b><small>本批实收</small></span><span><b>{formatCurrency(receipt.payableAmount, item.publicPayload.currency)}</b><small>{receipt.settlementStatus || "待核对"}</small></span></article>)}</div> : <div className="purchase-no-inbound"><ReceiptText size={18} /><span><b>尚未产生采购入库单</b><small>当前还未形成可结算数量与应付依据。</small></span></div>}
+      <footer><ShieldCheck size={15} />采购入库数据来自千顷 ERP，只读展示；最终付款仍由中台财务核对。</footer>
+    </section> : null}
     {production ? <ProductionProcessFlow value={item.publicPayload.productionProcess || item.publicPayload.firstArticle?.productionProcess} reports={order?.reports || []} /> : null}
     {production && (item.publicPayload.cartonType || item.publicPayload.barcode) ? <div className="partner-source-facts"><div><span>外箱与箱规</span><b>{[item.publicPayload.cartonType, item.publicPayload.piecesPerCarton ? `${item.publicPayload.piecesPerCarton} ${item.publicPayload.unit || "件"}/箱` : ""].filter(Boolean).join(" · ") || "未填写"}</b></div><div><span>商品条码</span><b>{item.publicPayload.barcode || "未填写"}</b></div></div> : null}
     {production ? <FirstArticlePanel record={item.publicPayload.firstArticle} /> : null}

@@ -7,6 +7,8 @@ import {
   outsourcingOrderIdentity,
   outsourcingProjectionFingerprint,
   outsourcingProjectionFromRecord,
+  purchaseOrderIdentity,
+  purchaseProjectionFromRecord,
 } from "./collaboration-outsourcing-source.js";
 
 const systemUser = Object.freeze({
@@ -115,6 +117,10 @@ function outsourcingProjectionStateKey(organizationCode, orderNo) {
   return `outsourcing_projection:${organizationCode}:${createHash("sha256").update(String(orderNo)).digest("hex").slice(0, 24)}`;
 }
 
+function purchaseProjectionStateKey(organizationCode, orderNo) {
+  return `purchase_projection:${organizationCode}:${createHash("sha256").update(String(orderNo)).digest("hex").slice(0, 24)}`;
+}
+
 export function createCollaborationBridge({
   store,
   domesticInventoryService,
@@ -128,6 +134,7 @@ export function createCollaborationBridge({
   listActiveOutsourcingOrders = async () => [],
   listOutsourcingFactoryOrders = async () => [],
   listFirstArticleRecords = async () => [],
+  listOutsourcingPurchaseDocuments = async () => ({ purchaseRecords: [], inboundRecords: [] }),
   recordOutsourcingPartnerFeedback = async () => ({ ok: true, skipped: true }),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
@@ -765,6 +772,7 @@ export function createCollaborationBridge({
         const workItems = await listOrganizationWorkItems(organization.code, { itemType: "production_order", limit: 100 });
         const existingByOrderNo = new Map((workItems.items || []).map((item) => [String(item.coreRefId || ""), item]));
         const catalog = productLookup(listProducts());
+        const productionDueAt = new Map();
         for (const record of records) {
           const identity = outsourcingOrderIdentity(record);
           if (!identity.orderNo || (!isActiveOutsourcingStatus(identity.status) && !tracked.has(identity.orderNo))) continue;
@@ -783,12 +791,49 @@ export function createCollaborationBridge({
           if (!projection) continue;
           const product = catalog.get(normalizedSku(projection.lines[0]?.sku)) || {};
           if (product.imageUrl) projection = { ...projection, lines: projection.lines.map((line, index) => index === 0 ? { ...line, imageUrl: publicImageUrl(product.imageUrl) } : line) };
+          productionDueAt.set(identity.orderNo, projection.dueAt || "");
           const fingerprint = outsourcingProjectionFingerprint(projection);
           if (!force && previous.fingerprint === fingerprint) { unchanged += 1; tracked.add(identity.orderNo); continue; }
           queuePartnerOrderProjection(projection);
           store.setState(stateKey, JSON.stringify({ fingerprint, version, sourceUpdatedAt: identity.updatedAt }), nowIso());
           tracked.add(identity.orderNo);
           queued += 1;
+        }
+        const procurementGrant = (access.grants || []).find((grant) => grant.resourceType === "organization" && grant.resourceRef === "procurement" && grant.permissions?.includes("procurement.order.view"));
+        if (procurementGrant && tracked.size) {
+          try {
+            const { purchaseRecords = [], inboundRecords = [] } = await listOutsourcingPurchaseDocuments([...tracked]);
+            const purchaseWorkItems = await listOrganizationWorkItems(organization.code, { itemType: "purchase_order", limit: 500 });
+            const existingPurchaseByOrderNo = new Map((purchaseWorkItems.items || []).map((item) => [String(item.coreRefId || ""), item]));
+            const factoryNames = [binding.factoryName, binding.factoryFullName, organization.name].filter(Boolean);
+            for (const purchaseRecord of purchaseRecords) {
+              const identity = purchaseOrderIdentity(purchaseRecord);
+              if (!identity.orderNo || !tracked.has(identity.outsourcingOrderNo)) continue;
+              const existingItem = existingPurchaseByOrderNo.get(identity.orderNo);
+              const stateKey = purchaseProjectionStateKey(organization.code, identity.orderNo);
+              const previous = parsedState(store, stateKey, { fingerprint: "", version: 0 });
+              const version = inventoryProjectionVersion(Math.max(Number(previous.version || 0), Number(existingItem?.version || 0)));
+              const eventHash = createHash("sha256").update(`${organization.code}:${identity.orderNo}:${version}`).digest("hex").slice(0, 24);
+              const projection = purchaseProjectionFromRecord(purchaseRecord, {
+                organizationCode: organization.code,
+                factoryId: binding.factoryId,
+                factoryNames,
+                inboundRecords,
+                version,
+                currentStatus: existingItem?.status || "",
+                dueAt: productionDueAt.get(identity.outsourcingOrderNo) || "",
+                eventId: `jdy-purchase-${eventHash}`,
+              });
+              if (!projection) continue;
+              const fingerprint = outsourcingProjectionFingerprint(projection);
+              if (!force && previous.fingerprint === fingerprint) { unchanged += 1; continue; }
+              queuePartnerOrderProjection(projection);
+              store.setState(stateKey, JSON.stringify({ fingerprint, version, sourceUpdatedAt: identity.updatedAt }), nowIso());
+              queued += 1;
+            }
+          } catch (error) {
+            warnings.push(`${organization.code}: 采购单/采购入库单同步暂时失败，已保留上次同步数据（${error.message}）`);
+          }
         }
         store.setState(outsourcingTrackedStateKey(organization.code), JSON.stringify([...tracked].sort()), nowIso());
         store.setState(`outsourcing_last_sync:${organization.code}`, nowIso(), nowIso());
