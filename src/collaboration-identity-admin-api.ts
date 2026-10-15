@@ -97,6 +97,8 @@ export type CollaborationAccessGrantPayload = {
   capabilities: CollaborationCapability[];
   resources?: Array<{ resourceRef: string; resourceName: string; capabilities: CollaborationCapability[] }>;
   defaultResourceRef?: string;
+  supportsWarehouseResources?: boolean;
+  warehouseCapabilities?: CollaborationCapability[];
 };
 
 export type CollaborationApproval = {

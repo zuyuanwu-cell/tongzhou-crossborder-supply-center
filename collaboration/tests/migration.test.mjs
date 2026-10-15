@@ -122,6 +122,27 @@ test("warehouse self-service stores allowlisted images and retains approval cont
   assert.doesNotMatch(taskDrawer, /completedQuantity: line\.completedQuantity \|\| line\.plannedQuantity/);
 });
 
+test("supplier organizations can receive exact warehouse grants without becoming warehouse organizations", () => {
+  assert.match(accessSource, /warehouseResourceOrganizationTypes/);
+  assert.match(accessSource, /production_factory/);
+  assert.match(accessSource, /material_supplier/);
+  assert.match(accessSource, /packaging_factory/);
+  assert.match(accessSource, /supportsWarehouseResources/);
+  assert.match(accessSource, /grant\.resourceType === "warehouse"/);
+  assert.match(accessSource, /warehouseCapabilities/);
+  const warehouseOperation = repositorySource.match(/export async function createWarehouseOperation[\s\S]*?export async function listInventory/)?.[0] || "";
+  assert.doesNotMatch(warehouseOperation, /organization\.type\s*!==\s*["']warehouse["']/);
+  assert.match(warehouseOperation, /assertResourcePermission[\s\S]*warehouse\.task\.view/);
+});
+
+test("hybrid supplier navigation is capability driven and keeps warehouse tasks separate", () => {
+  assert.match(portalSource, /hasWorkspaceModule\(session, "inventory"\)/);
+  assert.match(portalSource, /hasWorkspaceModule\(session, "warehouse_tasks"\)/);
+  assert.match(portalSource, /"warehouse-tasks"/);
+  assert.match(portalSource, /itemType\.startsWith\("warehouse_"\)/);
+  assert.doesNotMatch(portalSource, /route === "inventory" && mode === "warehouse"/);
+});
+
 test("warehouse inventory barcode lookup is projected and indexed", () => {
   assert.match(inventoryBarcodeSql, /ADD COLUMN IF NOT EXISTS barcode text NOT NULL DEFAULT ''/);
   assert.match(inventoryBarcodeSql, /organization_id, warehouse_ref, barcode/);

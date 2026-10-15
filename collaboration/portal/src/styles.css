@@ -400,6 +400,9 @@ body { font-size: 14px; }
 .inventory-actions button { font-size: 12px; }
 
 .overview-control-grid { display: grid; grid-template-columns: minmax(300px,.72fr) minmax(620px,1.65fr); gap: 16px; align-items: stretch; }
+.consignment-overview { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 16px; padding: 18px 20px; color: #173d7a; background: linear-gradient(110deg,#f7fbff 0%,#eef5ff 58%,#fff4ed 100%); border: 1px solid #bfd2ea; box-shadow: var(--shadow); }
+.consignment-symbol { width: 48px; height: 48px; display: grid; place-items: center; color: #fff; background: #174f95; border-radius: 13px; box-shadow: 0 8px 20px rgba(23,79,149,.2); }
+.consignment-overview h2 { margin: 2px 0 4px; font-size: 20px; color: #102b54; }.consignment-overview span { color: #63748c; font-size: 12px; }.consignment-overview > div:last-child { display: flex; gap: 9px; }
 .control-panel { min-width: 0; padding: 22px; background: var(--paper-bright); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
 .control-panel > header { min-height: 48px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .control-panel > header h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }.control-panel > header .kicker { margin-bottom: 7px; }
@@ -432,6 +435,7 @@ body { font-size: 14px; }
 }
 @media (max-width: 800px) {
   .control-panel { padding: 17px 14px; }.control-panel > header { min-height: 44px; }.control-panel > header > span { display: none; }
+  .consignment-overview { grid-template-columns: auto minmax(0,1fr); padding: 15px; }.consignment-overview > div:last-child { grid-column: 1 / -1; }.consignment-overview > div:last-child button { flex: 1; }
   .priority-visual { min-height: 0; grid-template-columns: 112px minmax(0,1fr); gap: 12px; padding-top: 12px; }.priority-ring { width: 112px; height: 112px; }.priority-ring::before { inset: 13px; }.priority-ring strong { font-size: 27px; }.priority-legend button { min-height: 42px; }.deadline-alerts { grid-template-columns: 1fr; }.deadline-alert { min-height: 54px; }
   .delivery-timeline { height: 142px; padding-left: 0; padding-right: 0; gap: 1px; overflow-x: auto; }.delivery-timeline > button { min-width: 35px; }.risk-order-list > button { grid-template-columns: 8px minmax(0,1fr) 17px; }.risk-order-list > button > strong { grid-column: 2; }.risk-order-list > button > svg { grid-column: 3; grid-row: 1 / span 2; }
   .task-drawer { width: 100%; }.drawer-head { min-height: 112px; padding: 18px 15px; grid-template-columns: 38px minmax(0,1fr); gap: 12px; }.drawer-head h2 { font-size: 20px; }.drawer-head > .status-pill { grid-column: 2; }.drawer-body { padding: 20px 15px 126px; }.drawer-actions { width: 100%; padding: 10px 15px max(10px,env(safe-area-inset-bottom)); flex-wrap: wrap; }.task-facts { grid-template-columns: repeat(2,1fr); }.editable-lines > div { grid-template-columns: 46px minmax(0,1fr) 105px; }.editable-lines .line-index { display: none; }.task-line-image { width: 46px; height: 46px; }.editable-lines > div > label input { width: 78px; }

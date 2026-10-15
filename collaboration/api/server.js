@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { collaborationConfig } from "./config.js";
 import { closePools, integrationPool } from "./db.js";
+import { workspaceForSession } from "./workspace.js";
 import { migrate } from "./migrate.js";
 import {
   assertAuthenticated,
@@ -138,7 +139,7 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-function publicSession(auth) {
+async function publicSession(auth) {
   return {
     user: auth.user,
     membership: auth.membership,
@@ -149,6 +150,7 @@ function publicSession(auth) {
     pendingMfa: false,
     mustChangePassword: false,
     oemEnabled: collaborationConfig.oemEnabled,
+    workspace: await workspaceForSession(auth),
   };
 }
 
@@ -167,7 +169,7 @@ async function route(req, res) {
 
   if (url.pathname === "/collaboration/auth/login" && req.method === "POST") {
     const result = await login(req, await readJson(req));
-    sendJson(res, 200, { ok: true, session: publicSession(result.auth), mfaSetupRequired: result.mfaSetupRequired }, { "Set-Cookie": result.cookies });
+    sendJson(res, 200, { ok: true, session: await publicSession(result.auth), mfaSetupRequired: result.mfaSetupRequired }, { "Set-Cookie": result.cookies });
     return;
   }
   if (url.pathname === "/collaboration/auth/invitations/accept" && req.method === "POST") {
@@ -187,7 +189,7 @@ async function route(req, res) {
   if (url.pathname === "/collaboration/me" && req.method === "GET") {
     if (!auth) { sendJson(res, 401, { ok: false, code: "authentication_required", message: "请先登录。" }); return; }
     const cookies = refreshCsrfCookies(req, auth);
-    sendJson(res, 200, { ok: true, session: publicSession(auth) }, cookies.length ? { "Set-Cookie": cookies } : {});
+    sendJson(res, 200, { ok: true, session: await publicSession(auth) }, cookies.length ? { "Set-Cookie": cookies } : {});
     return;
   }
 

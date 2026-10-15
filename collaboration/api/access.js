@@ -42,6 +42,9 @@ const allowedByOrganizationType = Object.freeze({
   internal: [],
 });
 
+const warehouseResourceOrganizationTypes = new Set(["warehouse", "production_factory", "material_supplier", "packaging_factory"]);
+const warehousePermissionKeys = Object.keys(permissionDefinitions).filter((key) => key.startsWith("warehouse.") || key === "attachment.upload");
+
 const defaultResourceRef = Object.freeze({
   filing_service: "filing",
   sampling_factory: "sampling",
@@ -106,6 +109,14 @@ function catalogForType(organizationType) {
   }));
 }
 
+function warehouseCapabilityCatalog() {
+  return warehousePermissionKeys.map((key) => ({
+    key,
+    label: permissionDefinitions[key][0],
+    description: permissionDefinitions[key][1],
+  }));
+}
+
 function capabilitiesForResource(organizationType, resourceRef) {
   if (organizationType === "warehouse") return catalogForType(organizationType);
   const resource = (organizationResources[organizationType] || []).find((item) => item.ref === resourceRef);
@@ -126,18 +137,22 @@ export function organizationAccessCatalog(organizationType) {
     capabilities: catalogForType(organizationType),
     resources: resourceCatalogForType(organizationType),
     defaultResourceRef: defaultResourceRef[organizationType] || "",
+    supportsWarehouseResources: warehouseResourceOrganizationTypes.has(organizationType),
+    warehouseCapabilities: warehouseResourceOrganizationTypes.has(organizationType) ? warehouseCapabilityCatalog() : [],
   };
 }
 
-function validateGrantForOrganization(organization, grant) {
-  let allowed = new Set(allowedByOrganizationType[organization.organization_type] || []);
-  if (organization.organization_type === "warehouse") {
-    if (grant.resourceType !== "warehouse") fail("仓库组织只能分配仓库资源。", 400, "invalid_resource_type");
+export function validateGrantForOrganization(organization, grant) {
+  const organizationType = organization.organization_type;
+  let allowed;
+  if (grant.resourceType === "warehouse") {
+    if (!warehouseResourceOrganizationTypes.has(organizationType)) fail("该协同组织不能分配仓库资源。", 400, "invalid_resource_type");
+    allowed = new Set(warehousePermissionKeys);
   } else {
-    if (grant.resourceType !== "organization" || !(organizationResources[organization.organization_type] || []).some((resource) => resource.ref === grant.resourceRef)) {
+    if (organizationType === "warehouse" || !(organizationResources[organizationType] || []).some((resource) => resource.ref === grant.resourceRef)) {
       fail("该协同组织的业务资源类型不正确。", 400, "invalid_resource_type");
     }
-    allowed = new Set(capabilitiesForResource(organization.organization_type, grant.resourceRef).map((capability) => capability.key));
+    allowed = new Set(capabilitiesForResource(organizationType, grant.resourceRef).map((capability) => capability.key));
   }
   const permissions = [...new Set(grant.permissions)];
   if (permissions.some((permission) => !allowed.has(permission))) fail("授权中包含不适用于该组织类型的业务能力。", 400, "invalid_permission");
@@ -160,9 +175,7 @@ export async function listOrganizationAccessGrants(code) {
     return {
       organization: { code: organization.code, name: organization.name, organizationType: organization.organization_type },
       grants: result.rows.map(publicGrant),
-      capabilities: catalogForType(organization.organization_type),
-      resources: resourceCatalogForType(organization.organization_type),
-      defaultResourceRef: defaultResourceRef[organization.organization_type] || "",
+      ...organizationAccessCatalog(organization.organization_type),
     };
   });
 }
@@ -197,7 +210,7 @@ export async function replaceOrganizationAccessGrants(code, input) {
       }],
     );
     const result = await client.query("SELECT * FROM organization_access_grants WHERE organization_id=$1 ORDER BY resource_name,resource_ref", [organization.id]);
-    return { grants: result.rows.map(publicGrant), capabilities: catalogForType(organization.organization_type), resources: resourceCatalogForType(organization.organization_type) };
+    return { grants: result.rows.map(publicGrant), ...organizationAccessCatalog(organization.organization_type) };
   });
 }
 

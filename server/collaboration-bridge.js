@@ -221,7 +221,7 @@ export function createCollaborationBridge({
     let unchanged = 0;
     let failed = 0;
     const errors = [];
-    for (const organization of organizations.filter((item) => item.organizationType === "warehouse" && item.status !== "suspended" && item.status !== "archived")) {
+    for (const organization of organizations.filter((item) => item.status !== "suspended" && item.status !== "archived")) {
       try {
         const access = await getOrganizationAccessGrants(organization.code);
         const grants = (access.grants || []).filter((grant) => grant.resourceType === "warehouse" && grant.permissions?.includes("warehouse.inventory.view"));
@@ -266,7 +266,7 @@ export function createCollaborationBridge({
     const allowedWarehouses = new Set((warehouseIds || []).map(String).filter(Boolean));
     const allowedSkus = new Set((skus || []).map(normalizedSku).filter(Boolean));
     const response = await listOrganizations({ status: "active" });
-    const warehouseOrganizations = (response.organizations || []).filter((organization) => organization.organizationType === "warehouse" && organization.status === "active");
+    const warehouseOrganizations = (response.organizations || []).filter((organization) => organization.status === "active");
     const organizations = [];
     const availability = new Map();
     for (const organization of warehouseOrganizations) {

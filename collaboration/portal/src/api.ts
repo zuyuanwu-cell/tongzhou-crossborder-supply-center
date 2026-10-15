@@ -28,6 +28,25 @@ const demoOrganization = demoProduction
     : demoOem
       ? { code: "packaging-partner-demo", name: "战略包装伙伴", type: "packaging_factory" }
       : { code: "cn-warehouse-demo", name: "华东协同仓", type: "warehouse" };
+const demoBusinessCapabilities = demoProduction
+  ? ["production.order.view", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "attachment.upload"]
+  : demoSupplier
+    ? ["procurement.order.view", "procurement.fulfillment.update", "procurement.exception.report", "attachment.upload"]
+    : [];
+const demoWarehouseCapabilities = demoProduction || (!demoOem && !demoSupplier && !demoInnerSample && !demoPackagingSample)
+  ? ["warehouse.inventory.view", "warehouse.task.view", "warehouse.task.handle", "warehouse.exception.report", "warehouse.inbound.confirm", "warehouse.outbound.confirm", "warehouse.transfer.receive", "warehouse.inventory.adjust.request", "warehouse.task.complete", "attachment.upload"]
+  : [];
+const demoWorkspace: Session["workspace"] = {
+  modules: ["overview", "tasks", "notifications", "account", ...(demoProduction ? ["production", "inventory", "warehouse_tasks"] : []), ...(!demoProduction && demoWarehouseCapabilities.length ? ["inventory", "warehouse_tasks"] : []), ...(demoAdmin ? ["members"] : [])],
+  taskTypes: [...(demoProduction ? ["production_order"] : demoSupplier ? ["purchase_order"] : []), ...(demoWarehouseCapabilities.length ? ["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception"] : [])],
+  actions: [...new Set([...demoBusinessCapabilities, ...demoWarehouseCapabilities].filter((permission) => !permission.endsWith(".view")))],
+  capabilities: [...new Set([...demoBusinessCapabilities, ...demoWarehouseCapabilities])],
+  resources: [
+    ...(demoProduction ? [{ key: "organization:production", resourceType: "organization" as const, resourceRef: "production", resourceName: "委外生产工单", permissions: demoBusinessCapabilities }] : []),
+    ...(demoSupplier ? [{ key: "organization:procurement", resourceType: "organization" as const, resourceRef: "procurement", resourceName: "物料采购单", permissions: demoBusinessCapabilities }] : []),
+    ...(demoWarehouseCapabilities.length ? [{ key: "warehouse:cn-warehouse-demo", resourceType: "warehouse" as const, resourceRef: "cn-warehouse-demo", resourceName: demoProduction ? "工厂成品寄存仓" : "华东协同仓", permissions: demoWarehouseCapabilities }] : []),
+  ],
+};
 
 export class ApiError extends Error {
   status: number;
@@ -64,6 +83,7 @@ let demoSession: Session = {
   membership: { id: "demo-membership", organizationId: "demo-org", organizationCode: demoOrganization.code, organizationName: demoOrganization.name, organizationType: demoOrganization.type, role: demoAdmin ? "organization_admin" : "manager", status: "active", permissions: demoInnerSample || demoPackagingSample ? ["sampling.task.view", "sampling.artifact.submit", "sampling.quote.submit", "attachment.upload"] : [], mfaRequired: false },
   organization: { id: "demo-org", ...demoOrganization },
   mfaRequired: false, mfaEnabled: false, mfaVerifiedAt: "", pendingMfa: false, mustChangePassword: false, oemEnabled: demoOem || demoPartnerOrder || demoInnerSample || demoPackagingSample,
+  workspace: demoWorkspace,
 };
 const now = Date.now();
 let demoMembers: OrganizationMember[] = [
@@ -86,6 +106,7 @@ const demoItems: WorkItem[] = [
   ...(demoPackagingSample ? [{ id: "aa77af62-79fa-4e30-a77e-2e5bf82114a8", spaceId: "packaging-sampling-demo", itemType: "sampling_task", title: "洗护礼盒包材打样", description: "按批准设计稿完成结构样、颜色样和测试文件。", status: "in_progress", priority: "normal", publicPayload: { projectCode: "DY-BC-20261014-DEMO01", productName: "洗护礼盒", sampleCategory: "packaging", sampleSubject: "packaging_box", sampleGoal: "确认量产结构、颜色与表面工艺", evaluationCriteria: "尺寸公差、结构强度、颜色与烫金位置", quantity: 3, unit: "套", deliveryDate: "2026-10-22", quoteRequired: true, packagingSpec: { material: "350g 白卡裱 E 楞", process: "哑膜、烫金、局部 UV", structureType: "天地盖礼盒", lengthMm: 280, widthMm: 210, heightMm: 85, colorPrinting: "CMYK + 专橙色", designVersion: "Artwork V3", fileRequirements: "刀模图、3D 效果图、材质证明、跌落测试报告" } }, dueAt: new Date(now + 8 * 864e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
   ...(demoOem ? [{ id: "6a77af62-79fa-4e30-a77e-2e5bf82114a4", spaceId: "oem-demo", itemType: "packaging_quote", title: "包装盲报价 · 海盐净润系列", description: "按已批准设计稿，对 500ml 瓶体、泵头和运输外箱进行整套报价。", status: "accepted", priority: "urgent", publicPayload: { projectCode: "OEM-2026-031", productName: "海盐净润洗护套装", productSpec: "500ml × 2", documentVersion: "DESIGN-V4", requirements: "报价需包含开模费、版费、含税到仓价。", quantity: 12000, unit: "套", deliveryDate: "2026-11-20", quoteCurrency: "CNY" }, dueAt: new Date(now + 1728e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
   ...(demoProduction ? [{ id: "7a77af62-79fa-4e30-a77e-2e5bf82114a5", spaceId: "production-demo", itemType: "production_order", title: "委外灌装加工单 · MO-202610-018", description: "全包生产 500ml 洗护套装，工厂负责料体、瓶体、泵头、标签与外箱。", status: "in_progress", priority: "urgent", publicPayload: { orderNo: "MO-202610-018", projectCode: "OEM-2026-041", productName: "海盐净润洗护套装", productSpec: "500ml × 2", barcode: "6970000000001", productionProcess: "灌装、密封测试、贴标、打码、装盒、装箱", cartonType: "专用箱（印箱唛）", piecesPerCarton: 24, factoryExpectedDeliveryDate: "2026-11-18", fulfillmentMode: "turnkey", requirements: "包材到齐后先完成密封、跌落及相容性测试，合格后方可批量灌装。", quantity: 12000, unit: "套", deliveryDate: "2026-11-20", deliveryAddress: "杭州总仓", firstArticle: demoFirstArticle }, dueAt: new Date(now + 12 * 864e5).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 2 * 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
+  ...(demoProduction ? [{ id: "2b77af62-79fa-4e30-a77e-2e5bf82114b9", spaceId: "consignment-demo", itemType: "warehouse_inbound", title: "成品入库 · MO-202610-018", description: "生产完成后核对箱数、批次和实物条码，确认进入工厂成品寄存仓。", status: "pending", priority: "urgent", publicPayload: { referenceNo: "RK-MO-202610-018", warehouseRef: "cn-warehouse-demo", warehouseName: "工厂成品寄存仓", note: "先拍摄封箱状态，再扫描实物条码。" }, dueAt: new Date(now + 2 * 864e5).toISOString(), version: 1, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 4 * 36e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
   ...(demoSupplier ? [{ id: "8a77af62-79fa-4e30-a77e-2e5bf82114a6", spaceId: "procurement-demo", itemType: "purchase_order", title: "包材采购单 · PO-202610-063", description: "采购 500ml PET 瓶体与配套泵头，按批准样封样生产。", status: "accepted", priority: "normal", publicPayload: { orderNo: "PO-202610-063", projectCode: "OEM-2026-041", productName: "500ml PET 瓶体与泵头", fulfillmentMode: "supplier", requirements: "按封样颜色及尺寸生产，出货附批次质检报告。", quantity: 24000, unit: "套", deliveryDate: "2026-10-30", deliveryAddress: "华南灌装协同工厂", paymentTerms: "月结 30 天" }, dueAt: new Date(now + 17 * 864e5).toISOString(), version: 2, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 864e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() } satisfies WorkItem] : []),
   ...(!demoOem && !demoPartnerOrder ? [
   { id: "193c9150-a854-4d0e-b61f-2d75fc56c706", spaceId: "demo", itemType: "warehouse_stockup", title: "DWO-20261013-A7K2 · 待签收验货", description: "签收后核对数量与外观，完成换箱、批号条码、箱规称重，并按计划分别发往海外仓和国内客户。", status: "in_progress", priority: "urgent", publicPayload: { referenceNo: "DWO-20261013-A7K2", warehouseRef: "dwh-east-01", warehouseName: "华东协同仓", destinationWarehouseName: "莫斯科主仓", note: "到货后先拍摄外箱与破损位置。", workOrder: { workOrderId: "swwo-demo-1", requestNo: "BH-202610-042", expectedArrivalAt: new Date(now + 7.2e7).toISOString(), senderName: "宁波海盐日化", senderContact: "王师傅 138****7721", inboundCarrier: "顺丰重货", inboundTrackingNo: "SF163006888", instructions: "1. 核对到货箱数；2. 开箱抽检；3. 破损隔离；4. 更换破损纸箱；5. 登记批号与商品条码；6. 测量箱规和重量；7. 按路线安排货拉拉或国内快递。", destinationCountry: "俄罗斯", destinationWarehouseName: "莫斯科主仓", expenseCategories: ["换箱费", "贴标费", "装卸费", "包装耗材", "仓储费", "货拉拉费", "其他"] } }, dueAt: new Date(now + 7.2e7).toISOString(), version: 3, lastCoreSyncedAt: new Date(now - 18e4).toISOString(), createdAt: new Date(now - 6 * 36e5).toISOString(), updatedAt: new Date(now - 18e4).toISOString() },
@@ -149,7 +170,7 @@ export async function fetchDashboard() {
       urgentTasks: demoItems.filter((item) => item.priority === "urgent").length,
       waitingTasks: warehouseItems.filter((item) => ["pending_approval", "pending_sync"].includes(item.status)).length,
       unreadNotifications: 2,
-      inventorySkuCount: demoPartnerOrder ? 0 : 186,
+      inventorySkuCount: demoWarehouseCapabilities.length ? 3 : 0,
       inventorySyncedAt: new Date(now - 9e4).toISOString(),
       productionOrders: demoProduction ? 1 : 0,
       purchaseOrders: demoSupplier ? 1 : 0,

@@ -14,10 +14,11 @@ import type { Dashboard, InventoryItem, InvitationDeliveryResult, NotificationIt
 
 type WarehouseTaskLineDraft = Omit<TaskLine, "completedQuantity"> & { completedQuantity: number | "" };
 
-type Route = "overview" | "tasks" | "material-sampling" | "packaging-sampling" | "inventory" | "notifications" | "members" | "account";
+type Route = "overview" | "tasks" | "warehouse-tasks" | "material-sampling" | "packaging-sampling" | "inventory" | "notifications" | "members" | "account";
 const routeMeta: Record<Route, { label: string; icon: React.ComponentType<{ size?: number }> }> = {
   overview: { label: "作业总览", icon: LayoutDashboard },
   tasks: { label: "协同任务", icon: ClipboardCheck },
+  "warehouse-tasks": { label: "仓储工单", icon: Warehouse },
   "material-sampling": { label: "料体打样", icon: FlaskConical },
   "packaging-sampling": { label: "包材打样", icon: Boxes },
   inventory: { label: "本仓库存", icon: Boxes },
@@ -44,9 +45,16 @@ function organizationMode(session: Session) {
 }
 
 function routeLabel(session: Session, route: Route) {
-  if (route !== "tasks") return routeMeta[route].label;
   const mode = organizationMode(session);
+  if (route === "inventory") return mode === "warehouse" ? "本仓库存" : "寄存库存";
+  if (route === "warehouse-tasks") return mode === "warehouse" ? "协同任务" : "仓储工单";
+  if (route !== "tasks") return routeMeta[route].label;
   return mode === "production" ? "加工与采购" : mode === "procurement" ? "采购协同" : "协同任务";
+}
+
+function hasWorkspaceModule(session: Session, module: string) {
+  if (session.workspace?.modules) return session.workspace.modules.includes(module);
+  return organizationMode(session) === "warehouse" && ["inventory", "warehouse_tasks"].includes(module);
 }
 
 function formatDate(value: string, withTime = true) {
@@ -324,6 +332,7 @@ function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; o
   const [stockupDetails, setStockupDetails] = React.useState<WorkItemDetail[]>([]);
   const [focus, setFocus] = React.useState<OverviewFocus>("all");
   const mode = organizationMode(session);
+  const hasConsignmentWarehouse = mode !== "warehouse" && hasWorkspaceModule(session, "inventory");
   React.useEffect(() => { Promise.all([fetchDashboard(), fetchWorkItems({ limit: 100 })]).then(async ([summary, work]) => { setDashboard(summary.dashboard); setTasks(work.items); if (mode === "warehouse") { const details = await Promise.all(work.items.filter((item) => item.itemType === "warehouse_stockup").slice(0, 12).map((item) => fetchWorkItem(item.id).catch(() => null))); setStockupDetails(details.filter(Boolean) as WorkItemDetail[]); } }); }, [mode]);
   const stockupTasks = tasks.filter((item) => item.itemType === "warehouse_stockup");
   const waitingProducts = stockupDetails.filter((detail) => ["pending", "accepted", "in_progress"].includes(detail.item.status)).flatMap((detail) => detail.lines.map((line) => ({ item: detail.item, line })));
@@ -339,7 +348,9 @@ function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; o
   const submittedExpenses = stockupDetails.flatMap((detail) => detail.commands.flatMap((command) => Array.isArray(command.payload?.expenses) ? command.payload.expenses as Array<{ category?: string; amountCny?: number }> : []));
   const expenseTotals = submittedExpenses.reduce((totals, expense) => ({ ...totals, [expense.category || "其他"]: Number(totals[expense.category || "其他"] || 0) + Number(expense.amountCny || 0) }), {} as Record<string, number>);
   const entityLabel = mode === "warehouse" ? "任务" : "订单";
-  const activeTasks = tasks.filter((item) => !terminalWorkItemStatuses.has(item.status));
+  const warehouseTasks = tasks.filter((item) => item.itemType.startsWith("warehouse_"));
+  const overviewTasks = mode === "warehouse" ? warehouseTasks : tasks.filter((item) => !item.itemType.startsWith("warehouse_"));
+  const activeTasks = overviewTasks.filter((item) => !terminalWorkItemStatuses.has(item.status));
   const dueSoonCount = activeTasks.filter((item) => deadlineClass(item) === "dueSoon").length;
   const focusedTasks = activeTasks.filter((item) => {
     if (focus === "all") return true;
@@ -356,6 +367,7 @@ function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; o
   if (mode !== "warehouse") return <div className="page-stack">
     <section className="work-brief"><div><p className="kicker">TODAY'S HANDOFF</p><h1>{mode === "production" ? "加工、采购、打样与异常，" : "交期、备货和发运，"}<br />都要<strong>清楚、准确、有回音。</strong></h1></div><div className="sync-stamp"><RefreshCw size={18} /><span>订单状态<b>实时留痕</b></span></div></section>
     <section className="metric-grid">{mode === "production" ? <><MetricCard label="在产加工单" value={dashboard?.productionOrders ?? "—"} note="仅本组织订单" icon={Factory} /><MetricCard label="物料采购单" value={dashboard?.purchaseOrders ?? "—"} note="兼任供应商订单" icon={PackageCheck} tone="green" /><MetricCard label="临期订单" value={dueSoonCount} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /></> : <><MetricCard label="采购单" value={dashboard?.purchaseOrders ?? "—"} note="仅本组织订单" icon={PackageCheck} /><MetricCard label="临期交付" value={dueSoonCount} note="7 天内到期" icon={Clock3} tone="amber" /><MetricCard label="异常记录" value={dashboard?.exceptionReports ?? "—"} note="需持续跟进" icon={AlertTriangle} tone="violet" /><MetricCard label="等待中台" value={dashboard?.waitingTasks ?? "—"} note="提交后自动同步" icon={RefreshCw} tone="green" /></>}</section>
+    {hasConsignmentWarehouse ? <section className="consignment-overview"><div className="consignment-symbol"><Warehouse size={25} /></div><div><p className="kicker">CONSIGNMENT WAREHOUSE</p><h2>生产后暂存库存</h2><span>{dashboard?.inventorySkuCount || 0} 个有库存 SKU · {warehouseTasks.filter((item) => !terminalWorkItemStatuses.has(item.status)).length} 个待处理仓储工单 · 最近同步 {dashboard?.inventorySyncedAt ? formatDate(dashboard.inventorySyncedAt) : "暂无库存投影"}</span></div><div><button className="secondary-action" onClick={() => onNavigate("inventory")}>查看寄存库存</button><button className="primary-action" onClick={() => onNavigate("warehouse-tasks")}>处理仓储工单 <ChevronRight size={16} /></button></div></section> : null}
     <section className="overview-control-grid"><PriorityControlBoard tasks={activeTasks} focus={focus} entityLabel={entityLabel} onFocus={setFocus} /><DeliveryControlBoard tasks={activeTasks} focus={focus} entityLabel={entityLabel} onFocus={setFocus} onOpenTask={onOpenTask} /></section>
     <section className="section-block"><header><div><p className="kicker">ACTIVE QUEUE</p><h2>{focus === "all" ? "当前作业队列" : "筛选后的优先队列"}</h2><span className="section-subtitle">{focusedTasks.length} 个{entityLabel}{focus !== "all" ? " · 点击上方“进行中”圆环恢复全部" : ""}</span></div><button className="text-action" onClick={() => onNavigate("tasks")}>查看全部 <ChevronRight size={16} /></button></header>{focusedTasks.length ? <div className="task-grid">{focusedTasks.slice(0, 6).map((entry) => <TaskCard key={entry.id} item={entry} onOpen={onOpenTask} />)}</div> : <div className="compact-empty"><CheckCircle2 size={22} /><span>当前筛选下没有待处理{entityLabel}</span></div>}</section>
     <section className="safety-banner"><div className="safety-symbol"><ShieldCheck size={28} /></div><div><b>你正处于“{session.organization.name || "本组织"}”数据边界</b><span>页面、搜索、附件和订单均只包含当前组织被授权的数据；所有操作会记录操作者与时间。</span></div></section>
@@ -374,18 +386,19 @@ function OverviewPage({ session, onOpenTask, onNavigate }: { session: Session; o
   </div>;
 }
 
-function TasksPage({ session, onOpenTask, sampleCategory }: { session: Session; onOpenTask(item: WorkItem): void; sampleCategory?: "inner_material" | "packaging" }) {
-  const [items, setItems] = React.useState<WorkItem[]>([]); const [counts, setCounts] = React.useState<Record<string, number>>({}); const [status, setStatus] = React.useState(""); const [itemType, setItemType] = React.useState(""); const [keyword, setKeyword] = React.useState(""); const [loading, setLoading] = React.useState(true);
-  const load = React.useCallback(() => { setLoading(true); fetchWorkItems({ status, keyword }).then((value) => { setItems(value.items); setCounts(value.counts); }).finally(() => setLoading(false)); }, [status, keyword]);
+function TasksPage({ session, onOpenTask, sampleCategory, taskScope = "business" }: { session: Session; onOpenTask(item: WorkItem): void; sampleCategory?: "inner_material" | "packaging"; taskScope?: "business" | "warehouse" }) {
+  const [items, setItems] = React.useState<WorkItem[]>([]); const [status, setStatus] = React.useState(""); const [itemType, setItemType] = React.useState(""); const [keyword, setKeyword] = React.useState(""); const [loading, setLoading] = React.useState(true);
+  const load = React.useCallback(() => { setLoading(true); fetchWorkItems({ status, keyword }).then((value) => setItems(value.items)).finally(() => setLoading(false)); }, [status, keyword]);
   React.useEffect(load, [load]);
-  const mode = organizationMode(session); const title = sampleCategory === "inner_material" ? "料体打样" : sampleCategory === "packaging" ? "包材打样" : mode === "production" ? "订单协同" : mode === "procurement" ? "采购协同" : "协同任务";
-  const categoryItems = sampleCategory ? items.filter((item) => item.itemType === "sampling_task" && item.publicPayload.sampleCategory === sampleCategory) : items.filter((item) => item.itemType !== "sampling_task");
+  const mode = organizationMode(session); const warehouseScope = taskScope === "warehouse" || mode === "warehouse"; const title = warehouseScope ? (mode === "warehouse" ? "协同任务" : "仓储工单") : sampleCategory === "inner_material" ? "料体打样" : sampleCategory === "packaging" ? "包材打样" : mode === "production" ? "订单协同" : mode === "procurement" ? "采购协同" : "协同任务";
+  const categoryItems = warehouseScope ? items.filter((item) => item.itemType.startsWith("warehouse_")) : sampleCategory ? items.filter((item) => item.itemType === "sampling_task" && item.publicPayload.sampleCategory === sampleCategory) : items.filter((item) => item.itemType !== "sampling_task" && !item.itemType.startsWith("warehouse_"));
   const visibleItems = itemType ? categoryItems.filter((item) => item.itemType === itemType) : categoryItems;
-  const typeOptions = mode === "production" ? [["", "全部单据", ClipboardCheck], ["production_order", "委外加工单", Factory], ["purchase_order", "物料采购单", PackageCheck]] as const : [];
-  return <div className="page-stack"><section className="page-title"><div><p className="kicker">{sampleCategory === "packaging" ? "PACKAGING SAMPLE" : sampleCategory === "inner_material" ? "INNER MATERIAL SAMPLE" : "WORK ITEMS"}</p><h1>{title}</h1><span>{sampleCategory === "inner_material" ? "每轮可登记多个独立料体；实际打出后填写供应商内部编码，平台追踪号自动生成。" : sampleCategory === "packaging" ? "按材质、工艺、结构、尺寸与文件管理送样，不与料体任务混排。" : mode === "production" ? "加工、采购和打样互相分区；反馈进度、物料与包材测试，异常及时上报。" : mode === "procurement" ? "确认订单、反馈备货与交付进度，并留存发运凭证。" : "接单、执行、回传凭证，并跟踪中台处理结果。"}</span></div><button className="secondary-action" onClick={load}><RefreshCw size={17} />刷新</button></section>
-    {!sampleCategory && typeOptions.length ? <nav className="task-type-filter" aria-label="单据类型">{typeOptions.map(([value, label, Icon]) => <button key={value} className={itemType === value ? "active" : ""} onClick={() => setItemType(value)}><Icon size={17} /><span>{label}</span><em>{value ? items.filter((item) => item.itemType === value).length : items.length}</em></button>)}</nav> : null}
-    <section className="filter-bar"><label className="search-field"><Search size={18} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索任务、单号" /></label><div className="filter-chips">{[["","全部"],["pending","待接单"],["accepted","已接单"],["in_progress","处理中"],["pending_approval","待审批"],["pending_sync","待同步"],["completed","已完成"]].map(([value,label]) => <button key={value} className={status === value ? "active" : ""} onClick={() => setStatus(value)}>{label}{value && counts[value] ? <em>{counts[value]}</em> : null}</button>)}</div></section>
-    {loading ? <div className="loading-state"><LoaderCircle className="spin" /><span>正在读取本组织任务…</span></div> : visibleItems.length ? <div className="task-grid wide">{visibleItems.map((item) => <TaskCard key={item.id} item={item} onOpen={onOpenTask} />)}</div> : <div className="empty-state"><Inbox size={42} /><h3>当前没有匹配任务</h3><p>{mode === "warehouse" ? "任务可由供应链中台下发，也可从“本仓库存”发起仓库作业。" : itemType ? `中台尚未向本组织发布${itemTypeMeta[itemType]?.label || "该类"}单。` : "中台尚未向本组织发布相关订单。"}</p></div>}
+  const visibleCounts = categoryItems.reduce<Record<string, number>>((result, item) => ({ ...result, [item.status]: Number(result[item.status] || 0) + 1 }), {});
+  const typeOptions = warehouseScope ? [["", "全部工单", ClipboardCheck], ["warehouse_inbound", "入库", ArrowDownToLine], ["warehouse_outbound", "出库", ArrowUpFromLine], ["warehouse_transfer", "调拨", ArrowLeftRight], ["warehouse_stockup", "备货", Boxes], ["warehouse_exception", "异常/盘点", AlertTriangle]] as const : mode === "production" ? [["", "全部单据", ClipboardCheck], ["production_order", "委外加工单", Factory], ["purchase_order", "物料采购单", PackageCheck]] as const : [];
+  return <div className="page-stack"><section className="page-title"><div><p className="kicker">{warehouseScope ? "WAREHOUSE WORK ORDERS" : sampleCategory === "packaging" ? "PACKAGING SAMPLE" : sampleCategory === "inner_material" ? "INNER MATERIAL SAMPLE" : "WORK ITEMS"}</p><h1>{title}</h1><span>{warehouseScope ? "只展示已授权寄存仓的入库、出库、调拨、盘点与异常任务；库存变更仍以中台审核后的主账为准。" : sampleCategory === "inner_material" ? "每轮可登记多个独立料体；实际打出后填写供应商内部编码，平台追踪号自动生成。" : sampleCategory === "packaging" ? "按材质、工艺、结构、尺寸与文件管理送样，不与料体任务混排。" : mode === "production" ? "加工、采购和打样互相分区；反馈进度、物料与包材测试，异常及时上报。" : mode === "procurement" ? "确认订单、反馈备货与交付进度，并留存发运凭证。" : "接单、执行、回传凭证，并跟踪中台处理结果。"}</span></div><button className="secondary-action" onClick={load}><RefreshCw size={17} />刷新</button></section>
+    {!sampleCategory && typeOptions.length ? <nav className="task-type-filter" aria-label="单据类型">{typeOptions.map(([value, label, Icon]) => <button key={value} className={itemType === value ? "active" : ""} onClick={() => setItemType(value)}><Icon size={17} /><span>{label}</span><em>{value ? categoryItems.filter((item) => item.itemType === value).length : categoryItems.length}</em></button>)}</nav> : null}
+    <section className="filter-bar"><label className="search-field"><Search size={18} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索任务、单号" /></label><div className="filter-chips">{[["","全部"],["pending","待接单"],["accepted","已接单"],["in_progress","处理中"],["pending_approval","待审批"],["pending_sync","待同步"],["completed","已完成"]].map(([value,label]) => <button key={value} className={status === value ? "active" : ""} onClick={() => setStatus(value)}>{label}{value && visibleCounts[value] ? <em>{visibleCounts[value]}</em> : null}</button>)}</div></section>
+    {loading ? <div className="loading-state"><LoaderCircle className="spin" /><span>正在读取本组织任务…</span></div> : visibleItems.length ? <div className="task-grid wide">{visibleItems.map((item) => <TaskCard key={item.id} item={item} onOpen={onOpenTask} />)}</div> : <div className="empty-state"><Inbox size={42} /><h3>当前没有匹配任务</h3><p>{warehouseScope ? `中台尚未下发${itemType ? itemTypeMeta[itemType]?.label || "该类" : "仓储"}工单；也可以从“${mode === "warehouse" ? "本仓库存" : "寄存库存"}”发起已获授权的仓库作业。` : itemType ? `中台尚未向本组织发布${itemTypeMeta[itemType]?.label || "该类"}单。` : "中台尚未向本组织发布相关订单。"}</p></div>}
   </div>;
 }
 
@@ -472,12 +485,14 @@ function InventoryPage({ session, onOpenTask, notify }: { session: Session; onOp
   const [operation, setOperation] = React.useState<WarehouseOperationType | null>(null); const [operationInventory, setOperationInventory] = React.useState<InventoryItem[]>([]);
   const load = React.useCallback(() => { setLoading(true); fetchInventory(keyword).then((value) => setItems(value.items)).finally(() => setLoading(false)); }, [keyword]);
   React.useEffect(() => { const timer = setTimeout(load, 180); return () => clearTimeout(timer); }, [load]);
-  const canStocktake = ["organization_admin", "manager"].includes(session.membership.role);
+  const mode = organizationMode(session);
+  const canPerform = (permission: string) => session.workspace?.capabilities?.includes(permission) ?? mode === "warehouse";
+  const canStocktake = ["organization_admin", "manager"].includes(session.membership.role) && canPerform("warehouse.inventory.adjust.request");
   async function openOperation(type: WarehouseOperationType) {
     try { const result = keyword ? await fetchInventory("") : { items }; setOperationInventory(result.items); setOperation(type); }
     catch (reason) { notify(reason instanceof Error ? reason.message : "本仓商品读取失败。", "error"); }
   }
-  return <div className="page-stack"><section className="page-title inventory-title"><div><p className="kicker">WAREHOUSE SNAPSHOT</p><h1>本仓库存</h1><span>展示有库存商品；实际主账仍以内部供应链中台为准。</span></div><div className="inventory-actions"><button onClick={() => void openOperation("inbound")}><ArrowDownToLine size={16} />发起入库</button><button onClick={() => void openOperation("outbound")}><ArrowUpFromLine size={16} />发起出库</button>{canStocktake ? <button className="accent" onClick={() => void openOperation("stocktake")}><ClipboardCheck size={16} />库存盘点</button> : null}</div></section>
+  return <div className="page-stack"><section className="page-title inventory-title"><div><p className="kicker">WAREHOUSE SNAPSHOT</p><h1>{mode === "warehouse" ? "本仓库存" : "寄存库存"}</h1><span>展示已授权仓库中有库存的商品；实际主账仍以内部供应链中台为准。</span></div><div className="inventory-actions">{canPerform("warehouse.inbound.confirm") ? <button onClick={() => void openOperation("inbound")}><ArrowDownToLine size={16} />发起入库</button> : null}{canPerform("warehouse.outbound.confirm") ? <button onClick={() => void openOperation("outbound")}><ArrowUpFromLine size={16} />发起出库</button> : null}{canStocktake ? <button className="accent" onClick={() => void openOperation("stocktake")}><ClipboardCheck size={16} />库存盘点</button> : null}</div></section>
     <section className="filter-bar"><label className="search-field"><ScanLine size={18} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} inputMode="search" autoComplete="off" placeholder="扫描条码，或搜索 SKU / 商品名称" /></label><span className="table-count">{items.length} 个 SKU</span></section>
     <section className="inventory-table-wrap">{loading ? <div className="loading-state"><LoaderCircle className="spin" />同步库存视图…</div> : <table className="inventory-table"><thead><tr><th>商品 / SKU / 条码</th><th>可用</th><th>锁定</th><th>在途</th><th title="该商品在内部主账中的最后变更时间，不代表门户轮询时间">源账变更时间</th></tr></thead><tbody>{items.map((item) => <tr key={`${item.warehouseRef}:${item.sku}`}><td><div className="inventory-product"><ProductImage src={item.imageUrl} name={item.productName} /><span><b>{item.productName}</b><code>{item.sku}</code>{item.barcode ? <small>条码 {item.barcode}</small> : null}</span></div></td><td><strong>{item.availableQuantity.toLocaleString()}</strong> {item.unit}</td><td>{item.lockedQuantity.toLocaleString()}</td><td className={item.inTransitQuantity ? "in-transit" : ""}>{item.inTransitQuantity.toLocaleString()}</td><td>{formatDate(item.lastCoreSyncedAt)}</td></tr>)}</tbody></table>}</section>
     {operation ? <WarehouseOperationModal operationType={operation} inventory={operationInventory} canStocktake={canStocktake} onClose={() => setOperation(null)} notify={notify} onCreated={(item) => { setOperation(null); load(); onOpenTask(item); }} /> : null}
@@ -926,11 +941,13 @@ function AppShell({ session, onSessionChange, onLogout }: { session: Session; on
   const organizationType = session.membership.organizationType || session.organization.type;
   const canMaterialSample = session.oemEnabled && ["sampling_factory", "production_factory", "material_supplier"].includes(organizationType);
   const canPackagingSample = session.oemEnabled && ["packaging_factory", "production_factory"].includes(organizationType);
-  React.useEffect(() => { if ((route === "members" && !canManageMembers) || (route === "inventory" && mode !== "warehouse") || (route === "material-sampling" && !canMaterialSample) || (route === "packaging-sampling" && !canPackagingSample)) navigate("overview"); }, [route, canManageMembers, canMaterialSample, canPackagingSample, mode, navigate]);
+  const canViewInventory = hasWorkspaceModule(session, "inventory");
+  const canViewWarehouseTasks = hasWorkspaceModule(session, "warehouse_tasks");
+  React.useEffect(() => { if ((route === "members" && !canManageMembers) || (route === "inventory" && !canViewInventory) || (route === "warehouse-tasks" && !canViewWarehouseTasks) || (route === "material-sampling" && !canMaterialSample) || (route === "packaging-sampling" && !canPackagingSample)) navigate("overview"); }, [route, canManageMembers, canMaterialSample, canPackagingSample, canViewInventory, canViewWarehouseTasks, navigate]);
   async function openTaskById(id: string) { try { const detail = await fetchWorkItem(id); setSelected(detail.item); } catch (reason) { setToast({ message: reason instanceof Error ? reason.message : "任务不存在", tone: "error" }); } }
-  const visibleRoutes = (Object.entries(routeMeta) as Array<[Route, typeof routeMeta[Route]]>).filter(([key]) => (key !== "members" || canManageMembers) && (key !== "inventory" || mode === "warehouse") && (key !== "material-sampling" || canMaterialSample) && (key !== "packaging-sampling" || canPackagingSample));
+  const visibleRoutes = (Object.entries(routeMeta) as Array<[Route, typeof routeMeta[Route]]>).filter(([key]) => (key !== "members" || canManageMembers) && (key !== "inventory" || canViewInventory) && (key !== "warehouse-tasks" || (canViewWarehouseTasks && mode !== "warehouse")) && (key !== "material-sampling" || canMaterialSample) && (key !== "packaging-sampling" || canPackagingSample));
   const mobileRoutes = visibleRoutes.filter(([key]) => key !== "account");
-  const page = route === "overview" ? <OverviewPage key={refreshKey} session={session} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} /> : route === "material-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="inner_material" /> : route === "packaging-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="packaging" /> : route === "inventory" && mode === "warehouse" ? <InventoryPage key={refreshKey} session={session} onOpenTask={setSelected} notify={showToast} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : route === "account" ? <AccountPage session={session} onSessionChange={onSessionChange} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
+  const page = route === "overview" ? <OverviewPage key={refreshKey} session={session} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} /> : route === "warehouse-tasks" && canViewWarehouseTasks ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} taskScope="warehouse" /> : route === "material-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="inner_material" /> : route === "packaging-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="packaging" /> : route === "inventory" && canViewInventory ? <InventoryPage key={refreshKey} session={session} onOpenTask={setSelected} notify={showToast} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : route === "account" ? <AccountPage session={session} onSessionChange={onSessionChange} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
   return <div className="portal-shell">
     <header className="portal-header">
       <div className="portal-header-main">

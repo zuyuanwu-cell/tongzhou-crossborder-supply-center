@@ -57,7 +57,7 @@ const roleLabels: Record<string, string> = { organization_admin: "组织管理�
 const partnerPortalUrl = "https://partner.tongzhoukuajing.com";
 
 type ProvisionedAccess = { organizationName: string; username: string; password: string };
-type WarehouseOption = { ref: string; name: string; meta: string; capabilities?: CollaborationAccessGrantPayload["capabilities"] };
+type WarehouseOption = { ref: string; name: string; meta: string; resourceType: "warehouse" | "organization"; capabilities?: CollaborationAccessGrantPayload["capabilities"] };
 
 function provisioningMessage(access: ProvisionedAccess) {
   return `您好，已为您更新同舟伙伴协同登录凭据。\n伙伴登录网址：${partnerPortalUrl}\n组织名称：${access.organizationName}\n登录账号：${access.username}\n登录密码：${access.password}\n收到后可直接登录；邮箱可登录后在“账号安全”中补充，用于找回密码。`;
@@ -79,6 +79,7 @@ function warehouseDirectory(domestic: DomesticWarehouse[], connected: WarehouseC
     ref: warehouse.id,
     name: warehouse.name,
     meta: [warehouse.code, warehouse.city || warehouse.province, "国内库存"].filter(Boolean).join(" · "),
+    resourceType: "warehouse",
   }));
   connected.forEach((warehouse) => {
     const ref = String(warehouse.id || warehouse.resolvedWarehouseId || warehouse.warehouseId || warehouse.warehouseCode || "").trim();
@@ -87,10 +88,11 @@ function warehouseDirectory(domestic: DomesticWarehouse[], connected: WarehouseC
       ref,
       name: warehouse.name,
       meta: [warehouse.providerName, warehouse.warehouseCode, warehouse.country, "WMS"].filter(Boolean).join(" · "),
+      resourceType: "warehouse",
     });
   });
   grants.filter((grant) => grant.resourceType === "warehouse").forEach((grant) => {
-    if (!options.has(grant.resourceRef)) options.set(grant.resourceRef, { ref: grant.resourceRef, name: grant.resourceName || grant.resourceRef, meta: "已有协同授权" });
+    if (!options.has(grant.resourceRef)) options.set(grant.resourceRef, { ref: grant.resourceRef, name: grant.resourceName || grant.resourceRef, meta: "已有协同授权", resourceType: "warehouse" });
   });
   return [...options.values()].sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
 }
@@ -390,8 +392,8 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
     if (samplingFilter === "pending_quote") return Number(item.sampling?.approvedVersion || 0) > 0 && Number(item.sampling?.quoteCount || 0) === 0;
     return Boolean(item.dueAt && Date.parse(item.dueAt) < Date.now() && !["completed", "cancelled", "rejected"].includes(item.status));
   }) : baseVisibleItems;
-  const enabled = Boolean(access?.grants.some((grant) => grant.resourceRef === selectedType.resourceRef && grant.permissions.includes(selectedType.permission)));
-  const productionEnabled = Boolean(access?.grants.some((grant) => grant.resourceRef === "production" && grant.permissions.includes("production.order.view")));
+  const enabled = Boolean(access?.grants.some((grant) => grant.resourceType === "organization" && grant.resourceRef === selectedType.resourceRef && grant.permissions.includes(selectedType.permission)));
+  const productionEnabled = Boolean(access?.grants.some((grant) => grant.resourceType === "organization" && grant.resourceRef === "production" && grant.permissions.includes("production.order.view")));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -633,7 +635,7 @@ export function CollaborationIdentityAdmin() {
       const payload = await fetchCollaborationOrganizationAccessGrants(code);
       setAccess(payload);
       setDraftGrants(payload.grants || []);
-      if (payload.organization.organizationType === "warehouse") {
+      if (payload.supportsWarehouseResources) {
         const [domesticResult, connectedResult] = await Promise.allSettled([fetchDomesticWarehouses(), fetchWarehouses()]);
         const domestic = domesticResult.status === "fulfilled" ? domesticResult.value.warehouses || [] : [];
         const connected = connectedResult.status === "fulfilled" ? connectedResult.value.warehouses || [] : [];
@@ -665,8 +667,13 @@ export function CollaborationIdentityAdmin() {
   const resourceOptions = useMemo<WarehouseOption[]>(() => {
     if (!access) return [];
     if (access.organization.organizationType === "warehouse") return warehouseOptions;
-    if (access.resources?.length) return access.resources.map((resource) => ({ ref: resource.resourceRef, name: resource.resourceName, meta: `${detail?.organization.name || access.organization.name} · 私有协作空间`, capabilities: resource.capabilities }));
-    return [{ ref: access.defaultResourceRef || "", name: detail?.organization.name || access.organization.name, meta: "组织级业务范围", capabilities: access.capabilities }].filter((item) => item.ref);
+    const businessOptions: WarehouseOption[] = access.resources?.length
+      ? access.resources.map((resource) => ({ ref: resource.resourceRef, name: resource.resourceName, meta: `${detail?.organization.name || access.organization.name} · 业务协同`, resourceType: "organization" as const, capabilities: resource.capabilities }))
+      : [{ ref: access.defaultResourceRef || "", name: detail?.organization.name || access.organization.name, meta: "组织级业务范围", resourceType: "organization" as const, capabilities: access.capabilities }].filter((item) => item.ref);
+    const consignmentOptions = access.supportsWarehouseResources
+      ? warehouseOptions.map((option) => ({ ...option, meta: `${option.meta ? `${option.meta} · ` : ""}寄存仓库`, capabilities: access.warehouseCapabilities || [] }))
+      : [];
+    return [...businessOptions, ...consignmentOptions];
   }, [access, warehouseOptions, detail?.organization.name]);
 
   async function submitCreate(event: FormEvent) {
@@ -713,12 +720,12 @@ export function CollaborationIdentityAdmin() {
     } finally { setBusyId(""); }
   }
 
-  function toggleResource(option: WarehouseOption | { ref: string; name: string; capabilities?: CollaborationAccessGrantPayload["capabilities"] }) {
+  function toggleResource(option: WarehouseOption) {
     setDraftGrants((current) => {
-      const existing = current.find((grant) => grant.resourceRef === option.ref);
-      if (existing) return current.filter((grant) => grant.resourceRef !== option.ref);
+      const existing = current.find((grant) => grant.resourceType === option.resourceType && grant.resourceRef === option.ref);
+      if (existing) return current.filter((grant) => !(grant.resourceType === option.resourceType && grant.resourceRef === option.ref));
       return [...current, {
-        resourceType: access?.organization.organizationType === "warehouse" ? "warehouse" : "organization",
+        resourceType: option.resourceType,
         resourceRef: option.ref,
         resourceName: option.name,
         permissions: (option.capabilities || access?.capabilities || []).map((capability) => capability.key),
@@ -726,8 +733,8 @@ export function CollaborationIdentityAdmin() {
     });
   }
 
-  function toggleCapability(resourceRef: string, permission: string) {
-    setDraftGrants((current) => current.map((grant) => grant.resourceRef !== resourceRef ? grant : {
+  function toggleCapability(resourceType: "warehouse" | "organization", resourceRef: string, permission: string) {
+    setDraftGrants((current) => current.map((grant) => grant.resourceType !== resourceType || grant.resourceRef !== resourceRef ? grant : {
       ...grant,
       permissions: grant.permissions.includes(permission)
         ? grant.permissions.filter((item) => item !== permission)
@@ -737,7 +744,7 @@ export function CollaborationIdentityAdmin() {
 
   function applyRecommendedPermissions() {
     setDraftGrants((current) => current.map((grant) => {
-      const option = resourceOptions.find((item) => item.ref === grant.resourceRef);
+      const option = resourceOptions.find((item) => item.resourceType === grant.resourceType && item.ref === grant.resourceRef);
       return { ...grant, permissions: (option?.capabilities || access?.capabilities || []).map((capability) => capability.key) };
     }));
   }
@@ -750,7 +757,7 @@ export function CollaborationIdentityAdmin() {
     try {
       const result = await replaceCollaborationOrganizationAccessGrants(detail.organization.code, draftGrants);
       setDraftGrants(result.grants || []);
-      setAccess({ ...access, grants: result.grants || [], capabilities: result.capabilities || access.capabilities, resources: result.resources || access.resources });
+      setAccess({ ...access, ...result, grants: result.grants || [] });
       setNotice(`已保存 ${detail.organization.name} 的资源与业务权限，立即生效。`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "资源权限保存失败");
@@ -875,17 +882,17 @@ export function CollaborationIdentityAdmin() {
               <div className="cia-access-actions"><button type="button" className="cia-secondary" onClick={applyRecommendedPermissions} disabled={accessLoading || !draftGrants.length}>使用推荐权限</button><button type="button" className="cia-primary" onClick={() => void saveAccess()} disabled={accessLoading || busyId === "access"}>{busyId === "access" ? <LoaderCircle size={15} className="cia-spin" /> : <Save size={15} />}保存权限</button></div>
             </div>
             {accessLoading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" /> 正在读取资源目录与授权…</div> : access ? <>
-              <div className="cia-access-rule"><Warehouse size={17} /><span><strong>{access.organization.organizationType === "warehouse" ? "按仓库隔离" : "按私有协作空间隔离"}</strong>未勾选的资源默认不可见；取消授权不会删除历史记录。</span></div>
+              <div className="cia-access-rule"><Warehouse size={17} /><span><strong>{access.supportsWarehouseResources && access.organization.organizationType !== "warehouse" ? "业务空间 + 寄存仓库双重隔离" : access.organization.organizationType === "warehouse" ? "按仓库隔离" : "按私有协作空间隔离"}</strong>未勾选的资源默认不可见；取消授权不会删除历史记录。</span></div>
               <div className="cia-resource-list">
                 {resourceOptions.map((option) => {
-                  const grant = draftGrants.find((item) => item.resourceRef === option.ref);
-                  const capabilities = option.capabilities || access.capabilities;
-                  return <article className={`cia-resource-card ${grant ? "selected" : ""}`} key={option.ref}>
-                    <label className="cia-resource-toggle"><input type="checkbox" checked={Boolean(grant)} onChange={() => toggleResource(option)} /><span><strong>{option.name}</strong><small>{option.meta || option.ref}</small><code>{option.ref}</code></span><em>{grant ? "已授权" : "未授权"}</em></label>
-                    {grant ? <div className="cia-capability-grid">{capabilities.map((capability) => <label key={capability.key} className={grant.permissions.includes(capability.key) ? "checked" : ""}><input type="checkbox" checked={grant.permissions.includes(capability.key)} onChange={() => toggleCapability(option.ref, capability.key)} /><span><strong>{capability.label}</strong><small>{capability.description}</small></span></label>)}</div> : null}
+                  const grant = draftGrants.find((item) => item.resourceType === option.resourceType && item.resourceRef === option.ref);
+                  const capabilities = option.capabilities || (option.resourceType === "warehouse" ? access.warehouseCapabilities : access.capabilities) || [];
+                  return <article className={`cia-resource-card ${grant ? "selected" : ""}`} key={`${option.resourceType}:${option.ref}`}>
+                    <label className="cia-resource-toggle"><input type="checkbox" checked={Boolean(grant)} onChange={() => toggleResource(option)} /><span><strong>{option.name}</strong><small>{option.resourceType === "warehouse" ? "寄存仓库 · " : "业务协同 · "}{option.meta || option.ref}</small><code>{option.ref}</code></span><em>{grant ? "已授权" : "未授权"}</em></label>
+                    {grant ? <div className="cia-capability-grid">{capabilities.map((capability) => <label key={capability.key} className={grant.permissions.includes(capability.key) ? "checked" : ""}><input type="checkbox" checked={grant.permissions.includes(capability.key)} onChange={() => toggleCapability(option.resourceType, option.ref, capability.key)} /><span><strong>{capability.label}</strong><small>{capability.description}</small></span></label>)}</div> : null}
                   </article>;
                 })}
-                {!resourceOptions.length ? <div className="cia-empty"><Warehouse size={22} /><strong>没有可分配的仓库</strong><span>请先在国内库存或仓库管理中建立仓库；已有历史授权仍会保留显示。</span></div> : null}
+                {!resourceOptions.length ? <div className="cia-empty"><Warehouse size={22} /><strong>没有可分配的资源</strong><span>请先建立业务空间或国内仓库；已有历史授权仍会保留显示。</span></div> : null}
               </div>
             </> : <div className="cia-empty"><AlertTriangle size={22} /><strong>资源权限暂不可用</strong><span>请刷新页面；在权限载入前不会扩大任何组织的访问范围。</span></div>}
           </section>

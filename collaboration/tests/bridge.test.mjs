@@ -610,3 +610,33 @@ test("internal staff can publish an allowlisted warehouse task and read partner 
     /无权查看该仓库/,
   );
 });
+
+test("background synchronization and warehouse task options include hybrid production suppliers", async (t) => {
+  const accessGrants = [{
+    resourceType: "warehouse",
+    resourceRef: "supplier-hold-warehouse",
+    resourceName: "松雨成品寄存仓",
+    permissions: ["warehouse.inventory.view", "warehouse.task.view", "warehouse.inbound.confirm"],
+  }];
+  const { bridge, requests } = await fixture(t, {
+    organizations: [{ code: "mf-songyu", name: "松雨", organizationType: "production_factory", status: "active" }],
+    accessGrants,
+    inventory: {
+      ok: true,
+      warehouses: [{ id: "supplier-hold-warehouse", name: "松雨成品寄存仓" }],
+      balances: [{ sku: "SKU-1", productName: "测试产品", availableQty: 36, reservedQty: 4, unit: "件" }],
+    },
+  });
+
+  const synchronized = await bridge.synchronizeInventoryProjections({ force: true });
+  assert.equal(synchronized.queued, 1);
+  await bridge.flushOutbox();
+  const published = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/inventory"));
+  assert.equal(published.body.organizationCode, "mf-songyu");
+  assert.equal(published.body.warehouseRef, "supplier-hold-warehouse");
+
+  const options = await bridge.listWarehouseTaskOptions();
+  assert.equal(options.organizations[0].code, "mf-songyu");
+  assert.equal(options.organizations[0].warehouses[0].resourceName, "松雨成品寄存仓");
+  assert.equal(options.products[0].availableByWarehouse["supplier-hold-warehouse"], 36);
+});

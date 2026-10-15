@@ -238,7 +238,6 @@ export async function createWarehouseOperation(auth, body, { idempotencyKey }) {
   if (!idempotencyKey || idempotencyKey.length > 160) fail("请提供有效的 Idempotency-Key。", 400, "idempotency_key_required");
   const parsed = warehouseOperationSchema.safeParse(body);
   if (!parsed.success) fail(parsed.error.issues[0]?.message || "仓库作业内容不正确。", 400, "invalid_operation_payload");
-  if (auth.organization.type !== "warehouse") fail("只有仓库组织可以发起仓库作业。", 403, "forbidden");
   const input = parsed.data;
   const config = {
     inbound: { action: "inbound_confirm", itemType: "warehouse_inbound", title: "仓库自主入库", permission: "warehouse.inbound.confirm" },

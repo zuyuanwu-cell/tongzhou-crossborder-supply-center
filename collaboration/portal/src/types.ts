@@ -1,4 +1,6 @@
 export type Organization = { id: string; code: string; name: string; type: string };
+export type WorkspaceResource = { key: string; resourceType: "warehouse" | "organization"; resourceRef: string; resourceName: string; permissions: string[] };
+export type PartnerWorkspace = { modules: string[]; taskTypes: string[]; actions: string[]; capabilities: string[]; resources: WorkspaceResource[] };
 export type Session = {
   user: { id: string; username: string; displayName: string; email: string };
   membership: { id: string; organizationId: string; organizationCode: string; organizationName: string; organizationType: string; role: string; status: string; permissions: string[]; mfaRequired: boolean };
@@ -9,6 +11,7 @@ export type Session = {
   pendingMfa: boolean;
   mustChangePassword: boolean;
   oemEnabled: boolean;
+  workspace: PartnerWorkspace;
 };
 export type Dashboard = { openTasks: number; urgentTasks: number; waitingTasks: number; unreadNotifications: number; inventorySkuCount: number; inventorySyncedAt: string; productionOrders: number; purchaseOrders: number; dueSoonTasks: number; exceptionReports: number };
 export type WorkItemStatus = "pending" | "accepted" | "in_progress" | "pending_approval" | "pending_sync" | "completed" | "rejected" | "cancelled";

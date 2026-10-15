@@ -140,6 +140,21 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
      VALUES ($1,'organization','production','委外加工',$2::jsonb,'集成测试')`,
     [factory.organization.id, JSON.stringify(["production.order.view", "production.order.accept", "production.progress.update", "production.material.update", "production.exception.report", "production.shipment.submit", "attachment.upload"])],
   );
+  const consignmentWarehouseRef = `factory-hold-${unique}`;
+  await integrationPool.query(
+    `INSERT INTO organization_access_grants(organization_id,resource_type,resource_ref,resource_name,permissions,created_by_name)
+     VALUES ($1,'warehouse',$2,'工厂成品寄存仓',$3::jsonb,'集成测试')`,
+    [factory.organization.id, consignmentWarehouseRef, JSON.stringify(["warehouse.inventory.view", "warehouse.task.view", "warehouse.task.handle", "warehouse.inbound.confirm", "warehouse.exception.report", "attachment.upload"])],
+  );
+  await integrationApi.applyInventoryProjection({
+    eventId: `factory-inventory-${unique}`,
+    organizationCode: factory.organization.code,
+    warehouseRef: consignmentWarehouseRef,
+    warehouseName: "工厂成品寄存仓",
+    version: 1,
+    syncedAt: new Date().toISOString(),
+    items: [{ sku: `FACTORY-STOCK-${unique}`, productName: "工厂暂存成品", barcode: `698${unique.slice(-10)}`, availableQuantity: 16, lockedQuantity: 0, inTransitQuantity: 0, unit: "箱" }],
+  });
   const projectedOrder = await partnerOrders.applyPartnerOrderProjection({
     eventId: `partner-order-${unique}`,
     organizationCode: factory.organization.code,
@@ -161,6 +176,16 @@ test("PostgreSQL migration, direct accounts, and RLS isolation work together", {
     milestones: [{ milestoneType: "material_ready", title: "物料到齐", status: "pending", publicPayload: { note: "" } }],
   });
   const factoryLogin = await authApi.login(request, { username: `factory-${unique}`, password: factoryPassword });
+  assert.deepEqual((await repository.listInventory(factoryLogin.auth)).items.map((item) => item.sku), [`FACTORY-STOCK-${unique}`]);
+  const selfInbound = await repository.createWarehouseOperation(factoryLogin.auth, {
+    operationType: "inbound",
+    warehouseRef: consignmentWarehouseRef,
+    referenceNo: `SELF-IN-${unique}`,
+    note: "生产完成后转入工厂成品寄存仓",
+    lines: [{ sku: `NEW-STOCK-${unique}`, productName: "待入库成品", quantity: 5, unit: "箱", barcode: `699${unique.slice(-10)}` }],
+  }, { idempotencyKey: `factory-self-inbound-${unique}` });
+  assert.equal(selfInbound.item.status, "pending_approval");
+  assert.equal(selfInbound.item.publicPayload.warehouseRef, consignmentWarehouseRef);
   const accepted = await repository.submitWorkItemAction(factoryLogin.auth, projectedOrder.workItemId, { action: "accept", note: "已接单" }, { idempotencyKey: `accept-${unique}`, expectedVersion: "1" });
   assert.equal(accepted.item.status, "accepted");
   const acceptCommand = (await integrationApi.listPendingCommands({ limit: 100 })).commands.find((command) => command.id === accepted.command.id);
