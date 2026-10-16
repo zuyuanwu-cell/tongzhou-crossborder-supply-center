@@ -41,7 +41,7 @@ const payload = {
   recommendations,
 };
 
-const report = renderStockupWarningPng(payload);
+const report = renderStockupWarningPng(payload, { loadSystemFonts: false });
 mkdirSync(dirname(outputPath), { recursive: true });
 writeFileSync(outputPath, report.buffer);
 console.log(outputPath);

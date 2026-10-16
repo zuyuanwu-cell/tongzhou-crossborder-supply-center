@@ -117,6 +117,9 @@ assert.deepEqual([...report.buffer.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26
 assert.ok(report.buffer.length > 10_000);
 assert.ok(report.buffer.length < stockupWarningReportConstants.wecomImageLimit);
 
+const bundledFontReport = renderStockupWarningPng(payload, { loadSystemFonts: false });
+assert.ok(bundledFontReport.buffer.length > 10_000, "无系统中文字体时仍应使用应用内字体生成长图");
+
 const body = buildWecomImageBody(report.buffer);
 assert.equal(body.msgtype, "image");
 assert.equal(body.image.md5, createHash("md5").update(report.buffer).digest("hex"));

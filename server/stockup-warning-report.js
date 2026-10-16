@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,12 +13,8 @@ const THUMBNAIL_FETCH_TIMEOUT_MS = 4_000;
 const THUMBNAIL_FETCH_CONCURRENCY = 4;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-const bundledFontDirectory = resolve(moduleDirectory, "../node_modules/@fontsource-variable/noto-sans-sc/files");
-const bundledFontFiles = existsSync(bundledFontDirectory)
-  ? readdirSync(bundledFontDirectory)
-    .filter((name) => /-wght-normal\.woff2$/i.test(name))
-    .map((name) => resolve(bundledFontDirectory, name))
-  : [];
+const bundledFontPath = resolve(moduleDirectory, "../assets/fonts/NotoSansCJKsc-Regular.otf");
+const bundledFontFiles = existsSync(bundledFontPath) ? [bundledFontPath] : [];
 
 function numberOrZero(value) {
   const numeric = Number(value);
@@ -429,7 +425,7 @@ export function renderStockupWarningPng(payload, options = {}) {
       fitTo: { mode: "width", value: width },
       font: {
         loadSystemFonts: options.loadSystemFonts !== false,
-        defaultFontFamily: options.defaultFontFamily || "Noto Sans SC",
+        defaultFontFamily: options.defaultFontFamily || "Noto Sans CJK SC",
         fontFiles: Array.isArray(options.fontFiles) ? options.fontFiles : bundledFontFiles,
       },
     });
