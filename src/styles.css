@@ -7701,6 +7701,19 @@ h3 {
   line-height: 1.5;
 }
 
+.wecom-scene-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wecom-scene-actions small {
+  flex: 1 1 220px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .wecom-after-sales-routing {
   grid-column: 1 / -1;
   gap: 16px;

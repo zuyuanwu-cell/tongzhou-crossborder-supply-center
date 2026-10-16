@@ -27,7 +27,7 @@ import { projectMovementPayload, scopeMovementSources } from "./movement-access.
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
-import { buildStockupWarningLinkMarkdown, buildWecomImageBody, renderStockupWarningPngWithImages } from "./stockup-warning-report.js";
+import { buildStockupWarningLinkMarkdown, buildWecomImageBody, renderStockupWarningPngWithImages, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseProductCreateCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
@@ -9682,6 +9682,79 @@ const server = http.createServer(async (req, res) => {
         "Content-Disposition": `inline; filename="stockup-warning-${report.model.reportDate || "preview"}.png"`,
       });
       res.end(report.buffer);
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/stockup-test" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canManageModule(auth, "notifications")) {
+        sendJson(res, 401, { ok: false, message: "测试发送备货预警长图需要管理员登录。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const configuredRobots = cachedWecomNotifications.robots || [];
+      const selectedRobotIds = Array.isArray(payload.robotIds) ? [...new Set(payload.robotIds.map(String).filter(Boolean))] : [];
+      const activeRobots = configuredRobots.filter((robot) => selectedRobotIds.includes(robot.id) && robot.enabled);
+      if (!activeRobots.length) {
+        sendJson(res, 400, { ok: false, message: "请先在备货预警场景中选择至少一个已启用的企业微信机器人。" });
+        return;
+      }
+
+      const stockup = buildCurrentStockupPayload({ notify: false, reason: "wecom_stockup_test" });
+      const extraText = String(payload.extraText || "").trim();
+      const linkUrl = absoluteNotificationLink(payload.linkUrl, "#stockup-recommendations");
+      const visibleItems = (stockup.recommendations || []).slice(0, 8);
+      const fallbackContent = [
+        "### 备货建议提醒（测试）",
+        `当前有 ${stockup.counts?.recommendations || 0} 个 SKU 需要关注备货，净建议备货 ${stockup.counts?.netRecommendedQty || 0} 件。`,
+        extraText,
+        visibleItems.map(stockupMarkdownItem).join("\n\n"),
+        notificationLinkLine(linkUrl, "查看备货中心"),
+      ].filter(Boolean).join("\n\n");
+      const robotIds = activeRobots.map((robot) => robot.id);
+      let report = null;
+      let imageResults = [];
+      let linkResults = [];
+      let fallbackResults = [];
+      let renderError = "";
+
+      try {
+        report = await renderStockupWarningPngWithImages(stockup, { fetchImpl: globalThis.fetch });
+        imageResults = await sendWecomImageNotification(robotIds, report.buffer);
+        const imageSuccessRobotIds = imageResults.filter((item) => item.ok).map((item) => item.robotId);
+        const imageFailedRobotIds = imageResults.filter((item) => !item.ok).map((item) => item.robotId);
+        const linkContent = buildStockupWarningLinkMarkdown(report.model, { linkUrl, extraText });
+        linkResults = imageSuccessRobotIds.length ? await sendWecomNotification(imageSuccessRobotIds, linkContent) : [];
+        fallbackResults = imageFailedRobotIds.length ? await sendWecomNotification(imageFailedRobotIds, fallbackContent) : [];
+      } catch (error) {
+        renderError = error?.message || "长图生成失败";
+        fallbackResults = await sendWecomNotification(robotIds, fallbackContent);
+      }
+
+      const deliveries = summarizeStockupWarningDeliveries({
+        robots: activeRobots,
+        imageResults,
+        linkResults,
+        fallbackResults,
+        renderError,
+      });
+      const failed = deliveries.filter((item) => !item.ok);
+      appendActionLog(auth, "测试发送备货预警长图", "wecom_scene", "备货预警长图", {
+        robotCount: deliveries.length,
+        failedCount: failed.length,
+        recommendationCount: stockup.counts?.recommendations || 0,
+        fallbackCount: deliveries.filter((item) => item.fallbackSent).length,
+      });
+      sendJson(res, 200, {
+        ...publicWecomNotificationPayload(),
+        results: deliveries.map(({ robotId, ok, message }) => ({ robotId, ok, message })),
+        deliveries,
+        report: {
+          recommendationCount: stockup.counts?.recommendations || 0,
+          imageBytes: report?.buffer?.length || 0,
+          renderError,
+        },
+      });
       return;
     }
 

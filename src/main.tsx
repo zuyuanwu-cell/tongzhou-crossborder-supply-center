@@ -202,6 +202,7 @@ import {
   testWarehouseConnection,
   testMiaoshouConnection,
   testWecomNotification,
+  testWecomStockupWarning,
   testWecomProjectTeam,
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
@@ -7358,6 +7359,36 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
     }
   }
 
+  async function sendStockupWarningTest() {
+    const scene = sceneForm.stockupRecommendation || defaultWecomScene;
+    if (!scene.robotIds?.length) {
+      setMessage("请先在备货预警长图场景中选择至少一个推送机器人。");
+      return;
+    }
+    setBusy("stockup-test");
+    setMessage("");
+    try {
+      const result = await testWecomStockupWarning({
+        robotIds: scene.robotIds,
+        linkUrl: scene.linkUrl,
+        extraText: scene.extraText,
+      });
+      await refresh(result);
+      const deliveries = result.deliveries || [];
+      const failed = deliveries.filter((item) => !item.ok);
+      if (!failed.length) {
+        setMessage(`备货预警长图已测试发送到 ${deliveries.length} 个群，测试不会影响正式推送。`);
+      } else {
+        const failureDetails = failed.map((item) => `${item.robotName}：${item.message || "发送失败"}`).join("；");
+        setMessage(`备货预警长图测试发送有 ${failed.length} 个群失败：${failureDetails}`);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "备货预警长图测试发送失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function sendOperatingSummary() {
     setBusy("operating-summary");
     setMessage("");
@@ -7754,7 +7785,22 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                 </label>
                 <span className="field-label">推送机器人</span>
                 <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds, ...(key === "afterSalesProgress" && robotIds.length ? { enabled: true } : {}) })} />
-                {key === "stockupRecommendation" ? <a className="ghost-button compact-button" href="/api/wecom-notifications/stockup-preview" target="_blank" rel="noreferrer">预览当前长图</a> : null}
+                {key === "stockupRecommendation" ? (
+                  <div className="wecom-scene-actions">
+                    <a className="ghost-button compact-button" href="/api/wecom-notifications/stockup-preview" target="_blank" rel="noreferrer">预览当前长图</a>
+                    <button
+                      className="sync-button compact-button"
+                      type="button"
+                      onClick={sendStockupWarningTest}
+                      disabled={busy === "stockup-test" || !scene.robotIds?.length}
+                      title={scene.robotIds?.length ? "发送真实长图和详情链接；不影响正式推送" : "请先选择推送机器人"}
+                    >
+                      <Image size={14} />
+                      {busy === "stockup-test" ? "正在生成并发送" : "测试发送"}
+                    </button>
+                    <small>使用当前配置发送，不占用当天正式推送次数。</small>
+                  </div>
+                ) : null}
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );

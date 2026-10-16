@@ -455,6 +455,47 @@ export function buildWecomImageBody(buffer) {
   };
 }
 
+export function summarizeStockupWarningDeliveries({
+  robots = [],
+  imageResults = [],
+  linkResults = [],
+  fallbackResults = [],
+  renderError = "",
+} = {}) {
+  const resultByRobot = (results) => new Map((results || []).map((item) => [String(item.robotId || ""), item]));
+  const images = resultByRobot(imageResults);
+  const links = resultByRobot(linkResults);
+  const fallbacks = resultByRobot(fallbackResults);
+
+  return (robots || []).map((robot) => {
+    const robotId = String(robot.id || robot.robotId || "");
+    const image = images.get(robotId);
+    const link = links.get(robotId);
+    const fallback = fallbacks.get(robotId);
+    const imageOk = image?.ok === true;
+    const linkOk = link?.ok === true;
+    const fallbackSent = fallback?.ok === true;
+    const ok = !renderError && imageOk && linkOk;
+    const messages = [];
+
+    if (renderError) messages.push(`长图生成失败：${renderError}`);
+    else if (!imageOk) messages.push(`长图发送失败：${image?.message || "企业微信未返回成功结果"}`);
+    else if (!linkOk) messages.push(`详情链接发送失败：${link?.message || "企业微信未返回成功结果"}`);
+    if (fallbackSent) messages.push("已回退发送文字提醒");
+    else if (fallback && !fallback.ok) messages.push(`文字回退失败：${fallback.message || "企业微信未返回成功结果"}`);
+
+    return {
+      robotId,
+      robotName: String(robot.name || robotId),
+      ok,
+      imageOk,
+      linkOk,
+      fallbackSent,
+      message: ok ? "长图和详情链接已发送" : messages.join("；"),
+    };
+  });
+}
+
 export function buildStockupWarningLinkMarkdown(model, options = {}) {
   const linkUrl = text(options.linkUrl, "");
   const lines = [

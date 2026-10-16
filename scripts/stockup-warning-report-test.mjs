@@ -9,6 +9,7 @@ import {
   renderStockupWarningPngWithImages,
   renderStockupWarningSvg,
   stockupWarningReportConstants,
+  summarizeStockupWarningDeliveries,
 } from "../server/stockup-warning-report.js";
 import { buildStockupPayload } from "../server/stockup-center.js";
 
@@ -129,5 +130,31 @@ const markdown = buildStockupWarningLinkMarkdown(model, { linkUrl: "https://gyl.
 assert.match(markdown, /2 个 SKU/);
 assert.match(markdown, /进入供应链中台/);
 assert.match(markdown, /https:\/\/gyl\.tongzhoukuajing\.com/);
+
+const deliveries = summarizeStockupWarningDeliveries({
+  robots: [
+    { id: "robot-ok", name: "成功群" },
+    { id: "robot-fallback", name: "回退群" },
+  ],
+  imageResults: [
+    { robotId: "robot-ok", ok: true },
+    { robotId: "robot-fallback", ok: false, message: "图片超限" },
+  ],
+  linkResults: [{ robotId: "robot-ok", ok: true }],
+  fallbackResults: [{ robotId: "robot-fallback", ok: true }],
+});
+assert.deepEqual(deliveries[0], {
+  robotId: "robot-ok",
+  robotName: "成功群",
+  ok: true,
+  imageOk: true,
+  linkOk: true,
+  fallbackSent: false,
+  message: "长图和详情链接已发送",
+});
+assert.equal(deliveries[1].ok, false, "发送文字回退也不能把长图测试标为成功");
+assert.equal(deliveries[1].fallbackSent, true);
+assert.match(deliveries[1].message, /图片超限/);
+assert.match(deliveries[1].message, /已回退发送文字提醒/);
 
 console.log("stockup warning report tests passed");
