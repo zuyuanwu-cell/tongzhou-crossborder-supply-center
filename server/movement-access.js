@@ -1,8 +1,18 @@
 import { hasPermission, isWithinDataScope, normalizeDataScopes } from "./access-control.js";
 
+function warehouseScopeIdentifiers(record) {
+  return Array.from(new Set([
+    record?.id,
+    record?.connectionId,
+    record?.warehouseId,
+    record?.warehouseCode,
+    record?.resolvedWarehouseId,
+  ].map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
 function matchesWarehouseScope(record, scopes) {
   if (!scopes.warehouseIds.length) return true;
-  return scopes.warehouseIds.includes(String(record?.warehouseId || record?.id || "").trim());
+  return warehouseScopeIdentifiers(record).some((value) => scopes.warehouseIds.includes(value));
 }
 
 function matchesMovementScope(record, scopes) {
@@ -21,16 +31,16 @@ export function scopeMovementSources({ products, warehouse, orders, connections 
   });
   const countryScope = { countries: scopes.countries, warehouseIds: [], skus: [] };
   const scopedConnections = (connections || []).filter((item) => matchesWarehouseScope(item, scopes) && isWithinDataScope(item, countryScope));
-  const visibleWarehouseIds = new Set(scopedConnections.map((item) => item.id));
+  const visibleWarehouseIds = new Set(scopedConnections.flatMap(warehouseScopeIdentifiers));
   const filterWarehouseRecord = (item) => {
     if (!matchesMovementScope(item, scopes)) return false;
     if (!scopes.warehouseIds.length) return true;
-    return visibleWarehouseIds.has(item.warehouseId);
+    return warehouseScopeIdentifiers(item).some((value) => visibleWarehouseIds.has(value));
   };
   const filterWarehouseResult = (item) => {
     if (!matchesWarehouseScope(item, scopes)) return false;
     if (!scopes.warehouseIds.length && !scopes.countries.length) return true;
-    return visibleWarehouseIds.has(String(item?.warehouseId || ""));
+    return warehouseScopeIdentifiers(item).some((value) => visibleWarehouseIds.has(value));
   };
 
   return {
