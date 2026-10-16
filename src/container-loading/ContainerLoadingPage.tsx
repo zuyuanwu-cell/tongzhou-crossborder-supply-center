@@ -115,6 +115,20 @@ type Props = {
   products: CatalogProduct[];
 };
 
+type CapacityDimensionUnit = "mm" | "cm";
+
+const capacityDimensionKeys = ["cartonLengthCm", "cartonWidthCm", "cartonHeightCm"] as const;
+
+function displayCapacityDimension(valueCm: number, unit: CapacityDimensionUnit) {
+  if (!valueCm) return "";
+  const value = unit === "mm" ? valueCm * 10 : valueCm;
+  return String(Math.round(value * 100) / 100);
+}
+
+function capacityDimensionToCm(value: number, unit: CapacityDimensionUnit) {
+  return unit === "mm" ? value / 10 : value;
+}
+
 function hasPermission(user: AuthUser, permission: string) {
   return user.role === "admin" || user.permissions.includes(permission);
 }
@@ -207,6 +221,7 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
   const [capacityOpen, setCapacityOpen] = React.useState(false);
   const [capacityContainerCode, setCapacityContainerCode] = React.useState("40HQ");
   const [capacityCarton, setCapacityCarton] = React.useState<SingleCartonCapacityInput>(defaultCapacityCarton);
+  const [capacityDimensionUnit, setCapacityDimensionUnit] = React.useState<CapacityDimensionUnit>("mm");
   const [capacityTargetCartons, setCapacityTargetCartons] = React.useState(0);
   const [capacityReserve, setCapacityReserve] = React.useState(defaultCapacityReserve);
   const [capacityEstimate, setCapacityEstimate] = React.useState<SingleCartonCapacityEstimate | null>(null);
@@ -285,6 +300,11 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
   const selectedIssue = selectedPlacementIssue(selectedPlacement, workingPlacements, plan);
   const editable = Boolean(canManage && plan?.status === "draft");
   const capacityResult = capacityEstimate?.selected || null;
+  const capacityDimensionsCm = capacityDimensionKeys.map((key) => Number(capacityCarton[key] || 0));
+  const capacityLooksLikeMillimetres = capacityDimensionUnit === "cm"
+    && capacityDimensionsCm.every((value) => value > 0)
+    && Math.max(...capacityDimensionsCm) >= 300
+    && Math.max(...capacityDimensionsCm) / 10 <= 240;
 
   async function changePlanLifecycle(nextLifecycle: "active" | "archived") {
     setPlanLifecycle(nextLifecycle);
@@ -358,6 +378,10 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
     setCapacityEstimate(null);
   }
 
+  function updateCapacityDimension(key: typeof capacityDimensionKeys[number], value: number) {
+    updateCapacityCarton(key, capacityDimensionToCm(value, capacityDimensionUnit));
+  }
+
   function updateCapacityReserve(key: keyof typeof defaultCapacityReserve, value: number) {
     setCapacityReserve((current) => ({ ...current, [key]: value }));
     setCapacityEstimate(null);
@@ -367,10 +391,23 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
     setBusy("capacity");
     setError("");
     try {
+      const normalizedCarton = capacityLooksLikeMillimetres
+        ? {
+          ...capacityCarton,
+          cartonLengthCm: capacityCarton.cartonLengthCm / 10,
+          cartonWidthCm: capacityCarton.cartonWidthCm / 10,
+          cartonHeightCm: capacityCarton.cartonHeightCm / 10,
+        }
+        : capacityCarton;
+      if (capacityLooksLikeMillimetres) {
+        setCapacityCarton(normalizedCarton);
+        setCapacityDimensionUnit("mm");
+        setNotice("已识别输入值为毫米，并自动换算后完成测算。");
+      }
       const result = await estimateContainerLoadingCapacity({
         containerType: capacityContainerCode,
         container: capacityContainerCode === "CUSTOM" ? customContainer : undefined,
-        carton: capacityCarton,
+        carton: normalizedCarton,
         targetCartons: capacityTargetCartons,
         reserve: capacityReserve,
       });
@@ -678,7 +715,11 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
             <label className="wide"><span>柜型</span><select value={capacityContainerCode} onChange={(event) => { setCapacityContainerCode(event.target.value); setCapacityEstimate(null); }}><option value="AUTO">自动对比全部标准柜型</option>{bootstrap?.containerTypes.map((container) => <option key={container.code} value={container.code}>{container.name} · {container.lengthCm}×{container.widthCm}×{container.heightCm}cm</option>)}<option value="CUSTOM">自定义柜型 / 车辆</option></select></label>
             <label><span>箱规</span><div className="cl-unit-input"><input type="number" min="1" value={capacityCarton.unitsPerCarton || ""} onChange={(event) => updateCapacityCarton("unitsPerCarton", Number(event.target.value))} /><em>件/箱</em></div></label>
             <label><span>计划目标（可选）</span><div className="cl-unit-input"><input type="number" min="0" value={capacityTargetCartons || ""} placeholder="用于自动选柜" onChange={(event) => { setCapacityTargetCartons(Number(event.target.value)); setCapacityEstimate(null); }} /><em>箱</em></div></label>
-            <label className="wide"><span>外箱尺寸</span><div className="cl-capacity-dimensions"><input aria-label="外箱长度" type="number" min="0.1" step="0.1" placeholder="长" value={capacityCarton.cartonLengthCm || ""} onChange={(event) => updateCapacityCarton("cartonLengthCm", Number(event.target.value))} /><i>×</i><input aria-label="外箱宽度" type="number" min="0.1" step="0.1" placeholder="宽" value={capacityCarton.cartonWidthCm || ""} onChange={(event) => updateCapacityCarton("cartonWidthCm", Number(event.target.value))} /><i>×</i><input aria-label="外箱高度" type="number" min="0.1" step="0.1" placeholder="高" value={capacityCarton.cartonHeightCm || ""} onChange={(event) => updateCapacityCarton("cartonHeightCm", Number(event.target.value))} /><em>cm</em></div></label>
+            <div className="wide cl-capacity-dimension-field">
+              <span className="cl-capacity-dimension-head"><span>外箱尺寸</span><span className="cl-capacity-unit-switch" role="group" aria-label="外箱尺寸单位"><button type="button" className={capacityDimensionUnit === "mm" ? "active" : ""} aria-pressed={capacityDimensionUnit === "mm"} onClick={() => setCapacityDimensionUnit("mm")}>毫米 mm</button><button type="button" className={capacityDimensionUnit === "cm" ? "active" : ""} aria-pressed={capacityDimensionUnit === "cm"} onClick={() => setCapacityDimensionUnit("cm")}>厘米 cm</button></span></span>
+              <div className="cl-capacity-dimensions"><input aria-label={`外箱长度（${capacityDimensionUnit}）`} type="number" min="0.1" step="0.1" placeholder="长" value={displayCapacityDimension(capacityCarton.cartonLengthCm, capacityDimensionUnit)} onChange={(event) => updateCapacityDimension("cartonLengthCm", Number(event.target.value))} /><i>×</i><input aria-label={`外箱宽度（${capacityDimensionUnit}）`} type="number" min="0.1" step="0.1" placeholder="宽" value={displayCapacityDimension(capacityCarton.cartonWidthCm, capacityDimensionUnit)} onChange={(event) => updateCapacityDimension("cartonWidthCm", Number(event.target.value))} /><i>×</i><input aria-label={`外箱高度（${capacityDimensionUnit}）`} type="number" min="0.1" step="0.1" placeholder="高" value={displayCapacityDimension(capacityCarton.cartonHeightCm, capacityDimensionUnit)} onChange={(event) => updateCapacityDimension("cartonHeightCm", Number(event.target.value))} /><em>{capacityDimensionUnit}</em></div>
+              {capacityLooksLikeMillimetres ? <span className="cl-capacity-unit-hint"><AlertTriangle size={13} />这组尺寸更像毫米：将按 {formatNumber(capacityCarton.cartonLengthCm / 10, 1)} × {formatNumber(capacityCarton.cartonWidthCm / 10, 1)} × {formatNumber(capacityCarton.cartonHeightCm / 10, 1)} cm 测算</span> : <small className="cl-capacity-unit-note">当前按{capacityDimensionUnit === "mm" ? "毫米" : "厘米"}录入，系统会统一换算后计算</small>}
+            </div>
             <label><span>单箱重量</span><div className="cl-unit-input"><input type="number" min="0.01" step="0.01" value={capacityCarton.cartonWeightKg || ""} onChange={(event) => updateCapacityCarton("cartonWeightKg", Number(event.target.value))} /><em>kg</em></div></label>
             <label><span>摆放方向</span><select value={capacityCarton.orientation} onChange={(event) => updateCapacityCarton("orientation", event.target.value)}><option value="upright">保持直立，可水平旋转</option><option value="any">允许翻转，六面择优</option><option value="fixed">固定当前长宽高方向</option></select></label>
           </div>
@@ -689,7 +730,7 @@ export default function ContainerLoadingPage({ currentUser, products }: Props) {
             <summary><span>02 · 安全预留</span><small>已启用合理默认值，可按现场调整</small></summary>
             <div>{([['doorReserveCm', '柜门作业带', 'cm'], ['sideClearanceCm', '单侧间隙', 'cm'], ['topClearanceCm', '顶部间隙', 'cm'], ['spaceReservePercent', '机动箱位', '%'], ['payloadReservePercent', '载重误差', '%']] as const).map(([key, label, unit]) => <label key={key}><span>{label}</span><div className="cl-unit-input"><input type="number" min="0" step="1" value={capacityReserve[key]} onChange={(event) => updateCapacityReserve(key, Number(event.target.value))} /><em>{unit}</em></div></label>)}</div>
           </details>
-          <button type="submit" className="cl-capacity-calculate" disabled={busy === "capacity"}>{busy === "capacity" ? <LoaderCircle size={17} className="is-spinning" /> : <Calculator size={17} />}{busy === "capacity" ? "正在测算" : "一键测算装满数量"}</button>
+          <button type="submit" className="cl-capacity-calculate" disabled={busy === "capacity"}>{busy === "capacity" ? <LoaderCircle size={17} className="is-spinning" /> : <Calculator size={17} />}{busy === "capacity" ? "正在测算" : capacityLooksLikeMillimetres ? "按毫米换算并测算" : "一键测算装满数量"}</button>
         </form>
 
         <section className={`cl-capacity-result ${capacityResult ? "has-result" : ""}`}>
