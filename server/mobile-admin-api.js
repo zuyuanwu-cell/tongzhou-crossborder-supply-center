@@ -11,6 +11,33 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+async function sendBusinessImage(res, sourceUrl) {
+  let parsed;
+  try { parsed = new URL(sourceUrl); }
+  catch { throw Object.assign(new Error("产品图片地址无效。"), { statusCode: 404, code: "image_not_found" }); }
+  if (parsed.protocol !== "https:") throw Object.assign(new Error("产品图片地址无效。"), { statusCode: 404, code: "image_not_found" });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(parsed, { signal: controller.signal, redirect: "follow" });
+    if (!response.ok) throw Object.assign(new Error("产品图片暂不可用。"), { statusCode: 502, code: "image_upstream_failed" });
+    const advertisedSize = Number(response.headers.get("content-length") || 0);
+    if (advertisedSize > 8 * 1024 * 1024) throw Object.assign(new Error("产品图片过大。"), { statusCode: 413, code: "image_too_large" });
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.length > 8 * 1024 * 1024) throw Object.assign(new Error("产品图片过大。"), { statusCode: 413, code: "image_too_large" });
+    const contentType = String(response.headers.get("content-type") || "image/jpeg").split(";")[0];
+    res.writeHead(200, {
+      "Content-Type": contentType.startsWith("image/") ? contentType : "image/jpeg",
+      "Content-Length": data.length,
+      "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+      "X-Content-Type-Options": "nosniff",
+    });
+    res.end(data);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -42,6 +69,11 @@ function capabilitiesFor(authOrUser) {
     viewTasks: hasPermission(auth, "collaboration_task_view") || hasPermission(auth, "collaboration_task_publish") || managesCollaboration,
     viewOrganizations: managesCollaboration,
     reviewCommands: managesCollaboration,
+    viewDomesticInventory: hasPermission(auth, "domestic_inventory_view"),
+    viewProducts: hasPermission(auth, "product_view"),
+    viewQualifications: hasPermission(auth, "qualifications"),
+    viewStockupRisks: hasPermission(auth, "stockup_recommendations_view"),
+    viewContainerLoading: hasPermission(auth, "container_loading_view") || hasPermission(auth, "container_loading_manage") || hasPermission(auth, "container_loading_confirm"),
   };
 }
 
@@ -64,6 +96,11 @@ function publicSession(authOrUser) {
         ...(capabilities.viewTasks ? ["admin_tasks"] : []),
         ...(capabilities.reviewCommands ? ["admin_approvals"] : []),
         ...(capabilities.viewOrganizations ? ["admin_organizations"] : []),
+        ...(capabilities.viewDomesticInventory ? ["admin_domestic_inventory"] : []),
+        ...(capabilities.viewProducts ? ["admin_products"] : []),
+        ...(capabilities.viewQualifications ? ["admin_qualifications"] : []),
+        ...(capabilities.viewStockupRisks ? ["admin_stockup_risks"] : []),
+        ...(capabilities.viewContainerLoading ? ["admin_container_loading"] : []),
         "profile",
       ],
       actions: capabilities.reviewCommands ? ["review_partner_command"] : [],
@@ -177,12 +214,21 @@ function overviewFrom({ tasks, approvals, organizations }) {
 
 export function createMobileAdminApi({
   bridge,
+  business = {},
   authenticateCredentials,
+  authenticateAccessCode = () => null,
   issueToken,
   resolveAuth,
   appendActionLog = () => {},
 }) {
   const loginAttempts = new Map();
+  const businessRoutes = new Map([
+    ["domestic-inventory", { capability: "viewDomesticInventory", provider: "domesticInventory" }],
+    ["products", { capability: "viewProducts", provider: "products" }],
+    ["qualifications", { capability: "viewQualifications", provider: "qualifications" }],
+    ["stockup-risks", { capability: "viewStockupRisks", provider: "stockupRisks" }],
+    ["container-loading", { capability: "viewContainerLoading", provider: "containerLoading" }],
+  ]);
 
   function assertLoginRate(req, username) {
     const now = Date.now();
@@ -208,20 +254,33 @@ export function createMobileAdminApi({
     try {
       const suffix = url.pathname.replace("/api/mobile-admin/v1", "") || "/";
 
+      const imageMatch = suffix.match(/^\/images\/([a-f0-9]{64})$/);
+      if (imageMatch && req.method === "GET") {
+        const sourceUrl = typeof business.resolveImage === "function" ? business.resolveImage(imageMatch[1]) : "";
+        if (!sourceUrl) throw Object.assign(new Error("产品图片不存在。"), { statusCode: 404, code: "image_not_found" });
+        await sendBusinessImage(res, sourceUrl);
+        return true;
+      }
+
       if (suffix === "/auth/login" && req.method === "POST") {
         const input = await readBody(req);
+        const credentialType = input.credentialType === "access_code" ? "access_code" : "account_password";
         const username = text(input.username, 120);
         const password = String(input.password || "");
-        if (!username || !password) throw Object.assign(new Error("请输入中台账号和密码。"), { statusCode: 400, code: "credentials_required" });
-        if (password.length > 512) throw Object.assign(new Error("账号或密码无效。"), { statusCode: 401, code: "invalid_credentials" });
-        const clearAttempt = assertLoginRate(req, username);
-        const user = authenticateCredentials(username, password);
-        if (!user) throw Object.assign(new Error("账号或密码无效。"), { statusCode: 401, code: "invalid_credentials" });
+        const accessCode = String(input.accessCode || "");
+        if (credentialType === "access_code" && !accessCode) throw Object.assign(new Error("请输入中台访问码。"), { statusCode: 400, code: "credentials_required" });
+        if (credentialType === "account_password" && (!username || !password)) throw Object.assign(new Error("请输入中台账号和密码。"), { statusCode: 400, code: "credentials_required" });
+        if (password.length > 512 || accessCode.length > 512) throw Object.assign(new Error("登录凭据无效。"), { statusCode: 401, code: "invalid_credentials" });
+        const clearAttempt = assertLoginRate(req, credentialType === "access_code" ? "access-code" : username);
+        const user = credentialType === "access_code"
+          ? authenticateAccessCode(accessCode)
+          : authenticateCredentials(username, password);
+        if (!user) throw Object.assign(new Error(credentialType === "access_code" ? "中台访问码无效。" : "账号或密码无效。"), { statusCode: 401, code: "invalid_credentials" });
         const capabilities = capabilitiesFor(user);
         if (!canAccess(capabilities)) throw Object.assign(new Error("当前账号没有移动协同工作台权限。"), { statusCode: 403, code: "mobile_admin_forbidden" });
         clearAttempt();
         const auth = { role: user.role, user };
-        appendActionLog(auth, "登录中台移动端", "mobile_admin_session", user.displayName || user.username, { ipAddress: clientIp(req) });
+        appendActionLog(auth, "登录中台移动端", "mobile_admin_session", user.displayName || user.username, { credentialType, ipAddress: clientIp(req) });
         sendJson(res, 200, { ok: true, token: issueToken(user), session: publicSession(auth) });
         return true;
       }
@@ -240,14 +299,61 @@ export function createMobileAdminApi({
       }
 
       if (suffix === "/overview" && req.method === "GET") {
-        const { capabilities } = requireAuth(req);
+        const { auth, capabilities } = requireAuth(req);
         const [tasks, approvalRows, organizations] = await Promise.all([
           capabilities.viewTasks ? bridge.listWarehouseTasks({ limit: 200, offset: 0 }) : Promise.resolve({ items: [], counts: {}, total: 0 }),
           capabilities.reviewCommands ? Promise.resolve(bridge.listApprovals()) : Promise.resolve([]),
           capabilities.viewOrganizations ? bridge.listOrganizations({ status: "" }) : Promise.resolve({ organizations: [] }),
         ]);
         const approvals = (Array.isArray(approvalRows) ? approvalRows : []).map(publicApproval);
-        sendJson(res, 200, { ok: true, overview: overviewFrom({ tasks, approvals, organizations }) });
+        sendJson(res, 200, { ok: true, capabilities, workspace: publicSession(auth).workspace, overview: overviewFrom({ tasks, approvals, organizations }) });
+        return true;
+      }
+
+      if (suffix === "/business/container-loading/calculator/bootstrap" && req.method === "GET") {
+        const { auth } = requireAuth(req, "viewContainerLoading");
+        const provider = business.containerLoading;
+        if (typeof provider?.calculatorBootstrap !== "function") throw Object.assign(new Error("临时装柜测算暂不可用。"), { statusCode: 503, code: "calculator_unavailable" });
+        sendJson(res, 200, { ok: true, ...(await provider.calculatorBootstrap(auth)) });
+        return true;
+      }
+
+      if (suffix === "/business/container-loading/calculator/run" && req.method === "POST") {
+        const { auth } = requireAuth(req, "viewContainerLoading");
+        const provider = business.containerLoading;
+        if (typeof provider?.calculate !== "function") throw Object.assign(new Error("临时装柜测算暂不可用。"), { statusCode: 503, code: "calculator_unavailable" });
+        const input = await readBody(req);
+        sendJson(res, 200, { ok: true, ...(await provider.calculate(input, auth)) });
+        return true;
+      }
+
+      const businessMatch = suffix.match(/^\/business\/([a-z-]+)$/);
+      if (businessMatch && req.method === "GET") {
+        const route = businessRoutes.get(businessMatch[1]);
+        if (!route) throw Object.assign(new Error("中台经营模块不存在。"), { statusCode: 404, code: "not_found" });
+        const { auth } = requireAuth(req, route.capability);
+        const provider = business[route.provider];
+        if (typeof provider !== "function") throw Object.assign(new Error("中台经营数据暂不可用。"), { statusCode: 503, code: "business_data_unavailable" });
+        const filters = Object.fromEntries(url.searchParams.entries());
+        sendJson(res, 200, { ok: true, module: businessMatch[1], ...(await provider(filters, auth)) });
+        return true;
+      }
+
+      const businessDetailMatch = suffix.match(/^\/business\/([a-z-]+)\/([^/]+)$/);
+      if (businessDetailMatch && req.method === "GET") {
+        const route = businessRoutes.get(businessDetailMatch[1]);
+        if (!route) throw Object.assign(new Error("中台经营模块不存在。"), { statusCode: 404, code: "not_found" });
+        const { auth } = requireAuth(req, route.capability);
+        const provider = business[route.provider];
+        if (typeof provider !== "function") throw Object.assign(new Error("中台经营数据暂不可用。"), { statusCode: 503, code: "business_data_unavailable" });
+        const recordId = decodeURIComponent(businessDetailMatch[2]);
+        let item = typeof provider.detail === "function" ? await provider.detail(recordId, auth) : null;
+        if (!item) {
+          const fallback = await provider({ limit: 200 }, auth);
+          item = (fallback.items || []).find((candidate) => String(candidate.id) === recordId) || null;
+        }
+        if (!item) throw Object.assign(new Error("未找到记录或当前账号无权查看。"), { statusCode: 404, code: "business_record_not_found" });
+        sendJson(res, 200, { ok: true, module: businessDetailMatch[1], item });
         return true;
       }
 

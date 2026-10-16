@@ -7063,7 +7063,7 @@ const wecomNotificationTemplates = [
     mode: "daily" as const,
     text: "### 今日备货提醒\n请查看备货中心的缺货、低可售天数和已采纳待创建计划 SKU，优先处理净建议数量大、可售天数低的商品。",
     linkText: "查看备货中心",
-    linkUrl: "#stockup",
+    linkUrl: "#stockup-recommendations",
     scene: "stockupRecommendation" as keyof WecomNotificationPayload["scenes"],
   },
   {
@@ -7726,7 +7726,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             <small>最近发送：{sceneForm.afterSalesNew?.lastSentAt ? formatDateTime(sceneForm.afterSalesNew.lastSentAt) : "暂无"}</small>
           </article>
           {([
-            ["stockupRecommendation", "新的备货建议产生时", "备货建议变化后，提醒相关同事查看并安排备货。"],
+            ["stockupRecommendation", "备货预警长图", "每日自动推送销售趋势、昨日单量、委外在产、建议量与预计断货时间，再附中台详情链接。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
             ["afterSalesProgress", "海外仓协同处理进度更新时", "优先按提交人的项目群通知；未配置或发送失败时回退到全局运营群。"],
@@ -7754,6 +7754,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                 </label>
                 <span className="field-label">推送机器人</span>
                 <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds, ...(key === "afterSalesProgress" && robotIds.length ? { enabled: true } : {}) })} />
+                {key === "stockupRecommendation" ? <a className="ghost-button compact-button" href="/api/wecom-notifications/stockup-preview" target="_blank" rel="noreferrer">预览当前长图</a> : null}
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );

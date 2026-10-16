@@ -33,6 +33,7 @@
     "test:warehouse-binding": "node scripts/warehouse-binding-test.mjs",
     "test:stockup-costing": "node scripts/stockup-costing-test.mjs",
     "test:stockup-notification": "node scripts/stockup-notification-test.mjs",
+    "test:stockup-warning-report": "node scripts/stockup-warning-report-test.mjs",
     "test:stockup-performance": "node scripts/stockup-collaboration-performance.mjs",
     "migrate:stockup-collaboration": "node scripts/stockup-collaboration-migration.mjs",
     "test:wms-stockup-push": "node scripts/wms-stockup-push-test.mjs",
@@ -91,7 +92,9 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1141.0",
     "@aws-sdk/s3-request-presigner": "^3.1141.0",
+    "@fontsource-variable/noto-sans-sc": "5.2.6",
     "@node-rs/argon2": "^2.2.1",
+    "@resvg/resvg-js": "2.6.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^8.2.2",
     "lucide-react": "^0.468.0",

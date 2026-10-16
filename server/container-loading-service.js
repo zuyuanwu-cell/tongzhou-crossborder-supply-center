@@ -404,6 +404,31 @@ export function createContainerLoadingService({ store, stockupService }) {
     }
   }
 
+  async function calculatePreview(payload, context = {}) {
+    const source = sourceFor(payload, context);
+    const container = containerByInput(payload);
+    const items = normalizeLoadingItems(applyProfiles(source.items));
+    const candidates = await generateCandidatesWithoutBlocking({ container, items });
+    const selectedStrategy = ["max_load", "balanced", "sku_complete"].includes(String(payload.selectedStrategy))
+      ? String(payload.selectedStrategy)
+      : "max_load";
+    return {
+      ok: true,
+      preview: true,
+      sourceType: source.sourceType,
+      sourceShipmentId: source.sourceShipmentId,
+      sourceShipmentNo: source.sourceShipmentNo,
+      destinationWarehouseId: source.destinationWarehouseId,
+      destinationWarehouseName: source.destinationWarehouseName,
+      sourceVersion: source.sourceVersion,
+      container,
+      items,
+      candidates,
+      selectedStrategy,
+      calculatedAt: nowIso(),
+    };
+  }
+
   async function createPlan(payload, context = {}) {
     const actor = actorOf(context);
     const source = sourceFor(payload, context);
@@ -574,5 +599,5 @@ export function createContainerLoadingService({ store, stockupService }) {
     });
   }
 
-  return { archivePlan, bootstrap, confirmPlan, createPlan, deletePlan, getPlan, listPlans, quickEstimate, recalculate, restorePlan, saveVersion, voidPlan };
+  return { archivePlan, bootstrap, calculatePreview, confirmPlan, createPlan, deletePlan, getPlan, listPlans, quickEstimate, recalculate, restorePlan, saveVersion, voidPlan };
 }

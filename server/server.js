@@ -2,7 +2,7 @@ import http from "node:http";
 import { Worker } from "node:worker_threads";
 import { createReadStream, mkdirSync, readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
 import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyCraftOrderRecordsForOrders, fetchJdyDataList, fetchJdyFirstArticleRecordsForOrders, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData, updateJdyOutsourcingOrderByNo } from "./jiandaoyun-client.js";
@@ -27,6 +27,7 @@ import { projectMovementPayload, scopeMovementSources } from "./movement-access.
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
+import { buildStockupWarningLinkMarkdown, buildWecomImageBody, renderStockupWarningPngWithImages } from "./stockup-warning-report.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseProductCreateCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
@@ -101,6 +102,7 @@ import { initCollaborationBridgeStore } from "./collaboration-bridge-db.js";
 import { createCollaborationBridge } from "./collaboration-bridge.js";
 import { createCollaborationBridgeApi } from "./collaboration-bridge-api.js";
 import { createMobileAdminApi } from "./mobile-admin-api.js";
+import { createMobileAdminBusinessProviders } from "./mobile-admin-business.js";
 import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
 import { createSystemBackupService } from "./system-backup-service.js";
 
@@ -500,13 +502,35 @@ const containerLoadingApi = createContainerLoadingApi({
   getAuth,
   appendActionLog,
 });
+const mobileAdminBusiness = createMobileAdminBusinessProviders({
+  domesticInventoryService,
+  domesticInventoryContextForAuth,
+  getProducts: () => cachedProducts,
+  productResponsePayload,
+  getQualifications: () => cachedQualifications,
+  scopedPartnerPayload,
+  getStockupPayload: () => stockupPayloadForView(buildCurrentStockupPayload({ notify: false, reason: "mobile_admin" }), "stockup-recommendations", { inboundLimit: 20 }),
+  containerLoadingService,
+  hasPermission,
+});
+
 const mobileAdminApi = createMobileAdminApi({
   bridge: collaborationBridge,
+  business: mobileAdminBusiness,
   authenticateCredentials: (username, password) => authenticateLocalUser(cachedUsers.users || [], username, password, cachedUsers.roles),
+  authenticateAccessCode: (accessCode) => {
+    if (!internalAccessCode || !accessCode) return null;
+    const expected = createHash("sha256").update(internalAccessCode).digest();
+    const actual = createHash("sha256").update(String(accessCode)).digest();
+    return timingSafeEqual(expected, actual) ? publicAccessUser(directAuth.user) : null;
+  },
   issueToken: (user) => createSessionToken(user, mobileAdminSessionSecret, 12 * 60 * 60 * 1000, cachedUsers.roles, { audience: "mobile-admin" }),
   resolveAuth: (req) => {
     const sessionUser = verifySessionToken(bearerToken(req), mobileAdminSessionSecret, { audience: "mobile-admin" });
     if (!sessionUser?.id) return { role: "guest", user: null };
+    if (sessionUser.id === directAuth.user.id && sessionUser.username === directAuth.user.username) {
+      return { role: directAuth.role, user: publicAccessUser(directAuth.user) };
+    }
     const currentUser = (cachedUsers.users || []).find((item) => item.id === sessionUser.id && item.status !== "disabled");
     if (!currentUser) return { role: "guest", user: null };
     return { role: currentUser.role, user: publicAccessUser(currentUser) };
@@ -1143,6 +1167,7 @@ function buildWecomNotificationPayload(input = {}) {
       linkUrl: String(input.scenes?.stockupRecommendation?.linkUrl || "").trim(),
       extraText: String(input.scenes?.stockupRecommendation?.extraText || "").trim(),
       lastSignature: input.scenes?.stockupRecommendation?.lastSignature || "",
+      lastReportDate: input.scenes?.stockupRecommendation?.lastReportDate || "",
       lastItemKeys: Array.isArray(input.scenes?.stockupRecommendation?.lastItemKeys) ? input.scenes.stockupRecommendation.lastItemKeys.map(String).filter(Boolean) : [],
       lastSentAt: input.scenes?.stockupRecommendation?.lastSentAt || "",
     },
@@ -1190,13 +1215,22 @@ function publicWecomNotificationPayload() {
   };
 }
 
+function absoluteNotificationLink(linkUrl, fallbackHash = "") {
+  const raw = String(linkUrl || fallbackHash || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const origin = String(process.env.PUBLIC_APP_ORIGIN || "https://gyl.tongzhoukuajing.com").trim().replace(/\/+$/, "");
+  if (raw.startsWith("#")) return `${origin}/${raw}`;
+  return `${origin}${raw.startsWith("/") ? "" : "/"}${raw}`;
+}
+
 function notificationLinkLine(linkUrl, linkText = "查看详情") {
-  const url = String(linkUrl || "").trim();
+  const url = absoluteNotificationLink(linkUrl);
   if (!url) return "";
   return `\n[${String(linkText || "查看详情").trim()}](${url})`;
 }
 
-async function sendWecomRobot(robot, content, mentionUserIds = []) {
+async function sendWecomRobotBody(robot, body) {
   if (!robot?.enabled) return { robotId: robot?.id, ok: false, skipped: true, message: "机器人已停用" };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
@@ -1205,10 +1239,7 @@ async function sendWecomRobot(robot, content, mentionUserIds = []) {
     response = await fetch(robot.webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        msgtype: "markdown",
-        markdown: { content: withWecomMentions(content, mentionUserIds) },
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
   } finally {
@@ -1227,6 +1258,17 @@ async function sendWecomRobot(robot, content, mentionUserIds = []) {
   return { robotId: robot.id, ok: true };
 }
 
+async function sendWecomRobot(robot, content, mentionUserIds = []) {
+  return sendWecomRobotBody(robot, {
+    msgtype: "markdown",
+    markdown: { content: withWecomMentions(content, mentionUserIds) },
+  });
+}
+
+async function sendWecomImageRobot(robot, buffer) {
+  return sendWecomRobotBody(robot, buildWecomImageBody(buffer));
+}
+
 async function sendWecomNotification(robotIds, content, mentionUserIds = []) {
   const ids = new Set((robotIds || []).map(String).filter(Boolean));
   const robots = (cachedWecomNotifications.robots || []).filter((robot) => ids.has(robot.id) && robot.enabled);
@@ -1238,6 +1280,25 @@ async function sendWecomNotification(robotIds, content, mentionUserIds = []) {
       return result;
     } catch (error) {
       robot.lastError = error.message || "推送失败";
+      return { robotId: robot.id, ok: false, message: robot.lastError };
+    }
+  }));
+  cachedWecomNotifications.updatedAt = new Date().toISOString();
+  saveWecomNotificationCache();
+  return results;
+}
+
+async function sendWecomImageNotification(robotIds, buffer) {
+  const ids = new Set((robotIds || []).map(String).filter(Boolean));
+  const robots = (cachedWecomNotifications.robots || []).filter((robot) => ids.has(robot.id) && robot.enabled);
+  const results = await Promise.all(robots.map(async (robot) => {
+    try {
+      const result = await sendWecomImageRobot(robot, buffer);
+      robot.lastSentAt = new Date().toISOString();
+      robot.lastError = "";
+      return result;
+    } catch (error) {
+      robot.lastError = error.message || "图片推送失败";
       return { robotId: robot.id, ok: false, message: robot.lastError };
     }
   }));
@@ -1437,7 +1498,15 @@ async function deliverWarehouseTicketNotification(ticket, eventType, origin) {
 }
 
 function stockupSignature(payload) {
-  const items = (payload.recommendations || []).map((item) => `${item.sku}:${item.replenishQty}:${item.netReplenishQty}`).sort();
+  const items = (payload.recommendations || []).map((item) => [
+    item.sku,
+    item.replenishQty,
+    item.outsourcingInProductionQty,
+    item.netReplenishQty,
+    item.yesterdayOutboundQty,
+    item.yesterdayReservedQty,
+    item.estimatedStockoutDate,
+  ].join(":")).sort();
   return items.join("|");
 }
 
@@ -1476,26 +1545,49 @@ async function notifyStockupRecommendation(payload, reason = "refresh") {
   const robotIds = scene.robotIds?.length ? scene.robotIds : (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
   if (!robotIds.length) return;
   const signature = stockupSignature(payload);
-  if (!signature || scene.lastSignature === signature) return;
+  const reportDate = dateKeyInTimezone(new Date(), inventorySnapshotTimezone);
+  const firstReportToday = scene.lastReportDate !== reportDate;
+  if (!signature || (!firstReportToday && scene.lastSignature === signature)) return;
   const currentKeys = (payload.recommendations || []).map((item) => item.recommendationKey || stockupRecommendationKey(item)).filter(Boolean);
   const previousKeys = new Set(scene.lastItemKeys || []);
   const newItems = (payload.recommendations || []).filter((item) => !previousKeys.has(item.recommendationKey || stockupRecommendationKey(item)));
   scene.lastSignature = signature;
   scene.lastItemKeys = currentKeys;
-  scene.lastSentAt = new Date().toISOString();
-  if (!newItems.length && previousKeys.size) {
+  if (!firstReportToday && !newItems.length && previousKeys.size) {
     saveWecomNotificationCache();
     return;
   }
   const visibleItems = (newItems.length ? newItems : payload.recommendations || []).slice(0, 8);
-  const content = [
+  const fallbackContent = [
     "### 备货建议提醒",
     `新增 ${newItems.length || visibleItems.length} 个 SKU 需要关注备货，当前净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`,
     scene.extraText,
     visibleItems.map(stockupMarkdownItem).join("\n\n"),
     notificationLinkLine(scene.linkUrl, "查看备货中心"),
   ].filter(Boolean).join("\n\n");
-  await sendWecomNotification(robotIds, content);
+  const linkUrl = absoluteNotificationLink(scene.linkUrl, "#stockup-recommendations");
+  let results = [];
+  try {
+    const report = await renderStockupWarningPngWithImages(payload, { fetchImpl: globalThis.fetch });
+    const imageResults = await sendWecomImageNotification(robotIds, report.buffer);
+    const linkContent = buildStockupWarningLinkMarkdown(report.model, {
+      linkUrl,
+      extraText: scene.extraText,
+    });
+    const imageSuccessRobotIds = imageResults.filter((item) => item.ok).map((item) => item.robotId);
+    const imageFailedRobotIds = imageResults.filter((item) => !item.ok).map((item) => item.robotId);
+    const linkResults = imageSuccessRobotIds.length ? await sendWecomNotification(imageSuccessRobotIds, linkContent) : [];
+    const fallbackResults = imageFailedRobotIds.length ? await sendWecomNotification(imageFailedRobotIds, fallbackContent) : [];
+    results = [...imageResults, ...linkResults, ...fallbackResults];
+  } catch (error) {
+    console.error("[wecom] stockup warning image fallback", error);
+    results = await sendWecomNotification(robotIds, fallbackContent);
+  }
+  if (results.some((item) => item.ok)) {
+    scene.lastReportDate = reportDate;
+    scene.lastSentAt = new Date().toISOString();
+  }
+  saveWecomNotificationCache();
 }
 
 async function notifyInventorySnapshot(snapshot) {
@@ -6466,8 +6558,7 @@ function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {})
   const cacheKey = `stockup:${derivedDataRevision}`;
   let payload = cachedDerivedResponse(cacheKey);
   if (!payload) {
-    const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
-    const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
+    const movementPayload = movementResponsePayload(directAuth);
     payload = cacheDerivedResponse(cacheKey, applyStockupDecisions(buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts)));
   }
   if (notify) void notifyStockupRecommendation(payload, reason);
@@ -9574,6 +9665,23 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, publicWecomNotificationPayload());
+      return;
+    }
+
+    if (url.pathname === "/api/wecom-notifications/stockup-preview" && req.method === "GET") {
+      if (!canManageModule(getAuth(req), "notifications")) {
+        sendJson(res, 401, { ok: false, message: "预览备货预警长图需要管理员登录。" });
+        return;
+      }
+      const stockup = buildCurrentStockupPayload({ notify: false, reason: "wecom_preview" });
+      const report = await renderStockupWarningPngWithImages(stockup, { fetchImpl: globalThis.fetch });
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Content-Length": report.buffer.length,
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": `inline; filename="stockup-warning-${report.model.reportDate || "preview"}.png"`,
+      });
+      res.end(report.buffer);
       return;
     }
 

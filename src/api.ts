@@ -660,6 +660,7 @@ export type WecomSceneConfig = {
   linkUrl: string;
   extraText: string;
   lastSignature?: string;
+  lastReportDate?: string;
   lastSentAt?: string;
 };
 
@@ -3374,7 +3375,11 @@ export type StockupRecommendation = {
   avgDaily7: number;
   avgDaily30: number;
   avgDaily90: number;
+  trend30: number[];
+  yesterdayOutboundQty: number | null;
+  yesterdayReservedQty: number | null;
   daysCover: number | null;
+  estimatedStockoutDate?: string;
   leadDays: number;
   targetCoverDays: number;
   replenishQty: number;
