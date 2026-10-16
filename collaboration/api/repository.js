@@ -28,6 +28,9 @@ function operationReference(operationType, supplied = "") {
 }
 
 function workItemFromRow(row) {
+  const publicPayload = row.item_type === "production_order" && !row.public_payload?.productImageUrl && row.cover_image_url
+    ? { ...(row.public_payload || {}), productImageUrl: row.cover_image_url }
+    : row.public_payload || {};
   return {
     id: row.id,
     spaceId: row.space_id,
@@ -36,7 +39,7 @@ function workItemFromRow(row) {
     description: row.description,
     status: row.status,
     priority: row.priority,
-    publicPayload: row.public_payload || {},
+    publicPayload,
     dueAt: row.due_at ? new Date(row.due_at).toISOString() : "",
     version: Number(row.version),
     lastCoreSyncedAt: row.last_core_synced_at ? new Date(row.last_core_synced_at).toISOString() : "",
@@ -57,7 +60,17 @@ export async function listWorkItems(auth, filters = {}) {
     if (keyword) { params.push(`%${keyword}%`); conditions.push(`(title ILIKE $${params.length} OR public_payload->>'referenceNo' ILIKE $${params.length} OR public_payload->>'orderNo' ILIKE $${params.length} OR public_payload->>'productName' ILIKE $${params.length})`); }
     params.push(limit, offset);
     const rows = await client.query(
-      `SELECT * FROM work_items WHERE ${conditions.join(" AND ")}
+      `SELECT work_items.*,
+              (SELECT line.image_url
+                 FROM partner_order_lines AS line
+                WHERE line.organization_id=work_items.organization_id
+                  AND line.work_item_id=work_items.id
+                  AND line.active=true
+                  AND line.line_type='finished_product'
+                  AND COALESCE(line.image_url,'')<>''
+                ORDER BY line.created_at,line.id
+                LIMIT 1) AS cover_image_url
+         FROM work_items WHERE ${conditions.join(" AND ")}
        ORDER BY CASE priority WHEN 'urgent' THEN 0 ELSE 1 END,
                 CASE WHEN due_at IS NULL THEN 1 ELSE 0 END,due_at,updated_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,

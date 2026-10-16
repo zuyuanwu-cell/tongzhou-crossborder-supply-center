@@ -219,10 +219,11 @@ function MetricCard({ label, value, note, icon: Icon, tone = "ink" }: { label: s
 function TaskCard({ item, onOpen }: { item: WorkItem; onOpen(item: WorkItem): void }) {
   const oem = ["filing_task", "sampling_task", "packaging_quote", "production_order", "purchase_order"].includes(item.itemType);
   const purchase = item.itemType === "purchase_order";
-  const productCover = item.itemType === "production_order" ? item.publicPayload.productImageUrl : "";
-  return <button className={`task-card ${item.priority === "urgent" ? "urgent" : ""}`} onClick={() => onOpen(item)}>
+  const production = item.itemType === "production_order";
+  const productCover = production ? item.publicPayload.productImageUrl : "";
+  return <button className={`task-card ${production ? "production-card" : ""} ${item.priority === "urgent" ? "urgent" : ""}`} onClick={() => onOpen(item)}>
     <div className="task-card-top"><TaskType type={item.itemType} /><StatusPill status={item.status} /></div>
-    {productCover ? <div className="task-card-product-cover"><ProductImage src={productCover} name={item.publicPayload.productName || item.title} /><span><small>生产产品</small><b>{item.publicPayload.productName || item.title}</b><code>{item.publicPayload.orderNo || ""}</code></span></div> : null}
+    {production ? <div className="task-card-product-cover"><ProductImage src={productCover} name={item.publicPayload.productName || item.title} className="task-card-cover-image" /><span><small>产品封面</small><b>{item.publicPayload.productName || item.title}</b><code>{item.publicPayload.orderNo || "待同步单号"}</code></span></div> : null}
     <h3>{item.title}</h3><p>{item.description}</p>
     <div className="task-route"><span>{oem ? (item.publicPayload.orderNo || item.publicPayload.projectCode) : (item.publicPayload.sourceWarehouseName || "供应链中台")}</span><ChevronRight size={14} /><span>{purchase && item.publicPayload.linkedProductionOrderNo ? `关联加工 ${item.publicPayload.linkedProductionOrderNo}` : oem ? item.publicPayload.productName : (item.publicPayload.destinationWarehouseName || item.publicPayload.warehouseName)}</span></div>
     <footer><span><Clock3 size={14} />截止 {formatDate(item.dueAt)}</span><span>{item.publicPayload.referenceNo || item.publicPayload.orderNo || item.publicPayload.documentVersion || `V${item.version}`}<ChevronRight size={16} /></span></footer>
@@ -410,6 +411,7 @@ function TasksPage({ session, onOpenTask, sampleCategory, taskScope = "business"
 
 function ProductImage({ src, name, className = "" }: { src?: string; name: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [src]);
   if (!src || failed) return <span className={`product-image-fallback ${className}`} aria-hidden="true">{name.trim().slice(0, 1) || <Boxes size={18} />}</span>;
   return <img className={`product-image ${className}`} src={src} alt={name} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
