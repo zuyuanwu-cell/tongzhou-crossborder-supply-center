@@ -1,5 +1,10 @@
 import type { StockupDispatchDocument, StockupForwarder, StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupProductRef, StockupPurchaseOrder, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
+import type { DataContext } from "../collaboration/shared/data-context-types";
 import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType, SingleCartonCapacityEstimate, SingleCartonCapacityInput } from "./container-loading/types";
+
+export type { DataContext } from "../collaboration/shared/data-context-types";
+
+export type DataContextPayload = { dataContext?: DataContext };
 
 export type CatalogProduct = {
   id: string;
@@ -92,7 +97,7 @@ export type ProductBase = {
   latestCostEffectiveAt?: string;
 };
 
-export type ProductPayload = {
+export type ProductPayload = DataContextPayload & {
   ok: boolean;
   internal: boolean;
   mode?: "list" | "detail";
@@ -129,7 +134,7 @@ export type WarehouseOnlyInventoryItem = {
   syncedAt?: string;
 };
 
-export type DashboardSummaryPayload = {
+export type DashboardSummaryPayload = DataContextPayload & {
   ok: boolean;
   generatedAt: string;
   internal: boolean;
@@ -682,7 +687,7 @@ export type WecomAfterSalesNewSceneConfig = WecomSceneConfig & {
   warehouseRobotIds: Record<string, string[]>;
 };
 
-export type WecomNotificationPayload = {
+export type WecomNotificationPayload = DataContextPayload & {
   ok: boolean;
   source: "local";
   updatedAt: string;
@@ -1079,7 +1084,7 @@ export type WarehouseTestResult = {
   warehouses?: WarehouseConnection[];
 };
 
-export type WarehousePayload = {
+export type WarehousePayload = DataContextPayload & {
   ok: boolean;
   providers: WmsProvider[];
   warehouses: WarehouseConnection[];
@@ -1596,7 +1601,7 @@ export type MovementWarehouseDiagnostic = {
   } | null;
 };
 
-export type MovementPayload = {
+export type MovementPayload = DataContextPayload & {
   ok: boolean;
   generatedAt: string;
   orderSyncedAt: string;
@@ -2015,7 +2020,7 @@ export type OverseasReconciliationRanking = {
   changeRate: number | null;
 };
 
-export type OverseasInventoryReconciliationPayload = {
+export type OverseasInventoryReconciliationPayload = DataContextPayload & {
   ok: boolean;
   scope: "overseas";
   generatedAt: string;
@@ -3459,7 +3464,7 @@ export type StockupProductionQueueItem = {
   orders: OutsourcingProductionOrder[];
 };
 
-export type StockupPayload = {
+export type StockupPayload = DataContextPayload & {
   ok: boolean;
   generatedAt: string;
   movementGeneratedAt: string;

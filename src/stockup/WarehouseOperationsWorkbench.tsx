@@ -28,6 +28,7 @@ import {
 } from "../api";
 import { fetchCollaborationTaskOptions, type CollaborationTaskOptions } from "../warehouse-collaboration-task-api";
 import type { StockupRequest, StockupWarehouseDashboard, StockupWarehouseWorkOrder } from "./types";
+import { StockupProductImage } from "./StockupProductImage";
 
 type Props = {
   requests: StockupRequest[];
@@ -118,6 +119,7 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [createError, setCreateError] = useState("");
   const [success, setSuccess] = useState("");
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("all");
@@ -149,6 +151,7 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
   const selectedOrganization = useMemo(() => options?.organizations.find((item) => item.code === draft.organizationCode) || null, [draft.organizationCode, options]);
   const selectedWarehouse = useMemo(() => selectedOrganization?.warehouses.find((item) => item.resourceRef === draft.warehouseRef) || null, [draft.warehouseRef, selectedOrganization]);
   const workOrders = dashboard?.workOrders || [];
+  const legacyRequests = useMemo(() => requests.filter((item) => item.workflowVersion !== 2 && !["cancelled", "completed"].includes(item.status)), [requests]);
   const routeTotal = Object.values(dashboard?.routeBreakdown || {}).reduce((sum, value) => sum + value, 0);
   const expenseRows = Object.entries(dashboard?.expenseBreakdown || {}).sort((a, b) => b[1] - a[1]);
   const maxExpense = Math.max(1, ...expenseRows.map(([, value]) => value));
@@ -171,18 +174,18 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
 
   async function createWorkOrder() {
     if (!selectedRequest || !selectedOrganization || !selectedWarehouse) {
-      setError("请选择备货单、伙伴组织和国内仓库。");
+      setCreateError("请选择备货单、伙伴组织和国内仓库。");
       return;
     }
     const lines = selectedRequest.lines
       .map((line) => ({ requestLineId: line.id, expectedQty: Number(draft.quantities[line.id] || 0) }))
       .filter((line) => line.expectedQty > 0);
     if (!lines.length) {
-      setError("请至少选择一个待国内仓处理的商品并填写数量。");
+      setCreateError("请至少选择一个待国内仓处理的商品并填写数量。");
       return;
     }
     setSaving(true);
-    setError("");
+    setCreateError("");
     setSuccess("");
     try {
       const created = await createStockupWarehouseWorkOrder({
@@ -208,7 +211,7 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
       setSuccess(draft.publishNow ? `工单 ${finalOrder.workOrderNo} 已推送给国内仓。` : `工单 ${finalOrder.workOrderNo} 已创建。`);
       await Promise.all([load(true), onChanged()]);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "国内仓工单创建失败");
+      setCreateError(saveError instanceof Error ? saveError.message : "国内仓工单创建失败");
     } finally {
       setSaving(false);
     }
@@ -269,19 +272,19 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
   const funnel = [
     ["waiting_receipt", "待签收", dashboard?.counts.waiting_receipt || 0],
     ["inspecting", "验收中", dashboard?.counts.inspecting || 0],
-    ["ready_to_ship", "待发运", (dashboard?.counts.ready_to_ship || 0) + (dashboard?.counts.partially_shipped || 0)],
+    ["ready_to_ship", "历史待发运", (dashboard?.counts.ready_to_ship || 0) + (dashboard?.counts.partially_shipped || 0)],
     ["completed", "已完结", dashboard?.counts.completed || 0],
   ] as const;
   const maxFunnel = Math.max(1, ...funnel.map((item) => item[2]));
 
   return <section className="sc-warehouse-workbench">
     <header className="sc-warehouse-command">
-      <div><span className="sc-eyebrow"><i /> DOMESTIC WAREHOUSE CONTROL</span><h2>国内仓作业工作台</h2><p>从备货单推送验收工单，统一管理换箱、追溯、箱规、发运分流与成本费用。</p></div>
+      <div><span className="sc-eyebrow"><i /> DOMESTIC WAREHOUSE CONTROL</span><h2>国内仓验货审核台</h2><p>审核 V2 仓库验货、批次、箱规和费用；发运计划在出运闭环中统一下达。</p></div>
       <div className="sc-warehouse-command-actions">
         <label><Search size={15} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="工单号 / SKU / 仓库" /></label>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="waiting_receipt">待签收</option><option value="inspecting">验收中</option><option value="ready_to_ship">待发运</option><option value="partially_shipped">部分发运</option><option value="completed">已完结</option></select>
+        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="waiting_receipt">待签收</option><option value="inspecting">验收中</option><option value="ready_to_ship">旧版待发运</option><option value="partially_shipped">旧版部分发运</option><option value="completed">已完结</option></select>
         <button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button>
-        {canManage ? <button className="sc-button sc-button-primary" onClick={() => setShowCreate(true)}><Plus size={17} />创建国内仓工单</button> : null}
+        {canManage && legacyRequests.length ? <details className="sc-legacy-actions"><summary>历史流程工具</summary><button className="sc-button sc-button-secondary" onClick={() => { setCreateError(""); setShowCreate(true); }}><Plus size={17} />创建旧版仓库工单</button></details> : null}
       </div>
     </header>
 
@@ -291,17 +294,17 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
     <div className="sc-warehouse-metrics">
       <article><span><Boxes size={20} /></span><div><small>待签收商品</small><strong>{fmtQty(dashboard?.waitingProducts.reduce((sum, item) => sum + Math.max(0, item.expectedQty - item.receivedQty), 0) || 0)}</strong><em>{dashboard?.waitingProducts.length || 0} 个 SKU 行</em></div></article>
       <article><span><PackageCheck size={20} /></span><div><small>验收处理中</small><strong>{dashboard?.counts.inspecting || 0}</strong><em>含换箱与追溯登记</em></div></article>
-      <article><span><Route size={20} /></span><div><small>待发运线路</small><strong>{(dashboard?.counts.ready_to_ship || 0) + (dashboard?.counts.partially_shipped || 0)}</strong><em>海外仓 / 国内客户 / 留仓</em></div></article>
+      <article><span><Route size={20} /></span><div><small>历史流程待发运</small><strong>{(dashboard?.counts.ready_to_ship || 0) + (dashboard?.counts.partially_shipped || 0)}</strong><em>V2 发运请前往“物流出运”</em></div></article>
       <article className="is-money"><span><CircleDollarSign size={20} /></span><div><small>仓内费用</small><strong>{fmtMoney(dashboard?.totals.expenseCny || 0)}</strong><em>审核后并入备货成本</em></div></article>
     </div>
 
     <div className="sc-warehouse-analytics">
       <article className="sc-warehouse-panel">
-        <header><div><small>PROCESS FUNNEL</small><h3>作业漏斗</h3></div><Clock3 size={20} /></header>
+        <header><div><small>PROCESS FUNNEL</small><h3>作业漏斗（含历史发运）</h3></div><Clock3 size={20} /></header>
         <div className="sc-warehouse-funnel">{funnel.map(([key, label, value], index) => <div key={key}><span>{index + 1}</span><b>{label}</b><i><em style={{ width: `${Math.max(8, value / maxFunnel * 100)}%` }} /></i><strong>{value}</strong></div>)}</div>
       </article>
       <article className="sc-warehouse-panel">
-        <header><div><small>OUTBOUND SPLIT</small><h3>发运去向</h3></div><Truck size={20} /></header>
+        <header><div><small>LEGACY OUTBOUND SPLIT</small><h3>历史工单发运去向</h3></div><Truck size={20} /></header>
         <div className="sc-route-split">
           <div className="sc-route-donut" style={{ background: routeTotal ? `conic-gradient(#1467b8 0 ${dashboard!.routeBreakdown.overseas_warehouse / routeTotal * 100}%, #f06a26 0 ${(dashboard!.routeBreakdown.overseas_warehouse + dashboard!.routeBreakdown.domestic_customer) / routeTotal * 100}%, #87a0bb 0)` : undefined }}><span><b>{fmtQty(routeTotal)}</b><small>已分配数量</small></span></div>
           <div>{Object.entries(routeLabels).map(([key, label]) => <p key={key}><i className={`route-${key}`} /><span>{label}</span><b>{fmtQty(dashboard?.routeBreakdown[key as keyof StockupWarehouseDashboard["routeBreakdown"]] || 0)}</b></p>)}</div>
@@ -318,7 +321,7 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
       <div className="sc-arrival-table">
         <div className="head"><span>商品</span><span>工单 / 备货单</span><span>国内仓</span><span>预计到仓</span><span>待签收</span><span>状态</span><span /></div>
         {(dashboard?.waitingProducts || []).slice(0, 30).map((item) => <button key={`${item.workOrderId}-${item.sku}`} onClick={() => void openOrder(item.workOrderId)}>
-          <span className="product">{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <i><Boxes size={16} /></i>}<em><b>{item.sku}</b><small>{item.productName}</small></em></span>
+          <span className="product"><StockupProductImage src={item.imageUrl} name={item.productName} size={16} /><em><b>{item.sku}</b><small>{item.productName}</small></em></span>
           <span><b>{item.workOrderNo}</b><small>{item.requestNo}</small></span><span>{item.domesticWarehouseName}</span><span>{fmtDate(item.expectedArrivalAt)}</span><span><b>{fmtQty(Math.max(0, item.expectedQty - item.receivedQty))}</b> {item.unit}</span><span><i className={`sc-wo-status is-${item.status}`}>{statusLabels[item.status] || item.status}</i></span><ArrowRight size={15} />
         </button>)}
         {!loading && !dashboard?.waitingProducts.length ? <div className="sc-warehouse-empty"><CheckCircle2 size={22} />当前没有等待签收验货的商品</div> : null}
@@ -333,10 +336,11 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
     </article>
 
     {showCreate ? <div className="sc-modal-backdrop"><section className="sc-modal sc-warehouse-create-modal">
-      <header className="sc-modal-head"><div><span className="sc-eyebrow"><i /> CREATE & DISPATCH</span><h2>创建国内仓作业工单</h2><p>选择备货商品并交代清楚到货、验收、包装和后续发运要求。</p></div><button className="sc-icon-button" onClick={() => setShowCreate(false)}><X size={19} /></button></header>
+      <header className="sc-modal-head"><div><span className="sc-eyebrow"><i /> LEGACY WORK ORDER</span><h2>创建旧版国内仓工单</h2><p>仅用于历史备货单；V2 现货流程由采购到货通知自动进入仓库验货。</p></div><button className="sc-icon-button" aria-label="关闭旧版仓库工单弹窗" onClick={() => setShowCreate(false)}><X size={19} /></button></header>
       <div className="sc-editor-scroll">
+        {createError ? <div className="sc-alert sc-alert-danger sc-modal-alert">{createError}</div> : null}
         <section className="sc-form-section"><div className="sc-section-heading"><span>1</span><div><b>备货来源与执行仓</b><small>工单会绑定备货单，并推送到指定伙伴仓库。</small></div></div><div className="sc-form-grid sc-form-grid-4">
-          <label className="full">备货单<select value={draft.requestId} onChange={(event) => chooseRequest(event.target.value)}><option value="">请选择待处理备货单</option>{requests.filter((item) => !["cancelled", "completed"].includes(item.status)).map((request) => <option value={request.id} key={request.id}>{request.requestNo} · {request.project || request.destinationCountry} · {request.lines.length} SKU</option>)}</select></label>
+          <label className="full">历史备货单<select value={draft.requestId} onChange={(event) => chooseRequest(event.target.value)}><option value="">请选择旧版待处理备货单</option>{legacyRequests.map((request) => <option value={request.id} key={request.id}>{request.requestNo} · {request.project || request.destinationCountry} · {request.lines.length} SKU</option>)}</select></label>
           <label>伙伴组织<select value={draft.organizationCode} onChange={(event) => chooseOrganization(event.target.value)}><option value="">请选择伙伴</option>{options?.organizations.map((organization) => <option value={organization.code} key={organization.code}>{organization.name}</option>)}</select></label>
           <label>国内仓库<select value={draft.warehouseRef} onChange={(event) => setDraft((current) => ({ ...current, warehouseRef: event.target.value }))}><option value="">请选择仓库</option>{selectedOrganization?.warehouses.map((warehouse) => <option value={warehouse.resourceRef} key={warehouse.resourceRef}>{warehouse.resourceName}</option>)}</select></label>
           <label>预计到仓<input type="datetime-local" value={draft.expectedArrivalAt} onChange={(event) => setDraft((current) => ({ ...current, expectedArrivalAt: event.target.value }))} /></label>
@@ -348,7 +352,7 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
         </div></section>
         <section className="sc-form-section"><div className="sc-section-heading"><span>2</span><div><b>待签收商品</b><small>数量可拆成多张国内仓工单，但累计不能超过备货数量。</small></div></div><div className="sc-create-lines">
           <div className="head"><span>商品</span><span>备货数量</span><span>本次推送</span></div>
-          {selectedRequest?.lines.map((line) => <div key={line.id}><span className="product">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <i><Boxes size={16} /></i>}<em><b>{line.sku}</b><small>{line.productName}</small></em></span><span>{fmtQty(line.requestedQty)} {line.unit}</span><label><input type="number" min="0" max={line.requestedQty} value={draft.quantities[line.id] ?? 0} onChange={(event) => setDraft((current) => ({ ...current, quantities: { ...current.quantities, [line.id]: Number(event.target.value) } }))} /> {line.unit}</label></div>)}
+          {selectedRequest?.lines.map((line) => <div key={line.id}><span className="product"><StockupProductImage src={line.imageUrl} name={line.productName} size={16} /><em><b>{line.sku}</b><small>{line.productName}</small></em></span><span>{fmtQty(line.requestedQty)} {line.unit}</span><label><input type="number" min="0" max={line.requestedQty} value={draft.quantities[line.id] ?? 0} onChange={(event) => setDraft((current) => ({ ...current, quantities: { ...current.quantities, [line.id]: Number(event.target.value) } }))} /> {line.unit}</label></div>)}
           {!selectedRequest ? <div className="sc-warehouse-empty">请先选择一张备货单</div> : null}
         </div></section>
         <section className="sc-form-section"><div className="sc-section-heading"><span>3</span><div><b>仓库执行要求</b><small>伙伴端将按验收、包装、去向分流和费用登记逐步完成。</small></div></div><div className="sc-operation-checks"><span><Check />验收数量与质量</span><span><Check />换纸箱</span><span><Check />批号与商品条码</span><span><Check />箱规尺寸与重量</span><span><Check />海外仓 / 国内客户分流</span><span><Check />货拉拉等发运安排</span><span><Check />仓内费用登记</span></div><label className="sc-instruction-field">补充指令<textarea rows={4} value={draft.instructions} onChange={(event) => setDraft((current) => ({ ...current, instructions: event.target.value }))} /></label></section>
@@ -357,11 +361,11 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
     </section></div> : null}
 
     {selected ? <div className="sc-drawer-backdrop"><aside className="sc-drawer sc-warehouse-detail-drawer">
-      <header className="sc-drawer-head"><div><span className="sc-eyebrow"><i /> {selected.workOrderNo}</span><h2>{selected.domesticWarehouseName}</h2><p>{selected.requestNo} · {selected.project || "备货作业"}</p></div><button className="sc-icon-button" onClick={() => setSelected(null)}><X size={19} /></button></header>
+      <header className="sc-drawer-head"><div><span className="sc-eyebrow"><i /> {selected.workOrderNo}</span><h2>{selected.domesticWarehouseName}</h2><p>{selected.requestNo} · {selected.project || "备货作业"}</p></div><button className="sc-icon-button" aria-label="关闭仓库工单详情" onClick={() => setSelected(null)}><X size={19} /></button></header>
       <div className="sc-drawer-scroll">
         <div className="sc-detail-summary"><article><small>工单状态</small><b><i className={`sc-wo-status is-${selected.status}`}>{statusLabels[selected.status] || selected.status}</i></b></article><article><small>预计 / 良品</small><b>{fmtQty(selected.expectedQty)} / {fmtQty(selected.goodQty)}</b></article><article><small>去向已分配</small><b>{fmtQty(selected.allocatedQty)}</b></article><article><small>仓内费用</small><b>{fmtMoney(selected.expenseTotalCny)}</b></article></div>
-        <section className="sc-detail-section"><header><PackageCheck size={18} /><div><b>验收与包装结果</b><small>批号、条码、换箱与箱规均由仓库回填</small></div></header><div className="sc-detail-lines"><div className="head"><span>商品</span><span>数量结果</span><span>追溯信息</span><span>包装信息</span></div>{selected.lines.map((line) => <div key={line.id}><span><b>{line.sku}</b><small>{line.productName}</small></span><span><b>良品 {fmtQty(line.goodQty)}</b><small>破损 {fmtQty(line.damagedQty)} · 短缺 {fmtQty(line.shortageQty)} · 待判 {fmtQty(line.pendingQty)}</small></span><span><b>批号 {line.lotNo || "待登记"}</b><small>条码 {line.barcode || "待登记"}</small></span><span><b>{line.cartonCount ? `${line.cartonCount} 箱 × ${line.unitsPerCarton}` : "待登记箱规"}</b><small>{line.cartonLengthCm ? `${line.cartonLengthCm}×${line.cartonWidthCm}×${line.cartonHeightCm}cm · ${line.cartonWeightKg}kg/箱` : "尺寸重量待登记"}</small></span></div>)}</div></section>
-        <section className="sc-detail-section"><header><Route size={18} /><div><b>后续发运去向</b><small>同一批可拆分发海外仓、国内客户或留仓待定</small></div></header><div className="sc-detail-routes">{selected.routes.map((route) => <article key={route.id}><span><MapPin size={16} /></span><div><b>{routeLabels[route.routeType]} · {route.destinationName}</b><small>{route.carrier || "承运商待定"} {route.trackingNo ? `· ${route.trackingNo}` : ""}</small></div><em>{route.lines.reduce((sum, line) => sum + line.quantity, 0)} 件</em><i className={`sc-wo-status is-${route.status}`}>{route.status}</i></article>)}{!selected.routes.length ? <div className="sc-warehouse-empty">仓库尚未登记发运分流</div> : null}</div></section>
+        <section className="sc-detail-section"><header><PackageCheck size={18} /><div><b>验收与包装结果</b><small>批次、条码、生产日期、换箱与箱规均由仓库回填</small></div></header><div className="sc-detail-lines"><div className="head"><span>商品</span><span>数量结果</span><span>追溯信息</span><span>包装信息</span></div>{selected.lines.map((line) => <div key={line.id}><span><b>{line.sku}</b><small>{line.productName}</small></span><span><b>良品 {fmtQty(line.goodQty)}</b><small>破损 {fmtQty(line.damagedQty)} · 短缺 {fmtQty(line.shortageQty)} · 待判 {fmtQty(line.pendingQty)}</small></span><span><b>{line.lots?.length ? `${line.lots.length} 个批次` : `批号 ${line.lotNo || "待登记"}`}</b><small>{line.lots?.length ? line.lots.map((lot) => `${lot.lotNo} · ${fmtDate(lot.productionDate)}`).join("；") : `条码 ${line.barcode || "待登记"}`}</small></span><span><b>{line.lots?.length ? `${line.lots.reduce((sum, lot) => sum + lot.cartonCount, 0)} 箱` : line.cartonCount ? `${line.cartonCount} 箱 × ${line.unitsPerCarton}` : "待登记箱规"}</b><small>{line.lots?.length ? line.lots.map((lot) => `${lot.cartonLengthCm}×${lot.cartonWidthCm}×${lot.cartonHeightCm}cm · ${lot.cartonWeightKg}kg`).join("；") : line.cartonLengthCm ? `${line.cartonLengthCm}×${line.cartonWidthCm}×${line.cartonHeightCm}cm · ${line.cartonWeightKg}kg/箱` : "尺寸重量待登记"}</small></span></div>)}</div></section>
+        {selected.workflowVersion === 2 ? <section className="sc-detail-section"><header><Route size={18} /><div><b>后续出运由中台安排</b><small>本工单审核通过后进入国内库存；请在“物流出运”按目的仓锁库并下发发货任务。</small></div></header><div className="sc-warehouse-empty">仓库伙伴无需在验货环节填写发运路线</div></section> : <section className="sc-detail-section"><header><Route size={18} /><div><b>历史流程发运去向</b><small>旧版工单由仓库登记分流和交付结果</small></div></header><div className="sc-detail-routes">{selected.routes.map((route) => <article key={route.id}><span><MapPin size={16} /></span><div><b>{routeLabels[route.routeType]} · {route.destinationName}</b><small>{route.carrier || "承运商待定"} {route.trackingNo ? `· ${route.trackingNo}` : ""}</small></div><em>{route.lines.reduce((sum, line) => sum + line.quantity, 0)} 件</em><i className={`sc-wo-status is-${route.status}`}>{route.status}</i></article>)}{!selected.routes.length ? <div className="sc-warehouse-empty">仓库尚未登记发运分流</div> : null}</div></section>}
         <section className="sc-detail-section"><header><CircleDollarSign size={18} /><div><b>仓内费用与成本归集</b><small>仓库登记、运营审核，批准后计入备货总成本</small></div></header><div className="sc-detail-expenses">{selected.expenses.map((expense) => <article key={expense.id}><span><CircleDollarSign size={17} /></span><div><b>{expenseLabels[expense.category] || expense.name}</b><small>{expense.vendor || "仓内费用"} · {expense.occurredAt || "日期待补"}</small></div><strong>{fmtMoney(expense.amountCny)}</strong><i className={`sc-wo-status is-${expense.reviewStatus}`}>{expense.reviewStatus === "approved" ? "已计成本" : expense.reviewStatus === "rejected" ? "已驳回" : "待审核"}</i>{canCost && expense.reviewStatus === "pending_review" ? <div><button disabled={saving} onClick={() => void reviewExpense(selected, expense.id, "approved")}><ShieldCheck size={14} />审核计入</button><button disabled={saving} onClick={() => void reviewExpense(selected, expense.id, "rejected")}>驳回</button></div> : null}</article>)}{!selected.expenses.length ? <div className="sc-warehouse-empty">仓库尚未登记费用</div> : null}</div></section>
         <section className="sc-detail-section"><header><Clock3 size={18} /><div><b>工单轨迹</b><small>管理端与伙伴端动作统一留痕</small></div></header><div className="sc-detail-timeline">{selected.events.map((event) => <article key={event.id}><i /><div><b>{event.title}</b><p>{event.description}</p><small>{event.actorName} · {fmtDate(event.occurredAt)}</small></div></article>)}</div></section>
       </div>

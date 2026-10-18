@@ -45,6 +45,7 @@
 .cwt-empty { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 170px; color: #75889f; }
 .cwt-alert { display: flex; align-items: center; gap: 8px; padding: 11px 13px; border: 1px solid; border-radius: 10px; }
 .cwt-alert.error { color: #a63a22; border-color: #f1b09f; background: #fff2ed; }
+.cwt-alert.warning { color: #78520b; border-color: #ebcf8b; background: #fff8df; }
 .cwt-alert.success { color: #156942; border-color: #a6d9bf; background: #eefaf4; }
 .cwt-alert button { margin-left: auto; padding: 0; color: inherit; border: 0; background: transparent; cursor: pointer; }
 .cwt-layer { position: fixed; z-index: 1200; inset: 0; display: flex; justify-content: flex-end; background: rgba(9, 29, 58, .48); backdrop-filter: blur(3px); }

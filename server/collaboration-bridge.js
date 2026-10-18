@@ -277,12 +277,20 @@ export function createCollaborationBridge({
     const warehouseOrganizations = (response.organizations || []).filter((organization) => organization.status === "active");
     const organizations = [];
     const availability = new Map();
+    const warnings = [];
     for (const organization of warehouseOrganizations) {
       const access = await getOrganizationAccessGrants(organization.code);
       const warehouses = [];
       for (const grant of (access.grants || []).filter((item) => item.resourceType === "warehouse" && item.permissions?.includes("warehouse.task.view"))) {
         if (allowedWarehouses.size && !allowedWarehouses.has(String(grant.resourceRef))) continue;
-        const snapshot = inventoryProjectionForGrant(organization.code, grant);
+        let snapshot;
+        try {
+          snapshot = inventoryProjectionForGrant(organization.code, grant);
+        } catch (error) {
+          if (error?.code !== "granted_warehouse_not_found") throw error;
+          warnings.push(`协同组织 ${organization.name || organization.code} 仍绑定已移除仓库 ${grant.resourceRef}，已从发布选项中排除。`);
+          continue;
+        }
         warehouses.push({
           resourceRef: grant.resourceRef,
           resourceName: snapshot.warehouseName,
@@ -312,6 +320,7 @@ export function createCollaborationBridge({
       portalUrl: String(publicOrigin || "").replace(/\/$/, ""),
       organizations,
       products: [...bySku.values()].sort((left, right) => left.sku.localeCompare(right.sku, "zh-CN", { numeric: true })),
+      warnings,
     };
   }
 

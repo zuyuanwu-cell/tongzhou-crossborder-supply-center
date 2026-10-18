@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Check, PackagePlus, Plus, Save, Search, Send, Trash2, X } from "lucide-react";
 import type { CatalogProduct, WarehouseConnection } from "../api";
+import { StockupProductImage } from "./StockupProductImage";
 
 export type StockupRequestDraftLine = {
   key: string;
@@ -230,7 +231,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                     const selected = lines.some((line) => skuKey(line.sku) === skuKey(product.sku));
                     return (
                     <button key={skuKey(product.sku)} disabled={selected} onClick={() => addProduct(product)}>
-                      <span className="sc-product-thumb">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <PackagePlus size={20} />}</span>
+                      <span className="sc-product-thumb"><StockupProductImage src={product.imageUrl} name={product.name || product.sku} size={20} /></span>
                       <span><b>{product.sku}</b><small>{product.name}</small></span>
                       {selected ? <Check size={17} /> : <Plus size={17} />}
                     </button>
@@ -244,7 +245,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                 {lines.map((line, index) => (
                   <div className="sc-line-row" key={line.key}>
                     <span className="sc-line-index">{String(index + 1).padStart(2, "0")}</span>
-                    <span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <PackagePlus size={22} />}</span>
+                    <span className="sc-product-thumb large"><StockupProductImage src={line.imageUrl} name={line.productName} size={22} /></span>
                     <div className="sc-line-product"><input value={line.sku} onChange={(event) => updateLine(line.key, { sku: event.target.value })} placeholder="留空自动生成临时编码" /><input value={line.productName} onChange={(event) => updateLine(line.key, { productName: event.target.value })} placeholder="产品名称 *" /><input value={line.specification} onChange={(event) => updateLine(line.key, { specification: event.target.value })} placeholder="规格" /><input value={line.procurementUrl} onChange={(event) => updateLine(line.key, { procurementUrl: event.target.value })} placeholder="1688 商品链接" /><label className="sc-inline-check"><input type="checkbox" checked={line.shelfLifeManaged} onChange={(event) => updateLine(line.key, { shelfLifeManaged: event.target.checked })} />保质期管理</label></div>
                     <label>执行方式<select value="采购" disabled><option>采购</option></select></label>
                     <label>需求数量<div className="sc-input-unit"><input type="number" min="0.01" value={line.requestedQty} onChange={(event) => updateLine(line.key, { requestedQty: Number(event.target.value) })} /><span>{line.unit}</span></div></label>

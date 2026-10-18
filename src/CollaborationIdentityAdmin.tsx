@@ -121,7 +121,7 @@ function InvitationRows({ invitations, busyId, onReissue, onRevoke }: {
 
 const approvalActionLabels: Record<string, string> = { inbound_confirm: "仓库自主入库", outbound_confirm: "仓库自主出库", inventory_adjustment: "库存盘点差异", transfer_receive: "调拨收货" };
 
-export function ApprovalQueue({ notify }: { notify(message: string, error?: boolean): void }) {
+export function ApprovalQueue({ notify, organizationCode = "", keyword = "", itemType = "", scopeLoading = false }: { notify(message: string, error?: boolean): void; organizationCode?: string; keyword?: string; itemType?: string; scopeLoading?: boolean }) {
   const [items, setItems] = useState<CollaborationApproval[]>([]);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -133,6 +133,20 @@ export function ApprovalQueue({ notify }: { notify(message: string, error?: bool
     finally { setLoading(false); }
   }, [notify]);
   useEffect(() => { void load(); }, [load]);
+  const visibleItems = React.useMemo(() => {
+    const normalized = keyword.trim().toLowerCase();
+    const commandType = itemType === "warehouse_inbound" ? "inbound_confirm"
+      : itemType === "warehouse_outbound" ? "outbound_confirm"
+        : itemType === "warehouse_transfer" ? "transfer_receive"
+          : itemType === "warehouse_exception" ? "inventory_adjustment" : "";
+    return items.filter((item) => {
+      if (organizationCode && item.organizationCode !== organizationCode) return false;
+      if (commandType && item.commandType !== commandType) return false;
+      if (!normalized) return true;
+      return [item.organizationCode, item.coreRefId, item.commandType, item.submittedByName, item.payload.reason, item.payload.note]
+        .some((value) => String(value || "").toLowerCase().includes(normalized));
+    });
+  }, [items, organizationCode, keyword, itemType]);
   async function review(item: CollaborationApproval, approved: boolean) {
     const note = String(notes[item.commandId] || "").trim();
     if (!approved && !note) return notify("驳回时请填写原因。", true);
@@ -146,13 +160,13 @@ export function ApprovalQueue({ notify }: { notify(message: string, error?: bool
   }
   return <section className="cia-section cia-approval-section">
     <div className="cia-section-head"><div><ClipboardCheck size={19} /><div><h4>仓库作业审批</h4><p>仓库自主发起的入库、出库和盘点差异不会直接改主账；批准时还会再次校验库存。</p></div></div><button type="button" className="cia-secondary" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "cia-spin" : ""} />刷新</button></div>
-    {loading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取待审批作业…</div> : items.length ? <div className="cia-approval-list">{items.map((item) => <article key={item.commandId}>
+    {loading || scopeLoading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在按当前任务范围读取待审批作业…</div> : visibleItems.length ? <div className="cia-approval-list">{visibleItems.map((item) => <article key={item.commandId}>
       <header><span><Warehouse size={17} /></span><div><strong>{approvalActionLabels[item.commandType] || item.commandType}</strong><small>{item.organizationCode} · {item.coreRefId}</small></div><em>高风险 · 待审批</em></header>
       <div className="cia-approval-lines">{(item.payload.lines || []).slice(0, 4).map((line) => <span key={`${item.commandId}:${line.sku}`}><code>{line.sku}</code><b>{line.direction === "decrease" ? "-" : line.direction === "increase" ? "+" : ""}{Number(line.quantity).toLocaleString()}</b></span>)}{(item.payload.lines?.length || 0) > 4 ? <span>另 {Number(item.payload.lines?.length) - 4} 项</span> : null}</div>
       <p>{item.payload.reason || item.payload.note || "未填写作业说明"}</p><small>{item.submittedByName || "仓库成员"} · {formatTime(item.submittedAt)}</small>
       <textarea rows={2} value={notes[item.commandId] || ""} onChange={(event) => setNotes((current) => ({ ...current, [item.commandId]: event.target.value }))} placeholder="审批意见；驳回时必填" />
       <footer><button type="button" className="cia-danger-button" disabled={busy === item.commandId} onClick={() => void review(item, false)}><XCircle size={15} />驳回</button><button type="button" className="cia-primary" disabled={busy === item.commandId} onClick={() => void review(item, true)}>{busy === item.commandId ? <LoaderCircle size={15} className="cia-spin" /> : <CheckCircle2 size={15} />}批准并入账</button></footer>
-    </article>)}</div> : <div className="cia-empty compact"><CheckCircle2 size={22} /><strong>没有待审批作业</strong><span>仓库提交申请后会进入这里。</span></div>}
+    </article>)}</div> : <div className="cia-empty compact"><CheckCircle2 size={22} /><strong>当前筛选没有待审批作业</strong><span>审批区与下方任务清单使用相同的组织、任务类型和关键词范围。</span></div>}
   </section>;
 }
 

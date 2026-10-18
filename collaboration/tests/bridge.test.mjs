@@ -745,6 +745,25 @@ test("internal staff can publish an allowlisted warehouse task and read partner 
   );
 });
 
+test("warehouse task options skip stale warehouse grants without hiding healthy options", async (t) => {
+  const { bridge } = await fixture(t, {
+    organizations: [{ code: "warehouse-a", name: "一号仓协同组织", organizationType: "warehouse", status: "active" }],
+    accessGrants: [
+      { resourceType: "warehouse", resourceRef: "removed-warehouse", resourceName: "已移除仓", permissions: ["warehouse.task.view"] },
+      { resourceType: "warehouse", resourceRef: "warehouse-1", resourceName: "一号仓", permissions: ["warehouse.task.view"] },
+    ],
+    inventory: {
+      ok: true,
+      warehouses: [{ id: "warehouse-1", name: "一号仓" }],
+      balances: [{ sku: "SKU-1", productName: "测试产品", availableQty: 20, reservedQty: 2, unit: "件", warehouseId: "warehouse-1" }],
+    },
+  });
+
+  const options = await bridge.listWarehouseTaskOptions();
+  assert.deepEqual(options.organizations[0].warehouses.map((warehouse) => warehouse.resourceRef), ["warehouse-1"]);
+  assert.match(options.warnings[0], /已移除仓库 removed-warehouse/);
+});
+
 test("background synchronization and warehouse task options include hybrid production suppliers", async (t) => {
   const accessGrants = [{
     resourceType: "warehouse",

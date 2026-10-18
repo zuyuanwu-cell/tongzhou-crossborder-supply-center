@@ -1,4 +1,5 @@
 import { resolveApiUrl } from "./api";
+import type { DataContext } from "../collaboration/shared/data-context-types";
 
 export type CollaborationWarehouseTaskType = "warehouse_inbound" | "warehouse_outbound" | "warehouse_stockup" | "warehouse_exception";
 export type CollaborationWarehouseTaskStatus = "pending" | "accepted" | "in_progress" | "pending_approval" | "pending_sync" | "completed" | "rejected" | "cancelled";
@@ -30,6 +31,7 @@ export type CollaborationTaskOptions = {
   portalUrl: string;
   organizations: CollaborationTaskOrganization[];
   products: CollaborationTaskProduct[];
+  warnings?: string[];
 };
 
 export type CollaborationWarehouseTask = {
@@ -98,7 +100,7 @@ export function fetchCollaborationTaskOptions() {
 export function fetchCollaborationWarehouseTasks(filters: { organizationCode?: string; status?: string; itemType?: string; keyword?: string; overdue?: boolean; limit?: number; offset?: number } = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) if (value !== undefined && String(value).trim()) query.set(key, String(value));
-  return request<{ items: CollaborationWarehouseTask[]; counts: Record<string, number>; total: number; limit: number; offset: number }>(`/api/collaboration-bridge/warehouse-tasks${query.size ? `?${query}` : ""}`);
+  return request<{ items: CollaborationWarehouseTask[]; counts: Record<string, number>; total: number; limit: number; offset: number; dataContext?: DataContext }>(`/api/collaboration-bridge/warehouse-tasks${query.size ? `?${query}` : ""}`);
 }
 
 export function remindCollaborationWarehouseTask(id: string, note = "") {

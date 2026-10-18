@@ -1,0 +1,74 @@
+:root {
+  --op-font-sans: Inter, "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --op-font-mono: "Geist Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --op-navy-950: #0b1f3a;
+  --op-navy-800: #173d7a;
+  --op-navy-700: #2451a4;
+  --op-orange-600: #d94f12;
+  --op-orange-500: #f45b0b;
+  --op-green-700: #14734b;
+  --op-green-100: #eaf7f0;
+  --op-red-700: #b42318;
+  --op-red-100: #fff0ee;
+  --op-amber-800: #8a4b08;
+  --op-amber-100: #fff6df;
+  --op-blue-700: #1f5fae;
+  --op-blue-100: #eaf2ff;
+  --op-slate-900: #18273f;
+  --op-slate-700: #43536a;
+  --op-slate-500: #6b7a90;
+  --op-slate-300: #cbd5e1;
+  --op-slate-200: #e2e8f0;
+  --op-slate-100: #f1f5f9;
+  --op-surface: #ffffff;
+  --op-canvas: #f6f8fb;
+  --op-radius-control: 8px;
+  --op-radius-card: 12px;
+  --op-shadow-card: 0 8px 26px rgba(23, 61, 122, .07);
+  --op-motion-fast: 160ms;
+  --op-motion-normal: 200ms;
+  --op-text-xs: 12px;
+  --op-text-sm: 14px;
+  --op-text-md: 16px;
+  --op-text-lg: 18px;
+  --op-text-xl: 22px;
+  --op-text-kpi: 30px;
+}
+
+.app-shell,
+.portal-shell {
+  font-family: var(--op-font-sans);
+  color: var(--op-slate-900);
+}
+
+.app-shell button,
+.app-shell input,
+.app-shell select,
+.app-shell textarea,
+.portal-shell button,
+.portal-shell input,
+.portal-shell select,
+.portal-shell textarea {
+  font-family: inherit;
+}
+
+.app-shell code,
+.portal-shell code {
+  font-family: var(--op-font-mono);
+}
+
+.app-shell :focus-visible,
+.portal-shell :focus-visible {
+  outline: 3px solid rgba(31, 95, 174, .28);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell *,
+  .portal-shell * {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

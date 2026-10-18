@@ -106,6 +106,7 @@ import { createMobileAdminApi } from "./mobile-admin-api.js";
 import { createMobileAdminBusinessProviders } from "./mobile-admin-business.js";
 import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
 import { createSystemBackupService } from "./system-backup-service.js";
+import { withDataContext } from "../collaboration/shared/data-context.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -1253,10 +1254,17 @@ function buildWecomNotificationPayload(input = {}) {
 
 function publicWecomNotificationPayload() {
   const payload = buildWecomNotificationPayload(cachedWecomNotifications);
-  return {
+  return withDataContext({
     ...payload,
     robots: payload.robots.map(({ webhookUrl, ...robot }) => ({ ...robot, webhookMasked: maskWebhook(webhookUrl) })),
-  };
+  }, {
+    generatedAt: payload.updatedAt,
+    effectiveAt: payload.updatedAt,
+    source: "snapshot",
+    scopeKey: "notification_configuration",
+    scopeLabel: "当前账号可管理的企业微信通知配置",
+    completeness: "complete",
+  });
 }
 
 function absoluteNotificationLink(linkUrl, fallbackHash = "") {
@@ -7955,7 +7963,19 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有经营总览权限。" });
         return;
       }
-      sendJson(res, 200, buildDashboardSummary(auth));
+      const payload = buildDashboardSummary(auth);
+      const warehouseStates = payload.warehouses || [];
+      const completed = warehouseStates.filter((item) => item.dataState?.complete).length;
+      sendJson(res, 200, withDataContext(payload, {
+        generatedAt: payload.generatedAt,
+        effectiveAt: payload.sync?.orderSyncedAt || payload.sync?.inventorySyncedAt || payload.generatedAt,
+        source: payload.sync?.dataHealth?.usingPreviousSuccessfulData ? "cache" : "derived",
+        scopeKey: "dashboard_visible_operations",
+        scopeLabel: "当前账号可见商品、仓库与近 90 天订单",
+        completeness: warehouseStates.length && completed < warehouseStates.length ? "partial" : "complete",
+        coverage: { completed, total: warehouseStates.length, unit: "warehouse" },
+        usingPreviousSuccess: Boolean(payload.sync?.dataHealth?.usingPreviousSuccessfulData),
+      }));
       return;
     }
 
@@ -8232,7 +8252,20 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        sendJson(res, 200, overseasReconciliationPayload(auth, Object.fromEntries(url.searchParams.entries())));
+        const payload = overseasReconciliationPayload(auth, Object.fromEntries(url.searchParams.entries()));
+        const sources = Object.values(payload.sources || {});
+        const completed = sources.filter((source) => ["complete", "ready"].includes(source?.status) || source?.ok === true).length;
+        sendJson(res, 200, withDataContext(payload, {
+          generatedAt: payload.generatedAt,
+          effectiveAt: payload.snapshots?.closing?.capturedAt || payload.generatedAt,
+          timezone: payload.timezone,
+          source: "derived",
+          scopeKey: "overseas_inventory_reconciliation",
+          scopeLabel: `${payload.ranges?.current?.label || "当前周期"} · 当前账号可见海外仓`,
+          filters: payload.filters,
+          completeness: sources.length && completed < sources.length ? "partial" : "complete",
+          coverage: { completed, total: sources.length, unit: "warehouse" },
+        }));
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "海外仓库存对账读取失败。" });
       }
@@ -9671,10 +9704,21 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const mode = url.searchParams.get("mode") === "detail" ? "detail" : "list";
-      sendJson(res, 200, {
+      const payload = {
         ok: true,
         ...productResponsePayload(cachedProducts, auth, mode),
-      });
+      };
+      sendJson(res, 200, withDataContext(payload, {
+        generatedAt: payload.syncedAt,
+        effectiveAt: payload.syncedAt,
+        source: payload.source === "jiandaoyun" ? "snapshot" : "cache",
+        scopeKey: "product_catalog",
+        scopeLabel: "当前账号可见商品目录",
+        filters: { mode },
+        completeness: payload.warning ? "partial" : "complete",
+        coverage: { completed: payload.counts?.visibleCatalog || 0, total: payload.counts?.visibleCatalog || 0, unit: "sku" },
+        isEstimate: payload.source !== "jiandaoyun",
+      }));
       return;
     }
 
@@ -11212,7 +11256,7 @@ const server = http.createServer(async (req, res) => {
       }
       const scoped = scopeMovementSources({ products: cachedProducts, warehouse: cachedWarehouseSync, orders: cachedOrdersSync, connections: warehouseConnections }, auth.user || directAuth.user);
       const mergedProducts = mergeWarehouseDataIntoProducts(scoped.products, scoped.warehouse);
-      sendJson(res, 200, {
+      const payload = {
         ok: true,
         providers: WMS_PROVIDERS,
         warehouses: scoped.connections.map(sanitizeWarehouse),
@@ -11244,7 +11288,17 @@ const server = http.createServer(async (req, res) => {
           "俄罗斯 YunWMS: appKey / appToken / warehouseCode",
           "SEA WMS: 各国家 baseUrl / clientId / clientSecret / warehouseCode",
         ],
-      });
+      };
+      const completed = (payload.lastSync.results || []).filter((item) => item.ok).length;
+      sendJson(res, 200, withDataContext(payload, {
+        generatedAt: payload.lastSync.syncedAt,
+        effectiveAt: payload.lastSync.syncedAt,
+        source: "snapshot",
+        scopeKey: "authorized_warehouses",
+        scopeLabel: "当前账号已授权 WMS 仓库原始库存",
+        completeness: payload.warehouses.length && completed < payload.warehouses.length ? "partial" : "complete",
+        coverage: { completed, total: payload.warehouses.length, unit: "warehouse" },
+      }));
       return;
     }
 
@@ -11960,11 +12014,24 @@ const server = http.createServer(async (req, res) => {
         view,
         { inboundLimit: url.searchParams.get("inboundLimit") || 100 },
       );
-      sendJson(res, 200, {
+      const response = {
         ...stockupPayload,
         ...currentOutsourcingCacheState(),
         ...(outsourcingRefreshError ? { warning: `生产数据后台刷新失败，当前显示上一次结果：${outsourcingRefreshError}` } : {}),
-      });
+      };
+      const syncResults = response.syncResults || [];
+      const completed = syncResults.filter((item) => item.ok).length;
+      sendJson(res, 200, withDataContext(response, {
+        generatedAt: response.generatedAt,
+        effectiveAt: response.stockupSyncedAt || response.movementGeneratedAt || response.generatedAt,
+        source: response.outsourcingCacheStale ? "cache" : "derived",
+        scopeKey: `stockup_${view}`,
+        scopeLabel: view === "stockup-recommendations" ? "当前账号可见现货备货建议" : "当前账号可见备货业务",
+        filters: { view },
+        completeness: response.warning || response.outsourcingRefreshError ? "partial" : "complete",
+        coverage: syncResults.length ? { completed, total: syncResults.length, unit: "warehouse" } : undefined,
+        usingPreviousSuccess: Boolean(response.outsourcingCacheStale),
+      }));
       return;
     }
 
@@ -12408,7 +12475,19 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有动销监控权限。" });
         return;
       }
-      sendJson(res, 200, movementResponsePayload(auth));
+      const payload = movementResponsePayload(auth);
+      const results = payload.orderSyncResults || [];
+      const completed = results.filter((item) => item.ok && !item.backgroundRunning).length;
+      sendJson(res, 200, withDataContext(payload, {
+        generatedAt: payload.generatedAt,
+        effectiveAt: payload.orderSyncedAt || payload.inventorySyncedAt || payload.generatedAt,
+        source: payload.syncState?.usingCachedOrders ? "cache" : "derived",
+        scopeKey: "movement_visible_sku_warehouse",
+        scopeLabel: "当前账号可见 SKU × 国家 × 授权仓库",
+        completeness: payload.orderDataComplete && !payload.syncState?.failedWarehouses?.length ? "complete" : "partial",
+        coverage: { completed, total: results.length, unit: "warehouse" },
+        usingPreviousSuccess: Boolean(payload.syncState?.usingCachedOrders),
+      }));
       return;
     }
 

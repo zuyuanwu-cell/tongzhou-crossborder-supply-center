@@ -28,6 +28,7 @@ export function ProcurementWorkspace({ requests, canManage, onChanged }: Props) 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [modalError, setModalError] = useState("");
   const [success, setSuccess] = useState("");
   const [modal, setModal] = useState<"purchase" | "forwarder" | "">("");
   const [order, setOrder] = useState({ supplierName: "", externalOrderNo: "", orderUrl: "", paidTotalCny: 0, orderedAt: new Date().toISOString().slice(0, 10), note: "" });
@@ -68,7 +69,7 @@ export function ProcurementWorkspace({ requests, canManage, onChanged }: Props) 
   const merchandiseTotal = selectedLines.reduce((sum, item) => sum + Number(item.merchandiseAmount || 0), 0);
 
   function openPurchase() {
-    setError(""); setSuccess("");
+    setError(""); setModalError(""); setSuccess("");
     setLineDrafts(Object.fromEntries(purchasableLines.map(({ line, remainingQty }) => [line.id, { requestLineId: line.id, quantity: remainingQty, merchandiseAmount: 0, allocatedAmount: 0, selected: false }])));
     setOrder({ supplierName: "", externalOrderNo: "", orderUrl: "", paidTotalCny: 0, orderedAt: new Date().toISOString().slice(0, 10), note: "" });
     setManualAllocation(false); setAllocationReason("");
@@ -78,19 +79,19 @@ export function ProcurementWorkspace({ requests, canManage, onChanged }: Props) 
   async function savePurchase() {
     const lines = selectedLines.map(({ selected: _selected, allocatedAmount: _allocatedAmount, ...line }) => line);
     if (!order.supplierName.trim() || !lines.length || order.paidTotalCny <= 0 || lines.some((line) => line.quantity <= 0 || line.merchandiseAmount < 0)) {
-      setError("请填写供应商和实付总额，并至少选择一条有效采购明细。"); return;
+      setModalError("请填写供应商和实付总额，并至少选择一条有效采购明细。"); return;
     }
     const allocationOverrides = manualAllocation ? Object.fromEntries(selectedLines.map((line) => [line.requestLineId, line.allocatedAmount])) : undefined;
     const allocatedTotal = selectedLines.reduce((sum, line) => sum + Number(line.allocatedAmount || 0), 0);
     if (manualAllocation && (!allocationReason.trim() || Math.abs(allocatedTotal - order.paidTotalCny) > 0.005)) {
-      setError("人工分摊时，分摊后金额合计必须等于实付总额，并填写调整原因。"); return;
+      setModalError("人工分摊时，分摊后金额合计必须等于实付总额，并填写调整原因。"); return;
     }
-    setSaving(true); setError("");
+    setSaving(true); setModalError("");
     try {
       const result = await createStockupPurchaseOrder({ ...order, platform: "1688", lines, ...(manualAllocation ? { allocationOverrides, allocationOverrideReason: allocationReason } : {}) });
       setSuccess(`采购单 ${result.purchaseOrder.purchaseNo} 已建立，共享金额已按商品金额自动分摊。`);
       setModal(""); await Promise.all([load(), onChanged()]);
-    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "采购单创建失败"); }
+    } catch (saveError) { setModalError(saveError instanceof Error ? saveError.message : "采购单创建失败"); }
     finally { setSaving(false); }
   }
 
@@ -109,13 +110,13 @@ export function ProcurementWorkspace({ requests, canManage, onChanged }: Props) 
 
   async function saveForwarder() {
     if (!forwarder.code || !forwarder.name || !forwarder.locationName || !forwarder.address || !forwarder.contactName || !forwarder.contactPhone) {
-      setError("请补齐货代、收货点、地址、联系人和电话。"); return;
+      setModalError("请补齐货代、收货点、地址、联系人和电话。"); return;
     }
-    setSaving(true); setError("");
+    setSaving(true); setModalError("");
     try {
       await createStockupForwarder({ code: forwarder.code, name: forwarder.name, locations: [{ name: forwarder.locationName, country: forwarder.country, province: forwarder.province, city: forwarder.city, address: forwarder.address, contactName: forwarder.contactName, contactPhone: forwarder.contactPhone, routingRequirements: forwarder.routingRequirements }] });
       setSuccess("货代及收货地址已保存，可用于创建出运计划。"); setModal(""); await load();
-    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "货代档案保存失败"); }
+    } catch (saveError) { setModalError(saveError instanceof Error ? saveError.message : "货代档案保存失败"); }
     finally { setSaving(false); }
   }
 
@@ -133,7 +134,7 @@ export function ProcurementWorkspace({ requests, canManage, onChanged }: Props) 
   return <section className="sc-warehouse-workbench">
     <header className="sc-warehouse-command">
       <div><span className="sc-eyebrow"><i /> SPOT PROCUREMENT</span><h2>现货采购与商品编码</h2><p>登记 1688 实付成本、自动分摊共享金额，并在 WMS 建单前完成正式 SKU 绑定。</p></div>
-      <div className="sc-warehouse-command-actions"><button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button>{canManage ? <><button className="sc-button sc-button-secondary" onClick={() => setModal("forwarder")}><Truck size={16} />新增货代</button><button className="sc-button sc-button-primary" onClick={openPurchase}><Plus size={17} />登记采购单</button></> : null}</div>
+      <div className="sc-warehouse-command-actions"><button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button>{canManage ? <><button className="sc-button sc-button-secondary" onClick={() => { setModalError(""); setModal("forwarder"); }}><Truck size={16} />新增货代</button><button className="sc-button sc-button-primary" disabled={!purchasableLines.length} title={!purchasableLines.length ? "当前没有已提交且待采购的 V2 需求" : ""} onClick={openPurchase}><Plus size={17} />登记采购单</button></> : null}</div>
     </header>
     {error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
     {success ? <div className="sc-warehouse-success"><CheckCircle2 size={17} />{success}<button onClick={() => setSuccess("")}><X size={14} /></button></div> : null}
@@ -148,12 +149,12 @@ export function ProcurementWorkspace({ requests, canManage, onChanged }: Props) 
       <article className="sc-warehouse-panel"><header><div><small>SKU CODING</small><h3>临时商品转正式 SKU</h3></div><Tag size={20} /></header><div className="sc-detail-expenses">{temporaryRefs.map((item) => <article key={item.id}><span><Tag size={17} /></span><div><b>{item.temporarySku}</b><small>{item.productName}{item.codingError ? ` · ${item.codingError}` : ""}</small><input value={skuInputs[item.id] || ""} onChange={(event) => setSkuInputs((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="正式 SKU" /></div>{canManage ? <button disabled={saving} onClick={() => void bindSku(item)}>绑定</button> : null}</article>)}{!temporaryRefs.length ? <div className="sc-warehouse-empty"><CheckCircle2 size={20} />所有商品均已有正式 SKU</div> : null}</div></article>
     </div>
 
-    {modal === "purchase" ? <div className="sc-modal-backdrop"><section className="sc-modal sc-warehouse-create-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">1688 PURCHASE ORDER</span><h2>登记采购单与实付成本</h2><p>多商品订单逐行填写商品金额，实付差额将自动按金额占比分摊并处理尾差。</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={19} /></button></header><div className="sc-editor-scroll">
+    {modal === "purchase" ? <div className="sc-modal-backdrop"><section className="sc-modal sc-warehouse-create-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">1688 PURCHASE ORDER</span><h2>登记采购单与实付成本</h2><p>多商品订单逐行填写商品金额，实付差额将自动按金额占比分摊并处理尾差。</p></div><button className="sc-icon-button" aria-label="关闭采购单弹窗" onClick={() => setModal("")}><X size={19} /></button></header><div className="sc-editor-scroll">
+      {modalError ? <div className="sc-alert sc-alert-danger sc-modal-alert">{modalError}</div> : null}
       <section className="sc-form-section"><div className="sc-form-grid sc-form-grid-4"><label>供应商<input value={order.supplierName} onChange={(event) => setOrder({ ...order, supplierName: event.target.value })} /></label><label>1688 订单号<input value={order.externalOrderNo} onChange={(event) => setOrder({ ...order, externalOrderNo: event.target.value })} /></label><label>订单链接<input value={order.orderUrl} onChange={(event) => setOrder({ ...order, orderUrl: event.target.value })} /></label><label>下单日期<input type="date" value={order.orderedAt} onChange={(event) => setOrder({ ...order, orderedAt: event.target.value })} /></label><label>实付总额<input type="number" min="0" step="0.01" value={order.paidTotalCny} onChange={(event) => setOrder({ ...order, paidTotalCny: Number(event.target.value) })} /></label><label>商品金额合计<input disabled value={merchandiseTotal.toFixed(2)} /></label><label>共享金额<input disabled value={(order.paidTotalCny - merchandiseTotal).toFixed(2)} /></label><label>备注<input value={order.note} onChange={(event) => setOrder({ ...order, note: event.target.value })} /></label><label><span><input type="checkbox" checked={manualAllocation} onChange={(event) => setManualAllocation(event.target.checked)} /> 人工分摊实付金额</span></label>{manualAllocation ? <label className="full">分摊调整原因<input value={allocationReason} onChange={(event) => setAllocationReason(event.target.value)} /></label> : null}</div></section>
       <section className="sc-form-section"><div className="sc-section-heading"><span>02</span><div><b>采购商品明细</b><small>可合并多张需求，但每行必须填写本次数量和商品金额。</small></div></div><div className="sc-create-lines"><div className="head"><span>选择 / 商品</span><span>采购数量</span><span>{manualAllocation ? "商品金额 / 分摊后" : "商品金额"}</span></div>{purchasableLines.map(({ request, line, remainingQty }) => { const draft = lineDrafts[line.id]; return <div key={line.id}><span className="product"><input type="checkbox" checked={Boolean(draft?.selected)} onChange={(event) => setLineDrafts((current) => ({ ...current, [line.id]: { ...current[line.id], selected: event.target.checked } }))} /><em><b>{line.sku}</b><small>{line.productName} · {request.requestNo} · 剩余 {remainingQty}</small></em></span><label><input type="number" min="0" max={remainingQty} value={draft?.quantity || 0} onChange={(event) => setLineDrafts((current) => ({ ...current, [line.id]: { ...current[line.id], quantity: Number(event.target.value) } }))} /> {line.unit}</label><label><input type="number" min="0" step="0.01" value={draft?.merchandiseAmount || 0} onChange={(event) => setLineDrafts((current) => ({ ...current, [line.id]: { ...current[line.id], merchandiseAmount: Number(event.target.value) } }))} />{manualAllocation ? <input aria-label="分摊后金额" type="number" min="0" step="0.01" value={draft?.allocatedAmount || 0} onChange={(event) => setLineDrafts((current) => ({ ...current, [line.id]: { ...current[line.id], allocatedAmount: Number(event.target.value) } }))} /> : null}</label></div>; })}{!purchasableLines.length ? <div className="sc-warehouse-empty">没有已提交且待采购的 V2 需求</div> : null}</div></section>
-    </div><footer className="sc-modal-foot"><span>预计分摊后单价会写入采购明细，最终到仓成本按合格数量核算。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={saving} onClick={() => void savePurchase()}>保存采购单</button></div></footer></section></div> : null}
+    </div><footer className="sc-modal-foot"><span>预计分摊后单价会写入采购明细，最终到仓成本按合格数量核算。</span><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={saving || !purchasableLines.length} onClick={() => void savePurchase()}>保存采购单</button></div></footer></section></div> : null}
 
-    {modal === "forwarder" ? <div className="sc-modal-backdrop"><section className="sc-modal sc-warehouse-create-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">FORWARDER DIRECTORY</span><h2>新增货代收货点</h2><p>出运计划会保存不可变地址快照。</p></div><button className="sc-icon-button" onClick={() => setModal("")}><X size={19} /></button></header><div className="sc-editor-scroll"><section className="sc-form-section"><div className="sc-form-grid sc-form-grid-4">{([['code','货代编码'],['name','货代名称'],['locationName','收货点名称'],['country','国家'],['province','省份'],['city','城市'],['address','详细地址'],['contactName','联系人'],['contactPhone','电话'],['routingRequirements','路由要求']] as const).map(([key, label]) => <label className={key === "address" || key === "routingRequirements" ? "full" : ""} key={key}>{label}<input value={forwarder[key]} onChange={(event) => setForwarder({ ...forwarder, [key]: event.target.value })} /></label>)}</div></section></div><footer className="sc-modal-foot"><span /><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={saving} onClick={() => void saveForwarder()}>保存档案</button></div></footer></section></div> : null}
+    {modal === "forwarder" ? <div className="sc-modal-backdrop"><section className="sc-modal sc-warehouse-create-modal"><header className="sc-modal-head"><div><span className="sc-eyebrow">FORWARDER DIRECTORY</span><h2>新增货代收货点</h2><p>出运计划会保存不可变地址快照。</p></div><button className="sc-icon-button" aria-label="关闭货代弹窗" onClick={() => setModal("")}><X size={19} /></button></header><div className="sc-editor-scroll">{modalError ? <div className="sc-alert sc-alert-danger sc-modal-alert">{modalError}</div> : null}<section className="sc-form-section"><div className="sc-form-grid sc-form-grid-4">{([['code','货代编码'],['name','货代名称'],['locationName','收货点名称'],['country','国家'],['province','省份'],['city','城市'],['address','详细地址'],['contactName','联系人'],['contactPhone','电话'],['routingRequirements','路由要求']] as const).map(([key, label]) => <label className={key === "address" || key === "routingRequirements" ? "full" : ""} key={key}>{label}<input value={forwarder[key]} onChange={(event) => setForwarder({ ...forwarder, [key]: event.target.value })} /></label>)}</div></section></div><footer className="sc-modal-foot"><span /><div><button className="sc-button sc-button-secondary" onClick={() => setModal("")}>取消</button><button className="sc-button sc-button-primary" disabled={saving} onClick={() => void saveForwarder()}>保存档案</button></div></footer></section></div> : null}
   </section>;
 }
-

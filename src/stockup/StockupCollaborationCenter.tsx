@@ -117,12 +117,16 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     if (selected) setSelected(await loadDetail(selected.id));
   }
 
+  const legacyLogisticsRequests = (payload?.items || []).filter((item) => item.workflowVersion !== 2);
+  const legacyShipments = shipments.filter((item) => item.workflowVersion !== 2);
+  const legacyReceipts = receipts.filter((item) => !shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion || shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion !== 2);
+
   const sections = [
     { id: "requests" as const, label: "我的需求", detail: "提交与查看进度", icon: ClipboardList, visible: true },
     { id: "procurement" as const, label: "现货采购", detail: "1688 订单与 SKU", icon: ShoppingCart, visible: permissions.canAccept || permissions.canExecute },
     { id: "execution" as const, label: "供应链执行", detail: "受理、采购与生产", icon: PackageCheck, visible: permissions.canAccept || permissions.canExecute },
-    { id: "warehouse" as const, label: "国内仓作业", detail: "签收、验货与发运分流", icon: Warehouse, visible: permissions.canWarehouseView || permissions.canCost },
-    { id: "logistics" as const, label: "物流与到仓", detail: "发运、ETA与收货", icon: Truck, visible: permissions.canShip || permissions.canReceive },
+    { id: "warehouse" as const, label: "国内仓作业", detail: "签收、验货与审核", icon: Warehouse, visible: permissions.canWarehouseView || permissions.canCost },
+    { id: "logistics" as const, label: "物流与到仓", detail: "锁库、文件与交货", icon: Truck, visible: permissions.canShip || permissions.canReceive },
     { id: "costs" as const, label: "成本结算", detail: "费用归集与锁定", icon: CircleDollarSign, visible: permissions.canCost || permissions.canLock },
     { id: "report" as const, label: "月度成本", detail: "SKU加权到仓成本", icon: Calculator, visible: permissions.canReport },
   ].filter((item) => item.visible);
@@ -141,7 +145,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} onChanged={() => loadAll(true)} /> : null}
     {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
     {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} onChanged={() => loadAll(true)} /> : null}
-    {section === "logistics" ? <><SpotDispatchWorkspace shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canReceive={permissions.canReceive} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /><ShipmentWorkspace requests={(payload?.items || []).filter((item) => item.workflowVersion !== 2)} shipments={shipments.filter((item) => item.workflowVersion !== 2)} receipts={receipts.filter((item) => !shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion || shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion !== 2)} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></> : null}
+    {section === "logistics" ? <><SpotDispatchWorkspace shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canReceive={permissions.canReceive} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} />{legacyLogisticsRequests.length || legacyShipments.length ? <details className="sc-legacy-section"><summary><span><b>历史流程物流单</b><small>仅处理 workflowVersion 1 的存量记录</small></span><em>{legacyShipments.length} 张</em></summary><div><ShipmentWorkspace requests={legacyLogisticsRequests} shipments={legacyShipments} receipts={legacyReceipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></div></details> : null}</> : null}
     {section === "costs" ? <CostSettlementWorkspace receipts={receipts} initialReceiptId={costReceiptId} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
     {section === "report" ? <MonthlyCostReport canManage={permissions.canLock} /> : null}
 

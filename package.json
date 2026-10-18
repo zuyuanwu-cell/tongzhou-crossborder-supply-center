@@ -67,6 +67,8 @@
     "test:performance-analytics": "node scripts/performance-analytics-test.mjs",
     "test:performance-cache-writer": "node scripts/performance-cache-writer-test.mjs",
     "test:dashboard-summary": "node scripts/dashboard-summary-test.mjs",
+    "test:data-context": "node scripts/data-context-test.mjs",
+    "test:ui-design-system": "node scripts/ui-design-system-test.mjs",
     "test:order-cache-policy": "node scripts/order-cache-policy-test.mjs",
     "test:order-analysis": "node scripts/order-analysis-test.mjs",
     "test:order-sync-job-state": "node scripts/order-sync-job-state-test.mjs",

@@ -1,4 +1,6 @@
 import React from "react";
+import { DataContextBar, ResourceBoundary } from "../collaboration/shared/OperationalUi";
+import type { DataContext } from "../collaboration/shared/data-context-types";
 import {
   AlertTriangle, ArrowDownToLine, ArrowUpFromLine, BellRing, Boxes, CheckCircle2, ChevronRight, Clock3, Download,
   ExternalLink, FileText, LoaderCircle, PackageOpen, Plus, RefreshCw, Search, Send, Trash2, Warehouse, X,
@@ -222,6 +224,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
   const [items, setItems] = React.useState<CollaborationWarehouseTask[]>([]);
   const [counts, setCounts] = React.useState<Record<string, number>>({});
   const [total, setTotal] = React.useState(0);
+  const [dataContext, setDataContext] = React.useState<DataContext | undefined>();
   const [organizationCode, setOrganizationCode] = React.useState("");
   const [status, setStatus] = React.useState("");
   const [itemType, setItemType] = React.useState("");
@@ -245,6 +248,7 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
       setItems(result.items || []);
       setCounts(result.counts || {});
       setTotal(result.total || 0);
+      setDataContext(result.dataContext);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "协同任务读取失败。");
     } finally {
@@ -254,12 +258,14 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
 
   React.useEffect(() => { const timer = window.setTimeout(() => void load(), 180); return () => window.clearTimeout(timer); }, [load]);
 
+  const metricComplete = dataContext?.completeness === "complete";
+  const metricValue = (value: number) => !dataContext || (!metricComplete && value === 0) ? "—" : value;
   const metrics = [
-    { label: "待伙伴接单", value: counts.pending || 0, icon: Send },
-    { label: "伙伴处理中", value: (counts.accepted || 0) + (counts.in_progress || 0), icon: Clock3 },
-    { label: "待中台确认", value: (counts.pending_approval || 0) + (counts.pending_sync || 0), icon: RefreshCw },
-    { label: "已逾期", value: counts.overdue || 0, icon: AlertTriangle },
-    { label: "已完成", value: counts.completed || 0, icon: CheckCircle2 },
+    { label: "待伙伴接单", value: metricValue(counts.pending || 0), icon: Send },
+    { label: "伙伴处理中", value: metricValue((counts.accepted || 0) + (counts.in_progress || 0)), icon: Clock3 },
+    { label: "待中台确认", value: metricValue((counts.pending_approval || 0) + (counts.pending_sync || 0)), icon: RefreshCw },
+    { label: "已逾期", value: metricValue(counts.overdue || 0), icon: AlertTriangle },
+    { label: "已完成", value: metricValue(counts.completed || 0), icon: CheckCircle2 },
   ];
 
   function openPortal() {
@@ -268,13 +274,17 @@ export function WarehouseCollaborationTasks({ currentUser }: { currentUser: Auth
   }
 
   return <section className="cwt-center">
-    <header className="cwt-page-head"><div><p>DOMESTIC WAREHOUSE</p><h2>国内仓协同</h2><span>集中发布国内仓入库、出库、备货与异常任务；调拨和盘点必须绑定真实主账单据。</span></div><div><button className="secondary" onClick={() => { window.location.hash = "#partner-collaboration"; }}>协同总览</button><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
-    {currentUser.permissions?.includes("operations") ? <ApprovalQueue notify={(notice, isError) => { if (isError) setError(notice); else setMessage(notice); }} /> : null}
+    <DataContextBar context={dataContext} loading={loading && !dataContext} refreshing={loading && Boolean(dataContext)} error={error} onRetry={() => void load()} />
+    <header className="cwt-page-head"><div><h2>国内仓协同</h2><span>集中发布国内仓入库、出库、备货与异常任务；调拨和盘点必须绑定真实主账单据。</span></div><div><button className="secondary" onClick={() => { window.location.hash = "#partner-collaboration"; }}>协同总览</button><button className="secondary" onClick={openPortal}><ExternalLink size={17} />打开伙伴门户</button>{canPublish ? <button className="primary" onClick={() => setCreating(true)} disabled={!options?.organizations.length}><Plus size={18} />发布协同任务</button> : null}</div></header>
+    {options?.warnings?.length ? <div className="cwt-alert warning" role="status"><AlertTriangle size={17} /><span>{options.warnings.join("；")}</span></div> : null}
+    {currentUser.permissions?.includes("operations") ? <ApprovalQueue organizationCode={organizationCode} keyword={keyword} itemType={itemType} scopeLoading={loading} notify={(notice, isError) => { if (isError) setError(notice); else setMessage(notice); }} /> : null}
     <div className="cwt-summary">{metrics.map(({ label, value, icon: Icon }) => <article key={label}><Icon size={20} /><span>{label}</span><strong>{value}</strong></article>)}</div>
     <section className="cwt-panel">
       <div className="cwt-toolbar"><label><Search size={17} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索任务号、标题或关联单号" /></label><select value={organizationCode} onChange={(event) => setOrganizationCode(event.target.value)}><option value="">全部协同组织</option>{options?.organizations.map((item) => <option value={item.code} key={item.code}>{item.name}</option>)}</select><select value={itemType} onChange={(event) => setItemType(event.target.value)}><option value="">全部任务类型</option>{Object.entries(typeMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(statusMeta).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select><button onClick={() => void load()} aria-label="刷新"><RefreshCw size={17} /></button></div>
       <div className="cwt-list-head"><span>共 {total} 个任务</span><button className={overdueOnly ? "active" : ""} onClick={() => setOverdueOnly((value) => !value)}><AlertTriangle size={14} />{overdueOnly ? "正在只看逾期" : "只看逾期"}</button><small>进度来自独立协同门户，库存真值仍以中台主账为准。</small></div>
-      {loading ? <div className="cwt-empty"><LoaderCircle className="spin" size={24} />正在读取协同任务…</div> : items.length ? <div className="cwt-task-list">{items.map((task) => { const TypeIcon = typeMeta[task.itemType]?.icon || Boxes; const daysOverdue = overdueDays(task); return <button className={daysOverdue ? "overdue" : ""} key={task.id} onClick={() => setSelected(task)}><span className="cwt-type-icon"><TypeIcon size={20} /></span><span className="cwt-main-cell"><b>{task.title}</b><small>{task.coreRefId} · {task.organizationName}</small></span><span><b>{task.publicPayload.warehouseName || "未标记仓库"}</b><small>{task.publicPayload.referenceNo || "无关联单号"}</small></span><span><b>{typeMeta[task.itemType]?.label || task.itemType}</b><small className={daysOverdue ? "cwt-overdue-text" : ""}>{daysOverdue ? `已逾期 ${daysOverdue} 天` : task.priority === "urgent" ? "紧急" : formatDate(task.dueAt)}</small></span><StatusPill status={task.status} /><ChevronRight size={17} /></button>; })}</div> : <div className="cwt-empty"><Boxes size={26} />当前筛选范围内没有协同任务</div>}
+      <ResourceBoundary loading={loading} hasData={Boolean(dataContext)} error={!dataContext ? error : ""} empty={!loading && Boolean(dataContext) && !items.length} emptyTitle="当前筛选没有协同任务" emptyDescription="已确认当前组织、任务类型、状态和关键词范围内没有匹配任务。" onRetry={() => void load()}>
+        {items.length ? <div className="cwt-task-list">{items.map((task) => { const TypeIcon = typeMeta[task.itemType]?.icon || Boxes; const daysOverdue = overdueDays(task); return <button className={daysOverdue ? "overdue" : ""} key={task.id} onClick={() => setSelected(task)}><span className="cwt-type-icon"><TypeIcon size={20} /></span><span className="cwt-main-cell"><b>{task.title}</b><small>{task.coreRefId} · {task.organizationName}</small></span><span><b>{task.publicPayload.warehouseName || "未标记仓库"}</b><small>{task.publicPayload.referenceNo || "无关联单号"}</small></span><span><b>{typeMeta[task.itemType]?.label || task.itemType}</b><small className={daysOverdue ? "cwt-overdue-text" : ""}>{daysOverdue ? `已逾期 ${daysOverdue} 天` : task.priority === "urgent" ? "紧急" : formatDate(task.dueAt)}</small></span><StatusPill status={task.status} /><ChevronRight size={17} /></button>; })}</div> : null}
+      </ResourceBoundary>
     </section>
     {error ? <div className="cwt-alert error"><AlertTriangle size={17} />{error}</div> : null}
     {message ? <div className="cwt-alert success"><CheckCircle2 size={17} />{message}<button onClick={() => setMessage("")}><X size={15} /></button></div> : null}

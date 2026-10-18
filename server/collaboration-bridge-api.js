@@ -1,9 +1,13 @@
 import { ZodError } from "zod";
+import { withDataContext } from "../collaboration/shared/data-context.js";
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key",
   });
   res.end(JSON.stringify(payload));
 }
@@ -79,7 +83,19 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         }
         if (suffix === "/warehouse-tasks" && req.method === "GET") {
           if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务的权限。"), { statusCode: 403, code: "forbidden" });
-          sendJson(res, 200, await bridge.listWarehouseTasks(Object.fromEntries(url.searchParams.entries()), { warehouseIds, skus }));
+          const filters = Object.fromEntries(url.searchParams.entries());
+          const payload = await bridge.listWarehouseTasks(filters, { warehouseIds, skus });
+          const latest = (payload.items || []).map((item) => item.updatedAt).filter(Boolean).sort().at(-1);
+          sendJson(res, 200, withDataContext(payload, {
+            generatedAt: new Date().toISOString(),
+            effectiveAt: latest || new Date().toISOString(),
+            source: "live",
+            scopeKey: "domestic_collaboration_tasks",
+            scopeLabel: filters.organizationCode ? `协同组织 ${filters.organizationCode}` : "当前账号可见国内仓协同任务",
+            filters,
+            completeness: "complete",
+            coverage: { completed: payload.items?.length || 0, total: payload.total || 0, unit: "order" },
+          }));
           return true;
         }
         if (suffix === "/warehouse-tasks" && req.method === "POST") {
@@ -95,7 +111,7 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         if (attachmentMatch && req.method === "GET") {
           if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务附件的权限。"), { statusCode: 403, code: "forbidden" });
           const download = await bridge.downloadWarehouseTaskAttachment(attachmentMatch[1], attachmentMatch[2], { warehouseIds, skus });
-          res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
+          res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store", "Access-Control-Allow-Origin": "*" });
           res.end(download.buffer);
           return true;
         }

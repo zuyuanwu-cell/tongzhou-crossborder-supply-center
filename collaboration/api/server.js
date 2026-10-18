@@ -54,6 +54,7 @@ import {
   updateProductionMilestone,
 } from "./oem.js";
 import { applyPartnerOrderProjection, submitPartnerOrderReport } from "./partner-orders.js";
+import { withDataContext } from "../shared/data-context.js";
 import {
   acceptInvitation,
   bootstrapOrganization,
@@ -338,7 +339,19 @@ async function route(req, res) {
   }
 
   if (url.pathname === "/collaboration/v1/dashboard" && req.method === "GET") {
-    sendJson(res, 200, { ok: true, dashboard: await organizationDashboard(auth) });
+    const dashboard = await organizationDashboard(auth);
+    sendJson(res, 200, {
+      ok: true,
+      dashboard: withDataContext(dashboard, {
+        generatedAt: new Date().toISOString(),
+        effectiveAt: dashboard.inventorySyncedAt || new Date().toISOString(),
+        source: "derived",
+        scopeKey: `organization_${auth.organization.id}`,
+        scopeLabel: `${auth.organization.name} · 已授权任务与仓库`,
+        completeness: dashboard.inventorySyncedAt ? "complete" : "partial",
+        coverage: { completed: dashboard.inventorySyncedAt ? 1 : 0, total: 1, unit: "warehouse" },
+      }),
+    });
     return;
   }
   if (url.pathname === "/collaboration/v1/admin/members" && req.method === "GET") {

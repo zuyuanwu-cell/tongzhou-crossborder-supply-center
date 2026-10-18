@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { DataContextBar, DeltaValue, OverflowMenu, ResourceBoundary, StatusBadge } from "../collaboration/shared/OperationalUi";
 import {
   Activity,
   AlertTriangle,
@@ -263,6 +264,8 @@ import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, tra
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
 import "./styles.css";
 import "./theme-refresh.css";
+import "../collaboration/shared/ui-tokens.css";
+import "../collaboration/shared/operational-ui.css";
 
 const ContainerLoadingPage = React.lazy(() => import("./container-loading/ContainerLoadingPage"));
 
@@ -1027,6 +1030,9 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; o
   );
 }
 
+type CoreResourceKey = "products" | "dashboard" | "warehouses" | "movement" | "stockup" | "wecom";
+type CoreResourceState = { phase: "idle" | "loading" | "refreshing" | "success" | "error"; error: string };
+
 function App() {
   const [activeView, setActiveView] = React.useState(getInitialView);
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
@@ -1067,12 +1073,35 @@ function App() {
   const [syncing, setSyncing] = React.useState(false);
   const [error, setError] = React.useState("");
   const [moduleErrors, setModuleErrors] = React.useState<Record<string, string>>({});
+  const emptyResourceState: CoreResourceState = { phase: "idle", error: "" };
+  const [resourceStates, setResourceStates] = React.useState<Record<CoreResourceKey, CoreResourceState>>({
+    products: emptyResourceState,
+    dashboard: emptyResourceState,
+    warehouses: emptyResourceState,
+    movement: emptyResourceState,
+    stockup: emptyResourceState,
+    wecom: emptyResourceState,
+  });
   const stockupLoadErrorsRef = React.useRef({ summary: "", workflow: "" });
   const [currentUser, setCurrentUser] = React.useState<AuthUser>(getStoredUser);
   const [authReady, setAuthReady] = React.useState(false);
   const [languageSaving, setLanguageSaving] = React.useState(false);
   const [blockedView, setBlockedView] = React.useState("");
   const [globalSearch, setGlobalSearch] = React.useState("");
+
+  function beginResource(key: CoreResourceKey, hasData: boolean) {
+    setResourceStates((current) => ({ ...current, [key]: { phase: hasData ? "refreshing" : "loading", error: "" } }));
+  }
+
+  function completeResource(key: CoreResourceKey) {
+    setResourceStates((current) => ({ ...current, [key]: { phase: "success", error: "" } }));
+  }
+
+  function failResource(key: CoreResourceKey, requestError: unknown, fallback: string) {
+    const message = requestError instanceof Error ? requestError.message : fallback;
+    setResourceStates((current) => ({ ...current, [key]: { phase: "error", error: message } }));
+    return message;
+  }
   const [productSearchKeyword, setProductSearchKeyword] = React.useState("");
   const [confirmRequest, setConfirmRequest] = React.useState<ConfirmRequest | null>(null);
   const internal = canViewInternalCatalog(currentUser);
@@ -1198,6 +1227,7 @@ function App() {
   }
 
   async function loadProducts(silent = false) {
+    beginResource("products", Boolean(payload));
     if (!silent) setLoading(true);
     if (!silent) setError("");
     try {
@@ -1205,8 +1235,10 @@ function App() {
       setPayload(data);
       setProductDetailLoaded(data.mode === "detail");
       if (data.user) setCurrentUser(data.user);
+      completeResource("products");
     } catch (requestError) {
-      if (!silent) setError(requestError instanceof Error ? requestError.message : "产品数据读取失败");
+      const message = failResource("products", requestError, "产品数据读取失败");
+      if (!silent) setError(message);
     } finally {
       if (!silent) setLoading(false);
     }
@@ -1236,23 +1268,29 @@ function App() {
   }
 
   async function loadDashboardSummary() {
+    beginResource("dashboard", Boolean(dashboardSummary));
     try {
       const data = await fetchDashboardSummary();
       setDashboardSummary(data);
       setModuleLoadError(["#dashboard"]);
       if (data.user) setCurrentUser(data.user);
+      completeResource("dashboard");
     } catch (requestError) {
-      setModuleLoadError(["#dashboard"], requestError instanceof Error ? requestError.message : "经营总览读取失败");
+      const message = failResource("dashboard", requestError, "经营总览读取失败");
+      setModuleLoadError(["#dashboard"], message);
     }
   }
 
   async function loadWarehouses() {
+    beginResource("warehouses", Boolean(warehousePayload));
     try {
       const data = await fetchWarehouses();
       setWarehousePayload(data);
       setModuleLoadError(["#inventory", "#warehouses"]);
+      completeResource("warehouses");
     } catch (requestError) {
-      setModuleLoadError(["#inventory", "#warehouses"], requestError instanceof Error ? requestError.message : "仓库数据读取失败");
+      const message = failResource("warehouses", requestError, "仓库数据读取失败");
+      setModuleLoadError(["#inventory", "#warehouses"], message);
     }
   }
 
@@ -1267,13 +1305,16 @@ function App() {
   }
 
   async function loadMovement() {
+    beginResource("movement", Boolean(movementPayload));
     try {
       const data = await fetchMovement();
       setMovementPayload(data);
       setModuleLoadError(["#movement"]);
       if (data.orderSyncJob) setOrderSyncJob(data.orderSyncJob);
+      completeResource("movement");
     } catch (requestError) {
-      setModuleLoadError(["#movement"], requestError instanceof Error ? requestError.message : "动销数据读取失败");
+      const message = failResource("movement", requestError, "动销数据读取失败");
+      setModuleLoadError(["#movement"], message);
     }
   }
 
@@ -1334,6 +1375,7 @@ function App() {
   }
 
   async function loadStockup(options: { inboundLimit?: number } = {}) {
+    beginResource("stockup", Boolean(stockupPayload));
     const view = hashForView(activeView).slice(1) || "dashboard";
     const inboundLimit = view === "stockup-recommendations" ? Math.max(100, options.inboundLimit || 100) : undefined;
     const requestKey = `${view}:${inboundLimit || 0}`;
@@ -1352,9 +1394,11 @@ function App() {
       const data = await pending.request;
       if (stockupLatestViewRef.current === requestKey) setStockupPayload(data);
       setStockupLoadError("summary");
+      completeResource("stockup");
     } catch (requestError) {
       // Keep the last successful snapshot visible during a transient refresh failure.
-      setStockupLoadError("summary", requestError instanceof Error ? requestError.message : "备货与生产数据读取失败");
+      const message = failResource("stockup", requestError, "备货与生产数据读取失败");
+      setStockupLoadError("summary", message);
     }
   }
 
@@ -1466,12 +1510,15 @@ function App() {
   }
 
   async function loadWecomNotifications() {
+    beginResource("wecom", Boolean(wecomNotificationPayload));
     try {
       const data = await fetchWecomNotifications();
       setWecomNotificationPayload(data);
       setModuleLoadError(["#wecom-notifications"]);
+      completeResource("wecom");
     } catch (requestError) {
-      setModuleLoadError(["#wecom-notifications"], requestError instanceof Error ? requestError.message : "通知配置读取失败");
+      const message = failResource("wecom", requestError, "通知配置读取失败");
+      setModuleLoadError(["#wecom-notifications"], message);
     }
   }
 
@@ -1902,6 +1949,7 @@ function App() {
     setWecomNotificationPayload(null);
     setActionLogPayload(null);
     setModuleErrors({});
+    setResourceStates({ products: emptyResourceState, dashboard: emptyResourceState, warehouses: emptyResourceState, movement: emptyResourceState, stockup: emptyResourceState, wecom: emptyResourceState });
     stockupLoadErrorsRef.current = { summary: "", workflow: "" };
     setError("");
     setBlockedView("");
@@ -2007,7 +2055,7 @@ function App() {
             {currentUser.role !== "guest" ? (
               <>
                 {hashForView(activeView) !== "#dashboard" && hasUserPermission(currentUser, "product_sync") ? (
-                  <button className="sync-button" onClick={handleSync} disabled={syncing}>
+                  <button className="sync-button header-sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
                     {translate(currentLocale, syncing ? "同步中" : "同步产品数据")}
                   </button>
@@ -2073,6 +2121,7 @@ function App() {
             productBase={payload?.productBase || []}
             externalKeyword={productSearchKeyword}
             onNeedDetails={loadProductDetails}
+            resourceState={resourceStates.products}
           />
         ) : activeView === "资质库" ? (
           <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} canSync={hasUserPermission(currentUser, "qualification_sync")} />
@@ -2235,6 +2284,7 @@ function App() {
             onTest={handleTestWarehouse}
             canConfigure={canManage(currentUser) && hasUserPermission(currentUser, "warehouses")}
             canSync={hasUserPermission(currentUser, "inventory_sync_run")}
+            resourceState={resourceStates.warehouses}
           />
         ) : activeView === "动销监控" ? (
           <MovementBoard
@@ -2258,6 +2308,7 @@ function App() {
               });
               handleViewChange("备货中心");
             }}
+            resourceState={resourceStates.movement}
           />
         ) : activeView === "动销分析" ? (
           <MovementAnalysisPage
@@ -2286,6 +2337,7 @@ function App() {
             canManage={hasUserPermission(currentUser, "stockup_recommendations_manage")}
             draftSeed={stockupDraftSeed}
             onDraftSeedConsumed={() => setStockupDraftSeed(null)}
+            resourceState={resourceStates.stockup}
           />
         ) : activeView === "供应链执行" ? (
           <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="execution" />
@@ -2302,7 +2354,7 @@ function App() {
         ) : activeView === "业务链路" ? (
           <BusinessChainCenter user={currentUser} />
         ) : activeView === "企业微信通知" ? (
-          <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
+          <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} resourceState={resourceStates.wecom} />
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "系统备份" ? (
@@ -2332,6 +2384,7 @@ function App() {
             onOpenWarehouses={() => handleViewChange("仓库授权")}
             onSyncProducts={() => void handleSync()}
             syncing={syncing}
+            resourceState={resourceStates.dashboard}
           />
         )}
         </div>
@@ -2702,7 +2755,6 @@ function Sidebar({
                   >
                     <span>{t(section.label)}</span>
                     <span className="nav-section-meta">
-                      {sectionItems.length}
                       <ChevronDown size={13} className={sectionCollapsed ? "section-collapsed" : ""} />
                     </span>
                   </button>
@@ -2763,6 +2815,7 @@ function Dashboard({
   onOpenWarehouses,
   onSyncProducts,
   syncing,
+  resourceState,
 }: {
   currentUser: AuthUser;
   products: CatalogProduct[];
@@ -2782,19 +2835,22 @@ function Dashboard({
   onOpenWarehouses: () => void;
   onSyncProducts: () => void;
   syncing: boolean;
+  resourceState: CoreResourceState;
 }) {
   const [heatmapPeriod, setHeatmapPeriod] = React.useState<HeatmapPeriod>("day");
   const [attentionCopyMessage, setAttentionCopyMessage] = React.useState("");
   const dataHealth = summary?.sync.dataHealth;
+  const dashboardDataComplete = summary?.dataContext?.completeness === "complete";
+  const dashboardMetric = (value: number) => dashboardDataComplete || value !== 0 ? formatNumber(value) : "—";
   const salesDisplay = summary?.counts.salesAmount90Display;
   const salesMetricValue = salesDisplay?.displayMode === "single" && salesDisplay.displayValue !== null
-    ? formatCurrencyAmount(salesDisplay.displayValue, salesDisplay.displayCurrency)
+    ? dashboardDataComplete || salesDisplay.displayValue !== 0 ? formatCurrencyAmount(salesDisplay.displayValue, salesDisplay.displayCurrency) : "—"
     : salesDisplay?.displayMode === "multiple"
       ? `${salesDisplay.currencyCount} 种币种`
       : "未提供";
   const salesMetricNote = salesDisplay?.amountsByCurrency?.length
     ? `${salesDisplay.amountsByCurrency.slice(0, 3).map((item) => formatCurrencyAmount(item.amount, item.currency)).join(" · ")}${salesDisplay.excludedLines ? ` · ${formatNumber(salesDisplay.excludedLines)} 条未纳入` : ""}`
-    : `${formatNumber(summary?.counts.orderCount90 ?? 0)} 条出库明细，金额口径待补齐`;
+    : `${dashboardMetric(summary?.counts.orderCount90 ?? 0)} 条出库明细，金额口径待补齐`;
   const staleSources = [
     { label: "产品", value: summary?.sync.productsSyncedAt },
     { label: "库存", value: summary?.sync.inventorySyncedAt },
@@ -3024,8 +3080,13 @@ function Dashboard({
   ];
   const priorityProducts = products.filter((product) => product.alert !== "健康").slice(0, 6);
 
+  if (resourceState.phase === "loading" && !summary) {
+    return <main className="dashboard-grid dashboard-overview"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
+  }
+
   return (
     <main className="dashboard-grid dashboard-overview">
+      <DataContextBar context={summary?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} />
       <section className="dashboard-command-center" aria-labelledby="dashboard-command-title">
         <div className="dashboard-command-grid" aria-hidden="true" />
         <header className="dashboard-command-header">
@@ -3060,8 +3121,8 @@ function Dashboard({
         </header>
 
         <section className="metric-strip dashboard-command-metrics" aria-label="经营核心指标">
-          <Metric title="已建档可售库存" value={formatNumber(totalInventory)} note={`${formatNumber(products.length)} 个可见商品 · 不含孤儿 SKU`} icon={Boxes} tone="blue" />
-          <Metric title="今日出库订单" value={formatNumber(totalOrders)} note={todayOrderNote} icon={PackageCheck} tone="green" />
+          <Metric title="已建档可售库存" value={summary ? dashboardMetric(totalInventory) : "—"} note={summary ? `${formatNumber(products.length)} 个可见商品 · 不含孤儿 SKU` : "等待库存口径"} icon={Boxes} tone="blue" />
+          <Metric title="今日出库订单" value={summary ? dashboardMetric(totalOrders) : "—"} note={summary ? todayOrderNote : "等待订单口径"} icon={PackageCheck} tone="green" />
           <article className="metric-card orange dashboard-sales-metric">
             <div className="metric-icon"><Coins size={20} /></div>
             <span>近 90 天订单金额</span>
@@ -3071,10 +3132,10 @@ function Dashboard({
                   <div key={item.currency}><small>{item.currency}</small><strong>{formatCurrencyAmount(item.amount, item.currency).replace(`${item.currency} `, "")}</strong></div>
                 ))}
               </div>
-            ) : <strong>{salesMetricValue}</strong>}
+            ) : <strong>{summary ? salesMetricValue : "—"}</strong>}
             <small>{salesDisplay?.excludedLines ? `${formatNumber(salesDisplay.excludedLines)} 条订单未纳入统计` : salesMetricNote}</small>
           </article>
-          <Metric title="风险 SKU（SKU × 国家）" value={String(riskCount)} note={`产品风险 ${formatNumber(productRiskCount)} · 未建档 ${formatNumber(warehouseOnlySkuCount)}`} icon={AlertTriangle} tone="red" />
+          <Metric title="风险 SKU（SKU × 国家）" value={summary ? dashboardMetric(riskCount) : "—"} note={summary ? `产品风险 ${dashboardMetric(productRiskCount)} · 未建档 ${dashboardMetric(warehouseOnlySkuCount)}` : "等待动销口径"} icon={AlertTriangle} tone="red" />
         </section>
       </section>
 
@@ -4315,6 +4376,7 @@ function MovementBoard({
   canSync,
   canCreateStockupDraft,
   onCreateStockupDraft,
+  resourceState,
 }: {
   movementPayload: MovementPayload | null;
   orderSyncJob: OrderSyncJob | null;
@@ -4324,6 +4386,7 @@ function MovementBoard({
   canSync: boolean;
   canCreateStockupDraft: boolean;
   onCreateStockupDraft: (item: MovementPayload["items"][number]) => void;
+  resourceState: CoreResourceState;
 }) {
   const [country, setCountry] = React.useState("全部");
   const [warehouse, setWarehouse] = React.useState("全部");
@@ -4370,6 +4433,8 @@ function MovementBoard({
     && (movementPayload.syncState?.publishReady ?? true)
   );
   const inventoryMetricsReady = Boolean(movementPayload?.inventorySyncedAt);
+  const movementDataComplete = movementPayload?.dataContext?.completeness === "complete";
+  const movementMetric = (ready: boolean, value: number) => ready && (movementDataComplete || value !== 0) ? formatNumber(value) : "—";
   const orderAgeDays = daysSince(movementPayload?.orderSyncedAt);
   const orderDataStale = riskMetricsReady && orderAgeDays !== null && orderAgeDays >= 2;
   const orderStatusLabel = !movementPayload
@@ -4468,8 +4533,13 @@ function MovementBoard({
     window.setTimeout(() => setRiskCopyMessage(""), 2000);
   }
 
+  if (resourceState.phase === "loading" && !movementPayload) {
+    return <main className="movement-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
+  }
+
   return (
     <main className="movement-page">
+      <DataContextBar context={movementPayload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} />
       <section className="library-hero movement-hero">
         <div>
           <p className="eyebrow">Movement Control</p>
@@ -4526,10 +4596,10 @@ function MovementBoard({
       ) : null}
 
       <section className="metric-strip movement-metrics">
-        <Metric title="缺货 SKU" value={riskMetricsReady ? formatNumber(movementPayload?.counts.stockout ?? 0) : "—"} note={riskMetricsReady ? "有销量但可售为 0" : "等待可用订单数据"} icon={AlertTriangle} tone="red" />
-        <Metric title="补货预警" value={riskMetricsReady ? formatNumber(movementPayload?.counts.replenish ?? 0) : "—"} note={riskMetricsReady ? "可售天数低于补货周期" : "等待可用订单数据"} icon={PackageCheck} tone="orange" />
-        <Metric title="慢销 / 滞销" value={riskMetricsReady ? formatNumber((movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0)) : "—"} note={riskMetricsReady ? "库存覆盖过高或无销量" : "等待可用订单数据"} icon={BarChart3} tone="blue" />
-        <Metric title="仓库未建档" value={inventoryMetricsReady ? formatNumber(movementPayload?.counts.warehouseOnly ?? 0) : "—"} note={inventoryMetricsReady ? "仓库有库存但产品库缺失" : "等待可用库存数据"} icon={Boxes} tone="green" />
+        <Metric title="缺货 SKU" value={movementMetric(riskMetricsReady, movementPayload?.counts.stockout ?? 0)} note={riskMetricsReady ? "有销量但可售为 0" : "等待可用订单数据"} icon={AlertTriangle} tone="red" />
+        <Metric title="补货预警" value={movementMetric(riskMetricsReady, movementPayload?.counts.replenish ?? 0)} note={riskMetricsReady ? "可售天数低于补货周期" : "等待可用订单数据"} icon={PackageCheck} tone="orange" />
+        <Metric title="慢销 / 滞销" value={movementMetric(riskMetricsReady, (movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0))} note={riskMetricsReady ? "库存覆盖过高或无销量" : "等待可用订单数据"} icon={BarChart3} tone="blue" />
+        <Metric title="仓库未建档" value={movementMetric(inventoryMetricsReady, movementPayload?.counts.warehouseOnly ?? 0)} note={inventoryMetricsReady ? "仓库有库存但产品库缺失" : "等待可用库存数据"} icon={Boxes} tone="green" />
       </section>
 
       <form
@@ -4766,13 +4836,14 @@ function StockupCenter({
   canManage = false,
   draftSeed = null,
   onDraftSeedConsumed,
+  resourceState,
 }: {
   pageMode?: "workflow" | "recommendations";
   stockupPayload: StockupPayload | null;
   workflowPayload: StockupWorkflowPayload | null;
   onRefreshWorkflow: () => Promise<StockupWorkflowPayload>;
   onSyncStockup: () => void;
-  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") => void;
+  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") => Promise<void>;
   onCreatePlan: (item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) => Promise<void>;
   onUpdatePlanStatus: (id: string, status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled") => Promise<void>;
   onOpenExecution: () => void;
@@ -4781,6 +4852,7 @@ function StockupCenter({
   canManage?: boolean;
   draftSeed?: StockupDraftSeed | null;
   onDraftSeedConsumed?: () => void;
+  resourceState: CoreResourceState;
 }) {
   const recommendations = stockupPayload?.recommendations ?? [];
   const abandonedRecommendations = stockupPayload?.abandonedRecommendations ?? [];
@@ -4798,10 +4870,22 @@ function StockupCenter({
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
   const [inboundLimit, setInboundLimit] = React.useState(100);
   const [inboundLoading, setInboundLoading] = React.useState(false);
+  const [batchAccepting, setBatchAccepting] = React.useState(false);
   const isRecommendationPage = pageMode === "recommendations";
   const [recommendationWorkspace, setRecommendationWorkspace] = React.useState<"recommendations" | "coding">("recommendations");
   const isCodingWorkspace = isRecommendationPage && recommendationWorkspace === "coding";
   const inboundTotal = stockupPayload?.pagination?.inbound?.total ?? inboundOrders.length;
+  const pendingRecommendations = recommendations.filter((item) => item.decisionStatus !== "accepted");
+
+  async function acceptPendingRecommendations() {
+    if (!pendingRecommendations.length || batchAccepting) return;
+    setBatchAccepting(true);
+    try {
+      for (const item of pendingRecommendations) await onDecision(item, "accept");
+    } finally {
+      setBatchAccepting(false);
+    }
+  }
 
   async function loadMoreInbound() {
     if (!onLoadMoreInbound || inboundLoading || inboundOrders.length >= inboundTotal) return;
@@ -4822,6 +4906,10 @@ function StockupCenter({
   React.useEffect(() => {
     if (!canManage && !["overview", "ledger"].includes(workflowTab)) setWorkflowTab("overview");
   }, [canManage, workflowTab]);
+
+  if (resourceState.phase === "loading" && !stockupPayload) {
+    return <main className="stockup-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
+  }
 
   const currentCounts = workflowPayload?.counts;
   const actionQueue = [
@@ -4908,6 +4996,7 @@ function StockupCenter({
 
   return (
     <main className={`movement-page stockup-page stockup-ops-page ${isRecommendationPage ? "stockup-recommendation-page" : ""}`}>
+      <DataContextBar context={stockupPayload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} />
       {isRecommendationPage ? (
         <section className="stockup-command-bar">
           <div>
@@ -4921,9 +5010,9 @@ function StockupCenter({
               <button className={isCodingWorkspace ? "active" : ""} type="button" role="tab" aria-selected={isCodingWorkspace} onClick={() => setRecommendationWorkspace("coding")}>新品编码<strong>{workflowPayload?.counts.codingQueue || ""}</strong></button>
             </div>
             {!isCodingWorkspace ? <>
-              <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
-              <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
-              {canManage ? <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button> : <span className="status-pill muted">只读查看</span>}
+              <span className="status-pill good">建议 SKU {stockupPayload ? formatNumber(stockupPayload.counts.recommendations) : "—"}</span>
+              <span className="status-pill muted">净建议 {stockupPayload ? formatNumber(stockupPayload.counts.netRecommendedQty) : "—"}</span>
+              {canManage ? <><button className="sync-button" type="button" onClick={() => void acceptPendingRecommendations()} disabled={syncing || batchAccepting || !pendingRecommendations.length}><Check size={15} />{batchAccepting ? "批量采纳中" : `批量采纳 ${pendingRecommendations.length} 项`}</button><button className="ghost-button compact-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS"}</button></> : <span className="status-pill muted">只读查看</span>}
             </> : <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新编码数据</button>}
           </div>
         </section>
@@ -5239,9 +5328,9 @@ function StockupCenter({
                 {!canManage ? <span className="status-pill muted">只读</span> : item.decisionStatus === "accepted" ? (
                   <span className="status-pill good">已采纳 · 待创建计划</span>
                 ) : (
-                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "accept")}>采纳</button>
+                  <button className="sync-button compact-button" type="button" disabled={syncing} onClick={() => void onDecision(item, "accept")}>采纳</button>
                 )}
-                {canManage ? <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => onDecision(item, "abandon")}>放弃</button> : null}
+                {canManage ? <OverflowMenu label={`${item.sku} 更多操作`}><button className="danger-button" type="button" disabled={syncing} onClick={() => void onDecision(item, "abandon")}>放弃本条建议</button></OverflowMenu> : null}
               </div>
             </article>
           )) : (
@@ -7176,7 +7265,7 @@ function RobotCheckboxes({
   );
 }
 
-function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { payload: WecomNotificationPayload | null; warehousePayload: WarehousePayload | null; onRefresh: () => Promise<void> }) {
+function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourceState }: { payload: WecomNotificationPayload | null; warehousePayload: WarehousePayload | null; onRefresh: () => Promise<void>; resourceState: CoreResourceState }) {
   const confirm = useConfirm();
   const [localPayload, setLocalPayload] = React.useState<WecomNotificationPayload | null>(null);
   const data = localPayload || payload;
@@ -7539,8 +7628,13 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
     setMessage("已启用已配置接收群的海外仓协同通知，请点击“保存场景配置”生效。");
   }
 
+  if (resourceState.phase === "loading" && !data) {
+    return <main className="movement-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
+  }
+
   return (
     <main className="movement-page">
+      <DataContextBar context={data?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} onRetry={() => void onRefresh()} />
       <section className="library-hero movement-hero">
         <div>
           <p className="eyebrow">WeCom Robot Center</p>
@@ -7551,16 +7645,16 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             <span>{data?.updatedAt ? formatDateTime(data.updatedAt) : "暂无配置"}</span>
           </div>
         </div>
-        <button className="sync-button" type="button" onClick={onRefresh}>
+        <button className="ghost-button" type="button" onClick={onRefresh}>
           <RefreshCw size={16} />
           刷新配置
         </button>
       </section>
 
       <section className="metric-strip movement-metrics">
-        <Metric title="机器人" value={formatNumber(robots.length)} note="可配置多个群机器人" icon={BellRing} tone="blue" />
-        <Metric title="定时推送" value={formatNumber(schedules.length)} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
-        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货、库存、资质、售后" icon={PackageCheck} tone="orange" />
+        <Metric title="机器人" value={data ? formatNumber(robots.length) : "—"} note="可配置多个群机器人" icon={BellRing} tone="blue" />
+        <Metric title="定时推送" value={data ? formatNumber(schedules.length) : "—"} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
+        <Metric title="场景推送" value={data ? formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length) : "—"} note="备货、库存、资质、售后" icon={PackageCheck} tone="orange" />
         <Metric title="最近更新" value={data?.updatedAt ? formatDate(data.updatedAt) : "-"} note="本地通知配置" icon={Settings} tone="red" />
       </section>
 
@@ -7655,8 +7749,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                   {robot.lastError ? <small className="wecom-error">{robot.lastError}</small> : <small>最近发送：{robot.lastSentAt ? formatDateTime(robot.lastSentAt) : "暂无"}</small>}
                 </div>
                 <span className={`status-pill ${robot.enabled ? "good" : "muted"}`}>{robot.enabled ? "启用" : "停用"}</span>
-                <button className="ghost-button compact-button" type="button" onClick={() => editRobot(robot)}>编辑</button>
-                <button className="ghost-button compact-button danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除</button>
+                <OverflowMenu label={`${robot.name} 更多操作`}>
+                  <button type="button" onClick={() => editRobot(robot)}>编辑机器人</button>
+                  <button className="danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除机器人</button>
+                </OverflowMenu>
               </article>
             )) : <div className="stockup-empty">暂无机器人。先创建一个企业微信群机器人 webhook。</div>}
           </div>
@@ -7781,8 +7877,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                 <small>{schedule.lastError ? `错误：${schedule.lastError}` : `最近发送：${schedule.lastSentAt ? formatDateTime(schedule.lastSentAt) : "暂无"}`}</small>
               </div>
               <span className={`status-pill ${schedule.enabled ? "good" : "muted"}`}>{schedule.enabled ? "启用" : "停用"}</span>
-              <button className="ghost-button compact-button" type="button" onClick={() => editSchedule(schedule)}>编辑</button>
-              <button className="ghost-button compact-button danger-button" type="button" disabled={busy === schedule.id} onClick={() => removeSchedule(schedule)}>删除</button>
+              <OverflowMenu label={`${schedule.name} 更多操作`}>
+                <button type="button" onClick={() => editSchedule(schedule)}>编辑定时推送</button>
+                <button className="danger-button" type="button" disabled={busy === schedule.id} onClick={() => removeSchedule(schedule)}>删除定时推送</button>
+              </OverflowMenu>
             </article>
           )) : <div className="stockup-empty">暂无定时推送。</div>}
         </div>
@@ -9644,6 +9742,7 @@ function WarehouseBoard({
   onTest,
   canConfigure,
   canSync,
+  resourceState,
 }: {
   mode?: "authorization" | "inventory";
   warehousePayload: WarehousePayload | null;
@@ -9657,6 +9756,7 @@ function WarehouseBoard({
   onTest: (input: Parameters<typeof testWarehouseConnection>[0]) => Promise<Awaited<ReturnType<typeof testWarehouseConnection>>>;
   canConfigure: boolean;
   canSync: boolean;
+  resourceState: CoreResourceState;
 }) {
   const confirm = useConfirm();
   const authorizationMode = mode === "authorization";
@@ -9798,8 +9898,15 @@ function WarehouseBoard({
     downloadTextFile(`tongzhou-product-missing-warehouse-sku-${new Date().toISOString().slice(0, 10)}.csv`, productMissingWarehouseCsv, "text/csv;charset=utf-8");
   }
 
+  if (resourceState.phase === "loading" && !warehousePayload) {
+    return <main className="warehouse-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
+  }
+  const warehouseDataComplete = warehousePayload?.dataContext?.completeness === "complete";
+  const warehouseMetric = (value: number) => warehouseDataComplete || value !== 0 ? formatNumber(value) : "—";
+
   return (
     <main className="warehouse-page">
+      <DataContextBar context={warehousePayload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing" || syncing} error={resourceState.error} onRetry={onSync} />
       <section className="library-hero warehouse-hero">
         <div>
           <p className="eyebrow">{authorizationMode ? "Warehouse Authorization" : "Inventory Synchronization"}</p>
@@ -9810,10 +9917,10 @@ function WarehouseBoard({
           <div className="source-row">
             {authorizationMode ? <>
               <span className={`status-pill ${authorizedCount === connections.length && connections.length ? "good" : "warning"}`}>授权状态</span>
-              <span>{authorizedCount} / {connections.length} 个仓库已授权</span>
+              <span>{warehousePayload ? `${authorizedCount} / ${connections.length}` : "—"} 个仓库已授权</span>
             </> : <>
               <span className={`status-pill ${warehousePayload?.lastSync?.syncedAt ? "good" : "warning"}`}>{warehousePayload?.lastSync?.syncedAt ? "同步快照可用" : "等待首次同步"}</span>
-              <span>{connections.length} 个仓库 · {warehousePayload?.lastSync?.syncedAt ? `更新于 ${formatDateTime(warehousePayload.lastSync.syncedAt)}` : "尚无同步时间"}</span>
+              <span>{warehousePayload ? `${connections.length} 个仓库` : "仓库范围读取中"} · {warehousePayload?.lastSync?.syncedAt ? `更新于 ${formatDateTime(warehousePayload.lastSync.syncedAt)}` : "尚无同步时间"}</span>
             </>}
           </div>
         </div>
@@ -9851,10 +9958,10 @@ function WarehouseBoard({
       ) : null}
 
       <section className="metric-strip warehouse-metrics">
-        <Metric title="仓库图片" value={formatNumber(warehousePayload?.lastSync?.imageCount ?? 0)} note="可作为产品图兜底" icon={ShoppingBag} tone="blue" />
-        <Metric title="库存记录" value={formatNumber(warehousePayload?.lastSync?.inventoryCount ?? 0)} note="合并到产品中心" icon={Boxes} tone="green" />
-        <Metric title="同步批次" value={warehousePayload?.lastSync?.syncedAt ? "1" : "0"} note={warehousePayload?.lastSync?.syncedAt ? new Date(warehousePayload.lastSync.syncedAt).toLocaleString("zh-CN") : "等待同步"} icon={DatabaseZap} tone="orange" />
-        <Metric title="待授权仓库" value={String(connections.length - authorizedCount)} note="补齐凭据后启用" icon={ShieldCheck} tone="red" />
+        <Metric title="仓库图片" value={warehousePayload ? warehouseMetric(warehousePayload.lastSync?.imageCount ?? 0) : "—"} note="可作为产品图兜底" icon={ShoppingBag} tone="blue" />
+        <Metric title="库存记录" value={warehousePayload ? warehouseMetric(warehousePayload.lastSync?.inventoryCount ?? 0) : "—"} note="WMS 原始仓维度" icon={Boxes} tone="green" />
+        <Metric title="同步批次" value={warehousePayload ? (warehousePayload.lastSync?.syncedAt ? "1" : "—") : "—"} note={warehousePayload?.lastSync?.syncedAt ? new Date(warehousePayload.lastSync.syncedAt).toLocaleString("zh-CN") : "等待同步"} icon={DatabaseZap} tone="orange" />
+        <Metric title="待授权仓库" value={warehousePayload ? warehouseMetric(connections.length - authorizedCount) : "—"} note="补齐凭据后启用" icon={ShieldCheck} tone="red" />
       </section>
 
       <section className="panel gap-panel">
@@ -9871,8 +9978,8 @@ function WarehouseBoard({
           </div>
         </div>
         <div className="gap-summary">
-          <span>仓库有库存但系统未建档：<strong>{formatNumber(warehouseOnlyCount)}</strong></span>
-          <span>系统有产品但仓库无库存：<strong>{formatNumber(productMissingWarehouseCount)}</strong></span>
+          <span>仓库有库存但系统未建档：<strong>{warehouseMetric(warehouseOnlyCount)}</strong></span>
+          <span>系统有产品但仓库无库存：<strong>{warehouseMetric(productMissingWarehouseCount)}</strong></span>
         </div>
         {gapCopyMessage ? <div className="notice good compact-notice">{gapCopyMessage}</div> : null}
         {warehouseOnlySummary.length ? (
@@ -13091,6 +13198,21 @@ function AssetCards({ assets }: { assets: AssetRecord[] }) {
   );
 }
 
+type ProductDetailTab = "base" | "qualifications" | "assets" | "listing";
+
+function productDetailRoute() {
+  const [route, query = ""] = window.location.hash.split("?", 2);
+  const params = new URLSearchParams(query);
+  const requestedTab = params.get("tab");
+  const tab: ProductDetailTab = ["base", "qualifications", "assets", "listing"].includes(String(requestedTab)) ? requestedTab as ProductDetailTab : "base";
+  return { route, sku: String(params.get("sku") || "").trim(), tab };
+}
+
+function productDetailHash(sku: string, tab: ProductDetailTab) {
+  const params = new URLSearchParams({ sku, tab });
+  return `#products?${params.toString()}`;
+}
+
 function ProductDetailModal({
   product,
   productBase,
@@ -13100,6 +13222,8 @@ function ProductDetailModal({
   currentUser,
   onAddToBundle,
   onClose,
+  activeTab,
+  onTabChange,
 }: {
   product: CatalogProduct;
   productBase: ProductBase[];
@@ -13109,8 +13233,9 @@ function ProductDetailModal({
   currentUser: AuthUser;
   onAddToBundle: (product: CatalogProduct) => void;
   onClose: () => void;
+  activeTab: ProductDetailTab;
+  onTabChange: (tab: ProductDetailTab) => void;
 }) {
-  const [activeTab, setActiveTab] = React.useState<"base" | "qualifications" | "assets" | "listing">("base");
   const [copiedSku, setCopiedSku] = React.useState(false);
   const [copiedAttachments, setCopiedAttachments] = React.useState(false);
   const dialogRef = React.useRef<HTMLElement | null>(null);
@@ -13207,7 +13332,7 @@ function ProductDetailModal({
   }
 
   return (
-    <div className="modal-layer" role="presentation">
+    <div className="modal-layer product-detail-layer" role="presentation">
       <button className="modal-backdrop" type="button" onClick={onClose} aria-label="关闭弹窗" />
       <section ref={dialogRef} className="product-detail-modal" role="dialog" aria-modal="true" aria-busy={detailsLoading} aria-labelledby={`${dialogId}-title`} tabIndex={-1} onKeyDown={handleDialogKeyDown}>
         <div className="modal-head">
@@ -13229,7 +13354,7 @@ function ProductDetailModal({
             aria-selected={activeTab === "base"}
             tabIndex={activeTab === "base" ? 0 : -1}
             className={activeTab === "base" ? "active" : ""}
-            onClick={() => setActiveTab("base")}
+            onClick={() => onTabChange("base")}
           >
             <FileText size={16} />
             产品基础信息
@@ -13242,7 +13367,7 @@ function ProductDetailModal({
             aria-selected={activeTab === "qualifications"}
             tabIndex={activeTab === "qualifications" ? 0 : -1}
             className={activeTab === "qualifications" ? "active" : ""}
-            onClick={() => setActiveTab("qualifications")}
+            onClick={() => onTabChange("qualifications")}
           >
             <PackageCheck size={16} />
             资质库
@@ -13256,7 +13381,7 @@ function ProductDetailModal({
             aria-selected={activeTab === "assets"}
             tabIndex={activeTab === "assets" ? 0 : -1}
             className={activeTab === "assets" ? "active" : ""}
-            onClick={() => setActiveTab("assets")}
+            onClick={() => onTabChange("assets")}
           >
             <Boxes size={16} />
             素材库
@@ -13271,7 +13396,7 @@ function ProductDetailModal({
               aria-selected={activeTab === "listing"}
               tabIndex={activeTab === "listing" ? 0 : -1}
               className={activeTab === "listing" ? "active" : ""}
-              onClick={() => setActiveTab("listing")}
+              onClick={() => onTabChange("listing")}
             >
               <Bot size={16} />
               AI 上架
@@ -13292,22 +13417,24 @@ function ProductDetailModal({
               </div>
             ) : null}
             <div className="product-detail-action-row">
-              <button className="ghost-button compact-button" type="button" onClick={copySku}>
-                {copiedSku ? <Check size={15} /> : <Copy size={15} />}
-                {copiedSku ? "已复制" : "复制 SKU"}
-              </button>
-              <button className="ghost-button compact-button" type="button" onClick={copyAttachmentLinks} disabled={!attachmentLinks.length}>
-                {copiedAttachments ? <Check size={15} /> : <Copy size={15} />}
-                {copiedAttachments ? "已复制附件" : "复制附件链接"}
-              </button>
-              <button className="ghost-button compact-button" type="button" onClick={downloadAttachmentList} disabled={!attachmentLinks.length}>
-                <Download size={15} />
-                下载附件清单
-              </button>
               <button className="sync-button compact-button" type="button" onClick={() => onAddToBundle(product)}>
                 <Plus size={15} />
                 加入选品清单
               </button>
+              <OverflowMenu label={`${product.sku} 更多操作`}>
+                <button type="button" onClick={copySku}>
+                  {copiedSku ? <Check size={15} /> : <Copy size={15} />}
+                  {copiedSku ? "已复制" : "复制 SKU"}
+                </button>
+                <button type="button" onClick={copyAttachmentLinks} disabled={!attachmentLinks.length}>
+                  {copiedAttachments ? <Check size={15} /> : <Copy size={15} />}
+                  {copiedAttachments ? "已复制附件" : "复制附件链接"}
+                </button>
+                <button type="button" onClick={downloadAttachmentList} disabled={!attachmentLinks.length}>
+                  <Download size={15} />
+                  下载附件清单
+                </button>
+              </OverflowMenu>
             </div>
             <dl className="product-info-grid">
               {detailRows.map(([label, value]) => (
@@ -13580,7 +13707,7 @@ function ProductFamilyCard({
       <div className="product-body">
         <div className="catalog-family-heading">
           <small>{preferred.brand || "未配置品牌"} <i>·</i> {preferred.category || "未配置分类"} <i>·</i> {preferred.unit || "件"}</small>
-          <h3><button type="button" onClick={() => onOpenComparison(family)}>{preferred.name}</button></h3>
+          <h3><button type="button" onClick={() => onOpenDetails(preferred)} aria-label={`打开 ${preferred.name} 商品详情`}>{preferred.name}</button></h3>
           <CopyableSku sku={preferred.sku || preferred.skuNo} />
         </div>
 
@@ -14062,6 +14189,38 @@ function AssetLibrary({
   );
 }
 
+function ProductDetailNotFound({ sku, onClose }: { sku: string; onClose: () => void }) {
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  const dialogRef = React.useRef<HTMLElement>(null);
+  React.useEffect(() => { closeRef.current?.focus(); }, []);
+  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || []);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  return <div className="modal-layer product-detail-layer" role="presentation">
+    <button className="modal-backdrop" type="button" onClick={onClose} aria-label="关闭商品详情" />
+    <aside ref={dialogRef} className="product-detail-modal product-detail-not-found" role="dialog" aria-modal="true" aria-labelledby="product-not-found-title" onKeyDown={handleDialogKeyDown}>
+      <div className="modal-head"><div><h2 id="product-not-found-title">无法打开商品详情</h2><span>{sku || "未提供 SKU"}</span></div><button ref={closeRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭商品详情"><X size={18} /></button></div>
+      <div className="product-detail-route-error"><AlertTriangle size={28} /><strong>商品不存在或当前账号无权查看</strong><p>链接仍保留在地址栏中，便于核对 SKU。关闭后可以继续使用当前商品列表和筛选条件。</p><button className="ghost-button" type="button" onClick={onClose}>返回商品列表</button></div>
+    </aside>
+  </div>;
+}
+
 function ProductLibrary({
   products,
   internal,
@@ -14074,6 +14233,7 @@ function ProductLibrary({
   productBase,
   externalKeyword,
   onNeedDetails,
+  resourceState,
 }: {
   products: CatalogProduct[];
   internal: boolean;
@@ -14086,6 +14246,7 @@ function ProductLibrary({
   productBase: ProductBase[];
   externalKeyword: string;
   onNeedDetails: () => Promise<void>;
+  resourceState: CoreResourceState;
 }) {
   const defaultChannel = internal ? "全部" : "分销";
   const [channel, setChannel] = React.useState<"全部" | "直营" | "分销">(defaultChannel);
@@ -14094,6 +14255,10 @@ function ProductLibrary({
   const [keywordInput, setKeywordInput] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
   const [detailProduct, setDetailProduct] = React.useState<CatalogProduct | null>(null);
+  const [detailTab, setDetailTab] = React.useState<ProductDetailTab>("base");
+  const [detailLookupError, setDetailLookupError] = React.useState("");
+  const detailOpenedFromListRef = React.useRef(false);
+  const onNeedDetailsRef = React.useRef(onNeedDetails);
   const [comparisonFamily, setComparisonFamily] = React.useState<CatalogProductFamily | null>(null);
   const [showBackTop, setShowBackTop] = React.useState(false);
   const [viewMode, setViewMode] = React.useState<"cards" | "matrix">("cards");
@@ -14171,10 +14336,61 @@ function ProductLibrary({
     setVisibleProductCount(24);
   }, [brand, channel, country, keyword]);
 
+  React.useEffect(() => {
+    onNeedDetailsRef.current = onNeedDetails;
+  }, [onNeedDetails]);
+
+  React.useEffect(() => {
+    const syncFromHash = () => {
+      const requested = productDetailRoute();
+      if (requested.route !== "#products" || !requested.sku) {
+        setDetailProduct(null);
+        setDetailLookupError("");
+        return;
+      }
+      setDetailTab(requested.tab);
+      const normalizedSku = requested.sku.toLocaleLowerCase();
+      const match = products.find((product) => [product.sku, product.countrySku, product.id].some((value) => String(value || "").toLocaleLowerCase() === normalizedSku));
+      if (match) {
+        setDetailProduct(match);
+        setDetailLookupError("");
+        void onNeedDetailsRef.current();
+      } else if (payload && resourceState.phase !== "loading") {
+        setDetailProduct(null);
+        setDetailLookupError(requested.sku);
+      }
+    };
+    syncFromHash();
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, [products, payload, resourceState.phase]);
+
   function openProductDetails(product: CatalogProduct) {
     setComparisonFamily(null);
     setDetailProduct(product);
-    void onNeedDetails();
+    setDetailLookupError("");
+    setDetailTab("base");
+    detailOpenedFromListRef.current = true;
+    window.location.hash = productDetailHash(product.sku, "base");
+  }
+
+  function changeProductDetailTab(tab: ProductDetailTab) {
+    if (!detailProduct) return;
+    setDetailTab(tab);
+    window.history.replaceState({}, "", productDetailHash(detailProduct.sku, tab));
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  }
+
+  function closeProductDetails() {
+    setDetailProduct(null);
+    setDetailLookupError("");
+    if (detailOpenedFromListRef.current && window.history.length > 1) {
+      detailOpenedFromListRef.current = false;
+      window.history.back();
+      return;
+    }
+    window.history.replaceState({}, "", "#products");
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
   }
 
   function addToBundle(product: CatalogProduct) {
@@ -14208,6 +14424,7 @@ function ProductLibrary({
 
   return (
     <main className="library-page">
+      <DataContextBar context={payload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} />
       <section className="catalog-page-heading">
         <div>
           <h1>产品库</h1>
@@ -14218,7 +14435,7 @@ function ProductLibrary({
           </span>
         </div>
         <div className="catalog-heading-count">
-          <strong>{formatNumber(filteredFamilies.length)}</strong>
+          <strong>{payload ? formatNumber(filteredFamilies.length) : "—"}</strong>
           <span>个基础 SKU</span>
         </div>
       </section>
@@ -14319,9 +14536,11 @@ function ProductLibrary({
         </section>
       ) : null}
 
-      {loading ? <div className="notice">正在读取产品库...</div> : null}
+      {loading && payload ? <div className="notice">正在更新产品库，当前继续显示上一次成功数据。</div> : null}
 
-      {viewMode === "cards" ? (
+      {loading && !payload ? <ResourceBoundary loading hasData={false}><span /></ResourceBoundary> : null}
+
+      {!loading || payload ? (viewMode === "cards" ? (
         <section className="catalog-grid catalog-family-grid">
           {visibleFamilies.map((family, index) => (
             <ProductFamilyCard
@@ -14350,7 +14569,7 @@ function ProductLibrary({
           onOpenComparison={setComparisonFamily}
           onOpenDetails={openProductDetails}
         />
-      )}
+      )) : null}
       <section className="catalog-load-more" aria-live="polite">
         <span>已显示 <strong>{formatNumber(visibleFamilies.length)}</strong> / {formatNumber(filteredFamilies.length)} 个基础 SKU，共 {formatNumber(visibleVariantCount)} 个国家版本</span>
         {visibleFamilies.length < filteredFamilies.length ? (
@@ -14383,9 +14602,12 @@ function ProductLibrary({
           detailsLoading={detailsLoading}
           currentUser={currentUser}
           onAddToBundle={addToBundle}
-          onClose={() => setDetailProduct(null)}
+          activeTab={detailTab}
+          onTabChange={changeProductDetailTab}
+          onClose={closeProductDetails}
         />
       ) : null}
+      {detailLookupError && !detailProduct ? <ProductDetailNotFound sku={detailLookupError} onClose={closeProductDetails} /> : null}
       {partnerApplicationSku ? (
         <DistributorApplicationModal
           sourceSku={partnerApplicationSku === "catalog" ? "" : partnerApplicationSku}

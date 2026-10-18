@@ -4,6 +4,7 @@ import { changeStockupCollaborationRequest, createStockupCollaborationTask, upda
 import type { StockupExecutionTask, StockupRequest } from "./types";
 import { formatStockupDate, statusTone, stockupRequestStatusLabels, stockupTaskStatusLabels } from "./status";
 import { ProgressTimeline } from "./ProgressTimeline";
+import { StockupProductImage } from "./StockupProductImage";
 
 type Props = {
   request: StockupRequest;
@@ -78,7 +79,7 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
             <div className="sc-detail-lines">
               {request.lines.map((line) => (
                 <article key={line.id}>
-                  <div className="sc-line-summary"><span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <Boxes size={22} />}</span><div><b>{line.sku}</b><span>{line.productName}</span><small>{line.method} · {line.requestedQty} {line.unit}</small></div><div className="sc-line-fulfillment"><b>{line.fulfilledQty}/{line.requestedQty}</b><small>已到仓 / 需求</small></div></div>
+                  <div className="sc-line-summary"><span className="sc-product-thumb large"><StockupProductImage src={line.imageUrl} name={line.productName} size={22} /></span><div><b>{line.sku}</b><span>{line.productName}</span><small>{line.method} · {line.requestedQty} {line.unit}</small></div><div className="sc-line-fulfillment"><b>{line.fulfilledQty}/{line.requestedQty}</b><small>已到仓 / 需求</small></div></div>
                   <div className="sc-task-list">
                     {(taskGroups[line.id] || []).map((task) => <button key={task.id} onClick={() => canExecute && openProgress(task)}><span className={`sc-status-dot sc-status-${statusTone(task.status)}`} /><div><b>{task.taskNo}</b><small>{task.supplierName || "未填写供应方"} · 计划 {task.plannedQty}</small></div><span>{stockupTaskStatusLabels[task.status] || task.status}</span><ChevronRight size={16} /></button>)}
                     {request.workflowVersion !== 2 && canExecute && ["accepted", "in_progress"].includes(request.status) ? <button className="sc-add-task" onClick={() => openTask(line.id)}><Plus size={16} />拆分采购 / 生产任务</button> : null}
