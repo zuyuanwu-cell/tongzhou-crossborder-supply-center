@@ -22,6 +22,7 @@ assert.match(operational, /min-height:\s*40px/);
 assert.match(operational, /font-size:\s*max\(12px,\s*1em\)/);
 assert.match(operational, /font-size:\s*max\(12px,\s*1em\)\s*!important/);
 assert.match(operational, /min-height:\s*36px\s*!important/);
+assert.match(operational, /\.app-shell :where\(button, input, select, textarea\) \{ min-height: 40px !important; \}/);
 assert.match(partnerStyles, /\.login-page button, \.credential-page button, \.mfa-page button \{ min-height: 40px; \}/);
 assert.match(reconciliation, /\.oir-page\s+:where[\s\S]*max\(12px,\s*1em\)/);
 assert.match(main, /#products\?\$\{params\.toString\(\)\}/);
