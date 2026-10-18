@@ -28,6 +28,17 @@ export const REQUEST_STATUS_LABELS = {
   completed: "已完成",
   rejected: "已驳回",
   cancelled: "已取消",
+  submitted: "已提交",
+  purchasing: "采购中",
+  warehouse_inspection: "国内仓验货",
+  inspection_review: "验货待审核",
+  inventory_ready: "国内库存就绪",
+  inventory_reserved: "库存已锁定",
+  wms_created: "海外仓单已创建",
+  instruction_issued: "已下发发货指令",
+  handed_over: "已交接货代",
+  overseas_received: "海外仓已收货",
+  cost_locked: "到仓成本已锁定",
 };
 
 export const TASK_STATUS_LABELS = {
@@ -113,5 +124,16 @@ export function requestProgress(status) {
     completed: 100,
     rejected: 0,
     cancelled: 0,
+    submitted: 10,
+    purchasing: 24,
+    warehouse_inspection: 38,
+    inspection_review: 48,
+    inventory_ready: 58,
+    inventory_reserved: 66,
+    wms_created: 74,
+    instruction_issued: 80,
+    handed_over: 87,
+    overseas_received: 94,
+    cost_locked: 100,
   }[status] ?? 0;
 }

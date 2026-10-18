@@ -266,6 +266,60 @@ export async function initDomesticInventoryStore(dbPath) {
       FOREIGN KEY(source_movement_line_id) REFERENCES domestic_inventory_movement_lines(id)
     );
     CREATE INDEX IF NOT EXISTS idx_domestic_transfer_lines_transfer ON domestic_inventory_transfer_lines(transfer_id, sku);
+
+
+    CREATE TABLE IF NOT EXISTS domestic_inventory_reservations (
+      id TEXT PRIMARY KEY,
+      reference_no TEXT NOT NULL UNIQUE,
+      warehouse_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      note TEXT,
+      outbound_movement_id TEXT,
+      reserved_at TEXT NOT NULL,
+      released_at TEXT,
+      committed_at TEXT,
+      created_by_id TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(warehouse_id) REFERENCES domestic_warehouses(id),
+      FOREIGN KEY(outbound_movement_id) REFERENCES domestic_inventory_movements(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_inventory_reservations_status ON domestic_inventory_reservations(warehouse_id,status,updated_at);
+    CREATE TABLE IF NOT EXISTS domestic_inventory_reservation_lines (
+      id TEXT PRIMARY KEY,
+      reservation_id TEXT NOT NULL,
+      product_id TEXT,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      image_url TEXT,
+      specification TEXT,
+      unit TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      lot_id TEXT,
+      unit_cost_cny REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(reservation_id) REFERENCES domestic_inventory_reservations(id),
+      FOREIGN KEY(lot_id) REFERENCES domestic_inventory_lots(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_inventory_reservation_lines ON domestic_inventory_reservation_lines(reservation_id,sku);
+
+    CREATE TABLE IF NOT EXISTS domestic_inventory_sku_recodes (
+      id TEXT PRIMARY KEY,
+      warehouse_id TEXT NOT NULL,
+      old_sku TEXT NOT NULL,
+      new_sku TEXT NOT NULL,
+      product_id TEXT,
+      reference_no TEXT,
+      affected_qty REAL NOT NULL,
+      affected_reserved_qty REAL NOT NULL,
+      created_by_id TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(warehouse_id,old_sku,new_sku,reference_no),
+      FOREIGN KEY(warehouse_id) REFERENCES domestic_warehouses(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domestic_inventory_sku_recodes ON domestic_inventory_sku_recodes(old_sku,new_sku,created_at);
   `);
   migrateLotSplittingSchema(db);
 

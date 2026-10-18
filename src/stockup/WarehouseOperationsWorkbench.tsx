@@ -23,6 +23,7 @@ import {
   fetchStockupWarehouseDashboard,
   fetchStockupWarehouseWorkOrder,
   publishStockupWarehouseWorkOrder,
+  reviewStockupWarehouseInspection,
   updateStockupWarehouseWorkOrder,
 } from "../api";
 import { fetchCollaborationTaskOptions, type CollaborationTaskOptions } from "../warehouse-collaboration-task-api";
@@ -56,6 +57,9 @@ const statusLabels: Record<string, string> = {
   draft: "草稿",
   waiting_receipt: "待签收",
   inspecting: "验收处理中",
+  warehouse_inspection: "待仓库验货",
+  inspection_review: "验货待审核",
+  inventory_ready: "已审核入库",
   ready_to_ship: "待发运",
   partially_shipped: "部分发运",
   completed: "已完结",
@@ -248,6 +252,20 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
     } finally { setSaving(false); }
   }
 
+  async function reviewInspection(workOrder: StockupWarehouseWorkOrder, action: "approve" | "reject") {
+    const note = action === "reject" ? window.prompt("请输入退回原因，仓库修改后可重新提交：", "") || "" : "验货数据与凭证审核通过";
+    if (action === "reject" && !note.trim()) return;
+    setSaving(true); setError("");
+    try {
+      await reviewStockupWarehouseInspection(workOrder.id, action, note);
+      setSuccess(action === "approve" ? "验货已审核通过，合格批次已幂等写入国内库存。" : "验货结果已退回仓库修订。");
+      const refreshed = await fetchStockupWarehouseWorkOrder(workOrder.id);
+      setSelected(refreshed.workOrder);
+      await Promise.all([load(true), onChanged()]);
+    } catch (reviewError) { setError(reviewError instanceof Error ? reviewError.message : "验货审核失败"); }
+    finally { setSaving(false); }
+  }
+
   const funnel = [
     ["waiting_receipt", "待签收", dashboard?.counts.waiting_receipt || 0],
     ["inspecting", "验收中", dashboard?.counts.inspecting || 0],
@@ -347,7 +365,7 @@ export function WarehouseOperationsWorkbench({ requests, canManage, canCost, onC
         <section className="sc-detail-section"><header><CircleDollarSign size={18} /><div><b>仓内费用与成本归集</b><small>仓库登记、运营审核，批准后计入备货总成本</small></div></header><div className="sc-detail-expenses">{selected.expenses.map((expense) => <article key={expense.id}><span><CircleDollarSign size={17} /></span><div><b>{expenseLabels[expense.category] || expense.name}</b><small>{expense.vendor || "仓内费用"} · {expense.occurredAt || "日期待补"}</small></div><strong>{fmtMoney(expense.amountCny)}</strong><i className={`sc-wo-status is-${expense.reviewStatus}`}>{expense.reviewStatus === "approved" ? "已计成本" : expense.reviewStatus === "rejected" ? "已驳回" : "待审核"}</i>{canCost && expense.reviewStatus === "pending_review" ? <div><button disabled={saving} onClick={() => void reviewExpense(selected, expense.id, "approved")}><ShieldCheck size={14} />审核计入</button><button disabled={saving} onClick={() => void reviewExpense(selected, expense.id, "rejected")}>驳回</button></div> : null}</article>)}{!selected.expenses.length ? <div className="sc-warehouse-empty">仓库尚未登记费用</div> : null}</div></section>
         <section className="sc-detail-section"><header><Clock3 size={18} /><div><b>工单轨迹</b><small>管理端与伙伴端动作统一留痕</small></div></header><div className="sc-detail-timeline">{selected.events.map((event) => <article key={event.id}><i /><div><b>{event.title}</b><p>{event.description}</p><small>{event.actorName} · {fmtDate(event.occurredAt)}</small></div></article>)}</div></section>
       </div>
-      <footer className="sc-drawer-foot"><span><Warehouse size={16} />伙伴端任务：{selected.publishedAt ? `已于 ${fmtDate(selected.publishedAt)} 推送` : "尚未推送"}</span>{canManage && !selected.publishedAt ? <button className="sc-button sc-button-primary" disabled={saving} onClick={() => void publishOrder(selected)}><Send size={16} />推送给国内仓</button> : null}</footer>
+      <footer className="sc-drawer-foot"><span><Warehouse size={16} />伙伴端任务：{selected.publishedAt ? `已于 ${fmtDate(selected.publishedAt)} 推送` : "尚未推送"}</span><div>{canManage && selected.workflowVersion === 2 && selected.status === "inspection_review" ? <><button className="sc-button sc-button-secondary" disabled={saving} onClick={() => void reviewInspection(selected, "reject")}>退回修订</button><button className="sc-button sc-button-primary" disabled={saving} onClick={() => void reviewInspection(selected, "approve")}><ShieldCheck size={16} />审核入库</button></> : null}{canManage && !selected.publishedAt ? <button className="sc-button sc-button-primary" disabled={saving} onClick={() => void publishOrder(selected)}><Send size={16} />推送给国内仓</button> : null}</div></footer>
     </aside></div> : null}
   </section>;
 }

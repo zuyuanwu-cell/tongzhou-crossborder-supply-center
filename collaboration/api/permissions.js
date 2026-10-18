@@ -10,9 +10,13 @@ const actionRoles = Object.freeze({
   complete: new Set(["organization_admin", "manager"]),
 });
 
+export function allowedActions(membership) {
+  if (!membership || membership.status !== "active") return [];
+  return Object.keys(actionRoles).filter((action) => actionRoles[action].has(membership.role));
+}
+
 export function canPerformAction(membership, action) {
-  if (!membership || membership.status !== "active") return false;
-  return Boolean(actionRoles[action]?.has(membership.role));
+  return allowedActions(membership).includes(action);
 }
 
 export function requiresMfaAtLogin() {

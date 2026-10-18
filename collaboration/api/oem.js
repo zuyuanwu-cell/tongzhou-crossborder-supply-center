@@ -74,6 +74,7 @@ export async function applyOemProjection(input) {
       );
       const spaceId = spaceResult.rows[0].id;
       const existing = await client.query("SELECT id,version FROM work_items WHERE organization_id=$1 AND core_ref_type=$2 AND core_ref_id=$3 FOR UPDATE", [organization.id, projection.coreRefType, projection.coreRefId]);
+      const isNewWorkItem = !existing.rows[0];
       if (existing.rows[0] && Number(existing.rows[0].version) > projection.version) {
         await client.query("UPDATE integration_inbox SET status='applied',processed_at=now() WHERE source_event_id=$1", [projection.eventId]);
         return { ok: true, ignoredStaleVersion: true, workItemId: existing.rows[0].id, version: Number(existing.rows[0].version) };
@@ -101,16 +102,18 @@ export async function applyOemProjection(input) {
           [organization.id, spaceId, item.id, milestone.milestoneType, milestone.title, milestone.plannedAt || null, milestone.status, milestone.publicPayload, projection.version],
         );
       }
-      await client.query(
-        `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
-         VALUES ($1,$2,'core.oem_projection','供应链中台','OEM 协同任务已发布或更新',$3)`,
-        [organization.id, item.id, { sourceEventId: projection.eventId, version: projection.version, spaceType: projection.spaceType }],
-      );
-      await client.query(
-        `INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status)
-         VALUES ($1,$2,$3,$4,'in_app','sent')`,
-        [organization.id, item.id, projection.version === 1 ? "收到新的 OEM 协同任务" : "OEM 协同任务已更新", projection.title],
-      );
+      if (isNewWorkItem) {
+        await client.query(
+          `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
+           VALUES ($1,$2,'core.oem_projection','供应链中台','收到新的 OEM 协同任务',$3)`,
+          [organization.id, item.id, { sourceEventId: projection.eventId, version: projection.version, spaceType: projection.spaceType, initial: true }],
+        );
+        await client.query(
+          `INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status)
+           VALUES ($1,$2,'收到新的 OEM 协同任务',$3,'in_app','sent')`,
+          [organization.id, item.id, projection.title],
+        );
+      }
       await client.query("UPDATE integration_inbox SET status='applied',processed_at=now() WHERE source_event_id=$1", [projection.eventId]);
       return { ok: true, workItemId: item.id, version: Number(item.version), idempotentReplay: false };
     } catch (error) {

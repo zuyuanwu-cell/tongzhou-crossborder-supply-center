@@ -112,6 +112,8 @@ import {
   acceptStockupRecommendation,
   abandonStockupRecommendation,
   restoreStockupRecommendation,
+  createStockupCollaborationRequest,
+  createStockupCustomProcessingHandoff,
   createStockupPlan,
   createShipmentFee,
   createStockupCostBatches,
@@ -1687,6 +1689,28 @@ function App() {
     setSyncing(true);
     setError("");
     try {
+      const destination = item.warehouseBreakdown?.[0];
+      const sourceSnapshot = { recommendationKey: item.recommendationKey, sku: item.sku, country: item.country, suggestion: item.suggestion, replenishQty: item.replenishQty, netReplenishQty: item.netReplenishQty, warehouseBreakdown: item.warehouseBreakdown };
+      if (input.planType === "purchase") {
+        await createStockupCollaborationRequest({
+          workflowVersion: 2,
+          submit: false,
+          sourceType: "recommendation",
+          sourceRef: item.recommendationKey || item.id,
+          sourceSnapshot,
+          project: input.owner || "备货建议",
+          destinationCountry: item.country,
+          destinationWarehouseId: destination?.warehouseId || `recommendation-${item.country}`,
+          destinationWarehouseName: destination?.warehouseName || `${item.country}待定海外仓`,
+          expectedArrivalAt: input.expectedArrivalAt,
+          priority: "常规",
+          reason: item.suggestion || "备货建议采纳",
+          note: input.note,
+          lines: [{ sku: item.sku, productName: item.name, imageUrl: item.imageUrl || "", requestedQty: input.quantity, unit: item.unit, shelfLifeManaged: false }],
+        });
+      } else {
+        await createStockupCustomProcessingHandoff({ sourceType: "recommendation", sourceRef: item.recommendationKey || item.id, sourceSnapshot, productName: item.name, sku: item.sku, quantity: input.quantity, unit: item.unit, expectedAt: input.expectedArrivalAt, note: input.note });
+      }
       const data = await createStockupPlan({
         recommendationKey: item.recommendationKey,
         recommendation: item,
@@ -3712,7 +3736,7 @@ function stockupPlanStatusLabel(status: string) {
 }
 
 function stockupPlanTypeLabel(type: string) {
-  return type === "outsourcing" ? "委外排产" : "采购补货";
+  return type === "outsourcing" ? "定制加工（待规划）" : "现货采购";
 }
 
 type StockupPlanItem = NonNullable<StockupPayload["plans"]>[number];

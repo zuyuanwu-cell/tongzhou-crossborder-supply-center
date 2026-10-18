@@ -13,6 +13,8 @@ export type StockupRequestDraftLine = {
   requestedQty: number;
   unit: string;
   targetUnitCostCny: number | "";
+  procurementUrl: string;
+  shelfLifeManaged: boolean;
   note: string;
 };
 
@@ -112,11 +114,16 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
       setLines((current) => [...current, {
         key: uniqueKey(), productId: product.id, sku: product.sku, productName: product.name, imageUrl: product.imageUrl || "",
         specification: product.specification || "", method: "采购", requestedQty: 1, unit: product.unit || "件",
-        targetUnitCostCny: product.directCostPrice ?? product.directPrice ?? "", note: "",
+        targetUnitCostCny: product.directCostPrice ?? product.directPrice ?? "", procurementUrl: "", shelfLifeManaged: false, note: "",
       }]);
     }
     setShowPicker(false);
     setQuery("");
+  }
+
+  function addTemporaryProduct() {
+    setLines((current) => [...current, { key: uniqueKey(), productId: "", sku: "", productName: "", imageUrl: "", specification: "", method: "采购", requestedQty: 1, unit: "件", targetUnitCostCny: "", procurementUrl: "", shelfLifeManaged: false, note: "" }]);
+    setShowPicker(false);
   }
 
   function updateLine(key: string, patch: Partial<StockupRequestDraftLine>) {
@@ -129,8 +136,8 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
       setError("请先填写项目、目的地、期望到仓日期和需求原因。");
       return;
     }
-    if (!lines.length || lines.some((line) => !line.sku || line.requestedQty <= 0)) {
-      setError("请至少添加一个产品，并填写正确的需求数量。");
+    if (!lines.length || lines.some((line) => !line.productName || line.requestedQty <= 0)) {
+      setError("请至少添加一个产品，并填写产品名称和正确的需求数量。");
       return;
     }
     setSaving(true);
@@ -216,6 +223,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
             <div className="sc-product-toolbar">
               <div className="sc-product-search"><Search size={17} /><input value={query} onFocus={() => setShowPicker(true)} onChange={(event) => { setQuery(event.target.value); setShowPicker(true); }} placeholder="搜索 SKU、中文名或外文名" /></div>
               <button className="sc-button sc-button-secondary" onClick={() => setShowPicker((value) => !value)}><Plus size={17} />添加产品</button>
+              <button className="sc-button sc-button-secondary" onClick={addTemporaryProduct}><PackagePlus size={17} />新增无 SKU 商品</button>
               {showPicker ? (
                 <div className="sc-product-picker">
                   {productMatches.length ? productMatches.map((product) => {
@@ -237,8 +245,8 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                   <div className="sc-line-row" key={line.key}>
                     <span className="sc-line-index">{String(index + 1).padStart(2, "0")}</span>
                     <span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <PackagePlus size={22} />}</span>
-                    <div className="sc-line-product"><b>{line.sku}</b><span>{line.productName}</span><small>{line.specification || "未配置规格"}</small></div>
-                    <label>执行方式<select value={line.method} onChange={(event) => updateLine(line.key, { method: event.target.value })}><option>采购</option><option>委外生产</option><option>自有库存调拨</option></select></label>
+                    <div className="sc-line-product"><input value={line.sku} onChange={(event) => updateLine(line.key, { sku: event.target.value })} placeholder="留空自动生成临时编码" /><input value={line.productName} onChange={(event) => updateLine(line.key, { productName: event.target.value })} placeholder="产品名称 *" /><input value={line.specification} onChange={(event) => updateLine(line.key, { specification: event.target.value })} placeholder="规格" /><input value={line.procurementUrl} onChange={(event) => updateLine(line.key, { procurementUrl: event.target.value })} placeholder="1688 商品链接" /><label className="sc-inline-check"><input type="checkbox" checked={line.shelfLifeManaged} onChange={(event) => updateLine(line.key, { shelfLifeManaged: event.target.checked })} />保质期管理</label></div>
+                    <label>执行方式<select value="采购" disabled><option>采购</option></select></label>
                     <label>需求数量<div className="sc-input-unit"><input type="number" min="0.01" value={line.requestedQty} onChange={(event) => updateLine(line.key, { requestedQty: Number(event.target.value) })} /><span>{line.unit}</span></div></label>
                     <label>目标成本（可选）<input type="number" min="0" step="0.01" value={line.targetUnitCostCny} onChange={(event) => updateLine(line.key, { targetUnitCostCny: event.target.value === "" ? "" : Number(event.target.value) })} /></label>
                     <div className="sc-line-actions">

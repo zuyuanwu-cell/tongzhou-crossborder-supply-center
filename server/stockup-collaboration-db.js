@@ -505,6 +505,212 @@ export async function initStockupCollaborationStore(dbPath) {
       UNIQUE(sku, profile_name)
     );
     CREATE INDEX IF NOT EXISTS idx_container_packaging_profiles_sku ON container_packaging_profiles(sku, enabled);
+
+    CREATE TABLE IF NOT EXISTS stockup_product_refs (
+      id TEXT PRIMARY KEY,
+      temporary_sku TEXT NOT NULL UNIQUE,
+      formal_sku TEXT,
+      product_id TEXT,
+      product_name TEXT NOT NULL,
+      image_url TEXT,
+      specification TEXT,
+      shelf_life_managed INTEGER NOT NULL DEFAULT 0,
+      coding_status TEXT NOT NULL DEFAULT 'temporary',
+      coding_error TEXT,
+      coded_at TEXT,
+      coded_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_stockup_product_refs_formal_sku ON stockup_product_refs(formal_sku) WHERE formal_sku IS NOT NULL AND formal_sku!='';
+
+    CREATE TABLE IF NOT EXISTS stockup_purchase_orders (
+      id TEXT PRIMARY KEY,
+      purchase_no TEXT NOT NULL UNIQUE,
+      supplier_name TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT '1688',
+      external_order_no TEXT,
+      order_url TEXT,
+      paid_total_cny REAL NOT NULL,
+      merchandise_total_cny REAL NOT NULL,
+      shared_amount_cny REAL NOT NULL,
+      allocation_mode TEXT NOT NULL DEFAULT 'merchandise_value',
+      allocation_override_reason TEXT,
+      status TEXT NOT NULL DEFAULT 'ordered',
+      ordered_at TEXT,
+      voucher_json TEXT NOT NULL DEFAULT '[]',
+      note TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_purchase_orders_status ON stockup_purchase_orders(status,updated_at);
+    CREATE TABLE IF NOT EXISTS stockup_purchase_order_lines (
+      id TEXT PRIMARY KEY,
+      purchase_order_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      request_line_id TEXT NOT NULL,
+      product_ref_id TEXT NOT NULL,
+      sku_snapshot TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit TEXT NOT NULL,
+      merchandise_amount_cny REAL NOT NULL,
+      shared_allocation_cny REAL NOT NULL,
+      allocated_amount_cny REAL NOT NULL,
+      estimated_unit_cost_cny REAL NOT NULL,
+      received_qty REAL NOT NULL DEFAULT 0,
+      cancelled_qty REAL NOT NULL DEFAULT 0,
+      refunded_amount_cny REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'ordered',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(purchase_order_id) REFERENCES stockup_purchase_orders(id),
+      FOREIGN KEY(request_id) REFERENCES stockup_requests(id),
+      FOREIGN KEY(request_line_id) REFERENCES stockup_request_lines(id),
+      FOREIGN KEY(product_ref_id) REFERENCES stockup_product_refs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_purchase_lines_request ON stockup_purchase_order_lines(request_id,request_line_id);
+    CREATE INDEX IF NOT EXISTS idx_stockup_purchase_lines_product ON stockup_purchase_order_lines(product_ref_id,status);
+
+    CREATE TABLE IF NOT EXISTS stockup_inspection_lots (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      work_order_line_id TEXT NOT NULL,
+      product_ref_id TEXT NOT NULL,
+      purchase_order_line_id TEXT,
+      quantity REAL NOT NULL,
+      lot_no TEXT NOT NULL,
+      barcode TEXT NOT NULL,
+      production_date TEXT NOT NULL,
+      expiry_date TEXT,
+      carton_count REAL NOT NULL DEFAULT 0,
+      units_per_carton REAL NOT NULL DEFAULT 0,
+      loose_quantity REAL NOT NULL DEFAULT 0,
+      carton_length_cm REAL NOT NULL DEFAULT 0,
+      carton_width_cm REAL NOT NULL DEFAULT 0,
+      carton_height_cm REAL NOT NULL DEFAULT 0,
+      carton_weight_kg REAL NOT NULL DEFAULT 0,
+      inventory_lot_id TEXT,
+      inventory_movement_id TEXT,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id),
+      FOREIGN KEY(work_order_line_id) REFERENCES stockup_warehouse_work_order_lines(id),
+      FOREIGN KEY(product_ref_id) REFERENCES stockup_product_refs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_inspection_lots_order ON stockup_inspection_lots(work_order_id,work_order_line_id);
+
+    CREATE TABLE IF NOT EXISTS stockup_inspection_evidence (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      work_order_line_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      attachment_id TEXT NOT NULL,
+      file_name TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(work_order_id) REFERENCES stockup_warehouse_work_orders(id),
+      FOREIGN KEY(work_order_line_id) REFERENCES stockup_warehouse_work_order_lines(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_inspection_evidence_order ON stockup_inspection_evidence(work_order_id,work_order_line_id);
+
+    CREATE TABLE IF NOT EXISTS stockup_forwarders (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      note TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS stockup_forwarder_locations (
+      id TEXT PRIMARY KEY,
+      forwarder_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      country TEXT NOT NULL,
+      province TEXT,
+      city TEXT,
+      address TEXT NOT NULL,
+      contact_name TEXT NOT NULL,
+      contact_phone TEXT NOT NULL,
+      routing_requirements TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(forwarder_id) REFERENCES stockup_forwarders(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_forwarder_locations ON stockup_forwarder_locations(forwarder_id,status);
+
+    CREATE TABLE IF NOT EXISTS stockup_inventory_reservations (
+      id TEXT PRIMARY KEY,
+      shipment_id TEXT NOT NULL UNIQUE,
+      external_reservation_id TEXT,
+      domestic_warehouse_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reserved_at TEXT NOT NULL,
+      released_at TEXT,
+      committed_at TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(shipment_id) REFERENCES stockup_shipments(id)
+    );
+    CREATE TABLE IF NOT EXISTS stockup_inventory_reservation_lines (
+      id TEXT PRIMARY KEY,
+      reservation_id TEXT NOT NULL,
+      shipment_line_id TEXT NOT NULL,
+      inspection_lot_id TEXT NOT NULL,
+      product_ref_id TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      domestic_lot_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(reservation_id) REFERENCES stockup_inventory_reservations(id),
+      FOREIGN KEY(shipment_line_id) REFERENCES stockup_shipment_lines(id),
+      FOREIGN KEY(inspection_lot_id) REFERENCES stockup_inspection_lots(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_reservation_lines_product ON stockup_inventory_reservation_lines(product_ref_id,reservation_id);
+
+    CREATE TABLE IF NOT EXISTS stockup_dispatch_documents (
+      id TEXT PRIMARY KEY,
+      shipment_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      document_type TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+      sha256 TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(shipment_id,version,document_type),
+      FOREIGN KEY(shipment_id) REFERENCES stockup_shipments(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_dispatch_documents_shipment ON stockup_dispatch_documents(shipment_id,version DESC);
+
+    CREATE TABLE IF NOT EXISTS stockup_custom_processing_handoffs (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_ref TEXT,
+      source_snapshot_json TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      sku TEXT,
+      quantity REAL NOT NULL,
+      unit TEXT NOT NULL,
+      expected_at TEXT,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'pending_custom_planning',
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_custom_handoffs_status ON stockup_custom_processing_handoffs(status,updated_at);
   `);
 
   const ensureColumn = (table, definition) => {
@@ -542,6 +748,39 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("container_loading_plans", "lifecycle_status TEXT NOT NULL DEFAULT 'active'");
   ensureColumn("container_loading_plans", "archived_at TEXT");
   ensureColumn("container_loading_plans", "archived_by TEXT");
+  ensureColumn("stockup_requests", "workflow_version INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("stockup_requests", "source_type TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn("stockup_requests", "source_ref TEXT");
+  ensureColumn("stockup_requests", "source_snapshot_json TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("stockup_request_lines", "product_ref_id TEXT");
+  ensureColumn("stockup_request_lines", "procurement_url TEXT");
+  ensureColumn("stockup_request_lines", "shelf_life_managed INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_warehouse_work_orders", "workflow_version INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("stockup_warehouse_work_orders", "inspection_submitted_at TEXT");
+  ensureColumn("stockup_warehouse_work_orders", "inspection_reviewed_at TEXT");
+  ensureColumn("stockup_warehouse_work_orders", "inspection_reviewed_by TEXT");
+  ensureColumn("stockup_warehouse_work_orders", "inspection_review_note TEXT");
+  ensureColumn("stockup_warehouse_work_orders", "inventory_movement_ids_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("stockup_warehouse_work_order_lines", "product_ref_id TEXT");
+  ensureColumn("stockup_warehouse_work_order_lines", "purchase_order_line_id TEXT");
+  ensureColumn("stockup_warehouse_work_order_lines", "production_date TEXT");
+  ensureColumn("stockup_warehouse_work_order_lines", "expiry_date TEXT");
+  ensureColumn("stockup_warehouse_work_order_lines", "evidence_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("stockup_shipments", "workflow_version INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("stockup_shipments", "forwarder_location_id TEXT");
+  ensureColumn("stockup_shipments", "forwarder_snapshot_json TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("stockup_shipments", "reservation_id TEXT");
+  ensureColumn("stockup_shipments", "instruction_published_at TEXT");
+  ensureColumn("stockup_shipments", "instruction_published_by TEXT");
+  ensureColumn("stockup_shipments", "handed_over_at TEXT");
+  ensureColumn("stockup_shipments", "document_version INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "product_ref_id TEXT");
+  ensureColumn("stockup_shipment_lines", "purchase_order_line_id TEXT");
+  ensureColumn("stockup_shipment_lines", "inspection_lot_id TEXT");
+  ensureColumn("stockup_cost_items", "purchase_order_id TEXT");
+  ensureColumn("stockup_cost_items", "purchase_order_line_id TEXT");
+  ensureColumn("stockup_cost_items", "warehouse_work_order_id TEXT");
+  ensureColumn("stockup_cost_items", "loss_treatment TEXT NOT NULL DEFAULT 'pending'");
   db.run(`
     UPDATE stockup_shipment_lines
     SET image_url = COALESCE((
@@ -554,7 +793,7 @@ export async function initStockupCollaborationStore(dbPath) {
   db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
   db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
   db.run("UPDATE container_loading_plans SET lifecycle_status='active' WHERE COALESCE(lifecycle_status,'')=''");
-  db.run("PRAGMA user_version = 7");
+  db.run("PRAGMA user_version = 8");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

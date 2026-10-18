@@ -14,6 +14,9 @@ export type StockupCollaborationLine = {
   note: string;
   status: string;
   fulfilledQty: number;
+  productRefId: string;
+  procurementUrl: string;
+  shelfLifeManaged: boolean;
 };
 export type StockupExecutionTask = {
   id: string;
@@ -59,6 +62,9 @@ export type StockupShipmentLine = {
   cartonWidthCm: number;
   cartonHeightCm: number;
   cartonWeightKg: number;
+  productRefId: string;
+  purchaseOrderLineId: string;
+  inspectionLotId: string;
 };
 
 export type StockupShipment = {
@@ -96,6 +102,14 @@ export type StockupShipment = {
   wmsPushAttempts: number;
   wmsPushedAt: string;
   wmsPushedBy: string;
+  workflowVersion: number;
+  forwarderLocationId: string;
+  forwarderSnapshot: Record<string, string>;
+  reservationId: string;
+  instructionPublishedAt: string;
+  instructionPublishedBy: string;
+  handedOverAt: string;
+  documentVersion: number;
   requestIds?: string[];
   requestNos?: string[];
   version: number;
@@ -212,6 +226,10 @@ export type StockupRequest = {
   assigneeId: string;
   assigneeName: string;
   exceptionCount: number;
+  workflowVersion: number;
+  sourceType: "manual" | "agent" | "recommendation" | string;
+  sourceRef: string;
+  sourceSnapshot: Record<string, unknown>;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -294,6 +312,12 @@ export type StockupWarehouseWorkOrderLine = {
   cartonHeightCm: number;
   cartonWeightKg: number;
   inspectionNote: string;
+  productionDate: string;
+  expiryDate: string;
+  evidence: StockupInspectionEvidence[];
+  productRefId: string;
+  purchaseOrderLineId: string;
+  lots?: StockupInspectionLot[];
   status: string;
   allocatedQty: number;
   unallocatedQty: number;
@@ -371,6 +395,12 @@ export type StockupWarehouseWorkOrder = {
   acceptedAt: string;
   completedAt: string;
   exceptionCount: number;
+  workflowVersion: number;
+  inspectionSubmittedAt: string;
+  inspectionReviewedAt: string;
+  inspectionReviewedBy: string;
+  inspectionReviewNote: string;
+  inventoryMovementIds: string[];
   version: number;
   createdBy: string;
   createdByName: string;
@@ -399,4 +429,45 @@ export type StockupWarehouseDashboard = {
   expenseBreakdown: Record<string, number>;
   waitingProducts: Array<{ workOrderId: string; workOrderNo: string; requestNo: string; domesticWarehouseId: string; domesticWarehouseName: string; expectedArrivalAt: string; status: string; priority: string; sku: string; productName: string; imageUrl: string; expectedQty: number; receivedQty: number; unit: string }>;
   workOrders: StockupWarehouseWorkOrder[];
+};
+
+export type StockupProductRef = {
+  id: string; temporarySku: string; formalSku: string; productId: string; productName: string; imageUrl: string; specification: string;
+  shelfLifeManaged: boolean; codingStatus: "temporary" | "coded" | "sync_failed" | string; codingError: string; codedAt: string; codedBy: string;
+};
+
+export type StockupPurchaseOrderLine = {
+  id: string; purchaseOrderId: string; requestId: string; requestLineId: string; productRefId: string; sku: string; productName: string;
+  quantity: number; unit: string; merchandiseAmountCny: number; sharedAllocationCny: number; allocatedAmountCny: number; estimatedUnitCostCny: number;
+  receivedQty: number; cancelledQty: number; refundedAmountCny: number; status: string;
+};
+
+export type StockupPurchaseOrder = {
+  id: string; purchaseNo: string; supplierName: string; platform: string; externalOrderNo: string; orderUrl: string; paidTotalCny: number;
+  merchandiseTotalCny: number; sharedAmountCny: number; allocationMode: string; allocationOverrideReason: string; status: string; orderedAt: string;
+  vouchers: Array<Record<string, unknown>>; note: string; version: number; lines: StockupPurchaseOrderLine[];
+};
+
+export type StockupInspectionEvidence = {
+  id?: string; kind: "damage" | "shortage" | "pending" | "repack_before" | "repack_after" | "normal" | string; attachmentId: string; fileName?: string; createdAt?: string;
+};
+
+export type StockupInspectionLot = {
+  id: string; workOrderId: string; workOrderLineId: string; productRefId: string; purchaseOrderLineId: string; quantity: number; lotNo: string;
+  barcode: string; productionDate: string; expiryDate: string; cartonCount: number; unitsPerCarton: number; looseQuantity: number;
+  cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; inventoryLotId: string; inventoryMovementId: string; status: string;
+};
+
+export type StockupForwarderLocation = {
+  id: string; forwarderId: string; name: string; country: string; province: string; city: string; address: string; contactName: string;
+  contactPhone: string; routingRequirements: string; status: string; version: number;
+};
+
+export type StockupForwarder = {
+  id: string; code: string; name: string; status: string; note: string; version: number; locations: StockupForwarderLocation[];
+};
+
+export type StockupDispatchDocument = {
+  id: string; shipmentId: string; version: number; documentType: "packing_list" | "carton_marks"; fileName: string; mimeType: string;
+  sha256: string; snapshot: Record<string, unknown>; createdBy: string; createdAt: string;
 };

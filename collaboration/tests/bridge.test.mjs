@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [] } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [], stockupWorkflowVersion = 1 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -14,6 +14,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
   const movements = [];
   const stockupActions = [];
   const sourceFeedback = [];
+  const stockupInspections = [];
   let remainingResultFailures = resultFailures;
   const fetchImpl = async (url, options = {}) => {
     const contentType = options.headers?.["Content-Type"] || options.headers?.get?.("Content-Type") || "";
@@ -53,6 +54,13 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
       },
     },
     stockupCollaborationService: {
+      getWarehouseWorkOrder(workOrderId) {
+        return { id: workOrderId, workOrderNo: "DWO-001", workflowVersion: stockupWorkflowVersion };
+      },
+      submitInspection(workOrderId, payload, context) {
+        stockupInspections.push({ workOrderId, payload, context });
+        return { ok: true, status: "inspection_review", workOrderId };
+      },
       applyWarehouseWorkOrderAction(workOrderId, payload, context, idempotencyKey) {
         stockupActions.push({ workOrderId, payload, context, idempotencyKey });
         return { ok: true, workOrder: { id: workOrderId, workOrderNo: "DWO-001", status: "completed" } };
@@ -71,7 +79,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     recordOutsourcingPartnerFeedback: async (feedback) => { sourceFeedback.push(feedback); return { ok: true, skipped: false }; },
     fetchImpl,
   });
-  return { bridge, movements, requests, stockupActions, sourceFeedback, store };
+  return { bridge, movements, requests, stockupActions, stockupInspections, sourceFeedback, store };
 }
 
 const projection = {
@@ -494,6 +502,35 @@ test("partner stockup processing updates the domestic warehouse work order idemp
   assert.equal(stockupActions[0].payload.action, "process");
   assert.equal(stockupActions[0].context.viewAll, true);
   assert.equal(stockupActions[0].idempotencyKey, `collaboration:${command.id}:stockup-process-1`);
+  assert.equal(store.command(command.id).local_status, "applied");
+});
+
+test("partner V2 stockup processing submits structured inspection without dispatch routes", async (t) => {
+  const command = {
+    id: "13131313-1313-4131-8131-131313131313",
+    organizationCode: "warehouse-a",
+    workItemId: "24242424-2424-4242-8242-242424242424",
+    coreRefType: "stockup_warehouse_work_order",
+    coreRefId: "swwo-v2-test-1",
+    itemType: "warehouse_stockup",
+    publicPayload: { ...projection.publicPayload, workOrder: { workOrderId: "swwo-v2-test-1", workflowVersion: 2 } },
+    commandType: "stockup_process",
+    idempotencyKey: "stockup-v2-process-1",
+    expectedVersion: 2,
+    payload: { action: "stockup_process", note: "已提交验货", lines: [{ id: "line-1", receivedQty: 10, goodQty: 10, damagedQty: 0, shortageQty: 0, pendingQty: 0, lots: [{ quantity: 10, lotNo: "LOT-1", barcode: "6970001", productionDate: "2026-10-18", cartonCount: 1, unitsPerCarton: 10, looseQuantity: 0, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 5 }], evidence: [] }], expenses: [], routes: [] },
+    riskLevel: "medium",
+    status: "pending_sync",
+    submittedByName: "仓库操作员",
+    submittedAt: "2026-10-18T08:00:00.000Z",
+  };
+  const { bridge, stockupActions, stockupInspections, store } = await fixture(t, { commands: [command], stockupWorkflowVersion: 2 });
+  const result = await bridge.pullCommands();
+  assert.equal(result.processed, 1);
+  assert.equal(stockupActions.length, 0);
+  assert.equal(stockupInspections.length, 1);
+  assert.equal(stockupInspections[0].workOrderId, "swwo-v2-test-1");
+  assert.equal(stockupInspections[0].payload.lines[0].lots[0].productionDate, "2026-10-18");
+  assert.equal(stockupInspections[0].context.viewAll, true);
   assert.equal(store.command(command.id).local_status, "applied");
 });
 

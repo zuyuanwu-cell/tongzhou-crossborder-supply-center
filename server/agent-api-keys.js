@@ -7,6 +7,7 @@ const MAX_ACTIVE_KEYS_PER_USER = 5;
 const DEFAULT_EXPIRY_DAYS = 90;
 const MAX_EXPIRY_DAYS = 365;
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
+const ALLOWED_SCOPES = new Set(["agent:read", "stockup_request_draft_create"]);
 
 function hashKey(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -40,11 +41,13 @@ function statusFor(record, now = Date.now()) {
 }
 
 function publicKey(record) {
+  const scopes = Array.isArray(record.scopes) ? record.scopes : String(record.scope || "agent:read").split(/[ ,]+/).filter(Boolean);
   return {
     id: record.id,
     name: record.name,
     keyPrefix: record.keyPrefix,
-    scope: record.scope,
+    scope: scopes.join(" "),
+    scopes,
     status: statusFor(record),
     createdAt: record.createdAt,
     expiresAt: record.expiresAt,
@@ -72,7 +75,7 @@ export function createAgentApiKeyStore({
       .map(publicKey);
   }
 
-  function create({ userId, name, expiresInDays = DEFAULT_EXPIRY_DAYS }) {
+  function create({ userId, name, expiresInDays = DEFAULT_EXPIRY_DAYS, scopes = ["agent:read"] }) {
     const safeUserId = String(userId || "").trim();
     if (!safeUserId) throw new Error("创建 Agent API Key 缺少用户标识。");
     const activeCount = store.keys
@@ -89,6 +92,7 @@ export function createAgentApiKeyStore({
       Math.min(MAX_EXPIRY_DAYS, Math.floor(Number(expiresInDays) || DEFAULT_EXPIRY_DAYS)),
     );
     const createdAt = now();
+    const safeScopes = [...new Set(["agent:read", ...(Array.isArray(scopes) ? scopes : [])].map(String).filter((scope) => ALLOWED_SCOPES.has(scope)))];
     const secret = `${KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
     const record = {
       id: `ak_${randomBytes(12).toString("base64url")}`,
@@ -96,7 +100,8 @@ export function createAgentApiKeyStore({
       name: safeName,
       keyHash: hashKey(secret),
       keyPrefix: `${secret.slice(0, 13)}…`,
-      scope: "agent:read",
+      scope: safeScopes.join(" "),
+      scopes: safeScopes,
       createdAt: createdAt.toISOString(),
       expiresAt: new Date(createdAt.getTime() + safeExpiryDays * 86400000).toISOString(),
       lastUsedAt: "",
@@ -125,7 +130,8 @@ export function createAgentApiKeyStore({
     return {
       id: record.id,
       userId: record.userId,
-      scope: record.scope,
+      scope: (Array.isArray(record.scopes) ? record.scopes : String(record.scope || "agent:read").split(/[ ,]+/).filter(Boolean)).join(" "),
+      scopes: Array.isArray(record.scopes) ? record.scopes : String(record.scope || "agent:read").split(/[ ,]+/).filter(Boolean),
     };
   }
 

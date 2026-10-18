@@ -58,6 +58,18 @@ test("notification delivery only locks notification rows across outer joins", ()
   assert.doesNotMatch(notificationSource, /LIMIT 20 FOR UPDATE SKIP LOCKED/);
 });
 
+test("routine core projection refreshes stay out of partner activity feeds", () => {
+  assert.match(integrationSource, /const isNewWorkItem = !existing\.rows\[0\]/);
+  assert.match(oemSource, /const isNewWorkItem = !existing\.rows\[0\]/);
+  assert.match(integrationSource, /if \(isNewWorkItem\)[\s\S]*收到新的协同任务/);
+  assert.match(oemSource, /if \(isNewWorkItem\)[\s\S]*收到新的 OEM 协同任务/);
+  assert.doesNotMatch(integrationSource, /协同任务已更新/);
+  assert.doesNotMatch(oemSource, /OEM 协同任务已更新/);
+  assert.match(repositorySource, /coreSyncEventTypes/);
+  assert.match(repositorySource, /coreSyncNotificationTitles/);
+  assert.match(repositorySource, /title <> ALL\(\$3::text\[\]\)/);
+});
+
 test("directly provisioned accounts can use the assigned password immediately", () => {
   assert.match(directAccountSql, /must_change_password boolean NOT NULL DEFAULT false/);
   assert.match(identitySource, /must_change_password\)\s*\n\s*VALUES[\s\S]*'active',false/);

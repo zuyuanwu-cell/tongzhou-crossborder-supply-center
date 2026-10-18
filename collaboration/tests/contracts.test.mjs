@@ -37,6 +37,20 @@ test("partner action schemas reject unbounded and unknown payload fields", () =>
   };
   assert.equal(workItemActionSchema.safeParse(stockupProcess).success, true);
   assert.equal(workItemActionSchema.safeParse({ ...stockupProcess, lines: [{ ...stockupProcess.lines[0], unitCost: 99 }] }).success, false);
+  const stockupProcessV2 = {
+    action: "stockup_process",
+    note: "提交 V2 多批次验货",
+    lines: [{
+      id: "line-1", receivedQty: 10, goodQty: 9, damagedQty: 1, shortageQty: 0, pendingQty: 0,
+      requiresRepack: true, replacementCartonCount: 1, inspectionNote: "破损一件并换箱",
+      lots: [{ quantity: 9, lotNo: "LOT-2", barcode: "6970002", productionDate: "2026-10-18", expiryDate: "2027-10-18", cartonCount: 1, unitsPerCarton: 9, looseQuantity: 0, cartonLengthCm: 50, cartonWidthCm: 40, cartonHeightCm: 30, cartonWeightKg: 12 }],
+      evidence: [{ kind: "damage", attachmentId: "attachment-1", fileName: "damage.jpg" }, { kind: "repack_before", attachmentId: "attachment-2", fileName: "before.jpg" }, { kind: "repack_after", attachmentId: "attachment-3", fileName: "after.jpg" }],
+    }],
+    expenses: [{ category: "换箱费", name: "换箱", amountCny: 10, occurredAt: "2026-10-18" }],
+    routes: [],
+  };
+  assert.equal(workItemActionSchema.safeParse(stockupProcessV2).success, true);
+  assert.equal(workItemActionSchema.safeParse({ ...stockupProcessV2, lines: [{ ...stockupProcessV2.lines[0], internalCost: 99 }] }).success, false);
   assert.equal(riskByAction.stockup_process, "medium");
 });
 

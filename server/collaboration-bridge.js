@@ -505,11 +505,17 @@ export function createCollaborationBridge({
     const idempotencyKey = `collaboration:${command.id}:${command.idempotencyKey}`;
     if (command.commandType === "stockup_process") {
       if (!stockupCollaborationService?.applyWarehouseWorkOrderAction) fail("备货国内仓主账服务不可用。", 503, "stockup_service_unavailable");
+      const stockupContext = systemStockupContext();
+      const workOrder = stockupCollaborationService.getWarehouseWorkOrder?.(command.coreRefId, stockupContext);
+      if (Number(workOrder?.workflowVersion) === 2) {
+        const result = stockupCollaborationService.submitInspection(command.coreRefId, command.payload, stockupContext);
+        return { ...result, reference: workOrder.workOrderNo || command.coreRefId };
+      }
       const result = stockupCollaborationService.applyWarehouseWorkOrderAction(command.coreRefId, {
         ...command.payload,
         action: "process",
         requireComplete: true,
-      }, systemStockupContext(), idempotencyKey);
+      }, stockupContext, idempotencyKey);
       return { ...result, reference: result.workOrder?.workOrderNo || command.coreRefId };
     }
     if (command.commandType === "transfer_receive") {

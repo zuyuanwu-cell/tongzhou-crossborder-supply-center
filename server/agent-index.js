@@ -967,7 +967,7 @@ function openApiDocument() {
     info: {
       title: "同舟供应链 Agent Index API",
       version: INDEX_VERSION,
-      description: "权限感知的只读内部数据索引 API。使用登录用户创建的 Agent API Key，不会绕过当前角色和账号状态。",
+      description: "权限感知的内部数据索引 API。默认只读；仅显式授权的 Agent API Key 可创建现货备货草稿，且不能提交或执行后续业务动作。",
     },
     servers: [{ url: "/", description: "当前同舟供应链服务" }],
     security: [{ agentBearer: [] }],
@@ -976,6 +976,7 @@ function openApiDocument() {
       { name: "Resources", description: "按类型读取业务记录" },
       { name: "Sync", description: "全量、增量和删除同步" },
       { name: "Analytics", description: "权限感知的只读业务计算能力" },
+      { name: "Drafts", description: "受限的业务草稿创建能力" },
     ],
     paths: {
       "/.well-known/agent-index.json": {
@@ -1074,6 +1075,17 @@ function openApiDocument() {
           operationId: "getAgentCoverage",
           parameters: [{ name: "types", in: "query", schema: { type: "string" } }],
           responses: { 200: { description: "源记录与可枚举记录覆盖率" } },
+        },
+      },
+      "/api/agent/stockup-request-drafts": {
+        post: {
+          tags: ["Drafts"],
+          operationId: "createStockupRequestDraft",
+          summary: "创建现货备货需求草稿",
+          description: "要求 API Key 同时具有 stockup_request_draft_create scope，且所属用户具有 stockup_request_create 权限。服务端强制保存为草稿。",
+          parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", minLength: 1 } }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["project", "destinationCountry", "destinationWarehouseName", "expectedArrivalAt", "reason", "lines"], properties: { project: { type: "string" }, destinationCountry: { type: "string" }, destinationWarehouseId: { type: "string" }, destinationWarehouseName: { type: "string" }, expectedArrivalAt: { type: "string", format: "date" }, reason: { type: "string" }, lines: { type: "array", minItems: 1, items: { type: "object", required: ["productName", "requestedQty"], properties: { sku: { type: "string", description: "可为空；为空时自动生成临时编码" }, productName: { type: "string" }, procurementUrl: { type: "string" }, requestedQty: { type: "number", exclusiveMinimum: 0 }, unit: { type: "string" } } } } } } } } },
+          responses: { 201: { description: "草稿已创建" }, 400: { description: "参数或幂等键无效" }, 403: { description: "scope 或业务权限不足" } },
         },
       },
       "/api/ai/agent/context": {
@@ -1404,8 +1416,23 @@ export function createAgentIndexLayer({
         coverage: "/api/agent/coverage",
         assistant_context: "/api/ai/agent/context?route={hash}",
         assistant_chat: "/api/ai/agent/chat",
+        create_stockup_draft: "/api/agent/stockup-request-drafts",
       },
       operations: [
+        {
+          id: "create_stockup_request_draft",
+          label: "创建现货备货需求草稿",
+          method: "POST",
+          endpoint: "/api/agent/stockup-request-drafts",
+          accessible: Boolean(auth?.agentScopes?.includes("stockup_request_draft_create") && auth?.user?.permissions?.includes("stockup_request_create")),
+          allowed_roles: ["direct", "admin"],
+          required_permissions: ["stockup_request_create"],
+          required_scopes: ["stockup_request_draft_create"],
+          read_only: false,
+          draft_only: true,
+          description: "仅创建待人工审核的 V2 现货备货草稿，不能提交、采购、锁库或调用 WMS。",
+          openapi_operation_id: "createStockupRequestDraft",
+        },
         {
           id: "current_page_ai_assistant",
           label: "同舟领航员页面诊断与问答",

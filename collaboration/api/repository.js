@@ -6,6 +6,9 @@ import { canPerformAction } from "./permissions.js";
 import { riskByAction, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { actionPermission, assertResourcePermission, assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
 
+const coreSyncEventTypes = ["core.projection", "core.oem_projection"];
+const coreSyncNotificationTitles = ["协同任务已更新", "OEM 协同任务已更新", "订单内容已由中台更新", "库存同步完成"];
+
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
 }
@@ -53,11 +56,14 @@ export async function listWorkItems(auth, filters = {}) {
   const allowedStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]);
   const status = allowedStatuses.has(filters.status) ? filters.status : "";
   const keyword = String(filters.keyword || "").trim().slice(0, 100);
+  const allowedItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception", "filing_task", "sampling_task", "packaging_quote", "production_order"]);
+  const itemType = allowedItemTypes.has(filters.itemType) ? filters.itemType : "";
   return withOrganization(auth.organization.id, async (client) => {
     const conditions = ["organization_id=$1", workItemAccessPredicate];
     const params = [auth.organization.id];
     if (status) { params.push(status); conditions.push(`status=$${params.length}`); }
-    if (keyword) { params.push(`%${keyword}%`); conditions.push(`(title ILIKE $${params.length} OR public_payload->>'referenceNo' ILIKE $${params.length} OR public_payload->>'orderNo' ILIKE $${params.length} OR public_payload->>'productName' ILIKE $${params.length})`); }
+    if (itemType) { params.push(itemType); conditions.push(`item_type=$${params.length}`); }
+    if (keyword) { params.push(`%${keyword}%`); conditions.push(`(title ILIKE $${params.length} OR public_payload->>'referenceNo' ILIKE $${params.length} OR public_payload->>'orderNo' ILIKE $${params.length} OR public_payload->>'projectCode' ILIKE $${params.length} OR public_payload->>'productName' ILIKE $${params.length})`); }
     params.push(limit, offset);
     const rows = await client.query(
       `SELECT work_items.*,
@@ -76,10 +82,11 @@ export async function listWorkItems(auth, filters = {}) {
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
-    const counts = await client.query(
-      `SELECT status,count(*)::int AS count FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate} GROUP BY status`,
-      [auth.organization.id],
-    );
+    const countConditions = ["organization_id=$1", workItemAccessPredicate];
+    const countParams = [auth.organization.id];
+    if (itemType) { countParams.push(itemType); countConditions.push(`item_type=$${countParams.length}`); }
+    if (keyword) { countParams.push(`%${keyword}%`); countConditions.push(`(title ILIKE $${countParams.length} OR public_payload->>'referenceNo' ILIKE $${countParams.length} OR public_payload->>'projectCode' ILIKE $${countParams.length} OR public_payload->>'productName' ILIKE $${countParams.length})`); }
+    const counts = await client.query(`SELECT status,count(*)::int AS count FROM work_items WHERE ${countConditions.join(" AND ")} GROUP BY status`, countParams);
     return { items: rows.rows.map(workItemFromRow), counts: Object.fromEntries(counts.rows.map((row) => [row.status, row.count])), limit, offset };
   });
 }
@@ -91,7 +98,13 @@ export async function getWorkItem(auth, workItemId) {
     if (!row) fail("任务不存在。", 404, "not_found");
     const [lines, events, attachments, commands] = await Promise.all([
       client.query("SELECT id,sku,product_name,image_url,planned_quantity,completed_quantity,unit,lot_no,barcode,production_date,expiry_date,metadata FROM warehouse_task_lines WHERE work_item_id=$1 AND organization_id=$2 ORDER BY sku,id", [workItemId, auth.organization.id]),
-      client.query("SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC LIMIT 100", [workItemId, auth.organization.id]),
+      client.query(
+        `SELECT id,event_type,actor_name,body,metadata,created_at FROM work_item_events
+          WHERE work_item_id=$1 AND organization_id=$2
+            AND (event_type <> ALL($3::text[]) OR metadata @> '{"initial":true}'::jsonb OR metadata->>'version'='1')
+          ORDER BY created_at DESC LIMIT 100`,
+        [workItemId, auth.organization.id, coreSyncEventTypes],
+      ),
       client.query("SELECT id,file_name,mime_type,size_bytes,scan_status,created_at FROM attachments WHERE work_item_id=$1 AND organization_id=$2 ORDER BY created_at DESC", [workItemId, auth.organization.id]),
       client.query("SELECT id,command_type,status,payload,submitted_at,processed_at,result_code,result_message,core_reference FROM partner_commands WHERE work_item_id=$1 AND organization_id=$2 ORDER BY submitted_at DESC LIMIT 50", [workItemId, auth.organization.id]),
     ]);
@@ -397,12 +410,13 @@ export async function listNotifications(auth, filters = {}) {
       `SELECT id,work_item_id,title,body,channel,delivery_status,read_at,created_at
          FROM notifications
         WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2)
+          AND title <> ALL($3::text[])
           AND (work_item_id IS NULL OR EXISTS (
             SELECT 1 FROM work_items
              WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}
           ))
-        ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
-      [auth.organization.id, auth.user.id, limit, offset],
+        ORDER BY created_at DESC LIMIT $4 OFFSET $5`,
+      [auth.organization.id, auth.user.id, coreSyncNotificationTitles, limit, offset],
     );
     return { items: result.rows.map((row) => ({ id: row.id, workItemId: row.work_item_id || "", title: row.title, body: row.body, channel: row.channel, deliveryStatus: row.delivery_status, readAt: row.read_at ? new Date(row.read_at).toISOString() : "", createdAt: new Date(row.created_at).toISOString() })), limit, offset };
   });
@@ -427,7 +441,7 @@ export async function markNotificationRead(auth, notificationId) {
 export async function organizationDashboard(auth) {
   return withOrganization(auth.organization.id, async (client) => {
     const work = await client.query(`SELECT count(*) FILTER (WHERE status NOT IN ('completed','cancelled','rejected'))::int AS open,count(*) FILTER (WHERE priority='urgent' AND status NOT IN ('completed','cancelled','rejected'))::int AS urgent,count(*) FILTER (WHERE status IN ('pending_sync','pending_approval'))::int AS waiting FROM work_items WHERE organization_id=$1 AND ${workItemAccessPredicate}`, [auth.organization.id]);
-    const unread = await client.query(`SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND read_at IS NULL AND (work_item_id IS NULL OR EXISTS (SELECT 1 FROM work_items WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}))`, [auth.organization.id, auth.user.id]);
+    const unread = await client.query(`SELECT count(*)::int AS count FROM notifications WHERE organization_id=$1 AND (user_id IS NULL OR user_id=$2) AND title <> ALL($3::text[]) AND read_at IS NULL AND (work_item_id IS NULL OR EXISTS (SELECT 1 FROM work_items WHERE work_items.id=notifications.work_item_id AND ${workItemAccessPredicate}))`, [auth.organization.id, auth.user.id, coreSyncNotificationTitles]);
     const stock = await client.query("SELECT count(DISTINCT sku)::int AS sku_count,max(last_core_synced_at) AS synced_at FROM warehouse_inventory_projections WHERE organization_id=$1 AND EXISTS (SELECT 1 FROM organization_access_grants access_grant WHERE access_grant.organization_id=warehouse_inventory_projections.organization_id AND access_grant.resource_type='warehouse' AND access_grant.resource_ref=warehouse_inventory_projections.warehouse_ref AND access_grant.permissions ? 'warehouse.inventory.view')", [auth.organization.id]);
     const orders = await client.query(`SELECT
         count(*) FILTER (WHERE item_type='production_order' AND status NOT IN ('completed','cancelled','rejected'))::int AS production_orders,

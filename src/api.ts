@@ -1,4 +1,4 @@
-import type { StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
+import type { StockupDispatchDocument, StockupForwarder, StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupProductRef, StockupPurchaseOrder, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
 import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType, SingleCartonCapacityEstimate, SingleCartonCapacityInput } from "./container-loading/types";
 
 export type CatalogProduct = {
@@ -408,7 +408,8 @@ export type AgentApiKey = {
   id: string;
   name: string;
   keyPrefix: string;
-  scope: "agent:read";
+  scope: string;
+  scopes: string[];
   status: "active" | "expired" | "revoked";
   createdAt: string;
   expiresAt: string;
@@ -418,7 +419,8 @@ export type AgentApiKey = {
 
 export type AgentApiKeyPayload = {
   ok: boolean;
-  scope: "agent:read";
+  scope: string;
+  availableScopes?: string[];
   maxActiveKeys: number;
   keys: AgentApiKey[];
 };
@@ -4471,7 +4473,7 @@ export function fetchAgentApiKeys() {
   return requestJson<AgentApiKeyPayload>("/api/agent-keys");
 }
 
-export function createAgentApiKey(input: { name: string; expiresInDays: number }) {
+export function createAgentApiKey(input: { name: string; expiresInDays: number; scopes?: string[] }) {
   return requestJson<{ ok: boolean; apiKey: string; key: AgentApiKey; message: string }>("/api/agent-keys", {
     method: "POST",
     body: JSON.stringify(input),
@@ -5244,6 +5246,10 @@ export function createStockupCollaborationShipment(payload: Record<string, unkno
   return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments", { method: "POST", body: JSON.stringify(payload) });
 }
 
+export function createStockupReservedShipment(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments/reserve", { method: "POST", body: JSON.stringify(payload) });
+}
+
 export function updateStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {
   return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}`, { method: "PATCH", body: JSON.stringify(payload) });
 }
@@ -5283,6 +5289,37 @@ export function cancelStockupCollaborationWarehouseOrder(shipmentId: string) {
 
 export function dispatchStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {
   return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/dispatch`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function generateStockupDispatchDocuments(shipmentId: string) {
+  return requestJson<{ ok: boolean; shipmentId: string; version: number; documents: StockupDispatchDocument[] }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/documents`, { method: "POST" });
+}
+
+export function fetchStockupDispatchDocuments(shipmentId: string) {
+  return requestJson<{ ok: boolean; shipmentId: string; currentVersion: number; documents: StockupDispatchDocument[] }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/documents`);
+}
+
+export async function downloadStockupDispatchDocument(document: StockupDispatchDocument) {
+  const response = await fetch(`${API_BASE}/api/stockup/collaboration/dispatch-documents/${encodeURIComponent(document.id)}/download`, { headers: authHeaders() });
+  if (!response.ok) throw new Error("发运文件下载失败。");
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = globalThis.document.createElement("a");
+  anchor.href = url;
+  anchor.download = document.fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export function issueStockupDispatchInstruction(shipmentId: string, payload: Record<string, unknown> = {}) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/issue-instruction`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function handoverStockupShipment(shipmentId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/handover`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function cancelStockupReservedShipment(shipmentId: string, reason: string) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>(`/api/stockup/collaboration/shipments/${encodeURIComponent(shipmentId)}/cancel-reservation`, { method: "POST", body: JSON.stringify({ reason }) });
 }
 
 export function fetchStockupCollaborationReceipts(filters: { status?: string; lifecycle?: "active" | "archived" | "deleted" | "all" } = {}) {
@@ -5345,8 +5382,44 @@ export function createStockupWarehouseWorkOrder(payload: Record<string, unknown>
   return requestJson<{ ok: boolean; idempotentReplay: boolean; workOrder: StockupWarehouseWorkOrder }>("/api/stockup/collaboration/warehouse-work-orders", {
     method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ workflowVersion: 2, ...payload }),
   });
+}
+
+export function fetchStockupProductRefs(filters: { codingStatus?: string; keyword?: string } = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
+  return requestJson<{ ok: boolean; productRefs: StockupProductRef[] }>(`/api/stockup/collaboration/product-refs${query.size ? `?${query}` : ""}`);
+}
+
+export function bindStockupFormalSku(productRefId: string, payload: { formalSku: string; productId?: string; productName?: string }) {
+  return requestJson<{ ok: boolean; idempotentReplay: boolean; productRef: StockupProductRef }>(`/api/stockup/collaboration/product-refs/${encodeURIComponent(productRefId)}/bind-sku`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function fetchStockupPurchaseOrders(filters: { status?: string; requestId?: string } = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
+  return requestJson<{ ok: boolean; purchaseOrders: StockupPurchaseOrder[] }>(`/api/stockup/collaboration/purchase-orders${query.size ? `?${query}` : ""}`);
+}
+
+export function createStockupPurchaseOrder(payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
+  return requestJson<{ ok: boolean; idempotentReplay: boolean; purchaseOrder: StockupPurchaseOrder }>("/api/stockup/collaboration/purchase-orders", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) });
+}
+
+export function recordStockupPurchaseEvent(purchaseOrderId: string, payload: { lineId: string; action: "receive" | "cancel" | "refund" | "reship"; quantity?: number; amountCny?: number; note?: string }) {
+  return requestJson<{ ok: boolean; purchaseOrder: StockupPurchaseOrder }>(`/api/stockup/collaboration/purchase-orders/${encodeURIComponent(purchaseOrderId)}/events`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function fetchStockupForwarders() {
+  return requestJson<{ ok: boolean; forwarders: StockupForwarder[] }>("/api/stockup/collaboration/forwarders");
+}
+
+export function createStockupForwarder(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; forwarderId: string }>("/api/stockup/collaboration/forwarders", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function createStockupCustomProcessingHandoff(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; handoffId: string; status: string }>("/api/stockup/collaboration/custom-processing-handoffs", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function publishStockupWarehouseWorkOrder(workOrderId: string, idempotencyKey = createStockupIdempotencyKey()) {
@@ -5362,6 +5435,14 @@ export function updateStockupWarehouseWorkOrder(workOrderId: string, payload: Re
     headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload),
   });
+}
+
+export function submitStockupWarehouseInspection(workOrderId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; workOrderId: string; status: string; exceptionCount: number }>(`/api/stockup/collaboration/warehouse-work-orders/${encodeURIComponent(workOrderId)}/inspection`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function reviewStockupWarehouseInspection(workOrderId: string, action: "approve" | "reject", note = "") {
+  return requestJson<{ ok: boolean; workOrderId: string; status: string; inventoryMovementId?: string }>(`/api/stockup/collaboration/warehouse-work-orders/${encodeURIComponent(workOrderId)}/inspection-review`, { method: "POST", body: JSON.stringify({ action, note }) });
 }
 
 export function fetchContainerLoadingBootstrap() {

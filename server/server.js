@@ -86,6 +86,7 @@ import { createOzonIntegrationService } from "./ozon-integration.js";
 import { initStockupCollaborationStore } from "./stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "./stockup-collaboration-service.js";
 import { createStockupCollaborationApi } from "./stockup-collaboration-api.js";
+import { createStockupDispatchDocumentService } from "./stockup-dispatch-documents.js";
 import { createContainerLoadingService } from "./container-loading-service.js";
 import { createContainerLoadingApi } from "./container-loading-api.js";
 import { initDomesticInventoryStore } from "./domestic-inventory-db.js";
@@ -248,10 +249,20 @@ let cachedOutsourcingOrders = attachProductionMaterialProgress(
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
-const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore);
-const containerLoadingService = createContainerLoadingService({ store: stockupCollaborationStore, stockupService: stockupCollaborationService });
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
+const stockupInventoryContext = (context = {}) => ({ ...domesticInventoryContextForAuth(context.auth), warehouseIds: [], countries: [] });
+const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore, {
+  inventoryGateway: {
+    createInspectionInbound: (input, context) => domesticInventoryService.createMovement({ ...input, type: "inbound", allowDuplicateSkus: true }, stockupInventoryContext(context), `stockup-inspection:${input.referenceNo}`),
+    reserveStock: (input, context) => domesticInventoryService.reserveStock(input, stockupInventoryContext(context), `stockup-reservation:${input.referenceNo}`),
+    releaseReservation: (reservationId, context) => domesticInventoryService.releaseReservation(reservationId, stockupInventoryContext(context)),
+    commitReservation: (reservationId, input, context) => domesticInventoryService.commitReservation(reservationId, input, stockupInventoryContext(context)),
+    recodeSku: (input, context) => domesticInventoryService.recodeSku(input, stockupInventoryContext(context)),
+  },
+});
+const stockupDispatchDocumentService = createStockupDispatchDocumentService({ outputDir: resolve(cacheDir, "stockup-dispatch-documents") });
+const containerLoadingService = createContainerLoadingService({ store: stockupCollaborationStore, stockupService: stockupCollaborationService });
 const collaborationBridgeStore = await initCollaborationBridgeStore(collaborationBridgeDbPath);
 const businessChainStore = await initBusinessChainStore(businessChainDbPath);
 const businessChainSyncService = createBusinessChainSyncService({ store: businessChainStore, fetchDataList: fetchJdyDataList });
@@ -351,6 +362,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   getAuth,
   appendActionLog,
   publishWarehouseTask: (...args) => collaborationBridge.publishWarehouseTask(...args),
+  generateDispatchDocuments: (shipment) => stockupDispatchDocumentService.generate(shipment),
   listWarehouses: () => {
     const optionByConnectionId = new Map(currentWmsWarehouseOptions().map((option) => [String(option.connectionId || ""), option]));
     return warehouseConnections
@@ -3613,13 +3625,15 @@ function getAgentAuth(req) {
   if (sessionAuth.role !== "guest") return sessionAuth;
 
   const apiKey = agentApiKeyStore.authenticate(bearerToken(req));
-  if (!apiKey || apiKey.scope !== "agent:read") return sessionAuth;
+  const agentScopes = Array.isArray(apiKey?.scopes) ? apiKey.scopes : String(apiKey?.scope || "").split(/[ ,]+/).filter(Boolean);
+  if (!apiKey || !agentScopes.includes("agent:read")) return sessionAuth;
   if ([directAuth.user.id, "legacy-internal"].includes(apiKey.userId)) {
     return {
       role: directAuth.role,
       user: publicAccessUser(directAuth.user),
       credentialType: "agent_api_key",
       apiKeyId: apiKey.id,
+      agentScopes,
     };
   }
 
@@ -3630,6 +3644,7 @@ function getAgentAuth(req) {
     user: publicAccessUser(currentUser),
     credentialType: "agent_api_key",
     apiKeyId: apiKey.id,
+    agentScopes,
   };
 }
 
@@ -7854,6 +7869,42 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/agent/stockup-request-drafts" && req.method === "POST") {
+      const auth = getAgentAuth(req);
+      if (auth.credentialType !== "agent_api_key" || !auth.agentScopes?.includes("stockup_request_draft_create")) {
+        sendJson(res, 403, { ok: false, code: "agent_scope_required", message: "当前 Agent API Key 未授权创建备货草稿。" });
+        return;
+      }
+      if (!hasPermission(auth, "stockup_request_create")) {
+        sendJson(res, 403, { ok: false, code: "business_permission_required", message: "API Key 所属用户没有创建备货需求的业务权限。" });
+        return;
+      }
+      const idempotencyKey = String(req.headers["idempotency-key"] || "").trim();
+      if (!idempotencyKey) {
+        sendJson(res, 400, { ok: false, code: "idempotency_key_required", message: "Agent 创建草稿必须提供 Idempotency-Key。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const dataScopes = auth.user?.dataScopes || {};
+        const context = {
+          auth,
+          viewAll: false,
+          viewCost: false,
+          revealSupplier: false,
+          countries: Array.isArray(dataScopes.countries) ? dataScopes.countries.map(String).filter(Boolean) : [],
+          warehouseIds: Array.isArray(dataScopes.warehouseIds) ? dataScopes.warehouseIds.map(String).filter(Boolean) : [],
+          skus: Array.isArray(dataScopes.skus) ? dataScopes.skus.map((value) => String(value).toUpperCase()).filter(Boolean) : [],
+        };
+        const result = stockupCollaborationService.createSpotRequest({ ...payload, workflowVersion: 2, submit: false, sourceType: "agent", sourceRef: auth.apiKeyId }, context, idempotencyKey);
+        appendActionLog(auth, "Agent 创建备货需求草稿", "stockup_collaboration_request", result.requestNo, { requestId: result.requestId, apiKeyId: auth.apiKeyId, idempotentReplay: Boolean(result.idempotentReplay) });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode || 400), { ok: false, code: error?.code || "agent_stockup_draft_error", message: error?.message || "创建备货草稿失败。" });
+      }
+      return;
+    }
+
     if (await agentIndexLayer.handle(req, res, url)) return;
 
     if (await containerLoadingApi(req, res, url)) return;
@@ -8029,6 +8080,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         scope: "agent:read",
+        availableScopes: ["agent:read", "stockup_request_draft_create"],
         maxActiveKeys: 5,
         keys: agentApiKeyStore.listForUser(auth.user.id),
       });
@@ -8048,6 +8100,7 @@ const server = http.createServer(async (req, res) => {
           userId: auth.user.id,
           name: payload.name,
           expiresInDays: payload.expiresInDays,
+          scopes: Array.isArray(payload.scopes) ? payload.scopes : ["agent:read"],
         });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error.message || "创建 Agent API Key 失败。" });

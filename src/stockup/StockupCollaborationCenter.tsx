@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { BellRing, Calculator, ClipboardList, CircleDollarSign, PackageCheck, Plus, RefreshCw, Route, Sparkles, Truck, Warehouse } from "lucide-react";
+import { BellRing, Calculator, ClipboardList, CircleDollarSign, PackageCheck, Plus, RefreshCw, Route, ShoppingCart, Sparkles, Truck, Warehouse } from "lucide-react";
 import {
   AuthUser,
   CatalogProduct,
@@ -18,14 +18,16 @@ import { CostSettlementWorkspace } from "./CostSettlementWorkspace";
 import { ExecutionQueue } from "./ExecutionQueue";
 import { MonthlyCostReport } from "./MonthlyCostReport";
 import { MyRequests } from "./MyRequests";
+import { ProcurementWorkspace } from "./ProcurementWorkspace";
 import { RequestCreatePanel } from "./RequestCreatePanel";
 import { RequestDetailDrawer } from "./RequestDetailDrawer";
 import { ShipmentWorkspace } from "./ShipmentWorkspace";
+import { SpotDispatchWorkspace } from "./SpotDispatchWorkspace";
 import { WarehouseOperationsWorkbench } from "./WarehouseOperationsWorkbench";
 import "./stockup-collaboration.css";
 import "./warehouse-operations.css";
 
-export type StockupCollaborationSection = "requests" | "execution" | "warehouse" | "logistics" | "costs" | "report";
+export type StockupCollaborationSection = "requests" | "procurement" | "execution" | "warehouse" | "logistics" | "costs" | "report";
 
 type Props = {
   user: AuthUser;
@@ -117,6 +119,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
 
   const sections = [
     { id: "requests" as const, label: "我的需求", detail: "提交与查看进度", icon: ClipboardList, visible: true },
+    { id: "procurement" as const, label: "现货采购", detail: "1688 订单与 SKU", icon: ShoppingCart, visible: permissions.canAccept || permissions.canExecute },
     { id: "execution" as const, label: "供应链执行", detail: "受理、采购与生产", icon: PackageCheck, visible: permissions.canAccept || permissions.canExecute },
     { id: "warehouse" as const, label: "国内仓作业", detail: "签收、验货与发运分流", icon: Warehouse, visible: permissions.canWarehouseView || permissions.canCost },
     { id: "logistics" as const, label: "物流与到仓", detail: "发运、ETA与收货", icon: Truck, visible: permissions.canShip || permissions.canReceive },
@@ -135,9 +138,10 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     {error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
 
     {section === "requests" ? <MyRequests payload={payload} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
+    {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} onChanged={() => loadAll(true)} /> : null}
     {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
     {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} onChanged={() => loadAll(true)} /> : null}
-    {section === "logistics" ? <ShipmentWorkspace requests={payload?.items || []} shipments={shipments} receipts={receipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /> : null}
+    {section === "logistics" ? <><SpotDispatchWorkspace shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canReceive={permissions.canReceive} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /><ShipmentWorkspace requests={(payload?.items || []).filter((item) => item.workflowVersion !== 2)} shipments={shipments.filter((item) => item.workflowVersion !== 2)} receipts={receipts.filter((item) => !shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion || shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion !== 2)} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></> : null}
     {section === "costs" ? <CostSettlementWorkspace receipts={receipts} initialReceiptId={costReceiptId} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
     {section === "report" ? <MonthlyCostReport canManage={permissions.canLock} /> : null}
 

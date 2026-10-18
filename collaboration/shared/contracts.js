@@ -25,6 +25,7 @@ export const warehouseLineSchema = z.object({
 
 const stockupWorkOrderPayloadSchema = z.object({
   workOrderId: limitedText(160).min(1),
+  workflowVersion: z.number().int().min(1).max(2).optional().default(1),
   requestNo: limitedText(120).min(1),
   expectedArrivalAt: isoDateTime.optional().default(""),
   senderName: limitedText(200).optional().default(""),
@@ -34,6 +35,7 @@ const stockupWorkOrderPayloadSchema = z.object({
   instructions: limitedText(5_000).min(1),
   destinationCountry: limitedText(120).optional().default(""),
   destinationWarehouseName: limitedText(200).optional().default(""),
+  lineRequirements: z.record(limitedText(160), z.object({ shelfLifeManaged: z.boolean().optional().default(false) }).strict()).optional().default({}),
   expenseCategories: z.array(limitedText(40).min(1)).max(30).optional().default([]),
 }).strict();
 
@@ -510,6 +512,35 @@ const stockupInspectionLineSchema = z.object({
   inspectionNote: limitedText(2_000).optional().default(""),
 }).strict();
 
+const stockupInspectionLotV2Schema = z.object({
+  quantity: z.number().finite().positive(),
+  lotNo: limitedText(100).min(1),
+  barcode: limitedText(100).min(1),
+  productionDate: limitedText(10).min(10),
+  expiryDate: limitedText(10).optional().default(""),
+  cartonCount: z.number().finite().positive(),
+  unitsPerCarton: z.number().finite().positive(),
+  looseQuantity: quantity.optional().default(0),
+  cartonLengthCm: z.number().finite().positive(),
+  cartonWidthCm: z.number().finite().positive(),
+  cartonHeightCm: z.number().finite().positive(),
+  cartonWeightKg: z.number().finite().positive(),
+}).strict();
+
+const stockupInspectionLineV2Schema = z.object({
+  id: limitedText(160).min(1),
+  receivedQty: quantity,
+  goodQty: quantity,
+  damagedQty: quantity,
+  shortageQty: quantity,
+  pendingQty: quantity,
+  requiresRepack: z.boolean().optional().default(false),
+  replacementCartonCount: quantity.optional().default(0),
+  inspectionNote: limitedText(2_000).optional().default(""),
+  lots: z.array(stockupInspectionLotV2Schema).max(100),
+  evidence: z.array(z.object({ kind: z.enum(["damage", "shortage", "pending", "repack_before", "repack_after", "normal"]), attachmentId: limitedText(160).min(1), fileName: limitedText(240).optional().default("") }).strict()).max(100).default([]),
+}).strict();
+
 const stockupExpenseSchema = z.object({
   category: limitedText(40).min(1),
   name: limitedText(160).min(1),
@@ -547,7 +578,7 @@ export const workItemActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("report_exception"), category: limitedText(80).min(1), note: limitedText(5_000).min(1) }).strict(),
   z.object({ action: z.enum(["inbound_confirm", "outbound_confirm", "transfer_receive"]), lines: z.array(actionLineSchema).min(1).max(2_000), note: limitedText(2_000).optional().default("") }).strict(),
   z.object({ action: z.literal("inventory_adjustment"), lines: z.array(adjustmentLineSchema).min(1).max(2_000), reason: limitedText(2_000).min(1) }).strict(),
-  z.object({ action: z.literal("stockup_process"), lines: z.array(stockupInspectionLineSchema).min(1).max(2_000), expenses: z.array(stockupExpenseSchema).max(200).default([]), routes: z.array(stockupRouteSchema).min(1).max(200), note: limitedText(2_000).optional().default("") }).strict(),
+  z.object({ action: z.literal("stockup_process"), lines: z.array(z.union([stockupInspectionLineSchema, stockupInspectionLineV2Schema])).min(1).max(2_000), expenses: z.array(stockupExpenseSchema).max(200).default([]), routes: z.array(stockupRouteSchema).max(200).default([]), note: limitedText(2_000).optional().default("") }).strict(),
   z.object({ action: z.literal("complete"), note: limitedText(2_000).optional().default("") }).strict(),
 ]);
 

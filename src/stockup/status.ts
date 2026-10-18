@@ -1,5 +1,16 @@
 export const stockupRequestStatusLabels: Record<string, string> = {
   draft: "草稿",
+  submitted: "已提交",
+  purchasing: "采购中",
+  warehouse_inspection: "仓库验货",
+  inspection_review: "验货待审核",
+  inventory_ready: "国内库存就绪",
+  inventory_reserved: "库存已锁定",
+  wms_created: "海外仓单已创建",
+  instruction_issued: "发货指令已下发",
+  handed_over: "已交货代",
+  overseas_received: "海外仓已收货",
+  cost_locked: "到仓成本已锁定",
   pending_acceptance: "待受理",
   needs_changes: "待补充",
   accepted: "已受理",
@@ -34,9 +45,9 @@ export const stockupTaskStatusLabels: Record<string, string> = {
 };
 
 export function statusTone(status: string) {
-  if (["completed", "arrived", "received", "shelved"].includes(status)) return "success";
+  if (["completed", "arrived", "received", "shelved", "inventory_ready", "handed_over", "overseas_received", "cost_locked"].includes(status)) return "success";
   if (["needs_changes", "rejected", "cancelled", "terminated"].includes(status)) return "danger";
-  if (["pending_acceptance", "pending_order", "waiting_shipment", "shipped", "partially_arrived"].includes(status)) return "warning";
+  if (["submitted", "pending_acceptance", "pending_order", "waiting_shipment", "shipped", "partially_arrived", "inspection_review", "inventory_reserved", "wms_created", "instruction_issued"].includes(status)) return "warning";
   return "active";
 }
 export function formatStockupDate(value?: string) {

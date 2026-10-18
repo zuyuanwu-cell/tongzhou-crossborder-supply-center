@@ -69,6 +69,8 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
             <dl><div><dt><CalendarClock size={15} />期望到仓</dt><dd>{formatStockupDate(request.expectedArrivalAt)}</dd></div><div><dt><Route size={15} />目的地</dt><dd>{request.destinationCountry} · {request.destinationWarehouseName}</dd></div><div><dt><ClipboardCheck size={15} />负责人</dt><dd>{request.assigneeName || "等待受理"}</dd></div></dl>
           </section>
 
+          {request.workflowVersion === 2 && request.status === "draft" ? <section className="sc-action-strip"><div><b>{request.sourceType === "agent" ? "Agent 已生成需求草稿" : request.sourceType === "recommendation" ? "备货建议已生成现货草稿" : "现货备货草稿待提交"}</b><span>请人工核对目的仓、数量和商品信息；提交后才能建立采购单。</span></div><div><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("submit", () => changeStockupCollaborationRequest(request.id, "submit"))}><Send size={17} />审核并提交</button></div></section> : null}
+
           {canAccept && request.status === "pending_acceptance" ? <section className="sc-action-strip"><div><b>这张需求正在等待供应链受理</b><span>受理后可按产品创建采购或生产任务。</span></div><div><button className="sc-button sc-button-secondary" disabled={Boolean(busy)} onClick={() => run("changes", () => changeStockupCollaborationRequest(request.id, "request-changes", { note: window.prompt("请填写需要运营补充的内容") || "请补充需求资料" }))}>要求补充</button><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("accept", () => changeStockupCollaborationRequest(request.id, "accept"))}><Check size={17} />受理需求</button></div></section> : null}
 
           <section className="sc-detail-section">
@@ -79,7 +81,7 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
                   <div className="sc-line-summary"><span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <Boxes size={22} />}</span><div><b>{line.sku}</b><span>{line.productName}</span><small>{line.method} · {line.requestedQty} {line.unit}</small></div><div className="sc-line-fulfillment"><b>{line.fulfilledQty}/{line.requestedQty}</b><small>已到仓 / 需求</small></div></div>
                   <div className="sc-task-list">
                     {(taskGroups[line.id] || []).map((task) => <button key={task.id} onClick={() => canExecute && openProgress(task)}><span className={`sc-status-dot sc-status-${statusTone(task.status)}`} /><div><b>{task.taskNo}</b><small>{task.supplierName || "未填写供应方"} · 计划 {task.plannedQty}</small></div><span>{stockupTaskStatusLabels[task.status] || task.status}</span><ChevronRight size={16} /></button>)}
-                    {canExecute && ["accepted", "in_progress"].includes(request.status) ? <button className="sc-add-task" onClick={() => openTask(line.id)}><Plus size={16} />拆分采购 / 生产任务</button> : null}
+                    {request.workflowVersion !== 2 && canExecute && ["accepted", "in_progress"].includes(request.status) ? <button className="sc-add-task" onClick={() => openTask(line.id)}><Plus size={16} />拆分采购 / 生产任务</button> : null}
                   </div>
                 </article>
               ))}

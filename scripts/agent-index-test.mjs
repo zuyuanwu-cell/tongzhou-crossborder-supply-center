@@ -165,6 +165,7 @@ async function main() {
   const openApi = await request("/api/agent/openapi.json");
   assert.equal(openApi.openapi, "3.1.0");
   assert.ok(openApi.paths["/api/agent/search"]);
+  assert.ok(openApi.paths["/api/agent/stockup-request-drafts"]);
   assert.ok(openApi.paths["/api/ai/agent/context"]);
   assert.ok(openApi.paths["/api/ai/agent/chat"]);
   assert.equal(openApi.paths["/api/movement-history/compare"].get.operationId, "compareMovementAndInventory");
@@ -234,6 +235,61 @@ async function main() {
   assert.ok(keyList.keys.some((key) => key.id === createdKey.key.id));
   assert.ok(!JSON.stringify(keyList).includes(createdKey.apiKey), "Key list must not return the full API key.");
   assert.ok(!JSON.stringify(keyList).includes("keyHash"), "Key list must not return stored key hashes.");
+
+  const stockupDraftPayload = {
+    project: "Agent 备货测试",
+    destinationCountry: "印度尼西亚",
+    destinationWarehouseId: "id-jkt-test",
+    destinationWarehouseName: "雅加达测试仓",
+    expectedArrivalAt: "2026-12-31",
+    reason: "Agent 幂等草稿验收",
+    lines: [{ sku: "", productName: "Agent 待编码商品", procurementUrl: "https://detail.1688.com/example", requestedQty: 12, unit: "件" }],
+  };
+  const readOnlyDraftDenied = await request("/api/agent/stockup-request-drafts", {
+    token: createdKey.apiKey,
+    method: "POST",
+    headers: { "Idempotency-Key": "agent-stockup-read-only" },
+    body: JSON.stringify(stockupDraftPayload),
+    expectedStatus: 403,
+  });
+  assert.equal(readOnlyDraftDenied.code, "agent_scope_required");
+
+  const stockupDraftKey = await request("/api/agent-keys", {
+    token,
+    method: "POST",
+    body: JSON.stringify({ name: "Stockup draft integration test", expiresInDays: 30, scopes: ["agent:read", "stockup_request_draft_create"] }),
+    expectedStatus: 201,
+  });
+  assert.ok(stockupDraftKey.key.scopes.includes("stockup_request_draft_create"));
+  await request("/api/agent/stockup-request-drafts", {
+    token: stockupDraftKey.apiKey,
+    method: "POST",
+    body: JSON.stringify(stockupDraftPayload),
+    expectedStatus: 400,
+  });
+  const createdDraft = await request("/api/agent/stockup-request-drafts", {
+    token: stockupDraftKey.apiKey,
+    method: "POST",
+    headers: { "Idempotency-Key": "agent-stockup-draft-1" },
+    body: JSON.stringify(stockupDraftPayload),
+    expectedStatus: 201,
+  });
+  assert.equal(createdDraft.status, "draft");
+  assert.equal(createdDraft.workflowVersion, 2);
+  const replayedDraft = await request("/api/agent/stockup-request-drafts", {
+    token: stockupDraftKey.apiKey,
+    method: "POST",
+    headers: { "Idempotency-Key": "agent-stockup-draft-1" },
+    body: JSON.stringify(stockupDraftPayload),
+  });
+  assert.equal(replayedDraft.requestId, createdDraft.requestId);
+  assert.equal(replayedDraft.idempotentReplay, true);
+  const draftDetail = await request(`/api/stockup/collaboration/requests/${encodeURIComponent(createdDraft.requestId)}`, { token });
+  assert.equal(draftDetail.request.status, "draft");
+  assert.equal(draftDetail.request.sourceType, "agent");
+  assert.match(draftDetail.request.lines[0].sku, /^TMP-/);
+  await request(`/api/agent-keys/${encodeURIComponent(stockupDraftKey.key.id)}`, { token, method: "DELETE" });
+  console.log("[ok] scoped Agent stockup draft, forced draft state and idempotency");
 
   await request("/api/agent/resources/qualification?page=1&limit=10", {
     token: createdKey.apiKey,
