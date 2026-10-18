@@ -138,6 +138,21 @@ async function expectJson(path, options = {}) {
   return data;
 }
 
+async function expectRejectedJson(path, options = {}, expectedStatus = 400) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`${path} returned non-JSON response: ${text.slice(0, 200)}`);
+  }
+  if (response.status !== expectedStatus || data.ok !== false) {
+    throw new Error(`${path} should have been rejected with ${expectedStatus}: ${response.status} ${JSON.stringify(data).slice(0, 500)}`);
+  }
+  return data;
+}
+
 async function expectHtmlRoot() {
   const response = await fetch(`${baseUrl}/`);
   const text = await response.text();
@@ -360,14 +375,41 @@ async function main() {
   });
   const collaborationRobot = robots.robots?.find((robot) => robot.name === "Smoke collaboration robot");
   if (!collaborationRobot?.id) throw new Error("Smoke collaboration robot was not created.");
-  await expectJson("/api/wecom-notifications/scenes", {
+  const emptyRecipientHeaders = { ...authHeaders, "Content-Type": "application/json" };
+  await expectRejectedJson("/api/wecom-notifications/test", {
+    method: "POST",
+    headers: emptyRecipientHeaders,
+    body: JSON.stringify({ robotIds: [], text: "should not send" }),
+  });
+  await expectRejectedJson("/api/wecom-notifications/operating-summary", {
+    method: "POST",
+    headers: emptyRecipientHeaders,
+    body: JSON.stringify({ robotIds: [], linkUrl: "#dashboard" }),
+  });
+  await expectRejectedJson("/api/wecom-notifications/schedules", {
+    method: "POST",
+    headers: emptyRecipientHeaders,
+    body: JSON.stringify({ name: "unsafe empty schedule", robotIds: [], enabled: true, mode: "daily", time: "09:00", text: "should not save" }),
+  });
+  await expectRejectedJson("/api/wecom-notifications/scenes", {
+    method: "POST",
+    headers: emptyRecipientHeaders,
+    body: JSON.stringify({ scenes: { stockupRecommendation: { enabled: true, robotIds: [], triggerMode: "daily", scheduleTime: "09:15" } } }),
+  });
+  console.log("[ok] WeCom test, summary, schedule and scene APIs reject an empty recipient scope");
+  const sceneConfiguration = await expectJson("/api/wecom-notifications/scenes", {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({ scenes: {
       afterSalesNew: { enabled: true, robotIds: [collaborationRobot.id], warehouseRobotIds: { "id-shenniu-jakarta": [collaborationRobot.id] }, linkUrl: "#after-sales" },
       afterSalesProgress: { enabled: true, robotIds: [collaborationRobot.id], linkUrl: "#after-sales" },
+      stockupRecommendation: { enabled: true, robotIds: [collaborationRobot.id], triggerMode: "daily", scheduleTime: "09:15", linkUrl: "#stockup" },
     } }),
   });
+  if (sceneConfiguration.scenes?.stockupRecommendation?.triggerMode !== "daily" || sceneConfiguration.scenes?.stockupRecommendation?.scheduleTime !== "09:15") {
+    throw new Error(`Stockup alert schedule was not persisted: ${JSON.stringify(sceneConfiguration.scenes?.stockupRecommendation)}`);
+  }
+  console.log("[ok] stockup alert supports an explicit Beijing-time daily schedule");
   const projectTeams = await expectJson("/api/wecom-notifications/project-teams", {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },

@@ -659,9 +659,13 @@ export type WecomSceneConfig = {
   robotIds: string[];
   linkUrl: string;
   extraText: string;
+  triggerMode?: "change" | "daily" | "both";
+  scheduleTime?: string;
   lastSignature?: string;
   lastReportDate?: string;
   lastSentAt?: string;
+  lastScheduleRunKey?: string;
+  lastError?: string;
 };
 
 export type WecomProjectTeam = {

@@ -1127,6 +1127,34 @@ function normalizeWarehouseRobotIds(value) {
     .filter(([warehouseId, robotIds]) => warehouseId && robotIds.length));
 }
 
+function normalizeWecomRobotIds(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean))];
+}
+
+function normalizeWecomDailyTime(value, fallback = "09:00") {
+  const candidate = String(value || "").trim();
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(candidate) ? candidate : fallback;
+}
+
+function normalizeStockupTriggerMode(value) {
+  return ["change", "daily", "both"].includes(value) ? value : "change";
+}
+
+function enabledWecomRobotIds() {
+  return new Set((cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id));
+}
+
+function validateExplicitWecomRecipients(value, label = "推送") {
+  const robotIds = normalizeWecomRobotIds(value);
+  if (!robotIds.length) return { ok: false, robotIds, message: `${label}必须明确选择至少一个接收群，未选择时不会发送。` };
+  const enabledIds = enabledWecomRobotIds();
+  const unavailable = robotIds.filter((id) => !enabledIds.has(id));
+  if (unavailable.length) return { ok: false, robotIds, message: `${label}包含已停用或不存在的机器人，请重新选择接收群。` };
+  return { ok: true, robotIds, message: "" };
+}
+
 function buildWecomNotificationPayload(input = {}) {
   const now = new Date().toISOString();
   const robots = (input.robots || [])
@@ -1145,7 +1173,7 @@ function buildWecomNotificationPayload(input = {}) {
     .map((schedule) => ({
       id: String(schedule.id || wecomId("schedule")),
       name: String(schedule.name || "").trim(),
-      robotIds: Array.isArray(schedule.robotIds) ? schedule.robotIds.map(String).filter(Boolean) : [],
+      robotIds: normalizeWecomRobotIds(schedule.robotIds),
       enabled: schedule.enabled !== false,
       mode: schedule.mode === "interval" ? "interval" : "daily",
       time: String(schedule.time || "09:00").trim(),
@@ -1162,18 +1190,22 @@ function buildWecomNotificationPayload(input = {}) {
     .filter((schedule) => schedule.name && schedule.robotIds.length && schedule.text);
   const scenes = {
     stockupRecommendation: {
-      enabled: input.scenes?.stockupRecommendation?.enabled !== false,
-      robotIds: Array.isArray(input.scenes?.stockupRecommendation?.robotIds) ? input.scenes.stockupRecommendation.robotIds.map(String).filter(Boolean) : [],
+      enabled: Boolean(input.scenes?.stockupRecommendation?.enabled),
+      robotIds: normalizeWecomRobotIds(input.scenes?.stockupRecommendation?.robotIds),
       linkUrl: String(input.scenes?.stockupRecommendation?.linkUrl || "").trim(),
       extraText: String(input.scenes?.stockupRecommendation?.extraText || "").trim(),
+      triggerMode: normalizeStockupTriggerMode(input.scenes?.stockupRecommendation?.triggerMode),
+      scheduleTime: normalizeWecomDailyTime(input.scenes?.stockupRecommendation?.scheduleTime, "09:00"),
       lastSignature: input.scenes?.stockupRecommendation?.lastSignature || "",
       lastReportDate: input.scenes?.stockupRecommendation?.lastReportDate || "",
       lastItemKeys: Array.isArray(input.scenes?.stockupRecommendation?.lastItemKeys) ? input.scenes.stockupRecommendation.lastItemKeys.map(String).filter(Boolean) : [],
       lastSentAt: input.scenes?.stockupRecommendation?.lastSentAt || "",
+      lastScheduleRunKey: input.scenes?.stockupRecommendation?.lastScheduleRunKey || "",
+      lastError: input.scenes?.stockupRecommendation?.lastError || "",
     },
     inventorySnapshot: {
       enabled: Boolean(input.scenes?.inventorySnapshot?.enabled),
-      robotIds: Array.isArray(input.scenes?.inventorySnapshot?.robotIds) ? input.scenes.inventorySnapshot.robotIds.map(String).filter(Boolean) : [],
+      robotIds: normalizeWecomRobotIds(input.scenes?.inventorySnapshot?.robotIds),
       linkUrl: String(input.scenes?.inventorySnapshot?.linkUrl || "").trim(),
       extraText: String(input.scenes?.inventorySnapshot?.extraText || "").trim(),
       lastSignature: input.scenes?.inventorySnapshot?.lastSignature || "",
@@ -1181,7 +1213,7 @@ function buildWecomNotificationPayload(input = {}) {
     },
     qualificationExpiry: {
       enabled: Boolean(input.scenes?.qualificationExpiry?.enabled),
-      robotIds: Array.isArray(input.scenes?.qualificationExpiry?.robotIds) ? input.scenes.qualificationExpiry.robotIds.map(String).filter(Boolean) : [],
+      robotIds: normalizeWecomRobotIds(input.scenes?.qualificationExpiry?.robotIds),
       linkUrl: String(input.scenes?.qualificationExpiry?.linkUrl || "").trim(),
       extraText: String(input.scenes?.qualificationExpiry?.extraText || "").trim(),
       lastSignature: input.scenes?.qualificationExpiry?.lastSignature || "",
@@ -1189,7 +1221,7 @@ function buildWecomNotificationPayload(input = {}) {
     },
     afterSalesNew: {
       enabled: Boolean(input.scenes?.afterSalesNew?.enabled),
-      robotIds: Array.isArray(input.scenes?.afterSalesNew?.robotIds) ? input.scenes.afterSalesNew.robotIds.map(String).filter(Boolean) : [],
+      robotIds: normalizeWecomRobotIds(input.scenes?.afterSalesNew?.robotIds),
       warehouseRobotIds: normalizeWarehouseRobotIds(input.scenes?.afterSalesNew?.warehouseRobotIds),
       linkUrl: String(input.scenes?.afterSalesNew?.linkUrl || "#after-sales").trim(),
       extraText: String(input.scenes?.afterSalesNew?.extraText || "").trim(),
@@ -1197,7 +1229,7 @@ function buildWecomNotificationPayload(input = {}) {
     },
     afterSalesProgress: {
       enabled: Boolean(input.scenes?.afterSalesProgress?.enabled),
-      robotIds: Array.isArray(input.scenes?.afterSalesProgress?.robotIds) ? input.scenes.afterSalesProgress.robotIds.map(String).filter(Boolean) : [],
+      robotIds: normalizeWecomRobotIds(input.scenes?.afterSalesProgress?.robotIds),
       linkUrl: String(input.scenes?.afterSalesProgress?.linkUrl || "#after-sales").trim(),
       extraText: String(input.scenes?.afterSalesProgress?.extraText || "").trim(),
       lastSentAt: input.scenes?.afterSalesProgress?.lastSentAt || "",
@@ -1539,28 +1571,33 @@ function stockupMarkdownItem(item, index) {
   ].join("\n");
 }
 
-async function notifyStockupRecommendation(payload, reason = "refresh") {
+async function notifyStockupRecommendation(payload, reason = "refresh", options = {}) {
   const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
-  if (!scene?.enabled) return;
-  const robotIds = scene.robotIds?.length ? scene.robotIds : (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
-  if (!robotIds.length) return;
+  const force = options.force === true;
+  if (!scene?.enabled) return [];
+  if (!force && scene.triggerMode === "daily") return [];
+  const robotIds = normalizeWecomRobotIds(scene.robotIds);
+  if (!robotIds.length) return [];
   const signature = stockupSignature(payload);
   const reportDate = dateKeyInTimezone(new Date(), inventorySnapshotTimezone);
-  const firstReportToday = scene.lastReportDate !== reportDate;
-  if (!signature || (!firstReportToday && scene.lastSignature === signature)) return;
+  if (!signature || (!force && scene.lastSignature === signature)) return [];
   const currentKeys = (payload.recommendations || []).map((item) => item.recommendationKey || stockupRecommendationKey(item)).filter(Boolean);
   const previousKeys = new Set(scene.lastItemKeys || []);
   const newItems = (payload.recommendations || []).filter((item) => !previousKeys.has(item.recommendationKey || stockupRecommendationKey(item)));
-  scene.lastSignature = signature;
-  scene.lastItemKeys = currentKeys;
-  if (!firstReportToday && !newItems.length && previousKeys.size) {
-    saveWecomNotificationCache();
-    return;
+  if (!force) {
+    scene.lastSignature = signature;
+    scene.lastItemKeys = currentKeys;
   }
-  const visibleItems = (newItems.length ? newItems : payload.recommendations || []).slice(0, 8);
+  if (!force && !newItems.length && previousKeys.size) {
+    saveWecomNotificationCache();
+    return [];
+  }
+  const visibleItems = (force ? payload.recommendations || [] : (newItems.length ? newItems : payload.recommendations || [])).slice(0, 8);
   const fallbackContent = [
-    "### 备货建议提醒",
-    `新增 ${newItems.length || visibleItems.length} 个 SKU 需要关注备货，当前净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`,
+    force ? "### 定时备货预警" : "### 备货建议提醒",
+    force
+      ? `当前 ${payload.counts?.recommendations || 0} 个 SKU 需要关注备货，净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`
+      : `新增 ${newItems.length || visibleItems.length} 个 SKU 需要关注备货，当前净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`,
     scene.extraText,
     visibleItems.map(stockupMarkdownItem).join("\n\n"),
     notificationLinkLine(scene.linkUrl, "查看备货中心"),
@@ -1588,6 +1625,7 @@ async function notifyStockupRecommendation(payload, reason = "refresh") {
     scene.lastSentAt = new Date().toISOString();
   }
   saveWecomNotificationCache();
+  return results;
 }
 
 async function notifyInventorySnapshot(snapshot) {
@@ -1642,7 +1680,7 @@ function qualificationExpiryMarkdownItem(item, index) {
 async function notifyQualificationExpiry(payload, reason = "refresh") {
   const scene = cachedWecomNotifications.scenes?.qualificationExpiry;
   if (!scene?.enabled) return;
-  const robotIds = scene.robotIds?.length ? scene.robotIds : (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
+  const robotIds = normalizeWecomRobotIds(scene.robotIds);
   if (!robotIds.length) return;
   const rows = qualificationExpiryRows(payload, 30);
   if (!rows.length) return;
@@ -1742,6 +1780,35 @@ function shouldRunSchedule(schedule, now = new Date()) {
   return minute >= target && minute < target + 2 && schedule.lastRunKey !== scheduleRunKey(schedule, now);
 }
 
+function stockupSceneScheduleRunKey(scene, now = new Date()) {
+  return `${dateKeyInTimezone(now)}-${normalizeWecomDailyTime(scene?.scheduleTime, "09:00")}`;
+}
+
+function shouldRunStockupSceneSchedule(scene, now = new Date()) {
+  if (!scene?.enabled || !["daily", "both"].includes(scene.triggerMode)) return false;
+  if (!normalizeWecomRobotIds(scene.robotIds).length) return false;
+  const minute = minutesInTimezone(now);
+  const [hourText, minuteText] = normalizeWecomDailyTime(scene.scheduleTime, "09:00").split(":");
+  const target = Number(hourText) * 60 + Number(minuteText);
+  return minute >= target && minute < target + 2 && scene.lastScheduleRunKey !== stockupSceneScheduleRunKey(scene, now);
+}
+
+async function runScheduledStockupScene(now = new Date()) {
+  const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
+  if (!shouldRunStockupSceneSchedule(scene, now)) return;
+  scene.lastScheduleRunKey = stockupSceneScheduleRunKey(scene, now);
+  scene.lastError = "";
+  const recipientCheck = validateExplicitWecomRecipients(scene.robotIds, "备货预警定时推送");
+  if (!recipientCheck.ok) {
+    scene.lastError = recipientCheck.message;
+    return;
+  }
+  const payload = buildCurrentStockupPayload({ notify: false, reason: "wecom_scheduled_stockup" });
+  const results = await notifyStockupRecommendation(payload, "scheduled", { force: true });
+  const failed = (results || []).filter((item) => !item.ok);
+  scene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
+}
+
 async function runWecomSchedules() {
   if (wecomScheduleRunning) return;
   wecomScheduleRunning = true;
@@ -1760,6 +1827,7 @@ async function runWecomSchedules() {
       const failed = results.filter((item) => !item.ok);
       schedule.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("; ") : "";
     }
+    await runScheduledStockupScene();
     cachedWecomNotifications.updatedAt = new Date().toISOString();
     saveWecomNotificationCache();
   } finally {
@@ -9911,10 +9979,10 @@ const server = http.createServer(async (req, res) => {
       const schedule = {
         id: String(payload.id || wecomId("schedule")),
         name: String(payload.name || "").trim(),
-        robotIds: Array.isArray(payload.robotIds) ? payload.robotIds.map(String).filter(Boolean) : [],
+        robotIds: normalizeWecomRobotIds(payload.robotIds),
         enabled: payload.enabled !== false,
         mode: payload.mode === "interval" ? "interval" : "daily",
-        time: String(payload.time || "09:00").trim(),
+        time: normalizeWecomDailyTime(payload.time, "09:00"),
         intervalMinutes: Math.max(5, Math.min(1440, Number(payload.intervalMinutes) || 60)),
         text: String(payload.text || "").trim(),
         linkUrl: String(payload.linkUrl || "").trim(),
@@ -9929,6 +9997,16 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, message: "定时通知名称、机器人和推送文字不能为空。" });
         return;
       }
+      if (schedule.mode === "daily" && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(payload.time || ""))) {
+        sendJson(res, 400, { ok: false, message: "定时推送时间格式不正确，请选择 00:00 至 23:59 的北京时间。" });
+        return;
+      }
+      const recipientCheck = validateExplicitWecomRecipients(schedule.robotIds, "定时推送");
+      if (!recipientCheck.ok) {
+        sendJson(res, 400, { ok: false, message: recipientCheck.message });
+        return;
+      }
+      schedule.robotIds = recipientCheck.robotIds;
       cachedWecomNotifications.schedules = [
         ...(cachedWecomNotifications.schedules || []).filter((item) => item.id !== schedule.id),
         schedule,
@@ -9974,7 +10052,13 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      cachedWecomNotifications = buildWecomNotificationPayload({
+      const stockupSceneInput = payload.scenes?.stockupRecommendation;
+      if (stockupSceneInput?.enabled && ["daily", "both"].includes(stockupSceneInput.triggerMode)
+        && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(stockupSceneInput.scheduleTime || ""))) {
+        sendJson(res, 400, { ok: false, message: "备货预警定时推送时间格式不正确，请选择有效的北京时间。", sceneKey: "stockupRecommendation" });
+        return;
+      }
+      const nextNotifications = buildWecomNotificationPayload({
         ...cachedWecomNotifications,
         scenes: {
           ...cachedWecomNotifications.scenes,
@@ -9982,6 +10066,27 @@ const server = http.createServer(async (req, res) => {
         },
         updatedAt: new Date().toISOString(),
       });
+      const sceneEntries = Object.entries(nextNotifications.scenes || {});
+      for (const [sceneKey, scene] of sceneEntries) {
+        if (!scene?.enabled) continue;
+        const warehouseRobotIds = sceneKey === "afterSalesNew"
+          ? Object.values(scene.warehouseRobotIds || {}).flatMap((ids) => normalizeWecomRobotIds(ids))
+          : [];
+        const allRobotIds = [...new Set([...normalizeWecomRobotIds(scene.robotIds), ...warehouseRobotIds])];
+        const sceneLabels = {
+          stockupRecommendation: "备货预警",
+          inventorySnapshot: "库存快照",
+          qualificationExpiry: "资质到期",
+          afterSalesNew: "新售后/仓库工单",
+          afterSalesProgress: "协同进度",
+        };
+        const recipientCheck = validateExplicitWecomRecipients(allRobotIds, `${sceneLabels[sceneKey] || "场景"}通知`);
+        if (!recipientCheck.ok) {
+          sendJson(res, 400, { ok: false, message: recipientCheck.message, sceneKey });
+          return;
+        }
+      }
+      cachedWecomNotifications = nextNotifications;
       saveWecomNotificationCache();
       appendActionLog(getAuth(req), "更新企业微信场景配置", "wecom_scene", "场景推送", {
         sceneKeys: Object.keys(payload.scenes || {}),
@@ -10006,18 +10111,15 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, { ok: true, content, results: [], ...publicWecomNotificationPayload() });
         return;
       }
-      const selectedRobotIds = Array.isArray(payload.robotIds) ? payload.robotIds.map(String).filter(Boolean) : [];
-      const enabledRobotIds = (cachedWecomNotifications.robots || []).filter((robot) => robot.enabled).map((robot) => robot.id);
-      const robotIds = selectedRobotIds.length ? selectedRobotIds : enabledRobotIds;
-      const activeRobotIds = robotIds.filter((id) => enabledRobotIds.includes(id));
-      if (!activeRobotIds.length) {
-        sendJson(res, 400, { ok: false, message: "请先选择至少一个已启用的企业微信机器人。" });
+      const recipientCheck = validateExplicitWecomRecipients(payload.robotIds, "经营摘要");
+      if (!recipientCheck.ok) {
+        sendJson(res, 400, { ok: false, message: recipientCheck.message });
         return;
       }
-      const results = await sendWecomNotification(activeRobotIds, content);
+      const results = await sendWecomNotification(recipientCheck.robotIds, content);
       const failed = results.filter((item) => !item.ok);
       appendActionLog(auth, "发送今日经营摘要", "wecom_summary", "今日经营摘要", {
-        robotCount: activeRobotIds.length,
+        robotCount: recipientCheck.robotIds.length,
         failedCount: failed.length,
       });
       sendJson(res, 200, { ok: true, results, ...publicWecomNotificationPayload() });
@@ -10030,12 +10132,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
+      const recipientCheck = validateExplicitWecomRecipients(payload.robotIds, "测试推送");
+      if (!recipientCheck.ok) {
+        sendJson(res, 400, { ok: false, message: recipientCheck.message });
+        return;
+      }
       const content = [
         "### 同舟供应链通知测试",
         String(payload.text || "这是一条企业微信机器人测试消息。").trim(),
         notificationLinkLine(payload.linkUrl, payload.linkText || "查看详情"),
       ].filter(Boolean).join("\n\n");
-      const results = await sendWecomNotification(payload.robotIds || [], content);
+      const results = await sendWecomNotification(recipientCheck.robotIds, content);
       sendJson(res, 200, { ok: true, results, ...publicWecomNotificationPayload() });
       return;
     }

@@ -7516,6 +7516,99 @@ h3 {
   gap: 16px;
 }
 
+.wecom-section-nav {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.wecom-section-nav button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 58px;
+  padding: 9px 11px;
+  color: var(--muted);
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.wecom-section-nav button:hover {
+  color: var(--text);
+  border-color: var(--line);
+  transform: translateY(-1px);
+}
+
+.wecom-section-nav button.active {
+  color: #fff;
+  border-color: rgba(255, 108, 31, 0.52);
+  background: linear-gradient(135deg, #ef5b17, #ff7b32);
+  box-shadow: 0 9px 20px rgba(239, 91, 23, 0.2);
+}
+
+.wecom-section-nav button > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wecom-section-nav strong,
+.wecom-section-nav small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wecom-section-nav strong { font-size: 13px; }
+.wecom-section-nav small { color: inherit; font-size: 10px; opacity: 0.74; }
+
+.wecom-recipient-guardrail {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.wecom-recipient-guardrail span { display: grid; gap: 2px; }
+
+.wecom-recipient-error,
+.wecom-recipient-ok {
+  display: block;
+  margin-top: 7px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wecom-recipient-error { color: #d84315; }
+.wecom-recipient-ok { color: #16845b; }
+
+.wecom-schedule-workspace {
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+  align-items: start;
+}
+
+.wecom-schedule-workspace > .panel-heading { grid-column: 1 / -1; }
+
+.wecom-stockup-schedule {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(239, 91, 23, 0.24);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(239, 91, 23, 0.09), rgba(255, 255, 255, 0.03));
+}
+
 .wecom-panel {
   display: grid;
   gap: 16px;
@@ -7538,7 +7631,8 @@ h3 {
 .wecom-panel select,
 .wecom-panel textarea,
 .wecom-scene-card input,
-.wecom-scene-card textarea {
+.wecom-scene-card textarea,
+.wecom-scene-card select {
   width: 100%;
   min-height: 40px;
   padding: 10px 11px;
@@ -7548,6 +7642,8 @@ h3 {
   outline: 0;
   background: rgba(255, 255, 255, 0.06);
 }
+
+.wecom-scene-card select { background: var(--panel); }
 
 .wecom-panel select {
   background: #1b1c21;
@@ -7650,6 +7746,10 @@ h3 {
   .notification-profile-grid {
     grid-template-columns: 1fr;
   }
+
+  .wecom-section-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .wecom-schedule-workspace,
+  .wecom-stockup-schedule { grid-template-columns: 1fr; }
 }
 
 .wecom-form-grid {

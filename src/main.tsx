@@ -7041,7 +7041,14 @@ function ProductCodingWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
   );
 }
 
-const defaultWecomScene: WecomSceneConfig = { enabled: false, robotIds: [], linkUrl: "", extraText: "" };
+const defaultWecomScene: WecomSceneConfig = {
+  enabled: false,
+  robotIds: [],
+  linkUrl: "",
+  extraText: "",
+  triggerMode: "change",
+  scheduleTime: "09:00",
+};
 
 const wecomNotificationTemplates = [
   {
@@ -7177,14 +7184,20 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   const [summaryForm, setSummaryForm] = React.useState({ robotIds: [] as string[], extraText: "", linkUrl: "#dashboard", linkText: "查看经营总览" });
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState("");
+  const [activeSection, setActiveSection] = React.useState<"overview" | "robots" | "schedules" | "scenes" | "routing" | "test">("overview");
   const afterSalesWarehouseRouteCount = Object.values(sceneForm.afterSalesNew?.warehouseRobotIds || {}).reduce((sum, ids) => sum + ids.length, 0);
   const afterSalesNewHasRecipients = Boolean((sceneForm.afterSalesNew?.robotIds || []).length || afterSalesWarehouseRouteCount);
   const afterSalesProgressHasRecipients = Boolean((sceneForm.afterSalesProgress?.robotIds || []).length);
   const collaborationNotificationNeedsEnable = (afterSalesNewHasRecipients && !sceneForm.afterSalesNew?.enabled)
     || (afterSalesProgressHasRecipients && !sceneForm.afterSalesProgress?.enabled);
+  const hasEnabledSceneWithoutRecipients = (Object.entries(sceneForm) as Array<[keyof WecomNotificationPayload["scenes"], WecomSceneConfig]>).some(([key, scene]) => {
+    if (!scene?.enabled) return false;
+    if (key !== "afterSalesNew") return !(scene.robotIds || []).length;
+    return !afterSalesNewHasRecipients;
+  });
 
   function templateRobotIds(currentIds: string[]) {
-    return currentIds.length ? currentIds : robots.filter((robot) => robot.enabled).map((robot) => robot.id);
+    return currentIds;
   }
 
   function applyScheduleTemplate(template: (typeof wecomNotificationTemplates)[number]) {
@@ -7200,7 +7213,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
       linkText: template.linkText,
       robotIds: templateRobotIds(current.robotIds),
     }));
-    setMessage(`已填入「${template.title}」定时推送模板。`);
+    setActiveSection("schedules");
+    setMessage(`已填入「${template.title}」定时推送模板，请明确选择接收群后保存。`);
   }
 
   function applyTestTemplate(template: (typeof wecomNotificationTemplates)[number]) {
@@ -7211,7 +7225,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
       linkText: template.linkText,
       robotIds: templateRobotIds(current.robotIds),
     }));
-    setMessage(`已填入「${template.title}」测试消息模板。`);
+    setActiveSection("test");
+    setMessage(`已填入「${template.title}」测试消息模板，请明确选择接收群后发送。`);
   }
 
   function applySceneTemplate(template: (typeof wecomNotificationTemplates)[number]) {
@@ -7222,7 +7237,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
       extraText: template.text,
       robotIds: templateRobotIds(sceneForm[template.scene]?.robotIds || []),
     });
-    setMessage(`已应用「${template.title}」场景推送模板，请保存场景配置。`);
+    setActiveSection("scenes");
+    setMessage(`已应用「${template.title}」场景推送模板，请明确选择接收群并保存。`);
   }
 
   React.useEffect(() => {
@@ -7279,6 +7295,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
 
   async function saveSchedule(event: React.FormEvent) {
     event.preventDefault();
+    if (!scheduleForm.robotIds.length) {
+      setMessage("定时推送未选择接收群，已拒绝保存。请至少选择一个企业微信机器人。");
+      return;
+    }
     setBusy("schedule");
     setMessage("");
     try {
@@ -7331,6 +7351,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   }
 
   async function saveScenes() {
+    if (hasEnabledSceneWithoutRecipients) {
+      setMessage("存在已启用但未选择接收群的场景，已拒绝保存。请先选择明确的企业微信机器人。");
+      return;
+    }
     setBusy("scenes");
     setMessage("");
     try {
@@ -7345,6 +7369,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   }
 
   async function sendTest() {
+    if (!testForm.robotIds.length) {
+      setMessage("测试推送未选择接收群，已拒绝发送。");
+      return;
+    }
     setBusy("test");
     setMessage("");
     try {
@@ -7390,6 +7418,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   }
 
   async function sendOperatingSummary() {
+    if (!summaryForm.robotIds.length) {
+      setMessage("经营摘要未选择接收群，已拒绝发送。");
+      return;
+    }
     setBusy("operating-summary");
     setMessage("");
     try {
@@ -7508,9 +7540,30 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
         <Metric title="最近更新" value={data?.updatedAt ? formatDate(data.updatedAt) : "-"} note="本地通知配置" icon={Settings} tone="red" />
       </section>
 
+      <nav className="wecom-section-nav" aria-label="企业微信通知配置">
+        {([
+          ["overview", "总览", "配置入口", LayoutDashboard],
+          ["robots", "接收群", `${robots.filter((robot) => robot.enabled).length} 个启用`, BellRing],
+          ["schedules", "定时任务", `${schedules.filter((schedule) => schedule.enabled).length} 个启用`, CalendarDays],
+          ["scenes", "场景通知", `${Object.values(scenes).filter((scene) => scene.enabled).length} 个启用`, PackageCheck],
+          ["routing", "项目路由", `${projectTeams.filter((team) => team.enabled).length} 个团队`, GitBranch],
+          ["test", "发送测试", "必须选择接收群", ShieldCheck],
+        ] as const).map(([key, label, detail, Icon]) => (
+          <button key={key} type="button" className={activeSection === key ? "active" : ""} onClick={() => setActiveSection(key)}>
+            <Icon size={17} />
+            <span><strong>{label}</strong><small>{detail}</small></span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="notice warning wecom-recipient-guardrail">
+        <ShieldCheck size={18} />
+        <span><strong>接收范围必须明确选择。</strong> 未选择任何机器人时，测试发送、定时任务和场景通知都会被系统拒绝，不再默认推送到全部企业微信群。</span>
+      </div>
+
       {message ? <div className={`notice ${message.includes("失败") ? "warning" : ""}`}>{message}</div> : null}
 
-      <section className="panel wecom-panel wecom-template-panel">
+      {activeSection === "overview" ? <section className="panel wecom-panel wecom-template-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Message Templates</p>
@@ -7534,9 +7587,9 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             </article>
           ))}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="wecom-grid">
+      {activeSection === "robots" ? <section className="wecom-grid">
         <form className="panel wecom-panel" onSubmit={saveRobot}>
           <div className="panel-heading">
             <div>
@@ -7584,9 +7637,9 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             )) : <div className="stockup-empty">暂无机器人。先创建一个企业微信群机器人 webhook。</div>}
           </div>
         </section>
-      </section>
+      </section> : null}
 
-      <section className="panel wecom-panel wecom-project-panel">
+      {activeSection === "routing" ? <section className="panel wecom-panel wecom-project-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Project Routing</p>
@@ -7635,9 +7688,9 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           <ShieldCheck size={18} />
           <span>工单创建时会冻结项目团队，人员后续转组不会改变旧工单去向；机器人更换可直接在团队内调整。项目群失效或发送失败时自动回退到全局运营群。</span>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel wecom-panel">
+      {activeSection === "schedules" ? <section className="panel wecom-panel wecom-schedule-workspace">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Scheduled Push</p>
@@ -7658,8 +7711,9 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           </label>
           {scheduleForm.mode === "daily" ? (
             <label>
-              <span>推送时间</span>
+              <span>推送时间（北京时间）</span>
               <input type="time" value={scheduleForm.time} onChange={(event) => setScheduleForm((current) => ({ ...current, time: event.target.value }))} />
+              <small>每天 {scheduleForm.time || "--:--"} 自动执行；修改已有任务后会按新时间生效。</small>
             </label>
           ) : (
             <label>
@@ -7682,13 +7736,14 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           <div className="wecom-span-2">
             <span className="field-label">推送机器人</span>
             <RobotCheckboxes robots={robots} selected={scheduleForm.robotIds} onChange={(robotIds) => setScheduleForm((current) => ({ ...current, robotIds }))} />
+            {!scheduleForm.robotIds.length ? <small className="wecom-recipient-error">尚未选择接收群，系统不会保存或发送这条任务。</small> : <small className="wecom-recipient-ok">将发送到 {scheduleForm.robotIds.length} 个明确选择的接收群。</small>}
           </div>
           <label className="wecom-inline-check">
             <input type="checkbox" checked={scheduleForm.enabled} onChange={(event) => setScheduleForm((current) => ({ ...current, enabled: event.target.checked }))} />
             <span>启用定时推送</span>
           </label>
           <div className="wecom-actions">
-            <button className="sync-button" type="submit" disabled={busy === "schedule"}>{busy === "schedule" ? "保存中" : "保存定时推送"}</button>
+            <button className="sync-button" type="submit" disabled={busy === "schedule" || !scheduleForm.robotIds.length}>{busy === "schedule" ? "保存中" : "保存定时推送"}</button>
             {scheduleForm.id ? <button className="ghost-button" type="button" onClick={() => setScheduleForm({ id: "", name: "", robotIds: [], enabled: true, mode: "daily", time: "09:00", intervalMinutes: 60, text: "", linkUrl: "", linkText: "查看详情" })}>取消编辑</button> : null}
           </div>
         </form>
@@ -7707,15 +7762,15 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             </article>
           )) : <div className="stockup-empty">暂无定时推送。</div>}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel wecom-panel">
+      {activeSection === "scenes" ? <section className="panel wecom-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Scene Push</p>
             <h2>场景化推送</h2>
           </div>
-          <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes"}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
+          <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes" || hasEnabledSceneWithoutRecipients}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
         </div>
         {collaborationNotificationNeedsEnable ? <div className="notice warning wecom-scene-warning"><span><strong>海外仓协同接收群已经配置，但通知开关仍处于停用状态。</strong>停用时，运营提交、仓库接单、上传面单和工单回复都不会发送企业微信消息。</span><button type="button" className="ghost-button compact-button" onClick={enableCollaborationNotifications}>启用海外仓协同通知</button></div> : null}
         <div className="wecom-scene-grid">
@@ -7757,7 +7812,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             <small>最近发送：{sceneForm.afterSalesNew?.lastSentAt ? formatDateTime(sceneForm.afterSalesNew.lastSentAt) : "暂无"}</small>
           </article>
           {([
-            ["stockupRecommendation", "备货预警长图", "每日自动推送销售趋势、昨日单量、委外在产、建议量与预计断货时间，再附中台详情链接。"],
+            ["stockupRecommendation", "备货预警长图", "可按新增预警触发，也可设定北京时间每天推送销售趋势、昨日单量、委外在产、建议量与预计断货时间。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
             ["afterSalesProgress", "海外仓协同处理进度更新时", "优先按提交人的项目群通知；未配置或发送失败时回退到全局运营群。"],
@@ -7775,6 +7830,25 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                     <span>{scene.enabled ? "启用" : "停用"}</span>
                   </label>
                 </div>
+                {key === "stockupRecommendation" ? (
+                  <div className="wecom-stockup-schedule">
+                    <label>
+                      <span>触发方式</span>
+                      <select value={scene.triggerMode || "change"} onChange={(event) => updateScene(key, { triggerMode: event.target.value as "change" | "daily" | "both" })}>
+                        <option value="change">仅在产生新预警时</option>
+                        <option value="daily">每天定时推送</option>
+                        <option value="both">新预警 + 每天定时</option>
+                      </select>
+                    </label>
+                    {["daily", "both"].includes(scene.triggerMode || "change") ? (
+                      <label>
+                        <span>定时推送时间（北京时间）</span>
+                        <input type="time" value={scene.scheduleTime || "09:00"} onChange={(event) => updateScene(key, { scheduleTime: event.target.value })} />
+                        <small>每天 {scene.scheduleTime || "09:00"} 重新读取最新备货预警后推送。</small>
+                      </label>
+                    ) : null}
+                  </div>
+                ) : null}
                 <label>
                   <span>提醒链接</span>
                   <input value={scene.linkUrl || ""} onChange={(event) => updateScene(key, { linkUrl: event.target.value })} placeholder="可选，例如备货中心/库存快照页面链接" />
@@ -7801,14 +7875,16 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                     <small>使用当前配置发送，不占用当天正式推送次数。</small>
                   </div>
                 ) : null}
+                {scene.enabled && !(scene.robotIds || []).length ? <small className="wecom-recipient-error">已启用但未选择接收群，系统将拒绝保存和发送。</small> : null}
+                {scene.lastError ? <small className="wecom-error">最近错误：{scene.lastError}</small> : null}
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );
           })}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel wecom-panel wecom-summary-panel">
+      {activeSection === "test" ? <section className="panel wecom-panel wecom-summary-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Daily Brief</p>
@@ -7818,7 +7894,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             className="sync-button"
             type="button"
             onClick={sendOperatingSummary}
-            disabled={busy === "operating-summary" || !robots.some((robot) => robot.enabled)}
+            disabled={busy === "operating-summary" || !summaryForm.robotIds.length}
           >
             {busy === "operating-summary" ? "发送中" : "发送摘要"}
           </button>
@@ -7831,7 +7907,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           <div>
             <span className="field-label">推送机器人</span>
             <RobotCheckboxes robots={robots} selected={summaryForm.robotIds} onChange={(robotIds) => setSummaryForm((current) => ({ ...current, robotIds }))} />
-            <small>不选择时默认发送到所有已启用机器人。</small>
+            {!summaryForm.robotIds.length ? <small className="wecom-recipient-error">必须明确选择接收群；留空不会发送。</small> : <small className="wecom-recipient-ok">将发送到 {summaryForm.robotIds.length} 个接收群。</small>}
           </div>
           <div className="wecom-form-grid">
             <label>
@@ -7848,9 +7924,9 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             </label>
           </div>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="panel wecom-panel">
+      {activeSection === "test" ? <section className="panel wecom-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Test Push</p>
@@ -7873,12 +7949,13 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
           <div className="wecom-span-2">
             <span className="field-label">推送机器人</span>
             <RobotCheckboxes robots={robots} selected={testForm.robotIds} onChange={(robotIds) => setTestForm((current) => ({ ...current, robotIds }))} />
+            {!testForm.robotIds.length ? <small className="wecom-recipient-error">未选择接收群，发送按钮保持禁用，后端也会拒绝请求。</small> : <small className="wecom-recipient-ok">仅发送到已选择的 {testForm.robotIds.length} 个接收群。</small>}
           </div>
           <div className="wecom-actions">
             <button className="sync-button" type="button" onClick={sendTest} disabled={busy === "test" || !testForm.robotIds.length}>{busy === "test" ? "发送中" : "发送测试消息"}</button>
           </div>
         </div>
-      </section>
+      </section> : null}
     </main>
   );
 }
