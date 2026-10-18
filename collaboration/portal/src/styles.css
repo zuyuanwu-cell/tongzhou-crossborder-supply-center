@@ -82,6 +82,7 @@ code, .kicker, .portal-version { font-family: "DIN Alternate", Bahnschrift, Cons
 .form-error { display: flex; align-items: flex-start; gap: 8px; padding: 11px 12px; color: #a83c22; background: #fff3ee; border: 1px solid #f2c7b7; border-left: 3px solid #e05b2d; border-radius: 10px; font-size: 13px; }
 .form-error svg { flex: 0 0 auto; margin-top: 1px; }
 .login-help { margin: -5px 0 0; border: 0; color: var(--muted); background: transparent; text-align: center; font-size: 12px; cursor: pointer; }
+.login-page button, .credential-page button, .mfa-page button { min-height: 40px; }
 .portal-version { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; color: #9aa5b4; font-size: 9px; letter-spacing: .16em; }
 .credential-page { min-height: 100vh; padding: 30px; display: grid; place-items: center; background: radial-gradient(circle at 82% 14%, rgba(35,136,189,.22), transparent 27%), linear-gradient(145deg, #061a35, #102e60 58%, #173d7a); }
 .credential-card { width: min(100%, 500px); padding: 42px; border-top: 4px solid var(--signal); border-radius: 14px; background: var(--paper-bright); box-shadow: 0 24px 80px rgba(4,24,52,.3); }

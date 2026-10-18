@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
-const [tokens, operational, main, partnerMain, reconciliation] = await Promise.all([
+const [tokens, operational, main, partnerMain, partnerStyles, reconciliation] = await Promise.all([
   read("collaboration/shared/ui-tokens.css"),
   read("collaboration/shared/operational-ui.css"),
   read("src/main.tsx"),
   read("collaboration/portal/src/main.tsx"),
+  read("collaboration/portal/src/styles.css"),
   read("src/overseas-inventory-reconciliation.css"),
 ]);
 
@@ -21,6 +22,7 @@ assert.match(operational, /min-height:\s*40px/);
 assert.match(operational, /font-size:\s*max\(12px,\s*1em\)/);
 assert.match(operational, /font-size:\s*max\(12px,\s*1em\)\s*!important/);
 assert.match(operational, /min-height:\s*36px\s*!important/);
+assert.match(partnerStyles, /\.login-page button, \.credential-page button, \.mfa-page button \{ min-height: 40px; \}/);
 assert.match(reconciliation, /\.oir-page\s+:where[\s\S]*max\(12px,\s*1em\)/);
 assert.match(main, /#products\?\$\{params\.toString\(\)\}/);
 assert.match(main, /role="dialog" aria-modal="true"/);
