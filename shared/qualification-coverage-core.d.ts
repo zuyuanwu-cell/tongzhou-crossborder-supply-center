@@ -1,0 +1,11 @@
+import type { CatalogProduct, ProductBase, QualificationRecord, WarehouseOnlyInventoryItem } from "../src/api";
+export type QualificationCoverageStatus = "valid" | "warning" | "urgent" | "expired" | "undated" | "missing";
+export type QualificationCoverageWarehouse = { id: string; name: string; country: string; productCount: number; totalQty: number; syncedAt: string };
+export type QualificationCoverageCell = { category: string; status: QualificationCoverageStatus; records: QualificationRecord[]; activeRecords: number; nearestExpiryDate: string; nearestDaysLeft: number | null };
+export type QualificationCoverageProduct = { id: string; sku: string; productName: string; imageUrl: string; category: string; brand: string; availableQty: number; lockedQty: number; inTransitQty: number; totalQty: number; status: QualificationCoverageStatus; covered: boolean; coveredCategoryCount: number; registeredCategoryCount: number; cells: QualificationCoverageCell[] };
+export type QualificationCoverageCategory = { name: string; coveredProducts: number; registeredProducts: number; missingProducts: number; expiringProducts: number; expiredProducts: number; coverageRate: number };
+export type QualificationCoverageResult = { warehouse: QualificationCoverageWarehouse | null; categories: QualificationCoverageCategory[]; products: QualificationCoverageProduct[]; summary: { products: number; covered: number; risk: number; expired: number; undated: number; missing: number; coverageRate: number } };
+export function buildQualificationCoverageProducts(catalog: CatalogProduct[], productBase: ProductBase[], warehouseOnlyInventory: WarehouseOnlyInventoryItem[]): CatalogProduct[];
+export function qualificationCategoryMatchesCountry(category: string, country: string): boolean;
+export function buildQualificationWarehouseOptions(products: CatalogProduct[]): QualificationCoverageWarehouse[];
+export function buildQualificationCoverage(products: CatalogProduct[], qualifications: QualificationRecord[], warehouseId: string, now?: Date): QualificationCoverageResult;

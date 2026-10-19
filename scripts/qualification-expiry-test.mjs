@@ -1,18 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import ts from "typescript";
-
 process.env.TZ = "Asia/Shanghai";
-
-const source = readFileSync(resolve("src/qualification-expiry.ts"), "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.ES2020,
-    target: ts.ScriptTarget.ES2020,
-  },
-}).outputText;
-const expiryModule = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const expiryModule = await import("../shared/qualification-expiry-core.js");
 const now = new Date("2026-09-13T12:00:00+08:00");
 
 assert.deepEqual(expiryModule.getQualificationExpiryInfo("", now), {

@@ -1,21 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import ts from "typescript";
-
 process.env.TZ = "Asia/Shanghai";
-
-function compile(source) {
-  return ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.ES2020, target: ts.ScriptTarget.ES2020 },
-  }).outputText;
-}
-
-const expirySource = readFileSync(resolve("src/qualification-expiry.ts"), "utf8");
-const expiryUrl = `data:text/javascript;base64,${Buffer.from(compile(expirySource)).toString("base64")}`;
-const coverageSource = readFileSync(resolve("src/qualification-coverage.ts"), "utf8")
-  .replace('from "./qualification-expiry"', `from "${expiryUrl}"`);
-const coverageModule = await import(`data:text/javascript;base64,${Buffer.from(compile(coverageSource)).toString("base64")}`);
+const coverageModule = await import("../shared/qualification-coverage-core.js");
 
 const warehouse = { warehouseId: "wh-id", warehouseName: "印尼仓", availableQty: 10, lockedQty: 0, inTransitQty: 0, totalQty: 10 };
 const products = [
@@ -69,5 +54,6 @@ assert.equal(result.products.find((row) => row.sku === "6975000000001")?.status,
 assert.equal(coverageModule.qualificationCategoryMatchesCountry("俄罗斯EAC", "俄罗斯"), true);
 assert.equal(coverageModule.qualificationCategoryMatchesCountry("俄罗斯国际认证", "俄罗斯联邦"), true);
 assert.equal(coverageModule.qualificationCategoryMatchesCountry("马来NOT", "印度尼西亚"), false);
+assert.deepEqual(result.products.map((row) => row.status), ["missing", "expired", "warning", "valid", "valid", "valid"], "the shared runtime must keep the agreed risk order");
 
 console.log("qualification coverage tests passed");
