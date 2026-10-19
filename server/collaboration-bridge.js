@@ -62,6 +62,53 @@ function publicImageUrl(value) {
   }
 }
 
+const qualificationCoverageStatuses = new Set(["valid", "warning", "urgent", "expired", "undated", "missing"]);
+
+function safeText(value, max = 300) {
+  return String(value ?? "").normalize("NFKC").trim().slice(0, max);
+}
+
+export function sanitizeQualificationCoverage(input) {
+  if (!input || typeof input !== "object" || !qualificationCoverageStatuses.has(String(input.status || ""))) return null;
+  const cells = (Array.isArray(input.cells) ? input.cells : []).slice(0, 100).map((cell) => ({
+    category: safeText(cell?.category, 200),
+    status: qualificationCoverageStatuses.has(String(cell?.status || "")) ? String(cell.status) : "missing",
+    activeRecords: Math.max(0, Math.floor(Number(cell?.activeRecords) || 0)),
+    nearestExpiryDate: safeText(cell?.nearestExpiryDate, 10),
+    nearestDaysLeft: Number.isFinite(Number(cell?.nearestDaysLeft)) ? Math.trunc(Number(cell.nearestDaysLeft)) : null,
+    records: (Array.isArray(cell?.records) ? cell.records : []).slice(0, 200).map((record) => ({
+      id: safeText(record?.id, 160),
+      qualificationName: safeText(record?.qualificationName, 300),
+      effectiveDate: safeText(record?.effectiveDate, 10),
+      expiryDate: safeText(record?.expiryDate, 10),
+    })),
+  })).filter((cell) => cell.category);
+  return {
+    status: String(input.status),
+    covered: Boolean(input.covered),
+    coveredCategoryCount: Math.max(0, Math.floor(Number(input.coveredCategoryCount) || 0)),
+    registeredCategoryCount: Math.max(0, Math.floor(Number(input.registeredCategoryCount) || 0)),
+    cells,
+  };
+}
+
+function projectedInventoryItem(item) {
+  return {
+    sku: normalizedSku(item?.sku),
+    productName: safeText(item?.productName || item?.name || item?.sku),
+    barcode: safeText(item?.barcode, 160),
+    imageUrl: publicImageUrl(item?.imageUrl),
+    country: safeText(item?.country, 120),
+    category: safeText(item?.category, 160),
+    brand: safeText(item?.brand, 160),
+    availableQuantity: Math.max(0, Number(item?.availableQuantity ?? item?.availableQty ?? 0) || 0),
+    lockedQuantity: Math.max(0, Number(item?.lockedQuantity ?? item?.lockedQty ?? 0) || 0),
+    inTransitQuantity: Math.max(0, Number(item?.inTransitQuantity ?? item?.inTransitQty ?? 0) || 0),
+    unit: safeText(item?.unit || "件", 20) || "件",
+    qualificationCoverage: sanitizeQualificationCoverage(item?.qualificationCoverage),
+  };
+}
+
 function normalizedSku(value) {
   return String(value || "").replace(/\s+/g, "").toUpperCase();
 }
@@ -126,6 +173,7 @@ export function createCollaborationBridge({
   domesticInventoryService,
   stockupCollaborationService,
   listProducts = () => [],
+  resolveWarehouseInventorySnapshot = () => null,
   baseUrl = process.env.COLLABORATION_API_BASE_URL || "http://127.0.0.1:8790",
   internalToken = process.env.COLLABORATION_INTERNAL_TOKEN || (process.env.NODE_ENV === "production" ? "" : "local-internal-token-change-me"),
   pollIntervalMs = Number(process.env.COLLABORATION_BRIDGE_POLL_MS || 10_000),
@@ -194,6 +242,17 @@ export function createCollaborationBridge({
   }
 
   function inventoryProjectionForGrant(organizationCode, grant) {
+    const resolvedSnapshot = resolveWarehouseInventorySnapshot({ organizationCode, warehouseRef: grant.resourceRef, warehouseName: grant.resourceName });
+    if (resolvedSnapshot) {
+      const warehouseName = safeText(resolvedSnapshot.warehouseName || grant.resourceName || grant.resourceRef, 200);
+      const items = (Array.isArray(resolvedSnapshot.items) ? resolvedSnapshot.items : []).map(projectedInventoryItem)
+        .filter((item) => item.sku && item.productName)
+        .sort((left, right) => left.sku.localeCompare(right.sku));
+      const stateKey = inventoryProjectionStateKey(organizationCode, grant.resourceRef);
+      const previous = storedInventoryProjectionState(store, stateKey);
+      const fingerprint = inventoryFingerprint(warehouseName, items);
+      return { fingerprint, items, previous, stateKey, warehouseName };
+    }
     if (!domesticInventoryService?.list) fail("国内库存服务不可用。", 503, "domestic_inventory_unavailable");
     const payload = domesticInventoryService.list({ warehouseId: grant.resourceRef }, systemInventoryContext());
     const warehouse = (payload.warehouses || []).find((item) => String(item.id) === String(grant.resourceRef));
@@ -202,7 +261,7 @@ export function createCollaborationBridge({
     const items = (payload.balances || []).map((item) => {
       const sku = String(item.sku || "").replace(/\s+/g, "").toUpperCase();
       const product = catalog.get(sku) || {};
-      return {
+      return projectedInventoryItem({
         sku,
         productName: String(item.productName || product.name || product.productName || item.sku || "").trim(),
         barcode: String(item.barcode || product.barcode || "").trim().slice(0, 160),
@@ -211,7 +270,7 @@ export function createCollaborationBridge({
         lockedQuantity: Math.max(0, Number(item.reservedQty || 0)),
         inTransitQuantity: 0,
         unit: String(item.unit || product.unit || "件").trim() || "件",
-      };
+      });
     }).filter((item) => item.sku && item.productName).sort((left, right) => left.sku.localeCompare(right.sku));
     const warehouseName = String(warehouse.name || grant.resourceName || grant.resourceRef).trim();
     const stateKey = inventoryProjectionStateKey(organizationCode, grant.resourceRef);

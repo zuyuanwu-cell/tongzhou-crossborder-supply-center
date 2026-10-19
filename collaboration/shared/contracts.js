@@ -85,6 +85,29 @@ export const internalWarehouseTaskSchema = z.object({
   workOrder: stockupWorkOrderPayloadSchema.optional(),
 }).strict();
 
+const qualificationCoverageStatusSchema = z.enum(["valid", "warning", "urgent", "expired", "undated", "missing"]);
+const qualificationCoverageRecordSchema = z.object({
+  id: limitedText(160).optional().default(""),
+  qualificationName: limitedText(300).optional().default(""),
+  effectiveDate: dateOnly.optional().default(""),
+  expiryDate: dateOnly.optional().default(""),
+}).strict();
+const qualificationCoverageCellSchema = z.object({
+  category: limitedText(200).min(1),
+  status: qualificationCoverageStatusSchema,
+  activeRecords: z.number().int().nonnegative().optional().default(0),
+  nearestExpiryDate: dateOnly.optional().default(""),
+  nearestDaysLeft: z.number().int().nullable().optional().default(null),
+  records: z.array(qualificationCoverageRecordSchema).max(200).optional().default([]),
+}).strict();
+const qualificationCoverageSnapshotSchema = z.object({
+  status: qualificationCoverageStatusSchema,
+  covered: z.boolean(),
+  coveredCategoryCount: z.number().int().nonnegative(),
+  registeredCategoryCount: z.number().int().nonnegative(),
+  cells: z.array(qualificationCoverageCellSchema).max(100),
+}).strict();
+
 export const inventoryProjectionSchema = z.object({
   eventId: limitedText(160).min(1),
   organizationCode: limitedText(64).regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),
@@ -97,10 +120,14 @@ export const inventoryProjectionSchema = z.object({
     productName: limitedText(300).min(1),
     barcode: limitedText(160).optional().default(""),
     imageUrl: httpsImageUrl.optional().or(z.literal("")),
+    country: limitedText(120).optional().default(""),
+    category: limitedText(160).optional().default(""),
+    brand: limitedText(160).optional().default(""),
     availableQuantity: quantity,
     lockedQuantity: quantity.optional().default(0),
     inTransitQuantity: quantity.optional().default(0),
     unit: limitedText(20).optional().default("件"),
+    qualificationCoverage: qualificationCoverageSnapshotSchema.nullable().optional().default(null),
   }).strict()).max(20_000),
 }).strict();
 

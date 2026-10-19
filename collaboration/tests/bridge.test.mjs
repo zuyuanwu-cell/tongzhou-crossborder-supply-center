@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [], stockupWorkflowVersion = 1 } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, warehouseInventorySnapshot = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [], stockupWorkflowVersion = 1 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
@@ -67,6 +67,7 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
       },
     },
     listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", barcode: "697000000001", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
+    resolveWarehouseInventorySnapshot: () => warehouseInventorySnapshot,
     baseUrl: "http://collaboration.test",
     internalToken: "internal-test-token",
     publicOrigin: "https://partner.example.test",
@@ -81,6 +82,27 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
   });
   return { bridge, movements, requests, stockupActions, stockupInspections, sourceFeedback, store };
 }
+
+test("inventory synchronization prefers a sanitized overseas WMS snapshot and tracks qualification-only changes", async (t) => {
+  const organizations = [{ code: "warehouse-a", organizationType: "warehouse", status: "active" }];
+  const accessGrants = [{ resourceType: "warehouse", resourceRef: "wms-idn-1", resourceName: "印尼雅加达仓", permissions: ["warehouse.inventory.view"] }];
+  const snapshot = {
+    warehouseName: "印尼雅加达仓",
+    items: [{ sku: "TZKJ-001", productName: "测试产品", country: "印度尼西亚", category: "个护", brand: "同舟", availableQuantity: 10, lockedQuantity: 2, inTransitQuantity: 3, unit: "件", qualificationCoverage: { status: "valid", covered: true, coveredCategoryCount: 1, registeredCategoryCount: 1, cells: [] } }],
+  };
+  const { bridge, requests, store } = await fixture(t, { organizations, accessGrants, warehouseInventorySnapshot: snapshot });
+  const first = await bridge.synchronizeInventoryProjections({ force: true });
+  assert.equal(first.queued, 1);
+  await bridge.flushOutbox();
+  const publishedItems = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/inventory"))?.body.items;
+  assert.equal(publishedItems?.[0].qualificationCoverage.status, "valid");
+  assert.equal(publishedItems?.[0].country, "印度尼西亚");
+  assert.equal(JSON.stringify(publishedItems).includes("files"), false);
+  store.setState("inventory_projection_last_scan_at", "", new Date().toISOString());
+  snapshot.items[0].qualificationCoverage.status = "warning";
+  const second = await bridge.synchronizeInventoryProjections();
+  assert.equal(second.queued, 1, "a qualification-only change must invalidate the inventory projection fingerprint");
+});
 
 const projection = {
   organizationCode: "warehouse-a",
@@ -414,7 +436,7 @@ test("saving warehouse access immediately publishes an allowlisted inventory sna
   assert.equal(saved.inventoryProjection.delivery.published, 1);
   const published = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/inventory"));
   assert.ok(published);
-  assert.deepEqual(published.body.items, [{ sku: "SKU-1", productName: "测试产品", barcode: "697000000001", imageUrl: "https://files.jiandaoyun.com/product.jpg", availableQuantity: 8, lockedQuantity: 2, inTransitQuantity: 0, unit: "件" }]);
+  assert.deepEqual(published.body.items, [{ sku: "SKU-1", productName: "测试产品", barcode: "697000000001", imageUrl: "https://files.jiandaoyun.com/product.jpg", country: "", category: "", brand: "", availableQuantity: 8, lockedQuantity: 2, inTransitQuantity: 0, unit: "件", qualificationCoverage: null }]);
   assert.equal(published.body.warehouseRef, "warehouse-1");
   assert.equal(published.body.items[0].imageUrl.startsWith("https://"), true);
   assert.equal("unitCostCny" in published.body.items[0], false);

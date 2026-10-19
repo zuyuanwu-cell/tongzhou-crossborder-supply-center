@@ -109,6 +109,7 @@ import { createMobileAdminBusinessProviders } from "./mobile-admin-business.js";
 import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
 import { createSystemBackupService } from "./system-backup-service.js";
 import { withDataContext } from "../collaboration/shared/data-context.js";
+import { buildQualificationCoverage, buildQualificationCoverageProducts, buildQualificationWarehouseOptions } from "../shared/qualification-coverage-core.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -254,6 +255,39 @@ const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanc
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
+
+function partnerWarehouseInventorySnapshot({ warehouseRef, warehouseName }) {
+  const merged = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
+  const products = buildQualificationCoverageProducts(merged.catalog || [], merged.productBase || [], merged.warehouseOnlyInventory || []);
+  const warehouses = buildQualificationWarehouseOptions(products);
+  const connection = warehouseConnections.find((item) => [item.id, item.resolvedWarehouseId, item.warehouseId, item.warehouseCode].filter(Boolean).some((value) => String(value) === String(warehouseRef)));
+  const candidateIds = new Set([warehouseRef, connection?.id, connection?.resolvedWarehouseId, connection?.warehouseId, connection?.warehouseCode].filter(Boolean).map(String));
+  const candidateNames = new Set([warehouseName, connection?.name].filter(Boolean).map((value) => String(value).trim()));
+  const selected = warehouses.find((item) => candidateIds.has(String(item.id))) || warehouses.find((item) => candidateNames.has(String(item.name).trim()));
+  if (!selected) return null;
+  const result = buildQualificationCoverage(products, cachedQualifications.qualifications || [], selected.id, new Date());
+  const metadataBySku = new Map(products.map((product) => [String(product.sku || product.skuNo || "").replace(/\s+/g, "").toUpperCase(), product]));
+  return {
+    warehouseName: selected.name,
+    items: result.products.map((product) => {
+      const metadata = metadataBySku.get(String(product.sku || "").replace(/\s+/g, "").toUpperCase()) || {};
+      return {
+        sku: product.sku,
+        productName: product.productName,
+        barcode: metadata.barcode || "",
+        imageUrl: product.imageUrl || "",
+        country: selected.country,
+        category: product.category,
+        brand: product.brand,
+        availableQuantity: product.availableQty,
+        lockedQuantity: product.lockedQty,
+        inTransitQuantity: product.inTransitQty,
+        unit: metadata.unit || "件",
+        qualificationCoverage: product,
+      };
+    }),
+  };
+}
 const stockupInventoryContext = (context = {}) => ({ ...domesticInventoryContextForAuth(context.auth), warehouseIds: [], countries: [] });
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore, {
   inventoryGateway: {
@@ -454,6 +488,7 @@ const collaborationBridge = createCollaborationBridge({
   domesticInventoryService,
   stockupCollaborationService,
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
+  resolveWarehouseInventorySnapshot: partnerWarehouseInventorySnapshot,
   listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
   listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
   listFirstArticleRecords: fetchJdyFirstArticleRecordsForOrders,
