@@ -12,6 +12,7 @@ import {
   summarizeStockupWarningDeliveries,
 } from "../server/stockup-warning-report.js";
 import { buildStockupPayload } from "../server/stockup-center.js";
+import { renderStockupWarningReport } from "../server/stockup-warning-renderer.js";
 
 const payload = {
   generatedAt: "2026-10-16T09:12:00+08:00",
@@ -113,6 +114,11 @@ const imageReport = await renderStockupWarningPngWithImages(payload, {
   }),
 });
 assert.ok(imageReport.buffer.length > 10_000);
+
+const workerPayload = structuredClone(payload);
+workerPayload.recommendations[0].imageUrl = `data:image/png;base64,${onePixelPng.toString("base64")}`;
+const workerReport = await renderStockupWarningReport(workerPayload, { timeoutMs: 20_000 });
+assert.ok(workerReport.buffer.length > 10_000, "独立线程应生成可发送的长图");
 
 const report = renderStockupWarningPng(payload);
 assert.deepEqual([...report.buffer.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);

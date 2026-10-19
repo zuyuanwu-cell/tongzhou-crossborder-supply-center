@@ -27,7 +27,8 @@ import { projectMovementPayload, scopeMovementSources } from "./movement-access.
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
-import { buildStockupWarningLinkMarkdown, buildWecomImageBody, renderStockupWarningPngWithImages, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
+import { buildStockupWarningLinkMarkdown, buildWecomImageBody, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
+import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
 import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseProductCreateCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
@@ -1628,7 +1629,8 @@ async function notifyStockupRecommendation(payload, reason = "refresh", options 
   const linkUrl = absoluteNotificationLink(scene.linkUrl, "#stockup-recommendations");
   let results = [];
   try {
-    const report = await renderStockupWarningPngWithImages(payload, { fetchImpl: globalThis.fetch });
+    const report = await renderStockupWarningReport(payload);
+    if (report.thumbnailFallbackReason) console.warn(`[wecom] stockup warning thumbnails omitted: ${report.thumbnailFallbackReason}`);
     const imageResults = await sendWecomImageNotification(robotIds, report.buffer);
     const linkContent = buildStockupWarningLinkMarkdown(report.model, {
       linkUrl,
@@ -9871,7 +9873,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const stockup = buildCurrentStockupPayload({ notify: false, reason: "wecom_preview" });
-      const report = await renderStockupWarningPngWithImages(stockup, { fetchImpl: globalThis.fetch });
+      const report = await renderStockupWarningReport(stockup);
       res.writeHead(200, {
         "Content-Type": "image/png",
         "Content-Length": report.buffer.length,
@@ -9916,7 +9918,7 @@ const server = http.createServer(async (req, res) => {
       let renderError = "";
 
       try {
-        report = await renderStockupWarningPngWithImages(stockup, { fetchImpl: globalThis.fetch });
+        report = await renderStockupWarningReport(stockup);
         imageResults = await sendWecomImageNotification(robotIds, report.buffer);
         const imageSuccessRobotIds = imageResults.filter((item) => item.ok).map((item) => item.robotId);
         const imageFailedRobotIds = imageResults.filter((item) => !item.ok).map((item) => item.robotId);
