@@ -1646,8 +1646,9 @@ async function notifyStockupRecommendation(payload, reason = "refresh", options 
     results = await sendWecomNotification(robotIds, fallbackContent);
   }
   if (results.some((item) => item.ok)) {
-    scene.lastReportDate = reportDate;
-    scene.lastSentAt = new Date().toISOString();
+    const currentScene = cachedWecomNotifications.scenes?.stockupRecommendation || scene;
+    currentScene.lastReportDate = reportDate;
+    currentScene.lastSentAt = new Date().toISOString();
   }
   saveWecomNotificationCache();
   return results;
