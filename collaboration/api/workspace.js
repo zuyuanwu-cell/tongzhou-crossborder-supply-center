@@ -34,6 +34,7 @@ export function buildWorkspace(auth, rawGrants = []) {
   addIf(modules, has("filing.task.view"), "filing");
   addIf(taskTypes, has("filing.task.view"), "filing_task");
   addIf(modules, has("warehouse.inventory.view"), "inventory");
+  addIf(modules, has("warehouse.inventory.view"), "qualification_coverage");
   addIf(modules, has("warehouse.task.view"), "warehouse_tasks");
   if (has("warehouse.task.view")) taskTypes.push(...warehouseTaskTypes);
   addIf(modules, auth?.membership?.role === "organization_admin", "members");

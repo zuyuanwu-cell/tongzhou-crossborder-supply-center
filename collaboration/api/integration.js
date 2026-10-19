@@ -150,22 +150,37 @@ export async function applyInventoryProjection(input) {
     );
     for (const item of projection.items) {
       await client.query(
-        `INSERT INTO warehouse_inventory_projections(organization_id,warehouse_ref,warehouse_name,sku,product_name,barcode,image_url,available_quantity,locked_quantity,in_transit_quantity,unit,last_core_synced_at,version)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        `INSERT INTO warehouse_inventory_projections(organization_id,warehouse_ref,warehouse_name,sku,product_name,barcode,image_url,country,category,brand,available_quantity,locked_quantity,in_transit_quantity,unit,qualification_coverage,last_core_synced_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          ON CONFLICT(organization_id,warehouse_ref,sku) DO UPDATE SET
            warehouse_name=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.warehouse_name ELSE warehouse_inventory_projections.warehouse_name END,
            product_name=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.product_name ELSE warehouse_inventory_projections.product_name END,
            barcode=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.barcode ELSE warehouse_inventory_projections.barcode END,
            image_url=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.image_url ELSE warehouse_inventory_projections.image_url END,
+           country=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.country ELSE warehouse_inventory_projections.country END,
+           category=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.category ELSE warehouse_inventory_projections.category END,
+           brand=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.brand ELSE warehouse_inventory_projections.brand END,
            available_quantity=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.available_quantity ELSE warehouse_inventory_projections.available_quantity END,
            locked_quantity=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.locked_quantity ELSE warehouse_inventory_projections.locked_quantity END,
            in_transit_quantity=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.in_transit_quantity ELSE warehouse_inventory_projections.in_transit_quantity END,
            unit=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.unit ELSE warehouse_inventory_projections.unit END,
+           qualification_coverage=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.qualification_coverage ELSE warehouse_inventory_projections.qualification_coverage END,
            last_core_synced_at=CASE WHEN warehouse_inventory_projections.version <= excluded.version THEN excluded.last_core_synced_at ELSE warehouse_inventory_projections.last_core_synced_at END,
            version=GREATEST(warehouse_inventory_projections.version,excluded.version)`,
-        [organization.id, projection.warehouseRef, projection.warehouseName, item.sku, item.productName, item.barcode || "", item.imageUrl || "", item.availableQuantity, item.lockedQuantity, item.inTransitQuantity, item.unit, projection.syncedAt, projection.version],
+        [organization.id, projection.warehouseRef, projection.warehouseName, item.sku, item.productName, item.barcode || "", item.imageUrl || "", item.country || "", item.category || "", item.brand || "", item.availableQuantity, item.lockedQuantity, item.inTransitQuantity, item.unit, item.qualificationCoverage, projection.syncedAt, projection.version],
       );
     }
+    await client.query(
+      `INSERT INTO warehouse_inventory_projection_states(organization_id,warehouse_ref,warehouse_name,item_count,qualification_item_count,last_core_synced_at,version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT(organization_id,warehouse_ref) DO UPDATE SET
+         warehouse_name=CASE WHEN warehouse_inventory_projection_states.version <= excluded.version THEN excluded.warehouse_name ELSE warehouse_inventory_projection_states.warehouse_name END,
+         item_count=CASE WHEN warehouse_inventory_projection_states.version <= excluded.version THEN excluded.item_count ELSE warehouse_inventory_projection_states.item_count END,
+         qualification_item_count=CASE WHEN warehouse_inventory_projection_states.version <= excluded.version THEN excluded.qualification_item_count ELSE warehouse_inventory_projection_states.qualification_item_count END,
+         last_core_synced_at=CASE WHEN warehouse_inventory_projection_states.version <= excluded.version THEN excluded.last_core_synced_at ELSE warehouse_inventory_projection_states.last_core_synced_at END,
+         version=GREATEST(warehouse_inventory_projection_states.version,excluded.version)`,
+      [organization.id, projection.warehouseRef, projection.warehouseName, projection.items.length, projection.items.filter((item) => item.qualificationCoverage).length, projection.syncedAt, projection.version],
+    );
     await client.query("UPDATE integration_inbox SET status='applied',processed_at=now() WHERE source_event_id=$1", [projection.eventId]);
     return { ok: true, itemCount: projection.items.length, deletedItemCount: deleted.rowCount };
   });

@@ -372,6 +372,156 @@ export async function createWarehouseOperation(auth, body, { idempotencyKey }) {
   });
 }
 
+const qualificationCoverageStatuses = new Set(["valid", "warning", "urgent", "expired", "undated", "missing"]);
+const qualificationCoverageRiskRank = { unavailable: -1, missing: 0, expired: 1, undated: 2, urgent: 3, warning: 4, valid: 5 };
+
+function recordValue(row, camel, snake) {
+  return row?.[camel] ?? row?.[snake];
+}
+
+function publicQualificationCoverage(input) {
+  if (!input || typeof input !== "object" || !qualificationCoverageStatuses.has(String(input.status || ""))) return null;
+  return {
+    status: String(input.status),
+    covered: Boolean(input.covered),
+    coveredCategoryCount: Math.max(0, Number(input.coveredCategoryCount) || 0),
+    registeredCategoryCount: Math.max(0, Number(input.registeredCategoryCount) || 0),
+    cells: (Array.isArray(input.cells) ? input.cells : []).map((cell) => ({
+      category: String(cell?.category || ""),
+      status: qualificationCoverageStatuses.has(String(cell?.status || "")) ? String(cell.status) : "missing",
+      activeRecords: Math.max(0, Number(cell?.activeRecords) || 0),
+      nearestExpiryDate: String(cell?.nearestExpiryDate || ""),
+      nearestDaysLeft: Number.isFinite(Number(cell?.nearestDaysLeft)) ? Number(cell.nearestDaysLeft) : null,
+      records: (Array.isArray(cell?.records) ? cell.records : []).map((record) => ({
+        id: String(record?.id || ""),
+        qualificationName: String(record?.qualificationName || ""),
+        effectiveDate: String(record?.effectiveDate || ""),
+        expiryDate: String(record?.expiryDate || ""),
+      })),
+    })).filter((cell) => cell.category),
+  };
+}
+
+function coverageFilterMatches(product, status) {
+  if (!status || status === "all") return true;
+  if (status === "attention") return ["urgent", "warning"].includes(product.status);
+  if (status === "risk") return ["unavailable", "missing", "expired", "undated"].includes(product.status);
+  if (status === "covered") return ["valid", "warning", "urgent"].includes(product.status);
+  return product.status === status;
+}
+
+export function buildPartnerQualificationCoverage({ grants = [], rows = [], requestedWarehouseRef = "", keyword = "", status = "" } = {}) {
+  const allowedGrants = grants.filter((grant) => recordValue(grant, "resourceType", "resource_type") === "warehouse" && (grant.permissions || []).includes("warehouse.inventory.view"));
+  const requested = String(requestedWarehouseRef || "").trim();
+  if (requested && !allowedGrants.some((grant) => String(recordValue(grant, "resourceRef", "resource_ref")) === requested)) fail("当前账号无权查看该仓库的资质覆盖。", 403, "resource_not_granted");
+  const selectedGrant = allowedGrants.find((grant) => String(recordValue(grant, "resourceRef", "resource_ref")) === requested) || allowedGrants[0] || null;
+  const selectedRef = String(recordValue(selectedGrant, "resourceRef", "resource_ref") || "");
+  const selectedRows = rows.filter((row) => String(recordValue(row, "warehouseRef", "warehouse_ref")) === selectedRef)
+    .filter((row) => Number(recordValue(row, "availableQuantity", "available_quantity") || 0) + Number(recordValue(row, "lockedQuantity", "locked_quantity") || 0) + Number(recordValue(row, "inTransitQuantity", "in_transit_quantity") || 0) > 0);
+  const allProducts = selectedRows.map((row) => {
+    const snapshot = publicQualificationCoverage(recordValue(row, "qualificationCoverage", "qualification_coverage"));
+    const availableQty = Number(recordValue(row, "availableQuantity", "available_quantity") || 0);
+    const lockedQty = Number(recordValue(row, "lockedQuantity", "locked_quantity") || 0);
+    const inTransitQty = Number(recordValue(row, "inTransitQuantity", "in_transit_quantity") || 0);
+    return {
+      id: `${selectedRef}:${String(row.sku || "")}`,
+      sku: String(row.sku || ""),
+      productName: String(recordValue(row, "productName", "product_name") || row.sku || ""),
+      barcode: String(row.barcode || ""),
+      imageUrl: String(recordValue(row, "imageUrl", "image_url") || ""),
+      country: String(row.country || ""),
+      category: String(row.category || ""),
+      brand: String(row.brand || ""),
+      availableQty,
+      lockedQty,
+      inTransitQty,
+      totalQty: availableQty + lockedQty + inTransitQty,
+      unit: String(row.unit || "件"),
+      status: snapshot?.status || "unavailable",
+      covered: Boolean(snapshot?.covered),
+      coveredCategoryCount: snapshot?.coveredCategoryCount || 0,
+      registeredCategoryCount: snapshot?.registeredCategoryCount || 0,
+      cells: snapshot?.cells || [],
+      syncedAt: recordValue(row, "lastCoreSyncedAt", "last_core_synced_at") ? new Date(recordValue(row, "lastCoreSyncedAt", "last_core_synced_at")).toISOString() : "",
+    };
+  }).sort((left, right) => qualificationCoverageRiskRank[left.status] - qualificationCoverageRiskRank[right.status] || right.totalQty - left.totalQty || left.sku.localeCompare(right.sku));
+  const knownProducts = allProducts.filter((product) => product.status !== "unavailable");
+  const covered = knownProducts.filter((product) => product.covered).length;
+  const categoryNames = [...new Set(knownProducts.flatMap((product) => product.cells.map((cell) => cell.category)))];
+  const categories = categoryNames.map((name) => {
+    const cells = knownProducts.map((product) => product.cells.find((cell) => cell.category === name)).filter(Boolean);
+    const coveredProducts = cells.filter((cell) => ["valid", "warning", "urgent"].includes(cell.status)).length;
+    const registeredProducts = cells.filter((cell) => cell.records.length > 0).length;
+    return { name, coveredProducts, registeredProducts, missingProducts: knownProducts.length - registeredProducts, expiringProducts: cells.filter((cell) => ["warning", "urgent"].includes(cell.status)).length, expiredProducts: cells.filter((cell) => cell.status === "expired").length, coverageRate: knownProducts.length ? Math.round((coveredProducts / knownProducts.length) * 1000) / 10 : 0 };
+  });
+  const warehouseRows = rows.filter((row) => String(recordValue(row, "warehouseRef", "warehouse_ref")) === selectedRef);
+  const warehouse = selectedGrant ? {
+    id: selectedRef,
+    name: String(recordValue(selectedGrant, "resourceName", "resource_name") || warehouseRows[0]?.warehouse_name || selectedRef),
+    country: warehouseRows.map((row) => String(row.country || "")).find(Boolean) || "",
+    productCount: allProducts.length,
+    totalQty: allProducts.reduce((sum, product) => sum + product.totalQty, 0),
+    syncedAt: recordValue(selectedGrant, "syncedAt", "synced_at") ? new Date(recordValue(selectedGrant, "syncedAt", "synced_at")).toISOString() : "",
+  } : null;
+  const warehouses = allowedGrants.map((grant) => ({
+    id: String(recordValue(grant, "resourceRef", "resource_ref")),
+    name: String(recordValue(grant, "resourceName", "resource_name") || recordValue(grant, "resourceRef", "resource_ref")),
+    syncedAt: recordValue(grant, "syncedAt", "synced_at") ? new Date(recordValue(grant, "syncedAt", "synced_at")).toISOString() : "",
+    itemCount: Math.max(0, Number(recordValue(grant, "itemCount", "item_count") || 0)),
+    synchronized: Boolean(recordValue(grant, "syncedAt", "synced_at")),
+  }));
+  const normalizedKeyword = String(keyword || "").trim().toLocaleLowerCase();
+  const products = allProducts.filter((product) => (!normalizedKeyword || `${product.sku} ${product.productName} ${product.barcode} ${product.brand}`.toLocaleLowerCase().includes(normalizedKeyword)) && coverageFilterMatches(product, status));
+  return {
+    warehouses,
+    warehouse,
+    categories,
+    products,
+    completedProducts: knownProducts.length,
+    summary: {
+      products: allProducts.length,
+      covered,
+      risk: knownProducts.filter((product) => ["warning", "urgent"].includes(product.status)).length,
+      urgent: knownProducts.filter((product) => product.status === "urgent").length,
+      warning: knownProducts.filter((product) => product.status === "warning").length,
+      expired: knownProducts.filter((product) => product.status === "expired").length,
+      undated: knownProducts.filter((product) => product.status === "undated").length,
+      missing: knownProducts.filter((product) => product.status === "missing").length,
+      unavailable: allProducts.length - knownProducts.length,
+      coverageRate: knownProducts.length ? Math.round((covered / knownProducts.length) * 1000) / 10 : 0,
+    },
+  };
+}
+
+export async function listQualificationCoverage(auth, filters = {}) {
+  const requestedWarehouseRef = String(filters.warehouseRef || "").trim().slice(0, 120);
+  const keyword = String(filters.keyword || "").trim().slice(0, 100);
+  const status = String(filters.status || "").trim().slice(0, 40);
+  return withOrganization(auth.organization.id, async (client) => {
+    const grantResult = await client.query(
+      `SELECT access_grant.resource_type,access_grant.resource_ref,access_grant.resource_name,access_grant.permissions,
+              projection_state.last_core_synced_at AS synced_at,projection_state.item_count,projection_state.qualification_item_count,projection_state.version
+         FROM organization_access_grants access_grant
+         LEFT JOIN warehouse_inventory_projection_states projection_state
+           ON projection_state.organization_id=access_grant.organization_id AND projection_state.warehouse_ref=access_grant.resource_ref
+        WHERE access_grant.organization_id=$1 AND access_grant.resource_type='warehouse' AND access_grant.permissions ? 'warehouse.inventory.view'
+        ORDER BY access_grant.resource_name,access_grant.resource_ref`,
+      [auth.organization.id],
+    );
+    const selectedGrant = requestedWarehouseRef ? grantResult.rows.find((grant) => grant.resource_ref === requestedWarehouseRef) : grantResult.rows[0];
+    if (requestedWarehouseRef && !selectedGrant) fail("当前账号无权查看该仓库的资质覆盖。", 403, "resource_not_granted");
+    const rowResult = selectedGrant ? await client.query(
+      `SELECT warehouse_ref,warehouse_name,sku,product_name,barcode,image_url,country,category,brand,available_quantity,locked_quantity,in_transit_quantity,unit,qualification_coverage,last_core_synced_at
+         FROM warehouse_inventory_projections
+        WHERE organization_id=$1 AND warehouse_ref=$2
+          AND (available_quantity > 0 OR locked_quantity > 0 OR in_transit_quantity > 0)
+        ORDER BY product_name,sku`,
+      [auth.organization.id, selectedGrant.resource_ref],
+    ) : { rows: [] };
+    return buildPartnerQualificationCoverage({ grants: grantResult.rows, rows: rowResult.rows, requestedWarehouseRef, keyword, status });
+  });
+}
+
 export async function listInventory(auth, filters = {}) {
   const { limit, offset } = pagination(filters);
   const keyword = String(filters.keyword || "").trim().slice(0, 100);

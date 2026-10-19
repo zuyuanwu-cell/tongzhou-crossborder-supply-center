@@ -15,6 +15,7 @@ const partnerOrderSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)
 const samplingVariantSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0010_sampling_variants.sql"), "utf8");
 const commandOutboxReconciliationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0011_command_outbox_reconciliation.sql"), "utf8");
 const inventoryBarcodeSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0012_inventory_barcode_lookup.sql"), "utf8");
+const partnerQualificationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0013_partner_qualification_coverage.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -161,6 +162,18 @@ test("warehouse inventory barcode lookup is projected and indexed", () => {
   assert.match(repositorySource, /product_name ILIKE \$2 OR barcode ILIKE \$2/);
   assert.match(repositorySource, /barcode: row\.barcode \|\| ""/);
   assert.match(portalSource, /扫描条码或输入 SKU 后回车/);
+});
+
+test("partner qualification coverage migration is additive and keeps sync state tenant isolated", () => {
+  assert.match(partnerQualificationSql, /ADD COLUMN IF NOT EXISTS qualification_coverage jsonb/);
+  assert.match(partnerQualificationSql, /CREATE TABLE IF NOT EXISTS warehouse_inventory_projection_states/);
+  assert.match(partnerQualificationSql, /ENABLE ROW LEVEL SECURITY/);
+  assert.match(partnerQualificationSql, /FORCE ROW LEVEL SECURITY/);
+  assert.match(partnerQualificationSql, /app\.current_organization_id/);
+  assert.match(integrationSource, /qualification_coverage/);
+  assert.match(integrationSource, /warehouse_inventory_projection_states/);
+  assert.match(repositorySource, /warehouse\.inventory\.view/);
+  assert.match(serverSource, /collaboration\/v1\/qualification-coverage/);
 });
 
 test("receiving barcode capture writes the physical code to the selected line without product lookup", () => {

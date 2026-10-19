@@ -18,6 +18,7 @@ import {
   createWarehouseOperation,
   getWorkItem,
   listInventory,
+  listQualificationCoverage,
   listNotifications,
   listWorkItems,
   markNotificationRead,
@@ -428,6 +429,25 @@ async function route(req, res) {
   }
   if (url.pathname === "/collaboration/v1/inventory" && req.method === "GET") {
     sendJson(res, 200, { ok: true, ...(await listInventory(auth, queryObject(url))) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/qualification-coverage" && req.method === "GET") {
+    const coverage = await listQualificationCoverage(auth, queryObject(url));
+    const total = coverage.summary.products;
+    const synchronized = Boolean(coverage.warehouse?.syncedAt);
+    sendJson(res, 200, {
+      ok: true,
+      ...withDataContext(coverage, {
+        generatedAt: new Date().toISOString(),
+        effectiveAt: coverage.warehouse?.syncedAt || new Date().toISOString(),
+        source: "snapshot",
+        scopeKey: coverage.warehouse ? `warehouse_${coverage.warehouse.id}` : `organization_${auth.organization.id}`,
+        scopeLabel: coverage.warehouse ? `${coverage.warehouse.name} · 正库存商品` : `${auth.organization.name} · 已授权仓库`,
+        filters: { warehouseRef: String(url.searchParams.get("warehouseRef") || ""), keyword: String(url.searchParams.get("keyword") || ""), status: String(url.searchParams.get("status") || "") },
+        completeness: !coverage.warehouse || !synchronized ? "unavailable" : coverage.completedProducts < total ? "partial" : "complete",
+        coverage: { completed: coverage.completedProducts, total, unit: "sku" },
+      }),
+    });
     return;
   }
   if (url.pathname === "/collaboration/v1/oem/quotes" && req.method === "POST") {
