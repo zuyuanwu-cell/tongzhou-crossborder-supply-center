@@ -42,6 +42,24 @@ export type PartnerOrderLine = { id: string; lineRef: string; lineType: "finishe
 export type PartnerOrderReport = { id: string; workItemId: string; lineId: string; commandId: string; reportType: "production_progress" | "material_readiness" | "purchase_fulfillment" | "exception" | "shipment"; stage: string; progressPercent: number | null; result: string; quantity: number | null; expectedAt: string; severity: string; title: string; note: string; details: Record<string, string | number | boolean | null>; submittedBy: string; createdAt: string };
 export type WorkItemDetail = { item: WorkItem; lines: TaskLine[]; events: WorkEvent[]; attachments: Attachment[]; commands: WorkCommand[]; oem?: { artifacts: OemArtifact[]; quotes: SupplierQuote[]; milestones: ProductionMilestone[] } | null; partnerOrder?: { lines: PartnerOrderLine[]; reports: PartnerOrderReport[] } | null };
 export type InventoryItem = { warehouseRef: string; warehouseName: string; sku: string; productName: string; barcode: string; imageUrl: string; availableQuantity: number; lockedQuantity: number; inTransitQuantity: number; unit: string; lastCoreSyncedAt: string; version: number };
+export type QualificationCoverageStatus = "valid" | "warning" | "urgent" | "expired" | "undated" | "missing" | "unavailable";
+export type QualificationCoverageRecord = { id: string; qualificationName: string; effectiveDate: string; expiryDate: string };
+export type QualificationCoverageCell = { category: string; status: Exclude<QualificationCoverageStatus, "unavailable">; activeRecords: number; nearestExpiryDate: string; nearestDaysLeft: number | null; records: QualificationCoverageRecord[] };
+export type QualificationCoverageProduct = {
+  id: string; sku: string; productName: string; barcode: string; imageUrl: string; country: string; category: string; brand: string;
+  availableQty: number; lockedQty: number; inTransitQty: number; totalQty: number; unit: string; status: QualificationCoverageStatus;
+  covered: boolean; coveredCategoryCount: number; registeredCategoryCount: number; cells: QualificationCoverageCell[]; syncedAt: string;
+};
+export type QualificationCoveragePayload = {
+  ok: boolean;
+  warehouses: Array<{ id: string; name: string; syncedAt: string; itemCount: number; synchronized: boolean }>;
+  warehouse: { id: string; name: string; country: string; productCount: number; totalQty: number; syncedAt: string } | null;
+  categories: Array<{ name: string; coveredProducts: number; registeredProducts: number; missingProducts: number; expiringProducts: number; expiredProducts: number; coverageRate: number }>;
+  products: QualificationCoverageProduct[];
+  completedProducts: number;
+  summary: { products: number; covered: number; risk: number; urgent: number; warning: number; expired: number; undated: number; missing: number; unavailable: number; coverageRate: number };
+  dataContext?: DataContext;
+};
 export type WarehouseOperationType = "inbound" | "outbound" | "stocktake";
 export type WarehouseOperationLine = { sku: string; productName: string; imageUrl?: string; quantity?: number; countedQuantity?: number; unit: string; lotNo?: string; barcode?: string; productionDate?: string; expiryDate?: string };
 export type NotificationItem = { id: string; workItemId: string; title: string; body: string; channel: string; deliveryStatus: string; readAt: string; createdAt: string };

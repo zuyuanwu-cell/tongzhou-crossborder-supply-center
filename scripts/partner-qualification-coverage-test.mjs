@@ -61,6 +61,16 @@ assert.throws(() => inventoryProjectionSchema.parse({
 }), /unrecognized|invalid/i, "strict projection contracts must reject certificate file fields");
 
 const portalSource = readFileSync(new URL("../collaboration/portal/src/App.tsx", import.meta.url), "utf8");
-assert.equal(portalSource.includes("qualification-coverage"), false, "the page assertion remains red until the portal task is implemented");
+const portalApiSource = readFileSync(new URL("../collaboration/portal/src/api.ts", import.meta.url), "utf8");
+const portalPageSource = readFileSync(new URL("../collaboration/portal/src/QualificationCoveragePage.tsx", import.meta.url), "utf8");
+const portalPageCss = readFileSync(new URL("../collaboration/portal/src/qualification-coverage.css", import.meta.url), "utf8");
+assert.equal(portalSource.includes('"qualification-coverage"'), true, "the portal must expose a workspace-gated qualification route");
+assert.match(portalApiSource, /\/collaboration\/v1\/qualification-coverage/);
+assert.match(portalPageSource, /DataContextBar/);
+assert.match(portalPageSource, /warehouseRef/);
+assert.match(portalPageSource, /status/);
+assert.match(portalPageSource, /keyword/);
+assert.doesNotMatch(portalPageSource, /downloadAttachment|qualificationFileDownloadUrl|fileId|证书下载/);
+assert.match(portalPageCss, /@media[^\{]*max-width:\s*800px/);
 
 console.log("partner qualification coverage projection tests passed");

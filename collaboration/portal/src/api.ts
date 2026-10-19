@@ -1,4 +1,4 @@
-import type { Dashboard, FirstArticleRecord, InvitationDeliveryResult, InventoryItem, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, Session, WarehouseOperationLine, WarehouseOperationType, WorkItem, WorkItemDetail } from "./types";
+import type { Dashboard, FirstArticleRecord, InvitationDeliveryResult, InventoryItem, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, QualificationCoveragePayload, Session, WarehouseOperationLine, WarehouseOperationType, WorkItem, WorkItemDetail } from "./types";
 
 export type PartnerOrderReportInput =
   | { reportType: "production_progress"; stage: "planning" | "material_preparation" | "filling" | "packaging" | "quality_check" | "ready_to_ship"; progressPercent: number; completedQuantity: number; expectedCompletionDate: string; note: string }
@@ -38,7 +38,7 @@ const demoWarehouseCapabilities = demoProduction || (!demoOem && !demoSupplier &
   ? ["warehouse.inventory.view", "warehouse.task.view", "warehouse.task.handle", "warehouse.exception.report", "warehouse.inbound.confirm", "warehouse.outbound.confirm", "warehouse.transfer.receive", "warehouse.inventory.adjust.request", "warehouse.task.complete", "attachment.upload"]
   : [];
 const demoWorkspace: Session["workspace"] = {
-  modules: ["overview", "tasks", "notifications", "account", ...(demoProduction ? ["production", "inventory", "warehouse_tasks"] : []), ...(!demoProduction && demoWarehouseCapabilities.length ? ["inventory", "warehouse_tasks"] : []), ...(demoAdmin ? ["members"] : [])],
+  modules: ["overview", "tasks", "notifications", "account", ...(demoProduction ? ["production", "inventory", "warehouse_tasks", "qualification_coverage"] : []), ...(!demoProduction && demoWarehouseCapabilities.length ? ["inventory", "warehouse_tasks", "qualification_coverage"] : []), ...(demoAdmin ? ["members"] : [])],
   taskTypes: [...(demoProduction ? ["production_order"] : demoSupplier ? ["purchase_order"] : []), ...(demoWarehouseCapabilities.length ? ["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception"] : [])],
   actions: [...new Set([...demoBusinessCapabilities, ...demoWarehouseCapabilities].filter((permission) => !permission.endsWith(".view")))],
   capabilities: [...new Set([...demoBusinessCapabilities, ...demoWarehouseCapabilities])],
@@ -241,6 +241,59 @@ export async function downloadAttachment(attachmentId: string) {
 }
 export async function updateProductionMilestone(milestoneId: string, version: number, body: { status: string; note: string }) { if (demoMode) return { ok: true }; return request(`/collaboration/v1/oem/milestones/${milestoneId}`, { method: "PATCH", headers: { "Idempotency-Key": crypto.randomUUID(), "If-Match": String(version) }, body: JSON.stringify(body) }); }
 export async function fetchInventory(keyword = "") { if (demoMode) { const items = [{ warehouseRef: "dwh-east-01", warehouseName: "华东协同仓", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", barcode: "697000000001", imageUrl: "", availableQuantity: 1880, lockedQuantity: 240, inTransitQuantity: 240, unit: "件", lastCoreSyncedAt: new Date(now - 9e4).toISOString(), version: 1 }, { warehouseRef: "dwh-east-01", warehouseName: "华东协同仓", sku: "TZKJ-DEMO-002", productName: "森系修护发膜", barcode: "697000000002", imageUrl: "", availableQuantity: 864, lockedQuantity: 120, inTransitQuantity: 120, unit: "件", lastCoreSyncedAt: new Date(now - 9e4).toISOString(), version: 1 }, { warehouseRef: "dwh-east-01", warehouseName: "华东协同仓", sku: "TZKJ-DEMO-003", productName: "轻盈蓬松护发素", barcode: "697000000003", imageUrl: "", availableQuantity: 430, lockedQuantity: 0, inTransitQuantity: 0, unit: "件", lastCoreSyncedAt: new Date(now - 9e4).toISOString(), version: 1 }] satisfies InventoryItem[]; const value = keyword.trim().toLowerCase(); return { ok: true, items: items.filter((item) => !value || `${item.sku} ${item.productName} ${item.barcode}`.toLowerCase().includes(value)), limit: 100, offset: 0 }; } return request<{ ok: boolean; items: InventoryItem[]; limit: number; offset: number }>(`/collaboration/v1/inventory?keyword=${encodeURIComponent(keyword)}&limit=100`); }
+
+export async function fetchQualificationCoverage(filters: { warehouseRef?: string; keyword?: string; status?: string } = {}) {
+  if (demoMode) {
+    const syncedAt = new Date(now - 9e4).toISOString();
+    const products: QualificationCoveragePayload["products"] = [
+      {
+        id: "demo-qualification-1", sku: "TZKJ-DEMO-001", productName: "海盐净润洗发露", barcode: "697000000001", imageUrl: "", country: "印度尼西亚", category: "洗护", brand: "同舟",
+        availableQty: 1880, lockedQty: 240, inTransitQty: 240, totalQty: 2360, unit: "件", status: "valid", covered: true, coveredCategoryCount: 2, registeredCategoryCount: 2, syncedAt,
+        cells: [
+          { category: "印尼跨境BPOM", status: "valid", activeRecords: 1, nearestExpiryDate: "2028-08-31", nearestDaysLeft: 681, records: [{ id: "demo-q-1", qualificationName: "印尼跨境 BPOM 注册", effectiveDate: "2025-09-01", expiryDate: "2028-08-31" }] },
+          { category: "印尼本土BPOM", status: "valid", activeRecords: 1, nearestExpiryDate: "2027-12-31", nearestDaysLeft: 438, records: [{ id: "demo-q-2", qualificationName: "印尼本土 BPOM 注册", effectiveDate: "2025-01-01", expiryDate: "2027-12-31" }] },
+        ],
+      },
+      {
+        id: "demo-qualification-2", sku: "TZKJ-DEMO-002", productName: "森系修护发膜", barcode: "697000000002", imageUrl: "", country: "印度尼西亚", category: "洗护", brand: "同舟",
+        availableQty: 864, lockedQty: 120, inTransitQty: 120, totalQty: 1104, unit: "件", status: "warning", covered: true, coveredCategoryCount: 2, registeredCategoryCount: 2, syncedAt,
+        cells: [
+          { category: "印尼跨境BPOM", status: "warning", activeRecords: 1, nearestExpiryDate: "2027-01-06", nearestDaysLeft: 79, records: [{ id: "demo-q-3", qualificationName: "印尼跨境 BPOM 注册", effectiveDate: "2024-01-07", expiryDate: "2027-01-06" }] },
+          { category: "印尼本土BPOM", status: "valid", activeRecords: 1, nearestExpiryDate: "2028-05-20", nearestDaysLeft: 579, records: [{ id: "demo-q-4", qualificationName: "印尼本土 BPOM 注册", effectiveDate: "2025-05-21", expiryDate: "2028-05-20" }] },
+        ],
+      },
+      {
+        id: "demo-qualification-3", sku: "TZKJ-DEMO-003", productName: "轻盈蓬松护发素", barcode: "697000000003", imageUrl: "", country: "印度尼西亚", category: "洗护", brand: "同舟",
+        availableQty: 430, lockedQty: 0, inTransitQty: 0, totalQty: 430, unit: "件", status: "missing", covered: false, coveredCategoryCount: 0, registeredCategoryCount: 0, syncedAt,
+        cells: [
+          { category: "印尼跨境BPOM", status: "missing", activeRecords: 0, nearestExpiryDate: "", nearestDaysLeft: null, records: [] },
+          { category: "印尼本土BPOM", status: "missing", activeRecords: 0, nearestExpiryDate: "", nearestDaysLeft: null, records: [] },
+        ],
+      },
+    ];
+    const keyword = String(filters.keyword || "").trim().toLowerCase();
+    const status = String(filters.status || "all");
+    const filtered = products.filter((product) => (!keyword || `${product.sku} ${product.productName} ${product.barcode} ${product.brand}`.toLowerCase().includes(keyword)) && (status === "all" || product.status === status));
+    return {
+      ok: true,
+      warehouses: [{ id: "dwh-east-01", name: "印尼雅加达仓", syncedAt, itemCount: products.length, synchronized: true }],
+      warehouse: { id: "dwh-east-01", name: "印尼雅加达仓", country: "印度尼西亚", productCount: products.length, totalQty: products.reduce((sum, product) => sum + product.totalQty, 0), syncedAt },
+      categories: [
+        { name: "印尼跨境BPOM", coveredProducts: 2, registeredProducts: 2, missingProducts: 1, expiringProducts: 1, expiredProducts: 0, coverageRate: 66.7 },
+        { name: "印尼本土BPOM", coveredProducts: 2, registeredProducts: 2, missingProducts: 1, expiringProducts: 0, expiredProducts: 0, coverageRate: 66.7 },
+      ],
+      products: filtered,
+      completedProducts: products.length,
+      summary: { products: 3, covered: 2, risk: 1, urgent: 0, warning: 1, expired: 0, undated: 0, missing: 1, unavailable: 0, coverageRate: 66.7 },
+      dataContext: { generatedAt: syncedAt, effectiveAt: syncedAt, timezone: "Asia/Shanghai", source: "snapshot", scopeKey: "warehouse:dwh-east-01", scopeLabel: "印尼雅加达仓 · 库存商品", filters: { warehouseRef: "dwh-east-01", keyword: filters.keyword || "", status }, completeness: "complete", coverage: { completed: products.length, total: products.length, unit: "sku" }, isEstimate: false, usingPreviousSuccess: false },
+    } satisfies QualificationCoveragePayload;
+  }
+  const query = new URLSearchParams();
+  if (filters.warehouseRef) query.set("warehouseRef", filters.warehouseRef);
+  if (filters.keyword) query.set("keyword", filters.keyword);
+  if (filters.status && filters.status !== "all") query.set("status", filters.status);
+  return request<QualificationCoveragePayload>(`/collaboration/v1/qualification-coverage${query.size ? `?${query}` : ""}`);
+}
 export async function createWarehouseOperation(input: { operationType: WarehouseOperationType; warehouseRef: string; referenceNo: string; note: string; lines: WarehouseOperationLine[] }) {
   if (demoMode) return { ok: true, item: { ...demoItems[0], id: crypto.randomUUID(), status: "pending_approval" as const, title: "仓库自主作业", version: 1 }, command: { id: crypto.randomUUID(), status: "pending_approval" } };
   return request<{ ok: boolean; item: WorkItem; command: { id: string; type: string; status: string; riskLevel: string } }>("/collaboration/v1/warehouse-operations", {
