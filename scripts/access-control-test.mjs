@@ -216,7 +216,7 @@ assert.equal(directMiaoshouPermissions.includes("miaoshou_automation"), false, "
 assert.equal(directMiaoshouPermissions.includes("miaoshou_config"), false, "connection configuration requires an explicit grant");
 assert.equal(directMiaoshouPermissions.includes("ozon_orders"), true, "direct operators can view and sync Ozon orders by default");
 assert.equal(directMiaoshouPermissions.includes("ozon_order_push"), true, "direct operators can review and push Ozon orders by default");
-assert.equal(directMiaoshouPermissions.includes("ozon_config"), false, "Ozon store credentials and mappings remain administrator-only by default");
+assert.equal(directMiaoshouPermissions.includes("ozon_config"), true, "direct operators can configure their assigned Ozon stores; server-side membership still protects credentials");
 
 const legacyMiaoshouOperator = effectivePermissions({
   role: "direct",

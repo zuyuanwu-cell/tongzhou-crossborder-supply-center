@@ -169,6 +169,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "miaoshou_alias",
     "ozon_orders",
     "ozon_order_push",
+    "ozon_config",
     "stockup_request_create",
     "stockup_request_view_own",
   ]),

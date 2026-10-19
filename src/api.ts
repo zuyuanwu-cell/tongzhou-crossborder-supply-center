@@ -2892,6 +2892,8 @@ export type MiaoshouPlatformReadiness = {
   total: number;
 };
 
+export type OzonStoreAccess = "admin" | "owner" | "collaborator" | "none";
+
 export type OzonStore = {
   id: string;
   name: string;
@@ -2899,6 +2901,11 @@ export type OzonStore = {
   apiKeyMasked: string;
   hasApiKey: boolean;
   enabled: boolean;
+  ownerId: string;
+  ownerName: string;
+  collaboratorIds: string[];
+  accessRole: OzonStoreAccess;
+  canManageCredentials: boolean;
   companyName: string;
   connectedAt: string;
   lastTestedAt: string;
@@ -2940,6 +2947,51 @@ export type OzonSkuMapping = {
   wmsSku: string;
   updatedAt: string;
   updatedBy: string;
+};
+
+export type OzonScheduleRule = {
+  id: string;
+  storeId: string;
+  ozonWarehouseId: string;
+  name: string;
+  timezone: "Asia/Shanghai";
+  weekdays: number[];
+  cutoffTimes: string[];
+  enabled: boolean;
+  lastGeneratedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type OzonScheduleBatch = {
+  id: string;
+  ruleId: string;
+  storeId: string;
+  ozonWarehouseId: string;
+  scheduledFor: string;
+  status: "draft" | "confirmed" | string;
+  orderNumbers: string[];
+  confirmedOrderNumbers: string[];
+  exclusions: Array<{ postingNumber: string; reasons: string[] }>;
+  createdAt: string;
+  createdBy: string;
+  confirmedAt: string;
+  confirmedBy: string;
+  updatedAt: string;
+};
+
+export type OzonTaskEvent = {
+  id: string;
+  storeId: string;
+  postingNumber: string;
+  stage: string;
+  level: "info" | "warning" | "error" | "success";
+  code: string;
+  message: string;
+  actor: string;
+  at: string;
+  updatedAt: string;
 };
 
 export type OzonOrder = {
@@ -2985,6 +3037,18 @@ export type OzonOrder = {
     availableQty: number;
     mapped: boolean;
   }>;
+  schedule: null | { status: string; batchId: string; markedAt: string; markedBy: string };
+  fulfillment: null | {
+    stage: string;
+    attempts: number;
+    nextRetryAt: string;
+    lastError: string;
+    errorCode: string;
+    failedStage: string;
+    updatedAt: string;
+    ozonRequestedAt: string;
+    completedAt: string;
+  };
   review: null | { status: string; note: string; reviewedAt: string; reviewedBy: string };
   push: null | { status: string; wmsOrderNo: string; duplicate: boolean; pushedAt: string; linkedAt: string; checkedAt: string; pushedBy: string; lastError: string; wmsStatus: string; platform: string; platformShop: string; warehouseCode: string; shippingMethod: string };
   timeline: Array<{ at: string; action: string; actor: string; note: string }>;
@@ -2993,13 +3057,17 @@ export type OzonOrder = {
 export type OzonPayload = {
   ok: boolean;
   updatedAt: string;
+  automation: { autoShipEnabled: boolean; timezone: "Asia/Shanghai"; maxConcurrency: number };
   stores: OzonStore[];
   routes: OzonWarehouseRoute[];
   skuMappings: OzonSkuMapping[];
+  scheduleRules: OzonScheduleRule[];
+  scheduleBatches: OzonScheduleBatch[];
+  taskEvents: OzonTaskEvent[];
   warehouses: Array<{ id: string; name: string; warehouseCode: string; status: string }>;
   products: Array<{ key: string; storeId: string; storeName: string; offerId: string; ozonSku: string; productName: string; orderCount: number }>;
   orders: OzonOrder[];
-  summary: { stores: number; pending: number; ready: number; approved: number; pushed: number; blocked: number };
+  summary: { stores: number; pending: number; ready: number; approved: number; pushed: number; blocked: number; draftBatches: number; processing: number; completed: number; exceptions: number };
 };
 
 export type MiaoshouListingDraft = {
@@ -6061,6 +6129,10 @@ export function fetchOzonIntegration() {
   return requestJson<OzonPayload>("/api/ozon");
 }
 
+export function fetchOzonOperators() {
+  return requestJson<{ ok: boolean; operators: Array<{ id: string; username: string; displayName: string; roleLabel: string }> }>("/api/ozon/operators");
+}
+
 export function saveOzonStore(input: { id?: string; name: string; clientId: string; apiKey?: string; enabled?: boolean }) {
   return requestJson<{ ok: boolean; store: OzonStore; payload: OzonPayload }>("/api/ozon/stores", {
     method: "POST",
@@ -6070,6 +6142,13 @@ export function saveOzonStore(input: { id?: string; name: string; clientId: stri
 
 export function deleteOzonStore(storeId: string) {
   return requestJson<OzonPayload>(`/api/ozon/stores/${encodeURIComponent(storeId)}`, { method: "DELETE" });
+}
+
+export function saveOzonStoreCollaborators(storeId: string, input: { collaboratorIds: string[]; ownerId?: string }) {
+  return requestJson<{ ok: boolean; store: OzonStore; payload: OzonPayload }>(`/api/ozon/stores/${encodeURIComponent(storeId)}/collaborators`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
 }
 
 export function testOzonStore(storeId: string) {
@@ -6090,6 +6169,32 @@ export function saveOzonSkuMapping(input: Omit<OzonSkuMapping, "updatedAt" | "up
 
 export function autoMapOzonSkus(input: { storeId: string; warehouseConnectionId: string }) {
   return requestJson<{ ok: boolean; mapped: number; payload: OzonPayload }>("/api/ozon/sku-mappings/auto", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function saveOzonScheduleRule(input: Pick<OzonScheduleRule, "storeId" | "ozonWarehouseId" | "name" | "weekdays" | "cutoffTimes" | "enabled"> & { id?: string }) {
+  return requestJson<{ ok: boolean; rule: OzonScheduleRule; payload: OzonPayload }>("/api/ozon/schedule-rules", {
+    method: input.id ? "PUT" : "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteOzonScheduleRule(ruleId: string) {
+  return requestJson<OzonPayload>(`/api/ozon/schedule-rules/${encodeURIComponent(ruleId)}`, { method: "DELETE" });
+}
+
+export function generateOzonScheduleBatch(ruleId: string) {
+  return requestJson<OzonPayload>(`/api/ozon/schedule-rules/${encodeURIComponent(ruleId)}/generate`, { method: "POST" });
+}
+
+export function confirmOzonScheduleBatch(batchId: string, orderNumbers: string[]) {
+  return requestJson<{ ok: boolean; batch: OzonScheduleBatch; payload: OzonPayload }>(`/api/ozon/schedule-batches/${encodeURIComponent(batchId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ orderNumbers }),
+  });
+}
+
+export function retryOzonOrder(postingNumber: string, recoverExternal = false) {
+  return requestJson<{ ok: boolean; order: OzonOrder; payload: OzonPayload }>(`/api/ozon/orders/${encodeURIComponent(postingNumber)}/retry`, { method: "POST", body: JSON.stringify({ recoverExternal }) });
 }
 
 export function reviewOzonOrder(postingNumber: string, note = "") {

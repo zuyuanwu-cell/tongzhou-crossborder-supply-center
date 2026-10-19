@@ -13,7 +13,7 @@ const posting = (postingNumber, status, offerId) => ({
   analytics_data: { warehouse_id: "9001", warehouse: "Ozon FBS 莫斯科仓", city: "Moscow" },
   products: [{
     product_offer_id: offerId,
-    product_id: `sku-${postingNumber}`,
+    product_id: postingNumber.replace(/\D/g, ""),
     product_name: "测试商品",
     price: "799.00",
     quantity: 1,
@@ -23,6 +23,8 @@ const posting = (postingNumber, status, offerId) => ({
 });
 
 const requests = [];
+const shippedPostings = new Set();
+const fulfillmentSequence = [];
 const fakeFetch = async (url, options = {}) => {
   const body = JSON.parse(options.body || "{}");
   requests.push({ url: String(url), body, headers: options.headers });
@@ -42,9 +44,17 @@ const fakeFetch = async (url, options = {}) => {
       postings: [
         posting("10000001-0001-1", "awaiting_packaging", "TZKJ-RU-0016**1"),
         posting("10000001-0002-1", "awaiting_deliver", "TZKJ-RU-0016*1"),
+        posting("10000001-0004-1", "awaiting_packaging", "TZKJ-RU-0016*1"),
+        { ...posting("10000001-0005-1", "awaiting_packaging", "TZKJ-RU-0016"), requirements: { products_requiring_mandatory_mark: ["marked-product"], products_requiring_imei: [] } },
         posting("10000001-0003-1", "delivered", "TZKJ-RU-0016"),
       ],
     };
+  } else if (String(url).endsWith("/v3/posting/fbs/get")) {
+    payload = { result: posting(body.posting_number, shippedPostings.has(body.posting_number) ? "awaiting_deliver" : "awaiting_packaging", "TZKJ-RU-0016**1") };
+  } else if (String(url).endsWith("/v4/posting/fbs/ship")) {
+    fulfillmentSequence.push("ozon_ship");
+    shippedPostings.add(body.posting_number);
+    payload = { result: [{ posting_number: body.posting_number }] };
   } else {
     throw new Error(`unexpected Ozon request: ${url}`);
   }
@@ -63,6 +73,8 @@ const inventory = [{ warehouseId: "ru-wh-1", sku: "TZKJ-RU-0016", availableQty: 
 let persisted = null;
 const lookupCount = new Map();
 const verificationCalls = [];
+const verificationAttempts = new Map();
+let currentTime = new Date("2026-09-15T08:00:00.000Z");
 const service = createOzonIntegrationService({
   initialState: {},
   save: (state) => { persisted = JSON.parse(JSON.stringify(state)); },
@@ -86,7 +98,13 @@ const service = createOzonIntegrationService({
     };
   },
   verifyWmsOrder: async (_warehouse, input) => {
+    fulfillmentSequence.push("wms_verify");
     verificationCalls.push(input);
+    const attempts = (verificationAttempts.get(input.referenceNo) || 0) + 1;
+    verificationAttempts.set(input.referenceNo, attempts);
+    if (input.referenceNo.endsWith("0004-1") && attempts === 1) {
+      throw Object.assign(new Error("temporary WMS network failure"), { statusCode: 502, code: "NETWORK_ERROR" });
+    }
     return {
       found: true,
       orderNo: `WMS-${input.referenceNo}`,
@@ -100,7 +118,8 @@ const service = createOzonIntegrationService({
       verified: true,
     };
   },
-  clock: () => new Date("2026-09-15T08:00:00.000Z"),
+  autoShipEnabled: true,
+  clock: () => new Date(currentTime),
 });
 
 const admin = { id: "admin", username: "admin", displayName: "管理员", role: "admin", dataScopes: { warehouseIds: [] } };
@@ -115,6 +134,7 @@ const tested = await service.testStore(store.id);
 assert.equal(tested.companyName, "Ozon 测试卖家");
 assert.equal(tested.ozonWarehouses[0].id, "9001");
 await service.syncStore(store.id);
+service.saveStoreCollaborators(store.id, [scopedOperator.id], admin);
 assert.equal(requests.some((request) => request.url.endsWith("/v4/posting/fbs/list")), true);
 assert.equal(requests.some((request) => request.url.includes("/v3/posting/fbs/list")), false);
 assert.equal(requests.some((request) => request.url.endsWith("/v2/warehouse/list")), true);
@@ -125,7 +145,7 @@ assert.equal(requests[0].headers["Client-Id"], "client-123");
 assert.equal(requests[0].headers["Api-Key"], "secret-api-key");
 
 let payload = service.payload(admin);
-assert.equal(payload.orders.length, 2, "provider anomalies must not retain delivered orders");
+assert.equal(payload.orders.length, 4, "provider anomalies must not retain delivered orders");
 assert.equal(payload.orders.some((order) => order.status === "delivered"), false);
 
 service.saveRoute({
@@ -135,7 +155,7 @@ service.saveRoute({
   warehouseConnectionId: "ru-wh-1",
 }, admin);
 const mapped = service.autoMap({ storeId: store.id, warehouseConnectionId: "ru-wh-1" }, admin);
-assert.equal(mapped.mapped, 2, "explicit *1 and **1 package suffixes should map to the exact base WMS SKU");
+assert.equal(mapped.mapped, 4, "explicit *1 and **1 package suffixes should map to the exact base WMS SKU");
 
 payload = service.payload(admin);
 const reviewOrder = payload.orders.find((order) => order.postingNumber.endsWith("0001-1"));
@@ -145,34 +165,101 @@ assert.equal(reviewOrder.products[0].wmsSku, "TZKJ-RU-0016");
 assert.equal(reconcileOrder.workflowStage, "reconcile");
 assert.equal(reconcileOrder.reconcileReady, true);
 
-const reviewed = service.reviewOrder(reviewOrder.postingNumber, { note: "SKU 与库存确认无误" }, scopedOperator);
-assert.equal(reviewed.review.status, "approved");
-const waiting = await service.pushOrder(reviewOrder.postingNumber, scopedOperator);
-assert.equal(waiting.push.status, "waiting_sync");
-assert.equal(waiting.push.wmsOrderNo, "");
-const reconciliation = await service.reconcileWaitingOrders({ storeId: store.id }, admin);
-assert.deepEqual(reconciliation, { checked: 1, linked: 0, waiting: 1, failed: 0 });
-const readyForVerification = service.payload(admin).orders.find((order) => order.postingNumber === reviewOrder.postingNumber);
-assert.equal(readyForVerification.linked, false);
-assert.equal(readyForVerification.push.status, "ready_for_verification");
-assert.equal(readyForVerification.push.wmsStatus, "C");
-const linked = await service.verifyOrderInWms(reviewOrder.postingNumber, scopedOperator);
-assert.equal(linked.push.status, "linked");
-assert.equal(linked.push.wmsOrderNo, `WMS-${reviewOrder.postingNumber}`);
-assert.equal(linked.push.platformShop, "FXYZ_RUOZ6005_5610463");
-assert.equal(linked.push.wmsStatus, "W");
+await assert.rejects(
+  service.verifyOrderInWms(reviewOrder.postingNumber, scopedOperator),
+  (error) => error?.statusCode === 409 && error?.code === "ozon_schedule_required",
+  "no WMS write is allowed before a persisted schedule confirmation",
+);
+assert.equal(verificationCalls.length, 0);
+
+const rule = service.saveScheduleRule({
+  storeId: store.id,
+  ozonWarehouseId: "9001",
+  name: "每日排单",
+  weekdays: [1, 2, 3, 4, 5, 6, 7],
+  cutoffTimes: ["16:00"],
+  enabled: true,
+}, scopedOperator);
+const generated = service.evaluateScheduleRules({ ruleId: rule.id, force: true }, scopedOperator);
+assert.equal(generated.created, 1);
+assert.deepEqual(generated.batches[0].orderNumbers, [reviewOrder.postingNumber, "10000001-0004-1"]);
+assert.equal(generated.batches[0].exclusions.some((item) => item.postingNumber === "10000001-0005-1" && item.reasons.some((reason) => reason.includes("特殊商品要求"))), true);
+const duplicateSlot = service.evaluateScheduleRules({ ruleId: rule.id, force: false, at: "2026-09-15T08:00:00.000Z" }, scopedOperator);
+const duplicateSlotAgain = service.evaluateScheduleRules({ ruleId: rule.id, force: false, at: "2026-09-15T08:00:00.000Z" }, scopedOperator);
+assert.equal(duplicateSlot.created, 1);
+assert.equal(duplicateSlotAgain.created, 0, "the same rule and cutoff slot must not create two batches");
+
+const confirmed = await service.confirmScheduleBatch(generated.batches[0].id, { orderNumbers: [reviewOrder.postingNumber] }, scopedOperator);
+assert.deepEqual(confirmed.confirmedOrderNumbers, [reviewOrder.postingNumber]);
+const fulfillment = await service.processFulfillmentQueue({ limit: 3 }, scopedOperator);
+assert.equal(fulfillment.succeeded, 1);
+const completed = service.payload(admin).orders.find((order) => order.postingNumber === reviewOrder.postingNumber);
+assert.equal(completed.fulfillment.stage, "completed");
+assert.equal(completed.push.status, "linked");
+assert.equal(completed.push.wmsOrderNo, `WMS-${reviewOrder.postingNumber}`);
+assert.equal(completed.push.wmsStatus, "W");
+assert.equal(completed.status, "awaiting_deliver");
 assert.equal(verificationCalls.length, 1);
 assert.deepEqual(verificationCalls[0].lines.map((line) => ({ sku: line.sku, quantity: line.quantity })), [{ sku: "TZKJ-RU-0016", quantity: 1 }]);
-assert.equal(lookupCount.get(reviewOrder.postingNumber), 2);
-await service.pushOrder(reviewOrder.postingNumber, scopedOperator);
-assert.equal(lookupCount.get(reviewOrder.postingNumber), 2, "linked orders must not be queried or created again");
-await service.verifyOrderInWms(reviewOrder.postingNumber, scopedOperator);
-assert.equal(verificationCalls.length, 1, "verified orders must not be submitted twice");
+assert.deepEqual(fulfillmentSequence, ["wms_verify", "ozon_ship"], "Ozon shipping must only happen after WMS reaches W");
+await service.processFulfillmentQueue({ limit: 3 }, scopedOperator);
+assert.equal(verificationCalls.length, 1, "completed orders must not be submitted to WMS twice");
+assert.equal(requests.filter((request) => request.url.endsWith("/v4/posting/fbs/ship")).length, 1, "completed orders must not be shipped twice");
 
-const directLink = await service.pushOrder(reconcileOrder.postingNumber, scopedOperator);
-assert.equal(directLink.linked, true, "awaiting_deliver orders can be reconciled without duplicate review");
-assert.equal(directLink.push.wmsOrderNo, `WMS-${reconcileOrder.postingNumber}`);
+const retryBatch = duplicateSlot.batches[0];
+await service.confirmScheduleBatch(retryBatch.id, { orderNumbers: ["10000001-0004-1"] }, scopedOperator);
+const failedFulfillment = await service.processFulfillmentQueue({ limit: 3 }, scopedOperator);
+assert.equal(failedFulfillment.failed, 1);
+let retryOrder = service.payload(admin).orders.find((order) => order.postingNumber === "10000001-0004-1");
+assert.equal(retryOrder.fulfillment.stage, "error");
+assert.equal(retryOrder.fulfillment.failedStage, "wms_verifying");
+assert.equal(retryOrder.fulfillment.attempts, 1);
+assert.equal(retryOrder.fulfillment.nextRetryAt, "2026-09-15T08:01:00.000Z", "retryable failures use the one-minute first backoff");
+currentTime = new Date("2026-09-15T08:01:01.000Z");
+const recoveredFulfillment = await service.processFulfillmentQueue({ limit: 3 }, scopedOperator);
+assert.equal(recoveredFulfillment.succeeded, 1);
+retryOrder = service.payload(admin).orders.find((order) => order.postingNumber === "10000001-0004-1");
+assert.equal(retryOrder.fulfillment.stage, "completed");
+assert.equal(verificationAttempts.get("10000001-0004-1"), 2);
+
+await assert.rejects(
+  service.pushOrder(reconcileOrder.postingNumber, scopedOperator),
+  (error) => error?.code === "ozon_schedule_required",
+  "orders externally moved to awaiting_deliver must not backfill WMS without explicit recovery",
+);
+assert.equal(reconcileOrder.fulfillment.stage, "external_awaiting_deliver");
+assert.throws(
+  () => service.retryOrder(reconcileOrder.postingNumber, {}, scopedOperator),
+  (error) => error?.code === "ozon_external_recovery_required",
+);
+const explicitlyRecovered = service.retryOrder(reconcileOrder.postingNumber, { recoverExternal: true }, scopedOperator);
+assert.equal(explicitlyRecovered.schedule.status, "confirmed");
+assert.equal(explicitlyRecovered.fulfillment.stage, "queued_wms");
+assert.equal(service.rawState().scheduleBatches.some((batch) => batch.id === explicitlyRecovered.schedule.batchId && batch.ruleId === "manual-external-recovery"), true);
 assert.equal(Boolean(persisted), true);
+
+const collaboratorStore = service.payload(scopedOperator).stores[0];
+assert.equal(collaboratorStore.clientId, "");
+assert.equal(collaboratorStore.apiKeyMasked, "");
+assert.equal(collaboratorStore.accessRole, "collaborator");
+assert.throws(
+  () => service.saveStoreCollaborators(store.id, [], scopedOperator),
+  (error) => error?.statusCode === 403,
+  "collaborators cannot change store membership",
+);
+service.assignStoreOwner(store.id, scopedOperator, admin);
+const ownerStore = service.payload(scopedOperator).stores[0];
+assert.equal(ownerStore.accessRole, "owner");
+assert.equal(ownerStore.clientId, "client-123");
+const secondCollaborator = { id: "op-2", username: "operator2", role: "direct", dataScopes: { warehouseIds: ["ru-wh-1"] } };
+service.saveStoreCollaborators(store.id, [secondCollaborator.id], scopedOperator);
+assert.equal(service.payload(secondCollaborator).stores[0].accessRole, "collaborator");
+assert.equal(service.payload(secondCollaborator).stores[0].clientId, "");
+assert.equal(service.payload(admin).stores[0].accessRole, "admin");
+
+const nonMember = service.payload({ id: "outsider", role: "direct", dataScopes: { warehouseIds: ["ru-wh-1"] } });
+assert.equal(nonMember.stores.length, 0);
+assert.equal(nonMember.orders.length, 0);
 
 const unauthorized = service.payload({ role: "direct", dataScopes: { warehouseIds: ["ru-wh-2"] } });
 assert.equal(unauthorized.orders.length, 0, "scoped users cannot see orders routed to another warehouse");
