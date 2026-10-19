@@ -64,10 +64,12 @@ assert.equal(effectivePermissions({ role: "distributor", permissionOverrides: { 
 
 const mainCenter = readFileSync(new URL("../src/WarehouseCollaborationCenter.tsx", import.meta.url), "utf8");
 const partnerPortal = readFileSync(new URL("../collaboration/portal/src/App.tsx", import.meta.url), "utf8");
+const partnerClientApi = readFileSync(new URL("../collaboration/portal/src/api.ts", import.meta.url), "utf8");
 const partnerApi = readFileSync(new URL("../collaboration/api/server.js", import.meta.url), "utf8");
 assert.match(mainCenter, /qualification_coverage/);
 assert.match(mainCenter, /WarehouseQualificationCoveragePage/);
 assert.doesNotMatch(partnerPortal, /qualification-coverage/);
+assert.doesNotMatch(partnerClientApi, /qualification-coverage/);
 assert.doesNotMatch(partnerApi, /collaboration\/v1\/qualification-coverage/);
 
 console.log("warehouse qualification coverage tests passed");
