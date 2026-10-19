@@ -101,6 +101,7 @@ const hydrated = await hydrateStockupWarningThumbnails(model, {
 });
 assert.equal(thumbnailFetches, 1);
 assert.match(hydrated.items[1].thumbnailDataUri, /^data:image\/png;base64,/);
+assert.ok(Buffer.from(hydrated.items[1].thumbnailDataUri.split(",")[1], "base64").length < 100_000, "产品原图应先压缩为轻量缩略图");
 assert.match(renderStockupWarningSvg(hydrated), /<image href="data:image\/png;base64,/);
 
 const imageReport = await renderStockupWarningPngWithImages(payload, {

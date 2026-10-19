@@ -11,6 +11,7 @@ const WECOM_IMAGE_LIMIT = 2 * 1024 * 1024;
 const THUMBNAIL_MAX_BYTES = 1_500_000;
 const THUMBNAIL_FETCH_TIMEOUT_MS = 4_000;
 const THUMBNAIL_FETCH_CONCURRENCY = 4;
+const THUMBNAIL_RENDER_SIZE = 164;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const bundledFontPath = resolve(moduleDirectory, "../assets/fonts/NotoSansCJKsc-Regular.otf");
@@ -127,6 +128,21 @@ function safeInlineImage(value) {
   return source.length <= Math.ceil(THUMBNAIL_MAX_BYTES * 4 / 3) + 256 ? source.replace(/\s+/g, "") : "";
 }
 
+function compactThumbnailDataUri(dataUri) {
+  const safeImage = safeInlineImage(dataUri);
+  if (!safeImage) return "";
+  try {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${THUMBNAIL_RENDER_SIZE}" height="${THUMBNAIL_RENDER_SIZE}" viewBox="0 0 ${THUMBNAIL_RENDER_SIZE} ${THUMBNAIL_RENDER_SIZE}"><rect width="100%" height="100%" fill="#fff"/><image href="${safeImage}" width="${THUMBNAIL_RENDER_SIZE}" height="${THUMBNAIL_RENDER_SIZE}" preserveAspectRatio="xMidYMid meet"/></svg>`;
+    const buffer = Buffer.from(new Resvg(svg, {
+      background: "#FFFFFF",
+      fitTo: { mode: "width", value: THUMBNAIL_RENDER_SIZE },
+    }).render().asPng());
+    return buffer.length ? `data:image/png;base64,${buffer.toString("base64")}` : "";
+  } catch {
+    return "";
+  }
+}
+
 function blockedImageHostname(hostname) {
   const host = String(hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
   if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
@@ -164,7 +180,7 @@ function detectedImageMime(buffer, declaredType = "") {
 
 async function fetchThumbnailDataUri(imageUrl, options = {}) {
   const inline = safeInlineImage(imageUrl);
-  if (inline) return inline;
+  if (inline) return compactThumbnailDataUri(inline);
   const remoteUrl = safeRemoteImageUrl(imageUrl);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (!remoteUrl || typeof fetchImpl !== "function") return "";
@@ -182,7 +198,7 @@ async function fetchThumbnailDataUri(imageUrl, options = {}) {
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!buffer.length || buffer.length > THUMBNAIL_MAX_BYTES) return "";
     const mime = detectedImageMime(buffer, response.headers?.get?.("content-type"));
-    return mime ? `data:${mime};base64,${buffer.toString("base64")}` : "";
+    return mime ? compactThumbnailDataUri(`data:${mime};base64,${buffer.toString("base64")}`) : "";
   } catch {
     return "";
   } finally {
@@ -513,4 +529,5 @@ export const stockupWarningReportConstants = Object.freeze({
   maxItems: MAX_REPORT_ITEMS,
   wecomImageLimit: WECOM_IMAGE_LIMIT,
   thumbnailMaxBytes: THUMBNAIL_MAX_BYTES,
+  thumbnailRenderSize: THUMBNAIL_RENDER_SIZE,
 });
