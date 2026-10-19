@@ -1849,17 +1849,19 @@ async function runScheduledStockupScene(now = new Date()) {
     const results = await notifyStockupRecommendation(payload, "scheduled", { force: true });
     const succeeded = (results || []).filter((item) => item.ok);
     const failed = (results || []).filter((item) => !item.ok);
+    const currentScene = cachedWecomNotifications.scenes?.stockupRecommendation || scene;
     if (succeeded.length) {
-      scene.lastScheduleRunKey = runKey;
-      scene.lastScheduleMessage = `已完成当天定时推送，共 ${succeeded.length} 个发送步骤成功。`;
-      scene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
+      currentScene.lastScheduleRunKey = runKey;
+      currentScene.lastScheduleMessage = `已完成当天定时推送，共 ${succeeded.length} 个发送步骤成功。`;
+      currentScene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
       return;
     }
-    scene.lastError = failed.map((item) => item.message).filter(Boolean).join("；") || "企业微信未返回成功结果。";
-    scene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
+    currentScene.lastError = failed.map((item) => item.message).filter(Boolean).join("；") || "企业微信未返回成功结果。";
+    currentScene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
   } catch (error) {
-    scene.lastError = error?.message || "备货预警长图定时推送失败。";
-    scene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
+    const currentScene = cachedWecomNotifications.scenes?.stockupRecommendation || scene;
+    currentScene.lastError = error?.message || "备货预警长图定时推送失败。";
+    currentScene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
   }
 }
 
