@@ -109,7 +109,7 @@ import { createMobileAdminBusinessProviders } from "./mobile-admin-business.js";
 import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
 import { createSystemBackupService } from "./system-backup-service.js";
 import { withDataContext } from "../collaboration/shared/data-context.js";
-import { buildQualificationCoverage, buildQualificationCoverageProducts, buildQualificationWarehouseOptions } from "../shared/qualification-coverage-core.js";
+import { buildWarehouseQualificationCoverage, WarehouseQualificationCoverageError } from "./warehouse-qualification-coverage.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -256,38 +256,6 @@ const stockupCollaborationStore = await initStockupCollaborationStore(stockupCol
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
 
-function partnerWarehouseInventorySnapshot({ warehouseRef, warehouseName }) {
-  const merged = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
-  const products = buildQualificationCoverageProducts(merged.catalog || [], merged.productBase || [], merged.warehouseOnlyInventory || []);
-  const warehouses = buildQualificationWarehouseOptions(products);
-  const connection = warehouseConnections.find((item) => [item.id, item.resolvedWarehouseId, item.warehouseId, item.warehouseCode].filter(Boolean).some((value) => String(value) === String(warehouseRef)));
-  const candidateIds = new Set([warehouseRef, connection?.id, connection?.resolvedWarehouseId, connection?.warehouseId, connection?.warehouseCode].filter(Boolean).map(String));
-  const candidateNames = new Set([warehouseName, connection?.name].filter(Boolean).map((value) => String(value).trim()));
-  const selected = warehouses.find((item) => candidateIds.has(String(item.id))) || warehouses.find((item) => candidateNames.has(String(item.name).trim()));
-  if (!selected) return null;
-  const result = buildQualificationCoverage(products, cachedQualifications.qualifications || [], selected.id, new Date());
-  const metadataBySku = new Map(products.map((product) => [String(product.sku || product.skuNo || "").replace(/\s+/g, "").toUpperCase(), product]));
-  return {
-    warehouseName: selected.name,
-    items: result.products.map((product) => {
-      const metadata = metadataBySku.get(String(product.sku || "").replace(/\s+/g, "").toUpperCase()) || {};
-      return {
-        sku: product.sku,
-        productName: product.productName,
-        barcode: metadata.barcode || "",
-        imageUrl: product.imageUrl || "",
-        country: selected.country,
-        category: product.category,
-        brand: product.brand,
-        availableQuantity: product.availableQty,
-        lockedQuantity: product.lockedQty,
-        inTransitQuantity: product.inTransitQty,
-        unit: metadata.unit || "件",
-        qualificationCoverage: product,
-      };
-    }),
-  };
-}
 const stockupInventoryContext = (context = {}) => ({ ...domesticInventoryContextForAuth(context.auth), warehouseIds: [], countries: [] });
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore, {
   inventoryGateway: {
@@ -488,7 +456,6 @@ const collaborationBridge = createCollaborationBridge({
   domesticInventoryService,
   stockupCollaborationService,
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
-  resolveWarehouseInventorySnapshot: partnerWarehouseInventorySnapshot,
   listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
   listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
   listFirstArticleRecords: fetchJdyFirstArticleRecordsForOrders,
@@ -4119,6 +4086,28 @@ function warehouseCollaborationDataScopes(auth) {
   if (auth.user?.role !== "warehouse" || scopes.warehouseIds.length) return scopes;
   // 历史仓库账号若尚未绑定仓库，默认看不到任何仓库数据，避免空范围被解释为“全部”。
   return { ...scopes, warehouseIds: ["__warehouse_unassigned__"] };
+}
+
+function warehouseQualificationCoveragePayload(auth, filters = {}) {
+  const user = auth.user || { role: auth.role || "guest" };
+  const scoped = scopeMovementSources({
+    products: cachedProducts,
+    warehouse: cachedWarehouseSync,
+    orders: { orders: [], results: [] },
+    connections: warehouseConnections,
+  }, { ...user, dataScopes: warehouseCollaborationDataScopes(auth) });
+  const merged = mergeWarehouseDataIntoProducts(scoped.products, scoped.warehouse);
+  return buildWarehouseQualificationCoverage({
+    catalog: merged.catalog || [],
+    productBase: merged.productBase || [],
+    warehouseOnlyInventory: merged.warehouseOnlyInventory || [],
+    qualifications: cachedQualifications.qualifications || [],
+    connections: scoped.connections,
+    requestedWarehouseId: filters.warehouseId,
+    keyword: filters.keyword,
+    status: filters.status,
+    qualificationAvailable: Boolean(cachedQualifications.syncedAt) && cachedQualifications.source !== "empty",
+  });
 }
 
 function warehouseAccountScopeError(role, dataScopes) {
@@ -8955,6 +8944,44 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 405, { ok: false, message: "不支持的核销批次操作。" });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "核销批次操作失败。" });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/warehouse-collaboration/qualification-coverage" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "warehouse_qualification_coverage")) {
+        sendJson(res, 403, { ok: false, code: "warehouse_qualification_coverage_forbidden", message: "当前账号没有本仓资质覆盖查询权限。" });
+        return;
+      }
+      try {
+        const coverage = warehouseQualificationCoveragePayload(auth, {
+          warehouseId: url.searchParams.get("warehouseId"),
+          keyword: url.searchParams.get("keyword"),
+          status: url.searchParams.get("status"),
+        });
+        const total = coverage.summary.products;
+        const complete = coverage.qualificationAvailable && Boolean(coverage.warehouse?.syncedAt);
+        sendJson(res, 200, {
+          ok: true,
+          ...withDataContext(coverage, {
+            generatedAt: new Date().toISOString(),
+            effectiveAt: coverage.warehouse?.syncedAt || cachedQualifications.syncedAt || new Date().toISOString(),
+            source: "snapshot",
+            scopeKey: coverage.warehouse ? `warehouse_${coverage.warehouse.id}` : "authorized_overseas_warehouses",
+            scopeLabel: coverage.warehouse ? `${coverage.warehouse.name} · 正库存商品` : "当前账号绑定的海外仓",
+            filters: {
+              warehouseId: String(url.searchParams.get("warehouseId") || ""),
+              keyword: String(url.searchParams.get("keyword") || ""),
+              status: String(url.searchParams.get("status") || "all"),
+            },
+            completeness: coverage.warehouse && complete ? "complete" : "unavailable",
+            ...(complete ? { coverage: { completed: coverage.completedProducts, total, unit: "sku" } } : {}),
+          }),
+        });
+      } catch (error) {
+        const statusCode = error instanceof WarehouseQualificationCoverageError ? error.statusCode : 400;
+        sendJson(res, statusCode, { ok: false, code: error?.code || "warehouse_qualification_coverage_error", message: error?.message || "本仓资质覆盖读取失败。" });
       }
       return;
     }

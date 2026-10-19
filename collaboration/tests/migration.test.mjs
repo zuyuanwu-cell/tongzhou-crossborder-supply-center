@@ -164,7 +164,7 @@ test("warehouse inventory barcode lookup is projected and indexed", () => {
   assert.match(portalSource, /扫描条码或输入 SKU 后回车/);
 });
 
-test("partner qualification coverage migration is additive and keeps sync state tenant isolated", () => {
+test("legacy qualification projection storage remains tenant isolated but is not exposed in the partner portal", () => {
   assert.match(partnerQualificationSql, /ADD COLUMN IF NOT EXISTS qualification_coverage jsonb/);
   assert.match(partnerQualificationSql, /CREATE TABLE IF NOT EXISTS warehouse_inventory_projection_states/);
   assert.match(partnerQualificationSql, /ENABLE ROW LEVEL SECURITY/);
@@ -173,7 +173,8 @@ test("partner qualification coverage migration is additive and keeps sync state 
   assert.match(integrationSource, /qualification_coverage/);
   assert.match(integrationSource, /warehouse_inventory_projection_states/);
   assert.match(repositorySource, /warehouse\.inventory\.view/);
-  assert.match(serverSource, /collaboration\/v1\/qualification-coverage/);
+  assert.doesNotMatch(serverSource, /collaboration\/v1\/qualification-coverage/);
+  assert.doesNotMatch(portalSource, /qualification-coverage/);
 });
 
 test("receiving barcode capture writes the physical code to the selected line without product lookup", () => {

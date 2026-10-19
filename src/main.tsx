@@ -440,7 +440,7 @@ const navItems = [
   { label: "料体打样", icon: FlaskConical, hash: "#material-sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
   { label: "包材打样", icon: Boxes, hash: "#packaging-sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
   { label: "伙伴与权限", icon: Users, hash: "#collaboration-accounts", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_liability_settlement"] },
+  { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_qualification_coverage", "warehouse_liability_settlement"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
   { label: "供应链执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_request_accept", additionalPermissions: ["stockup_execution_update", "stockup_execution_view"] },

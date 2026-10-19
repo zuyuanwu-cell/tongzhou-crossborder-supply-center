@@ -12,11 +12,10 @@ import {
   updateMember, updateOwnProfile, reissueInvitation, revokeInvitation,
 } from "./api";
 import type { Dashboard, InventoryItem, InvitationDeliveryResult, NotificationItem, OrganizationInvitation, OrganizationMember, OrganizationMemberRole, Session, TaskLine, WarehouseOperationLine, WarehouseOperationType, WorkItem, WorkItemDetail, WorkItemStatus } from "./types";
-import QualificationCoveragePage from "./QualificationCoveragePage";
 
 type WarehouseTaskLineDraft = Omit<TaskLine, "completedQuantity"> & { completedQuantity: number | "" };
 
-type Route = "overview" | "tasks" | "warehouse-tasks" | "material-sampling" | "packaging-sampling" | "inventory" | "qualification-coverage" | "notifications" | "members" | "account";
+type Route = "overview" | "tasks" | "warehouse-tasks" | "material-sampling" | "packaging-sampling" | "inventory" | "notifications" | "members" | "account";
 const routeMeta: Record<Route, { label: string; icon: React.ComponentType<{ size?: number }> }> = {
   overview: { label: "作业总览", icon: LayoutDashboard },
   tasks: { label: "协同任务", icon: ClipboardCheck },
@@ -24,7 +23,6 @@ const routeMeta: Record<Route, { label: string; icon: React.ComponentType<{ size
   "material-sampling": { label: "料体打样", icon: FlaskConical },
   "packaging-sampling": { label: "包材打样", icon: Boxes },
   inventory: { label: "本仓库存", icon: Boxes },
-  "qualification-coverage": { label: "资质覆盖", icon: ShieldCheck },
   notifications: { label: "消息中心", icon: Bell },
   members: { label: "成员管理", icon: Users },
   account: { label: "账号安全", icon: UserRound },
@@ -57,7 +55,7 @@ function routeLabel(session: Session, route: Route) {
 
 function hasWorkspaceModule(session: Session, module: string) {
   if (session.workspace?.modules) return session.workspace.modules.includes(module);
-  return organizationMode(session) === "warehouse" && ["inventory", "warehouse_tasks", "qualification_coverage"].includes(module);
+  return organizationMode(session) === "warehouse" && ["inventory", "warehouse_tasks"].includes(module);
 }
 
 function formatDate(value: string, withTime = true) {
@@ -1147,12 +1145,11 @@ function AppShell({ session, onSessionChange, onLogout }: { session: Session; on
   const canPackagingSample = session.oemEnabled && ["packaging_factory", "production_factory"].includes(organizationType);
   const canViewInventory = hasWorkspaceModule(session, "inventory");
   const canViewWarehouseTasks = hasWorkspaceModule(session, "warehouse_tasks");
-  const canViewQualificationCoverage = hasWorkspaceModule(session, "qualification_coverage");
-  React.useEffect(() => { if ((route === "members" && !canManageMembers) || (route === "inventory" && !canViewInventory) || (route === "qualification-coverage" && !canViewQualificationCoverage) || (route === "warehouse-tasks" && !canViewWarehouseTasks) || (route === "material-sampling" && !canMaterialSample) || (route === "packaging-sampling" && !canPackagingSample)) navigate("overview"); }, [route, canManageMembers, canMaterialSample, canPackagingSample, canViewInventory, canViewQualificationCoverage, canViewWarehouseTasks, navigate]);
+  React.useEffect(() => { if ((route === "members" && !canManageMembers) || (route === "inventory" && !canViewInventory) || (route === "warehouse-tasks" && !canViewWarehouseTasks) || (route === "material-sampling" && !canMaterialSample) || (route === "packaging-sampling" && !canPackagingSample)) navigate("overview"); }, [route, canManageMembers, canMaterialSample, canPackagingSample, canViewInventory, canViewWarehouseTasks, navigate]);
   async function openTaskById(id: string) { try { const detail = await fetchWorkItem(id); setSelected(detail.item); } catch (reason) { setToast({ message: reason instanceof Error ? reason.message : "任务不存在", tone: "error" }); } }
-  const visibleRoutes = (Object.entries(routeMeta) as Array<[Route, typeof routeMeta[Route]]>).filter(([key]) => (key !== "members" || canManageMembers) && (key !== "inventory" || canViewInventory) && (key !== "qualification-coverage" || canViewQualificationCoverage) && (key !== "warehouse-tasks" || (canViewWarehouseTasks && mode !== "warehouse")) && (key !== "material-sampling" || canMaterialSample) && (key !== "packaging-sampling" || canPackagingSample));
+  const visibleRoutes = (Object.entries(routeMeta) as Array<[Route, typeof routeMeta[Route]]>).filter(([key]) => (key !== "members" || canManageMembers) && (key !== "inventory" || canViewInventory) && (key !== "warehouse-tasks" || (canViewWarehouseTasks && mode !== "warehouse")) && (key !== "material-sampling" || canMaterialSample) && (key !== "packaging-sampling" || canPackagingSample));
   const mobileRoutes = visibleRoutes.filter(([key]) => key !== "account");
-  const page = route === "overview" ? <OverviewPage key={refreshKey} session={session} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} /> : route === "warehouse-tasks" && canViewWarehouseTasks ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} taskScope="warehouse" /> : route === "material-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="inner_material" /> : route === "packaging-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="packaging" /> : route === "inventory" && canViewInventory ? <InventoryPage key={refreshKey} session={session} onOpenTask={setSelected} notify={showToast} /> : route === "qualification-coverage" && canViewQualificationCoverage ? <QualificationCoveragePage key={refreshKey} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : route === "account" ? <AccountPage session={session} onSessionChange={onSessionChange} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
+  const page = route === "overview" ? <OverviewPage key={refreshKey} session={session} onOpenTask={setSelected} onNavigate={navigate} /> : route === "tasks" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} /> : route === "warehouse-tasks" && canViewWarehouseTasks ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} taskScope="warehouse" /> : route === "material-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="inner_material" /> : route === "packaging-sampling" ? <TasksPage key={refreshKey} session={session} onOpenTask={setSelected} sampleCategory="packaging" /> : route === "inventory" && canViewInventory ? <InventoryPage key={refreshKey} session={session} onOpenTask={setSelected} notify={showToast} /> : route === "members" && canManageMembers ? <MembersPage session={session} notify={showToast} /> : route === "account" ? <AccountPage session={session} onSessionChange={onSessionChange} notify={showToast} /> : <NotificationsPage key={refreshKey} onOpenTask={openTaskById} />;
   return <div className="portal-shell">
     <header className="portal-header">
       <div className="portal-header-main">

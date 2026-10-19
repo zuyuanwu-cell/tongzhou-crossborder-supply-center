@@ -38,7 +38,7 @@ const demoWarehouseCapabilities = demoProduction || (!demoOem && !demoSupplier &
   ? ["warehouse.inventory.view", "warehouse.task.view", "warehouse.task.handle", "warehouse.exception.report", "warehouse.inbound.confirm", "warehouse.outbound.confirm", "warehouse.transfer.receive", "warehouse.inventory.adjust.request", "warehouse.task.complete", "attachment.upload"]
   : [];
 const demoWorkspace: Session["workspace"] = {
-  modules: ["overview", "tasks", "notifications", "account", ...(demoProduction ? ["production", "inventory", "warehouse_tasks", "qualification_coverage"] : []), ...(!demoProduction && demoWarehouseCapabilities.length ? ["inventory", "warehouse_tasks", "qualification_coverage"] : []), ...(demoAdmin ? ["members"] : [])],
+  modules: ["overview", "tasks", "notifications", "account", ...(demoProduction ? ["production", "inventory", "warehouse_tasks"] : []), ...(!demoProduction && demoWarehouseCapabilities.length ? ["inventory", "warehouse_tasks"] : []), ...(demoAdmin ? ["members"] : [])],
   taskTypes: [...(demoProduction ? ["production_order"] : demoSupplier ? ["purchase_order"] : []), ...(demoWarehouseCapabilities.length ? ["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception"] : [])],
   actions: [...new Set([...demoBusinessCapabilities, ...demoWarehouseCapabilities].filter((permission) => !permission.endsWith(".view")))],
   capabilities: [...new Set([...demoBusinessCapabilities, ...demoWarehouseCapabilities])],
