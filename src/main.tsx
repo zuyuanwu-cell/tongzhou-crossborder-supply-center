@@ -7473,7 +7473,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
     try {
       const result = await updateWecomScenes(sceneForm);
       await refresh(result);
-      setMessage("场景推送配置已保存。");
+      const stockupScene = sceneForm.stockupRecommendation;
+      setMessage(stockupScene?.enabled && ["daily", "both"].includes(stockupScene.triggerMode || "change")
+        ? `场景推送配置已保存。备货预警长图已启用，每天 ${stockupScene.scheduleTime || "09:00"} 推送；若今天已过该时间，系统会自动补发一次。`
+        : "场景推送配置已保存。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "场景推送保存失败。");
     } finally {
@@ -7947,29 +7950,45 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                     <h3>{title}</h3>
                     <p>{description}</p>
                   </div>
-                  <label className="wecom-switch">
+                  <label className={`wecom-switch ${scene.enabled ? "is-enabled" : "is-disabled"}`}>
                     <input type="checkbox" checked={scene.enabled} onChange={(event) => updateScene(key, { enabled: event.target.checked })} />
-                    <span>{scene.enabled ? "启用" : "停用"}</span>
+                    <span>{scene.enabled ? "已启用" : "未启用"}</span>
                   </label>
                 </div>
                 {key === "stockupRecommendation" ? (
-                  <div className="wecom-stockup-schedule">
-                    <label>
-                      <span>触发方式</span>
-                      <select value={scene.triggerMode || "change"} onChange={(event) => updateScene(key, { triggerMode: event.target.value as "change" | "daily" | "both" })}>
-                        <option value="change">仅在产生新预警时</option>
-                        <option value="daily">每天定时推送</option>
-                        <option value="both">新预警 + 每天定时</option>
-                      </select>
-                    </label>
-                    {["daily", "both"].includes(scene.triggerMode || "change") ? (
+                  <>
+                    <div className={`wecom-stockup-status ${scene.enabled ? "is-enabled" : "is-disabled"}`}>
+                      {scene.enabled ? <Check size={18} /> : <AlertTriangle size={18} />}
+                      <div>
+                        <strong>{scene.enabled ? "备货预警长图已启用" : "当前未启用，不会自动推送"}</strong>
+                        <span>{scene.enabled
+                          ? (["daily", "both"].includes(scene.triggerMode || "change")
+                            ? `每天北京时间 ${scene.scheduleTime || "09:00"} 执行；错过计划时间会在当天自动补发。`
+                            : "发现新增备货预警时自动推送。")
+                          : "时间、接收群即使已填写，未启用时调度器也不会执行。"}</span>
+                      </div>
+                    </div>
+                    <div className="wecom-stockup-schedule">
                       <label>
-                        <span>定时推送时间（北京时间）</span>
-                        <input type="time" value={scene.scheduleTime || "09:00"} onChange={(event) => updateScene(key, { scheduleTime: event.target.value })} />
-                        <small>每天 {scene.scheduleTime || "09:00"} 重新读取最新备货预警后推送。</small>
+                        <span>触发方式</span>
+                        <select value={scene.triggerMode || "change"} onChange={(event) => {
+                          const triggerMode = event.target.value as "change" | "daily" | "both";
+                          updateScene(key, { triggerMode, ...(["daily", "both"].includes(triggerMode) ? { enabled: true } : {}) });
+                        }}>
+                          <option value="change">仅在产生新预警时</option>
+                          <option value="daily">每天定时推送</option>
+                          <option value="both">新预警 + 每天定时</option>
+                        </select>
                       </label>
-                    ) : null}
-                  </div>
+                      {["daily", "both"].includes(scene.triggerMode || "change") ? (
+                        <label>
+                          <span>定时推送时间（北京时间）</span>
+                          <input type="time" value={scene.scheduleTime || "09:00"} onChange={(event) => updateScene(key, { scheduleTime: event.target.value, enabled: true })} />
+                          <small>每天 {scene.scheduleTime || "09:00"} 重新读取最新备货预警后推送。</small>
+                        </label>
+                      ) : null}
+                    </div>
+                  </>
                 ) : null}
                 <label>
                   <span>提醒链接</span>
@@ -7980,7 +7999,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                   <textarea value={scene.extraText || ""} onChange={(event) => updateScene(key, { extraText: event.target.value })} placeholder="可选，追加到自动生成的消息后面" />
                 </label>
                 <span className="field-label">推送机器人</span>
-                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds, ...(key === "afterSalesProgress" && robotIds.length ? { enabled: true } : {}) })} />
+                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, {
+                  robotIds,
+                  ...(["stockupRecommendation", "afterSalesProgress"].includes(key) && robotIds.length ? { enabled: true } : {}),
+                })} />
                 {key === "stockupRecommendation" ? (
                   <div className="wecom-scene-actions">
                     <a className="ghost-button compact-button" href="/api/wecom-notifications/stockup-preview" target="_blank" rel="noreferrer">预览当前长图</a>
@@ -7999,6 +8021,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                 ) : null}
                 {scene.enabled && !(scene.robotIds || []).length ? <small className="wecom-recipient-error">已启用但未选择接收群，系统将拒绝保存和发送。</small> : null}
                 {scene.lastError ? <small className="wecom-error">最近错误：{scene.lastError}</small> : null}
+                {key === "stockupRecommendation" && scene.lastScheduleMessage ? <small className="wecom-schedule-message">调度状态：{scene.lastScheduleMessage}</small> : null}
+                {key === "stockupRecommendation" && scene.lastScheduleAttemptAt ? <small>最近调度：{formatDateTime(scene.lastScheduleAttemptAt)}</small> : null}
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );

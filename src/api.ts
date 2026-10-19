@@ -672,6 +672,8 @@ export type WecomSceneConfig = {
   lastReportDate?: string;
   lastSentAt?: string;
   lastScheduleRunKey?: string;
+  lastScheduleAttemptAt?: string;
+  lastScheduleMessage?: string;
   lastError?: string;
 };
 

@@ -7609,6 +7609,22 @@ h3 {
   background: linear-gradient(135deg, rgba(239, 91, 23, 0.09), rgba(255, 255, 255, 0.03));
 }
 
+.wecom-stockup-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: 10px;
+}
+
+.wecom-stockup-status > div { display: grid; gap: 3px; }
+.wecom-stockup-status strong { color: var(--text); font-size: 13px; }
+.wecom-stockup-status span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.wecom-stockup-status.is-enabled { border-color: rgba(22, 132, 91, 0.34); background: rgba(22, 132, 91, 0.09); color: #16845b; }
+.wecom-stockup-status.is-disabled { border-color: rgba(216, 67, 21, 0.36); background: rgba(216, 67, 21, 0.1); color: #d84315; }
+
 .wecom-panel {
   display: grid;
   gap: 16px;
@@ -7676,6 +7692,19 @@ h3 {
   color: var(--text);
 }
 
+.wecom-switch {
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.wecom-switch.is-enabled { border-color: rgba(22, 132, 91, 0.38); background: rgba(22, 132, 91, 0.1); }
+.wecom-switch.is-disabled { border-color: rgba(216, 67, 21, 0.38); background: rgba(216, 67, 21, 0.09); }
+.wecom-switch span { color: inherit !important; font-weight: 700; }
+
 .wecom-inline-check input,
 .wecom-switch input,
 .wecom-check input {
@@ -7716,6 +7745,8 @@ h3 {
 .wecom-error {
   color: #ff6b81 !important;
 }
+
+.wecom-schedule-message { color: #16845b !important; }
 
 .wecom-project-list {
   display: grid;

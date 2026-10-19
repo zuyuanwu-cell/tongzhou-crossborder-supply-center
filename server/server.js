@@ -28,6 +28,7 @@ import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWarningLinkMarkdown, buildWecomImageBody, renderStockupWarningPngWithImages, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
+import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseProductCreateCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
@@ -1214,6 +1215,8 @@ function buildWecomNotificationPayload(input = {}) {
       lastItemKeys: Array.isArray(input.scenes?.stockupRecommendation?.lastItemKeys) ? input.scenes.stockupRecommendation.lastItemKeys.map(String).filter(Boolean) : [],
       lastSentAt: input.scenes?.stockupRecommendation?.lastSentAt || "",
       lastScheduleRunKey: input.scenes?.stockupRecommendation?.lastScheduleRunKey || "",
+      lastScheduleAttemptAt: input.scenes?.stockupRecommendation?.lastScheduleAttemptAt || "",
+      lastScheduleMessage: input.scenes?.stockupRecommendation?.lastScheduleMessage || "",
       lastError: input.scenes?.stockupRecommendation?.lastError || "",
     },
     inventorySnapshot: {
@@ -1805,28 +1808,57 @@ function stockupSceneScheduleRunKey(scene, now = new Date()) {
 }
 
 function shouldRunStockupSceneSchedule(scene, now = new Date()) {
-  if (!scene?.enabled || !["daily", "both"].includes(scene.triggerMode)) return false;
-  if (!normalizeWecomRobotIds(scene.robotIds).length) return false;
   const minute = minutesInTimezone(now);
   const [hourText, minuteText] = normalizeWecomDailyTime(scene.scheduleTime, "09:00").split(":");
   const target = Number(hourText) * 60 + Number(minuteText);
-  return minute >= target && minute < target + 2 && scene.lastScheduleRunKey !== stockupSceneScheduleRunKey(scene, now);
+  return shouldRunStockupDailySchedule({
+    enabled: scene?.enabled,
+    triggerMode: scene?.triggerMode,
+    recipientCount: normalizeWecomRobotIds(scene?.robotIds).length,
+    currentMinute: minute,
+    targetMinute: target,
+    currentRunKey: stockupSceneScheduleRunKey(scene, now),
+    lastRunKey: scene?.lastScheduleRunKey,
+    lastAttemptAt: scene?.lastScheduleAttemptAt,
+    nowMs: now.getTime(),
+  });
 }
 
 async function runScheduledStockupScene(now = new Date()) {
   const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
   if (!shouldRunStockupSceneSchedule(scene, now)) return;
-  scene.lastScheduleRunKey = stockupSceneScheduleRunKey(scene, now);
+  const runKey = stockupSceneScheduleRunKey(scene, now);
+  scene.lastScheduleAttemptAt = now.toISOString();
+  scene.lastScheduleMessage = "正在生成并推送备货预警长图。";
   scene.lastError = "";
   const recipientCheck = validateExplicitWecomRecipients(scene.robotIds, "备货预警定时推送");
   if (!recipientCheck.ok) {
     scene.lastError = recipientCheck.message;
+    scene.lastScheduleMessage = "接收群校验失败，系统将在 10 分钟后自动重试。";
     return;
   }
   const payload = buildCurrentStockupPayload({ notify: false, reason: "wecom_scheduled_stockup" });
-  const results = await notifyStockupRecommendation(payload, "scheduled", { force: true });
-  const failed = (results || []).filter((item) => !item.ok);
-  scene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
+  if (!stockupSignature(payload)) {
+    scene.lastScheduleRunKey = runKey;
+    scene.lastScheduleMessage = "本次已检查，当前没有需要推送的备货预警。";
+    return;
+  }
+  try {
+    const results = await notifyStockupRecommendation(payload, "scheduled", { force: true });
+    const succeeded = (results || []).filter((item) => item.ok);
+    const failed = (results || []).filter((item) => !item.ok);
+    if (succeeded.length) {
+      scene.lastScheduleRunKey = runKey;
+      scene.lastScheduleMessage = `已完成当天定时推送，共 ${succeeded.length} 个发送步骤成功。`;
+      scene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
+      return;
+    }
+    scene.lastError = failed.map((item) => item.message).filter(Boolean).join("；") || "企业微信未返回成功结果。";
+    scene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
+  } catch (error) {
+    scene.lastError = error?.message || "备货预警长图定时推送失败。";
+    scene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
+  }
 }
 
 async function runWecomSchedules() {

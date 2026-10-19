@@ -35,6 +35,7 @@
     "test:stockup-costing": "node scripts/stockup-costing-test.mjs",
     "test:stockup-notification": "node scripts/stockup-notification-test.mjs",
     "test:stockup-warning-report": "node scripts/stockup-warning-report-test.mjs",
+    "test:wecom-stockup-schedule": "node scripts/wecom-stockup-schedule-test.mjs",
     "test:stockup-performance": "node scripts/stockup-collaboration-performance.mjs",
     "migrate:stockup-collaboration": "node scripts/stockup-collaboration-migration.mjs",
     "test:wms-stockup-push": "node scripts/wms-stockup-push-test.mjs",
