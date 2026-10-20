@@ -87,7 +87,6 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
         session_id: text(sessionId),
         model: text(model),
         instructions: text(instructions),
-        model_options: { reasoning: { enabled: false } },
       },
     });
   }

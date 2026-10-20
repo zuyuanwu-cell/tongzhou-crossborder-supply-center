@@ -52,6 +52,25 @@ try {
   });
   assert.equal((await capabilityClient.health()).status, "ready");
 
+  let submittedRunBody = null;
+  const runSubmissionClient = createHermesClient({
+    baseUrl: "http://hermes.test",
+    apiKey: "secret",
+    fetchImpl: async (_url, options) => {
+      submittedRunBody = JSON.parse(options.body);
+      return new Response(JSON.stringify({ run_id: "run-test" }), { status: 202 });
+    },
+  });
+  await runSubmissionClient.createRun({
+    input: "hello",
+    sessionId: "session-test",
+    model: "agnes-3.0-pro",
+    instructions: "test",
+    idempotencyKey: "idempotency-test-0001",
+  });
+  assert.equal(submittedRunBody.model, "agnes-3.0-pro");
+  assert.equal(Object.hasOwn(submittedRunBody, "model_options"), false, "custom model requests must not force unsupported reasoning options");
+
   const stream = new Response([
     "id: 1\n",
     "data: {\"event\":\"message.delta\",\"delta\":\"正在核对\",\"seq\":1}\n\n",

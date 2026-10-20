@@ -48,7 +48,6 @@ if (process.env.HERMES_CONTRACT_RUN === "1") {
       session_id: `tongzhou-contract-${randomUUID()}`,
       model: process.env.HERMES_MODEL || "agnes-3.0-pro",
       instructions: "This is a runtime contract probe. Do not use tools.",
-      model_options: { reasoning: { enabled: false } },
     }),
   })).json();
   assert.match(String(started.run_id || ""), /^run_/);
