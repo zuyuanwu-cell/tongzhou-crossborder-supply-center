@@ -85,7 +85,7 @@ function saveJson(path, value) {
 
 function requireAdmin(auth) {
   if (!auth?.user?.id || auth.role === "guest") throw fail("请先登录。", 401, "authentication_required");
-  if (auth.role !== "admin" || !hasPermission(auth, "hermes_agent_admin")) {
+  if (auth.role !== "admin" || ["system", "legacy-internal"].includes(auth.user.id) || !hasPermission(auth, "hermes_agent_admin")) {
     throw fail("仅系统管理员可以配置智能体模型。", 403, "hermes_admin_required");
   }
 }

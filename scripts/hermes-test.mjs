@@ -133,7 +133,7 @@ try {
       const request = JSON.parse(options.body);
       return new Response(JSON.stringify({ id: "chat-test", model: request.model, choices: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
     },
-    getAuth: () => ({ role: "admin", user: { id: "admin-a", role: "admin", permissions: ROLE_DEFAULT_PERMISSIONS.admin } }),
+    getAuth: (request) => request.auth || { role: "admin", user: { id: "admin-a", role: "admin", permissions: ROLE_DEFAULT_PERMISSIONS.admin } },
     parseRequestBody: async (request) => request.payload || {},
     sendJson: (response, statusCode, payload) => {
       response.statusCode = statusCode;
@@ -147,6 +147,15 @@ try {
   assert.equal(modelGateway.runtimeConfig().configured, true);
   assert.equal(modelGateway.publicConfig().apiKeyMasked.includes("test-secret-value"), false);
   assert.equal(readFileSync(modelConfigPath, "utf8").includes("sk-deepseek-test-secret-value"), false, "DeepSeek key must be encrypted at rest");
+
+  const legacyConfigRequest = Object.assign(new EventEmitter(), {
+    method: "GET",
+    headers: {},
+    auth: { role: "admin", user: { id: "legacy-internal", role: "admin", permissions: ROLE_DEFAULT_PERMISSIONS.admin } },
+  });
+  const legacyConfigResponse = { headersSent: false, writableEnded: false };
+  await modelGateway.handle(legacyConfigRequest, legacyConfigResponse, new URL("http://tongzhou.local/api/hermes/model-config"));
+  assert.equal(legacyConfigResponse.statusCode, 403, "legacy internal access must not expose model configuration");
 
   function modelResponse() {
     const response = new EventEmitter();
