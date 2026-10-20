@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 
 function safeMarkdownHref(href?: string) {
   const value = String(href || "").trim();
-  if (/^(?:https?:|mailto:|#|\/)/i.test(value)) return value;
+  if (/^(?:https?:|mailto:|#)/i.test(value) || /^\/(?!\/)/.test(value)) return value;
   return "";
 }
 

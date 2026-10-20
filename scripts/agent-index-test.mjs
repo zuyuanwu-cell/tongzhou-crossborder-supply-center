@@ -154,7 +154,8 @@ async function main() {
   assert.equal(discovery.discovery, true);
   assert.ok(discovery.resources.length >= 20, "Manifest should enumerate all supported resource types.");
   assert.equal(discovery.endpoints.get_by_id, "/api/agent/resources/{type}/{id}");
-  assert.equal(discovery.endpoints.assistant_chat, "/api/ai/agent/chat");
+  assert.equal(discovery.endpoints.assistant_chat, undefined);
+  assert.ok(!discovery.operations.some((operation) => operation.id === "current_page_ai_assistant"));
   assert.ok(discovery.record_schema.required.includes("permissions"));
   assert.ok(discovery.record_schema.required.includes("updated_at"));
   assert.ok(discovery.resources.some((resource) => resource.type === "product_catalog" && resource.accessible));
@@ -166,8 +167,8 @@ async function main() {
   assert.equal(openApi.openapi, "3.1.0");
   assert.ok(openApi.paths["/api/agent/search"]);
   assert.ok(openApi.paths["/api/agent/stockup-request-drafts"]);
-  assert.ok(openApi.paths["/api/ai/agent/context"]);
-  assert.ok(openApi.paths["/api/ai/agent/chat"]);
+  assert.equal(openApi.paths["/api/ai/agent/context"], undefined);
+  assert.equal(openApi.paths["/api/ai/agent/chat"], undefined);
   assert.equal(openApi.paths["/api/movement-history/compare"].get.operationId, "compareMovementAndInventory");
   assert.equal(openApi.components.securitySchemes.agentBearer.scheme, "bearer");
   assert.ok(openApi.components.schemas.AgentRecord.required.includes("updated_at"));
@@ -197,7 +198,8 @@ async function main() {
     expectedStatus: 401,
   });
   assert.equal(guestDenied.ok, false);
-  await request("/api/ai/agent/context?route=%23dashboard", { expectedStatus: 403 });
+  const retiredGuestAssistant = await request("/api/ai/agent/context?route=%23dashboard", { expectedStatus: 410 });
+  assert.equal(retiredGuestAssistant.code, "tongzhou_navigator_retired");
 
   const login = await request("/api/login", {
     method: "POST",
@@ -207,21 +209,15 @@ async function main() {
   assert.ok(login.token);
   const token = login.token;
 
-  const assistantContext = await request("/api/ai/agent/context?route=%23inventory-value", { token });
-  assert.equal(assistantContext.page.route, "#inventory-value");
-  assert.equal(assistantContext.safety.readOnly, true);
-  assert.equal(assistantContext.safety.noBackgroundSync, true);
-  assert.ok(Array.isArray(assistantContext.metrics));
-  assert.ok(Array.isArray(assistantContext.insights));
-  assert.ok(!Object.prototype.hasOwnProperty.call(assistantContext, "records"), "Browser context must not expose raw Agent records.");
-  const unconfiguredAssistant = await request("/api/ai/agent/chat", {
+  const retiredAssistant = await request("/api/ai/agent/chat", {
     token,
     method: "POST",
     body: JSON.stringify({ route: "#inventory-value", messages: [{ role: "user", content: "帮我分析货值风险" }] }),
-    expectedStatus: 409,
+    expectedStatus: 410,
   });
-  assert.equal(unconfiguredAssistant.code, "ai_not_configured");
-  console.log("[ok] floating assistant context, safety boundary and unconfigured-model guidance");
+  assert.equal(retiredAssistant.code, "tongzhou_navigator_retired");
+  assert.equal(retiredAssistant.href, "#hermes-agent");
+  console.log("[ok] retired navigator returns 410 and points to Hermes workbench");
 
   const createdKey = await request("/api/agent-keys", {
     token,

@@ -40,7 +40,6 @@ import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserReco
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { BUILTIN_ROLE_IDS, createUserRole, deleteUserRole, normalizeUserRoles, projectUserRoles, replaceUserRole, resolveUserRole, updateUserRole } from "./user-roles.js";
 import { createAgentIndexLayer } from "./agent-index.js";
-import { agentPageDefinition, buildAgentContext, buildAgentSystemPrompt, normalizeAgentChatMessages, publicAgentContext } from "./ai-agent.js";
 import { createAgentApiKeyStore } from "./agent-api-keys.js";
 import { initMiaoshouAutomation } from "./miaoshou-automation.js";
 import { directHttpsUrls, initMiaoshouListingService, localizeListingWarning, parseListingAiOutput, parseListingImagePlan, validateListingDraft } from "./miaoshou-listing.js";
@@ -109,6 +108,11 @@ import { createMobileAdminApi } from "./mobile-admin-api.js";
 import { createMobileAdminBusinessProviders } from "./mobile-admin-business.js";
 import { createSystemMaintenanceGate } from "./system-maintenance-gate.js";
 import { createSystemBackupService } from "./system-backup-service.js";
+import { initHermesIntegrationStore } from "./hermes-integration-db.js";
+import { createHermesClient } from "./hermes-client.js";
+import { createHermesToolGateway } from "./hermes-tool-gateway.js";
+import { createHermesApi } from "./hermes-api.js";
+import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
 import { withDataContext } from "../collaboration/shared/data-context.js";
 import { buildWarehouseQualificationCoverage, WarehouseQualificationCoverageError } from "./warehouse-qualification-coverage.js";
 
@@ -179,6 +183,14 @@ const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
 const skuCodingRegistryPath = resolve(cacheDir, "sku-coding.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
+const hermesIntegrationDbPath = resolve(process.env.HERMES_INTEGRATION_DB_PATH || resolve(cacheDir, "hermes-integration.sqlite"));
+const hermesAgentEnabled = process.env.HERMES_AGENT_ENABLED === "true";
+const hermesPatrolEnabled = process.env.HERMES_PATROL_ENABLED === "true";
+const hermesBaseUrl = String(process.env.HERMES_BASE_URL || "http://hermes:8642").trim();
+const hermesApiKey = String(process.env.HERMES_API_KEY || "").trim();
+const hermesBridgeSecret = String(process.env.HERMES_BRIDGE_SECRET || "").trim();
+const hermesModel = String(process.env.HERMES_MODEL || "anthropic/claude-sonnet-4.6").trim();
+const hermesDigestTeamId = String(process.env.HERMES_DIGEST_TEAM_ID || "").trim().toLowerCase();
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
 const businessChainDbPath = resolve(process.env.BUSINESS_CHAIN_DB_PATH || resolve(cacheDir, "business-chain.sqlite"));
 const collaborationBridgeDbPath = resolve(process.env.COLLABORATION_BRIDGE_DB_PATH || resolve(cacheDir, "collaboration-bridge.sqlite"));
@@ -255,6 +267,8 @@ let cachedOutsourcingOrders = attachProductionMaterialProgress(
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
+const hermesIntegrationStore = await initHermesIntegrationStore(hermesIntegrationDbPath);
+const hermesClient = createHermesClient({ baseUrl: hermesBaseUrl, apiKey: hermesApiKey });
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
 
@@ -1046,6 +1060,12 @@ function assertSecureRuntimeConfig() {
   }
   if (isProductionRuntime && String(process.env.INTEGRATION_CREDENTIAL_ENCRYPTION_KEY || "").trim().length < 16) {
     throw new Error("Refusing to start in production: set INTEGRATION_CREDENTIAL_ENCRYPTION_KEY to at least 16 characters.");
+  }
+  if (hermesAgentEnabled && hermesApiKey.length < 16) {
+    throw new Error("Refusing to enable Hermes: HERMES_API_KEY must contain at least 16 characters.");
+  }
+  if (hermesAgentEnabled && hermesBridgeSecret.length < 32) {
+    throw new Error("Refusing to enable Hermes: HERMES_BRIDGE_SECRET must contain at least 32 characters.");
   }
 }
 
@@ -3571,7 +3591,7 @@ function sendJson(res, status, payload) {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key,X-Backup-Upload-Token,X-Backup-Download-Ticket",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key,X-Backup-Upload-Token,X-Backup-Download-Ticket,X-Hermes-Timestamp,X-Hermes-Nonce,X-Hermes-Body-Sha256,X-Hermes-Signature,Last-Event-ID",
   });
   res.end(JSON.stringify(payload));
 }
@@ -3674,6 +3694,23 @@ function getAuth(req) {
     };
   }
   return { role: "guest", user: null };
+}
+
+function getAuthForUserId(userId) {
+  const id = String(userId || "").trim();
+  if (!id) return { role: "guest", user: null };
+  if (id === directAuth.user.id) return { role: directAuth.role, user: publicAccessUser(directAuth.user) };
+  const currentUser = (cachedUsers.users || []).find((user) => user.id === id && user.status !== "disabled");
+  if (!currentUser || currentUser.role === "guest") return { role: "guest", user: null };
+  return { role: currentUser.role, user: publicAccessUser(currentUser) };
+}
+
+function reauthenticateHermesAction(auth, password) {
+  const user = (cachedUsers.users || []).find((item) => item.id === auth?.user?.id && item.status !== "disabled");
+  if (!user || !authenticateLocalUser([user], user.username, String(password || ""), cachedUsers.roles)) {
+    throw Object.assign(new Error("密码校验失败，本次业务动作未批准。"), { statusCode: 401, code: "reauthentication_failed" });
+  }
+  return true;
 }
 
 function systemBackupAdmin(req, res) {
@@ -5762,6 +5799,7 @@ async function handleWarehouseSync(req, res) {
   saveWarehouseCache(cachedWarehouseSync);
   upsertInventorySnapshot(dateKeyInTimezone(), "warehouse_sync");
   upsertMovementSnapshot(dateKeyInTimezone(new Date(), movementHistoryTimezone), "warehouse_sync", movementHistoryTimezone);
+  queueHermesPatrol("manual-warehouse-inventory");
   sendJson(res, 200, { ok: true, ...cachedWarehouseSync, products: undefined, inventory: undefined });
 }
 
@@ -6412,6 +6450,7 @@ async function runOrderSyncJob(jobId) {
   } catch (error) {
     console.error("[movement-history] capture after order sync failed", error);
   }
+  queueHermesPatrol(`order-sync:${job.reason || "manual"}`);
 }
 
 function warehouseTestMissingFields(connection) {
@@ -7255,6 +7294,16 @@ async function runOzonFulfillmentAutomation() {
   return { scheduling, fulfillment };
 }
 
+async function runThenQueueHermesPatrol(run, reason) {
+  const result = await run();
+  queueHermesPatrol(reason);
+  return result;
+}
+
+function queueHermesPatrol(reason) {
+  if (hermesPatrolEnabled) void syncScheduler.trigger("hermes-exception-patrol").catch((error) => console.error(`[hermes-patrol] ${reason} trigger failed`, error));
+}
+
 function registerBackgroundSyncTasks() {
   const minute = 60_000;
   const orderSnapshotTime = Date.parse(String(cachedOrdersSync.syncedAt || ""));
@@ -7269,6 +7318,38 @@ function registerBackgroundSyncTasks() {
     initialDelayMs: 5_000,
     jitterMs: 5_000,
     run: runWecomSchedules,
+  });
+  syncScheduler.register({
+    id: "hermes-exception-patrol",
+    label: "Hermes 确定性异常巡检",
+    enabled: hermesPatrolEnabled,
+    lane: "light",
+    priority: 102,
+    intervalMs: 60 * minute,
+    initialDelayMs: 30_000,
+    jitterMs: 10_000,
+    run: () => hermesPatrol.run({ reason: "scheduled" }),
+  });
+  syncScheduler.register({
+    id: "hermes-daily-digest",
+    label: "Hermes 异常日报",
+    enabled: hermesPatrolEnabled,
+    lane: "light",
+    priority: 101,
+    intervalMs: minute,
+    initialDelayMs: 45_000,
+    jitterMs: 5_000,
+    run: () => hermesPatrol.sendDailyDigestIfDue(),
+  });
+  syncScheduler.register({
+    id: "hermes-retention",
+    label: "Hermes 数据保留清理",
+    lane: "light",
+    priority: 20,
+    intervalMs: 24 * 60 * minute,
+    initialDelayMs: 5 * minute,
+    jitterMs: minute,
+    run: () => hermesIntegrationStore.prune({ messageDays: 90, auditDays: 365 }),
   });
   external("miaoshou", {
     id: "miaoshou-waybills",
@@ -7303,7 +7384,7 @@ function registerBackgroundSyncTasks() {
     priority: 105,
     intervalMs: productionSyncIntervalMs,
     initialDelayMs: 10_000,
-    run: refreshStockupWorkflowCache,
+    run: () => runThenQueueHermesPatrol(refreshStockupWorkflowCache, "stockup-workflow"),
   });
   external("jdy", {
     id: "production-materials",
@@ -7311,7 +7392,7 @@ function registerBackgroundSyncTasks() {
     priority: 100,
     intervalMs: productionSyncIntervalMs,
     initialDelayMs: 35_000,
-    run: () => refreshOutsourcingOrderCache(),
+    run: () => runThenQueueHermesPatrol(() => refreshOutsourcingOrderCache(), "production-materials"),
   });
   external("jdy", {
     id: "business-chain",
@@ -7336,7 +7417,7 @@ function registerBackgroundSyncTasks() {
     priority: 90,
     intervalMs: warehouseInventorySyncIntervalMs,
     initialDelayMs: 2 * minute,
-    run: runScheduledInventorySync,
+    run: () => runThenQueueHermesPatrol(runScheduledInventorySync, "warehouse-inventory"),
   });
   external("wms", {
     id: "warehouse-stockup-orders",
@@ -7344,7 +7425,7 @@ function registerBackgroundSyncTasks() {
     priority: 85,
     intervalMs: warehouseStockupSyncIntervalMs,
     initialDelayMs: 3 * minute,
-    run: refreshWarehouseStockupCache,
+    run: () => runThenQueueHermesPatrol(refreshWarehouseStockupCache, "warehouse-stockup-orders"),
   });
   external("wms", {
     id: "warehouse-orders",
@@ -7443,6 +7524,51 @@ async function runScheduledInventorySnapshot() {
 
 function agentSourceForType(type, auth) {
   const now = new Date().toISOString();
+  if (type === "production_timeline") {
+    const workflow = currentStockupWorkflowPayload();
+    const collaborationTimelines = workflow.productionTimelines || [];
+    const outsourcingOrders = new Map();
+    for (const item of [...(cachedOutsourcingOrders.orders || []), ...(cachedOutsourcingOrders.domesticCustomizationOrders || [])]) {
+      if (item?.id && !outsourcingOrders.has(item.id)) outsourcingOrders.set(item.id, item);
+    }
+    const outsourcingTimelines = [...outsourcingOrders.values()].map((item) => {
+      const progress = item.materialProgress || {};
+      const completedAt = !item.isInProduction ? (item.inboundCompletedAt || item.finishedShippedAt || item.updatedAt) : "";
+      return {
+        orderRecordId: item.id,
+        orderNo: item.orderNo,
+        status: item.status,
+        project: item.productionRegion || item.productionType || "",
+        country: item.country || item.destinationCountry || "",
+        warehouseId: item.destinationWarehouseId || item.warehouseId || "",
+        sku: item.tongzhouSku || item.productSku || "",
+        skus: [item.tongzhouSku || item.productSku].filter(Boolean),
+        openedAt: item.createdAt || "",
+        updatedAt: item.updatedAt || progress.lastInboundAt || progress.lastPurchaseAt || "",
+        expectedCompletedAt: item.factoryExpectedFinishedAt || item.expectedFinishedAt || item.packagingExpectedAt || "",
+        materialReady: typeof progress.materialReady === "boolean"
+          ? progress.materialReady
+          : item.materialReady ? /到齐|已齐|ready/i.test(String(item.materialReady)) : undefined,
+        missingMaterialQty: Number(progress.pendingMaterials || 0),
+        events: completedAt ? [{ id: `completed:${item.id}`, type: "completed", occurredAt: completedAt, title: "生产已完成" }] : [],
+      };
+    });
+    const scopes = normalizeDataScopes(auth?.user?.dataScopes || {});
+    const records = [...collaborationTimelines, ...outsourcingTimelines].filter((item) => {
+      if (scopes.warehouseIds.length && (!item.warehouseId || !scopes.warehouseIds.includes(String(item.warehouseId)))) return false;
+      return isWithinDataScope(item, scopes);
+    });
+    const updatedAt = [workflow.cacheState?.syncedAt, cachedOutsourcingOrders.syncedAt, cachedOutsourcingOrders.materialSyncedAt]
+      .filter(Boolean).sort().at(-1) || "";
+    return {
+      records,
+      updatedAt,
+      sourceSystem: "stockup-and-production",
+      complete: Boolean(workflow.cacheState?.syncedAt && cachedOutsourcingOrders.syncedAt)
+        && !stockupWorkflowRefreshError
+        && !outsourcingRefreshError,
+    };
+  }
   if (["domestic_inventory_balance", "domestic_inventory_lot", "domestic_inventory_movement"].includes(type)) {
     const context = domesticInventoryContextForAuth(auth);
     if (type === "domestic_inventory_balance") {
@@ -7760,6 +7886,211 @@ const agentIndexLayer = createAgentIndexLayer({
   sendJson,
 });
 
+function hermesStockupContext(auth, { viewAll = false } = {}) {
+  const dataScopes = auth?.user?.dataScopes || {};
+  return {
+    auth,
+    viewAll: viewAll && (auth.role === "admin" || hasPermission(auth, "stockup_request_view_all") || hasPermission(auth, "stockup_workflow_manage")),
+    viewCost: false,
+    revealSupplier: false,
+    countries: Array.isArray(dataScopes.countries) ? dataScopes.countries.map(String).filter(Boolean) : [],
+    warehouseIds: Array.isArray(dataScopes.warehouseIds) ? dataScopes.warehouseIds.map(String).filter(Boolean) : [],
+    skus: Array.isArray(dataScopes.skus) ? dataScopes.skus.map((value) => String(value).toUpperCase()).filter(Boolean) : [],
+  };
+}
+
+function hermesDigestTeam() {
+  return normalizeWecomProjectTeams(cachedWecomNotifications.projectTeams)
+    .find((team) => team.enabled && team.id === hermesDigestTeamId && team.robotIds.length) || null;
+}
+
+async function sendHermesTeamNotification(content, mentionUserIds = []) {
+  const team = hermesDigestTeam();
+  if (!team) throw Object.assign(new Error("Hermes 企业微信项目群尚未配置。"), { statusCode: 503, code: "digest_team_not_configured" });
+  const results = await sendWecomNotification(team.robotIds, content, mentionUserIds);
+  if (!results.some((item) => item.ok)) throw Object.assign(new Error(results.map((item) => item.message).filter(Boolean).join("；") || "企业微信发送失败。"), { statusCode: 502, code: "wecom_delivery_failed" });
+  return results;
+}
+
+function hermesCaseMarkdown(item, heading) {
+  return [
+    `### ${heading}`,
+    `> ${item.title}`,
+    `> 严重度：${item.severity}｜状态：${item.status}`,
+    item.summary,
+    item.warehouseId ? `> 仓库：${item.warehouseId}` : "",
+    item.sku ? `> SKU：${item.sku}` : "",
+    "[进入智能体工作台](#hermes-agent)",
+  ].filter(Boolean).join("\n");
+}
+
+async function notifyHermesSevereCase(item, { kind } = {}) {
+  return sendHermesTeamNotification(hermesCaseMarkdown(item, kind === "escalated" ? "严重异常升级" : "新增严重异常"));
+}
+
+async function notifyHermesDailyDigest(cases, { date } = {}) {
+  const counts = cases.reduce((acc, item) => {
+    acc[item.severity] = (acc[item.severity] || 0) + 1;
+    return acc;
+  }, {});
+  const lines = cases.slice(0, 12).map((item, index) => `${index + 1}. **${item.title}**｜${item.assigneeName || "未分派"}`).join("\n");
+  return sendHermesTeamNotification([
+    `### 同舟智能体异常日报 · ${date || "今日"}`,
+    `活动异常 ${cases.length} 条｜严重 ${counts.critical || 0}｜高 ${counts.high || 0}｜中 ${counts.medium || 0}`,
+    lines || "当前没有未关闭异常。",
+    "[进入智能体工作台](#hermes-agent)",
+  ].join("\n\n"));
+}
+
+function collectHermesPatrolSources() {
+  const movement = movementResponsePayload(directAuth);
+  const context = hermesStockupContext(directAuth, { viewAll: true });
+  const requests = stockupCollaborationService.listRequests({}, context);
+  const tasks = stockupCollaborationService.listTasks({}, context);
+  const production = agentSourceForType("production_timeline", directAuth);
+  return {
+    complete: true,
+    warehouseSync: {
+      syncedAt: cachedWarehouseSync.syncedAt,
+      results: cachedWarehouseSync.results || [],
+      warehouses: warehouseConnections.map((item) => ({ id: item.id, name: item.name || item.warehouseName, country: item.country || item.countryCode })),
+      complete: Boolean(cachedWarehouseSync.syncedAt)
+        && Array.isArray(cachedWarehouseSync.results)
+        && cachedWarehouseSync.results.every((item) => item.ok !== false || item.skipped),
+    },
+    inventoryRisk: {
+      items: (movement.items || []).filter((item) => ["缺货", "补货预警"].includes(item.status)),
+      generatedAt: movement.generatedAt,
+      complete: Boolean(movement.generatedAt)
+        && movement.orderDataComplete !== false
+        && movement.syncState?.publishReady !== false
+        && (movement.items || []).every((item) => item.dataCompleteness === "complete"),
+    },
+    stockup: { requests: requests.requests || [], tasks: tasks.tasks || [], complete: true },
+    production: { timelines: production.records || [], complete: production.complete !== false && Boolean(production.updatedAt) },
+  };
+}
+
+const hermesPatrol = createAgentExceptionPatrol({
+  store: hermesIntegrationStore,
+  collect: collectHermesPatrolSources,
+  notifySevere: notifyHermesSevereCase,
+  notifyDigest: notifyHermesDailyDigest,
+  enabled: hermesPatrolEnabled,
+  notificationsEnabled: Boolean(hermesDigestTeamId),
+});
+
+const hermesToolProviders = {
+  resolveAssignee(userId) {
+    const user = (cachedUsers.users || []).find((item) => item.id === String(userId || "") && item.status !== "disabled");
+    return user ? publicAccessUser(user) : null;
+  },
+  searchResources(args, auth) {
+    const types = Array.isArray(args.types) ? args.types.slice(0, 8) : String(args.types || "").split(",").slice(0, 8);
+    const result = agentIndexLayer.queryResources({ types, q: String(args.query || args.q || "").slice(0, 500), limit: Math.min(100, Number(args.limit) || 30) }, auth);
+    return { ok: true, ...result, evidence: result.sources.map((source) => ({ type: "agent_index", id: source.type, label: source.label, updatedAt: source.source_updated_at })) };
+  },
+  getResource(args, auth) {
+    const type = String(args.type || "").trim();
+    const id = String(args.id || "").trim();
+    const result = agentIndexLayer.queryResources({ types: [type], q: id, limit: 200 }, auth);
+    const record = result.records.find((item) => [item.id, item.source_id, item.data?.id, item.data?.sku].map(String).includes(id));
+    if (!record) throw Object.assign(new Error("资源不存在或超出当前数据范围。"), { statusCode: 404, code: "resource_not_found" });
+    return { ok: true, record, evidence: [{ type: "agent_index", id: record.id, label: type, updatedAt: record.updated_at }] };
+  },
+  queryInventoryRisk(args, auth) {
+    const payload = movementResponsePayload(auth);
+    const sku = String(args.sku || "").trim().toUpperCase();
+    const warehouseId = String(args.warehouseId || "").trim();
+    const items = (payload.items || []).filter((item) => ["缺货", "补货预警"].includes(item.status))
+      .filter((item) => !sku || [item.sku, item.countrySku, item.id].map((value) => String(value || "").toUpperCase()).includes(sku))
+      .filter((item) => !warehouseId || (item.warehouseBreakdown || []).some((row) => String(row.warehouseId || "") === warehouseId))
+      .slice(0, Math.min(100, Number(args.limit) || 50));
+    return { ok: true, generatedAt: payload.generatedAt, items, evidence: items.map((item) => ({ type: "movement_inventory", id: item.id, label: item.status, updatedAt: payload.generatedAt })) };
+  },
+  queryStockupExecution(args, auth) {
+    const context = hermesStockupContext(auth, { viewAll: true });
+    return { ok: true, requests: stockupCollaborationService.listRequests(args, context).requests || [], tasks: stockupCollaborationService.listTasks(args, context).tasks || [] };
+  },
+  queryProductionTimeline(args, auth) {
+    const source = agentSourceForType("production_timeline", auth);
+    const query = String(args.query || args.orderId || "").trim().toLowerCase();
+    const status = String(args.status || "").trim().toLowerCase();
+    const project = String(args.project || "").trim().toLowerCase();
+    const sku = String(args.sku || "").trim().toUpperCase();
+    const timelines = (source.records || [])
+      .filter((item) => !query || JSON.stringify(item).toLowerCase().includes(query))
+      .filter((item) => !status || String(item.status || "").toLowerCase() === status)
+      .filter((item) => !project || String(item.project || "").toLowerCase().includes(project))
+      .filter((item) => !sku || [item.sku, ...(item.skus || [])].map((value) => String(value || "").toUpperCase()).includes(sku))
+      .slice(0, Math.min(100, Number(args.limit) || 50));
+    return {
+      ok: true,
+      updatedAt: source.updatedAt,
+      complete: source.complete !== false,
+      timelines,
+      evidence: timelines.map((item) => ({ type: "production_timeline", id: item.orderRecordId || item.id, label: item.orderNo || item.status, href: "#production", updatedAt: item.updatedAt || source.updatedAt })),
+    };
+  },
+  compareMovementInventory(args, auth) {
+    return movementComparisonPayload(args, auth);
+  },
+  createStockupDraft(args, auth, idempotencyKey) {
+    const context = hermesStockupContext(auth, { viewAll: false });
+    const result = stockupCollaborationService.createSpotRequest({ ...args, workflowVersion: 2, submit: false, sourceType: "hermes", sourceRef: "tongzhou-business" }, context, idempotencyKey);
+    const request = result?.request || result;
+    return {
+      ...result,
+      evidence: request?.id ? [{ type: "stockup_request", id: request.id, label: request.project || request.title || "备货需求草稿", href: "#stockup", updatedAt: request.updatedAt || request.createdAt }] : [],
+    };
+  },
+  assignException(args, auth, scopes) {
+    const assignee = this.resolveAssignee(args.assigneeId);
+    if (!assignee) throw Object.assign(new Error("责任人不存在或账号已停用。"), { statusCode: 404, code: "assignee_not_found" });
+    const item = hermesIntegrationStore.updateCase(args.caseId, {
+      version: args.version,
+      status: "investigating",
+      assigneeId: assignee.id,
+      assigneeName: assignee.displayName || assignee.username,
+    }, { id: auth.user.id, name: auth.user.displayName || auth.user.username }, scopes);
+    if (!item) throw Object.assign(new Error("异常案例不存在或已超出当前数据范围。"), { statusCode: 404, code: "case_not_found" });
+    return { ok: true, case: item };
+  },
+  async sendExceptionReminder(args, auth, idempotencyKey, scopes) {
+    const item = hermesIntegrationStore.getCase(args.caseId, scopes);
+    if (!item) throw Object.assign(new Error("异常案例不存在或超出当前数据范围。"), { statusCode: 404, code: "case_not_found" });
+    if (Number(args.version || 0) && Number(args.version) !== item.version) throw Object.assign(new Error("异常案例版本已变化。"), { statusCode: 409, code: "version_conflict" });
+    const assignee = (cachedUsers.users || []).find((user) => user.id === item.assigneeId && user.status !== "disabled");
+    const mention = normalizeWecomUserId(assignee?.wecomUserId);
+    const results = await sendHermesTeamNotification(hermesCaseMarkdown(item, "异常催办"), mention ? [mention] : []);
+    hermesIntegrationStore.recordCaseEvent(item.id, "reminded", { idempotencyKey, note: String(args.note || ""), delivery: results }, { id: auth.user.id, name: auth.user.displayName || auth.user.username }, scopes);
+    return { ok: true, caseId: item.id, delivered: results.filter((result) => result.ok).length, evidence: [{ type: "exception_case", id: item.id, label: item.title, href: item.href || "#hermes-agent", updatedAt: item.updatedAt }] };
+  },
+};
+
+const hermesToolGateway = createHermesToolGateway({
+  store: hermesIntegrationStore,
+  bridgeSecret: hermesBridgeSecret,
+  resolveAuthForUserId: getAuthForUserId,
+  providers: hermesToolProviders,
+  sendJson,
+  appendActionLog,
+});
+
+const hermesApi = createHermesApi({
+  enabled: hermesAgentEnabled,
+  model: hermesModel,
+  store: hermesIntegrationStore,
+  client: hermesClient,
+  getAuth,
+  parseRequestBody,
+  sendJson,
+  appendActionLog,
+  patrol: hermesPatrol,
+  resolveAssignee: (userId) => hermesToolProviders.resolveAssignee(userId),
+  reauthenticateAction: reauthenticateHermesAction,
+});
+
 function aiAgentDiagnostics(route, auth) {
   const metrics = [];
   const insights = [];
@@ -7883,6 +8214,9 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+
+    if (await hermesToolGateway(req, res, url)) return;
+    if (await hermesApi(req, res, url)) return;
 
     if (url.pathname === "/api/system-backup/status" && req.method === "GET") {
       const auth = systemBackupAdmin(req, res);
@@ -10692,86 +11026,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === "/api/ai/agent/context" && req.method === "GET") {
-      const auth = getAuth(req);
-      if (!canUseTongzhouAi(auth)) {
-        sendJson(res, 403, { ok: false, message: "使用同舟领航员需要登录并拥有同舟 AI 权限。" });
-        return;
-      }
-      try {
-        const context = aiAgentContext(auth, url.searchParams.get("route") || "#dashboard");
-        sendJson(res, 200, publicAgentContext(context));
-      } catch (error) {
-        sendJson(res, 500, { ok: false, message: error?.message || "读取页面诊断上下文失败。" });
-      }
-      return;
-    }
-
-    if (url.pathname === "/api/ai/agent/chat" && req.method === "POST") {
-      const auth = getAuth(req);
-      if (!canUseTongzhouAi(auth)) {
-        sendJson(res, 403, { ok: false, message: "使用同舟领航员需要登录并拥有同舟 AI 权限。" });
-        return;
-      }
-      const actorKey = String(auth.user?.id || auth.user?.username || "anonymous");
-      if (activeAiAgentChats.has(actorKey)) {
-        sendJson(res, 429, { ok: false, message: "上一条问题还在分析，请稍候。" });
-        return;
-      }
-      activeAiAgentChats.set(actorKey, { startedAt: Date.now() });
-      try {
-        const payload = await parseRequestBody(req);
-        const messages = normalizeAgentChatMessages(payload.messages);
-        const latestQuestion = messages.at(-1)?.content || "";
-        const context = aiAgentContext(auth, payload.route || "#dashboard", latestQuestion);
-        if (!context.configured) {
-          sendJson(res, 409, {
-            ok: false,
-            code: "ai_not_configured",
-            message: "请先在“同舟 AI”中保存你自己的同舟画布 API Key 和文本模型；本页规则诊断仍可正常使用。",
-            actions: [{ label: "前往配置", href: "#tongzhou-ai" }],
-          });
-          return;
-        }
-        const startedAt = Date.now();
-        const job = await tongzhouCanvasAi.submitModelTask(auth.user.id, {
-          category: "chat",
-          model: payload.model,
-          messages: [
-            { role: "system", content: buildAgentSystemPrompt(context) },
-            ...messages,
-          ],
-          params: {
-            temperature: 0.35,
-            max_tokens: 1800,
-          },
-        });
-        const completed = await tongzhouCanvasAi.waitForJob(auth.user.id, job.id, { timeoutMs: 180_000 });
-        const answer = String(completed.output?.text || "").trim();
-        if (!answer) throw new Error("模型已完成分析，但没有返回可显示的内容。请换一种问法重试。");
-        appendActionLog(auth, "使用同舟领航员分析页面", "ai_agent_chat", context.page.title, {
-          route: context.page.route,
-          model: completed.model,
-          messageCount: messages.length,
-          questionLength: latestQuestion.length,
-          contextRecordCount: context.records.length,
-          durationMs: Date.now() - startedAt,
-        });
-        sendJson(res, 200, {
-          ok: true,
-          answer,
-          model: completed.model,
-          jobId: completed.id,
-          generatedAt: new Date().toISOString(),
-          page: context.page,
-          actions: context.actions,
-        });
-      } catch (error) {
-        const status = error instanceof TongzhouCanvasApiError ? canvasAiErrorStatus(error) : 400;
-        sendJson(res, status, canvasAiErrorPayload(error, "同舟领航员分析失败。"));
-      } finally {
-        activeAiAgentChats.delete(actorKey);
-      }
+    if (["/api/ai/agent/context", "/api/ai/agent/chat"].includes(url.pathname)) {
+      sendJson(res, 410, {
+        ok: false,
+        code: "tongzhou_navigator_retired",
+        message: "同舟领航员已停止服务，请使用 Hermes 智能体工作台。",
+        href: "#hermes-agent",
+      });
       return;
     }
 
@@ -11528,6 +11789,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const result = await refreshOutsourcingOrderCache();
+      queueHermesPatrol("manual-production-materials");
       sendJson(res, 200, result);
       return;
     }

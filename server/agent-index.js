@@ -962,7 +962,7 @@ function openApiDocument() {
     },
   };
 
-  return {
+  const document = {
     openapi: "3.1.0",
     info: {
       title: "同舟供应链 Agent Index API",
@@ -1243,6 +1243,9 @@ function openApiDocument() {
       },
     },
   };
+  delete document.paths["/api/ai/agent/context"];
+  delete document.paths["/api/ai/agent/chat"];
+  return document;
 }
 
 function readJson(path, fallback) {
@@ -1394,7 +1397,7 @@ export function createAgentIndexLayer({
 
   function manifest(auth, { discovery = false } = {}) {
     const scope = scopeForAuth(auth);
-    return {
+    const payload = {
       ok: true,
       product: "tongzhou-agent-index",
       version: INDEX_VERSION,
@@ -1414,8 +1417,6 @@ export function createAgentIndexLayer({
         updated_since: "/api/agent/updated_since?since={iso8601}&types={type1,type2}",
         deleted_since: "/api/agent/deleted_since?since={iso8601}&types={type1,type2}",
         coverage: "/api/agent/coverage",
-        assistant_context: "/api/ai/agent/context?route={hash}",
-        assistant_chat: "/api/ai/agent/chat",
         create_stockup_draft: "/api/agent/stockup-request-drafts",
       },
       operations: [
@@ -1502,6 +1503,8 @@ export function createAgentIndexLayer({
         { type: "session_token", indexable: false, exclusion_reason: "当前登录凭据" },
       ],
     };
+    payload.operations = payload.operations.filter((operation) => operation.id !== "current_page_ai_assistant");
+    return payload;
   }
 
   function collectType(type, auth) {

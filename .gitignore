@@ -18,6 +18,9 @@ output/playwright/
 .playwright-cli/
 .cache/collaboration-objects/
 .cache/collaboration-antivirus/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Local secrets
 .env

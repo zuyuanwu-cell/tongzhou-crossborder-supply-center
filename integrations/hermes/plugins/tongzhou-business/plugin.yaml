@@ -1,0 +1,21 @@
+name: tongzhou-business
+version: 0.1.0
+description: Permission-bound Tongzhou supply-chain read and approval-gated action tools.
+requires_hermes: ">=0.21.7, <0.22"
+requires_env:
+  - HERMES_BRIDGE_SECRET
+  - TONGZHOU_BRIDGE_BASE_URL
+provides_tools:
+  - tongzhou_search_resources
+  - tongzhou_get_resource
+  - tongzhou_query_exception_cases
+  - tongzhou_query_inventory_risk
+  - tongzhou_query_stockup_execution
+  - tongzhou_query_production_timeline
+  - tongzhou_compare_movement_inventory
+  - tongzhou_create_stockup_draft
+  - tongzhou_assign_exception
+  - tongzhou_update_exception_status
+  - tongzhou_send_exception_reminder
+provides_hooks:
+  - pre_tool_call

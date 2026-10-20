@@ -212,11 +212,21 @@ export function buildProductionTimelines(workflow = {}, actionLogPayload = {}, w
     events.sort((left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.id.localeCompare(right.id));
     const cleanEvents = events.map(({ _key, ...event }) => event);
     const actualEvents = cleanEvents.filter((event) => event.tone !== "planned");
+    const skus = [...new Set(orderLines.map((line) => text(line.sku || line.countrySku)).filter(Boolean))];
     return {
       orderRecordId: order.id,
+      orderNo: text(order.orderNo),
+      status: text(order.status),
+      project: text(order.project || order.projectName),
+      country: text(order.destinationCountry || order.country),
+      warehouseId: text(order.destinationWarehouseId || order.warehouseId),
+      sku: skus.length === 1 ? skus[0] : "",
+      skus,
       openedAt: openedAt || cleanEvents[0]?.occurredAt || "",
       updatedAt: latestDate(actualEvents.map((event) => event.occurredAt)),
       expectedCompletedAt: validDate(order.expectedCompletedAt),
+      materialReady: typeof order.materialReady === "boolean" ? order.materialReady : undefined,
+      missingMaterialQty: numeric(order.missingMaterialQty),
       events: cleanEvents,
     };
   });

@@ -1,0 +1,6 @@
+services:
+  hermes-build:
+    build:
+      context: https://github.com/NousResearch/hermes-agent.git#71d34bad1045610252eda02ee79549436896e784
+      dockerfile: Dockerfile
+    image: tongzhou/hermes-agent:v0.21.7-71d34bad

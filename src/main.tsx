@@ -251,7 +251,6 @@ import { WarehouseCollaborationTasks } from "./WarehouseCollaborationTasks";
 import { InventoryValuePage } from "./InventoryValuePage";
 import { OverseasInventoryReconciliationPage } from "./OverseasInventoryReconciliationPage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
-import { AiAgentWidget } from "./AiAgentWidget";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
@@ -262,12 +261,14 @@ import ReviewCenter from "./ReviewCenter";
 import QualificationCoveragePage from "./QualificationCoveragePage";
 import { I18nProvider, LegacyUiTranslator, localeOptions, normalizeUiLocale, translate, useI18n } from "./i18n";
 import { getQualificationExpiryInfo, qualificationExpiryRank, type QualificationExpiryStatus } from "./qualification-expiry";
+import { handoffToHermes } from "./hermes/handoff";
 import "./styles.css";
 import "./theme-refresh.css";
 import "../collaboration/shared/ui-tokens.css";
 import "../collaboration/shared/operational-ui.css";
 
 const ContainerLoadingPage = React.lazy(() => import("./container-loading/ContainerLoadingPage"));
+const HermesAgentWorkspace = React.lazy(() => import("./hermes/HermesAgentWorkspace").then((module) => ({ default: module.HermesAgentWorkspace })));
 
 type AlertType = "补货" | "断货" | "健康" | "滞销";
 type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
@@ -421,6 +422,7 @@ const navSections = [
 
 const navItems = [
   { label: "经营总览", icon: LayoutDashboard, hash: "#dashboard", section: "workbench", permission: "dashboard" },
+  { label: "智能体工作台", icon: Bot, hash: "#hermes-agent", section: "workbench", beta: true, permission: "hermes_agent_use" },
   { label: "产品库", icon: ShoppingBag, hash: "#products", section: "catalog", permission: "product_view" },
   { label: "资质库", icon: FileText, hash: "#qualifications", section: "catalog", childOf: "产品库", permission: "qualifications" },
   { label: "资质覆盖", icon: ShieldCheck, hash: "#qualification-coverage", section: "catalog", childOf: "产品库", permission: "qualifications", requiredPermissions: ["qualifications", "inventory"] },
@@ -464,6 +466,8 @@ const navItems = [
   { label: "系统备份", icon: ArchiveRestore, hash: "#system-backup", section: "settings", permission: "system_backup", adminOnly: true },
   { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "settings", permission: "api_access" },
 ];
+
+const hermesHandoffRoutes = new Set(["#inventory", "#movement", "#movement-analysis", "#stockup", "#stockup-recommendations", "#stockup-execution", "#production"]);
 
 const navigationDisplayLabels: Record<string, string> = {
   经营总览: "经营工作台",
@@ -2008,6 +2012,17 @@ function App() {
   const canRenderActiveView = authReady && visibleNavItems(currentUser).some((item) => item.label === activeView);
   const currentNavItem = visibleNavItems(currentUser).find((item) => item.label === activeView);
   const currentNavSection = navSections.find((section) => section.id === currentNavItem?.section);
+  const activeRoute = hashForView(activeView);
+  const canHandoffToHermes = activeView !== "智能体工作台"
+    && hasUserPermission(currentUser, "hermes_agent_use")
+    && hermesHandoffRoutes.has(activeRoute);
+
+  function openCurrentPageInHermes() {
+    const filters = activeRoute === "#movement" && movementWarehouseFilter
+      ? { warehouseId: movementWarehouseFilter }
+      : undefined;
+    handoffToHermes({ route: activeRoute, filters });
+  }
 
   return (
     <I18nProvider locale={currentLocale}>
@@ -2037,6 +2052,7 @@ function App() {
             <h1>{translate(currentLocale, navigationDisplayLabel(activeView))}</h1>
           </div>
           <div className="topbar-actions">
+            {canHandoffToHermes ? <button className="hermes-handoff-button" type="button" onClick={openCurrentPageInHermes}><Bot size={16} />交给智能体</button> : null}
             <form className="search-box" onSubmit={handleGlobalSearch}>
               <Search size={16} />
               <input aria-label="全局搜索商品或 SKU" value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="全局搜索商品 / SKU" />
@@ -2108,6 +2124,10 @@ function App() {
               <span>系统确认账号权限后再读取页面数据，避免无权限接口被提前请求。</span>
             </div>
           </section>
+        ) : activeView === "智能体工作台" ? (
+          <React.Suspense fallback={<div className="loading-screen"><LoaderCircle className="spinning" size={24} /><span>正在加载智能体工作台…</span></div>}>
+            <HermesAgentWorkspace currentUser={currentUser} />
+          </React.Suspense>
         ) : activeView === "产品库" ? (
           <ProductLibrary
             products={catalog}
@@ -2388,9 +2408,6 @@ function App() {
           />
         )}
         </div>
-        {authReady && currentUser.role !== "guest" && hasUserPermission(currentUser, "tongzhou_ai") ? (
-          <AiAgentWidget currentUser={currentUser} route={hashForView(activeView)} />
-        ) : null}
         <ConfirmDialog request={confirmRequest} onClose={closeConfirm} />
         <LegacyUiTranslator />
       </div>

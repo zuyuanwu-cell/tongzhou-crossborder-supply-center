@@ -13151,3 +13151,19 @@ h3 {
     padding-bottom: 18px;
   }
 }
+.hermes-handoff-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #b9d5e7;
+  border-radius: 10px;
+  color: #155e8e;
+  background: #edf7fc;
+  cursor: pointer;
+}
+
+.hermes-handoff-button:hover {
+  border-color: #75add0;
+  background: #e4f3fb;
+}
