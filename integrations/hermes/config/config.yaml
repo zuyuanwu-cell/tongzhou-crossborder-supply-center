@@ -1,8 +1,9 @@
 model:
+  provider: nous
   default: anthropic/claude-sonnet-4.6
 
 agent:
-  max_iterations: 12
+  max_turns: 12
   disabled_toolsets:
     - web
     - search
@@ -41,6 +42,12 @@ memory:
 
 compression:
   enabled: true
+
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  hard_stop_after:
+    exact_failure: 5
+    idempotent_no_progress: 5
 
 gateway:
   api_server:

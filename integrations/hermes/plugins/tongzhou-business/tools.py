@@ -86,9 +86,9 @@ def make_approval_hook(bridge: TongzhouBridgeClient):
         title = str(preview.get("title") or tool_name)
         summary = str(preview.get("summary") or "请确认本次业务动作")
         warnings = [str(item) for item in preview.get("warnings", []) if str(item).strip()]
-        message = f"{title}?{summary}"
+        message = f"{title}：{summary}"
         if warnings:
-            message += "?" + "?".join(warnings[:3])
+            message += "；" + "；".join(warnings[:3])
         return {
             "action": "approve",
             "message": message,
