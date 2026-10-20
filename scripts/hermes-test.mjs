@@ -95,6 +95,7 @@ try {
   for await (const event of parseSseStream(stream)) parsed.push(event);
   assert.equal(normalizeHermesEvent(parsed[0]).type, "assistant.delta");
   assert.equal(normalizeHermesEvent(parsed[1]).output, "处理建议");
+  assert.equal(normalizeHermesEvent({ event: "tool.started", data: { tool: "tool_describe" } }), null, "Hermes platform tools must stay out of the business event stream");
   const approvalEvent = {
     event: "message",
     data: {

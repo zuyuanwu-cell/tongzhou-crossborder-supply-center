@@ -112,6 +112,7 @@ export function normalizeHermesEvent(event, { runId, toolCallId: correlatedToolC
   }
   if (type === "tool.started") {
     const tool = text(data.tool || data.name);
+    if (!Object.hasOwn(TOOL_LABELS, tool)) return null;
     return {
       type: "tool.started",
       toolCallId,
@@ -120,11 +121,13 @@ export function normalizeHermesEvent(event, { runId, toolCallId: correlatedToolC
     };
   }
   if (["tool.completed", "tool.failed"].includes(type)) {
+    const tool = text(data.tool || data.name);
+    if (!Object.hasOwn(TOOL_LABELS, tool)) return null;
     const preview = toolPreview(data.preview);
     return {
       type: "tool.completed",
       toolCallId,
-      tool: text(data.tool || data.name),
+      tool,
       summary: text(preview.summary || data.summary) || (data.error ? "工具执行失败" : "工具执行完成"),
       evidence: Array.isArray(preview.evidence) ? preview.evidence : (Array.isArray(data.evidence) ? data.evidence : []),
       error: Boolean(data.error || type === "tool.failed"),
