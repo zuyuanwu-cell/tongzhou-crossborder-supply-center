@@ -36,6 +36,7 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 1. 生成独立随机的 `HERMES_API_KEY` 和至少 32 字节的 `HERMES_BRIDGE_SECRET`。
 2. 将自有模型网关的服务端密钥写入 `HERMES_MODEL_API_KEY`。当前固定端点为 `https://apihub.agnes-ai.com/v1`，默认模型为 `agnes-3.0-pro`。
 3. 核对 `config/config.yaml` 的 `custom:tongzhou` 提供商仅使用 `chat_completions`，并且只启用 API Server 和 `tongzhou-business`。
+   Node 默认允许每轮最多 32 次 `tongzhou_*` 业务工具调用，可通过 `HERMES_MAX_TOOL_CALLS` 在 12–64 之间调整；Hermes 平台内部调用不占用该预算。模型会在硬上限前 8 次停止扩展查询并使用已有证据完成回答。
 4. 运行插件和契约测试：
 
 ```powershell

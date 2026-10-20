@@ -191,6 +191,7 @@ const hermesApiKey = String(process.env.HERMES_API_KEY || "").trim();
 const hermesBridgeSecret = String(process.env.HERMES_BRIDGE_SECRET || "").trim();
 const hermesModelProvider = String(process.env.HERMES_MODEL_PROVIDER || "custom:tongzhou").trim();
 const hermesModel = String(process.env.HERMES_MODEL || "agnes-3.0-pro").trim();
+const hermesMaxToolCalls = process.env.HERMES_MAX_TOOL_CALLS || 32;
 const hermesDigestTeamId = String(process.env.HERMES_DIGEST_TEAM_ID || "").trim().toLowerCase();
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
 const businessChainDbPath = resolve(process.env.BUSINESS_CHAIN_DB_PATH || resolve(cacheDir, "business-chain.sqlite"));
@@ -8082,6 +8083,7 @@ const hermesApi = createHermesApi({
   enabled: hermesAgentEnabled,
   provider: hermesModelProvider,
   model: hermesModel,
+  maxToolCalls: hermesMaxToolCalls,
   store: hermesIntegrationStore,
   client: hermesClient,
   getAuth,

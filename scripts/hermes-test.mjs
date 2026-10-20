@@ -10,7 +10,7 @@ import { initHermesIntegrationStore } from "../server/hermes-integration-db.js";
 import { sha256Hex, signHermesBridgeRequest, verifyHermesBridgeRequest } from "../server/hermes-bridge-auth.js";
 import { createHermesClient, parseSseStream } from "../server/hermes-client.js";
 import { approvalToolCallId, normalizeHermesEvent } from "../server/hermes-events.js";
-import { hermesRunInstructions, scopeHermesRunIdempotencyKey } from "../server/hermes-api.js";
+import { hermesRunInstructions, isHermesBusinessTool, normalizeHermesToolCallLimit, scopeHermesRunIdempotencyKey } from "../server/hermes-api.js";
 import { createHermesToolGateway, hashHermesToolArguments } from "../server/hermes-tool-gateway.js";
 
 const directory = mkdtempSync(join(tmpdir(), "tongzhou-hermes-test-"));
@@ -45,6 +45,7 @@ try {
           run_status: true,
           run_events_sse: true,
           run_stop: true,
+          run_steer: true,
           run_approval_response: true,
         },
       }), { status: 200 });
@@ -71,6 +72,19 @@ try {
   assert.equal(submittedRunBody.model, "agnes-3.0-pro");
   assert.equal(Object.hasOwn(submittedRunBody, "model_options"), false, "custom model requests must not force unsupported reasoning options");
 
+  let steerRequest = null;
+  const steerClient = createHermesClient({
+    baseUrl: "http://hermes.test",
+    apiKey: "secret",
+    fetchImpl: async (url, options) => {
+      steerRequest = { url: String(url), body: JSON.parse(options.body) };
+      return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+    },
+  });
+  await steerClient.steer("run-test", "请使用已有证据收口");
+  assert.match(steerRequest.url, /\/v1\/runs\/run-test\/steer$/);
+  assert.equal(steerRequest.body.input, "请使用已有证据收口");
+
   const stream = new Response([
     "id: 1\n",
     "data: {\"event\":\"message.delta\",\"delta\":\"正在核对\",\"seq\":1}\n\n",
@@ -91,9 +105,16 @@ try {
   };
   assert.equal(approvalToolCallId(approvalEvent), "call-99");
   assert.equal(normalizeHermesEvent(approvalEvent, { runId: "run-local" }).toolCallId, "call-99");
-  const instructions = hermesRunInstructions({ route: "#movement" });
+  const instructions = hermesRunInstructions({ route: "#movement" }, { maxToolCalls: 32 });
   assert.match(instructions, /本次人工审批/);
   assert.match(instructions, /真实数据必须通过工具重新读取/);
+  assert.match(instructions, /不要用逐个 SKU 的 N\+1 查询/);
+  assert.match(instructions, /使用到 24 次时必须停止扩展查询/);
+  assert.equal(isHermesBusinessTool("tongzhou_query_inventory_risk"), true);
+  assert.equal(isHermesBusinessTool("tool_describe"), false, "Hermes platform calls must not consume the business tool budget");
+  assert.equal(normalizeHermesToolCallLimit("48"), 48);
+  assert.equal(normalizeHermesToolCallLimit("invalid"), 32);
+  assert.equal(normalizeHermesToolCallLimit(1000), 64);
   const scopedRunKey = scopeHermesRunIdempotencyKey("user-a", conversationA.id, "client-request-key-0001");
   assert.equal(scopedRunKey, scopeHermesRunIdempotencyKey("user-a", conversationA.id, "client-request-key-0001"));
   assert.notEqual(scopedRunKey, scopeHermesRunIdempotencyKey("user-b", conversationA.id, "client-request-key-0001"));

@@ -69,7 +69,7 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
         capabilities(),
       ]);
       const features = capabilityPayload?.features || {};
-      const required = ["run_submission", "run_status", "run_events_sse", "run_stop", "run_approval_response"];
+      const required = ["run_submission", "run_status", "run_events_sse", "run_stop", "run_steer", "run_approval_response"];
       const missing = required.filter((feature) => features[feature] !== true);
       return { ok: !missing.length, status: !missing.length ? "ready" : "incompatible", liveness, capabilities: capabilityPayload, missing };
     } catch (error) {
@@ -117,7 +117,14 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
     return request(`/v1/runs/${encodeURIComponent(runId)}/stop`, { method: "POST", body: {} });
   }
 
-  return { approve, capabilities, configured, createRun, events, getRun, health, stop };
+  function steer(runId, input) {
+    return request(`/v1/runs/${encodeURIComponent(runId)}/steer`, {
+      method: "POST",
+      body: { input: text(input) },
+    });
+  }
+
+  return { approve, capabilities, configured, createRun, events, getRun, health, steer, stop };
 }
 
 export async function* parseSseStream(response) {

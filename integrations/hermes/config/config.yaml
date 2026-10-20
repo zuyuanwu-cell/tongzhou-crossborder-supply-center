@@ -11,7 +11,7 @@ providers:
     discover_models: false
 
 agent:
-  max_turns: 12
+  max_turns: 24
   disabled_toolsets:
     - web
     - search
