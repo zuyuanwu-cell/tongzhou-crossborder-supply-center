@@ -181,6 +181,17 @@ export type PartnerProgressConfig = {
   updatedAt?: string;
 };
 
+export type PartnerProgressHealth = {
+  status: "enabled" | "disabled";
+  voiceReady: boolean;
+  checkedAt: string;
+  metrics: {
+    transcriptions_24h: number; transcriptions_completed_24h: number; transcriptions_failed_24h: number;
+    cleanup_pending: number; cleanup_failures: number; drafts_24h: number; drafts_succeeded_24h: number;
+    drafts_submitted_24h: number; draft_p95_ms: number; last_transcription_at?: string; last_draft_at?: string;
+  };
+};
+
 export type HermesEvent =
   | { type: "assistant.delta"; text: string }
   | { type: "tool.started"; toolCallId: string; tool: string; label: string }
@@ -278,6 +289,10 @@ export function stopHermesRun(runId: string) {
 
 export function fetchPartnerProgressConfig(signal?: AbortSignal) {
   return request<{ ok: boolean; config: PartnerProgressConfig; organizations: PartnerProgressOrganization[] }>("/api/hermes/partner-progress-config", { signal });
+}
+
+export function fetchPartnerProgressHealth(signal?: AbortSignal) {
+  return request<PartnerProgressHealth & { ok: boolean }>("/api/hermes/partner-progress-config/health", { signal });
 }
 
 export function testPartnerProgressConfig(input: { asr: { secretId?: string; secretKey?: string; engine: string } }) {

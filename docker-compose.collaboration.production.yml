@@ -53,6 +53,8 @@ services:
       COLLABORATION_COOKIE_SECURE: "true"
       COLLABORATION_SECRET_KEY: ${COLLABORATION_SECRET_KEY:?required}
       COLLABORATION_INTERNAL_TOKEN: ${COLLABORATION_INTERNAL_TOKEN:?required}
+      COLLABORATION_PARTNER_AI_BRIDGE_URL: ${COLLABORATION_PARTNER_AI_BRIDGE_URL:-http://host.docker.internal:8787}
+      HERMES_PARTNER_BRIDGE_SECRET: ${HERMES_PARTNER_BRIDGE_SECRET:?required}
       COLLABORATION_STORAGE_DRIVER: local
       COLLABORATION_ALLOW_LOCAL_PRIVATE_STORAGE: "true"
       COLLABORATION_STORAGE_DIR: /var/lib/tongzhou-collaboration/objects
@@ -78,6 +80,8 @@ services:
     volumes:
       - collaboration_clamav_data:/var/lib/clamav:ro
       - collaboration_object_data:/var/lib/tongzhou-collaboration/objects
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8790:8790"
     healthcheck:

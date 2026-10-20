@@ -15,7 +15,8 @@ export function createHermesPartnerConfigApi({ bridge, getAuth, parseRequestBody
   return async function handleHermesPartnerConfig(req, res, url) {
     const configPath = "/api/hermes/partner-progress-config";
     const testPath = `${configPath}/test`;
-    if (url.pathname !== configPath && url.pathname !== testPath) return false;
+    const healthPath = `${configPath}/health`;
+    if (url.pathname !== configPath && url.pathname !== testPath && url.pathname !== healthPath) return false;
     try {
       const auth = getAuth(req);
       requireAdmin(auth);
@@ -39,6 +40,10 @@ export function createHermesPartnerConfigApi({ bridge, getAuth, parseRequestBody
       }
       if (url.pathname === testPath && req.method === "POST") {
         sendJson(res, 200, await bridge.testPartnerAiAsr(await parseRequestBody(req, 32 * 1024)));
+        return true;
+      }
+      if (url.pathname === healthPath && req.method === "GET") {
+        sendJson(res, 200, await bridge.getPartnerAiHealth());
         return true;
       }
       fail("伙伴快捷汇报配置接口不存在。", 404, "not_found");

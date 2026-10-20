@@ -52,6 +52,12 @@ function environmentDefaults() {
   });
 }
 
+function assertAsrCredentials(secretId, secretKey) {
+  if (String(secretId || "").trim().length < 10 || String(secretKey || "").trim().length < 16) {
+    throw Object.assign(new Error("腾讯云 SecretId 或 SecretKey 不完整。"), { statusCode: 400, code: "invalid_asr_credentials" });
+  }
+}
+
 export async function getPartnerAiSettings() {
   const row = await withSystem(async (client) => (await client.query("SELECT encrypted_config,updated_by,updated_at FROM partner_ai_settings WHERE singleton_key='global'")).rows[0] || null);
   if (!row) return { config: environmentDefaults(), updatedBy: "environment", updatedAt: "" };
@@ -71,6 +77,7 @@ export async function savePartnerAiSettings(input, actorId = "") {
     },
   };
   const config = configSchema.parse(candidate);
+  if (config.enabled && config.voiceEnabled) assertAsrCredentials(config.asr.secretId, config.asr.secretKey);
   await withSystem((client) => client.query(
     `INSERT INTO partner_ai_settings(singleton_key,encrypted_config,updated_by)
      VALUES ('global',$1,$2)
@@ -136,8 +143,17 @@ export async function testPartnerAiAsrConnection(input = {}) {
   const secretId = String(input?.asr?.secretId || "").trim() || current.config.asr.secretId;
   const secretKey = String(input?.asr?.secretKey || "").trim() || current.config.asr.secretKey;
   const engine = String(input?.asr?.engine || current.config.asr.engine || "16k_zh");
-  const result = await recognizeShortAudio({ buffer: silentWav(), mimeType: "audio/wav", fileName: "connection-test.wav", secretId, secretKey, engine, timeoutMs: 12_000 });
-  return { ok: true, message: "腾讯云语音识别连接成功。", requestId: result.requestId, testedAt: new Date().toISOString() };
+  assertAsrCredentials(secretId, secretKey);
+  try {
+    const result = await recognizeShortAudio({ buffer: silentWav(), mimeType: "audio/wav", fileName: "connection-test.wav", secretId, secretKey, engine, timeoutMs: 12_000 });
+    return { ok: true, message: "腾讯云语音识别鉴权和服务状态正常。", requestId: result.requestId, testedAt: new Date().toISOString() };
+  } catch (error) {
+    const upstreamCode = String(error?.details?.upstreamCode || "");
+    if (["FailedOperation.ErrorRecognize", "InternalError.ErrorRecognize"].includes(upstreamCode)) {
+      return { ok: true, message: "腾讯云鉴权成功；静音探针未识别到语音，服务可连接。", requestId: String(error?.details?.requestId || ""), testedAt: new Date().toISOString() };
+    }
+    throw error;
+  }
 }
 
 export { configSchema as partnerAiConfigSchema };

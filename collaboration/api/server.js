@@ -59,6 +59,8 @@ import {
   completePartnerAiTranscription,
   createPartnerAiTranscription,
   createPartnerProgressDraft,
+  getPartnerAiTranscription,
+  getPartnerAiHealth,
   markPartnerAiDraftApplied,
   receivePartnerAiAudio,
 } from "./partner-ai.js";
@@ -230,6 +232,10 @@ async function route(req, res) {
     }
     if (url.pathname === "/collaboration/internal/v1/partner-ai/config/test" && req.method === "POST") {
       sendJson(res, 200, await testPartnerAiAsrConnection(await readJson(req)));
+      return;
+    }
+    if (url.pathname === "/collaboration/internal/v1/partner-ai/health" && req.method === "GET") {
+      sendJson(res, 200, await getPartnerAiHealth());
       return;
     }
     if (url.pathname === "/collaboration/internal/v1/organizations" && req.method === "GET") {
@@ -453,12 +459,18 @@ async function route(req, res) {
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions$`));
   if (match && req.method === "POST") {
-    sendJson(res, 201, { ok: true, ...(await createPartnerAiTranscription(auth, match[1], await readJson(req))) });
+    const result = await createPartnerAiTranscription(auth, match[1], await readJson(req), { idempotencyKey: req.headers["idempotency-key"] });
+    sendJson(res, result.idempotentReplay ? 200 : 201, { ok: true, ...result });
     return;
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions/${uuidPattern}/content$`));
   if (match && req.method === "PUT") {
     sendJson(res, 200, await receivePartnerAiAudio(auth, match[1], match[2], req));
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions/${uuidPattern}$`));
+  if (match && req.method === "GET") {
+    sendJson(res, 200, { ok: true, ...(await getPartnerAiTranscription(auth, match[1], match[2])) });
     return;
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions/${uuidPattern}/complete$`));
@@ -468,7 +480,8 @@ async function route(req, res) {
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-progress-drafts$`));
   if (match && req.method === "POST") {
-    sendJson(res, 201, await createPartnerProgressDraft(auth, match[1], await readJson(req)));
+    const result = await createPartnerProgressDraft(auth, match[1], await readJson(req), { idempotencyKey: req.headers["idempotency-key"] });
+    sendJson(res, result.idempotentReplay ? 200 : 201, result);
     return;
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-progress-drafts/${uuidPattern}/applied$`));

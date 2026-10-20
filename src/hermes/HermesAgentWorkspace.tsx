@@ -41,6 +41,7 @@ import {
   fetchHermesStatus,
   fetchHermesTodos,
   fetchPartnerProgressConfig,
+  fetchPartnerProgressHealth,
   saveHermesModelConfig,
   savePartnerProgressConfig,
   startHermesRun,
@@ -62,6 +63,7 @@ import {
   type HermesTodo,
   type PartnerProgressConfig,
   type PartnerProgressOrganization,
+  type PartnerProgressHealth,
 } from "./hermes-api";
 import "./hermes-workspace.css";
 
@@ -141,6 +143,7 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   const [modelMessage, setModelMessage] = React.useState("");
   const [modelError, setModelError] = React.useState("");
   const [partnerConfig, setPartnerConfig] = React.useState<PartnerProgressConfig | null>(null);
+  const [partnerHealth, setPartnerHealth] = React.useState<PartnerProgressHealth | null>(null);
   const [partnerOrganizations, setPartnerOrganizations] = React.useState<PartnerProgressOrganization[]>([]);
   const [showPartnerConfig, setShowPartnerConfig] = React.useState(false);
   const [partnerDraft, setPartnerDraft] = React.useState({ enabled: false, textEnabled: true, voiceEnabled: false, organizationIds: [] as string[], userDailyLimit: 30, organizationDailyLimit: 120, engine: "16k_zh", secretId: "", secretKey: "" });
@@ -186,8 +189,9 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
 
   const loadPartnerConfig = React.useCallback(async (signal?: AbortSignal) => {
     if (!canConfigureModel) return;
-    const result = await fetchPartnerProgressConfig(signal);
+    const [result, health] = await Promise.all([fetchPartnerProgressConfig(signal), fetchPartnerProgressHealth(signal)]);
     setPartnerConfig(result.config);
+    setPartnerHealth(health);
     setPartnerOrganizations(result.organizations || []);
     setPartnerDraft({
       enabled: result.config.enabled, textEnabled: result.config.textEnabled, voiceEnabled: result.config.voiceEnabled,
@@ -302,7 +306,6 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     }
     if (event.type === "run.checkpoint") {
       setApprovals([]);
-      setRun(null);
       setRun((current) => current ? {
         ...current,
         status: "checkpointed",
@@ -642,6 +645,7 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
         <section className="hermes-model-modal hermes-partner-modal" role="dialog" aria-modal="true" aria-labelledby="hermes-partner-title">
           <header><div><span>PARTNER QUICK REPORT</span><h3 id="hermes-partner-title">伙伴快捷汇报配置</h3><p>仅生成可编辑草稿；伙伴仍需检查并通过原表单提交。</p></div><button type="button" aria-label="关闭" onClick={() => setShowPartnerConfig(false)} disabled={Boolean(partnerBusy)}><X size={17} /></button></header>
           <div className="hermes-partner-toggles"><label><input type="checkbox" checked={partnerDraft.enabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, enabled: event.target.checked })} />总开关</label><label><input type="checkbox" checked={partnerDraft.textEnabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, textEnabled: event.target.checked })} />文字</label><label><input type="checkbox" checked={partnerDraft.voiceEnabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, voiceEnabled: event.target.checked })} />语音</label></div>
+          {partnerHealth ? <div className="hermes-model-provider"><i><ShieldCheck size={18} /></i><div><strong>{partnerHealth.voiceReady ? "语音服务已就绪" : "语音服务尚未就绪"}</strong><span>24 小时草稿 {partnerHealth.metrics.drafts_succeeded_24h}/{partnerHealth.metrics.drafts_24h} · ASR {partnerHealth.metrics.transcriptions_completed_24h}/{partnerHealth.metrics.transcriptions_24h} · P95 {partnerHealth.metrics.draft_p95_ms || 0}ms</span></div><em className={partnerHealth.metrics.cleanup_pending === 0 && partnerHealth.metrics.cleanup_failures === 0 ? "configured" : ""}>待清理 {partnerHealth.metrics.cleanup_pending}</em></div> : null}
           <label><span>试点伙伴组织</span><div className="hermes-partner-organizations">{partnerOrganizations.length ? partnerOrganizations.map((organization) => <label key={organization.id}><input type="checkbox" checked={partnerDraft.organizationIds.includes(organization.id)} onChange={() => togglePartnerOrganization(organization.id)} /><span><strong>{organization.name}</strong><small>{organization.code} · {organization.organizationType}</small></span></label>) : <small>{partnerBusy === "load" ? "正在读取组织…" : "暂无可选的活动组织"}</small>}</div></label>
           <div className="hermes-partner-limits"><label><span>每用户每日</span><input type="number" min="1" max="500" value={partnerDraft.userDailyLimit} onChange={(event) => setPartnerDraft({ ...partnerDraft, userDailyLimit: Number(event.target.value) })} /></label><label><span>每组织每日</span><input type="number" min="1" max="10000" value={partnerDraft.organizationDailyLimit} onChange={(event) => setPartnerDraft({ ...partnerDraft, organizationDailyLimit: Number(event.target.value) })} /></label></div>
           <label><span>腾讯云识别引擎</span><select value={partnerDraft.engine} onChange={(event) => setPartnerDraft({ ...partnerDraft, engine: event.target.value })}><option value="16k_zh">普通话 16k</option><option value="16k_zh-PY">普通话 + 英文</option><option value="16k_zh_dialect">普通话 + 方言</option></select></label>

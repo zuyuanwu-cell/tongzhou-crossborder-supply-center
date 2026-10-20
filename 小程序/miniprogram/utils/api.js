@@ -195,6 +195,8 @@ function randomId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const partnerDraftRequestKeys = new Map();
+
 function currentDemoSession() {
   return wx.getStorageSync("tz_collab_session_profile") || activeDemoSession;
 }
@@ -561,7 +563,7 @@ function demoProgressDraft(workItemId, version, text) {
 
 async function createPartnerAiTranscription(workItemId, workItemVersion, recording) {
   if (config.demoMode) return { transcriptionId: randomId(), uploadUrl: "demo://voice", uploadMethod: "PUT", requiredHeaders: {}, expiresAt: new Date(Date.now() + 9e5).toISOString() };
-  return request(`/collaboration/v1/work-items/${workItemId}/ai-transcriptions`, { method: "POST", data: {
+  return request(`/collaboration/v1/work-items/${workItemId}/ai-transcriptions`, { method: "POST", header: { "Idempotency-Key": recording.idempotencyKey || randomId() }, data: {
     fileName: recording.fileName,
     mimeType: recording.mimeType,
     sizeBytes: Number(recording.sizeBytes),
@@ -572,18 +574,32 @@ async function createPartnerAiTranscription(workItemId, workItemVersion, recordi
 
 async function transcribePartnerAudio(workItemId, workItemVersion, recording) {
   if (config.demoMode) return { transcriptionId: randomId(), transcript: "已完成本周进度，当前工作正常推进。", durationMs: recording.durationMs };
-  const ticket = await createPartnerAiTranscription(workItemId, workItemVersion, recording);
+  const ticket = await createPartnerAiTranscription(workItemId, workItemVersion, { ...recording, idempotencyKey: recording.idempotencyKey || randomId() });
+  if (ticket.status === "completed") return ticket;
+  if (!ticket.uploadUrl && ticket.status !== "uploaded") throw Object.assign(new Error("录音请求正在处理，请稍候重试。"), { code: "transcription_in_progress" });
   const localUpload = String(ticket.uploadUrl || "").startsWith("/collaboration/");
   const uploadUrl = localUpload ? `${config.apiBaseUrl.replace(/\/$/, "")}${ticket.uploadUrl}` : ticket.uploadUrl;
-  await uploadBinary(uploadUrl, ticket.uploadMethod, ticket.requiredHeaders, recording.tempFilePath, localUpload);
+  if (ticket.status !== "uploaded") {
+    try {
+      await uploadBinary(uploadUrl, ticket.uploadMethod, ticket.requiredHeaders, recording.tempFilePath, localUpload);
+    } catch (uploadError) {
+      const current = await request(`/collaboration/v1/work-items/${workItemId}/ai-transcriptions/${ticket.transcriptionId}`);
+      if (current.status === "created") await uploadBinary(uploadUrl, ticket.uploadMethod, ticket.requiredHeaders, recording.tempFilePath, localUpload);
+      else if (current.status === "completed") return current;
+      else if (current.status !== "uploaded") throw uploadError;
+    }
+  }
   return request(`/collaboration/v1/work-items/${workItemId}/ai-transcriptions/${ticket.transcriptionId}/complete`, { method: "POST", timeout: 25_000 });
 }
 
 function createPartnerProgressDraft(workItemId, workItemVersion, text, transcriptionId) {
   if (config.demoMode) return Promise.resolve({ ok: true, draft: demoProgressDraft(workItemId, workItemVersion, text) });
-  return request(`/collaboration/v1/work-items/${workItemId}/ai-progress-drafts`, { method: "POST", timeout: 35_000, data: {
+  const scope = `${workItemId}:${workItemVersion}:${transcriptionId || "text"}:${text}`;
+  const idempotencyKey = partnerDraftRequestKeys.get(scope) || randomId();
+  partnerDraftRequestKeys.set(scope, idempotencyKey);
+  return request(`/collaboration/v1/work-items/${workItemId}/ai-progress-drafts`, { method: "POST", timeout: 35_000, header: { "Idempotency-Key": idempotencyKey }, data: {
     text, workItemVersion: Number(workItemVersion), ...(transcriptionId ? { transcriptionId } : {}),
-  } });
+  } }).then((result) => { partnerDraftRequestKeys.delete(scope); return result; });
 }
 
 function markPartnerProgressDraftApplied(workItemId, draftId, workItemVersion) {

@@ -50,6 +50,8 @@ COLLABORATION_PUBLIC_ORIGIN=https://partner.example.com
 COLLABORATION_COOKIE_SECURE=true
 COLLABORATION_SECRET_KEY=<至少32字符随机值>
 COLLABORATION_INTERNAL_TOKEN=<至少32字符随机值>
+COLLABORATION_PARTNER_AI_BRIDGE_URL=http://host.docker.internal:8787
+HERMES_PARTNER_BRIDGE_SECRET=<至少32字符且不得与其他服务密钥复用>
 COLLABORATION_STORAGE_DRIVER=s3
 COLLABORATION_S3_ENDPOINT=https://<private-s3-endpoint>
 COLLABORATION_S3_REGION=<region>
@@ -65,6 +67,8 @@ COLLABORATION_API_BASE_URL=http://<private-collaboration-api>:8790
 COLLABORATION_BRIDGE_DB_PATH=.cache/collaboration-bridge.sqlite
 COLLABORATION_BRIDGE_POLL_MS=10000
 ```
+
+伙伴快捷汇报的腾讯云 `SecretId`/`SecretKey` 默认由内部管理员在“智能体工作台 → 伙伴汇报”中配置，使用协同服务的 `COLLABORATION_SECRET_KEY` 派生密钥进行 AES-256-GCM 加密后写入 PostgreSQL。生产环境不得更换 `COLLABORATION_SECRET_KEY` 而不先迁移密文；不得把腾讯密钥写入前端、小程序或 Hermes 容器。保存前先使用“测试语音连接”，确认账号已开通语音识别且未欠费。
 
 核心 API 与协同 API 必须使用同一个 `COLLABORATION_INTERNAL_TOKEN`。生产环境不要启用 `COLLABORATION_DEV_TRUST_UPLOADS`。
 

@@ -17,6 +17,7 @@ const commandOutboxReconciliationSql = readFileSync(join(dirname(fileURLToPath(i
 const inventoryBarcodeSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0012_inventory_barcode_lookup.sql"), "utf8");
 const partnerQualificationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0013_partner_qualification_coverage.sql"), "utf8");
 const partnerAiSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0014_partner_ai_progress.sql"), "utf8");
+const partnerAiHardeningSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0015_partner_ai_production_hardening.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -240,6 +241,9 @@ test("partner AI drafts are version-bound, tenant-isolated, and never store audi
   assert.match(partnerAiSql, /expires_at timestamptz NOT NULL DEFAULT now\(\) \+ interval '15 minutes'/);
   assert.match(partnerAiSql, /encrypted_config text NOT NULL/);
   assert.doesNotMatch(partnerAiSql, /audio_blob|bytea/i);
+  assert.match(partnerAiHardeningSql, /uq_partner_ai_transcriptions_idempotency/);
+  assert.match(partnerAiHardeningSql, /uq_partner_ai_drafts_idempotency/);
+  assert.match(partnerAiHardeningSql, /cleanup_attempts/);
 });
 
 test("sampling quotes bind the exact system-generated final sample variant", () => {

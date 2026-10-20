@@ -683,6 +683,10 @@ export function createCollaborationBridge({
     return internalRequest("/collaboration/internal/v1/partner-ai/config/test", { method: "POST", body: input });
   }
 
+  function getPartnerAiHealth() {
+    return internalRequest("/collaboration/internal/v1/partner-ai/health");
+  }
+
   function getOrganizationAccess(code) {
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`);
   }
@@ -1118,6 +1122,7 @@ export function createCollaborationBridge({
     getOrganizationAccess,
     getOrganizationAccessGrants,
     getPartnerAiConfig,
+    getPartnerAiHealth,
     getOrganizationWorkItem,
     getOutsourcingSourceBinding,
     getWarehouseTask,
