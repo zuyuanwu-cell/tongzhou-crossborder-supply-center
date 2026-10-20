@@ -103,6 +103,7 @@ export function hermesRunInstructions(context) {
 
 export function createHermesApi({
   enabled,
+  provider = "custom:tongzhou",
   model,
   maxGlobalRuns = 4,
   maxToolCalls = 12,
@@ -122,7 +123,7 @@ export function createHermesApi({
 
   async function statusPayload(auth) {
     let value;
-    if (!enabled) value = { ok: true, enabled: false, status: "disabled", model, patrol: patrol.status() };
+    if (!enabled) value = { ok: true, enabled: false, status: "disabled", provider, model, patrol: patrol.status() };
     else if (statusCache.value && Date.now() - statusCache.at < 30_000) value = statusCache.value;
     else {
       for (const activeRun of store.listActiveRuns()) startMirror(activeRun);
@@ -134,6 +135,7 @@ export function createHermesApi({
         enabled: true,
         status: runtime.status,
         ready: Boolean(runtime.ok),
+        provider,
         model,
         activeRuns: store.countActiveRuns(),
         maxGlobalRuns,
@@ -193,7 +195,7 @@ export function createHermesApi({
       store.updateRun(localRun.id, {
         status: "completed",
         usage: status.usage || {},
-        provider: status.runtime?.provider || existing?.provider || "nous",
+        provider: status.runtime?.provider || existing?.provider || provider,
         model: status.runtime?.model || existing?.model || model,
         completedAt: new Date().toISOString(),
         durationMs: Math.max(0, Date.now() - Date.parse(existing?.startedAt || existing?.createdAt || new Date().toISOString())),
@@ -285,7 +287,7 @@ export function createHermesApi({
             store.updateRun(localRun.id, {
               status: "completed",
               usage: normalized.usage || {},
-              provider: normalized.runtime?.provider || "nous",
+              provider: normalized.runtime?.provider || provider,
               model: normalized.runtime?.model || model,
               completedAt: new Date().toISOString(),
               durationMs: Math.max(0, Date.now() - Date.parse(localRun.startedAt || localRun.createdAt || new Date().toISOString())),
@@ -395,7 +397,7 @@ export function createHermesApi({
           throw fail("Idempotency-Key 必须是 16 到 200 位可见 ASCII 字符。", 400, "invalid_idempotency_key");
         }
         const idempotencyKey = scopeHermesRunIdempotencyKey(userId, conversationId, suppliedIdempotencyKey || randomUUID());
-        const localRun = store.createRun({ conversationId, userId, model, idempotencyKey });
+        const localRun = store.createRun({ conversationId, userId, provider, model, idempotencyKey });
         if (localRun.idempotentReplay) {
           startMirror(localRun);
           sendJson(res, 200, { ok: true, run: publicRun(localRun) });

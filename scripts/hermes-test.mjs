@@ -92,10 +92,11 @@ try {
   assert.equal(truncatedToolResult.evidence[0].id, "SKU-1");
   assert.equal(truncatedToolResult.durationMs, 125);
 
-  const run = store.createRun({ conversationId: conversationA.id, userId: "user-a", model: "anthropic/claude-sonnet-4.6", idempotencyKey: "run-key-a" });
-  const replay = store.createRun({ conversationId: conversationA.id, userId: "user-a", model: "anthropic/claude-sonnet-4.6", idempotencyKey: "run-key-a" });
+  const run = store.createRun({ conversationId: conversationA.id, userId: "user-a", provider: "custom:tongzhou", model: "agnes-3.0-pro", idempotencyKey: "run-key-a" });
+  const replay = store.createRun({ conversationId: conversationA.id, userId: "user-a", provider: "custom:tongzhou", model: "agnes-3.0-pro", idempotencyKey: "run-key-a" });
   assert.equal(replay.id, run.id);
   assert.equal(replay.idempotentReplay, true);
+  assert.equal(run.provider, "custom:tongzhou");
   const firstToolEvent = store.appendToolEvent({ runId: run.id, type: "tool.started", tool: "tongzhou_query_inventory_risk", sequence: 7 });
   const replayedToolEvent = store.appendToolEvent({ runId: run.id, type: "tool.started", tool: "tongzhou_query_inventory_risk", sequence: 7 });
   assert.equal(firstToolEvent.idempotentReplay, false);

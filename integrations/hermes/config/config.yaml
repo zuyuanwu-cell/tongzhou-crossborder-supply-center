@@ -1,6 +1,14 @@
 model:
-  provider: nous
-  default: anthropic/claude-sonnet-4.6
+  provider: custom:tongzhou
+  default: agnes-3.0-pro
+
+providers:
+  tongzhou:
+    api: https://apihub.agnes-ai.com/v1
+    key_env: HERMES_MODEL_API_KEY
+    transport: chat_completions
+    default_model: agnes-3.0-pro
+    discover_models: false
 
 agent:
   max_turns: 12

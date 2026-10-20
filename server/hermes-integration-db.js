@@ -448,13 +448,13 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     ).map(messageFromRow);
   }
 
-  function createRun({ conversationId, userId, model, idempotencyKey }) {
+  function createRun({ conversationId, userId, provider = "configured", model, idempotencyKey }) {
     if (!getConversation(conversationId, userId)) throw Object.assign(new Error("Conversation not found."), { statusCode: 404 });
     const replay = runFromRow(first("SELECT * FROM hermes_runs WHERE request_idempotency_key=?", [text(idempotencyKey)]));
     if (replay) return { ...replay, idempotentReplay: true };
     const createdAt = nowIso(now);
     const item = {
-      id: randomUUID(), conversationId, hermesRunId: "", status: "queued", model: text(model), provider: "nous",
+      id: randomUUID(), conversationId, hermesRunId: "", status: "queued", model: text(model), provider: text(provider) || "configured",
       usage: {}, toolCount: 0, error: "", durationMs: 0, startedAt: "", completedAt: "", createdAt, updatedAt: createdAt,
     };
     transaction(() => run(

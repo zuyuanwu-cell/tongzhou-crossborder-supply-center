@@ -1,6 +1,6 @@
 # 同舟 Hermes 运行时
 
-本目录保存固定版本的 Hermes 容器配置和 `tongzhou-business` 插件。生产环境还需要由管理员配置 Nous OAuth、Hermes API Key 和桥接密钥。
+本目录保存固定版本的 Hermes 容器配置和 `tongzhou-business` 插件。生产环境使用同舟已有的 OpenAI Chat Completions 兼容模型网关，不依赖 Nous Portal OAuth。管理员只需配置模型密钥、Hermes API Key 和桥接密钥。
 
 ## 固定源码与镜像 digest
 
@@ -23,10 +23,10 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 
 ## 网络边界
 
-`hermes` 不发布宿主机端口：
+`hermes` 只把 API 发布到宿主机回环地址 `127.0.0.1:8642`：
 
-- `tongzhou-hermes-control` 仅允许同舟 Node 服务访问 Hermes API。
-- `tongzhou-hermes-outbound` 允许 Hermes 访问 Nous Portal。
+- `tongzhou-hermes-control` 用于同舟 Node 服务与 Hermes API 之间的控制流量。
+- `tongzhou-hermes-outbound` 只用于访问审核过的自有模型网关。
 - 插件通过 `TONGZHOU_BRIDGE_BASE_URL=http://tongzhou-api:8787` 回调同舟 Node 内部网关。
 
 如 Node 仍由 PM2 运行，需要增加受限的 Compose override 或内部反向代理；不要把 Hermes API 暴露到公网。
@@ -34,8 +34,8 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 ## 启动前检查
 
 1. 生成独立随机的 `HERMES_API_KEY` 和至少 32 字节的 `HERMES_BRIDGE_SECRET`。
-2. 在持久化 `hermes-state` 卷中完成 Nous Portal OAuth；OAuth 凭据不写入业务 SQLite。
-3. 核对 `config/config.yaml` 只启用 API Server 和 `tongzhou-business`。
+2. 将自有模型网关的服务端密钥写入 `HERMES_MODEL_API_KEY`。当前固定端点为 `https://apihub.agnes-ai.com/v1`，默认模型为 `agnes-3.0-pro`。
+3. 核对 `config/config.yaml` 的 `custom:tongzhou` 提供商仅使用 `chat_completions`，并且只启用 API Server 和 `tongzhou-business`。
 4. 运行插件和契约测试：
 
 ```powershell
@@ -63,4 +63,4 @@ npm run test:hermes-contract
 
 将 Node 的 `HERMES_AGENT_ENABLED` 与 `HERMES_PATROL_ENABLED` 设为 `false` 并停止 Hermes 容器即可回滚。主业务继续运行，异常台账和审计数据保留。
 
-业务主记录位于 `.cache/hermes-integration.sqlite`：会话正文默认保留 90 天，工具、审批和异常审计至少保留 365 天。Hermes 容器状态可重建，Nous OAuth 需通过独立运维步骤恢复。
+业务主记录位于 `.cache/hermes-integration.sqlite`：会话正文默认保留 90 天，工具、审批和异常审计至少保留 365 天。Hermes 容器状态可重建；模型密钥只从服务端环境恢复，不复制到业务 SQLite 或前端。
