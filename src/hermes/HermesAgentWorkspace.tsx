@@ -10,6 +10,7 @@ import {
   Database,
   FileSearch,
   Filter,
+  KeyRound,
   LoaderCircle,
   MessageSquareText,
   OctagonX,
@@ -18,6 +19,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Settings2,
   ShieldCheck,
   Square,
   UserRound,
@@ -32,10 +34,13 @@ import {
   fetchHermesCases,
   fetchHermesConversations,
   fetchHermesMessages,
+  fetchHermesModelConfig,
   fetchHermesStatus,
+  saveHermesModelConfig,
   startHermesRun,
   stopHermesRun,
   streamHermesRunEvents,
+  testHermesModelConfig,
   type HermesActionPreview,
   type HermesCase,
   type HermesContext,
@@ -43,6 +48,7 @@ import {
   type HermesEvidenceRef,
   type HermesEvent,
   type HermesMessage,
+  type HermesModelConfig,
   type HermesRun,
   type HermesStatus,
 } from "./hermes-api";
@@ -98,6 +104,13 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   const [busyApproval, setBusyApproval] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [modelConfig, setModelConfig] = React.useState<HermesModelConfig | null>(null);
+  const [showModelConfig, setShowModelConfig] = React.useState(false);
+  const [modelDraft, setModelDraft] = React.useState("deepseek-v4-pro");
+  const [modelApiKey, setModelApiKey] = React.useState("");
+  const [modelBusy, setModelBusy] = React.useState<"test" | "save" | "">("");
+  const [modelMessage, setModelMessage] = React.useState("");
+  const [modelError, setModelError] = React.useState("");
   const [mobilePanel, setMobilePanel] = React.useState<"cases" | "chat" | "evidence">("chat");
   const streamAbortRef = React.useRef<AbortController | null>(null);
   const endRef = React.useRef<HTMLDivElement | null>(null);
@@ -105,6 +118,7 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   const activeConversation = conversations.find((item) => item.id === conversationId) || null;
   const approval = approvals[0] || null;
   const running = Boolean(run && ["queued", "running", "waiting_for_approval", "stopping"].includes(run.status));
+  const canConfigureModel = currentUser.role === "admin" && currentUser.permissions?.includes("hermes_agent_admin");
   const evidence = React.useMemo(() => {
     const refs = [...(selectedCase?.evidence || []), ...activities.flatMap((item) => item.evidence || []), ...messages.flatMap((item) => item.evidence || [])];
     const seen = new Set<string>();
@@ -126,6 +140,13 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     const result = await fetchHermesMessages(id, signal);
     setMessages(result.messages);
   }, []);
+
+  const loadModelConfig = React.useCallback(async (signal?: AbortSignal) => {
+    if (!canConfigureModel) return;
+    const result = await fetchHermesModelConfig(signal);
+    setModelConfig(result.config);
+    setModelDraft(result.config.model);
+  }, [canConfigureModel]);
 
   const loadWorkspace = React.useCallback(async (signal?: AbortSignal) => {
     setError("");
@@ -157,6 +178,15 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [loadCases]);
+
+  React.useEffect(() => {
+    if (!canConfigureModel) return;
+    const controller = new AbortController();
+    void loadModelConfig(controller.signal).catch((caught) => {
+      if (!controller.signal.aborted) setModelError(caught instanceof Error ? caught.message : "读取模型配置失败");
+    });
+    return () => controller.abort();
+  }, [canConfigureModel, loadModelConfig]);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -324,6 +354,47 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     }
   }
 
+  function openModelSettings() {
+    setModelApiKey("");
+    setModelMessage("");
+    setModelError("");
+    setModelDraft(modelConfig?.model || status?.model || "deepseek-v4-pro");
+    setShowModelConfig(true);
+  }
+
+  async function testModelConnection() {
+    if (modelBusy) return;
+    setModelBusy("test");
+    setModelMessage("");
+    setModelError("");
+    try {
+      const result = await testHermesModelConfig({ model: modelDraft, ...(modelApiKey.trim() ? { apiKey: modelApiKey.trim() } : {}) });
+      setModelMessage(result.message);
+    } catch (caught) {
+      setModelError(caught instanceof Error ? caught.message : "DeepSeek 连接测试失败");
+    } finally {
+      setModelBusy("");
+    }
+  }
+
+  async function saveModelSettings() {
+    if (modelBusy || running) return;
+    setModelBusy("save");
+    setModelMessage("");
+    setModelError("");
+    try {
+      const result = await saveHermesModelConfig({ model: modelDraft, ...(modelApiKey.trim() ? { apiKey: modelApiKey.trim() } : {}) });
+      setModelConfig(result.config);
+      setModelApiKey("");
+      setModelMessage("配置已保存并启用，新的对话将使用 DeepSeek。");
+      setStatus(await fetchHermesStatus());
+    } catch (caught) {
+      setModelError(caught instanceof Error ? caught.message : "保存模型配置失败");
+    } finally {
+      setModelBusy("");
+    }
+  }
+
   function investigateCase(item: HermesCase) {
     setSelectedCase(item);
     setContext({ route: item.href || "#hermes-agent", selectedRefs: [{ type: "exception_case", id: item.id }] });
@@ -336,9 +407,12 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
       <header className="hermes-workspace-hero">
         <div className="hermes-hero-mark"><Bot size={24} /><i /></div>
         <div><span>HERMES BUSINESS AGENT</span><h2>同舟智能体工作台</h2><p>围绕库存、备货和生产异常，由 Hermes 调用业务工具查证、归因并推动闭环。</p></div>
-        <div className={`hermes-runtime-state is-${status?.status || "loading"}`}>
-          {status?.ready ? <CheckCircle2 size={16} /> : status?.enabled === false ? <OctagonX size={16} /> : <LoaderCircle size={16} className={!status ? "spinning" : ""} />}
-          <span><b>{status?.enabled === false ? "运行时未启用" : status?.ready ? "Hermes 就绪" : status?.status === "unavailable" ? "运行时不可用" : "状态检查中"}</b><small>{status?.model || "模型未配置"}</small></span>
+        <div className="hermes-hero-actions">
+          <div className={`hermes-runtime-state is-${status?.status || "loading"}`}>
+            {status?.ready ? <CheckCircle2 size={16} /> : status?.enabled === false ? <OctagonX size={16} /> : status?.modelConfigured === false ? <KeyRound size={16} /> : <LoaderCircle size={16} className={!status ? "spinning" : ""} />}
+            <span><b>{status?.enabled === false ? "运行时未启用" : status?.modelConfigured === false ? "DeepSeek 未配置" : status?.ready ? "Hermes 就绪" : status?.status === "unavailable" ? "运行时不可用" : "状态检查中"}</b><small>{status?.model || "模型未配置"}</small></span>
+          </div>
+          {canConfigureModel ? <button className="hermes-model-settings-button" type="button" onClick={openModelSettings}><Settings2 size={15} />模型配置</button> : null}
         </div>
       </header>
 
@@ -375,6 +449,7 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
             {running ? <button onClick={() => void stop()}><Square size={13} />停止</button> : null}
           </header>
           <div className="hermes-messages" aria-live="polite">
+            {status?.modelConfigured === false ? <div className="hermes-model-required"><KeyRound size={18} /><div><strong>需要先配置 DeepSeek</strong><span>{canConfigureModel ? "点击右上角“模型配置”，填写你自己的 DeepSeek API Key 后即可真实对话。" : "请联系系统管理员配置 DeepSeek API Key。"}</span></div>{canConfigureModel ? <button type="button" onClick={openModelSettings}>立即配置</button> : null}</div> : null}
             {!messages.length && !streamText && !running ? <div className="hermes-welcome"><span><FileSearch size={24} /></span><h3>{currentUser.displayName || currentUser.username || "你好"}，今天要处理什么？</h3><p>我会重新读取权限范围内的真实业务数据，给出证据、影响和建议；任何写操作都会在执行前请你确认。</p><div><button onClick={() => setInput("列出当前最严重的库存、备货和生产异常，并按影响排序。")}>查看严重异常</button><button onClick={() => setInput("检查逾期备货和生产任务，说明原因与下一步。")}>检查逾期任务</button></div></div> : null}
             {messages.map((message) => <article key={message.id} className={`hermes-message ${message.role}`}>
               <i>{message.role === "assistant" ? <Bot size={16} /> : <UserRound size={16} />}</i>
@@ -389,8 +464,8 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
           </div>
           <form className="hermes-composer" onSubmit={submit}>
             {context.route !== "#hermes-agent" ? <div className="hermes-context-chip"><Database size={13} /><span>来自 {context.route}</span><button type="button" onClick={() => setContext({ route: "#hermes-agent" })}><X size={12} /></button></div> : null}
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} disabled={running || status?.enabled === false} rows={3} placeholder="询问异常、原因、影响或下一步…" />
-            <button type="submit" disabled={!input.trim() || running || !status?.enabled || status.ready === false} aria-label="发送"><Send size={18} /></button>
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} disabled={running || status?.enabled === false || status?.modelConfigured === false} rows={3} placeholder={status?.modelConfigured === false ? "请先配置 DeepSeek API Key" : "询问异常、原因、影响或下一步…"} />
+            <button type="submit" disabled={!input.trim() || running || !status?.enabled || status.ready === false || status.modelConfigured === false} aria-label="发送"><Send size={18} /></button>
             <small><ShieldCheck size={12} />所有业务写操作都需要你逐次确认</small>
           </form>
         </main>
@@ -406,6 +481,18 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
           {status?.metrics ? <section className="hermes-metrics-card"><header><span>近 {status.metrics.periodDays} 天成功率</span><strong>{Math.round(status.metrics.runs.successRate * 100)}%</strong></header><dl><div><dt>运行 / 失败</dt><dd>{status.metrics.runs.total} / {status.metrics.runs.failed}</dd></div><div><dt>工具完成</dt><dd>{status.metrics.tools.completed}</dd></div><div><dt>批准 / 拒绝</dt><dd>{status.metrics.approvals.approved} / {status.metrics.approvals.denied}</dd></div><div><dt>活动异常</dt><dd>{status.metrics.cases.active}</dd></div><div><dt>Token</dt><dd>{(status.metrics.usage.inputTokens + status.metrics.usage.outputTokens).toLocaleString()}</dd></div><div><dt>费用</dt><dd>${status.metrics.usage.costUsd.toFixed(3)}</dd></div></dl></section> : null}
         </aside>
       </div>
+      {showModelConfig ? <div className="hermes-model-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !modelBusy) setShowModelConfig(false); }}>
+        <section className="hermes-model-modal" role="dialog" aria-modal="true" aria-labelledby="hermes-model-title">
+          <header><div><span>MODEL RUNTIME</span><h3 id="hermes-model-title">DeepSeek 模型配置</h3><p>直接调用 DeepSeek 官方 API；Key 仅加密保存在同舟服务端。</p></div><button type="button" aria-label="关闭" onClick={() => setShowModelConfig(false)} disabled={Boolean(modelBusy)}><X size={17} /></button></header>
+          <div className="hermes-model-provider"><i><KeyRound size={18} /></i><div><strong>{modelConfig?.providerLabel || "DeepSeek 官方 API"}</strong><span>{modelConfig?.baseUrl || "https://api.deepseek.com"}</span></div><em className={modelConfig?.configured ? "configured" : ""}>{modelConfig?.configured ? "已配置" : "未配置"}</em></div>
+          <label><span>模型</span><select value={modelDraft} onChange={(event) => setModelDraft(event.target.value)} disabled={Boolean(modelBusy)}>{(modelConfig?.models || [{ id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", description: "复杂业务分析与多工具任务（推荐）" }, { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", description: "响应更快、成本更低" }]).map((item) => <option value={item.id} key={item.id}>{item.label} · {item.description}</option>)}</select></label>
+          <label><span>DeepSeek API Key</span><input type="password" autoComplete="new-password" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} disabled={Boolean(modelBusy)} placeholder={modelConfig?.configured ? `留空则继续使用 ${modelConfig.apiKeyMasked}` : "sk-..."} /><small>{modelConfig?.configured ? "不修改 Key 时保持为空；填写新 Key 会安全替换旧值。" : "请在 DeepSeek 开放平台创建 API Key 后填入。"}</small></label>
+          {modelMessage ? <div className="hermes-model-result success"><CheckCircle2 size={15} />{modelMessage}</div> : null}
+          {modelError ? <div className="hermes-model-result error"><AlertTriangle size={15} />{modelError}</div> : null}
+          <footer><button type="button" className="secondary" onClick={() => void testModelConnection()} disabled={Boolean(modelBusy) || (!modelApiKey.trim() && !modelConfig?.configured)}>{modelBusy === "test" ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}测试连接</button><button type="button" className="primary" onClick={() => void saveModelSettings()} disabled={Boolean(modelBusy) || running || Boolean(status?.activeRuns) || (!modelApiKey.trim() && !modelConfig?.configured)}>{modelBusy === "save" ? <LoaderCircle size={14} className="spinning" /> : <ShieldCheck size={14} />}保存并启用</button></footer>
+          {running || Boolean(status?.activeRuns) ? <small className="hermes-model-running-note">当前有智能体任务运行中，结束后才能切换模型配置。</small> : null}
+        </section>
+      </div> : null}
     </section>
   );
 }

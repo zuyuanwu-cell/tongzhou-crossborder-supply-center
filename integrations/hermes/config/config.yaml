@@ -1,13 +1,13 @@
 model:
   provider: custom:tongzhou
-  default: agnes-3.0-pro
+  default: deepseek-v4-pro
 
 providers:
   tongzhou:
-    api: https://apihub.agnes-ai.com/v1
+    api: http://host.docker.internal:8787/api/internal/hermes/v1/model
     key_env: HERMES_MODEL_API_KEY
     transport: chat_completions
-    default_model: agnes-3.0-pro
+    default_model: deepseek-v4-pro
     discover_models: false
 
 agent:

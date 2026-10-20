@@ -37,7 +37,8 @@ services:
       API_SERVER_KEY: ${HERMES_API_KEY:?HERMES_API_KEY is required}
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
       HERMES_BRIDGE_SECRET: ${HERMES_BRIDGE_SECRET:?HERMES_BRIDGE_SECRET is required}
-      HERMES_MODEL_API_KEY: ${HERMES_MODEL_API_KEY:?HERMES_MODEL_API_KEY is required}
+      # This authenticates Hermes to the Tongzhou model proxy. The real DeepSeek key stays encrypted in Node.
+      HERMES_MODEL_API_KEY: ${HERMES_MODEL_PROXY_KEY:?HERMES_MODEL_PROXY_KEY is required}
       TONGZHOU_BRIDGE_BASE_URL: ${TONGZHOU_BRIDGE_BASE_URL:-http://host.docker.internal:8787}
     networks:
       - control

@@ -112,6 +112,7 @@ import { initHermesIntegrationStore } from "./hermes-integration-db.js";
 import { createHermesClient } from "./hermes-client.js";
 import { createHermesToolGateway } from "./hermes-tool-gateway.js";
 import { createHermesApi } from "./hermes-api.js";
+import { createHermesModelGateway } from "./hermes-model-gateway.js";
 import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
 import { withDataContext } from "../collaboration/shared/data-context.js";
 import { buildWarehouseQualificationCoverage, WarehouseQualificationCoverageError } from "./warehouse-qualification-coverage.js";
@@ -189,8 +190,9 @@ const hermesPatrolEnabled = process.env.HERMES_PATROL_ENABLED === "true";
 const hermesBaseUrl = String(process.env.HERMES_BASE_URL || "http://hermes:8642").trim();
 const hermesApiKey = String(process.env.HERMES_API_KEY || "").trim();
 const hermesBridgeSecret = String(process.env.HERMES_BRIDGE_SECRET || "").trim();
+const hermesModelProxyKey = String(process.env.HERMES_MODEL_PROXY_KEY || "").trim();
 const hermesModelProvider = String(process.env.HERMES_MODEL_PROVIDER || "custom:tongzhou").trim();
-const hermesModel = String(process.env.HERMES_MODEL || "agnes-3.0-pro").trim();
+const hermesModel = String(process.env.HERMES_MODEL || "deepseek-v4-pro").trim();
 const hermesMaxToolCalls = process.env.HERMES_MAX_TOOL_CALLS || 32;
 const hermesDigestTeamId = String(process.env.HERMES_DIGEST_TEAM_ID || "").trim().toLowerCase();
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
@@ -354,6 +356,18 @@ const integrationCredentialSecret = String(process.env.INTEGRATION_CREDENTIAL_EN
 const tongzhouCanvasAi = initTongzhouCanvasAi({
   cacheDir,
   encryptionSecret: canvasCredentialSecret,
+});
+const hermesModelGateway = createHermesModelGateway({
+  cacheDir,
+  encryptionSecret: canvasCredentialSecret,
+  proxySecret: hermesModelProxyKey,
+  defaultModel: hermesModel,
+  fetchImpl: globalThis.fetch,
+  getAuth,
+  parseRequestBody,
+  sendJson,
+  appendActionLog,
+  canUpdate: () => hermesIntegrationStore.countActiveRuns() === 0,
 });
 const directAuth = {
   role: "admin",
@@ -1068,6 +1082,9 @@ function assertSecureRuntimeConfig() {
   }
   if (hermesAgentEnabled && hermesBridgeSecret.length < 32) {
     throw new Error("Refusing to enable Hermes: HERMES_BRIDGE_SECRET must contain at least 32 characters.");
+  }
+  if (hermesAgentEnabled && hermesModelProxyKey.length < 32) {
+    throw new Error("Refusing to enable Hermes: HERMES_MODEL_PROXY_KEY must contain at least 32 characters.");
   }
 }
 
@@ -8083,6 +8100,7 @@ const hermesApi = createHermesApi({
   enabled: hermesAgentEnabled,
   provider: hermesModelProvider,
   model: hermesModel,
+  resolveRuntimeConfig: () => hermesModelGateway.runtimeConfig(),
   maxToolCalls: hermesMaxToolCalls,
   store: hermesIntegrationStore,
   client: hermesClient,
@@ -8219,6 +8237,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (await hermesModelGateway.handle(req, res, url)) return;
     if (await hermesToolGateway(req, res, url)) return;
     if (await hermesApi(req, res, url)) return;
 

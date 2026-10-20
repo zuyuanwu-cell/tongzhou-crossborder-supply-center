@@ -87,6 +87,7 @@ export type HermesStatus = {
   enabled: boolean;
   status: string;
   ready?: boolean;
+  modelConfigured?: boolean;
   model: string;
   activeRuns?: number;
   maxGlobalRuns?: number;
@@ -100,6 +101,24 @@ export type HermesStatus = {
     usage: { inputTokens: number; outputTokens: number; costUsd: number };
     cases: { active: number };
   };
+};
+
+export type HermesModelOption = {
+  id: string;
+  label: string;
+  description: string;
+};
+
+export type HermesModelConfig = {
+  provider: "deepseek";
+  providerLabel: string;
+  baseUrl: string;
+  model: string;
+  models: HermesModelOption[];
+  configured: boolean;
+  apiKeyMasked: string;
+  updatedAt?: string;
+  lastTest?: { ok: boolean; message: string; testedAt: string } | null;
 };
 
 export type HermesEvent =
@@ -139,6 +158,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export function fetchHermesStatus(signal?: AbortSignal) {
   return request<HermesStatus & { ok: boolean }>("/api/hermes/status", { signal });
+}
+
+export function fetchHermesModelConfig(signal?: AbortSignal) {
+  return request<{ ok: boolean; config: HermesModelConfig }>("/api/hermes/model-config", { signal });
+}
+
+export function testHermesModelConfig(input: { apiKey?: string; model: string }) {
+  return request<{ ok: boolean; model: string; message: string; testedAt: string }>("/api/hermes/model-config/test", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function saveHermesModelConfig(input: { apiKey?: string; model: string }) {
+  return request<{ ok: boolean; config: HermesModelConfig }>("/api/hermes/model-config", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
 }
 
 export function fetchHermesConversations(signal?: AbortSignal) {

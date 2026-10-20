@@ -56,6 +56,10 @@
 .hermes-runtime-state.is-ready svg { color: #45dda9; }
 .hermes-runtime-state.is-unavailable svg,
 .hermes-runtime-state.is-disabled svg { color: #ff9c76; }
+.hermes-runtime-state.is-configuration_required svg { color: #ffbf68; }
+.hermes-hero-actions { display: flex; align-items: stretch; gap: 8px; }
+.hermes-model-settings-button { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 11px; border: 1px solid rgba(255,255,255,.22); border-radius: 13px; font-size: 10px; font-weight: 750; color: #fff; background: rgba(255,255,255,.1); cursor: pointer; }
+.hermes-model-settings-button:hover { background: rgba(255,255,255,.17); }
 
 .hermes-grid { display: grid; min-height: 680px; flex: 1; grid-template-columns: minmax(240px, .8fr) minmax(420px, 1.65fr) minmax(270px, .9fr); overflow: hidden; border: 1px solid var(--hermes-line); border-radius: 20px; background: #f8fafc; box-shadow: 0 18px 44px rgba(32, 68, 103, .08); }
 .hermes-left-panel,
@@ -119,6 +123,12 @@
 .hermes-chat-header > button { display: flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid #e1c8c0; border-radius: 9px; font-size: 9px; color: #a33d28; background: #fff5f2; cursor: pointer; }
 
 .hermes-messages { min-height: 0; overflow-y: auto; padding: 20px 18px 14px; background: linear-gradient(180deg, #fbfdff, #fff 28%); }
+.hermes-model-required { display: grid; max-width: 700px; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin: 0 auto 16px; padding: 11px 12px; border: 1px solid #efd29c; border-radius: 12px; color: #805416; background: #fff9e9; }
+.hermes-model-required > svg { color: #bc791d; }
+.hermes-model-required > div { display: flex; min-width: 0; flex-direction: column; }
+.hermes-model-required strong { font-size: 11px; }
+.hermes-model-required span { margin-top: 2px; font-size: 9px; line-height: 1.45; color: #94713e; }
+.hermes-model-required button { padding: 6px 8px; border: 1px solid #dfb866; border-radius: 8px; font-size: 9px; font-weight: 750; color: #8a5610; background: #fff; cursor: pointer; }
 .hermes-welcome { max-width: 520px; margin: 7vh auto 0; text-align: center; }
 .hermes-welcome > span { display: grid; width: 52px; height: 52px; margin: 0 auto 13px; place-items: center; border-radius: 17px; color: #fff; background: linear-gradient(145deg, #0e568e, #0a345e); box-shadow: 0 12px 28px rgba(15, 83, 135, .2); }
 .hermes-welcome h3 { margin: 0; font-size: 17px; color: #173c60; }
@@ -226,6 +236,38 @@
 .hermes-handoff-button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #b9d5e7; border-radius: 10px; color: #155e8e; background: #edf7fc; cursor: pointer; }
 .hermes-handoff-button:hover { border-color: #75add0; background: #e4f3fb; }
 
+.hermes-model-modal-backdrop { position: fixed; z-index: 1500; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(6, 25, 43, .56); backdrop-filter: blur(4px); }
+.hermes-model-modal { width: min(520px, 100%); padding: 20px; border: 1px solid #d4e2ed; border-radius: 20px; color: #29445d; background: #fff; box-shadow: 0 28px 80px rgba(4, 32, 58, .3); }
+.hermes-model-modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.hermes-model-modal > header > div { min-width: 0; }
+.hermes-model-modal > header span { font-size: 9px; font-weight: 850; letter-spacing: .15em; color: #2971a3; }
+.hermes-model-modal > header h3 { margin: 4px 0 5px; font-size: 19px; color: #123b60; }
+.hermes-model-modal > header p { margin: 0; font-size: 10px; line-height: 1.55; color: #75889a; }
+.hermes-model-modal > header > button { display: grid; width: 31px; height: 31px; flex: 0 0 auto; place-items: center; padding: 0; border: 1px solid #dae3ea; border-radius: 9px; color: #5b7288; background: #f8fafc; cursor: pointer; }
+.hermes-model-provider { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin: 17px 0 15px; padding: 12px; border: 1px solid #dbe8f1; border-radius: 13px; background: #f6fafc; }
+.hermes-model-provider > i { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #13639a; background: #e1f0fa; }
+.hermes-model-provider > div { display: flex; min-width: 0; flex-direction: column; }
+.hermes-model-provider strong { font-size: 11px; color: #224866; }
+.hermes-model-provider span { margin-top: 3px; overflow: hidden; font-size: 9px; color: #7b8c9c; text-overflow: ellipsis; white-space: nowrap; }
+.hermes-model-provider em { padding: 4px 7px; border-radius: 8px; font-size: 8px; font-style: normal; font-weight: 750; color: #a06420; background: #fff0d9; }
+.hermes-model-provider em.configured { color: #247052; background: #e3f5ed; }
+.hermes-model-modal > label { display: grid; gap: 6px; margin-top: 13px; }
+.hermes-model-modal > label > span { font-size: 10px; font-weight: 750; color: #3d5870; }
+.hermes-model-modal select,
+.hermes-model-modal input { width: 100%; min-height: 40px; padding: 0 11px; border: 1px solid #ccdbe6; border-radius: 10px; outline: 0; font-size: 11px; color: #28455d; background: #fff; }
+.hermes-model-modal select:focus,
+.hermes-model-modal input:focus { border-color: #5c9bc5; box-shadow: 0 0 0 3px rgba(40, 119, 171, .1); }
+.hermes-model-modal label small { font-size: 8px; line-height: 1.5; color: #8292a1; }
+.hermes-model-result { display: flex; align-items: flex-start; gap: 6px; margin-top: 13px; padding: 9px 10px; border-radius: 9px; font-size: 9px; line-height: 1.45; }
+.hermes-model-result.success { color: #266f54; background: #e9f7f0; }
+.hermes-model-result.error { color: #a43e30; background: #fff0ed; }
+.hermes-model-modal > footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.hermes-model-modal > footer button { display: flex; align-items: center; gap: 5px; padding: 9px 12px; border-radius: 10px; font-size: 10px; font-weight: 750; cursor: pointer; }
+.hermes-model-modal > footer button.secondary { border: 1px solid #cbdbe7; color: #35617f; background: #f7fafc; }
+.hermes-model-modal > footer button.primary { border: 1px solid #125c91; color: #fff; background: #12639a; }
+.hermes-model-modal button:disabled { opacity: .5; cursor: not-allowed; }
+.hermes-model-running-note { display: block; margin-top: 9px; text-align: right; font-size: 8px; color: #a3662a; }
+
 @keyframes hermes-blink { 50% { opacity: 0; } }
 
 @media (max-width: 1240px) {
@@ -235,7 +277,8 @@
 @media (max-width: 980px) {
   .hermes-workspace { min-height: calc(100vh - 92px); }
   .hermes-workspace-hero { grid-template-columns: auto 1fr; }
-  .hermes-runtime-state { grid-column: 1 / -1; width: 100%; }
+  .hermes-hero-actions { grid-column: 1 / -1; width: 100%; }
+  .hermes-runtime-state { flex: 1; }
   .hermes-mobile-tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px; border: 1px solid var(--hermes-line); border-radius: 12px; background: #fff; }
   .hermes-mobile-tabs button { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px; border: 0; border-radius: 8px; font-size: 10px; color: #6d8092; background: transparent; }
   .hermes-mobile-tabs button.active { color: #135b8d; background: #e8f3fa; }
@@ -261,6 +304,12 @@
   .hermes-messages { padding: 14px 10px; }
   .hermes-composer { padding: 10px; }
   .hermes-message > div { max-width: calc(100vw - 104px); }
+  .hermes-hero-actions { flex-wrap: wrap; }
+  .hermes-model-settings-button { min-height: 42px; }
+  .hermes-model-required { grid-template-columns: auto 1fr; }
+  .hermes-model-required button { grid-column: 1 / -1; }
+  .hermes-model-modal-backdrop { padding: 10px; }
+  .hermes-model-modal { padding: 16px; border-radius: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

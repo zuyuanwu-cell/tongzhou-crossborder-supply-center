@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -12,6 +13,7 @@ import { createHermesClient, parseSseStream } from "../server/hermes-client.js";
 import { approvalToolCallId, normalizeHermesEvent } from "../server/hermes-events.js";
 import { hermesRunInstructions, isHermesBusinessTool, normalizeHermesToolCallLimit, scopeHermesRunIdempotencyKey } from "../server/hermes-api.js";
 import { createHermesToolGateway, hashHermesToolArguments } from "../server/hermes-tool-gateway.js";
+import { createHermesModelGateway } from "../server/hermes-model-gateway.js";
 
 const directory = mkdtempSync(join(tmpdir(), "tongzhou-hermes-test-"));
 let clock = new Date("2026-10-20T01:00:00.000Z");
@@ -116,6 +118,64 @@ try {
   assert.equal(normalizeHermesToolCallLimit("48"), 48);
   assert.equal(normalizeHermesToolCallLimit("invalid"), 32);
   assert.equal(normalizeHermesToolCallLimit(1000), 64);
+
+  const modelRequests = [];
+  const modelConfigPath = join(directory, "hermes-model-config.json");
+  const modelGateway = createHermesModelGateway({
+    cacheDir: directory,
+    encryptionSecret: "test-model-encryption-secret-0123456789",
+    proxySecret: "test-model-proxy-secret-012345678901",
+    fetchImpl: async (url, options = {}) => {
+      modelRequests.push({ url: String(url), options });
+      if (String(url).endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "deepseek-v4-pro" }, { id: "deepseek-v4-flash" }] }), { status: 200 });
+      }
+      const request = JSON.parse(options.body);
+      return new Response(JSON.stringify({ id: "chat-test", model: request.model, choices: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+    getAuth: () => ({ role: "admin", user: { id: "admin-a", role: "admin", permissions: ROLE_DEFAULT_PERMISSIONS.admin } }),
+    parseRequestBody: async (request) => request.payload || {},
+    sendJson: (response, statusCode, payload) => {
+      response.statusCode = statusCode;
+      response.payload = payload;
+      response.headersSent = true;
+      response.writableEnded = true;
+    },
+  });
+  assert.equal(modelGateway.runtimeConfig().configured, false);
+  await modelGateway.saveConfig({ apiKey: "sk-deepseek-test-secret-value", model: "deepseek-v4-pro" }, { id: "admin-a" });
+  assert.equal(modelGateway.runtimeConfig().configured, true);
+  assert.equal(modelGateway.publicConfig().apiKeyMasked.includes("test-secret-value"), false);
+  assert.equal(readFileSync(modelConfigPath, "utf8").includes("sk-deepseek-test-secret-value"), false, "DeepSeek key must be encrypted at rest");
+
+  function modelResponse() {
+    const response = new EventEmitter();
+    return Object.assign(response, {
+      statusCode: 0,
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false,
+      chunks: [],
+      writeHead(statusCode, headers) { this.statusCode = statusCode; this.headers = headers; this.headersSent = true; },
+      write(chunk) { this.chunks.push(Buffer.from(chunk)); return true; },
+      end(chunk) { if (chunk) this.write(chunk); this.writableEnded = true; },
+    });
+  }
+  const proxyRequest = Object.assign(new EventEmitter(), {
+    method: "POST",
+    headers: { authorization: "Bearer test-model-proxy-secret-012345678901" },
+    payload: { model: "model-injected-by-caller", messages: [{ role: "user", content: "hello" }], stream: false },
+  });
+  const proxyResponse = modelResponse();
+  assert.equal(await modelGateway.handle(proxyRequest, proxyResponse, new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions")), true);
+  assert.equal(proxyResponse.statusCode, 200);
+  const upstreamModelBody = JSON.parse(modelRequests.at(-1).options.body);
+  assert.equal(upstreamModelBody.model, "deepseek-v4-pro", "the server-selected model must override model input from Hermes");
+
+  const unauthorizedResponse = modelResponse();
+  const unauthorizedRequest = Object.assign(new EventEmitter(), { method: "POST", headers: { authorization: "Bearer wrong" }, payload: {} });
+  await modelGateway.handle(unauthorizedRequest, unauthorizedResponse, new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions"));
+  assert.equal(unauthorizedResponse.statusCode, 401);
   const scopedRunKey = scopeHermesRunIdempotencyKey("user-a", conversationA.id, "client-request-key-0001");
   assert.equal(scopedRunKey, scopeHermesRunIdempotencyKey("user-a", conversationA.id, "client-request-key-0001"));
   assert.notEqual(scopedRunKey, scopeHermesRunIdempotencyKey("user-b", conversationA.id, "client-request-key-0001"));

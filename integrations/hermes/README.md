@@ -1,6 +1,6 @@
 # 同舟 Hermes 运行时
 
-本目录保存固定版本的 Hermes 容器配置和 `tongzhou-business` 插件。生产环境使用同舟已有的 OpenAI Chat Completions 兼容模型网关，不依赖 Nous Portal OAuth。管理员只需配置模型密钥、Hermes API Key 和桥接密钥。
+本目录保存固定版本的 Hermes 容器配置和 `tongzhou-business` 插件。生产环境由同舟 Node 后端代理调用 DeepSeek 官方 API，不依赖 Nous Portal OAuth。DeepSeek API Key 由管理员在“同舟智能体工作台”配置，经 AES-256-GCM 加密后保存在 `.cache/hermes-model-config.json`，不会进入浏览器响应、日志或 Hermes 容器。
 
 ## 固定源码与镜像 digest
 
@@ -34,10 +34,11 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 ## 启动前检查
 
 1. 生成独立随机的 `HERMES_API_KEY` 和至少 32 字节的 `HERMES_BRIDGE_SECRET`。
-2. 将自有模型网关的服务端密钥写入 `HERMES_MODEL_API_KEY`。当前固定端点为 `https://apihub.agnes-ai.com/v1`，默认模型为 `agnes-3.0-pro`。
-3. 核对 `config/config.yaml` 的 `custom:tongzhou` 提供商仅使用 `chat_completions`，并且只启用 API Server 和 `tongzhou-business`。
+2. 生成至少 32 字节的 `HERMES_MODEL_PROXY_KEY`。它只用于 Hermes 容器认证同舟模型代理，不是 DeepSeek API Key。
+3. 使用管理员账号打开“同舟智能体工作台 → 模型配置”，填写 DeepSeek API Key，选择模型并保存。保存前后端会连接 `https://api.deepseek.com/models` 验证密钥和模型。
+4. 核对 `config/config.yaml` 的 `custom:tongzhou` 提供商仅使用 `chat_completions`，并且只启用 API Server 和 `tongzhou-business`。
    Node 默认允许每轮最多 32 次 `tongzhou_*` 业务工具调用，可通过 `HERMES_MAX_TOOL_CALLS` 在 12–64 之间调整；Hermes 平台内部调用不占用该预算。模型会在硬上限前 8 次停止扩展查询并使用已有证据完成回答。
-4. 运行插件和契约测试：
+5. 运行插件和契约测试：
 
 ```powershell
 npm run test:hermes-plugin
@@ -48,7 +49,7 @@ npm run test:hermes-contract
 
 默认契约测试只检查能力与安全边界；设置 `HERMES_CONTRACT_RUN=1` 才会产生真实模型调用和费用。
 
-5. Node 首次保持 `HERMES_AGENT_ENABLED=false`，可用 `HERMES_PATROL_ENABLED=true` 进行三天影子巡检。
+6. Node 首次保持 `HERMES_AGENT_ENABLED=false`，可用 `HERMES_PATROL_ENABLED=true` 进行三天影子巡检。
 
 ## 分阶段授权
 

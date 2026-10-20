@@ -119,6 +119,7 @@ export function createHermesApi({
   enabled,
   provider = "custom:tongzhou",
   model,
+  resolveRuntimeConfig,
   maxGlobalRuns = 4,
   maxToolCalls = 32,
   runTimeoutMs = 180_000,
@@ -137,9 +138,19 @@ export function createHermesApi({
   const synthesisToolCallLimit = Math.max(8, toolCallLimit - 8);
   let statusCache = { at: 0, value: null };
 
+  function runtimeConfig() {
+    const resolved = typeof resolveRuntimeConfig === "function" ? (resolveRuntimeConfig() || {}) : {};
+    return {
+      provider: text(resolved.provider) || provider,
+      model: text(resolved.model) || model,
+      configured: resolved.configured !== false,
+    };
+  }
+
   async function statusPayload(auth) {
+    const configuredRuntime = runtimeConfig();
     let value;
-    if (!enabled) value = { ok: true, enabled: false, status: "disabled", provider, model, patrol: patrol.status() };
+    if (!enabled) value = { ok: true, enabled: false, status: "disabled", patrol: patrol.status() };
     else if (statusCache.value && Date.now() - statusCache.at < 30_000) value = statusCache.value;
     else {
       for (const activeRun of store.listActiveRuns()) startMirror(activeRun);
@@ -147,21 +158,27 @@ export function createHermesApi({
       statusCache = {
         at: Date.now(),
         value: {
-        ok: true,
-        enabled: true,
-        status: runtime.status,
-        ready: Boolean(runtime.ok),
-        provider,
-        model,
-        activeRuns: store.countActiveRuns(),
-        maxGlobalRuns,
-        patrol: patrol.status(),
-        missingCapabilities: runtime.missing || [],
+          ok: true,
+          enabled: true,
+          status: runtime.status,
+          ready: Boolean(runtime.ok),
+          activeRuns: store.countActiveRuns(),
+          maxGlobalRuns,
+          patrol: patrol.status(),
+          missingCapabilities: runtime.missing || [],
         },
       };
       value = statusCache.value;
     }
-    return hasPermission(auth, "hermes_agent_admin") ? { ...value, metrics: store.metrics({ days: 14 }) } : value;
+    const merged = {
+      ...value,
+      status: enabled && !configuredRuntime.configured ? "configuration_required" : value.status,
+      ready: Boolean(value.ready && configuredRuntime.configured),
+      provider: configuredRuntime.provider,
+      model: configuredRuntime.model,
+      modelConfigured: configuredRuntime.configured,
+    };
+    return hasPermission(auth, "hermes_agent_admin") ? { ...merged, metrics: store.metrics({ days: 14 }) } : merged;
   }
 
   function persistNormalizedEvent(localRun, normalized, sequence) {
@@ -211,8 +228,8 @@ export function createHermesApi({
       store.updateRun(localRun.id, {
         status: "completed",
         usage: status.usage || {},
-        provider: status.runtime?.provider || existing?.provider || provider,
-        model: status.runtime?.model || existing?.model || model,
+        provider: status.runtime?.provider || existing?.provider || localRun.provider || provider,
+        model: status.runtime?.model || existing?.model || localRun.model || model,
         completedAt: new Date().toISOString(),
         durationMs: Math.max(0, Date.now() - Date.parse(existing?.startedAt || existing?.createdAt || new Date().toISOString())),
       });
@@ -314,8 +331,8 @@ export function createHermesApi({
             store.updateRun(localRun.id, {
               status: "completed",
               usage: normalized.usage || {},
-              provider: normalized.runtime?.provider || provider,
-              model: normalized.runtime?.model || model,
+              provider: normalized.runtime?.provider || localRun.provider || provider,
+              model: normalized.runtime?.model || localRun.model || model,
               completedAt: new Date().toISOString(),
               durationMs: Math.max(0, Date.now() - Date.parse(localRun.startedAt || localRun.createdAt || new Date().toISOString())),
             });
@@ -409,6 +426,8 @@ export function createHermesApi({
       match = url.pathname.match(/^\/api\/hermes\/conversations\/([^/]+)\/runs$/);
       if (match && req.method === "POST") {
         if (!enabled) throw fail("Hermes 智能体当前未启用。", 503, "hermes_disabled");
+        const configuredRuntime = runtimeConfig();
+        if (!configuredRuntime.configured) throw fail("DeepSeek 尚未配置，请联系管理员在智能体工作台完成配置。", 503, "model_not_configured");
         const conversationId = decodeURIComponent(match[1]);
         const conversation = store.getConversation(conversationId, userId);
         if (!conversation) throw fail("会话不存在。", 404, "conversation_not_found");
@@ -424,7 +443,7 @@ export function createHermesApi({
           throw fail("Idempotency-Key 必须是 16 到 200 位可见 ASCII 字符。", 400, "invalid_idempotency_key");
         }
         const idempotencyKey = scopeHermesRunIdempotencyKey(userId, conversationId, suppliedIdempotencyKey || randomUUID());
-        const localRun = store.createRun({ conversationId, userId, provider, model, idempotencyKey });
+        const localRun = store.createRun({ conversationId, userId, provider: configuredRuntime.provider, model: configuredRuntime.model, idempotencyKey });
         if (localRun.idempotentReplay) {
           startMirror(localRun);
           sendJson(res, 200, { ok: true, run: publicRun(localRun) });
@@ -435,13 +454,13 @@ export function createHermesApi({
           const remote = await client.createRun({
             input,
             sessionId: conversation.hermesSessionId,
-            model,
+            model: configuredRuntime.model,
             instructions: hermesRunInstructions(context, { maxToolCalls: toolCallLimit }),
             idempotencyKey,
           });
           const started = store.updateRun(localRun.id, { hermesRunId: remote.run_id, status: "running", startedAt: new Date().toISOString() });
           startMirror(started);
-          appendActionLog(auth, "发起 Hermes 运行", "hermes_run", started.id, { conversationId, model });
+          appendActionLog(auth, "发起 Hermes 运行", "hermes_run", started.id, { conversationId, model: configuredRuntime.model });
           sendJson(res, 202, { ok: true, run: publicRun(started) });
         } catch (caught) {
           store.updateRun(localRun.id, { status: "failed", error: caught?.message || "Hermes unavailable", completedAt: new Date().toISOString() });
