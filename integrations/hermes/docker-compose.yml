@@ -7,7 +7,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777
-      - /run:size=32m,mode=755
+      # s6-overlay copies its stage binaries into /run and must execute them there.
+      - /run:size=32m,mode=755,exec
     cap_drop:
       - AUDIT_WRITE
       - FSETID
