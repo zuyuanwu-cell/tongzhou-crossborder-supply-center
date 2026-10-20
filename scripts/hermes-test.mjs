@@ -107,6 +107,11 @@ try {
   for await (const event of parseSseStream(stream)) parsed.push(event);
   assert.equal(normalizeHermesEvent(parsed[0]).type, "assistant.delta");
   assert.equal(normalizeHermesEvent(parsed[1]).output, "处理建议");
+  let streamCleaned = false;
+  const earlyExitStream = new Response("data: first\n\ndata: second\n\n", { headers: { "Content-Type": "text/event-stream" } });
+  Object.defineProperty(earlyExitStream, "hermesStreamCleanup", { value: () => { streamCleaned = true; } });
+  for await (const _event of parseSseStream(earlyExitStream)) break;
+  assert.equal(streamCleaned, true, "SSE deadlines must be released when a consumer exits early");
   assert.equal(normalizeHermesEvent({ event: "tool.started", data: { tool: "tool_describe" } }), null, "Hermes platform tools must stay out of the business event stream");
   const approvalEvent = {
     event: "message",
@@ -494,11 +499,21 @@ try {
       { field: "expectedCompletionDate", sourceQuote: "月底左右", normalizedValue: "2026-10-31" },
     ], warnings: [],
   }, { itemType: "production_order", allowedStages: ["filling"] }, `${explicitText}，月底左右`);
-  assert.equal(unsupported.fields.stage, undefined);
-  assert.equal(unsupported.fields.progressPercent, undefined);
-  assert.equal(unsupported.fields.completedQuantity, undefined);
+  assert.equal(unsupported.fields.stage, "filling");
+  assert.equal(unsupported.fields.progressPercent, 60);
+  assert.equal(unsupported.fields.completedQuantity, 5000);
   assert.equal(unsupported.fields.expectedCompletionDate, undefined);
-  assert.deepEqual(unsupported.evidence, []);
+  assert.deepEqual(unsupported.evidence.map((item) => [item.field, item.normalizedValue]), [
+    ["stage", "filling"],
+    ["progressPercent", 60],
+    ["completedQuantity", 5000],
+  ]);
+  const fuzzyDate = normalizePartnerProgressDraft({ fields: {}, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["filling"] }, "预计周五左右完成");
+  assert.equal(fuzzyDate.fields.expectedCompletionDate, undefined);
+  const invalidDate = normalizePartnerProgressDraft({ fields: {}, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["filling"] }, "预计 2026 年 2 月 31 日完成");
+  assert.equal(invalidDate.fields.expectedCompletionDate, undefined);
+  const planningDate = normalizePartnerProgressDraft({ fields: {}, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["planning"] }, "计划周五完成");
+  assert.equal(planningDate.fields.stage, undefined);
 
   const warningInput = { ...input, inventoryRisk: JSON.parse(JSON.stringify(input.inventoryRisk)) };
   warningInput.inventoryRisk.items[0].status = "补货预警";

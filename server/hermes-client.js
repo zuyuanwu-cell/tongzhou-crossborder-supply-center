@@ -29,6 +29,7 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer?.unref?.();
+    let streamHandedOff = false;
     try {
       const response = await fetchImpl(`${root}${path}`, {
         method,
@@ -45,7 +46,11 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
         try { payload = await response.json(); } catch { payload = {}; }
         throw new HermesClientError(publicErrorBody(payload, response.status), response.status, text(payload?.error?.code || payload?.code) || "hermes_error", payload);
       }
-      if (stream) return response;
+      if (stream) {
+        streamHandedOff = true;
+        Object.defineProperty(response, "hermesStreamCleanup", { value: () => clearTimeout(timer), enumerable: false });
+        return response;
+      }
       if (response.status === 204) return {};
       return response.json();
     } catch (error) {
@@ -53,7 +58,7 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
       if (error?.name === "AbortError") throw new HermesClientError("Hermes request timed out.", 504, "hermes_timeout");
       throw new HermesClientError("Hermes runtime is unavailable.", 503, "hermes_unavailable", { cause: text(error?.message) });
     } finally {
-      clearTimeout(timer);
+      if (!streamHandedOff) clearTimeout(timer);
     }
   }
 
@@ -151,24 +156,28 @@ export async function* parseSseStream(response) {
     return event;
   }
 
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let newline;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, newline).replace(/\r$/, "");
-      buffer = buffer.slice(newline + 1);
-      if (!line) {
-        const event = flush();
-        if (event) yield event;
-      } else if (!line.startsWith(":")) {
-        const colon = line.indexOf(":");
-        const field = colon < 0 ? line : line.slice(0, colon);
-        const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");
-        if (field === "event") eventName = value;
-        else if (field === "id") eventId = value;
-        else if (field === "data") dataLines.push(value);
+  try {
+    for await (const chunk of response.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, "");
+        buffer = buffer.slice(newline + 1);
+        if (!line) {
+          const event = flush();
+          if (event) yield event;
+        } else if (!line.startsWith(":")) {
+          const colon = line.indexOf(":");
+          const field = colon < 0 ? line : line.slice(0, colon);
+          const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");
+          if (field === "event") eventName = value;
+          else if (field === "id") eventId = value;
+          else if (field === "data") dataLines.push(value);
+        }
       }
     }
+  } finally {
+    response.hermesStreamCleanup?.();
   }
   buffer += decoder.decode();
   if (buffer.trim()) dataLines.push(buffer.trim());

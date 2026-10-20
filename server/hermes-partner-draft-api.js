@@ -8,7 +8,7 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const FUZZY_DATE_PATTERN = /(左右|大概|差不多|应该|可能|估计|差不离)/;
 const EXPLICIT_DATE_PATTERN = /(\d{4}[年\/-]\d{1,2}[月\/-]\d{1,2}日?|\d{1,2}[月\/-]\d{1,2}日?|今天|明天|后天|本周|下周|周[一二三四五六日天])/;
 const STAGE_TERMS = Object.freeze({
-  planning: ["计划", "排产"],
+  planning: ["计划阶段", "正在计划", "排产"],
   material_preparation: ["备料", "物料准备", "物料已齐"],
   filling: ["灌装", "装瓶"],
   packaging: ["包装", "装盒", "装箱"],
@@ -64,6 +64,99 @@ function validatedEvidence(rawEvidence, sourceText) {
   })).filter((item) => item.field && item.sourceQuote && sourceText.includes(item.sourceQuote));
 }
 
+function shanghaiToday() {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((item) => [item.type, item.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+function isoDate(date) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function isExactCalendarDate(value) {
+  if (!DATE_PATTERN.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function hasFuzzyDateContext(source, match) {
+  const start = Math.max(0, Number(match.index || 0) - 8);
+  const end = Math.min(source.length, Number(match.index || 0) + match[0].length + 8);
+  return FUZZY_DATE_PATTERN.test(source.slice(start, end));
+}
+
+function explicitDateFact(sourceText) {
+  const source = String(sourceText || "");
+  const absolute = source.match(/(?:预计|计划|交期|交付|完成)?\s*(\d{4})[年\/-](\d{1,2})[月\/-](\d{1,2})日?/);
+  if (absolute) {
+    const value = `${absolute[1]}-${String(absolute[2]).padStart(2, "0")}-${String(absolute[3]).padStart(2, "0")}`;
+    if (isExactCalendarDate(value) && !hasFuzzyDateContext(source, absolute)) return { quote: absolute[0].trim(), value };
+  }
+  const relative = source.match(/(?:预计|计划|交期|交付|完成)?\s*(今天|明天|后天|本周[一二三四五六日天]|下周[一二三四五六日天]|周[一二三四五六日天])/);
+  if (!relative || hasFuzzyDateContext(source, relative)) return null;
+  const baseText = shanghaiToday();
+  const [year, month, day] = baseText.split("-").map(Number);
+  const base = new Date(Date.UTC(year, month - 1, day));
+  const token = relative[1];
+  let offset = token === "今天" ? 0 : token === "明天" ? 1 : token === "后天" ? 2 : null;
+  if (offset === null) {
+    const weekdays = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
+    const target = weekdays[token.slice(-1)];
+    const current = base.getUTCDay();
+    if (token.startsWith("本周")) offset = target - current;
+    else if (token.startsWith("下周")) offset = 7 - current + target;
+    else {
+      offset = (target - current + 7) % 7;
+      if (offset === 0) offset = 7;
+    }
+  }
+  base.setUTCDate(base.getUTCDate() + offset);
+  return { quote: relative[0].trim(), value: isoDate(base) };
+}
+
+function explicitFacts(sourceText, type, allowedStages = []) {
+  const source = String(sourceText || "");
+  const fields = {};
+  const evidence = [];
+  const allowed = new Set((allowedStages || []).map(String));
+  for (const [stage, terms] of Object.entries(STAGE_TERMS)) {
+    if (allowed.size && !allowed.has(stage)) continue;
+    const term = terms.find((candidate) => source.includes(candidate));
+    if (!term) continue;
+    fields.stage = stage;
+    evidence.push({ field: "stage", sourceQuote: term, normalizedValue: stage });
+    break;
+  }
+  const percent = source.match(/(?:完成|进度)?\s*(\d{1,3}(?:\.\d+)?)\s*(%|百分之)/) || source.match(/百分之\s*(\d{1,3}(?:\.\d+)?)/);
+  if (percent) {
+    const value = Number(percent[1]);
+    if (Number.isFinite(value) && value >= 0 && value <= 100) {
+      const field = type === "work_item_progress" ? "percent" : "progressPercent";
+      if (type !== "purchase_fulfillment") {
+        fields[field] = Math.trunc(value);
+        evidence.push({ field, sourceQuote: percent[0], normalizedValue: Math.trunc(value) });
+      }
+    }
+  }
+  const quantity = source.match(/(?:已经|已)?(?:完成|生产|采购|交付|灌装)\s*([\d,]+(?:\.\d+)?)\s*(瓶|件|套|个|箱|支|公斤|kg|千克|吨|台|批)/i);
+  if (quantity && type !== "work_item_progress") {
+    const value = Number(quantity[1].replace(/,/g, ""));
+    if (Number.isFinite(value) && value >= 0) {
+      fields.completedQuantity = value;
+      evidence.push({ field: "completedQuantity", sourceQuote: quantity[0], normalizedValue: value });
+    }
+  }
+  const date = explicitDateFact(source);
+  if (date && type !== "work_item_progress") {
+    const field = type === "production_progress" ? "expectedCompletionDate" : "expectedDeliveryDate";
+    fields[field] = date.value;
+    evidence.push({ field, sourceQuote: date.quote, normalizedValue: date.value });
+  }
+  return { fields, evidence };
+}
+
 function normalizeDraft(raw, task, sourceText) {
   const type = draftType(task.itemType);
   const evidence = validatedEvidence(raw.evidence, sourceText);
@@ -71,7 +164,8 @@ function normalizeDraft(raw, task, sourceText) {
   const warnings = (Array.isArray(raw.warnings) ? raw.warnings : []).map((item) => text(item, 300)).filter(Boolean).slice(0, 8);
   const fields = {};
   const input = raw.fields && typeof raw.fields === "object" && !Array.isArray(raw.fields) ? raw.fields : {};
-  const note = text(input.note || raw.note || sourceText, 2_000);
+  const note = text(sourceText, 2_000);
+  const deterministic = explicitFacts(sourceText, type, task.allowedStages);
   const allowStage = (value) => {
     const stage = text(value, 80);
     const allowed = Array.isArray(task.allowedStages) ? task.allowedStages.map((item) => text(item, 80)) : [];
@@ -107,6 +201,7 @@ function normalizeDraft(raw, task, sourceText) {
     if (progressPercent !== undefined) fields.progressPercent = progressPercent;
     if (completedQuantity !== undefined) fields.completedQuantity = completedQuantity;
     if (expectedCompletionDate) fields.expectedCompletionDate = expectedCompletionDate;
+    Object.entries(deterministic.fields).forEach(([field, value]) => { if (fields[field] === undefined) fields[field] = value; });
     fields.note = note;
   } else if (type === "purchase_fulfillment") {
     const stage = allowStage(input.stage);
@@ -115,12 +210,14 @@ function normalizeDraft(raw, task, sourceText) {
     if (stage) fields.stage = stage;
     if (completedQuantity !== undefined) fields.completedQuantity = completedQuantity;
     if (expectedDeliveryDate) fields.expectedDeliveryDate = expectedDeliveryDate;
+    Object.entries(deterministic.fields).forEach(([field, value]) => { if (fields[field] === undefined) fields[field] = value; });
     fields.note = note;
   } else {
     const percent = allowNumber("percent", input.percent, { integer: true, max: 100 });
     fields.action = "progress";
     fields.note = note;
     if (percent !== undefined) fields.percent = percent;
+    if (fields.percent === undefined && deterministic.fields.percent !== undefined) fields.percent = deterministic.fields.percent;
   }
 
   const required = type === "production_progress" ? ["stage", "progressPercent", "note"]
@@ -130,9 +227,14 @@ function normalizeDraft(raw, task, sourceText) {
     if (["note", "action"].includes(field) || fields[field] !== undefined || !input[field]) continue;
     warnings.push(`${field} 未在原话中找到可核验依据，未自动填写。`);
   }
-  const acceptedEvidence = evidence.filter((item) => fields[item.field] !== undefined
+  const deterministicFields = new Set(deterministic.evidence.map((item) => item.field));
+  const acceptedEvidence = [
+    ...evidence.filter((item) => !deterministicFields.has(item.field)),
+    ...deterministic.evidence,
+  ].filter((item) => fields[item.field] !== undefined
     && String(fields[item.field]) === String(item.normalizedValue));
-  return { type, fields, evidence: acceptedEvidence, missingFields, warnings: [...new Set(warnings)].slice(0, 8) };
+  const uniqueEvidence = acceptedEvidence.filter((item, index, list) => list.findIndex((other) => other.field === item.field && other.sourceQuote === item.sourceQuote && String(other.normalizedValue) === String(item.normalizedValue)) === index);
+  return { type, fields, evidence: uniqueEvidence, missingFields, warnings: [...new Set(warnings)].slice(0, 8) };
 }
 
 function promptFor(payload) {
@@ -141,7 +243,12 @@ function promptFor(payload) {
   return JSON.stringify({
     request: "extract_partner_progress_draft",
     expectedType,
-    currentDate: new Date().toISOString().slice(0, 10),
+    outputContract: expectedType === "production_progress"
+      ? { fields: ["stage", "progressPercent", "completedQuantity", "expectedCompletionDate", "note"] }
+      : expectedType === "purchase_fulfillment"
+        ? { fields: ["stage", "completedQuantity", "expectedDeliveryDate", "note"] }
+        : { fields: ["action", "note", "percent"], action: "progress" },
+    currentDate: shanghaiToday(),
     sourceText: payload.text,
     untrustedTaskContext: {
       title: task.title,
@@ -189,7 +296,7 @@ export function createHermesPartnerDraftApi({
         sessionId: `tz_partner_${randomUUID()}`,
         model: runtime.model,
         instructions: draftInstructions(),
-        idempotencyKey: `partner_draft_${requestHash}_${attempt}`,
+        idempotencyKey: `partner_draft_${requestHash}_${attempt}_${randomUUID()}`,
       });
       let output = "";
       let usage = {};
@@ -201,7 +308,7 @@ export function createHermesPartnerDraftApi({
           const type = hermesEventType(event);
           const data = event?.data && typeof event.data === "object" ? event.data : {};
           if (type === "tool.started") {
-            await client.stop(remote.run_id).catch(() => {});
+            void client.stop(remote.run_id).catch(() => {});
             throw fail("伙伴轻量档案禁止调用工具。", 502, "partner_tool_forbidden");
           }
           if (type === "run.completed") {
@@ -221,7 +328,11 @@ export function createHermesPartnerDraftApi({
         }
         return { output, usage };
       } catch (error) {
-        if (["hermes_timeout", "partner_draft_timeout"].includes(error?.code)) await client.stop(remote.run_id).catch(() => {});
+        if (error?.name === "AbortError") {
+          void client.stop(remote.run_id).catch(() => {});
+          throw fail("Hermes 草稿运行超时。", 504, "partner_draft_timeout");
+        }
+        if (["hermes_timeout", "partner_draft_timeout"].includes(error?.code)) void client.stop(remote.run_id).catch(() => {});
         throw error;
       }
     }
