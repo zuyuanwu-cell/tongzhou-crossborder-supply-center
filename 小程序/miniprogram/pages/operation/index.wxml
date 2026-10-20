@@ -1,0 +1,29 @@
+<view class="operation-page">
+  <view class="operation-hero"><view class="eyebrow operation-eyebrow">WAREHOUSE REQUEST</view><view class="operation-title">{{meta.title}}</view><view class="operation-copy">{{meta.note}}</view><view class="step-line"><view class="is-active"><text>1</text><small>作业类型</small></view><view class="is-active"><text>2</text><small>商品数量</small></view><view><text>3</text><small>确认提交</small></view></view></view>
+  <view class="operation-body">
+    <view class="type-switch card"><view wx:for="{{types}}" wx:key="value" class="{{type === item.value ? 'is-active' : ''}}" data-type="{{item.value}}" bindtap="changeType">{{item.label}}</view></view>
+    <view class="form-section card">
+      <view class="form-title"><text>01</text><view><strong>选择商品</strong><small>从当前授权仓库的库存投影中选择</small></view></view>
+      <view wx:if="{{loading}}" class="operation-loading">正在读取本仓商品…</view>
+      <view wx:else class="product-picker-row"><picker class="product-picker" range="{{productNames}}" value="{{selectedIndex}}" bindchange="chooseProduct"><view>{{productNames[selectedIndex] || '暂无可选商品'}}<text>⌄</text></view></picker><button class="scan-product" bindtap="scanProduct">⌗ 扫码</button><button class="add-line" bindtap="addSelected">＋ 添加</button></view>
+      <view wx:if="{{lines.length}}" class="selected-lines">
+        <view wx:for="{{lines}}" wx:key="sku" class="selected-line">
+          <view class="line-summary"><view class="line-image">{{item.initial}}</view><view><strong>{{item.productName}}</strong><text class="mono">{{item.sku}}</text><small>可用 {{item.availableQuantity}} · 锁定 {{item.lockedQuantity}} {{item.unit}}</small></view><view class="remove-line" data-index="{{index}}" bindtap="removeLine">×</view></view>
+          <view class="operation-fields">
+            <label><text>{{type === 'stocktake' ? '实盘数量' : '作业数量'}}</text><input type="digit" value="{{type === 'stocktake' ? item.countedQuantity : item.quantity}}" data-index="{{index}}" data-field="{{type === 'stocktake' ? 'countedQuantity' : 'quantity'}}" bindinput="updateLine"/></label>
+            <label wx:if="{{type !== 'stocktake'}}"><text>批次号</text><input value="{{item.lotNo}}" data-index="{{index}}" data-field="lotNo" bindinput="updateLine" placeholder="选填"/></label>
+            <label wx:if="{{type !== 'stocktake'}}" class="barcode-field"><text>{{type === 'inbound' ? '实际到货条码' : '实际出库条码'}}</text><view><input value="{{item.barcode}}" data-index="{{index}}" data-field="barcode" bindinput="updateLine" placeholder="扫描实物条码或手动输入"/><button class="barcode-scan-button" data-index="{{index}}" catchtap="scanLine">⌗ 扫码</button></view></label>
+            <label wx:if="{{type === 'inbound'}}"><text>生产日期</text><picker mode="date" value="{{item.productionDate}}" data-index="{{index}}" data-field="productionDate" bindchange="chooseLineDate"><view class="date-picker">{{item.productionDate || '请选择'}}</view></picker></label>
+            <label wx:if="{{type === 'inbound'}}"><text>有效期</text><picker mode="date" value="{{item.expiryDate}}" data-index="{{index}}" data-field="expiryDate" bindchange="chooseLineDate"><view class="date-picker">{{item.expiryDate || '请选择'}}</view></picker></label>
+          </view>
+        </view>
+      </view>
+    </view>
+    <view class="form-section card"><view class="form-title"><text>02</text><view><strong>填写作业信息</strong><small>外部单号可留空，由系统自动生成</small></view></view>
+      <label class="field"><text class="field__label">外部单号</text><input class="field__input" value="{{form.referenceNo}}" data-field="referenceNo" bindinput="updateForm" placeholder="例如采购单号、调拨单号"/></label>
+      <label class="field"><text class="field__label">作业说明 <text class="field__required">*</text></text><textarea class="field__textarea" value="{{form.note}}" data-field="note" bindinput="updateForm" placeholder="说明作业原因、到货情况或需要中台注意的事项" maxlength="2000"/></label>
+    </view>
+    <view class="approval-banner"><view>审</view><view><strong>提交后进入中台审批</strong><text>本申请不会直接修改库存。审批通过后，核心服务会再次校验仓库、SKU 和数量。</text></view></view>
+  </view>
+  <view class="fixed-action-bar"><button class="secondary-button" bindtap="addSelected">继续添加</button><button class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="submit">提交审批</button></view>
+</view>

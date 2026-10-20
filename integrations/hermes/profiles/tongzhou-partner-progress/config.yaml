@@ -1,0 +1,50 @@
+model:
+  provider: custom:tongzhou
+  default: deepseek-v4-pro
+
+providers:
+  tongzhou:
+    api: http://host.docker.internal:8787/api/internal/hermes/v1/model
+    key_env: HERMES_PARTNER_MODEL_API_KEY
+    transport: chat_completions
+    default_model: deepseek-v4-pro
+    discover_models: false
+
+agent:
+  max_turns: 4
+  disabled_toolsets:
+    - web
+    - search
+    - terminal
+    - file
+    - browser
+    - vision
+    - image_gen
+    - skills
+    - tts
+    - todo
+    - memory
+    - session_search
+    - cronjob
+    - code_execution
+    - delegation
+    - clarify
+    - messaging
+    - discord
+    - discord_admin
+    - debugging
+    - safe
+    - tongzhou-business
+
+platform_toolsets:
+  api_server: []
+
+plugins:
+  enabled: []
+
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+
+compression:
+  enabled: false

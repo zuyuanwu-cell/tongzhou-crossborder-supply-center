@@ -1,0 +1,10 @@
+<view class="page-shell admin-page organization-page">
+  <view class="organization-head"><view><text>PARTNER DIRECTORY</text><strong>伙伴组织</strong><small>查看组织状态、成员活跃度与协同边界</small></view><view class="org-total"><strong>{{items.length}}</strong><text>组织</text></view></view>
+  <view class="admin-search"><text>⌕</text><input value="{{keyword}}" bindinput="updateKeyword" bindconfirm="search" confirm-type="search" placeholder="搜索组织名称或编码" /><text wx:if="{{keyword}}" bindtap="clearKeyword">×</text></view>
+  <scroll-view class="admin-filter-scroll" scroll-x enhanced show-scrollbar="{{false}}"><view class="admin-filter-row"><view wx:for="{{filters}}" wx:key="value" class="admin-filter-chip {{status === item.value ? 'is-active' : ''}}" data-value="{{item.value}}" bindtap="changeStatus">{{item.label}}</view></view></scroll-view>
+  <view wx:if="{{loading}}" class="admin-loading">正在读取伙伴目录…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>伙伴目录暂不可用</strong>{{error}}<button wx:if="{{allowed}}" class="secondary-button retry" bindtap="load">重新加载</button></view>
+  <view wx:elif="{{!items.length}}" class="admin-empty admin-card"><strong>没有匹配的伙伴组织</strong>可调整状态或搜索关键词</view>
+  <view wx:else class="organization-list"><view wx:for="{{items}}" wx:key="code" class="organization-card admin-card" data-code="{{item.code}}" bindtap="openOrganization"><view class="organization-symbol">{{item.symbol}}</view><view class="organization-main"><view><strong>{{item.name}}</strong><text class="admin-status admin-status--{{item.statusTone}}">{{item.statusLabel}}</text></view><text>{{item.typeLabel}} · {{item.code}}</text><small>{{item.activeMemberCount}} / {{item.memberCount}} 名活跃成员 · {{item.pendingInvitationCount}} 个待接受邀请</small></view><text class="organization-arrow">›</text></view></view>
+  <tz-tab-bar active="admin-organizations" mode="admin" />
+</view>

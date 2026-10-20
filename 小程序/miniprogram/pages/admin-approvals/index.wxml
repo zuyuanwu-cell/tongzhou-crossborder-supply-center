@@ -1,0 +1,9 @@
+<view class="page-shell admin-page approval-page">
+  <view class="approval-head"><view><text>DECISION QUEUE</text><strong>协同审批</strong><small>仅处理需要中台确认的高风险伙伴操作</small></view><view class="approval-count"><strong>{{items.length}}</strong><text>待决策</text></view></view>
+  <view class="approval-rule"><text>双重确认</text><view>批准后将进入中台入账流程；驳回必须填写原因并回传伙伴。</view></view>
+  <view wx:if="{{loading}}" class="admin-loading">正在读取审批队列…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>审批队列暂不可用</strong>{{error}}<button wx:if="{{allowed}}" class="secondary-button retry" bindtap="load">重新加载</button></view>
+  <view wx:elif="{{!items.length}}" class="admin-empty admin-card"><strong>审批队列已清空</strong>当前没有需要中台决策的伙伴操作</view>
+  <view wx:else class="approval-list"><view wx:for="{{items}}" wx:key="commandId" class="approval-card admin-card"><view class="approval-card__top"><view><text>{{item.organizationLabel}}</text><strong>{{item.commandLabel}}</strong></view><text>{{item.riskLabel}}</text></view><view class="approval-card__body">{{item.payloadText}}</view><view class="approval-card__meta"><text>提交人 {{item.submittedByName || '伙伴成员'}}</text><text>{{item.submittedText}}</text></view><view class="admin-action-row"><button class="admin-action admin-action--reject" disabled="{{busy}}" data-id="{{item.commandId}}" data-decision="reject" bindtap="review">驳回并说明</button><button class="admin-action admin-action--approve" loading="{{busy === item.commandId}}" disabled="{{busy}}" data-id="{{item.commandId}}" data-decision="approve" bindtap="review">批准并入账</button></view></view></view>
+  <tz-tab-bar active="admin-approvals" mode="admin" />
+</view>

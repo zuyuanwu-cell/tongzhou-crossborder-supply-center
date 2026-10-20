@@ -1,0 +1,25 @@
+<view class="page-shell admin-page detail-page">
+  <view wx:if="{{loading}}" class="admin-loading">正在读取任务详情…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>无法读取任务</strong>{{error}}<button class="secondary-button retry" bindtap="load">重新加载</button></view>
+  <block wx:elif="{{item}}">
+    <view class="detail-hero">
+      <view class="detail-hero__top"><text class="detail-type">{{item.typeIcon}} · {{item.typeLabel}}</text><text class="admin-status admin-status--{{item.statusTone}}">{{item.statusLabel}}</text></view>
+      <view class="detail-title">{{item.title}}</view><view class="detail-ref">{{item.referenceNo}} · {{item.organizationLabel}}</view>
+      <view class="detail-flags"><text class="{{item.isOverdue ? 'is-danger' : ''}}">{{item.deadlineLabel}}</text><text wx:if="{{item.isUrgent}}" class="is-urgent">紧急任务</text><text>V{{item.version}}</text></view>
+    </view>
+    <view class="readonly-note"><text>监管只读</text><view>中台可查看伙伴回传和业务结果；本页面不代替伙伴提交进度。</view></view>
+
+    <view class="admin-section-head"><view><text>BRIEF</text><strong>任务摘要</strong></view></view>
+    <view class="detail-section admin-card"><view class="detail-description">{{item.description || '暂无任务说明'}}</view><view wx:if="{{facts.length}}" class="fact-grid"><view wx:for="{{facts}}" wx:key="key"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view></view>
+
+    <block wx:if="{{lines.length}}"><view class="admin-section-head"><view><text>LINES</text><strong>商品与数量</strong></view><text>{{lines.length}} 项</text></view><view class="detail-section admin-card line-list"><view wx:for="{{lines}}" wx:key="id" class="line-row"><view><strong>{{item.productName}}</strong><text>{{item.sku}}{{item.barcode ? ' · ' + item.barcode : ''}}</text></view><text>{{item.quantityText}}</text></view></view></block>
+
+    <block wx:if="{{commands.length}}"><view class="admin-section-head"><view><text>RESULTS</text><strong>伙伴提交与入账</strong></view></view><view class="detail-section admin-card record-list"><view wx:for="{{commands}}" wx:key="id" class="record-row"><view><strong>{{item.commandLabel}}</strong><text>{{item.resultMessage || item.status}}</text></view><view><text>{{item.status}}</text><small>{{item.timeText}}</small></view></view></view></block>
+
+    <block wx:if="{{attachments.length}}"><view class="admin-section-head"><view><text>EVIDENCE</text><strong>附件凭证</strong></view><text>{{attachments.length}} 个</text></view><view class="detail-section admin-card record-list"><view wx:for="{{attachments}}" wx:key="id" class="record-row"><view><strong>{{item.fileName}}</strong><text>{{item.mimeType}}</text></view><view><text>{{item.scanStatus}}</text><small>{{item.sizeText}}</small></view></view></view></block>
+
+    <view class="admin-section-head"><view><text>TRACE</text><strong>关键时间轴</strong></view><text>{{events.length}} 条</text></view>
+    <view wx:if="{{events.length}}" class="timeline admin-card"><view wx:for="{{events}}" wx:key="id" class="timeline-row"><view class="timeline-dot"></view><view><strong>{{item.actorLabel}}</strong><text>{{item.body || item.eventType}}</text><small>{{item.timeText}}</small></view></view></view>
+    <view wx:else class="admin-empty admin-card">暂无伙伴动作或关键业务事件。中台自动同步更新不会在这里展示。</view>
+  </block>
+</view>

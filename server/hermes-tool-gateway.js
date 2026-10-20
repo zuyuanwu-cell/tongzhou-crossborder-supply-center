@@ -10,6 +10,7 @@ export const HERMES_READ_TOOLS = Object.freeze(new Set([
   "tongzhou_query_stockup_execution",
   "tongzhou_query_production_timeline",
   "tongzhou_compare_movement_inventory",
+  "tongzhou_query_risk_batch",
 ]));
 
 export const HERMES_WRITE_TOOLS = Object.freeze(new Set([
@@ -157,6 +158,7 @@ const TOOL_RESULT_LABELS = Object.freeze({
   tongzhou_query_stockup_execution: "备货执行查询完成",
   tongzhou_query_production_timeline: "生产时间线查询完成",
   tongzhou_compare_movement_inventory: "动销库存差异计算完成",
+  tongzhou_query_risk_batch: "库存、备货与生产风险批量查询完成",
   tongzhou_create_stockup_draft: "备货需求草稿已创建",
   tongzhou_assign_exception: "异常责任人已分派",
   tongzhou_update_exception_status: "异常处理状态已更新",
@@ -170,6 +172,13 @@ function evidenceFromResult(tool, result) {
   }
   if (tool === "tongzhou_query_stockup_execution") {
     return [...(result?.requests || []), ...(result?.tasks || [])].map((item) => ({ type: "stockup", id: item.id, label: item.title || item.project || item.id, href: "#stockup", updatedAt: item.updatedAt }));
+  }
+  if (tool === "tongzhou_query_risk_batch") {
+    return [
+      ...(result?.inventory?.evidence || []),
+      ...(result?.stockup?.evidence || []),
+      ...(result?.production?.evidence || []),
+    ];
   }
   if (result?.case) return [{ type: "exception_case", id: result.case.id, label: result.case.title, href: result.case.href || "#hermes-agent", updatedAt: result.case.updatedAt }];
   return [];
@@ -216,6 +225,7 @@ export function createHermesToolGateway({
     if (tool === "tongzhou_query_stockup_execution") return providers.queryStockupExecution(args, auth);
     if (tool === "tongzhou_query_production_timeline") return providers.queryProductionTimeline(args, auth);
     if (tool === "tongzhou_compare_movement_inventory") return providers.compareMovementInventory(args, auth);
+    if (tool === "tongzhou_query_risk_batch") return providers.queryRiskBatch(args, auth);
     throw error("Tool is not enabled.", 404, "tool_not_enabled");
   }
 

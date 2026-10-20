@@ -1,0 +1,34 @@
+{
+  "pages": [
+    "pages/login/index",
+    "pages/admin/index",
+    "pages/admin-business/index",
+    "pages/admin-business-detail/index",
+    "pages/admin-container-calculator/index",
+    "pages/admin-tasks/index",
+    "pages/admin-task-detail/index",
+    "pages/admin-approvals/index",
+    "pages/admin-organizations/index",
+    "pages/admin-organization/index",
+    "pages/index/index",
+    "pages/tasks/index",
+    "pages/task-detail/index",
+    "pages/inventory/index",
+    "pages/operation/index",
+    "pages/messages/index",
+    "pages/profile/index"
+  ],
+  "window": {
+    "backgroundColor": "#F3F6FA",
+    "backgroundTextStyle": "dark",
+    "navigationBarBackgroundColor": "#173D7A",
+    "navigationBarTitleText": "同舟协同",
+    "navigationBarTextStyle": "white"
+  },
+  "sitemapLocation": "sitemap.json",
+  "style": "v2",
+  "permission": {
+    "scope.record": { "desc": "用于在任务详情中录制最多 50 秒的进度汇报语音" }
+  },
+  "lazyCodeLoading": "requiredComponents"
+}

@@ -54,6 +54,21 @@ import {
   updateProductionMilestone,
 } from "./oem.js";
 import { applyPartnerOrderProjection, submitPartnerOrderReport } from "./partner-orders.js";
+import {
+  cleanupExpiredPartnerAiAudio,
+  completePartnerAiTranscription,
+  createPartnerAiTranscription,
+  createPartnerProgressDraft,
+  markPartnerAiDraftApplied,
+  receivePartnerAiAudio,
+} from "./partner-ai.js";
+import {
+  getPartnerAiSettings,
+  partnerAiCapabilitiesFor,
+  publicPartnerAiSettings,
+  savePartnerAiSettings,
+  testPartnerAiAsrConnection,
+} from "./partner-ai-settings.js";
 import { withDataContext } from "../shared/data-context.js";
 import {
   acceptInvitation,
@@ -92,7 +107,7 @@ function applySecurityHeaders(req, res) {
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Vary", "Origin");
   }
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, Idempotency-Key, If-Match, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, Idempotency-Key, If-Match, Authorization, X-AI-Draft-Id");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -203,6 +218,20 @@ async function route(req, res) {
 
   if (url.pathname.startsWith("/collaboration/internal/")) {
     assertInternalRequest(req);
+    if (url.pathname === "/collaboration/internal/v1/partner-ai/config" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, config: publicPartnerAiSettings(await getPartnerAiSettings()) });
+      return;
+    }
+    if (url.pathname === "/collaboration/internal/v1/partner-ai/config" && req.method === "PUT") {
+      const input = await readJson(req);
+      const { actorId = "internal-admin", ...settings } = input;
+      sendJson(res, 200, { ok: true, config: publicPartnerAiSettings(await savePartnerAiSettings(settings, String(actorId))) });
+      return;
+    }
+    if (url.pathname === "/collaboration/internal/v1/partner-ai/config/test" && req.method === "POST") {
+      sendJson(res, 200, await testPartnerAiAsrConnection(await readJson(req)));
+      return;
+    }
     if (url.pathname === "/collaboration/internal/v1/organizations" && req.method === "GET") {
       sendJson(res, 200, { ok: true, ...(await listOrganizations(queryObject(url))) });
       return;
@@ -405,7 +434,11 @@ async function route(req, res) {
   }
   let match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}$`));
   if (match && req.method === "GET") {
-    sendJson(res, 200, { ok: true, ...(await getWorkItem(auth, match[1])) });
+    const [workItem, partnerAi] = await Promise.all([
+      getWorkItem(auth, match[1]),
+      partnerAiCapabilitiesFor(auth.organization.id),
+    ]);
+    sendJson(res, 200, { ok: true, ...workItem, partnerAi });
     return;
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/actions$`));
@@ -413,8 +446,35 @@ async function route(req, res) {
     const result = await submitWorkItemAction(auth, match[1], await readJson(req), {
       idempotencyKey: String(req.headers["idempotency-key"] || ""),
       expectedVersion: String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/"/g, ""),
+      aiDraftId: String(req.headers["x-ai-draft-id"] || ""),
     });
     sendJson(res, result.idempotentReplay ? 200 : 201, { ok: true, ...result });
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions$`));
+  if (match && req.method === "POST") {
+    sendJson(res, 201, { ok: true, ...(await createPartnerAiTranscription(auth, match[1], await readJson(req))) });
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions/${uuidPattern}/content$`));
+  if (match && req.method === "PUT") {
+    sendJson(res, 200, await receivePartnerAiAudio(auth, match[1], match[2], req));
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-transcriptions/${uuidPattern}/complete$`));
+  if (match && req.method === "POST") {
+    sendJson(res, 200, { ok: true, ...(await completePartnerAiTranscription(auth, match[1], match[2])) });
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-progress-drafts$`));
+  if (match && req.method === "POST") {
+    sendJson(res, 201, await createPartnerProgressDraft(auth, match[1], await readJson(req)));
+    return;
+  }
+  match = url.pathname.match(new RegExp(`^/collaboration/v1/work-items/${uuidPattern}/ai-progress-drafts/${uuidPattern}/applied$`));
+  if (match && req.method === "POST") {
+    const body = await readJson(req);
+    sendJson(res, 200, await markPartnerAiDraftApplied(auth, match[1], match[2], Number(body.workItemVersion)));
     return;
   }
   match = url.pathname.match(new RegExp(`^/collaboration/v1/partner-orders/${uuidPattern}/reports$`));
@@ -422,6 +482,7 @@ async function route(req, res) {
     const result = await submitPartnerOrderReport(auth, match[1], await readJson(req), {
       idempotencyKey: String(req.headers["idempotency-key"] || ""),
       expectedVersion: String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/"/g, ""),
+      aiDraftId: String(req.headers["x-ai-draft-id"] || ""),
     });
     sendJson(res, result.idempotentReplay ? 200 : 201, result);
     return;
@@ -497,13 +558,16 @@ export async function startCollaborationServer() {
       else res.destroy(error);
     });
   });
-  server.requestTimeout = 30_000;
-  server.headersTimeout = 35_000;
+  server.requestTimeout = 45_000;
+  server.headersTimeout = 50_000;
   server.listen(collaborationConfig.port, "0.0.0.0", () => console.log(`Tongzhou collaboration API listening on http://localhost:${collaborationConfig.port}`));
   const deliveryTimer = setInterval(() => runNotificationDeliveryBatch().catch((error) => console.error("[collaboration:notifications]", error.message)), 30_000);
   deliveryTimer.unref();
+  const partnerAiCleanupTimer = setInterval(() => cleanupExpiredPartnerAiAudio().catch((error) => console.error("[collaboration:partner-ai-cleanup]", error.message)), 5 * 60_000);
+  partnerAiCleanupTimer.unref();
   const shutdown = async () => {
     clearInterval(deliveryTimer);
+    clearInterval(partnerAiCleanupTimer);
     server.close();
     await closePools();
   };

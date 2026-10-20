@@ -1,0 +1,58 @@
+<view class="page-shell admin-page calculator-page">
+  <view class="calculator-hero">
+    <view><text>QUICK LOADING CHECK</text><strong>临时装柜测算</strong><small>手机录入箱规，立即比较三种装载策略</small></view>
+    <view class="calculator-hero__badge">不保存</view>
+  </view>
+
+  <view wx:if="{{loading}}" class="admin-loading">正在准备柜型和发运数据…</view>
+  <view wx:elif="{{error && !hasResult}}" class="admin-error admin-card"><strong>测算暂不可用</strong>{{error}}<button wx:if="{{!bootstrapReady}}" class="secondary-button button-small" bindtap="loadBootstrap">重新加载</button></view>
+  <block wx:if="{{!loading && bootstrapReady}}">
+    <view class="calculator-section admin-card">
+      <view class="calculator-section__head"><view><text>01</text><strong>选择数据来源</strong></view><small>发运单会自动带入箱规，也可以手工录入</small></view>
+      <picker mode="selector" range="{{sourceOptions}}" range-key="label" value="{{sourceIndex}}" bindchange="selectSource">
+        <view class="calculator-picker"><view><text>数据来源</text><strong>{{sourceLabel}}</strong></view><text>切换⌄</text></view>
+      </picker>
+      <picker mode="selector" range="{{containerTypes}}" range-key="name" value="{{containerIndex}}" bindchange="selectContainer">
+        <view class="calculator-picker"><view><text>计划柜型</text><strong>{{containerLabel}}</strong></view><text>切换⌄</text></view>
+      </picker>
+    </view>
+
+    <view class="calculator-section admin-card">
+      <view class="calculator-section__head"><view><text>02</text><strong>确认商品与箱规</strong></view><small>尺寸单位 cm，重量单位 kg</small></view>
+      <view wx:for="{{items}}" wx:key="id" class="cargo-editor">
+        <view class="cargo-editor__head"><strong>商品 {{index + 1}}</strong><text wx:if="{{items.length > 1}}" data-index="{{index}}" bindtap="removeItem">删除</text></view>
+        <view class="cargo-grid cargo-grid--wide">
+          <label><text>SKU</text><input value="{{item.sku}}" data-index="{{index}}" data-field="sku" bindinput="updateItem" placeholder="必填" /></label>
+          <label><text>产品名称</text><input value="{{item.productName}}" data-index="{{index}}" data-field="productName" bindinput="updateItem" placeholder="可选" /></label>
+        </view>
+        <view class="cargo-grid">
+          <label><text>箱数</text><input type="number" value="{{item.cartonCount}}" data-index="{{index}}" data-field="cartonCount" bindinput="updateItem" placeholder="0" /></label>
+          <label><text>每箱件数</text><input type="number" value="{{item.unitsPerCarton}}" data-index="{{index}}" data-field="unitsPerCarton" bindinput="updateItem" placeholder="1" /></label>
+          <label><text>外箱长</text><input type="digit" value="{{item.cartonLengthCm}}" data-index="{{index}}" data-field="cartonLengthCm" bindinput="updateItem" placeholder="cm" /></label>
+          <label><text>外箱宽</text><input type="digit" value="{{item.cartonWidthCm}}" data-index="{{index}}" data-field="cartonWidthCm" bindinput="updateItem" placeholder="cm" /></label>
+          <label><text>外箱高</text><input type="digit" value="{{item.cartonHeightCm}}" data-index="{{index}}" data-field="cartonHeightCm" bindinput="updateItem" placeholder="cm" /></label>
+          <label><text>单箱重量</text><input type="digit" value="{{item.cartonWeightKg}}" data-index="{{index}}" data-field="cartonWeightKg" bindinput="updateItem" placeholder="kg" /></label>
+        </view>
+      </view>
+      <button class="add-cargo-button" bindtap="addItem">＋ 添加一行商品</button>
+    </view>
+
+    <button class="calculate-button" loading="{{calculating}}" disabled="{{calculating}}" bindtap="runCalculation">{{calculating ? '正在计算三种方案…' : '开始临时测算'}}</button>
+    <view class="preview-notice"><strong>本次仅预演</strong><text>不会新建正式装柜方案，不保存箱规，也不会产生业务消息。</text></view>
+
+    <view wx:if="{{hasResult}}" class="result-block">
+      <view class="result-title"><text>CALCULATION RESULT</text><strong>三种策略测算结果</strong></view>
+      <scroll-view scroll-x class="strategy-scroll"><view class="strategy-row"><view wx:for="{{resultStrategies}}" wx:key="strategy" class="strategy-card {{selectedStrategy === item.strategy ? 'is-active' : ''}}" data-strategy="{{item.strategy}}" bindtap="selectResultStrategy"><strong>{{item.label}}</strong><text>{{item.summary}}</text><small>{{item.note}}</small></view></view></scroll-view>
+
+      <view class="scene-card admin-card">
+        <view class="scene-head"><view><text>INTERACTIVE VIEW</text><strong>{{candidate.label}} · 装载空间</strong></view><view class="scene-tabs"><text class="{{viewMode === 'iso' ? 'is-active' : ''}}" data-mode="iso" bindtap="setViewMode">立体</text><text class="{{viewMode === 'top' ? 'is-active' : ''}}" data-mode="top" bindtap="setViewMode">俯视</text><text class="{{viewMode === 'side' ? 'is-active' : ''}}" data-mode="side" bindtap="setViewMode">侧视</text></view></view>
+        <canvas type="2d" id="calculatorScene" class="loading-scene" bindtouchstart="startRotate" catchtouchmove="rotateScene"></canvas>
+        <view class="scene-note">{{sceneNote}}</view>
+        <scroll-view scroll-x class="scene-legend"><view class="scene-legend__row"><view wx:for="{{sceneLegend}}" wx:key="sku"><text style="background:{{item.color}}"></text><view><strong>{{item.sku}}</strong><small>{{item.cartons}} 箱</small></view></view></view></scroll-view>
+      </view>
+
+      <view class="result-metrics"><view wx:for="{{candidate.metricsView}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+      <view class="warning-card admin-card"><strong>测算提示</strong><view wx:if="{{candidate.warnings.length}}"><text wx:for="{{candidate.warnings}}" wx:key="*this">• {{item}}</text></view><text wx:else class="warning-card__safe">当前策略无明显装载警告，正式装柜前仍需核对现场条件。</text></view>
+    </view>
+  </block>
+</view>

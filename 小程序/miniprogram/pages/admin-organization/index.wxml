@@ -1,0 +1,15 @@
+<view class="page-shell admin-page organization-detail-page">
+  <view wx:if="{{loading}}" class="admin-loading">正在读取组织资料…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>无法读取组织资料</strong>{{error}}<button class="secondary-button retry" bindtap="load">重新加载</button></view>
+  <block wx:elif="{{organization}}">
+    <view class="org-detail-hero"><view class="org-detail-symbol">{{organization.symbol}}</view><view><text>{{organization.typeLabel}}</text><strong>{{organization.name}}</strong><small>{{organization.code}}</small></view><text class="admin-status admin-status--{{organization.statusTone}}">{{organization.statusLabel}}</text></view>
+    <view class="org-detail-metrics"><view><strong>{{organization.activeMemberCount}}</strong><text>活跃成员</text></view><view><strong>{{organization.memberCount}}</strong><text>全部成员</text></view><view><strong>{{organization.pendingInvitationCount}}</strong><text>待接受邀请</text></view></view>
+    <view class="readonly-note"><text>只读目录</text><view>移动端只用于监管，不在这里创建账号、修改角色或调整资源授权。</view></view>
+
+    <view class="admin-section-head"><view><text>MEMBERS</text><strong>组织成员</strong></view><text>{{members.length}} 人</text></view>
+    <view wx:if="{{members.length}}" class="member-list admin-card"><view wx:for="{{members}}" wx:key="id" class="member-row"><view class="member-avatar">{{item.initial}}</view><view><strong>{{item.displayName}}</strong><text>@{{item.username}} · {{item.roleLabel}}</text><small>最近登录 {{item.lastLoginText}}</small></view><text class="member-status {{item.statusLabel === '正常' ? 'is-active' : ''}}">{{item.statusLabel}}</text></view></view>
+    <view wx:else class="admin-empty admin-card">暂无组织成员</view>
+
+    <block wx:if="{{invitations.length}}"><view class="admin-section-head"><view><text>INVITATIONS</text><strong>待处理邀请</strong></view><text>{{invitations.length}} 个</text></view><view class="member-list admin-card"><view wx:for="{{invitations}}" wx:key="id" class="member-row"><view class="member-avatar is-invite">邀</view><view><strong>@{{item.username}}</strong><text>{{item.roleLabel}} · {{item.status}}</text><small>有效期至 {{item.expiresText}}</small></view></view></view></block>
+  </block>
+</view>

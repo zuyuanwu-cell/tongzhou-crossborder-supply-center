@@ -1,0 +1,5 @@
+{
+  "navigationBarTitleText": "中台总览",
+  "enablePullDownRefresh": true,
+  "usingComponents": { "tz-tab-bar": "/components/tz-tab-bar/index" }
+}

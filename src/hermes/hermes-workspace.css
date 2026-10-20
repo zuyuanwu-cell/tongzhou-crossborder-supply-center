@@ -124,6 +124,29 @@
 
 .hermes-messages { min-height: 0; overflow-y: auto; padding: 20px 18px 14px; background: linear-gradient(180deg, #fbfdff, #fff 28%); }
 .hermes-model-required { display: grid; max-width: 700px; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin: 0 auto 16px; padding: 11px 12px; border: 1px solid #efd29c; border-radius: 12px; color: #805416; background: #fff9e9; }
+.hermes-task-plan { max-width: 760px; margin: 0 auto 14px; overflow: hidden; border: 1px solid #d8e5ef; border-radius: 13px; background: #f9fcff; }
+.hermes-task-plan > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border-bottom: 1px solid #e0e9f1; background: #f2f7fb; }
+.hermes-task-plan > header div { display: grid; gap: 2px; }
+.hermes-task-plan > header span { color: #2d72a7; font-size: 9px; font-weight: 850; letter-spacing: .14em; }
+.hermes-task-plan > header strong { color: #143b5e; font-size: 12px; }
+.hermes-task-plan > header em { color: #70879b; font-size: 10px; font-style: normal; }
+.hermes-task-plan ol { display: grid; gap: 0; margin: 0; padding: 4px 13px; list-style: none; }
+.hermes-task-plan li { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; min-height: 34px; color: #667f94; border-bottom: 1px dashed #e2eaf1; }
+.hermes-task-plan li:last-child { border-bottom: 0; }
+.hermes-task-plan li i { display: grid; place-items: center; color: #8aa0b2; }
+.hermes-task-plan li span { font-size: 11px; }
+.hermes-task-plan li small { font-size: 9px; }
+.hermes-task-plan li.is-completed { color: #39735e; }
+.hermes-task-plan li.is-completed i { color: #16845f; }
+.hermes-task-plan li.is-in_progress { color: #155c91; font-weight: 750; }
+.hermes-task-plan li.is-in_progress i { color: #1975ad; }
+.hermes-task-plan li.is-paused { color: #9a641c; }
+.hermes-checkpoint-card { max-width: 760px; margin: 0 auto 14px; padding: 12px 13px; border: 1px solid #efc27d; border-radius: 13px; color: #7b4b13; background: #fff8e9; }
+.hermes-checkpoint-card header { display: flex; align-items: flex-start; gap: 9px; }
+.hermes-checkpoint-card header div { display: grid; gap: 3px; }
+.hermes-checkpoint-card header span,.hermes-checkpoint-card p { color: #8d632d; font-size: 10px; line-height: 1.55; }
+.hermes-checkpoint-card p { margin: 8px 0; }
+.hermes-checkpoint-card button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid #c9842e; border-radius: 9px; color: #fff; background: #c87a1c; font-size: 10px; font-weight: 800; }
 .hermes-model-required > svg { color: #bc791d; }
 .hermes-model-required > div { display: flex; min-width: 0; flex-direction: column; }
 .hermes-model-required strong { font-size: 11px; }
@@ -201,6 +224,14 @@
 .hermes-case-detail dd { margin: 0; overflow-wrap: anywhere; color: #425b71; }
 .hermes-case-detail footer { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .hermes-case-detail footer button { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border: 1px solid #cbdde9; border-radius: 8px; font-size: 9px; color: #185f91; background: #f2f8fc; cursor: pointer; }
+.hermes-todo-summary { margin: 0 10px 10px; padding: 9px; border: 1px solid #d8e5ee; border-radius: 11px; background: #f7fbfd; }
+.hermes-todo-summary header { display: flex; align-items: baseline; justify-content: space-between; padding: 2px 3px 7px; }
+.hermes-todo-summary header span { font-size: 7px; font-weight: 850; letter-spacing: .12em; color: #58809e; }.hermes-todo-summary header strong { font-size: 9px; color: #214b6d; }
+.hermes-todo-summary > button { display: grid; width: 100%; grid-template-columns: auto 1fr; gap: 7px; align-items: start; padding: 7px 3px; border: 0; border-top: 1px solid #e5edf2; text-align: left; background: transparent; cursor: pointer; }
+.hermes-todo-summary > button > i { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: #d08a35; }.hermes-todo-summary > button > i.severity-critical { background: #c93d32; }
+.hermes-todo-summary > button span { min-width: 0; }.hermes-todo-summary > button strong,.hermes-todo-summary > button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.hermes-todo-summary > button strong { font-size: 8px; color: #365a75; }.hermes-todo-summary > button small { margin-top: 2px; font-size: 7px; color: #8695a2; }
+.hermes-change-summary { display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; padding: 8px; border-radius: 9px; color: #5d7184; background: #f1f5f8; }.hermes-change-summary.changed { color: #1e664f; background: #e8f5ef; }.hermes-change-summary > span { display: flex; min-width: 0; flex-direction: column; }.hermes-change-summary strong { font-size: 8px; }.hermes-change-summary small { margin-top: 3px; font-size: 8px; line-height: 1.4; }
+.hermes-dossier-actions,.hermes-dossier-playbooks { margin-top: 10px; padding-top: 9px; border-top: 1px solid #edf1f5; }.hermes-dossier-actions > strong,.hermes-dossier-playbooks > strong { display: block; font-size: 9px; color: #3e596f; }.hermes-dossier-actions ol { margin: 6px 0 0; padding-left: 17px; font-size: 8px; line-height: 1.55; color: #66798a; }.hermes-dossier-playbooks span { display: inline-flex; margin: 6px 5px 0 0; padding: 4px 7px; border-radius: 7px; font-size: 8px; color: #58448d; background: #f0ebfa; }
 
 .hermes-side-approval { border-color: #efbf9f; background: #fff9f5; }
 .hermes-side-approval > span { font-size: 8px; font-weight: 800; letter-spacing: .1em; color: #b76239; }
@@ -267,6 +298,19 @@
 .hermes-model-modal > footer button.primary { border: 1px solid #125c91; color: #fff; background: #12639a; }
 .hermes-model-modal button:disabled { opacity: .5; cursor: not-allowed; }
 .hermes-model-running-note { display: block; margin-top: 9px; text-align: right; font-size: 8px; color: #a3662a; }
+.hermes-partner-modal { width: min(610px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; }
+.hermes-partner-toggles { display: flex; gap: 8px; margin: 16px 0 4px; flex-wrap: wrap; }
+.hermes-partner-toggles label { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #d6e3ed; border-radius: 10px; font-size: 10px; font-weight: 700; color: #35536d; background: #f7fafc; }
+.hermes-partner-toggles input,.hermes-partner-organizations input { width: 14px; height: 14px; min-height: 0; padding: 0; accent-color: #176497; }
+.hermes-partner-organizations { max-height: 160px; overflow-y: auto; padding: 7px; border: 1px solid #d5e1ea; border-radius: 11px; background: #f8fafc; }
+.hermes-partner-organizations > label { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.hermes-partner-organizations > label:hover { background: #edf5fa; }
+.hermes-partner-organizations > label > span { display: flex; min-width: 0; flex-direction: column; }
+.hermes-partner-organizations strong { font-size: 10px; color: #2e4d67; }
+.hermes-partner-organizations small { margin-top: 2px; font-size: 8px; color: #81909e; }
+.hermes-partner-limits { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.hermes-partner-limits > label { display: grid; gap: 6px; margin-top: 13px; }
+.hermes-partner-limits span { font-size: 10px; font-weight: 750; color: #3d5870; }
 
 @keyframes hermes-blink { 50% { opacity: 0; } }
 

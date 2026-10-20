@@ -99,10 +99,25 @@ async function responseJson(response) {
   try { return raw ? JSON.parse(raw) : {}; } catch { return {}; }
 }
 
+export function prepareHermesModelPayload(payload, model, { structured = false } = {}) {
+  const prepared = { ...payload, model };
+  if (!structured) return prepared;
+  prepared.temperature = 0.1;
+  prepared.response_format = { type: "json_object" };
+  const requestedMaxTokens = Number(payload?.max_tokens);
+  prepared.max_tokens = Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
+    ? Math.min(Math.floor(requestedMaxTokens), 1200)
+    : 1200;
+  delete prepared.tools;
+  delete prepared.tool_choice;
+  return prepared;
+}
+
 export function createHermesModelGateway({
   cacheDir = ".cache",
   encryptionSecret,
   proxySecret,
+  partnerProxySecret,
   defaultModel = DEFAULT_MODEL,
   fetchImpl = globalThis.fetch,
   getAuth,
@@ -209,8 +224,10 @@ export function createHermesModelGateway({
 
   async function proxyChatCompletions(req, res) {
     const supplied = text(req.headers.authorization).replace(/^Bearer\s+/i, "");
-    if (!text(proxySecret)) throw fail("模型代理尚未配置服务密钥。", 503, "model_proxy_not_configured");
-    if (!safeEqual(supplied, proxySecret)) throw fail("模型代理认证失败。", 401, "model_proxy_unauthorized");
+    if (!text(proxySecret) && !text(partnerProxySecret)) throw fail("模型代理尚未配置服务密钥。", 503, "model_proxy_not_configured");
+    const isMainProfile = safeEqual(supplied, proxySecret);
+    const isPartnerProfile = text(partnerProxySecret) && safeEqual(supplied, partnerProxySecret);
+    if (!isMainProfile && !isPartnerProfile) throw fail("模型代理认证失败。", 401, "model_proxy_unauthorized");
     if (!config.encryptedApiKey) throw fail("DeepSeek 尚未配置，请由管理员在智能体工作台完成配置。", 503, "model_not_configured");
     const payload = await parseRequestBody(req, 2 * 1024 * 1024);
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw fail("模型请求格式无效。", 400, "invalid_model_request");
@@ -227,7 +244,7 @@ export function createHermesModelGateway({
           "Content-Type": "application/json",
           Accept: payload.stream === false ? "application/json" : "text/event-stream",
         },
-        body: JSON.stringify({ ...payload, model: config.model }),
+        body: JSON.stringify(prepareHermesModelPayload(payload, config.model, { structured: isPartnerProfile })),
         signal: controller.signal,
       });
       if (!upstream.ok) {

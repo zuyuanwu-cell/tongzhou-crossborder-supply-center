@@ -34,10 +34,10 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 ## 启动前检查
 
 1. 生成独立随机的 `HERMES_API_KEY` 和至少 32 字节的 `HERMES_BRIDGE_SECRET`。
-2. 生成至少 32 字节的 `HERMES_MODEL_PROXY_KEY`。它只用于 Hermes 容器认证同舟模型代理，不是 DeepSeek API Key。
+2. 分别生成至少 32 字节且互不相同的 `HERMES_MODEL_PROXY_KEY` 与 `HERMES_PARTNER_MODEL_PROXY_KEY`。它们只用于两个 Hermes 档案认证同舟模型代理，不是 DeepSeek API Key；伙伴密钥会触发低温度、JSON 模式、1200 tokens 上限和工具字段剥离。
 3. 使用管理员账号打开“同舟智能体工作台 → 模型配置”，填写 DeepSeek API Key，选择模型并保存。保存前后端会连接 `https://api.deepseek.com/models` 验证密钥和模型。
 4. 核对 `config/config.yaml` 的 `custom:tongzhou` 提供商仅使用 `chat_completions`，并且只启用 API Server 和 `tongzhou-business`。
-   Node 默认允许每轮最多 32 次 `tongzhou_*` 业务工具调用，可通过 `HERMES_MAX_TOOL_CALLS` 在 12–64 之间调整；Hermes 平台内部调用不占用该预算。模型会在硬上限前 8 次停止扩展查询并使用已有证据完成回答。
+   Node 默认允许整项任务最多 32 次 `tongzhou_*` 业务工具调用，可通过 `HERMES_MAX_TOOL_CALLS` 在 12–64 之间调整；Hermes 平台内部调用不占用该预算。单个阶段达到 12 次会收口，累计 20 次会强制复盘计划，硬上限或循环检测会保存检查点并显示“继续完成”。
 5. 运行插件和契约测试：
 
 ```powershell
@@ -50,6 +50,18 @@ npm run test:hermes-contract
 默认契约测试只检查能力与安全边界；设置 `HERMES_CONTRACT_RUN=1` 才会产生真实模型调用和费用。
 
 6. Node 首次保持 `HERMES_AGENT_ENABLED=false`，可用 `HERMES_PATROL_ENABLED=true` 进行三天影子巡检。
+
+## 伙伴手机快捷汇报
+
+管理员在“同舟智能体工作台 → 伙伴汇报”配置试点组织、文字/语音开关、限额和腾讯云 ASR 凭据。伙伴端只发送当前任务白名单上下文，Hermes 使用现有 DeepSeek 配置生成草稿，不开放工具、长期记忆或跨任务会话。
+
+- 文字和语音均只生成草稿；“填入表单”只修改小程序本地表单。
+- 腾讯云凭据加密保存在协同 PostgreSQL，不进入浏览器、Hermes 容器或日志。
+- 录音最长 50 秒、2.5MB，转写后立即删除；清理任务每 5 分钟重试未删除对象。
+- 转写文字 30 天后清空，草稿正文与字段依据 90 天后清空，模型、耗时、状态和关联提交等审计事实继续保留。
+- 正式提交仍使用原有权限、`If-Match`、幂等和审计链路，并可用 `X-AI-Draft-Id` 关联草稿效果。
+
+运行前需完成 `collaboration/migrations/0014_partner_ai_progress.sql`，并配置 `HERMES_PARTNER_BRIDGE_SECRET`（或复用 `HERMES_BRIDGE_SECRET`）、`HERMES_PARTNER_API_KEY`、`HERMES_PARTNER_MODEL_PROXY_KEY` 与 `COLLABORATION_PARTNER_AI_BRIDGE_URL`。容器通过 `/p/tongzhou-partner-progress/` 使用独立档案、独立 API Key 和独立模型代理身份；该档案不加载同舟业务插件、工具、记忆、技能或跨任务会话。
 
 ## 分阶段授权
 

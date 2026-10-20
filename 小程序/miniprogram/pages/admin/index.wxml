@@ -1,0 +1,33 @@
+<view class="page-shell admin-page">
+  <view class="admin-hero">
+    <view class="admin-hero__top"><view class="admin-brand"><view class="admin-brand__mark">舟</view><view><strong>供应链中台</strong><text>MOBILE CONTROL</text></view></view><view class="admin-secure">权限已校验</view></view>
+    <view class="admin-hero__copy"><view class="admin-hero__eyebrow">COLLABORATION PULSE</view><view class="admin-hero__title">协同全局，一屏聚焦</view><view class="admin-hero__subtitle">{{session.user.displayName}}，当前仅开放跨组织监管与审批，不代替伙伴执行任务。</view></view>
+  </view>
+
+  <view wx:if="{{loading}}" class="admin-loading">正在汇总协同状态…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>中台总览暂不可用</strong>{{error}}<button class="secondary-button button-small" bindtap="load">重新加载</button></view>
+  <block wx:else>
+    <view class="admin-metrics"><view wx:for="{{metrics}}" wx:key="key" class="admin-metric admin-metric--{{item.tone}}" data-key="{{item.key}}"><text>{{item.label}}</text><strong>{{item.value}}</strong><small>{{item.note}}</small></view></view>
+
+    <block wx:if="{{businessModules.length}}">
+      <view class="admin-section-head"><view><text>BUSINESS DATA</text><strong>经营数据</strong></view><text>按权限开放</text></view>
+      <view class="admin-business-grid">
+        <view wx:for="{{businessModules}}" wx:key="key" class="admin-business-entry admin-card" data-module="{{item.key}}" bindtap="openBusiness">
+          <view class="admin-business-entry__icon">{{item.icon}}</view>
+          <view class="admin-business-entry__copy"><strong>{{item.label}}</strong><text>{{item.note}}</text></view>
+          <text class="admin-link-arrow">›</text>
+        </view>
+      </view>
+    </block>
+
+    <view class="admin-section-head"><view><text>PRIORITY</text><strong>优先关注</strong></view><text bindtap="openTasks">全部任务 ›</text></view>
+    <view wx:if="{{priorityTasks.length}}" class="admin-task-list admin-card"><view wx:for="{{priorityTasks}}" wx:key="id" class="admin-task-row {{item.isUrgent ? 'is-urgent' : ''}} {{item.isOverdue ? 'is-overdue' : ''}}" data-id="{{item.id}}" bindtap="openTask"><view class="admin-task-row__bar"></view><view class="admin-task-row__main"><strong>{{item.title}}</strong><text>{{item.organizationLabel}} · {{item.typeLabel}}</text><small>{{item.referenceNo}} · {{item.updatedText}}</small></view><view class="admin-task-row__side"><text>{{item.deadlineLabel}}</text><small class="admin-status admin-status--{{item.statusTone}}">{{item.statusLabel}}</small></view></view></view>
+    <view wx:else class="admin-empty admin-card"><strong>暂无风险任务</strong>当前没有需要优先跟进的开放事项</view>
+
+    <block wx:if="{{canReview}}"><view class="admin-section-head"><view><text>DECISIONS</text><strong>待审核指令</strong></view><text bindtap="openApprovals">进入审批 ›</text></view><view class="admin-card admin-link-row" bindtap="openApprovals"><view class="admin-link-icon">审</view><view class="admin-link-copy"><strong>{{approvals.length ? approvals.length + ' 项等待决策' : '审批队列已清空'}}</strong><text>{{approvals.length ? approvals[0].commandLabel + ' · ' + approvals[0].organizationLabel : '没有待处理的高风险伙伴操作'}}</text></view><text class="admin-link-arrow">›</text></view></block>
+
+    <block wx:if="{{canViewOrganizations}}"><view class="admin-section-head"><view><text>PARTNERS</text><strong>伙伴组织</strong></view><text bindtap="openOrganizations">查看全部 ›</text></view><view class="admin-org-list admin-card"><view wx:for="{{organizations}}" wx:key="code" class="admin-link-row" data-code="{{item.code}}" bindtap="openOrganization"><view class="admin-link-icon">{{item.symbol}}</view><view class="admin-link-copy"><strong>{{item.name}}</strong><text>{{item.typeLabel}} · {{item.memberCount}} 名成员 · {{item.lastLoginText}}</text></view><text class="admin-status admin-status--{{item.statusTone}}">{{item.statusLabel}}</text></view></view></block>
+    <view class="admin-section-head"><view><text>REFRESH</text><strong>数据状态</strong></view><text>{{updatedText}} 更新</text></view><view class="admin-empty admin-card">自动同步只用于刷新业务状态，不进入时间轴，也不生成未读消息。</view>
+  </block>
+  <tz-tab-bar active="admin-index" mode="admin" />
+</view>

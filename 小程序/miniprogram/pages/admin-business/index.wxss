@@ -1,0 +1,25 @@
+@import "../../styles/admin.wxss";
+.business-page { padding-top: 0; }
+.business-hero { margin: 0 -28rpx 24rpx; padding: 34rpx 34rpx 38rpx; color: #fff; background: radial-gradient(circle at 90% 0, rgba(110,224,204,.22), transparent 260rpx), linear-gradient(145deg,#071d2d,#145866); }
+.business-hero text,.business-hero strong,.business-hero small { display: block; }
+.business-hero__eyebrow { color: #79ddca; font-size: 17rpx; font-weight: 800; letter-spacing: 3rpx; }
+.business-hero strong { margin-top: 10rpx; font-size: 40rpx; }
+.business-hero > text:not(.business-hero__eyebrow) { margin-top: 10rpx; color: #bad0d3; font-size: 21rpx; line-height: 1.6; }
+.business-hero small { margin-top: 18rpx; color: #82b9b5; font-size: 17rpx; }
+.business-metrics { display: grid; grid-template-columns: repeat(2,1fr); gap: 13rpx; }
+.business-metric { position: relative; overflow: hidden; min-height: 120rpx; padding: 22rpx; background: #fff; border: 1rpx solid #d8e4e6; border-radius: 18rpx; }
+.business-metric::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 5rpx; background: #2451a4; }
+.business-metric--orange::after { background: #f45b0b; }.business-metric--red::after { background: #b42318; }
+.business-metric text,.business-metric strong { display: block; }.business-metric text { color: #6b7f89; font-size: 19rpx; }.business-metric strong { margin-top: 14rpx; color: #153e4d; font: 900 36rpx/1 "DIN Alternate",monospace; }
+.business-list { margin-top: 22rpx; }.business-card { margin-bottom: 16rpx; padding: 23rpx; }
+.business-card--pressed { opacity: .72; transform: scale(.992); }
+.business-card__top { display: flex; align-items: flex-start; gap: 16rpx; }.business-card__copy { flex: 1; min-width: 0; }
+.business-card__visual { width: 82rpx; height: 82rpx; flex: 0 0 82rpx; display: flex; align-items: center; justify-content: center; overflow: hidden; color: #0f6f64; background: #e7f3f0; border: 1rpx solid #d3e5e1; border-radius: 16rpx; font-size: 24rpx; font-weight: 900; }
+.business-card__visual image { width: 100%; height: 100%; background: #fff; }
+.business-card__copy strong,.business-card__copy text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.business-card__copy strong { color: #173d4d; font-size: 25rpx; }.business-card__copy text { margin-top: 8rpx; color: #74858e; font-size: 18rpx; }
+.business-card__value { margin-top: 19rpx; color: #0f6f64; font-size: 27rpx; font-weight: 900; }.business-card__foot { margin-top: 12rpx; padding-top: 13rpx; display: flex; align-items: flex-start; gap: 14rpx; color: #71838d; border-top: 1rpx dashed #dce5e7; font-size: 18rpx; line-height: 1.55; }.business-card__foot text { flex: 1; }.business-card__foot strong { flex: 0 0 auto; color: #176f66; font-size: 18rpx; }
+.warehouse-picker { margin-top: 16rpx; min-height: 86rpx; padding: 16rpx 20rpx; display: flex; align-items: center; justify-content: space-between; background: #fff; border: 1rpx solid #d8e4e6; border-radius: 17rpx; }
+.warehouse-picker view text,.warehouse-picker view strong { display: block; }.warehouse-picker view text { color: #7c8d95; font-size: 17rpx; }.warehouse-picker view strong { margin-top: 5rpx; color: #173d4d; font-size: 22rpx; }.warehouse-picker__action { color: #0f7569; font-size: 20rpx; font-weight: 800; }
+.calculator-entry { margin-top: 16rpx; padding: 21rpx; display: flex; align-items: center; gap: 15rpx; color: #fff; background: linear-gradient(135deg,#0b5f58,#159080); border-radius: 18rpx; box-shadow: 0 10rpx 25rpx rgba(13,111,101,.18); }
+.calculator-entry__icon { width: 62rpx; height: 62rpx; flex: 0 0 62rpx; display: flex; align-items: center; justify-content: center; color: #0f6f64; background: #dff8f1; border-radius: 16rpx; font-size: 24rpx; font-weight: 900; }.calculator-entry > view:nth-child(2) { flex: 1; min-width: 0; }.calculator-entry strong,.calculator-entry text { display: block; }.calculator-entry strong { font-size: 24rpx; }.calculator-entry > view:nth-child(2) text { margin-top: 6rpx; color: #bfe4df; font-size: 17rpx; line-height: 1.45; }.calculator-entry__action { flex: 0 0 auto; color: #fff; font-size: 19rpx; font-weight: 800; }
+.safe-banner strong,.safe-banner text { display: block; }.safe-banner strong { font-size: 23rpx; }.safe-banner text { margin-top: 7rpx; font-size: 19rpx; line-height: 1.6; }.safe-banner__icon { font-size: 18rpx; }

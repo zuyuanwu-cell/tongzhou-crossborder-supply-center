@@ -95,10 +95,10 @@ export function createHermesClient({ baseUrl, apiKey, fetchImpl = globalThis.fet
     return request(`/v1/runs/${encodeURIComponent(runId)}`);
   }
 
-  function events(runId, { lastEventId = "" } = {}) {
+  function events(runId, { lastEventId = "", timeoutMs = 190_000 } = {}) {
     return request(`/v1/runs/${encodeURIComponent(runId)}/events`, {
       stream: true,
-      timeoutMs: 190_000,
+      timeoutMs,
       headers: text(lastEventId) ? { "Last-Event-ID": text(lastEventId) } : {},
     });
   }

@@ -16,6 +16,7 @@ const samplingVariantSql = readFileSync(join(dirname(fileURLToPath(import.meta.u
 const commandOutboxReconciliationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0011_command_outbox_reconciliation.sql"), "utf8");
 const inventoryBarcodeSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0012_inventory_barcode_lookup.sql"), "utf8");
 const partnerQualificationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0013_partner_qualification_coverage.sql"), "utf8");
+const partnerAiSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0014_partner_ai_progress.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -228,6 +229,17 @@ test("production and procurement collaboration is tenant isolated and append-onl
   assert.match(partnerOrderSource, /organization_id=\$1 AND work_item_id=\$2/);
   assert.match(serverSource, /partner-orders\/projections/);
   assert.match(serverSource, /partner-orders\/\$\{uuidPattern\}\/reports/);
+});
+
+test("partner AI drafts are version-bound, tenant-isolated, and never store audio blobs", () => {
+  for (const table of ["partner_ai_transcriptions", "partner_ai_drafts"]) {
+    assert.match(partnerAiSql, new RegExp(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`));
+    assert.match(partnerAiSql, new RegExp(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`));
+  }
+  assert.match(partnerAiSql, /work_item_version integer NOT NULL/);
+  assert.match(partnerAiSql, /expires_at timestamptz NOT NULL DEFAULT now\(\) \+ interval '15 minutes'/);
+  assert.match(partnerAiSql, /encrypted_config text NOT NULL/);
+  assert.doesNotMatch(partnerAiSql, /audio_blob|bytea/i);
 });
 
 test("sampling quotes bind the exact system-generated final sample variant", () => {

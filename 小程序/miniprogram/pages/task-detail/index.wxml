@@ -1,0 +1,275 @@
+<view class="detail-page">
+  <view wx:if="{{loading}}" class="loading-state"><view class="state-symbol">…</view><view class="state-title">正在读取任务</view><view class="state-copy">请稍候，正在确认最新版本与组织权限。</view></view>
+  <view wx:elif="{{error}}" class="error-state"><view class="state-symbol">!</view><view class="state-title">任务无法打开</view><view class="state-copy">{{error}}</view><button class="secondary-button button-small retry-button" bindtap="load">重新加载</button></view>
+  <block wx:else>
+    <view class="detail-hero detail-hero--{{detailMode}}">
+      <view class="detail-hero__top"><view class="type-pill detail-type">{{item.typeIcon}} · {{item.typeLabel}}</view><view class="status-pill status-pill--{{item.statusTone}}">{{item.statusLabel}}</view></view>
+      <view class="detail-title">{{item.title}}</view><view class="detail-ref mono">{{item.referenceNo}}</view>
+      <view class="detail-route"><view><text>{{item.sourceLabel}}</text><strong>{{item.sourceName}}</strong></view><text class="route-arrow">→</text><view><text>{{item.destinationLabel}}</text><strong>{{item.destinationName}}</strong></view></view>
+    </view>
+
+    <view class="detail-body">
+      <view wx:if="{{!isPartnerOrder}}" class="progress-card card">
+        <view wx:for="{{progress}}" wx:key="number" class="progress-item {{item.done ? 'is-done' : ''}} {{item.stopped ? 'is-stopped' : ''}}"><view class="progress-line"></view><view class="progress-dot">{{item.done ? '✓' : item.number}}</view><text>{{item.label}}</text></view>
+      </view>
+      <view wx:if="{{canAiReport}}" class="ai-report-card card">
+        <view class="ai-report-head" bindtap="toggleAiCard"><view><text>HERMES QUICK REPORT</text><strong>快速汇报</strong><small>说一段或写一段，生成可编辑草稿</small></view><text>{{aiExpanded ? '收起⌃' : '展开⌄'}}</text></view>
+        <view wx:if="{{aiExpanded}}" class="ai-report-body">
+          <textarea value="{{aiText}}" bindinput="updateAiText" disabled="{{!aiTextEnabled && !aiTranscriptionId}}" maxlength="2000" placeholder="{{aiTextEnabled ? '例如：已经灌装 5000 瓶，完成 60%，预计周五结束。' : '请先录音，转写后可修改文字。'}}" />
+          <view class="ai-report-actions"><button wx:if="{{aiVoiceEnabled}}" class="ai-voice-button {{aiRecording ? 'is-recording' : ''}}" loading="{{aiVoiceBusy}}" disabled="{{aiBusy || aiVoiceBusy}}" bindtap="toggleAiRecording">{{aiRecording ? '■ 结束录音' : '● 语音输入'}}</button><button class="ai-generate-button" loading="{{aiBusy}}" disabled="{{aiBusy || aiVoiceBusy || (!aiTextEnabled && !aiTranscriptionId)}}" bindtap="generateAiDraft">生成草稿</button></view>
+          <view wx:if="{{aiMessage}}" class="ai-report-message">{{aiMessage}}</view><view wx:if="{{aiError}}" class="ai-report-error">{{aiError}}</view>
+          <view wx:if="{{aiDraft}}" class="ai-draft">
+            <view class="ai-draft-title"><strong>Hermes 草稿</strong><text>不会自动提交</text></view>
+            <view class="ai-draft-note">{{aiDraft.fields.note}}</view>
+            <view wx:if="{{aiDraft.evidence.length}}" class="ai-evidence"><view wx:for="{{aiDraft.evidence}}" wx:key="field"><strong>{{item.label}}：{{item.normalizedValue}}</strong><text>原话“{{item.sourceQuote}}”</text></view></view>
+            <view wx:if="{{aiDraft.missingFields.length}}" class="ai-missing">待补字段：{{aiDraft.missingText}}</view>
+            <view wx:for="{{aiDraft.warnings}}" wx:key="*this" class="ai-warning">{{item}}</view>
+            <button class="ai-apply-button" disabled="{{aiBusy}}" bindtap="applyAiDraft">填入表单</button>
+          </view>
+        </view>
+      </view>
+      <view class="facts-grid card"><view><text>截止时间</text><strong>{{item.dueText}}</strong></view><view><text>任务版本</text><strong>V{{item.version}}</strong></view><view><text>优先级</text><strong class="{{item.isUrgent ? 'signal' : ''}}">{{item.isUrgent ? '紧急' : '普通'}}</strong></view><view><text>最近更新</text><strong>{{item.updatedText}}</strong></view></view>
+
+      <view wx:if="{{detailMode === 'production' && productCover}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">PRODUCT COVER</text><strong>产品封面</strong></view><text>来自工艺单 · 点击放大</text></view>
+        <view class="product-cover-card card" bindtap="previewProductCover">
+          <image src="{{productCover}}" mode="aspectFit" />
+          <view><text>委外加工产品</text><strong>{{item.publicPayload.productName || item.title}}</strong><small>{{item.publicPayload.productSpec || '工艺单产品封面'}}</small><code>{{item.publicPayload.orderNo || item.referenceNo}}</code></view>
+        </view>
+      </view>
+
+      <view class="detail-section"><view class="section-title"><view><text class="eyebrow">INSTRUCTIONS</text><strong>协同要求</strong></view></view><view class="instruction-card card"><text>{{item.description || '请按任务要求完成处理并及时反馈。'}}</text><view wx:if="{{item.publicPayload.note || item.publicPayload.requirements}}">特别说明：{{item.publicPayload.note || item.publicPayload.requirements}}</view></view></view>
+
+      <view wx:if="{{detailMode !== 'warehouse'}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">{{isPartnerOrder ? 'ORDER BRIEF' : 'PROJECT BRIEF'}}</text><strong>{{isPartnerOrder ? '订单资料' : '项目资料'}}</strong></view><text>{{isPartnerOrder ? fulfillmentLabel : item.publicPayload.documentVersion}}</text></view>
+        <view class="oem-facts card"><view wx:for="{{facts}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+      </view>
+
+      <view wx:if="{{detailMode === 'purchase' && purchaseSettlement}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">PURCHASE & RECEIPT</text><strong>采购入库结算依据</strong></view><text>千顷 ERP 只读同步</text></view>
+        <view class="purchase-settlement card">
+          <view class="purchase-settlement__head"><view><text>关联委外加工单</text><strong>{{purchaseSettlement.linkedProductionOrderNo}}</strong><small>采购单 {{purchaseSettlement.orderNo}} · 下单 {{purchaseSettlement.orderedAtText}}</small></view><text>{{purchaseSettlement.status}}</text></view>
+          <view class="purchase-settlement__metrics"><view wx:for="{{purchaseSettlement.metrics}}" wx:key="label" class="{{item.highlight ? 'is-highlight' : ''}}"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+          <view class="purchase-receipts">
+            <view class="purchase-receipts__title"><strong>采购入库记录</strong><text>{{purchaseSettlement.inboundDocuments.length}} 个批次</text></view>
+            <view wx:if="{{purchaseSettlement.inboundDocuments.length}}"><view wx:for="{{purchaseSettlement.inboundDocuments}}" wx:key="inboundNo" class="purchase-receipt"><view><strong>{{item.inboundNo}}</strong><text>{{item.inboundAtText}}</text></view><view><strong>{{item.quantityText}}</strong><text>本批实收</text></view><view><strong>{{item.amountText}}</strong><text>{{item.settlementStatus}}</text></view></view></view>
+            <view wx:else class="purchase-receipts__empty">尚未产生采购入库单，当前还没有可结算数量和应付依据。</view>
+          </view>
+          <view class="purchase-settlement__foot">采购入库累计实收和应付金额作为费用结算依据；付款仍由中台财务核对。</view>
+        </view>
+      </view>
+
+      <view wx:if="{{detailMode === 'production'}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">PRODUCTION FLOW</text><strong>生产工序</strong></view><text>以最新反馈定位当前节点</text></view>
+        <view class="process-card card">
+          <view wx:for="{{processSteps}}" wx:key="number" class="process-row process-row--{{item.state}}">
+            <view class="process-axis"><view class="process-number">{{item.state === 'completed' ? '✓' : item.number}}</view><view class="process-line"></view></view>
+            <view class="process-main"><view><strong>{{item.label}}</strong><text>{{item.state === 'completed' ? '已完成' : item.state === 'current' ? '当前节点' : item.state === 'blocked' ? '存在异常' : '待开始'}}</text></view><small wx:if="{{item.note}}">{{item.note}}</small></view>
+          </view>
+        </view>
+      </view>
+
+      <view wx:if="{{detailMode === 'production'}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">SOURCE FACTS</text><strong>生产依据</strong></view><text>来自中台订单</text></view>
+        <view class="source-facts card"><view wx:for="{{sourceFacts}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+      </view>
+
+      <view wx:if="{{detailMode === 'production'}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">FIRST ARTICLE</text><strong>首件档案</strong></view><text>内部维护 · 供应商只读</text></view>
+        <view wx:if="{{firstArticle}}" class="first-article card">
+          <view class="first-article__head"><view><strong>{{firstArticle.documentNo}} · {{firstArticle.version}}</strong><text>{{firstArticle.matchedLabel}}</text></view><view class="read-only-pill">只读</view></view>
+          <view class="first-article__facts"><view wx:for="{{firstArticle.facts}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+          <view wx:if="{{firstArticle.images.length}}" class="first-article__gallery"><view wx:for="{{firstArticle.images}}" wx:key="url" class="first-article__image"><image src="{{item.url}}" mode="aspectFill" data-src="{{item.url}}" bindtap="previewFirstArticle"/><text>{{item.categoryLabel}}</text></view></view>
+          <view class="bom-toggle" bindtap="toggleFirstArticleBom"><text>首件 BOM 明细</text><text>{{firstArticleBomOpen ? '收起' : '展开'}} {{firstArticleBomOpen ? '⌃' : '⌄'}}</text></view>
+          <view wx:if="{{firstArticleBomOpen}}" class="bom-table"><view class="bom-row bom-row--head"><text>分类</text><text>物料</text><text>料体编号</text><text>组成/净含量</text></view><view wx:for="{{firstArticle.bom}}" wx:key="materialCode" class="bom-row"><text>{{item.category || '—'}}</text><text>{{item.name || '—'}}</text><text>{{item.materialCode || '—'}}</text><text>{{item.composition || item.netContent || '—'}}</text></view></view>
+          <view class="first-article__foot">档案更新 {{firstArticle.updatedText}}</view>
+        </view>
+        <view wx:else class="first-article-empty card">当前产品未找到可精确匹配的首件记录，不会自动展示其他产品资料。</view>
+      </view>
+
+      <view wx:if="{{isPartnerOrder && orderLines.length}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">ORDER LINES</text><strong>订单明细</strong></view><text>{{orderLines.length}} 项</text></view>
+        <view class="order-line-list card"><view wx:for="{{orderLines}}" wx:key="id" class="order-line"><view class="line-image">{{item.initial}}</view><view class="order-line__main"><view><strong>{{item.productName}}</strong><text class="line-type-pill">{{item.lineTypeLabel}}</text></view><text>{{item.specification || '暂无规格'}}</text><small class="mono">{{item.sku}}</small><small wx:if="{{detailMode === 'purchase'}}">单价 {{item.unitPriceText}} · 金额 {{item.amountText}}</small></view><view class="plan-qty"><text>计划</text><strong>{{item.plannedQuantity}} {{item.unit}}</strong></view></view></view>
+      </view>
+
+      <view wx:if="{{lines.length}}" class="detail-section"><view class="section-title"><view><text class="eyebrow">ITEM LINES</text><strong>商品明细</strong></view><text>{{lines.length}} 个 SKU</text></view>
+        <view wx:for="{{lines}}" wx:key="id" class="line-card card">
+          <view class="line-head"><view class="line-image">{{item.initial}}</view><view><strong>{{item.productName}}</strong><text class="mono">{{item.sku}}</text></view><view class="plan-qty"><text>计划</text><strong>{{item.plannedQuantity}} {{item.unit}}</strong></view></view>
+          <view class="line-fields">
+            <label><text>实际数量</text><input type="digit" value="{{item.actualQuantity}}" data-index="{{index}}" data-field="actualQuantity" bindinput="updateLine"/></label>
+            <label><text>批次号</text><input value="{{item.lotNo}}" data-index="{{index}}" data-field="lotNo" bindinput="updateLine" placeholder="请输入"/></label>
+            <label class="barcode-field"><text>{{primaryActionName === 'outbound_confirm' ? '实际出库条码' : '实际到货条码'}}</text><view><input value="{{item.barcode}}" data-index="{{index}}" data-field="barcode" bindinput="updateLine" placeholder="扫描实物条码或手动输入"/><button class="barcode-scan-button" data-index="{{index}}" catchtap="scanLine">⌗ 扫码</button></view></label>
+            <label><text>生产日期</text><picker mode="date" value="{{item.productionDate}}" data-index="{{index}}" data-field="productionDate" bindchange="chooseLineDate"><view class="date-picker">{{item.productionDate || '请选择'}}</view></picker></label>
+            <label><text>有效期</text><picker mode="date" value="{{item.expiryDate}}" data-index="{{index}}" data-field="expiryDate" bindchange="chooseLineDate"><view class="date-picker">{{item.expiryDate || '请选择'}}</view></picker></label>
+          </view>
+        </view>
+      </view>
+
+      <view wx:if="{{isPartnerOrder}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">PARTNER REPORT</text><strong>{{detailMode === 'production' ? '加工单协同台' : '采购单履约台'}}</strong></view><text>{{fulfillmentLabel}}</text></view>
+        <scroll-view class="order-tabs-scroll" scroll-x enhanced show-scrollbar="{{false}}"><view class="order-tabs"><view wx:for="{{orderTabs}}" wx:key="value" class="order-tab {{orderTab === item.value ? 'is-active' : ''}}" data-value="{{item.value}}" bindtap="changeOrderTab">{{item.label}}</view></view></scroll-view>
+
+        <view class="partner-form card">
+          <block wx:if="{{orderTab === 'production_progress'}}">
+            <view class="form-grid">
+              <label class="{{aiMissingMap.stage ? 'ai-field-missing' : ''}}"><text>当前阶段</text><picker range="{{productionStages}}" range-key="label" data-options="productionStages" data-form="progressForm" data-field="stage" data-label="progressStageLabel" bindchange="choosePartnerOption"><view class="select-field">{{progressStageLabel}} ›</view></picker></label>
+              <label class="{{aiMissingMap.progressPercent ? 'ai-field-missing' : ''}}"><text>完成进度（%）</text><input type="number" value="{{progressForm.progressPercent}}" data-form="progressForm" data-field="progressPercent" bindinput="updatePartnerForm" placeholder="0-100"/></label>
+              <label class="{{aiMissingMap.completedQuantity ? 'ai-field-missing' : ''}}"><text>已完成数量</text><input type="digit" value="{{progressForm.completedQuantity}}" data-form="progressForm" data-field="completedQuantity" bindinput="updatePartnerForm" placeholder="0"/></label>
+              <label class="{{aiMissingMap.expectedCompletionDate ? 'ai-field-missing' : ''}}"><text>预计完成日期</text><picker mode="date" value="{{progressForm.expectedCompletionDate}}" data-form="progressForm" data-field="expectedCompletionDate" bindchange="choosePartnerDate"><view class="select-field">{{progressForm.expectedCompletionDate || '请选择'}} ›</view></picker></label>
+            </view>
+            <label class="block-field"><text>进度说明</text><textarea value="{{progressForm.note}}" data-form="progressForm" data-field="note" bindinput="updatePartnerForm" placeholder="说明当前完成情况、下一节点与风险" maxlength="2000"/></label>
+          </block>
+
+          <block wx:elif="{{orderTab === 'material_readiness'}}">
+            <label class="block-field block-field--first"><text>物料 / 包材</text><picker range="{{materialLines}}" range-key="productName" bindchange="chooseMaterialLine"><view class="select-field">{{materialLineLabel}} ›</view></picker></label>
+            <view class="form-grid">
+              <label><text>到齐状态</text><picker range="{{readinessOptions}}" range-key="label" data-options="readinessOptions" data-form="materialForm" data-field="readiness" data-label="readinessLabel" bindchange="choosePartnerOption"><view class="select-field">{{readinessLabel}} ›</view></picker></label>
+              <label><text>已到数量</text><input type="digit" value="{{materialForm.arrivedQuantity}}" data-form="materialForm" data-field="arrivedQuantity" bindinput="updatePartnerForm" placeholder="0"/></label>
+              <label><text>测试结果</text><picker range="{{testOptions}}" range-key="label" data-options="testOptions" data-form="materialForm" data-field="testResult" data-label="testResultLabel" bindchange="choosePartnerOption"><view class="select-field">{{testResultLabel}} ›</view></picker></label>
+              <label><text>测试日期</text><picker mode="date" value="{{materialForm.testedAt}}" data-form="materialForm" data-field="testedAt" bindchange="choosePartnerDate"><view class="select-field">{{materialForm.testedAt || '请选择'}} ›</view></picker></label>
+            </view>
+            <label wx:if="{{materialForm.testResult === 'failed'}}" class="block-field"><text>测试异常说明</text><textarea value="{{materialForm.exceptionDescription}}" data-form="materialForm" data-field="exceptionDescription" bindinput="updatePartnerForm" placeholder="说明不合格项目、影响和处置建议" maxlength="2000"/></label>
+            <label class="block-field"><text>补充说明</text><textarea value="{{materialForm.note}}" data-form="materialForm" data-field="note" bindinput="updatePartnerForm" placeholder="填写到货批次、测试结论或待补物料" maxlength="2000"/></label>
+          </block>
+
+          <block wx:elif="{{orderTab === 'purchase_fulfillment'}}">
+            <view class="form-grid">
+              <label class="{{aiMissingMap.stage ? 'ai-field-missing' : ''}}"><text>履约阶段</text><picker range="{{purchaseStages}}" range-key="label" data-options="purchaseStages" data-form="purchaseForm" data-field="stage" data-label="purchaseStageLabel" bindchange="choosePartnerOption"><view class="select-field">{{purchaseStageLabel}} ›</view></picker></label>
+              <label class="{{aiMissingMap.completedQuantity ? 'ai-field-missing' : ''}}"><text>已完成数量</text><input type="digit" value="{{purchaseForm.completedQuantity}}" data-form="purchaseForm" data-field="completedQuantity" bindinput="updatePartnerForm" placeholder="0"/></label>
+              <label class="form-span {{aiMissingMap.expectedDeliveryDate ? 'ai-field-missing' : ''}}"><text>预计交付日期</text><picker mode="date" value="{{purchaseForm.expectedDeliveryDate}}" data-form="purchaseForm" data-field="expectedDeliveryDate" bindchange="choosePartnerDate"><view class="select-field">{{purchaseForm.expectedDeliveryDate || '请选择'}} ›</view></picker></label>
+            </view>
+            <label class="block-field"><text>履约说明</text><textarea value="{{purchaseForm.note}}" data-form="purchaseForm" data-field="note" bindinput="updatePartnerForm" placeholder="说明备料、生产、交付进度与风险" maxlength="2000"/></label>
+          </block>
+
+          <block wx:elif="{{orderTab === 'shipment'}}">
+            <view class="form-grid">
+              <label><text>发货数量</text><input type="digit" value="{{shipmentForm.shippedQuantity}}" data-form="shipmentForm" data-field="shippedQuantity" bindinput="updatePartnerForm" placeholder="0"/></label>
+              <label><text>发货日期</text><picker mode="date" value="{{shipmentForm.shippedAt}}" data-form="shipmentForm" data-field="shippedAt" bindchange="choosePartnerDate"><view class="select-field">{{shipmentForm.shippedAt || '请选择'}} ›</view></picker></label>
+              <label><text>承运商</text><input value="{{shipmentForm.carrier}}" data-form="shipmentForm" data-field="carrier" bindinput="updatePartnerForm" placeholder="物流公司"/></label>
+              <label><text>运单号</text><input value="{{shipmentForm.trackingNo}}" data-form="shipmentForm" data-field="trackingNo" bindinput="updatePartnerForm" placeholder="请输入"/></label>
+            </view>
+            <label class="block-field"><text>发货说明</text><textarea value="{{shipmentForm.note}}" data-form="shipmentForm" data-field="note" bindinput="updatePartnerForm" placeholder="填写批次、箱数、预计到货或其他说明" maxlength="2000"/></label>
+          </block>
+
+          <block wx:elif="{{orderTab === 'exception'}}">
+            <view class="form-grid">
+              <label><text>异常类型</text><picker range="{{exceptionCategories}}" range-key="label" data-options="exceptionCategories" data-form="exceptionForm" data-field="category" data-label="exceptionCategoryLabel" bindchange="choosePartnerOption"><view class="select-field">{{exceptionCategoryLabel}} ›</view></picker></label>
+              <label><text>严重程度</text><picker range="{{severityOptions}}" range-key="label" data-options="severityOptions" data-form="exceptionForm" data-field="severity" data-label="severityLabel" bindchange="choosePartnerOption"><view class="select-field">{{severityLabel}} ›</view></picker></label>
+              <label class="form-span"><text>异常标题</text><input value="{{exceptionForm.title}}" data-form="exceptionForm" data-field="title" bindinput="updatePartnerForm" placeholder="一句话概括异常"/></label>
+              <label><text>影响数量</text><input type="digit" value="{{exceptionForm.affectedQuantity}}" data-form="exceptionForm" data-field="affectedQuantity" bindinput="updatePartnerForm" placeholder="0"/></label>
+              <label><text>预计解决日期</text><picker mode="date" value="{{exceptionForm.expectedResolutionDate}}" data-form="exceptionForm" data-field="expectedResolutionDate" bindchange="choosePartnerDate"><view class="select-field">{{exceptionForm.expectedResolutionDate || '请选择'}} ›</view></picker></label>
+            </view>
+            <label class="block-field"><text>异常说明</text><textarea value="{{exceptionForm.description}}" data-form="exceptionForm" data-field="description" bindinput="updatePartnerForm" placeholder="说明原因、影响、当前处置和需要中台协助的事项" maxlength="5000"/></label>
+          </block>
+
+          <button wx:if="{{canReportOrder}}" class="primary-button {{orderTab === 'exception' ? 'primary-button--danger' : ''}}" loading="{{busy}}" disabled="{{busy}}" bindtap="submitPartnerReport">{{orderTab === 'exception' ? '提交异常上报' : '提交本次反馈'}}</button>
+          <view wx:else class="report-lock">{{item.status === 'pending' ? '请先确认接单，再反馈履约信息。' : '当前订单状态不可继续反馈。'}}</view>
+        </view>
+
+        <view wx:if="{{reports.length}}" class="report-history card"><view class="report-history__title">最近反馈</view><view wx:for="{{reports}}" wx:key="id" class="report-row"><view><strong>{{item.typeLabel}}</strong><text>{{item.note || item.title || item.description || '已提交本次反馈'}}</text></view><small>{{item.timeText}}</small></view></view>
+      </view>
+
+      <view wx:if="{{detailMode === 'quote'}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">SEALED QUOTE</text><strong>本组织报价</strong></view><text>其他供应商不可见</text></view>
+        <view wx:if="{{oem.quotes.length}}" class="record-list card"><view wx:for="{{oem.quotes}}" wx:key="id" class="record-row"><view><strong>{{item.currency}} {{item.amount}}</strong><text>起订 {{item.minimumOrderQuantity}} · 交期 {{item.leadTimeDays}} 天</text></view><view><text>{{item.status}}</text><small>{{item.timeText}}</small></view></view></view>
+        <view wx:if="{{canSubmitQuote}}" class="business-form card">
+          <view class="form-grid"><label><text>币种</text><input value="{{quoteForm.currency}}" data-field="currency" bindinput="updateQuote" maxlength="3"/></label><label><text>含税总价</text><input type="digit" value="{{quoteForm.amount}}" data-field="amount" bindinput="updateQuote" placeholder="0.00"/></label><label><text>最小起订量</text><input type="number" value="{{quoteForm.minimumOrderQuantity}}" data-field="minimumOrderQuantity" bindinput="updateQuote" placeholder="0"/></label><label><text>交期（天）</text><input type="number" value="{{quoteForm.leadTimeDays}}" data-field="leadTimeDays" bindinput="updateQuote" placeholder="0"/></label></view>
+          <label class="block-field"><text>报价条款</text><textarea value="{{quoteForm.terms}}" data-field="terms" bindinput="updateQuote" placeholder="包含打样费、刀模费、税费、运输条件和报价有效期" maxlength="5000"/></label>
+          <button class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="submitQuote">提交密封报价</button>
+        </view>
+      </view>
+
+      <view wx:if="{{detailMode === 'sampling'}}" class="detail-section sampling-workspace">
+        <view class="section-title"><view><text class="eyebrow">SAMPLE LOOP</text><strong>{{sampling.categoryLabel}}闭环</strong></view><text>{{sampling.subjectLabel}} · 多轮留痕</text></view>
+
+        <scroll-view class="sampling-route-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+          <view class="sampling-route card"><view wx:for="{{sampling.route}}" wx:key="label" class="sampling-route__step {{item.done ? 'is-done' : ''}}"><view>{{item.done ? '✓' : item.number}}</view><text>{{item.label}}</text><i wx:if="{{index < 4}}"></i></view></view>
+        </scroll-view>
+
+        <view class="sampling-brief card"><view wx:for="{{sampling.brief}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+
+        <view wx:if="{{sampling.category === 'packaging'}}" class="detail-section detail-section--inner">
+          <view class="section-title"><view><text class="eyebrow">PACKAGING SPEC</text><strong>包材规格要求</strong></view><text>来自中台</text></view>
+          <view class="packaging-facts card"><view wx:for="{{sampling.packagingFacts}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
+        </view>
+
+        <view class="detail-section detail-section--inner">
+          <view class="section-title"><view><text class="eyebrow">ROUND HISTORY</text><strong>送样评审记录</strong></view><text>{{sampling.rounds.length}} 轮</text></view>
+          <view wx:if="{{sampling.rounds.length}}" class="sample-round-list card">
+            <view wx:for="{{sampling.rounds}}" wx:key="id" class="sample-round sample-round--{{item.status}}">
+              <view class="sample-round__mark">{{item.roundLabel}}</view><view class="sample-round__main"><view><strong>{{item.title}}</strong><text>{{item.statusLabel}}</text></view><small>{{item.variantCount}} 个样品{{item.attachmentCount ? ' · ' + item.attachmentCount + ' 个文件' : ''}}</small><p>{{item.summaryText}}</p><code wx:for="{{item.variantCodes}}" wx:key="*this">{{item}}</code><em wx:if="{{item.reviewNote}}">评审：{{item.reviewNote}}</em></view>
+            </view>
+          </view>
+          <view wx:else class="sample-empty card">尚未提交样品结果；首轮送样完成后在下方登记。</view>
+        </view>
+
+        <view wx:if="{{canSubmitSample}}" class="detail-section detail-section--inner sample-round-form card">
+          <view class="sample-form-head"><view><strong>提交第 {{sampling.rounds.length + 1}} 轮{{sampling.category === 'packaging' ? '包材' : '料体'}}</strong><text>单号和轮次由系统生成，历史不会被覆盖</text></view><button class="secondary-button" bindtap="addSampleVariant">＋ 增加{{sampling.category === 'packaging' ? '方案' : '料体'}}</button></view>
+
+          <view class="sample-variant-list">
+            <view wx:for="{{sampleVariants}}" wx:key="key" class="sample-variant">
+              <view class="sample-variant__head"><view class="sample-number">{{index + 1}}</view><view><strong>{{sampling.category === 'packaging' ? '包材方案' : '料体样品'}}</strong><text>平台追踪号提交后自动生成</text></view><button wx:if="{{sampleVariants.length > 1}}" data-index="{{index}}" catchtap="removeSampleVariant">删除</button></view>
+              <view class="form-grid">
+                <label class="form-span"><text>{{sampling.category === 'packaging' ? '方案名称' : '样品名称'}}</text><input value="{{item.name}}" data-index="{{index}}" data-field="name" bindinput="updateSampleVariant" placeholder="请输入名称"/></label>
+                <label wx:if="{{sampling.category === 'inner_material'}}" class="form-span"><text>供应商内部编码（必填）</text><input value="{{item.supplierMaterialCode}}" data-index="{{index}}" data-field="supplierMaterialCode" bindinput="updateSampleVariant" placeholder="例如：SY-NT-20261014-A"/></label>
+                <label><text>送样数量</text><input type="digit" value="{{item.sampleQuantity}}" data-index="{{index}}" data-field="sampleQuantity" bindinput="updateSampleVariant"/></label>
+                <label><text>单位</text><input value="{{item.unit}}" data-index="{{index}}" data-field="unit" bindinput="updateSampleVariant"/></label>
+                <label class="form-span"><text>内部版本（可选）</text><input value="{{item.specificationVersion}}" data-index="{{index}}" data-field="specificationVersion" bindinput="updateSampleVariant" placeholder="可留空"/></label>
+              </view>
+              <view wx:if="{{sampling.category === 'packaging'}}" class="packaging-variant-fields">
+                <label><text>材质</text><input value="{{item.material}}" data-index="{{index}}" data-field="material" bindinput="updateSampleVariant"/></label><label><text>盒型 / 瓶型</text><input value="{{item.structureType}}" data-index="{{index}}" data-field="structureType" bindinput="updateSampleVariant"/></label>
+                <label class="wide"><text>工艺</text><input value="{{item.process}}" data-index="{{index}}" data-field="process" bindinput="updateSampleVariant"/></label>
+                <label><text>长 mm</text><input type="digit" value="{{item.lengthMm}}" data-index="{{index}}" data-field="lengthMm" bindinput="updateSampleVariant"/></label><label><text>宽 mm</text><input type="digit" value="{{item.widthMm}}" data-index="{{index}}" data-field="widthMm" bindinput="updateSampleVariant"/></label><label><text>高 mm</text><input type="digit" value="{{item.heightMm}}" data-index="{{index}}" data-field="heightMm" bindinput="updateSampleVariant"/></label>
+                <label><text>口径 mm</text><input type="digit" value="{{item.diameterMm}}" data-index="{{index}}" data-field="diameterMm" bindinput="updateSampleVariant"/></label><label><text>容量 ml</text><input type="digit" value="{{item.capacityMl}}" data-index="{{index}}" data-field="capacityMl" bindinput="updateSampleVariant"/></label>
+                <label class="wide"><text>颜色 / 印刷</text><input value="{{item.colorPrinting}}" data-index="{{index}}" data-field="colorPrinting" bindinput="updateSampleVariant"/></label>
+              </view>
+              <label class="block-field"><text>{{sampling.category === 'packaging' ? '方案差异 / 测试结果' : '料体特点 / 与上轮差异'}}</text><textarea value="{{item.description}}" data-index="{{index}}" data-field="description" bindinput="updateSampleVariant" placeholder="只填写有助于客户判断的关键信息" maxlength="2000"/></label>
+            </view>
+          </view>
+
+          <view class="form-grid sample-conclusion"><label><text>供应商自检结论</text><picker value="{{sampleForm.resultIndex}}" range="{{artifactResults}}" range-key="label" bindchange="chooseSampleResult"><view class="select-field">{{artifactResults[sampleForm.resultIndex].label}} ›</view></picker></label><label><text>后续计划（可选）</text><input value="{{sampleForm.nextPlan}}" data-field="nextPlan" bindinput="updateSampleForm" placeholder="需要下一轮时填写"/></label></view>
+          <label class="block-field"><text>本轮整体说明（必填）</text><textarea value="{{sampleForm.summary}}" data-field="summary" bindinput="updateSampleForm" placeholder="概括本轮差异、自检结论和需要中台关注的事项" maxlength="5000"/></label>
+
+          <view class="sample-files {{media.length ? 'is-ready' : ''}}"><view><strong>{{media.length ? '已选择 ' + media.length + ' 个本轮文件' : (sampling.category === 'packaging' ? '包材送样必须选择本轮文件' : '可上传本轮照片或检测文件') }}</strong><text>设计稿、刀模图、效果图、测试报告或现场照片</text></view><button bindtap="chooseMedia">选择文件</button></view>
+          <view wx:if="{{media.length}}" class="media-grid sample-media"><view wx:for="{{media}}" wx:key="tempFilePath" class="media-item"><image src="{{item.tempFilePath}}" mode="aspectFill" data-src="{{item.tempFilePath}}" bindtap="previewMedia"/><view class="media-remove" data-index="{{index}}" catchtap="removeMedia">×</view></view><view wx:if="{{media.length < 4}}" class="media-add" bindtap="chooseMedia"><text>＋</text><text>继续添加</text></view></view>
+          <button class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="submitSampleRound">提交本轮 {{sampleVariants.length}} 个样品</button>
+        </view>
+        <view wx:elif="{{!sampling.approved}}" class="sampling-lock card">{{item.status === 'pending' ? '请先确认接单；进入执行后即可登记送样。' : '本轮已提交或当前状态不可重复送样，请等待中台评审。'}}</view>
+
+        <view wx:if="{{sampling.approved}}" class="detail-section detail-section--inner sample-quote-gate card">
+          <view class="sample-quote-head"><view><strong>✓ 最终样 {{sampling.approved.publicPayload.approvedVariantCode || sampling.approved.roundLabel}} 已锁定</strong><text>后续报价将永久绑定此具体样品</text></view><em>QUOTE OPEN</em></view>
+          <view wx:if="{{sampling.latestQuote}}" class="sample-quote-record"><strong>{{sampling.latestQuote.currency}} {{sampling.latestQuote.amount}} · 报价 V{{sampling.latestQuote.version}}</strong><text>交期 {{sampling.latestQuote.leadTimeDays}} 天 · {{sampling.latestQuote.status === 'awarded' ? '中台已确认' : '等待中台确认'}}</text></view>
+          <view wx:elif="{{canSubmitSampleQuote}}" class="sample-quote-form"><view class="form-grid"><label><text>币种</text><input value="{{quoteForm.currency}}" data-field="currency" bindinput="updateQuote" maxlength="3"/></label><label><text>报价金额</text><input type="digit" value="{{quoteForm.amount}}" data-field="amount" bindinput="updateQuote" placeholder="0.00"/></label><label><text>最小起订量</text><input type="number" value="{{quoteForm.minimumOrderQuantity}}" data-field="minimumOrderQuantity" bindinput="updateQuote" placeholder="0"/></label><label><text>量产交期（天）</text><input type="number" value="{{quoteForm.leadTimeDays}}" data-field="leadTimeDays" bindinput="updateQuote" placeholder="0"/></label></view><label class="block-field"><text>报价条款</text><textarea value="{{quoteForm.terms}}" data-field="terms" bindinput="updateQuote" placeholder="税费、运费、付款条件、版费或模具费等" maxlength="5000"/></label><button class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="submitSampleQuote">提交最终样报价</button></view>
+        </view>
+        <view wx:else class="sampling-quote-locked card">等待中台确认最终样后，系统自动开放报价入口。</view>
+      </view>
+
+      <view wx:if="{{detailMode === 'artifact'}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">DELIVERABLES</text><strong>资料与结果</strong></view><text>{{oem.artifacts.length}} 份</text></view>
+        <view wx:if="{{oem.artifacts.length}}" class="record-list card"><view wx:for="{{oem.artifacts}}" wx:key="id" class="record-row"><view><strong>{{item.title}}</strong><text>V{{item.version}} · {{item.resultLabel}}</text></view><view><text>{{item.status}}</text><small>{{item.timeText}}</small></view></view></view>
+        <view wx:if="{{canSubmitArtifact}}" class="business-form card">
+          <label class="block-field"><text>资料标题</text><input value="{{artifactForm.title}}" data-field="title" bindinput="updateArtifact" placeholder="例如：备案受理回执、打样检测结果、质检报告"/></label>
+          <label class="block-field"><text>处理结果</text><picker value="{{artifactForm.resultIndex}}" range="{{artifactResults}}" range-key="label" bindchange="chooseArtifactResult"><view class="select-field">{{artifactResultLabel}} ›</view></picker></label>
+          <label class="block-field"><text>结果摘要</text><textarea value="{{artifactForm.summary}}" data-field="summary" bindinput="updateArtifact" placeholder="填写版本、结论、寄样单号或需要中台确认的问题" maxlength="5000"/></label>
+          <button class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="submitArtifact">提交资料与结果</button>
+        </view>
+      </view>
+
+      <view wx:if="{{!isPartnerOrder && oem.milestones.length}}" class="detail-section">
+        <view class="section-title"><view><text class="eyebrow">MILESTONES</text><strong>生产节点</strong></view><text>{{oem.milestones.length}} 个节点</text></view>
+        <view class="milestone-list card"><view wx:for="{{oem.milestones}}" wx:key="id" class="milestone-row"><view class="milestone-mark milestone-mark--{{item.status}}">{{index + 1}}</view><view class="milestone-main"><view><strong>{{item.title}}</strong><text class="status-pill status-pill--{{item.status === 'completed' ? 'green' : item.status === 'blocked' ? 'red' : 'blue'}}">{{item.statusLabel}}</text></view><text>计划 {{item.plannedText}} · {{item.publicPayload.note || '暂无说明'}}</text><view wx:if="{{canUpdateMilestone && item.status !== 'completed'}}" class="milestone-actions"><button data-id="{{item.id}}" data-status="completed" bindtap="updateMilestone">标记完成</button><button data-id="{{item.id}}" data-status="blocked" bindtap="updateMilestone">报告受阻</button></view></view></view></view>
+      </view>
+
+      <view wx:if="{{canUpload && !isSampling}}" class="detail-section"><view class="section-title"><view><text class="eyebrow">EVIDENCE</text><strong>{{detailMode === 'warehouse' ? '现场凭证' : '附件凭证'}}</strong></view><text>最多 4 张</text></view>
+        <view class="media-grid"><view wx:for="{{media}}" wx:key="tempFilePath" class="media-item"><image src="{{item.tempFilePath}}" mode="aspectFill" data-src="{{item.tempFilePath}}" bindtap="previewMedia"/><view class="media-remove" data-index="{{index}}" catchtap="removeMedia">×</view></view><view wx:if="{{media.length < 4}}" class="media-add" bindtap="chooseMedia"><text>＋</text><text>拍照上传</text></view></view>
+      </view>
+
+      <view wx:if="{{primaryLabel}}" class="detail-section"><view class="section-title"><view><text class="eyebrow">HANDOFF NOTE</text><strong>处理说明</strong></view></view><textarea class="field__textarea" value="{{note}}" bindinput="updateNote" placeholder="填写处理结果、差异原因或需要中台注意的事项" maxlength="2000"/></view>
+      <view wx:if="{{aiDraftId && aiDraft.type === 'work_item_progress'}}" class="ai-generic-form card"><strong>快捷汇报已填入</strong><label class="{{aiMissingMap.percent ? 'ai-field-missing' : ''}}"><text>进度百分比（可选）</text><input type="number" value="{{aiProgressPercent}}" data-field="aiProgressPercent" bindinput="updateAiProgressPercent" placeholder="仅填写原话明确说出的数字"/></label><label class="{{aiMissingMap.note ? 'ai-field-missing' : ''}}"><text>进度说明</text><textarea value="{{note}}" bindinput="updateNote" maxlength="2000"/></label><button class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="submitAiGenericProgress">确认提交进度</button></view>
+      <view wx:if="{{item.status === 'pending_sync' || item.status === 'pending_approval'}}" class="toast-note">处理结果已经提交并进入{{item.status === 'pending_approval' ? '中台审批' : '同步队列'}}，请勿重复操作。</view>
+
+      <view class="detail-section"><view class="section-title"><view><text class="eyebrow">TIMELINE</text><strong>操作时间线</strong></view></view><view class="timeline card"><view wx:for="{{events}}" wx:key="id" class="timeline-item"><view class="timeline-dot"></view><view><strong>{{item.actorName}}</strong><text>{{item.body}}</text><small>{{item.timeText}}</small></view></view></view></view>
+    </view>
+    <view wx:if="{{primaryLabel || canReport}}" class="fixed-action-bar"><button wx:if="{{canReport}}" class="danger-button" disabled="{{busy}}" bindtap="reportException">报告异常</button><button wx:if="{{primaryLabel}}" class="primary-button" loading="{{busy}}" disabled="{{busy}}" bindtap="primaryAction">{{primaryLabel}}</button></view>
+  </block>
+</view>

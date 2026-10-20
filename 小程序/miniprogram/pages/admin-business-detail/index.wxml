@@ -1,0 +1,47 @@
+<view class="page-shell admin-page detail-page">
+  <view class="detail-heading">
+    <text>{{eyebrow}}</text>
+    <strong>{{title}}</strong>
+    <small>来自供应链中台的实时只读数据</small>
+  </view>
+
+  <view wx:if="{{loading}}" class="admin-loading">正在读取详情…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>详情暂不可用</strong>{{error}}<button class="secondary-button button-small" bindtap="load">重新加载</button></view>
+  <block wx:else>
+    <view class="detail-identity admin-card">
+      <view class="detail-identity__visual"><image wx:if="{{detail.hero.imageUrl}}" src="{{detail.hero.imageUrl}}" mode="aspectFit" /><text wx:else>{{detail.hero.visualText}}</text></view>
+      <view class="detail-identity__copy"><strong>{{detail.hero.title}}</strong><text>{{detail.hero.subtitle}}</text></view>
+      <text class="admin-status admin-status--{{detail.hero.tone}}">{{detail.hero.badge}}</text>
+    </view>
+
+    <view wx:if="{{isContainer}}" class="scene-card admin-card">
+      <view class="scene-head"><view><text>INTERACTIVE VIEW</text><strong>装载空间视图</strong></view><view class="scene-tabs"><text class="{{viewMode === 'iso' ? 'is-active' : ''}}" data-mode="iso" bindtap="setViewMode">立体</text><text class="{{viewMode === 'top' ? 'is-active' : ''}}" data-mode="top" bindtap="setViewMode">俯视</text><text class="{{viewMode === 'side' ? 'is-active' : ''}}" data-mode="side" bindtap="setViewMode">侧视</text></view></view>
+      <canvas type="2d" id="loadingScene" class="loading-scene" bindtouchstart="startRotate" catchtouchmove="rotateScene"></canvas>
+      <view class="scene-note">{{sceneNote}}</view>
+      <scroll-view scroll-x class="scene-legend"><view class="scene-legend__row"><view wx:for="{{sceneLegend}}" wx:key="sku"><text style="background:{{item.color}}"></text><view><strong>{{item.sku}}</strong><small>{{item.cartons}} 箱</small></view></view></view></scroll-view>
+    </view>
+
+    <view class="detail-metrics">
+      <view wx:for="{{detail.metrics}}" wx:key="label" class="detail-metric"><text>{{item.label}}</text><strong>{{item.value}}</strong></view>
+    </view>
+
+    <view wx:for="{{detail.sections}}" wx:key="title" wx:for-item="section" class="detail-section admin-card">
+      <view class="detail-section__head">{{section.title}}</view>
+      <view wx:for="{{section.fields}}" wx:key="label" wx:for-item="field" class="detail-field"><text>{{field.label}}</text><strong class="{{field.accent ? 'is-accent' : ''}}">{{field.value}}</strong></view>
+    </view>
+
+    <view wx:if="{{containerItems.length}}" class="detail-section admin-card">
+      <view class="detail-section__head">装载商品</view>
+      <view wx:for="{{containerItems}}" wx:key="id" class="container-item"><text style="background:{{item.color}}"></text><view><strong>{{item.sku}} · {{item.productName}}</strong><small>{{item.cartonCount}} 箱 × {{item.unitsPerCarton}} 件 / 箱 · {{item.cartonLengthCm}} × {{item.cartonWidthCm}} × {{item.cartonHeightCm}} cm</small></view></view>
+    </view>
+
+    <view wx:for="{{detail.descriptions}}" wx:key="title" class="detail-copy admin-card"><strong>{{item.title}}</strong><text user-select>{{item.body}}</text></view>
+
+    <view wx:if="{{detail.files.length}}" class="detail-section admin-card">
+      <view class="detail-section__head">资质附件</view>
+      <view wx:for="{{detail.files}}" wx:key="id" class="attachment-row" data-url="{{item.url}}" bindtap="openFile"><view>附件</view><text>{{item.name}}</text><strong>打开 ›</strong></view>
+    </view>
+
+    <view class="safe-banner"><view class="safe-banner__icon">只读</view><view><strong>移动端详情</strong><text>本页用于查询与现场判断；修改档案、库存、备货决策及确认装柜仍在网页端完成。</text></view></view>
+  </block>
+</view>

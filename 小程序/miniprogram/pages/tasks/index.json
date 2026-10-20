@@ -1,0 +1,5 @@
+{
+  "navigationBarTitleText": "协同任务",
+  "enablePullDownRefresh": true,
+  "usingComponents": { "tz-tab-bar": "/components/tz-tab-bar/index" }
+}

@@ -1,0 +1,5 @@
+{
+  "navigationBarTitleText": "伙伴组织",
+  "enablePullDownRefresh": true,
+  "usingComponents": { "tz-tab-bar": "/components/tz-tab-bar/index" }
+}

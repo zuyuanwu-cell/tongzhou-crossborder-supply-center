@@ -1,0 +1,38 @@
+<view class="page-shell inventory-page">
+  <view class="inventory-head">
+    <view><view class="eyebrow">WAREHOUSE STOCK</view><view class="inventory-title">本仓库存</view><view class="inventory-sub">{{session.organization.name}} · 最近同步 {{syncText}}</view></view>
+    <view class="scope-seal"><text>授权</text><text>范围</text></view>
+  </view>
+  <view class="search-wrap">
+    <view class="search-bar card"><text class="search-icon">⌕</text><input value="{{keyword}}" bindinput="updateKeyword" bindconfirm="search" confirm-type="search" placeholder="扫描条码，或搜索 SKU / 商品名称"/><text wx:if="{{keyword}}" class="search-clear" bindtap="clearKeyword">×</text></view>
+    <view class="scan-square" bindtap="scan">⌗</view>
+  </view>
+
+  <view class="inventory-tools">
+    <text>共 {{items.length}} 个结果</text>
+    <view><view data-type="inbound" bindtap="openOperation">＋ 入库</view><view data-type="stocktake" bindtap="openOperation">✓ 盘点</view></view>
+  </view>
+
+  <view wx:if="{{loading}}"><view wx:for="{{[1,2,3]}}" wx:key="*this" class="inventory-card card"><view class="skeleton goods-image"></view><view class="skeleton inventory-loading"></view></view></view>
+  <view wx:elif="{{error}}" class="error-state card"><view class="state-symbol">!</view><view class="state-title">库存暂不可用</view><view class="state-copy">{{error}}</view><button class="secondary-button button-small retry-button" bindtap="load">重新加载</button></view>
+  <view wx:elif="{{!items.length}}" class="empty-state card"><view class="state-symbol">库</view><view class="state-title">没有找到库存</view><view class="state-copy">请更换 SKU、商品名称或扫描商品条码。</view></view>
+  <view wx:else>
+    <view wx:for="{{items}}" wx:key="sku" class="inventory-card card">
+      <image wx:if="{{item.imageUrl}}" class="goods-image" src="{{item.imageUrl}}" mode="aspectFill"/>
+      <view wx:else class="goods-image goods-fallback">{{item.initial}}</view>
+      <view class="goods-main">
+        <view class="goods-top"><view class="goods-name text-ellipsis">{{item.productName}}</view><view wx:if="{{item.isLow || item.isEmpty}}" class="stock-warning">{{item.isEmpty ? '暂时缺货' : '库存偏低'}}</view></view>
+        <view class="goods-sku mono">{{item.sku}}<text wx:if="{{item.barcode}}"> · 条码 {{item.barcode}}</text></view>
+        <view class="stock-grid">
+          <view><text>可用</text><strong class="{{item.isEmpty ? 'danger-number' : ''}}">{{item.availableQuantity}}</strong></view>
+          <view><text>锁定</text><strong>{{item.lockedQuantity}}</strong></view>
+          <view><text>在途</text><strong>{{item.inTransitQuantity}}</strong></view>
+          <view><text>单位</text><strong class="stock-unit">{{item.unit}}</strong></view>
+        </view>
+        <view class="goods-actions"><view data-type="inbound" data-sku="{{item.sku}}" bindtap="openOperation">发起入库</view><view data-type="outbound" data-sku="{{item.sku}}" bindtap="openOperation">发起出库</view><view data-type="stocktake" data-sku="{{item.sku}}" bindtap="openOperation">盘点</view></view>
+      </view>
+    </view>
+  </view>
+  <view class="safe-banner"><view class="safe-banner__icon">✓</view><view><view class="safe-banner__title">库存边界已锁定</view><view class="safe-banner__copy">仅展示当前组织被授权仓库的库存投影，不包含成本和其他伙伴数据。</view></view></view>
+  <tz-tab-bar active="inventory" unread="{{unread}}" />
+</view>

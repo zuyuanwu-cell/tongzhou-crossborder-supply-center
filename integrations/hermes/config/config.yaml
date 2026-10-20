@@ -58,6 +58,7 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 gateway:
+  multiplex_profiles: true
   api_server:
     enabled: true
     host: 0.0.0.0

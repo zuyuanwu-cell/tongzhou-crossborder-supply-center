@@ -24,6 +24,7 @@ async function configurePortalPrivileges(client) {
     "warehouse_inventory_projections", "work_item_events", "partner_commands", "approvals",
     "attachments", "notifications", "audit_log", "oem_artifacts", "supplier_quotes", "production_milestones",
     "organization_access_grants", "integration_outbox", "partner_order_lines", "partner_order_reports", "warehouse_inventory_projection_states",
+    "partner_ai_transcriptions", "partner_ai_drafts", "partner_ai_settings",
   ];
   await client.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
   await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM ${role}`);
@@ -38,6 +39,7 @@ async function configurePortalPrivileges(client) {
   await client.query(`GRANT SELECT,UPDATE ON production_milestones TO ${role}`);
   await client.query(`GRANT SELECT ON partner_order_lines TO ${role}`);
   await client.query(`GRANT SELECT,INSERT ON partner_order_reports TO ${role}`);
+  await client.query(`GRANT SELECT,INSERT,UPDATE ON partner_ai_transcriptions,partner_ai_drafts TO ${role}`);
   await client.query(`REVOKE UPDATE,DELETE ON audit_log FROM ${role}`);
   await client.query(`REVOKE UPDATE,DELETE ON partner_order_reports FROM ${role}`);
   return tables;

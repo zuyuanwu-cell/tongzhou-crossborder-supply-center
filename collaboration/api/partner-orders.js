@@ -2,6 +2,7 @@ import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { partnerOrderProjectionSchema, partnerOrderReportSchema } from "../shared/contracts.js";
 import { assertResourcePermission, assertWorkItemPermission } from "./access.js";
+import { linkPartnerAiDraftToCommand } from "./partner-ai.js";
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -198,7 +199,7 @@ function reportColumns(input, line) {
   };
 }
 
-export async function submitPartnerOrderReport(auth, workItemId, body, { idempotencyKey, expectedVersion }) {
+export async function submitPartnerOrderReport(auth, workItemId, body, { idempotencyKey, expectedVersion, aiDraftId = "" }) {
   assertEnabled();
   assertPartnerRole(auth);
   const input = partnerOrderReportSchema.parse(body);
@@ -244,6 +245,12 @@ export async function submitPartnerOrderReport(auth, workItemId, body, { idempot
       [auth.organization.id, workItemId, `order_${input.reportType}`, key, version, commandPayload, auth.user.id],
     );
     const command = commandResult.rows[0];
+    if (aiDraftId) {
+      if (!["production_progress", "purchase_fulfillment"].includes(input.reportType)) fail("AI 快捷汇报草稿不能用于该反馈类型。", 409, "ai_draft_action_mismatch");
+      await linkPartnerAiDraftToCommand(client, {
+        auth, workItemId, workItemVersion: version, draftId: aiDraftId, commandId: command.id, expectedDraftType: input.reportType,
+      });
+    }
     const reportResult = await client.query(
       `INSERT INTO partner_order_reports(organization_id,work_item_id,line_id,command_id,report_type,stage,progress_percent,result,quantity,expected_at,severity,title,note,details,submitted_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,'')::date,$11,$12,$13,$14,$15) RETURNING *`,

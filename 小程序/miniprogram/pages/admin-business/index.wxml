@@ -1,0 +1,38 @@
+<view class="page-shell admin-page business-page">
+  <view class="business-hero">
+    <text class="business-hero__eyebrow">{{eyebrow}}</text>
+    <strong>{{title}}</strong>
+    <text>{{subtitle}}</text>
+    <small>{{updatedText ? updatedText + ' 更新' : '读取最新业务数据'}}</small>
+  </view>
+
+  <view wx:if="{{loading}}" class="admin-loading">正在读取{{title}}…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>数据暂不可用</strong>{{error}}<button class="secondary-button button-small" bindtap="load">重新加载</button></view>
+  <block wx:else>
+    <view class="business-metrics">
+      <view wx:for="{{metrics}}" wx:key="key" class="business-metric business-metric--{{item.tone}}"><text>{{item.label}}</text><strong>{{item.value}}</strong></view>
+    </view>
+
+    <view class="admin-search"><text>⌕</text><input value="{{query}}" bindinput="updateQuery" bindconfirm="submitSearch" confirm-type="search" placeholder="搜索 SKU、产品、仓库或单号" /><text wx:if="{{query}}" bindtap="clearSearch">清除</text></view>
+    <view wx:if="{{moduleKey === 'container-loading'}}" class="calculator-entry" bindtap="openCalculator">
+      <view class="calculator-entry__icon">算</view>
+      <view><strong>临时装柜测算</strong><text>选发运单或手填箱规，立即比较三种策略与 3D 装载效果</text></view>
+      <text class="calculator-entry__action">开始 ›</text>
+    </view>
+    <picker wx:if="{{moduleKey === 'domestic-inventory'}}" mode="selector" range="{{warehouseOptions}}" range-key="label" value="{{warehouseIndex}}" bindchange="selectWarehouse">
+      <view class="warehouse-picker"><view><text>库存仓库</text><strong>{{warehouseLabel}}</strong></view><text class="warehouse-picker__action">切换⌄</text></view>
+    </picker>
+    <scroll-view wx:if="{{filters.length > 1}}" scroll-x class="admin-filter-scroll"><view class="admin-filter-row"><view wx:for="{{filters}}" wx:key="key" class="admin-filter-chip {{filterKey === item.key ? 'is-active' : ''}}" data-key="{{item.key}}" bindtap="selectFilter">{{item.label}}</view></view></scroll-view>
+
+    <view class="business-list">
+      <view wx:for="{{items}}" wx:key="id" class="business-card admin-card" hover-class="business-card--pressed" data-id="{{item.id}}" bindtap="openItem">
+        <view class="business-card__top"><view class="business-card__visual"><image wx:if="{{item.thumbnailUrl}}" src="{{item.thumbnailUrl}}" mode="aspectFit" lazy-load /><text wx:else>{{item.visualText}}</text></view><view class="business-card__copy"><strong>{{item.title}}</strong><text>{{item.meta}}</text></view><text class="admin-status admin-status--{{item.tone}}">{{item.badge}}</text></view>
+        <view class="business-card__value">{{item.primary}}</view>
+        <view class="business-card__foot"><text>{{item.secondary}}</text><strong>查看详情 ›</strong></view>
+      </view>
+      <view wx:if="{{!items.length}}" class="admin-empty admin-card"><strong>暂无匹配记录</strong>{{emptyText}}</view>
+    </view>
+
+    <view class="safe-banner"><view class="safe-banner__icon">只读</view><view><strong>移动端管理视图</strong><text>{{moduleKey === 'container-loading' ? '临时测算不会保存或影响正式方案；装柜确认仍在网页端完成。' : '当前仅提供查询与风险判断；修改库存、产品、资质和备货决策请在网页端完成。'}}</text></view></view>
+  </block>
+</view>

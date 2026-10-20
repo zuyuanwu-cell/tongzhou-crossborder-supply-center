@@ -1,0 +1,44 @@
+.login-page { min-height: 100vh; background: #f5f7fb; }
+.login-hero { position: relative; min-height: 590rpx; overflow: hidden; padding: 46rpx 42rpx 50rpx; color: #fff; background: radial-gradient(circle at 90% 5%, rgba(74, 165, 217, .24), transparent 300rpx), linear-gradient(145deg, #081d3b, #103368 64%, #173d7a); }
+.hero-grid { position: absolute; inset: 0; opacity: .16; background-image: linear-gradient(rgba(255,255,255,.1) 1rpx, transparent 1rpx), linear-gradient(90deg,rgba(255,255,255,.1) 1rpx,transparent 1rpx); background-size: 54rpx 54rpx; }
+.brand-row { position: relative; z-index: 1; display: flex; align-items: center; gap: 18rpx; }
+.brand-mark { width: 78rpx; height: 78rpx; display: flex; align-items: center; justify-content: center; color: #f45b0b; background: #fff; border-radius: 20rpx; box-shadow: 0 14rpx 34rpx rgba(2, 16, 38, .28); font-size: 38rpx; font-weight: 900; }
+.brand-name { font-size: 34rpx; font-weight: 800; letter-spacing: 6rpx; }
+.brand-en { margin-top: 5rpx; color: #9fb8d8; font-size: 15rpx; letter-spacing: 3rpx; }
+.hero-copy { position: relative; z-index: 1; margin-top: 84rpx; }
+.hero-eyebrow { color: #80d5f6; }
+.hero-title { margin-top: 24rpx; font-size: 52rpx; font-weight: 900; line-height: 1.35; letter-spacing: -2rpx; }
+.hero-title text { color: #ff994e; }
+.hero-title > .title-line { display: block; color: #fff; }
+.hero-subtitle { margin-top: 26rpx; color: #b6c8dc; font-size: 24rpx; }
+.handoff-line { position: relative; z-index: 1; margin-top: 48rpx; display: flex; align-items: center; gap: 18rpx; color: #c6d4e4; font-size: 20rpx; }
+.handoff-dot { width: 44rpx; height: 1rpx; position: relative; background: #6384aa; }
+.handoff-dot::after { content: ""; position: absolute; right: 0; top: -4rpx; width: 8rpx; height: 8rpx; border-top: 2rpx solid #f45b0b; border-right: 2rpx solid #f45b0b; transform: rotate(45deg); }
+.login-panel { position: relative; z-index: 2; margin-top: -22rpx; padding: 48rpx 42rpx 64rpx; background: #f7f9fc; border-radius: 30rpx 30rpx 0 0; }
+.login-mode-switch { height: 94rpx; margin: -20rpx 0 38rpx; padding: 7rpx; display: grid; grid-template-columns: 1fr 1fr; gap: 7rpx; background: #e8edf4; border: 1rpx solid #d7e0eb; border-radius: 18rpx; }
+.login-mode-option { display: flex; flex-direction: column; align-items: center; justify-content: center; color: #718096; border-radius: 13rpx; }
+.login-mode-option text { font-size: 24rpx; font-weight: 800; }.login-mode-option small { margin-top: 5rpx; font-size: 16rpx; }
+.login-mode-option.is-active { color: #173d7a; background: #fff; box-shadow: 0 7rpx 18rpx rgba(23,61,122,.12); }.login-mode-option.is-active small { color: #f45b0b; }
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; }
+.panel-title { margin-top: 10rpx; color: #173d7a; font-size: 44rpx; font-weight: 900; }
+.panel-copy { margin: 12rpx 0 40rpx; color: #718096; font-size: 24rpx; }
+.demo-tag { padding: 9rpx 14rpx; color: #805712; background: #fff0d1; border-radius: 999rpx; font-size: 19rpx; font-weight: 700; }
+.admin-tag { padding: 9rpx 14rpx; color: #0f5f55; background: #dff4ee; border: 1rpx solid #b9e3d7; border-radius: 999rpx; font-size: 19rpx; font-weight: 800; }
+.admin-credential-switch { margin: -12rpx 0 30rpx; padding: 6rpx; display: grid; grid-template-columns: 1fr 1fr; gap: 6rpx; background: #e8f1ef; border: 1rpx solid #cfe2de; border-radius: 14rpx; }
+.admin-credential-option { height: 66rpx; display: flex; align-items: center; justify-content: center; color: #617a77; border-radius: 10rpx; font-size: 22rpx; font-weight: 700; }
+.admin-credential-option.is-active { color: #0f6157; background: #fff; box-shadow: 0 6rpx 16rpx rgba(15, 97, 87, .12); }
+.demo-switcher { margin: -8rpx 0 30rpx; padding: 20rpx; background: #eef3f8; border: 1rpx solid #d7e0eb; border-radius: 18rpx; }.demo-switcher__label { margin-bottom: 14rpx; color: #66778d; font-size: 19rpx; }.demo-switcher__grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 9rpx; }.demo-account { min-height: 92rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6rpx; color: #6d7d91; background: #fff; border: 1rpx solid #dbe3ec; border-radius: 13rpx; }.demo-account text { font-size: 25rpx; font-weight: 900; }.demo-account small { font-size: 17rpx; }.demo-account.is-active { color: #fff; background: #173d7a; border-color: #173d7a; box-shadow: 0 8rpx 18rpx rgba(23,61,122,.18); }.demo-account.is-active text { color: #ff9a56; }
+.login-field { margin-bottom: 24rpx; }
+.password-field { position: relative; }
+.password-field .field__input { padding-right: 110rpx; }
+.password-toggle { position: absolute; right: 0; top: 0; width: 100rpx; height: 88rpx; display: flex; align-items: center; justify-content: center; color: #2451a4; font-size: 22rpx; font-weight: 700; }
+.login-button { width: 100%; margin-top: 14rpx; }
+.security-note { margin-top: 32rpx; padding: 24rpx; display: flex; align-items: center; gap: 18rpx; background: #eaf2f8; border: 1rpx solid #cbd9e9; border-radius: 16rpx; }
+.security-shield { flex: 0 0 58rpx; height: 58rpx; display: flex; align-items: center; justify-content: center; color: #fff; background: #173d7a; border-radius: 18rpx 18rpx 24rpx 24rpx; font-weight: 900; }
+.security-note text { display: block; }
+.security-note text:first-child { color: #173d7a; font-size: 23rpx; font-weight: 800; }
+.security-note text:last-child { margin-top: 6rpx; color: #63738b; font-size: 19rpx; }
+.login-page--admin .login-hero { background: radial-gradient(circle at 92% 0, rgba(45, 183, 151, .2), transparent 320rpx), linear-gradient(145deg, #071d2d, #103d50 60%, #145866); }
+.login-page--admin .brand-mark { color: #117c6a; }.login-page--admin .hero-eyebrow { color: #82e2d0; }.login-page--admin .hero-title text { color: #71dec9; }
+.login-page--admin .handoff-dot::after { border-color: #71dec9; }.login-page--admin .primary-button { background: linear-gradient(110deg, #0f6f64, #179981); box-shadow: 0 16rpx 28rpx rgba(15,111,100,.2); }
+.security-note--admin { background: #e8f5f2; border-color: #c6e5de; }.security-note--admin .security-shield { background: #116f63; }.security-note--admin text:first-child { color: #0f6157; }

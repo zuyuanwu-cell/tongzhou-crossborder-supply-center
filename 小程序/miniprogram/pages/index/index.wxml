@@ -1,0 +1,93 @@
+<view class="page-shell home-page">
+  <view class="home-hero">
+    <view class="hero-orbit"></view>
+    <view class="home-hero__top">
+      <view>
+        <view class="home-date">{{today}}</view>
+        <view class="home-org">{{session.organization.name || '协同组织'}}</view>
+      </view>
+      <view wx:if="{{showScan}}" class="scan-button" bindtap="scan"><view class="scan-corners">⌗</view><text>扫码</text></view>
+    </view>
+    <view class="home-greeting">{{greeting}}，{{session.user.displayName || '伙伴'}}</view>
+    <view class="workspace-tag">{{profile.symbol}} · {{profile.name}}</view>
+    <view class="home-slogan"><text class="slogan-line">{{profile.slogan[0]}}</text><text class="slogan-line home-slogan__accent">{{profile.slogan[1]}}</text></view>
+    <view class="sync-chip"><text class="sync-spin">↻</text><view><text>{{profile.syncLabel}}</text><text>{{syncText}}</text></view></view>
+  </view>
+
+  <view wx:if="{{loading}}" class="metrics-grid">
+    <view wx:for="{{[1,2,3,4]}}" wx:key="*this" class="metric-card card"><view class="skeleton metric-skeleton"></view></view>
+  </view>
+  <view wx:elif="{{error}}" class="error-state card">
+    <view class="state-symbol">!</view><view class="state-title">暂时无法读取工作台</view><view class="state-copy">{{error}}</view><button class="secondary-button button-small retry-button" bindtap="load">重新加载</button>
+  </view>
+  <view wx:elif="{{isDeliveryMode}}" class="metrics-grid production-metrics">
+    <view wx:for="{{deliveryOverview.metrics}}" wx:key="key" class="metric-card card metric-card--{{item.tone}}" data-type="{{item.key === 'production' ? 'production_order' : item.key === 'purchase' ? 'purchase_order' : ''}}" bindtap="openProductionType">
+      <view class="metric-icon">{{item.icon}}</view><view class="metric-label">{{item.label}}</view><view class="metric-value">{{item.value}}</view><view class="metric-note">{{item.note}}</view>
+    </view>
+  </view>
+  <view wx:else class="metrics-grid">
+    <view class="metric-card card metric-card--navy"><view class="metric-icon">单</view><view class="metric-label">进行中任务</view><view class="metric-value">{{dashboard.openTasks}}</view><view class="metric-note">本组织待处理</view></view>
+    <view class="metric-card card metric-card--orange"><view class="metric-icon">!</view><view class="metric-label">紧急任务</view><view class="metric-value">{{dashboard.urgentTasks}}</view><view class="metric-note">请优先处理</view></view>
+    <view class="metric-card card metric-card--violet"><view class="metric-icon">审</view><view class="metric-label">等待中台</view><view class="metric-value">{{dashboard.waitingTasks}}</view><view class="metric-note">已提交，勿重复</view></view>
+    <view class="metric-card card metric-card--{{fourthMetric.tone}}" bindtap="openFourthMetric"><view class="metric-icon">{{fourthMetric.icon}}</view><view class="metric-label">{{fourthMetric.label}}</view><view class="metric-value">{{fourthMetric.value}}</view><view class="metric-note">{{fourthMetric.note}}</view></view>
+  </view>
+
+  <block wx:if="{{isDeliveryMode && deliveryOverview}}">
+    <view class="section-head production-section-head"><view><view class="eyebrow">WORKSPACE MODULES</view><view class="section-head__title">业务入口</view></view></view>
+    <view class="quick-grid">
+      <view wx:for="{{quickActions}}" wx:key="label" class="quick-action {{item.highlight ? 'quick-action--scan' : ''}}" data-index="{{index}}" bindtap="openShortcut"><view class="quick-icon">{{item.icon}}</view><text>{{item.label}}</text></view>
+    </view>
+
+    <view class="section-head production-section-head"><view><view class="eyebrow">ORDER PRIORITY</view><view class="section-head__title">订单优先级</view></view><view class="section-head__action" bindtap="openTasks">全部订单 ›</view></view>
+    <view class="priority-strip card">
+      <view wx:for="{{deliveryOverview.priority}}" wx:key="key" class="priority-chip {{deliveryOverview.focus === item.key ? 'is-active' : ''}}" data-focus="{{item.key}}" bindtap="selectDeliveryFocus"><strong>{{item.value}}</strong><text>{{item.label}}</text></view>
+    </view>
+
+    <view class="section-head production-section-head"><view><view class="eyebrow">14-DAY DELIVERY</view><view class="section-head__title">14 天交期</view></view><view class="section-head__action">左右滑动查看</view></view>
+    <view class="deadline-alerts">
+      <view wx:for="{{deliveryOverview.alerts}}" wx:key="key" class="deadline-alert deadline-alert--{{item.tone}} {{deliveryOverview.focus === item.key ? 'is-active' : ''}}" data-focus="{{item.key}}" bindtap="selectDeliveryFocus"><strong>{{item.value}}</strong><text>{{item.label}}</text></view>
+    </view>
+    <scroll-view class="delivery-calendar card" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="delivery-calendar__row">
+        <view wx:for="{{deliveryOverview.days}}" wx:key="key" class="delivery-day {{deliveryOverview.focus === item.focus ? 'is-active' : ''}}" data-focus="{{item.focus}}" bindtap="selectDeliveryFocus">
+          <view class="delivery-day__bar"><view style="height: {{item.barHeight}}%;"></view><text wx:if="{{item.urgent}}">{{item.urgent}}</text></view>
+          <strong>{{item.day}}</strong><small>{{item.weekday}}</small><em wx:if="{{item.count}}">{{item.count}} 单</em>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view class="section-head production-section-head"><view><view class="eyebrow">PRIORITY QUEUE</view><view class="section-head__title">优先关注</view></view><view class="section-head__action">{{deliveryOverview.selectedCount}} 个事项</view></view>
+    <view wx:if="{{deliveryOverview.selected.length}}" class="production-risk-list card">
+      <view wx:for="{{deliveryOverview.selected}}" wx:key="id" class="production-risk-row" data-id="{{item.id}}" bindtap="openTask">
+        <view class="risk-marker risk-marker--{{item.deadlineKey}}"></view>
+        <view class="risk-copy"><strong>{{item.title}}</strong><text>{{item.typeLabel}} · {{item.referenceNo}}</text></view>
+        <view class="risk-deadline risk-deadline--{{item.deadlineKey}}">{{item.deadlineText}}</view><text class="risk-arrow">›</text>
+      </view>
+    </view>
+    <view wx:else class="production-empty card">当前筛选没有需要优先关注的订单</view>
+  </block>
+
+  <block wx:else>
+    <view class="section-head"><view><view class="eyebrow">{{profile.eyebrow}}</view><view class="section-head__title">快捷入口</view></view></view>
+    <view class="quick-grid">
+      <view wx:for="{{quickActions}}" wx:key="label" class="quick-action {{item.highlight ? 'quick-action--scan' : ''}}" data-index="{{index}}" bindtap="openShortcut"><view class="quick-icon">{{item.icon}}</view><text>{{item.label}}</text></view>
+    </view>
+
+    <view class="section-head"><view><view class="eyebrow">ACTIVE QUEUE</view><view class="section-head__title">今日优先任务</view></view><view class="section-head__action" bindtap="openTasks">查看全部 ›</view></view>
+    <view wx:if="{{!loading && tasks.length}}">
+      <view wx:for="{{tasks}}" wx:key="id" class="task-card {{item.isUrgent ? 'task-card--urgent' : ''}}" data-id="{{item.id}}" bindtap="openTask">
+        <view class="task-card__top"><view class="type-pill">{{item.typeIcon}} · {{item.typeLabel}}</view><view class="status-pill status-pill--{{item.statusTone}}">{{item.statusLabel}}</view></view>
+        <view class="task-card__title">{{item.title}}</view>
+        <view class="task-card__desc">{{item.description}}</view>
+        <view class="task-card__route"><text>{{item.sourceName}}</text><text>›</text><text>{{item.destinationName}}</text></view>
+        <view class="task-card__foot"><text>截止 {{item.dueText}}</text><text class="task-card__ref">{{item.referenceNo}} ›</text></view>
+      </view>
+    </view>
+  </block>
+
+  <view class="safe-banner">
+    <view class="safe-banner__icon">✓</view>
+    <view><view class="safe-banner__title">你正处于“{{session.organization.name}}”数据边界</view><view class="safe-banner__copy">{{profile.boundaryCopy}}</view></view>
+  </view>
+  <tz-tab-bar active="index" unread="{{unread}}" />
+</view>

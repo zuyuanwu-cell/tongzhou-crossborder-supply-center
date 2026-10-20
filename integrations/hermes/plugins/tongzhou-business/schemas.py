@@ -8,6 +8,7 @@ READ_TOOLS = frozenset({
     "tongzhou_query_stockup_execution",
     "tongzhou_query_production_timeline",
     "tongzhou_compare_movement_inventory",
+    "tongzhou_query_risk_batch",
 })
 
 WRITE_TOOLS = frozenset({
@@ -102,6 +103,17 @@ TOOL_SCHEMAS = {
             "sku": _string("Optional SKU."),
             "timezone": _string("IANA timezone; default Asia/Shanghai."),
         }, ("period",)),
+    },
+    "tongzhou_query_risk_batch": {
+        "name": "tongzhou_query_risk_batch",
+        "description": "Batch-query inventory, stockup, and production risks in one permission-scoped call. Prefer this for broad diagnosis instead of one query per SKU.",
+        "parameters": _object({
+            "warehouseId": _string("Optional warehouse identifier."),
+            "project": _string("Optional project name."),
+            "sku": _string("Optional SKU."),
+            "status": _string("Optional status filter."),
+            "limitPerDomain": {"type": "integer", "minimum": 1, "maximum": 100},
+        }),
     },
     "tongzhou_create_stockup_draft": {
         "name": "tongzhou_create_stockup_draft",

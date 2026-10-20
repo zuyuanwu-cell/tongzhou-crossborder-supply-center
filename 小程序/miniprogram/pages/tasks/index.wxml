@@ -1,0 +1,43 @@
+<view class="page-shell tasks-page">
+  <view class="page-intro">
+    <view><view class="eyebrow">{{pageEyebrow}}</view><view class="page-title">{{pageTitle}}</view><view class="page-subtitle">{{pageSubtitle}}</view></view>
+    <view class="queue-mark"><text>{{items.length}}</text><text>当前结果</text></view>
+  </view>
+
+  <view class="search-bar card">
+    <text class="search-icon">⌕</text>
+    <input value="{{keyword}}" bindinput="updateKeyword" bindconfirm="search" confirm-type="search" placeholder="搜索任务、项目编号或商品" />
+    <text wx:if="{{keyword}}" class="search-clear" bindtap="clearKeyword">×</text>
+  </view>
+
+  <scroll-view wx:if="{{isProduction}}" class="type-filter-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+    <view class="type-filter-row">
+      <view wx:for="{{typeFilters}}" wx:key="value" class="type-filter {{itemType === item.value ? 'is-active' : ''}}" data-value="{{item.value}}" bindtap="changeType">
+        <text class="type-filter__icon">{{item.icon}}</text><text>{{item.label}}</text><text class="type-filter__count">{{item.count}}</text>
+      </view>
+    </view>
+  </scroll-view>
+
+  <scroll-view class="filter-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+    <view class="filter-row">
+      <view wx:for="{{filters}}" wx:key="value" class="filter-chip {{status === item.value ? 'is-active' : ''}}" data-value="{{item.value}}" bindtap="changeStatus">
+        {{item.label}}<text wx:if="{{item.value && counts[item.value]}}">{{counts[item.value]}}</text>
+      </view>
+    </view>
+  </scroll-view>
+
+  <view wx:if="{{loading}}" class="task-loading">
+    <view wx:for="{{[1,2,3]}}" wx:key="*this" class="task-card"><view class="skeleton loading-line loading-line--short"></view><view class="skeleton loading-line"></view><view class="skeleton loading-block"></view></view>
+  </view>
+  <view wx:elif="{{error}}" class="error-state card"><view class="state-symbol">!</view><view class="state-title">任务队列暂不可用</view><view class="state-copy">{{error}}</view><button class="secondary-button button-small retry-button" bindtap="load">重新加载</button></view>
+  <view wx:elif="{{!items.length}}" class="empty-state card"><view class="state-symbol">单</view><view class="state-title">当前没有匹配任务</view><view class="state-copy">调整筛选条件，或稍后下拉刷新。</view></view>
+  <view wx:else class="task-list">
+    <view wx:for="{{items}}" wx:key="id" class="task-card {{item.isUrgent ? 'task-card--urgent' : ''}}" data-id="{{item.id}}" bindtap="openTask">
+      <view class="task-card__top"><view class="type-pill">{{item.typeIcon}} · {{item.typeLabel}}</view><view class="status-pill status-pill--{{item.statusTone}}">{{item.statusLabel}}</view></view>
+      <view class="task-card__title">{{item.title}}</view><view class="task-card__desc">{{item.description}}</view>
+      <view class="task-card__route"><text>{{item.sourceName}}</text><text>›</text><text>{{item.destinationName}}</text></view>
+      <view class="task-card__foot"><text>{{item.isPartnerOrder ? item.deadlineText : '截止 ' + item.dueText}}</text><text class="task-card__ref">{{item.referenceNo}} ›</text></view>
+    </view>
+  </view>
+  <tz-tab-bar active="tasks" unread="{{unread}}" />
+</view>

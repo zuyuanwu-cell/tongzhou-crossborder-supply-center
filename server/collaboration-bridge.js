@@ -671,6 +671,18 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations${suffix}`);
   }
 
+  function getPartnerAiConfig() {
+    return internalRequest("/collaboration/internal/v1/partner-ai/config");
+  }
+
+  function savePartnerAiConfig(input) {
+    return internalRequest("/collaboration/internal/v1/partner-ai/config", { method: "PUT", body: input });
+  }
+
+  function testPartnerAiAsr(input) {
+    return internalRequest("/collaboration/internal/v1/partner-ai/config/test", { method: "POST", body: input });
+  }
+
   function getOrganizationAccess(code) {
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`);
   }
@@ -1105,6 +1117,7 @@ export function createCollaborationBridge({
     awardOemQuote,
     getOrganizationAccess,
     getOrganizationAccessGrants,
+    getPartnerAiConfig,
     getOrganizationWorkItem,
     getOutsourcingSourceBinding,
     getWarehouseTask,
@@ -1129,12 +1142,14 @@ export function createCollaborationBridge({
     reviewSampleArtifact,
     revokeInvitation,
     saveOutsourcingSourceBinding,
+    savePartnerAiConfig,
     start,
     status,
     stop,
     synchronize,
     synchronizeInventoryProjections,
     synchronizeOutsourcingProjections,
+    testPartnerAiAsr,
     updateOrganizationStatus,
     updateMemberCredentials,
     uploadOrganizationWorkItemAttachment,

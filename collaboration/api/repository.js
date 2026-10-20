@@ -5,6 +5,7 @@ import { withOrganization, withSystem } from "./db.js";
 import { canPerformAction } from "./permissions.js";
 import { riskByAction, warehouseOperationSchema, workItemActionSchema } from "../shared/contracts.js";
 import { actionPermission, assertResourcePermission, assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
+import { linkPartnerAiDraftToCommand } from "./partner-ai.js";
 
 const coreSyncEventTypes = ["core.projection", "core.oem_projection"];
 const coreSyncNotificationTitles = ["协同任务已更新", "OEM 协同任务已更新", "订单内容已由中台更新", "库存同步完成"];
@@ -162,7 +163,7 @@ function nextStatus(action, risk) {
   return "in_progress";
 }
 
-export async function submitWorkItemAction(auth, workItemId, body, { idempotencyKey, expectedVersion }) {
+export async function submitWorkItemAction(auth, workItemId, body, { idempotencyKey, expectedVersion, aiDraftId = "" }) {
   if (!idempotencyKey || idempotencyKey.length > 160) fail("请提供有效的 Idempotency-Key。", 400, "idempotency_key_required");
   const parsed = workItemActionSchema.safeParse(body);
   if (!parsed.success) fail(parsed.error.issues[0]?.message || "操作内容不正确。", 400, "invalid_action_payload");
@@ -227,6 +228,12 @@ export async function submitWorkItemAction(auth, workItemId, body, { idempotency
       [auth.organization.id, workItemId, action, idempotencyKey, version, parsed.data, risk, status, auth.user.id],
     );
     const command = commandResult.rows[0];
+    if (aiDraftId) {
+      if (action !== "progress") fail("AI 快捷汇报草稿只能用于进度提交。", 409, "ai_draft_action_mismatch");
+      await linkPartnerAiDraftToCommand(client, {
+        auth, workItemId, workItemVersion: version, draftId: aiDraftId, commandId: command.id, expectedDraftType: "work_item_progress",
+      });
+    }
     if (risk === "high") await client.query("INSERT INTO approvals(organization_id,command_id) VALUES ($1,$2)", [auth.organization.id, command.id]);
     if (["inbound_confirm", "outbound_confirm", "transfer_receive"].includes(action)) {
       for (const line of parsed.data.lines) {

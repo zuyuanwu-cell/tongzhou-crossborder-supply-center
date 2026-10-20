@@ -52,9 +52,38 @@ export type HermesRun = {
   status: string;
   model: string;
   toolCount: number;
+  parentRunId?: string;
+  stageNo?: number;
+  plan?: HermesTaskPlan;
+  checkpoint?: HermesCheckpoint | null;
   error?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type HermesTaskStep = {
+  id: string;
+  label: string;
+  status: "pending" | "in_progress" | "paused" | "completed";
+};
+
+export type HermesTaskPlan = {
+  version: number;
+  objective: string;
+  route: string;
+  steps: HermesTaskStep[];
+  continuedFrom?: string;
+};
+
+export type HermesCheckpoint = {
+  reason: string;
+  message: string;
+  canContinue: boolean;
+  stageNo: number;
+  toolCount: number;
+  completedSteps: string[];
+  remainingSteps: string[];
+  createdAt: string;
 };
 
 export type HermesCase = {
@@ -73,6 +102,7 @@ export type HermesCase = {
   assigneeId?: string;
   assigneeName?: string;
   evidence: HermesEvidenceRef[];
+  changeSummary?: { changed: boolean; summary: string; added?: string[]; updated?: string[]; removed?: string[] };
   href?: string;
   sourceUpdatedAt?: string;
   firstSeenAt: string;
@@ -121,11 +151,42 @@ export type HermesModelConfig = {
   lastTest?: { ok: boolean; message: string; testedAt: string } | null;
 };
 
+export type HermesTodo = {
+  id: string; caseId: string; title: string; severity: HermesCase["severity"]; status: string; href?: string;
+  score: number; needsAssignment: boolean; needsReminder: boolean; needsReplenishmentDecision: boolean; reason: string;
+  changeSummary?: HermesCase["changeSummary"];
+};
+
+export type HermesDossier = {
+  caseId: string; title: string; status: string; severity: string; summary: string; evidence: HermesEvidenceRef[];
+  affectedOrders: Array<{ type: string; id: string; href?: string }>;
+  inventoryGap: Array<{ label: string; value: unknown; updatedAt?: string }>;
+  productionNodes: Array<{ id: string; label: string; value: unknown; updatedAt?: string }>;
+  changeSummary: { changed: boolean; summary: string };
+  suggestedActions: string[];
+  playbooks: Array<{ id: string; title: string; steps: string[] }>;
+  generatedAt: string;
+};
+
+export type PartnerProgressOrganization = { id: string; code: string; name: string; organizationType: string };
+export type PartnerProgressConfig = {
+  enabled: boolean;
+  textEnabled: boolean;
+  voiceEnabled: boolean;
+  organizationIds: string[];
+  userDailyLimit: number;
+  organizationDailyLimit: number;
+  asr: { configured: boolean; secretIdMasked: string; engine: "16k_zh" | "16k_zh-PY" | "16k_zh_dialect" };
+  updatedBy?: string;
+  updatedAt?: string;
+};
+
 export type HermesEvent =
   | { type: "assistant.delta"; text: string }
   | { type: "tool.started"; toolCallId: string; tool: string; label: string }
   | { type: "tool.completed"; toolCallId: string; summary: string; evidence: HermesEvidenceRef[] }
   | { type: "approval.required"; runId: string; toolCallId: string; preview: HermesActionPreview }
+  | { type: "run.checkpoint"; checkpoint: HermesCheckpoint }
   | { type: "run.completed"; messageId: string }
   | { type: "run.failed" | "run.cancelled"; message: string };
 
@@ -215,11 +276,48 @@ export function stopHermesRun(runId: string) {
   });
 }
 
+export function fetchPartnerProgressConfig(signal?: AbortSignal) {
+  return request<{ ok: boolean; config: PartnerProgressConfig; organizations: PartnerProgressOrganization[] }>("/api/hermes/partner-progress-config", { signal });
+}
+
+export function testPartnerProgressConfig(input: { asr: { secretId?: string; secretKey?: string; engine: string } }) {
+  return request<{ ok: boolean; message: string; testedAt: string }>("/api/hermes/partner-progress-config/test", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function savePartnerProgressConfig(input: {
+  enabled: boolean; textEnabled: boolean; voiceEnabled: boolean; organizationIds: string[];
+  userDailyLimit: number; organizationDailyLimit: number; asr: { secretId?: string; secretKey?: string; engine: string };
+}) {
+  return request<{ ok: boolean; config: PartnerProgressConfig }>("/api/hermes/partner-progress-config", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function continueHermesRun(runId: string, note = "") {
+  return request<{ ok: boolean; run: HermesRun }>(`/api/hermes/runs/${encodeURIComponent(runId)}/continue`, {
+    method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify({ note }),
+  });
+}
+
 export function fetchHermesCases(filters: { status?: string; severity?: string; assigneeId?: string } = {}, signal?: AbortSignal) {
   const query = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
   const suffix = query.size ? `?${query.toString()}` : "";
   return request<{ ok: boolean; cases: HermesCase[] }>(`/api/hermes/cases${suffix}`, { signal });
+}
+
+export function fetchHermesTodos(signal?: AbortSignal) {
+  return request<{ ok: boolean; todos: HermesTodo[] }>("/api/hermes/todos", { signal });
+}
+
+export function fetchHermesCaseDossier(caseId: string, signal?: AbortSignal) {
+  return request<{ ok: boolean; dossier: HermesDossier }>(`/api/hermes/cases/${encodeURIComponent(caseId)}/dossier`, { signal });
 }
 
 type StreamFrame = { id: number; event: HermesEvent };

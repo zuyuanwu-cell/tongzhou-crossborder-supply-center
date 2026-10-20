@@ -1,0 +1,19 @@
+<view class="page-shell messages-page">
+  <view class="message-head">
+    <view><view class="eyebrow">NOTIFICATIONS</view><view class="message-title">消息中心</view><view class="message-sub">{{unread ? unread + ' 条未读消息' : '所有消息均已处理'}}</view></view>
+    <view class="read-all {{unread ? '' : 'is-disabled'}}" bindtap="markAllRead">全部已读</view>
+  </view>
+  <view class="message-legend"><view><view class="legend-dot legend-dot--orange"></view>任务</view><view><view class="legend-dot legend-dot--violet"></view>审批</view><view><view class="legend-dot legend-dot--green"></view>系统</view></view>
+
+  <view wx:if="{{loading}}"><view wx:for="{{[1,2,3]}}" wx:key="*this" class="message-card card"><view class="skeleton message-icon"></view><view class="skeleton message-loading"></view></view></view>
+  <view wx:elif="{{error}}" class="error-state card"><view class="state-symbol">!</view><view class="state-title">消息暂不可用</view><view class="state-copy">{{error}}</view><button class="secondary-button button-small retry-button" bindtap="load">重新加载</button></view>
+  <view wx:elif="{{!items.length}}" class="empty-state card"><view class="state-symbol">铃</view><view class="state-title">暂时没有新消息</view><view class="state-copy">任务变化和审批结果会第一时间出现在这里。</view></view>
+  <view wx:else class="message-list">
+    <view wx:for="{{items}}" wx:key="id" class="message-card card {{item.unread ? 'message-card--unread' : ''}}" data-index="{{index}}" bindtap="openMessage">
+      <view class="message-icon message-icon--{{item.category === '审批结果' ? 'violet' : item.category === '系统通知' ? 'green' : 'orange'}}">{{item.categoryInitial}}</view>
+      <view class="message-body"><view class="message-meta"><text>{{item.category}}</text><text>{{item.timeText}}</text></view><view class="message-name">{{item.title}}</view><view class="message-copy">{{item.body}}</view></view>
+      <view class="message-arrow">›</view><view wx:if="{{item.unread}}" class="unread-dot"></view>
+    </view>
+  </view>
+  <tz-tab-bar active="messages" unread="{{unread}}" />
+</view>

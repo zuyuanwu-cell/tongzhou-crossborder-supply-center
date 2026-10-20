@@ -1,0 +1,12 @@
+<view class="page-shell admin-page admin-list-page">
+  <view class="admin-list-head"><view><text>ALL ORGANIZATIONS</text><strong>协同任务</strong><small>跨伙伴组织查看交期、状态与业务回传</small></view><view class="admin-count"><strong>{{total}}</strong><text>任务</text></view></view>
+  <view class="admin-search"><text>⌕</text><input value="{{keyword}}" bindinput="updateKeyword" bindconfirm="search" confirm-type="search" placeholder="搜索任务、订单号或产品" /><text wx:if="{{keyword}}" bindtap="clearKeyword">×</text></view>
+  <picker wx:if="{{organizationOptions.length > 1}}" mode="selector" range="{{organizationOptions}}" range-key="name" value="{{organizationIndex}}" bindchange="changeOrganization"><view class="organization-picker admin-card"><text>组织范围</text><strong>{{organizationName}}</strong><text>⌄</text></view></picker>
+  <scroll-view class="admin-filter-scroll" scroll-x enhanced show-scrollbar="{{false}}"><view class="admin-filter-row"><view wx:for="{{filters}}" wx:key="value" class="admin-filter-chip {{status === item.value ? 'is-active' : ''}}" data-value="{{item.value}}" bindtap="changeStatus">{{item.label}}<text wx:if="{{item.value && counts[item.value]}}"> · {{counts[item.value]}}</text></view></view></scroll-view>
+
+  <view wx:if="{{loading}}" class="admin-loading">正在读取跨组织任务…</view>
+  <view wx:elif="{{error}}" class="admin-error admin-card"><strong>任务队列暂不可用</strong>{{error}}<button class="secondary-button retry" bindtap="load">重新加载</button></view>
+  <view wx:elif="{{!items.length}}" class="admin-empty admin-card"><strong>没有匹配的任务</strong>可调整组织、状态或搜索关键词</view>
+  <view wx:else class="admin-task-list admin-card"><view wx:for="{{items}}" wx:key="id" class="admin-task-row {{item.isUrgent ? 'is-urgent' : ''}} {{item.isOverdue ? 'is-overdue' : ''}}" data-id="{{item.id}}" bindtap="openTask"><view class="admin-task-row__bar"></view><view class="admin-task-row__main"><strong>{{item.title}}</strong><text>{{item.organizationLabel}} · {{item.typeLabel}}</text><small>{{item.referenceNo}} · {{item.updatedText}}</small></view><view class="admin-task-row__side"><text>{{item.deadlineLabel}}</text><small class="admin-status admin-status--{{item.statusTone}}">{{item.statusLabel}}</small></view></view></view>
+  <tz-tab-bar active="admin-tasks" mode="admin" />
+</view>

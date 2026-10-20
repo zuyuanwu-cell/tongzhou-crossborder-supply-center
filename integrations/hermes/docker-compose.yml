@@ -3,7 +3,17 @@ services:
     image: ${HERMES_RUNTIME_IMAGE:?Set HERMES_RUNTIME_IMAGE to the reviewed image@sha256 digest}
     container_name: tongzhou-hermes
     restart: unless-stopped
-    command: ["gateway", "run"]
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        mkdir -p /opt/data/profiles/tongzhou-partner-progress
+        printf '%s\n' \
+          "API_SERVER_KEY=$${HERMES_PARTNER_API_KEY}" \
+          "HERMES_PARTNER_MODEL_API_KEY=$${HERMES_PARTNER_MODEL_PROXY_KEY}" \
+          > /opt/data/profiles/tongzhou-partner-progress/.env
+        exec hermes gateway run
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777
@@ -26,6 +36,8 @@ services:
       - ./config/config.yaml:/opt/data/config.yaml:ro
       - ./config/SOUL.md:/opt/data/SOUL.md:ro
       - ./plugins/tongzhou-business:/opt/data/plugins/tongzhou-business:ro
+      - ./profiles/tongzhou-partner-progress/config.yaml:/opt/data/profiles/tongzhou-partner-progress/config.yaml:ro
+      - ./profiles/tongzhou-partner-progress/SOUL.md:/opt/data/profiles/tongzhou-partner-progress/SOUL.md:ro
     ports:
       - "127.0.0.1:8642:8642"
     extra_hosts:
@@ -35,10 +47,13 @@ services:
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_PORT: "8642"
       API_SERVER_KEY: ${HERMES_API_KEY:?HERMES_API_KEY is required}
+      HERMES_PARTNER_API_KEY: ${HERMES_PARTNER_API_KEY:?HERMES_PARTNER_API_KEY is required}
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
       HERMES_BRIDGE_SECRET: ${HERMES_BRIDGE_SECRET:?HERMES_BRIDGE_SECRET is required}
       # This authenticates Hermes to the Tongzhou model proxy. The real DeepSeek key stays encrypted in Node.
       HERMES_MODEL_API_KEY: ${HERMES_MODEL_PROXY_KEY:?HERMES_MODEL_PROXY_KEY is required}
+      # Separate identity lets Node enforce JSON-only, low-temperature partner extraction.
+      HERMES_PARTNER_MODEL_PROXY_KEY: ${HERMES_PARTNER_MODEL_PROXY_KEY:?HERMES_PARTNER_MODEL_PROXY_KEY is required}
       TONGZHOU_BRIDGE_BASE_URL: ${TONGZHOU_BRIDGE_BASE_URL:-http://host.docker.internal:8787}
     networks:
       - control

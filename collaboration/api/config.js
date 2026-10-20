@@ -37,6 +37,8 @@ export const collaborationConfig = Object.freeze({
   cookieSecure: process.env.COLLABORATION_COOKIE_SECURE !== "false" && production,
   secretKey: required("COLLABORATION_SECRET_KEY", { developmentFallback: production ? "" : "local-only-change-before-production" }),
   internalToken: required("COLLABORATION_INTERNAL_TOKEN", { developmentFallback: production ? "" : "local-internal-token-change-me" }),
+  partnerAiBridgeUrl: String(process.env.COLLABORATION_PARTNER_AI_BRIDGE_URL || "http://127.0.0.1:8787").replace(/\/+$/, ""),
+  partnerAiBridgeSecret: String(process.env.HERMES_PARTNER_BRIDGE_SECRET || process.env.HERMES_BRIDGE_SECRET || "").trim(),
   storageDriver: process.env.COLLABORATION_STORAGE_DRIVER === "s3" ? "s3" : "local",
   allowLocalPrivateStorage: process.env.COLLABORATION_ALLOW_LOCAL_PRIVATE_STORAGE === "true",
   storageDir: resolve(process.env.COLLABORATION_STORAGE_DIR || resolve(process.cwd(), ".cache", "collaboration-objects")),

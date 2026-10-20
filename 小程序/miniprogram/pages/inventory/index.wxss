@@ -1,0 +1,22 @@
+.inventory-page { padding-top: 18rpx; }
+.inventory-head { min-height: 154rpx; display: flex; align-items: center; justify-content: space-between; }
+.inventory-title { margin-top: 8rpx; color: #173d7a; font-size: 45rpx; font-weight: 900; }
+.inventory-sub { margin-top: 10rpx; color: #718096; font-size: 21rpx; }
+.scope-seal { width: 88rpx; height: 88rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #174f95; background: #eaf2fb; border: 1rpx solid #c6d7e9; border-radius: 50%; font-size: 19rpx; font-weight: 800; text-align: center; line-height: 1.25; }
+.search-wrap { display: flex; gap: 14rpx; }
+.search-bar { flex: 1; height: 86rpx; padding: 0 20rpx; display: flex; align-items: center; gap: 13rpx; }
+.search-icon { color: #2451a4; font-size: 34rpx; }.search-bar input { flex: 1; min-width: 0; font-size: 24rpx; }.search-clear { color: #8794a5; font-size: 34rpx; }
+.scan-square { flex: 0 0 86rpx; height: 86rpx; display: flex; align-items: center; justify-content: center; color: #fff; background: #173d7a; border-radius: 18rpx; font-size: 38rpx; }
+.inventory-tools { margin: 27rpx 0 18rpx; display: flex; align-items: center; justify-content: space-between; color: #718096; font-size: 21rpx; }
+.inventory-tools > view { display: flex; gap: 12rpx; }.inventory-tools > view > view { padding: 12rpx 16rpx; color: #2451a4; background: #e9f1fa; border-radius: 12rpx; font-weight: 700; }
+.inventory-card { margin-bottom: 18rpx; padding: 24rpx; display: flex; gap: 20rpx; }
+.goods-image { flex: 0 0 92rpx; width: 92rpx; height: 92rpx; border-radius: 18rpx; }
+.goods-fallback { display: flex; align-items: center; justify-content: center; color: #2451a4; background: linear-gradient(145deg, #edf4fb, #dbe7f4); border: 1rpx solid #cfdaea; font-size: 34rpx; font-weight: 900; }
+.goods-main { flex: 1; min-width: 0; }
+.goods-top { display: flex; align-items: center; gap: 12rpx; }.goods-name { flex: 1; color: #173d7a; font-size: 27rpx; font-weight: 800; }.goods-sku { margin-top: 7rpx; color: #718096; font-size: 19rpx; }
+.stock-warning { padding: 7rpx 11rpx; color: #a33c24; background: #fff0e9; border-radius: 999rpx; font-size: 17rpx; white-space: nowrap; }
+.stock-grid { margin-top: 22rpx; display: grid; grid-template-columns: repeat(4, 1fr); background: #f5f8fb; border-radius: 12rpx; }
+.stock-grid > view { min-height: 88rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1rpx solid #e1e8f0; }.stock-grid > view:first-child { border-left: 0; }
+.stock-grid text { color: #8290a1; font-size: 17rpx; }.stock-grid strong { margin-top: 6rpx; color: #173d7a; font: 800 27rpx/1 "DIN Alternate", monospace; }.stock-grid .stock-unit { font-family: inherit; font-size: 21rpx; }.stock-grid .danger-number { color: #b42318; }
+.goods-actions { margin-top: 18rpx; display: flex; gap: 10rpx; }.goods-actions view { flex: 1; padding: 13rpx 6rpx; color: #2451a4; background: #eef4fb; border-radius: 10rpx; font-size: 19rpx; font-weight: 700; text-align: center; }
+.inventory-loading { flex: 1; height: 92rpx; }.retry-button { width: 220rpx; margin-top: 24rpx; }
