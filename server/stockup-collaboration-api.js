@@ -67,7 +67,7 @@ export function collaborationIsoDateTime(value) {
   return new Date(timestamp).toISOString();
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), getDomesticAvailabilitySummary = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
   async function publishStockupWorkOrder(workOrder, context, auth, idempotencyKey, { revision = false } = {}) {
     const dueAt = collaborationIsoDateTime(workOrder.expectedArrivalAt);
     const request = service.getRequest(workOrder.requestId, context);
@@ -129,6 +129,12 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       if (suffix === "/domestic-availability" && req.method === "GET") {
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有国内库存查看权限。");
         sendJson(res, 200, getDomesticAvailability(queryObject(url), context, auth));
+        return true;
+      }
+
+      if (suffix === "/domestic-availability-summary" && req.method === "GET") {
+        requireAny(auth, ["stockup_request_create", "stockup_workflow_manage", "stockup_execution_manage", "stockup_shipment_update"], "当前账号没有国内库存查看权限。");
+        sendJson(res, 200, getDomesticAvailabilitySummary(queryObject(url), context, auth));
         return true;
       }
 

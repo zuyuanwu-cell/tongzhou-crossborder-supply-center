@@ -759,6 +759,12 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_request_lines", "procurement_closed_reason TEXT");
   ensureColumn("stockup_request_lines", "procurement_closed_at TEXT");
   ensureColumn("stockup_request_lines", "procurement_closed_by TEXT");
+  ensureColumn("stockup_request_lines", "domestic_available_qty REAL");
+  ensureColumn("stockup_request_lines", "domestic_allocated_qty REAL");
+  ensureColumn("stockup_request_lines", "procurement_required_qty REAL");
+  ensureColumn("stockup_request_lines", "inventory_snapshot_json TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("stockup_request_lines", "inventory_checked_at TEXT");
+  db.run("UPDATE stockup_request_lines SET procurement_required_qty=requested_qty WHERE procurement_required_qty IS NULL");
   ensureColumn("stockup_warehouse_work_orders", "workflow_version INTEGER NOT NULL DEFAULT 1");
   ensureColumn("stockup_warehouse_work_orders", "inspection_submitted_at TEXT");
   ensureColumn("stockup_warehouse_work_orders", "inspection_reviewed_at TEXT");

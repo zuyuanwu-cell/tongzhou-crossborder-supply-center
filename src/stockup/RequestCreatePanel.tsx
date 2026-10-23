@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Check, PackagePlus, Plus, Save, Search, Send, Trash2, X } from "lucide-react";
-import type { CatalogProduct, WarehouseConnection } from "../api";
+import { fetchStockupDomesticAvailabilitySummary } from "../api";
+import type { CatalogProduct, StockupDomesticAvailabilitySummaryItem, WarehouseConnection } from "../api";
 import "./request-create-panel.css";
 
 export type StockupRequestDraftLine = {
@@ -57,6 +58,9 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
   const [lines, setLines] = useState<StockupRequestDraftLine[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState(defaultProjectTeamId || "");
   const [platformChoice, setPlatformChoice] = useState("");
+  const [availabilityBySku, setAvailabilityBySku] = useState<Record<string, StockupDomesticAvailabilitySummaryItem>>({});
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState("");
 
   useEffect(() => {
     const preferred = projectTeams.find((team) => team.id === defaultProjectTeamId);
@@ -99,13 +103,34 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
     const keyword = query.trim().toLowerCase();
     return productOptions
       .filter((product) => !keyword || `${product.sku} ${product.name} ${product.nameEn}`.toLowerCase().includes(keyword))
-      .slice(0, 36);
+      .slice(0, 100);
   }, [productOptions, query]);
 
   const lineSkuKeys = useMemo(() => new Set(lines.map((line) => skuKey(line.sku)).filter(Boolean)), [lines]);
   const pendingSkuKeys = useMemo(() => new Set(pendingProductSkus), [pendingProductSkus]);
   const visibleSelectableProducts = useMemo(() => productMatches.filter((product) => !lineSkuKeys.has(skuKey(product.sku))), [lineSkuKeys, productMatches]);
   const allVisibleSelected = Boolean(visibleSelectableProducts.length) && visibleSelectableProducts.every((product) => pendingSkuKeys.has(skuKey(product.sku)));
+  const selectedSkuKey = useMemo(() => lines.map((line) => skuKey(line.sku)).filter(Boolean).sort().join(","), [lines]);
+
+  useEffect(() => {
+    const skus = selectedSkuKey ? selectedSkuKey.split(",") : [];
+    let cancelled = false;
+    if (!skus.length) {
+      setAvailabilityBySku({});
+      setAvailabilityError("");
+      return () => { cancelled = true; };
+    }
+    setAvailabilityLoading(true);
+    setAvailabilityError("");
+    void fetchStockupDomesticAvailabilitySummary(skus).then((result) => {
+      if (!cancelled) setAvailabilityBySku(Object.fromEntries((result.items || []).map((item) => [skuKey(item.sku), item])));
+    }).catch((loadError) => {
+      if (!cancelled) setAvailabilityError(loadError instanceof Error ? loadError.message : "国内库存暂时读取失败");
+    }).finally(() => {
+      if (!cancelled) setAvailabilityLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [selectedSkuKey]);
 
   const warehouseOptions = useMemo(() => {
     const options = new Map<string, { id: string; name: string; country: string }>();
@@ -168,38 +193,57 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
     setPendingProductSkus([]);
   }
 
-  function renderProductPicker(placement: "top" | "bottom") {
-    if (pickerPlacement !== placement) return null;
+  function inventoryPlanForLine(line: StockupRequestDraftLine) {
+    const inventory = availabilityBySku[skuKey(line.sku)];
+    const availableQty = Math.max(0, Number(inventory?.availableQty || 0));
+    const inventoryQty = Math.min(Math.max(0, Number(line.requestedQty || 0)), availableQty);
+    const procurementQty = Math.max(0, Number(line.requestedQty || 0) - inventoryQty);
+    return {
+      inventory,
+      availableQty,
+      inventoryQty,
+      procurementQty,
+      method: inventoryQty >= Number(line.requestedQty || 0) ? "国内库存" : inventoryQty > 0 ? "库存优先+采购" : "采购",
+    };
+  }
+
+  function renderProductPicker() {
+    if (!pickerPlacement) return null;
+    const closePicker = () => { setPickerPlacement(null); setPendingProductSkus([]); setQuery(""); };
     return (
-      <div className={`sc-product-picker${placement === "bottom" ? " is-inline" : ""}`}>
-        {placement === "bottom" ? (
+      <div className="sc-product-picker-layer" role="presentation" onMouseDown={closePicker}>
+        <section className="sc-product-picker" role="dialog" aria-modal="true" aria-label="批量选择产品" onMouseDown={(event) => event.stopPropagation()}>
+          <header className="sc-product-picker-head">
+            <div><b>批量选择产品</b><small>可连续勾选，底部按钮始终可见</small></div>
+            <button type="button" className="sc-picker-close" aria-label="关闭产品选择器" onClick={closePicker}><X size={18} /></button>
+          </header>
           <div className="sc-product-picker-search">
             <Search size={17} />
             <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 SKU、中文名或外文名" />
           </div>
-        ) : null}
-        <div className="sc-product-picker-summary">
-          <span><b>{pendingProductSkus.length}</b> 个待加入</span>
-          <button type="button" className="sc-picker-link" disabled={!visibleSelectableProducts.length} onClick={toggleVisibleProducts}>{allVisibleSelected ? "取消全选" : `全选当前 ${visibleSelectableProducts.length} 项`}</button>
-        </div>
-        <div className="sc-product-picker-list">
-          {productMatches.length ? productMatches.map((product) => {
-            const key = skuKey(product.sku);
-            const existing = lineSkuKeys.has(key);
-            const selected = pendingSkuKeys.has(key);
-            return (
-              <button type="button" className={`sc-product-picker-option${selected ? " is-selected" : ""}`} key={key} disabled={existing} onClick={() => toggleProduct(product)} aria-pressed={selected}>
-                <span className="sc-product-thumb">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <PackagePlus size={20} />}</span>
-                <span><b>{product.sku}</b><small>{product.name}</small></span>
-                <span className="sc-picker-check">{existing ? "已添加" : selected ? <Check size={16} /> : <Plus size={16} />}</span>
-              </button>
-            );
-          }) : <p>没有找到匹配产品</p>}
-        </div>
-        <div className="sc-product-picker-actions">
-          <button type="button" className="sc-picker-action secondary" onClick={() => { setPickerPlacement(null); setPendingProductSkus([]); setQuery(""); }}>取消</button>
-          <button type="button" className="sc-picker-action primary" disabled={!pendingProductSkus.length} onClick={addSelectedProducts}><Plus size={16} />加入清单{pendingProductSkus.length ? `（${pendingProductSkus.length}）` : ""}</button>
-        </div>
+          <div className="sc-product-picker-summary">
+            <span><b>{pendingProductSkus.length}</b> 个待加入 · 当前显示 {productMatches.length} 个</span>
+            <button type="button" className="sc-picker-link" disabled={!visibleSelectableProducts.length} onClick={toggleVisibleProducts}>{allVisibleSelected ? "取消全选" : `全选当前 ${visibleSelectableProducts.length} 项`}</button>
+          </div>
+          <div className="sc-product-picker-list">
+            {productMatches.length ? productMatches.map((product) => {
+              const key = skuKey(product.sku);
+              const existing = lineSkuKeys.has(key);
+              const selected = pendingSkuKeys.has(key);
+              return (
+                <button type="button" className={`sc-product-picker-option${selected ? " is-selected" : ""}`} key={key} disabled={existing} onClick={() => toggleProduct(product)} aria-pressed={selected}>
+                  <span className="sc-product-thumb">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <PackagePlus size={20} />}</span>
+                  <span><b>{product.sku}</b><small>{product.name}</small></span>
+                  <span className="sc-picker-check">{existing ? "已添加" : selected ? <Check size={16} /> : <Plus size={16} />}</span>
+                </button>
+              );
+            }) : <p>没有找到匹配产品</p>}
+          </div>
+          <div className="sc-product-picker-actions">
+            <button type="button" className="sc-picker-action secondary" onClick={closePicker}>取消</button>
+            <button type="button" className="sc-picker-action primary" disabled={!pendingProductSkus.length} onClick={addSelectedProducts}><Plus size={16} />加入清单{pendingProductSkus.length ? `（${pendingProductSkus.length}）` : ""}</button>
+          </div>
+        </section>
       </div>
     );
   }
@@ -220,7 +264,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
     }
     setSaving(true);
     try {
-      await onSave({ ...form, submit: submitNow, notificationTeamId: projectTeams.some((team) => team.id === selectedTeamId) ? selectedTeamId : "", lines: lines.map(({ key: _key, ...line }) => line) });
+      await onSave({ ...form, submit: submitNow, notificationTeamId: projectTeams.some((team) => team.id === selectedTeamId) ? selectedTeamId : "", lines: lines.map((line) => { const { key: _key, ...payloadLine } = line; return { ...payloadLine, method: inventoryPlanForLine(line).method }; }) });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "保存失败，请稍后重试。");
     } finally {
@@ -302,24 +346,37 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
               <div className="sc-product-search"><Search size={17} /><input value={pickerPlacement === "top" ? query : ""} onFocus={() => { if (pickerPlacement !== "top") togglePicker("top"); }} onChange={(event) => { setQuery(event.target.value); setPickerPlacement("top"); }} placeholder="搜索 SKU、中文名或外文名" /></div>
               <button type="button" className="sc-button sc-button-secondary" onClick={() => togglePicker("top")}><Plus size={17} />批量添加产品</button>
               <button type="button" className="sc-button sc-button-secondary" onClick={addTemporaryProduct}><PackagePlus size={17} />新增无 SKU 商品</button>
-              {renderProductPicker("top")}
+            </div>
+
+            <div className={`sc-inventory-hint${availabilityError ? " is-warning" : ""}`}>
+              <PackagePlus size={18} />
+              <span><b>{availabilityLoading ? "正在核对国内仓库存…" : availabilityError ? "库存预览暂不可用" : "已启用库存优先"}</b><small>{availabilityError || "系统汇总全部国内仓可用库存；现货覆盖部分不会进入采购，只有缺口才生成采购/生产待办。这里显示的是可用库存快照，提交需求和登记采购时后端都会重新校验，正式发运时再锁库。"}</small></span>
             </div>
 
             {lines.length ? (
               <div className="sc-line-editor">
-                {lines.map((line, index) => (
+                {lines.map((line, index) => {
+                  const plan = inventoryPlanForLine(line);
+                  return (
                   <div className="sc-line-row" key={line.key}>
                     <span className="sc-line-index">{String(index + 1).padStart(2, "0")}</span>
                     <span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <PackagePlus size={22} />}</span>
                     <div className="sc-line-product"><input value={line.sku} onChange={(event) => updateLine(line.key, { sku: event.target.value })} placeholder="留空自动生成临时编码" /><input value={line.productName} onChange={(event) => updateLine(line.key, { productName: event.target.value })} placeholder="产品名称 *" /><input value={line.specification} onChange={(event) => updateLine(line.key, { specification: event.target.value })} placeholder="规格" /><input value={line.procurementUrl} onChange={(event) => updateLine(line.key, { procurementUrl: event.target.value })} placeholder="1688 商品链接" /><label className="sc-inline-check"><input type="checkbox" checked={line.shelfLifeManaged} onChange={(event) => updateLine(line.key, { shelfLifeManaged: event.target.checked })} />保质期管理</label></div>
-                    <label>执行方式<select value="采购" disabled><option>采购</option></select></label>
+                    <label>执行方式<div className={`sc-method-value${plan.inventoryQty > 0 ? " has-stock" : ""}`}>{plan.method}</div></label>
                     <label>需求数量<div className="sc-input-unit"><input type="number" min="0.01" value={line.requestedQty} onChange={(event) => updateLine(line.key, { requestedQty: Number(event.target.value) })} /><span>{line.unit}</span></div></label>
                     <label>目标成本（可选）<input type="number" min="0" step="0.01" value={line.targetUnitCostCny} onChange={(event) => updateLine(line.key, { targetUnitCostCny: event.target.value === "" ? "" : Number(event.target.value) })} /></label>
                     <div className="sc-line-actions">
                       <button title="删除" onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))}><Trash2 size={16} /></button>
                     </div>
+                    <div className={`sc-line-inventory${plan.availableQty > 0 ? " has-stock" : ""}`}>
+                      <span><small>国内仓可用</small><b>{availabilityLoading ? "核对中" : `${plan.availableQty.toLocaleString("zh-CN")} ${line.unit}`}</b></span>
+                      <span><small>本需求库存覆盖</small><b>{plan.inventoryQty.toLocaleString("zh-CN")} {line.unit}</b></span>
+                      <span><small>采购/生产缺口</small><b>{plan.procurementQty.toLocaleString("zh-CN")} {line.unit}</b></span>
+                      <em>{plan.inventory?.warehouses?.filter((item) => item.availableQty > 0).map((item) => `${item.warehouseName} ${item.availableQty.toLocaleString("zh-CN")}`).join("；") || (line.sku ? "国内仓暂无可用库存" : "生成正式 SKU 后才能自动匹配库存")}</em>
+                    </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ) : <div className="sc-empty-inline"><PackagePlus size={28} /><b>先添加需要采购或生产的产品</b><span>产品图片、名称、规格和成本会自动带入。</span></div>}
 
@@ -332,10 +389,11 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                 <button type="button" className="sc-button sc-button-secondary" onClick={addTemporaryProduct}>新增无 SKU 商品</button>
                 <button type="button" className="sc-button sc-button-primary" onClick={() => togglePicker("bottom")}><Plus size={17} />{pickerPlacement === "bottom" ? "收起选择器" : "批量选择产品"}</button>
               </div>
-              {renderProductPicker("bottom")}
             </div>
           </section>
         </div>
+
+        {renderProductPicker()}
 
         <footer className="sc-modal-foot">
           <div className="sc-safe-note"><Check size={16} />草稿不会进入供应链待办，也不会发送通知。</div>

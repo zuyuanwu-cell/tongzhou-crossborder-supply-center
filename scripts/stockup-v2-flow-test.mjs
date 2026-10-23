@@ -14,14 +14,36 @@ try {
   const context = { auth: { role: "admin", user: { id: "tester", displayName: "测试管理员" } }, viewAll: true, viewCost: true, revealSupplier: true };
   const inventoryContext = { auth: context.auth, countries: [], warehouseIds: [], skus: [] };
   const warehouse = inventory.createWarehouse({ code: "CN-SZ", name: "深圳仓" }, inventoryContext).warehouse;
+  inventory.createMovement({ warehouseId: warehouse.id, type: "inbound", referenceNo: "OPEN-STOCK", lines: [{ productId: "stocked-1", sku: "STOCKED-001", productName: "国内现货商品", unit: "件", quantity: 8, unitCostCny: 5 }] }, inventoryContext, "opening-stock");
   const store = await initStockupCollaborationStore(resolve(temp, "stockup.sqlite"));
   const service = createStockupCollaborationService(store, { inventoryGateway: {
+    getAvailabilitySummary: (skus) => ({ queriedAt: new Date().toISOString(), items: skus.map((sku) => {
+      const item = inventory.stockupAvailability({ warehouseId: warehouse.id, skus: sku }, inventoryContext).items[0];
+      return { sku, onHandQty: item.onHandQty, reservedQty: item.reservedQty, availableQty: item.availableQty, warehouses: [{ warehouseId: warehouse.id, warehouseName: warehouse.name, onHandQty: item.onHandQty, reservedQty: item.reservedQty, availableQty: item.availableQty }] };
+    }) }),
     createInspectionInbound: (input, ctx) => inventory.createMovement({ ...input, type: "inbound", allowDuplicateSkus: true }, inventoryContext, `inspection:${input.referenceNo}`),
     reserveStock: (input) => inventory.reserveStock(input, inventoryContext, `reservation:${input.referenceNo}`),
     releaseReservation: (reservationId) => inventory.releaseReservation(reservationId, inventoryContext),
     commitReservation: (reservationId, input) => inventory.commitReservation(reservationId, input, inventoryContext),
     recodeSku: (input) => inventory.recodeSku(input, inventoryContext),
   } });
+
+  const stockedRequestResult = service.createSpotRequest({
+    workflowVersion: 2, project: "库存优先测试", destinationCountry: "印度尼西亚", destinationWarehouseId: "id-jkt-1", destinationWarehouseName: "雅加达仓", expectedArrivalAt: "2026-11-30", priority: "常规", reason: "补库存", submit: true,
+    lines: [{ sku: "STOCKED-001", productName: "国内现货商品", requestedQty: 10, unit: "件" }],
+  }, context, "stocked-request");
+  const stockedRequest = service.getRequest(stockedRequestResult.requestId, context);
+  assert.equal(stockedRequest.lines[0].domesticAvailableQty, 8);
+  assert.equal(stockedRequest.lines[0].domesticAllocatedQty, 8);
+  assert.equal(stockedRequest.lines[0].procurementRequiredQty, 2);
+  assert.equal(stockedRequest.lines[0].method, "库存优先+采购");
+  inventory.createMovement({ warehouseId: warehouse.id, type: "inbound", referenceNo: "LATE-STOCK", lines: [{ productId: "stocked-1", sku: "STOCKED-001", productName: "国内现货商品", unit: "件", quantity: 2, unitCostCny: 5 }] }, inventoryContext, "late-stock");
+  assert.throws(() => service.createPurchaseOrder({ supplierName: "库存补足后不应采购", paidTotalCny: 10, lines: [{ requestLineId: stockedRequest.lines[0].id, quantity: 2, merchandiseAmount: 10 }] }, context), (error) => error?.code === "purchase_quantity_exceeds_request");
+  assert.equal(service.getRequest(stockedRequestResult.requestId, context).lines[0].procurementRequiredQty, 0);
+  inventory.createMovement({ warehouseId: warehouse.id, type: "outbound", referenceNo: "ALLOCATED-ELSEWHERE", lines: [{ productId: "stocked-1", sku: "STOCKED-001", productName: "国内现货商品", unit: "件", quantity: 2 }] }, inventoryContext, "allocated-elsewhere");
+  assert.throws(() => service.createPurchaseOrder({ supplierName: "错误超量采购", paidTotalCny: 15, lines: [{ requestLineId: stockedRequest.lines[0].id, quantity: 3, merchandiseAmount: 15 }] }, context), (error) => error?.code === "purchase_quantity_exceeds_request");
+  const stockedPurchase = service.createPurchaseOrder({ supplierName: "缺口采购", paidTotalCny: 10, lines: [{ requestLineId: stockedRequest.lines[0].id, quantity: 2, merchandiseAmount: 10 }] }, context, "stocked-purchase").purchaseOrder;
+  assert.equal(stockedPurchase.lines[0].quantity, 2);
 
   const requestResult = service.createSpotRequest({
     workflowVersion: 2, project: "Shopee 印尼", destinationCountry: "印度尼西亚", destinationWarehouseId: "id-jkt-1", destinationWarehouseName: "雅加达仓", expectedArrivalAt: "2026-11-30", priority: "常规", reason: "补库存", submit: false,

@@ -16,7 +16,7 @@ import {
   Warehouse,
   X,
 } from "lucide-react";
-import { qualificationFileDownloadUrl, type CatalogProduct, type ProductBase, type QualificationPayload, type WarehouseOnlyInventoryItem } from "./api";
+import { qualificationFileDownloadUrl, type CatalogProduct, type ProductBase, type QualificationPayload, type QualificationRecord, type WarehouseOnlyInventoryItem, type WarehouseQualificationCoverageCell, type WarehouseQualificationCoveragePayload, type WarehouseQualificationCoverageProduct, type WarehouseQualificationCoverageStatus } from "./api";
 import {
   buildQualificationCoverage,
   buildQualificationCoverageProducts,
@@ -28,14 +28,18 @@ import {
 import "./qualification-coverage.css";
 
 type CoverageFilter = "all" | "gap" | "attention" | "risk" | "covered";
+type CoverageStatus = QualificationCoverageStatus | WarehouseQualificationCoverageStatus;
+type CoverageProductView = QualificationCoverageProduct | WarehouseQualificationCoverageProduct;
+type CoverageCellView = QualificationCoverageCell | WarehouseQualificationCoverageCell;
 
-const statusMeta: Record<QualificationCoverageStatus, { label: string; short: string; note: string }> = {
+const statusMeta: Record<CoverageStatus, { label: string; short: string; note: string }> = {
   valid: { label: "资质有效", short: "有效", note: "有效期超过 90 天" },
   warning: { label: "需要关注", short: "临期", note: "31–90 天内到期" },
   urgent: { label: "紧急续证", short: "紧急", note: "30 天内到期" },
   expired: { label: "已经过期", short: "过期", note: "仅有已过期记录" },
   undated: { label: "待核验", short: "待核验", note: "有记录但未维护有效期" },
   missing: { label: "未覆盖", short: "未登记", note: "未发现本国资质记录" },
+  unavailable: { label: "待同步", short: "待同步", note: "库存已识别，资质口径尚未同步" },
 };
 
 function formatNumber(value: number) {
@@ -48,7 +52,7 @@ function formatDate(value: string) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" }) : value;
 }
 
-function statusIcon(status: QualificationCoverageStatus, size = 15) {
+function statusIcon(status: CoverageStatus, size = 15) {
   if (status === "valid") return <CheckCircle2 size={size} />;
   if (status === "warning" || status === "urgent") return <Clock3 size={size} />;
   if (status === "expired") return <ShieldAlert size={size} />;
@@ -56,7 +60,7 @@ function statusIcon(status: QualificationCoverageStatus, size = 15) {
   return <AlertTriangle size={size} />;
 }
 
-function CellButton({ cell, onClick }: { cell: QualificationCoverageCell; onClick: () => void }) {
+function CellButton({ cell, onClick }: { cell: CoverageCellView; onClick: () => void }) {
   const meta = statusMeta[cell.status];
   return (
     <button className={`qualification-matrix-cell status-${cell.status}`} type="button" onClick={onClick} title={`${cell.category}：${meta.label}，${meta.note}`}>
@@ -73,12 +77,14 @@ function DetailDrawer({
   warehouseName,
   onSelectCategory,
   onClose,
+  readOnly,
 }: {
-  product: QualificationCoverageProduct;
-  selectedCell: QualificationCoverageCell | null;
+  product: CoverageProductView;
+  selectedCell: CoverageCellView | null;
   warehouseName: string;
   onSelectCategory: (category: string) => void;
   onClose: () => void;
+  readOnly: boolean;
 }) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const activeCell = selectedCell || product.cells.find((cell) => cell.records.length > 0) || product.cells[0] || null;
@@ -119,28 +125,30 @@ function DetailDrawer({
             <div className="qualification-drawer-title"><div><p className="eyebrow">RECORD DETAIL</p><h3>{activeCell.category}</h3></div><span className={`qualification-status-chip status-${activeCell.status}`}>{statusMeta[activeCell.status].label}</span></div>
             {activeCell.records.length ? (
               <div className="qualification-record-list">
-                {activeCell.records.map((record) => (
-                  <article key={record.id}>
-                    <div><FileCheck2 size={17} /><span><strong>{record.qualificationName || activeCell.category}</strong><small>{record.issuer || "证书编号未维护"}</small></span></div>
+                {activeCell.records.map((record) => {
+                  const internalRecord = record as Partial<QualificationRecord>;
+                  const files = Array.isArray(internalRecord.files) ? internalRecord.files : [];
+                  return <article key={record.id}>
+                    <div><FileCheck2 size={17} /><span><strong>{record.qualificationName || activeCell.category}</strong>{readOnly ? <small>只读状态与有效期</small> : <small>{internalRecord.issuer || "证书编号未维护"}</small>}</span></div>
                     <dl>
                       <div><dt>生效日期</dt><dd>{formatDate(record.effectiveDate)}</dd></div>
                       <div><dt>到期日期</dt><dd>{formatDate(record.expiryDate)}</dd></div>
                     </dl>
-                    <div className="qualification-record-files">
-                      {record.files.length ? record.files.map((file) => {
+                    {!readOnly ? <div className="qualification-record-files">
+                      {files.length ? files.map((file) => {
                         const href = file.url || (file.fileId ? qualificationFileDownloadUrl(file.fileId, file.name) : "");
                         return href ? <a key={file.id} href={href} target="_blank" rel="noreferrer"><FileText size={14} />{file.name}<ExternalLink size={12} /></a> : null;
                       }) : <span>暂无证书附件</span>}
-                    </div>
-                  </article>
-                ))}
+                    </div> : null}
+                  </article>;
+                })}
               </div>
             ) : (
               <div className="qualification-missing-detail">
                 <CircleDashed size={28} />
                 <strong>未登记“{activeCell.category}”</strong>
                 <p>这表示资质库没有找到该类型记录，不等同于法规判定为必须补办；请结合产品销售渠道和注册路径确认。</p>
-                <button type="button" onClick={() => { window.location.hash = "#qualifications"; }}>打开资质库 <ChevronRight size={15} /></button>
+                {!readOnly ? <button type="button" onClick={() => { window.location.hash = "#qualifications"; }}>打开资质库 <ChevronRight size={15} /></button> : null}
               </div>
             )}
           </section>
@@ -155,30 +163,47 @@ export default function QualificationCoveragePage({
   productBase,
   warehouseOnlyInventory,
   qualificationPayload,
+  precomputedCoverage,
+  selectedWarehouseId,
+  onWarehouseChange,
+  readOnly = false,
 }: {
   products: CatalogProduct[];
   productBase: ProductBase[];
   warehouseOnlyInventory: WarehouseOnlyInventoryItem[];
   qualificationPayload: QualificationPayload | null;
+  precomputedCoverage?: WarehouseQualificationCoveragePayload | null;
+  selectedWarehouseId?: string;
+  onWarehouseChange?: (warehouseId: string) => void;
+  readOnly?: boolean;
 }) {
   const coverageProducts = React.useMemo(() => buildQualificationCoverageProducts(products, productBase, warehouseOnlyInventory), [productBase, products, warehouseOnlyInventory]);
-  const warehouses = React.useMemo(() => buildQualificationWarehouseOptions(coverageProducts), [coverageProducts]);
-  const [warehouseId, setWarehouseId] = React.useState("");
+  const localWarehouses = React.useMemo(() => buildQualificationWarehouseOptions(coverageProducts), [coverageProducts]);
+  const warehouses = precomputedCoverage?.warehouses || localWarehouses;
+  const [localWarehouseId, setLocalWarehouseId] = React.useState("");
+  const warehouseId = selectedWarehouseId === undefined ? localWarehouseId : selectedWarehouseId;
   const [filter, setFilter] = React.useState<CoverageFilter>("all");
   const [keyword, setKeyword] = React.useState("");
   const [focusedCategory, setFocusedCategory] = React.useState("");
-  const [detail, setDetail] = React.useState<{ product: QualificationCoverageProduct; category: string } | null>(null);
+  const [detail, setDetail] = React.useState<{ product: CoverageProductView; category: string } | null>(null);
 
   React.useEffect(() => {
+    if (selectedWarehouseId !== undefined) return;
     if (!warehouses.length) setWarehouseId("");
     else if (!warehouses.some((warehouse) => warehouse.id === warehouseId)) setWarehouseId(warehouses[0].id);
-  }, [warehouseId, warehouses]);
+  }, [selectedWarehouseId, warehouseId, warehouses]);
 
-  const coverage = React.useMemo(() => buildQualificationCoverage(
+  function setWarehouseId(nextWarehouseId: string) {
+    if (selectedWarehouseId === undefined) setLocalWarehouseId(nextWarehouseId);
+    onWarehouseChange?.(nextWarehouseId);
+  }
+
+  const localCoverage = React.useMemo(() => buildQualificationCoverage(
     coverageProducts,
     qualificationPayload?.qualifications || [],
     warehouseId,
   ), [coverageProducts, qualificationPayload, warehouseId]);
+  const coverage = precomputedCoverage || localCoverage;
 
   React.useEffect(() => setFocusedCategory(""), [coverage.warehouse?.id]);
   React.useEffect(() => setDetail(null), [coverage.warehouse?.id]);
@@ -202,8 +227,8 @@ export default function QualificationCoveragePage({
         <div className="qualification-coverage-intro">
           <p className="eyebrow">QUALIFICATION COVERAGE MAP</p>
           <h2>仓库资质覆盖</h2>
-          <p>从仓库库存反查产品认证，快速定位未覆盖、临期和已过期的 SKU。</p>
-          <label><Warehouse size={16} /><span>审查仓库</span><select value={coverage.warehouse?.id || warehouseId} onChange={(event) => setWarehouseId(event.target.value)}>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name} · {warehouse.country} · {warehouse.productCount} SKU</option>)}</select></label>
+          <p>{readOnly ? "查看本账号绑定仓库中正库存商品的资质状态与有效期；不提供证书原件。" : "从仓库库存反查产品认证，快速定位未覆盖、临期和已过期的 SKU。"}</p>
+          <label><Warehouse size={16} /><span>审查仓库</span><select value={warehouseId || coverage.warehouse?.id || ""} onChange={(event) => setWarehouseId(event.target.value)}>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name} · {warehouse.country} · {warehouse.productCount} SKU</option>)}</select></label>
         </div>
         <div className="qualification-coverage-score" style={{ "--coverage-degree": coverageDegrees } as React.CSSProperties}>
           <div><strong>{coverage.summary.coverageRate}%</strong><span>国家资质覆盖率</span><small>{coverage.summary.covered} / {coverage.summary.products} 个产品</small></div>
@@ -264,7 +289,7 @@ export default function QualificationCoveragePage({
         <footer><span>显示 {filteredProducts.length} / {coverage.products.length} 个有库存产品</span><span><AlertTriangle size={13} />“未登记”仅表示系统没有记录，最终合规要求仍需按产品和销售渠道确认。</span></footer>
       </section>
 
-      {detail ? <DetailDrawer product={detail.product} selectedCell={selectedDetailCell} warehouseName={coverage.warehouse?.name || "当前仓库"} onSelectCategory={(category) => setDetail((current) => current ? { ...current, category } : current)} onClose={() => setDetail(null)} /> : null}
+      {detail ? <DetailDrawer product={detail.product} selectedCell={selectedDetailCell} warehouseName={coverage.warehouse?.name || "当前仓库"} onSelectCategory={(category) => setDetail((current) => current ? { ...current, category } : current)} onClose={() => setDetail(null)} readOnly={readOnly} /> : null}
     </main>
   );
 }

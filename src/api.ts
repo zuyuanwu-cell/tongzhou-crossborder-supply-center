@@ -1,5 +1,48 @@
 import type { StockupDispatchDocument, StockupForwarder, StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupProductRef, StockupPurchaseOrder, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
 import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType } from "./container-loading/types";
+import type { DataContext } from "../collaboration/shared/data-context-types";
+
+export type { DataContext } from "../collaboration/shared/data-context-types";
+
+export type DataContextPayload = { dataContext?: DataContext };
+
+export type WarehouseQualificationCoverageStatus = "valid" | "warning" | "urgent" | "expired" | "undated" | "missing" | "unavailable";
+export type WarehouseQualificationCoverageRecord = { id: string; qualificationName: string; effectiveDate: string; expiryDate: string };
+export type WarehouseQualificationCoverageCell = {
+  category: string;
+  status: Exclude<WarehouseQualificationCoverageStatus, "unavailable">;
+  activeRecords: number;
+  nearestExpiryDate: string;
+  nearestDaysLeft: number | null;
+  records: WarehouseQualificationCoverageRecord[];
+};
+export type WarehouseQualificationCoverageProduct = {
+  id: string;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  category: string;
+  brand: string;
+  availableQty: number;
+  lockedQty: number;
+  inTransitQty: number;
+  totalQty: number;
+  status: WarehouseQualificationCoverageStatus;
+  covered: boolean;
+  coveredCategoryCount: number;
+  registeredCategoryCount: number;
+  cells: WarehouseQualificationCoverageCell[];
+};
+export type WarehouseQualificationCoveragePayload = DataContextPayload & {
+  ok: boolean;
+  warehouses: Array<{ id: string; name: string; country: string; productCount: number; totalQty: number; syncedAt: string; synchronized: boolean }>;
+  warehouse: { id: string; name: string; country: string; productCount: number; totalQty: number; syncedAt: string } | null;
+  categories: Array<{ name: string; coveredProducts: number; registeredProducts: number; missingProducts: number; expiringProducts: number; expiredProducts: number; coverageRate: number }>;
+  products: WarehouseQualificationCoverageProduct[];
+  completedProducts: number;
+  qualificationAvailable: boolean;
+  summary: { products: number; covered: number; risk: number; urgent: number; warning: number; expired: number; undated: number; missing: number; unavailable: number; coverageRate: number };
+};
 
 export type CatalogProduct = {
   id: string;
@@ -5197,6 +5240,19 @@ export function createStockupCollaborationShipment(payload: Record<string, unkno
   return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments", { method: "POST", body: JSON.stringify(payload) });
 }
 
+export type StockupDomesticAvailabilitySummaryItem = {
+  sku: string;
+  onHandQty: number;
+  reservedQty: number;
+  availableQty: number;
+  warehouses: Array<{ warehouseId: string; warehouseName: string; onHandQty: number; reservedQty: number; availableQty: number }>;
+};
+
+export function fetchStockupDomesticAvailabilitySummary(skus: string[]) {
+  const params = new URLSearchParams({ skus: skus.join(",") });
+  return requestJson<{ ok: boolean; queriedAt: string; items: StockupDomesticAvailabilitySummaryItem[] }>(`/api/stockup/collaboration/domestic-availability-summary?${params}`);
+}
+
 export function createStockupReservedShipment(payload: Record<string, unknown>) {
   return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments/reserve", { method: "POST", body: JSON.stringify(payload) });
 }
@@ -5554,6 +5610,15 @@ export async function downloadWarehouseLiabilitySettlementBatch(id: string) {
     throw new Error(payload.message || "导出核销明细失败。");
   }
   return response.blob();
+}
+
+export function fetchWarehouseQualificationCoverage(input: { warehouseId?: string; keyword?: string; status?: string } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.keyword) params.set("keyword", input.keyword);
+  if (input.status && input.status !== "all") params.set("status", input.status);
+  const query = params.size ? `?${params.toString()}` : "";
+  return requestJson<WarehouseQualificationCoveragePayload>(`/api/warehouse-collaboration/qualification-coverage${query}`, { signal });
 }
 
 export function fetchAfterSales(input: { status?: string; keyword?: string; mine?: boolean } = {}, signal?: AbortSignal) {

@@ -14,6 +14,17 @@ export type StockupCollaborationLine = {
   note: string;
   status: string;
   fulfilledQty: number;
+  domesticAvailableQty: number;
+  domesticAllocatedQty: number;
+  procurementRequiredQty: number;
+  inventorySnapshot: {
+    sku?: string;
+    onHandQty?: number;
+    reservedQty?: number;
+    availableQty?: number;
+    warehouses?: Array<{ warehouseId: string; warehouseName: string; onHandQty: number; reservedQty: number; availableQty: number }>;
+  };
+  inventoryCheckedAt: string;
   purchaseOrderedQty: number;
   purchaseReceivedQty: number;
   purchaseCancelledQty: number;

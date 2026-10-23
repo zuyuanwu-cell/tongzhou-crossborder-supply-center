@@ -128,6 +128,9 @@ function lineFromRow(row) {
     targetUnitCostCny: row.target_unit_cost_cny == null ? null : number(row.target_unit_cost_cny),
     expectedArrivalAt: String(row.expected_arrival_at || ""), note: String(row.note || ""), status: String(row.status),
     fulfilledQty: number(row.fulfilled_qty),
+    domesticAvailableQty: number(row.domestic_available_qty), domesticAllocatedQty: number(row.domestic_allocated_qty),
+    procurementRequiredQty: row.procurement_required_qty == null ? number(row.requested_qty) : number(row.procurement_required_qty),
+    inventorySnapshot: parseJson(row.inventory_snapshot_json, {}), inventoryCheckedAt: String(row.inventory_checked_at || ""),
     purchaseOrderedQty: number(row.purchase_ordered_qty), purchaseReceivedQty: number(row.purchase_received_qty), purchaseCancelledQty: number(row.purchase_cancelled_qty),
     warehouseExpectedQty: number(row.warehouse_expected_qty), warehouseReceivedQty: number(row.warehouse_received_qty), warehouseGoodQty: number(row.warehouse_good_qty),
     warehouseWorkOrderCount: number(row.warehouse_work_order_count),
@@ -553,6 +556,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
     } else {
       assertRequestTransition(request.status, targetStatus);
     }
+    if (request.workflowVersion === 2 && request.status === "draft" && targetStatus === "submitted") v2Service.refreshInventoryPlan(requestId, context);
     const now = nowIso();
     return store.transaction(() => {
       store.run("UPDATE stockup_requests SET status=?,assignee_id=?,assignee_name=?,version=version+1,updated_at=? WHERE id=?", [targetStatus, payload.assigneeId || request.assigneeId || userOf(context).id, payload.assigneeName || request.assigneeName || userOf(context).name, now, requestId]);

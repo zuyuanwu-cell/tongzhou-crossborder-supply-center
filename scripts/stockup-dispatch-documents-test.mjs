@@ -7,7 +7,7 @@ import { createStockupDispatchDocumentService } from "../server/stockup-dispatch
 const outputDir = mkdtempSync(resolve(tmpdir(), "stockup-dispatch-pdf-"));
 try {
   const service = createStockupDispatchDocumentService({ outputDir });
-  const result = service.generate({
+  const result = await service.generate({
     id: "shipment-1",
     shipmentNo: "FY-20261018-001",
     wmsOrderNo: "SEA-001",

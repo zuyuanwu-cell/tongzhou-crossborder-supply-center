@@ -17,6 +17,48 @@ function businessNo(prefix) {
 }
 
 export function createStockupV2Service({ store, inventoryGateway = {}, getRequest, getShipment, addEvent }) {
+  function planInventory(lines, context = {}) {
+    const skus = [...new Set(lines.map((line) => text(line.sku).replace(/\s+/g, "").toUpperCase()).filter(Boolean))];
+    const availability = skus.length && inventoryGateway.getAvailabilitySummary
+      ? inventoryGateway.getAvailabilitySummary(skus, context)
+      : { queriedAt: nowIso(), items: [] };
+    const bySku = new Map((availability?.items || []).map((item) => [text(item.sku).replace(/\s+/g, "").toUpperCase(), item]));
+    return lines.map((line) => {
+      const inventory = bySku.get(text(line.sku).replace(/\s+/g, "").toUpperCase()) || {};
+      const domesticAvailableQty = Math.max(0, number(inventory.availableQty));
+      const domesticAllocatedQty = Math.min(number(line.quantity), domesticAvailableQty);
+      const procurementRequiredQty = Math.max(0, number(line.quantity) - domesticAllocatedQty);
+      const method = domesticAllocatedQty >= number(line.quantity) ? "国内库存" : domesticAllocatedQty > 0 ? "库存优先+采购" : "采购";
+      return {
+        ...line,
+        method,
+        domesticAvailableQty,
+        domesticAllocatedQty,
+        procurementRequiredQty,
+        inventoryCheckedAt: text(availability?.queriedAt) || nowIso(),
+        inventorySnapshot: {
+          sku: text(line.sku),
+          onHandQty: number(inventory.onHandQty),
+          reservedQty: number(inventory.reservedQty),
+          availableQty: domesticAvailableQty,
+          warehouses: Array.isArray(inventory.warehouses) ? inventory.warehouses : [],
+        },
+      };
+    });
+  }
+
+  function refreshInventoryPlan(requestId, context = {}) {
+    const rows = store.all("SELECT * FROM stockup_request_lines WHERE request_id=?", [text(requestId)]);
+    const planned = planInventory(rows.map((row) => ({ ...row, quantity: number(row.requested_qty), sku: text(row.sku) })), context);
+    const checkedAt = nowIso();
+    return store.transaction(() => {
+      for (const line of planned) store.run(`UPDATE stockup_request_lines
+        SET method=?,domestic_available_qty=?,domestic_allocated_qty=?,procurement_required_qty=?,inventory_snapshot_json=?,inventory_checked_at=?,updated_at=? WHERE id=?`,
+        [line.method, line.domesticAvailableQty, line.domesticAllocatedQty, line.procurementRequiredQty, JSON.stringify(line.inventorySnapshot), line.inventoryCheckedAt, checkedAt, line.id]);
+      return planned;
+    });
+  }
+
   function nextTemporarySku() {
     const date = new Date();
     for (let sequence = 1; sequence <= 9999; sequence += 1) {
@@ -70,7 +112,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     const requestNo = businessNo("BR");
     const status = payload.submit ? "submitted" : "draft";
     const result = store.transaction(() => {
-      const lines = rawLines.map((line, index) => {
+      let lines = rawLines.map((line, index) => {
         const quantity = number(line.requestedQty);
         if (quantity <= 0) fail(`第 ${index + 1} 行需求数量必须大于 0。`, "invalid_quantity");
         const productRef = ensureProductRef(line, now);
@@ -78,16 +120,18 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       });
       const normalizedSkus = lines.map((line) => line.sku.toUpperCase());
       if (new Set(normalizedSkus).size !== normalizedSkus.length) fail("同一商品不能在需求中重复添加。", "duplicate_product_ref");
+      lines = planInventory(lines, context);
       store.run(`INSERT INTO stockup_requests
         (id,request_no,project,destination_country,destination_warehouse_id,destination_warehouse_name,expected_arrival_at,priority,reason,platform,note,status,requester_id,requester_name,assignee_id,assignee_name,exception_count,version,created_at,updated_at,workflow_version,source_type,source_ref,source_snapshot_json)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'','',0,1,?,?,?,?,?,?)`, [requestId, requestNo, required(payload.project, "项目/团队"), required(payload.destinationCountry, "目的国家"), text(payload.destinationWarehouseId),
         required(payload.destinationWarehouseName, "目的仓库"), required(payload.expectedArrivalAt, "期望到仓日期"), text(payload.priority) || "常规", required(payload.reason, "需求原因"),
         text(payload.platform), text(payload.note), status, actor.id, actor.name, now, now, 2, text(payload.sourceType) || "manual", text(payload.sourceRef), JSON.stringify(payload.sourceSnapshot || {})]);
       for (const line of lines) store.run(`INSERT INTO stockup_request_lines
-        (id,request_id,product_id,sku,product_name,image_url,specification,method,requested_qty,unit,target_unit_cost_cny,expected_arrival_at,note,status,fulfilled_qty,created_at,updated_at,product_ref_id,procurement_url,shelf_life_managed)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`, [line.id, requestId, line.productRef.productId, line.sku, line.productRef.productName, line.productRef.imageUrl, line.productRef.specification,
-        "采购", line.quantity, text(line.unit) || "件", line.targetUnitCostCny === "" || line.targetUnitCostCny == null ? null : number(line.targetUnitCostCny), text(line.expectedArrivalAt),
-        text(line.note), status, now, now, line.productRef.id, text(line.procurementUrl || line.orderUrl), line.productRef.shelfLifeManaged ? 1 : 0]);
+        (id,request_id,product_id,sku,product_name,image_url,specification,method,requested_qty,unit,target_unit_cost_cny,expected_arrival_at,note,status,fulfilled_qty,created_at,updated_at,product_ref_id,procurement_url,shelf_life_managed,domestic_available_qty,domestic_allocated_qty,procurement_required_qty,inventory_snapshot_json,inventory_checked_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)`, [line.id, requestId, line.productRef.productId, line.sku, line.productRef.productName, line.productRef.imageUrl, line.productRef.specification,
+        line.method, line.quantity, text(line.unit) || "件", line.targetUnitCostCny === "" || line.targetUnitCostCny == null ? null : number(line.targetUnitCostCny), text(line.expectedArrivalAt),
+        text(line.note), status, now, now, line.productRef.id, text(line.procurementUrl || line.orderUrl), line.productRef.shelfLifeManaged ? 1 : 0,
+        line.domesticAvailableQty, line.domesticAllocatedQty, line.procurementRequiredQty, JSON.stringify(line.inventorySnapshot), line.inventoryCheckedAt]);
       addEvent(requestId, status === "draft" ? "draft_saved" : "request_submitted", status === "draft" ? "已保存现货备货草稿" : "现货备货需求已提交", `${lines.length} 个产品，共 ${lines.reduce((sum, line) => sum + line.quantity, 0)} 件`, context, { payload: { workflowVersion: 2, sourceType: text(payload.sourceType) || "manual" } });
       const response = { ok: true, idempotentReplay: false, requestId, requestNo, status, workflowVersion: 2 };
       if (storedKey) store.run("INSERT INTO stockup_idempotency (key,user_id,response_json,created_at) VALUES (?,?,?,?)", [storedKey, actor.id, JSON.stringify(response), now]);
@@ -110,7 +154,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     const currentById = new Map(currentRows.map((line) => [text(line.id), line]));
 
     return store.transaction(() => {
-      const nextLines = rawLines?.map((line, index) => {
+      let nextLines = rawLines?.map((line, index) => {
         const quantity = number(line.requestedQty);
         if (quantity <= 0) fail(`第 ${index + 1} 行需求数量必须大于 0。`, "invalid_quantity");
         const current = currentById.get(text(line.id));
@@ -123,12 +167,13 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       });
       if (nextLines && !nextLines.length) fail("请至少添加一个产品。", "request_lines_required");
       if (nextLines && new Set(nextLines.map((line) => line.productRef.id)).size !== nextLines.length) fail("同一商品不能在需求中重复添加。", "duplicate_product_ref");
+      if (nextLines) nextLines = planInventory(nextLines, context);
       store.run(`UPDATE stockup_requests SET project=?,destination_country=?,destination_warehouse_id=?,destination_warehouse_name=?,expected_arrival_at=?,priority=?,reason=?,platform=?,note=?,version=version+1,updated_at=? WHERE id=?`, [required(payload.project ?? request.project, "项目/团队"), required(payload.destinationCountry ?? request.destinationCountry, "目的国家"), text(payload.destinationWarehouseId ?? request.destinationWarehouseId), required(payload.destinationWarehouseName ?? request.destinationWarehouseName, "目的仓库"), required(payload.expectedArrivalAt ?? request.expectedArrivalAt, "期望到仓日期"), text(payload.priority ?? request.priority) || "常规", required(payload.reason ?? request.reason, "需求原因"), text(payload.platform ?? request.platform), text(payload.note ?? request.note), now, request.id]);
       if (nextLines) {
         store.run("DELETE FROM stockup_request_lines WHERE request_id=?", [request.id]);
         for (const line of nextLines) store.run(`INSERT INTO stockup_request_lines
-          (id,request_id,product_id,sku,product_name,image_url,specification,method,requested_qty,unit,target_unit_cost_cny,expected_arrival_at,note,status,fulfilled_qty,created_at,updated_at,product_ref_id,procurement_url,shelf_life_managed)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',0,?,?,?,?,?)`, [line.id, request.id, line.productRef.productId, line.sku, line.productRef.productName, line.productRef.imageUrl, line.productRef.specification, "采购", line.quantity, text(line.input.unit) || "件", line.input.targetUnitCostCny === "" || line.input.targetUnitCostCny == null ? null : number(line.input.targetUnitCostCny), text(line.input.expectedArrivalAt), text(line.input.note), now, now, line.productRef.id, text(line.input.procurementUrl || line.input.orderUrl), line.productRef.shelfLifeManaged ? 1 : 0]);
+          (id,request_id,product_id,sku,product_name,image_url,specification,method,requested_qty,unit,target_unit_cost_cny,expected_arrival_at,note,status,fulfilled_qty,created_at,updated_at,product_ref_id,procurement_url,shelf_life_managed,domestic_available_qty,domestic_allocated_qty,procurement_required_qty,inventory_snapshot_json,inventory_checked_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'draft',0,?,?,?,?,?,?,?,?,?,?)`, [line.id, request.id, line.productRef.productId, line.sku, line.productRef.productName, line.productRef.imageUrl, line.productRef.specification, line.method, line.quantity, text(line.input.unit) || "件", line.input.targetUnitCostCny === "" || line.input.targetUnitCostCny == null ? null : number(line.input.targetUnitCostCny), text(line.input.expectedArrivalAt), text(line.input.note), now, now, line.productRef.id, text(line.input.procurementUrl || line.input.orderUrl), line.productRef.shelfLifeManaged ? 1 : 0, line.domesticAvailableQty, line.domesticAllocatedQty, line.procurementRequiredQty, JSON.stringify(line.inventorySnapshot), line.inventoryCheckedAt]);
       }
       addEvent(request.id, "request_updated", "现货备货草稿已修订", text(payload.note) || "已更新基本信息或产品清单", context);
       return { ok: true, request: getRequest(request.id, { ...context, viewAll: true }) };
@@ -226,11 +271,17 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     const replay = storedKey ? store.first("SELECT response_json FROM stockup_idempotency WHERE key=?", [storedKey]) : null;
     if (replay) { const parsed = json(replay.response_json, {}); return { ok: true, idempotentReplay: true, purchaseOrder: purchaseFromRow(store.first("SELECT * FROM stockup_purchase_orders WHERE id=?", [parsed.purchaseOrderId])) }; }
     const rawLines = Array.isArray(payload.lines) ? payload.lines : [];
+    const referencedRequestIds = new Set(rawLines.map((line) => text(store.first(
+      "SELECT request_id FROM stockup_request_lines WHERE id=?",
+      [text(line.requestLineId)],
+    )?.request_id)).filter(Boolean));
+    for (const requestId of referencedRequestIds) refreshInventoryPlan(requestId, context);
     const sources = rawLines.map((line) => {
       const requestLine = store.first("SELECT l.*,r.workflow_version,r.status AS request_status FROM stockup_request_lines l JOIN stockup_requests r ON r.id=l.request_id WHERE l.id=?", [text(line.requestLineId)]);
       if (!requestLine || number(requestLine.workflow_version) !== 2) fail("采购明细必须来自现货备货 V2 需求。", "purchase_request_line_not_found", 404);
       if (!["submitted", "purchasing"].includes(text(requestLine.request_status))) fail("需求当前状态不能建立采购单。", "purchase_request_state", 409);
-      const remaining = number(requestLine.requested_qty) - number(store.first("SELECT SUM(quantity-cancelled_qty) AS qty FROM stockup_purchase_order_lines WHERE request_line_id=? AND status!='cancelled'", [requestLine.id])?.qty);
+      const procurementRequiredQty = requestLine.procurement_required_qty == null ? number(requestLine.requested_qty) : number(requestLine.procurement_required_qty);
+      const remaining = procurementRequiredQty - number(store.first("SELECT SUM(quantity-cancelled_qty) AS qty FROM stockup_purchase_order_lines WHERE request_line_id=? AND status!='cancelled'", [requestLine.id])?.qty);
       const quantity = number(line.quantity);
       if (quantity <= 0 || quantity > remaining) fail(`${requestLine.sku} 可采购数量为 ${remaining}。`, "purchase_quantity_exceeds_request", 409);
       return { ...line, id: id("spol"), requestLine, quantity, merchandiseAmount: number(line.merchandiseAmount) };
@@ -634,6 +685,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     createReservedShipment,
     createSpotRequest,
     updateSpotRequest,
+    refreshInventoryPlan,
     issueDispatchInstruction,
     handoverShipment,
     listCustomProcessingHandoffs,

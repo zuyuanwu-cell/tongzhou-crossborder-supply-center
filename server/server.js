@@ -260,8 +260,36 @@ const hermesClient = createHermesClient({ baseUrl: hermesBaseUrl, apiKey: hermes
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
 const stockupInventoryContext = (context = {}) => ({ ...domesticInventoryContextForAuth(context.auth), warehouseIds: [], countries: [] });
+const stockupDomesticAvailabilitySummary = (skuValues, context = {}) => {
+  const skus = [...new Set((Array.isArray(skuValues) ? skuValues : String(skuValues || "").split(","))
+    .map((value) => String(value || "").replace(/\s+/g, "").toUpperCase()).filter(Boolean))];
+  if (!skus.length) return { ok: true, queriedAt: new Date().toISOString(), items: [] };
+  if (skus.length > 100) throw Object.assign(new Error("单次最多查询 100 个 SKU。"), { statusCode: 400, code: "too_many_skus" });
+  const inventoryContext = stockupInventoryContext(context);
+  const warehouses = domesticInventoryService.listWarehouses(inventoryContext).warehouses.filter((warehouse) => warehouse.status === "active");
+  const summary = new Map(skus.map((sku) => [sku, { sku, onHandQty: 0, reservedQty: 0, availableQty: 0, warehouses: [] }]));
+  for (const warehouse of warehouses) {
+    const result = domesticInventoryService.stockupAvailability({ warehouseId: warehouse.id, skus: skus.join(",") }, inventoryContext);
+    for (const item of result.items) {
+      const current = summary.get(item.sku);
+      if (!current) continue;
+      current.onHandQty += Number(item.onHandQty || 0);
+      current.reservedQty += Number(item.reservedQty || 0);
+      current.availableQty += Number(item.availableQty || 0);
+      if (Number(item.onHandQty || 0) > 0 || Number(item.reservedQty || 0) > 0) current.warehouses.push({
+        warehouseId: item.warehouseId,
+        warehouseName: item.warehouseName,
+        onHandQty: Number(item.onHandQty || 0),
+        reservedQty: Number(item.reservedQty || 0),
+        availableQty: Number(item.availableQty || 0),
+      });
+    }
+  }
+  return { ok: true, queriedAt: new Date().toISOString(), items: [...summary.values()] };
+};
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore, {
   inventoryGateway: {
+    getAvailabilitySummary: (skus, context) => stockupDomesticAvailabilitySummary(skus, context),
     createInspectionInbound: (input, context) => domesticInventoryService.createMovement({ ...input, type: "inbound", allowDuplicateSkus: true }, stockupInventoryContext(context), `stockup-inspection:${input.referenceNo}`),
     reserveStock: (input, context) => domesticInventoryService.reserveStock(input, stockupInventoryContext(context), `stockup-reservation:${input.referenceNo}`),
     releaseReservation: (reservationId, context) => domesticInventoryService.releaseReservation(reservationId, stockupInventoryContext(context)),
@@ -439,6 +467,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   }, { ...filters, limit: filters.limit || 10000 }),
   listDomesticWarehouses: (_context, auth) => domesticInventoryService.listWarehouses({ ...domesticInventoryContextForAuth(auth), warehouseIds: [], countries: [] }),
   getDomesticAvailability: (filters, _context, auth) => domesticInventoryService.stockupAvailability(filters, { ...domesticInventoryContextForAuth(auth), warehouseIds: [], countries: [] }),
+  getDomesticAvailabilitySummary: (filters, context) => stockupDomesticAvailabilitySummary(filters.skus, context),
   createDomesticOutbound: (shipment, auth) => {
     const bySku = new Map();
     for (const line of shipment.lines || []) {

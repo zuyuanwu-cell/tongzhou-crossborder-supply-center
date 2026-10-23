@@ -68,7 +68,7 @@ export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff
   }, {}), [orders]);
   const purchasableLines = useMemo(() => requests
     .filter((request) => request.workflowVersion === 2 && ["submitted", "purchasing"].includes(request.status))
-    .flatMap((request) => request.lines.filter((line) => line.status !== "procurement_cancelled").map((line) => ({ request, line, remainingQty: Math.max(0, line.requestedQty - (purchasedByRequestLine[line.id] || 0)) })))
+    .flatMap((request) => request.lines.filter((line) => line.status !== "procurement_cancelled").map((line) => ({ request, line, remainingQty: Math.max(0, (line.procurementRequiredQty ?? line.requestedQty) - (purchasedByRequestLine[line.id] || 0)) })))
     .filter((item) => item.remainingQty > 0), [purchasedByRequestLine, requests]);
   const closedLines = useMemo(() => requests.flatMap((request) => request.lines
     .filter((line) => line.status === "procurement_cancelled")
