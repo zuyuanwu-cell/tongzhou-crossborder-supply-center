@@ -17,6 +17,9 @@ const workflow = {
     createdAt: "2026-08-28T02:00:00.000Z",
     updatedAt: "2026-09-05T08:00:00.000Z",
     expectedCompletedAt: "2026-09-10T08:00:00.000Z",
+    project: "俄罗斯项目",
+    destinationCountry: "俄罗斯",
+    destinationWarehouseId: "wh-ru",
   }],
   stockupLines: [{
     id: "line-1",
@@ -25,6 +28,7 @@ const workflow = {
     completedQty: 60,
     qualifiedQty: 40,
     shippedQty: 20,
+    sku: "SKU-RU-1",
     updatedAt: "2026-09-05T08:00:00.000Z",
   }],
   shipments: [{
@@ -82,6 +86,10 @@ const timelines = buildProductionTimelines(workflow, actionLog, [{
 assert.equal(timelines.length, 1);
 assert.equal(timelines[0].orderRecordId, "order-1");
 assert.equal(timelines[0].openedAt, "2026-08-28T02:00:00.000Z");
+assert.equal(timelines[0].project, "俄罗斯项目");
+assert.equal(timelines[0].country, "俄罗斯");
+assert.equal(timelines[0].warehouseId, "wh-ru");
+assert.equal(timelines[0].sku, "SKU-RU-1");
 assert.deepEqual(timelines[0].events.map((event) => event.type), ["opened", "progress", "shipment", "wms", "expected"]);
 assert.match(timelines[0].events[1].description, /已完工 60/);
 assert.equal(timelines[0].events.filter((event) => event.type === "shipment").length, 1, "发货数据与操作日志不应重复生成节点");

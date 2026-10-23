@@ -25,7 +25,7 @@ assert.doesNotThrow(() => validateInspectionLine({
   lots: [{ quantity: 18, lotNo: "LOT-1", barcode: "690001", productionDate: "2026-10-01", cartonCount: 1, unitsPerCarton: 18, looseQuantity: 0, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 5 }],
 }));
 assert.throws(() => validateInspectionLine({ expectedQty: 10, receivedQty: 10, goodQty: 10, lots: [] }), (error) => error?.code === "inspection_lot_required");
+assert.throws(() => validateInspectionLine({ expectedQty: 10, receivedQty: 10, goodQty: 10, lots: [{ quantity: 10, lotNo: "LOT-2", barcode: "690002", productionDate: "2026-10-02" }] }), (error) => error?.code === "inspection_carton_required");
 assert.equal(temporarySku(new Date("2026-10-18T00:00:00Z"), 7), "TMP-20261018-0007");
 
 console.log("stockup v2 domain tests passed");
-

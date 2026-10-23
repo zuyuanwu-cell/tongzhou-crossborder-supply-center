@@ -1,0 +1,234 @@
+/* V2 requests that finished domestic inspection are the next logistics action. */
+.sc-execution-grid>button.is-next-shipment {
+  border-color: #86bea9;
+  background: linear-gradient(145deg, #fff 0, #f2fbf7 100%);
+  box-shadow: inset 0 -3px 0 #1c9367;
+}
+
+.sc-execution-grid>button.is-next-shipment:hover {
+  border-color: #4aa47f;
+  box-shadow: inset 0 -3px 0 #1c9367, 0 10px 24px rgba(20, 103, 74, .12);
+}
+
+.sc-execution-grid>button.is-next-shipment footer {
+  margin: 0 -7px -7px;
+  padding: 11px 8px 7px;
+  color: #08724e;
+}
+
+.sc-execution-grid>button.is-next-shipment footer span::after {
+  content: " · 点击立即处理";
+  color: #e45b1e;
+}
+
+.sc-dispatch-readiness-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px 18px 4px;
+  background: #f4f7fb;
+}
+
+.sc-dispatch-readiness-metrics article {
+  min-height: 88px;
+  padding: 15px;
+  border: 1px solid #d7e2ef;
+  border-radius: 13px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sc-dispatch-readiness-metrics article>span {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #eaf3fd;
+  color: #0c5eaf;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.sc-dispatch-readiness-metrics article>div {
+  min-width: 0;
+  display: grid;
+}
+
+.sc-dispatch-readiness-metrics small,
+.sc-dispatch-readiness-metrics em {
+  color: #73869d;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.sc-dispatch-readiness-metrics b {
+  color: #0a356d;
+  font-size: 23px;
+  line-height: 1.15;
+}
+
+.sc-dispatch-readiness-metrics article.is-warning {
+  border-color: #f0bb88;
+  background: #fff9f1;
+}
+
+.sc-dispatch-readiness-metrics article.is-warning>span {
+  background: #fff0e3;
+  color: #d55214;
+}
+
+.sc-ready-dispatch-queue {
+  margin: 14px 18px 4px;
+  border: 1px solid #bddbce;
+  border-radius: 14px;
+  background: #f4fbf8;
+  overflow: hidden;
+}
+
+.sc-ready-dispatch-queue>header {
+  padding: 13px 15px;
+  border-bottom: 1px solid #d7e9e1;
+}
+
+.sc-ready-dispatch-queue>header>div {
+  display: flex;
+  flex-direction: column;
+}
+
+.sc-ready-dispatch-queue>header b {
+  color: #116447;
+  font-size: 14px;
+}
+
+.sc-ready-dispatch-queue>header span {
+  color: #68867b;
+  font-size: 11px;
+}
+
+.sc-ready-dispatch-queue>div>article {
+  min-height: 78px;
+  padding: 12px 15px;
+  border-bottom: 1px solid #dfece6;
+  display: grid;
+  grid-template-columns: 38px minmax(190px, 1fr) minmax(300px, 1.5fr) max-content;
+  align-items: center;
+  gap: 12px;
+  background: #fff;
+}
+
+.sc-ready-dispatch-queue>div>article:last-child {
+  border-bottom: 0;
+}
+
+.sc-ready-dispatch-queue>div>article>span {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: #e8f7f0;
+  color: #16805c;
+  display: grid;
+  place-items: center;
+}
+
+.sc-ready-dispatch-queue>div>article>div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sc-ready-dispatch-queue>div>article>div b {
+  color: #103b70;
+  font-size: 13px;
+}
+
+.sc-ready-dispatch-queue>div>article>div small {
+  color: #75889e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc-ready-dispatch-queue dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.sc-ready-dispatch-queue dl div {
+  display: flex;
+  flex-direction: column;
+}
+
+.sc-ready-dispatch-queue dt {
+  color: #8292a5;
+  font-size: 10px;
+}
+
+.sc-ready-dispatch-queue dd {
+  margin: 3px 0 0;
+  color: #244666;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sc-ready-dispatch-queue article>button {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 8px;
+  background: #0d68b8;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .sc-dispatch-readiness-metrics { grid-template-columns: 1fr 1fr; }
+  .sc-ready-dispatch-queue>div>article { grid-template-columns: 38px 1fr; }
+  .sc-ready-dispatch-queue dl,
+  .sc-ready-dispatch-queue article>button { grid-column: 2; }
+}
+
+@media (max-width: 560px) {
+  .sc-dispatch-readiness-metrics { grid-template-columns: 1fr; }
+  .sc-ready-dispatch-queue dl { grid-template-columns: 1fr 1fr 1fr; }
+}
+
+/* Dispatch billing keeps warehouse packing facts separate from carrier-confirmed billing facts. */
+.sc-dispatch-create-modal { width: min(1180px, 97vw); height: min(900px, 96vh); }
+.sc-carrier-billing-section { border-color: #bad2ec; background: linear-gradient(135deg, #f7fbff 0, #fffaf6 100%); }
+.sc-billing-heading { margin-bottom: 13px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.sc-billing-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sc-billing-heading b { color: #0b3c75; font-size: 15px; }
+.sc-billing-heading span { color: #72869d; font-size: 10px; }
+.sc-billing-heading button { min-height: 34px; padding: 0 12px; border: 1px solid #b9cde3; border-radius: 8px; background: #fff; color: #145a9f; font-size: 10px; font-weight: 900; cursor: pointer; }
+.sc-billing-compare { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
+.sc-billing-compare-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.sc-billing-compare article { min-height: 58px; padding: 10px 12px; border: 1px solid #d6e3f0; border-radius: 10px; background: #fff; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+.sc-billing-compare small { color: #7b8da2; font-size: 9px; }
+.sc-billing-compare b { color: #163f70; font-size: 15px; }
+.sc-billing-warning { margin-bottom: 12px; padding: 10px 12px; border: 1px solid #efc599; border-radius: 9px; background: #fff8ee; color: #8a501d; display: flex; align-items: flex-start; gap: 8px; font-size: 10px; line-height: 1.6; }
+.sc-billing-warning svg { flex: none; margin-top: 1px; color: #e2601f; }
+.sc-billing-grid { align-items: end; }
+.sc-quote-output output { height: 42px; padding: 0 12px; border: 1px solid #f0b78f; border-radius: 9px; background: #fff4ec; color: #d74d0e; display: flex; align-items: center; font-size: 17px; font-weight: 900; }
+.sc-billing-hint { margin: 12px 0 0; color: #6a7e96; font-size: 10px; }
+.sc-shipment-meta b { white-space: nowrap; }
+.sc-dispatch-lots > div { min-width: 940px; grid-template-columns: minmax(300px, 1.45fr) .58fr .9fr 1fr; gap: 12px; }
+.sc-dispatch-pack-edit { display: grid; grid-template-columns: minmax(76px, 1fr) 12px minmax(76px, 1fr) auto; align-items: end; gap: 7px; }
+.sc-dispatch-pack-edit > label { display: flex; align-items: stretch; flex-direction: column; gap: 3px; }
+.sc-dispatch-pack-edit > label small { color: #72869d; font-size: 9px; font-weight: 800; }
+.sc-dispatch-pack-edit > label input { width: 100%; min-width: 0; }
+.sc-dispatch-pack-edit > i { padding-bottom: 10px; color: #7f90a2; font-style: normal; }
+.sc-dispatch-pack-edit > em { align-self: end; margin-bottom: 9px; padding: 3px 6px; border-radius: 999px; font-size: 8px; font-style: normal; font-weight: 900; white-space: nowrap; }
+.sc-dispatch-pack-edit > em.is-valid { background: #e8f7ef; color: #087554; }
+.sc-dispatch-pack-edit > em.is-error { background: #fff0eb; color: #c2410c; }
+
+@media (max-width: 900px) {
+  .sc-dispatch-create-modal { width: 100vw; height: 100vh; border-radius: 0; }
+  .sc-billing-compare { grid-template-columns: 1fr; }
+  .sc-billing-heading { align-items: flex-start; flex-direction: column; }
+}

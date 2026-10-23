@@ -1,5 +1,4 @@
 import { resolveApiUrl } from "./api";
-import type { DataContext } from "../collaboration/shared/data-context-types";
 
 export type CollaborationWarehouseTaskType = "warehouse_inbound" | "warehouse_outbound" | "warehouse_stockup" | "warehouse_exception";
 export type CollaborationWarehouseTaskStatus = "pending" | "accepted" | "in_progress" | "pending_approval" | "pending_sync" | "completed" | "rejected" | "cancelled";
@@ -31,7 +30,6 @@ export type CollaborationTaskOptions = {
   portalUrl: string;
   organizations: CollaborationTaskOrganization[];
   products: CollaborationTaskProduct[];
-  warnings?: string[];
 };
 
 export type CollaborationWarehouseTask = {
@@ -97,17 +95,10 @@ export function fetchCollaborationTaskOptions() {
   return request<CollaborationTaskOptions>("/api/collaboration-bridge/warehouse-tasks/options");
 }
 
-export function fetchCollaborationWarehouseTasks(filters: { organizationCode?: string; status?: string; itemType?: string; keyword?: string; overdue?: boolean; limit?: number; offset?: number } = {}) {
+export function fetchCollaborationWarehouseTasks(filters: { organizationCode?: string; status?: string; itemType?: string; keyword?: string; limit?: number; offset?: number } = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) if (value !== undefined && String(value).trim()) query.set(key, String(value));
-  return request<{ items: CollaborationWarehouseTask[]; counts: Record<string, number>; total: number; limit: number; offset: number; dataContext?: DataContext }>(`/api/collaboration-bridge/warehouse-tasks${query.size ? `?${query}` : ""}`);
-}
-
-export function remindCollaborationWarehouseTask(id: string, note = "") {
-  return request<{ ok: boolean; workItemId: string; status: string; remindedAt: string }>(`/api/collaboration-bridge/warehouse-tasks/${encodeURIComponent(id)}/remind`, {
-    method: "POST",
-    body: JSON.stringify({ note }),
-  });
+  return request<{ items: CollaborationWarehouseTask[]; counts: Record<string, number>; total: number; limit: number; offset: number }>(`/api/collaboration-bridge/warehouse-tasks${query.size ? `?${query}` : ""}`);
 }
 
 export function fetchCollaborationWarehouseTask(id: string) {

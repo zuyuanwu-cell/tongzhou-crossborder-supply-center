@@ -3,7 +3,6 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import type { ContainerPlacement, ContainerType } from "./types";
-import { skuColorHex } from "./color";
 
 type Props = {
   container: ContainerType;
@@ -15,6 +14,13 @@ type Props = {
   onSelect: (placementId: string) => void;
   onMove: (placementId: string, position: { x: number; y: number; z: number }) => void;
 };
+
+function skuColor(sku: string) {
+  let hash = 0;
+  for (let index = 0; index < sku.length; index += 1) hash = ((hash << 5) - hash + sku.charCodeAt(index)) | 0;
+  const hue = ((Math.abs(hash) % 300) + 18) / 360;
+  return new THREE.Color().setHSL(hue, 0.64, 0.55);
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -94,7 +100,7 @@ export function ContainerScene({ container, placements, selectedId, showShell, e
       .slice(0, 1500);
     for (const placement of visiblePlacements) {
       const geometry = new THREE.BoxGeometry(placement.lengthCm * scale * 0.985, placement.heightCm * scale * 0.985, placement.widthCm * scale * 0.985);
-      const color = new THREE.Color(skuColorHex(placement.sku));
+      const color = skuColor(placement.sku);
       const selected = placement.placementId === selectedId;
       const material = new THREE.MeshStandardMaterial({
         color,

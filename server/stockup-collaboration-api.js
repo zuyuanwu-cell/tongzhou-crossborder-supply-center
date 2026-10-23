@@ -55,11 +55,21 @@ function queryObject(url) {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
+export function collaborationIsoDateTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  let candidate = raw;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) candidate = `${raw}T23:59:59+08:00`;
+  else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(raw)) candidate = `${raw}:00+08:00`;
+  else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(raw)) candidate = `${raw}+08:00`;
+  const timestamp = Date.parse(candidate);
+  if (!Number.isFinite(timestamp)) throw Object.assign(new Error("预计到仓时间格式不正确，请重新选择日期和时间。"), { statusCode: 400, code: "invalid_expected_arrival_at" });
+  return new Date(timestamp).toISOString();
+}
+
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
   async function publishStockupWorkOrder(workOrder, context, auth, idempotencyKey, { revision = false } = {}) {
-    const dueAt = workOrder.expectedArrivalAt
-      ? (/T/.test(workOrder.expectedArrivalAt) ? workOrder.expectedArrivalAt : `${workOrder.expectedArrivalAt.slice(0, 10)}T23:59:59.000Z`)
-      : "";
+    const dueAt = collaborationIsoDateTime(workOrder.expectedArrivalAt);
     const request = service.getRequest(workOrder.requestId, context);
     return publishWarehouseTask({
       organizationCode: workOrder.organizationCode,
@@ -150,6 +160,14 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         sendJson(res, 200, result);
         return true;
       }
+      if ((match = suffix.match(/^\/request-lines\/([^/]+)\/procurement$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有终止或恢复商品采购的权限。");
+        const payload = await readBody(req);
+        const result = service.updateRequestLineProcurement(decodeURIComponent(match[1]), payload, context);
+        appendActionLog(auth, payload.action === "reopen" ? "恢复商品采购" : "采购前终止商品", "stockup_request_line", match[1], { requestId: result.request.id, reason: payload.reason || "" });
+        sendJson(res, 200, result);
+        return true;
+      }
 
       if (suffix === "/purchase-orders" && req.method === "GET") {
         requireAny(auth, ["stockup_execution_view", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有查看采购单的权限。");
@@ -161,6 +179,13 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         const result = service.createPurchaseOrder(await readBody(req), context, String(req.headers["idempotency-key"] || ""));
         appendActionLog(auth, "登记 1688 采购单", "stockup_purchase_order", result.purchaseOrder.purchaseNo, { paidTotalCny: result.purchaseOrder.paidTotalCny });
         sendJson(res, result.idempotentReplay ? 200 : 201, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/purchase-orders\/([^/]+)$/)) && req.method === "PATCH") {
+        requireAny(auth, ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有修改采购单的权限。");
+        const result = service.updatePurchaseOrder(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "修改采购单价格分摊", "stockup_purchase_order", result.purchaseOrder.purchaseNo, { paidTotalCny: result.purchaseOrder.paidTotalCny, version: result.purchaseOrder.version });
+        sendJson(res, 200, result);
         return true;
       }
       if ((match = suffix.match(/^\/purchase-orders\/([^/]+)\/events$/)) && req.method === "POST") {
@@ -267,7 +292,15 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         const result = Number(payload.workflowVersion || 2) === 2
           ? service.createSpotRequest(payload, context, String(req.headers["idempotency-key"] || ""))
           : service.createRequest(payload, context, String(req.headers["idempotency-key"] || ""));
-        appendActionLog(auth, payload.submit ? "提交备货协同需求" : "保存备货协同草稿", "stockup_collaboration_request", result.requestNo, { requestId: result.requestId });
+        if (payload.submit && !result.idempotentReplay) {
+          const request = service.getRequest(result.requestId, { ...context, viewAll: true });
+          try {
+            result.notification = await notifyRequestSubmitted({ request, payload, auth, req });
+          } catch (error) {
+            result.notification = { status: "failed", message: error?.message || "企业微信通知发送失败" };
+          }
+        }
+        appendActionLog(auth, payload.submit ? "提交备货协同需求" : "保存备货协同草稿", "stockup_collaboration_request", result.requestNo, { requestId: result.requestId, notificationStatus: result.notification?.status || "not_requested" });
         sendJson(res, 201, result);
         return true;
       }
@@ -284,7 +317,7 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       }
       if ((match = suffix.match(/^\/requests\/([^/]+)\/(submit|accept|request-changes|reject|cancel|restore)$/)) && req.method === "POST") {
         const action = match[2];
-        if (["accept", "request-changes", "reject"].includes(action)) requireAny(auth, ["stockup_request_accept", "stockup_workflow_manage"], "当前账号没有受理备货需求权限。");
+        if (["accept", "request-changes", "reject"].includes(action)) requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有受理备货需求权限。");
         else requireAny(auth, ["stockup_request_create", "stockup_workflow_manage"], "当前账号没有变更备货需求权限。");
         const statusByAction = { submit: "pending_acceptance", accept: "accepted", "request-changes": "needs_changes", reject: "rejected", cancel: "cancelled", restore: "draft" };
         const payload = await readBody(req);
@@ -355,6 +388,13 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有作废仓库单据权限。");
         const result = await cancelWarehouseDocument(decodeURIComponent(match[1]), context, auth);
         appendActionLog(auth, `作废${result.documentLabel || "仓库单据"}`, "stockup_collaboration_shipment", result.shipment?.shipmentNo || match[1], { orderNo: result.shipment?.wmsOrderNo || "", alreadyCancelled: Boolean(result.alreadyCancelled) });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/shipments\/([^/]+)\/reconcile-wms-deletion$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有登记 WMS 外部删除的权限。");
+        const result = service.reconcileDeletedShipmentWmsOrder(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "登记外部 WMS 单已删除", "stockup_collaboration_shipment", result.shipment?.shipmentNo || match[1], { orderNo: result.shipment?.wmsOrderNo || "", preservedStatus: result.preservedStatus || "" });
         sendJson(res, 200, result);
         return true;
       }

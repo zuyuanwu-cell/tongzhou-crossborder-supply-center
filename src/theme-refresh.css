@@ -1577,7 +1577,6 @@
   --workflow-accent-soft: #fff1e8;
 }
 .stockup-recommendation-page > .stockup-command-bar { order: 1; }
-.stockup-recommendation-page > .sku-coding-center { order: 2; }
 .stockup-recommendation-page > .recommendation-queue-panel { order: 2; }
 .stockup-recommendation-page > .active-plan-panel { order: 3; }
 .stockup-recommendation-page > .arrived-review-panel { order: 4; }
@@ -1994,9 +1993,6 @@
 .warehouse-module-tabs button strong { color: #183c6b; font-size: 16px; }
 .warehouse-module-tabs button small { color: #7a8aa0; }
 .warehouse-module-tabs button.active { border-color: #bed0e6; background: #fff; box-shadow: inset 0 -3px #ff5b0a, 0 8px 20px rgba(23, 55, 96, .08); }
-.warehouse-qualification-workspace { display: grid; gap: 12px; min-width: 0; }
-.warehouse-qualification-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; color: #5d7189; border: 1px solid #d7e2ef; border-radius: 12px; background: #f8fbfe; font-size: 13px; }
-.warehouse-qualification-actions button { flex: 0 0 auto; }
 .warehouse-ticket-center { display: grid; gap: 14px; }
 .wt-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .wt-summary-grid article { position: relative; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 10px; min-height: 95px; padding: 18px; border: 1px solid #d9e3ef; border-radius: 15px; background: #fff; }
@@ -2060,7 +2056,6 @@
   .warehouse-collaboration-hero > svg { display: none; }
   .warehouse-module-tabs, .wt-summary-grid, .wt-form-grid { grid-template-columns: 1fr; }
   .warehouse-module-tabs button { justify-content: flex-start; }
-  .warehouse-qualification-actions { align-items: flex-start; flex-direction: column; }
   .wt-tabs { overflow-x: auto; }
   .wt-toolbar { grid-template-columns: 1fr; }
   .wt-ticket-row { grid-template-columns: 48px 1fr auto; }

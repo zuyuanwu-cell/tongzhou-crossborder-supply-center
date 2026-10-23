@@ -267,7 +267,6 @@ export async function initDomesticInventoryStore(dbPath) {
     );
     CREATE INDEX IF NOT EXISTS idx_domestic_transfer_lines_transfer ON domestic_inventory_transfer_lines(transfer_id, sku);
 
-
     CREATE TABLE IF NOT EXISTS domestic_inventory_reservations (
       id TEXT PRIMARY KEY,
       reference_no TEXT NOT NULL UNIQUE,

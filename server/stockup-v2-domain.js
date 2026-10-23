@@ -51,6 +51,14 @@ export function assertStockupV2Transition(from, to) {
   if (!V2_TRANSITIONS[from]?.has(to)) fail(`现货备货状态不能从“${from}”变更为“${to}”。`, "invalid_v2_transition", 409);
 }
 
+export function canPreviewStockupShipmentWmsOrder(shipment) {
+  const workflowVersion = Number(shipment?.workflowVersion || 1);
+  const status = String(shipment?.status || "");
+  const recovery = String(shipment?.wmsPushStatus || "") === "voided"
+    && ["wms_created", "instruction_issued", "handed_over"].includes(status);
+  return workflowVersion === 2 ? status === "inventory_reserved" || recovery : status === "shipped";
+}
+
 export function allocateAmountByBasis(totalAmount, rows, overrides = null) {
   const targetCents = cents(totalAmount);
   if (!Array.isArray(rows) || !rows.length) fail("分摊至少需要一条明细。", "allocation_lines_required");
@@ -128,10 +136,8 @@ export function validateInspectionLine(input) {
     if (quantity <= 0) fail(`第 ${index + 1} 个批次数量必须大于 0。`, "invalid_inspection_lot_quantity");
     if (!String(lot.lotNo || "").trim() || !String(lot.barcode || "").trim() || !String(lot.productionDate || "").trim()) fail(`第 ${index + 1} 个批次必须填写批次号、条码和生产日期。`, "inspection_traceability_required");
     if (lot.shelfLifeManaged && !String(lot.expiryDate || "").trim()) fail(`第 ${index + 1} 个批次必须填写有效期。`, "inspection_expiry_required");
-    if (cartonCount > 0 || unitsPerCarton > 0) {
-      if (![cartonCount, unitsPerCarton, numeric(lot.cartonLengthCm), numeric(lot.cartonWidthCm), numeric(lot.cartonHeightCm), numeric(lot.cartonWeightKg)].every((value) => value > 0)) fail(`第 ${index + 1} 个批次请补齐箱数、箱规、尺寸和单箱重量。`, "inspection_carton_required");
-      if (cents(cartonCount * unitsPerCarton + looseQuantity) !== cents(quantity)) fail(`第 ${index + 1} 个批次的箱装数量、散件数与批次数量不一致。`, "inspection_carton_quantity_mismatch");
-    }
+    if (![cartonCount, unitsPerCarton, numeric(lot.cartonLengthCm), numeric(lot.cartonWidthCm), numeric(lot.cartonHeightCm), numeric(lot.cartonWeightKg)].every((value) => value > 0)) fail(`第 ${index + 1} 个批次请补齐用于发运的箱数、装箱数、长宽高和单箱重量。`, "inspection_carton_required");
+    if (cents(cartonCount * unitsPerCarton + looseQuantity) !== cents(quantity)) fail(`第 ${index + 1} 个批次的箱装数量、散件数与批次数量不一致。`, "inspection_carton_quantity_mismatch");
   }
   const evidence = Array.isArray(input.evidence) ? input.evidence : [];
   if ((damagedQty > 0 || shortageQty > 0 || pendingQty > 0 || input.requiresRepack) && evidence.length === 0) fail("破损、短少、待处理或换箱必须上传验收凭证。", "inspection_evidence_required");
@@ -150,4 +156,3 @@ export function temporarySku(date = new Date(), sequence = 1) {
   const stamp = `${value.getFullYear()}${String(value.getMonth() + 1).padStart(2, "0")}${String(value.getDate()).padStart(2, "0")}`;
   return `TMP-${stamp}-${String(sequence).padStart(4, "0")}`;
 }
-

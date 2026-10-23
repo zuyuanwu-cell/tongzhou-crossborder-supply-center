@@ -2,7 +2,6 @@ import React, { useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, Boxes, CalendarClock, CheckCircle2, Clock3, FilePenLine, PackageCheck } from "lucide-react";
 import type { StockupRequest, StockupRequestListPayload } from "./types";
 import { formatStockupDate, statusTone, stockupRequestStatusLabels } from "./status";
-import { StockupProductImage } from "./StockupProductImage";
 
 type Props = {
   payload: StockupRequestListPayload | null;
@@ -57,7 +56,7 @@ export function MyRequests({ payload, loading, onOpen }: Props) {
               </div>
               <div className="sc-request-products">
                 <div className="sc-product-stack">
-                  {request.lines.slice(0, 3).map((line) => <span key={line.id}><StockupProductImage src={line.imageUrl} name={line.productName} size={16} /></span>)}
+                  {request.lines.slice(0, 3).map((line) => <span key={line.id}>{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <Boxes size={16} />}</span>)}
                   {request.lines.length > 3 ? <span>+{request.lines.length - 3}</span> : null}
                 </div>
                 <div><b>{request.lines.length === 1 ? request.lines[0].productName : `${request.lines.length} 个产品`}</b><small>{request.lines.map((line) => line.sku).slice(0, 2).join("、")}{request.lines.length > 2 ? "…" : ""}</small></div>

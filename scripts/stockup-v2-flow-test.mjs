@@ -37,17 +37,40 @@ try {
   assert.equal(updatedDraft.lines[0].productName, "待编码测试商品（已核对）");
   const request = service.setRequestStatus(draft.id, "submitted", {}, context).request;
   assert.equal(request.status, "submitted");
+  const claimedRequest = service.setRequestStatus(request.id, "accepted", {}, context).request;
+  assert.equal(claimedRequest.status, "submitted");
+  assert.equal(claimedRequest.assigneeId, "tester");
+  assert.equal(claimedRequest.events[0]?.eventType, "request_claimed");
+  const closedBeforePurchase = service.updateRequestLineProcurement(request.lines[0].id, { action: "close", reason: "供应商断货，采购前终止", requestVersion: claimedRequest.version }, context).request;
+  assert.equal(closedBeforePurchase.status, "cancelled");
+  assert.equal(closedBeforePurchase.lines[0].status, "procurement_cancelled");
+  assert.equal(closedBeforePurchase.events[0]?.eventType, "procurement_line_closed");
+  const reopenedBeforePurchase = service.updateRequestLineProcurement(request.lines[0].id, { action: "reopen", requestVersion: closedBeforePurchase.version }, context).request;
+  assert.equal(reopenedBeforePurchase.status, "submitted");
+  assert.equal(reopenedBeforePurchase.lines[0].status, "submitted");
+  assert.equal(reopenedBeforePurchase.events[0]?.eventType, "procurement_line_reopened");
 
   const purchase = service.createPurchaseOrder({ supplierName: "1688 测试供应商", externalOrderNo: "1688-001", orderUrl: "https://detail.1688.com/example", paidTotalCny: 80, lines: [{ requestLineId: request.lines[0].id, quantity: 20, merchandiseAmount: 70 }], allocationOverrides: { [request.lines[0].id]: 80 }, allocationOverrideReason: "测试按业务确认覆盖分摊" }, context, "purchase-1").purchaseOrder;
   assert.equal(purchase.sharedAmountCny, 10);
   assert.equal(purchase.lines[0].estimatedUnitCostCny, 4);
-  const partlyReceived = service.recordPurchaseEvent(purchase.id, { lineId: purchase.lines[0].id, action: "receive", quantity: 19, note: "分批到货" }, context).purchaseOrder;
+  const correctedPurchase = service.updatePurchaseOrder(purchase.id, { version: purchase.version, supplierName: "1688 测试供应商（已校正）", paidTotalCny: 80, lines: [{ id: purchase.lines[0].id, merchandiseAmount: 72 }] }, context).purchaseOrder;
+  assert.equal(correctedPurchase.supplierName, "1688 测试供应商（已校正）");
+  assert.equal(correctedPurchase.lines[0].merchandiseAmountCny, 72);
+  assert.equal(correctedPurchase.lines[0].allocatedAmountCny, 80);
+  const partlyReceived = service.recordPurchaseEvent(correctedPurchase.id, { lineId: correctedPurchase.lines[0].id, action: "receive", quantity: 19, note: "分批到货" }, context).purchaseOrder;
   assert.equal(partlyReceived.lines[0].receivedQty, 19);
+  const purchaseProgress = service.getRequest(request.id, context).lines[0];
+  assert.equal(purchaseProgress.purchaseOrderedQty, 20);
+  assert.equal(purchaseProgress.purchaseReceivedQty, 19);
+  assert.equal(purchaseProgress.warehouseExpectedQty, 0);
+  assert.equal(purchaseProgress.fulfilledQty, 0, "采购登记到货不能冒充仓库已验收数量");
+  assert.throws(() => service.updatePurchaseOrder(partlyReceived.id, { version: partlyReceived.version, paidTotalCny: 81 }, context), (error) => error?.code === "purchase_order_edit_locked");
   const refunded = service.recordPurchaseEvent(purchase.id, { lineId: purchase.lines[0].id, action: "refund", amountCny: 8, note: "短少索赔" }, context).purchaseOrder;
   assert.equal(refunded.lines[0].refundedAmountCny, 8);
 
   const workOrder = service.createWarehouseWorkOrder({ requestId: request.id, organizationCode: "partner-sz", domesticWarehouseId: warehouse.id, domesticWarehouseName: warehouse.name, submit: true, lines: [{ requestLineId: request.lines[0].id, purchaseOrderLineId: purchase.lines[0].id, expectedQty: 20 }] }, context, "work-order-1").workOrder;
   assert.equal(workOrder.workflowVersion, 2);
+  assert.equal(service.getRequest(request.id, context).lines[0].warehouseExpectedQty, 20);
   const accepted = service.applyWarehouseWorkOrderAction(workOrder.id, { action: "accept", expectedVersion: workOrder.version }, context, "accept-1").workOrder;
   const inspectionPayload = { lines: [{ id: accepted.lines[0].id, receivedQty: 19, goodQty: 18, damagedQty: 1, shortageQty: 1, pendingQty: 0, lots: [{ quantity: 18, lotNo: "LOT-202610", barcode: "6970001", productionDate: "2026-10-10", cartonCount: 2, unitsPerCarton: 9, looseQuantity: 0, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 5 }], evidence: [{ kind: "damage", attachmentId: "att-damage", fileName: "damage.jpg" }, { kind: "shortage", attachmentId: "att-shortage", fileName: "shortage.jpg" }] }] };
   const submitted = service.submitInspection(workOrder.id, inspectionPayload, context);
@@ -57,6 +80,11 @@ try {
   const approved = service.reviewInspection(workOrder.id, { action: "approve" }, context);
   assert.equal(approved.status, "inventory_ready");
   assert.equal(service.reviewInspection(workOrder.id, { action: "approve" }, context).idempotentReplay, true);
+  assert.equal(service.warehouseWorkOrderDashboard({}, context).counts.inventory_ready, 1);
+  const warehouseProgress = service.getRequest(request.id, context).lines[0];
+  assert.equal(warehouseProgress.fulfilledQty, 18);
+  assert.equal(warehouseProgress.warehouseReceivedQty, 19);
+  assert.equal(warehouseProgress.warehouseGoodQty, 18);
   assert.equal(inventory.stockupAvailability({ warehouseId: warehouse.id, sku: request.lines[0].sku }, inventoryContext).items[0].onHandQty, 18);
 
   const forwarder = service.createForwarder({ code: "FF-1", name: "测试货代", locations: [{ name: "深圳收货点", country: "中国", address: "深圳市测试路 1 号", contactName: "张三", contactPhone: "13800000000" }] }).forwarderId;
@@ -70,7 +98,18 @@ try {
   assert.equal(coded.formalSku, "ID-TEST-001");
   assert.equal(inventory.stockupAvailability({ warehouseId: warehouse.id, sku: "ID-TEST-001" }, inventoryContext).items[0].onHandQty, 18);
 
-  const reservationInput = { forwarderLocationId: location.id, transportMode: "海运", lines: [{ inspectionLotId: approvedOrder.lines[0].lots[0].id, quantity: 18 }] };
+  const reservationInput = {
+    forwarderLocationId: location.id,
+    transportMode: "海运",
+    trackingNo: "H26100659",
+    billingMethod: "volume",
+    carrierPackages: 253,
+    carrierActualWeightKg: 3722,
+    chargeableVolumeM3: 12.12,
+    billingUnitPriceCny: 1000,
+    billingExtraFeeCny: 2424,
+    lines: [{ inspectionLotId: approvedOrder.lines[0].lots[0].id, quantity: 18, cartonCount: 3, unitsPerCarton: 6 }],
+  };
   const cancelledShipment = service.createReservedShipment(reservationInput, context).shipment;
   assert.equal(cancelledShipment.status, "inventory_reserved");
   assert.equal(inventory.stockupAvailability({ warehouseId: warehouse.id, sku: "ID-TEST-001" }, inventoryContext).items[0].reservedQty, 18);
@@ -78,7 +117,22 @@ try {
   service.cancelReservedShipment(cancelledShipment.id, { reason: "测试取消释放库存" }, context);
   assert.equal(inventory.stockupAvailability({ warehouseId: warehouse.id, sku: "ID-TEST-001" }, inventoryContext).items[0].reservedQty, 0);
   const shipment = service.createReservedShipment(reservationInput, context).shipment;
+  assert.equal(shipment.billingMethod, "volume");
+  assert.equal(shipment.trackingNo, "H26100659");
+  assert.equal(shipment.packages, 3);
+  assert.equal(shipment.lines[0].cartonCount, 3);
+  assert.equal(shipment.lines[0].unitsPerCarton, 6);
+  assert.equal(shipment.carrierPackages, 253);
+  assert.equal(shipment.carrierActualWeightKg, 3722);
+  assert.equal(shipment.chargeableVolumeM3, 12.12);
+  assert.equal(shipment.billingExtraFeeCny, 2424);
+  assert.equal(shipment.quotedFreightCny, 14544);
   assert.equal(inventory.stockupAvailability({ warehouseId: warehouse.id, sku: "ID-TEST-001" }, inventoryContext).items[0].reservedQty, 18);
+  const reservedOrder = service.getWarehouseWorkOrder(workOrder.id, context);
+  assert.equal(reservedOrder.lines[0].allocatedQty, 18);
+  assert.equal(reservedOrder.lines[0].unallocatedQty, 0);
+  assert.equal(reservedOrder.lines[0].lots[0].reservedQty, 18);
+  assert.equal(reservedOrder.lines[0].lots[0].availableQty, 0);
 
   service.beginShipmentWmsPush(shipment.id, { providerId: "sea_wms", documentType: "stockup" }, context);
   const wms = service.completeShipmentWmsPush(shipment.id, { orderNo: "SEA-001", documentLabel: "备货单" }, context).shipment;
@@ -87,9 +141,14 @@ try {
   service.issueDispatchInstruction(shipment.id, {}, context);
   const handed = service.handoverShipment(shipment.id, { carrier: "测试物流", trackingNo: "TRACK-001", actualFreightCny: 9 }, context).shipment;
   assert.equal(handed.status, "handed_over");
+  assert.equal(store.first("SELECT allocation_method FROM stockup_cost_items WHERE id=?", [`handover-freight:${shipment.id}`]).allocation_method, "volume");
   const balance = inventory.stockupAvailability({ warehouseId: warehouse.id, sku: "ID-TEST-001" }, inventoryContext).items[0];
   assert.equal(balance.onHandQty, 0);
   assert.equal(balance.reservedQty, 0);
+  const handedOrder = service.getWarehouseWorkOrder(workOrder.id, context);
+  assert.equal(handedOrder.lines[0].lots[0].shippedQty, 18);
+  assert.equal(handedOrder.lines[0].lots[0].availableQty, 0);
+  assert.throws(() => service.createReservedShipment(reservationInput, context), (error) => error?.code === "inspection_lot_over_reserved", "已交货代批次不得再次锁库发运");
 
   const receipt = service.confirmReceipt({ shipmentId: shipment.id, arrivedAt: "2026-11-20", lines: handed.lines.map((line) => ({ shipmentLineId: line.id, expectedQty: line.shippedQty, receivedQty: line.shippedQty, goodQty: line.shippedQty, damagedQty: 0, shortageQty: 0, pendingQty: 0 })) }, context).receipt;
   assert.equal(service.getShipment(shipment.id, context).status, "overseas_received");
@@ -107,4 +166,3 @@ try {
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
-

@@ -4,7 +4,6 @@ import { changeStockupCollaborationRequest, createStockupCollaborationTask, upda
 import type { StockupExecutionTask, StockupRequest } from "./types";
 import { formatStockupDate, statusTone, stockupRequestStatusLabels, stockupTaskStatusLabels } from "./status";
 import { ProgressTimeline } from "./ProgressTimeline";
-import { StockupProductImage } from "./StockupProductImage";
 
 type Props = {
   request: StockupRequest;
@@ -12,9 +11,10 @@ type Props = {
   canExecute: boolean;
   onClose: () => void;
   onChanged: () => Promise<void>;
+  onNavigate: (section: "procurement" | "execution" | "warehouse" | "logistics") => void;
 };
 
-export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, onChanged }: Props) {
+export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, onChanged, onNavigate }: Props) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [taskLineId, setTaskLineId] = useState("");
@@ -23,6 +23,12 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
   const [progressForm, setProgressForm] = useState({ status: "in_progress", orderedQty: 0, completedQty: 0, expectedCompletedAt: "", exceptionType: "", exceptionNote: "" });
 
   const taskGroups = useMemo(() => Object.fromEntries((request.lines || []).map((line) => [line.id, (request.tasks || []).filter((task) => task.lineId === line.id)])), [request.lines, request.tasks]);
+  const arrivalTotals = useMemo(() => request.lines.reduce((result, line) => ({
+    requested: result.requested + line.requestedQty,
+    purchaseReceived: result.purchaseReceived + (line.purchaseReceivedQty || 0),
+    warehouseExpected: result.warehouseExpected + (line.warehouseExpectedQty || 0),
+    warehouseGood: result.warehouseGood + (line.warehouseGoodQty || line.fulfilledQty || 0),
+  }), { requested: 0, purchaseReceived: 0, warehouseExpected: 0, warehouseGood: 0 }), [request.lines]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -41,6 +47,20 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
     try { await action(); await onChanged(); }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : "操作失败"); }
     finally { setBusy(""); }
+  }
+
+  async function claimAndNavigate() {
+    setBusy("claim");
+    setError("");
+    try {
+      await changeStockupCollaborationRequest(request.id, "accept");
+      await onChanged();
+      onNavigate("procurement");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "操作失败");
+    } finally {
+      setBusy("");
+    }
   }
 
   function openTask(lineId: string) {
@@ -72,6 +92,14 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
 
           {request.workflowVersion === 2 && request.status === "draft" ? <section className="sc-action-strip"><div><b>{request.sourceType === "agent" ? "Agent 已生成需求草稿" : request.sourceType === "recommendation" ? "备货建议已生成现货草稿" : "现货备货草稿待提交"}</b><span>请人工核对目的仓、数量和商品信息；提交后才能建立采购单。</span></div><div><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("submit", () => changeStockupCollaborationRequest(request.id, "submit"))}><Send size={17} />审核并提交</button></div></section> : null}
 
+          {request.workflowVersion === 2 && request.status === "submitted" && (canAccept || canExecute) ? <section className="sc-action-strip"><div><b>{request.assigneeName ? `当前由 ${request.assigneeName} 负责处理` : "这张备货单正在等待供应链负责人认领"}</b><span>{request.assigneeName ? "下一步到现货采购登记采购单、实付金额和供应商信息。" : "认领后你会成为当前负责人，并直接进入现货采购处理。"}</span></div><div>{request.assigneeName ? <button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => onNavigate("procurement")}><ChevronRight size={17} />进入现货采购</button> : <button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => void claimAndNavigate()}><Check size={17} />认领并去采购</button>}</div></section> : null}
+
+          {request.workflowVersion === 2 && request.status === "purchasing" ? <section className="sc-action-strip"><div><b>{arrivalTotals.purchaseReceived >= arrivalTotals.requested ? "采购侧已登记到齐，等待移交国内仓" : `采购到货 ${arrivalTotals.purchaseReceived}/${arrivalTotals.requested}`}</b><span>{arrivalTotals.warehouseExpected > 0 ? `已有 ${arrivalTotals.warehouseExpected} 件进入仓库验收；实际到仓数量以仓库提交并审核的数据为准。` : "采购人员不再代替仓库确认实收；请创建国内仓验收任务。"}</span></div><div><button className="sc-button sc-button-secondary" onClick={() => onNavigate("procurement")}>查看采购单</button><button className="sc-button sc-button-primary" onClick={() => onNavigate("warehouse")}><PackageCheck size={17} />移交国内仓验收</button></div></section> : null}
+
+          {request.workflowVersion === 2 && ["warehouse_inspection", "inspection_review"].includes(request.status) ? <section className="sc-action-strip"><div><b>{request.status === "inspection_review" ? "仓库已提交验收，等待中台审核" : "国内仓正在签收并整理发运资料"}</b><span>仓库需核对实收数量、批次、条码、箱数、装箱数、尺寸、重量和凭证；完成后数据会回写本需求。</span></div><div><button className="sc-button sc-button-primary" onClick={() => onNavigate("warehouse")}><ChevronRight size={17} />查看仓库进度</button></div></section> : null}
+
+          {request.workflowVersion === 2 && ["inventory_ready", "inventory_reserved", "wms_created", "instruction_issued"].includes(request.status) ? <section className="sc-action-strip"><div><b>国内仓已验收 {arrivalTotals.warehouseGood}/{arrivalTotals.requested}，发运基础数据已准备</b><span>下一步创建出运计划、选择货代并生成海外仓单和交接文件。</span></div><div><button className="sc-button sc-button-primary" onClick={() => onNavigate("logistics")}><Truck size={17} />进入物流与到仓</button></div></section> : null}
+
           {canAccept && request.status === "pending_acceptance" ? <section className="sc-action-strip"><div><b>这张需求正在等待供应链受理</b><span>受理后可按产品创建采购或生产任务。</span></div><div><button className="sc-button sc-button-secondary" disabled={Boolean(busy)} onClick={() => run("changes", () => changeStockupCollaborationRequest(request.id, "request-changes", { note: window.prompt("请填写需要运营补充的内容") || "请补充需求资料" }))}>要求补充</button><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("accept", () => changeStockupCollaborationRequest(request.id, "accept"))}><Check size={17} />受理需求</button></div></section> : null}
 
           <section className="sc-detail-section">
@@ -79,7 +107,7 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, onClose, o
             <div className="sc-detail-lines">
               {request.lines.map((line) => (
                 <article key={line.id}>
-                  <div className="sc-line-summary"><span className="sc-product-thumb large"><StockupProductImage src={line.imageUrl} name={line.productName} size={22} /></span><div><b>{line.sku}</b><span>{line.productName}</span><small>{line.method} · {line.requestedQty} {line.unit}</small></div><div className="sc-line-fulfillment"><b>{line.fulfilledQty}/{line.requestedQty}</b><small>已到仓 / 需求</small></div></div>
+                  <div className="sc-line-summary"><span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <Boxes size={22} />}</span><div><b>{line.sku}</b><span>{line.productName}</span><small>{line.method} · {line.requestedQty} {line.unit}</small>{line.status === "procurement_cancelled" ? <small className="sc-line-procurement-closed">采购前已终止 · {line.procurementClosedReason || "不再采购"}</small> : null}</div><div className="sc-line-fulfillment"><b>{line.warehouseGoodQty || line.fulfilledQty}/{line.requestedQty}</b><small>仓库已验收 / 需求</small><span>采购登记 {line.purchaseReceivedQty || 0} · 已移交 {line.warehouseExpectedQty || 0}</span></div></div>
                   <div className="sc-task-list">
                     {(taskGroups[line.id] || []).map((task) => <button key={task.id} onClick={() => canExecute && openProgress(task)}><span className={`sc-status-dot sc-status-${statusTone(task.status)}`} /><div><b>{task.taskNo}</b><small>{task.supplierName || "未填写供应方"} · 计划 {task.plannedQty}</small></div><span>{stockupTaskStatusLabels[task.status] || task.status}</span><ChevronRight size={16} /></button>)}
                     {request.workflowVersion !== 2 && canExecute && ["accepted", "in_progress"].includes(request.status) ? <button className="sc-add-task" onClick={() => openTask(line.id)}><Plus size={16} />拆分采购 / 生产任务</button> : null}

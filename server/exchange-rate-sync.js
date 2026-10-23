@@ -144,15 +144,14 @@ export function createExchangeRateSyncService({
     const currentTime = now();
     const lastSuccessTime = Date.parse(current.lastSuccessAt || "");
     const minimumInterval = Math.max(60 * 60 * 1000, Number(intervalMs) || 24 * 60 * 60 * 1000);
+    if (!force && Number.isFinite(lastSuccessTime) && currentTime.getTime() - lastSuccessTime < minimumInterval) {
+      return { ...current, skipped: true, message: "当前汇率仍在有效同步周期内。" };
+    }
     const currencies = normalizeExchangeRateCurrencies([
       ...(store.listSalesCurrencies?.() || []),
       ...configuredCurrencies,
     ]);
     if (!currencies.length) return { ...current, skipped: true, message: "当前订单没有需要折算的外币。" };
-    const configuredSetChanged = currencies.some((currency) => !current.currencies.includes(currency));
-    if (!force && !configuredSetChanged && Number.isFinite(lastSuccessTime) && currentTime.getTime() - lastSuccessTime < minimumInterval) {
-      return { ...current, skipped: true, message: "当前汇率仍在有效同步周期内。" };
-    }
 
     running = true;
     const lastRateDate = dateKey(current.lastRateDate);

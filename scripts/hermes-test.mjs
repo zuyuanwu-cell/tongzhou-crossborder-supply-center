@@ -11,19 +11,9 @@ import { initHermesIntegrationStore } from "../server/hermes-integration-db.js";
 import { sha256Hex, signHermesBridgeRequest, verifyHermesBridgeRequest } from "../server/hermes-bridge-auth.js";
 import { createHermesClient, parseSseStream } from "../server/hermes-client.js";
 import { approvalToolCallId, normalizeHermesEvent } from "../server/hermes-events.js";
-import {
-  advanceHermesTaskPlan,
-  createHermesTaskPlan,
-  hermesRunInstructions,
-  hermesToolCallSignature,
-  isHermesBusinessTool,
-  normalizeHermesToolCallLimit,
-  scopeHermesRunIdempotencyKey,
-} from "../server/hermes-api.js";
+import { hermesRunInstructions, isHermesBusinessTool, normalizeHermesToolCallLimit, scopeHermesRunIdempotencyKey } from "../server/hermes-api.js";
 import { createHermesToolGateway, hashHermesToolArguments } from "../server/hermes-tool-gateway.js";
-import { createHermesModelGateway, prepareHermesModelPayload } from "../server/hermes-model-gateway.js";
-import { normalizePartnerProgressDraft } from "../server/hermes-partner-draft-api.js";
-import { buildExceptionDossier, buildPersonalTodos } from "../server/agent-exception-dossier.js";
+import { createHermesModelGateway } from "../server/hermes-model-gateway.js";
 
 const directory = mkdtempSync(join(tmpdir(), "tongzhou-hermes-test-"));
 let clock = new Date("2026-10-20T01:00:00.000Z");
@@ -107,11 +97,6 @@ try {
   for await (const event of parseSseStream(stream)) parsed.push(event);
   assert.equal(normalizeHermesEvent(parsed[0]).type, "assistant.delta");
   assert.equal(normalizeHermesEvent(parsed[1]).output, "处理建议");
-  let streamCleaned = false;
-  const earlyExitStream = new Response("data: first\n\ndata: second\n\n", { headers: { "Content-Type": "text/event-stream" } });
-  Object.defineProperty(earlyExitStream, "hermesStreamCleanup", { value: () => { streamCleaned = true; } });
-  for await (const _event of parseSseStream(earlyExitStream)) break;
-  assert.equal(streamCleaned, true, "SSE deadlines must be released when a consumer exits early");
   assert.equal(normalizeHermesEvent({ event: "tool.started", data: { tool: "tool_describe" } }), null, "Hermes platform tools must stay out of the business event stream");
   const approvalEvent = {
     event: "message",
@@ -123,43 +108,16 @@ try {
   };
   assert.equal(approvalToolCallId(approvalEvent), "call-99");
   assert.equal(normalizeHermesEvent(approvalEvent, { runId: "run-local" }).toolCallId, "call-99");
-  const taskPlan = createHermesTaskPlan("核对库存风险", { route: "#movement" });
-  assert.equal(taskPlan.steps.length, 4);
-  assert.equal(taskPlan.steps[0].status, "completed");
-  assert.equal(advanceHermesTaskPlan(taskPlan, "tool.completed").steps.find((item) => item.id === "verify").status, "in_progress");
-  assert.equal(advanceHermesTaskPlan(taskPlan, "completed").steps.every((item) => item.status === "completed"), true);
-  assert.equal(
-    hermesToolCallSignature({ data: { tool: "tongzhou_query_inventory_risk", arguments: { warehouseId: "wh-1", sku: "SKU-1" } } }),
-    hermesToolCallSignature({ data: { tool: "tongzhou_query_inventory_risk", arguments: { sku: "SKU-1", warehouseId: "wh-1" } } }),
-    "tool loop signatures must ignore object key order",
-  );
-  const instructions = hermesRunInstructions({ route: "#movement" }, { maxToolCalls: 32, stageToolCalls: 12, softToolCalls: 20, plan: taskPlan });
+  const instructions = hermesRunInstructions({ route: "#movement" }, { maxToolCalls: 32 });
   assert.match(instructions, /本次人工审批/);
   assert.match(instructions, /真实数据必须通过工具重新读取/);
   assert.match(instructions, /不要用逐个 SKU 的 N\+1 查询/);
-  assert.match(instructions, /单个调查阶段最多 12 次/);
-  assert.match(instructions, /累计到 20 次时必须停止扩展查询/);
-  assert.match(instructions, /执行步骤/);
+  assert.match(instructions, /使用到 24 次时必须停止扩展查询/);
   assert.equal(isHermesBusinessTool("tongzhou_query_inventory_risk"), true);
   assert.equal(isHermesBusinessTool("tool_describe"), false, "Hermes platform calls must not consume the business tool budget");
   assert.equal(normalizeHermesToolCallLimit("48"), 48);
   assert.equal(normalizeHermesToolCallLimit("invalid"), 32);
   assert.equal(normalizeHermesToolCallLimit(1000), 64);
-
-  const structuredModelPayload = prepareHermesModelPayload({
-    model: "caller-model",
-    messages: [{ role: "user", content: "return json" }],
-    temperature: 0.9,
-    max_tokens: 5000,
-    tools: [{ type: "function", function: { name: "forbidden" } }],
-    tool_choice: "auto",
-  }, "deepseek-v4-pro", { structured: true });
-  assert.equal(structuredModelPayload.model, "deepseek-v4-pro");
-  assert.equal(structuredModelPayload.temperature, 0.1);
-  assert.deepEqual(structuredModelPayload.response_format, { type: "json_object" });
-  assert.equal(structuredModelPayload.max_tokens, 1200);
-  assert.equal("tools" in structuredModelPayload, false);
-  assert.equal("tool_choice" in structuredModelPayload, false);
 
   const modelRequests = [];
   const modelConfigPath = join(directory, "hermes-model-config.json");
@@ -167,7 +125,6 @@ try {
     cacheDir: directory,
     encryptionSecret: "test-model-encryption-secret-0123456789",
     proxySecret: "test-model-proxy-secret-012345678901",
-    partnerProxySecret: "test-partner-model-secret-012345678901",
     fetchImpl: async (url, options = {}) => {
       modelRequests.push({ url: String(url), options });
       if (String(url).endsWith("/models")) {
@@ -224,26 +181,6 @@ try {
   const upstreamModelBody = JSON.parse(modelRequests.at(-1).options.body);
   assert.equal(upstreamModelBody.model, "deepseek-v4-pro", "the server-selected model must override model input from Hermes");
 
-  const partnerProxyRequest = Object.assign(new EventEmitter(), {
-    method: "POST",
-    headers: { authorization: "Bearer test-partner-model-secret-012345678901" },
-    payload: {
-      model: "model-injected-by-caller",
-      messages: [{ role: "user", content: "return json" }],
-      stream: false,
-      temperature: 1,
-      tools: [{ type: "function", function: { name: "forbidden" } }],
-    },
-  });
-  const partnerProxyResponse = modelResponse();
-  await modelGateway.handle(partnerProxyRequest, partnerProxyResponse, new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions"));
-  assert.equal(partnerProxyResponse.statusCode, 200);
-  const partnerUpstreamBody = JSON.parse(modelRequests.at(-1).options.body);
-  assert.equal(partnerUpstreamBody.temperature, 0.1);
-  assert.deepEqual(partnerUpstreamBody.response_format, { type: "json_object" });
-  assert.equal(partnerUpstreamBody.max_tokens, 1200);
-  assert.equal("tools" in partnerUpstreamBody, false);
-
   const unauthorizedResponse = modelResponse();
   const unauthorizedRequest = Object.assign(new EventEmitter(), { method: "POST", headers: { authorization: "Bearer wrong" }, payload: {} });
   await modelGateway.handle(unauthorizedRequest, unauthorizedResponse, new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions"));
@@ -265,21 +202,11 @@ try {
   assert.equal(truncatedToolResult.evidence[0].id, "SKU-1");
   assert.equal(truncatedToolResult.durationMs, 125);
 
-  const run = store.createRun({
-    conversationId: conversationA.id,
-    userId: "user-a",
-    provider: "custom:tongzhou",
-    model: "agnes-3.0-pro",
-    idempotencyKey: "run-key-a",
-    input: "检查库存风险",
-    plan: taskPlan,
-  });
+  const run = store.createRun({ conversationId: conversationA.id, userId: "user-a", provider: "custom:tongzhou", model: "agnes-3.0-pro", idempotencyKey: "run-key-a" });
   const replay = store.createRun({ conversationId: conversationA.id, userId: "user-a", provider: "custom:tongzhou", model: "agnes-3.0-pro", idempotencyKey: "run-key-a" });
   assert.equal(replay.id, run.id);
   assert.equal(replay.idempotentReplay, true);
   assert.equal(run.provider, "custom:tongzhou");
-  assert.equal(run.input, "检查库存风险");
-  assert.equal(run.plan.steps.length, 4);
   const firstToolEvent = store.appendToolEvent({ runId: run.id, type: "tool.started", tool: "tongzhou_query_inventory_risk", sequence: 7 });
   const replayedToolEvent = store.appendToolEvent({ runId: run.id, type: "tool.started", tool: "tongzhou_query_inventory_risk", sequence: 7 });
   assert.equal(firstToolEvent.idempotentReplay, false);
@@ -428,13 +355,6 @@ try {
   assert.equal(approvedExecution.statusCode, 200);
   assert.equal(gatewayExecutions, 1);
   assert.equal(approvedExecution.payload.result.draft.quantity, 10);
-  const checkpointed = store.updateRun(run.id, {
-    status: "checkpointed",
-    checkpoint: { reason: "tool_loop_detected", canContinue: true },
-    stageNo: 2,
-  });
-  assert.equal(checkpointed.checkpoint.canContinue, true);
-  assert.equal(checkpointed.stageNo, 2);
 
   const fingerprint = exceptionFingerprint({ ruleCode: "inventory_stockout", warehouseId: "wh-1", resourceId: "sku-1", sku: "SKU-1" });
   const input = {
@@ -457,63 +377,6 @@ try {
   const secondScan = store.reconcileCases(built.observations, { scanId: "scan-2", complete: true });
   assert.equal(secondScan.detected.length, 0);
   assert.equal(secondScan.changed.length, 0);
-
-  const changedInput = JSON.parse(JSON.stringify(input));
-  changedInput.now = now;
-  changedInput.inventoryRisk.items[0].inTransitQty = 12;
-  const changedObservation = buildExceptionObservations(changedInput);
-  const changedScan = store.reconcileCases(changedObservation.observations, { scanId: "scan-2b", complete: true });
-  assert.equal(changedScan.changed.length, 1);
-  assert.equal(changedScan.changed[0].changeSummary.changed, true);
-  assert.match(changedScan.changed[0].changeSummary.summary, /更新 1 项证据/);
-  const approvedPlaybook = store.saveApprovedPlaybook({ title: "缺货处理剧本", ruleCodes: ["inventory_stockout"], steps: ["核对库存", "创建备货草稿"] }, { id: "admin-a" });
-  assert.equal(approvedPlaybook.status, "approved");
-  assert.equal(store.listPlaybooks({ ruleCode: "inventory_stockout" }).length, 1);
-  const dossier = buildExceptionDossier(changedScan.changed[0], store.listCaseEvents(changedScan.changed[0].id), store.listPlaybooks());
-  assert.equal(dossier.inventoryGap.length, 1);
-  assert.equal(dossier.playbooks[0].title, "缺货处理剧本");
-  const todos = buildPersonalTodos([changedScan.changed[0]], "user-a");
-  assert.equal(todos[0].needsAssignment, true);
-  assert.equal(todos[0].needsReplenishmentDecision, true);
-
-  const explicitText = "已经灌装 5000 瓶，完成 60%，预计周五结束";
-  const extracted = normalizePartnerProgressDraft({
-    fields: { stage: "filling", progressPercent: 60, completedQuantity: 5000, expectedCompletionDate: "2026-10-23", note: explicitText },
-    evidence: [
-      { field: "stage", sourceQuote: "灌装", normalizedValue: "filling" },
-      { field: "completedQuantity", sourceQuote: "5000 瓶", normalizedValue: 5000 },
-      { field: "progressPercent", sourceQuote: "60%", normalizedValue: 60 },
-      { field: "expectedCompletionDate", sourceQuote: "周五", normalizedValue: "2026-10-23" },
-    ], warnings: [],
-  }, { itemType: "production_order", allowedStages: ["filling"] }, explicitText);
-  assert.deepEqual(extracted.fields, { stage: "filling", progressPercent: 60, completedQuantity: 5000, expectedCompletionDate: "2026-10-23", note: explicitText });
-  const vague = normalizePartnerProgressDraft({ fields: { progressPercent: 95, expectedCompletionDate: "2026-10-31", note: "差不多完成了" }, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["filling"] }, "差不多完成了");
-  assert.equal(vague.fields.progressPercent, undefined);
-  assert.equal(vague.fields.expectedCompletionDate, undefined);
-  const unsupported = normalizePartnerProgressDraft({
-    fields: { stage: "filling", progressPercent: 95, completedQuantity: 9000, expectedCompletionDate: "2026-10-31", note: explicitText },
-    evidence: [
-      { field: "stage", sourceQuote: "完成", normalizedValue: "filling" },
-      { field: "progressPercent", sourceQuote: "60%", normalizedValue: 95 },
-      { field: "completedQuantity", sourceQuote: "5000 瓶", normalizedValue: 9000 },
-      { field: "expectedCompletionDate", sourceQuote: "月底左右", normalizedValue: "2026-10-31" },
-    ], warnings: [],
-  }, { itemType: "production_order", allowedStages: ["filling"] }, `${explicitText}，月底左右`);
-  assert.equal(unsupported.fields.stage, "filling");
-  assert.equal(unsupported.fields.progressPercent, 60);
-  assert.equal(unsupported.fields.completedQuantity, 5000);
-  assert.equal(unsupported.fields.expectedCompletionDate, undefined);
-  assert.deepEqual(unsupported.evidence.map((item) => [item.field, item.normalizedValue]), [
-    ["stage", "filling"],
-    ["progressPercent", 60],
-    ["completedQuantity", 5000],
-  ]);
-  const fuzzyDate = normalizePartnerProgressDraft({ fields: {}, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["filling"] }, "预计周五左右完成");
-  assert.equal(fuzzyDate.fields.expectedCompletionDate, undefined);
-  const invalidDate = normalizePartnerProgressDraft({ fields: {}, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["filling"] }, "预计 2026 年 2 月 31 日完成");
-  assert.equal(invalidDate.fields.expectedCompletionDate, undefined);
-  const planningDate = normalizePartnerProgressDraft({ fields: {}, evidence: [], warnings: [] }, { itemType: "production_order", allowedStages: ["planning"] }, "计划周五完成");
-  assert.equal(planningDate.fields.stage, undefined);
 
   const warningInput = { ...input, inventoryRisk: JSON.parse(JSON.stringify(input.inventoryRisk)) };
   warningInput.inventoryRisk.items[0].status = "补货预警";

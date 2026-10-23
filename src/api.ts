@@ -1,48 +1,5 @@
 import type { StockupDispatchDocument, StockupForwarder, StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupProductRef, StockupPurchaseOrder, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
-import type { DataContext } from "../collaboration/shared/data-context-types";
-import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType, SingleCartonCapacityEstimate, SingleCartonCapacityInput } from "./container-loading/types";
-
-export type { DataContext } from "../collaboration/shared/data-context-types";
-
-export type DataContextPayload = { dataContext?: DataContext };
-
-export type WarehouseQualificationCoverageStatus = "valid" | "warning" | "urgent" | "expired" | "undated" | "missing" | "unavailable";
-export type WarehouseQualificationCoverageRecord = { id: string; qualificationName: string; effectiveDate: string; expiryDate: string };
-export type WarehouseQualificationCoverageCell = {
-  category: string;
-  status: Exclude<WarehouseQualificationCoverageStatus, "unavailable">;
-  activeRecords: number;
-  nearestExpiryDate: string;
-  nearestDaysLeft: number | null;
-  records: WarehouseQualificationCoverageRecord[];
-};
-export type WarehouseQualificationCoverageProduct = {
-  id: string;
-  sku: string;
-  productName: string;
-  imageUrl: string;
-  category: string;
-  brand: string;
-  availableQty: number;
-  lockedQty: number;
-  inTransitQty: number;
-  totalQty: number;
-  status: WarehouseQualificationCoverageStatus;
-  covered: boolean;
-  coveredCategoryCount: number;
-  registeredCategoryCount: number;
-  cells: WarehouseQualificationCoverageCell[];
-};
-export type WarehouseQualificationCoveragePayload = DataContextPayload & {
-  ok: boolean;
-  warehouses: Array<{ id: string; name: string; country: string; productCount: number; totalQty: number; syncedAt: string; synchronized: boolean }>;
-  warehouse: { id: string; name: string; country: string; productCount: number; totalQty: number; syncedAt: string } | null;
-  categories: Array<{ name: string; coveredProducts: number; registeredProducts: number; missingProducts: number; expiringProducts: number; expiredProducts: number; coverageRate: number }>;
-  products: WarehouseQualificationCoverageProduct[];
-  completedProducts: number;
-  qualificationAvailable: boolean;
-  summary: { products: number; covered: number; risk: number; urgent: number; warning: number; expired: number; undated: number; missing: number; unavailable: number; coverageRate: number };
-};
+import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType } from "./container-loading/types";
 
 export type CatalogProduct = {
   id: string;
@@ -135,8 +92,21 @@ export type ProductBase = {
   latestCostEffectiveAt?: string;
 };
 
-export type ProductPayload = DataContextPayload & {
+export type ProductPayload = {
   ok: boolean;
+  dataContext?: {
+    generatedAt: string;
+    effectiveAt: string;
+    timezone: string;
+    source: "live" | "snapshot" | "cache" | "derived";
+    scopeKey: string;
+    scopeLabel: string;
+    filters: Record<string, string>;
+    completeness: "complete" | "partial" | "unavailable";
+    coverage?: { completed: number; total: number; unit: "warehouse" | "sku" | "order" };
+    isEstimate: boolean;
+    usingPreviousSuccess: boolean;
+  };
   internal: boolean;
   mode?: "list" | "detail";
   user?: AuthUser;
@@ -172,8 +142,21 @@ export type WarehouseOnlyInventoryItem = {
   syncedAt?: string;
 };
 
-export type DashboardSummaryPayload = DataContextPayload & {
+export type DashboardSummaryPayload = {
   ok: boolean;
+  dataContext?: {
+    generatedAt: string;
+    effectiveAt: string;
+    timezone: string;
+    source: "live" | "snapshot" | "cache" | "derived";
+    scopeKey: string;
+    scopeLabel: string;
+    filters: Record<string, string>;
+    completeness: "complete" | "partial" | "unavailable";
+    coverage?: { completed: number; total: number; unit: "warehouse" | "sku" | "order" };
+    isEstimate: boolean;
+    usingPreviousSuccess: boolean;
+  };
   generatedAt: string;
   internal: boolean;
   user?: AuthUser;
@@ -707,11 +690,8 @@ export type WecomSceneConfig = {
   triggerMode?: "change" | "daily" | "both";
   scheduleTime?: string;
   lastSignature?: string;
-  lastReportDate?: string;
   lastSentAt?: string;
   lastScheduleRunKey?: string;
-  lastScheduleAttemptAt?: string;
-  lastScheduleMessage?: string;
   lastError?: string;
 };
 
@@ -727,7 +707,7 @@ export type WecomAfterSalesNewSceneConfig = WecomSceneConfig & {
   warehouseRobotIds: Record<string, string[]>;
 };
 
-export type WecomNotificationPayload = DataContextPayload & {
+export type WecomNotificationPayload = {
   ok: boolean;
   source: "local";
   updatedAt: string;
@@ -741,16 +721,6 @@ export type WecomNotificationPayload = DataContextPayload & {
     afterSalesNew: WecomAfterSalesNewSceneConfig;
     afterSalesProgress: WecomSceneConfig;
   };
-};
-
-export type WecomStockupTestDelivery = {
-  robotId: string;
-  robotName: string;
-  ok: boolean;
-  imageOk: boolean;
-  linkOk: boolean;
-  fallbackSent: boolean;
-  message: string;
 };
 
 export type ActionLogEntry = {
@@ -1124,7 +1094,7 @@ export type WarehouseTestResult = {
   warehouses?: WarehouseConnection[];
 };
 
-export type WarehousePayload = DataContextPayload & {
+export type WarehousePayload = {
   ok: boolean;
   providers: WmsProvider[];
   warehouses: WarehouseConnection[];
@@ -1641,7 +1611,7 @@ export type MovementWarehouseDiagnostic = {
   } | null;
 };
 
-export type MovementPayload = DataContextPayload & {
+export type MovementPayload = {
   ok: boolean;
   generatedAt: string;
   orderSyncedAt: string;
@@ -1928,6 +1898,7 @@ export type OverseasReconciliationReturnFact = {
   returnOrderNumber: string;
   originalOrderNumber: string;
   trackingNumber: string;
+  multiPackage: boolean;
   sku: string;
   productName: string;
   shopName: string;
@@ -2060,7 +2031,7 @@ export type OverseasReconciliationRanking = {
   changeRate: number | null;
 };
 
-export type OverseasInventoryReconciliationPayload = DataContextPayload & {
+export type OverseasInventoryReconciliationPayload = {
   ok: boolean;
   scope: "overseas";
   generatedAt: string;
@@ -3504,11 +3475,7 @@ export type StockupRecommendation = {
   avgDaily7: number;
   avgDaily30: number;
   avgDaily90: number;
-  trend30: number[];
-  yesterdayOutboundQty: number | null;
-  yesterdayReservedQty: number | null;
   daysCover: number | null;
-  estimatedStockoutDate?: string;
   leadDays: number;
   targetCoverDays: number;
   replenishQty: number;
@@ -3572,7 +3539,7 @@ export type StockupProductionQueueItem = {
   orders: OutsourcingProductionOrder[];
 };
 
-export type StockupPayload = DataContextPayload & {
+export type StockupPayload = {
   ok: boolean;
   generatedAt: string;
   movementGeneratedAt: string;
@@ -3820,75 +3787,6 @@ export type StockupWmsWarehouseOption = {
   createConfigured: boolean;
   createMode: string;
   createMessage: string;
-  productCreateSupported?: boolean;
-  productCreateConfigured?: boolean;
-  productCreateMode?: string;
-  productCreateMessage?: string;
-  productRequiredFields?: string[];
-};
-
-export type SkuCodingRule = {
-  id: string;
-  name: string;
-  prefix: string;
-  digits: number;
-  kind: string;
-  brand: string;
-  country: string;
-  description: string;
-  enabled: boolean;
-  observedMax: number;
-  issuedMax: number;
-  currentMax: number;
-  currentSku: string;
-  nextSequence: number;
-  nextSku: string;
-  updatedAt: string;
-  updatedBy: string;
-};
-
-export type SkuCodingWarehouseResult = {
-  connectionId: string;
-  warehouseName: string;
-  providerId: string;
-  status: "success" | "failed" | string;
-  externalId: string;
-  message: string;
-  updatedAt: string;
-};
-
-export type SkuCodingReservation = {
-  id: string;
-  ruleId: string;
-  productRecordId: string;
-  productName: string;
-  sequence: number;
-  sku: string;
-  status: "reserved" | "partial" | "completed" | "cancelled" | string;
-  requestedById: string;
-  requestedByName: string;
-  createdAt: string;
-  updatedAt: string;
-  cancelledAt?: string;
-  cancelReason?: string;
-  jdyRecordId: string;
-  jdyStatus: string;
-  message?: string;
-  warehouseResults: SkuCodingWarehouseResult[];
-  targetConnectionIds?: string[];
-};
-
-export type SkuCodingCenterPayload = {
-  ok: boolean;
-  version: number;
-  rules: SkuCodingRule[];
-  reservations: SkuCodingReservation[];
-  queue: StockupWorkflowPayload["productCodingQueue"];
-  warehouseOptions: StockupWmsWarehouseOption[];
-  updatedAt: string;
-  catalogSkuCount: number;
-  catalogSyncedAt: string;
-  catalogSource: string;
 };
 
 export type StockupWmsPushTask = {
@@ -4043,26 +3941,6 @@ export type StockupWorkflowPayload = {
     skuCodingStatus: string;
     archiveStatus: string;
     productName: string;
-    productNameEn?: string;
-    unit?: string;
-    category?: string;
-    functionCategory?: string;
-    productType?: string;
-    skuAttribute?: string;
-    brand?: string;
-    supplier?: string;
-    supplierCode?: string;
-    barcode?: string;
-    specification?: string;
-    weightKg?: number;
-    lengthCm?: number;
-    widthCm?: number;
-    heightCm?: number;
-    purchasePrice?: number;
-    warningQty?: number;
-    hsCode?: string;
-    origin?: string;
-    cartonSpecification?: string;
     sourceDemandRecordId: string;
     sourceDemandBatchNo: string;
     codingAppliedAt: string;
@@ -4071,7 +3949,6 @@ export type StockupWorkflowPayload = {
   productOptions?: Array<{ id: string; sku: string; productName: string }>;
   warehouseOptions?: StockupWmsWarehouseOption[];
   wmsPushTasks?: StockupWmsPushTask[];
-  codingCenter?: SkuCodingCenterPayload;
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : `${window.location.protocol}//${window.location.hostname}:8787`);
@@ -4457,17 +4334,6 @@ export function testWecomProjectTeam(id: string) {
 
 export function testWecomNotification(input: { robotIds: string[]; text: string; linkUrl?: string; linkText?: string }) {
   return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>("/api/wecom-notifications/test", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export function testWecomStockupWarning(input: { robotIds: string[]; linkUrl?: string; extraText?: string }) {
-  return requestJson<WecomNotificationPayload & {
-    results: Array<{ robotId: string; ok: boolean; message?: string }>;
-    deliveries: WecomStockupTestDelivery[];
-    report: { recommendationCount: number; imageBytes: number; renderError: string };
-  }>("/api/wecom-notifications/stockup-test", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -5089,36 +4955,8 @@ export function voidWorkflowShipment(input: { shipmentRecordId: string; reason?:
   return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId: string; shipmentNo?: string; status: string; reversedLineCount: number; reason: string }>("/api/stockup/workflow/shipments/void", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function fetchSkuCodingCenter() {
-  return requestJson<SkuCodingCenterPayload>("/api/stockup/workflow/product-coding");
-}
-
-export function updateSkuCodingRule(input: Partial<SkuCodingRule> & { name: string; prefix: string; digits: number }) {
-  return requestJson<{ ok: boolean; rule: SkuCodingRule; codingCenter: SkuCodingCenterPayload }>("/api/stockup/workflow/product-coding/rules", { method: "PUT", body: JSON.stringify(input) });
-}
-
-export function reserveWorkflowSku(input: { productRecordId: string; ruleId: string; mode?: "direct" | "queue"; productName?: string }) {
-  return requestJson<{ ok: boolean; reservation: SkuCodingReservation }>("/api/stockup/workflow/product-coding/reservations", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function cancelWorkflowSkuReservation(reservationId: string, reason = "") {
-  return requestJson<{ ok: boolean; reservation: SkuCodingReservation }>(`/api/stockup/workflow/product-coding/reservations/${encodeURIComponent(reservationId)}`, { method: "DELETE", body: JSON.stringify({ reason }) });
-}
-
-export function completeWorkflowProductCoding(input: {
-  productRecordId: string;
-  reservationId?: string;
-  mode?: "direct" | "queue";
-  sku?: string;
-  warehouseConnectionIds?: string[];
-  product?: Record<string, string | number>;
-  dryRun?: boolean;
-}) {
-  return requestJson<{ ok: boolean; dryRun?: boolean; productRecordId?: string; demandRecordId?: string; sku?: string; status?: string; reservationId?: string; warehouseResults?: SkuCodingWarehouseResult[] }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function retryWorkflowWmsProduct(reservationId: string, warehouseConnectionIds?: string[]) {
-  return requestJson<SkuCodingReservation & { ok: boolean }>(`/api/stockup/workflow/product-coding/reservations/${encodeURIComponent(reservationId)}/retry`, { method: "POST", body: JSON.stringify({ warehouseConnectionIds }) });
+export function completeWorkflowProductCoding(input: { productRecordId: string; sku: string; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun: boolean; productRecordId?: string; demandRecordId?: string; sku?: string }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function previewStockupCost(input: {
@@ -5327,7 +5165,7 @@ function createStockupIdempotencyKey() {
 }
 
 export function createStockupCollaborationRequest(payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
-  return requestJson<{ ok: boolean; requestId: string; requestNo: string; status: string }>("/api/stockup/collaboration/requests", {
+  return requestJson<{ ok: boolean; requestId: string; requestNo: string; status: string; notification?: { status: "sent" | "partial" | "failed" | "skipped"; message: string; teamName?: string; delivered?: number; failed?: number } }>("/api/stockup/collaboration/requests", {
     method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload),
@@ -5519,6 +5357,14 @@ export function createStockupPurchaseOrder(payload: Record<string, unknown>, ide
   return requestJson<{ ok: boolean; idempotentReplay: boolean; purchaseOrder: StockupPurchaseOrder }>("/api/stockup/collaboration/purchase-orders", { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) });
 }
 
+export function updateStockupPurchaseOrder(purchaseOrderId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; purchaseOrder: StockupPurchaseOrder }>(`/api/stockup/collaboration/purchase-orders/${encodeURIComponent(purchaseOrderId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function updateStockupRequestLineProcurement(requestLineId: string, payload: { action: "close" | "reopen"; reason?: string; requestVersion?: number }) {
+  return requestJson<{ ok: boolean; idempotentReplay: boolean; request: StockupRequest }>(`/api/stockup/collaboration/request-lines/${encodeURIComponent(requestLineId)}/procurement`, { method: "POST", body: JSON.stringify(payload) });
+}
+
 export function recordStockupPurchaseEvent(purchaseOrderId: string, payload: { lineId: string; action: "receive" | "cancel" | "refund" | "reship"; quantity?: number; amountCny?: number; note?: string }) {
   return requestJson<{ ok: boolean; purchaseOrder: StockupPurchaseOrder }>(`/api/stockup/collaboration/purchase-orders/${encodeURIComponent(purchaseOrderId)}/events`, { method: "POST", body: JSON.stringify(payload) });
 }
@@ -5562,21 +5408,10 @@ export function fetchContainerLoadingBootstrap() {
   return requestJson<ContainerLoadingBootstrap>("/api/container-loading/bootstrap");
 }
 
-export function estimateContainerLoadingCapacity(payload: {
-  containerType: string;
-  container?: ContainerType;
-  carton: SingleCartonCapacityInput;
-  targetCartons?: number;
-  reserve?: { doorReserveCm?: number; sideClearanceCm?: number; topClearanceCm?: number; spaceReservePercent?: number; payloadReservePercent?: number };
-}) {
-  return requestJson<{ ok: boolean; estimate: SingleCartonCapacityEstimate }>("/api/container-loading/quick-estimate", { method: "POST", body: JSON.stringify(payload) });
-}
-
-export function fetchContainerLoadingPlans(filters: { status?: string; shipmentId?: string; lifecycle?: "active" | "archived" | "all" } = {}) {
+export function fetchContainerLoadingPlans(filters: { status?: string; shipmentId?: string } = {}) {
   const query = new URLSearchParams();
   if (filters.status) query.set("status", filters.status);
   if (filters.shipmentId) query.set("shipmentId", filters.shipmentId);
-  if (filters.lifecycle) query.set("lifecycle", filters.lifecycle);
   return requestJson<{ ok: boolean; plans: ContainerLoadingPlanSummary[] }>(`/api/container-loading/plans${query.size ? `?${query}` : ""}`);
 }
 
@@ -5600,7 +5435,7 @@ export function saveContainerLoadingVersion(planId: string, payload: { expectedV
   return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/versions`, { method: "POST", body: JSON.stringify(payload) });
 }
 
-export function recalculateContainerLoadingPlan(planId: string, payload: { expectedVersion: number; selectedStrategy: ContainerLoadingStrategy; containerType?: string; container?: ContainerType; items?: ContainerLoadingItem[]; savePackagingProfiles?: boolean }) {
+export function recalculateContainerLoadingPlan(planId: string, payload: { expectedVersion: number; selectedStrategy: ContainerLoadingStrategy; container?: ContainerType; items?: ContainerLoadingItem[]; savePackagingProfiles?: boolean }) {
   return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/recalculate`, { method: "POST", body: JSON.stringify(payload) });
 }
 
@@ -5610,18 +5445,6 @@ export function confirmContainerLoadingPlan(planId: string, payload: { expectedV
 
 export function voidContainerLoadingPlan(planId: string, payload: { expectedVersion: number; reason?: string }) {
   return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/void`, { method: "POST", body: JSON.stringify(payload) });
-}
-
-export function archiveContainerLoadingPlan(planId: string, payload: { expectedVersion: number }) {
-  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/archive`, { method: "POST", body: JSON.stringify(payload) });
-}
-
-export function restoreContainerLoadingPlan(planId: string, payload: { expectedVersion: number }) {
-  return requestJson<{ ok: boolean; plan: ContainerLoadingPlan; versions: ContainerLoadingVersion[] }>(`/api/container-loading/plans/${encodeURIComponent(planId)}/restore`, { method: "POST", body: JSON.stringify(payload) });
-}
-
-export function deleteContainerLoadingPlan(planId: string, payload: { expectedVersion: number }) {
-  return requestJson<{ ok: boolean; deletedPlan: ContainerLoadingPlanSummary }>(`/api/container-loading/plans/${encodeURIComponent(planId)}`, { method: "DELETE", body: JSON.stringify(payload) });
 }
 
 export function fetchStockupCollaborationNotifications() {
@@ -5731,15 +5554,6 @@ export async function downloadWarehouseLiabilitySettlementBatch(id: string) {
     throw new Error(payload.message || "导出核销明细失败。");
   }
   return response.blob();
-}
-
-export function fetchWarehouseQualificationCoverage(input: { warehouseId?: string; keyword?: string; status?: string } = {}, signal?: AbortSignal) {
-  const params = new URLSearchParams();
-  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
-  if (input.keyword) params.set("keyword", input.keyword);
-  if (input.status && input.status !== "all") params.set("status", input.status);
-  const query = params.size ? `?${params.toString()}` : "";
-  return requestJson<WarehouseQualificationCoveragePayload>(`/api/warehouse-collaboration/qualification-coverage${query}`, { signal });
 }
 
 export function fetchAfterSales(input: { status?: string; keyword?: string; mine?: boolean } = {}, signal?: AbortSignal) {

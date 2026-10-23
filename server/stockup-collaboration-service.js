@@ -127,7 +127,13 @@ function lineFromRow(row) {
     method: String(row.method), requestedQty: number(row.requested_qty), unit: String(row.unit),
     targetUnitCostCny: row.target_unit_cost_cny == null ? null : number(row.target_unit_cost_cny),
     expectedArrivalAt: String(row.expected_arrival_at || ""), note: String(row.note || ""), status: String(row.status),
-    fulfilledQty: number(row.fulfilled_qty), productRefId: String(row.product_ref_id || ""), procurementUrl: String(row.procurement_url || ""), shelfLifeManaged: Boolean(row.shelf_life_managed), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    fulfilledQty: number(row.fulfilled_qty),
+    purchaseOrderedQty: number(row.purchase_ordered_qty), purchaseReceivedQty: number(row.purchase_received_qty), purchaseCancelledQty: number(row.purchase_cancelled_qty),
+    warehouseExpectedQty: number(row.warehouse_expected_qty), warehouseReceivedQty: number(row.warehouse_received_qty), warehouseGoodQty: number(row.warehouse_good_qty),
+    warehouseWorkOrderCount: number(row.warehouse_work_order_count),
+    productRefId: String(row.product_ref_id || ""), procurementUrl: String(row.procurement_url || ""), shelfLifeManaged: Boolean(row.shelf_life_managed),
+    procurementClosedReason: String(row.procurement_closed_reason || ""), procurementClosedAt: String(row.procurement_closed_at || ""), procurementClosedBy: String(row.procurement_closed_by || ""),
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
 
@@ -154,7 +160,10 @@ function shipmentFromRow(row) {
     carrier: String(row.carrier || ""), transportMode: String(row.transport_mode || ""),
     trackingNo: String(row.tracking_no || ""), etd: String(row.etd || ""), eta: String(row.eta || ""), actualShippedAt: String(row.actual_shipped_at || ""),
     status: String(row.status), packages: number(row.packages), totalWeightKg: number(row.total_weight_kg), totalVolumeM3: number(row.total_volume_m3),
-    chargeableWeightKg: number(row.chargeable_weight_kg), note: String(row.note || ""), boxMark: String(row.box_mark || ""), inventoryMovementId: String(row.inventory_movement_id || ""), version: number(row.version, 1),
+    chargeableWeightKg: number(row.chargeable_weight_kg), billingMethod: String(row.billing_method || "weight"),
+    carrierPackages: number(row.carrier_packages), carrierActualWeightKg: number(row.carrier_actual_weight_kg), chargeableVolumeM3: number(row.chargeable_volume_m3),
+    billingUnitPriceCny: number(row.billing_unit_price_cny), billingExtraFeeCny: number(row.billing_extra_fee_cny), quotedFreightCny: number(row.quoted_freight_cny),
+    note: String(row.note || ""), boxMark: String(row.box_mark || ""), inventoryMovementId: String(row.inventory_movement_id || ""), version: number(row.version, 1),
     wmsProviderId: String(row.wms_provider_id || ""), wmsDocumentType: String(row.wms_document_type || ""),
     wmsPushStatus: String(row.wms_push_status || "not_created"), wmsOrderNo: String(row.wms_order_no || ""),
     wmsPushError: String(row.wms_push_error || ""), wmsPushAttempts: number(row.wms_push_attempts),
@@ -193,6 +202,40 @@ function costItemFromRow(row) {
     amountCny: number(row.amount_cny), included: Boolean(row.included), allocationMethod: String(row.allocation_method), note: String(row.note || ""),
     status: String(row.status), createdBy: String(row.created_by), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
+}
+
+function requestLineRows(store, requestId) {
+  return store.all(`SELECT l.*,
+      COALESCE(po.purchase_ordered_qty,0) AS purchase_ordered_qty,
+      COALESCE(po.purchase_received_qty,0) AS purchase_received_qty,
+      COALESCE(po.purchase_cancelled_qty,0) AS purchase_cancelled_qty,
+      COALESCE(wo.warehouse_expected_qty,0) AS warehouse_expected_qty,
+      COALESCE(wo.warehouse_received_qty,0) AS warehouse_received_qty,
+      COALESCE(wo.warehouse_good_qty,0) AS warehouse_good_qty,
+      COALESCE(wo.warehouse_work_order_count,0) AS warehouse_work_order_count
+    FROM stockup_request_lines l
+    LEFT JOIN (
+      SELECT request_line_id,
+        SUM(quantity) AS purchase_ordered_qty,
+        SUM(received_qty) AS purchase_received_qty,
+        SUM(cancelled_qty) AS purchase_cancelled_qty
+      FROM stockup_purchase_order_lines
+      WHERE status!='cancelled'
+      GROUP BY request_line_id
+    ) po ON po.request_line_id=l.id
+    LEFT JOIN (
+      SELECT wl.request_line_id,
+        SUM(wl.expected_qty) AS warehouse_expected_qty,
+        SUM(wl.received_qty) AS warehouse_received_qty,
+        SUM(CASE WHEN wl.status='approved' THEN wl.good_qty ELSE 0 END) AS warehouse_good_qty,
+        COUNT(DISTINCT wl.work_order_id) AS warehouse_work_order_count
+      FROM stockup_warehouse_work_order_lines wl
+      JOIN stockup_warehouse_work_orders w ON w.id=wl.work_order_id
+      WHERE w.status!='cancelled'
+      GROUP BY wl.request_line_id
+    ) wo ON wo.request_line_id=l.id
+    WHERE l.request_id=?
+    ORDER BY l.created_at`, [requestId]);
 }
 
 function warehouseWorkOrderLineFromRow(row) {
@@ -330,7 +373,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
     const request = ensureVisible(requestFromRow(store.first("SELECT * FROM stockup_requests WHERE id = ?", [String(idValue || "")])), context);
     if (!includeDetails) return request;
     const scopedSkus = context.skus?.length ? new Set(context.skus.map((sku) => String(sku).trim().toUpperCase())) : null;
-    request.lines = store.all("SELECT * FROM stockup_request_lines WHERE request_id = ? ORDER BY created_at", [request.id])
+    request.lines = requestLineRows(store, request.id)
       .map(lineFromRow)
       .filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
     const scopedLineIds = scopedSkus ? new Set(request.lines.map((line) => line.id)) : null;
@@ -358,7 +401,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
       unitCostCny: number(row.unit_cost_cny), snapshot: parseJson(row.snapshot_json, {}), note: String(row.note || ""), createdBy: String(row.created_by), createdAt: String(row.created_at),
       lockedBy: String(row.locked_by || ""), lockedAt: String(row.locked_at || ""),
     })) : [];
-    request.events = store.all("SELECT * FROM stockup_progress_events WHERE request_id = ? AND visibility != 'cost_only' ORDER BY occurred_at DESC", [request.id])
+    request.events = store.all("SELECT * FROM stockup_progress_events WHERE request_id = ? AND visibility != 'cost_only' ORDER BY occurred_at DESC, rowid DESC", [request.id])
       .map(eventFromRow)
       .filter((event) => !scopedLineIds || !event.lineId || scopedLineIds.has(event.lineId));
     return request;
@@ -402,10 +445,10 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
       updated_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]);
     const items = listRows.map(requestFromRow).map((request) => {
       const scopedSkus = context.skus?.length ? new Set(context.skus.map((sku) => String(sku).trim().toUpperCase())) : null;
-      request.lines = store.all("SELECT * FROM stockup_request_lines WHERE request_id = ? ORDER BY created_at", [request.id])
+      request.lines = requestLineRows(store, request.id)
         .map(lineFromRow)
         .filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
-      request.latestEvent = eventFromRow(store.first("SELECT * FROM stockup_progress_events WHERE request_id = ? AND visibility = 'all' ORDER BY occurred_at DESC LIMIT 1", [request.id]) || {});
+      request.latestEvent = eventFromRow(store.first("SELECT * FROM stockup_progress_events WHERE request_id = ? AND visibility = 'all' ORDER BY occurred_at DESC, rowid DESC LIMIT 1", [request.id]) || {});
       request.isOverdue = !["completed", "cancelled", "rejected"].includes(request.status) && request.expectedArrivalAt && request.expectedArrivalAt < new Date().toISOString().slice(0, 10);
       return request;
     });
@@ -503,6 +546,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
 
   function setRequestStatus(requestId, targetStatus, payload, context) {
     const request = getRequest(requestId, context);
+    const requestedTargetStatus = targetStatus;
     if (request.workflowVersion === 2) {
       targetStatus = ({ pending_acceptance: "submitted", needs_changes: "draft", rejected: "cancelled", accepted: "submitted" })[targetStatus] || targetStatus;
       if (targetStatus !== request.status) assertStockupV2Transition(request.status, targetStatus);
@@ -513,8 +557,9 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
     return store.transaction(() => {
       store.run("UPDATE stockup_requests SET status=?,assignee_id=?,assignee_name=?,version=version+1,updated_at=? WHERE id=?", [targetStatus, payload.assigneeId || request.assigneeId || userOf(context).id, payload.assigneeName || request.assigneeName || userOf(context).name, now, requestId]);
       store.run("UPDATE stockup_request_lines SET status=?,updated_at=? WHERE request_id=?", [targetStatus, now, requestId]);
+      const isV2Claim = request.workflowVersion === 2 && requestedTargetStatus === "accepted" && request.status === "submitted";
       const titles = { submitted: "现货备货需求已提交", pending_acceptance: "备货需求已重新提交", accepted: "供应链已受理", needs_changes: "需求需要补充资料", rejected: "需求已驳回", cancelled: "需求已取消", draft: request.workflowVersion === 2 ? "需求已退回草稿修订" : "需求已恢复为草稿" };
-      addEvent(requestId, `request_${targetStatus}`, titles[targetStatus] || "需求状态已更新", payload.note || payload.reason || "", context);
+      addEvent(requestId, isV2Claim ? "request_claimed" : `request_${targetStatus}`, isV2Claim ? "供应链已认领需求" : (titles[targetStatus] || "需求状态已更新"), payload.note || payload.reason || (isV2Claim ? "后续由认领人登记采购单并跟进到货" : ""), context);
       return { ok: true, request: getRequest(requestId, { ...context, viewAll: true }) };
     });
   }
@@ -700,11 +745,13 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
   function beginShipmentWmsPush(shipmentId, metadata, context) {
     const shipment = getShipment(shipmentId, context);
     if (shipment.workflowVersion === 2) {
-      if (shipment.status !== "inventory_reserved") throw Object.assign(new Error("只有已锁定国内库存的批次才能创建海外仓备货单。"), { statusCode: 409, code: "wms_requires_inventory_reservation" });
+      const recovery = shipment.wmsPushStatus === "voided" && ["wms_created", "instruction_issued", "handed_over"].includes(shipment.status);
+      if (shipment.status !== "inventory_reserved" && !recovery) throw Object.assign(new Error("只有已锁定国内库存的批次，或已登记外部 WMS 单被删除的批次，才能创建海外仓备货单。"), { statusCode: 409, code: "wms_requires_inventory_reservation" });
       const missingSku = store.first(`SELECT sl.product_name FROM stockup_shipment_lines sl LEFT JOIN stockup_product_refs pr ON pr.id=sl.product_ref_id WHERE sl.shipment_id=? AND (COALESCE(pr.formal_sku,'')='' OR pr.coding_status!='coded') LIMIT 1`, [shipment.id]);
       if (missingSku) throw Object.assign(new Error(`${String(missingSku.product_name || "商品")} 尚未绑定正式 SKU，不能创建海外仓备货单。`), { statusCode: 409, code: "formal_sku_required" });
       const reservation = store.first("SELECT status FROM stockup_inventory_reservations WHERE shipment_id=?", [shipment.id]);
-      if (String(reservation?.status || "") !== "reserved") throw Object.assign(new Error("国内库存预约已失效，请重新创建出运计划。"), { statusCode: 409, code: "inventory_reservation_inactive" });
+      const requiredReservationStatus = shipment.status === "handed_over" ? "committed" : "reserved";
+      if (String(reservation?.status || "") !== requiredReservationStatus) throw Object.assign(new Error(recovery ? "当前出运批次的库存状态与业务状态不一致，已阻止重建 WMS 单。" : "国内库存预约已失效，请重新创建出运计划。"), { statusCode: 409, code: "inventory_reservation_inactive" });
     } else if (shipment.status !== "shipped") throw Object.assign(new Error("只有已发出的批次才能创建仓库单据。"), { statusCode: 409 });
     if (shipment.wmsPushStatus !== "voided" && (shipment.wmsOrderNo || shipment.wmsPushStatus === "pushed")) return { alreadyCreated: true, shipment };
     if (shipment.wmsPushStatus === "pushing") throw Object.assign(new Error("仓库单据正在创建，请勿重复点击。"), { statusCode: 409 });
@@ -721,10 +768,10 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
     const orderNo = required(result.orderNo, '仓库单号');
     const now = nowIso();
     return store.transaction(() => {
-      store.run(`UPDATE stockup_shipments SET wms_push_status='pushed',wms_order_no=?,wms_push_error='',wms_pushed_at=?,wms_pushed_by=?,status=CASE WHEN workflow_version=2 THEN 'wms_created' ELSE status END,version=version+1,updated_at=? WHERE id=?`, [orderNo, now, userOf(context).name, now, shipment.id]);
+      store.run(`UPDATE stockup_shipments SET wms_push_status='pushed',wms_order_no=?,wms_push_error='',wms_pushed_at=?,wms_pushed_by=?,status=CASE WHEN workflow_version=2 AND status='inventory_reserved' THEN 'wms_created' ELSE status END,version=version+1,updated_at=? WHERE id=?`, [orderNo, now, userOf(context).name, now, shipment.id]);
       for (const requestId of shipment.requestIds || [shipment.requestId]) {
-        if (shipment.workflowVersion === 2) store.run("UPDATE stockup_requests SET status='wms_created',version=version+1,updated_at=? WHERE id=?", [now, requestId]);
-        addEvent(requestId, 'wms_order_created', `${result.documentLabel || '仓库单据'}已创建`, `${orderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo } });
+        if (shipment.workflowVersion === 2 && shipment.status === "inventory_reserved") store.run("UPDATE stockup_requests SET status='wms_created',version=version+1,updated_at=? WHERE id=?", [now, requestId]);
+        addEvent(requestId, shipment.status === "inventory_reserved" ? 'wms_order_created' : 'wms_order_rebuilt', `${result.documentLabel || '仓库单据'}${shipment.status === "inventory_reserved" ? "已创建" : "已重建"}`, `${orderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo, previousOrderNo: shipment.wmsOrderNo || "" } });
       }
       return { ok: true, alreadyCreated: false, shipment: hydrateShipment(store.first('SELECT * FROM stockup_shipments WHERE id=?', [shipment.id])) };
     });
@@ -754,6 +801,32 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
         addEvent(requestId, "wms_order_voided", `${result.documentLabel || "仓库单据"}已作废`, `${shipment.wmsOrderNo} · ${shipment.destinationWarehouseName}`, context, { shipmentId: shipment.id, payload: { orderNo: shipment.wmsOrderNo } });
       }
       return { ok: true, alreadyCancelled: Boolean(result.alreadyCancelled), shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
+    });
+  }
+
+  function reconcileDeletedShipmentWmsOrder(shipmentId, payload, context) {
+    const shipment = getShipment(shipmentId, context);
+    if (shipment.workflowVersion !== 2 || !["wms_created", "instruction_issued", "handed_over"].includes(shipment.status)) {
+      throw Object.assign(new Error("只有已创建 WMS 单且尚未到仓的 V2 出运批次可以登记外部删除。"), { statusCode: 409, code: "wms_reconcile_state_invalid" });
+    }
+    if (shipment.wmsPushStatus !== "pushed" || !shipment.wmsOrderNo) {
+      throw Object.assign(new Error("当前批次没有可登记为外部删除的 WMS 单。"), { statusCode: 409, code: "wms_reconcile_order_missing" });
+    }
+    const expectedOrderNo = required(payload?.expectedOrderNo, "原 WMS 单号");
+    if (expectedOrderNo !== shipment.wmsOrderNo) {
+      throw Object.assign(new Error("WMS 单号已变化，请刷新后重新操作。"), { statusCode: 409, code: "wms_reconcile_order_conflict" });
+    }
+    const reason = required(payload?.reason, "删除原因");
+    const reservation = store.first("SELECT status FROM stockup_inventory_reservations WHERE shipment_id=?", [shipment.id]);
+    const requiredReservationStatus = shipment.status === "handed_over" ? "committed" : "reserved";
+    if (String(reservation?.status || "") !== requiredReservationStatus) {
+      throw Object.assign(new Error("库存状态与出运状态不一致，已阻止重建操作。"), { statusCode: 409, code: "wms_reconcile_inventory_conflict" });
+    }
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run("UPDATE stockup_shipments SET wms_push_status='voided',wms_push_error=?,version=version+1,updated_at=? WHERE id=?", [`外部 WMS 已删除原单 ${shipment.wmsOrderNo}：${reason}`, now, shipment.id]);
+      for (const requestId of shipment.requestIds || [shipment.requestId]) addEvent(requestId, "wms_order_deleted_externally", "外部 WMS 单已删除，等待原状态重建", `${shipment.wmsOrderNo} · ${reason}`, context, { shipmentId: shipment.id, payload: { orderNo: shipment.wmsOrderNo, reason, preservedStatus: shipment.status } });
+      return { ok: true, preservedStatus: shipment.status, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
     });
   }
 
@@ -1095,9 +1168,21 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
       .filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
     if (workOrder.workflowVersion === 2) workOrder.lines = workOrder.lines.map((line) => ({
       ...line,
-      lots: store.all("SELECT * FROM stockup_inspection_lots WHERE work_order_line_id=? ORDER BY created_at,id", [line.id]).map((lot) => ({
-        id: String(lot.id), workOrderId: String(lot.work_order_id), workOrderLineId: String(lot.work_order_line_id), productRefId: String(lot.product_ref_id || ""), purchaseOrderLineId: String(lot.purchase_order_line_id || ""), quantity: number(lot.quantity), lotNo: String(lot.lot_no), barcode: String(lot.barcode), productionDate: String(lot.production_date), expiryDate: String(lot.expiry_date || ""), cartonCount: number(lot.carton_count), unitsPerCarton: number(lot.units_per_carton), looseQuantity: number(lot.loose_quantity), cartonLengthCm: number(lot.carton_length_cm), cartonWidthCm: number(lot.carton_width_cm), cartonHeightCm: number(lot.carton_height_cm), cartonWeightKg: number(lot.carton_weight_kg), inventoryLotId: String(lot.inventory_lot_id || ""), inventoryMovementId: String(lot.inventory_movement_id || ""), status: String(lot.status),
-      })),
+      lots: store.all("SELECT * FROM stockup_inspection_lots WHERE work_order_line_id=? ORDER BY created_at,id", [line.id]).map((lot) => {
+        const allocation = store.first(`SELECT
+            COALESCE(SUM(CASE WHEN r.status='reserved' THEN rl.quantity ELSE 0 END),0) AS reserved_qty,
+            COALESCE(SUM(CASE WHEN r.status='committed' THEN rl.quantity ELSE 0 END),0) AS shipped_qty
+          FROM stockup_inventory_reservation_lines rl
+          JOIN stockup_inventory_reservations r ON r.id=rl.reservation_id
+          WHERE rl.inspection_lot_id=? AND r.status IN ('reserved','committed')`, [lot.id]);
+        const reservedQty = number(allocation?.reserved_qty);
+        const shippedQty = number(allocation?.shipped_qty);
+        const allocatedQty = reservedQty + shippedQty;
+        return {
+          id: String(lot.id), workOrderId: String(lot.work_order_id), workOrderLineId: String(lot.work_order_line_id), productRefId: String(lot.product_ref_id || ""), purchaseOrderLineId: String(lot.purchase_order_line_id || ""), quantity: number(lot.quantity), lotNo: String(lot.lot_no), barcode: String(lot.barcode), productionDate: String(lot.production_date), expiryDate: String(lot.expiry_date || ""), cartonCount: number(lot.carton_count), unitsPerCarton: number(lot.units_per_carton), looseQuantity: number(lot.loose_quantity), cartonLengthCm: number(lot.carton_length_cm), cartonWidthCm: number(lot.carton_width_cm), cartonHeightCm: number(lot.carton_height_cm), cartonWeightKg: number(lot.carton_weight_kg), inventoryLotId: String(lot.inventory_lot_id || ""), inventoryMovementId: String(lot.inventory_movement_id || ""), status: String(lot.status),
+          reservedQty, shippedQty, allocatedQty, availableQty: Math.max(0, number(lot.quantity) - allocatedQty),
+        };
+      }),
       evidence: store.all("SELECT * FROM stockup_inspection_evidence WHERE work_order_line_id=? ORDER BY created_at,id", [line.id]).map((item) => ({ id: String(item.id), kind: String(item.kind), attachmentId: String(item.attachment_id), fileName: String(item.file_name || ""), createdAt: String(item.created_at) })),
     }));
     const visibleLineIds = new Set(workOrder.lines.map((line) => line.id));
@@ -1110,7 +1195,12 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
     })).filter((route) => route.lines.length > 0);
     const allocatedByLine = new Map();
     for (const route of workOrder.routes) for (const line of route.lines) allocatedByLine.set(line.workOrderLineId, number(allocatedByLine.get(line.workOrderLineId)) + line.quantity);
-    workOrder.lines = workOrder.lines.map((line) => ({ ...line, allocatedQty: number(allocatedByLine.get(line.id)), unallocatedQty: Math.max(0, line.goodQty - number(allocatedByLine.get(line.id))) }));
+    workOrder.lines = workOrder.lines.map((line) => {
+      const allocatedQty = workOrder.workflowVersion === 2
+        ? (line.lots || []).reduce((sum, lot) => sum + number(lot.allocatedQty), 0)
+        : number(allocatedByLine.get(line.id));
+      return { ...line, allocatedQty, unallocatedQty: Math.max(0, line.goodQty - allocatedQty) };
+    });
     workOrder.expenses = scopedSkus ? [] : store.all("SELECT * FROM stockup_warehouse_expenses WHERE work_order_id=? ORDER BY occurred_at DESC,created_at DESC", [workOrder.id]).map(warehouseExpenseFromRow);
     workOrder.events = store.all("SELECT * FROM stockup_warehouse_work_order_events WHERE work_order_id=? ORDER BY occurred_at DESC", [workOrder.id]).map((event) => ({
       id: String(event.id), workOrderId: String(event.work_order_id), eventType: String(event.event_type), title: String(event.title), description: String(event.description || ""),
@@ -1391,7 +1481,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
   function warehouseWorkOrderDashboard(filters = {}, context = {}) {
     const listed = listWarehouseWorkOrders(filters, context);
     const workOrders = listed.workOrders;
-    const statuses = ["draft", "waiting_receipt", "inspecting", "ready_to_ship", "partially_shipped", "completed", "exception", "cancelled"];
+    const statuses = ["draft", "waiting_receipt", "inspecting", "inspection_review", "inventory_ready", "ready_to_ship", "partially_shipped", "completed", "exception", "cancelled"];
     const counts = Object.fromEntries(statuses.map((status) => [status, workOrders.filter((item) => item.status === status).length]));
     counts.overdue = workOrders.filter((item) => !["completed", "cancelled"].includes(item.status) && item.expectedArrivalAt && Date.parse(item.expectedArrivalAt) < Date.now()).length;
     const routeBreakdown = { overseas_warehouse: 0, domestic_customer: 0, hold: 0 };
@@ -1442,7 +1532,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
 
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
-    listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, voidShipmentWmsOrder,
+    listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, reconcileDeletedShipmentWmsOrder, voidShipmentWmsOrder,
     applyWarehouseWorkOrderAction, createWarehouseWorkOrder, getWarehouseWorkOrder, listWarehouseWorkOrders, markWarehouseWorkOrderPublished, warehouseWorkOrderDashboard,
     saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
     ...v2Service,

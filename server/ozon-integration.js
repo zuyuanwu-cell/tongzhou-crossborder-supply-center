@@ -515,6 +515,17 @@ function availableInventory(inventoryRows, warehouseId) {
   return { bySku, hasSnapshot: rows.length > 0 };
 }
 
+function availableWarehouseSkus(inventoryRows, productRows, warehouseId) {
+  const rows = [...(Array.isArray(inventoryRows) ? inventoryRows : []), ...(Array.isArray(productRows) ? productRows : [])]
+    .filter((row) => text(row.warehouseId) === text(warehouseId));
+  const skus = new Set();
+  for (const row of rows) {
+    const sku = text(row.sku || row.productSku).toUpperCase();
+    if (sku) skus.add(sku);
+  }
+  return { skus, hasCatalog: rows.length > 0 };
+}
+
 function isWmsLinked(order) {
   return ["linked", "pushed"].includes(text(order?.push?.status)) && Boolean(text(order?.push?.wmsOrderNo));
 }
@@ -599,13 +610,14 @@ export function createOzonIntegrationService({
   fetchImpl = globalThis.fetch,
   warehouseConnections = () => [],
   inventory = () => [],
+  warehouseProducts = () => [],
   lookupWmsOrder,
   verifyWmsOrder,
   notifyFailure = () => {},
   autoShipEnabled = false,
   clock = () => new Date(),
 } = {}) {
-  const dependencies = { warehouseConnections, inventory };
+  const dependencies = { warehouseConnections, inventory, warehouseProducts };
   let state = normalizeOzonState(initialState);
   const inFlightPushes = new Map();
   const inFlightVerifications = new Map();
@@ -667,6 +679,48 @@ export function createOzonIntegrationService({
       updatedAt: at,
     }));
     state.taskEvents = state.taskEvents.slice(0, 20000);
+  }
+
+  function applyAutoMappings({ storeId, warehouseConnectionId }, actor = {}, { requireCatalog = false } = {}) {
+    const store = findStore(storeId, actor, "collaborator");
+    const connection = warehouseConnections().find((item) => item.id === text(warehouseConnectionId));
+    if (!connection || !russianWarehouse(connection)) throw new Error("请选择已启用的俄罗斯 YunWMS 仓库。");
+    const catalog = availableWarehouseSkus(inventory(), warehouseProducts(), connection.id);
+    if (!catalog.hasCatalog && requireCatalog) throw new Error("目标仓暂无商品或库存快照，请先在库存同步中更新该仓数据。");
+
+    const products = new Map();
+    for (const product of state.orders.filter((order) => order.storeId === store.id).flatMap((order) => order.products)) {
+      const key = mappingKey(store.id, connection.id, product.offerId, product.ozonSku);
+      if (!products.has(key)) products.set(key, product);
+    }
+
+    let mapped = 0;
+    let existing = 0;
+    let unmatched = 0;
+    const now = clock().toISOString();
+    for (const [key, product] of products) {
+      if (state.skuMappings.some((mapping) => mappingKey(mapping.storeId, mapping.warehouseConnectionId, mapping.offerId, mapping.ozonSku) === key)) {
+        existing += 1;
+        continue;
+      }
+      const wmsSku = skuCandidates(product.offerId, product.ozonSku).find((candidate) => catalog.skus.has(candidate));
+      if (!wmsSku) {
+        unmatched += 1;
+        continue;
+      }
+      state.skuMappings.push(normalizeSkuMapping({
+        storeId: store.id,
+        warehouseConnectionId: connection.id,
+        offerId: product.offerId,
+        ozonSku: product.ozonSku,
+        productName: product.name,
+        wmsSku,
+        updatedAt: now,
+        updatedBy: `${actorName(actor)}（自动匹配）`,
+      }));
+      mapped += 1;
+    }
+    return { mapped, existing, unmatched, total: products.size };
   }
 
   function assertConfirmedSchedule(order) {
@@ -880,8 +934,18 @@ export function createOzonIntegrationService({
       store.ozonWarehouses = await fetchOzonWarehouses(fetchImpl, store);
       store.lastSyncedAt = clock().toISOString();
       store.lastError = "";
+      const mappingResult = state.routes
+        .filter((route) => route.storeId === store.id && route.warehouseConnectionId)
+        .reduce((summary, route) => {
+          const result = applyAutoMappings({ storeId: store.id, warehouseConnectionId: route.warehouseConnectionId }, actor || { role: "admin" });
+          summary.mapped += result.mapped;
+          summary.existing += result.existing;
+          summary.unmatched += result.unmatched;
+          summary.total += result.total;
+          return summary;
+        }, { mapped: 0, existing: 0, unmatched: 0, total: 0 });
       persist();
-      return { store: publicStore(store, actor || { role: "admin" }), count: synced.length };
+      return { store: publicStore(store, actor || { role: "admin" }), count: synced.length, autoMapped: mappingResult.mapped, mapping: mappingResult };
     } catch (error) {
       store.lastError = error instanceof Error ? error.message : "Ozon 同步失败";
       persist();
@@ -908,6 +972,7 @@ export function createOzonIntegrationService({
     const index = state.routes.findIndex((route) => routeKey(route.storeId, route.ozonWarehouseId) === routeKey(next.storeId, next.ozonWarehouseId));
     if (index >= 0) state.routes[index] = next;
     else state.routes.push(next);
+    applyAutoMappings({ storeId: store.id, warehouseConnectionId: connection.id }, actor);
     persist();
     return next;
   }
@@ -931,21 +996,9 @@ export function createOzonIntegrationService({
   }
 
   function autoMap({ storeId, warehouseConnectionId }, actor = {}) {
-    const store = findStore(storeId, actor, "collaborator");
-    const connection = warehouseConnections().find((item) => item.id === text(warehouseConnectionId));
-    if (!connection || !russianWarehouse(connection)) throw new Error("请选择已启用的俄罗斯 YunWMS 仓库。");
-    const snapshot = availableInventory(inventory(), connection.id);
-    if (!snapshot.hasSnapshot) throw new Error("目标仓暂无库存快照，请先在库存同步中更新该仓数据。");
-    let mapped = 0;
-    const products = state.orders.filter((order) => order.storeId === store.id).flatMap((order) => order.products);
-    for (const product of products) {
-      const candidates = skuCandidates(product.offerId, product.ozonSku);
-      const wmsSku = candidates.find((candidate) => snapshot.bySku.has(candidate));
-      if (!wmsSku) continue;
-      saveSkuMapping({ storeId: store.id, warehouseConnectionId: connection.id, offerId: product.offerId, ozonSku: product.ozonSku, productName: product.name, wmsSku }, actor);
-      mapped += 1;
-    }
-    return { mapped };
+    const result = applyAutoMappings({ storeId, warehouseConnectionId }, actor, { requireCatalog: true });
+    if (result.mapped) persist();
+    return result;
   }
 
   function saveScheduleRule(input, actor = {}) {
@@ -1282,6 +1335,13 @@ export function createOzonIntegrationService({
         if (!result?.found || !text(result.orderNo)) {
           const generationRequested = result?.generationRequested === true;
           const platformPending = result?.platformPending === true;
+          if (route) {
+            route.platformShop = route.platformShop || text(result?.platformShop);
+            route.wmsWarehouseCode = route.wmsWarehouseCode || text(result?.warehouseCode);
+            route.shippingMethod = route.shippingMethod || text(result?.shippingMethod);
+            route.updatedAt = clock().toISOString();
+            route.updatedBy = actorName(actor);
+          }
           order.push = {
             ...order.push,
             status: generationRequested ? "generation_pending" : platformPending ? "platform_pending" : "waiting_sync",
@@ -1320,6 +1380,13 @@ export function createOzonIntegrationService({
           throw new Error("WMS 回查的 SKU / 数量与中台不一致，请勿重复点击并联系管理员核对。");
         }
         const verified = ["W", "D"].includes(text(result.status).toUpperCase()) && result.pendingConfirmation !== true;
+        if (route) {
+          route.platformShop = route.platformShop || text(result.platformShop);
+          route.wmsWarehouseCode = route.wmsWarehouseCode || text(result.warehouseCode);
+          route.shippingMethod = route.shippingMethod || text(result.shippingMethod);
+          route.updatedAt = clock().toISOString();
+          route.updatedBy = actorName(actor);
+        }
         order.push = {
           ...order.push,
           status: verified ? "linked" : "verification_pending",
@@ -1468,7 +1535,13 @@ export function createOzonIntegrationService({
     const status = number(error?.status || error?.statusCode);
     const code = text(error?.code).toUpperCase();
     return status === 429 || status >= 500 || ["TIMEOUT", "NETWORK_ERROR"].includes(code)
-      || /timeout|network|temporar|超时|网络|稍后|频繁/i.test(text(error?.message));
+      || /timeout|network|temporar|no\s*data|超时|网络|稍后|频繁|待生成订单.*查询|尚未返回|同步延迟/i.test(text(error?.message));
+  }
+
+  function isRecoverableWmsSyncError(order) {
+    return order.fulfillment?.stage === "error"
+      && text(order.fulfillment?.failedStage) === "wms_verifying"
+      && /no\s*data|待生成订单.*查询|尚未返回|同步延迟/i.test(text(order.fulfillment?.lastError));
   }
 
   function recordFulfillmentFailure(order, error, actor = {}) {
@@ -1528,8 +1601,12 @@ export function createOzonIntegrationService({
     for (const order of state.orders) {
       if (candidates.length >= Math.max(1, Math.min(3, Number(limit) || 3))) break;
       if (order.schedule?.status !== "confirmed" || order.fulfillment?.stage === "completed") continue;
+      // In safe mode a WMS-ready order is intentionally waiting for a human to
+      // complete the Ozon shipment. It must not keep occupying the one-order-
+      // per-store queue slot and starve later confirmed orders forever.
+      if (!autoShipEnabled && order.fulfillment?.stage === "wms_ready") continue;
       const nextRetry = new Date(order.fulfillment?.nextRetryAt || 0).getTime();
-      if (order.fulfillment?.stage === "error" && !nextRetry) continue;
+      if (order.fulfillment?.stage === "error" && !nextRetry && !isRecoverableWmsSyncError(order)) continue;
       if (nextRetry && nextRetry > now) continue;
       if (storeIds.has(order.storeId)) continue;
       storeIds.add(order.storeId);

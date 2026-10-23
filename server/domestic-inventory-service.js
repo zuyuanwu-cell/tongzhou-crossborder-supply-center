@@ -858,7 +858,6 @@ export function createDomesticInventoryService(store) {
     return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty };
   }
 
-
   function reservationFromRow(row) {
     if (!row) return null;
     const reservation = {

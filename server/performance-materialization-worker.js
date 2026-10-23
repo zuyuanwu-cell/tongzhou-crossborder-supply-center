@@ -1,10 +1,10 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { reconcileMiaoshouPerformance } from "./miaoshou-performance.js";
 import { materializePerformanceFacts } from "./performance-analytics.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { applyShopDirectoryProfile } from "./shop-directory.js";
-import { writeGzipJsonArrayAtomic } from "./atomic-json-gzip.js";
 
 async function run() {
   const startedAt = Date.now();
@@ -17,14 +17,14 @@ async function run() {
       orderSnapshot = null;
     }
   }
-  let sourceFacts = Array.isArray(orderSnapshot?.orders)
+  const sourceFacts = Array.isArray(orderSnapshot?.orders)
     ? orderSnapshot.orders
     : store.listSalesFacts();
   const sourceSyncedAt = String(orderSnapshot?.syncedAt || workerData.sourceSyncedAt || "");
-  let facts = sourceFacts
+  const facts = sourceFacts
     .map((fact) => applyShopDirectoryProfile(fact, workerData.shopDirectory || {}));
   const miaoshouSnapshot = store.listMiaoshouPerformance();
-  let hybrid = reconcileMiaoshouPerformance({
+  const hybrid = reconcileMiaoshouPerformance({
     facts,
     ...miaoshouSnapshot,
     requestedSource: workerData.requestedSource || "shadow",
@@ -37,11 +37,6 @@ async function run() {
     packagingFeeRules: workerData.packagingFeeRules || [],
     supplementalProductCosts: workerData.supplementalProductCosts || [],
   });
-  const transactionReconciliation = hybrid.reconciliation;
-  orderSnapshot = null;
-  sourceFacts = null;
-  facts = null;
-  hybrid = null;
   const materializedAt = new Date().toISOString();
   const durationMs = Date.now() - startedAt;
   const metadata = {
@@ -50,7 +45,7 @@ async function run() {
     materializationDurationMs: durationMs,
     shopDirectory: workerData.shopDirectory || {},
     factCount: materializedFacts.length,
-    transactionReconciliation,
+    transactionReconciliation: hybrid.reconciliation,
     transactionSync: workerData.transactionSync || {},
     stale: false,
     targetDataVersion: workerData.dataVersion || "",
@@ -60,7 +55,13 @@ async function run() {
   // must replace the previous snapshot even when that file was written
   // recently. Otherwise every restart recomputes the same 60k+ rows.
   if (workerData.cachePath) {
-    await writeGzipJsonArrayAtomic(workerData.cachePath, metadata, "facts", materializedFacts, { level: 1 });
+    const cachePayload = JSON.stringify({
+      ...metadata,
+      facts: materializedFacts,
+    });
+    const temporaryPath = `${workerData.cachePath}.${process.pid}.tmp`;
+    writeFileSync(temporaryPath, gzipSync(Buffer.from(cachePayload), { level: 1 }));
+    renameSync(temporaryPath, workerData.cachePath);
   }
   if (workerData.metadataPath) {
     const temporaryMetadataPath = `${workerData.metadataPath}.${process.pid}.tmp`;
@@ -71,7 +72,7 @@ async function run() {
     ok: true,
     ...metadata,
     ...(workerData.returnFacts === false ? {} : { facts: materializedFacts }),
-    reconciliation: transactionReconciliation,
+    reconciliation: hybrid.reconciliation,
     durationMs,
   });
   store.close?.();

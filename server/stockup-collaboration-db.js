@@ -139,6 +139,13 @@ export async function initStockupCollaborationStore(dbPath) {
       total_weight_kg REAL NOT NULL DEFAULT 0,
       total_volume_m3 REAL NOT NULL DEFAULT 0,
       chargeable_weight_kg REAL NOT NULL DEFAULT 0,
+      billing_method TEXT NOT NULL DEFAULT 'weight',
+      carrier_packages REAL NOT NULL DEFAULT 0,
+      carrier_actual_weight_kg REAL NOT NULL DEFAULT 0,
+      chargeable_volume_m3 REAL NOT NULL DEFAULT 0,
+      billing_unit_price_cny REAL NOT NULL DEFAULT 0,
+      billing_extra_fee_cny REAL NOT NULL DEFAULT 0,
+      quoted_freight_cny REAL NOT NULL DEFAULT 0,
       note TEXT,
       box_mark TEXT,
       inventory_movement_id TEXT,
@@ -457,9 +464,6 @@ export async function initStockupCollaborationStore(dbPath) {
       destination_warehouse_name TEXT,
       container_type TEXT NOT NULL,
       status TEXT NOT NULL,
-      lifecycle_status TEXT NOT NULL DEFAULT 'active',
-      archived_at TEXT,
-      archived_by TEXT,
       selected_strategy TEXT NOT NULL,
       version INTEGER NOT NULL DEFAULT 1,
       confirmed_version INTEGER,
@@ -745,9 +749,6 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_receipts", "archived_by TEXT");
   ensureColumn("stockup_receipts", "deleted_at TEXT");
   ensureColumn("stockup_receipts", "deleted_by TEXT");
-  ensureColumn("container_loading_plans", "lifecycle_status TEXT NOT NULL DEFAULT 'active'");
-  ensureColumn("container_loading_plans", "archived_at TEXT");
-  ensureColumn("container_loading_plans", "archived_by TEXT");
   ensureColumn("stockup_requests", "workflow_version INTEGER NOT NULL DEFAULT 1");
   ensureColumn("stockup_requests", "source_type TEXT NOT NULL DEFAULT 'manual'");
   ensureColumn("stockup_requests", "source_ref TEXT");
@@ -755,6 +756,9 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_request_lines", "product_ref_id TEXT");
   ensureColumn("stockup_request_lines", "procurement_url TEXT");
   ensureColumn("stockup_request_lines", "shelf_life_managed INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_request_lines", "procurement_closed_reason TEXT");
+  ensureColumn("stockup_request_lines", "procurement_closed_at TEXT");
+  ensureColumn("stockup_request_lines", "procurement_closed_by TEXT");
   ensureColumn("stockup_warehouse_work_orders", "workflow_version INTEGER NOT NULL DEFAULT 1");
   ensureColumn("stockup_warehouse_work_orders", "inspection_submitted_at TEXT");
   ensureColumn("stockup_warehouse_work_orders", "inspection_reviewed_at TEXT");
@@ -774,6 +778,13 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_shipments", "instruction_published_by TEXT");
   ensureColumn("stockup_shipments", "handed_over_at TEXT");
   ensureColumn("stockup_shipments", "document_version INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "billing_method TEXT NOT NULL DEFAULT 'weight'");
+  ensureColumn("stockup_shipments", "carrier_packages REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "carrier_actual_weight_kg REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "chargeable_volume_m3 REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "billing_unit_price_cny REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "billing_extra_fee_cny REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipments", "quoted_freight_cny REAL NOT NULL DEFAULT 0");
   ensureColumn("stockup_shipment_lines", "product_ref_id TEXT");
   ensureColumn("stockup_shipment_lines", "purchase_order_line_id TEXT");
   ensureColumn("stockup_shipment_lines", "inspection_lot_id TEXT");
@@ -792,8 +803,7 @@ export async function initStockupCollaborationStore(dbPath) {
   `);
   db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
   db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
-  db.run("UPDATE container_loading_plans SET lifecycle_status='active' WHERE COALESCE(lifecycle_status,'')=''");
-  db.run("PRAGMA user_version = 8");
+  db.run("PRAGMA user_version = 9");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

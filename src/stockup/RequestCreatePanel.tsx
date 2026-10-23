@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Check, PackagePlus, Plus, Save, Search, Send, Trash2, X } from "lucide-react";
 import type { CatalogProduct, WarehouseConnection } from "../api";
-import { StockupProductImage } from "./StockupProductImage";
+import "./request-create-panel.css";
 
 export type StockupRequestDraftLine = {
   key: string;
@@ -49,7 +49,8 @@ function uniqueKey() {
 
 export function RequestCreatePanel({ products, warehouses = [], projectTeams = [], defaultProjectTeamId = "", onClose, onSave }: Props) {
   const [query, setQuery] = useState("");
-  const [showPicker, setShowPicker] = useState(false);
+  const [pickerPlacement, setPickerPlacement] = useState<"top" | "bottom" | null>(null);
+  const [pendingProductSkus, setPendingProductSkus] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ project: "", destinationCountry: "", destinationWarehouseId: "", destinationWarehouseName: "", expectedArrivalAt: "", priority: "常规", reason: "补库存", platform: "", note: "" });
@@ -66,14 +67,20 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && !saving) onClose();
+      if (event.key !== "Escape" || saving) return;
+      if (pickerPlacement) {
+        setPickerPlacement(null);
+        setPendingProductSkus([]);
+        setQuery("");
+        return;
+      }
+      onClose();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, saving]);
+  }, [onClose, pickerPlacement, saving]);
 
-  const productMatches = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
+  const productOptions = useMemo(() => {
     const preferredCountry = countryName(form.destinationCountry).toLowerCase();
     const ordered = [...products].sort((left, right) => {
       const leftPreferred = preferredCountry && countryName(left.country || "").toLowerCase() === preferredCountry ? 1 : 0;
@@ -85,8 +92,20 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
       const key = skuKey(product.sku);
       if (key && !unique.has(key)) unique.set(key, product);
     });
-    return [...unique.values()].filter((product) => !keyword || `${product.sku} ${product.name} ${product.nameEn}`.toLowerCase().includes(keyword)).slice(0, 12);
-  }, [form.destinationCountry, products, query]);
+    return [...unique.values()];
+  }, [form.destinationCountry, products]);
+
+  const productMatches = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    return productOptions
+      .filter((product) => !keyword || `${product.sku} ${product.name} ${product.nameEn}`.toLowerCase().includes(keyword))
+      .slice(0, 36);
+  }, [productOptions, query]);
+
+  const lineSkuKeys = useMemo(() => new Set(lines.map((line) => skuKey(line.sku)).filter(Boolean)), [lines]);
+  const pendingSkuKeys = useMemo(() => new Set(pendingProductSkus), [pendingProductSkus]);
+  const visibleSelectableProducts = useMemo(() => productMatches.filter((product) => !lineSkuKeys.has(skuKey(product.sku))), [lineSkuKeys, productMatches]);
+  const allVisibleSelected = Boolean(visibleSelectableProducts.length) && visibleSelectableProducts.every((product) => pendingSkuKeys.has(skuKey(product.sku)));
 
   const warehouseOptions = useMemo(() => {
     const options = new Map<string, { id: string; name: string; country: string }>();
@@ -107,24 +126,82 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
 
   const filteredWarehouses = useMemo(() => warehouseOptions.filter((warehouse) => !form.destinationCountry || !warehouse.country || warehouse.country === form.destinationCountry), [form.destinationCountry, warehouseOptions]);
 
-  function addProduct(product: CatalogProduct) {
-    const duplicate = lines.find((line) => skuKey(line.sku) === skuKey(product.sku));
-    if (duplicate) {
-      setLines((current) => current.map((line) => line.key === duplicate.key ? { ...line, requestedQty: line.requestedQty + 1 } : line));
-    } else {
-      setLines((current) => [...current, {
+  function productDraftLine(product: CatalogProduct): StockupRequestDraftLine {
+    return {
         key: uniqueKey(), productId: product.id, sku: product.sku, productName: product.name, imageUrl: product.imageUrl || "",
         specification: product.specification || "", method: "采购", requestedQty: 1, unit: product.unit || "件",
         targetUnitCostCny: product.directCostPrice ?? product.directPrice ?? "", procurementUrl: "", shelfLifeManaged: false, note: "",
-      }]);
-    }
-    setShowPicker(false);
+    };
+  }
+
+  function togglePicker(placement: "top" | "bottom") {
+    setPickerPlacement((current) => current === placement ? null : placement);
+    setPendingProductSkus([]);
+    setQuery("");
+  }
+
+  function toggleProduct(product: CatalogProduct) {
+    const key = skuKey(product.sku);
+    if (!key || lineSkuKeys.has(key)) return;
+    setPendingProductSkus((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  }
+
+  function toggleVisibleProducts() {
+    const visibleKeys = visibleSelectableProducts.map((product) => skuKey(product.sku));
+    setPendingProductSkus((current) => allVisibleSelected
+      ? current.filter((key) => !visibleKeys.includes(key))
+      : Array.from(new Set([...current, ...visibleKeys])));
+  }
+
+  function addSelectedProducts() {
+    const selected = productOptions.filter((product) => pendingSkuKeys.has(skuKey(product.sku)) && !lineSkuKeys.has(skuKey(product.sku)));
+    if (!selected.length) return;
+    setLines((current) => [...current, ...selected.map(productDraftLine)]);
+    setPendingProductSkus([]);
+    setPickerPlacement(null);
     setQuery("");
   }
 
   function addTemporaryProduct() {
     setLines((current) => [...current, { key: uniqueKey(), productId: "", sku: "", productName: "", imageUrl: "", specification: "", method: "采购", requestedQty: 1, unit: "件", targetUnitCostCny: "", procurementUrl: "", shelfLifeManaged: false, note: "" }]);
-    setShowPicker(false);
+    setPickerPlacement(null);
+    setPendingProductSkus([]);
+  }
+
+  function renderProductPicker(placement: "top" | "bottom") {
+    if (pickerPlacement !== placement) return null;
+    return (
+      <div className={`sc-product-picker${placement === "bottom" ? " is-inline" : ""}`}>
+        {placement === "bottom" ? (
+          <div className="sc-product-picker-search">
+            <Search size={17} />
+            <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 SKU、中文名或外文名" />
+          </div>
+        ) : null}
+        <div className="sc-product-picker-summary">
+          <span><b>{pendingProductSkus.length}</b> 个待加入</span>
+          <button type="button" className="sc-picker-link" disabled={!visibleSelectableProducts.length} onClick={toggleVisibleProducts}>{allVisibleSelected ? "取消全选" : `全选当前 ${visibleSelectableProducts.length} 项`}</button>
+        </div>
+        <div className="sc-product-picker-list">
+          {productMatches.length ? productMatches.map((product) => {
+            const key = skuKey(product.sku);
+            const existing = lineSkuKeys.has(key);
+            const selected = pendingSkuKeys.has(key);
+            return (
+              <button type="button" className={`sc-product-picker-option${selected ? " is-selected" : ""}`} key={key} disabled={existing} onClick={() => toggleProduct(product)} aria-pressed={selected}>
+                <span className="sc-product-thumb">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : <PackagePlus size={20} />}</span>
+                <span><b>{product.sku}</b><small>{product.name}</small></span>
+                <span className="sc-picker-check">{existing ? "已添加" : selected ? <Check size={16} /> : <Plus size={16} />}</span>
+              </button>
+            );
+          }) : <p>没有找到匹配产品</p>}
+        </div>
+        <div className="sc-product-picker-actions">
+          <button type="button" className="sc-picker-action secondary" onClick={() => { setPickerPlacement(null); setPendingProductSkus([]); setQuery(""); }}>取消</button>
+          <button type="button" className="sc-picker-action primary" disabled={!pendingProductSkus.length} onClick={addSelectedProducts}><Plus size={16} />加入清单{pendingProductSkus.length ? `（${pendingProductSkus.length}）` : ""}</button>
+        </div>
+      </div>
+    );
   }
 
   function updateLine(key: string, patch: Partial<StockupRequestDraftLine>) {
@@ -143,7 +220,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
     }
     setSaving(true);
     try {
-      await onSave({ ...form, submit: submitNow, lines: lines.map(({ key: _key, ...line }) => line) });
+      await onSave({ ...form, submit: submitNow, notificationTeamId: projectTeams.some((team) => team.id === selectedTeamId) ? selectedTeamId : "", lines: lines.map(({ key: _key, ...line }) => line) });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "保存失败，请稍后重试。");
     } finally {
@@ -222,22 +299,10 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
           <section className="sc-form-section">
             <div className="sc-section-heading"><span>02</span><div><b>产品清单</b><small>一张需求单可以放多个产品</small></div></div>
             <div className="sc-product-toolbar">
-              <div className="sc-product-search"><Search size={17} /><input value={query} onFocus={() => setShowPicker(true)} onChange={(event) => { setQuery(event.target.value); setShowPicker(true); }} placeholder="搜索 SKU、中文名或外文名" /></div>
-              <button className="sc-button sc-button-secondary" onClick={() => setShowPicker((value) => !value)}><Plus size={17} />添加产品</button>
-              <button className="sc-button sc-button-secondary" onClick={addTemporaryProduct}><PackagePlus size={17} />新增无 SKU 商品</button>
-              {showPicker ? (
-                <div className="sc-product-picker">
-                  {productMatches.length ? productMatches.map((product) => {
-                    const selected = lines.some((line) => skuKey(line.sku) === skuKey(product.sku));
-                    return (
-                    <button key={skuKey(product.sku)} disabled={selected} onClick={() => addProduct(product)}>
-                      <span className="sc-product-thumb"><StockupProductImage src={product.imageUrl} name={product.name || product.sku} size={20} /></span>
-                      <span><b>{product.sku}</b><small>{product.name}</small></span>
-                      {selected ? <Check size={17} /> : <Plus size={17} />}
-                    </button>
-                  ); }) : <p>没有找到匹配产品</p>}
-                </div>
-              ) : null}
+              <div className="sc-product-search"><Search size={17} /><input value={pickerPlacement === "top" ? query : ""} onFocus={() => { if (pickerPlacement !== "top") togglePicker("top"); }} onChange={(event) => { setQuery(event.target.value); setPickerPlacement("top"); }} placeholder="搜索 SKU、中文名或外文名" /></div>
+              <button type="button" className="sc-button sc-button-secondary" onClick={() => togglePicker("top")}><Plus size={17} />批量添加产品</button>
+              <button type="button" className="sc-button sc-button-secondary" onClick={addTemporaryProduct}><PackagePlus size={17} />新增无 SKU 商品</button>
+              {renderProductPicker("top")}
             </div>
 
             {lines.length ? (
@@ -245,7 +310,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                 {lines.map((line, index) => (
                   <div className="sc-line-row" key={line.key}>
                     <span className="sc-line-index">{String(index + 1).padStart(2, "0")}</span>
-                    <span className="sc-product-thumb large"><StockupProductImage src={line.imageUrl} name={line.productName} size={22} /></span>
+                    <span className="sc-product-thumb large">{line.imageUrl ? <img src={line.imageUrl} alt="" /> : <PackagePlus size={22} />}</span>
                     <div className="sc-line-product"><input value={line.sku} onChange={(event) => updateLine(line.key, { sku: event.target.value })} placeholder="留空自动生成临时编码" /><input value={line.productName} onChange={(event) => updateLine(line.key, { productName: event.target.value })} placeholder="产品名称 *" /><input value={line.specification} onChange={(event) => updateLine(line.key, { specification: event.target.value })} placeholder="规格" /><input value={line.procurementUrl} onChange={(event) => updateLine(line.key, { procurementUrl: event.target.value })} placeholder="1688 商品链接" /><label className="sc-inline-check"><input type="checkbox" checked={line.shelfLifeManaged} onChange={(event) => updateLine(line.key, { shelfLifeManaged: event.target.checked })} />保质期管理</label></div>
                     <label>执行方式<select value="采购" disabled><option>采购</option></select></label>
                     <label>需求数量<div className="sc-input-unit"><input type="number" min="0.01" value={line.requestedQty} onChange={(event) => updateLine(line.key, { requestedQty: Number(event.target.value) })} /><span>{line.unit}</span></div></label>
@@ -257,6 +322,18 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                 ))}
               </div>
             ) : <div className="sc-empty-inline"><PackagePlus size={28} /><b>先添加需要采购或生产的产品</b><span>产品图片、名称、规格和成本会自动带入。</span></div>}
+
+            <div className={`sc-inline-product-adder${pickerPlacement === "bottom" ? " is-open" : ""}`}>
+              <div className="sc-inline-product-adder-copy">
+                <span className="sc-inline-add-icon"><PackagePlus size={20} /></span>
+                <span><b>继续添加产品</b><small>在这里搜索并一次勾选多个产品，无需回到清单顶部。</small></span>
+              </div>
+              <div className="sc-inline-product-adder-buttons">
+                <button type="button" className="sc-button sc-button-secondary" onClick={addTemporaryProduct}>新增无 SKU 商品</button>
+                <button type="button" className="sc-button sc-button-primary" onClick={() => togglePicker("bottom")}><Plus size={17} />{pickerPlacement === "bottom" ? "收起选择器" : "批量选择产品"}</button>
+              </div>
+              {renderProductPicker("bottom")}
+            </div>
           </section>
         </div>
 

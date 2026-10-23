@@ -1,10 +1,9 @@
 import React from "react";
-import { ClipboardCheck, Headphones, ShieldCheck, WalletCards, Warehouse } from "lucide-react";
+import { ClipboardCheck, Headphones, WalletCards, Warehouse } from "lucide-react";
 import { AuthUser } from "./api";
 import { AfterSalesCenter } from "./AfterSalesCenter";
 import { WarehouseTicketCenter } from "./WarehouseTicketCenter";
 import { WarehouseLiabilitySettlement } from "./WarehouseLiabilitySettlement";
-import { WarehouseQualificationCoveragePage } from "./WarehouseQualificationCoveragePage";
 
 function hasPermission(user: AuthUser, permission: string) {
   return Boolean(user.permissions?.includes(permission));
@@ -14,7 +13,6 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
   const canAfterSales = hasPermission(currentUser, "after_sales_report") || hasPermission(currentUser, "after_sales_warehouse") || hasPermission(currentUser, "warehouse_return_query");
   const canTickets = hasPermission(currentUser, "warehouse_ticket_report") || hasPermission(currentUser, "warehouse_ticket_warehouse");
   const canSettlement = hasPermission(currentUser, "warehouse_liability_settlement");
-  const canQualificationCoverage = hasPermission(currentUser, "warehouse_qualification_coverage");
   const readDeepLink = React.useCallback(() => {
     const query = new URLSearchParams(window.location.hash.split("?", 2)[1] || "");
     const requestedModule = query.get("module");
@@ -22,8 +20,6 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
     return {
       module: requestedModule === "settlement" && canSettlement
           ? "settlement" as const
-          : requestedModule === "qualification_coverage" && canQualificationCoverage
-            ? "qualification_coverage" as const
           : requestedModule === "tickets" && canTickets
           ? "tickets" as const
           : requestedModule === "after_sales" && canAfterSales
@@ -32,9 +28,7 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
               ? "after_sales" as const
               : canTickets
                 ? "tickets" as const
-                : canQualificationCoverage
-                  ? "qualification_coverage" as const
-                  : "settlement" as const,
+                : "settlement" as const,
       ticketId: query.get("ticket") || "",
       view: requestedView === "warehouse" ? "warehouse" as const : requestedView === "mine" ? "mine" as const : requestedView === "returns" ? "returns" as const : requestedView === "create" ? "create" as const : "" as const,
       warehouseId: query.get("warehouseId") || "",
@@ -43,7 +37,7 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
       title: query.get("title") || "",
       description: query.get("description") || "",
     };
-  }, [canAfterSales, canQualificationCoverage, canSettlement, canTickets]);
+  }, [canAfterSales, canSettlement, canTickets]);
   const [deepLink, setDeepLink] = React.useState(readDeepLink);
   const module = deepLink.module;
 
@@ -53,7 +47,7 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
     return () => window.removeEventListener("hashchange", sync);
   }, [readDeepLink]);
 
-  function changeModule(nextModule: "after_sales" | "tickets" | "qualification_coverage" | "settlement") {
+  function changeModule(nextModule: "after_sales" | "tickets" | "settlement") {
     setDeepLink({ module: nextModule, ticketId: "", view: "", warehouseId: "", relatedOrderNumber: "", category: "", title: "", description: "" });
     window.history.replaceState(null, "", `#after-sales?module=${nextModule}`);
   }
@@ -66,12 +60,10 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
     <nav className="warehouse-module-tabs" aria-label="海外仓协同业务板块">
       {canAfterSales ? <button className={module === "after_sales" ? "active" : ""} onClick={() => changeModule("after_sales")}><Headphones size={20} /><span><strong>售后订单</strong><small>责任判定、补发、驳回与结算</small></span></button> : null}
       {canTickets ? <button className={module === "tickets" ? "active" : ""} onClick={() => changeModule("tickets")}><ClipboardCheck size={20} /><span><strong>仓库工单</strong><small>订单催促与日常问题反馈</small></span></button> : null}
-      {canQualificationCoverage ? <button className={module === "qualification_coverage" ? "active" : ""} onClick={() => changeModule("qualification_coverage")}><ShieldCheck size={20} /><span><strong>资质覆盖</strong><small>本仓商品状态与有效期</small></span></button> : null}
       {canSettlement ? <button className={module === "settlement" ? "active" : ""} onClick={() => changeModule("settlement")}><WalletCards size={20} /><span><strong>费用核销</strong><small>责任费用导出、扣款与冲销</small></span></button> : null}
     </nav>
     {module === "after_sales" && canAfterSales ? <AfterSalesCenter currentUser={currentUser} embedded initialTicketId={deepLink.ticketId} initialView={deepLink.view === "create" ? "" : deepLink.view} /> : null}
     {module === "tickets" && canTickets ? <WarehouseTicketCenter currentUser={currentUser} initialTicketId={deepLink.ticketId} initialView={deepLink.view === "returns" ? "" : deepLink.view} initialPrefill={{ warehouseId: deepLink.warehouseId, relatedOrderNumber: deepLink.relatedOrderNumber, category: deepLink.category, title: deepLink.title, description: deepLink.description }} /> : null}
-    {module === "qualification_coverage" && canQualificationCoverage ? <WarehouseQualificationCoveragePage /> : null}
     {module === "settlement" && canSettlement ? <WarehouseLiabilitySettlement /> : null}
   </div>;
 }

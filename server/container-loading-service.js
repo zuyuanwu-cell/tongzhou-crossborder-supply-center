@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import { calculateLoadingMetrics, estimateSingleCartonCapacity, generateLoadingCandidates, normalizeContainer, normalizeLoadingItems, validateContainerPlacements } from "./container-loading-engine.js";
+import { calculateLoadingMetrics, generateLoadingCandidates, normalizeContainer, normalizeLoadingItems, validateContainerPlacements } from "./container-loading-engine.js";
 
 export const CONTAINER_TYPES = Object.freeze([
   { code: "20GP", name: "20GP 普柜", lengthCm: 589, widthCm: 235, heightCm: 239, doorWidthCm: 234, doorHeightCm: 228, maxPayloadKg: 28200 },
@@ -75,9 +75,6 @@ function planFromRow(row, includeSnapshot = true) {
     destinationWarehouseName: String(row.destination_warehouse_name || ""),
     containerType: String(row.container_type),
     status: String(row.status),
-    lifecycleStatus: String(row.lifecycle_status || "active"),
-    archivedAt: String(row.archived_at || ""),
-    archivedBy: String(row.archived_by || ""),
     selectedStrategy: String(row.selected_strategy),
     version: number(row.version, 1),
     confirmedVersion: row.confirmed_version == null ? null : number(row.confirmed_version),
@@ -93,7 +90,6 @@ function planFromRow(row, includeSnapshot = true) {
       candidates: Array.isArray(snapshot.candidates) ? snapshot.candidates : [],
       sourceVersion: number(snapshot.sourceVersion),
       warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : [],
-      containerRecommendation: snapshot.containerRecommendation || null,
     } : {
       summary: snapshot.summary || {},
     }),
@@ -162,109 +158,7 @@ function generateCandidatesWithoutBlocking({ container, items }) {
   });
 }
 
-function bestCandidate(candidates = []) {
-  return [...candidates].sort((left, right) => {
-    const a = left.metrics || {};
-    const b = right.metrics || {};
-    return number(b.loadedCartons) - number(a.loadedCartons)
-      || number(b.completeSkuCount) - number(a.completeSkuCount)
-      || number(b.volumeUtilization) - number(a.volumeUtilization)
-      || number(b.balanceScore) - number(a.balanceScore)
-      || number(right.score) - number(left.score);
-  })[0] || null;
-}
-
-function recommendationAlternative(container, candidate) {
-  const metrics = candidate?.metrics || {};
-  return {
-    container,
-    bestStrategy: candidate?.strategy || "max_load",
-    fullFit: number(metrics.unplacedCartons) === 0 && number(metrics.loadedCartons) >= number(metrics.totalCartons),
-    metrics,
-  };
-}
-
-async function resolveContainerSelection(payload, items) {
-  const requestedCode = String(payload.containerType || payload.container?.code || "40HQ").toUpperCase();
-  if (requestedCode !== "AUTO") {
-    const container = containerByInput(payload);
-    const candidates = await generateCandidatesWithoutBlocking({ container, items });
-    return {
-      container,
-      candidates,
-      recommendation: {
-        mode: "manual",
-        selectedCode: container.code,
-        selectedName: container.name,
-        reason: "已按手动指定柜型生成装柜方案。",
-        alternatives: [recommendationAlternative(container, bestCandidate(candidates))],
-      },
-    };
-  }
-
-  const alternatives = [];
-  let selected = null;
-  for (const preset of CONTAINER_TYPES) {
-    const container = normalizeContainer(preset);
-    const candidates = await generateCandidatesWithoutBlocking({ container, items });
-    const candidate = bestCandidate(candidates);
-    const alternative = recommendationAlternative(container, candidate);
-    alternatives.push(alternative);
-    selected = { container, candidates, candidate };
-    if (alternative.fullFit) break;
-  }
-  if (!selected) throw Object.assign(new Error("没有可用于计算的标准柜型。"), { statusCode: 400, code: "container_not_found" });
-
-  const complete = alternatives.find((item) => item.fullFit);
-  if (!complete) {
-    const best = [...alternatives].sort((left, right) => {
-      const a = left.metrics || {};
-      const b = right.metrics || {};
-      return number(b.loadedCartons) - number(a.loadedCartons)
-        || number(a.unplacedCartons) - number(b.unplacedCartons)
-        || number(b.volumeUtilization) - number(a.volumeUtilization)
-        || number(b.balanceScore) - number(a.balanceScore);
-    })[0];
-    if (best && best.container.code !== selected.container.code) {
-      const container = normalizeContainer(best.container);
-      const candidates = await generateCandidatesWithoutBlocking({ container, items });
-      selected = { container, candidates, candidate: bestCandidate(candidates) };
-    }
-  }
-
-  const selectedAlternative = alternatives.find((item) => item.container.code === selected.container.code)
-    || recommendationAlternative(selected.container, selected.candidate);
-  const reason = selectedAlternative.fullFit
-    ? `${selected.container.name} 是当前货物可完整装下的最小标准柜型，优先减少空余空间与柜型成本。`
-    : `单柜无法完整装下全部货物，已选择装入箱数最多、空间利用更充分的 ${selected.container.name}。`;
-  return {
-    container: selected.container,
-    candidates: selected.candidates,
-    recommendation: {
-      mode: "auto",
-      selectedCode: selected.container.code,
-      selectedName: selected.container.name,
-      reason,
-      alternatives,
-    },
-  };
-}
-
 export function createContainerLoadingService({ store, stockupService }) {
-  function quickEstimate(payload = {}) {
-    return {
-      ok: true,
-      estimate: estimateSingleCartonCapacity({
-        containers: CONTAINER_TYPES,
-        containerType: payload.containerType,
-        container: payload.container,
-        carton: payload.carton,
-        reserve: payload.reserve,
-        targetCartons: payload.targetCartons,
-      }),
-    };
-  }
-
   function canSeeRow(row, context) {
     const actor = actorOf(context);
     if (!context.viewAll && String(row.created_by) !== actor.id) return false;
@@ -291,10 +185,8 @@ export function createContainerLoadingService({ store, stockupService }) {
   }
 
   function listPlans(filters = {}, context = {}) {
-    const lifecycle = ["active", "archived", "all"].includes(String(filters.lifecycle)) ? String(filters.lifecycle) : "active";
     const rows = store.all("SELECT * FROM container_loading_plans ORDER BY updated_at DESC LIMIT 200")
       .filter((row) => canSeeRow(row, context))
-      .filter((row) => lifecycle === "all" || String(row.lifecycle_status || "active") === lifecycle)
       .filter((row) => !filters.status || String(row.status) === String(filters.status))
       .filter((row) => !filters.shipmentId || String(row.source_shipment_id || "") === String(filters.shipmentId));
     return { ok: true, plans: rows.map((row) => planFromRow(row, false)) };
@@ -432,13 +324,14 @@ export function createContainerLoadingService({ store, stockupService }) {
   async function createPlan(payload, context = {}) {
     const actor = actorOf(context);
     const source = sourceFor(payload, context);
+    const container = containerByInput(payload);
     const items = normalizeLoadingItems(applyProfiles(source.items));
-    const { container, candidates, recommendation } = await resolveContainerSelection(payload, items);
+    const candidates = await generateCandidatesWithoutBlocking({ container, items });
     const selectedStrategy = ["max_load", "balanced", "sku_complete"].includes(String(payload.selectedStrategy)) ? String(payload.selectedStrategy) : "max_load";
     const planId = id("clp");
     const planNo = businessNo();
     const now = nowIso();
-    const snapshot = { container, items, candidates, selectedStrategy, sourceVersion: source.sourceVersion, containerRecommendation: recommendation, summary: {} };
+    const snapshot = { container, items, candidates, selectedStrategy, sourceVersion: source.sourceVersion, summary: {} };
     snapshot.summary = summarizeSnapshot(snapshot);
     return store.transaction(() => {
       if (payload.savePackagingProfiles !== false) saveProfiles(items, context);
@@ -487,15 +380,11 @@ export function createContainerLoadingService({ store, stockupService }) {
     assertExpectedVersion(row, payload.expectedVersion);
     if (["confirmed", "loaded", "voided"].includes(String(row.status))) throw Object.assign(new Error("当前方案状态不能重新计算。"), { statusCode: 409 });
     const current = parseJson(row.snapshot_json, {});
+    const container = payload.container ? normalizeContainer(payload.container) : current.container;
     const items = normalizeLoadingItems(applyProfiles(payload.items || current.items));
-    const selectionPayload = payload.containerType
-      ? { ...payload, containerType: payload.containerType }
-      : payload.container
-        ? { ...payload, containerType: payload.container.code || "CUSTOM" }
-        : { ...payload, containerType: current.containerRecommendation?.mode === "auto" ? "AUTO" : current.container?.code };
-    const { container, candidates, recommendation } = await resolveContainerSelection(selectionPayload, items);
+    const candidates = await generateCandidatesWithoutBlocking({ container, items });
     const selectedStrategy = String(payload.selectedStrategy || current.selectedStrategy || "max_load");
-    const snapshot = { ...current, container, items, candidates, selectedStrategy, containerRecommendation: recommendation };
+    const snapshot = { ...current, container, items, candidates, selectedStrategy };
     snapshot.summary = summarizeSnapshot(snapshot);
     const actor = actorOf(context);
     const now = nowIso();
@@ -555,49 +444,5 @@ export function createContainerLoadingService({ store, stockupService }) {
     });
   }
 
-  function changeLifecycle(planId, payload, context, nextLifecycle) {
-    const row = visiblePlanRow(planId, context);
-    assertExpectedVersion(row, payload.expectedVersion);
-    if (String(row.status) !== "voided") {
-      throw Object.assign(new Error("只有已作废方案可以归档或恢复。"), { statusCode: 409, code: "plan_not_voided" });
-    }
-    const currentLifecycle = String(row.lifecycle_status || "active");
-    if (currentLifecycle === nextLifecycle) return getPlan(planId, context);
-    const actor = actorOf(context);
-    const now = nowIso();
-    const version = number(row.version, 1) + 1;
-    const snapshot = parseJson(row.snapshot_json, {});
-    const versionType = nextLifecycle === "archived" ? "archived" : "restored";
-    return store.transaction(() => {
-      store.run("UPDATE container_loading_plans SET lifecycle_status=?,archived_at=?,archived_by=?,version=?,updated_at=? WHERE id=?",
-        [nextLifecycle, nextLifecycle === "archived" ? now : null, nextLifecycle === "archived" ? actor.name : null, version, now, String(planId)]);
-      store.run("INSERT INTO container_loading_plan_versions (id,plan_id,version,version_type,strategy,snapshot_json,created_by,created_by_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-        [id("clv"), String(planId), version, versionType, String(row.selected_strategy), JSON.stringify({ lifecycleStatus: nextLifecycle, metrics: summarizeSnapshot(snapshot).metrics }), actor.id, actor.name, now]);
-      return getPlan(planId, context);
-    });
-  }
-
-  function archivePlan(planId, payload, context = {}) {
-    return changeLifecycle(planId, payload, context, "archived");
-  }
-
-  function restorePlan(planId, payload, context = {}) {
-    return changeLifecycle(planId, payload, context, "active");
-  }
-
-  function deletePlan(planId, payload, context = {}) {
-    const row = visiblePlanRow(planId, context);
-    assertExpectedVersion(row, payload.expectedVersion);
-    if (String(row.status) !== "voided") {
-      throw Object.assign(new Error("只有已作废方案可以永久删除。"), { statusCode: 409, code: "plan_not_voided" });
-    }
-    const deletedPlan = planFromRow(row, false);
-    return store.transaction(() => {
-      store.run("DELETE FROM container_loading_plan_versions WHERE plan_id=?", [String(planId)]);
-      store.run("DELETE FROM container_loading_plans WHERE id=?", [String(planId)]);
-      return { ok: true, deletedPlan };
-    });
-  }
-
-  return { archivePlan, bootstrap, calculatePreview, confirmPlan, createPlan, deletePlan, getPlan, listPlans, quickEstimate, recalculate, restorePlan, saveVersion, voidPlan };
+  return { bootstrap, calculatePreview, confirmPlan, createPlan, getPlan, listPlans, recalculate, saveVersion, voidPlan };
 }

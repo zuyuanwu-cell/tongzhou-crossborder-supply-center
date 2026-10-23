@@ -14,9 +14,19 @@ export type StockupCollaborationLine = {
   note: string;
   status: string;
   fulfilledQty: number;
+  purchaseOrderedQty: number;
+  purchaseReceivedQty: number;
+  purchaseCancelledQty: number;
+  warehouseExpectedQty: number;
+  warehouseReceivedQty: number;
+  warehouseGoodQty: number;
+  warehouseWorkOrderCount: number;
   productRefId: string;
   procurementUrl: string;
   shelfLifeManaged: boolean;
+  procurementClosedReason: string;
+  procurementClosedAt: string;
+  procurementClosedBy: string;
 };
 export type StockupExecutionTask = {
   id: string;
@@ -91,6 +101,13 @@ export type StockupShipment = {
   totalWeightKg: number;
   totalVolumeM3: number;
   chargeableWeightKg: number;
+  billingMethod: "volume" | "weight" | "flat";
+  carrierPackages: number;
+  carrierActualWeightKg: number;
+  chargeableVolumeM3: number;
+  billingUnitPriceCny: number;
+  billingExtraFeeCny: number;
+  quotedFreightCny: number;
   note: string;
   boxMark: string;
   inventoryMovementId: string;
@@ -456,6 +473,7 @@ export type StockupInspectionLot = {
   id: string; workOrderId: string; workOrderLineId: string; productRefId: string; purchaseOrderLineId: string; quantity: number; lotNo: string;
   barcode: string; productionDate: string; expiryDate: string; cartonCount: number; unitsPerCarton: number; looseQuantity: number;
   cartonLengthCm: number; cartonWidthCm: number; cartonHeightCm: number; cartonWeightKg: number; inventoryLotId: string; inventoryMovementId: string; status: string;
+  reservedQty: number; shippedQty: number; allocatedQty: number; availableQty: number;
 };
 
 export type StockupForwarderLocation = {

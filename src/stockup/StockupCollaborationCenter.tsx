@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BellRing, Calculator, ClipboardList, CircleDollarSign, PackageCheck, Plus, RefreshCw, Route, ShoppingCart, Sparkles, Truck, Warehouse } from "lucide-react";
 import {
   AuthUser,
@@ -26,6 +26,7 @@ import { SpotDispatchWorkspace } from "./SpotDispatchWorkspace";
 import { WarehouseOperationsWorkbench } from "./WarehouseOperationsWorkbench";
 import "./stockup-collaboration.css";
 import "./warehouse-operations.css";
+import "./workflow-guidance.css";
 
 export type StockupCollaborationSection = "requests" | "procurement" | "execution" | "warehouse" | "logistics" | "costs" | "report";
 
@@ -51,11 +52,15 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   const [showCreate, setShowCreate] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const [unread, setUnread] = useState(0);
   const [warehouseOptions, setWarehouseOptions] = useState<StockupWarehouseOption[]>(warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: warehouse.country, status: warehouse.status, address: "", contactName: "", contactPhone: "" })));
   const [projectTeams, setProjectTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [defaultProjectTeamId, setDefaultProjectTeamId] = useState("");
   const [productOptions, setProductOptions] = useState<CatalogProduct[]>(products);
+  const [warehouseHandoff, setWarehouseHandoff] = useState<{ requestId: string; token: number }>({ requestId: "", token: 0 });
+  const [shipmentHandoff, setShipmentHandoff] = useState<{ requestId: string; token: number }>({ requestId: "", token: 0 });
+  const openedDeepLink = useRef("");
 
   const permissions = useMemo(() => ({
     canCreate: allowed(user, "stockup_request_create", ["stockup_workflow_manage"]),
@@ -100,6 +105,15 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   useEffect(() => { setSection(initialSection); }, [initialSection]);
   useEffect(() => { if (warehouses.length) setWarehouseOptions(warehouses.map((warehouse) => ({ id: warehouse.id, name: warehouse.name, country: warehouse.country, status: warehouse.status, address: "", contactName: "", contactPhone: "" }))); }, [warehouses]);
   useEffect(() => { void loadAll(); }, [loadAll]);
+  useEffect(() => {
+    const requestId = new URLSearchParams(window.location.search).get("stockupRequest") || "";
+    if (!requestId || openedDeepLink.current === requestId) return;
+    openedDeepLink.current = requestId;
+    setSection("execution");
+    void fetchStockupCollaborationRequest(requestId)
+      .then((result) => setSelected(result.request))
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : "备货需求读取失败"));
+  }, []);
 
   async function loadDetail(requestId: string) {
     const result = await fetchStockupCollaborationRequest(requestId);
@@ -117,19 +131,22 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     if (selected) setSelected(await loadDetail(selected.id));
   }
 
-  const legacyLogisticsRequests = (payload?.items || []).filter((item) => item.workflowVersion !== 2);
-  const legacyShipments = shipments.filter((item) => item.workflowVersion !== 2);
-  const legacyReceipts = receipts.filter((item) => !shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion || shipments.find((shipment) => shipment.id === item.shipmentId)?.workflowVersion !== 2);
-
   const sections = [
     { id: "requests" as const, label: "我的需求", detail: "提交与查看进度", icon: ClipboardList, visible: true },
     { id: "procurement" as const, label: "现货采购", detail: "1688 订单与 SKU", icon: ShoppingCart, visible: permissions.canAccept || permissions.canExecute },
     { id: "execution" as const, label: "供应链执行", detail: "受理、采购与生产", icon: PackageCheck, visible: permissions.canAccept || permissions.canExecute },
-    { id: "warehouse" as const, label: "国内仓作业", detail: "签收、验货与审核", icon: Warehouse, visible: permissions.canWarehouseView || permissions.canCost },
-    { id: "logistics" as const, label: "物流与到仓", detail: "锁库、文件与交货", icon: Truck, visible: permissions.canShip || permissions.canReceive },
+    { id: "warehouse" as const, label: "国内仓作业", detail: "签收、验货与发运分流", icon: Warehouse, visible: permissions.canWarehouseView || permissions.canCost },
+    { id: "logistics" as const, label: "物流与到仓", detail: "发运、ETA与收货", icon: Truck, visible: permissions.canShip || permissions.canReceive },
     { id: "costs" as const, label: "成本结算", detail: "费用归集与锁定", icon: CircleDollarSign, visible: permissions.canCost || permissions.canLock },
     { id: "report" as const, label: "月度成本", detail: "SKU加权到仓成本", icon: Calculator, visible: permissions.canReport },
   ].filter((item) => item.visible);
+  const legacyRequests = (payload?.items || []).filter((item) => item.workflowVersion !== 2);
+  const legacyShipments = shipments.filter((item) => item.workflowVersion !== 2);
+  const legacyReceipts = receipts.filter((item) => {
+    const shipment = shipments.find((candidate) => candidate.id === item.shipmentId);
+    return !shipment?.workflowVersion || shipment.workflowVersion !== 2;
+  });
+  const hasLegacyLogistics = legacyRequests.length > 0 || legacyShipments.length > 0 || legacyReceipts.length > 0;
 
   return <main className="stockup-collaboration-page">
     <section className="sc-hero">
@@ -140,18 +157,19 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
 
     <nav className="sc-tabs">{sections.map(({ id, label, detail, icon: Icon }) => <button className={section === id ? "is-active" : ""} key={id} onClick={() => setSection(id)}><Icon size={18} /><span><b>{label}</b><small>{detail}</small></span></button>)}</nav>
     {error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
+    {notice ? <div className={`sc-alert ${notice.tone === "success" ? "sc-alert-success" : "sc-alert-warning"}`}>{notice.text}</div> : null}
 
     {section === "requests" ? <MyRequests payload={payload} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
-    {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} onChanged={() => loadAll(true)} /> : null}
-    {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
-    {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} onChanged={() => loadAll(true)} /> : null}
-    {section === "logistics" ? <><SpotDispatchWorkspace shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canReceive={permissions.canReceive} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} />{legacyLogisticsRequests.length || legacyShipments.length ? <details className="sc-legacy-section"><summary><span><b>历史流程物流单</b><small>仅处理 workflowVersion 1 的存量记录</small></span><em>{legacyShipments.length} 张</em></summary><div><ShipmentWorkspace requests={legacyLogisticsRequests} shipments={legacyShipments} receipts={legacyReceipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></div></details> : null}</> : null}
+    {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} onChanged={() => loadAll(true)} onHandoff={(requestId) => { setWarehouseHandoff((current) => ({ requestId, token: current.token + 1 })); setSection("warehouse"); }} /> : null}
+    {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => { if (request.workflowVersion === 2 && ["inventory_ready", "inventory_reserved", "wms_created", "instruction_issued"].includes(request.status)) { if (request.status === "inventory_ready") setShipmentHandoff((current) => ({ requestId: request.id, token: current.token + 1 })); setSection("logistics"); return; } void openDetail(request); }} /> : null}
+    {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} initialRequestId={warehouseHandoff.requestId} handoffToken={warehouseHandoff.token} onChanged={() => loadAll(true)} /> : null}
+    {section === "logistics" ? <><SpotDispatchWorkspace shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canReceive={permissions.canReceive} initialRequestId={shipmentHandoff.requestId} handoffToken={shipmentHandoff.token} onHandoffConsumed={() => setShipmentHandoff((current) => ({ ...current, requestId: "" }))} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} />{hasLegacyLogistics ? <details className="sc-legacy-logistics"><summary><span>历史出运记录（旧流程）</span><small>{legacyShipments.length} 个批次，仅用于查询和完成原有单据</small></summary><ShipmentWorkspace requests={legacyRequests} shipments={legacyShipments} receipts={legacyReceipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></details> : null}</> : null}
     {section === "costs" ? <CostSettlementWorkspace receipts={receipts} initialReceiptId={costReceiptId} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
     {section === "report" ? <MonthlyCostReport canManage={permissions.canLock} /> : null}
 
     <section className="sc-guidance"><Sparkles size={18} /><div><b>无需再记复杂步骤</b><span>系统根据当前角色和单据状态，只展示下一步要处理的动作。</span></div></section>
 
-    {showCreate ? <RequestCreatePanel products={productOptions} warehouses={warehouseOptions} projectTeams={projectTeams} defaultProjectTeamId={defaultProjectTeamId} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); }} /> : null}
-    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} onClose={() => setSelected(null)} onChanged={reloadSelected} /> : null}
+    {showCreate ? <RequestCreatePanel products={productOptions} warehouses={warehouseOptions} projectTeams={projectTeams} defaultProjectTeamId={defaultProjectTeamId} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); const notification = result.notification; setNotice(notification ? { tone: notification.status === "sent" ? "success" : "warning", text: notification.message } : null); }} /> : null}
+    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { setSelected(null); setSection(target); }} /> : null}
   </main>;
 }

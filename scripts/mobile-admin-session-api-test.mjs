@@ -86,6 +86,18 @@ try {
   assert.equal(session.response.status, 200);
   assert.equal(session.payload.session.user.username, "mobile.admin");
 
+  const accessCodeLogin = await jsonRequest("/api/mobile-admin/v1/auth/login", {
+    method: "POST",
+    body: { credentialType: "access_code", accessCode: "mobile-admin-session-test" },
+  });
+  assert.equal(accessCodeLogin.response.status, 200);
+  assert.equal(accessCodeLogin.payload.session.user.username, "system");
+  assert.equal(accessCodeLogin.payload.session.capabilities.reviewCommands, true);
+
+  const accessCodeSession = await jsonRequest("/api/mobile-admin/v1/session", { token: accessCodeLogin.payload.token });
+  assert.equal(accessCodeSession.response.status, 200);
+  assert.equal(accessCodeSession.payload.session.user.username, "system");
+
   const webTokenRejected = await jsonRequest("/api/mobile-admin/v1/session", { token: setup.payload.token });
   assert.equal(webTokenRejected.response.status, 401, "网页令牌不能调用中台移动接口");
 

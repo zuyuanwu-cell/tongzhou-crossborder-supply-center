@@ -5,7 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
-import { createJdyData, deleteJdyData, fetchAllJdyActiveOutsourcingOrders, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyCraftOrderRecordsForOrders, fetchJdyDataList, fetchJdyFirstArticleRecordsForOrders, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData, updateJdyOutsourcingOrderByNo } from "./jiandaoyun-client.js";
+import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
 import { buildProductPayload } from "./normalize-products.js";
 import { buildQualificationPayload } from "./normalize-qualifications.js";
 import { buildAssetPayload } from "./normalize-assets.js";
@@ -27,15 +27,11 @@ import { projectMovementPayload, scopeMovementSources } from "./movement-access.
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { buildStockupPayload } from "./stockup-center.js";
-import { buildStockupWarningLinkMarkdown, buildWecomImageBody, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
-import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
-import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
+import { canPreviewStockupShipmentWmsOrder } from "./stockup-v2-domain.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseProductCreateCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
-import { createSkuCodingRegistry } from "./sku-coding-registry.js";
-import { createSkuCodingService } from "./sku-coding-service.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
 import { BUILTIN_ROLE_IDS, createUserRole, deleteUserRole, normalizeUserRoles, projectUserRoles, replaceUserRole, resolveUserRole, updateUserRole } from "./user-roles.js";
@@ -69,6 +65,7 @@ import {
   buildWarehouseTicketReminderMarkdown,
   notificationRobotIds,
 } from "./after-sales-notifications.js";
+import { buildStockupRequestSubmittedMarkdown } from "./stockup-notifications.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
@@ -113,11 +110,7 @@ import { createHermesClient } from "./hermes-client.js";
 import { createHermesToolGateway } from "./hermes-tool-gateway.js";
 import { createHermesApi } from "./hermes-api.js";
 import { createHermesModelGateway } from "./hermes-model-gateway.js";
-import { createHermesPartnerDraftApi } from "./hermes-partner-draft-api.js";
-import { createHermesPartnerConfigApi } from "./hermes-partner-config-api.js";
 import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
-import { withDataContext } from "../collaboration/shared/data-context.js";
-import { buildWarehouseQualificationCoverage, WarehouseQualificationCoverageError } from "./warehouse-qualification-coverage.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -153,7 +146,7 @@ const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "f
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
 const performanceFxEndpoint = String(process.env.PERFORMANCE_FX_ENDPOINT || "").trim() || undefined;
-const performanceFxConfiguredCurrencies = ["RUB", "IDR", "VND", "MYR", ...String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean)];
+const performanceFxConfiguredCurrencies = String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean);
 const performanceMiaoshouAutoSyncEnabled = process.env.MIAOSHOU_PERFORMANCE_AUTO_SYNC !== "false";
 const performanceMiaoshouSyncIntervalMs = Math.max(5 * 60 * 1000, Number(process.env.MIAOSHOU_PERFORMANCE_SYNC_INTERVAL_MS || 15 * 60 * 1000));
 const performanceMiaoshouBackfillDays = Math.max(7, Math.min(365, Number(process.env.MIAOSHOU_PERFORMANCE_BACKFILL_DAYS || 90)));
@@ -184,19 +177,14 @@ const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
-const skuCodingRegistryPath = resolve(cacheDir, "sku-coding.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
 const hermesIntegrationDbPath = resolve(process.env.HERMES_INTEGRATION_DB_PATH || resolve(cacheDir, "hermes-integration.sqlite"));
 const hermesAgentEnabled = process.env.HERMES_AGENT_ENABLED === "true";
 const hermesPatrolEnabled = process.env.HERMES_PATROL_ENABLED === "true";
 const hermesBaseUrl = String(process.env.HERMES_BASE_URL || "http://hermes:8642").trim();
 const hermesApiKey = String(process.env.HERMES_API_KEY || "").trim();
-const hermesPartnerBaseUrl = String(process.env.HERMES_PARTNER_BASE_URL || `${hermesBaseUrl.replace(/\/+$/, "")}/p/tongzhou-partner-progress`).trim();
-const hermesPartnerApiKey = String(process.env.HERMES_PARTNER_API_KEY || "").trim();
 const hermesBridgeSecret = String(process.env.HERMES_BRIDGE_SECRET || "").trim();
-const hermesPartnerBridgeSecret = String(process.env.HERMES_PARTNER_BRIDGE_SECRET || hermesBridgeSecret).trim();
 const hermesModelProxyKey = String(process.env.HERMES_MODEL_PROXY_KEY || "").trim();
-const hermesPartnerModelProxyKey = String(process.env.HERMES_PARTNER_MODEL_PROXY_KEY || "").trim();
 const hermesModelProvider = String(process.env.HERMES_MODEL_PROVIDER || "custom:tongzhou").trim();
 const hermesModel = String(process.env.HERMES_MODEL || "deepseek-v4-pro").trim();
 const hermesMaxToolCalls = process.env.HERMES_MAX_TOOL_CALLS || 32;
@@ -251,16 +239,6 @@ let cachedStockupWorkflow = loadJsonCache(stockupWorkflowCachePath) || {
 let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
-const skuCodingRegistry = createSkuCodingRegistry({ filePath: skuCodingRegistryPath });
-const skuCodingService = createSkuCodingService({
-  registry: skuCodingRegistry,
-  completeProductCodingFn: completeProductCoding,
-  createWarehouseProductFn: createWarehouseProduct,
-  resolveConnection: (connectionId) => {
-    const connection = warehouseConnections.find((item) => String(item.id) === String(connectionId));
-    return connection ? effectiveWarehouseProductConnection(connection) : null;
-  },
-});
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
@@ -279,10 +257,8 @@ const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanc
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const hermesIntegrationStore = await initHermesIntegrationStore(hermesIntegrationDbPath);
 const hermesClient = createHermesClient({ baseUrl: hermesBaseUrl, apiKey: hermesApiKey });
-const hermesPartnerClient = createHermesClient({ baseUrl: hermesPartnerBaseUrl, apiKey: hermesPartnerApiKey, requestTimeoutMs: 30_000 });
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
-
 const stockupInventoryContext = (context = {}) => ({ ...domesticInventoryContextForAuth(context.auth), warehouseIds: [], countries: [] });
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore, {
   inventoryGateway: {
@@ -294,6 +270,18 @@ const stockupCollaborationService = createStockupCollaborationService(stockupCol
   },
 });
 const stockupDispatchDocumentService = createStockupDispatchDocumentService({ outputDir: resolve(cacheDir, "stockup-dispatch-documents") });
+function stockupShipmentWithProductImages(shipment) {
+  const imageBySku = new Map();
+  for (const product of [...(cachedProducts.productBase || []), ...(cachedProducts.catalog || [])]) {
+    const sku = String(product?.sku || "").trim().toUpperCase();
+    const imageUrl = String(product?.imageUrl || product?.qualificationImageUrl || "").trim();
+    if (sku && imageUrl) imageBySku.set(sku, imageUrl);
+  }
+  return {
+    ...shipment,
+    lines: (shipment.lines || []).map((line) => ({ ...line, imageUrl: line.imageUrl || imageBySku.get(String(line.sku || "").trim().toUpperCase()) || "" })),
+  };
+}
 const containerLoadingService = createContainerLoadingService({ store: stockupCollaborationStore, stockupService: stockupCollaborationService });
 const collaborationBridgeStore = await initCollaborationBridgeStore(collaborationBridgeDbPath);
 const businessChainStore = await initBusinessChainStore(businessChainDbPath);
@@ -368,7 +356,6 @@ const hermesModelGateway = createHermesModelGateway({
   cacheDir,
   encryptionSecret: canvasCredentialSecret,
   proxySecret: hermesModelProxyKey,
-  partnerProxySecret: hermesPartnerModelProxyKey,
   defaultModel: hermesModel,
   fetchImpl: globalThis.fetch,
   getAuth,
@@ -402,6 +389,7 @@ const ozonIntegrationService = createOzonIntegrationService({
   fetchImpl: globalThis.fetch,
   warehouseConnections: () => warehouseConnections,
   inventory: () => cachedWarehouseSync.inventory || [],
+  warehouseProducts: () => cachedWarehouseSync.products || [],
   lookupWmsOrder: findWarehouseOutboundOrder,
   verifyWmsOrder: updateAndVerifyWarehouseOutboundOrder,
   notifyFailure: notifyOzonFulfillmentFailure,
@@ -415,8 +403,9 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   service: stockupCollaborationService,
   getAuth,
   appendActionLog,
+  notifyRequestSubmitted: ({ request, payload, auth, req }) => notifyStockupRequestSubmitted(request, payload, auth, requestOrigin(req)),
   publishWarehouseTask: (...args) => collaborationBridge.publishWarehouseTask(...args),
-  generateDispatchDocuments: (shipment) => stockupDispatchDocumentService.generate(shipment),
+  generateDispatchDocuments: (shipment) => stockupDispatchDocumentService.generate(stockupShipmentWithProductImages(shipment)),
   listWarehouses: () => {
     const optionByConnectionId = new Map(currentWmsWarehouseOptions().map((option) => [String(option.connectionId || ""), option]));
     return warehouseConnections
@@ -505,33 +494,6 @@ const collaborationBridge = createCollaborationBridge({
   domesticInventoryService,
   stockupCollaborationService,
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
-  listActiveOutsourcingOrders: fetchAllJdyActiveOutsourcingOrders,
-  listOutsourcingFactoryOrders: fetchJdyOutsourcingOrdersByFactoryId,
-  listFirstArticleRecords: fetchJdyFirstArticleRecordsForOrders,
-  listCraftOrderRecords: fetchJdyCraftOrderRecordsForOrders,
-  listOutsourcingPurchaseDocuments: fetchAllJdyProductionMaterials,
-  recordOutsourcingPartnerFeedback: async ({ orderNo, commandType, payload, submittedByName, submittedAt }) => {
-    const fields = JIANYUN_FORMS.outsourcingOrders.fields;
-    const actor = String(submittedByName || "委外工厂").trim();
-    const at = submittedAt || new Date().toISOString();
-    const patch = { [fields.lastFollowedAt]: at };
-    if (commandType === "accept") patch[fields.progressSummary] = `${actor}已在协同门户接单`;
-    if (commandType === "order_production_progress") {
-      patch[fields.progressSummary] = `${actor}反馈生产进度 ${Number(payload.progressPercent || 0)}%：${String(payload.note || payload.stage || "").slice(0, 1500)}`;
-      if (payload.expectedCompletionDate) patch[fields.factoryExpectedFinishedAt] = payload.expectedCompletionDate;
-    }
-    if (commandType === "order_material_readiness") {
-      const lineName = String(payload.line?.productName || payload.line?.sku || "物料/包材").slice(0, 200);
-      patch[fields.progressSummary] = `${actor}反馈${lineName}：${payload.readiness || ""}，测试${payload.testResult || ""}${payload.exceptionDescription ? `；异常：${String(payload.exceptionDescription).slice(0, 1000)}` : ""}`;
-    }
-    if (commandType === "order_exception") patch[fields.progressSummary] = `${actor}上报${payload.severity || ""}异常：${String(payload.title || "").slice(0, 240)}；${String(payload.description || "").slice(0, 1200)}`;
-    if (commandType === "order_shipment") {
-      patch[fields.progressSummary] = `${actor}反馈累计发货 ${Number(payload.shippedQuantity || 0)}：${[payload.carrier, payload.trackingNo, payload.note].filter(Boolean).join(" · ").slice(0, 1200)}`;
-      patch[fields.producedQty] = Number(payload.shippedQuantity || 0);
-      if (payload.shippedAt) patch[fields.finishedShippedAt] = payload.shippedAt;
-    }
-    return updateJdyOutsourcingOrderByNo(orderNo, patch);
-  },
   onAudit: (action, command, result) => appendActionLog(
     directAuth,
     action,
@@ -548,13 +510,6 @@ const collaborationBridgeApi = createCollaborationBridgeApi({
   canPublishTasks: (auth) => hasPermission(auth, "collaboration_task_publish") || (hasPermission(auth, "operations") && hasPermission(auth, "domestic_inventory_manage")),
   appendActionLog,
 });
-const hermesPartnerConfigApi = createHermesPartnerConfigApi({
-  bridge: collaborationBridge,
-  getAuth,
-  parseRequestBody,
-  sendJson,
-  appendActionLog,
-});
 const agentApiKeyStore = createAgentApiKeyStore({ cacheDir });
 let outsourcingRefreshStartedAt = "";
 let outsourcingRefreshError = "";
@@ -563,7 +518,6 @@ let lastScheduledInventorySnapshotDate = "";
 let scheduledInventorySnapshotRunning = false;
 let wecomScheduleRunning = false;
 const activeWarehouseReturnQueries = new Map();
-const activeAiAgentChats = new Map();
 const syncScheduler = createSyncScheduler({
   heartbeatMs: syncSchedulerHeartbeatMs,
   laneLimits: { light: 4, jdy: 1, wms: 1, miaoshou: 1, compute: 1, publicApi: 1 },
@@ -575,6 +529,7 @@ const containerLoadingApi = createContainerLoadingApi({
   getAuth,
   appendActionLog,
 });
+
 const mobileAdminBusiness = createMobileAdminBusinessProviders({
   domesticInventoryService,
   domesticInventoryContextForAuth,
@@ -597,6 +552,7 @@ const mobileAdminApi = createMobileAdminApi({
     const actual = createHash("sha256").update(String(accessCode)).digest();
     return timingSafeEqual(expected, actual) ? publicAccessUser(directAuth.user) : null;
   },
+  generateDispatchDocuments: (shipment) => stockupDispatchDocumentService.generate(stockupShipmentWithProductImages(shipment)),
   issueToken: (user) => createSessionToken(user, mobileAdminSessionSecret, 12 * 60 * 60 * 1000, cachedUsers.roles, { audience: "mobile-admin" }),
   resolveAuth: (req) => {
     const sessionUser = verifySessionToken(bearerToken(req), mobileAdminSessionSecret, { audience: "mobile-admin" });
@@ -1095,17 +1051,11 @@ function assertSecureRuntimeConfig() {
   if (hermesAgentEnabled && hermesApiKey.length < 16) {
     throw new Error("Refusing to enable Hermes: HERMES_API_KEY must contain at least 16 characters.");
   }
-  if (hermesPartnerApiKey && (hermesPartnerApiKey.length < 16 || hermesPartnerApiKey === hermesApiKey)) {
-    throw new Error("Refusing to configure the Hermes partner profile: HERMES_PARTNER_API_KEY must be at least 16 characters and different from HERMES_API_KEY.");
-  }
   if (hermesAgentEnabled && hermesBridgeSecret.length < 32) {
     throw new Error("Refusing to enable Hermes: HERMES_BRIDGE_SECRET must contain at least 32 characters.");
   }
   if (hermesAgentEnabled && hermesModelProxyKey.length < 32) {
     throw new Error("Refusing to enable Hermes: HERMES_MODEL_PROXY_KEY must contain at least 32 characters.");
-  }
-  if (hermesPartnerApiKey && (hermesPartnerModelProxyKey.length < 32 || hermesPartnerModelProxyKey === hermesModelProxyKey)) {
-    throw new Error("Refusing to configure the Hermes partner profile: HERMES_PARTNER_MODEL_PROXY_KEY must be at least 32 characters and different from HERMES_MODEL_PROXY_KEY.");
   }
 }
 
@@ -1288,12 +1238,9 @@ function buildWecomNotificationPayload(input = {}) {
       triggerMode: normalizeStockupTriggerMode(input.scenes?.stockupRecommendation?.triggerMode),
       scheduleTime: normalizeWecomDailyTime(input.scenes?.stockupRecommendation?.scheduleTime, "09:00"),
       lastSignature: input.scenes?.stockupRecommendation?.lastSignature || "",
-      lastReportDate: input.scenes?.stockupRecommendation?.lastReportDate || "",
       lastItemKeys: Array.isArray(input.scenes?.stockupRecommendation?.lastItemKeys) ? input.scenes.stockupRecommendation.lastItemKeys.map(String).filter(Boolean) : [],
       lastSentAt: input.scenes?.stockupRecommendation?.lastSentAt || "",
       lastScheduleRunKey: input.scenes?.stockupRecommendation?.lastScheduleRunKey || "",
-      lastScheduleAttemptAt: input.scenes?.stockupRecommendation?.lastScheduleAttemptAt || "",
-      lastScheduleMessage: input.scenes?.stockupRecommendation?.lastScheduleMessage || "",
       lastError: input.scenes?.stockupRecommendation?.lastError || "",
     },
     inventorySnapshot: {
@@ -1327,6 +1274,13 @@ function buildWecomNotificationPayload(input = {}) {
       extraText: String(input.scenes?.afterSalesProgress?.extraText || "").trim(),
       lastSentAt: input.scenes?.afterSalesProgress?.lastSentAt || "",
     },
+    ozonFulfillmentFailure: {
+      enabled: Boolean(input.scenes?.ozonFulfillmentFailure?.enabled),
+      robotIds: normalizeWecomRobotIds(input.scenes?.ozonFulfillmentFailure?.robotIds),
+      linkUrl: String(input.scenes?.ozonFulfillmentFailure?.linkUrl || "#ozon-orders").trim(),
+      extraText: String(input.scenes?.ozonFulfillmentFailure?.extraText || "").trim(),
+      lastSentAt: input.scenes?.ozonFulfillmentFailure?.lastSentAt || "",
+    },
   };
   const projectTeams = normalizeWecomProjectTeams(input.projectTeams);
   return { ok: true, source: "local", updatedAt: input.updatedAt || now, robots, schedules, projectTeams, scenes };
@@ -1334,35 +1288,19 @@ function buildWecomNotificationPayload(input = {}) {
 
 function publicWecomNotificationPayload() {
   const payload = buildWecomNotificationPayload(cachedWecomNotifications);
-  return withDataContext({
+  return {
     ...payload,
     robots: payload.robots.map(({ webhookUrl, ...robot }) => ({ ...robot, webhookMasked: maskWebhook(webhookUrl) })),
-  }, {
-    generatedAt: payload.updatedAt,
-    effectiveAt: payload.updatedAt,
-    source: "snapshot",
-    scopeKey: "notification_configuration",
-    scopeLabel: "当前账号可管理的企业微信通知配置",
-    completeness: "complete",
-  });
-}
-
-function absoluteNotificationLink(linkUrl, fallbackHash = "") {
-  const raw = String(linkUrl || fallbackHash || "").trim();
-  if (!raw) return "";
-  if (/^https?:\/\//i.test(raw)) return raw;
-  const origin = String(process.env.PUBLIC_APP_ORIGIN || "https://gyl.tongzhoukuajing.com").trim().replace(/\/+$/, "");
-  if (raw.startsWith("#")) return `${origin}/${raw}`;
-  return `${origin}${raw.startsWith("/") ? "" : "/"}${raw}`;
+  };
 }
 
 function notificationLinkLine(linkUrl, linkText = "查看详情") {
-  const url = absoluteNotificationLink(linkUrl);
+  const url = String(linkUrl || "").trim();
   if (!url) return "";
   return `\n[${String(linkText || "查看详情").trim()}](${url})`;
 }
 
-async function sendWecomRobotBody(robot, body) {
+async function sendWecomRobot(robot, content, mentionUserIds = []) {
   if (!robot?.enabled) return { robotId: robot?.id, ok: false, skipped: true, message: "机器人已停用" };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
@@ -1371,7 +1309,10 @@ async function sendWecomRobotBody(robot, body) {
     response = await fetch(robot.webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        msgtype: "markdown",
+        markdown: { content: withWecomMentions(content, mentionUserIds) },
+      }),
       signal: controller.signal,
     });
   } finally {
@@ -1388,17 +1329,6 @@ async function sendWecomRobotBody(robot, body) {
     throw new Error(data.errmsg || data.message || text || `企业微信机器人推送失败 ${response.status}`);
   }
   return { robotId: robot.id, ok: true };
-}
-
-async function sendWecomRobot(robot, content, mentionUserIds = []) {
-  return sendWecomRobotBody(robot, {
-    msgtype: "markdown",
-    markdown: { content: withWecomMentions(content, mentionUserIds) },
-  });
-}
-
-async function sendWecomImageRobot(robot, buffer) {
-  return sendWecomRobotBody(robot, buildWecomImageBody(buffer));
 }
 
 async function sendWecomNotification(robotIds, content, mentionUserIds = []) {
@@ -1420,28 +1350,49 @@ async function sendWecomNotification(robotIds, content, mentionUserIds = []) {
   return results;
 }
 
-async function sendWecomImageNotification(robotIds, buffer) {
-  const ids = new Set((robotIds || []).map(String).filter(Boolean));
-  const robots = (cachedWecomNotifications.robots || []).filter((robot) => ids.has(robot.id) && robot.enabled);
-  const results = await Promise.all(robots.map(async (robot) => {
-    try {
-      const result = await sendWecomImageRobot(robot, buffer);
-      robot.lastSentAt = new Date().toISOString();
-      robot.lastError = "";
-      return result;
-    } catch (error) {
-      robot.lastError = error.message || "图片推送失败";
-      return { robotId: robot.id, ok: false, message: robot.lastError };
-    }
-  }));
-  cachedWecomNotifications.updatedAt = new Date().toISOString();
-  saveWecomNotificationCache();
-  return results;
+async function notifyStockupRequestSubmitted(request, payload = {}, auth = {}, origin = "") {
+  const notificationRoute = resolveNotificationRouteSnapshot({
+    actor: auth.user || {},
+    requestedTeamId: payload.notificationTeamId,
+    projectTeams: cachedWecomNotifications.projectTeams,
+  });
+  notificationRoute.mentionSubmitter = false;
+  const route = resolveProgressNotificationRoute({
+    ticket: { notificationRoute },
+    projectTeams: cachedWecomNotifications.projectTeams,
+    globalRobotIds: [],
+  });
+  if (!route.robotIds.length) {
+    return {
+      status: "skipped",
+      teamName: route.teamName,
+      message: route.teamName
+        ? `项目团队“${route.teamName}”尚未配置企业微信接收群，本次未发送。`
+        : "未选择项目团队且创建人没有默认通知团队，本次未发送。",
+    };
+  }
+  const content = buildStockupRequestSubmittedMarkdown(request, { requestOrigin: origin });
+  const results = await sendWecomNotification(route.robotIds, content, route.mentionUserIds);
+  const delivered = results.filter((item) => item.ok).length;
+  const failed = Math.max(0, route.robotIds.length - delivered);
+  if (!delivered) return { status: "failed", teamName: route.teamName, delivered, failed, message: "企业微信接收群不可用或推送失败，请检查项目团队的机器人配置。" };
+  return {
+    status: failed ? "partial" : "sent",
+    teamName: route.teamName,
+    delivered,
+    failed,
+    message: failed ? `已发送到 ${delivered} 个接收群，另有 ${failed} 个失败。` : `已通知${route.teamName ? `“${route.teamName}”` : "项目团队"}。`,
+  };
 }
 
 const ozonFailureNotificationDedupe = new Map();
 
 async function notifyOzonFulfillmentFailure({ store = {}, order = {}, stage = "", error = "", code = "" } = {}) {
+  const scene = cachedWecomNotifications.scenes?.ozonFulfillmentFailure;
+  if (!scene?.enabled) return { status: "skipped", message: "Ozon 自动履约异常通知未启用" };
+  const recipientCheck = validateExplicitWecomRecipients(scene.robotIds, "Ozon 自动履约异常通知");
+  if (!recipientCheck.ok) return { status: "skipped", message: recipientCheck.message };
+
   const key = [store.id, order.postingNumber, stage || "unknown"].map((value) => String(value || "").trim()).join("::");
   const now = Date.now();
   const lastSentAt = ozonFailureNotificationDedupe.get(key) || 0;
@@ -1451,19 +1402,6 @@ async function notifyOzonFulfillmentFailure({ store = {}, order = {}, stage = ""
     if (now - sentAt > 24 * 60 * 60 * 1000) ozonFailureNotificationDedupe.delete(dedupeKey);
   }
 
-  const owner = (cachedUsers.users || []).find((user) => user.id === store.ownerId && user.status !== "disabled") || {};
-  const notificationRoute = resolveNotificationRouteSnapshot({
-    actor: owner,
-    requestedTeamId: owner.notificationTeamId,
-    projectTeams: cachedWecomNotifications.projectTeams,
-  });
-  const scene = cachedWecomNotifications.scenes?.afterSalesProgress;
-  const route = resolveProgressNotificationRoute({
-    ticket: { notificationRoute },
-    projectTeams: cachedWecomNotifications.projectTeams,
-    globalRobotIds: scene?.enabled ? scene.robotIds : [],
-  });
-  if (!route.robotIds.length) return { status: "skipped", message: "未配置可用的企业微信群机器人" };
   const content = [
     "### Ozon 自动履约异常",
     `> 店铺：${String(store.name || store.id || "未知店铺")}`,
@@ -1472,12 +1410,12 @@ async function notifyOzonFulfillmentFailure({ store = {}, order = {}, stage = ""
     `> 错误：${String(error || "自动履约失败")}`,
     code ? `> 错误码：${String(code)}` : "",
     order.fulfillment?.nextRetryAt ? `> 下次重试：${String(order.fulfillment.nextRetryAt)}` : "> 处理方式：请在中台异常队列检查后手动重试",
+    scene.extraText ? String(scene.extraText) : "",
+    notificationLinkLine(scene.linkUrl || "#ozon-orders", "查看 Ozon 异常订单"),
   ].filter(Boolean).join("\n");
-  const results = await sendWecomNotification(route.robotIds, content, route.mentionUserIds);
+  const results = await sendWecomNotification(recipientCheck.robotIds, content);
   return notificationOutcome(results, true);
 }
-
-
 
 const afterSalesStatusLabels = Object.freeze({
   pending_warehouse: "待仓库接单",
@@ -1670,15 +1608,7 @@ async function deliverWarehouseTicketNotification(ticket, eventType, origin) {
 }
 
 function stockupSignature(payload) {
-  const items = (payload.recommendations || []).map((item) => [
-    item.sku,
-    item.replenishQty,
-    item.outsourcingInProductionQty,
-    item.netReplenishQty,
-    item.yesterdayOutboundQty,
-    item.yesterdayReservedQty,
-    item.estimatedStockoutDate,
-  ].join(":")).sort();
+  const items = (payload.recommendations || []).map((item) => `${item.sku}:${item.replenishQty}:${item.netReplenishQty}`).sort();
   return items.join("|");
 }
 
@@ -1719,7 +1649,6 @@ async function notifyStockupRecommendation(payload, reason = "refresh", options 
   const robotIds = normalizeWecomRobotIds(scene.robotIds);
   if (!robotIds.length) return [];
   const signature = stockupSignature(payload);
-  const reportDate = dateKeyInTimezone(new Date(), inventorySnapshotTimezone);
   if (!signature || (!force && scene.lastSignature === signature)) return [];
   const currentKeys = (payload.recommendations || []).map((item) => item.recommendationKey || stockupRecommendationKey(item)).filter(Boolean);
   const previousKeys = new Set(scene.lastItemKeys || []);
@@ -1728,12 +1657,13 @@ async function notifyStockupRecommendation(payload, reason = "refresh", options 
     scene.lastSignature = signature;
     scene.lastItemKeys = currentKeys;
   }
+  scene.lastSentAt = new Date().toISOString();
   if (!force && !newItems.length && previousKeys.size) {
     saveWecomNotificationCache();
     return [];
   }
   const visibleItems = (force ? payload.recommendations || [] : (newItems.length ? newItems : payload.recommendations || [])).slice(0, 8);
-  const fallbackContent = [
+  const content = [
     force ? "### 定时备货预警" : "### 备货建议提醒",
     force
       ? `当前 ${payload.counts?.recommendations || 0} 个 SKU 需要关注备货，净建议备货 ${payload.counts?.netRecommendedQty || 0} 件。`
@@ -1742,32 +1672,7 @@ async function notifyStockupRecommendation(payload, reason = "refresh", options 
     visibleItems.map(stockupMarkdownItem).join("\n\n"),
     notificationLinkLine(scene.linkUrl, "查看备货中心"),
   ].filter(Boolean).join("\n\n");
-  const linkUrl = absoluteNotificationLink(scene.linkUrl, "#stockup-recommendations");
-  let results = [];
-  try {
-    const report = await renderStockupWarningReport(payload);
-    if (report.thumbnailFallbackReason) console.warn(`[wecom] stockup warning thumbnails omitted: ${report.thumbnailFallbackReason}`);
-    const imageResults = await sendWecomImageNotification(robotIds, report.buffer);
-    const linkContent = buildStockupWarningLinkMarkdown(report.model, {
-      linkUrl,
-      extraText: scene.extraText,
-    });
-    const imageSuccessRobotIds = imageResults.filter((item) => item.ok).map((item) => item.robotId);
-    const imageFailedRobotIds = imageResults.filter((item) => !item.ok).map((item) => item.robotId);
-    const linkResults = imageSuccessRobotIds.length ? await sendWecomNotification(imageSuccessRobotIds, linkContent) : [];
-    const fallbackResults = imageFailedRobotIds.length ? await sendWecomNotification(imageFailedRobotIds, fallbackContent) : [];
-    results = [...imageResults, ...linkResults, ...fallbackResults];
-  } catch (error) {
-    console.error("[wecom] stockup warning image fallback", error);
-    results = await sendWecomNotification(robotIds, fallbackContent);
-  }
-  if (results.some((item) => item.ok)) {
-    const currentScene = cachedWecomNotifications.scenes?.stockupRecommendation || scene;
-    currentScene.lastReportDate = reportDate;
-    currentScene.lastSentAt = new Date().toISOString();
-  }
-  saveWecomNotificationCache();
-  return results;
+  return sendWecomNotification(robotIds, content);
 }
 
 async function notifyInventorySnapshot(snapshot) {
@@ -1927,59 +1832,28 @@ function stockupSceneScheduleRunKey(scene, now = new Date()) {
 }
 
 function shouldRunStockupSceneSchedule(scene, now = new Date()) {
+  if (!scene?.enabled || !["daily", "both"].includes(scene.triggerMode)) return false;
+  if (!normalizeWecomRobotIds(scene.robotIds).length) return false;
   const minute = minutesInTimezone(now);
   const [hourText, minuteText] = normalizeWecomDailyTime(scene.scheduleTime, "09:00").split(":");
   const target = Number(hourText) * 60 + Number(minuteText);
-  return shouldRunStockupDailySchedule({
-    enabled: scene?.enabled,
-    triggerMode: scene?.triggerMode,
-    recipientCount: normalizeWecomRobotIds(scene?.robotIds).length,
-    currentMinute: minute,
-    targetMinute: target,
-    currentRunKey: stockupSceneScheduleRunKey(scene, now),
-    lastRunKey: scene?.lastScheduleRunKey,
-    lastAttemptAt: scene?.lastScheduleAttemptAt,
-    nowMs: now.getTime(),
-  });
+  return minute >= target && minute < target + 2 && scene.lastScheduleRunKey !== stockupSceneScheduleRunKey(scene, now);
 }
 
 async function runScheduledStockupScene(now = new Date()) {
   const scene = cachedWecomNotifications.scenes?.stockupRecommendation;
   if (!shouldRunStockupSceneSchedule(scene, now)) return;
-  const runKey = stockupSceneScheduleRunKey(scene, now);
-  scene.lastScheduleAttemptAt = now.toISOString();
-  scene.lastScheduleMessage = "正在生成并推送备货预警长图。";
+  scene.lastScheduleRunKey = stockupSceneScheduleRunKey(scene, now);
   scene.lastError = "";
   const recipientCheck = validateExplicitWecomRecipients(scene.robotIds, "备货预警定时推送");
   if (!recipientCheck.ok) {
     scene.lastError = recipientCheck.message;
-    scene.lastScheduleMessage = "接收群校验失败，系统将在 10 分钟后自动重试。";
     return;
   }
   const payload = buildCurrentStockupPayload({ notify: false, reason: "wecom_scheduled_stockup" });
-  if (!stockupSignature(payload)) {
-    scene.lastScheduleRunKey = runKey;
-    scene.lastScheduleMessage = "本次已检查，当前没有需要推送的备货预警。";
-    return;
-  }
-  try {
-    const results = await notifyStockupRecommendation(payload, "scheduled", { force: true });
-    const succeeded = (results || []).filter((item) => item.ok);
-    const failed = (results || []).filter((item) => !item.ok);
-    const currentScene = cachedWecomNotifications.scenes?.stockupRecommendation || scene;
-    if (succeeded.length) {
-      currentScene.lastScheduleRunKey = runKey;
-      currentScene.lastScheduleMessage = `已完成当天定时推送，共 ${succeeded.length} 个发送步骤成功。`;
-      currentScene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
-      return;
-    }
-    currentScene.lastError = failed.map((item) => item.message).filter(Boolean).join("；") || "企业微信未返回成功结果。";
-    currentScene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
-  } catch (error) {
-    const currentScene = cachedWecomNotifications.scenes?.stockupRecommendation || scene;
-    currentScene.lastError = error?.message || "备货预警长图定时推送失败。";
-    currentScene.lastScheduleMessage = "本次推送失败，系统将在 10 分钟后自动重试。";
-  }
+  const results = await notifyStockupRecommendation(payload, "scheduled", { force: true });
+  const failed = (results || []).filter((item) => !item.ok);
+  scene.lastError = failed.length ? failed.map((item) => item.message).filter(Boolean).join("；") : "";
 }
 
 async function runWecomSchedules() {
@@ -2902,12 +2776,6 @@ function effectiveWarehouseCreateConnection(connection) {
   return fallback ? { ...connection, credentials: fallback.credentials } : connection;
 }
 
-function effectiveWarehouseProductConnection(connection) {
-  if (warehouseProductCreateCapability(connection).configured) return connection;
-  const fallback = sameSystemCredentialFallback(connection);
-  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
-}
-
 function parseFirstMileContact(value) {
   const source = String(value || "").trim();
   const contactName = source.match(/(?:联系人|收件人|contact(?:\s+person)?|consignee)\s*[:：]?\s*([^,，;；|\n\r]+)/i)?.[1]?.trim() || "";
@@ -2928,18 +2796,7 @@ function currentWmsWarehouseOptions() {
     warehouseConnections,
     cachedWarehouseInfo.warehouseInfo || [],
     (connection) => warehouseStockupCreateCapability(effectiveWarehouseCreateConnection(connection)),
-  ).map((option) => {
-    const connection = warehouseConnections.find((item) => item.id === option.connectionId);
-    const productCapability = warehouseProductCreateCapability(connection ? effectiveWarehouseProductConnection(connection) : null);
-    return {
-      ...option,
-      productCreateSupported: productCapability.supported,
-      productCreateConfigured: productCapability.configured,
-      productCreateMode: productCapability.createMode,
-      productCreateMessage: productCapability.message,
-      productRequiredFields: productCapability.requiredFields,
-    };
-  });
+  );
 }
 
 function collaborationShipmentWmsConnection(shipment) {
@@ -2976,7 +2833,12 @@ function collaborationShipmentWmsInput(shipment, options = {}) {
 
 async function previewCollaborationShipmentWmsOrder(shipmentId, context) {
   const shipment = stockupCollaborationService.getShipment(shipmentId, context);
-  if (shipment.status !== "shipped") throw Object.assign(new Error("只有已发出的批次才能预览仓库单据。"), { statusCode: 409 });
+  if (!canPreviewStockupShipmentWmsOrder(shipment)) {
+    const message = Number(shipment.workflowVersion) === 2
+      ? "只有已锁定国内库存的出运计划才能预览海外仓单。"
+      : "只有已发出的批次才能预览仓库单据。";
+    throw Object.assign(new Error(message), { statusCode: 409, code: "wms_preview_state_invalid" });
+  }
   const { effectiveConnection } = collaborationShipmentWmsConnection(shipment);
   const preview = await previewWarehouseStockupOrder(effectiveConnection, collaborationShipmentWmsInput(shipment));
   return { ...preview, shipmentId: shipment.id, shipmentNo: shipment.shipmentNo, shipmentVersion: shipment.version, warehouseName: shipment.destinationWarehouseName };
@@ -3024,23 +2886,8 @@ function workflowWithWmsState(workflow) {
     ...workflow,
     warehouseOptions,
     wmsPushTasks,
-    codingCenter: skuCodingService.snapshot(workflow, warehouseOptions),
     productionTimelines: buildProductionTimelines(workflow, cachedActionLog, wmsPushTasks),
   };
-}
-
-function skuCodingActor(auth) {
-  return {
-    id: String(auth?.user?.id || auth?.user?.username || "system"),
-    name: String(auth?.user?.displayName || auth?.user?.name || auth?.user?.username || "系统"),
-  };
-}
-
-async function workflowForSkuCoding() {
-  if (!hasJdyCredentials()) return cachedStockupWorkflow;
-  const fresh = await loadStockupWorkflow();
-  const failed = (fresh.warnings || []).some((warning) => /读取失败/.test(String(warning)));
-  return failed ? cachedStockupWorkflow : fresh;
 }
 
 function listingNumber(value) {
@@ -3745,14 +3592,6 @@ function getAuthForUserId(userId) {
   return { role: currentUser.role, user: publicAccessUser(currentUser) };
 }
 
-function reauthenticateHermesAction(auth, password) {
-  const user = (cachedUsers.users || []).find((item) => item.id === auth?.user?.id && item.status !== "disabled");
-  if (!user || !authenticateLocalUser([user], user.username, String(password || ""), cachedUsers.roles)) {
-    throw Object.assign(new Error("密码校验失败，本次业务动作未批准。"), { statusCode: 401, code: "reauthentication_failed" });
-  }
-  return true;
-}
-
 function systemBackupAdmin(req, res) {
   const auth = getAuth(req);
   if (auth.role === "guest" || !auth.user?.id) {
@@ -3793,7 +3632,7 @@ function reauthenticateSystemBackupAdmin(auth, password) {
 async function waitForSystemBackupApplicationIdle() {
   if (activeOrderSyncJobPromise) await Promise.resolve(activeOrderSyncJobPromise).catch(() => {});
   if (performanceAnalyticsMaterializationJob?.promise) await Promise.resolve(performanceAnalyticsMaterializationJob.promise).catch(() => {});
-  while (scheduledInventorySnapshotRunning || activeWarehouseReturnQueries.size || activeAiAgentChats.size) {
+  while (scheduledInventorySnapshotRunning || activeWarehouseReturnQueries.size) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
 }
@@ -4217,28 +4056,6 @@ function warehouseCollaborationDataScopes(auth) {
   if (auth.user?.role !== "warehouse" || scopes.warehouseIds.length) return scopes;
   // 历史仓库账号若尚未绑定仓库，默认看不到任何仓库数据，避免空范围被解释为“全部”。
   return { ...scopes, warehouseIds: ["__warehouse_unassigned__"] };
-}
-
-function warehouseQualificationCoveragePayload(auth, filters = {}) {
-  const user = auth.user || { role: auth.role || "guest" };
-  const scoped = scopeMovementSources({
-    products: cachedProducts,
-    warehouse: cachedWarehouseSync,
-    orders: { orders: [], results: [] },
-    connections: warehouseConnections,
-  }, { ...user, dataScopes: warehouseCollaborationDataScopes(auth) });
-  const merged = mergeWarehouseDataIntoProducts(scoped.products, scoped.warehouse);
-  return buildWarehouseQualificationCoverage({
-    catalog: merged.catalog || [],
-    productBase: merged.productBase || [],
-    warehouseOnlyInventory: merged.warehouseOnlyInventory || [],
-    qualifications: cachedQualifications.qualifications || [],
-    connections: scoped.connections,
-    requestedWarehouseId: filters.warehouseId,
-    keyword: filters.keyword,
-    status: filters.status,
-    qualificationAvailable: Boolean(cachedQualifications.syncedAt) && cachedQualifications.source !== "empty",
-  });
 }
 
 function warehouseAccountScopeError(role, dataScopes) {
@@ -5071,6 +4888,10 @@ function buildDashboardSummary(auth) {
     generatedAt: new Date().toISOString(),
     internal: canViewInternalCatalog(auth),
     user: publicAccessUser(auth.user),
+    marketSnapshot: buildDashboardMarketSnapshot(
+      performanceAnalyticsStore.listExchangeRates(),
+      performanceExchangeRateSync.status(),
+    ),
     counts: {
       visibleCatalog: visibleCatalog.length,
       totalInventory: canViewInventory ? visibleCatalog.reduce((sum, product) => sum + numberOrZero(product.stockQty), 0) : 0,
@@ -5099,10 +4920,6 @@ function buildDashboardSummary(auth) {
       failedWarehouses: movementPayload?.syncState?.failedWarehouses || [],
       dataHealth,
     },
-    marketSnapshot: buildDashboardMarketSnapshot(
-      performanceAnalyticsStore.listExchangeRates(),
-      performanceExchangeRateSync.status(),
-    ),
     movementDiagnostics: canViewSync ? (movementPayload?.warehouseDiagnostics || []) : [],
     warehouses: scoped.connections.map((connection) => {
       const result = warehouseResults.find((item) => item.warehouseId === connection.id);
@@ -6843,7 +6660,8 @@ function buildCurrentStockupPayload({ notify = false, reason = "refresh" } = {})
   const cacheKey = `stockup:${derivedDataRevision}`;
   let payload = cachedDerivedResponse(cacheKey);
   if (!payload) {
-    const movementPayload = movementResponsePayload(directAuth);
+    const mergedProducts = mergeWarehouseDataIntoProducts(cachedProducts, cachedWarehouseSync);
+    const movementPayload = buildMovementPayload(mergedProducts, cachedWarehouseSync, cachedOrdersSync);
     payload = cacheDerivedResponse(cacheKey, applyStockupDecisions(buildStockupPayload(movementPayload, cachedStockupSync, cachedOutsourcingOrders, cachedProducts)));
   }
   if (notify) void notifyStockupRecommendation(payload, reason);
@@ -7530,12 +7348,8 @@ function registerBackgroundSyncTasks() {
     enabled: performanceFxAutoSyncEnabled,
     priority: 20,
     intervalMs: performanceFxSyncIntervalMs,
-    initialDelayMs: minute / 2,
-    run: async () => {
-      const result = await performanceExchangeRateSync.run({ reason: "scheduled" });
-      if (!result.skipped) invalidateDerivedResponses();
-      return result;
-    },
+    initialDelayMs: 24 * minute,
+    run: () => performanceExchangeRateSync.run({ reason: "scheduled" }),
   });
   console.log(`[sync-scheduler] registered ${syncScheduler.status().counts.tasks} staggered tasks; heartbeat ${Math.round(syncSchedulerHeartbeatMs / 1000)}s`);
 }
@@ -7984,10 +7798,11 @@ async function notifyHermesDailyDigest(cases, { date } = {}) {
 
 function collectHermesPatrolSources() {
   const movement = movementResponsePayload(directAuth);
-  const context = hermesStockupContext(directAuth, { viewAll: true });
-  const requests = stockupCollaborationService.listRequests({}, context);
-  const tasks = stockupCollaborationService.listTasks({}, context);
-  const production = agentSourceForType("production_timeline", directAuth);
+  const stockupContext = hermesStockupContext(directAuth, { viewAll: true });
+  const requestPayload = stockupCollaborationService.listRequests({}, stockupContext);
+  const taskPayload = stockupCollaborationService.listTasks({}, stockupContext);
+  const productionSource = agentSourceForType("production_timeline", directAuth);
+  const inventoryItems = (movement.items || []).filter((item) => ["缺货", "补货预警"].includes(item.status));
   return {
     complete: true,
     warehouseSync: {
@@ -7999,15 +7814,22 @@ function collectHermesPatrolSources() {
         && cachedWarehouseSync.results.every((item) => item.ok !== false || item.skipped),
     },
     inventoryRisk: {
-      items: (movement.items || []).filter((item) => ["缺货", "补货预警"].includes(item.status)),
+      items: inventoryItems,
       generatedAt: movement.generatedAt,
       complete: Boolean(movement.generatedAt)
         && movement.orderDataComplete !== false
         && movement.syncState?.publishReady !== false
         && (movement.items || []).every((item) => item.dataCompleteness === "complete"),
     },
-    stockup: { requests: requests.requests || [], tasks: tasks.tasks || [], complete: true },
-    production: { timelines: production.records || [], complete: production.complete !== false && Boolean(production.updatedAt) },
+    stockup: {
+      requests: requestPayload.requests || [],
+      tasks: taskPayload.tasks || [],
+      complete: true,
+    },
+    production: {
+      timelines: productionSource.records || [],
+      complete: productionSource.complete !== false && Boolean(productionSource.updatedAt),
+    },
   };
 }
 
@@ -8050,7 +7872,11 @@ const hermesToolProviders = {
   },
   queryStockupExecution(args, auth) {
     const context = hermesStockupContext(auth, { viewAll: true });
-    return { ok: true, requests: stockupCollaborationService.listRequests(args, context).requests || [], tasks: stockupCollaborationService.listTasks(args, context).tasks || [] };
+    return {
+      ok: true,
+      requests: stockupCollaborationService.listRequests(args, context).requests || [],
+      tasks: stockupCollaborationService.listTasks(args, context).tasks || [],
+    };
   },
   queryProductionTimeline(args, auth) {
     const source = agentSourceForType("production_timeline", auth);
@@ -8075,20 +7901,6 @@ const hermesToolProviders = {
   compareMovementInventory(args, auth) {
     return movementComparisonPayload(args, auth);
   },
-  queryRiskBatch(args, auth) {
-    const limit = Math.min(100, Math.max(1, Number(args.limitPerDomain) || 50));
-    const shared = { ...args, limit };
-    const inventory = this.queryInventoryRisk(shared, auth);
-    const stockup = this.queryStockupExecution(shared, auth);
-    const production = this.queryProductionTimeline(shared, auth);
-    return {
-      ok: true,
-      summary: `批量取得库存风险 ${inventory.items?.length || 0} 条、备货需求/任务 ${(stockup.requests?.length || 0) + (stockup.tasks?.length || 0)} 条、生产时间线 ${production.timelines?.length || 0} 条`,
-      inventory,
-      stockup,
-      production,
-    };
-  },
   createStockupDraft(args, auth, idempotencyKey) {
     const context = hermesStockupContext(auth, { viewAll: false });
     const result = stockupCollaborationService.createSpotRequest({ ...args, workflowVersion: 2, submit: false, sourceType: "hermes", sourceRef: "tongzhou-business" }, context, idempotencyKey);
@@ -8101,14 +7913,17 @@ const hermesToolProviders = {
   assignException(args, auth, scopes) {
     const assignee = this.resolveAssignee(args.assigneeId);
     if (!assignee) throw Object.assign(new Error("责任人不存在或账号已停用。"), { statusCode: 404, code: "assignee_not_found" });
-    const item = hermesIntegrationStore.updateCase(args.caseId, {
+    const caseItem = hermesIntegrationStore.updateCase(args.caseId, {
       version: args.version,
       status: "investigating",
       assigneeId: assignee.id,
       assigneeName: assignee.displayName || assignee.username,
     }, { id: auth.user.id, name: auth.user.displayName || auth.user.username }, scopes);
-    if (!item) throw Object.assign(new Error("异常案例不存在或已超出当前数据范围。"), { statusCode: 404, code: "case_not_found" });
-    return { ok: true, case: item };
+    if (!caseItem) throw Object.assign(new Error("异常案例不存在或已超出当前数据范围。"), { statusCode: 404, code: "case_not_found" });
+    return {
+      ok: true,
+      case: caseItem,
+    };
   },
   async sendExceptionReminder(args, auth, idempotencyKey, scopes) {
     const item = hermesIntegrationStore.getCase(args.caseId, scopes);
@@ -8118,7 +7933,12 @@ const hermesToolProviders = {
     const mention = normalizeWecomUserId(assignee?.wecomUserId);
     const results = await sendHermesTeamNotification(hermesCaseMarkdown(item, "异常催办"), mention ? [mention] : []);
     hermesIntegrationStore.recordCaseEvent(item.id, "reminded", { idempotencyKey, note: String(args.note || ""), delivery: results }, { id: auth.user.id, name: auth.user.displayName || auth.user.username }, scopes);
-    return { ok: true, caseId: item.id, delivered: results.filter((result) => result.ok).length, evidence: [{ type: "exception_case", id: item.id, label: item.title, href: item.href || "#hermes-agent", updatedAt: item.updatedAt }] };
+    return {
+      ok: true,
+      caseId: item.id,
+      delivered: results.filter((result) => result.ok).length,
+      evidence: [{ type: "exception_case", id: item.id, label: item.title, href: item.href || "#hermes-agent", updatedAt: item.updatedAt }],
+    };
   },
 };
 
@@ -8129,14 +7949,6 @@ const hermesToolGateway = createHermesToolGateway({
   providers: hermesToolProviders,
   sendJson,
   appendActionLog,
-});
-
-const hermesPartnerDraftApi = createHermesPartnerDraftApi({
-  store: hermesIntegrationStore,
-  client: hermesPartnerClient,
-  bridgeSecret: hermesPartnerBridgeSecret,
-  resolveRuntimeConfig: () => hermesModelGateway.runtimeConfig(),
-  sendJson,
 });
 
 const hermesApi = createHermesApi({
@@ -8153,111 +7965,7 @@ const hermesApi = createHermesApi({
   appendActionLog,
   patrol: hermesPatrol,
   resolveAssignee: (userId) => hermesToolProviders.resolveAssignee(userId),
-  reauthenticateAction: reauthenticateHermesAction,
 });
-
-function aiAgentDiagnostics(route, auth) {
-  const metrics = [];
-  const insights = [];
-  const metric = (label, value, tone = "neutral") => metrics.push({ label, value, tone });
-  const insight = (severity, title, detail, href = "") => insights.push({ severity, title, detail, href });
-
-  if (route === "#dashboard" && hasPermission(auth, "dashboard")) {
-    const summary = buildDashboardSummary(auth);
-    metric("风险 SKU", numberOrZero(summary.counts?.riskSku), summary.counts?.riskSku ? "warning" : "success");
-    metric("今日订单", numberOrZero(summary.counts?.todayOrders));
-    const failed = summary.sync?.failedWarehouses || [];
-    if (failed.length) insight("critical", `${failed.length} 个仓库同步异常`, failed.slice(0, 3).map((item) => item.name || item.warehouseName || item.warehouseId).filter(Boolean).join("、"), "#inventory");
-  }
-
-  if (["#inventory-value", "#inventory-snapshots"].includes(route) && hasPermission(auth, "inventory_value")) {
-    const payload = inventoryValuePayload({}, auth);
-    const summary = payload.summary || {};
-    metric("当前在库货值", `¥${Math.round(numberOrZero(summary.onHandValueCny)).toLocaleString("zh-CN")}`);
-    metric("成本覆盖率", `${Math.round(numberOrZero(summary.costCoverageRate) * 100)}%`, numberOrZero(summary.costCoverageRate) < 0.98 ? "warning" : "success");
-    if (numberOrZero(summary.missingCostSkuCount)) insight("warning", `${summary.missingCostSkuCount} 个 SKU 缺少成本`, "缺失成本的库存不会按 0 元误计，也不会计入当前货值。", "#inventory-value");
-  }
-
-  if (route === "#qualifications" && hasPermission(auth, "qualifications")) {
-    const scoped = scopedPartnerPayload(cachedQualifications, "qualifications", auth);
-    const expiring = qualificationExpiryRows(scoped, 90);
-    const expired = expiring.filter((item) => item.daysLeft < 0);
-    const due30 = expiring.filter((item) => item.daysLeft >= 0 && item.daysLeft <= 30);
-    metric("已过期", expired.length, expired.length ? "critical" : "success");
-    metric("30天内到期", due30.length, due30.length ? "warning" : "success");
-    if (expired.length) insight("critical", `${expired.length} 份资质已过期`, "应先确认相关产品是否仍在售，再安排续证或下架处理。", "#qualifications");
-  }
-
-  if (route === "#after-sales") {
-    if (canAccessAfterSales(auth)) {
-      const afterSales = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth), createdById: afterSalesCreatedByFilter(auth) });
-      metric("待仓库接单", numberOrZero(afterSales.summary?.pendingWarehouse), afterSales.summary?.pendingWarehouse ? "warning" : "success");
-      metric("被驳回", numberOrZero(afterSales.summary?.rejected), afterSales.summary?.rejected ? "warning" : "success");
-      if (numberOrZero(afterSales.summary?.rejected)) insight("warning", `${afterSales.summary.rejected} 张售后单被驳回`, "请核对原因、责任归属和凭证后重新提交。", "#after-sales");
-    }
-    if (canAccessWarehouseTickets(auth)) {
-      const tickets = warehouseTicketService.list({ dataScopes: warehouseCollaborationDataScopes(auth), createdById: warehouseTicketCreatedByFilter(auth) });
-      metric("未完结工单", numberOrZero(tickets.summary?.open), tickets.summary?.open ? "warning" : "success");
-      if (numberOrZero(tickets.summary?.urgent)) insight("critical", `${tickets.summary.urgent} 张紧急仓库工单`, "建议优先确认是否已受理，并补齐最新回复。", "#after-sales");
-    }
-  }
-
-  if (route === "#movement" && hasPermission(auth, "movement")) {
-    const movement = movementResponsePayload(auth);
-    metric("缺货", numberOrZero(movement.counts?.stockout), movement.counts?.stockout ? "critical" : "success");
-    metric("补货预警", numberOrZero(movement.counts?.replenish), movement.counts?.replenish ? "warning" : "success");
-    metric("滞销", numberOrZero(movement.counts?.stagnant), movement.counts?.stagnant ? "warning" : "success");
-  }
-
-  if (["#stockup", "#stockup-recommendations", "#stockup-execution", "#production"].includes(route)
-    && hasPermission(auth, stockupPermissionForView(route.slice(1)))) {
-    const stockup = buildCurrentStockupPayload({ notify: false, reason: "ai_agent" });
-    metric("备货建议", numberOrZero(stockup.counts?.recommendations));
-    metric("未完成计划", numberOrZero(stockup.counts?.openStockupPlans), stockup.counts?.openStockupPlans ? "warning" : "success");
-    metric("待入库", numberOrZero(stockup.counts?.inboundOrders));
-  }
-
-  if (route === "#business-chain" && hasPermission(auth, "business_chain_view")) {
-    const summary = businessChainService.summary({ finance: hasPermission(auth, "contract_finance_view") });
-    metric("生产中合同", numberOrZero(summary.counts?.activeContracts), summary.counts?.activeContracts ? "warning" : "success");
-    metric("累计入库", numberOrZero(summary.counts?.inboundQty));
-    metric("累计发货", numberOrZero(summary.counts?.shippedQty));
-    if (numberOrZero(summary.counts?.pendingLinks)) insight("warning", `${summary.counts.pendingLinks} 张单据待人工关联`, "系统不会仅凭 SKU 猜测单据关系，请补齐合同号或关联记录。", "#business-chain");
-    if (summary.finance?.unpaidAmount) insight("info", `待核对应付 ¥${Math.round(summary.finance.unpaidAmount).toLocaleString("zh-CN")}`, "正式入账前需财务核对付款归属与冲销关系。", "#business-chain");
-  }
-
-  if (route === "#miaoshou" && canViewMiaoshouWorkspace(auth)) {
-    const miaoshou = miaoshouAutomation.publicPayload({ taskLimit: 20, eventLimit: 0 });
-    metric("已启用店铺", numberOrZero(miaoshou.counts?.enabledShops));
-    metric("异常店铺", numberOrZero(miaoshou.counts?.invalidShops), miaoshou.counts?.invalidShops ? "warning" : "success");
-    if (miaoshou.config?.lastRunStatus === "failed") insight("critical", "最近一次妙手任务失败", miaoshou.config.lastRunMessage || "请检查妙手连接与任务记录。", "#miaoshou");
-  }
-
-  return { metrics, insights };
-}
-
-function aiAgentContext(auth, route, query = "") {
-  const page = agentPageDefinition(route);
-  let indexed = agentIndexLayer.queryResources({ types: page.resourceTypes, q: query, limit: 36 }, auth);
-  if (query && !indexed.records.length) indexed = agentIndexLayer.queryResources({ types: page.resourceTypes, limit: 36 }, auth);
-  const diagnostics = aiAgentDiagnostics(page.route, auth);
-  const config = tongzhouCanvasAi.publicConfig(auth.user.id);
-  return buildAgentContext({
-    route: page.route,
-    configured: config.configured,
-    records: indexed.records,
-    sources: indexed.sources.map((source) => ({
-      type: source.type,
-      label: source.label,
-      count: source.source_count,
-      updatedAt: source.source_updated_at,
-      complete: source.source_complete,
-      warning: source.source_warning,
-    })),
-    metrics: diagnostics.metrics,
-    insights: diagnostics.insights,
-  });
-}
 
 const server = http.createServer(async (req, res) => {
   let maintenanceRequest = null;
@@ -8281,8 +7989,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (await hermesModelGateway.handle(req, res, url)) return;
-    if (await hermesPartnerConfigApi(req, res, url)) return;
-    if (await hermesPartnerDraftApi(req, res, url)) return;
     if (await hermesToolGateway(req, res, url)) return;
     if (await hermesApi(req, res, url)) return;
 
@@ -8496,19 +8202,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有经营总览权限。" });
         return;
       }
-      const payload = buildDashboardSummary(auth);
-      const warehouseStates = payload.warehouses || [];
-      const completed = warehouseStates.filter((item) => item.dataState?.complete).length;
-      sendJson(res, 200, withDataContext(payload, {
-        generatedAt: payload.generatedAt,
-        effectiveAt: payload.sync?.orderSyncedAt || payload.sync?.inventorySyncedAt || payload.generatedAt,
-        source: payload.sync?.dataHealth?.usingPreviousSuccessfulData ? "cache" : "derived",
-        scopeKey: "dashboard_visible_operations",
-        scopeLabel: "当前账号可见商品、仓库与近 90 天订单",
-        completeness: warehouseStates.length && completed < warehouseStates.length ? "partial" : "complete",
-        coverage: { completed, total: warehouseStates.length, unit: "warehouse" },
-        usingPreviousSuccess: Boolean(payload.sync?.dataHealth?.usingPreviousSuccessfulData),
-      }));
+      sendJson(res, 200, buildDashboardSummary(auth));
       return;
     }
 
@@ -8785,20 +8479,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const payload = overseasReconciliationPayload(auth, Object.fromEntries(url.searchParams.entries()));
-        const sources = Object.values(payload.sources || {});
-        const completed = sources.filter((source) => ["complete", "ready"].includes(source?.status) || source?.ok === true).length;
-        sendJson(res, 200, withDataContext(payload, {
-          generatedAt: payload.generatedAt,
-          effectiveAt: payload.snapshots?.closing?.capturedAt || payload.generatedAt,
-          timezone: payload.timezone,
-          source: "derived",
-          scopeKey: "overseas_inventory_reconciliation",
-          scopeLabel: `${payload.ranges?.current?.label || "当前周期"} · 当前账号可见海外仓`,
-          filters: payload.filters,
-          completeness: sources.length && completed < sources.length ? "partial" : "complete",
-          coverage: { completed, total: sources.length, unit: "warehouse" },
-        }));
+        sendJson(res, 200, overseasReconciliationPayload(auth, Object.fromEntries(url.searchParams.entries())));
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "海外仓库存对账读取失败。" });
       }
@@ -9531,44 +9212,6 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 405, { ok: false, message: "不支持的核销批次操作。" });
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error?.message || "核销批次操作失败。" });
-      }
-      return;
-    }
-
-    if (url.pathname === "/api/warehouse-collaboration/qualification-coverage" && req.method === "GET") {
-      const auth = getAuth(req);
-      if (!hasPermission(auth, "warehouse_qualification_coverage")) {
-        sendJson(res, 403, { ok: false, code: "warehouse_qualification_coverage_forbidden", message: "当前账号没有本仓资质覆盖查询权限。" });
-        return;
-      }
-      try {
-        const coverage = warehouseQualificationCoveragePayload(auth, {
-          warehouseId: url.searchParams.get("warehouseId"),
-          keyword: url.searchParams.get("keyword"),
-          status: url.searchParams.get("status"),
-        });
-        const total = coverage.summary.products;
-        const complete = coverage.qualificationAvailable && Boolean(coverage.warehouse?.syncedAt);
-        sendJson(res, 200, {
-          ok: true,
-          ...withDataContext(coverage, {
-            generatedAt: new Date().toISOString(),
-            effectiveAt: coverage.warehouse?.syncedAt || cachedQualifications.syncedAt || new Date().toISOString(),
-            source: "snapshot",
-            scopeKey: coverage.warehouse ? `warehouse_${coverage.warehouse.id}` : "authorized_overseas_warehouses",
-            scopeLabel: coverage.warehouse ? `${coverage.warehouse.name} · 正库存商品` : "当前账号绑定的海外仓",
-            filters: {
-              warehouseId: String(url.searchParams.get("warehouseId") || ""),
-              keyword: String(url.searchParams.get("keyword") || ""),
-              status: String(url.searchParams.get("status") || "all"),
-            },
-            completeness: coverage.warehouse && complete ? "complete" : "unavailable",
-            ...(complete ? { coverage: { completed: coverage.completedProducts, total, unit: "sku" } } : {}),
-          }),
-        });
-      } catch (error) {
-        const statusCode = error instanceof WarehouseQualificationCoverageError ? error.statusCode : 400;
-        sendJson(res, statusCode, { ok: false, code: error?.code || "warehouse_qualification_coverage_error", message: error?.message || "本仓资质覆盖读取失败。" });
       }
       return;
     }
@@ -10390,21 +10033,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const mode = url.searchParams.get("mode") === "detail" ? "detail" : "list";
-      const payload = {
+      sendJson(res, 200, {
         ok: true,
         ...productResponsePayload(cachedProducts, auth, mode),
-      };
-      sendJson(res, 200, withDataContext(payload, {
-        generatedAt: payload.syncedAt,
-        effectiveAt: payload.syncedAt,
-        source: payload.source === "jiandaoyun" ? "snapshot" : "cache",
-        scopeKey: "product_catalog",
-        scopeLabel: "当前账号可见商品目录",
-        filters: { mode },
-        completeness: payload.warning ? "partial" : "complete",
-        coverage: { completed: payload.counts?.visibleCatalog || 0, total: payload.counts?.visibleCatalog || 0, unit: "sku" },
-        isEstimate: payload.source !== "jiandaoyun",
-      }));
+      });
       return;
     }
 
@@ -10516,96 +10148,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, publicWecomNotificationPayload());
-      return;
-    }
-
-    if (url.pathname === "/api/wecom-notifications/stockup-preview" && req.method === "GET") {
-      if (!canManageModule(getAuth(req), "notifications")) {
-        sendJson(res, 401, { ok: false, message: "预览备货预警长图需要管理员登录。" });
-        return;
-      }
-      const stockup = buildCurrentStockupPayload({ notify: false, reason: "wecom_preview" });
-      const report = await renderStockupWarningReport(stockup);
-      res.writeHead(200, {
-        "Content-Type": "image/png",
-        "Content-Length": report.buffer.length,
-        "Cache-Control": "private, no-store",
-        "Content-Disposition": `inline; filename="stockup-warning-${report.model.reportDate || "preview"}.png"`,
-      });
-      res.end(report.buffer);
-      return;
-    }
-
-    if (url.pathname === "/api/wecom-notifications/stockup-test" && req.method === "POST") {
-      const auth = getAuth(req);
-      if (!canManageModule(auth, "notifications")) {
-        sendJson(res, 401, { ok: false, message: "测试发送备货预警长图需要管理员登录。" });
-        return;
-      }
-      const payload = await parseRequestBody(req);
-      const configuredRobots = cachedWecomNotifications.robots || [];
-      const selectedRobotIds = Array.isArray(payload.robotIds) ? [...new Set(payload.robotIds.map(String).filter(Boolean))] : [];
-      const activeRobots = configuredRobots.filter((robot) => selectedRobotIds.includes(robot.id) && robot.enabled);
-      if (!activeRobots.length) {
-        sendJson(res, 400, { ok: false, message: "请先在备货预警场景中选择至少一个已启用的企业微信机器人。" });
-        return;
-      }
-
-      const stockup = buildCurrentStockupPayload({ notify: false, reason: "wecom_stockup_test" });
-      const extraText = String(payload.extraText || "").trim();
-      const linkUrl = absoluteNotificationLink(payload.linkUrl, "#stockup-recommendations");
-      const visibleItems = (stockup.recommendations || []).slice(0, 8);
-      const fallbackContent = [
-        "### 备货建议提醒（测试）",
-        `当前有 ${stockup.counts?.recommendations || 0} 个 SKU 需要关注备货，净建议备货 ${stockup.counts?.netRecommendedQty || 0} 件。`,
-        extraText,
-        visibleItems.map(stockupMarkdownItem).join("\n\n"),
-        notificationLinkLine(linkUrl, "查看备货中心"),
-      ].filter(Boolean).join("\n\n");
-      const robotIds = activeRobots.map((robot) => robot.id);
-      let report = null;
-      let imageResults = [];
-      let linkResults = [];
-      let fallbackResults = [];
-      let renderError = "";
-
-      try {
-        report = await renderStockupWarningReport(stockup);
-        imageResults = await sendWecomImageNotification(robotIds, report.buffer);
-        const imageSuccessRobotIds = imageResults.filter((item) => item.ok).map((item) => item.robotId);
-        const imageFailedRobotIds = imageResults.filter((item) => !item.ok).map((item) => item.robotId);
-        const linkContent = buildStockupWarningLinkMarkdown(report.model, { linkUrl, extraText });
-        linkResults = imageSuccessRobotIds.length ? await sendWecomNotification(imageSuccessRobotIds, linkContent) : [];
-        fallbackResults = imageFailedRobotIds.length ? await sendWecomNotification(imageFailedRobotIds, fallbackContent) : [];
-      } catch (error) {
-        renderError = error?.message || "长图生成失败";
-        fallbackResults = await sendWecomNotification(robotIds, fallbackContent);
-      }
-
-      const deliveries = summarizeStockupWarningDeliveries({
-        robots: activeRobots,
-        imageResults,
-        linkResults,
-        fallbackResults,
-        renderError,
-      });
-      const failed = deliveries.filter((item) => !item.ok);
-      appendActionLog(auth, "测试发送备货预警长图", "wecom_scene", "备货预警长图", {
-        robotCount: deliveries.length,
-        failedCount: failed.length,
-        recommendationCount: stockup.counts?.recommendations || 0,
-        fallbackCount: deliveries.filter((item) => item.fallbackSent).length,
-      });
-      sendJson(res, 200, {
-        ...publicWecomNotificationPayload(),
-        results: deliveries.map(({ robotId, ok, message }) => ({ robotId, ok, message })),
-        deliveries,
-        report: {
-          recommendationCount: stockup.counts?.recommendations || 0,
-          imageBytes: report?.buffer?.length || 0,
-          renderError,
-        },
-      });
       return;
     }
 
@@ -10862,6 +10404,7 @@ const server = http.createServer(async (req, res) => {
           qualificationExpiry: "资质到期",
           afterSalesNew: "新售后/仓库工单",
           afterSalesProgress: "协同进度",
+          ozonFulfillmentFailure: "Ozon 自动履约异常",
         };
         const recipientCheck = validateExplicitWecomRecipients(allRobotIds, `${sceneLabels[sceneKey] || "场景"}通知`);
         if (!recipientCheck.ok) {
@@ -11870,7 +11413,7 @@ const server = http.createServer(async (req, res) => {
       }
       const scoped = scopeMovementSources({ products: cachedProducts, warehouse: cachedWarehouseSync, orders: cachedOrdersSync, connections: warehouseConnections }, auth.user || directAuth.user);
       const mergedProducts = mergeWarehouseDataIntoProducts(scoped.products, scoped.warehouse);
-      const payload = {
+      sendJson(res, 200, {
         ok: true,
         providers: WMS_PROVIDERS,
         warehouses: scoped.connections.map(sanitizeWarehouse),
@@ -11902,17 +11445,7 @@ const server = http.createServer(async (req, res) => {
           "俄罗斯 YunWMS: appKey / appToken / warehouseCode",
           "SEA WMS: 各国家 baseUrl / clientId / clientSecret / warehouseCode",
         ],
-      };
-      const completed = (payload.lastSync.results || []).filter((item) => item.ok).length;
-      sendJson(res, 200, withDataContext(payload, {
-        generatedAt: payload.lastSync.syncedAt,
-        effectiveAt: payload.lastSync.syncedAt,
-        source: "snapshot",
-        scopeKey: "authorized_warehouses",
-        scopeLabel: "当前账号已授权 WMS 仓库原始库存",
-        completeness: payload.warehouses.length && completed < payload.warehouses.length ? "partial" : "complete",
-        coverage: { completed, total: payload.warehouses.length, unit: "warehouse" },
-      }));
+      });
       return;
     }
 
@@ -12497,7 +12030,6 @@ const server = http.createServer(async (req, res) => {
       }
       const sync = await performanceExchangeRateSync.run({ force: true, reason: `manual:${auth.user?.username || auth.user?.id || "admin"}` });
       clearPerformanceAnalyticsResponseCache();
-      invalidateDerivedResponses();
       void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "立即同步经营汇率", "performance_exchange_rate", sync.provider || "Frankfurter", {
         updatedCount: sync.lastUpdatedCount || 0,
@@ -12628,24 +12160,11 @@ const server = http.createServer(async (req, res) => {
         view,
         { inboundLimit: url.searchParams.get("inboundLimit") || 100 },
       );
-      const response = {
+      sendJson(res, 200, {
         ...stockupPayload,
         ...currentOutsourcingCacheState(),
         ...(outsourcingRefreshError ? { warning: `生产数据后台刷新失败，当前显示上一次结果：${outsourcingRefreshError}` } : {}),
-      };
-      const syncResults = response.syncResults || [];
-      const completed = syncResults.filter((item) => item.ok).length;
-      sendJson(res, 200, withDataContext(response, {
-        generatedAt: response.generatedAt,
-        effectiveAt: response.stockupSyncedAt || response.movementGeneratedAt || response.generatedAt,
-        source: response.outsourcingCacheStale ? "cache" : "derived",
-        scopeKey: `stockup_${view}`,
-        scopeLabel: view === "stockup-recommendations" ? "当前账号可见现货备货建议" : "当前账号可见备货业务",
-        filters: { view },
-        completeness: response.warning || response.outsourcingRefreshError ? "partial" : "complete",
-        coverage: syncResults.length ? { completed, total: syncResults.length, unit: "warehouse" } : undefined,
-        usingPreviousSuccess: Boolean(response.outsourcingCacheStale),
-      }));
+      });
       return;
     }
 
@@ -12810,73 +12329,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "GET") {
-      const auth = getAuth(req);
-      if (!hasAnyPermission(auth, stockupViewPermissions)) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
-        return;
-      }
-      const workflow = await workflowForSkuCoding();
-      sendJson(res, 200, skuCodingService.snapshot(workflow, currentWmsWarehouseOptions()));
-      return;
-    }
-
-    if (url.pathname === "/api/stockup/workflow/product-coding/rules" && req.method === "PUT") {
-      const auth = getAuth(req);
-      if (!hasPermission(auth, "stockup_workflow_manage")) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有 SKU 编码规则维护权限。" });
-        return;
-      }
-      const payload = await parseRequestBody(req);
-      const rule = skuCodingService.upsertRule(payload, skuCodingActor(auth));
-      appendActionLog(auth, "维护 SKU 编码规则", "sku_coding_rule", rule.id, { prefix: rule.prefix, name: rule.name, enabled: rule.enabled });
-      const workflow = await workflowForSkuCoding();
-      sendJson(res, 200, { ok: true, rule, codingCenter: skuCodingService.snapshot(workflow, currentWmsWarehouseOptions()) });
-      return;
-    }
-
-    if (url.pathname === "/api/stockup/workflow/product-coding/reservations" && req.method === "POST") {
-      const auth = getAuth(req);
-      if (!hasPermission(auth, "stockup_workflow_manage")) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有新品编码权限。" });
-        return;
-      }
-      const payload = await parseRequestBody(req);
-      const workflow = await workflowForSkuCoding();
-      const reservation = skuCodingService.reserve(payload, workflow, skuCodingActor(auth));
-      appendActionLog(auth, "预占新品 SKU", "product_coding", reservation.sku, { reservationId: reservation.id, productRecordId: reservation.productRecordId, ruleId: reservation.ruleId });
-      sendJson(res, 201, { ok: true, reservation });
-      return;
-    }
-
-    const codingRetryMatch = url.pathname.match(/^\/api\/stockup\/workflow\/product-coding\/reservations\/([^/]+)\/retry$/);
-    if (codingRetryMatch && req.method === "POST") {
-      const auth = getAuth(req);
-      if (!hasPermission(auth, "stockup_workflow_manage")) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有 WMS 商品建档重试权限。" });
-        return;
-      }
-      const payload = await parseRequestBody(req);
-      const result = await skuCodingService.retry({ ...payload, reservationId: decodeURIComponent(codingRetryMatch[1]) }, skuCodingActor(auth));
-      appendActionLog(auth, "重试 WMS 商品建档", "product_coding", result.sku, { reservationId: result.id, status: result.status });
-      sendJson(res, 200, result);
-      return;
-    }
-
-    const codingReservationMatch = url.pathname.match(/^\/api\/stockup\/workflow\/product-coding\/reservations\/([^/]+)$/);
-    if (codingReservationMatch && req.method === "DELETE") {
-      const auth = getAuth(req);
-      if (!hasPermission(auth, "stockup_workflow_manage")) {
-        sendJson(res, 403, { ok: false, message: "当前账号没有新品编码权限。" });
-        return;
-      }
-      const payload = await parseRequestBody(req);
-      const reservation = skuCodingService.cancel({ ...payload, reservationId: decodeURIComponent(codingReservationMatch[1]) }, skuCodingActor(auth));
-      appendActionLog(auth, "撤销 SKU 预占", "product_coding", reservation.sku, { reservationId: reservation.id, reason: reservation.cancelReason });
-      sendJson(res, 200, { ok: true, reservation });
-      return;
-    }
-
     if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "POST") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "stockup_workflow_manage")) {
@@ -12884,8 +12336,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      const workflow = await workflowForSkuCoding();
-      const result = await skuCodingService.complete(payload, workflow, skuCodingActor(auth));
+      const workflow = await loadStockupWorkflow();
+      const result = await completeProductCoding(payload, workflow);
       if (!payload.dryRun) appendActionLog(auth, "完成新品编码", "product_coding", result.sku, { productRecordId: result.productRecordId, demandRecordId: result.demandRecordId });
       if (!payload.dryRun) queueStockupWorkflowRefresh("product_coded");
       sendJson(res, 200, result);
@@ -13089,19 +12541,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有动销监控权限。" });
         return;
       }
-      const payload = movementResponsePayload(auth);
-      const results = payload.orderSyncResults || [];
-      const completed = results.filter((item) => item.ok && !item.backgroundRunning).length;
-      sendJson(res, 200, withDataContext(payload, {
-        generatedAt: payload.generatedAt,
-        effectiveAt: payload.orderSyncedAt || payload.inventorySyncedAt || payload.generatedAt,
-        source: payload.syncState?.usingCachedOrders ? "cache" : "derived",
-        scopeKey: "movement_visible_sku_warehouse",
-        scopeLabel: "当前账号可见 SKU × 国家 × 授权仓库",
-        completeness: payload.orderDataComplete && !payload.syncState?.failedWarehouses?.length ? "complete" : "partial",
-        coverage: { completed, total: results.length, unit: "warehouse" },
-        usingPreviousSuccess: Boolean(payload.syncState?.usingCachedOrders),
-      }));
+      sendJson(res, 200, movementResponsePayload(auth));
       return;
     }
 

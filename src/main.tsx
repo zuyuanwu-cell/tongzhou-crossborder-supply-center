@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { DataContextBar, DeltaValue, OverflowMenu, ResourceBoundary, StatusBadge } from "../collaboration/shared/OperationalUi";
+import { DataContextBar, OverflowMenu, ResourceBoundary } from "../collaboration/shared/OperationalUi";
 import {
   Activity,
   AlertTriangle,
@@ -26,7 +26,6 @@ import {
   ExternalLink,
   Factory,
   FileText,
-  FlaskConical,
   Grid2X2,
   Globe2,
   GitBranch,
@@ -54,7 +53,6 @@ import {
   Video,
   Truck,
   Upload,
-  Users,
   Warehouse as WarehouseIcon,
   X,
 } from "lucide-react";
@@ -96,9 +94,6 @@ import {
   StockupPayload,
   StockupCostPreview,
   StockupWorkflowPayload,
-  SkuCodingCenterPayload,
-  SkuCodingReservation,
-  SkuCodingRule,
   UserManagementPayload,
   UserRoleDefinition,
   WecomNotificationPayload,
@@ -124,10 +119,6 @@ import {
   confirmWorkflowWmsPush,
   cancelWorkflowExecution,
   completeWorkflowProductCoding,
-  reserveWorkflowSku,
-  cancelWorkflowSkuReservation,
-  retryWorkflowWmsProduct,
-  updateSkuCodingRule,
   rollbackWorkflowExecutionLine,
   updateWorkflowExecutionLine,
   voidWorkflowShipment,
@@ -172,7 +163,6 @@ import {
   fetchQualifications,
   fetchSetupStatus,
   fetchStockup,
-  fetchSkuCodingCenter,
   fetchStockupWorkflow,
   fetchUsers,
   fetchWarehouses,
@@ -205,7 +195,6 @@ import {
   testWarehouseConnection,
   testMiaoshouConnection,
   testWecomNotification,
-  testWecomStockupWarning,
   testWecomProjectTeam,
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
@@ -255,7 +244,6 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
-import { PartnerCollaborationOverview, PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
 import { SystemBackupPage } from "./SystemBackupPage";
 import ReviewCenter from "./ReviewCenter";
 import QualificationCoveragePage from "./QualificationCoveragePage";
@@ -264,8 +252,6 @@ import { getQualificationExpiryInfo, qualificationExpiryRank, type Qualification
 import { handoffToHermes } from "./hermes/handoff";
 import "./styles.css";
 import "./theme-refresh.css";
-import "../collaboration/shared/ui-tokens.css";
-import "../collaboration/shared/operational-ui.css";
 
 const ContainerLoadingPage = React.lazy(() => import("./container-loading/ContainerLoadingPage"));
 const HermesAgentWorkspace = React.lazy(() => import("./hermes/HermesAgentWorkspace").then((module) => ({ default: module.HermesAgentWorkspace })));
@@ -435,14 +421,8 @@ const navItems = [
   { label: "动销分析", icon: CalendarDays, hash: "#movement-analysis", section: "inventory", permission: "movement_analysis" },
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "国内仓进销存", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
-  { label: "协同总览", icon: Handshake, hash: "#partner-collaboration", section: "collaboration", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish", additionalPermissions: ["operations"] },
-  { label: "国内仓协同", icon: WarehouseIcon, hash: "#domestic-collaboration", section: "collaboration", childOf: "协同总览", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
-  { label: "委外加工协同", icon: Factory, hash: "#outsourcing-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "物料采购协同", icon: PackageCheck, hash: "#procurement-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "料体打样", icon: FlaskConical, hash: "#material-sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "包材打样", icon: Boxes, hash: "#packaging-sampling-collaboration", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "伙伴与权限", icon: Users, hash: "#collaboration-accounts", section: "collaboration", childOf: "协同总览", permission: "operations" },
-  { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_qualification_coverage", "warehouse_liability_settlement"] },
+  { label: "伙伴协同", icon: Handshake, hash: "#partner-collaboration", section: "collaboration", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
+  { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_liability_settlement"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
   { label: "供应链执行", icon: PackageCheck, hash: "#stockup-execution", section: "stockup", childOf: "备货中心", permission: "stockup_request_accept", additionalPermissions: ["stockup_execution_update", "stockup_execution_view"] },
@@ -462,6 +442,7 @@ const navItems = [
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
   { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
+  { label: "协同组织与账号", icon: ShieldCheck, hash: "#collaboration-accounts", section: "settings", permission: "operations" },
   { label: "操作日志", icon: List, hash: "#action-log", section: "settings", permission: "action_log" },
   { label: "系统备份", icon: ArchiveRestore, hash: "#system-backup", section: "settings", permission: "system_backup", adminOnly: true },
   { label: "API 接入", icon: KeyRound, hash: "#api-access", section: "settings", permission: "api_access" },
@@ -486,7 +467,7 @@ viewHashMap["#orders"] = "经营总览";
 
 function getInitialView() {
   const routeHash = window.location.hash.split("?", 1)[0];
-  if (routeHash === "#after-sales" && new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("module") === "collaboration_tasks") return "国内仓协同";
+  if (routeHash === "#after-sales" && new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("module") === "collaboration_tasks") return "伙伴协同";
   return viewHashMap[routeHash] ?? "经营总览";
 }
 
@@ -1034,7 +1015,6 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; o
   );
 }
 
-type CoreResourceKey = "products" | "dashboard" | "warehouses" | "movement" | "stockup" | "wecom";
 type CoreResourceState = { phase: "idle" | "loading" | "refreshing" | "success" | "error"; error: string };
 
 function App() {
@@ -1077,35 +1057,12 @@ function App() {
   const [syncing, setSyncing] = React.useState(false);
   const [error, setError] = React.useState("");
   const [moduleErrors, setModuleErrors] = React.useState<Record<string, string>>({});
-  const emptyResourceState: CoreResourceState = { phase: "idle", error: "" };
-  const [resourceStates, setResourceStates] = React.useState<Record<CoreResourceKey, CoreResourceState>>({
-    products: emptyResourceState,
-    dashboard: emptyResourceState,
-    warehouses: emptyResourceState,
-    movement: emptyResourceState,
-    stockup: emptyResourceState,
-    wecom: emptyResourceState,
-  });
   const stockupLoadErrorsRef = React.useRef({ summary: "", workflow: "" });
   const [currentUser, setCurrentUser] = React.useState<AuthUser>(getStoredUser);
   const [authReady, setAuthReady] = React.useState(false);
   const [languageSaving, setLanguageSaving] = React.useState(false);
   const [blockedView, setBlockedView] = React.useState("");
   const [globalSearch, setGlobalSearch] = React.useState("");
-
-  function beginResource(key: CoreResourceKey, hasData: boolean) {
-    setResourceStates((current) => ({ ...current, [key]: { phase: hasData ? "refreshing" : "loading", error: "" } }));
-  }
-
-  function completeResource(key: CoreResourceKey) {
-    setResourceStates((current) => ({ ...current, [key]: { phase: "success", error: "" } }));
-  }
-
-  function failResource(key: CoreResourceKey, requestError: unknown, fallback: string) {
-    const message = requestError instanceof Error ? requestError.message : fallback;
-    setResourceStates((current) => ({ ...current, [key]: { phase: "error", error: message } }));
-    return message;
-  }
   const [productSearchKeyword, setProductSearchKeyword] = React.useState("");
   const [confirmRequest, setConfirmRequest] = React.useState<ConfirmRequest | null>(null);
   const internal = canViewInternalCatalog(currentUser);
@@ -1231,7 +1188,6 @@ function App() {
   }
 
   async function loadProducts(silent = false) {
-    beginResource("products", Boolean(payload));
     if (!silent) setLoading(true);
     if (!silent) setError("");
     try {
@@ -1239,10 +1195,8 @@ function App() {
       setPayload(data);
       setProductDetailLoaded(data.mode === "detail");
       if (data.user) setCurrentUser(data.user);
-      completeResource("products");
     } catch (requestError) {
-      const message = failResource("products", requestError, "产品数据读取失败");
-      if (!silent) setError(message);
+      if (!silent) setError(requestError instanceof Error ? requestError.message : "产品数据读取失败");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -1272,29 +1226,23 @@ function App() {
   }
 
   async function loadDashboardSummary() {
-    beginResource("dashboard", Boolean(dashboardSummary));
     try {
       const data = await fetchDashboardSummary();
       setDashboardSummary(data);
       setModuleLoadError(["#dashboard"]);
       if (data.user) setCurrentUser(data.user);
-      completeResource("dashboard");
     } catch (requestError) {
-      const message = failResource("dashboard", requestError, "经营总览读取失败");
-      setModuleLoadError(["#dashboard"], message);
+      setModuleLoadError(["#dashboard"], requestError instanceof Error ? requestError.message : "经营总览读取失败");
     }
   }
 
   async function loadWarehouses() {
-    beginResource("warehouses", Boolean(warehousePayload));
     try {
       const data = await fetchWarehouses();
       setWarehousePayload(data);
       setModuleLoadError(["#inventory", "#warehouses"]);
-      completeResource("warehouses");
     } catch (requestError) {
-      const message = failResource("warehouses", requestError, "仓库数据读取失败");
-      setModuleLoadError(["#inventory", "#warehouses"], message);
+      setModuleLoadError(["#inventory", "#warehouses"], requestError instanceof Error ? requestError.message : "仓库数据读取失败");
     }
   }
 
@@ -1309,16 +1257,13 @@ function App() {
   }
 
   async function loadMovement() {
-    beginResource("movement", Boolean(movementPayload));
     try {
       const data = await fetchMovement();
       setMovementPayload(data);
       setModuleLoadError(["#movement"]);
       if (data.orderSyncJob) setOrderSyncJob(data.orderSyncJob);
-      completeResource("movement");
     } catch (requestError) {
-      const message = failResource("movement", requestError, "动销数据读取失败");
-      setModuleLoadError(["#movement"], message);
+      setModuleLoadError(["#movement"], requestError instanceof Error ? requestError.message : "动销数据读取失败");
     }
   }
 
@@ -1379,7 +1324,6 @@ function App() {
   }
 
   async function loadStockup(options: { inboundLimit?: number } = {}) {
-    beginResource("stockup", Boolean(stockupPayload));
     const view = hashForView(activeView).slice(1) || "dashboard";
     const inboundLimit = view === "stockup-recommendations" ? Math.max(100, options.inboundLimit || 100) : undefined;
     const requestKey = `${view}:${inboundLimit || 0}`;
@@ -1398,11 +1342,9 @@ function App() {
       const data = await pending.request;
       if (stockupLatestViewRef.current === requestKey) setStockupPayload(data);
       setStockupLoadError("summary");
-      completeResource("stockup");
     } catch (requestError) {
       // Keep the last successful snapshot visible during a transient refresh failure.
-      const message = failResource("stockup", requestError, "备货与生产数据读取失败");
-      setStockupLoadError("summary", message);
+      setStockupLoadError("summary", requestError instanceof Error ? requestError.message : "备货与生产数据读取失败");
     }
   }
 
@@ -1514,15 +1456,12 @@ function App() {
   }
 
   async function loadWecomNotifications() {
-    beginResource("wecom", Boolean(wecomNotificationPayload));
     try {
       const data = await fetchWecomNotifications();
       setWecomNotificationPayload(data);
       setModuleLoadError(["#wecom-notifications"]);
-      completeResource("wecom");
     } catch (requestError) {
-      const message = failResource("wecom", requestError, "通知配置读取失败");
-      setModuleLoadError(["#wecom-notifications"], message);
+      setModuleLoadError(["#wecom-notifications"], requestError instanceof Error ? requestError.message : "通知配置读取失败");
     }
   }
 
@@ -1953,7 +1892,6 @@ function App() {
     setWecomNotificationPayload(null);
     setActionLogPayload(null);
     setModuleErrors({});
-    setResourceStates({ products: emptyResourceState, dashboard: emptyResourceState, warehouses: emptyResourceState, movement: emptyResourceState, stockup: emptyResourceState, wecom: emptyResourceState });
     stockupLoadErrorsRef.current = { summary: "", workflow: "" };
     setError("");
     setBlockedView("");
@@ -2070,8 +2008,8 @@ function App() {
             </label>
             {currentUser.role !== "guest" ? (
               <>
-                {hashForView(activeView) !== "#dashboard" && hasUserPermission(currentUser, "product_sync") ? (
-                  <button className="sync-button header-sync-button" onClick={handleSync} disabled={syncing}>
+                {hasUserPermission(currentUser, "product_sync") ? (
+                  <button className="sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
                     {translate(currentLocale, syncing ? "同步中" : "同步产品数据")}
                   </button>
@@ -2141,7 +2079,7 @@ function App() {
             productBase={payload?.productBase || []}
             externalKeyword={productSearchKeyword}
             onNeedDetails={loadProductDetails}
-            resourceState={resourceStates.products}
+            resourceState={{ phase: loading ? (payload ? "refreshing" : "loading") : "success", error: "" }}
           />
         ) : activeView === "资质库" ? (
           <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} canSync={hasUserPermission(currentUser, "qualification_sync")} />
@@ -2177,20 +2115,8 @@ function App() {
           <MiaoshouPage currentUser={currentUser} />
         ) : activeView === "Ozon 订单" ? (
           <OzonOrderCenter currentUser={currentUser} />
-        ) : activeView === "协同总览" ? (
-          <PartnerCollaborationOverview />
-        ) : activeView === "国内仓协同" ? (
+        ) : activeView === "伙伴协同" ? (
           <WarehouseCollaborationTasks currentUser={currentUser} />
-        ) : activeView === "委外加工协同" ? (
-          <PartnerCollaborationWorkspace taskType="production_order" />
-        ) : activeView === "物料采购协同" ? (
-          <PartnerCollaborationWorkspace taskType="purchase_order" />
-        ) : activeView === "料体打样" ? (
-          <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="inner_material" />
-        ) : activeView === "包材打样" ? (
-          <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="packaging" />
-        ) : activeView === "伙伴与权限" ? (
-          <CollaborationIdentityAdmin />
         ) : activeView === "海外仓协同" ? (
           <WarehouseCollaborationCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (
@@ -2304,7 +2230,6 @@ function App() {
             onTest={handleTestWarehouse}
             canConfigure={canManage(currentUser) && hasUserPermission(currentUser, "warehouses")}
             canSync={hasUserPermission(currentUser, "inventory_sync_run")}
-            resourceState={resourceStates.warehouses}
           />
         ) : activeView === "动销监控" ? (
           <MovementBoard
@@ -2328,7 +2253,6 @@ function App() {
               });
               handleViewChange("备货中心");
             }}
-            resourceState={resourceStates.movement}
           />
         ) : activeView === "动销分析" ? (
           <MovementAnalysisPage
@@ -2357,7 +2281,6 @@ function App() {
             canManage={hasUserPermission(currentUser, "stockup_recommendations_manage")}
             draftSeed={stockupDraftSeed}
             onDraftSeedConsumed={() => setStockupDraftSeed(null)}
-            resourceState={resourceStates.stockup}
           />
         ) : activeView === "供应链执行" ? (
           <StockupCollaborationCenter user={currentUser} products={catalog} warehouses={warehousePayload?.warehouses || []} initialSection="execution" />
@@ -2374,13 +2297,15 @@ function App() {
         ) : activeView === "业务链路" ? (
           <BusinessChainCenter user={currentUser} />
         ) : activeView === "企业微信通知" ? (
-          <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} resourceState={resourceStates.wecom} />
+          <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "系统备份" ? (
           <SystemBackupPage />
         ) : activeView === "用户管理" ? (
           <UserManagement userPayload={userPayload} projectTeams={wecomNotificationPayload?.projectTeams || []} warehousePayload={warehousePayload} />
+        ) : activeView === "协同组织与账号" ? (
+          <CollaborationIdentityAdmin />
         ) : (
           <Dashboard
             currentUser={currentUser}
@@ -2401,10 +2326,10 @@ function App() {
               setMovementWarehouseFilter(warehouseId);
               handleViewChange("动销监控");
             }}
-            onOpenWarehouses={() => handleViewChange("仓库授权")}
             onSyncProducts={() => void handleSync()}
             syncing={syncing}
-            resourceState={resourceStates.dashboard}
+            resourceState={{ phase: dashboardSummary ? "success" : "loading", error: moduleErrors["#dashboard"] || "" }}
+            onOpenWarehouses={() => handleViewChange("仓库授权")}
           />
         )}
         </div>
@@ -2772,6 +2697,7 @@ function Sidebar({
                   >
                     <span>{t(section.label)}</span>
                     <span className="nav-section-meta">
+                      {sectionItems.length}
                       <ChevronDown size={13} className={sectionCollapsed ? "section-collapsed" : ""} />
                     </span>
                   </button>
@@ -3421,6 +3347,11 @@ function periodLabel(period: HeatmapPeriod) {
   return { day: "日", week: "周", month: "月" }[period];
 }
 
+function heatLevel(value: number, max: number) {
+  if (!max || value <= 0) return 0;
+  return Math.min(5, Math.max(1, Math.ceil((value / max) * 5)));
+}
+
 function WarehouseMovementHeatmap({
   summary,
   period,
@@ -3440,33 +3371,59 @@ function WarehouseMovementHeatmap({
     turnoverScore: warehouse.inventoryCount > 0 ? ((warehouse.orderCount || 0) * multiplier) / warehouse.inventoryCount : 0,
   }));
   const maxOrders = Math.max(...rows.map((row) => row.periodOrders), 1);
+  const maxTurnover = Math.max(...rows.map((row) => row.turnoverScore), 0.01);
   const totalPeriodOrders = rows.reduce((sum, row) => sum + row.periodOrders, 0);
 
   return (
-    <div className="warehouse-heatmap" aria-label="仓库动销">
+    <div className="warehouse-heatmap" aria-label="仓库动销热力图">
       <div className="heatmap-toolbar">
         <div>
-          <strong>仓库动销</strong>
-          <span>基于近 90 天出库估算 · 预计{periodLabel(period)}出库 {formatNumber(totalPeriodOrders)}</span>
+          <strong>仓库动销热力图</strong>
+          <span>{periodLabel(period)}维度估算，基于近 90 天出库缓存</span>
         </div>
-        <div className="heatmap-tabs" role="group" aria-label="统计周期">
+        <div className="heatmap-tabs" role="group" aria-label="热力图周期">
           {(["day", "week", "month"] as const).map((item) => (
-            <button key={item} className={period === item ? "active" : ""} type="button" aria-pressed={period === item} onClick={() => onPeriodChange(item)}>
+            <button key={item} className={period === item ? "active" : ""} type="button" onClick={() => onPeriodChange(item)}>
               {periodLabel(item)}
             </button>
           ))}
         </div>
       </div>
-      <div className="movement-table">
-        <div className="movement-table-head"><span>仓库</span><span>{periodLabel(period)}出库</span><span>出库 / 库存</span><span>90 天订单</span></div>
-        {rows.length ? rows.map((row) => (
-          <button className="movement-table-row" type="button" key={row.id} onClick={() => onWarehouseClick(row.id)}>
-            <span className="movement-warehouse"><strong>{row.name}</strong><small>{row.country} · {row.providerName}</small></span>
-            <span className="movement-volume"><span><i style={{ width: `${Math.max(2, (row.periodOrders / maxOrders) * 100)}%` }} /></span><strong>{formatNumber(row.periodOrders)}</strong></span>
-            <span className="movement-ratio">{row.turnoverScore.toFixed(2)}</span>
-            <span className="movement-orders">{formatNumber(row.orderCount || 0)}</span>
-          </button>
-        )) : <div className="heatmap-empty">暂无仓库动销数据，请先完成仓库和订单同步。</div>}
+      <div className="heatmap-summary">
+        <span>预计{periodLabel(period)}出库 <strong>{formatNumber(totalPeriodOrders)}</strong></span>
+        <span>覆盖仓库 <strong>{formatNumber(rows.length)}</strong></span>
+        <span>最近订单同步 <strong>{summary?.sync.orderSyncedAt ? formatDateTime(summary.sync.orderSyncedAt) : "未同步"}</strong></span>
+      </div>
+      <div className="heatmap-grid">
+        <span className="heatmap-head">仓库</span>
+        <span className="heatmap-head">出库热度</span>
+        <span className="heatmap-head">周转热度</span>
+        <span className="heatmap-head">状态</span>
+        {rows.length ? rows.map((row) => {
+          const orderLevel = heatLevel(row.periodOrders, maxOrders);
+          const turnoverLevel = heatLevel(row.turnoverScore, maxTurnover);
+          return (
+            <React.Fragment key={row.id}>
+              <button className="heatmap-name heatmap-link" type="button" onClick={() => onWarehouseClick(row.id)}>
+                <strong>{row.name}</strong>
+                <small>{row.providerName} · {row.country}</small>
+              </button>
+              <div className={`heat-cell level-${orderLevel}`}>
+                <strong>{formatNumber(row.periodOrders)}</strong>
+                <small>{periodLabel(period)}出库</small>
+              </div>
+              <div className={`heat-cell level-${turnoverLevel}`}>
+                <strong>{row.turnoverScore.toFixed(3)}</strong>
+                <small>出库/库存</small>
+              </div>
+              <span className={`status-pill ${row.backgroundRunning ? "warning" : row.orderOk || row.inventoryOk ? "good" : "muted"}`}>
+                {row.backgroundRunning ? "后台同步中" : row.orderOk || row.inventoryOk ? "正常" : "待同步"}
+              </span>
+            </React.Fragment>
+          );
+        }) : (
+          <div className="heatmap-empty">暂无仓库动销数据，请先完成仓库和订单同步。</div>
+        )}
       </div>
     </div>
   );
@@ -4393,7 +4350,6 @@ function MovementBoard({
   canSync,
   canCreateStockupDraft,
   onCreateStockupDraft,
-  resourceState,
 }: {
   movementPayload: MovementPayload | null;
   orderSyncJob: OrderSyncJob | null;
@@ -4403,7 +4359,6 @@ function MovementBoard({
   canSync: boolean;
   canCreateStockupDraft: boolean;
   onCreateStockupDraft: (item: MovementPayload["items"][number]) => void;
-  resourceState: CoreResourceState;
 }) {
   const [country, setCountry] = React.useState("全部");
   const [warehouse, setWarehouse] = React.useState("全部");
@@ -4450,8 +4405,6 @@ function MovementBoard({
     && (movementPayload.syncState?.publishReady ?? true)
   );
   const inventoryMetricsReady = Boolean(movementPayload?.inventorySyncedAt);
-  const movementDataComplete = movementPayload?.dataContext?.completeness === "complete";
-  const movementMetric = (ready: boolean, value: number) => ready && (movementDataComplete || value !== 0) ? formatNumber(value) : "—";
   const orderAgeDays = daysSince(movementPayload?.orderSyncedAt);
   const orderDataStale = riskMetricsReady && orderAgeDays !== null && orderAgeDays >= 2;
   const orderStatusLabel = !movementPayload
@@ -4550,13 +4503,8 @@ function MovementBoard({
     window.setTimeout(() => setRiskCopyMessage(""), 2000);
   }
 
-  if (resourceState.phase === "loading" && !movementPayload) {
-    return <main className="movement-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
-  }
-
   return (
     <main className="movement-page">
-      <DataContextBar context={movementPayload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} />
       <section className="library-hero movement-hero">
         <div>
           <p className="eyebrow">Movement Control</p>
@@ -4613,10 +4561,10 @@ function MovementBoard({
       ) : null}
 
       <section className="metric-strip movement-metrics">
-        <Metric title="缺货 SKU" value={movementMetric(riskMetricsReady, movementPayload?.counts.stockout ?? 0)} note={riskMetricsReady ? "有销量但可售为 0" : "等待可用订单数据"} icon={AlertTriangle} tone="red" />
-        <Metric title="补货预警" value={movementMetric(riskMetricsReady, movementPayload?.counts.replenish ?? 0)} note={riskMetricsReady ? "可售天数低于补货周期" : "等待可用订单数据"} icon={PackageCheck} tone="orange" />
-        <Metric title="慢销 / 滞销" value={movementMetric(riskMetricsReady, (movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0))} note={riskMetricsReady ? "库存覆盖过高或无销量" : "等待可用订单数据"} icon={BarChart3} tone="blue" />
-        <Metric title="仓库未建档" value={movementMetric(inventoryMetricsReady, movementPayload?.counts.warehouseOnly ?? 0)} note={inventoryMetricsReady ? "仓库有库存但产品库缺失" : "等待可用库存数据"} icon={Boxes} tone="green" />
+        <Metric title="缺货 SKU" value={riskMetricsReady ? formatNumber(movementPayload?.counts.stockout ?? 0) : "—"} note={riskMetricsReady ? "有销量但可售为 0" : "等待可用订单数据"} icon={AlertTriangle} tone="red" />
+        <Metric title="补货预警" value={riskMetricsReady ? formatNumber(movementPayload?.counts.replenish ?? 0) : "—"} note={riskMetricsReady ? "可售天数低于补货周期" : "等待可用订单数据"} icon={PackageCheck} tone="orange" />
+        <Metric title="慢销 / 滞销" value={riskMetricsReady ? formatNumber((movementPayload?.counts.slow ?? 0) + (movementPayload?.counts.stagnant ?? 0)) : "—"} note={riskMetricsReady ? "库存覆盖过高或无销量" : "等待可用订单数据"} icon={BarChart3} tone="blue" />
+        <Metric title="仓库未建档" value={inventoryMetricsReady ? formatNumber(movementPayload?.counts.warehouseOnly ?? 0) : "—"} note={inventoryMetricsReady ? "仓库有库存但产品库缺失" : "等待可用库存数据"} icon={Boxes} tone="green" />
       </section>
 
       <form
@@ -4853,14 +4801,13 @@ function StockupCenter({
   canManage = false,
   draftSeed = null,
   onDraftSeedConsumed,
-  resourceState,
 }: {
   pageMode?: "workflow" | "recommendations";
   stockupPayload: StockupPayload | null;
   workflowPayload: StockupWorkflowPayload | null;
   onRefreshWorkflow: () => Promise<StockupWorkflowPayload>;
   onSyncStockup: () => void;
-  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") => Promise<void>;
+  onDecision: (item: StockupPayload["recommendations"][number], action: "accept" | "abandon" | "restore") => void;
   onCreatePlan: (item: StockupPayload["recommendations"][number], input: { quantity: number; planType: "purchase" | "outsourcing"; owner: string; expectedArrivalAt: string; note: string }) => Promise<void>;
   onUpdatePlanStatus: (id: string, status: "draft" | "ordered" | "in_production" | "arrived" | "cancelled") => Promise<void>;
   onOpenExecution: () => void;
@@ -4869,7 +4816,6 @@ function StockupCenter({
   canManage?: boolean;
   draftSeed?: StockupDraftSeed | null;
   onDraftSeedConsumed?: () => void;
-  resourceState: CoreResourceState;
 }) {
   const recommendations = stockupPayload?.recommendations ?? [];
   const abandonedRecommendations = stockupPayload?.abandonedRecommendations ?? [];
@@ -4887,22 +4833,8 @@ function StockupCenter({
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
   const [inboundLimit, setInboundLimit] = React.useState(100);
   const [inboundLoading, setInboundLoading] = React.useState(false);
-  const [batchAccepting, setBatchAccepting] = React.useState(false);
   const isRecommendationPage = pageMode === "recommendations";
-  const [recommendationWorkspace, setRecommendationWorkspace] = React.useState<"recommendations" | "coding">("recommendations");
-  const isCodingWorkspace = isRecommendationPage && recommendationWorkspace === "coding";
   const inboundTotal = stockupPayload?.pagination?.inbound?.total ?? inboundOrders.length;
-  const pendingRecommendations = recommendations.filter((item) => item.decisionStatus !== "accepted");
-
-  async function acceptPendingRecommendations() {
-    if (!pendingRecommendations.length || batchAccepting) return;
-    setBatchAccepting(true);
-    try {
-      for (const item of pendingRecommendations) await onDecision(item, "accept");
-    } finally {
-      setBatchAccepting(false);
-    }
-  }
 
   async function loadMoreInbound() {
     if (!onLoadMoreInbound || inboundLoading || inboundOrders.length >= inboundTotal) return;
@@ -4923,10 +4855,6 @@ function StockupCenter({
   React.useEffect(() => {
     if (!canManage && !["overview", "ledger"].includes(workflowTab)) setWorkflowTab("overview");
   }, [canManage, workflowTab]);
-
-  if (resourceState.phase === "loading" && !stockupPayload) {
-    return <main className="stockup-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
-  }
 
   const currentCounts = workflowPayload?.counts;
   const actionQueue = [
@@ -4950,7 +4878,7 @@ function StockupCenter({
       quantity: Math.max(0, item.netReplenishQty || item.replenishQty || 0),
       planType: item.outsourcingInProductionQty > 0 ? "purchase" : "purchase",
       owner: "",
-      expectedArrivalAt: "",
+      expectedArrivalAt: new Date(Date.now() + Math.max(1, Number(item.leadDays) || 30) * 86400000).toISOString().slice(0, 10),
       note: "",
     };
   }
@@ -5013,24 +4941,17 @@ function StockupCenter({
 
   return (
     <main className={`movement-page stockup-page stockup-ops-page ${isRecommendationPage ? "stockup-recommendation-page" : ""}`}>
-      <DataContextBar context={stockupPayload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} />
       {isRecommendationPage ? (
         <section className="stockup-command-bar">
           <div>
-            <p className="eyebrow">{isCodingWorkspace ? "SKU Coding Center" : "Replenishment Planning"}</p>
-            <h2>{isCodingWorkspace ? "新品编码中心" : "备货建议"}</h2>
-            <p>{isCodingWorkspace ? "统一管理 SKU 规则与流水号，并把新品一次建档到简道云和指定 WMS。" : "根据库存、销量、在途和委外在产数量生成建议；采纳后送入正式备货需求与供应执行流程。"}</p>
+            <p className="eyebrow">Replenishment Planning</p>
+            <h2>备货建议</h2>
+            <p>根据库存、销量、在途和委外在产数量生成建议；采纳后送入正式备货需求与供应执行流程。</p>
           </div>
           <div className="stockup-command-actions">
-            <div className="stockup-workspace-switch" role="tablist" aria-label="备货建议工作区">
-              <button className={!isCodingWorkspace ? "active" : ""} type="button" role="tab" aria-selected={!isCodingWorkspace} onClick={() => setRecommendationWorkspace("recommendations")}>备货建议</button>
-              <button className={isCodingWorkspace ? "active" : ""} type="button" role="tab" aria-selected={isCodingWorkspace} onClick={() => setRecommendationWorkspace("coding")}>新品编码<strong>{workflowPayload?.counts.codingQueue || ""}</strong></button>
-            </div>
-            {!isCodingWorkspace ? <>
-              <span className="status-pill good">建议 SKU {stockupPayload ? formatNumber(stockupPayload.counts.recommendations) : "—"}</span>
-              <span className="status-pill muted">净建议 {stockupPayload ? formatNumber(stockupPayload.counts.netRecommendedQty) : "—"}</span>
-              {canManage ? <><button className="sync-button" type="button" onClick={() => void acceptPendingRecommendations()} disabled={syncing || batchAccepting || !pendingRecommendations.length}><Check size={15} />{batchAccepting ? "批量采纳中" : `批量采纳 ${pendingRecommendations.length} 项`}</button><button className="ghost-button compact-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS"}</button></> : <span className="status-pill muted">只读查看</span>}
-            </> : <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => void onRefreshWorkflow()}><RefreshCw size={15} className={syncing ? "spinning" : ""} />刷新编码数据</button>}
+            <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
+            <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
+            {canManage ? <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button> : <span className="status-pill muted">只读查看</span>}
           </div>
         </section>
       ) : <>
@@ -5076,8 +4997,7 @@ function StockupCenter({
         {canManage && workflowTab === "coding" ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
       </section>
       </>}
-      {isCodingWorkspace ? <ProductCodingWorkbench payload={workflowPayload} onRefresh={onRefreshWorkflow} /> : null}
-      {isRecommendationPage && !isCodingWorkspace && acceptedRecommendations.length ? (
+      {isRecommendationPage && acceptedRecommendations.length ? (
         <section className="panel stockup-panel accepted-stockup-panel">
           <div className="panel-heading">
             <div>
@@ -5125,8 +5045,8 @@ function StockupCenter({
                     <label>
                       <span>计划类型</span>
                       <select value={draftFor(item).planType} onChange={(event) => updatePlanDraft(item, { planType: event.target.value as "purchase" | "outsourcing" })}>
-                        <option value="purchase">采购补货</option>
-                        <option value="outsourcing">委外排产</option>
+                        <option value="purchase">现货采购</option>
+                        <option value="outsourcing">定制加工（待规划）</option>
                       </select>
                     </label>
                     <label>
@@ -5166,7 +5086,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && !isCodingWorkspace && activePlans.length ? (
+      {isRecommendationPage && activePlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel active-plan-panel">
           <div className="panel-heading">
             <div>
@@ -5226,7 +5146,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && !isCodingWorkspace && arrivedPlans.length ? (
+      {isRecommendationPage && arrivedPlans.length ? (
         <section className="panel stockup-panel stockup-plan-panel arrived-review-panel">
           <div className="panel-heading">
             <div>
@@ -5280,7 +5200,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && !isCodingWorkspace && abandonedRecommendations.length ? (
+      {isRecommendationPage && abandonedRecommendations.length ? (
         <section className="panel stockup-panel dismissed-queue-panel">
           <div className="panel-heading">
             <div>
@@ -5301,7 +5221,7 @@ function StockupCenter({
         </section>
       ) : null}
 
-      {isRecommendationPage && !isCodingWorkspace ? <section className="panel stockup-panel recommendation-queue-panel">
+      {isRecommendationPage ? <section className="panel stockup-panel recommendation-queue-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Replenishment Queue</p>
@@ -5345,9 +5265,9 @@ function StockupCenter({
                 {!canManage ? <span className="status-pill muted">只读</span> : item.decisionStatus === "accepted" ? (
                   <span className="status-pill good">已采纳 · 待创建计划</span>
                 ) : (
-                  <button className="sync-button compact-button" type="button" disabled={syncing} onClick={() => void onDecision(item, "accept")}>采纳</button>
+                  <button className="ghost-button compact-button" type="button" disabled={syncing} onClick={() => onDecision(item, "accept")}>采纳</button>
                 )}
-                {canManage ? <OverflowMenu label={`${item.sku} 更多操作`}><button className="danger-button" type="button" disabled={syncing} onClick={() => void onDecision(item, "abandon")}>放弃本条建议</button></OverflowMenu> : null}
+                {canManage ? <button className="ghost-button compact-button danger-button" type="button" disabled={syncing} onClick={() => onDecision(item, "abandon")}>放弃</button> : null}
               </div>
             </article>
           )) : (
@@ -5356,7 +5276,7 @@ function StockupCenter({
         </div>
       </section> : null}
 
-      {isRecommendationPage && !isCodingWorkspace ? <section className="panel stockup-panel stockup-wms-panel">
+      {isRecommendationPage ? <section className="panel stockup-panel stockup-wms-panel">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">WMS Inbound Orders</p>
@@ -5956,14 +5876,10 @@ function emptyStockupDemandDraft(): StockupDemandDraft {
   return { productSourceType: "已有产品", productRecordId: "", sku: "", productName: "", requestedQty: 0, unit: "件", project: "", platform: "SHOPEE", destinationCountry: "", destinationWarehouseName: "", stockupMethod: "外采成品", priority: "普通", expectedArrivalAt: "", reason: "" };
 }
 
-function readStockupDemandDraft(): StockupDemandDraft {
+function readStockupDemandDraft() {
   try {
     const stored = JSON.parse(localStorage.getItem(STOCKUP_DEMAND_DRAFT_KEY) || "null");
-    if (!stored || typeof stored !== "object") return emptyStockupDemandDraft();
-    const draft = { ...emptyStockupDemandDraft(), ...stored } as StockupDemandDraft;
-    return draft.productSourceType === "外采新品"
-      ? { ...draft, productSourceType: "已有产品", productRecordId: "", sku: "", productName: "" }
-      : draft;
+    return stored && typeof stored === "object" ? { ...emptyStockupDemandDraft(), ...stored } as StockupDemandDraft : emptyStockupDemandDraft();
   } catch {
     return emptyStockupDemandDraft();
   }
@@ -5989,7 +5905,7 @@ function StockupDemandWorkbench({ payload, onRefresh, seed = null, onSeedConsume
   const filteredProductOptions = productOptions.filter((item) => !productQuery.trim() || `${item.sku} ${item.productName}`.toLowerCase().includes(productQuery.trim().toLowerCase())).slice(0, 80);
   const today = new Date().toISOString().slice(0, 10);
   const validationIssues = [
-    ...(!form.productRecordId ? ["请选择产品基础信息库中的正式 SKU"] : []),
+    ...(form.productSourceType === "已有产品" && !form.productRecordId ? ["请选择可识别的正式 SKU"] : []),
     ...(!form.productName.trim() ? ["填写或选择产品"] : []),
     ...(!(form.requestedQty > 0) ? ["备货数量必须大于 0"] : []),
     ...(!form.destinationCountry ? ["选择目的国"] : []),
@@ -6064,10 +5980,11 @@ function StockupDemandWorkbench({ payload, onRefresh, seed = null, onSeedConsume
           <div><strong>备货需求草稿</strong><span>内容自动保存在本机；提交失败或离开页面后可以继续填写。</span></div>
           <span className="status-pill muted">{validationIssues.length ? `${validationIssues.length} 项待完成` : "可以提交"}</span>
         </div>
-        <label><span>产品来源</span><input aria-label="产品来源" value="产品基础信息库（正式 SKU）" readOnly /></label>
-        <label><span>搜索产品</span><input aria-label="搜索正式 SKU" value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="输入 SKU 或商品名称" /></label>
-        <label className="wide-field"><span>选择正式 SKU</span><select aria-label="选择正式 SKU" value={form.productRecordId} onChange={(event) => selectProduct(event.target.value)}><option value="">请选择匹配商品</option>{filteredProductOptions.map((item) => <option value={item.id} key={item.id}>{item.sku} · {item.productName}</option>)}</select><small>当前显示 {formatNumber(filteredProductOptions.length)} 条匹配结果</small></label>
-        <div className="demand-product-prerequisite wide-field"><PackageCheck size={17} /><div><strong>这是新品，还没有 SKU？</strong><span>请先在“备货建议 → 新品编码”直接完成产品基础档案，再回来选择正式 SKU。</span></div><a className="ghost-button compact-button" href="#stockup-recommendations">前往新品编码中心</a></div>
+        <label><span>产品来源</span><select aria-label="产品来源" value={form.productSourceType} onChange={(event) => setForm({ ...form, productSourceType: event.target.value as typeof form.productSourceType, productRecordId: "", sku: "", productName: "" })}><option>已有产品</option><option>外采新品</option></select></label>
+        {form.productSourceType === "已有产品" ? <>
+          <label><span>搜索产品</span><input aria-label="搜索正式 SKU" value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="输入 SKU 或商品名称" /></label>
+          <label className="wide-field"><span>选择正式 SKU</span><select aria-label="选择正式 SKU" value={form.productRecordId} onChange={(event) => selectProduct(event.target.value)}><option value="">请选择匹配商品</option>{filteredProductOptions.map((item) => <option value={item.id} key={item.id}>{item.sku} · {item.productName}</option>)}</select><small>当前显示 {formatNumber(filteredProductOptions.length)} 条匹配结果</small></label>
+        </> : <label className="wide-field"><span>新品名称</span><input value={form.productName} onChange={(event) => setForm({ ...form, productName: event.target.value })} placeholder="输入外采新品名称" /></label>}
         <label><span>备货数量</span><input type="number" min="1" value={form.requestedQty || ""} onChange={(event) => setForm({ ...form, requestedQty: Number(event.target.value) })} /></label>
         <label><span>单位</span><input value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} /></label>
         <label><span>归属项目</span><input list="stockup-project-options" value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder="选择或输入项目" /><datalist id="stockup-project-options">{uniqueSorted((payload?.demands ?? []).map((item) => item.project)).map((item) => <option value={item} key={item} />)}</datalist></label>
@@ -6839,334 +6756,23 @@ function StockupCostLedger({ payload }: { payload: StockupWorkflowPayload | null
   );
 }
 
-type ProductCodingDraft = {
-  ruleId: string;
-  productName: string;
-  productNameEn: string;
-  unit: string;
-  brand: string;
-  category: string;
-  functionCategory: string;
-  productType: string;
-  skuAttribute: string;
-  specification: string;
-  barcode: string;
-  supplier: string;
-  supplierCode: string;
-  purchasePrice: number;
-  warningQty: number;
-  purchaseLeadDays: number;
-  minOrderQty: number;
-  weightKg: number;
-  lengthCm: number;
-  widthCm: number;
-  heightCm: number;
-  hsCode: string;
-  origin: string;
-  cartonSpecification: string;
-  declaredNameEn: string;
-  declaredValueUsd: number;
-  destinationCountry: string;
-};
-
-const emptyCodingDraft: ProductCodingDraft = {
-  ruleId: "", productName: "", productNameEn: "", unit: "件", brand: "", category: "", functionCategory: "", productType: "外采品", skuAttribute: "单品",
-  specification: "", barcode: "", supplier: "", supplierCode: "", purchasePrice: 0, warningQty: 0, purchaseLeadDays: 0, minOrderQty: 0,
-  weightKg: 0, lengthCm: 0, widthCm: 0, heightCm: 0, hsCode: "", origin: "中国", cartonSpecification: "", declaredNameEn: "", declaredValueUsd: 0, destinationCountry: "",
-};
-
-function createManualProductDraftId() {
-  const randomId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `manual:${randomId}`;
-}
-
 function ProductCodingWorkbench({ payload, onRefresh }: { payload: StockupWorkflowPayload | null; onRefresh: () => Promise<StockupWorkflowPayload> }) {
-  const payloadCenter = payload?.codingCenter;
-  const [liveCenter, setLiveCenter] = React.useState<SkuCodingCenterPayload | null>(null);
-  const center = liveCenter || payloadCenter;
-  const queue = center?.queue ?? payload?.productCodingQueue ?? [];
-  const rules = center?.rules ?? [];
-  const reservations = center?.reservations ?? [];
-  const warehouseOptions = center?.warehouseOptions ?? payload?.warehouseOptions ?? [];
-  const [sourceMode, setSourceMode] = React.useState<"direct" | "queue">("direct");
-  const [directDraftId, setDirectDraftId] = React.useState(createManualProductDraftId);
-  const [activeId, setActiveId] = React.useState("");
-  const [draft, setDraft] = React.useState<ProductCodingDraft>(emptyCodingDraft);
-  const [selectedWarehouses, setSelectedWarehouses] = React.useState<string[]>([]);
+  const queue = payload?.productCodingQueue ?? [];
+  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
   const [busy, setBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
-  const [showDetails, setShowDetails] = React.useState(true);
-  const [showRules, setShowRules] = React.useState(false);
-  const [ruleForm, setRuleForm] = React.useState<Partial<SkuCodingRule>>({ name: "", prefix: "TZKJ-", digits: 3, kind: "自主品牌", brand: "", country: "", description: "", enabled: true });
-  const directProduct: StockupWorkflowPayload["productCodingQueue"][number] = {
-    id: directDraftId,
-    temporaryProductNo: "",
-    officialSku: "",
-    skuCodingStatus: "待编码",
-    archiveStatus: "草稿",
-    productName: "",
-    sourceDemandRecordId: "",
-    sourceDemandBatchNo: "",
-    codingAppliedAt: "",
-    codingCompletedAt: "",
-  };
-  const active = sourceMode === "direct" ? directProduct : (queue.find((item) => item.id === activeId) ?? queue[0]);
-  const sourceDemand = payload?.demands.find((item) => item.id === active?.sourceDemandRecordId);
-  const activeReservation = reservations.find((item) => item.productRecordId === active?.id && item.status !== "cancelled");
-  const selectedRule = rules.find((item) => item.id === (activeReservation?.ruleId || draft.ruleId));
-  const selectedWarehouseOptions = warehouseOptions.filter((item) => selectedWarehouses.includes(item.connectionId));
-  const yunSelected = selectedWarehouseOptions.some((item) => item.providerId === "yunwms_ru");
-  const missingYunFields = yunSelected ? [
-    !draft.weightKg ? "重量" : "",
-    !draft.lengthCm ? "长度" : "",
-    !draft.widthCm ? "宽度" : "",
-    !draft.heightCm ? "高度" : "",
-    !draft.declaredNameEn.trim() ? "英文申报名" : "",
-    !draft.declaredValueUsd ? "申报价值(USD)" : "",
-  ].filter(Boolean) : [];
-
-  const refreshCodingCenter = React.useCallback(async () => {
-    const result = await fetchSkuCodingCenter();
-    setLiveCenter(result);
-    return result;
-  }, []);
-
-  React.useEffect(() => {
-    let activeRequest = true;
-    void fetchSkuCodingCenter()
-      .then((result) => { if (activeRequest) setLiveCenter(result); })
-      .catch((error) => { if (activeRequest) setMessage(error instanceof Error ? error.message : "产品基础库编码读取失败"); });
-    return () => { activeRequest = false; };
-  }, []);
-
-  React.useEffect(() => {
-    if (sourceMode !== "queue") return;
-    if (!queue.length) { setActiveId(""); return; }
-    if (!queue.some((item) => item.id === activeId)) setActiveId(queue[0].id);
-  }, [activeId, queue, sourceMode]);
-
-  React.useEffect(() => {
-    if (!active) return;
-    const demand = payload?.demands.find((item) => item.id === active.sourceDemandRecordId);
-    const suggested = sourceMode === "direct" ? undefined : (
-      rules.find((item) => item.enabled && active.brand && item.brand.toLowerCase() === active.brand.toLowerCase())
-      || rules.find((item) => item.enabled && /印尼|印度尼西亚/.test(demand?.destinationCountry || "") && item.prefix === "TZKJ-IDWG")
-      || rules.find((item) => item.enabled)
-    );
-    setDraft({
-      ...emptyCodingDraft,
-      ruleId: activeReservation?.ruleId || suggested?.id || "",
-      productName: active.productName || demand?.productName || "",
-      productNameEn: active.productNameEn || "",
-      unit: active.unit || "件",
-      brand: active.brand || suggested?.brand || "",
-      category: active.category || "",
-      functionCategory: active.functionCategory || "",
-      productType: active.productType || (suggested?.kind === "自主品牌" ? "自主品" : "外采品"),
-      skuAttribute: active.skuAttribute || "单品",
-      specification: active.specification || "",
-      barcode: active.barcode || "",
-      supplier: active.supplier || "",
-      supplierCode: active.supplierCode || "",
-      purchasePrice: active.purchasePrice || 0,
-      warningQty: active.warningQty || 0,
-      weightKg: active.weightKg || 0,
-      lengthCm: active.lengthCm || 0,
-      widthCm: active.widthCm || 0,
-      heightCm: active.heightCm || 0,
-      hsCode: active.hsCode || "",
-      origin: active.origin || "中国",
-      cartonSpecification: active.cartonSpecification || "",
-      declaredNameEn: active.productNameEn || "",
-      destinationCountry: demand?.destinationCountry || "",
-    });
-    setSelectedWarehouses([]);
-  }, [active?.id, sourceMode]);
-
-  function patchDraft(values: Partial<ProductCodingDraft>) {
-    setDraft((current) => ({ ...current, ...values }));
-  }
-
-  async function reserve() {
-    if (!active || !draft.ruleId || (sourceMode === "direct" && !draft.productName.trim())) return;
+  async function submit(item: StockupWorkflowPayload["productCodingQueue"][number]) {
     setBusy(true); setMessage("");
-    try {
-      const result = await reserveWorkflowSku({ productRecordId: active.id, ruleId: draft.ruleId, mode: sourceMode, productName: draft.productName });
-      await Promise.all([onRefresh(), refreshCodingCenter()]);
-      setMessage(`已安全预占 ${result.reservation.sku}；该号码不会再分配给其他新品。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "SKU 预占失败"); } finally { setBusy(false); }
+    try { const result = await completeWorkflowProductCoding({ productRecordId: item.id, sku: drafts[item.id] || "" }); await onRefresh(); setMessage(`正式 SKU ${result.sku} 已回写产品档案和来源需求。`); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "编码保存失败"); } finally { setBusy(false); }
   }
-
-  async function cancelReservation() {
-    if (!activeReservation) return;
-    setBusy(true); setMessage("");
-    try {
-      await cancelWorkflowSkuReservation(activeReservation.id, "编码规则调整");
-      await Promise.all([onRefresh(), refreshCodingCenter()]);
-      setMessage(`${activeReservation.sku} 已撤销；为保证追溯，该号码不会回收。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "撤销预占失败"); } finally { setBusy(false); }
-  }
-
-  async function submit() {
-    if (!active || !activeReservation) return;
-    setBusy(true); setMessage("");
-    try {
-      const result = await completeWorkflowProductCoding({
-        productRecordId: active.id,
-        reservationId: activeReservation.id,
-        mode: sourceMode,
-        warehouseConnectionIds: selectedWarehouses,
-        product: { ...draft, purchasePriceCurrency: "CNY" },
-      });
-      if (sourceMode === "direct") {
-        setDirectDraftId(createManualProductDraftId());
-        setDraft(emptyCodingDraft);
-        setSelectedWarehouses([]);
-      }
-      await Promise.all([onRefresh(), refreshCodingCenter()]);
-      setMessage(result.status === "partial"
-        ? `${result.sku} 已在简道云建档；部分 WMS 失败，已保留为可重试任务。`
-        : `${result.sku} 已完成简道云${selectedWarehouses.length ? "及所选 WMS" : ""}建档。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "产品建档失败"); } finally { setBusy(false); }
-  }
-
-  async function retryWms(reservation: SkuCodingReservation) {
-    setBusy(true); setMessage("");
-    try {
-      const result = await retryWorkflowWmsProduct(reservation.id);
-      await Promise.all([onRefresh(), refreshCodingCenter()]);
-      setMessage(result.status === "completed" ? `${reservation.sku} 的 WMS 建档已全部完成。` : `${reservation.sku} 仍有 WMS 建档失败，请核对配置。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "WMS 重试失败"); } finally { setBusy(false); }
-  }
-
-  function editRule(rule?: SkuCodingRule) {
-    setRuleForm(rule ? { ...rule } : { name: "", prefix: "TZKJ-", digits: 3, kind: "自主品牌", brand: "", country: "", description: "", enabled: true });
-  }
-
-  async function saveRule() {
-    if (!ruleForm.name || !ruleForm.prefix) return;
-    setBusy(true); setMessage("");
-    try {
-      const result = await updateSkuCodingRule({
-        ...ruleForm,
-        name: ruleForm.name,
-        prefix: ruleForm.prefix,
-        digits: Number(ruleForm.digits || 3),
-      });
-      await Promise.all([onRefresh(), refreshCodingCenter()]);
-      editRule();
-      setMessage(`编码规则 ${result.rule.prefix} 已保存，下一号为 ${result.rule.nextSku}。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "编码规则保存失败"); } finally { setBusy(false); }
-  }
-
-  function toggleWarehouse(connectionId: string) {
-    setSelectedWarehouses((current) => current.includes(connectionId) ? current.filter((id) => id !== connectionId) : [...current, connectionId]);
-  }
-
-  const recentReservations = reservations.filter((item) => item.status !== "reserved").slice(0, 8);
   return (
-    <section className="panel workflow-panel sku-coding-center">
-      <div className="panel-heading sku-coding-heading">
-        <div><p className="eyebrow">SKU Coding Center</p><h2>新品编码与一键建档</h2><small>直接建立 SKU 和产品基础档案；仓库仅决定是否同步创建 WMS 商品，不改变全球 SKU。</small></div>
-        <div className="workflow-heading-actions"><div className="sku-source-tabs" role="tablist" aria-label="新品来源"><button type="button" role="tab" aria-selected={sourceMode === "direct"} className={sourceMode === "direct" ? "active" : ""} onClick={() => setSourceMode("direct")}><Plus size={14} />直接新建</button><button type="button" role="tab" aria-selected={sourceMode === "queue"} className={sourceMode === "queue" ? "active" : ""} onClick={() => setSourceMode("queue")}>历史待处理{queue.length ? <strong>{queue.length}</strong> : null}</button></div><button className="ghost-button compact-button" type="button" onClick={() => setShowRules((value) => !value)}><Settings size={14} />编码规则</button></div>
-      </div>
+    <section className="panel workflow-panel">
+      <div className="panel-heading"><div><p className="eyebrow">Product Coding</p><h2>外采新品编码队列</h2></div><span className={`status-pill ${queue.length ? "warning" : "good"}`}>{queue.length ? `${queue.length} 个待处理` : "无待办"}</span></div>
       {message ? <div className="notice compact-notice">{message}</div> : null}
-
-      <div className="sku-catalog-basis"><DatabaseZap size={17} /><div><strong>序号依据：简道云产品基础信息库</strong><span>已读取 {center?.catalogSkuCount ?? payload?.productOptions?.length ?? 0} 个去重后的现有 SKU；每次打开、刷新和预占前都会重新核对最大流水。</span></div><button className="ghost-button compact-button" type="button" disabled={busy} onClick={() => void refreshCodingCenter()}><RefreshCw size={14} />重新核对</button></div>
-
-      <div className="sku-coding-metrics">
-        <article><span>基础库 SKU</span><strong>{center?.catalogSkuCount ?? payload?.productOptions?.length ?? 0}</strong><small>实时扫描已有编码</small></article>
-        <article><span>可用规则</span><strong>{rules.filter((item) => item.enabled).length}</strong><small>可新增、自定义、停用</small></article>
-        <article><span>已预占</span><strong>{reservations.filter((item) => item.status === "reserved").length}</strong><small>号码锁定，防止撞号</small></article>
-        <article><span>待重试</span><strong>{reservations.filter((item) => item.status === "partial").length}</strong><small>简道云已成功，WMS 可重试</small></article>
+      <div className="coding-queue-grid">
+        {queue.length ? queue.map((item) => <article key={item.id}><div className="coding-sequence">{item.temporaryProductNo || "临时号待生成"}</div><strong>{item.productName || "未填写产品名称"}</strong><span>{item.sourceDemandBatchNo ? `来源需求 ${item.sourceDemandBatchNo}` : "来自运营新品需求"}</span><dl><div><dt>编码状态</dt><dd>{item.skuCodingStatus || "待编码"}</dd></div><div><dt>正式 SKU</dt><dd>{item.officialSku || "尚未分配"}</dd></div><div><dt>申请时间</dt><dd>{item.codingAppliedAt ? formatDate(item.codingAppliedAt) : "未记录"}</dd></div></dl><div className="coding-action"><input value={drafts[item.id] || ""} onChange={(event) => setDrafts({ ...drafts, [item.id]: event.target.value.toUpperCase() })} placeholder="输入正式 SKU" /><button className="sync-button compact-button" type="button" disabled={busy || !drafts[item.id]} onClick={() => void submit(item)}>完成编码</button></div><small>{item.id.startsWith("demand:") ? "提交后会自动建立正式产品档案，并把 SKU 回写到来源需求。" : "提交后同步回写产品档案与来源需求，历史临时号继续保留追溯。"}</small></article>) : <div className="stockup-empty">当前没有等待人工编码的新品。</div>}
       </div>
-
-      {showRules ? <div className="sku-rule-workbench">
-        <div className="sku-rule-list">
-          {rules.map((rule) => <button type="button" key={rule.id} className={ruleForm.id === rule.id ? "active" : ""} onClick={() => editRule(rule)}><span>{rule.name}<small>{rule.kind}{rule.brand ? ` · ${rule.brand}` : ""}</small></span><strong>{rule.nextSku}</strong><em className={rule.enabled ? "enabled" : "disabled"}>{rule.enabled ? "启用" : "停用"}</em></button>)}
-          <button type="button" className="sku-rule-add" onClick={() => editRule()}><Plus size={16} />新增编码规则</button>
-        </div>
-        <div className="sku-rule-form">
-          <label><span>规则名称</span><input value={ruleForm.name || ""} onChange={(event) => setRuleForm({ ...ruleForm, name: event.target.value })} placeholder="例如：WET 自主品牌" /></label>
-          <label><span>完整前缀</span><input value={ruleForm.prefix || ""} onChange={(event) => setRuleForm({ ...ruleForm, prefix: event.target.value.toUpperCase() })} placeholder="TZKJ-WET" disabled={Boolean(ruleForm.id && (ruleForm.issuedMax || 0) > 0)} /></label>
-          <label><span>数字位数</span><input type="number" min="2" max="8" value={ruleForm.digits || 3} onChange={(event) => setRuleForm({ ...ruleForm, digits: Number(event.target.value) })} /></label>
-          <label><span>规则类型</span><select value={ruleForm.kind || "自主品牌"} onChange={(event) => setRuleForm({ ...ruleForm, kind: event.target.value })}><option>自主品牌</option><option>外采品</option><option>历史规则</option><option>其他</option></select></label>
-          <label><span>品牌</span><input value={ruleForm.brand || ""} onChange={(event) => setRuleForm({ ...ruleForm, brand: event.target.value })} placeholder="品牌缩写或品牌名" /></label>
-          <label><span>国家标签</span><input value={ruleForm.country || ""} onChange={(event) => setRuleForm({ ...ruleForm, country: event.target.value })} placeholder="仅用于提示，不参与序号" /></label>
-          <label className="wide-field"><span>说明</span><input value={ruleForm.description || ""} onChange={(event) => setRuleForm({ ...ruleForm, description: event.target.value })} placeholder="编码适用范围" /></label>
-          <label className="sku-rule-toggle"><input type="checkbox" checked={ruleForm.enabled !== false} onChange={(event) => setRuleForm({ ...ruleForm, enabled: event.target.checked })} /><span>允许继续发号</span></label>
-          <div className="workflow-form-actions"><button className="ghost-button compact-button" type="button" onClick={() => editRule()}>清空</button><button className="sync-button compact-button" type="button" disabled={busy || !ruleForm.name || !ruleForm.prefix} onClick={() => void saveRule()}>保存规则</button></div>
-        </div>
-      </div> : null}
-
-      {sourceMode === "queue" && !active ? <div className="stockup-empty sku-coding-empty"><PackageCheck size={30} /><strong>没有遗留的待编码新品</strong><span>现在可以直接在编码中心新建 SKU，不需要先填写备货需求。</span><button className="sync-button compact-button" type="button" onClick={() => setSourceMode("direct")}><Plus size={14} />直接新建产品</button></div> : active ? <div className={`sku-coding-layout ${sourceMode === "direct" ? "direct-mode" : ""}`}>
-        {sourceMode === "queue" ? <aside className="sku-coding-queue">
-          <div className="sku-coding-section-title"><div><span>01</span><strong>选择新品</strong></div><small>{queue.length} 项</small></div>
-          {queue.map((item) => {
-            const reservation = reservations.find((entry) => entry.productRecordId === item.id && entry.status !== "cancelled");
-            return <button type="button" key={item.id} className={item.id === active.id ? "active" : ""} onClick={() => setActiveId(item.id)}><span className="coding-sequence">{reservation?.sku || item.temporaryProductNo || "待取号"}</span><strong>{item.productName || "未填写产品名称"}</strong><small>{item.sourceDemandBatchNo || "运营新品需求"}</small><em className={reservation ? "reserved" : "pending"}>{reservation ? "已预占" : "待编码"}</em></button>;
-          })}
-        </aside> : null}
-
-        <div className="sku-coding-editor">
-          <div className="sku-code-console">
-            <div className="sku-coding-section-title"><div><span>{sourceMode === "direct" ? "01" : "02"}</span><strong>确认编码</strong></div><small>全局防重</small></div>
-            {sourceMode === "direct" ? <label><span>新品中文名称 *</span><input autoFocus value={draft.productName} onChange={(event) => patchDraft({ productName: event.target.value })} placeholder="先填写名称，再获取正式 SKU" /></label> : null}
-            <label><span>编码规则</span><select value={activeReservation?.ruleId || draft.ruleId} disabled={Boolean(activeReservation)} onChange={(event) => { const rule = rules.find((item) => item.id === event.target.value); patchDraft({ ruleId: event.target.value, brand: draft.brand || rule?.brand || "", productType: rule?.kind === "自主品牌" ? "自主品" : draft.productType }); }}><option value="">请选择编码规则</option>{rules.filter((item) => item.enabled || item.id === activeReservation?.ruleId).map((rule) => <option value={rule.id} key={rule.id}>{rule.name} · 下一号 {rule.nextSku}</option>)}</select></label>
-            <div className={`sku-next-code ${activeReservation ? "locked" : ""}`}><span>{activeReservation ? "已预占正式 SKU" : "系统建议下一编码"}</span><strong>{activeReservation?.sku || selectedRule?.nextSku || "选择规则后生成"}</strong><small>{selectedRule ? `当前已到 ${selectedRule.currentSku || "尚未发号"} · ${selectedRule.digits} 位序号` : "每个完整前缀独立递增"}</small></div>
-            <div className="sku-code-actions">{activeReservation ? <><button className="ghost-button compact-button danger-button" type="button" disabled={busy} onClick={() => void cancelReservation()}><X size={14} />撤销预占</button><span><Lock size={14} />号码已锁定，不会重复分配</span></> : <button className="sync-button" type="button" disabled={busy || !draft.ruleId || (sourceMode === "direct" && !draft.productName.trim())} onClick={() => void reserve()}><KeyRound size={16} />获取并预占下一编码</button>}</div>
-          </div>
-
-          <div className="sku-archive-form">
-            <div className="sku-coding-section-title"><div><span>{sourceMode === "direct" ? "02" : "03"}</span><strong>完善产品档案</strong></div><button className="ghost-button compact-button" type="button" onClick={() => setShowDetails((value) => !value)}>{showDetails ? "收起字段" : "展开字段"}<ChevronDown size={14} /></button></div>
-            <div className="sku-core-fields">
-              {sourceMode === "queue" ? <label className="wide-field"><span>中文名称 *</span><input value={draft.productName} onChange={(event) => patchDraft({ productName: event.target.value })} /></label> : null}
-              <label><span>品牌</span><input value={draft.brand} onChange={(event) => patchDraft({ brand: event.target.value })} /></label>
-              <label><span>单位</span><input value={draft.unit} onChange={(event) => patchDraft({ unit: event.target.value })} /></label>
-              <label><span>产品类型</span><select value={draft.productType} onChange={(event) => patchDraft({ productType: event.target.value })}><option>外采品</option><option>自主品</option><option>组合品</option><option>其他</option></select></label>
-              <label><span>SKU 属性</span><select value={draft.skuAttribute} onChange={(event) => patchDraft({ skuAttribute: event.target.value })}><option>单品</option><option>组合品</option><option>赠品</option><option>其他</option></select></label>
-            </div>
-            {showDetails ? <div className="sku-detail-fields">
-              <label className="wide-field"><span>英文名称</span><input value={draft.productNameEn} onChange={(event) => patchDraft({ productNameEn: event.target.value, declaredNameEn: draft.declaredNameEn || event.target.value })} /></label>
-              <label><span>产品分类</span><input value={draft.category} onChange={(event) => patchDraft({ category: event.target.value })} /></label>
-              <label><span>功效分类</span><input value={draft.functionCategory} onChange={(event) => patchDraft({ functionCategory: event.target.value })} /></label>
-              <label><span>规格</span><input value={draft.specification} onChange={(event) => patchDraft({ specification: event.target.value })} placeholder="如 50g / 100ml" /></label>
-              <label><span>条码</span><input value={draft.barcode} onChange={(event) => patchDraft({ barcode: event.target.value })} /></label>
-              <label><span>供应商</span><input value={draft.supplier} onChange={(event) => patchDraft({ supplier: event.target.value })} /></label>
-              <label><span>供应商编码</span><input value={draft.supplierCode} onChange={(event) => patchDraft({ supplierCode: event.target.value })} /></label>
-              <label><span>采购成本 CNY</span><input type="number" min="0" step="0.01" value={draft.purchasePrice || ""} onChange={(event) => patchDraft({ purchasePrice: Number(event.target.value) })} /></label>
-              <label><span>库存预警值</span><input type="number" min="0" value={draft.warningQty || ""} onChange={(event) => patchDraft({ warningQty: Number(event.target.value) })} /></label>
-              <label><span>采购周期（天）</span><input type="number" min="0" value={draft.purchaseLeadDays || ""} onChange={(event) => patchDraft({ purchaseLeadDays: Number(event.target.value) })} /></label>
-              <label><span>最小起订量</span><input type="number" min="0" value={draft.minOrderQty || ""} onChange={(event) => patchDraft({ minOrderQty: Number(event.target.value) })} /></label>
-              <label><span>重量 kg</span><input type="number" min="0" step="0.001" value={draft.weightKg || ""} onChange={(event) => patchDraft({ weightKg: Number(event.target.value) })} /></label>
-              <label><span>长 cm</span><input type="number" min="0" step="0.01" value={draft.lengthCm || ""} onChange={(event) => patchDraft({ lengthCm: Number(event.target.value) })} /></label>
-              <label><span>宽 cm</span><input type="number" min="0" step="0.01" value={draft.widthCm || ""} onChange={(event) => patchDraft({ widthCm: Number(event.target.value) })} /></label>
-              <label><span>高 cm</span><input type="number" min="0" step="0.01" value={draft.heightCm || ""} onChange={(event) => patchDraft({ heightCm: Number(event.target.value) })} /></label>
-              <label><span>HS 编码</span><input value={draft.hsCode} onChange={(event) => patchDraft({ hsCode: event.target.value })} /></label>
-              <label><span>原产地</span><input value={draft.origin} onChange={(event) => patchDraft({ origin: event.target.value })} /></label>
-              <label><span>箱规</span><input value={draft.cartonSpecification} onChange={(event) => patchDraft({ cartonSpecification: event.target.value })} /></label>
-              <label><span>英文申报名</span><input value={draft.declaredNameEn} onChange={(event) => patchDraft({ declaredNameEn: event.target.value })} /></label>
-              <label><span>申报价值 USD</span><input type="number" min="0" step="0.01" value={draft.declaredValueUsd || ""} onChange={(event) => patchDraft({ declaredValueUsd: Number(event.target.value) })} /></label>
-            </div> : null}
-          </div>
-
-          <div className="sku-warehouse-picker">
-            <div className="sku-coding-section-title"><div><span>{sourceMode === "direct" ? "03" : "04"}</span><strong>选择 WMS 建档目标</strong></div><small>可不选，先建基础档案</small></div>
-            <div className="sku-warehouse-grid">
-              {warehouseOptions.map((warehouse) => <label key={warehouse.connectionId} className={`${selectedWarehouses.includes(warehouse.connectionId) ? "selected" : ""} ${!warehouse.productCreateConfigured ? "disabled" : ""}`}><input type="checkbox" checked={selectedWarehouses.includes(warehouse.connectionId)} disabled={!warehouse.productCreateConfigured} onChange={() => toggleWarehouse(warehouse.connectionId)} /><span><strong>{warehouse.warehouseName}</strong><small>{warehouse.country} · {warehouse.providerName}</small></span><em>{warehouse.productCreateConfigured ? warehouse.productCreateMode || "可建档" : warehouse.productCreateMessage || "未配置"}</em></label>)}
-              {!warehouseOptions.length ? <div className="stockup-empty">还没有可选择的仓库连接；可以先完成简道云建档。</div> : null}
-            </div>
-            {missingYunFields.length ? <div className="sku-field-warning"><AlertTriangle size={16} /><span>俄罗斯 YunWMS 还需要：{missingYunFields.join("、")}</span></div> : null}
-          </div>
-
-          <div className="sku-submit-bar"><div><strong>{activeReservation?.sku || "请先预占 SKU"}</strong><span>先创建/完善简道云产品基础档案，再逐个创建所选 WMS 商品档案。</span></div><button className="sync-button" type="button" disabled={busy || !activeReservation || !draft.productName.trim() || missingYunFields.length > 0} onClick={() => void submit()}>{busy ? <LoaderCircle className="spinning" size={16} /> : <PackageCheck size={16} />}一键完成建档</button></div>
-        </div>
-      </div> : null}
-
-      {recentReservations.length ? <div className="sku-coding-history">
-        <div className="sku-coding-section-title"><div><span>05</span><strong>最近建档记录</strong></div><small>失败目标可单独重试</small></div>
-        <div className="sku-history-list">{recentReservations.map((reservation) => <article key={reservation.id}><div><span className="coding-sequence">{reservation.sku}</span><strong>{reservation.productName || "未填写产品名称"}</strong><small>{formatDateTime(reservation.updatedAt)}</small></div><div className="sku-archive-progress"><span className={reservation.jdyStatus === "success" ? "done" : "pending"}><Check size={13} />简道云</span>{reservation.warehouseResults.map((result) => <span key={result.connectionId} className={result.status === "success" ? "done" : "failed"} title={result.message}>{result.status === "success" ? <Check size={13} /> : <AlertTriangle size={13} />}{result.warehouseName || result.connectionId}</span>)}</div><div className="sku-history-status"><b className={`status-pill ${reservation.status === "completed" ? "good" : reservation.status === "partial" ? "warning" : "muted"}`}>{reservation.status === "completed" ? "建档完成" : reservation.status === "partial" ? "部分失败" : "已撤销"}</b>{reservation.status === "partial" ? <button className="ghost-button compact-button" type="button" disabled={busy} onClick={() => void retryWms(reservation)}><RefreshCw size={13} />重试 WMS</button> : null}</div></article>)}</div>
-      </div> : null}
     </section>
   );
 }
@@ -7201,7 +6807,7 @@ const wecomNotificationTemplates = [
     mode: "daily" as const,
     text: "### 今日备货提醒\n请查看备货中心的缺货、低可售天数和已采纳待创建计划 SKU，优先处理净建议数量大、可售天数低的商品。",
     linkText: "查看备货中心",
-    linkUrl: "#stockup-recommendations",
+    linkUrl: "#stockup",
     scene: "stockupRecommendation" as keyof WecomNotificationPayload["scenes"],
   },
   {
@@ -7282,7 +6888,7 @@ function RobotCheckboxes({
   );
 }
 
-function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourceState }: { payload: WecomNotificationPayload | null; warehousePayload: WarehousePayload | null; onRefresh: () => Promise<void>; resourceState: CoreResourceState }) {
+function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { payload: WecomNotificationPayload | null; warehousePayload: WarehousePayload | null; onRefresh: () => Promise<void> }) {
   const confirm = useConfirm();
   const [localPayload, setLocalPayload] = React.useState<WecomNotificationPayload | null>(null);
   const data = localPayload || payload;
@@ -7490,10 +7096,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
     try {
       const result = await updateWecomScenes(sceneForm);
       await refresh(result);
-      const stockupScene = sceneForm.stockupRecommendation;
-      setMessage(stockupScene?.enabled && ["daily", "both"].includes(stockupScene.triggerMode || "change")
-        ? `场景推送配置已保存。备货预警长图已启用，每天 ${stockupScene.scheduleTime || "09:00"} 推送；若今天已过该时间，系统会自动补发一次。`
-        : "场景推送配置已保存。");
+      setMessage("场景推送配置已保存。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "场景推送保存失败。");
     } finally {
@@ -7515,36 +7118,6 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
       setMessage(failed.length ? `测试发送完成，${failed.length} 个机器人失败。` : "测试消息已发送。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "测试发送失败。");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function sendStockupWarningTest() {
-    const scene = sceneForm.stockupRecommendation || defaultWecomScene;
-    if (!scene.robotIds?.length) {
-      setMessage("请先在备货预警长图场景中选择至少一个推送机器人。");
-      return;
-    }
-    setBusy("stockup-test");
-    setMessage("");
-    try {
-      const result = await testWecomStockupWarning({
-        robotIds: scene.robotIds,
-        linkUrl: scene.linkUrl,
-        extraText: scene.extraText,
-      });
-      await refresh(result);
-      const deliveries = result.deliveries || [];
-      const failed = deliveries.filter((item) => !item.ok);
-      if (!failed.length) {
-        setMessage(`备货预警长图已测试发送到 ${deliveries.length} 个群，测试不会影响正式推送。`);
-      } else {
-        const failureDetails = failed.map((item) => `${item.robotName}：${item.message || "发送失败"}`).join("；");
-        setMessage(`备货预警长图测试发送有 ${failed.length} 个群失败：${failureDetails}`);
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "备货预警长图测试发送失败。");
     } finally {
       setBusy("");
     }
@@ -7648,13 +7221,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
     setMessage("已启用已配置接收群的海外仓协同通知，请点击“保存场景配置”生效。");
   }
 
-  if (resourceState.phase === "loading" && !data) {
-    return <main className="movement-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
-  }
-
   return (
     <main className="movement-page">
-      <DataContextBar context={data?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing"} error={resourceState.error} onRetry={() => void onRefresh()} />
       <section className="library-hero movement-hero">
         <div>
           <p className="eyebrow">WeCom Robot Center</p>
@@ -7665,16 +7233,16 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
             <span>{data?.updatedAt ? formatDateTime(data.updatedAt) : "暂无配置"}</span>
           </div>
         </div>
-        <button className="ghost-button" type="button" onClick={onRefresh}>
+        <button className="sync-button" type="button" onClick={onRefresh}>
           <RefreshCw size={16} />
           刷新配置
         </button>
       </section>
 
       <section className="metric-strip movement-metrics">
-        <Metric title="机器人" value={data ? formatNumber(robots.length) : "—"} note="可配置多个群机器人" icon={BellRing} tone="blue" />
-        <Metric title="定时推送" value={data ? formatNumber(schedules.length) : "—"} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
-        <Metric title="场景推送" value={data ? formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length) : "—"} note="备货、库存、资质、售后" icon={PackageCheck} tone="orange" />
+        <Metric title="机器人" value={formatNumber(robots.length)} note="可配置多个群机器人" icon={BellRing} tone="blue" />
+        <Metric title="定时推送" value={formatNumber(schedules.length)} note="按每天时间或间隔发送" icon={CalendarDays} tone="green" />
+        <Metric title="场景推送" value={formatNumber(Object.values(scenes).filter((scene) => scene.enabled).length)} note="备货、库存、资质、售后" icon={PackageCheck} tone="orange" />
         <Metric title="最近更新" value={data?.updatedAt ? formatDate(data.updatedAt) : "-"} note="本地通知配置" icon={Settings} tone="red" />
       </section>
 
@@ -7769,10 +7337,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                   {robot.lastError ? <small className="wecom-error">{robot.lastError}</small> : <small>最近发送：{robot.lastSentAt ? formatDateTime(robot.lastSentAt) : "暂无"}</small>}
                 </div>
                 <span className={`status-pill ${robot.enabled ? "good" : "muted"}`}>{robot.enabled ? "启用" : "停用"}</span>
-                <OverflowMenu label={`${robot.name} 更多操作`}>
-                  <button type="button" onClick={() => editRobot(robot)}>编辑机器人</button>
-                  <button className="danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除机器人</button>
-                </OverflowMenu>
+                <button className="ghost-button compact-button" type="button" onClick={() => editRobot(robot)}>编辑</button>
+                <button className="ghost-button compact-button danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除</button>
               </article>
             )) : <div className="stockup-empty">暂无机器人。先创建一个企业微信群机器人 webhook。</div>}
           </div>
@@ -7897,10 +7463,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                 <small>{schedule.lastError ? `错误：${schedule.lastError}` : `最近发送：${schedule.lastSentAt ? formatDateTime(schedule.lastSentAt) : "暂无"}`}</small>
               </div>
               <span className={`status-pill ${schedule.enabled ? "good" : "muted"}`}>{schedule.enabled ? "启用" : "停用"}</span>
-              <OverflowMenu label={`${schedule.name} 更多操作`}>
-                <button type="button" onClick={() => editSchedule(schedule)}>编辑定时推送</button>
-                <button className="danger-button" type="button" disabled={busy === schedule.id} onClick={() => removeSchedule(schedule)}>删除定时推送</button>
-              </OverflowMenu>
+              <button className="ghost-button compact-button" type="button" onClick={() => editSchedule(schedule)}>编辑</button>
+              <button className="ghost-button compact-button danger-button" type="button" disabled={busy === schedule.id} onClick={() => removeSchedule(schedule)}>删除</button>
             </article>
           )) : <div className="stockup-empty">暂无定时推送。</div>}
         </div>
@@ -7954,7 +7518,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
             <small>最近发送：{sceneForm.afterSalesNew?.lastSentAt ? formatDateTime(sceneForm.afterSalesNew.lastSentAt) : "暂无"}</small>
           </article>
           {([
-            ["stockupRecommendation", "备货预警长图", "可按新增预警触发，也可设定北京时间每天推送销售趋势、昨日单量、委外在产、建议量与预计断货时间。"],
+            ["stockupRecommendation", "备货预警长图", "可按新增预警触发，也可设定北京时间每天定时推送最新备货清单。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
             ["afterSalesProgress", "海外仓协同处理进度更新时", "优先按提交人的项目群通知；未配置或发送失败时回退到全局运营群。"],
@@ -7967,45 +7531,29 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                     <h3>{title}</h3>
                     <p>{description}</p>
                   </div>
-                  <label className={`wecom-switch ${scene.enabled ? "is-enabled" : "is-disabled"}`}>
+                  <label className="wecom-switch">
                     <input type="checkbox" checked={scene.enabled} onChange={(event) => updateScene(key, { enabled: event.target.checked })} />
-                    <span>{scene.enabled ? "已启用" : "未启用"}</span>
+                    <span>{scene.enabled ? "启用" : "停用"}</span>
                   </label>
                 </div>
                 {key === "stockupRecommendation" ? (
-                  <>
-                    <div className={`wecom-stockup-status ${scene.enabled ? "is-enabled" : "is-disabled"}`}>
-                      {scene.enabled ? <Check size={18} /> : <AlertTriangle size={18} />}
-                      <div>
-                        <strong>{scene.enabled ? "备货预警长图已启用" : "当前未启用，不会自动推送"}</strong>
-                        <span>{scene.enabled
-                          ? (["daily", "both"].includes(scene.triggerMode || "change")
-                            ? `每天北京时间 ${scene.scheduleTime || "09:00"} 执行；错过计划时间会在当天自动补发。`
-                            : "发现新增备货预警时自动推送。")
-                          : "时间、接收群即使已填写，未启用时调度器也不会执行。"}</span>
-                      </div>
-                    </div>
-                    <div className="wecom-stockup-schedule">
+                  <div className="wecom-stockup-schedule">
+                    <label>
+                      <span>触发方式</span>
+                      <select value={scene.triggerMode || "change"} onChange={(event) => updateScene(key, { triggerMode: event.target.value as "change" | "daily" | "both" })}>
+                        <option value="change">仅在产生新预警时</option>
+                        <option value="daily">每天定时推送</option>
+                        <option value="both">新预警 + 每天定时</option>
+                      </select>
+                    </label>
+                    {["daily", "both"].includes(scene.triggerMode || "change") ? (
                       <label>
-                        <span>触发方式</span>
-                        <select value={scene.triggerMode || "change"} onChange={(event) => {
-                          const triggerMode = event.target.value as "change" | "daily" | "both";
-                          updateScene(key, { triggerMode, ...(["daily", "both"].includes(triggerMode) ? { enabled: true } : {}) });
-                        }}>
-                          <option value="change">仅在产生新预警时</option>
-                          <option value="daily">每天定时推送</option>
-                          <option value="both">新预警 + 每天定时</option>
-                        </select>
+                        <span>定时推送时间（北京时间）</span>
+                        <input type="time" value={scene.scheduleTime || "09:00"} onChange={(event) => updateScene(key, { scheduleTime: event.target.value })} />
+                        <small>每天 {scene.scheduleTime || "09:00"} 重新读取最新备货预警后推送。</small>
                       </label>
-                      {["daily", "both"].includes(scene.triggerMode || "change") ? (
-                        <label>
-                          <span>定时推送时间（北京时间）</span>
-                          <input type="time" value={scene.scheduleTime || "09:00"} onChange={(event) => updateScene(key, { scheduleTime: event.target.value, enabled: true })} />
-                          <small>每天 {scene.scheduleTime || "09:00"} 重新读取最新备货预警后推送。</small>
-                        </label>
-                      ) : null}
-                    </div>
-                  </>
+                    ) : null}
+                  </div>
                 ) : null}
                 <label>
                   <span>提醒链接</span>
@@ -8016,30 +7564,9 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh, resourc
                   <textarea value={scene.extraText || ""} onChange={(event) => updateScene(key, { extraText: event.target.value })} placeholder="可选，追加到自动生成的消息后面" />
                 </label>
                 <span className="field-label">推送机器人</span>
-                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, {
-                  robotIds,
-                  ...(["stockupRecommendation", "afterSalesProgress"].includes(key) && robotIds.length ? { enabled: true } : {}),
-                })} />
-                {key === "stockupRecommendation" ? (
-                  <div className="wecom-scene-actions">
-                    <a className="ghost-button compact-button" href="/api/wecom-notifications/stockup-preview" target="_blank" rel="noreferrer">预览当前长图</a>
-                    <button
-                      className="sync-button compact-button"
-                      type="button"
-                      onClick={sendStockupWarningTest}
-                      disabled={busy === "stockup-test" || !scene.robotIds?.length}
-                      title={scene.robotIds?.length ? "发送真实长图和详情链接；不影响正式推送" : "请先选择推送机器人"}
-                    >
-                      <Image size={14} />
-                      {busy === "stockup-test" ? "正在生成并发送" : "测试发送"}
-                    </button>
-                    <small>使用当前配置发送，不占用当天正式推送次数。</small>
-                  </div>
-                ) : null}
+                <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds, ...(key === "afterSalesProgress" && robotIds.length ? { enabled: true } : {}) })} />
                 {scene.enabled && !(scene.robotIds || []).length ? <small className="wecom-recipient-error">已启用但未选择接收群，系统将拒绝保存和发送。</small> : null}
                 {scene.lastError ? <small className="wecom-error">最近错误：{scene.lastError}</small> : null}
-                {key === "stockupRecommendation" && scene.lastScheduleMessage ? <small className="wecom-schedule-message">调度状态：{scene.lastScheduleMessage}</small> : null}
-                {key === "stockupRecommendation" && scene.lastScheduleAttemptAt ? <small>最近调度：{formatDateTime(scene.lastScheduleAttemptAt)}</small> : null}
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );
@@ -8338,6 +7865,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   const [notice, setNotice] = React.useState("");
   const [name, setName] = React.useState("我的 Agent");
   const [expiresInDays, setExpiresInDays] = React.useState(90);
+  const [allowStockupDrafts, setAllowStockupDrafts] = React.useState(false);
   const [newApiKey, setNewApiKey] = React.useState("");
   const manifestUrl = new URL(resolveApiUrl("/api/agent/manifest"), window.location.href).toString();
   const openApiUrl = new URL(resolveApiUrl("/api/agent/openapi.json"), window.location.href).toString();
@@ -8346,6 +7874,8 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
   const agentConfig = `TONGZHOU_AGENT_BASE_URL=${apiBaseUrl}\nTONGZHOU_AGENT_TOKEN=<YOUR_API_KEY>`;
   const curlExample = `curl "${apiBaseUrl}/api/agent/search?q=SKU&types=product_catalog" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
   const comparisonCurlExample = `curl "${apiBaseUrl}/api/movement-history/compare?period=month&warehouseId=<WAREHOUSE_ID>&timezone=Asia%2FShanghai" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>"`;
+
+  const stockupDraftCurlExample = `curl -X POST "${apiBaseUrl}/api/agent/stockup-request-drafts" -H "Authorization: Bearer <YOUR_API_KEY>" -H "Idempotency-Key: <UNIQUE_KEY>" -H "Content-Type: application/json" -d '{"project":"Agent 草稿","destinationCountry":"印度尼西亚","destinationWarehouseId":"<WAREHOUSE_ID>","destinationWarehouseName":"<WAREHOUSE_NAME>","expectedArrivalAt":"2026-12-01","reason":"库存预警","lines":[{"sku":"SKU-001","productName":"商品","requestedQty":100,"unit":"件"}]}'`;
 
   const loadKeys = React.useCallback(async () => {
     setLoadingKeys(true);
@@ -8374,7 +7904,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
     setError("");
     setNotice("");
     try {
-      const payload = await createAgentApiKey({ name, expiresInDays });
+      const payload = await createAgentApiKey({ name, expiresInDays, scopes: allowStockupDrafts ? ["agent:read", "stockup_request_draft_create"] : ["agent:read"] });
       setNewApiKey(payload.apiKey);
       setNotice("API Key 已创建。完整密钥只显示这一次，请立即复制到 Agent 配置中。");
       await loadKeys();
@@ -8440,7 +7970,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
               <p className="eyebrow">Personal Credential</p>
               <h3>我的 Agent API Key</h3>
             </div>
-            <span className="agent-scope-badge">只读 · agent:read</span>
+            <span className="agent-scope-badge">默认只读 · 写入需单独授权</span>
           </div>
 
           <form className="agent-key-form" onSubmit={handleCreate}>
@@ -8457,6 +7987,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
                 <option value={365}>365 天</option>
               </select>
             </label>
+            {hasUserPermission(currentUser, "stockup_request_create") ? <label><span>可选写入权限</span><span><input type="checkbox" checked={allowStockupDrafts} onChange={(event) => setAllowStockupDrafts(event.target.checked)} /> 仅允许创建现货备货草稿</span></label> : null}
             <button className="sync-button" type="submit" disabled={creating || !name.trim()}>
               <KeyRound size={16} />
               {creating ? "创建中" : "创建 API Key"}
@@ -8495,6 +8026,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
                   </span>
                 </div>
                 <div className="agent-key-meta">
+                  <span>Scope：{key.scopes?.join(" · ") || key.scope}</span>
                   <span>创建：{formatDateTime(key.createdAt)}</span>
                   <span>到期：{formatDateTime(key.expiresAt)}</span>
                   <span>最近使用：{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : "尚未使用"}</span>
@@ -8563,6 +8095,14 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
             </section>
           ) : null}
 
+          {hasUserPermission(currentUser, "stockup_request_create") ? (
+            <section className="panel">
+              <div className="section-title-row"><div><p className="eyebrow">Draft-only Write</p><h3>创建现货备货草稿</h3></div><button className="ghost-button compact-button" type="button" onClick={() => void handleCopy(stockupDraftCurlExample, "备货草稿 curl 示例已复制。") }><Copy size={15} />复制</button></div>
+              <p className="agent-operation-note">必须使用带 stockup_request_draft_create scope 的 Key 和唯一 Idempotency-Key。服务端强制 source=agent、status=draft，Agent 无法提交、采购、锁库、调用 WMS 或确认出库。</p>
+              <pre className="agent-code-block"><code>{stockupDraftCurlExample}</code></pre>
+            </section>
+          ) : null}
+
           <section className="panel agent-endpoint-list">
             <p className="eyebrow">Endpoints</p>
             <h3>Agent 会用到的接口</h3>
@@ -8577,6 +8117,7 @@ function AgentApiAccessPage({ currentUser }: { currentUser: AuthUser }) {
                 ["国内仓批次（Agent）", "/api/agent/resources/domestic_inventory_lot"],
                 ["国内仓业务 API", "/api/domestic-inventory/*（登录会话）"],
               ] : []),
+              ...(hasUserPermission(currentUser, "stockup_request_create") ? [["创建备货草稿", "/api/agent/stockup-request-drafts（独立 scope）"]] : []),
               ...(currentUser.role === "admin" ? [["库存差异计算", "/api/movement-history/compare"]] : []),
             ].map(([label, endpoint]) => (
               <div key={endpoint}>
@@ -9783,7 +9324,6 @@ function WarehouseBoard({
   onTest,
   canConfigure,
   canSync,
-  resourceState,
 }: {
   mode?: "authorization" | "inventory";
   warehousePayload: WarehousePayload | null;
@@ -9797,7 +9337,6 @@ function WarehouseBoard({
   onTest: (input: Parameters<typeof testWarehouseConnection>[0]) => Promise<Awaited<ReturnType<typeof testWarehouseConnection>>>;
   canConfigure: boolean;
   canSync: boolean;
-  resourceState: CoreResourceState;
 }) {
   const confirm = useConfirm();
   const authorizationMode = mode === "authorization";
@@ -9939,15 +9478,8 @@ function WarehouseBoard({
     downloadTextFile(`tongzhou-product-missing-warehouse-sku-${new Date().toISOString().slice(0, 10)}.csv`, productMissingWarehouseCsv, "text/csv;charset=utf-8");
   }
 
-  if (resourceState.phase === "loading" && !warehousePayload) {
-    return <main className="warehouse-page"><DataContextBar loading /><ResourceBoundary loading hasData={false}><span /></ResourceBoundary></main>;
-  }
-  const warehouseDataComplete = warehousePayload?.dataContext?.completeness === "complete";
-  const warehouseMetric = (value: number) => warehouseDataComplete || value !== 0 ? formatNumber(value) : "—";
-
   return (
     <main className="warehouse-page">
-      <DataContextBar context={warehousePayload?.dataContext} loading={resourceState.phase === "loading"} refreshing={resourceState.phase === "refreshing" || syncing} error={resourceState.error} onRetry={onSync} />
       <section className="library-hero warehouse-hero">
         <div>
           <p className="eyebrow">{authorizationMode ? "Warehouse Authorization" : "Inventory Synchronization"}</p>
@@ -9958,10 +9490,10 @@ function WarehouseBoard({
           <div className="source-row">
             {authorizationMode ? <>
               <span className={`status-pill ${authorizedCount === connections.length && connections.length ? "good" : "warning"}`}>授权状态</span>
-              <span>{warehousePayload ? `${authorizedCount} / ${connections.length}` : "—"} 个仓库已授权</span>
+              <span>{authorizedCount} / {connections.length} 个仓库已授权</span>
             </> : <>
               <span className={`status-pill ${warehousePayload?.lastSync?.syncedAt ? "good" : "warning"}`}>{warehousePayload?.lastSync?.syncedAt ? "同步快照可用" : "等待首次同步"}</span>
-              <span>{warehousePayload ? `${connections.length} 个仓库` : "仓库范围读取中"} · {warehousePayload?.lastSync?.syncedAt ? `更新于 ${formatDateTime(warehousePayload.lastSync.syncedAt)}` : "尚无同步时间"}</span>
+              <span>{connections.length} 个仓库 · {warehousePayload?.lastSync?.syncedAt ? `更新于 ${formatDateTime(warehousePayload.lastSync.syncedAt)}` : "尚无同步时间"}</span>
             </>}
           </div>
         </div>
@@ -9999,10 +9531,10 @@ function WarehouseBoard({
       ) : null}
 
       <section className="metric-strip warehouse-metrics">
-        <Metric title="仓库图片" value={warehousePayload ? warehouseMetric(warehousePayload.lastSync?.imageCount ?? 0) : "—"} note="可作为产品图兜底" icon={ShoppingBag} tone="blue" />
-        <Metric title="库存记录" value={warehousePayload ? warehouseMetric(warehousePayload.lastSync?.inventoryCount ?? 0) : "—"} note="WMS 原始仓维度" icon={Boxes} tone="green" />
-        <Metric title="同步批次" value={warehousePayload ? (warehousePayload.lastSync?.syncedAt ? "1" : "—") : "—"} note={warehousePayload?.lastSync?.syncedAt ? new Date(warehousePayload.lastSync.syncedAt).toLocaleString("zh-CN") : "等待同步"} icon={DatabaseZap} tone="orange" />
-        <Metric title="待授权仓库" value={warehousePayload ? warehouseMetric(connections.length - authorizedCount) : "—"} note="补齐凭据后启用" icon={ShieldCheck} tone="red" />
+        <Metric title="仓库图片" value={formatNumber(warehousePayload?.lastSync?.imageCount ?? 0)} note="可作为产品图兜底" icon={ShoppingBag} tone="blue" />
+        <Metric title="库存记录" value={formatNumber(warehousePayload?.lastSync?.inventoryCount ?? 0)} note="合并到产品中心" icon={Boxes} tone="green" />
+        <Metric title="同步批次" value={warehousePayload?.lastSync?.syncedAt ? "1" : "0"} note={warehousePayload?.lastSync?.syncedAt ? new Date(warehousePayload.lastSync.syncedAt).toLocaleString("zh-CN") : "等待同步"} icon={DatabaseZap} tone="orange" />
+        <Metric title="待授权仓库" value={String(connections.length - authorizedCount)} note="补齐凭据后启用" icon={ShieldCheck} tone="red" />
       </section>
 
       <section className="panel gap-panel">
@@ -10019,8 +9551,8 @@ function WarehouseBoard({
           </div>
         </div>
         <div className="gap-summary">
-          <span>仓库有库存但系统未建档：<strong>{warehouseMetric(warehouseOnlyCount)}</strong></span>
-          <span>系统有产品但仓库无库存：<strong>{warehouseMetric(productMissingWarehouseCount)}</strong></span>
+          <span>仓库有库存但系统未建档：<strong>{formatNumber(warehouseOnlyCount)}</strong></span>
+          <span>系统有产品但仓库无库存：<strong>{formatNumber(productMissingWarehouseCount)}</strong></span>
         </div>
         {gapCopyMessage ? <div className="notice good compact-notice">{gapCopyMessage}</div> : null}
         {warehouseOnlySummary.length ? (

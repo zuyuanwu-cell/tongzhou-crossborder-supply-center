@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { estimateSingleCartonCapacity, generateLoadingCandidates, simulateContainerLoading } from "../server/container-loading-engine.js";
+import { generateLoadingCandidates, simulateContainerLoading } from "../server/container-loading-engine.js";
 import { initStockupCollaborationStore } from "../server/stockup-collaboration-db.js";
 import { createContainerLoadingService } from "../server/container-loading-service.js";
 
@@ -34,44 +34,6 @@ const overweight = simulateContainerLoading({
 assert.ok(overweight.metrics.loadedCartons <= 28);
 assert.ok(overweight.metrics.loadedWeightKg <= container.maxPayloadKg);
 
-const quickEstimate = estimateSingleCartonCapacity({
-  containers: [container],
-  containerType: "20GP",
-  carton: { unitsPerCarton: 24, cartonLengthCm: 60, cartonWidthCm: 40, cartonHeightCm: 40, cartonWeightKg: 10, orientation: "upright" },
-});
-assert.equal(quickEstimate.selected.container.code, "20GP");
-assert.equal(quickEstimate.selected.maxCartons, 218, "default safety reserve should reduce the raw 225-carton grid");
-assert.equal(quickEstimate.selected.maxUnits, 5232);
-assert.equal(quickEstimate.selected.limitingFactor, "space");
-assert.deepEqual(quickEstimate.selected.layout, { alongLength: 9, acrossWidth: 5, layers: 5 });
-
-const targetEstimate = estimateSingleCartonCapacity({
-  containers: [
-    container,
-    { code: "40GP", name: "40GP", lengthCm: 1203, widthCm: 235, heightCm: 239, doorWidthCm: 234, doorHeightCm: 228, maxPayloadKg: 26700 },
-    { code: "40HQ", name: "40HQ", lengthCm: 1203, widthCm: 235, heightCm: 269, doorWidthCm: 234, doorHeightCm: 258, maxPayloadKg: 26480 },
-  ],
-  containerType: "AUTO",
-  targetCartons: 500,
-  carton: { unitsPerCarton: 24, cartonLengthCm: 60, cartonWidthCm: 40, cartonHeightCm: 40, cartonWeightKg: 10, orientation: "upright" },
-});
-assert.equal(targetEstimate.selected.container.code, "40HQ", "auto selection should choose the smallest container that fits the target");
-assert.equal(targetEstimate.selected.targetFits, true);
-
-const heavyEstimate = estimateSingleCartonCapacity({
-  containers: [container], containerType: "20GP",
-  carton: { unitsPerCarton: 1, cartonLengthCm: 60, cartonWidthCm: 40, cartonHeightCm: 40, cartonWeightKg: 1000, orientation: "upright" },
-});
-assert.equal(heavyEstimate.selected.maxCartons, 27);
-assert.equal(heavyEstimate.selected.limitingFactor, "weight");
-
-const blockedEstimate = estimateSingleCartonCapacity({
-  containers: [container], containerType: "20GP",
-  carton: { unitsPerCarton: 1, cartonLengthCm: 100, cartonWidthCm: 240, cartonHeightCm: 100, cartonWeightKg: 10, orientation: "fixed" },
-});
-assert.equal(blockedEstimate.selected.maxCartons, 0);
-assert.ok(blockedEstimate.selected.warnings.some((warning) => warning.includes("柜门")));
-
 const directory = await mkdtemp(join(tmpdir(), "tongzhou-container-loading-"));
 try {
   const store = await initStockupCollaborationStore(join(directory, "stockup.sqlite"));
@@ -100,12 +62,13 @@ try {
   const bootstrap = service.bootstrap(context);
   assert.equal(bootstrap.shipments.length, 1);
   assert.equal(bootstrap.containerTypes.length, 4);
-  const serviceEstimate = service.quickEstimate({
-    containerType: "20GP",
-    carton: { unitsPerCarton: 12, cartonLengthCm: 50, cartonWidthCm: 40, cartonHeightCm: 30, cartonWeightKg: 8 },
-  }, context);
-  assert.equal(serviceEstimate.ok, true);
-  assert.ok(serviceEstimate.estimate.selected.maxCartons > 0);
+
+  const preview = await service.calculatePreview({ sourceShipmentId: shipment.id, containerType: "20GP", selectedStrategy: "balanced" }, context);
+  assert.equal(preview.preview, true);
+  assert.equal(preview.sourceShipmentNo, shipment.shipmentNo);
+  assert.equal(preview.candidates.length, 3);
+  assert.equal(preview.selectedStrategy, "balanced");
+  assert.equal(service.listPlans({}, context).plans.length, 0, "临时测算不得创建正式装柜方案");
 
   const created = await service.createPlan({ sourceShipmentId: shipment.id, containerType: "20GP", selectedStrategy: "balanced" }, context);
   assert.equal(created.plan.sourceShipmentNo, shipment.shipmentNo);
@@ -121,23 +84,6 @@ try {
     items: [{ ...items[0], id: "worker-sku", cartonCount: 300 }],
   }, context);
   assert.equal(workerCreated.plan.candidates.length, 3, "large plans should be calculated in a worker thread");
-
-  const autoCreated = await service.createPlan({ containerType: "AUTO", items }, context);
-  assert.equal(autoCreated.plan.containerRecommendation.mode, "auto");
-  assert.equal(autoCreated.plan.container.code, "20GP", "auto mode should choose the smallest standard container that fits all cartons");
-  assert.ok(autoCreated.plan.containerRecommendation.reason.includes("最小标准柜型"));
-
-  const voided = service.voidPlan(autoCreated.plan.id, { expectedVersion: autoCreated.plan.version, reason: "测试归档" }, context);
-  const archived = service.archivePlan(voided.plan.id, { expectedVersion: voided.plan.version }, context);
-  assert.equal(archived.plan.lifecycleStatus, "archived");
-  assert.equal(service.listPlans({}, context).plans.some((plan) => plan.id === archived.plan.id), false, "archived plans must be hidden from the default list");
-  assert.equal(service.listPlans({ lifecycle: "archived" }, context).plans.some((plan) => plan.id === archived.plan.id), true);
-  const restored = service.restorePlan(archived.plan.id, { expectedVersion: archived.plan.version }, context);
-  assert.equal(restored.plan.lifecycleStatus, "active");
-  const deleted = service.deletePlan(restored.plan.id, { expectedVersion: restored.plan.version }, context);
-  assert.equal(deleted.deletedPlan.id, restored.plan.id);
-  assert.throws(() => service.getPlan(restored.plan.id, context), /未找到装柜方案/);
-  assert.throws(() => service.deletePlan(workerCreated.plan.id, { expectedVersion: workerCreated.plan.version }, context), /只有已作废方案/);
 
   const selected = created.plan.candidates.find((candidate) => candidate.strategy === "balanced");
   const saved = service.saveVersion(created.plan.id, { expectedVersion: created.plan.version, strategy: "balanced", placements: selected.placements }, context);

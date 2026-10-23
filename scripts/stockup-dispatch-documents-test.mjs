@@ -50,4 +50,3 @@ try {
 } finally {
   rmSync(outputDir, { recursive: true, force: true });
 }
-

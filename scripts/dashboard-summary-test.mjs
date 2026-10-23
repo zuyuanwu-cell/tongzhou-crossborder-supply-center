@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildDashboardMarketSnapshot, buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "../server/dashboard-summary.js";
+import { buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "../server/dashboard-summary.js";
 
 const mixed = summarizeOrderAmounts([
   { salesAmount: 100, currency: "CNY", salesAmountValid: true },
@@ -41,20 +41,6 @@ assert.equal(health.incompleteCount, 2);
 assert.equal(health.failedCount, 1);
 assert.equal(health.partialCount, 1);
 
-const markets = buildDashboardMarketSnapshot([
-  { currency: "RUB", effectiveDate: "2026-10-10", rateToCny: 0.088, source: "auto:frankfurter", updatedAt: "2026-10-10T01:00:00.000Z" },
-  { currency: "RUB", effectiveDate: "2026-10-11", rateToCny: 0.089, source: "manual", updatedAt: "2026-10-11T01:00:00.000Z" },
-  { currency: "IDR", effectiveDate: "2026-10-11", rateToCny: 0.00045, source: "auto:frankfurter", updatedAt: "2026-10-11T01:00:00.000Z" },
-  { currency: "MYR", effectiveDate: "invalid", rateToCny: 1.55, source: "auto:frankfurter" },
-], { provider: "Frankfurter", providerUrl: "https://frankfurter.dev/", lastSuccessAt: "2026-10-11T01:00:00.000Z" });
-assert.deepEqual(markets.items.map((item) => item.currency), ["RUB", "IDR", "VND", "MYR"]);
-assert.equal(markets.items[0].rateToCny, 0.089);
-assert.equal(markets.items[0].effectiveDate, "2026-10-11");
-assert.equal(markets.items[2].rateToCny, null);
-assert.equal(markets.items[3].rateToCny, null);
-assert.equal(markets.provider, "Frankfurter");
-
 console.log("[ok] mixed currencies are never added into one unlabeled amount");
 console.log("[ok] truncated and unconfigured warehouses are not marked healthy");
 console.log("[ok] overall health reflects the weakest warehouse dependency");
-console.log("[ok] dashboard markets use the latest valid rate in a fixed business order");

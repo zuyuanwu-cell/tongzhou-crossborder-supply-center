@@ -26,3 +26,4 @@ export function consumeHermesHandoff(): HermesHandoff | null {
     return null;
   }
 }
+

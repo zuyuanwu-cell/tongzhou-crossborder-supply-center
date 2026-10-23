@@ -71,16 +71,16 @@ function syncObservations(source = {}, nowMs, staleAfterMs) {
       warehouseId,
       country: text(result.country || warehouse?.country),
       title: `${text(result.warehouseName, warehouseId) || "仓库"}同步失败`,
-      summary: text(result.message) || "仓库同步未成功，请检查连接配置和上游服务。",
+      summary: text(result.message) || "仓库数据源最近一次同步未成功。",
       severity: "critical",
-      evidence: [{ type: "warehouse_sync", id: warehouseId, label: "同步错误", value: text(result.message) || "failed", updatedAt: iso(result.updatedAt || source.syncedAt) }],
+      evidence: [{ type: "warehouse_sync", id: warehouseId, label: "同步结果", value: text(result.message) || "failed", updatedAt: iso(result.updatedAt || source.syncedAt) }],
       href: "#inventory",
       sourceUpdatedAt: result.updatedAt || source.syncedAt,
     }));
   }
   const syncedAt = Date.parse(text(source.syncedAt));
   if (Number.isFinite(syncedAt) && nowMs - syncedAt > staleAfterMs) {
-    for (const warehouse of warehouses.length ? warehouses : [{ id: "all", name: "全部仓库" }]) {
+    for (const warehouse of warehouses.length ? warehouses : [{ id: "all", name: "仓库数据" }]) {
       const warehouseId = text(warehouse.id || warehouse.warehouseId);
       output.push(observation({
         ruleCode: "warehouse_sync_stale",
@@ -88,10 +88,10 @@ function syncObservations(source = {}, nowMs, staleAfterMs) {
         resourceId: warehouseId || "all",
         warehouseId: warehouseId === "all" ? "" : warehouseId,
         country: text(warehouse.country),
-        title: `${text(warehouse.name || warehouse.warehouseName) || "仓库"}数据已过期`,
-        summary: `最近一次成功同步时间为 ${new Date(syncedAt).toISOString()}。`,
+        title: `${text(warehouse.name || warehouse.warehouseName) || "仓库数据"}长时间未更新`,
+        summary: `最近更新时间为 ${new Date(syncedAt).toISOString()}。`,
         severity: nowMs - syncedAt > staleAfterMs * 3 ? "critical" : "high",
-        evidence: [{ type: "warehouse_sync", id: warehouseId || "all", label: "同步时间", value: new Date(syncedAt).toISOString(), updatedAt: new Date(syncedAt).toISOString() }],
+        evidence: [{ type: "warehouse_sync", id: warehouseId || "all", label: "最后同步", value: new Date(syncedAt).toISOString(), updatedAt: new Date(syncedAt).toISOString() }],
         href: "#inventory",
         sourceUpdatedAt: new Date(syncedAt).toISOString(),
       }));
@@ -149,9 +149,9 @@ function stockupObservations(source = {}, nowMs) {
       country: text(task.country || task.destinationCountry),
       sku,
       title: `${text(task.taskNo || task.id) || "备货任务"}已逾期`,
-      summary: `预计日期 ${iso(dueAt) || dueAt}，当前逾期 ${late} 天，状态为 ${text(task.status) || "未知"}。`,
+      summary: `预计节点 ${iso(dueAt) || dueAt}，已逾期 ${late} 天，当前状态 ${text(task.status) || "未知"}。`,
       severity: late >= 3 ? "critical" : "high",
-      evidence: [{ type: "stockup_task", id: text(task.id), label: "预计日期", value: dueAt, updatedAt: iso(task.updatedAt) }],
+      evidence: [{ type: "stockup_task", id: text(task.id), label: "预计完成", value: dueAt, updatedAt: iso(task.updatedAt) }],
       href: "#stockup-execution",
       sourceUpdatedAt: task.updatedAt,
     }));
@@ -168,7 +168,7 @@ function stockupObservations(source = {}, nowMs) {
       warehouseId: text(request.destinationWarehouseId),
       project: text(request.project),
       country: text(request.country || request.destinationCountry),
-      title: `${text(request.requestNo || request.id) || "备货需求"}预计到仓逾期`,
+      title: `${text(request.requestNo || request.id) || "备货需求"}未按期完成`,
       summary: `预计到仓 ${iso(dueAt) || dueAt}，已逾期 ${late} 天。`,
       severity: late >= 3 ? "critical" : "high",
       evidence: [{ type: "stockup_request", id: text(request.id), label: "预计到仓", value: dueAt, updatedAt: iso(request.updatedAt) }],
@@ -211,7 +211,7 @@ function productionObservations(source = {}, nowMs) {
         country: text(timeline.country || timeline.destinationCountry),
         sku: text(timeline.sku),
         title: `${text(timeline.orderNo || timeline.orderRecordId) || "生产单"}临近交期但物料未齐`,
-        summary: `距离预计完成约 ${Math.ceil(hoursUntilDue)} 小时，缺料数量 ${number(timeline.missingMaterialQty)}。`,
+        summary: `距离计划完成不足 ${Math.ceil(hoursUntilDue)} 小时，缺料数量 ${number(timeline.missingMaterialQty)}。`,
         severity: hoursUntilDue <= 24 ? "critical" : "high",
         evidence: [{ type: "production_material", id: text(timeline.orderRecordId), label: "缺料", value: number(timeline.missingMaterialQty), updatedAt: iso(timeline.updatedAt) }],
         href: "#production",

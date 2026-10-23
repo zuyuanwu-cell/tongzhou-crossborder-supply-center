@@ -8,6 +8,9 @@ services:
       - -ec
       - |
         umask 077
+        printf '%s\n' \
+          "HERMES_MODEL_API_KEY=$${HERMES_MODEL_API_KEY}" \
+          > /opt/data/.env
         mkdir -p /opt/data/profiles/tongzhou-partner-progress
         printf '%s\n' \
           "API_SERVER_KEY=$${HERMES_PARTNER_API_KEY}" \

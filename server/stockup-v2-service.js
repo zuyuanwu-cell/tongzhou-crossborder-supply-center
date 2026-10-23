@@ -169,6 +169,48 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     });
   }
 
+  function updateRequestLineProcurement(requestLineId, payload, context = {}) {
+    const line = store.first(`SELECT l.*,r.workflow_version,r.status AS request_status,r.version AS request_version
+      FROM stockup_request_lines l JOIN stockup_requests r ON r.id=l.request_id WHERE l.id=?`, [text(requestLineId)]);
+    if (!line || number(line.workflow_version) !== 2) fail("现货备货商品不存在。", "purchase_request_line_not_found", 404);
+    if (payload.requestVersion != null && number(payload.requestVersion) !== number(line.request_version)) fail("备货需求已被其他用户更新，请刷新后重试。", "version_conflict", 409);
+    const action = text(payload.action);
+    if (!["close", "reopen"].includes(action)) fail("采购处理动作无效。", "procurement_line_action_invalid");
+    const request = getRequest(text(line.request_id), { ...context, viewAll: true });
+    const currentLine = request.lines.find((item) => item.id === text(line.id));
+    if (!currentLine) fail("当前账号无权处理该商品。", "purchase_request_line_forbidden", 403);
+    const now = nowIso();
+    const actor = userOf(context);
+
+    if (action === "close") {
+      if (text(line.status) === "procurement_cancelled") return { ok: true, idempotentReplay: true, request };
+      if (!["submitted", "purchasing"].includes(text(line.request_status))) fail("当前备货需求状态不能终止采购。", "procurement_line_state", 409);
+      const reason = required(payload.reason, "终止采购原因");
+      const activePurchasedQty = number(store.first("SELECT SUM(quantity-cancelled_qty) AS qty FROM stockup_purchase_order_lines WHERE request_line_id=? AND status!='cancelled'", [line.id])?.qty);
+      if (activePurchasedQty > 0) fail("该商品已经产生有效采购单，请在采购单明细中登记断货/取消，不能按采购前终止处理。", "procurement_line_has_purchase", 409);
+      const hasWarehouseWorkOrder = store.first("SELECT 1 AS found FROM stockup_warehouse_work_order_lines WHERE request_line_id=? LIMIT 1", [line.id]);
+      if (hasWarehouseWorkOrder) fail("该商品已经生成国内仓工单，不能按采购前终止处理。", "procurement_line_has_work_order", 409);
+      return store.transaction(() => {
+        store.run("UPDATE stockup_request_lines SET status='procurement_cancelled',procurement_closed_reason=?,procurement_closed_at=?,procurement_closed_by=?,updated_at=? WHERE id=?", [reason, now, actor.name, now, line.id]);
+        const openLineCount = number(store.first("SELECT COUNT(*) AS count FROM stockup_request_lines WHERE request_id=? AND status!='procurement_cancelled'", [line.request_id])?.count);
+        const nextRequestStatus = openLineCount === 0 ? "cancelled" : text(line.request_status);
+        store.run("UPDATE stockup_requests SET status=?,version=version+1,updated_at=? WHERE id=?", [nextRequestStatus, now, line.request_id]);
+        addEvent(text(line.request_id), "procurement_line_closed", "商品已终止采购", `${text(line.sku)} · ${reason}`, context, { lineId: text(line.id), payload: { reason, source: "before_purchase" } });
+        return { ok: true, idempotentReplay: false, request: getRequest(text(line.request_id), { ...context, viewAll: true }) };
+      });
+    }
+
+    if (text(line.status) !== "procurement_cancelled") return { ok: true, idempotentReplay: true, request };
+    if (!["cancelled", "submitted", "purchasing"].includes(text(line.request_status))) fail("当前备货需求状态不能恢复采购。", "procurement_line_reopen_state", 409);
+    return store.transaction(() => {
+      const nextRequestStatus = text(line.request_status) === "cancelled" ? "submitted" : text(line.request_status);
+      store.run("UPDATE stockup_request_lines SET status=?,procurement_closed_reason='',procurement_closed_at=NULL,procurement_closed_by='',updated_at=? WHERE id=?", [nextRequestStatus, now, line.id]);
+      store.run("UPDATE stockup_requests SET status=?,version=version+1,updated_at=? WHERE id=?", [nextRequestStatus, now, line.request_id]);
+      addEvent(text(line.request_id), "procurement_line_reopened", "商品已恢复采购", `${text(line.sku)} · 重新进入待采购清单`, context, { lineId: text(line.id) });
+      return { ok: true, idempotentReplay: false, request: getRequest(text(line.request_id), { ...context, viewAll: true }) };
+    });
+  }
+
   function purchaseFromRow(row) {
     if (!row) return null;
     const order = { id: text(row.id), purchaseNo: text(row.purchase_no), supplierName: text(row.supplier_name), platform: text(row.platform), externalOrderNo: text(row.external_order_no), orderUrl: text(row.order_url), paidTotalCny: number(row.paid_total_cny), merchandiseTotalCny: number(row.merchandise_total_cny), sharedAmountCny: number(row.shared_amount_cny), allocationMode: text(row.allocation_mode), allocationOverrideReason: text(row.allocation_override_reason), status: text(row.status), orderedAt: text(row.ordered_at), vouchers: json(row.voucher_json, []), note: text(row.note), version: number(row.version, 1), createdBy: text(row.created_by), createdByName: text(row.created_by_name), createdAt: text(row.created_at), updatedAt: text(row.updated_at), lines: [] };
@@ -231,6 +273,48 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     if (filters.status) { where.push("status=?"); params.push(text(filters.status)); }
     if (filters.requestId) { where.push("id IN (SELECT purchase_order_id FROM stockup_purchase_order_lines WHERE request_id=?)"); params.push(text(filters.requestId)); }
     return { ok: true, purchaseOrders: store.all(`SELECT * FROM stockup_purchase_orders ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT 300`, params).map(purchaseFromRow) };
+  }
+
+  function updatePurchaseOrder(purchaseOrderId, payload, context = {}) {
+    const orderRow = store.first("SELECT * FROM stockup_purchase_orders WHERE id=?", [text(purchaseOrderId)]);
+    if (!orderRow) fail("采购单不存在。", "purchase_order_not_found", 404);
+    const order = purchaseFromRow(orderRow);
+    if (number(payload.version, order.version) !== order.version) fail("采购单已被其他用户更新，请刷新后重试。", "version_conflict", 409);
+    const hasProgress = order.lines.some((line) => line.receivedQty > 0 || line.cancelledQty > 0 || line.refundedAmountCny > 0 || line.status !== "ordered");
+    const lineIds = order.lines.map((line) => line.id);
+    const hasWarehouseWorkOrder = lineIds.length && store.first(`SELECT 1 AS found FROM stockup_warehouse_work_order_lines WHERE purchase_order_line_id IN (${lineIds.map(() => "?").join(",")}) LIMIT 1`, lineIds);
+    if (hasProgress || hasWarehouseWorkOrder) fail("该采购单已产生到货、退款或国内仓工单，为避免成本账被改写，不能再修改价格分摊。", "purchase_order_edit_locked", 409);
+
+    const inputById = new Map((Array.isArray(payload.lines) ? payload.lines : []).map((line) => [text(line.id || line.purchaseOrderLineId), line]));
+    const sources = order.lines.map((line) => {
+      const input = inputById.get(line.id) || {};
+      return { id: line.id, quantity: line.quantity, merchandiseAmount: number(input.merchandiseAmount ?? input.merchandiseAmountCny ?? line.merchandiseAmountCny), current: line };
+    });
+    const requestedOverrides = payload.allocationOverrides && typeof payload.allocationOverrides === "object" ? payload.allocationOverrides : null;
+    const allocationOverrides = requestedOverrides ? Object.fromEntries(sources.map((line) => {
+      const allocatedAmount = number(requestedOverrides[line.id]);
+      return [line.id, money(allocatedAmount - line.merchandiseAmount)];
+    })) : null;
+    const allocation = allocatePurchaseOrder({ paidTotal: payload.paidTotalCny ?? order.paidTotalCny, lines: sources, overrides: allocationOverrides });
+    if (requestedOverrides && !text(payload.allocationOverrideReason)) fail("人工调整采购分摊时必须填写原因。", "allocation_reason_required");
+    const allocationById = new Map(allocation.lines.map((line) => [line.id, line]));
+    const supplierName = required(payload.supplierName ?? order.supplierName, "供应商");
+    const externalOrderNo = text(payload.externalOrderNo ?? order.externalOrderNo);
+    const orderedAt = text(payload.orderedAt ?? order.orderedAt) || nowIso();
+    const note = text(payload.note ?? order.note);
+    const now = nowIso();
+    const requestIds = [...new Set(order.lines.map((line) => line.requestId).filter(Boolean))];
+    return store.transaction(() => {
+      store.run(`UPDATE stockup_purchase_orders SET supplier_name=?,external_order_no=?,order_url=?,paid_total_cny=?,merchandise_total_cny=?,shared_amount_cny=?,allocation_mode=?,allocation_override_reason=?,ordered_at=?,note=?,version=version+1,updated_at=? WHERE id=?`,
+        [supplierName, externalOrderNo, text(payload.orderUrl ?? order.orderUrl), allocation.paidTotal, allocation.merchandiseTotal, allocation.sharedAmount, requestedOverrides ? "manual" : "merchandise_value", text(payload.allocationOverrideReason), orderedAt, note, now, order.id]);
+      for (const source of sources) {
+        const allocated = allocationById.get(source.id);
+        store.run("UPDATE stockup_purchase_order_lines SET merchandise_amount_cny=?,shared_allocation_cny=?,allocated_amount_cny=?,estimated_unit_cost_cny=?,updated_at=? WHERE id=?", [source.merchandiseAmount, allocated.sharedAllocation, allocated.allocatedAmount, allocated.estimatedUnitCost, now, source.id]);
+        store.run("UPDATE stockup_cost_items SET vendor=?,invoice_no=?,occurred_at=?,original_amount=?,amount_cny=?,allocation_method=?,note=?,updated_at=? WHERE id=?", [supplierName, externalOrderNo, orderedAt.slice(0, 10), allocated.allocatedAmount, allocated.allocatedAmount, requestedOverrides ? "manual" : "purchase_line", note, now, `purchase-line:${source.id}`]);
+      }
+      for (const requestId of requestIds) addEvent(requestId, "purchase_order_updated", "采购单价格与分摊已修订", `${order.purchaseNo} · 实付 ¥${allocation.paidTotal}`, context, { payload: { purchaseOrderId: order.id, previousVersion: order.version } });
+      return { ok: true, purchaseOrder: purchaseFromRow(store.first("SELECT * FROM stockup_purchase_orders WHERE id=?", [order.id])) };
+    });
   }
 
   function recordPurchaseEvent(purchaseOrderId, payload, context = {}) {
@@ -343,6 +427,14 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
         store.run("UPDATE stockup_inspection_lots SET inventory_lot_id=?,inventory_movement_id=?,status='approved',updated_at=? WHERE id=?", [text(result?.lotId), inbound.movementId, now, lot.id]);
       }
       store.run("UPDATE stockup_warehouse_work_order_lines SET status='approved',updated_at=? WHERE work_order_id=?", [now, workOrder.id]);
+      const requestLineIds = [...new Set(store.all("SELECT request_line_id FROM stockup_warehouse_work_order_lines WHERE work_order_id=?", [workOrder.id]).map((line) => text(line.request_line_id)).filter(Boolean))];
+      for (const requestLineId of requestLineIds) {
+        const approvedGoodQty = number(store.first(`SELECT SUM(wl.good_qty) AS qty
+          FROM stockup_warehouse_work_order_lines wl
+          JOIN stockup_warehouse_work_orders wo ON wo.id=wl.work_order_id
+          WHERE wl.request_line_id=? AND wl.status='approved' AND wo.status!='cancelled'`, [requestLineId])?.qty);
+        store.run("UPDATE stockup_request_lines SET fulfilled_qty=?,updated_at=? WHERE id=?", [approvedGoodQty, now, requestLineId]);
+      }
       store.run("UPDATE stockup_warehouse_work_orders SET status='inventory_ready',inspection_reviewed_at=?,inspection_reviewed_by=?,inspection_review_note=?,inventory_movement_ids_json=?,version=version+1,updated_at=? WHERE id=?", [now, userOf(context).name, text(payload.note), JSON.stringify([inbound.movementId]), now, workOrder.id]);
       const pending = number(store.first("SELECT COUNT(*) AS count FROM stockup_warehouse_work_orders WHERE request_id=? AND workflow_version=2 AND status NOT IN ('inventory_ready','completed','cancelled')", [workOrder.request_id])?.count);
       if (pending === 0) store.run("UPDATE stockup_requests SET status='inventory_ready',version=version+1,updated_at=? WHERE id=?", [now, workOrder.request_id]);
@@ -375,14 +467,31 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       const lot = store.first(`SELECT il.*,wl.sku,wl.product_name,wl.image_url,wl.unit,wl.request_line_id,wo.request_id,wo.domestic_warehouse_id,wo.domestic_warehouse_name,r.destination_warehouse_id,r.destination_warehouse_name,r.destination_country,r.status AS request_status,pr.formal_sku,pr.temporary_sku,po.estimated_unit_cost_cny
         FROM stockup_inspection_lots il JOIN stockup_warehouse_work_order_lines wl ON wl.id=il.work_order_line_id JOIN stockup_warehouse_work_orders wo ON wo.id=il.work_order_id JOIN stockup_requests r ON r.id=wo.request_id LEFT JOIN stockup_product_refs pr ON pr.id=il.product_ref_id LEFT JOIN stockup_purchase_order_lines po ON po.id=il.purchase_order_line_id WHERE il.id=? AND il.status='approved'`, [text(input.inspectionLotId)]);
       if (!lot) fail("出运批次包含未审核或不存在的库存批次。", "shipment_inspection_lot_not_found", 404);
-      const reserved = number(store.first(`SELECT SUM(rl.quantity) AS qty FROM stockup_inventory_reservation_lines rl JOIN stockup_inventory_reservations r ON r.id=rl.reservation_id WHERE rl.inspection_lot_id=? AND r.status='reserved'`, [lot.id])?.qty);
+      // A committed reservation has already left the domestic warehouse and must
+      // remain unavailable. Counting only active reservations allowed the same
+      // inspection lot to become selectable again after handover.
+      const reserved = number(store.first(`SELECT SUM(rl.quantity) AS qty FROM stockup_inventory_reservation_lines rl JOIN stockup_inventory_reservations r ON r.id=rl.reservation_id WHERE rl.inspection_lot_id=? AND r.status IN ('reserved','committed')`, [lot.id])?.qty);
       const quantity = number(input.quantity);
       if (quantity <= 0 || quantity > number(lot.quantity) - reserved) fail(`${text(lot.sku)} 可锁定数量不足。`, "inspection_lot_over_reserved", 409);
-      return { ...lot, quantity };
+      const shipmentCartonCount = input.cartonCount === undefined ? number(lot.carton_count) : number(input.cartonCount);
+      const shipmentUnitsPerCarton = input.unitsPerCarton === undefined ? number(lot.units_per_carton) : number(input.unitsPerCarton);
+      if (!Number.isInteger(shipmentCartonCount) || shipmentCartonCount <= 0) fail(`${text(lot.sku)} 的发运箱数必须是大于 0 的整数。`, "shipment_carton_count_invalid");
+      if (!Number.isInteger(shipmentUnitsPerCarton) || shipmentUnitsPerCarton <= 0) fail(`${text(lot.sku)} 的每箱数量必须是大于 0 的整数。`, "shipment_units_per_carton_invalid");
+      if (shipmentCartonCount * shipmentUnitsPerCarton !== quantity) fail(`${text(lot.sku)} 的装箱数据不一致：${shipmentCartonCount} 箱 × ${shipmentUnitsPerCarton} 件/箱 = ${shipmentCartonCount * shipmentUnitsPerCarton} 件，但本次发运数量为 ${quantity} 件。`, "shipment_packaging_quantity_mismatch");
+      return { ...lot, quantity, shipment_carton_count: shipmentCartonCount, shipment_units_per_carton: shipmentUnitsPerCarton };
     });
     const first = lots[0];
     if (lots.some((lot) => text(lot.destination_warehouse_id) !== text(first.destination_warehouse_id) || text(lot.domestic_warehouse_id) !== text(first.domestic_warehouse_id))) fail("合并出运必须来自同一国内仓并发往同一海外仓。", "mixed_destination", 409);
     const transportMode = required(payload.transportMode, "运输方式");
+    const billingMethod = ["volume", "weight", "flat"].includes(text(payload.billingMethod)) ? text(payload.billingMethod) : "weight";
+    const carrierPackages = Math.max(0, number(payload.carrierPackages));
+    const carrierActualWeightKg = Math.max(0, number(payload.carrierActualWeightKg));
+    const chargeableWeightKg = Math.max(0, number(payload.chargeableWeightKg));
+    const chargeableVolumeM3 = Math.max(0, number(payload.chargeableVolumeM3));
+    const billingUnitPriceCny = Math.max(0, money(payload.billingUnitPriceCny));
+    const billingExtraFeeCny = Math.max(0, money(payload.billingExtraFeeCny));
+    const billingBasis = billingMethod === "volume" ? chargeableVolumeM3 : billingMethod === "weight" ? chargeableWeightKg : 1;
+    const quotedFreightCny = money(billingBasis * billingUnitPriceCny + billingExtraFeeCny);
     const shipmentId = id("sps");
     const shipmentNo = businessNo("FY");
     const reservationInput = { warehouseId: text(first.domestic_warehouse_id), referenceNo: shipmentNo, note: `备货出运锁库：${shipmentNo}`, lines: lots.map((lot) => ({ sku: text(lot.formal_sku || lot.temporary_sku || lot.sku), quantity: lot.quantity, lotId: text(lot.inventory_lot_id), unitCostCny: number(lot.estimated_unit_cost_cny) })) };
@@ -392,12 +501,13 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     const snapshot = { forwarderId: text(location.forwarder_id), forwarderName: text(location.forwarder_name), forwarderCode: text(location.forwarder_code), locationId: text(location.id), locationName: text(location.name), country: text(location.country), province: text(location.province), city: text(location.city), address: text(location.address), contactName: text(location.contact_name), contactPhone: text(location.contact_phone), routingRequirements: text(location.routing_requirements) };
     try {
       return store.transaction(() => {
-        store.run(`INSERT INTO stockup_shipments (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,destination_address,destination_contact_name,destination_contact_phone,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,note,box_mark,inventory_movement_id,wms_provider_id,wms_document_type,wms_push_status,wms_order_no,wms_push_error,wms_push_attempts,wms_pushed_at,wms_pushed_by,version,created_at,updated_at,workflow_version,forwarder_location_id,forwarder_snapshot_json,reservation_id,instruction_published_at,instruction_published_by,handed_over_at,document_version)
-          VALUES (${Array(45).fill("?").join(",")})`, [
+        store.run(`INSERT INTO stockup_shipments (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,destination_address,destination_contact_name,destination_contact_phone,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,billing_method,carrier_packages,carrier_actual_weight_kg,chargeable_volume_m3,billing_unit_price_cny,billing_extra_fee_cny,quoted_freight_cny,note,box_mark,inventory_movement_id,wms_provider_id,wms_document_type,wms_push_status,wms_order_no,wms_push_error,wms_push_attempts,wms_pushed_at,wms_pushed_by,version,created_at,updated_at,workflow_version,forwarder_location_id,forwarder_snapshot_json,reservation_id,instruction_published_at,instruction_published_by,handed_over_at,document_version)
+          VALUES (${Array(52).fill("?").join(",")})`, [
           shipmentId, first.request_id, shipmentNo, text(first.domestic_warehouse_name), text(first.domestic_warehouse_id), "", text(first.destination_warehouse_id), text(first.destination_warehouse_name), text(first.destination_country), "", "", "",
-          text(payload.carrier), transportMode, "", text(payload.etd), text(payload.eta), "", "inventory_reserved", lots.reduce((sum, lot) => sum + number(lot.carton_count), 0),
-          lots.reduce((sum, lot) => sum + number(lot.carton_count) * number(lot.carton_weight_kg), 0), lots.reduce((sum, lot) => sum + number(lot.carton_count) * number(lot.carton_length_cm) * number(lot.carton_width_cm) * number(lot.carton_height_cm) / 1_000_000, 0),
-          number(payload.chargeableWeightKg), text(payload.note), text(payload.boxMark), "", "", "", "not_created", "", "", 0, "", "", 1, now, now, 2, text(location.id), JSON.stringify(snapshot), external.reservation.id, "", "", "", 0,
+          text(payload.carrier), transportMode, text(payload.trackingNo), text(payload.etd), text(payload.eta), "", "inventory_reserved", lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count), 0),
+          lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count) * number(lot.carton_weight_kg), 0), lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count) * number(lot.carton_length_cm) * number(lot.carton_width_cm) * number(lot.carton_height_cm) / 1_000_000, 0),
+          chargeableWeightKg, billingMethod, carrierPackages, carrierActualWeightKg, chargeableVolumeM3, billingUnitPriceCny, billingExtraFeeCny, quotedFreightCny,
+          text(payload.note), text(payload.boxMark), "", "", "", "not_created", "", "", 0, "", "", 1, now, now, 2, text(location.id), JSON.stringify(snapshot), external.reservation.id, "", "", "", 0,
         ]);
         const reservationId = id("sir");
         store.run("INSERT INTO stockup_inventory_reservations (id,shipment_id,external_reservation_id,domestic_warehouse_id,status,reserved_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [reservationId, shipmentId, external.reservation.id, text(first.domestic_warehouse_id), "reserved", now, userOf(context).id, now, now]);
@@ -406,7 +516,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
           const shipmentLineId = id("spl");
           const sku = text(lot.formal_sku || lot.temporary_sku || lot.sku);
           store.run(`INSERT INTO stockup_shipment_lines (id,shipment_id,request_id,task_id,line_id,sku,product_name,image_url,shipped_qty,unit,base_unit_cost_cny,weight_kg,volume_m3,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,product_ref_id,purchase_order_line_id,inspection_lot_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentLineId, shipmentId, lot.request_id, "", lot.request_line_id, sku, text(lot.product_name), text(lot.image_url), lot.quantity, text(lot.unit) || "件", number(lot.estimated_unit_cost_cny), number(lot.carton_count) * number(lot.carton_weight_kg), number(lot.carton_count) * number(lot.carton_length_cm) * number(lot.carton_width_cm) * number(lot.carton_height_cm) / 1_000_000, number(lot.carton_count), number(lot.units_per_carton), number(lot.carton_length_cm), number(lot.carton_width_cm), number(lot.carton_height_cm), number(lot.carton_weight_kg), text(lot.product_ref_id), text(lot.purchase_order_line_id), text(lot.id)]);
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentLineId, shipmentId, lot.request_id, "", lot.request_line_id, sku, text(lot.product_name), text(lot.image_url), lot.quantity, text(lot.unit) || "件", number(lot.estimated_unit_cost_cny), number(lot.shipment_carton_count) * number(lot.carton_weight_kg), number(lot.shipment_carton_count) * number(lot.carton_length_cm) * number(lot.carton_width_cm) * number(lot.carton_height_cm) / 1_000_000, number(lot.shipment_carton_count), number(lot.shipment_units_per_carton), number(lot.carton_length_cm), number(lot.carton_width_cm), number(lot.carton_height_cm), number(lot.carton_weight_kg), text(lot.product_ref_id), text(lot.purchase_order_line_id), text(lot.id)]);
           const matched = externalLines.find((line) => text(line.lotId) === text(lot.inventory_lot_id) && text(line.sku) === sku && number(line.quantity) >= lot.quantity);
           store.run("INSERT INTO stockup_inventory_reservation_lines (id,reservation_id,shipment_line_id,inspection_lot_id,product_ref_id,sku,quantity,domestic_lot_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)", [id("sirl"), reservationId, shipmentLineId, lot.id, lot.product_ref_id, sku, lot.quantity, text(matched?.lotId || lot.inventory_lot_id), now]);
           store.run("INSERT OR IGNORE INTO stockup_shipment_request_links (shipment_id,request_id,created_at) VALUES (?,?,?)", [shipmentId, lot.request_id, now]);
@@ -433,7 +543,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     const now = nowIso();
     return store.transaction(() => {
       for (const document of documents) store.run("INSERT INTO stockup_dispatch_documents (id,shipment_id,version,document_type,file_name,file_path,mime_type,sha256,snapshot_json,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", [id("sdd"), shipment.id, version, required(document.documentType, "文件类型"), required(document.fileName, "文件名"), required(document.filePath, "文件路径"), "application/pdf", required(document.sha256, "文件校验值"), JSON.stringify(document.snapshot || {}), userOf(context).id, now]);
-      store.run("UPDATE stockup_shipments SET document_version=?,status='wms_created',version=version+1,updated_at=? WHERE id=?", [version, now, shipment.id]);
+      store.run("UPDATE stockup_shipments SET document_version=?,status=CASE WHEN status='inventory_reserved' THEN 'wms_created' ELSE status END,version=version+1,updated_at=? WHERE id=?", [version, now, shipment.id]);
       return { ok: true, shipmentId: shipment.id, version, documents: store.all("SELECT * FROM stockup_dispatch_documents WHERE shipment_id=? AND version=? ORDER BY document_type", [shipment.id, version]) };
     });
   }
@@ -482,7 +592,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
         (id,request_id,shipment_id,receipt_id,category,name,stage,vendor,invoice_no,occurred_at,original_amount,currency,exchange_rate,amount_cny,included,allocation_method,note,status,created_by,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET original_amount=excluded.original_amount,amount_cny=excluded.amount_cny,vendor=excluded.vendor,invoice_no=excluded.invoice_no,note=excluded.note,included=1,status='recorded',updated_at=excluded.updated_at`,
-      [`handover-freight:${shipment.id}`, shipment.requestId, shipment.id, "", "domestic_freight", "交接货代实际运费", "国内物流", text(payload.carrier || shipment.carrier), text(payload.invoiceNo), (text(payload.handedOverAt) || now).slice(0, 10), money(payload.actualFreightCny), "CNY", 1, money(payload.actualFreightCny), 1, "weight", text(payload.costNote), "recorded", userOf(context).id, now, now]);
+      [`handover-freight:${shipment.id}`, shipment.requestId, shipment.id, "", "first_mile_freight", "头程物流实际运费", "头程物流", text(payload.carrier || shipment.carrier), text(payload.invoiceNo), (text(payload.handedOverAt) || now).slice(0, 10), money(payload.actualFreightCny), "CNY", 1, money(payload.actualFreightCny), 1, shipment.billingMethod === "volume" ? "volume" : shipment.billingMethod === "flat" ? "quantity" : "weight", text(payload.costNote), "recorded", userOf(context).id, now, now]);
       for (const requestId of shipment.requestIds || [shipment.requestId]) { store.run("UPDATE stockup_requests SET status='handed_over',version=version+1,updated_at=? WHERE id=?", [now, requestId]); addEvent(requestId, "shipment_handed_over", "货物已交接货代并扣减库存", `${shipment.shipmentNo} · ${payload.trackingNo}`, context, { shipmentId: shipment.id, payload: { inventoryMovementId: committed.movementId } }); }
       return { ok: true, idempotentReplay: false, shipment: getShipment(shipment.id, context) };
     });
@@ -532,6 +642,8 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     listDispatchDocuments,
     listProductRefs,
     listPurchaseOrders,
+    updatePurchaseOrder,
+    updateRequestLineProcurement,
     recordPurchaseEvent,
     recordDispatchDocuments,
     reviewInspection,

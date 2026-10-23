@@ -118,46 +118,6 @@ assert.equal(scoped.warehouse.inventory.length, 1);
 assert.equal(scoped.orders.orders.length, 1);
 assert.equal(scoped.connections.length, 1);
 
-const connectionIdScopeFixture = {
-  products: {
-    catalog: [{ sku: "SKU-A", country: "Indonesia" }],
-    productBase: [{ sku: "SKU-A" }],
-  },
-  warehouse: {
-    products: [],
-    inventory: [
-      { warehouseId: "connection-id", sku: "SKU-A", country: "Indonesia", availableQty: 5 },
-      { warehouseId: "other-connection", sku: "SKU-A", country: "Indonesia", availableQty: 9 },
-    ],
-    results: [{ warehouseId: "connection-id" }, { warehouseId: "other-connection" }],
-  },
-  orders: {
-    orders: [
-      { warehouseId: "connection-id", sku: "SKU-A", country: "Indonesia", quantity: 2 },
-      { warehouseId: "other-connection", sku: "SKU-A", country: "Indonesia", quantity: 3 },
-    ],
-    results: [{ warehouseId: "connection-id" }, { warehouseId: "other-connection" }],
-  },
-  connections: [
-    { id: "connection-id", warehouseId: "provider-code", warehouseCode: "provider-code", country: "Indonesia" },
-    { id: "other-connection", warehouseId: "other-provider-code", warehouseCode: "other-provider-code", country: "Indonesia" },
-  ],
-};
-const scopedByConnectionId = scopeMovementSources(connectionIdScopeFixture, {
-  role: "direct",
-  dataScopes: { countries: [], warehouseIds: ["connection-id"], skus: [] },
-});
-assert.deepEqual(scopedByConnectionId.connections.map((item) => item.id), ["connection-id"], "warehouse scopes match the stable connection id even when the connection also has a provider warehouse id");
-assert.deepEqual(scopedByConnectionId.warehouse.inventory.map((item) => item.warehouseId), ["connection-id"], "scoped inventory keeps only the authorized connection");
-assert.deepEqual(scopedByConnectionId.orders.orders.map((item) => item.warehouseId), ["connection-id"], "scoped orders keep only the authorized connection");
-
-const scopedDistributorByConnectionId = scopeMovementSources(connectionIdScopeFixture, {
-  role: "distributor",
-  dataScopes: { countries: [], warehouseIds: ["connection-id"], skus: [] },
-});
-assert.deepEqual(scopedDistributorByConnectionId.connections.map((item) => item.id), ["connection-id"], "distributor warehouse scopes use the same stable connection id");
-assert.deepEqual(scopedDistributorByConnectionId.warehouse.inventory.map((item) => item.warehouseId), ["connection-id"], "distributor inventory cannot include an unauthorized warehouse");
-
 const salesOnlyUser = {
   role: "distributor",
   permissionOverrides: { allow: ["movement"], deny: [] },

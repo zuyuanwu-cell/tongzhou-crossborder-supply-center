@@ -312,7 +312,9 @@ async function main() {
     }),
   });
   const collaborationDetail = await expectJson(`/api/stockup/collaboration/requests/${encodeURIComponent(collaborationRequest.requestId)}`, { headers: authHeaders });
-  if (collaborationDetail.request?.lines?.length !== 2 || collaborationDetail.request?.status !== "pending_acceptance") {
+  if (collaborationDetail.request?.lines?.length !== 2
+    || collaborationDetail.request?.workflowVersion !== 2
+    || collaborationDetail.request?.status !== "submitted") {
     throw new Error(`Stockup collaboration request workflow was not persisted correctly: ${JSON.stringify(collaborationDetail).slice(0, 600)}`);
   }
   console.log("[ok] stockup collaboration warehouse options and multi-product request");

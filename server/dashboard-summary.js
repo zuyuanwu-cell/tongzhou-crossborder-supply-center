@@ -32,7 +32,6 @@ export function buildDashboardMarketSnapshot(exchangeRates = [], syncStatus = {}
       });
     }
   }
-
   return {
     baseCurrency: "CNY",
     provider: text(syncStatus?.provider) || "Frankfurter",

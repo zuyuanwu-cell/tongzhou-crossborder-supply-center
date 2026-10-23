@@ -4,7 +4,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
   });
   res.end(JSON.stringify(payload));
@@ -62,11 +62,6 @@ export function createContainerLoadingApi({ service, getAuth, appendActionLog = 
         sendJson(res, 200, service.bootstrap(context));
         return true;
       }
-      if (suffix === "/quick-estimate" && req.method === "POST") {
-        const result = service.quickEstimate(await readBody(req), context);
-        sendJson(res, 200, result);
-        return true;
-      }
       if (suffix === "/plans" && req.method === "GET") {
         sendJson(res, 200, service.listPlans(Object.fromEntries(url.searchParams.entries()), context));
         return true;
@@ -107,27 +102,6 @@ export function createContainerLoadingApi({ service, getAuth, appendActionLog = 
         requireAny(auth, ["container_loading_confirm"], "当前账号没有作废装柜方案权限。");
         const result = service.voidPlan(decodeURIComponent(match[1]), await readBody(req), context);
         appendActionLog(auth, "作废智能装柜方案", "container_loading_plan", result.plan.planNo, { version: result.plan.version });
-        sendJson(res, 200, result);
-        return true;
-      }
-      if ((match = suffix.match(/^\/plans\/([^/]+)\/archive$/)) && req.method === "POST") {
-        requireAny(auth, ["container_loading_confirm"], "当前账号没有归档装柜方案权限。");
-        const result = service.archivePlan(decodeURIComponent(match[1]), await readBody(req), context);
-        appendActionLog(auth, "归档已作废装柜方案", "container_loading_plan", result.plan.planNo, { version: result.plan.version });
-        sendJson(res, 200, result);
-        return true;
-      }
-      if ((match = suffix.match(/^\/plans\/([^/]+)\/restore$/)) && req.method === "POST") {
-        requireAny(auth, ["container_loading_confirm"], "当前账号没有恢复装柜方案权限。");
-        const result = service.restorePlan(decodeURIComponent(match[1]), await readBody(req), context);
-        appendActionLog(auth, "恢复已归档装柜方案", "container_loading_plan", result.plan.planNo, { version: result.plan.version });
-        sendJson(res, 200, result);
-        return true;
-      }
-      if ((match = suffix.match(/^\/plans\/([^/]+)$/)) && req.method === "DELETE") {
-        requireAny(auth, ["container_loading_confirm"], "当前账号没有删除装柜方案权限。");
-        const result = service.deletePlan(decodeURIComponent(match[1]), await readBody(req), context);
-        appendActionLog(auth, "永久删除已作废装柜方案", "container_loading_plan", result.deletedPlan.planNo, {});
         sendJson(res, 200, result);
         return true;
       }

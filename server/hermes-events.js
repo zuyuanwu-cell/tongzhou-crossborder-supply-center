@@ -10,7 +10,6 @@ const TOOL_LABELS = Object.freeze({
   tongzhou_query_stockup_execution: "查询备货执行",
   tongzhou_query_production_timeline: "查询生产时间线",
   tongzhou_compare_movement_inventory: "计算动销库存差异",
-  tongzhou_query_risk_batch: "批量查询库存、备货与生产风险",
   tongzhou_create_stockup_draft: "创建备货需求草稿",
   tongzhou_assign_exception: "分派异常责任人",
   tongzhou_update_exception_status: "更新异常处理状态",

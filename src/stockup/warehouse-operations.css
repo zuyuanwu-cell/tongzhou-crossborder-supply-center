@@ -79,6 +79,20 @@
 .sc-create-lines > div.head { min-height: 36px; background: #eaf2fb; color: #4a6684; font-size: 10px; font-weight: 900; }
 .sc-create-lines label { display: flex; align-items: center; gap: 6px; }
 .sc-create-lines input { width: 110px; height: 36px; padding: 0 8px; border: 1px solid #cbd8e7; border-radius: 7px; }
+.sc-procurement-lines .product .sc-line-stop { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; border: 1px solid #fecaca; border-radius: 7px; background: #fff7f7; color: #b42318; font-weight: 800; cursor: pointer; }
+.sc-procurement-lines .product .sc-line-stop:disabled { opacity: .5; cursor: wait; }
+.sc-closed-procurement { margin-top: 12px; border: 1px solid #f2d6c9; border-radius: 10px; background: #fffaf7; overflow: hidden; }
+.sc-closed-procurement summary { padding: 11px 13px; color: #9a3412; font-size: 12px; font-weight: 900; cursor: pointer; }
+.sc-closed-procurement > div { border-top: 1px solid #f3ded4; }
+.sc-closed-procurement article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border-bottom: 1px solid #f7e8e1; }
+.sc-closed-procurement article:last-child { border-bottom: 0; }
+.sc-closed-procurement article > div { min-width: 0; display: grid; gap: 3px; }
+.sc-closed-procurement article b { color: #7c2d12; font-size: 12px; }
+.sc-closed-procurement article small { color: #9a6b58; }
+.sc-closed-procurement article button { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 6px 9px; border: 1px solid #edc3b2; border-radius: 7px; background: #fff; color: #9a3412; font-weight: 800; cursor: pointer; }
+.sc-form-grid label > span:has(input[type="checkbox"]) { min-height: 42px; display: inline-flex; align-items: center; gap: 8px; }
+.sc-form-grid input[type="checkbox"] { width: 17px; height: 17px; padding: 0; border-radius: 4px; accent-color: #f05a16; flex: none; }
+.sc-line-summary .sc-line-procurement-closed { width: fit-content; margin-top: 4px; padding: 3px 7px; border-radius: 999px; background: #fff0ed; color: #b42318; font-weight: 800; }
 .sc-operation-checks { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-bottom: 13px; }
 .sc-operation-checks span { min-height: 43px; padding: 8px; border: 1px solid #cfe3d9; border-radius: 9px; background: #f2faf6; color: #227055; display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 800; }
 .sc-operation-checks svg { width: 14px; height: 14px; }
@@ -126,12 +140,6 @@
 .sc-detail-timeline small { color: #95a2b1; font-size: 8px; }
 .sc-drawer-foot { min-height: 68px; padding: 11px 20px; border-top: 1px solid #d8e2ee; background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #667d95; font-size: 10px; }
 .sc-drawer-foot > span { display: flex; align-items: center; gap: 6px; }
-.sc-legacy-actions { position: relative; }
-.sc-legacy-actions > summary { min-height: 42px; padding: 0 12px; border: 1px solid #cfdbea; border-radius: 9px; background: #f5f8fc; color: #516b86; display: flex; align-items: center; font-size: 11px; font-weight: 800; cursor: pointer; list-style: none; }
-.sc-legacy-actions > summary::-webkit-details-marker { display: none; }
-.sc-legacy-actions[open] > summary { border-color: #9eb6d0; background: #eaf1f8; }
-.sc-legacy-actions > button { position: absolute; right: 0; top: 48px; z-index: 20; min-width: 210px; box-shadow: 0 14px 36px rgba(13,43,79,.2); }
-.sc-arrival-table .product > .sc-image-fallback, .sc-create-lines .product > .sc-image-fallback { width: 36px; height: 36px; flex: 0 0 36px; border: 1px solid #dbe5ef; border-radius: 8px; }
 
 @media (max-width: 1250px) {
   .sc-tabs { grid-template-columns: repeat(3, 1fr); }
@@ -157,7 +165,4 @@
   .sc-route-split { grid-template-columns: 100px 1fr; }
   .sc-route-donut { width: 96px; height: 96px; }
   .sc-detail-summary { grid-template-columns: 1fr 1fr; }
-  .sc-warehouse-command-actions > select, .sc-warehouse-command-actions > .sc-button, .sc-warehouse-command-actions > .sc-legacy-actions { flex: 1; min-width: 140px; }
-  .sc-legacy-actions > summary { justify-content: center; }
-  .sc-legacy-actions > button { position: fixed; left: 12px; right: 12px; top: auto; bottom: 84px; width: calc(100% - 24px); }
 }

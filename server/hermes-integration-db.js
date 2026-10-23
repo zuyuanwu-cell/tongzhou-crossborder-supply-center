@@ -77,11 +77,6 @@ function runFromRow(row) {
     provider: row.provider || "",
     usage: json(row.usage_json, {}),
     toolCount: Number(row.tool_count || 0),
-    input: row.input_text || "",
-    parentRunId: row.parent_run_id || "",
-    plan: json(row.plan_json, { steps: [] }),
-    checkpoint: json(row.checkpoint_json, null),
-    stageNo: Math.max(1, Number(row.stage_no || 1)),
     error: row.error || "",
     durationMs: Number(row.duration_ms || 0),
     startedAt: row.started_at || "",
@@ -149,7 +144,6 @@ function caseFromRow(row) {
     assigneeId: row.assignee_id || "",
     assigneeName: row.assignee_name || "",
     evidence: json(row.evidence_json, []),
-    changeSummary: json(row.change_summary_json, { changed: false, summary: "暂无变化记录", added: [], updated: [], removed: [] }),
     href: row.href || "",
     sourceUpdatedAt: row.source_updated_at || "",
     firstSeenAt: row.first_seen_at,
@@ -162,29 +156,6 @@ function caseFromRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-function playbookFromRow(row) {
-  if (!row) return null;
-  return {
-    id: row.id, title: row.title, description: row.description || "", ruleCodes: json(row.rule_codes_json, []),
-    steps: json(row.steps_json, []), status: row.status, approvedBy: row.approved_by || "", approvedAt: row.approved_at || "",
-    version: Number(row.version || 1), createdAt: row.created_at, updatedAt: row.updated_at,
-  };
-}
-
-function evidenceDelta(previous = [], next = []) {
-  const keyOf = (item) => `${text(item?.type)}:${text(item?.id)}:${text(item?.label)}`;
-  const before = new Map((Array.isArray(previous) ? previous : []).map((item) => [keyOf(item), item]));
-  const after = new Map((Array.isArray(next) ? next : []).map((item) => [keyOf(item), item]));
-  const added = [...after.keys()].filter((key) => !before.has(key));
-  const removed = [...before.keys()].filter((key) => !after.has(key));
-  const updated = [...after.keys()].filter((key) => before.has(key) && jsonText(before.get(key)) !== jsonText(after.get(key)));
-  const parts = [];
-  if (added.length) parts.push(`新增 ${added.length} 项证据`);
-  if (updated.length) parts.push(`更新 ${updated.length} 项证据`);
-  if (removed.length) parts.push(`移除 ${removed.length} 项证据`);
-  return { changed: Boolean(parts.length), summary: parts.join("，") || "证据无变化", added, updated, removed };
 }
 
 function caseEventFromRow(row) {
@@ -258,11 +229,6 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
       provider TEXT,
       usage_json TEXT NOT NULL DEFAULT '{}',
       tool_count INTEGER NOT NULL DEFAULT 0,
-      input_text TEXT NOT NULL DEFAULT '',
-      parent_run_id TEXT,
-      plan_json TEXT NOT NULL DEFAULT '{"steps":[]}',
-      checkpoint_json TEXT,
-      stage_no INTEGER NOT NULL DEFAULT 1,
       error TEXT,
       duration_ms INTEGER NOT NULL DEFAULT 0,
       started_at TEXT,
@@ -327,7 +293,6 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
       assignee_id TEXT,
       assignee_name TEXT,
       evidence_json TEXT NOT NULL DEFAULT '[]',
-      change_summary_json TEXT NOT NULL DEFAULT '{"changed":false,"summary":"首次发现","added":[],"updated":[],"removed":[]}',
       evidence_hash TEXT NOT NULL,
       href TEXT,
       source_updated_at TEXT,
@@ -358,21 +323,6 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     );
     CREATE INDEX IF NOT EXISTS idx_agent_case_events_case ON agent_case_events(case_id, created_at);
 
-    CREATE TABLE IF NOT EXISTS agent_playbooks (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      rule_codes_json TEXT NOT NULL DEFAULT '[]',
-      steps_json TEXT NOT NULL DEFAULT '[]',
-      status TEXT NOT NULL DEFAULT 'approved',
-      approved_by TEXT,
-      approved_at TEXT,
-      version INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_agent_playbooks_status ON agent_playbooks(status, updated_at);
-
     CREATE TABLE IF NOT EXISTS hermes_request_nonces (
       nonce TEXT PRIMARY KEY,
       expires_at TEXT NOT NULL,
@@ -394,15 +344,8 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
   `);
   const caseColumns = new Set(rows(db, "PRAGMA table_info(agent_exception_cases)").map((item) => item.name));
   if (!caseColumns.has("country")) db.run("ALTER TABLE agent_exception_cases ADD COLUMN country TEXT");
-  if (!caseColumns.has("change_summary_json")) db.run("ALTER TABLE agent_exception_cases ADD COLUMN change_summary_json TEXT NOT NULL DEFAULT '{\"changed\":false,\"summary\":\"暂无变化记录\",\"added\":[],\"updated\":[],\"removed\":[]}'");
   const proposalColumns = new Set(rows(db, "PRAGMA table_info(hermes_action_proposals)").map((item) => item.name));
   if (!proposalColumns.has("arguments_hash")) db.run("ALTER TABLE hermes_action_proposals ADD COLUMN arguments_hash TEXT NOT NULL DEFAULT ''");
-  const runColumns = new Set(rows(db, "PRAGMA table_info(hermes_runs)").map((item) => item.name));
-  if (!runColumns.has("input_text")) db.run("ALTER TABLE hermes_runs ADD COLUMN input_text TEXT NOT NULL DEFAULT ''");
-  if (!runColumns.has("parent_run_id")) db.run("ALTER TABLE hermes_runs ADD COLUMN parent_run_id TEXT");
-  if (!runColumns.has("plan_json")) db.run("ALTER TABLE hermes_runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT '{\"steps\":[]}'");
-  if (!runColumns.has("checkpoint_json")) db.run("ALTER TABLE hermes_runs ADD COLUMN checkpoint_json TEXT");
-  if (!runColumns.has("stage_no")) db.run("ALTER TABLE hermes_runs ADD COLUMN stage_no INTEGER NOT NULL DEFAULT 1");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));
@@ -505,20 +448,18 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     ).map(messageFromRow);
   }
 
-  function createRun({ conversationId, userId, provider = "configured", model, idempotencyKey, input = "", parentRunId = "", plan = { steps: [] }, stageNo = 1 }) {
+  function createRun({ conversationId, userId, provider = "configured", model, idempotencyKey }) {
     if (!getConversation(conversationId, userId)) throw Object.assign(new Error("Conversation not found."), { statusCode: 404 });
     const replay = runFromRow(first("SELECT * FROM hermes_runs WHERE request_idempotency_key=?", [text(idempotencyKey)]));
     if (replay) return { ...replay, idempotentReplay: true };
     const createdAt = nowIso(now);
     const item = {
       id: randomUUID(), conversationId, hermesRunId: "", status: "queued", model: text(model), provider: text(provider) || "configured",
-      usage: {}, toolCount: 0, input: String(input || ""), parentRunId: text(parentRunId), plan, checkpoint: null,
-      stageNo: Math.max(1, Number(stageNo) || 1), error: "", durationMs: 0, startedAt: "", completedAt: "", createdAt, updatedAt: createdAt,
+      usage: {}, toolCount: 0, error: "", durationMs: 0, startedAt: "", completedAt: "", createdAt, updatedAt: createdAt,
     };
     transaction(() => run(
-      "INSERT INTO hermes_runs (id,conversation_id,user_id,request_idempotency_key,status,model,provider,input_text,parent_run_id,plan_json,checkpoint_json,stage_no,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      [item.id, conversationId, userId, text(idempotencyKey), item.status, item.model, item.provider, item.input, item.parentRunId || null,
-        jsonText(item.plan), null, item.stageNo, createdAt, createdAt],
+      "INSERT INTO hermes_runs (id,conversation_id,user_id,request_idempotency_key,status,model,provider,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+      [item.id, conversationId, userId, text(idempotencyKey), item.status, item.model, item.provider, createdAt, createdAt],
     ));
     return item;
   }
@@ -559,10 +500,9 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     const updatedAt = nowIso(now);
     const next = { ...current, ...patch, updatedAt };
     transaction(() => run(
-      `UPDATE hermes_runs SET hermes_run_id=?,status=?,model=?,provider=?,usage_json=?,tool_count=?,input_text=?,parent_run_id=?,plan_json=?,checkpoint_json=?,stage_no=?,error=?,duration_ms=?,started_at=?,completed_at=?,updated_at=? WHERE id=?`,
-      [next.hermesRunId || null, next.status, next.model, next.provider || null, jsonText(next.usage), Number(next.toolCount || 0),
-        next.input || "", next.parentRunId || null, jsonText(next.plan), next.checkpoint ? jsonText(next.checkpoint) : null, Math.max(1, Number(next.stageNo || 1)),
-        next.error || null, Number(next.durationMs || 0), next.startedAt || null, next.completedAt || null, updatedAt, current.id],
+      `UPDATE hermes_runs SET hermes_run_id=?,status=?,model=?,provider=?,usage_json=?,tool_count=?,error=?,duration_ms=?,started_at=?,completed_at=?,updated_at=? WHERE id=?`,
+      [next.hermesRunId || null, next.status, next.model, next.provider || null, jsonText(next.usage), Number(next.toolCount || 0), next.error || null,
+        Number(next.durationMs || 0), next.startedAt || null, next.completedAt || null, updatedAt, current.id],
     ));
     return runFromRow(first("SELECT * FROM hermes_runs WHERE id=?", [current.id]));
   }
@@ -666,31 +606,6 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     return all("SELECT * FROM agent_case_events WHERE case_id=? ORDER BY created_at ASC", [text(caseId)]).map(caseEventFromRow);
   }
 
-  function listPlaybooks({ ruleCode = "", status = "approved", limit = 100 } = {}) {
-    const allRows = all("SELECT * FROM agent_playbooks WHERE (?='' OR status=?) ORDER BY updated_at DESC LIMIT ?", [text(status), text(status), Math.max(1, Math.min(200, Number(limit) || 100))]).map(playbookFromRow);
-    return text(ruleCode) ? allRows.filter((item) => item.ruleCodes.includes(text(ruleCode))) : allRows;
-  }
-
-  function saveApprovedPlaybook(input = {}, actor = {}) {
-    const title = text(input.title).slice(0, 200);
-    const description = text(input.description).slice(0, 2_000);
-    const ruleCodes = [...new Set((Array.isArray(input.ruleCodes) ? input.ruleCodes : []).map((item) => text(item).slice(0, 100)).filter(Boolean))].slice(0, 50);
-    const steps = (Array.isArray(input.steps) ? input.steps : []).map((item) => text(item).slice(0, 500)).filter(Boolean).slice(0, 30);
-    if (!title || !steps.length) throw Object.assign(new Error("Playbook title and steps are required."), { statusCode: 400, code: "invalid_playbook" });
-    const id = text(input.id) || randomUUID();
-    const timestamp = nowIso(now);
-    const current = playbookFromRow(first("SELECT * FROM agent_playbooks WHERE id=?", [id]));
-    if (current && input.version !== undefined && Number(input.version) !== current.version) throw Object.assign(new Error("Playbook version changed."), { statusCode: 409, code: "version_conflict" });
-    transaction(() => run(
-      `INSERT INTO agent_playbooks(id,title,description,rule_codes_json,steps_json,status,approved_by,approved_at,version,created_at,updated_at)
-       VALUES (?,?,?,?,?,'approved',?,?,1,?,?)
-       ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,rule_codes_json=excluded.rule_codes_json,
-       steps_json=excluded.steps_json,status='approved',approved_by=excluded.approved_by,approved_at=excluded.approved_at,version=agent_playbooks.version+1,updated_at=excluded.updated_at`,
-      [id, title, description, jsonText(ruleCodes, []), jsonText(steps, []), text(actor.id) || null, timestamp, current?.createdAt || timestamp, timestamp],
-    ));
-    return playbookFromRow(first("SELECT * FROM agent_playbooks WHERE id=?", [id]));
-  }
-
   function updateCase(caseId, patch = {}, actor = {}, scopes = {}) {
     const current = getCase(caseId, scopes);
     if (!current) return null;
@@ -749,19 +664,16 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
         const wasInactive = ["resolved", "dismissed"].includes(current.status);
         const severityUp = (rank[observation.severity] ?? 0) > (rank[current.severity] ?? 0);
         const evidenceChanged = evidenceHash !== text(first("SELECT evidence_hash FROM agent_exception_cases WHERE id=?", [current.id])?.evidence_hash);
-        const changeSummary = evidenceDelta(current.evidence, evidence);
-        if (severityUp) changeSummary.summary = `${changeSummary.summary === "证据无变化" ? "" : `${changeSummary.summary}，`}严重度由 ${current.severity} 升为 ${observation.severity}`;
-        changeSummary.changed = changeSummary.changed || severityUp;
         const nextStatus = wasInactive ? "open" : current.status;
         run(
-          `UPDATE agent_exception_cases SET title=?,summary=?,severity=?,status=?,warehouse_id=?,project=?,country=?,sku=?,evidence_json=?,change_summary_json=?,evidence_hash=?,href=?,source_updated_at=?,last_seen_at=?,last_scan_id=?,missing_scan_count=0,resolved_at=NULL,resolution=NULL,version=version+1,updated_at=? WHERE id=?`,
+          `UPDATE agent_exception_cases SET title=?,summary=?,severity=?,status=?,warehouse_id=?,project=?,country=?,sku=?,evidence_json=?,evidence_hash=?,href=?,source_updated_at=?,last_seen_at=?,last_scan_id=?,missing_scan_count=0,resolved_at=NULL,resolution=NULL,version=version+1,updated_at=? WHERE id=?`,
           [observation.title, observation.summary, observation.severity, nextStatus, text(observation.warehouseId) || null,
-            text(observation.project) || null, text(observation.country) || null, text(observation.sku) || null, jsonText(evidence, []), jsonText(changeSummary), evidenceHash,
+            text(observation.project) || null, text(observation.country) || null, text(observation.sku) || null, jsonText(evidence, []), evidenceHash,
             text(observation.href) || null, text(observation.sourceUpdatedAt) || null, timestamp, scanId, timestamp, current.id],
         );
         if (wasInactive) appendCaseEvent(current.id, "reopened", { severity: observation.severity, evidence }, actor);
         else if (severityUp) appendCaseEvent(current.id, "severity_escalated", { from: current.severity, to: observation.severity, evidence }, actor);
-        else if (evidenceChanged) appendCaseEvent(current.id, "evidence_updated", { evidence, previousEvidence: current.evidence, changes: changeSummary }, actor);
+        else if (evidenceChanged) appendCaseEvent(current.id, "evidence_updated", { evidence }, actor);
         const next = caseFromRow(first("SELECT * FROM agent_exception_cases WHERE id=?", [current.id]));
         if (wasInactive) detected.push(next);
         else if (severityUp) escalated.push(next);
@@ -921,8 +833,6 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     recordCaseEvent,
     listCases,
     listCaseEvents,
-    listPlaybooks,
-    saveApprovedPlaybook,
     updateCase,
     reconcileCases,
     markCaseNotified,

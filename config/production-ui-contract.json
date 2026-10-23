@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "applicationTitle": "同舟供应链中台",
+  "minimums": {
+    "entryJavaScriptBytes": 850000,
+    "totalJavaScriptBytes": 1400000,
+    "totalCssBytes": 450000
+  },
+  "baselineRetention": {
+    "minimumEntryJavaScriptRatio": 0.75,
+    "minimumTotalJavaScriptRatio": 0.85,
+    "minimumTotalCssRatio": 0.85,
+    "minimumProtectedMarkerRatio": 1
+  },
+  "features": [
+    {
+      "id": "operations-workbench-country-time",
+      "description": "经营工作台国家时间卡片",
+      "allOf": [
+        "经营工作台",
+        "dashboard-market-panel",
+        "dashboard-market-grid",
+        "dashboard-market-card",
+        "dashboard-market-date",
+        "俄罗斯",
+        "印度尼西亚",
+        "马来西亚",
+        "越南"
+      ]
+    },
+    {
+      "id": "operations-workbench-exchange-rates",
+      "description": "经营工作台汇率卡片",
+      "allOf": [
+        "全球市场时间与汇率",
+        "dashboard-market-rate",
+        "dashboard-currency-list",
+        "RUB",
+        "IDR",
+        "MYR",
+        "VND"
+      ]
+    },
+    {
+      "id": "product-library-current-layout",
+      "description": "新版产品库布局与展示切换",
+      "allOf": [
+        "catalog-page-heading",
+        "catalog-control-shelf",
+        "catalog-family-grid",
+        "product-family-card",
+        "catalog-price-matrix-panel",
+        "catalog-country-price-list"
+      ]
+    }
+  ],
+  "forbiddenText": [
+    "经营快照"
+  ]
+}

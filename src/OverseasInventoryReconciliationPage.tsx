@@ -1,5 +1,4 @@
 import React from "react";
-import { DataContextBar } from "../collaboration/shared/OperationalUi";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -133,7 +132,7 @@ function MetricCard({
   detail,
 }: {
   eyebrow: string;
-  value: number | null;
+  value: number;
   unit?: string;
   delta?: OverseasReconciliationMetricDelta;
   inverse?: boolean;
@@ -143,8 +142,8 @@ function MetricCard({
   return (
     <article className={`oir-metric-card ${tone}`}>
       <span className="oir-metric-eyebrow">{eyebrow}</span>
-      <div className="oir-metric-value"><strong>{value === null ? "—" : quantity(value)}</strong><span>{unit}</span></div>
-      <div className="oir-metric-foot"><Delta value={value === null ? undefined : delta} inverse={inverse} /><span>{detail}</span></div>
+      <div className="oir-metric-value"><strong>{quantity(value)}</strong><span>{unit}</span></div>
+      <div className="oir-metric-foot"><Delta value={delta} inverse={inverse} /><span>{detail}</span></div>
     </article>
   );
 }
@@ -346,7 +345,6 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
   if (loading && !payload) {
     return (
       <section className="oir-page" data-testid="overseas-reconciliation-page">
-        <DataContextBar loading />
         <div className="oir-loading-hero"><RefreshCw className="spin" size={24} /><strong>正在合并海外仓库存与退货事实</strong><span>读取库存快照、出入库、退货处置与售后认领关系…</span></div>
         <div className="oir-skeleton-grid">{Array.from({ length: 6 }).map((_, index) => <i key={index} />)}</div>
       </section>
@@ -356,14 +354,12 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
   if (!payload) {
     return (
       <section className="oir-page" data-testid="overseas-reconciliation-page">
-        <DataContextBar error={error} onRetry={() => void load()} />
         <div className="oir-fatal"><AlertTriangle size={34} /><strong>海外仓库存对账暂时无法读取</strong><span>{error}</span><button type="button" onClick={() => void load()}><RefreshCw size={16} />重试</button></div>
       </section>
     );
   }
 
   const summary = payload.summary;
-  const reconciliationMetric = (value: number) => payload.dataContext?.completeness === "complete" || value !== 0 ? value : null;
   const comparison = payload.comparison.summary;
   const rankings = payload.rankings[rankingMode];
   const rankingMax = Math.max(1, ...rankings.slice(0, 8).map((item) => item.returnQty));
@@ -377,10 +373,9 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
 
   return (
     <section className="oir-page" data-testid="overseas-reconciliation-page">
-      <DataContextBar context={payload.dataContext} refreshing={loading || refreshing} error={error} onRetry={() => void load()} />
       <header className="oir-hero">
         <div className="oir-hero-copy">
-          <span className="oir-kicker"><i /> 库存事实核算</span>
+          <span className="oir-kicker"><i /> OVERSEAS INVENTORY CONTROL</span>
           <h2>海外仓库存对账中心</h2>
           <p>用实际库存、实际出入库与 WMS 实物退货闭环定位差异；售后漏录不会阻断事实，只进入待认领队列。</p>
           <div className="oir-source-row">
@@ -412,12 +407,12 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
       {notice ? <div className="oir-notice success"><CheckCircle2 size={17} /><span>{notice}</span></div> : null}
 
       <div className="oir-metric-grid">
-        <MetricCard eyebrow="海外仓实际库存" value={reconciliationMetric(summary.actualInventoryQty)} unit="件" delta={comparison.actualInventoryQty} tone="cyan" detail={`${summary.warehouseCount} 个海外仓`} />
-        <MetricCard eyebrow="账实差异" value={reconciliationMetric(summary.varianceQty)} unit="件" delta={comparison.varianceQty} inverse tone={Math.abs(summary.varianceQty) > 0 ? "red" : "green"} detail={`${summary.anomalyWarehouseCount} 个仓需关注`} />
-        <MetricCard eyebrow="周期实际出库" value={reconciliationMetric(summary.outboundQty)} unit="件" delta={comparison.outboundQty} detail={`入库 ${quantity(summary.inboundQty)} 件`} />
-        <MetricCard eyebrow="WMS 实物退货" value={reconciliationMetric(summary.returnQty)} unit="件" delta={comparison.returnQty} tone="amber" detail={`售后匹配率 ${percent(summary.afterSalesCoverageRate)}`} />
-        <MetricCard eyebrow="已重新上架" value={reconciliationMetric(summary.restockedQty)} unit="件" delta={comparison.restockedQty} tone="green" detail={`已报废 ${quantity(summary.scrappedQty)} 件`} />
-        <MetricCard eyebrow="退货在途" value={reconciliationMetric(summary.inTransitReturnQty)} unit="件" delta={comparison.inTransitReturnQty} detail={`到仓待处理 ${quantity(summary.pendingReturnQty)} 件`} />
+        <MetricCard eyebrow="海外仓实际库存" value={summary.actualInventoryQty} unit="件" delta={comparison.actualInventoryQty} tone="cyan" detail={`${summary.warehouseCount} 个海外仓`} />
+        <MetricCard eyebrow="账实差异" value={summary.varianceQty} unit="件" delta={comparison.varianceQty} inverse tone={Math.abs(summary.varianceQty) > 0 ? "red" : "green"} detail={`${summary.anomalyWarehouseCount} 个仓需关注`} />
+        <MetricCard eyebrow="周期实际出库" value={summary.outboundQty} unit="件" delta={comparison.outboundQty} detail={`入库 ${quantity(summary.inboundQty)} 件`} />
+        <MetricCard eyebrow="WMS 实物退货" value={summary.returnQty} unit="件" delta={comparison.returnQty} tone="amber" detail={`售后匹配率 ${percent(summary.afterSalesCoverageRate)}`} />
+        <MetricCard eyebrow="已重新上架" value={summary.restockedQty} unit="件" delta={comparison.restockedQty} tone="green" detail={`已报废 ${quantity(summary.scrappedQty)} 件`} />
+        <MetricCard eyebrow="退货在途" value={summary.inTransitReturnQty} unit="件" delta={comparison.inTransitReturnQty} detail={`到仓待处理 ${quantity(summary.pendingReturnQty)} 件`} />
       </div>
 
       <section className="oir-equation-panel">

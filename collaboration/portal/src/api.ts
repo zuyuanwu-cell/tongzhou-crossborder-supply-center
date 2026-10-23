@@ -68,15 +68,27 @@ async function ensureCsrfToken() {
   return token ? decodeURIComponent(token) : "";
 }
 
+const CSRF_EXEMPT_PATHS = new Set([
+  "/collaboration/auth/login",
+  "/collaboration/auth/invitations/accept",
+  "/collaboration/auth/password-reset/request",
+  "/collaboration/auth/password-reset/confirm",
+]);
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const method = String(init.method || "GET").toUpperCase();
-  const headers = new Headers(init.headers);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (!["GET", "HEAD"].includes(method)) headers.set("X-CSRF-Token", await ensureCsrfToken());
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers, credentials: "include" });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(payload.message || `请求失败（${response.status}）`, response.status, payload.code);
-  return payload as T;
+  try {
+    const method = String(init.method || "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (!["GET", "HEAD"].includes(method) && !CSRF_EXEMPT_PATHS.has(path)) headers.set("X-CSRF-Token", await ensureCsrfToken());
+    const response = await fetch(`${API_BASE}${path}`, { ...init, headers, credentials: "include" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ApiError(payload.message || `请求失败（${response.status}）`, response.status, payload.code);
+    return payload as T;
+  } catch (reason) {
+    if (reason instanceof ApiError) throw reason;
+    throw new ApiError("无法连接协同服务，请检查网络后重试。", 0, "network_error");
+  }
 }
 
 let demoSession: Session = {
