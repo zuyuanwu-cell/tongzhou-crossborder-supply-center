@@ -1,4 +1,5 @@
 const INVALID_SHOP_PATTERN = /已解绑|不存在店铺|店铺[^，。]*不存在|shop[^，。]*(?:unbind|not\s*exist|invalid)/i;
+const SHOP_SCOPE_ERROR_PATTERN = /越权操作|无权操作|无权限[^，。]*店铺/i;
 const NO_DATA_PATTERN = /没有符合条件的数据|没有匹配的数据|未查询到数据|no\s+(?:matching\s+)?data|no\s+records?\s+found/i;
 
 function text(value) {
@@ -19,6 +20,10 @@ export function isMiaoshouInvalidShopError(error) {
   return INVALID_SHOP_PATTERN.test(`${text(error?.code)} ${text(error?.message)}`);
 }
 
+export function isMiaoshouShopScopeError(error) {
+  return SHOP_SCOPE_ERROR_PATTERN.test(`${text(error?.code)} ${text(error?.message)}`);
+}
+
 export function isMiaoshouNoDataError(error) {
   return NO_DATA_PATTERN.test(`${text(error?.code)} ${text(error?.message)}`);
 }
@@ -33,7 +38,7 @@ export async function queryMiaoshouShopBatches({
   const normalizedShopIds = uniqueShopIds(shopIds);
   const safeBatchSize = Math.max(1, Math.min(100, Math.floor(Number(batchSize) || 100)));
   const results = [];
-  const invalidShops = [];
+  const invalidCandidates = [];
 
   async function queryBatch(batch) {
     if (!batch.length) return;
@@ -45,19 +50,32 @@ export async function queryMiaoshouShopBatches({
         results.push({ shopIds: batch, value: null, noData: true });
         return;
       }
-      if (!isMiaoshouInvalidShopError(error)) throw error;
+      const explicitInvalidShop = isMiaoshouInvalidShopError(error);
+      const genericScopeError = isMiaoshouShopScopeError(error);
+      if (!explicitInvalidShop && !genericScopeError) throw error;
       if (batch.length > 1) {
         const middle = Math.ceil(batch.length / 2);
         await queryBatch(batch.slice(0, middle));
         await queryBatch(batch.slice(middle));
         return;
       }
-      const invalidShop = { shopId: batch[0], reason: text(error?.message) || "店铺已解绑或不存在" };
-      invalidShops.push(invalidShop);
-      await onInvalidShop?.(invalidShop);
+      invalidCandidates.push({
+        shopId: batch[0],
+        reason: text(error?.message) || "店铺已解绑、不存在或不在当前授权范围",
+        genericScopeError,
+      });
     }
   }
 
   for (const batch of chunks(normalizedShopIds, safeBatchSize)) await queryBatch(batch);
+  if (
+    normalizedShopIds.length
+    && invalidCandidates.length === normalizedShopIds.length
+    && invalidCandidates.every((candidate) => candidate.genericScopeError)
+  ) {
+    throw new Error("妙手接口对全部店铺返回“越权操作”，请检查开放平台订单权限；本次未停用任何店铺。");
+  }
+  const invalidShops = invalidCandidates.map(({ genericScopeError: _genericScopeError, ...candidate }) => candidate);
+  for (const invalidShop of invalidShops) await onInvalidShop?.(invalidShop);
   return { results, invalidShops };
 }

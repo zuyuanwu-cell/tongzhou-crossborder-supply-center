@@ -119,7 +119,7 @@ try {
     async searchPerformancePackages(input) {
       resilientSearches.push([...input.shopIds]);
       if (input.shopIds.includes("SHOP-STALE")) {
-        const error = new Error("\u5b58\u5728\u5df2\u89e3\u7ed1\u6216\u4e0d\u5b58\u5728\u5e97\u94fa\uff0c\u8bf7\u8c03\u6574\u5e97\u94fa\u53c2\u6570");
+        const error = new Error("越权操作");
         error.code = "fail";
         throw error;
       }
@@ -156,6 +156,35 @@ try {
   assert.equal(resilientSynced.order.shopId, "SHOP-LIVE");
   assert.deepEqual(resilientSearches, [["SHOP-STALE", "SHOP-LIVE"], ["SHOP-STALE"], ["SHOP-LIVE"]]);
   assert.deepEqual(invalidatedPerformanceShops.map((item) => item.shopId), ["SHOP-STALE"]);
+  const globallyInvalidatedShops = [];
+  const globallyDeniedService = createAfterSalesService({
+    cachePath: resolve(tempDir, "after-sales-global-denial.json"),
+    uploadDir: resolve(tempDir, "uploads-global-denial"),
+    performanceStore,
+    connector: {
+      performanceContext() {
+        return {
+          hasCredentials: true,
+          shops: [
+            { shopId: "SHOP-A", platform: "tiktok", site: "ID" },
+            { shopId: "SHOP-B", platform: "tiktok", site: "ID" },
+          ],
+        };
+      },
+      async searchPerformancePackages() {
+        throw new Error("越权操作");
+      },
+      invalidatePerformanceShop(shopId) {
+        globallyInvalidatedShops.push(shopId);
+      },
+    },
+    getProducts: () => ({ catalog: [], productBase: [] }),
+  });
+  await assert.rejects(
+    globallyDeniedService.syncOrder("ORDER-GLOBAL-DENIED"),
+    /全部店铺返回“越权操作”/,
+  );
+  assert.deepEqual(globallyInvalidatedShops, [], "全局权限异常不能误停全部店铺");
   const productOptions = service.searchProducts({ keyword: "测试", country: "ID" });
   assert.equal(productOptions.products.length, 1);
   assert.equal(productOptions.products[0].unitCostCny, 14.4);
