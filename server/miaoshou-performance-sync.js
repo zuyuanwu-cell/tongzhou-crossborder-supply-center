@@ -4,6 +4,7 @@ import {
   normalizeMiaoshouPackages,
   normalizeMiaoshouReturns,
 } from "./miaoshou-performance.js";
+import { queryMiaoshouShopBatches } from "./miaoshou-shop-query.js";
 
 const PAGE_SIZE = 50;
 const MAX_PAGES = 200;
@@ -37,12 +38,6 @@ function windows(dateFrom, dateTo, chunkDays) {
     result.push({ dateFrom: cursor, dateTo: end < dateTo ? end : dateTo });
     cursor = addDays(result[result.length - 1].dateTo, 1);
   }
-  return result;
-}
-
-function chunks(values, size) {
-  const result = [];
-  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
   return result;
 }
 
@@ -179,6 +174,7 @@ export function createMiaoshouPerformanceSyncService({
       const returns = [];
       const cancellations = [];
       const warnings = [];
+      const invalidShopIds = new Set();
       let afterSalesWarningCount = 0;
       let packageCount = 0;
       let packagePages = 0;
@@ -193,13 +189,25 @@ export function createMiaoshouPerformanceSyncService({
       const syncWindows = windows(safeDateFrom, safeDateTo, clamp(chunkDays, 1, 31, 7));
       for (const range of syncWindows) {
         for (const [platform, shopIds] of shopGroups) {
-          for (const shopBatch of chunks(shopIds, 100)) {
-            const result = await fetchPackagePages({
+          const queryResult = await queryMiaoshouShopBatches({
+            shopIds: shopIds.filter((shopId) => !invalidShopIds.has(shopId)),
+            request: (shopBatch) => fetchPackagePages({
               platform,
               shopIds: shopBatch,
               gmtModifiedFrom: `${range.dateFrom} 00:00:00`,
               gmtModifiedTo: rangeEndDateTime(range.dateTo, currentClock),
-            });
+            }),
+            onInvalidShop: ({ shopId, reason }) => {
+              invalidShopIds.add(shopId);
+              connector.invalidatePerformanceShop?.(shopId, reason);
+            },
+          });
+          if (queryResult.invalidShops.length) {
+            warnings.push(`${platform} 已隔离 ${queryResult.invalidShops.length} 家失效店铺：${queryResult.invalidShops.map((shop) => shop.shopId).join("、")}`);
+          }
+          for (const batchResult of queryResult.results) {
+            const result = batchResult.value;
+            if (!result) continue;
             orders.push(...result.orders);
             items.push(...result.items);
             packageCount += result.packageCount;

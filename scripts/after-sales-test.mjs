@@ -103,6 +103,59 @@ try {
   assert.equal(synced.order.customer.name, "Tester");
   assert.match(synced.order.customer.recipientInfo, /电话：081234/);
   assert.equal(upserts.length, 1);
+
+  const resilientSearches = [];
+  const invalidatedPerformanceShops = [];
+  const resilientConnector = {
+    performanceContext() {
+      return {
+        hasCredentials: true,
+        shops: [
+          { shopId: "SHOP-STALE", platform: "tiktok", site: "ID", shopNick: "Stale Shop" },
+          { shopId: "SHOP-LIVE", platform: "tiktok", site: "ID", shopNick: "Live Shop" },
+        ],
+      };
+    },
+    async searchPerformancePackages(input) {
+      resilientSearches.push([...input.shopIds]);
+      if (input.shopIds.includes("SHOP-STALE")) {
+        const error = new Error("\u5b58\u5728\u5df2\u89e3\u7ed1\u6216\u4e0d\u5b58\u5728\u5e97\u94fa\uff0c\u8bf7\u8c03\u6574\u5e97\u94fa\u53c2\u6570");
+        error.code = "fail";
+        throw error;
+      }
+      return {
+        data: {
+          orderPackageList: [{
+            opOrderPackageId: "PKG-LARGE-ID",
+            orderInfo: {
+              opOrderId: "OP-LARGE-ID",
+              platform: "tiktok",
+              shopId: "SHOP-LIVE",
+              platformOrderSn: "586679584342181770",
+              site: "ID",
+              gmtOrderStart: "2026-10-20 04:17:21",
+            },
+            items: [{ opOrderPackageItemId: "ITEM-LARGE-ID", platformOuterSkuId: "TZKJ-A", quantity: 1 }],
+          }],
+        },
+      };
+    },
+    invalidatePerformanceShop(shopId, reason) {
+      invalidatedPerformanceShops.push({ shopId, reason });
+    },
+  };
+  const resilientService = createAfterSalesService({
+    cachePath: resolve(tempDir, "after-sales-resilient.json"),
+    uploadDir: resolve(tempDir, "uploads-resilient"),
+    performanceStore,
+    connector: resilientConnector,
+    getProducts: () => ({ catalog: [], productBase: [] }),
+  });
+  const resilientSynced = await resilientService.syncOrder("586679584342181770");
+  assert.equal(resilientSynced.order.orderNumber, "586679584342181770");
+  assert.equal(resilientSynced.order.shopId, "SHOP-LIVE");
+  assert.deepEqual(resilientSearches, [["SHOP-STALE", "SHOP-LIVE"], ["SHOP-STALE"], ["SHOP-LIVE"]]);
+  assert.deepEqual(invalidatedPerformanceShops.map((item) => item.shopId), ["SHOP-STALE"]);
   const productOptions = service.searchProducts({ keyword: "测试", country: "ID" });
   assert.equal(productOptions.products.length, 1);
   assert.equal(productOptions.products[0].unitCostCny, 14.4);

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { extname, resolve } from "node:path";
 import { calculatePackagingFeeCny, normalizedCountryKey, normalizePackagingFeeRules } from "./performance-analytics.js";
 import { normalizeMiaoshouPackages } from "./miaoshou-performance.js";
+import { queryMiaoshouShopBatches } from "./miaoshou-shop-query.js";
 import { normalizeNotificationRouteSnapshot } from "./wecom-project-routing.js";
 
 export const AFTER_SALES_PRIMARY_REASONS = Object.freeze([
@@ -988,7 +989,7 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     let orders = cached.orders || [];
     let items = cached.items || [];
     let rawRows = [];
-    let liveWarning = "";
+    const liveWarnings = [];
     if (context.hasCredentials) {
       const shopsByPlatform = new Map();
       for (const shop of context.shops || []) {
@@ -1001,28 +1002,42 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
       }
       for (const [platform, shopIds] of shopsByPlatform) {
         try {
-          const payload = await connector.searchPerformancePackages({
-            page: 1,
-            pageSize: 50,
-            platform,
-            shopIds: [...new Set(shopIds)].slice(0, 100),
-            platformOrderSns: orderNumber,
+          const queryResult = await queryMiaoshouShopBatches({
+            shopIds,
+            request: (shopBatch) => connector.searchPerformancePackages({
+              page: 1,
+              pageSize: 50,
+              platform,
+              shopIds: shopBatch,
+              platformOrderSns: orderNumber,
+            }),
+            onInvalidShop: ({ shopId, reason }) => connector.invalidatePerformanceShop?.(shopId, reason),
           });
-          rawRows.push(...packageRows(payload));
-          const normalized = normalizeMiaoshouPackages(payload);
-          const liveOrders = normalized.orders.filter((order) => text(order.platformOrderSn) === orderNumber);
-          const identities = new Set(liveOrders.map((order) => order.identity));
-          const liveItems = normalized.items.filter((item) => identities.has(item.orderIdentity));
-          if (liveOrders.length) {
-            performanceStore?.upsertMiaoshouPerformance?.({ orders: liveOrders, items: liveItems });
-            orders = [...orders, ...liveOrders];
-            items = [...items, ...liveItems];
+          if (queryResult.invalidShops.length) {
+            liveWarnings.push(`${platform} 已跳过 ${queryResult.invalidShops.length} 家失效店铺`);
           }
+          let platformMatched = false;
+          for (const result of queryResult.results) {
+            if (!result.value) continue;
+            rawRows.push(...packageRows(result.value));
+            const normalized = normalizeMiaoshouPackages(result.value);
+            const liveOrders = normalized.orders.filter((order) => text(order.platformOrderSn) === orderNumber);
+            const identities = new Set(liveOrders.map((order) => order.identity));
+            const liveItems = normalized.items.filter((item) => identities.has(item.orderIdentity));
+            if (liveOrders.length) {
+              platformMatched = true;
+              performanceStore?.upsertMiaoshouPerformance?.({ orders: liveOrders, items: liveItems });
+              orders = [...orders, ...liveOrders];
+              items = [...items, ...liveItems];
+            }
+          }
+          if (platformMatched) break;
         } catch (error) {
-          liveWarning = text(error?.message) || "妙手实时查询失败，已使用本地缓存。";
+          liveWarnings.push(`${platform}：${text(error?.message) || "妙手实时查询失败"}`);
         }
       }
     }
+    const liveWarning = [...new Set(liveWarnings)].join("；");
     const exactOrders = [...new Map(orders.filter((order) => text(order.platformOrderSn) === orderNumber).map((order) => [order.identity, order])).values()];
     const shopIds = [...new Set(exactOrders.map((order) => text(order.shopId)).filter(Boolean))];
     if (!exactOrders.length) throw new Error(liveWarning || "妙手未查询到该平台订单号，请核对后重试。");

@@ -264,6 +264,42 @@ try {
   const futureDateResult = await syncService.run({ dateFrom: "2026-08-05", dateTo: "2026-08-07", force: true });
   assert.equal(futureDateResult.dateTo, "2026-08-05", "future end dates must be clamped to the current business date");
   assert.equal(inputs.packages.at(-1).gmtModifiedTo, "2026-08-05 08:00:00");
+
+  const resilientCalls = [];
+  const invalidatedShops = [];
+  const resilientConnector = {
+    performanceContext: () => ({
+      hasCredentials: true,
+      shopsSyncedAt: "2026-08-01T00:00:00.000Z",
+      shops: [
+        { shopId: "200", platform: "tiktok", site: "ID" },
+        { shopId: "STALE", platform: "tiktok", site: "ID" },
+      ],
+    }),
+    searchPerformancePackages: async (input) => {
+      resilientCalls.push([...input.shopIds]);
+      if (input.shopIds.includes("STALE")) {
+        const error = new Error("\u5b58\u5728\u5df2\u89e3\u7ed1\u6216\u4e0d\u5b58\u5728\u5e97\u94fa\uff0c\u8bf7\u8c03\u6574\u5e97\u94fa\u53c2\u6570");
+        error.code = "fail";
+        throw error;
+      }
+      return packagePayload;
+    },
+    searchPerformanceReturns: async () => ({ data: { orderReturnList: [] } }),
+    searchPerformanceCancellations: async () => ({ data: { orderCancelList: [] } }),
+    invalidatePerformanceShop: (shopId, reason) => invalidatedShops.push({ shopId, reason }),
+  };
+  const resilientSyncService = createMiaoshouPerformanceSyncService({
+    connector: resilientConnector,
+    store: reopened,
+    now: () => new Date("2026-08-05T00:00:00.000Z"),
+  });
+  const resilientResult = await resilientSyncService.run({ dateFrom: "2026-08-01", dateTo: "2026-08-01", force: true });
+  assert.equal(resilientResult.status, "partial");
+  assert.equal(resilientResult.orderCount, 1);
+  assert.deepEqual(resilientCalls, [["200", "STALE"], ["200"], ["STALE"]]);
+  assert.deepEqual(invalidatedShops.map((item) => item.shopId), ["STALE"]);
+  assert.match(resilientResult.warnings.join("\n"), /STALE/);
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

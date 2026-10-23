@@ -891,6 +891,7 @@ export async function initMiaoshouAutomation({
     searchPerformanceCancellations,
     searchPerformancePackages,
     searchPerformanceReturns,
+    invalidatePerformanceShop: markShopInvalid,
     syncShops,
     testConnection,
     updateConfig,
