@@ -27,7 +27,8 @@ fi
 
 UNTRACKED_RELEASE_FILES="$(git ls-files --others --exclude-standard -- \
   'src/**' 'server/**' 'scripts/**' 'collaboration/**' 'config/**' 'public/**' \
-  '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' 'package.json' 'package-lock.json')"
+  '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' 'package.json' 'package-lock.json' \
+  | grep -Ev '^(\.codex-builds/|\.codex-rollbacks/|\.release-[^/]+/|dist(?:[.-][^/]+)?/)' || true)"
 if [[ -n "$UNTRACKED_RELEASE_FILES" ]]; then
   echo "[deploy] refused: production has untracked release source files" >&2
   printf '%s\n' "$UNTRACKED_RELEASE_FILES" >&2
