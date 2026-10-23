@@ -131,9 +131,16 @@ install -m 0644 "$PROJECT_DIR/$FRONTEND_CONTRACT" "$PINNED_GUARD_DIR/production-
 tar \
   --exclude='./node_modules' \
   --exclude='./dist' \
+  --exclude='./dist-*' \
+  --exclude='./dist.*' \
   --exclude='./.git' \
+  --exclude='./.cache' \
+  --exclude='./.codex-builds' \
+  --exclude='./.codex-rollbacks' \
+  --exclude='./*.bundle' \
   --exclude='./.release-staging-*' \
   --exclude='./.dist-rollback-*' \
+  --exclude='./.release-*' \
   -czf "$BACKUP_DIR/project-before.tgz" .
 test -s "$BACKUP_DIR/project-before.tgz"
 
