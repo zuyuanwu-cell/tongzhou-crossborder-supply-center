@@ -5307,7 +5307,7 @@ export function updateStockupCollaborationRequest(requestId: string, payload: Re
   return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
-export function changeStockupCollaborationRequest(requestId: string, action: "submit" | "accept" | "request-changes" | "reject" | "cancel" | "restore", payload: Record<string, unknown> = {}) {
+export function changeStockupCollaborationRequest(requestId: string, action: "submit" | "accept" | "request-changes" | "reject" | "cancel" | "restore" | "rollback", payload: Record<string, unknown> = {}) {
   return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/${action}`, { method: "POST", body: JSON.stringify(payload) });
 }
 

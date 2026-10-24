@@ -358,6 +358,10 @@ export type StockupRequest = {
   ownerRole?: string;
   nextAction?: { key: string; label: string; target: string; objectId: string; enabled: boolean; reason: string } | null;
   blockers?: Array<{ code: string; message: string }>;
+  lifecycleActions?: {
+    cancel: { enabled: boolean; reason: string };
+    rollback: { enabled: boolean; reason: string };
+  };
 };
 
 export type StockupRequestListPayload = {

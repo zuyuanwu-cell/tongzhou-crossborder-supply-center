@@ -75,6 +75,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     canCost: allowed(user, "stockup_cost_edit", ["stockup_workflow_manage"]),
     canLock: allowed(user, "stockup_cost_lock", ["stockup_workflow_manage"]),
     canReport: allowed(user, "stockup_cost_report_view", ["stockup_workflow_manage"]),
+    canWorkflowManage: allowed(user, "stockup_workflow_manage"),
   }), [user]);
 
   const loadAll = useCallback(async (silent = false) => {
@@ -172,6 +173,6 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     <section className="sc-guidance"><Sparkles size={18} /><div><b>无需再记复杂步骤</b><span>系统根据当前角色和单据状态，只展示下一步要处理的动作。</span></div></section>
 
     {showCreate ? <RequestCreatePanel products={productOptions} warehouses={warehouseOptions} projectTeams={projectTeams} defaultProjectTeamId={defaultProjectTeamId} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); const notification = result.notification; setNotice(notification ? { tone: notification.status === "sent" ? "success" : "warning", text: notification.message } : null); }} /> : null}
-    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} canWarehouseManage={permissions.canWarehouseManage} canShip={permissions.canShip} canCost={permissions.canCost} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { setSelected(null); setSection(target); }} /> : null}
+    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} canWarehouseManage={permissions.canWarehouseManage} canShip={permissions.canShip} canCost={permissions.canCost} canWorkflowManage={permissions.canWorkflowManage} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { setSelected(null); setSection(target); }} /> : null}
   </main>;
 }

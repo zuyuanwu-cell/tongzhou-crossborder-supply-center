@@ -45,6 +45,28 @@ try {
   const stockedPurchase = service.createPurchaseOrder({ supplierName: "缺口采购", paidTotalCny: 10, lines: [{ requestLineId: stockedRequest.lines[0].id, quantity: 2, merchandiseAmount: 10 }] }, context, "stocked-purchase").purchaseOrder;
   assert.equal(stockedPurchase.lines[0].quantity, 2);
 
+  // Admins may roll a V2 request back while no real execution has started. Once
+  // task progress exists, rollback is blocked, but audited cancellation remains
+  // available and must preserve the task record.
+  const lifecycleRequestResult = service.createSpotRequest({
+    workflowVersion: 2, project: "流程管理测试", destinationCountry: "印度尼西亚", destinationWarehouseId: "id-jkt-1", destinationWarehouseName: "雅加达仓", expectedArrivalAt: "2026-12-01", priority: "常规", reason: "流程测试", submit: true,
+    lines: [{ sku: "ROLLBACK-001", productName: "流程管理商品", requestedQty: 5, unit: "件" }],
+  }, context, "lifecycle-request");
+  assert.equal(service.getJourneyRequest(lifecycleRequestResult.requestId, context).lifecycleActions.rollback.enabled, true);
+  const lifecycleDraft = service.rollbackRequest(lifecycleRequestResult.requestId, { reason: "退回修改需求" }, context).request;
+  assert.equal(lifecycleDraft.status, "draft");
+  const lifecycleSubmitted = service.setRequestStatus(lifecycleDraft.id, "submitted", {}, context).request;
+  const lifecycleTask = service.createTask({ requestId: lifecycleSubmitted.id, lineId: lifecycleSubmitted.lines[0].id, plannedQty: 5 }, context).task;
+  assert.equal(service.getJourneyRequest(lifecycleSubmitted.id, context).lifecycleActions.rollback.enabled, true, "a pending task can be rolled back safely");
+  const lifecycleProgress = service.updateTask(lifecycleTask.id, { version: lifecycleTask.version, orderedQty: 1, completedQty: 0, status: "in_progress" }, context).task;
+  const progressedLifecycle = service.getJourneyRequest(lifecycleSubmitted.id, context).lifecycleActions;
+  assert.equal(progressedLifecycle.rollback.enabled, false, "task progress blocks destructive rollback");
+  assert.equal(progressedLifecycle.cancel.enabled, true);
+  assert.throws(() => service.setRequestStatus(lifecycleSubmitted.id, "cancelled", {}, context), (error) => error?.code === "required");
+  const lifecycleCancelled = service.setRequestStatus(lifecycleSubmitted.id, "cancelled", { reason: "业务终止，不再继续执行" }, context).request;
+  assert.equal(lifecycleCancelled.status, "cancelled");
+  assert.equal(service.getRequest(lifecycleSubmitted.id, context).tasks.find((item) => item.id === lifecycleProgress.id)?.status, "in_progress", "cancellation preserves execution records for audit");
+
   const requestResult = service.createSpotRequest({
     workflowVersion: 2, project: "Shopee 印尼", destinationCountry: "印度尼西亚", destinationWarehouseId: "id-jkt-1", destinationWarehouseName: "雅加达仓", expectedArrivalAt: "2026-11-30", priority: "常规", reason: "补库存", submit: false,
     lines: [{ sku: "", productName: "待编码测试商品", procurementUrl: "https://detail.1688.com/example", requestedQty: 20, unit: "件" }],

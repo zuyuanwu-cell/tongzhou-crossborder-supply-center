@@ -580,14 +580,24 @@ export function createStockupCollaborationService(store, {
   function setRequestStatus(requestId, targetStatus, payload, context) {
     const request = getRequest(requestId, context);
     const requestedTargetStatus = targetStatus;
+    if (targetStatus === "cancelled") {
+      required(payload.reason, "作废原因");
+      const shipment = store.first(`SELECT DISTINCT s.id,s.shipment_no,s.status FROM stockup_shipments s
+        LEFT JOIN stockup_shipment_request_links l ON l.shipment_id=s.id
+        WHERE (s.request_id=? OR l.request_id=?) AND s.status NOT IN ('voided','cancelled')
+        ORDER BY s.created_at DESC LIMIT 1`, [request.id, request.id]);
+      if (shipment) throw Object.assign(new Error(`需求已创建活动发运批次 ${String(shipment.shipment_no || "")}，请先在“物流与到仓”取消出运计划。`), { statusCode: 409, code: "request_cancel_has_active_shipment", details: { shipmentId: String(shipment.id), shipmentNo: String(shipment.shipment_no), shipmentStatus: String(shipment.status) } });
+    }
     if (request.workflowVersion === 2) {
       targetStatus = ({ pending_acceptance: "submitted", needs_changes: "draft", rejected: "cancelled", accepted: "submitted" })[targetStatus] || targetStatus;
-      if (targetStatus !== request.status) assertStockupV2Transition(request.status, targetStatus);
+      const transitionFrom = ({ accepted: "submitted", in_progress: "purchasing" })[request.status] || request.status;
+      if (targetStatus !== request.status) assertStockupV2Transition(transitionFrom, targetStatus);
     } else {
       assertRequestTransition(request.status, targetStatus);
     }
     if (request.workflowVersion === 2 && targetStatus === "cancelled" && number(request.routePlanVersion) > 0) {
-      return v3Service.cancelRoute(requestId, payload, context);
+      const result = v3Service.cancelRoute(requestId, payload, context);
+      return { ...result, request: getJourneyRequest(requestId, { ...context, viewAll: true }) };
     }
     if (request.workflowVersion === 2 && request.status === "draft" && targetStatus === "submitted") v2Service.refreshInventoryPlan(requestId, context);
     const now = nowIso();
@@ -598,6 +608,84 @@ export function createStockupCollaborationService(store, {
       const titles = { submitted: "现货备货需求已提交", pending_acceptance: "备货需求已重新提交", accepted: "供应链已受理", needs_changes: "需求需要补充资料", rejected: "需求已驳回", cancelled: "需求已取消", draft: request.workflowVersion === 2 ? "需求已退回草稿修订" : "需求已恢复为草稿" };
       addEvent(requestId, isV2Claim ? "request_claimed" : `request_${targetStatus}`, isV2Claim ? "供应链已认领需求" : (titles[targetStatus] || "需求状态已更新"), payload.note || payload.reason || (isV2Claim ? "后续由认领人登记采购单并跟进到货" : ""), context);
       return { ok: true, request: getRequest(requestId, { ...context, viewAll: true }) };
+    });
+  }
+
+  function requestLifecycleActions(request) {
+    const disabled = (reason) => ({ enabled: false, reason });
+    const activeShipment = store.first(`SELECT DISTINCT s.id,s.shipment_no,s.status FROM stockup_shipments s
+      LEFT JOIN stockup_shipment_request_links l ON l.shipment_id=s.id
+      WHERE (s.request_id=? OR l.request_id=?) AND s.status NOT IN ('voided','cancelled')
+      ORDER BY s.created_at DESC LIMIT 1`, [request.id, request.id]);
+    const finalStatus = ["handed_over", "overseas_received", "cost_locked", "completed", "cancelled", "rejected"].includes(request.status);
+    const cancel = finalStatus
+      ? disabled(request.status === "cancelled" ? "需求已作废。" : "已交接货代或已完成的需求不能直接作废，请走冲正流程。")
+      : activeShipment
+        ? disabled(`请先取消活动发运批次 ${String(activeShipment.shipment_no || "")}。`)
+        : { enabled: true, reason: "作废后保留完整时间线，并释放尚未交接货代的库存锁定。" };
+
+    if (request.workflowVersion !== 2) return { cancel, rollback: disabled("旧协同流程暂不支持通用回退。") };
+    if (activeShipment) return { cancel, rollback: disabled(`请先取消活动发运批次 ${String(activeShipment.shipment_no || "")}。`) };
+    if (finalStatus) return { cancel, rollback: disabled("当前阶段不能直接回退。") };
+    const currentRoutePlan = number(request.routePlanVersion) > 0
+      ? store.first("SELECT plan_status FROM stockup_route_plan_versions WHERE request_id=? AND plan_version=?", [request.id, request.routePlanVersion])
+      : null;
+    if (number(request.routePlanVersion) > 0) {
+      if (String(currentRoutePlan?.plan_status || "") === "confirmed") {
+        const linked = store.first(`SELECT reference_type,reference_no,reference_id,status FROM stockup_fulfillment_allocations
+          WHERE request_id=? AND plan_version=? AND status NOT IN ('cancelled','superseded')
+            AND (shipped_qty>0 OR reference_type IN ('purchase_order_line','outsourcing_order','domestic_transfer'))
+          ORDER BY created_at LIMIT 1`, [request.id, request.routePlanVersion]);
+        if (linked) {
+          const reference = String(linked.reference_no || linked.reference_id || "");
+          const label = linked.reference_type === "purchase_order_line" ? "采购单" : linked.reference_type === "outsourcing_order" ? "委外加工单" : linked.reference_type === "domestic_transfer" ? "跨仓调拨" : "已发运数量";
+          return { cancel, rollback: disabled(`已关联${label}${reference ? ` ${reference}` : ""}，请先处理对应下游单据。`) };
+        }
+        return { cancel, rollback: { enabled: true, reason: "释放当前方案库存锁定，并退回到逐 SKU 履约方案确认。" } };
+      }
+      return { cancel, rollback: disabled("当前履约方案已经退回，请直接重新确认方案；如需调整数量或来源，请在方案确认页修改。") };
+    }
+    if (request.status === "submitted") return { cancel, rollback: { enabled: true, reason: "退回草稿，供需求提出人修改后重新提交。" } };
+    if (["purchasing", "in_progress"].includes(request.status)) {
+      const downstream = store.first(`SELECT
+        (SELECT COUNT(*) FROM stockup_purchase_order_lines WHERE request_id=? AND status NOT IN ('cancelled','out_of_stock')) AS purchase_count,
+        (SELECT COUNT(*) FROM stockup_warehouse_work_orders WHERE request_id=? AND status!='cancelled') AS warehouse_count,
+        (SELECT COUNT(*) FROM stockup_execution_tasks WHERE request_id=? AND status!='terminated'
+          AND (status NOT IN ('pending_assignment','pending_order') OR ordered_qty>0 OR completed_qty>0)) AS progressed_task_count`, [request.id, request.id, request.id]);
+      if (number(downstream?.purchase_count) || number(downstream?.warehouse_count) || number(downstream?.progressed_task_count)) return { cancel, rollback: disabled("已产生采购/生产进度或国内仓工单，请先处理对应下游记录；如业务整体终止，可直接作废需求。") };
+      return { cancel, rollback: { enabled: true, reason: "终止未形成外部单据的旧执行任务，并退回履约方案确认。" } };
+    }
+    if (request.status === "inspection_review") return { cancel, rollback: disabled("请在“国内仓作业”打开对应验收单并执行驳回，避免需求与仓库工单状态不一致。") };
+    return { cancel, rollback: disabled("当前阶段不能直接回退；请先处理仓库、发运或外部单据。") };
+  }
+
+  function rollbackRequest(requestId, payload, context) {
+    const request = getRequest(requestId, context);
+    const reason = required(payload.reason, "回退原因");
+    const actions = requestLifecycleActions(request);
+    if (!actions.rollback.enabled) throw Object.assign(new Error(actions.rollback.reason), { statusCode: 409, code: "request_rollback_blocked" });
+    const currentRoutePlan = number(request.routePlanVersion) > 0
+      ? store.first("SELECT plan_status FROM stockup_route_plan_versions WHERE request_id=? AND plan_version=?", [request.id, request.routePlanVersion])
+      : null;
+    if (number(request.workflowVersion) === 2 && number(request.routePlanVersion) > 0 && String(currentRoutePlan?.plan_status || "") === "confirmed") {
+      const result = v3Service.rollbackRoute(requestId, { ...payload, reason }, context);
+      return { ...result, request: getJourneyRequest(requestId, { ...context, viewAll: true }) };
+    }
+    if (number(request.workflowVersion) !== 2) throw Object.assign(new Error("旧协同流程暂不支持通用回退。"), { statusCode: 409, code: "request_rollback_unsupported" });
+
+    const targetStatus = request.status === "submitted" ? "draft"
+      : ["purchasing", "in_progress"].includes(request.status) ? "submitted" : "";
+    if (!targetStatus) throw Object.assign(new Error("当前阶段不能直接回退。"), { statusCode: 409, code: "request_rollback_state" });
+    const now = nowIso();
+    const taskSnapshot = ["purchasing", "in_progress"].includes(request.status)
+      ? store.all("SELECT id,task_no,status,planned_qty,ordered_qty,completed_qty FROM stockup_execution_tasks WHERE request_id=? AND status!='terminated'", [request.id])
+      : [];
+    return store.transaction(() => {
+      if (["purchasing", "in_progress"].includes(request.status)) store.run("UPDATE stockup_execution_tasks SET status='terminated',version=version+1,updated_at=? WHERE request_id=? AND status!='terminated'", [now, request.id]);
+      store.run("UPDATE stockup_requests SET status=?,journey_stage=?,version=version+1,updated_at=? WHERE id=?", [targetStatus, targetStatus === "draft" ? "draft" : "route_planning", now, request.id]);
+      store.run("UPDATE stockup_request_lines SET status=?,updated_at=? WHERE request_id=?", [targetStatus, now, request.id]);
+      addEvent(request.id, "request_rolled_back", targetStatus === "draft" ? "需求已退回草稿修改" : "需求已退回重新规划", reason, context, { payload: { fromStatus: request.status, toStatus: targetStatus, terminatedTasks: taskSnapshot } });
+      return { ok: true, request: getJourneyRequest(request.id, { ...context, viewAll: true }) };
     });
   }
 
@@ -1590,14 +1678,16 @@ export function createStockupCollaborationService(store, {
     adminOnly: fulfillmentV3AdminOnly,
   });
   function getJourneyRequest(requestId, context = {}) {
-    return v3Service.decorateRequest(getRequest(requestId, context), context);
+    const request = v3Service.decorateRequest(getRequest(requestId, context), context);
+    request.lifecycleActions = requestLifecycleActions(request);
+    return request;
   }
 
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
     listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, reconcileDeletedShipmentWmsOrder, voidShipmentWmsOrder,
     applyWarehouseWorkOrderAction, createWarehouseWorkOrder, getWarehouseWorkOrder, listWarehouseWorkOrders, markWarehouseWorkOrderPublished, warehouseWorkOrderDashboard,
-    saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
+    rollbackRequest, saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
     getJourneyRequest,
     ...v2Service,
     ...v3Service,

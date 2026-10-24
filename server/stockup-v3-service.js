@@ -12,6 +12,7 @@ const ACTIVE_ALLOCATION_STATUSES = new Set([
   "production_completed_waiting_inbound",
   "waiting_inbound",
   "shipment_reserved",
+  "shipped",
   "handover_recovery_required",
   "reservation_recovery_required",
 ]);
@@ -93,7 +94,8 @@ function deriveJourney(allocations, request) {
   if (text(request.status) === "overseas_received") {
     return { journeyStage: "cost_pending", ownerRole: "finance", blockers: [], nextAction: { key: "settle_cost", label: "核算到仓成本", target: "costs", objectId: request.id, enabled: true, reason: "" } };
   }
-  if (!allocations.length) {
+  const active = allocations.filter((item) => ACTIVE_ALLOCATION_STATUSES.has(item.status));
+  if (!active.length) {
     return {
       journeyStage: request.status === "draft" ? "draft" : "route_planning",
       ownerRole: "supply_chain",
@@ -101,8 +103,7 @@ function deriveJourney(allocations, request) {
       nextAction: { key: "confirm_route", label: "确认执行方案", target: "route_confirmation", objectId: request.id, enabled: true, reason: "" },
     };
   }
-  const summary = routeSummary(allocations);
-  const active = allocations.filter((item) => ACTIVE_ALLOCATION_STATUSES.has(item.status));
+  const summary = routeSummary(active);
   const unresolved = active.filter((item) => item.sourceType === "unresolved");
   const transfers = active.filter((item) => item.sourceType === "transfer" && item.readyQty < item.plannedQty);
   const transferSuggestions = transfers.filter((item) => item.status === "transfer_suggested");
@@ -186,6 +187,30 @@ export function createStockupV3Service({
       JOIN stockup_requests r ON r.id=a.request_id
       WHERE a.request_id=? AND a.plan_version=r.route_plan_version
       ORDER BY a.request_line_id,a.source_type,a.created_at`, [text(requestId)]).map(allocationFromRow);
+  }
+
+  function activeShipmentForRequest(requestId) {
+    return store.first(`SELECT DISTINCT s.id,s.shipment_no,s.status
+      FROM stockup_shipments s
+      LEFT JOIN stockup_shipment_request_links l ON l.shipment_id=s.id
+      WHERE (s.request_id=? OR l.request_id=?)
+        AND s.status NOT IN ('voided','cancelled')
+      ORDER BY s.created_at DESC LIMIT 1`, [text(requestId), text(requestId)]);
+  }
+
+  function ensureRouteCanClose(request, allocations, operation) {
+    const shipment = activeShipmentForRequest(request.id);
+    if (shipment) {
+      fail(`需求已创建活动发运批次 ${text(shipment.shipment_no)}，请先在“物流与到仓”取消出运计划，再${operation}。`, "route_close_has_active_shipment", 409, {
+        shipmentId: text(shipment.id), shipmentNo: text(shipment.shipment_no), shipmentStatus: text(shipment.status),
+      });
+    }
+    if (allocations.some((allocation) => allocation.shippedQty > 0)) {
+      fail(`已有数量交接货代，不能直接${operation}整张需求，请走冲正流程。`, "route_close_has_handover", 409);
+    }
+    if (allocations.some((allocation) => allocation.referenceType === "domestic_transfer" && allocation.status === "transfer_in_progress")) {
+      fail(`存在在途跨仓调拨，请先在国内库存中取消调拨或确认到仓并同步状态，再${operation}。`, "route_close_has_transfer", 409);
+    }
   }
 
   function releasePlanReservationsOrMarkRecovery(request, allocations, context, operation) {
@@ -758,9 +783,10 @@ export function createStockupV3Service({
   function cancelRoute(requestId, payload = {}, context = {}) {
     const request = getRequest(text(requestId), { ...context, viewAll: true });
     ensureRequestEnabled(request, context);
+    const reason = text(payload.reason);
+    if (!reason) fail("请填写作废原因。", "route_cancel_reason_required", 400);
     const allocations = currentAllocations(request.id);
-    if (allocations.some((allocation) => allocation.shippedQty > 0)) fail("已有数量发运，不能直接取消整张需求，请先处理在途批次。", "route_cancel_has_shipment", 409);
-    if (allocations.some((allocation) => allocation.referenceType === "domestic_transfer" && allocation.status === "transfer_in_progress")) fail("存在在途跨仓调拨，请先在国内库存中取消调拨或确认到仓并同步状态。", "route_cancel_has_transfer", 409);
+    ensureRouteCanClose(request, allocations, "作废");
     const reservations = releasePlanReservationsOrMarkRecovery(request, allocations, context, "取消履约方案");
     const reservationIds = reservations.map((item) => text(item.external_reservation_id));
     const now = nowIso();
@@ -770,10 +796,41 @@ export function createStockupV3Service({
         (SELECT id FROM stockup_fulfillment_allocations WHERE request_id=? AND plan_version=?) AND status='reserved'`, [now, request.id, request.routePlanVersion]);
       store.run("UPDATE stockup_route_plan_versions SET plan_status='cancelled' WHERE request_id=? AND plan_version=?", [request.id, request.routePlanVersion]);
       store.run("UPDATE stockup_requests SET status='cancelled',journey_stage='cancelled',version=version+1,updated_at=? WHERE id=?", [now, request.id]);
-      addEvent(request.id, "route_cancelled", "履约方案已取消并释放库存", text(payload.reason) || "管理员取消需求", context, { payload: { reservationIds } });
+      addEvent(request.id, "route_cancelled", "履约方案已取消并释放库存", reason, context, { payload: { reservationIds } });
       return { ok: true, request: decorateRequest(getRequest(request.id, { ...context, viewAll: true }), context) };
     });
   }
 
-  return { cancelRoute, confirmRoute, confirmTransfer, currentAllocations, decorateRequest, enrichProductOptions, linkOutsourcing, previewRoute, recoverReservation, replaceRoute, routeReconciliation, syncTransfer, updateProductSupplyMode };
+  function rollbackRoute(requestId, payload = {}, context = {}) {
+    const request = getRequest(text(requestId), { ...context, viewAll: true });
+    ensureRequestEnabled(request, context);
+    const reason = text(payload.reason);
+    if (!reason) fail("请填写回退原因。", "route_rollback_reason_required", 400);
+    if (["cancelled", "handed_over", "overseas_received", "cost_locked", "completed"].includes(text(request.status))) {
+      fail("当前需求已进入不可直接回退的阶段。", "route_rollback_state", 409);
+    }
+    const allocations = currentAllocations(request.id);
+    ensureRouteCanClose(request, allocations, "回退");
+    const linkedExecution = allocations.find((allocation) => ["purchase_order_line", "outsourcing_order"].includes(allocation.referenceType));
+    if (linkedExecution) {
+      fail(`履约分支已关联${linkedExecution.referenceType === "purchase_order_line" ? "采购单" : "委外加工单"} ${linkedExecution.referenceNo || linkedExecution.referenceId || ""}，请先取消或关闭对应下游单据，再回退执行方案。`, "route_rollback_has_external_execution", 409, {
+        allocationId: linkedExecution.id, referenceType: linkedExecution.referenceType, referenceId: linkedExecution.referenceId, referenceNo: linkedExecution.referenceNo,
+      });
+    }
+    const reservations = releasePlanReservationsOrMarkRecovery(request, allocations, context, "回退履约方案");
+    const reservationIds = reservations.map((item) => text(item.external_reservation_id));
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run("UPDATE stockup_fulfillment_allocations SET status='superseded',version=version+1,updated_at=? WHERE request_id=? AND plan_version=?", [now, request.id, request.routePlanVersion]);
+      store.run(`UPDATE stockup_fulfillment_reservations SET status='released',updated_at=? WHERE allocation_id IN
+        (SELECT id FROM stockup_fulfillment_allocations WHERE request_id=? AND plan_version=?) AND status='reserved'`, [now, request.id, request.routePlanVersion]);
+      store.run("UPDATE stockup_route_plan_versions SET plan_status='rolled_back',reason=? WHERE request_id=? AND plan_version=?", [reason, request.id, request.routePlanVersion]);
+      store.run("UPDATE stockup_requests SET status='submitted',journey_stage='route_planning',version=version+1,updated_at=? WHERE id=?", [now, request.id]);
+      store.run("UPDATE stockup_request_lines SET status='submitted',updated_at=? WHERE request_id=?", [now, request.id]);
+      addEvent(request.id, "route_rolled_back", "履约方案已退回重新规划", reason, context, { payload: { planVersion: request.routePlanVersion, reservationIds } });
+      return { ok: true, request: decorateRequest(getRequest(request.id, { ...context, viewAll: true }), context) };
+    });
+  }
+
+  return { cancelRoute, confirmRoute, confirmTransfer, currentAllocations, decorateRequest, enrichProductOptions, linkOutsourcing, previewRoute, recoverReservation, replaceRoute, rollbackRoute, routeReconciliation, syncTransfer, updateProductSupplyMode };
 }

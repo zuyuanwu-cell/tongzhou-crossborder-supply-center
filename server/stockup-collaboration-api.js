@@ -374,13 +374,16 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         sendJson(res, 200, result);
         return true;
       }
-      if ((match = suffix.match(/^\/requests\/([^/]+)\/(submit|accept|request-changes|reject|cancel|restore)$/)) && req.method === "POST") {
+      if ((match = suffix.match(/^\/requests\/([^/]+)\/(submit|accept|request-changes|reject|cancel|restore|rollback)$/)) && req.method === "POST") {
         const action = match[2];
-        if (["accept", "request-changes", "reject"].includes(action)) requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有受理备货需求权限。");
+        if (action === "rollback") requireAny(auth, ["stockup_workflow_manage"], "当前账号没有回退备货流程的权限。");
+        else if (["accept", "request-changes", "reject"].includes(action)) requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有受理备货需求权限。");
         else requireAny(auth, ["stockup_request_create", "stockup_workflow_manage"], "当前账号没有变更备货需求权限。");
         const statusByAction = { submit: "pending_acceptance", accept: "accepted", "request-changes": "needs_changes", reject: "rejected", cancel: "cancelled", restore: "draft" };
         const payload = await readBody(req);
-        const result = service.setRequestStatus(decodeURIComponent(match[1]), statusByAction[action], payload, context);
+        const result = action === "rollback"
+          ? service.rollbackRequest(decodeURIComponent(match[1]), payload, context)
+          : service.setRequestStatus(decodeURIComponent(match[1]), statusByAction[action], payload, context);
         if (action === "submit") {
           try {
             result.notification = await notifyRequestSubmitted({ request: result.request, payload, auth, req });
@@ -393,7 +396,7 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
             detail: "供应链已受理备货需求。",
             reference: `request:${result.request?.version || result.request?.updatedAt || ""}`,
           }, context, auth, req);
-        } else if (["request-changes", "reject", "cancel"].includes(action)) {
+        } else if (["request-changes", "reject", "cancel", "rollback"].includes(action)) {
           await attachProgressNotifications(result, result.request?.id, {
             node: "exception",
             detail: String(payload.reason || payload.note || `需求状态变更为 ${result.request?.status || action}`),

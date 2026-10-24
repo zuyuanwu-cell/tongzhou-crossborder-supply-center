@@ -334,6 +334,7 @@ try {
 
   // 取消后的需求必须进入真正终态，释放锁定且不能再出现“重新计算方案”。
   inbound(target.id, "OPEN-CANCEL", "V3-CANCEL", 5);
+  inbound(target.id, "OPEN-ROLLBACK", "V3-ROLLBACK", 5);
   const cancelledCreated = createRequest("v3-cancel", [{ sku: "V3-CANCEL", productName: "取消终态", requestedQty: 5, unit: "件", supplyMode: "外采成品" }]);
   const cancelledPreview = service.previewRoute(cancelledCreated.requestId, { consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context);
   service.confirmRoute(cancelledCreated.requestId, { expectedVersion: cancelledPreview.expectedRequestVersion, consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context, "confirm-cancelled");
@@ -341,6 +342,46 @@ try {
   assert.equal(cancelledJourney.journeyStage, "cancelled");
   assert.equal(cancelledJourney.nextAction, null);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-CANCEL" }, inventoryContext).items[0].reservedQty, 0);
+
+  // 管理员可把尚未产生下游单据的方案退回重新规划；库存锁必须释放，
+  // 原方案保留为历史版本，重新确认后生成下一版而不是覆盖原记录。
+  const rollbackCreated = createRequest("v3-rollback", [{ sku: "V3-ROLLBACK", productName: "回退方案", requestedQty: 5, unit: "件", supplyMode: "外采成品" }]);
+  const rollbackPreview = service.previewRoute(rollbackCreated.requestId, { consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context);
+  const rollbackConfirmed = service.confirmRoute(rollbackCreated.requestId, { expectedVersion: rollbackPreview.expectedRequestVersion, consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context, "confirm-rollback");
+  assert.equal(service.getJourneyRequest(rollbackCreated.requestId, context).lifecycleActions.rollback.enabled, true);
+  const rolledBack = service.rollbackRequest(rollbackCreated.requestId, { reason: "调整履约来源" }, context).request;
+  assert.equal(rolledBack.status, "submitted");
+  assert.equal(rolledBack.nextAction.key, "confirm_route");
+  assert.equal(rolledBack.allocations[0].status, "superseded");
+  assert.equal(rolledBack.lifecycleActions.rollback.enabled, false, "the same route plan cannot be rolled back twice");
+  assert.match(rolledBack.lifecycleActions.rollback.reason, /已经退回/);
+  assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ROLLBACK" }, inventoryContext).items[0].reservedQty, 0);
+  const rollbackReplanned = service.replaceRoute(rollbackCreated.requestId, { expectedVersion: rolledBack.version, consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context, "replan-after-rollback");
+  assert.equal(rollbackReplanned.planVersion, 2);
+  assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ROLLBACK" }, inventoryContext).items[0].reservedQty, 5);
+
+  // 已经创建活动发运批次时，不允许需求层直接作废或回退；必须先取消
+  // 出运计划，避免留下指向已释放库存的孤立发运单。
+  const rollbackAllocation = rollbackReplanned.request.allocations.find((item) => item.status === "ready");
+  const rollbackShipment = service.createRouteShipment({
+    requestId: rollbackCreated.requestId,
+    forwarderLocationId,
+    transportMode: "海运",
+    carrier: "V3 测试货代",
+    lines: [{ allocationId: rollbackAllocation.id, quantity: 5, packagingGroups: [{ id: "standard", kind: "standard", cartonCount: 1, unitsPerCarton: 5, cartonLengthCm: 30, cartonWidthCm: 20, cartonHeightCm: 15, cartonWeightKg: 2 }] }],
+  }, context).shipment;
+  const blockedLifecycle = service.getJourneyRequest(rollbackCreated.requestId, context).lifecycleActions;
+  assert.equal(blockedLifecycle.cancel.enabled, false);
+  assert.equal(blockedLifecycle.rollback.enabled, false);
+  assert.throws(() => service.cancelRoute(rollbackCreated.requestId, { reason: "错误顺序" }, context), (error) => error?.code === "route_close_has_active_shipment");
+  assert.throws(() => service.rollbackRequest(rollbackCreated.requestId, { reason: "错误顺序" }, context), (error) => error?.code === "request_rollback_blocked");
+  service.cancelReservedShipment(rollbackShipment.id, { reason: "先取消发运计划" }, context);
+  const rollbackCancelled = service.setRequestStatus(rollbackCreated.requestId, "cancelled", { reason: "业务不再需要" }, context).request;
+  assert.equal(rollbackCancelled.status, "cancelled");
+  assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ROLLBACK" }, inventoryContext).items[0].reservedQty, 0);
+
+  const noReasonCreated = createRequest("v3-no-cancel-reason", [{ sku: "V3-NO-STOCK", productName: "取消原因校验", requestedQty: 1, unit: "件", supplyMode: "外采成品" }]);
+  assert.throws(() => service.setRequestStatus(noReasonCreated.requestId, "cancelled", {}, context), (error) => error?.code === "required");
 
   // 生产试点必须同时受需求白名单和管理员身份约束，避免开启开关后
   // 把所有历史 V2 需求一起切到新状态机。
