@@ -205,6 +205,8 @@ until curl -fsS "$HEALTH_URL"; do
   if (( attempt >= HEALTH_ATTEMPTS )); then
     echo "[deploy] API health check failed after $attempt attempts" >&2
     pm2 logs "$PM2_APP" --lines 80 --nostream || true
+    rollback_frontend
+    cleanup_staging
     exit 41
   fi
   sleep "$HEALTH_INTERVAL_SECONDS"
