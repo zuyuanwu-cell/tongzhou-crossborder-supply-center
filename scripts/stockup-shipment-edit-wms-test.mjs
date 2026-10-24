@@ -55,12 +55,25 @@ try {
   assert.equal(cartonItems[199].box_no, "200");
   assert.equal(cartonItems.every((item) => item.quantity === 72), true);
   assert.equal(cartonItems.reduce((sum, item) => sum + item.quantity, 0), 14_400);
+  const tailCartonItems = buildYunAsnItems({ lines: [{
+    sku: "SKU-TAIL",
+    quantity: 3029,
+    packagingGroups: [
+      { kind: "standard", cartonCount: 21, unitsPerCarton: 144 },
+      { kind: "remainder", cartonCount: 1, unitsPerCarton: 5 },
+    ],
+  }] });
+  assert.equal(tailCartonItems.length, 22);
+  assert.equal(tailCartonItems[0].quantity, 144);
+  assert.equal(tailCartonItems[21].quantity, 5);
+  assert.equal(tailCartonItems[21].box_no, "22");
+  assert.equal(tailCartonItems.reduce((sum, item) => sum + item.quantity, 0), 3029);
   const multiSkuItems = buildYunAsnItems({ lines: [
     { sku: "SKU-A", quantity: 20, cartonCount: 2, unitsPerCarton: 10 },
     { sku: "SKU-B", quantity: 15, cartonCount: 3, unitsPerCarton: 5 },
   ] });
   assert.deepEqual(multiSkuItems.map((item) => item.box_no), ["1", "2", "3", "4", "5"]);
-  assert.throws(() => buildYunAsnItems({ lines: [{ sku: "SKU-BAD", quantity: 14_400, cartonCount: 199, unitsPerCarton: 72 }] }), /装箱数据不一致/);
+  assert.throws(() => buildYunAsnItems({ lines: [{ sku: "SKU-BAD", quantity: 14_400, cartonCount: 199, unitsPerCarton: 72 }] }), /标准箱与尾数箱合计/);
   const modifyPayload = buildYunAsnPayload({ referenceNo: "FY-20260929-M8P01", eta: "2026-10-15", lines: [{ sku: "TZKJ-QL032", quantity: 14_400, cartonCount: 200, unitsPerCarton: 72 }] }, "DD002", "RVAEE0004-2-410-260930-0001");
   assert.equal(modifyPayload.receiving_code, "RVAEE0004-2-410-260930-0001");
   assert.equal(modifyPayload.warehouse_code, "DD002");

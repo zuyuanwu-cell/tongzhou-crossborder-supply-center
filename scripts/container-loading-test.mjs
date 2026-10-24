@@ -45,10 +45,17 @@ try {
     destinationCountry: "俄罗斯",
     status: "in_transit",
     version: 3,
-    packages: 100,
-    totalWeightKg: 1000,
-    totalVolumeM3: 9.6,
-    lines: items.map((item) => ({ ...item, shippedQty: item.cartonCount * item.unitsPerCarton })),
+    packages: 101,
+    totalWeightKg: 1003,
+    totalVolumeM3: 9.6175,
+    lines: items.map((item) => ({
+      ...item,
+      shippedQty: item.cartonCount * item.unitsPerCarton + 5,
+      packagingGroups: [
+        { kind: "standard", cartonCount: item.cartonCount, unitsPerCarton: item.unitsPerCarton, cartonLengthCm: item.cartonLengthCm, cartonWidthCm: item.cartonWidthCm, cartonHeightCm: item.cartonHeightCm, cartonWeightKg: item.cartonWeightKg },
+        { kind: "remainder", cartonCount: 1, unitsPerCarton: 5, cartonLengthCm: 35, cartonWidthCm: 25, cartonHeightCm: 20, cartonWeightKg: 3 },
+      ],
+    })),
   };
   const stockupService = {
     listShipments: () => ({ ok: true, shipments: [shipment] }),
@@ -61,6 +68,9 @@ try {
   const context = { viewAll: true, auth: { role: "admin", user: { id: "admin-1", displayName: "管理员" } }, warehouseIds: [], countries: [], skus: [] };
   const bootstrap = service.bootstrap(context);
   assert.equal(bootstrap.shipments.length, 1);
+  assert.equal(bootstrap.shipments[0].lines.length, 2);
+  assert.equal(bootstrap.shipments[0].lines[1].productName, "测试商品（尾数箱）");
+  assert.equal(bootstrap.shipments[0].lines[1].unitsPerCarton, 5);
   assert.equal(bootstrap.containerTypes.length, 4);
 
   const preview = await service.calculatePreview({ sourceShipmentId: shipment.id, containerType: "20GP", selectedStrategy: "balanced" }, context);

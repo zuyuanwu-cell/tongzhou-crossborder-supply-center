@@ -306,11 +306,24 @@ export function createStockupCollaborationService(store, {
   fulfillmentV3AdminOnly = false,
 } = {}) {
   function shipmentLineFromRow(line) {
+    const storedGroups = parseJson(line.packaging_groups_json, []);
+    const packagingGroups = Array.isArray(storedGroups) && storedGroups.length
+      ? storedGroups.map((group, index) => ({
+        id: String(group?.id || `${line.id}-package-${index + 1}`),
+        kind: group?.kind === "remainder" ? "remainder" : "standard",
+        cartonCount: number(group?.cartonCount), unitsPerCarton: number(group?.unitsPerCarton),
+        cartonLengthCm: number(group?.cartonLengthCm), cartonWidthCm: number(group?.cartonWidthCm), cartonHeightCm: number(group?.cartonHeightCm), cartonWeightKg: number(group?.cartonWeightKg),
+      }))
+      : number(line.carton_count) > 0 ? [{
+        id: `${line.id}-package-1`, kind: "standard", cartonCount: number(line.carton_count), unitsPerCarton: number(line.units_per_carton),
+        cartonLengthCm: number(line.carton_length_cm), cartonWidthCm: number(line.carton_width_cm), cartonHeightCm: number(line.carton_height_cm), cartonWeightKg: number(line.carton_weight_kg),
+      }] : [];
     return {
       id: String(line.id), shipmentId: String(line.shipment_id), requestId: String(line.request_id || ""), taskId: String(line.task_id), lineId: String(line.line_id), sku: String(line.sku), productName: String(line.product_name), imageUrl: String(line.image_url || ""),
       shippedQty: number(line.shipped_qty), unit: String(line.unit), baseUnitCostCny: number(line.base_unit_cost_cny), weightKg: number(line.weight_kg), volumeM3: number(line.volume_m3),
       cartonCount: number(line.carton_count), unitsPerCarton: number(line.units_per_carton), cartonLengthCm: number(line.carton_length_cm), cartonWidthCm: number(line.carton_width_cm),
       cartonHeightCm: number(line.carton_height_cm), cartonWeightKg: number(line.carton_weight_kg),
+      packagingGroups,
       productRefId: String(line.product_ref_id || ""), purchaseOrderLineId: String(line.purchase_order_line_id || ""), inspectionLotId: String(line.inspection_lot_id || ""), fulfillmentAllocationId: String(line.fulfillment_allocation_id || ""),
     };
   }

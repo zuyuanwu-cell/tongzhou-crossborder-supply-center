@@ -224,20 +224,23 @@ export function createContainerLoadingService({ store, stockupService }) {
         packages: shipment.packages,
         totalWeightKg: shipment.totalWeightKg,
         totalVolumeM3: shipment.totalVolumeM3,
-        lines: (shipment.lines || []).map((line) => ({
-          id: line.id,
-          sku: line.sku,
-          productName: line.productName,
-          imageUrl: line.imageUrl,
-          cartonCount: line.cartonCount,
-          unitsPerCarton: line.unitsPerCarton,
-          cartonLengthCm: line.cartonLengthCm,
-          cartonWidthCm: line.cartonWidthCm,
-          cartonHeightCm: line.cartonHeightCm,
-          cartonWeightKg: line.cartonWeightKg,
-          orientation: "upright",
-          priority: 5,
-        })),
+        lines: (shipment.lines || []).flatMap((line) => {
+          const groups = Array.isArray(line.packagingGroups) && line.packagingGroups.length ? line.packagingGroups : [line];
+          return groups.map((group, groupIndex) => ({
+            id: `${line.id}:package:${groupIndex + 1}`,
+            sku: line.sku,
+            productName: `${line.productName}${group.kind === "remainder" ? "（尾数箱）" : ""}`,
+            imageUrl: line.imageUrl,
+            cartonCount: group.cartonCount,
+            unitsPerCarton: group.unitsPerCarton,
+            cartonLengthCm: group.cartonLengthCm,
+            cartonWidthCm: group.cartonWidthCm,
+            cartonHeightCm: group.cartonHeightCm,
+            cartonWeightKg: group.cartonWeightKg,
+            orientation: "upright",
+            priority: 5,
+          }));
+        }),
       }));
   }
 
@@ -281,7 +284,10 @@ export function createContainerLoadingService({ store, stockupService }) {
       destinationWarehouseId: shipment.destinationWarehouseId,
       destinationWarehouseName: shipment.destinationWarehouseName,
       sourceVersion: shipment.version,
-      items: Array.isArray(payload.items) && payload.items.length ? payload.items : shipment.lines,
+      items: Array.isArray(payload.items) && payload.items.length ? payload.items : (shipment.lines || []).flatMap((line) => {
+        const groups = Array.isArray(line.packagingGroups) && line.packagingGroups.length ? line.packagingGroups : [line];
+        return groups.map((group, index) => ({ ...line, ...group, id: `${line.id}:package:${index + 1}`, productName: `${line.productName}${group.kind === "remainder" ? "（尾数箱）" : ""}` }));
+      }),
     };
   }
 

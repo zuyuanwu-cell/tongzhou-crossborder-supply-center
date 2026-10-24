@@ -148,9 +148,20 @@ export type StockupShipmentLine = {
   cartonWidthCm: number;
   cartonHeightCm: number;
   cartonWeightKg: number;
+  packagingGroups: Array<{
+    id: string;
+    kind: "standard" | "remainder";
+    cartonCount: number;
+    unitsPerCarton: number;
+    cartonLengthCm: number;
+    cartonWidthCm: number;
+    cartonHeightCm: number;
+    cartonWeightKg: number;
+  }>;
   productRefId: string;
   purchaseOrderLineId: string;
   inspectionLotId: string;
+  fulfillmentAllocationId?: string;
 };
 
 export type StockupShipment = {

@@ -908,6 +908,21 @@ function validateCreateLines(input) {
     const quantity = firstNumber(line.quantity);
     if (!sku) throw new Error(`WMS 建单第 ${index + 1} 行缺少 SKU。`);
     if (!Number.isInteger(quantity) || quantity <= 0) throw new Error(`${sku} 的 WMS 入库数量必须是大于 0 的整数。`);
+    const rawPackagingGroups = Array.isArray(line.packagingGroups) && line.packagingGroups.length
+      ? line.packagingGroups
+      : [{ kind: "standard", cartonCount: line.cartonCount, unitsPerCarton: line.unitsPerCarton }];
+    const packagingGroups = rawPackagingGroups.map((group, groupIndex) => ({
+      id: firstText(group?.id, `${sku}-package-${groupIndex + 1}`),
+      kind: group?.kind === "remainder" ? "remainder" : "standard",
+      cartonCount: firstNumber(group?.cartonCount),
+      unitsPerCarton: firstNumber(group?.unitsPerCarton),
+    }));
+    for (const group of packagingGroups) {
+      if (!Number.isInteger(group.cartonCount) || group.cartonCount <= 0) throw new Error(`${sku} 的${group.kind === "remainder" ? "尾数箱" : "标准箱"}箱数必须是大于 0 的整数。`);
+      if (!Number.isInteger(group.unitsPerCarton) || group.unitsPerCarton <= 0) throw new Error(`${sku} 的${group.kind === "remainder" ? "尾数箱" : "标准箱"}件/箱必须是大于 0 的整数。`);
+    }
+    const packedQuantity = packagingGroups.reduce((sum, group) => sum + group.cartonCount * group.unitsPerCarton, 0);
+    if (packedQuantity !== quantity) throw new Error(`${sku} 的标准箱与尾数箱合计 ${packedQuantity} 件，但发运数量为 ${quantity} 件。`);
     return {
       sku,
       quantity,
@@ -917,8 +932,9 @@ function validateCreateLines(input) {
       purchasePrice: Math.max(0, firstNumber(line.purchasePrice)),
       purchasePriceCurrency: firstText(line.purchasePriceCurrency, "CNY") || "CNY",
       boxSequence: Math.max(1, Math.floor(firstNumber(line.boxSequence, index + 1))),
-      cartonCount: firstNumber(line.cartonCount),
-      unitsPerCarton: firstNumber(line.unitsPerCarton),
+      cartonCount: packagingGroups.reduce((sum, group) => sum + group.cartonCount, 0),
+      unitsPerCarton: (packagingGroups.find((group) => group.kind === "standard") || packagingGroups[0]).unitsPerCarton,
+      packagingGroups,
     };
   });
 }
@@ -928,25 +944,17 @@ export function buildYunAsnItems(input) {
   const items = [];
   let nextBoxNumber = 1;
   for (const line of lines) {
-    if (!Number.isInteger(line.cartonCount) || line.cartonCount <= 0) {
-      throw new Error(`${line.sku} 的箱数必须是大于 0 的整数，已停止创建 YunWMS 入库单。`);
-    }
-    if (!Number.isInteger(line.unitsPerCarton) || line.unitsPerCarton <= 0) {
-      throw new Error(`${line.sku} 的每箱件数必须是大于 0 的整数，已停止创建 YunWMS 入库单。`);
-    }
-    const packedQuantity = line.cartonCount * line.unitsPerCarton;
-    if (packedQuantity !== line.quantity) {
-      throw new Error(`${line.sku} 的装箱数据不一致：${line.cartonCount} 箱 × ${line.unitsPerCarton} 件/箱 = ${packedQuantity} 件，但发运数量为 ${line.quantity} 件。`);
-    }
-    for (let cartonIndex = 0; cartonIndex < line.cartonCount; cartonIndex += 1) {
-      items.push({
-        product_sku: line.sku,
-        quantity: line.unitsPerCarton,
-        box_no: String(nextBoxNumber),
-        product_price: line.purchasePrice,
-        currency_code: line.purchasePriceCurrency,
-      });
-      nextBoxNumber += 1;
+    for (const group of line.packagingGroups) {
+      for (let cartonIndex = 0; cartonIndex < group.cartonCount; cartonIndex += 1) {
+        items.push({
+          product_sku: line.sku,
+          quantity: group.unitsPerCarton,
+          box_no: String(nextBoxNumber),
+          product_price: line.purchasePrice,
+          currency_code: line.purchasePriceCurrency,
+        });
+        nextBoxNumber += 1;
+      }
     }
   }
   return items;
@@ -957,25 +965,17 @@ export function buildSeaStockupItems(input) {
   const items = [];
   let nextBoxNumber = 1;
   for (const line of lines) {
-    if (!Number.isInteger(line.cartonCount) || line.cartonCount <= 0) {
-      throw new Error(`${line.sku} 的箱数必须是大于 0 的整数，已停止创建 SEA WMS 备货单。`);
-    }
-    if (!Number.isInteger(line.unitsPerCarton) || line.unitsPerCarton <= 0) {
-      throw new Error(`${line.sku} 的每箱件数必须是大于 0 的整数，已停止创建 SEA WMS 备货单。`);
-    }
-    const packedQuantity = line.cartonCount * line.unitsPerCarton;
-    if (packedQuantity !== line.quantity) {
-      throw new Error(`${line.sku} 的装箱数据不一致：${line.cartonCount} 箱 × ${line.unitsPerCarton} 件/箱 = ${packedQuantity} 件，但发运数量为 ${line.quantity} 件。`);
-    }
-    for (let cartonIndex = 0; cartonIndex < line.cartonCount; cartonIndex += 1) {
-      items.push({
-        goodsSkuOuterId: line.sku,
-        boxSn: nextBoxNumber,
-        quantity: line.unitsPerCarton,
-        purchasePrice: line.purchasePrice,
-        purchasePriceCurrency: line.purchasePriceCurrency,
-      });
-      nextBoxNumber += 1;
+    for (const group of line.packagingGroups) {
+      for (let cartonIndex = 0; cartonIndex < group.cartonCount; cartonIndex += 1) {
+        items.push({
+          goodsSkuOuterId: line.sku,
+          boxSn: nextBoxNumber,
+          quantity: group.unitsPerCarton,
+          purchasePrice: line.purchasePrice,
+          purchasePriceCurrency: line.purchasePriceCurrency,
+        });
+        nextBoxNumber += 1;
+      }
     }
   }
   return items;
@@ -1111,8 +1111,9 @@ export async function previewWarehouseStockupOrder(connection, input) {
         productName: line.productName,
         imageUrl: firstText(input.lines?.find((item) => firstText(item?.sku) === line.sku)?.imageUrl),
         quantity: line.quantity,
-        cartonCount: line.cartonCount,
-        unitsPerCarton: line.unitsPerCarton,
+         cartonCount: line.cartonCount,
+         unitsPerCarton: line.unitsPerCarton,
+         packagingGroups: line.packagingGroups,
       })),
     };
   }
@@ -1136,8 +1137,9 @@ export async function previewWarehouseStockupOrder(connection, input) {
       productName: line.productName,
       imageUrl: firstText(input.lines?.find((item) => firstText(item?.sku) === line.sku)?.imageUrl),
       quantity: line.quantity,
-      cartonCount: line.cartonCount,
-      unitsPerCarton: line.unitsPerCarton,
+       cartonCount: line.cartonCount,
+       unitsPerCarton: line.unitsPerCarton,
+       packagingGroups: line.packagingGroups,
     })),
   };
 }

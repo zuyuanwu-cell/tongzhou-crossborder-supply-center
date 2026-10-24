@@ -13,8 +13,8 @@ try {
     wmsOrderNo: "SEA-001",
     destinationWarehouseName: "雅加达仓",
     transportMode: "海运",
-    packages: 2,
-    totalWeightKg: 10,
+    packages: 3,
+    totalWeightKg: 11,
     totalVolumeM3: 0.048,
     documentVersion: 0,
     forwarderSnapshot: {
@@ -25,7 +25,18 @@ try {
       contactPhone: "13800000000",
       routingRequirements: "外箱贴箱唛",
     },
-    lines: [{ sku: "ID-TEST-001", productName: "测试商品", shippedQty: 20, unit: "件", cartonCount: 2, unitsPerCarton: 10 }],
+    lines: [{
+      sku: "ID-TEST-001",
+      productName: "测试商品",
+      shippedQty: 25,
+      unit: "件",
+      cartonCount: 3,
+      unitsPerCarton: 10,
+      packagingGroups: [
+        { kind: "standard", cartonCount: 2, unitsPerCarton: 10, cartonLengthCm: 40, cartonWidthCm: 30, cartonHeightCm: 20, cartonWeightKg: 5 },
+        { kind: "remainder", cartonCount: 1, unitsPerCarton: 5, cartonLengthCm: 30, cartonWidthCm: 20, cartonHeightCm: 15, cartonWeightKg: 1 },
+      ],
+    }],
   });
 
   assert.equal(result.documents.length, 2);
@@ -42,7 +53,7 @@ try {
   assert.ok(marksPdf.startsWith("%PDF-1.4"));
   assert.match(packingPdf, /\/MediaBox \[0 0 595\.28 841\.89\]/);
   assert.match(marksPdf, /\/MediaBox \[0 0 283\.46 283\.46\]/);
-  assert.match(marksPdf, /\/Count 2/);
+  assert.match(marksPdf, /\/Count 3/);
   assert.equal(packing.snapshot.version, 1);
   assert.equal(packing.snapshot.forwarderSnapshot.address, "深圳市测试路 1 号");
 

@@ -228,13 +228,30 @@ async function loadProductImages(lines, imageLoader) {
   return images;
 }
 
+function documentPackagingGroups(line) {
+  if (Array.isArray(line?.packagingGroups) && line.packagingGroups.length) return line.packagingGroups;
+  return Number(line?.cartonCount || 0) > 0 ? [{
+    id: `${line.id || line.sku || "line"}-package-1`, kind: "standard", cartonCount: Number(line.cartonCount || 0), unitsPerCarton: Number(line.unitsPerCarton || 0),
+    cartonLengthCm: Number(line.cartonLengthCm || 0), cartonWidthCm: Number(line.cartonWidthCm || 0), cartonHeightCm: Number(line.cartonHeightCm || 0), cartonWeightKg: Number(line.cartonWeightKg || 0),
+  }] : [];
+}
+
+function documentPackingLines(shipment) {
+  return (Array.isArray(shipment.lines) ? shipment.lines : []).flatMap((line) => documentPackagingGroups(line).map((group) => ({
+    ...line,
+    ...group,
+    packagingKind: group.kind === "remainder" ? "remainder" : "standard",
+    shippedQty: Number(group.cartonCount || 0) * Number(group.unitsPerCarton || 0),
+  })));
+}
+
 function packingPages(shipment, productImages) {
   const width = 210 * MM_TO_PT;
   const height = 297 * MM_TO_PT;
   const margin = 28;
   const rowHeight = 38;
   const rowsPerPage = 13;
-  const lines = Array.isArray(shipment.lines) ? shipment.lines : [];
+  const lines = documentPackingLines(shipment);
   const pages = [];
   for (let offset = 0; offset < Math.max(1, lines.length); offset += rowsPerPage) {
     const pageLines = lines.slice(offset, offset + rowsPerPage);
@@ -286,7 +303,7 @@ function packingPages(shipment, productImages) {
       commands.push(textCommand(String(line.sku || "-").slice(0, 18), columns[2] + 4, y + 5, 6.8));
       commands.push(textCommand(String(line.productName || "-").slice(0, 19), columns[3] + 4, y + 5, 6.8));
       commands.push(textCommand(`${line.shippedQty} ${line.unit || "件"}`, columns[4] + 4, y + 5, 7.2));
-      commands.push(textCommand(String(line.cartonCount || 0), columns[5] + 4, y + 5, 8.5, [0.82, 0.24, 0.04]));
+      commands.push(textCommand(`${line.cartonCount || 0}${line.packagingKind === "remainder" ? " 尾" : ""}`, columns[5] + 4, y + 5, 8.5, [0.82, 0.24, 0.04]));
       commands.push(textCommand(`${line.unitsPerCarton || 0}/箱`, columns[6] + 4, y + 9, 7));
       commands.push(textCommand(`${Number(line.cartonLengthCm || 0)}×${Number(line.cartonWidthCm || 0)}×${Number(line.cartonHeightCm || 0)}cm`, columns[6] + 4, y - 3, 5.6, [0.35, 0.45, 0.58]));
     });
@@ -304,7 +321,7 @@ function markPages(shipment) {
   const height = 100 * MM_TO_PT;
   const totalCartons = Math.max(1, Math.round(Number(shipment.packages || 0)));
   const expanded = [];
-  for (const line of shipment.lines || []) {
+  for (const line of documentPackingLines(shipment)) {
     for (let carton = 0; carton < Math.max(0, Math.round(Number(line.cartonCount || 0))); carton += 1) expanded.push(line);
   }
   while (expanded.length < totalCartons) expanded.push(null);
@@ -327,7 +344,7 @@ function markPages(shipment) {
     commands.push(textCommand(`箱唛：${String(shipment.boxMark || "-").slice(0, 23)}`, 18, height - 194, 10, [0.03, 0.19, 0.39]));
     commands.push(textCommand(`SKU：${line?.sku || "MIXED"}`, 18, height - 214, 9));
     commands.push(textCommand(`品名：${String(line?.productName || "混装").slice(0, 21)}`, 18, height - 231, 8));
-    commands.push(textCommand(`箱规：${line?.unitsPerCarton || "-"} ${line?.unit || "件"}/箱`, 18, height - 248, 8));
+    commands.push(textCommand(`${line?.packagingKind === "remainder" ? "尾数箱" : "箱规"}：${line?.unitsPerCarton || "-"} ${line?.unit || "件"}/箱`, 18, height - 248, 8));
     commands.push(lineCommand(16, 28, width - 16, 28, [0.68, 0.77, 0.87], 0.8));
     commands.push(textCommand(`批次 ${shipment.shipmentNo}`, 18, 17, 6.5, [0.35, 0.45, 0.58]));
     commands.push(textCommand(`物流 ${shipment.trackingNo || "-"}`, 150, 17, 6.5, [0.35, 0.45, 0.58]));

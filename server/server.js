@@ -2863,6 +2863,7 @@ function collaborationShipmentWmsInput(shipment, options = {}) {
       boxSequence: index + 1,
       cartonCount: line.cartonCount,
       unitsPerCarton: line.unitsPerCarton,
+      packagingGroups: line.packagingGroups,
     })),
   };
 }

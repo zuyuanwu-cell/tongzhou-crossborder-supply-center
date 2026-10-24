@@ -180,8 +180,9 @@ export async function initStockupCollaborationStore(dbPath) {
       ,units_per_carton REAL NOT NULL DEFAULT 0
       ,carton_length_cm REAL NOT NULL DEFAULT 0
       ,carton_width_cm REAL NOT NULL DEFAULT 0
-      ,carton_height_cm REAL NOT NULL DEFAULT 0
-      ,carton_weight_kg REAL NOT NULL DEFAULT 0
+       ,carton_height_cm REAL NOT NULL DEFAULT 0
+       ,carton_weight_kg REAL NOT NULL DEFAULT 0
+       ,packaging_groups_json TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE IF NOT EXISTS stockup_shipment_request_links (
       shipment_id TEXT NOT NULL,
@@ -762,6 +763,7 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_shipment_lines", "carton_width_cm REAL NOT NULL DEFAULT 0");
   ensureColumn("stockup_shipment_lines", "carton_height_cm REAL NOT NULL DEFAULT 0");
   ensureColumn("stockup_shipment_lines", "carton_weight_kg REAL NOT NULL DEFAULT 0");
+  ensureColumn("stockup_shipment_lines", "packaging_groups_json TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("stockup_receipts", "lifecycle_status TEXT NOT NULL DEFAULT 'active'");
   ensureColumn("stockup_receipts", "archived_at TEXT");
   ensureColumn("stockup_receipts", "archived_by TEXT");

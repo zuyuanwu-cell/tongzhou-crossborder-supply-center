@@ -16,6 +16,42 @@ function businessNo(prefix) {
   return `${prefix}-${stamp}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
 }
 
+function normalizeShipmentPackaging(input, quantity, sku) {
+  const rawGroups = Array.isArray(input?.packagingGroups) && input.packagingGroups.length
+    ? input.packagingGroups
+    : [{
+      kind: "standard", cartonCount: input?.cartonCount, unitsPerCarton: input?.unitsPerCarton,
+      cartonLengthCm: input?.cartonLengthCm, cartonWidthCm: input?.cartonWidthCm, cartonHeightCm: input?.cartonHeightCm, cartonWeightKg: input?.cartonWeightKg,
+    }];
+  const groups = rawGroups.map((group, index) => ({
+    id: text(group?.id) || `package-${index + 1}`,
+    kind: group?.kind === "remainder" ? "remainder" : "standard",
+    cartonCount: number(group?.cartonCount), unitsPerCarton: number(group?.unitsPerCarton),
+    cartonLengthCm: number(group?.cartonLengthCm), cartonWidthCm: number(group?.cartonWidthCm), cartonHeightCm: number(group?.cartonHeightCm), cartonWeightKg: number(group?.cartonWeightKg),
+  }));
+  if (!groups.length) fail(`${sku} 至少需要一种装箱规格。`, "shipment_packaging_required");
+  for (const [index, group] of groups.entries()) {
+    const label = group.kind === "remainder" ? `尾数箱 ${index + 1}` : "标准箱";
+    if (!Number.isInteger(group.cartonCount) || group.cartonCount <= 0) fail(`${sku} 的${label}箱数必须是大于 0 的整数。`, "shipment_carton_count_invalid");
+    if (!Number.isInteger(group.unitsPerCarton) || group.unitsPerCarton <= 0) fail(`${sku} 的${label}件/箱必须是大于 0 的整数。`, "shipment_units_per_carton_invalid");
+    if ([group.cartonLengthCm, group.cartonWidthCm, group.cartonHeightCm, group.cartonWeightKg].some((value) => value <= 0)) fail(`${sku} 的${label}请补齐外箱长宽高和单箱毛重。`, "shipment_packaging_dimensions_invalid");
+  }
+  const packedQuantity = groups.reduce((sum, group) => sum + group.cartonCount * group.unitsPerCarton, 0);
+  if (packedQuantity !== quantity) fail(`${sku} 的标准箱与尾数箱合计 ${packedQuantity}，但本次发运数量为 ${quantity}。`, "shipment_packaging_quantity_mismatch");
+  const representative = groups.find((group) => group.kind === "standard") || groups[0];
+  return {
+    groups,
+    cartonCount: groups.reduce((sum, group) => sum + group.cartonCount, 0),
+    unitsPerCarton: representative.unitsPerCarton,
+    cartonLengthCm: representative.cartonLengthCm,
+    cartonWidthCm: representative.cartonWidthCm,
+    cartonHeightCm: representative.cartonHeightCm,
+    cartonWeightKg: representative.cartonWeightKg,
+    weightKg: groups.reduce((sum, group) => sum + group.cartonCount * group.cartonWeightKg, 0),
+    volumeM3: groups.reduce((sum, group) => sum + group.cartonCount * group.cartonLengthCm * group.cartonWidthCm * group.cartonHeightCm / 1_000_000, 0),
+  };
+}
+
 export function createStockupV2Service({ store, inventoryGateway = {}, getRequest, getShipment, addEvent }) {
   function planInventory(lines, context = {}) {
     const skus = [...new Set(lines.map((line) => text(line.sku).replace(/\s+/g, "").toUpperCase()).filter(Boolean))];
@@ -660,20 +696,11 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       const reservationRows = store.all("SELECT * FROM stockup_fulfillment_reservations WHERE allocation_id=? AND status='reserved' AND COALESCE(shipment_id,'')='' ORDER BY created_at,id", [row.id]);
       const reservationQty = reservationRows.reduce((sum, item) => sum + number(item.quantity), 0);
       if (!reservationRows.length || reservationQty < quantity) fail(`${text(row.sku)} 的库存预留不完整，请先恢复锁库。`, "route_reservation_missing", 409);
-      const cartonCount = number(input.cartonCount);
-      const unitsPerCarton = number(input.unitsPerCarton);
-      if (!Number.isInteger(cartonCount) || cartonCount <= 0 || !Number.isInteger(unitsPerCarton) || unitsPerCarton <= 0 || cartonCount * unitsPerCarton !== quantity) {
-        fail(`${text(row.sku)} 装箱数量不一致，请确认箱数 × 件/箱 = ${quantity}。`, "shipment_packaging_quantity_mismatch");
-      }
+      const packaging = normalizeShipmentPackaging(input, quantity, text(row.sku));
       return {
         ...row,
         quantity,
-        cartonCount,
-        unitsPerCarton,
-        cartonLengthCm: Math.max(0, number(input.cartonLengthCm)),
-        cartonWidthCm: Math.max(0, number(input.cartonWidthCm)),
-        cartonHeightCm: Math.max(0, number(input.cartonHeightCm)),
-        cartonWeightKg: Math.max(0, number(input.cartonWeightKg)),
+        ...packaging,
         reservationRows,
       };
     });
@@ -703,7 +730,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
         VALUES (${Array(52).fill("?").join(",")})`, [
         shipmentId, request.id, shipmentNo, request.consolidationWarehouseName, request.consolidationWarehouseId, "", request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, "", "", "",
         text(payload.carrier), transportMode, text(payload.trackingNo), text(payload.etd), text(payload.eta), "", "inventory_reserved", allocations.reduce((sum, item) => sum + item.cartonCount, 0),
-        allocations.reduce((sum, item) => sum + item.cartonCount * item.cartonWeightKg, 0), allocations.reduce((sum, item) => sum + item.cartonCount * item.cartonLengthCm * item.cartonWidthCm * item.cartonHeightCm / 1_000_000, 0),
+        allocations.reduce((sum, item) => sum + item.weightKg, 0), allocations.reduce((sum, item) => sum + item.volumeM3, 0),
         chargeableWeightKg, billingMethod, carrierPackages, carrierActualWeightKg, chargeableVolumeM3, billingUnitPriceCny, billingExtraFeeCny, quotedFreightCny,
         text(payload.note) || splitReason, text(payload.boxMark), "", "", "", "not_created", "", "", 0, "", "", 1, now, now, 2, text(location.id), JSON.stringify(snapshot), JSON.stringify(reservationIds), "", "", "", 0,
       ]);
@@ -711,10 +738,8 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       store.run("INSERT INTO stockup_inventory_reservations (id,shipment_id,external_reservation_id,domestic_warehouse_id,status,reserved_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)", [internalReservationId, shipmentId, JSON.stringify(reservationIds), request.consolidationWarehouseId, "reserved", now, userOf(context).id, now, now]);
       for (const allocation of allocations) {
         const shipmentLineId = id("spl");
-        const weightKg = allocation.cartonCount * allocation.cartonWeightKg;
-        const volumeM3 = allocation.cartonCount * allocation.cartonLengthCm * allocation.cartonWidthCm * allocation.cartonHeightCm / 1_000_000;
-        store.run(`INSERT INTO stockup_shipment_lines (id,shipment_id,request_id,task_id,line_id,sku,product_name,image_url,shipped_qty,unit,base_unit_cost_cny,weight_kg,volume_m3,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,product_ref_id,purchase_order_line_id,inspection_lot_id,fulfillment_allocation_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentLineId, shipmentId, request.id, "", allocation.request_line_id, allocation.sku, allocation.product_name, allocation.image_url, allocation.quantity, allocation.unit || "件", number(allocation.target_unit_cost_cny), weightKg, volumeM3, allocation.cartonCount, allocation.unitsPerCarton, allocation.cartonLengthCm, allocation.cartonWidthCm, allocation.cartonHeightCm, allocation.cartonWeightKg, text(allocation.product_ref_id), "", "", allocation.id]);
+        store.run(`INSERT INTO stockup_shipment_lines (id,shipment_id,request_id,task_id,line_id,sku,product_name,image_url,shipped_qty,unit,base_unit_cost_cny,weight_kg,volume_m3,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,packaging_groups_json,product_ref_id,purchase_order_line_id,inspection_lot_id,fulfillment_allocation_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentLineId, shipmentId, request.id, "", allocation.request_line_id, allocation.sku, allocation.product_name, allocation.image_url, allocation.quantity, allocation.unit || "件", number(allocation.target_unit_cost_cny), allocation.weightKg, allocation.volumeM3, allocation.cartonCount, allocation.unitsPerCarton, allocation.cartonLengthCm, allocation.cartonWidthCm, allocation.cartonHeightCm, allocation.cartonWeightKg, JSON.stringify(allocation.groups), text(allocation.product_ref_id), "", "", allocation.id]);
         store.run("UPDATE stockup_fulfillment_allocations SET status='shipment_reserved',version=version+1,updated_at=? WHERE id=?", [now, allocation.id]);
         for (const reservation of allocation.reservationRows) store.run("UPDATE stockup_fulfillment_reservations SET shipment_id=?,updated_at=? WHERE id=?", [shipmentId, now, reservation.id]);
       }

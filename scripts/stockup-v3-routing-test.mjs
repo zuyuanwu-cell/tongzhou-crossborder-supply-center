@@ -111,11 +111,23 @@ try {
     trackingNo: "V3-TRACK-001",
     billingMethod: "flat",
     billingUnitPriceCny: 100,
-    lines: [{ allocationId: fullAllocation.id, quantity: 1000, cartonCount: 10, unitsPerCarton: 100, cartonLengthCm: 50, cartonWidthCm: 40, cartonHeightCm: 30, cartonWeightKg: 10 }],
+    lines: [{
+      allocationId: fullAllocation.id,
+      quantity: 1000,
+      packagingGroups: [
+        { id: "standard", kind: "standard", cartonCount: 8, unitsPerCarton: 120, cartonLengthCm: 50, cartonWidthCm: 40, cartonHeightCm: 30, cartonWeightKg: 10 },
+        { id: "remainder", kind: "remainder", cartonCount: 1, unitsPerCarton: 40, cartonLengthCm: 36, cartonWidthCm: 28, cartonHeightCm: 22, cartonWeightKg: 4.5 },
+      ],
+    }],
   };
+  assert.throws(() => service.createRouteShipment({ ...shipmentInput, lines: [{ ...shipmentInput.lines[0], packagingGroups: shipmentInput.lines[0].packagingGroups.map((group, index) => index ? { ...group, unitsPerCarton: 39 } : group) }] }, context), (error) => error?.code === "shipment_packaging_quantity_mismatch");
   const firstRouteShipment = service.createRouteShipment(shipmentInput, context).shipment;
   assert.equal(firstRouteShipment.status, "inventory_reserved");
   assert.equal(firstRouteShipment.lines[0].fulfillmentAllocationId, fullAllocation.id);
+  assert.equal(firstRouteShipment.packages, 9);
+  assert.equal(firstRouteShipment.lines[0].packagingGroups.length, 2);
+  assert.equal(firstRouteShipment.lines[0].packagingGroups[1].kind, "remainder");
+  assert.equal(firstRouteShipment.lines[0].weightKg, 84.5);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-A" }, inventoryContext).items[0].reservedQty, 1000, "creating a shipment must not reserve the same stock twice");
   service.cancelReservedShipment(firstRouteShipment.id, { reason: "回归测试取消" }, context);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-A" }, inventoryContext).items[0].reservedQty, 1000, "cancelling a route shipment keeps fulfillment stock reserved");

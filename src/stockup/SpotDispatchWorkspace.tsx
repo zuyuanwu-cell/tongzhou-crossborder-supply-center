@@ -45,6 +45,17 @@ type LotChoice = {
 
 type ShipmentBillingMethod = "volume" | "weight" | "flat";
 
+export type RoutePackagingGroup = {
+  id: string;
+  kind: "standard" | "remainder";
+  cartonCount: number;
+  unitsPerCarton: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
+};
+
 type RouteChoice = {
   allocationId: string;
   sku: string;
@@ -53,13 +64,113 @@ type RouteChoice = {
   quantity: number;
   unit: string;
   selected: boolean;
-  cartonCount: number;
-  unitsPerCarton: number;
-  cartonLengthCm: number;
-  cartonWidthCm: number;
-  cartonHeightCm: number;
-  cartonWeightKg: number;
+  packagingGroups: RoutePackagingGroup[];
 };
+
+let routePackagingSequence = 0;
+
+function newRoutePackagingGroup(kind: RoutePackagingGroup["kind"], overrides: Partial<RoutePackagingGroup> = {}): RoutePackagingGroup {
+  routePackagingSequence += 1;
+  return {
+    id: `route-package-${Date.now().toString(36)}-${routePackagingSequence.toString(36)}`,
+    kind,
+    cartonCount: kind === "remainder" ? 1 : 0,
+    unitsPerCarton: 0,
+    cartonLengthCm: 0,
+    cartonWidthCm: 0,
+    cartonHeightCm: 0,
+    cartonWeightKg: 0,
+    ...overrides,
+  };
+}
+
+function activeRoutePackagingGroups(groups: RoutePackagingGroup[]) {
+  return groups.filter((group) => Number(group.cartonCount) > 0 && Number(group.unitsPerCarton) > 0);
+}
+
+function routePackedQuantity(groups: RoutePackagingGroup[]) {
+  return activeRoutePackagingGroups(groups).reduce((sum, group) => sum + Number(group.cartonCount) * Number(group.unitsPerCarton), 0);
+}
+
+function routePackagingMeasures(groups: RoutePackagingGroup[]) {
+  return activeRoutePackagingGroups(groups).reduce((summary, group) => ({
+    packages: summary.packages + Number(group.cartonCount),
+    weightKg: summary.weightKg + Number(group.cartonCount) * Number(group.cartonWeightKg || 0),
+    volumeM3: summary.volumeM3 + Number(group.cartonCount) * Number(group.cartonLengthCm || 0) * Number(group.cartonWidthCm || 0) * Number(group.cartonHeightCm || 0) / 1_000_000,
+  }), { packages: 0, weightKg: 0, volumeM3: 0 });
+}
+
+function routePackagingIsComplete(item: RouteChoice) {
+  const groups = activeRoutePackagingGroups(item.packagingGroups);
+  return groups.length > 0
+    && routePackedQuantity(groups) === item.quantity
+    && groups.every((group) => Number.isInteger(group.cartonCount)
+      && Number.isInteger(group.unitsPerCarton)
+      && [group.cartonLengthCm, group.cartonWidthCm, group.cartonHeightCm, group.cartonWeightKg].every((value) => Number(value) > 0));
+}
+
+function RoutePackagingCard({ item, onChange }: { item: RouteChoice; onChange: (next: RouteChoice) => void }) {
+  const packedQty = routePackedQuantity(item.packagingGroups);
+  const measures = routePackagingMeasures(item.packagingGroups);
+  const complete = routePackagingIsComplete(item);
+  const standardGroup = item.packagingGroups.find((group) => group.kind === "standard") || item.packagingGroups[0];
+
+  function updateGroup(groupId: string, patch: Partial<RoutePackagingGroup>) {
+    onChange({ ...item, packagingGroups: item.packagingGroups.map((group) => group.id === groupId ? { ...group, ...patch } : group) });
+  }
+
+  function splitAutomatically() {
+    const units = Math.floor(Number(standardGroup?.unitsPerCarton || 0));
+    if (units <= 0) return;
+    const fullCartons = Math.floor(item.quantity / units);
+    const remainder = item.quantity - fullCartons * units;
+    const nextStandard = { ...standardGroup, kind: "standard" as const, cartonCount: fullCartons, unitsPerCarton: units };
+    const previousRemainder = item.packagingGroups.find((group) => group.kind === "remainder");
+    const nextGroups: RoutePackagingGroup[] = [nextStandard];
+    if (remainder > 0) nextGroups.push(newRoutePackagingGroup("remainder", {
+      ...(previousRemainder ? {
+        cartonLengthCm: previousRemainder.cartonLengthCm,
+        cartonWidthCm: previousRemainder.cartonWidthCm,
+        cartonHeightCm: previousRemainder.cartonHeightCm,
+        cartonWeightKg: previousRemainder.cartonWeightKg,
+      } : {}),
+      cartonCount: 1,
+      unitsPerCarton: remainder,
+    }));
+    onChange({ ...item, packagingGroups: nextGroups });
+  }
+
+  function addRemainderGroup() {
+    const remaining = Math.max(0, item.quantity - packedQty);
+    onChange({ ...item, packagingGroups: [...item.packagingGroups, newRoutePackagingGroup("remainder", { unitsPerCarton: remaining })] });
+  }
+
+  return <article className={`sc-route-packaging-card${item.selected ? " is-selected" : ""}`}>
+    <header className="sc-route-packaging-head">
+      <label className="sc-route-toggle"><input type="checkbox" checked={item.selected} onChange={(event) => onChange({ ...item, selected: event.target.checked })} /><span /></label>
+      <div className="sc-route-product">
+        {item.imageUrl ? <img src={item.imageUrl} alt="" /> : <span className="sc-route-product-placeholder"><Boxes size={20} /></span>}
+        <div><b>{item.productName}</b><small>{item.sku} · 已锁定 {item.quantity.toLocaleString("zh-CN")} {item.unit}</small></div>
+      </div>
+      <div className={`sc-route-packaging-result ${complete ? "is-valid" : "is-pending"}`}><small>已装 / 应装</small><b>{packedQty.toLocaleString("zh-CN")} / {item.quantity.toLocaleString("zh-CN")} {item.unit}</b><span>{measures.packages} 箱 · {roundMeasure(measures.volumeM3, 3)} CBM</span></div>
+    </header>
+    <div className="sc-route-packaging-guide"><div><b>先填标准箱，再处理尾数</b><span>填写“件/箱”后点击自动拆箱；系统会把不足一整箱的数量单独生成尾数箱，尾数箱可填写不同外箱尺寸和重量。</span></div><button type="button" disabled={!item.selected || Number(standardGroup?.unitsPerCarton || 0) <= 0} onClick={splitAutomatically}>自动拆分标准箱 / 尾数箱</button></div>
+    <div className="sc-route-packaging-groups">
+      {item.packagingGroups.map((group, index) => <section key={group.id} className={group.kind === "remainder" ? "is-remainder" : "is-standard"}>
+        <div className="sc-route-package-kind"><i>{group.kind === "standard" ? "标准箱" : `尾数箱 ${item.packagingGroups.slice(0, index + 1).filter((candidate) => candidate.kind === "remainder").length}`}</i><small>{group.kind === "standard" ? "相同箱规批量录入" : "允许与标准箱不同"}</small></div>
+        <label><small>箱数</small><input disabled={!item.selected} type="number" min="0" step="1" value={group.cartonCount || ""} onChange={(event) => updateGroup(group.id, { cartonCount: Number(event.target.value) })} /></label>
+        <label><small>件 / 箱</small><input disabled={!item.selected} type="number" min="1" step="1" value={group.unitsPerCarton || ""} onChange={(event) => updateGroup(group.id, { unitsPerCarton: Number(event.target.value) })} /></label>
+        <output><small>本组数量</small><b>{(Number(group.cartonCount || 0) * Number(group.unitsPerCarton || 0)).toLocaleString("zh-CN")}</b></output>
+        <label><small>外箱长 cm</small><input disabled={!item.selected} type="number" min="0" step="0.1" value={group.cartonLengthCm || ""} onChange={(event) => updateGroup(group.id, { cartonLengthCm: Number(event.target.value) })} /></label>
+        <label><small>外箱宽 cm</small><input disabled={!item.selected} type="number" min="0" step="0.1" value={group.cartonWidthCm || ""} onChange={(event) => updateGroup(group.id, { cartonWidthCm: Number(event.target.value) })} /></label>
+        <label><small>外箱高 cm</small><input disabled={!item.selected} type="number" min="0" step="0.1" value={group.cartonHeightCm || ""} onChange={(event) => updateGroup(group.id, { cartonHeightCm: Number(event.target.value) })} /></label>
+        <label><small>单箱毛重 kg</small><input disabled={!item.selected} type="number" min="0" step="0.01" value={group.cartonWeightKg || ""} onChange={(event) => updateGroup(group.id, { cartonWeightKg: Number(event.target.value) })} /></label>
+        {group.kind === "remainder" ? <button type="button" className="sc-route-remove-package" disabled={!item.selected} onClick={() => onChange({ ...item, packagingGroups: item.packagingGroups.filter((candidate) => candidate.id !== group.id) })} aria-label="删除尾数箱"><X size={15} /></button> : <span className="sc-route-package-spacer" />}
+      </section>)}
+    </div>
+    <footer className="sc-route-packaging-foot"><button type="button" disabled={!item.selected || packedQty >= item.quantity} onClick={addRemainderGroup}><Plus size={14} />增加另一种尾数箱</button><span className={complete ? "is-valid" : "is-error"}>{complete ? "装箱数量、尺寸和重量已完整" : packedQty < item.quantity ? `还差 ${item.quantity - packedQty} ${item.unit}，请调整标准箱或尾数箱` : packedQty > item.quantity ? `超出 ${packedQty - item.quantity} ${item.unit}，请减少箱数或件/箱` : "数量已对上，请补齐所有外箱尺寸和单箱毛重"}</span></footer>
+  </article>;
+}
 
 function summarizeWarehouseLots(items: LotChoice[]) {
   return items.reduce((summary, item) => ({
@@ -124,9 +235,9 @@ export function SpotDispatchWorkspace({ shipments, requests, canShip, canSplit, 
   const shipmentSummary = useMemo(() => summarizeShipmentLots(selectedLots), [selectedLots]);
   const selectedRouteChoices = useMemo(() => Object.values(routeChoices).filter((item) => item.selected), [routeChoices]);
   const routeShipmentSummary = useMemo(() => selectedRouteChoices.reduce((summary, item) => ({
-    packages: summary.packages + Number(item.cartonCount || 0),
-    weightKg: summary.weightKg + Number(item.cartonCount || 0) * Number(item.cartonWeightKg || 0),
-    volumeM3: summary.volumeM3 + Number(item.cartonCount || 0) * Number(item.cartonLengthCm || 0) * Number(item.cartonWidthCm || 0) * Number(item.cartonHeightCm || 0) / 1_000_000,
+    packages: summary.packages + routePackagingMeasures(item.packagingGroups).packages,
+    weightKg: summary.weightKg + routePackagingMeasures(item.packagingGroups).weightKg,
+    volumeM3: summary.volumeM3 + routePackagingMeasures(item.packagingGroups).volumeM3,
   }), { packages: 0, weightKg: 0, volumeM3: 0 }), [selectedRouteChoices]);
   const billingBasis = form.billingMethod === "volume" ? form.chargeableVolumeM3 : form.billingMethod === "weight" ? form.chargeableWeightKg : 1;
   const quotedFreightCny = roundMeasure(Math.max(0, billingBasis) * Math.max(0, form.billingUnitPriceCny) + Math.max(0, form.billingExtraFeeCny));
@@ -158,7 +269,7 @@ export function SpotDispatchWorkspace({ shipments, requests, canShip, canSplit, 
     const choices = Object.fromEntries((request.allocations || []).filter((allocation) => allocation.status === "ready" && Number(allocation.readyQty || 0) > Number(allocation.shippedQty || 0)).map((allocation) => {
       const line = request.lines.find((candidate) => candidate.id === allocation.requestLineId);
       const quantity = Number(allocation.readyQty || 0) - Number(allocation.shippedQty || 0);
-      return [allocation.id, { allocationId: allocation.id, sku: line?.sku || "", productName: line?.productName || "", imageUrl: line?.imageUrl || "", quantity, unit: line?.unit || "件", selected: true, cartonCount: 1, unitsPerCarton: quantity, cartonLengthCm: 0, cartonWidthCm: 0, cartonHeightCm: 0, cartonWeightKg: 0 } satisfies RouteChoice];
+      return [allocation.id, { allocationId: allocation.id, sku: line?.sku || "", productName: line?.productName || "", imageUrl: line?.imageUrl || "", quantity, unit: line?.unit || "件", selected: true, packagingGroups: [newRoutePackagingGroup("standard")] } satisfies RouteChoice];
     }));
     setRouteChoices(choices);
     setSplitReason("");
@@ -229,12 +340,13 @@ export function SpotDispatchWorkspace({ shipments, requests, canShip, canSplit, 
     const isSplit = selected.length < Object.keys(routeChoices).length;
     if (isSplit && !canSplit) { setError("当前账号没有分批发运权限。"); return; }
     if (isSplit && !splitReason.trim()) { setError("分批发运必须填写原因。"); return; }
-    if (selected.some((item) => item.cartonCount <= 0 || item.unitsPerCarton <= 0 || item.cartonCount * item.unitsPerCarton !== item.quantity)) { setError("存在装箱数量不一致的产品，请确保箱数 × 件/箱等于本次发运数量。"); return; }
+    const invalidPackaging = selected.find((item) => !routePackagingIsComplete(item));
+    if (invalidPackaging) { setError(`${invalidPackaging.sku || invalidPackaging.productName} 的装箱数据未完成：标准箱与尾数箱合计必须等于发运数量，并补齐各箱型的外箱尺寸和单箱毛重。`); return; }
     if (form.billingMethod === "volume" && form.chargeableVolumeM3 <= 0) { setError("按体积计费时，请填写计费方数（CBM）。"); return; }
     if (form.billingMethod === "weight" && form.chargeableWeightKg <= 0) { setError("按重量计费时，请填写计费重量（kg）。"); return; }
     setBusy("route-reserve"); setError("");
     try {
-      const result = await createStockupRouteShipment({ ...form, requestId: routeModalRequest.id, allowSplitShipment: isSplit, splitReason, lines: selected.map(({ allocationId, quantity, cartonCount, unitsPerCarton, cartonLengthCm, cartonWidthCm, cartonHeightCm, cartonWeightKg }) => ({ allocationId, quantity, cartonCount, unitsPerCarton, cartonLengthCm, cartonWidthCm, cartonHeightCm, cartonWeightKg })) });
+      const result = await createStockupRouteShipment({ ...form, requestId: routeModalRequest.id, allowSplitShipment: isSplit, splitReason, lines: selected.map(({ allocationId, quantity, packagingGroups }) => ({ allocationId, quantity, packagingGroups: activeRoutePackagingGroups(packagingGroups) })) });
       setMessage(`${result.shipment.shipmentNo} 已从履约方案创建；现有锁库已接续到发运批次，不会重复锁库。`);
       setRouteModalRequest(null);
       await onChanged();
@@ -367,12 +479,7 @@ export function SpotDispatchWorkspace({ shipments, requests, canShip, canSplit, 
           <label>附加费 ¥<input type="number" min="0" step="0.01" value={form.billingExtraFeeCny} onChange={(event) => setForm({ ...form, billingExtraFeeCny: Number(event.target.value) })} /></label>
         </div></section>
         <section className="sc-route-shipment-summary"><span><small>集货仓</small><b>{routeModalRequest.consolidationWarehouseName}</b></span><span><small>本次产品</small><b>{selectedRouteChoices.length} 项</b></span><span><small>本次箱数</small><b>{routeShipmentSummary.packages} 箱</b></span><span><small>估算体积</small><b>{roundMeasure(routeShipmentSummary.volumeM3, 3)} CBM</b></span><span><small>报价估算</small><b>¥{quotedFreightCny.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}</b></span></section>
-        <section className="sc-route-shipment-lines"><header><span>发运</span><span>产品 / 来源</span><span>数量与箱规</span><span>外箱尺寸与重量</span></header>{Object.values(routeChoices).map((item) => <article key={item.allocationId} className={item.selected ? "is-selected" : ""}>
-          <label className="toggle"><input type="checkbox" checked={item.selected} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], selected: event.target.checked } }))} /><span /></label>
-          <div className="product">{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <span><Boxes size={18} /></span>}<em><b>{item.productName}</b><small>{item.sku} · 已锁定 {item.quantity.toLocaleString("zh-CN")} {item.unit}</small></em></div>
-          <div className="pack"><label><small>箱数</small><input type="number" min="1" step="1" value={item.cartonCount} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonCount: Number(event.target.value) } }))} /></label><i>×</i><label><small>件/箱</small><input type="number" min="1" step="1" value={item.unitsPerCarton} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], unitsPerCarton: Number(event.target.value) } }))} /></label><em className={item.cartonCount * item.unitsPerCarton === item.quantity ? "is-valid" : "is-error"}>{item.cartonCount * item.unitsPerCarton === item.quantity ? "数量一致" : `应为 ${item.quantity}`}</em></div>
-          <div className="dimensions"><label><small>外箱长 cm</small><input type="number" min="0" step="0.1" value={item.cartonLengthCm} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonLengthCm: Number(event.target.value) } }))} /></label><label><small>外箱宽 cm</small><input type="number" min="0" step="0.1" value={item.cartonWidthCm} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonWidthCm: Number(event.target.value) } }))} /></label><label><small>外箱高 cm</small><input type="number" min="0" step="0.1" value={item.cartonHeightCm} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonHeightCm: Number(event.target.value) } }))} /></label><label><small>单箱 kg</small><input type="number" min="0" step="0.01" value={item.cartonWeightKg} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonWeightKg: Number(event.target.value) } }))} /></label></div>
-        </article>)}</section>
+        <section className="sc-route-shipment-lines"><header><div><b>产品装箱明细</b><span>每个产品可拆成标准箱和一种或多种尾数箱；系统按各箱型汇总箱数、体积和重量。</span></div><em>{selectedRouteChoices.length} 个产品 · {routeShipmentSummary.packages} 箱</em></header>{Object.values(routeChoices).map((item) => <RoutePackagingCard key={item.allocationId} item={item} onChange={(next) => setRouteChoices((current) => ({ ...current, [item.allocationId]: next }))} />)}</section>
         {selectedRouteChoices.length < Object.keys(routeChoices).length ? <section className="sc-split-shipment-reason"><AlertTriangle size={17} /><label><b>受控分批发运</b><span>{canSplit ? "未选择的履约分配继续保留在原需求中。请填写原因。" : "当前账号没有分批发运权限，请选择全部产品。"}</span><textarea disabled={!canSplit} value={splitReason} onChange={(event) => setSplitReason(event.target.value)} placeholder="例如：优先发运即将断货的产品，剩余产品等待调拨到仓" /></label></section> : null}
       </div>
       <footer className="sc-modal-foot"><span>库存已在履约确认时锁定；交货代时才正式扣减。</span><div><button className="sc-button sc-button-secondary" onClick={() => setRouteModalRequest(null)}>取消</button><button className="sc-button sc-button-primary" disabled={busy === "route-reserve"} onClick={() => void reserveRoute()}>{busy === "route-reserve" ? <LoaderCircle className="spin" size={16} /> : <Route size={16} />}创建发运计划</button></div></footer>
