@@ -20,5 +20,6 @@ assert.match(markdown, /新备货需求待认领/);
 assert.match(markdown, /BR-20261020-TEST/);
 assert.match(markdown, /120 件/);
 assert.match(markdown, /供应链负责人请进入执行台认领/);
+assert.match(markdown, /国内现货、跨仓调拨、采购或委外生产/);
 assert.match(markdown, /https:\/\/gyl\.tongzhoukuajing\.com\/\?stockupRequest=spr-test#stockup-execution/);
 console.log("stockup request notification tests passed");

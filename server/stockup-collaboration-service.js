@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { assertReceiptQuantities, assertRequestTransition, deriveRequestStatus, requestProgress } from "./stockup-status-machine.js";
 import { createStockupV2Service } from "./stockup-v2-service.js";
+import { createStockupV3Service } from "./stockup-v3-service.js";
 import { assertStockupV2Transition } from "./stockup-v2-domain.js";
 
 function nowIso() {
@@ -114,6 +115,12 @@ function requestFromRow(row) {
     assigneeName: String(row.assignee_name || ""),
     exceptionCount: number(row.exception_count),
     workflowVersion: number(row.workflow_version, 1), sourceType: String(row.source_type || "manual"), sourceRef: String(row.source_ref || ""), sourceSnapshot: parseJson(row.source_snapshot_json, {}),
+    journeyStage: String(row.journey_stage || "awaiting_acceptance"),
+    consolidationWarehouseId: String(row.consolidation_warehouse_id || ""),
+    consolidationWarehouseName: String(row.consolidation_warehouse_name || ""),
+    routePlanVersion: number(row.route_plan_version),
+    allowSplitShipment: Boolean(row.allow_split_shipment),
+    splitShipmentReason: String(row.split_shipment_reason || ""),
     version: number(row.version, 1),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -136,6 +143,8 @@ function lineFromRow(row) {
     warehouseWorkOrderCount: number(row.warehouse_work_order_count),
     productRefId: String(row.product_ref_id || ""), procurementUrl: String(row.procurement_url || ""), shelfLifeManaged: Boolean(row.shelf_life_managed),
     procurementClosedReason: String(row.procurement_closed_reason || ""), procurementClosedAt: String(row.procurement_closed_at || ""), procurementClosedBy: String(row.procurement_closed_by || ""),
+    defaultSupplyMode: String(row.default_supply_mode || "待判断"), effectiveSupplyMode: String(row.effective_supply_mode || row.default_supply_mode || "待判断"),
+    supplyOverrideReason: String(row.supply_override_reason || ""), supplyOverrideBy: String(row.supply_override_by || ""), supplyOverrideAt: String(row.supply_override_at || ""),
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
@@ -250,7 +259,7 @@ function warehouseWorkOrderLineFromRow(row) {
     cartonCount: number(row.carton_count), unitsPerCarton: number(row.units_per_carton), cartonLengthCm: number(row.carton_length_cm), cartonWidthCm: number(row.carton_width_cm),
     cartonHeightCm: number(row.carton_height_cm), cartonWeightKg: number(row.carton_weight_kg), inspectionNote: String(row.inspection_note || ""),
     productionDate: String(row.production_date || ""), expiryDate: String(row.expiry_date || ""), evidence: parseJson(row.evidence_json, []),
-    productRefId: String(row.product_ref_id || ""), purchaseOrderLineId: String(row.purchase_order_line_id || ""), status: String(row.status), updatedAt: String(row.updated_at),
+    productRefId: String(row.product_ref_id || ""), purchaseOrderLineId: String(row.purchase_order_line_id || ""), fulfillmentAllocationId: String(row.fulfillment_allocation_id || ""), status: String(row.status), updatedAt: String(row.updated_at),
   };
 }
 
@@ -290,14 +299,19 @@ function warehouseWorkOrderFromRow(row) {
   };
 }
 
-export function createStockupCollaborationService(store, { inventoryGateway = {} } = {}) {
+export function createStockupCollaborationService(store, {
+  inventoryGateway = {},
+  fulfillmentV3Enabled = false,
+  fulfillmentV3PilotRequestRefs = [],
+  fulfillmentV3AdminOnly = false,
+} = {}) {
   function shipmentLineFromRow(line) {
     return {
       id: String(line.id), shipmentId: String(line.shipment_id), requestId: String(line.request_id || ""), taskId: String(line.task_id), lineId: String(line.line_id), sku: String(line.sku), productName: String(line.product_name), imageUrl: String(line.image_url || ""),
       shippedQty: number(line.shipped_qty), unit: String(line.unit), baseUnitCostCny: number(line.base_unit_cost_cny), weightKg: number(line.weight_kg), volumeM3: number(line.volume_m3),
       cartonCount: number(line.carton_count), unitsPerCarton: number(line.units_per_carton), cartonLengthCm: number(line.carton_length_cm), cartonWidthCm: number(line.carton_width_cm),
       cartonHeightCm: number(line.carton_height_cm), cartonWeightKg: number(line.carton_weight_kg),
-      productRefId: String(line.product_ref_id || ""), purchaseOrderLineId: String(line.purchase_order_line_id || ""), inspectionLotId: String(line.inspection_lot_id || ""),
+      productRefId: String(line.product_ref_id || ""), purchaseOrderLineId: String(line.purchase_order_line_id || ""), inspectionLotId: String(line.inspection_lot_id || ""), fulfillmentAllocationId: String(line.fulfillment_allocation_id || ""),
     };
   }
 
@@ -365,9 +379,12 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
       (id,request_id,line_id,task_id,shipment_id,receipt_id,event_type,title,description,visibility,actor_id,actor_name,payload_json,occurred_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [event.id, requestId, event.lineId, event.taskId, event.shipmentId, event.receiptId, eventType, title, event.description, event.visibility, actor.id, actor.name, JSON.stringify(event.payload), event.occurredAt]);
     const request = requestFromRow(store.first("SELECT * FROM stockup_requests WHERE id = ?", [requestId]));
-    if (request?.requesterId && request.requesterId !== actor.id && event.visibility === "all") {
-      store.run(`INSERT INTO stockup_notifications (id,recipient_id,request_id,event_id,title,message,created_at,read_at) VALUES (?,?,?,?,?,?,?,NULL)`,
-        [id("spn"), request.requesterId, requestId, event.id, title, event.description, event.occurredAt]);
+    if (request && event.visibility === "all") {
+      const recipients = new Set([request.requesterId, request.assigneeId].map(String).filter((recipientId) => recipientId && recipientId !== actor.id));
+      for (const recipientId of recipients) {
+        store.run(`INSERT INTO stockup_notifications (id,recipient_id,request_id,event_id,title,message,created_at,read_at) VALUES (?,?,?,?,?,?,?,NULL)`,
+          [id("spn"), recipientId, requestId, event.id, title, event.description, event.occurredAt]);
+      }
     }
     return event;
   }
@@ -453,7 +470,7 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
         .filter((line) => !scopedSkus || scopedSkus.has(line.sku.toUpperCase()));
       request.latestEvent = eventFromRow(store.first("SELECT * FROM stockup_progress_events WHERE request_id = ? AND visibility = 'all' ORDER BY occurred_at DESC, rowid DESC LIMIT 1", [request.id]) || {});
       request.isOverdue = !["completed", "cancelled", "rejected"].includes(request.status) && request.expectedArrivalAt && request.expectedArrivalAt < new Date().toISOString().slice(0, 10);
-      return request;
+      return request.workflowVersion === 2 ? v3Service.decorateRequest(request, context) : request;
     });
     const visibilityParts = context.viewAll ? ["1=1"] : ["requester_id = ?"];
     const visibilityParams = context.viewAll ? [] : [userOf(context).id];
@@ -555,6 +572,9 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
       if (targetStatus !== request.status) assertStockupV2Transition(request.status, targetStatus);
     } else {
       assertRequestTransition(request.status, targetStatus);
+    }
+    if (request.workflowVersion === 2 && targetStatus === "cancelled" && number(request.routePlanVersion) > 0) {
+      return v3Service.cancelRoute(requestId, payload, context);
     }
     if (request.workflowVersion === 2 && request.status === "draft" && targetStatus === "submitted") v2Service.refreshInventoryPlan(requestId, context);
     const now = nowIso();
@@ -1266,8 +1286,21 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
           JOIN stockup_warehouse_work_orders wo ON wo.id=wl.work_order_id WHERE wl.purchase_order_line_id=? AND wo.status!='cancelled'`, [candidate.id])?.qty);
         return money(number(candidate.quantity) - number(candidate.cancelled_qty) - planned) >= money(expectedQty);
       });
-      if (request.workflowVersion === 2 && !purchaseLine) throw Object.assign(new Error(`${requestLine.sku} 尚未关联有效采购明细。`), { statusCode: 409, code: "warehouse_purchase_line_required" });
-      return { requestLine, expectedQty, purchaseLine };
+      const requestedAllocationId = String(input.fulfillmentAllocationId || "");
+      const allocationCandidates = number(request.routePlanVersion) > 0
+        ? store.all(`SELECT a.* FROM stockup_fulfillment_allocations a
+            WHERE a.request_line_id=? AND a.plan_version=? AND a.source_type IN ('purchase','outsourced_production')
+              AND a.status NOT IN ('cancelled','superseded')
+              AND (?='' OR a.id=?)
+            ORDER BY a.created_at,a.id`, [requestLine.id, request.routePlanVersion, requestedAllocationId, requestedAllocationId])
+        : [];
+      const fulfillmentAllocation = allocationCandidates.find((candidate) => {
+        const planned = number(store.first(`SELECT SUM(expected_qty) AS qty FROM stockup_warehouse_work_order_lines wl
+          JOIN stockup_warehouse_work_orders wo ON wo.id=wl.work_order_id WHERE wl.fulfillment_allocation_id=? AND wo.status!='cancelled'`, [candidate.id])?.qty);
+        return money(number(candidate.planned_qty) - planned) >= money(expectedQty);
+      });
+      if (request.workflowVersion === 2 && !purchaseLine && !fulfillmentAllocation) throw Object.assign(new Error(`${requestLine.sku} 没有可入库的采购或委外生产履约分配。`), { statusCode: 409, code: "warehouse_fulfillment_allocation_required" });
+      return { requestLine, expectedQty, purchaseLine, fulfillmentAllocation };
     });
     const now = nowIso();
     const workOrderId = id("swwo");
@@ -1282,9 +1315,10 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
         "", workOrderId, "", "", "", "", 0, 1, actor.id, actor.name, now, now, request.workflowVersion || 1]);
       for (const line of lines) {
         store.run(`INSERT INTO stockup_warehouse_work_order_lines
-          (id,work_order_id,request_line_id,sku,product_name,image_url,expected_qty,received_qty,good_qty,damaged_qty,shortage_qty,pending_qty,unit,requires_repack,replacement_carton_count,lot_no,barcode,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,inspection_note,status,updated_at,product_ref_id,purchase_order_line_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id("swwl"), workOrderId, line.requestLine.id, line.requestLine.sku, line.requestLine.productName, line.requestLine.imageUrl,
-          line.expectedQty, 0, 0, 0, 0, 0, line.requestLine.unit, 0, 0, "", "", 0, 0, 0, 0, 0, 0, "", "waiting_receipt", now, line.requestLine.productRefId || "", line.purchaseLine?.id || ""]);
+          (id,work_order_id,request_line_id,sku,product_name,image_url,expected_qty,received_qty,good_qty,damaged_qty,shortage_qty,pending_qty,unit,requires_repack,replacement_carton_count,lot_no,barcode,carton_count,units_per_carton,carton_length_cm,carton_width_cm,carton_height_cm,carton_weight_kg,inspection_note,status,updated_at,product_ref_id,purchase_order_line_id,fulfillment_allocation_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id("swwl"), workOrderId, line.requestLine.id, line.requestLine.sku, line.requestLine.productName, line.requestLine.imageUrl,
+          line.expectedQty, 0, 0, 0, 0, 0, line.requestLine.unit, 0, 0, "", "", 0, 0, 0, 0, 0, 0, "", "waiting_receipt", now, line.requestLine.productRefId || "", line.purchaseLine?.id || "", line.fulfillmentAllocation?.id || ""]);
+        if (line.fulfillmentAllocation) store.run("UPDATE stockup_fulfillment_allocations SET status='waiting_inbound',version=version+1,updated_at=? WHERE id=?", [now, line.fulfillmentAllocation.id]);
       }
       if (request.workflowVersion === 2) store.run("UPDATE stockup_requests SET status='warehouse_inspection',version=version+1,updated_at=? WHERE id=?", [now, request.id]);
       addWarehouseWorkOrderEvent(workOrderId, "created", status === "draft" ? "国内仓工单已保存" : "国内仓工单待签收", `${domesticWarehouseName} · ${lines.length} 个 SKU`, context, { requestNo: request.requestNo });
@@ -1533,12 +1567,26 @@ export function createStockupCollaborationService(store, { inventoryGateway = {}
   }
 
   const v2Service = createStockupV2Service({ store, inventoryGateway, getRequest, getShipment, addEvent });
+  const v3Service = createStockupV3Service({
+    store,
+    inventoryGateway,
+    getRequest,
+    addEvent,
+    enabled: fulfillmentV3Enabled,
+    pilotRequestRefs: fulfillmentV3PilotRequestRefs,
+    adminOnly: fulfillmentV3AdminOnly,
+  });
+  function getJourneyRequest(requestId, context = {}) {
+    return v3Service.decorateRequest(getRequest(requestId, context), context);
+  }
 
   return {
     addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
     listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, reconcileDeletedShipmentWmsOrder, voidShipmentWmsOrder,
     applyWarehouseWorkOrderAction, createWarehouseWorkOrder, getWarehouseWorkOrder, listWarehouseWorkOrders, markWarehouseWorkOrderPublished, warehouseWorkOrderDashboard,
     saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,
+    getJourneyRequest,
     ...v2Service,
+    ...v3Service,
   };
 }

@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Boxes, Check, Download, FileText, LoaderCircle, LockKeyhole, MapPin, PackageCheck, Plus, RefreshCw, Send, Ship, Truck, X } from "lucide-react";
+import { AlertTriangle, Boxes, Check, Download, FileText, LoaderCircle, LockKeyhole, MapPin, PackageCheck, Plus, RefreshCw, Route, Send, Ship, Truck, X } from "lucide-react";
 import {
   cancelStockupReservedShipment,
   confirmStockupCollaborationReceipt,
   createStockupCollaborationWarehouseOrder,
   createStockupForwarder,
   createStockupReservedShipment,
+  createStockupRouteShipment,
   downloadStockupDispatchDocument,
   fetchStockupDispatchDocuments,
   fetchStockupForwarders,
@@ -15,12 +16,14 @@ import {
   issueStockupDispatchInstruction,
   previewStockupCollaborationWarehouseOrder,
 } from "../api";
-import type { StockupDispatchDocument, StockupForwarder, StockupShipment, StockupWarehouseWorkOrder } from "./types";
+import type { StockupDispatchDocument, StockupForwarder, StockupRequest, StockupShipment, StockupWarehouseWorkOrder } from "./types";
 import { formatStockupDate, stockupRequestStatusLabels } from "./status";
 
 type Props = {
   shipments: StockupShipment[];
+  requests: StockupRequest[];
   canShip: boolean;
+  canSplit: boolean;
   canReceive: boolean;
   initialRequestId?: string;
   handoffToken?: number;
@@ -41,6 +44,22 @@ type LotChoice = {
 };
 
 type ShipmentBillingMethod = "volume" | "weight" | "flat";
+
+type RouteChoice = {
+  allocationId: string;
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  quantity: number;
+  unit: string;
+  selected: boolean;
+  cartonCount: number;
+  unitsPerCarton: number;
+  cartonLengthCm: number;
+  cartonWidthCm: number;
+  cartonHeightCm: number;
+  cartonWeightKg: number;
+};
 
 function summarizeWarehouseLots(items: LotChoice[]) {
   return items.reduce((summary, item) => ({
@@ -65,14 +84,18 @@ function roundMeasure(value: number, digits = 2) {
 
 const shipmentStates = ["inventory_reserved", "wms_created", "instruction_issued", "handed_over", "overseas_received", "cost_locked"];
 
-export function SpotDispatchWorkspace({ shipments, canShip, canReceive, initialRequestId = "", handoffToken = 0, onHandoffConsumed, onStartCosting, onChanged }: Props) {
+export function SpotDispatchWorkspace({ shipments, requests, canShip, canSplit, canReceive, initialRequestId = "", handoffToken = 0, onHandoffConsumed, onStartCosting, onChanged }: Props) {
   const [workOrders, setWorkOrders] = useState<StockupWarehouseWorkOrder[]>([]);
   const [forwarders, setForwarders] = useState<StockupForwarder[]>([]);
   const [choices, setChoices] = useState<Record<string, LotChoice>>({});
   const [documents, setDocuments] = useState<Record<string, StockupDispatchDocument[]>>({});
   const [modal, setModal] = useState(false);
+  const [routeModalRequest, setRouteModalRequest] = useState<StockupRequest | null>(null);
+  const [routeChoices, setRouteChoices] = useState<Record<string, RouteChoice>>({});
+  const [splitReason, setSplitReason] = useState("");
   const [forwarderModal, setForwarderModal] = useState(false);
   const [pendingRequestId, setPendingRequestId] = useState("");
+  const [pendingRouteRequestId, setPendingRouteRequestId] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -94,10 +117,17 @@ export function SpotDispatchWorkspace({ shipments, canShip, canReceive, initialR
     .map((lot) => ({ inspectionLotId: lot.id, quantity: Number(lot.availableQty ?? lot.quantity), selected: false, shipmentCartonCount: Number(lot.cartonCount || 0), shipmentUnitsPerCarton: Number(lot.unitsPerCarton || 0), order, line, lot })))), [workOrders]);
   const locations = forwarders.flatMap((item) => item.locations.filter((location) => location.status === "active").map((location) => ({ ...location, forwarderName: item.name })));
   const activeShipments = shipments.filter((item) => shipmentStates.includes(item.status));
+  const routeReadyRequests = useMemo(() => requests.filter((request) => Number(request.routePlanVersion || 0) > 0 && (request.allocations || []).some((allocation) => allocation.status === "ready" && Number(allocation.readyQty || 0) > Number(allocation.shippedQty || 0))), [requests]);
   const modalLots = Object.values(choices);
   const selectedLots = useMemo(() => modalLots.filter((item) => item.selected), [modalLots]);
   const warehouseSummary = useMemo(() => summarizeWarehouseLots(selectedLots), [selectedLots]);
   const shipmentSummary = useMemo(() => summarizeShipmentLots(selectedLots), [selectedLots]);
+  const selectedRouteChoices = useMemo(() => Object.values(routeChoices).filter((item) => item.selected), [routeChoices]);
+  const routeShipmentSummary = useMemo(() => selectedRouteChoices.reduce((summary, item) => ({
+    packages: summary.packages + Number(item.cartonCount || 0),
+    weightKg: summary.weightKg + Number(item.cartonCount || 0) * Number(item.cartonWeightKg || 0),
+    volumeM3: summary.volumeM3 + Number(item.cartonCount || 0) * Number(item.cartonLengthCm || 0) * Number(item.cartonWidthCm || 0) * Number(item.cartonHeightCm || 0) / 1_000_000,
+  }), { packages: 0, weightKg: 0, volumeM3: 0 }), [selectedRouteChoices]);
   const billingBasis = form.billingMethod === "volume" ? form.chargeableVolumeM3 : form.billingMethod === "weight" ? form.chargeableWeightKg : 1;
   const quotedFreightCny = roundMeasure(Math.max(0, billingBasis) * Math.max(0, form.billingUnitPriceCny) + Math.max(0, form.billingExtraFeeCny));
   const readyGroups = useMemo(() => {
@@ -122,6 +152,19 @@ export function SpotDispatchWorkspace({ shipments, canShip, canReceive, initialR
     setChoices(nextChoices);
     setForm({ forwarderLocationId: activeLocations[0]?.id || "", transportMode: "海运", carrier: "", trackingNo: "", etd: "", eta: "", billingMethod: "volume", carrierPackages: summary.packages, carrierActualWeightKg: roundMeasure(summary.weightKg), chargeableWeightKg: roundMeasure(summary.weightKg), chargeableVolumeM3: roundMeasure(summary.volumeM3, 3), billingUnitPriceCny: 0, billingExtraFeeCny: 0, boxMark: "", note: "" });
     setError(""); setModal(true);
+  }
+
+  function openRouteReservation(request: StockupRequest, activeLocations = locations) {
+    const choices = Object.fromEntries((request.allocations || []).filter((allocation) => allocation.status === "ready" && Number(allocation.readyQty || 0) > Number(allocation.shippedQty || 0)).map((allocation) => {
+      const line = request.lines.find((candidate) => candidate.id === allocation.requestLineId);
+      const quantity = Number(allocation.readyQty || 0) - Number(allocation.shippedQty || 0);
+      return [allocation.id, { allocationId: allocation.id, sku: line?.sku || "", productName: line?.productName || "", imageUrl: line?.imageUrl || "", quantity, unit: line?.unit || "件", selected: true, cartonCount: 1, unitsPerCarton: quantity, cartonLengthCm: 0, cartonWidthCm: 0, cartonHeightCm: 0, cartonWeightKg: 0 } satisfies RouteChoice];
+    }));
+    setRouteChoices(choices);
+    setSplitReason("");
+    setForm({ forwarderLocationId: activeLocations[0]?.id || "", transportMode: "海运", carrier: "", trackingNo: "", etd: "", eta: "", billingMethod: "volume", carrierPackages: Object.values(choices).length, carrierActualWeightKg: 0, chargeableWeightKg: 0, chargeableVolumeM3: 0, billingUnitPriceCny: 0, billingExtraFeeCny: 0, boxMark: "", note: "" });
+    setError("");
+    setRouteModalRequest(request);
   }
 
   function fillCarrierMeasuresFromShipment() {
@@ -152,23 +195,52 @@ export function SpotDispatchWorkspace({ shipments, canShip, canReceive, initialR
       setForwarderModal(false);
       setForwarder({ name: "", locationName: "", country: "中国", province: "", city: "", address: "", contactName: "", contactPhone: "", routingRequirements: "" });
       setMessage("货代收货点已保存，继续选择本次发运批次。");
-      openReservation(pendingRequestId, nextLocations);
+      const pendingRoute = requests.find((request) => request.id === pendingRouteRequestId);
+      if (pendingRoute) openRouteReservation(pendingRoute, nextLocations);
+      else openReservation(pendingRequestId, nextLocations);
       setPendingRequestId("");
+      setPendingRouteRequestId("");
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "货代收货点保存失败"); }
     finally { setBusy(""); }
   }
 
   useEffect(() => {
-    if (!initialRequestId || !handoffToken || openedHandoffToken.current === handoffToken || !workOrders.length) return;
+    if (!initialRequestId || !handoffToken || openedHandoffToken.current === handoffToken) return;
+    const routeRequest = routeReadyRequests.find((request) => request.id === initialRequestId);
     const matchingLots = availableLots.filter((item) => item.order.requestId === initialRequestId);
     openedHandoffToken.current = handoffToken;
     onHandoffConsumed?.();
+    if (routeRequest) {
+      if (!locations.length) { setPendingRouteRequestId(routeRequest.id); setError("已齐套库存存在，但尚未配置货代收货点。请补充后继续。"); setForwarderModal(true); return; }
+      openRouteReservation(routeRequest);
+      return;
+    }
     if (!matchingLots.length) {
       setError("该需求暂未找到可发运的已审核批次，请刷新仓库验收状态或检查验货是否已通过审核。");
       return;
     }
     beginReservation(initialRequestId);
-  }, [availableLots, handoffToken, initialRequestId, onHandoffConsumed, workOrders.length]);
+  }, [availableLots, handoffToken, initialRequestId, locations.length, onHandoffConsumed, routeReadyRequests]);
+
+  async function reserveRoute() {
+    if (!routeModalRequest) return;
+    const selected = Object.values(routeChoices).filter((item) => item.selected);
+    if (!selected.length || !form.forwarderLocationId || !form.transportMode) { setError("请选择至少一个已齐套产品、运输方式和货代收货点。"); return; }
+    const isSplit = selected.length < Object.keys(routeChoices).length;
+    if (isSplit && !canSplit) { setError("当前账号没有分批发运权限。"); return; }
+    if (isSplit && !splitReason.trim()) { setError("分批发运必须填写原因。"); return; }
+    if (selected.some((item) => item.cartonCount <= 0 || item.unitsPerCarton <= 0 || item.cartonCount * item.unitsPerCarton !== item.quantity)) { setError("存在装箱数量不一致的产品，请确保箱数 × 件/箱等于本次发运数量。"); return; }
+    if (form.billingMethod === "volume" && form.chargeableVolumeM3 <= 0) { setError("按体积计费时，请填写计费方数（CBM）。"); return; }
+    if (form.billingMethod === "weight" && form.chargeableWeightKg <= 0) { setError("按重量计费时，请填写计费重量（kg）。"); return; }
+    setBusy("route-reserve"); setError("");
+    try {
+      const result = await createStockupRouteShipment({ ...form, requestId: routeModalRequest.id, allowSplitShipment: isSplit, splitReason, lines: selected.map(({ allocationId, quantity, cartonCount, unitsPerCarton, cartonLengthCm, cartonWidthCm, cartonHeightCm, cartonWeightKg }) => ({ allocationId, quantity, cartonCount, unitsPerCarton, cartonLengthCm, cartonWidthCm, cartonHeightCm, cartonWeightKg })) });
+      setMessage(`${result.shipment.shipmentNo} 已从履约方案创建；现有锁库已接续到发运批次，不会重复锁库。`);
+      setRouteModalRequest(null);
+      await onChanged();
+    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "履约发运计划创建失败"); }
+    finally { setBusy(""); }
+  }
 
   async function reserve() {
     const selected = selectedLots;
@@ -255,11 +327,15 @@ export function SpotDispatchWorkspace({ shipments, canShip, canReceive, initialR
     {error ? <div className="sc-alert sc-alert-danger"><AlertTriangle size={16} />{error}</div> : null}
     {message ? <div className="sc-warehouse-success"><Check size={16} />{message}<button onClick={() => setMessage("")}><X size={14} /></button></div> : null}
     <div className="sc-dispatch-readiness-metrics">
-      <article><span><PackageCheck size={19} /></span><div><small>待建出运需求</small><b>{readyGroups.length}</b><em>国内仓已审核入库</em></div></article>
-      <article><span><Boxes size={19} /></span><div><small>可发运 SKU</small><b>{readySkuCount}</b><em>{availableLots.length} 个库存批次</em></div></article>
-      <article><span><LockKeyhole size={19} /></span><div><small>当前可锁定</small><b>{readyQuantity.toLocaleString("zh-CN")}</b><em>已扣除锁定及已发数量</em></div></article>
-      <article className={!locations.length && readyGroups.length ? "is-warning" : ""}><span><MapPin size={19} /></span><div><small>货代收货点</small><b>{locations.length}</b><em>{locations.length ? "可直接创建计划" : "需补充后继续"}</em></div></article>
+      <article><span><PackageCheck size={19} /></span><div><small>待建出运需求</small><b>{readyGroups.length + routeReadyRequests.length}</b><em>已审核入库或履约齐套</em></div></article>
+      <article><span><Boxes size={19} /></span><div><small>可发运 SKU</small><b>{readySkuCount + routeReadyRequests.reduce((sum, request) => sum + new Set((request.allocations || []).filter((item) => item.status === "ready").map((item) => item.requestLineId)).size, 0)}</b><em>按履约分配防止重复占用</em></div></article>
+      <article><span><LockKeyhole size={19} /></span><div><small>已锁定待发</small><b>{(readyQuantity + routeReadyRequests.reduce((sum, request) => sum + (request.allocations || []).filter((item) => item.status === "ready").reduce((part, item) => part + Math.max(0, Number(item.readyQty) - Number(item.shippedQty)), 0), 0)).toLocaleString("zh-CN")}</b><em>创建发运不再二次锁库</em></div></article>
+      <article className={!locations.length && (readyGroups.length + routeReadyRequests.length) ? "is-warning" : ""}><span><MapPin size={19} /></span><div><small>货代收货点</small><b>{locations.length}</b><em>{locations.length ? "可直接创建计划" : "需补充后继续"}</em></div></article>
     </div>
+    {routeReadyRequests.length ? <section className="sc-ready-dispatch-queue sc-route-ready-queue"><header><div><b>V3 履约已齐套</b><span>库存已经在确认履约方案时锁定；这里直接接续发运，不会生成虚拟采购或重复锁库。</span></div></header><div>{routeReadyRequests.map((request) => {
+      const ready = (request.allocations || []).filter((allocation) => allocation.status === "ready" && Number(allocation.readyQty) > Number(allocation.shippedQty));
+      return <article key={request.id}><span><Route size={20} /></span><div><b>{request.requestNo}</b><small>{request.consolidationWarehouseName} → {request.destinationWarehouseName}</small></div><dl><div><dt>可发分配</dt><dd>{ready.length}</dd></div><div><dt>来源</dt><dd>{new Set(ready.map((item) => item.sourceType)).size}</dd></div><div><dt>已锁定数量</dt><dd>{ready.reduce((sum, item) => sum + Number(item.readyQty) - Number(item.shippedQty), 0).toLocaleString("zh-CN")}</dd></div></dl>{canShip ? <button onClick={() => locations.length ? openRouteReservation(request) : (setPendingRouteRequestId(request.id), setForwarderModal(true))}>创建该需求发运计划</button> : null}</article>;
+    })}</div></section> : null}
     {readyGroups.length ? <section className="sc-ready-dispatch-queue"><header><div><b>待创建出运计划</b><span>这些货已在国内库存中，不需要重复入库；选择需求后直接锁库发运。</span></div></header><div>{readyGroups.map((group) => <article key={group.requestId}><span><PackageCheck size={20} /></span><div><b>{group.requestNo}</b><small>{group.warehouseName} → {group.destinationName}</small></div><dl><div><dt>可发 SKU</dt><dd>{group.skuSet.size}</dd></div><div><dt>批次 / 箱数</dt><dd>{group.lotCount} / {group.cartonCount}</dd></div><div><dt>可发数量</dt><dd>{group.quantity.toLocaleString("zh-CN")}</dd></div></dl>{canShip ? <button onClick={() => beginReservation(group.requestId)}>创建该需求出运计划</button> : null}</article>)}</div></section> : null}
     <div className="sc-shipment-board">{activeShipments.map((shipment) => <article className="sc-shipment-card" key={shipment.id}><header><span><Ship size={18} /></span><div><b>{shipment.shipmentNo}</b><small>{shipment.originWarehouse} → {shipment.destinationWarehouseName}</small></div><i className={`sc-status is-${shipment.status}`}>{stockupRequestStatusLabels[shipment.status] || shipment.status}</i></header><div className="sc-shipment-meta"><span><small>发运箱数</small><b>{shipment.lines?.length || 0} 行 / {shipment.packages} 箱</b></span><span><small>货代确认</small><b>{shipment.carrierPackages || "—"} 箱</b></span><span><small>计费方式</small><b>{shipment.billingMethod === "volume" ? `${shipment.chargeableVolumeM3} CBM` : shipment.billingMethod === "flat" ? "按票" : `${shipment.chargeableWeightKg} kg`}</b></span><span><small>物流单号</small><b>{shipment.trackingNo || "待补"}</b></span></div><p>{String(shipment.forwarderSnapshot?.forwarderName || "货代待确认")} · {String(shipment.forwarderSnapshot?.locationName || "")} {String(shipment.forwarderSnapshot?.address || "")}</p><footer>
       {busy === shipment.id ? <LoaderCircle className="spin" size={17} /> : null}
@@ -271,7 +347,36 @@ export function SpotDispatchWorkspace({ shipments, canShip, canReceive, initialR
       {canReceive && shipment.status === "handed_over" ? <button className="is-primary" onClick={() => void receive(shipment)}><Check size={15} />确认海外仓收货</button> : null}
       {canShip && ["inventory_reserved", "wms_created", "instruction_issued"].includes(shipment.status) ? <button onClick={() => void cancel(shipment)}><X size={15} />取消并释放库存</button> : null}
       {shipment.status === "overseas_received" ? <span className="sc-status is-overseas_received">已进入收货与成本归集</span> : null}
-    </footer>{documents[shipment.id]?.length ? <div className="sc-operation-checks">{documents[shipment.id].map((document) => <button key={document.id} onClick={() => void downloadStockupDispatchDocument(document)}><Download size={14} />下载/打印{document.documentType === "packing_list" ? "A4 装箱单" : "100×100mm 箱唛"} V{document.version}</button>)}</div> : null}</article>)}{!activeShipments.length ? <div className="sc-empty-inline"><LockKeyhole size={25} /><b>尚未生成出运计划</b><span>{readyGroups.length ? "上方已有可发运库存，请点击需求右侧按钮继续。" : "验货审核入库后，可选择批次锁定库存。"}</span></div> : null}</div>
+    </footer>{documents[shipment.id]?.length ? <div className="sc-operation-checks">{documents[shipment.id].map((document) => <button key={document.id} onClick={() => void downloadStockupDispatchDocument(document)}><Download size={14} />下载/打印{document.documentType === "packing_list" ? "A4 装箱单" : "100×100mm 箱唛"} V{document.version}</button>)}</div> : null}</article>)}{!activeShipments.length ? <div className="sc-empty-inline"><LockKeyhole size={25} /><b>尚未生成出运计划</b><span>{readyGroups.length + routeReadyRequests.length ? "上方已有可发运库存，请点击需求右侧按钮继续。" : "履约齐套或验货审核入库后，可直接创建发运计划。"}</span></div> : null}</div>
+
+    {routeModalRequest ? <div className="sc-modal-backdrop"><section className="sc-modal sc-route-shipment-modal">
+      <header className="sc-modal-head"><div><span className="sc-eyebrow">FULFILLMENT TO SHIPMENT</span><h2>{routeModalRequest.requestNo} · 创建发运计划</h2><p>已确认的履约库存直接接续到发运，不会再次采购或重复锁库；取消发运时仍保留需求锁库。</p></div><button className="sc-icon-button" onClick={() => setRouteModalRequest(null)}><X size={19} /></button></header>
+      <div className="sc-editor-scroll">
+        <section className="sc-form-section"><div className="sc-form-grid sc-form-grid-4">
+          <label>货代收货点<select value={form.forwarderLocationId} onChange={(event) => setForm({ ...form, forwarderLocationId: event.target.value })}><option value="">请选择</option>{locations.map((location) => <option key={location.id} value={location.id}>{location.forwarderName} · {location.name} · {location.city}</option>)}</select></label>
+          <label>运输方式<select value={form.transportMode} onChange={(event) => setForm({ ...form, transportMode: event.target.value })}><option>海运</option><option>空运</option><option>陆运</option><option>快递</option></select></label>
+          <label>承运商<input value={form.carrier} onChange={(event) => setForm({ ...form, carrier: event.target.value })} placeholder="物流公司 / 渠道" /></label>
+          <label>物流单号 / 转单号<input value={form.trackingNo} onChange={(event) => setForm({ ...form, trackingNo: event.target.value })} placeholder="可稍后补充" /></label>
+          <label>预计发出<input type="date" value={form.etd} onChange={(event) => setForm({ ...form, etd: event.target.value })} /></label>
+          <label>预计到仓<input type="date" value={form.eta} onChange={(event) => setForm({ ...form, eta: event.target.value })} /></label>
+          <label>箱唛标识<input value={form.boxMark} onChange={(event) => setForm({ ...form, boxMark: event.target.value })} /></label>
+          <label>计费方式<select value={form.billingMethod} onChange={(event) => setForm({ ...form, billingMethod: event.target.value as ShipmentBillingMethod })}><option value="volume">按体积（CBM）</option><option value="weight">按重量（kg）</option><option value="flat">按票 / 包干</option></select></label>
+          {form.billingMethod === "volume" ? <label>计费方数 CBM<input type="number" min="0" step="0.001" value={form.chargeableVolumeM3} onChange={(event) => setForm({ ...form, chargeableVolumeM3: Number(event.target.value) })} /></label> : null}
+          {form.billingMethod === "weight" ? <label>计费重量 kg<input type="number" min="0" step="0.01" value={form.chargeableWeightKg} onChange={(event) => setForm({ ...form, chargeableWeightKg: Number(event.target.value) })} /></label> : null}
+          <label>计费单价 ¥<input type="number" min="0" step="0.01" value={form.billingUnitPriceCny} onChange={(event) => setForm({ ...form, billingUnitPriceCny: Number(event.target.value) })} /></label>
+          <label>附加费 ¥<input type="number" min="0" step="0.01" value={form.billingExtraFeeCny} onChange={(event) => setForm({ ...form, billingExtraFeeCny: Number(event.target.value) })} /></label>
+        </div></section>
+        <section className="sc-route-shipment-summary"><span><small>集货仓</small><b>{routeModalRequest.consolidationWarehouseName}</b></span><span><small>本次产品</small><b>{selectedRouteChoices.length} 项</b></span><span><small>本次箱数</small><b>{routeShipmentSummary.packages} 箱</b></span><span><small>估算体积</small><b>{roundMeasure(routeShipmentSummary.volumeM3, 3)} CBM</b></span><span><small>报价估算</small><b>¥{quotedFreightCny.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}</b></span></section>
+        <section className="sc-route-shipment-lines"><header><span>发运</span><span>产品 / 来源</span><span>数量与箱规</span><span>外箱尺寸与重量</span></header>{Object.values(routeChoices).map((item) => <article key={item.allocationId} className={item.selected ? "is-selected" : ""}>
+          <label className="toggle"><input type="checkbox" checked={item.selected} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], selected: event.target.checked } }))} /><span /></label>
+          <div className="product">{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <span><Boxes size={18} /></span>}<em><b>{item.productName}</b><small>{item.sku} · 已锁定 {item.quantity.toLocaleString("zh-CN")} {item.unit}</small></em></div>
+          <div className="pack"><label><small>箱数</small><input type="number" min="1" step="1" value={item.cartonCount} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonCount: Number(event.target.value) } }))} /></label><i>×</i><label><small>件/箱</small><input type="number" min="1" step="1" value={item.unitsPerCarton} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], unitsPerCarton: Number(event.target.value) } }))} /></label><em className={item.cartonCount * item.unitsPerCarton === item.quantity ? "is-valid" : "is-error"}>{item.cartonCount * item.unitsPerCarton === item.quantity ? "数量一致" : `应为 ${item.quantity}`}</em></div>
+          <div className="dimensions"><label><small>外箱长 cm</small><input type="number" min="0" step="0.1" value={item.cartonLengthCm} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonLengthCm: Number(event.target.value) } }))} /></label><label><small>外箱宽 cm</small><input type="number" min="0" step="0.1" value={item.cartonWidthCm} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonWidthCm: Number(event.target.value) } }))} /></label><label><small>外箱高 cm</small><input type="number" min="0" step="0.1" value={item.cartonHeightCm} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonHeightCm: Number(event.target.value) } }))} /></label><label><small>单箱 kg</small><input type="number" min="0" step="0.01" value={item.cartonWeightKg} onChange={(event) => setRouteChoices((current) => ({ ...current, [item.allocationId]: { ...current[item.allocationId], cartonWeightKg: Number(event.target.value) } }))} /></label></div>
+        </article>)}</section>
+        {selectedRouteChoices.length < Object.keys(routeChoices).length ? <section className="sc-split-shipment-reason"><AlertTriangle size={17} /><label><b>受控分批发运</b><span>{canSplit ? "未选择的履约分配继续保留在原需求中。请填写原因。" : "当前账号没有分批发运权限，请选择全部产品。"}</span><textarea disabled={!canSplit} value={splitReason} onChange={(event) => setSplitReason(event.target.value)} placeholder="例如：优先发运即将断货的产品，剩余产品等待调拨到仓" /></label></section> : null}
+      </div>
+      <footer className="sc-modal-foot"><span>库存已在履约确认时锁定；交货代时才正式扣减。</span><div><button className="sc-button sc-button-secondary" onClick={() => setRouteModalRequest(null)}>取消</button><button className="sc-button sc-button-primary" disabled={busy === "route-reserve"} onClick={() => void reserveRoute()}>{busy === "route-reserve" ? <LoaderCircle className="spin" size={16} /> : <Route size={16} />}创建发运计划</button></div></footer>
+    </section></div> : null}
 
     {modal ? <div className="sc-modal-backdrop"><section className="sc-modal sc-warehouse-create-modal sc-dispatch-create-modal">
       <header className="sc-modal-head"><div><span className="sc-eyebrow">INVENTORY RESERVATION</span><h2>选择已审核库存批次</h2><p>仓库装箱数据保留原值；货代回传的箱数、实重和计费方数单独记录，用于核对与成本分摊。</p></div><button className="sc-icon-button" onClick={() => setModal(false)}><X size={19} /></button></header>

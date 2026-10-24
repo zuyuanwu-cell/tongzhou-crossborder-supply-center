@@ -1,4 +1,4 @@
-import type { StockupDispatchDocument, StockupForwarder, StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupProductRef, StockupPurchaseOrder, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
+import type { StockupDispatchDocument, StockupForwarder, StockupMonthlyCostPeriod, StockupMonthlyCostRow, StockupProductRef, StockupPurchaseOrder, StockupReceipt, StockupRequest, StockupRequestListPayload, StockupRoutePreview, StockupShipment, StockupWarehouseDashboard, StockupWarehouseOption, StockupWarehouseWorkOrder } from "./stockup/types";
 import type { ContainerLoadingBootstrap, ContainerLoadingItem, ContainerLoadingPlan, ContainerLoadingPlanSummary, ContainerLoadingStrategy, ContainerLoadingVersion, ContainerPlacement, ContainerType } from "./container-loading/types";
 import type { DataContext } from "../collaboration/shared/data-context-types";
 
@@ -87,6 +87,8 @@ export type CatalogProduct = {
   countrySku?: string;
   imageUrl?: string;
   imageSource?: string;
+  productRefId?: string;
+  defaultSupplyMode?: "外采成品" | "委外生产" | "自有成品库存" | "待判断" | string;
   functionCategory?: string;
   productType?: string;
   skuAttribute?: string;
@@ -5109,6 +5111,15 @@ export function syncOutsourcingOrders() {
   return requestJson<{ ok: boolean; syncedAt: string; counts: { orders: number } }>("/api/outsourcing-orders/sync", { method: "POST" });
 }
 
+export function fetchOutsourcingOrders() {
+  return requestJson<{
+    ok: boolean;
+    syncedAt: string;
+    orders: OutsourcingProductionOrder[];
+    counts?: { orders?: number };
+  }>("/api/outsourcing-orders");
+}
+
 export type CreateWarehouseInput = {
   name: string;
   country: string;
@@ -5201,6 +5212,79 @@ export function fetchStockupCollaborationRequest(requestId: string) {
   return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}`);
 }
 
+export function previewStockupFulfillmentRoute(requestId: string, payload: Record<string, unknown> = {}) {
+  return requestJson<StockupRoutePreview>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/route-preview`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchStockupRouteReconciliation(requestId: string) {
+  return requestJson<{
+    ok: boolean;
+    requestId: string;
+    requestNo: string;
+    routePlanVersion: number;
+    summary: { requestedQty: number; currentPlannedQty: number; allocationCount: number; purchaseLineCount: number; warehouseLineCount: number; shipmentLineCount: number; reservationCount: number };
+    warnings: Array<{ code: string; level: "warning" | "danger"; message: string }>;
+    requiresAdminReview: boolean;
+    canCreateFreshPlan: boolean;
+    generatedAt: string;
+  }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/route-reconciliation`);
+}
+
+export function confirmStockupFulfillmentRoute(requestId: string, payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
+  return requestJson<{ ok: boolean; request: StockupRequest; planVersion: number; idempotentReplay: boolean }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/route-confirm`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function replanStockupFulfillmentRoute(requestId: string, payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
+  return requestJson<{ ok: boolean; request: StockupRequest; planVersion: number; idempotentReplay: boolean }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/route-replan`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function linkStockupOutsourcingAllocation(allocationId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/fulfillment-allocations/${encodeURIComponent(allocationId)}/link-outsourcing`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function recoverStockupFulfillmentReservation(allocationId: string) {
+  return requestJson<{ ok: boolean; request: StockupRequest }>(`/api/stockup/collaboration/fulfillment-allocations/${encodeURIComponent(allocationId)}/recover-reservation`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function confirmStockupTransferAllocation(allocationId: string, payload: Record<string, unknown> = {}, idempotencyKey = createStockupIdempotencyKey()) {
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; request: StockupRequest; transfer?: DomesticInventoryTransfer }>(`/api/stockup/collaboration/fulfillment-allocations/${encodeURIComponent(allocationId)}/confirm-transfer`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function syncStockupTransferAllocation(allocationId: string) {
+  return requestJson<{ ok: boolean; idempotentReplay?: boolean; request: StockupRequest; transfer?: DomesticInventoryTransfer }>(`/api/stockup/collaboration/fulfillment-allocations/${encodeURIComponent(allocationId)}/sync-transfer`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function updateStockupProductSupplyMode(productRefId: string, defaultSupplyMode: string) {
+  return requestJson<{ ok: boolean; productRefId: string; defaultSupplyMode: string; updatedAt: string }>(`/api/stockup/collaboration/product-refs/${encodeURIComponent(productRefId)}/supply-mode`, {
+    method: "PATCH",
+    body: JSON.stringify({ defaultSupplyMode }),
+  });
+}
+
 function createStockupIdempotencyKey() {
   const browserCrypto = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
   if (browserCrypto && typeof browserCrypto.randomUUID === "function") return browserCrypto.randomUUID();
@@ -5255,6 +5339,10 @@ export function fetchStockupDomesticAvailabilitySummary(skus: string[]) {
 
 export function createStockupReservedShipment(payload: Record<string, unknown>) {
   return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments/reserve", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function createStockupRouteShipment(payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; shipment: StockupShipment }>("/api/stockup/collaboration/shipments/from-route", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export function updateStockupCollaborationShipment(shipmentId: string, payload: Record<string, unknown>) {

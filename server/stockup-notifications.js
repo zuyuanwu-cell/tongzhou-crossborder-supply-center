@@ -31,7 +31,7 @@ export function buildStockupRequestSubmittedMarkdown(request = {}, options = {})
     `> 优先级：${text(request.priority) || "常规"}`,
     `> 提交人：${text(request.requesterName) || "-"}`,
     "",
-    "**下一步：**供应链负责人请进入执行台认领，再登记采购单并持续更新到货进度。",
+    "**下一步：**供应链负责人请进入执行台认领，并确认国内现货、跨仓调拨、采购或委外生产的履约方案。",
     link ? `[进入供应链执行台](${link})` : "",
   ].filter(Boolean).join("\n");
 }

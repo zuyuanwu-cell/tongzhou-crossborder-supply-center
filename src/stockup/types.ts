@@ -38,6 +38,71 @@ export type StockupCollaborationLine = {
   procurementClosedReason: string;
   procurementClosedAt: string;
   procurementClosedBy: string;
+  defaultSupplyMode: "外采成品" | "委外生产" | "自有成品库存" | "待判断" | string;
+  effectiveSupplyMode: "外采成品" | "委外生产" | "自有成品库存" | "待判断" | string;
+  supplyOverrideReason: string;
+  supplyOverrideBy: string;
+  supplyOverrideAt: string;
+  allocations?: StockupFulfillmentAllocation[];
+};
+
+export type StockupFulfillmentSourceType = "domestic_stock" | "transfer" | "purchase" | "outsourced_production" | "unresolved";
+
+export type StockupFulfillmentAllocation = {
+  id: string;
+  requestId: string;
+  requestLineId: string;
+  planVersion: number;
+  sourceType: StockupFulfillmentSourceType;
+  sourceWarehouseId: string;
+  sourceWarehouseName: string;
+  targetWarehouseId: string;
+  targetWarehouseName: string;
+  plannedQty: number;
+  reservedQty: number;
+  receivedQty: number;
+  readyQty: number;
+  shippedQty: number;
+  exceptionQty: number;
+  status: string;
+  externalReservationId: string;
+  referenceType: string;
+  referenceId: string;
+  referenceNo: string;
+  expectedReadyAt: string;
+  supplyMode?: string;
+  version: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type StockupRoutingSummary = {
+  domesticStock: number;
+  transfer: number;
+  purchase: number;
+  outsourcedProduction: number;
+  unresolved: number;
+  planned: number;
+  reserved: number;
+  ready: number;
+  shipped: number;
+  exception: number;
+};
+
+export type StockupRoutePreview = {
+  ok: boolean;
+  requestId: string;
+  requestNo: string;
+  expectedRequestVersion: number;
+  nextPlanVersion: number;
+  queriedAt: string;
+  recommendedConsolidationWarehouse: { id: string; name: string; coverageQty: number; skuCount: number };
+  consolidationWarehouse: { id: string; name: string };
+  allocations: StockupFulfillmentAllocation[];
+  routingSummary: StockupRoutingSummary;
+  blockers: Array<{ code: string; message: string }>;
+  canConfirm: boolean;
 };
 export type StockupExecutionTask = {
   id: string;
@@ -270,6 +335,17 @@ export type StockupRequest = {
   costVersions?: Array<Record<string, unknown>>;
   events?: StockupProgressEvent[];
   latestEvent?: StockupProgressEvent;
+  journeyStage: string;
+  consolidationWarehouseId: string;
+  consolidationWarehouseName: string;
+  routePlanVersion: number;
+  allowSplitShipment: boolean;
+  splitShipmentReason: string;
+  allocations?: StockupFulfillmentAllocation[];
+  routingSummary?: StockupRoutingSummary;
+  ownerRole?: string;
+  nextAction?: { key: string; label: string; target: string; objectId: string; enabled: boolean; reason: string } | null;
+  blockers?: Array<{ code: string; message: string }>;
 };
 
 export type StockupRequestListPayload = {
@@ -345,6 +421,7 @@ export type StockupWarehouseWorkOrderLine = {
   evidence: StockupInspectionEvidence[];
   productRefId: string;
   purchaseOrderLineId: string;
+  fulfillmentAllocationId: string;
   lots?: StockupInspectionLot[];
   status: string;
   allocatedQty: number;

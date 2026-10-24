@@ -18,6 +18,7 @@ export type StockupRequestDraftLine = {
   procurementUrl: string;
   shelfLifeManaged: boolean;
   note: string;
+  supplyMode: "外采成品" | "委外生产" | "自有成品库存" | "待判断" | string;
 };
 
 type Props = {
@@ -154,8 +155,9 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
   function productDraftLine(product: CatalogProduct): StockupRequestDraftLine {
     return {
         key: uniqueKey(), productId: product.id, sku: product.sku, productName: product.name, imageUrl: product.imageUrl || "",
-        specification: product.specification || "", method: "采购", requestedQty: 1, unit: product.unit || "件",
+        specification: product.specification || "", method: "待计算", requestedQty: 1, unit: product.unit || "件",
         targetUnitCostCny: product.directCostPrice ?? product.directPrice ?? "", procurementUrl: "", shelfLifeManaged: false, note: "",
+        supplyMode: product.defaultSupplyMode || "待判断",
     };
   }
 
@@ -188,7 +190,7 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
   }
 
   function addTemporaryProduct() {
-    setLines((current) => [...current, { key: uniqueKey(), productId: "", sku: "", productName: "", imageUrl: "", specification: "", method: "采购", requestedQty: 1, unit: "件", targetUnitCostCny: "", procurementUrl: "", shelfLifeManaged: false, note: "" }]);
+    setLines((current) => [...current, { key: uniqueKey(), productId: "", sku: "", productName: "", imageUrl: "", specification: "", method: "待计算", requestedQty: 1, unit: "件", targetUnitCostCny: "", procurementUrl: "", shelfLifeManaged: false, note: "", supplyMode: "待判断" }]);
     setPickerPlacement(null);
     setPendingProductSkus([]);
   }
@@ -198,12 +200,13 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
     const availableQty = Math.max(0, Number(inventory?.availableQty || 0));
     const inventoryQty = Math.min(Math.max(0, Number(line.requestedQty || 0)), availableQty);
     const procurementQty = Math.max(0, Number(line.requestedQty || 0) - inventoryQty);
+    const shortageMethod = line.supplyMode === "外采成品" ? "采购" : line.supplyMode === "委外生产" ? "委外生产" : "待判断";
     return {
       inventory,
       availableQty,
       inventoryQty,
       procurementQty,
-      method: inventoryQty >= Number(line.requestedQty || 0) ? "国内库存" : inventoryQty > 0 ? "库存优先+采购" : "采购",
+      method: inventoryQty >= Number(line.requestedQty || 0) ? "国内库存" : inventoryQty > 0 ? `库存优先+${shortageMethod}` : shortageMethod,
     };
   }
 
@@ -373,6 +376,14 @@ export function RequestCreatePanel({ products, warehouses = [], projectTeams = [
                       <span><small>本需求库存覆盖</small><b>{plan.inventoryQty.toLocaleString("zh-CN")} {line.unit}</b></span>
                       <span><small>采购/生产缺口</small><b>{plan.procurementQty.toLocaleString("zh-CN")} {line.unit}</b></span>
                       <em>{plan.inventory?.warehouses?.filter((item) => item.availableQty > 0).map((item) => `${item.warehouseName} ${item.availableQty.toLocaleString("zh-CN")}`).join("；") || (line.sku ? "国内仓暂无可用库存" : "生成正式 SKU 后才能自动匹配库存")}</em>
+                      <label className="sc-line-supply-mode">库存不足时
+                        <select value={line.supplyMode} onChange={(event) => updateLine(line.key, { supplyMode: event.target.value })}>
+                          <option value="待判断">提交后由供应链判断</option>
+                          <option value="外采成品">外采成品</option>
+                          <option value="委外生产">委外生产</option>
+                          <option value="自有成品库存">只等现有/后续库存</option>
+                        </select>
+                      </label>
                     </div>
                   </div>
                   );

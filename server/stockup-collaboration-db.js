@@ -680,6 +680,24 @@ export async function initStockupCollaborationStore(dbPath) {
     );
     CREATE INDEX IF NOT EXISTS idx_stockup_reservation_lines_product ON stockup_inventory_reservation_lines(product_ref_id,reservation_id);
 
+    CREATE TABLE IF NOT EXISTS stockup_fulfillment_reservations (
+      id TEXT PRIMARY KEY,
+      allocation_id TEXT NOT NULL,
+      external_reservation_id TEXT NOT NULL,
+      warehouse_id TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'reserved',
+      shipment_id TEXT,
+      reference_no TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(allocation_id) REFERENCES stockup_fulfillment_allocations(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_stockup_fulfillment_reservation_external ON stockup_fulfillment_reservations(external_reservation_id);
+    CREATE INDEX IF NOT EXISTS idx_stockup_fulfillment_reservation_allocation ON stockup_fulfillment_reservations(allocation_id,status);
+    CREATE INDEX IF NOT EXISTS idx_stockup_fulfillment_reservation_shipment ON stockup_fulfillment_reservations(shipment_id,status);
+
     CREATE TABLE IF NOT EXISTS stockup_dispatch_documents (
       id TEXT PRIMARY KEY,
       shipment_id TEXT NOT NULL,
@@ -753,6 +771,12 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_requests", "source_type TEXT NOT NULL DEFAULT 'manual'");
   ensureColumn("stockup_requests", "source_ref TEXT");
   ensureColumn("stockup_requests", "source_snapshot_json TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("stockup_requests", "journey_stage TEXT NOT NULL DEFAULT 'awaiting_acceptance'");
+  ensureColumn("stockup_requests", "consolidation_warehouse_id TEXT");
+  ensureColumn("stockup_requests", "consolidation_warehouse_name TEXT");
+  ensureColumn("stockup_requests", "route_plan_version INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_requests", "allow_split_shipment INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("stockup_requests", "split_shipment_reason TEXT");
   ensureColumn("stockup_request_lines", "product_ref_id TEXT");
   ensureColumn("stockup_request_lines", "procurement_url TEXT");
   ensureColumn("stockup_request_lines", "shelf_life_managed INTEGER NOT NULL DEFAULT 0");
@@ -764,6 +788,12 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_request_lines", "procurement_required_qty REAL");
   ensureColumn("stockup_request_lines", "inventory_snapshot_json TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("stockup_request_lines", "inventory_checked_at TEXT");
+  ensureColumn("stockup_request_lines", "default_supply_mode TEXT NOT NULL DEFAULT '待判断'");
+  ensureColumn("stockup_request_lines", "effective_supply_mode TEXT NOT NULL DEFAULT '待判断'");
+  ensureColumn("stockup_request_lines", "supply_override_reason TEXT");
+  ensureColumn("stockup_request_lines", "supply_override_by TEXT");
+  ensureColumn("stockup_request_lines", "supply_override_at TEXT");
+  ensureColumn("stockup_product_refs", "default_supply_mode TEXT NOT NULL DEFAULT '待判断'");
   db.run("UPDATE stockup_request_lines SET procurement_required_qty=requested_qty WHERE procurement_required_qty IS NULL");
   ensureColumn("stockup_warehouse_work_orders", "workflow_version INTEGER NOT NULL DEFAULT 1");
   ensureColumn("stockup_warehouse_work_orders", "inspection_submitted_at TEXT");
@@ -773,6 +803,7 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_warehouse_work_orders", "inventory_movement_ids_json TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("stockup_warehouse_work_order_lines", "product_ref_id TEXT");
   ensureColumn("stockup_warehouse_work_order_lines", "purchase_order_line_id TEXT");
+  ensureColumn("stockup_warehouse_work_order_lines", "fulfillment_allocation_id TEXT");
   ensureColumn("stockup_warehouse_work_order_lines", "production_date TEXT");
   ensureColumn("stockup_warehouse_work_order_lines", "expiry_date TEXT");
   ensureColumn("stockup_warehouse_work_order_lines", "evidence_json TEXT NOT NULL DEFAULT '[]'");
@@ -794,10 +825,71 @@ export async function initStockupCollaborationStore(dbPath) {
   ensureColumn("stockup_shipment_lines", "product_ref_id TEXT");
   ensureColumn("stockup_shipment_lines", "purchase_order_line_id TEXT");
   ensureColumn("stockup_shipment_lines", "inspection_lot_id TEXT");
+  ensureColumn("stockup_shipment_lines", "fulfillment_allocation_id TEXT");
   ensureColumn("stockup_cost_items", "purchase_order_id TEXT");
   ensureColumn("stockup_cost_items", "purchase_order_line_id TEXT");
   ensureColumn("stockup_cost_items", "warehouse_work_order_id TEXT");
   ensureColumn("stockup_cost_items", "loss_treatment TEXT NOT NULL DEFAULT 'pending'");
+  db.run(`
+    CREATE TABLE IF NOT EXISTS stockup_fulfillment_allocations (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      request_line_id TEXT NOT NULL,
+      plan_version INTEGER NOT NULL,
+      source_type TEXT NOT NULL,
+      source_warehouse_id TEXT,
+      source_warehouse_name TEXT,
+      target_warehouse_id TEXT,
+      target_warehouse_name TEXT,
+      planned_qty REAL NOT NULL,
+      reserved_qty REAL NOT NULL DEFAULT 0,
+      received_qty REAL NOT NULL DEFAULT 0,
+      ready_qty REAL NOT NULL DEFAULT 0,
+      shipped_qty REAL NOT NULL DEFAULT 0,
+      exception_qty REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL,
+      external_reservation_id TEXT,
+      reference_type TEXT,
+      reference_id TEXT,
+      reference_no TEXT,
+      expected_ready_at TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(request_id) REFERENCES stockup_requests(id),
+      FOREIGN KEY(request_line_id) REFERENCES stockup_request_lines(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_allocations_request ON stockup_fulfillment_allocations(request_id, plan_version, status);
+    CREATE INDEX IF NOT EXISTS idx_stockup_allocations_line ON stockup_fulfillment_allocations(request_line_id, source_type, status);
+    CREATE INDEX IF NOT EXISTS idx_stockup_allocations_reference ON stockup_fulfillment_allocations(reference_type, reference_id);
+
+    CREATE TABLE IF NOT EXISTS stockup_route_plan_versions (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      plan_version INTEGER NOT NULL,
+      plan_status TEXT NOT NULL,
+      consolidation_warehouse_id TEXT,
+      consolidation_warehouse_name TEXT,
+      snapshot_json TEXT NOT NULL,
+      reason TEXT,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(request_id, plan_version),
+      FOREIGN KEY(request_id) REFERENCES stockup_requests(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stockup_route_versions_request ON stockup_route_plan_versions(request_id, plan_version DESC);
+
+    CREATE TABLE IF NOT EXISTS stockup_route_command_receipts (
+      idempotency_key TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      command_type TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(request_id) REFERENCES stockup_requests(id)
+    );
+  `);
   db.run(`
     UPDATE stockup_shipment_lines
     SET image_url = COALESCE((
@@ -809,7 +901,7 @@ export async function initStockupCollaborationStore(dbPath) {
   `);
   db.run("UPDATE stockup_shipments SET wms_push_status='not_created' WHERE COALESCE(wms_push_status,'')=''");
   db.run("UPDATE stockup_shipments SET wms_push_status='needs_manual_check',wms_push_error=COALESCE(NULLIF(wms_push_error,''),'服务重启前建单结果未知，请到仓库系统核对后再处理。') WHERE wms_push_status='pushing'");
-  db.run("PRAGMA user_version = 9");
+  db.run("PRAGMA user_version = 11");
 
   function persist() {
     writeFileSync(dbPath, Buffer.from(db.export()));

@@ -19,6 +19,7 @@
     "test:sku-coding-api": "node scripts/sku-coding-api-test.mjs",
     "test:stockup-collaboration": "node scripts/stockup-collaboration-test.mjs",
     "test:stockup-v2": "node scripts/stockup-v2-domain-test.mjs && node scripts/stockup-v2-flow-test.mjs && node scripts/stockup-dispatch-documents-test.mjs",
+    "test:stockup-v3": "node scripts/stockup-v3-routing-test.mjs",
     "test:stockup-warehouse-work-orders": "node scripts/stockup-warehouse-work-orders-test.mjs",
     "test:domestic-inventory": "node scripts/domestic-inventory-test.mjs",
     "test:domestic-inventory-api": "node scripts/domestic-inventory-api-test.mjs",

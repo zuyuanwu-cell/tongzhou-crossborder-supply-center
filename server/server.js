@@ -288,11 +288,18 @@ const stockupDomesticAvailabilitySummary = (skuValues, context = {}) => {
   return { ok: true, queriedAt: new Date().toISOString(), items: [...summary.values()] };
 };
 const stockupCollaborationService = createStockupCollaborationService(stockupCollaborationStore, {
+  fulfillmentV3Enabled: ["1", "true", "yes"].includes(String(process.env.STOCKUP_FULFILLMENT_V3_ENABLED || "").trim().toLowerCase()),
+  fulfillmentV3PilotRequestRefs: String(process.env.STOCKUP_FULFILLMENT_V3_PILOT_REQUESTS || "").split(",").map((value) => value.trim()).filter(Boolean),
+  fulfillmentV3AdminOnly: ["1", "true", "yes"].includes(String(process.env.STOCKUP_FULFILLMENT_V3_ADMIN_ONLY || "").trim().toLowerCase()),
   inventoryGateway: {
     getAvailabilitySummary: (skus, context) => stockupDomesticAvailabilitySummary(skus, context),
     createInspectionInbound: (input, context) => domesticInventoryService.createMovement({ ...input, type: "inbound", allowDuplicateSkus: true }, stockupInventoryContext(context), `stockup-inspection:${input.referenceNo}`),
     reserveStock: (input, context) => domesticInventoryService.reserveStock(input, stockupInventoryContext(context), `stockup-reservation:${input.referenceNo}`),
+    getReservation: (reservationId, context) => domesticInventoryService.getReservation(reservationId, stockupInventoryContext(context)),
     releaseReservation: (reservationId, context) => domesticInventoryService.releaseReservation(reservationId, stockupInventoryContext(context)),
+    createTransfer: (input, context, idempotencyKey) => domesticInventoryService.createTransfer(input, stockupInventoryContext(context), idempotencyKey),
+    getTransfer: (transferId, context) => domesticInventoryService.getTransfer(transferId, stockupInventoryContext(context)),
+    cancelTransfer: (transferId, context) => domesticInventoryService.cancelTransfer(transferId, stockupInventoryContext(context)),
     commitReservation: (reservationId, input, context) => domesticInventoryService.commitReservation(reservationId, input, stockupInventoryContext(context)),
     recodeSku: (input, context) => domesticInventoryService.recodeSku(input, stockupInventoryContext(context)),
   },

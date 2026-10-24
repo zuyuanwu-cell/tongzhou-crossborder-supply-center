@@ -25,6 +25,7 @@ import { ShipmentWorkspace } from "./ShipmentWorkspace";
 import { SpotDispatchWorkspace } from "./SpotDispatchWorkspace";
 import { WarehouseOperationsWorkbench } from "./WarehouseOperationsWorkbench";
 import "./stockup-collaboration.css";
+import "./stockup-v3.css";
 import "./warehouse-operations.css";
 import "./workflow-guidance.css";
 
@@ -69,6 +70,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     canWarehouseView: allowed(user, "stockup_execution_view", ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"]),
     canWarehouseManage: allowed(user, "stockup_execution_update", ["stockup_execution_manage", "stockup_workflow_manage"]),
     canShip: allowed(user, "stockup_shipment_update", ["stockup_execution_manage"]),
+    canSplit: allowed(user, "stockup_split_shipment", ["stockup_workflow_manage"]),
     canReceive: allowed(user, "stockup_receipt_confirm", ["stockup_execution_manage"]),
     canCost: allowed(user, "stockup_cost_edit", ["stockup_workflow_manage"]),
     canLock: allowed(user, "stockup_cost_lock", ["stockup_workflow_manage"]),
@@ -163,13 +165,13 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} onChanged={() => loadAll(true)} onHandoff={(requestId) => { setWarehouseHandoff((current) => ({ requestId, token: current.token + 1 })); setSection("warehouse"); }} /> : null}
     {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => { if (request.workflowVersion === 2 && ["inventory_ready", "inventory_reserved", "wms_created", "instruction_issued"].includes(request.status)) { if (request.status === "inventory_ready") setShipmentHandoff((current) => ({ requestId: request.id, token: current.token + 1 })); setSection("logistics"); return; } void openDetail(request); }} /> : null}
     {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} initialRequestId={warehouseHandoff.requestId} handoffToken={warehouseHandoff.token} onChanged={() => loadAll(true)} /> : null}
-    {section === "logistics" ? <><SpotDispatchWorkspace shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canReceive={permissions.canReceive} initialRequestId={shipmentHandoff.requestId} handoffToken={shipmentHandoff.token} onHandoffConsumed={() => setShipmentHandoff((current) => ({ ...current, requestId: "" }))} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} />{hasLegacyLogistics ? <details className="sc-legacy-logistics"><summary><span>历史出运记录（旧流程）</span><small>{legacyShipments.length} 个批次，仅用于查询和完成原有单据</small></summary><ShipmentWorkspace requests={legacyRequests} shipments={legacyShipments} receipts={legacyReceipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></details> : null}</> : null}
+    {section === "logistics" ? <><SpotDispatchWorkspace requests={payload?.items || []} shipments={shipments.filter((item) => item.workflowVersion === 2)} canShip={permissions.canShip} canSplit={permissions.canSplit} canReceive={permissions.canReceive} initialRequestId={shipmentHandoff.requestId} handoffToken={shipmentHandoff.token} onHandoffConsumed={() => setShipmentHandoff((current) => ({ ...current, requestId: "" }))} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} />{hasLegacyLogistics ? <details className="sc-legacy-logistics"><summary><span>历史出运记录（旧流程）</span><small>{legacyShipments.length} 个批次，仅用于查询和完成原有单据</small></summary><ShipmentWorkspace requests={legacyRequests} shipments={legacyShipments} receipts={legacyReceipts} warehouses={warehouseOptions} canShip={permissions.canShip} canReceive={permissions.canReceive} loadRequest={loadDetail} onStartCosting={(receiptId) => { setCostReceiptId(receiptId); setSection("costs"); }} onChanged={() => loadAll(true)} /></details> : null}</> : null}
     {section === "costs" ? <CostSettlementWorkspace receipts={receipts} initialReceiptId={costReceiptId} canEdit={permissions.canCost} canLock={permissions.canLock} loadRequest={loadDetail} onChanged={() => loadAll(true)} /> : null}
     {section === "report" ? <MonthlyCostReport canManage={permissions.canLock} /> : null}
 
     <section className="sc-guidance"><Sparkles size={18} /><div><b>无需再记复杂步骤</b><span>系统根据当前角色和单据状态，只展示下一步要处理的动作。</span></div></section>
 
     {showCreate ? <RequestCreatePanel products={productOptions} warehouses={warehouseOptions} projectTeams={projectTeams} defaultProjectTeamId={defaultProjectTeamId} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); const notification = result.notification; setNotice(notification ? { tone: notification.status === "sent" ? "success" : "warning", text: notification.message } : null); }} /> : null}
-    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { setSelected(null); setSection(target); }} /> : null}
+    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} canWarehouseManage={permissions.canWarehouseManage} canShip={permissions.canShip} canCost={permissions.canCost} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { setSelected(null); setSection(target); }} /> : null}
   </main>;
 }

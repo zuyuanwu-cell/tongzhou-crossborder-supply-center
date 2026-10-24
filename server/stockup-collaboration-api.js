@@ -116,7 +116,7 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       let match;
 
       if (suffix === "/products" && req.method === "GET") {
-        sendJson(res, 200, listProducts(context, queryObject(url), auth));
+        sendJson(res, 200, service.enrichProductOptions(listProducts(context, queryObject(url), auth)));
         return true;
       }
 
@@ -311,7 +311,31 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         return true;
       }
       if ((match = suffix.match(/^\/requests\/([^/]+)$/)) && req.method === "GET") {
-        sendJson(res, 200, { ok: true, request: service.getRequest(decodeURIComponent(match[1]), context) });
+        sendJson(res, 200, { ok: true, request: service.getJourneyRequest(decodeURIComponent(match[1]), context) });
+        return true;
+      }
+      if ((match = suffix.match(/^\/requests\/([^/]+)\/route-preview$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有预览履约方案的权限。");
+        sendJson(res, 200, service.previewRoute(decodeURIComponent(match[1]), await readBody(req), context));
+        return true;
+      }
+      if ((match = suffix.match(/^\/requests\/([^/]+)\/route-reconciliation$/)) && req.method === "GET") {
+        requireAny(auth, ["stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有查看历史履约对账的权限。");
+        sendJson(res, 200, service.routeReconciliation(decodeURIComponent(match[1]), context));
+        return true;
+      }
+      if ((match = suffix.match(/^\/requests\/([^/]+)\/route-confirm$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有确认履约方案的权限。");
+        const result = service.confirmRoute(decodeURIComponent(match[1]), await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, "确认备货履约方案", "stockup_collaboration_request", result.request?.requestNo || match[1], { planVersion: result.planVersion, routingSummary: result.routingSummary });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/requests\/([^/]+)\/route-replan$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有替换履约方案的权限。");
+        const result = service.replaceRoute(decodeURIComponent(match[1]), await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, "重新计算备货履约方案", "stockup_collaboration_request", result.request?.requestNo || match[1], { planVersion: result.planVersion });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
         return true;
       }
       if ((match = suffix.match(/^\/requests\/([^/]+)$/)) && req.method === "PATCH") {
@@ -329,6 +353,43 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         const payload = await readBody(req);
         const result = service.setRequestStatus(decodeURIComponent(match[1]), statusByAction[action], payload, context);
         appendActionLog(auth, `备货需求：${action}`, "stockup_collaboration_request", result.request.requestNo, { status: result.request.status });
+        sendJson(res, 200, result);
+        return true;
+      }
+
+      if ((match = suffix.match(/^\/fulfillment-allocations\/([^/]+)\/confirm-transfer$/)) && req.method === "POST") {
+        requireAny(auth, ["domestic_inventory_transfer", "domestic_inventory_manage", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有确认跨仓调拨的权限。");
+        const result = service.confirmTransfer(decodeURIComponent(match[1]), await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, "确认备货履约跨仓调拨", "stockup_fulfillment_allocation", match[1], { transferNo: result.transfer?.transferNo || "" });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/fulfillment-allocations\/([^/]+)\/sync-transfer$/)) && req.method === "POST") {
+        requireAny(auth, ["domestic_inventory_transfer", "domestic_inventory_manage", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有同步跨仓调拨的权限。");
+        const result = service.syncTransfer(decodeURIComponent(match[1]), context);
+        appendActionLog(auth, "同步备货履约跨仓调拨", "stockup_fulfillment_allocation", match[1], { transferNo: result.transfer?.transferNo || "", transferStatus: result.transfer?.status || "" });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/fulfillment-allocations\/([^/]+)\/link-outsourcing$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有关联委外加工单的权限。");
+        const result = service.linkOutsourcing(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "关联委外加工单", "stockup_fulfillment_allocation", match[1], { referenceNo: result.allocation?.referenceNo || "" });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/fulfillment-allocations\/([^/]+)\/recover-reservation$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_execution_manage", "stockup_workflow_manage", "domestic_inventory_manage"], "当前账号没有恢复库存锁定的权限。");
+        const result = service.recoverReservation(decodeURIComponent(match[1]), context);
+        appendActionLog(auth, "恢复备货履约库存锁定", "stockup_fulfillment_allocation", match[1], { reservationId: result.allocation?.externalReservationId || "" });
+        sendJson(res, 200, result);
+        return true;
+      }
+
+      if ((match = suffix.match(/^\/product-refs\/([^/]+)\/supply-mode$/)) && req.method === "PATCH") {
+        requireAny(auth, ["stockup_execution_manage", "stockup_workflow_manage", "product_manage"], "当前账号没有维护产品供应策略的权限。");
+        const result = service.updateProductSupplyMode(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "维护产品默认供应方式", "stockup_product_ref", match[1], { defaultSupplyMode: result.defaultSupplyMode });
         sendJson(res, 200, result);
         return true;
       }
@@ -367,6 +428,15 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有创建锁库出运计划的权限。");
         const result = service.createReservedShipment(await readBody(req), context);
         appendActionLog(auth, "创建出运计划并锁定库存", "stockup_collaboration_shipment", result.shipment.shipmentNo, {});
+        sendJson(res, 201, result);
+        return true;
+      }
+      if (suffix === "/shipments/from-route" && req.method === "POST") {
+        requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有从履约方案创建发运计划的权限。");
+        const payload = await readBody(req);
+        if (payload?.allowSplitShipment) requireAny(auth, ["stockup_split_shipment", "stockup_workflow_manage"], "当前账号没有分批发运权限。");
+        const result = service.createRouteShipment(payload, context);
+        appendActionLog(auth, payload?.allowSplitShipment ? "创建分批发运计划" : "从履约方案创建发运计划", "stockup_collaboration_shipment", result.shipment.shipmentNo, { requestId: payload?.requestId || "", splitReason: payload?.splitReason || "" });
         sendJson(res, 201, result);
         return true;
       }
