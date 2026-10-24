@@ -6,6 +6,8 @@ PROJECT_DIR="${DEPLOY_PROJECT_DIR:-/www/wwwroot/gyl.tongzhoukuajing.com}"
 BACKUP_BASE="${DEPLOY_BACKUP_BASE:-/www/backup/tongzhou-supply}"
 HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8787/api/health}"
 EXTERNAL_URL="${DEPLOY_EXTERNAL_URL:-https://gyl.tongzhoukuajing.com}"
+HEALTH_ATTEMPTS="${DEPLOY_HEALTH_ATTEMPTS:-90}"
+HEALTH_INTERVAL_SECONDS="${DEPLOY_HEALTH_INTERVAL_SECONDS:-2}"
 PM2_APP="${DEPLOY_PM2_APP:-tongzhou-supply-api}"
 PM2_RESTORE_APP="${DEPLOY_PM2_RESTORE_APP:-tongzhou-system-restore}"
 DEPLOY_COMPONENT="${DEPLOY_COMPONENT:-auto}"
@@ -15,6 +17,11 @@ FRONTEND_CONTRACT="${DEPLOY_FRONTEND_CONTRACT:-config/production-ui-contract.jso
 if [[ ! -d "$PROJECT_DIR/.git" ]]; then
   echo "[deploy] project git directory not found: $PROJECT_DIR" >&2
   exit 20
+fi
+
+if ! [[ "$HEALTH_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || ! [[ "$HEALTH_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[deploy] health attempts and interval must be positive integers" >&2
+  exit 27
 fi
 
 cd "$PROJECT_DIR"
@@ -195,12 +202,12 @@ echo "__API_HEALTH__"
 attempt=0
 until curl -fsS "$HEALTH_URL"; do
   attempt=$((attempt + 1))
-  if (( attempt >= 10 )); then
+  if (( attempt >= HEALTH_ATTEMPTS )); then
     echo "[deploy] API health check failed after $attempt attempts" >&2
     pm2 logs "$PM2_APP" --lines 80 --nostream || true
     exit 41
   fi
-  sleep 2
+  sleep "$HEALTH_INTERVAL_SECONDS"
 done
 echo
 
