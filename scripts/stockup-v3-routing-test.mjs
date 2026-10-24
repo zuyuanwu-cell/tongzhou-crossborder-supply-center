@@ -352,8 +352,14 @@ try {
     fulfillmentV3AdminOnly: true,
   });
   assert.ok(pilotService.getJourneyRequest(mixedCreated.requestId, context).allocations?.length > 0);
+  assert.equal(pilotService.getJourneyRequest(mixedCreated.requestId, context).fulfillmentRoutingEnabled, true);
   const nonAdminContext = { ...context, auth: { role: "direct", user: { id: "v3-viewer", displayName: "V3 普通用户" } } };
-  assert.equal(pilotService.getJourneyRequest(mixedCreated.requestId, nonAdminContext).allocations, undefined);
+  const nonAdminJourney = pilotService.getJourneyRequest(mixedCreated.requestId, nonAdminContext);
+  assert.equal(nonAdminJourney.allocations, undefined);
+  assert.equal(nonAdminJourney.fulfillmentRoutingEnabled, false);
+  const outsidePilotJourney = pilotService.getJourneyRequest(raceTwo.requestId, context);
+  assert.equal(outsidePilotJourney.fulfillmentRoutingEnabled, false);
+  assert.equal(outsidePilotJourney.nextAction, undefined);
   assert.throws(
     () => pilotService.previewRoute(raceTwo.requestId, { consolidationWarehouseId: target.id }, context),
     (error) => error?.code === "fulfillment_v3_not_in_pilot",

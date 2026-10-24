@@ -56,13 +56,13 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
     finally { setBusy(""); }
   }
 
-  async function claimAndNavigate() {
+  async function claimAndOpenRoute() {
     setBusy("claim");
     setError("");
     try {
       await changeStockupCollaborationRequest(request.id, "accept");
       await onChanged();
-      onNavigate("procurement");
+      setRouteOpen(true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "操作失败");
     } finally {
@@ -144,13 +144,13 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
             <dl><div><dt><CalendarClock size={15} />期望到仓</dt><dd>{formatStockupDate(request.expectedArrivalAt)}</dd></div><div><dt><Route size={15} />目的地</dt><dd>{request.destinationCountry} · {request.destinationWarehouseName}</dd></div><div><dt><ClipboardCheck size={15} />当前负责人</dt><dd>{({ supply_chain: "供应链负责人", procurement: "采购人员", production_followup: "生产跟单", domestic_warehouse: "国内仓", logistics: "物流人员", finance: "财务人员" }[request.ownerRole || ""] || request.assigneeName || "等待受理")}</dd></div></dl>
           </section>
 
-          {request.workflowVersion === 2 && request.status === "draft" ? <section className="sc-action-strip"><div><b>{request.sourceType === "agent" ? "Agent 已生成需求草稿" : request.sourceType === "recommendation" ? "备货建议已生成现货草稿" : "现货备货草稿待提交"}</b><span>请人工核对目的仓、数量和商品信息；提交后才能建立采购单。</span></div><div><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("submit", () => changeStockupCollaborationRequest(request.id, "submit"))}><Send size={17} />审核并提交</button></div></section> : null}
+          {request.workflowVersion === 2 && request.status === "draft" ? <section className="sc-action-strip"><div><b>{request.sourceType === "agent" ? "Agent 已生成需求草稿" : request.sourceType === "recommendation" ? "备货建议已生成现货草稿" : "现货备货草稿待提交"}</b><span>请人工核对目的仓、数量和商品信息；提交后系统会按国内库存、调拨、采购或委外逐行分流。</span></div><div><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("submit", () => changeStockupCollaborationRequest(request.id, "submit"))}><Send size={17} />审核并提交</button></div></section> : null}
 
           {request.workflowVersion === 2 && request.status !== "draft" && request.nextAction ? <section className="sc-action-strip sc-action-strip-v3"><div><b>{request.nextAction.label}</b><span>{request.blockers?.[0]?.message || (canHandleNextAction ? "系统已根据当前库存与各分支进度确定唯一下一步。" : "当前步骤由对应负责人处理；你可以继续查看产品拆分和进度时间线。")}</span>{request.blockers && request.blockers.length > 1 ? <small>{request.blockers.slice(1).map((item) => item.message).join("；")}</small> : null}</div><div><button className="sc-button sc-button-primary" disabled={Boolean(busy) || request.nextAction.enabled === false || !canHandleNextAction} onClick={handleNextAction}><ChevronRight size={17} />{canHandleNextAction ? request.nextAction.label : "等待负责人处理"}</button></div></section> : null}
 
           {parallelActions.length ? <section className="sc-parallel-actions"><div><b>并行履约分支</b><span>这些分支可同时推进，不必等待主动作完成。</span></div><div>{parallelActions.map((action) => <button key={action.target} type="button" className="sc-button sc-button-secondary" disabled={Boolean(busy)} onClick={() => handleActionTarget(action.target)}>{action.label}<ChevronRight size={15} /></button>)}</div></section> : null}
 
-          {request.workflowVersion === 2 && !request.nextAction && request.status === "submitted" && (canAccept || canExecute) ? <section className="sc-action-strip"><div><b>{request.assigneeName ? `当前由 ${request.assigneeName} 负责处理` : "这张备货单正在等待供应链负责人认领"}</b><span>{request.assigneeName ? "下一步到现货采购登记采购单、实付金额和供应商信息。" : "认领后你会成为当前负责人，并直接进入现货采购处理。"}</span></div><div>{request.assigneeName ? <button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => onNavigate("procurement")}><ChevronRight size={17} />进入现货采购</button> : <button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => void claimAndNavigate()}><Check size={17} />认领并去采购</button>}</div></section> : null}
+          {request.workflowVersion === 2 && !request.nextAction && request.status === "submitted" && (canAccept || canExecute) ? <section className="sc-action-strip"><div><b>{request.assigneeName ? "先确认逐 SKU 执行方案" : "这张备货单正在等待供应链负责人认领"}</b><span>{request.fulfillmentRoutingEnabled === false ? "当前需求尚未进入多来源履约范围，请刷新或联系管理员检查 V3 配置；系统不会把它默认送去采购。" : "系统会先使用国内可用库存，只把未覆盖的数量分流到调拨、采购或委外生产。"}</span></div><div>{request.assigneeName ? <button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => setRouteOpen(true)}><Route size={17} />确认执行方案</button> : <button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => void claimAndOpenRoute()}><Check size={17} />认领并确认方案</button>}</div></section> : null}
 
           {request.workflowVersion === 2 && !request.nextAction && request.status === "purchasing" ? <section className="sc-action-strip"><div><b>{arrivalTotals.purchaseReceived >= arrivalTotals.requested ? "采购侧已登记到齐，等待移交国内仓" : `采购到货 ${arrivalTotals.purchaseReceived}/${arrivalTotals.requested}`}</b><span>{arrivalTotals.warehouseExpected > 0 ? `已有 ${arrivalTotals.warehouseExpected} 件进入仓库验收；实际到仓数量以仓库提交并审核的数据为准。` : "采购人员不再代替仓库确认实收；请创建国内仓验收任务。"}</span></div><div><button className="sc-button sc-button-secondary" onClick={() => onNavigate("procurement")}>查看采购单</button><button className="sc-button sc-button-primary" onClick={() => onNavigate("warehouse")}><PackageCheck size={17} />移交国内仓验收</button></div></section> : null}
 

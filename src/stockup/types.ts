@@ -352,6 +352,7 @@ export type StockupRequest = {
   routePlanVersion: number;
   allowSplitShipment: boolean;
   splitShipmentReason: string;
+  fulfillmentRoutingEnabled?: boolean;
   allocations?: StockupFulfillmentAllocation[];
   routingSummary?: StockupRoutingSummary;
   ownerRole?: string;

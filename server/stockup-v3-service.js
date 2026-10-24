@@ -734,7 +734,9 @@ export function createStockupV3Service({
   }
 
   function decorateRequest(request, context = {}) {
-    if (!isEnabledForRequest(request, context)) return request;
+    const routingEnabled = isEnabledForRequest(request, context);
+    request.fulfillmentRoutingEnabled = routingEnabled;
+    if (!routingEnabled) return request;
     const allocations = currentAllocations(request.id);
     const journey = deriveJourney(allocations, request);
     const byLine = new Map();
