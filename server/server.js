@@ -65,7 +65,12 @@ import {
   buildWarehouseTicketReminderMarkdown,
   notificationRobotIds,
 } from "./after-sales-notifications.js";
-import { buildStockupRequestSubmittedMarkdown } from "./stockup-notifications.js";
+import {
+  buildStockupRequestProgressMarkdown,
+  buildStockupRequestSubmittedMarkdown,
+  normalizeStockupProgressNodes,
+  resolveStockupSceneDelivery,
+} from "./stockup-notifications.js";
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
@@ -439,6 +444,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   getAuth,
   appendActionLog,
   notifyRequestSubmitted: ({ request, payload, auth, req }) => notifyStockupRequestSubmitted(request, payload, auth, requestOrigin(req)),
+  notifyRequestProgress: ({ request, event, auth, req }) => notifyStockupRequestProgress(request, event, auth, requestOrigin(req)),
   publishWarehouseTask: (...args) => collaborationBridge.publishWarehouseTask(...args),
   generateDispatchDocuments: (shipment) => stockupDispatchDocumentService.generate(stockupShipmentWithProductImages(shipment)),
   listWarehouses: () => {
@@ -1266,6 +1272,26 @@ function buildWecomNotificationPayload(input = {}) {
     }))
     .filter((schedule) => schedule.name && schedule.robotIds.length && schedule.text);
   const scenes = {
+    stockupRequestSubmitted: {
+      enabled: Boolean(input.scenes?.stockupRequestSubmitted?.enabled),
+      robotIds: normalizeWecomRobotIds(input.scenes?.stockupRequestSubmitted?.robotIds),
+      linkUrl: String(input.scenes?.stockupRequestSubmitted?.linkUrl || "#stockup-execution").trim(),
+      extraText: String(input.scenes?.stockupRequestSubmitted?.extraText || "").trim(),
+      lastSentAt: input.scenes?.stockupRequestSubmitted?.lastSentAt || "",
+      lastError: input.scenes?.stockupRequestSubmitted?.lastError || "",
+    },
+    stockupRequestProgress: {
+      enabled: Boolean(input.scenes?.stockupRequestProgress?.enabled),
+      robotIds: normalizeWecomRobotIds(input.scenes?.stockupRequestProgress?.robotIds),
+      linkUrl: String(input.scenes?.stockupRequestProgress?.linkUrl || "#stockup-execution").trim(),
+      extraText: String(input.scenes?.stockupRequestProgress?.extraText || "").trim(),
+      progressNodes: normalizeStockupProgressNodes(input.scenes?.stockupRequestProgress?.progressNodes),
+      recentSignatures: Array.isArray(input.scenes?.stockupRequestProgress?.recentSignatures)
+        ? input.scenes.stockupRequestProgress.recentSignatures.map(String).filter(Boolean).slice(-200)
+        : [],
+      lastSentAt: input.scenes?.stockupRequestProgress?.lastSentAt || "",
+      lastError: input.scenes?.stockupRequestProgress?.lastError || "",
+    },
     stockupRecommendation: {
       enabled: Boolean(input.scenes?.stockupRecommendation?.enabled),
       robotIds: normalizeWecomRobotIds(input.scenes?.stockupRecommendation?.robotIds),
@@ -1324,9 +1350,11 @@ function buildWecomNotificationPayload(input = {}) {
 
 function publicWecomNotificationPayload() {
   const payload = buildWecomNotificationPayload(cachedWecomNotifications);
+  const { recentSignatures: _recentSignatures, ...stockupRequestProgress } = payload.scenes.stockupRequestProgress;
   return {
     ...payload,
     robots: payload.robots.map(({ webhookUrl, ...robot }) => ({ ...robot, webhookMasked: maskWebhook(webhookUrl) })),
+    scenes: { ...payload.scenes, stockupRequestProgress },
   };
 }
 
@@ -1387,37 +1415,77 @@ async function sendWecomNotification(robotIds, content, mentionUserIds = []) {
 }
 
 async function notifyStockupRequestSubmitted(request, payload = {}, auth = {}, origin = "") {
-  const notificationRoute = resolveNotificationRouteSnapshot({
-    actor: auth.user || {},
-    requestedTeamId: payload.notificationTeamId,
-    projectTeams: cachedWecomNotifications.projectTeams,
-  });
-  notificationRoute.mentionSubmitter = false;
-  const route = resolveProgressNotificationRoute({
-    ticket: { notificationRoute },
-    projectTeams: cachedWecomNotifications.projectTeams,
-    globalRobotIds: [],
-  });
-  if (!route.robotIds.length) {
+  void payload;
+  void auth;
+  const scene = cachedWecomNotifications.scenes?.stockupRequestSubmitted;
+  const delivery = resolveStockupSceneDelivery(scene);
+  if (!delivery.shouldSend) {
     return {
       status: "skipped",
-      teamName: route.teamName,
-      message: route.teamName
-        ? `项目团队“${route.teamName}”尚未配置企业微信接收群，本次未发送。`
-        : "未选择项目团队且创建人没有默认通知团队，本次未发送。",
+      message: delivery.reason === "recipients_missing"
+        ? "新备货需求提交通知未配置明确接收群，本次未发送。"
+        : "新备货需求提交通知未启用，本次未发送。",
     };
   }
-  const content = buildStockupRequestSubmittedMarkdown(request, { requestOrigin: origin });
-  const results = await sendWecomNotification(route.robotIds, content, route.mentionUserIds);
+  const recipientCheck = validateExplicitWecomRecipients(delivery.robotIds, "新备货需求提交");
+  if (!recipientCheck.ok) return { status: "skipped", message: recipientCheck.message };
+  const content = buildStockupRequestSubmittedMarkdown(request, {
+    requestOrigin: origin,
+    linkUrl: scene.linkUrl,
+    extraText: scene.extraText,
+  });
+  const results = await sendWecomNotification(recipientCheck.robotIds, content);
   const delivered = results.filter((item) => item.ok).length;
-  const failed = Math.max(0, route.robotIds.length - delivered);
-  if (!delivered) return { status: "failed", teamName: route.teamName, delivered, failed, message: "企业微信接收群不可用或推送失败，请检查项目团队的机器人配置。" };
+  const failed = Math.max(0, recipientCheck.robotIds.length - delivered);
+  scene.lastSentAt = delivered ? new Date().toISOString() : scene.lastSentAt;
+  scene.lastError = failed ? `有 ${failed} 个接收群发送失败。` : "";
+  saveWecomNotificationCache();
+  if (!delivered) return { status: "failed", delivered, failed, message: "新备货需求接收群不可用或推送失败，请检查独立场景配置。" };
   return {
     status: failed ? "partial" : "sent",
-    teamName: route.teamName,
     delivered,
     failed,
-    message: failed ? `已发送到 ${delivered} 个接收群，另有 ${failed} 个失败。` : `已通知${route.teamName ? `“${route.teamName}”` : "项目团队"}。`,
+    message: failed ? `已发送到 ${delivered} 个接收群，另有 ${failed} 个失败。` : "已通知备货需求接单群。",
+  };
+}
+
+async function notifyStockupRequestProgress(request, event = {}, auth = {}, origin = "") {
+  const scene = cachedWecomNotifications.scenes?.stockupRequestProgress;
+  const delivery = resolveStockupSceneDelivery(scene, event.node);
+  if (!delivery.shouldSend) {
+    const messages = {
+      disabled: "备货需求进度通知未启用，本次未发送。",
+      recipients_missing: "备货需求进度通知未配置明确接收群，本次未发送。",
+      node_disabled: "当前进度节点未配置推送，本次未发送。",
+    };
+    return { status: "skipped", message: messages[delivery.reason] || "当前进度不需要推送。" };
+  }
+  const recipientCheck = validateExplicitWecomRecipients(delivery.robotIds, "备货需求进度");
+  if (!recipientCheck.ok) return { status: "skipped", message: recipientCheck.message };
+  const signature = [request?.id, event.node, event.reference || request?.updatedAt || ""].map(String).join(":");
+  const recentSignatures = new Set(scene.recentSignatures || []);
+  if (recentSignatures.has(signature)) return { status: "deduplicated", message: "相同进度已通知，本次不重复发送。" };
+  const content = buildStockupRequestProgressMarkdown(request, {
+    ...event,
+    actorName: event.actorName || auth?.user?.displayName || auth?.user?.username || "",
+  }, {
+    requestOrigin: origin,
+    linkUrl: scene.linkUrl,
+    extraText: scene.extraText,
+  });
+  const results = await sendWecomNotification(recipientCheck.robotIds, content);
+  const delivered = results.filter((item) => item.ok).length;
+  const failed = Math.max(0, recipientCheck.robotIds.length - delivered);
+  if (delivered) scene.recentSignatures = [...recentSignatures, signature].slice(-200);
+  scene.lastSentAt = delivered ? new Date().toISOString() : scene.lastSentAt;
+  scene.lastError = failed ? `有 ${failed} 个接收群发送失败。` : "";
+  saveWecomNotificationCache();
+  if (!delivered) return { status: "failed", delivered, failed, message: "备货需求进度接收群不可用或推送失败。" };
+  return {
+    status: failed ? "partial" : "sent",
+    delivered,
+    failed,
+    message: failed ? `已发送到 ${delivered} 个接收群，另有 ${failed} 个失败。` : "备货需求进度已通知运营群。",
   };
 }
 
@@ -10428,6 +10496,15 @@ const server = http.createServer(async (req, res) => {
         },
         updatedAt: new Date().toISOString(),
       });
+      if (nextNotifications.scenes.stockupRequestProgress.enabled
+        && !nextNotifications.scenes.stockupRequestProgress.progressNodes.length) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "备货需求进度通知已启用，但尚未选择任何关键推送节点。默认不推送，请先勾选需要通知运营群的节点。",
+          sceneKey: "stockupRequestProgress",
+        });
+        return;
+      }
       const sceneEntries = Object.entries(nextNotifications.scenes || {});
       for (const [sceneKey, scene] of sceneEntries) {
         if (!scene?.enabled) continue;
@@ -10436,6 +10513,8 @@ const server = http.createServer(async (req, res) => {
           : [];
         const allRobotIds = [...new Set([...normalizeWecomRobotIds(scene.robotIds), ...warehouseRobotIds])];
         const sceneLabels = {
+          stockupRequestSubmitted: "新备货需求提交",
+          stockupRequestProgress: "备货需求进度",
           stockupRecommendation: "备货预警",
           inventorySnapshot: "库存快照",
           qualificationExpiry: "资质到期",

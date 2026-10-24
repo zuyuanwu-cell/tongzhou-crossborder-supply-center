@@ -734,6 +734,7 @@ export type WecomSceneConfig = {
   extraText: string;
   triggerMode?: "change" | "daily" | "both";
   scheduleTime?: string;
+  progressNodes?: string[];
   lastSignature?: string;
   lastSentAt?: string;
   lastScheduleRunKey?: string;
@@ -760,11 +761,14 @@ export type WecomNotificationPayload = {
   schedules: WecomSchedule[];
   projectTeams: WecomProjectTeam[];
   scenes: {
+    stockupRequestSubmitted: WecomSceneConfig;
+    stockupRequestProgress: WecomSceneConfig;
     stockupRecommendation: WecomSceneConfig;
     inventorySnapshot: WecomSceneConfig;
     qualificationExpiry: WecomSceneConfig;
     afterSalesNew: WecomAfterSalesNewSceneConfig;
     afterSalesProgress: WecomSceneConfig;
+    ozonFulfillmentFailure: WecomSceneConfig;
   };
 };
 

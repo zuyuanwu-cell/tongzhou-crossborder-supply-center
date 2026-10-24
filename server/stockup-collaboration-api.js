@@ -67,7 +67,7 @@ export function collaborationIsoDateTime(value) {
   return new Date(timestamp).toISOString();
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), getDomesticAvailabilitySummary = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), notifyRequestProgress = async () => ({ status: "skipped", message: "未配置企业微信进度通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), getDomesticAvailabilitySummary = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
   async function publishStockupWorkOrder(workOrder, context, auth, idempotencyKey, { revision = false } = {}) {
     const dueAt = collaborationIsoDateTime(workOrder.expectedArrivalAt);
     const request = service.getRequest(workOrder.requestId, context);
@@ -104,6 +104,22 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       warehouseIds: context.warehouseIds,
       skus: context.skus,
     });
+  }
+
+  async function attachProgressNotifications(result, requestIds, event, context, auth, req) {
+    const ids = [...new Set((Array.isArray(requestIds) ? requestIds : [requestIds]).map(String).filter(Boolean))];
+    if (!ids.length || result?.idempotentReplay) return result;
+    const notifications = [];
+    for (const requestId of ids) {
+      try {
+        const request = service.getRequest(requestId, { ...context, viewAll: true });
+        notifications.push(await notifyRequestProgress({ request, event, auth, req }));
+      } catch (error) {
+        notifications.push({ status: "failed", message: error?.message || "企业微信进度通知发送失败" });
+      }
+    }
+    result.progressNotifications = notifications;
+    return result;
   }
 
   return async function handleStockupCollaborationApi(req, res, url) {
@@ -278,6 +294,14 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
           service.markWarehouseWorkOrderPublished(workOrderId, { ...collaboration, deliveryMessage: collaboration.delivery?.failed ? "修订任务已进入重试队列" : "仓库已收到验货修订任务" }, context);
           result.collaboration = collaboration;
         }
+        const reviewedWorkOrder = service.getWarehouseWorkOrder(workOrderId, context);
+        await attachProgressNotifications(result, reviewedWorkOrder.requestId, {
+          node: payload.action === "approve" ? "warehouse_received" : "exception",
+          detail: payload.action === "approve"
+            ? `${reviewedWorkOrder.workOrderNo || "国内仓工单"} 已验收并入库。`
+            : `${reviewedWorkOrder.workOrderNo || "国内仓工单"} 验货数据被退回：${payload.note || "请修订后重提"}`,
+          reference: `inspection:${workOrderId}:${result.inventoryMovementId || result.status || ""}`,
+        }, context, auth, req);
         appendActionLog(auth, "审核国内仓验货", "stockup_warehouse_work_order", match[1], { status: result.status });
         sendJson(res, 200, result);
         return true;
@@ -328,6 +352,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有确认履约方案的权限。");
         const result = service.confirmRoute(decodeURIComponent(match[1]), await readBody(req), context, String(req.headers["idempotency-key"] || ""));
         appendActionLog(auth, "确认备货履约方案", "stockup_collaboration_request", result.request?.requestNo || match[1], { planVersion: result.planVersion, routingSummary: result.routingSummary });
+        await attachProgressNotifications(result, result.request?.id || decodeURIComponent(match[1]), {
+          node: "route_confirmed",
+          detail: "履约方案已确认，货源执行开始。",
+          reference: `route:${result.planVersion || result.request?.version || ""}`,
+        }, context, auth, req);
         sendJson(res, result.idempotentReplay ? 200 : 201, result);
         return true;
       }
@@ -352,6 +381,25 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         const statusByAction = { submit: "pending_acceptance", accept: "accepted", "request-changes": "needs_changes", reject: "rejected", cancel: "cancelled", restore: "draft" };
         const payload = await readBody(req);
         const result = service.setRequestStatus(decodeURIComponent(match[1]), statusByAction[action], payload, context);
+        if (action === "submit") {
+          try {
+            result.notification = await notifyRequestSubmitted({ request: result.request, payload, auth, req });
+          } catch (error) {
+            result.notification = { status: "failed", message: error?.message || "企业微信通知发送失败" };
+          }
+        } else if (action === "accept") {
+          await attachProgressNotifications(result, result.request?.id, {
+            node: "accepted",
+            detail: "供应链已受理备货需求。",
+            reference: `request:${result.request?.version || result.request?.updatedAt || ""}`,
+          }, context, auth, req);
+        } else if (["request-changes", "reject", "cancel"].includes(action)) {
+          await attachProgressNotifications(result, result.request?.id, {
+            node: "exception",
+            detail: String(payload.reason || payload.note || `需求状态变更为 ${result.request?.status || action}`),
+            reference: `request:${action}:${result.request?.version || result.request?.updatedAt || ""}`,
+          }, context, auth, req);
+        }
         appendActionLog(auth, `备货需求：${action}`, "stockup_collaboration_request", result.request.requestNo, { status: result.request.status });
         sendJson(res, 200, result);
         return true;
@@ -409,6 +457,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_execution_update", "stockup_execution_manage"], "当前账号没有更新执行任务权限。");
         const result = service.updateTask(decodeURIComponent(match[1]), await readBody(req), context);
         appendActionLog(auth, "更新备货执行进度", "stockup_collaboration_task", result.task.taskNo, { status: result.task.status });
+        await attachProgressNotifications(result, result.task?.requestId, {
+          node: "execution_progress",
+          detail: `${result.task?.taskNo || "执行任务"} · ${result.task?.status || "进度已更新"}`,
+          reference: `task:${result.task?.id || match[1]}:${result.task?.version || result.task?.updatedAt || ""}`,
+        }, context, auth, req);
         sendJson(res, 200, result);
         return true;
       }
@@ -421,6 +474,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage"], "当前账号没有登记发运权限。");
         const result = service.createShipment(await readBody(req), context);
         appendActionLog(auth, "创建备货发运批次", "stockup_collaboration_shipment", result.shipment.shipmentNo, {});
+        await attachProgressNotifications(result, result.shipment?.requestIds?.length ? result.shipment.requestIds : result.shipment?.requestId, {
+          node: "shipment_created",
+          detail: `发运计划 ${result.shipment?.shipmentNo || ""} 已创建。`,
+          reference: `shipment:${result.shipment?.id || ""}:created`,
+        }, context, auth, req);
         sendJson(res, 201, result);
         return true;
       }
@@ -428,6 +486,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有创建锁库出运计划的权限。");
         const result = service.createReservedShipment(await readBody(req), context);
         appendActionLog(auth, "创建出运计划并锁定库存", "stockup_collaboration_shipment", result.shipment.shipmentNo, {});
+        await attachProgressNotifications(result, result.shipment?.requestIds?.length ? result.shipment.requestIds : result.shipment?.requestId, {
+          node: "shipment_created",
+          detail: `发运计划 ${result.shipment?.shipmentNo || ""} 已创建并锁定库存。`,
+          reference: `shipment:${result.shipment?.id || ""}:reserved`,
+        }, context, auth, req);
         sendJson(res, 201, result);
         return true;
       }
@@ -437,6 +500,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         if (payload?.allowSplitShipment) requireAny(auth, ["stockup_split_shipment", "stockup_workflow_manage"], "当前账号没有分批发运权限。");
         const result = service.createRouteShipment(payload, context);
         appendActionLog(auth, payload?.allowSplitShipment ? "创建分批发运计划" : "从履约方案创建发运计划", "stockup_collaboration_shipment", result.shipment.shipmentNo, { requestId: payload?.requestId || "", splitReason: payload?.splitReason || "" });
+        await attachProgressNotifications(result, result.shipment?.requestIds?.length ? result.shipment.requestIds : (result.shipment?.requestId || payload?.requestId), {
+          node: "shipment_created",
+          detail: `发运计划 ${result.shipment?.shipmentNo || ""} 已创建。`,
+          reference: `shipment:${result.shipment?.id || ""}:route`,
+        }, context, auth, req);
         sendJson(res, 201, result);
         return true;
       }
@@ -504,6 +572,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_shipment_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有确认货代交接的权限。");
         const result = service.handoverShipment(decodeURIComponent(match[1]), await readBody(req), context);
         appendActionLog(auth, "确认交接货代并扣减国内库存", "stockup_collaboration_shipment", result.shipment.shipmentNo, { trackingNo: result.shipment.trackingNo });
+        await attachProgressNotifications(result, result.shipment?.requestIds?.length ? result.shipment.requestIds : result.shipment?.requestId, {
+          node: "shipment_handover",
+          detail: `${result.shipment?.shipmentNo || "发运批次"} 已交接货代，物流单号 ${result.shipment?.trackingNo || "-"}。`,
+          reference: `shipment:${result.shipment?.id || match[1]}:handover:${result.shipment?.version || ""}`,
+        }, context, auth, req);
         sendJson(res, 200, result);
         return true;
       }
@@ -527,6 +600,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         }
         const result = service.dispatchShipment(shipmentId, payload, context);
         appendActionLog(auth, "确认备货发运", "stockup_collaboration_shipment", result.shipment.shipmentNo, { trackingNo: result.shipment.trackingNo });
+        await attachProgressNotifications(result, result.shipment?.requestIds?.length ? result.shipment.requestIds : result.shipment?.requestId, {
+          node: "shipment_dispatched",
+          detail: `${result.shipment?.shipmentNo || "发运批次"} 已发运，物流单号 ${result.shipment?.trackingNo || "-"}。`,
+          reference: `shipment:${result.shipment?.id || shipmentId}:dispatch:${result.shipment?.version || ""}`,
+        }, context, auth, req);
         sendJson(res, 200, result);
         return true;
       }
@@ -539,6 +617,11 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         requireAny(auth, ["stockup_receipt_confirm", "stockup_execution_manage"], "当前账号没有到仓确认权限。");
         const result = service.confirmReceipt(await readBody(req), context);
         appendActionLog(auth, "确认备货到仓", "stockup_collaboration_receipt", result.receipt.receiptNo, { hasDifference: result.hasDifference });
+        await attachProgressNotifications(result, result.receipt?.requestId, {
+          node: result.hasDifference ? "exception" : "overseas_received",
+          detail: result.hasDifference ? "海外仓已收货，但存在收货差异。" : "海外仓已确认收货。",
+          reference: `receipt:${result.receipt?.id || ""}:${result.receipt?.version || ""}`,
+        }, context, auth, req);
         sendJson(res, 201, result);
         return true;
       }
@@ -570,6 +653,13 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         if (action === "adjust") payload.versionType = "adjustment";
         const result = service.saveCostVersion(decodeURIComponent(match[1]), payload, context, action === "lock");
         appendActionLog(auth, action === "lock" ? "锁定备货到仓成本" : "提交备货成本复核", "stockup_collaboration_cost_version", match[1], { version: result.version });
+        if (action === "lock") {
+          await attachProgressNotifications(result, result.preview?.receipt?.requestId, {
+            node: "cost_locked",
+            detail: `到仓成本已锁定（版本 ${result.version}）。`,
+            reference: `cost:${match[1]}:${result.version}`,
+          }, context, auth, req);
+        }
         sendJson(res, 200, result);
         return true;
       }

@@ -6784,7 +6784,21 @@ const defaultWecomScene: WecomSceneConfig = {
   extraText: "",
   triggerMode: "change",
   scheduleTime: "09:00",
+  progressNodes: [],
 };
+
+const stockupProgressNodeOptions = [
+  ["accepted", "需求已受理"],
+  ["route_confirmed", "履约方案已确认"],
+  ["execution_progress", "采购/生产进度变化"],
+  ["warehouse_received", "国内仓验收入库"],
+  ["shipment_created", "发运计划已创建"],
+  ["shipment_handover", "已交接货代"],
+  ["shipment_dispatched", "货物已发运"],
+  ["overseas_received", "海外仓已收货"],
+  ["cost_locked", "成本已锁定"],
+  ["exception", "异常/退回"],
+] as const;
 
 const wecomNotificationTemplates = [
   {
@@ -6896,11 +6910,14 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   const schedules = data?.schedules || [];
   const [projectTeams, setProjectTeams] = React.useState<WecomProjectTeam[]>([]);
   const scenes = data?.scenes || {
+    stockupRequestSubmitted: defaultWecomScene,
+    stockupRequestProgress: defaultWecomScene,
     stockupRecommendation: defaultWecomScene,
     inventorySnapshot: defaultWecomScene,
     qualificationExpiry: defaultWecomScene,
     afterSalesNew: { ...defaultWecomScene, warehouseRobotIds: {} },
     afterSalesProgress: defaultWecomScene,
+    ozonFulfillmentFailure: defaultWecomScene,
   };
   const [robotForm, setRobotForm] = React.useState({ id: "", name: "", webhookUrl: "", enabled: true });
   const [scheduleForm, setScheduleForm] = React.useState({
@@ -6931,6 +6948,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
     if (key !== "afterSalesNew") return !(scene.robotIds || []).length;
     return !afterSalesNewHasRecipients;
   });
+  const hasEnabledStockupProgressWithoutNodes = Boolean(sceneForm.stockupRequestProgress?.enabled
+    && !(sceneForm.stockupRequestProgress.progressNodes || []).length);
 
   function templateRobotIds(currentIds: string[]) {
     return currentIds;
@@ -7089,6 +7108,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
   async function saveScenes() {
     if (hasEnabledSceneWithoutRecipients) {
       setMessage("存在已启用但未选择接收群的场景，已拒绝保存。请先选择明确的企业微信机器人。");
+      return;
+    }
+    if (hasEnabledStockupProgressWithoutNodes) {
+      setMessage("备货需求进度通知已启用，但没有选择关键节点。默认不推送，请至少勾选一个节点后再保存。");
       return;
     }
     setBusy("scenes");
@@ -7476,7 +7499,7 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             <p className="eyebrow">Scene Push</p>
             <h2>场景化推送</h2>
           </div>
-          <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes" || hasEnabledSceneWithoutRecipients}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
+          <button className="sync-button" type="button" onClick={saveScenes} disabled={busy === "scenes" || hasEnabledSceneWithoutRecipients || hasEnabledStockupProgressWithoutNodes}>{busy === "scenes" ? "保存中" : "保存场景配置"}</button>
         </div>
         {collaborationNotificationNeedsEnable ? <div className="notice warning wecom-scene-warning"><span><strong>海外仓协同接收群已经配置，但通知开关仍处于停用状态。</strong>停用时，运营提交、仓库接单、上传面单和工单回复都不会发送企业微信消息。</span><button type="button" className="ghost-button compact-button" onClick={enableCollaborationNotifications}>启用海外仓协同通知</button></div> : null}
         <div className="wecom-scene-grid">
@@ -7518,6 +7541,8 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
             <small>最近发送：{sceneForm.afterSalesNew?.lastSentAt ? formatDateTime(sceneForm.afterSalesNew.lastSentAt) : "暂无"}</small>
           </article>
           {([
+            ["stockupRequestSubmitted", "新备货需求提交", "只发送给专门负责接单和履约的群；未启用或未选择接收群时绝不推送，也不会回退到运营群。"],
+            ["stockupRequestProgress", "备货需求进度更新", "只发送给运营群；仅勾选的关键节点会推送，默认停用且默认不选择任何节点。"],
             ["stockupRecommendation", "备货预警长图", "可按新增预警触发，也可设定北京时间每天定时推送最新备货清单。"],
             ["inventorySnapshot", "库存快照产生时", "每日或手动生成库存快照后，推送库存沉淀结果。"],
             ["qualificationExpiry", "资质过期或即将到期", "资质同步后，推送已过期和 30 天内到期的资质摘要。"],
@@ -7553,6 +7578,32 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                         <small>每天 {scene.scheduleTime || "09:00"} 重新读取最新备货预警后推送。</small>
                       </label>
                     ) : null}
+                  </div>
+                ) : null}
+                {key === "stockupRequestProgress" ? (
+                  <div>
+                    <span className="field-label">关键推送节点</span>
+                    <div className="wecom-robot-picker">
+                      {stockupProgressNodeOptions.map(([nodeKey, nodeLabel]) => {
+                        const selected = new Set(scene.progressNodes || []);
+                        return (
+                          <label className="wecom-check" key={nodeKey}>
+                            <input
+                              type="checkbox"
+                              checked={selected.has(nodeKey)}
+                              onChange={(event) => updateScene(key, {
+                                progressNodes: event.target.checked
+                                  ? [...selected, nodeKey]
+                                  : (scene.progressNodes || []).filter((item) => item !== nodeKey),
+                              })}
+                            />
+                            <span>{nodeLabel}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {!scene.progressNodes?.length ? <small>当前未选择节点，因此不会向运营群推送任何备货进度。</small> : null}
+                    {scene.enabled && !scene.progressNodes?.length ? <small className="wecom-recipient-error">已启用但没有选择关键节点，系统将拒绝保存。</small> : null}
                   </div>
                 ) : null}
                 <label>
