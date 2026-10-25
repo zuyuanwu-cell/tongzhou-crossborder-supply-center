@@ -267,6 +267,41 @@
 .hermes-model-modal > footer button.primary { border: 1px solid #125c91; color: #fff; background: #12639a; }
 .hermes-model-modal button:disabled { opacity: .5; cursor: not-allowed; }
 .hermes-model-running-note { display: block; margin-top: 9px; text-align: right; font-size: 8px; color: #a3662a; }
+.hermes-partner-modal { width: min(760px, 100%); max-height: min(860px, calc(100vh - 40px)); overflow: auto; }
+.hermes-partner-switches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 17px; }
+.hermes-partner-switches label { display: flex; align-items: flex-start; gap: 8px; padding: 11px; border: 1px solid #dbe8f1; border-radius: 12px; background: #f7fafc; cursor: pointer; }
+.hermes-partner-switches input { width: 16px; min-height: 16px; margin: 2px 0 0; accent-color: #12639a; }
+.hermes-partner-switches span { display: flex; min-width: 0; flex-direction: column; }
+.hermes-partner-switches strong { font-size: 10px; color: #214965; }
+.hermes-partner-switches small { margin-top: 3px; font-size: 8px; line-height: 1.4; color: #7e91a2; }
+.hermes-partner-organizations { margin-top: 13px; overflow: hidden; border: 1px solid #dbe8f1; border-radius: 13px; }
+.hermes-partner-organizations > header { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; background: #eff6fa; }
+.hermes-partner-organizations > header > div { display: flex; flex-direction: column; }
+.hermes-partner-organizations > header strong { font-size: 10px; color: #244c69; }
+.hermes-partner-organizations > header small { margin-top: 2px; font-size: 8px; color: #7f91a0; }
+.hermes-partner-organizations > header > span { padding: 4px 7px; border-radius: 8px; font-size: 8px; font-weight: 750; color: #256749; background: #def2e8; }
+.hermes-partner-org-head,
+.hermes-partner-org-list > label { display: grid; grid-template-columns: minmax(0, 1fr) 88px 88px; align-items: center; gap: 8px; }
+.hermes-partner-org-head { padding: 7px 12px; border-top: 1px solid #e2ebf1; border-bottom: 1px solid #e2ebf1; font-size: 8px; font-weight: 750; color: #788b9b; }
+.hermes-partner-org-head span:not(:first-child) { text-align: center; }
+.hermes-partner-org-list { max-height: 230px; overflow: auto; }
+.hermes-partner-org-list > label { min-height: 48px; padding: 7px 12px; border-bottom: 1px solid #edf2f5; cursor: pointer; }
+.hermes-partner-org-list > label:last-child { border-bottom: 0; }
+.hermes-partner-org-list > label:hover { background: #f8fbfd; }
+.hermes-partner-org-list > label > span { display: flex; min-width: 0; flex-direction: column; }
+.hermes-partner-org-list strong { overflow: hidden; font-size: 10px; color: #2a4d67; text-overflow: ellipsis; white-space: nowrap; }
+.hermes-partner-org-list small { margin-top: 2px; overflow: hidden; font-size: 8px; color: #8394a2; text-overflow: ellipsis; white-space: nowrap; }
+.hermes-partner-org-list input { width: 16px; min-height: 16px; justify-self: center; accent-color: #12639a; }
+.hermes-partner-limits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 13px; }
+.hermes-partner-limits label,
+.hermes-partner-secrets label { display: grid; gap: 5px; }
+.hermes-partner-limits label > span,
+.hermes-partner-secrets label > span { font-size: 9px; font-weight: 750; color: #3d5870; }
+.hermes-partner-limits input,
+.hermes-partner-limits select,
+.hermes-partner-secrets input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid #ccdbe6; border-radius: 9px; outline: 0; color: #28455d; background: #fff; }
+.hermes-partner-secrets { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 13px; }
+.hermes-partner-empty { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 76px; padding: 12px; font-size: 9px; color: #7e91a1; }
 
 @keyframes hermes-blink { 50% { opacity: 0; } }
 
@@ -310,6 +345,11 @@
   .hermes-model-required button { grid-column: 1 / -1; }
   .hermes-model-modal-backdrop { padding: 10px; }
   .hermes-model-modal { padding: 16px; border-radius: 16px; }
+  .hermes-partner-switches,
+  .hermes-partner-limits,
+  .hermes-partner-secrets { grid-template-columns: 1fr; }
+  .hermes-partner-org-head,
+  .hermes-partner-org-list > label { grid-template-columns: minmax(0, 1fr) 64px 64px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

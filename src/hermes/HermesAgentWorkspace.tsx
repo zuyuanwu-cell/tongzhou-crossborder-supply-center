@@ -35,12 +35,15 @@ import {
   fetchHermesConversations,
   fetchHermesMessages,
   fetchHermesModelConfig,
+  fetchHermesPartnerConfig,
   fetchHermesStatus,
   saveHermesModelConfig,
+  saveHermesPartnerConfig,
   startHermesRun,
   stopHermesRun,
   streamHermesRunEvents,
   testHermesModelConfig,
+  testHermesPartnerAsr,
   type HermesActionPreview,
   type HermesCase,
   type HermesContext,
@@ -49,6 +52,8 @@ import {
   type HermesEvent,
   type HermesMessage,
   type HermesModelConfig,
+  type HermesPartnerConfig,
+  type HermesPartnerOrganization,
   type HermesRun,
   type HermesStatus,
 } from "./hermes-api";
@@ -111,6 +116,15 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   const [modelBusy, setModelBusy] = React.useState<"test" | "save" | "">("");
   const [modelMessage, setModelMessage] = React.useState("");
   const [modelError, setModelError] = React.useState("");
+  const [partnerConfig, setPartnerConfig] = React.useState<HermesPartnerConfig | null>(null);
+  const [partnerOrganizations, setPartnerOrganizations] = React.useState<HermesPartnerOrganization[]>([]);
+  const [showPartnerConfig, setShowPartnerConfig] = React.useState(false);
+  const [partnerDraft, setPartnerDraft] = React.useState<HermesPartnerConfig | null>(null);
+  const [partnerSecretId, setPartnerSecretId] = React.useState("");
+  const [partnerSecretKey, setPartnerSecretKey] = React.useState("");
+  const [partnerBusy, setPartnerBusy] = React.useState<"load" | "test" | "save" | "">("");
+  const [partnerMessage, setPartnerMessage] = React.useState("");
+  const [partnerError, setPartnerError] = React.useState("");
   const [mobilePanel, setMobilePanel] = React.useState<"cases" | "chat" | "evidence">("chat");
   const streamAbortRef = React.useRef<AbortController | null>(null);
   const endRef = React.useRef<HTMLDivElement | null>(null);
@@ -146,6 +160,14 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     const result = await fetchHermesModelConfig(signal);
     setModelConfig(result.config);
     setModelDraft(result.config.model);
+  }, [canConfigureModel]);
+
+  const loadPartnerConfig = React.useCallback(async (signal?: AbortSignal) => {
+    if (!canConfigureModel) return;
+    const result = await fetchHermesPartnerConfig(signal);
+    setPartnerConfig(result.config);
+    setPartnerDraft(result.config);
+    setPartnerOrganizations(result.organizations || []);
   }, [canConfigureModel]);
 
   const loadWorkspace = React.useCallback(async (signal?: AbortSignal) => {
@@ -187,6 +209,15 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     });
     return () => controller.abort();
   }, [canConfigureModel, loadModelConfig]);
+
+  React.useEffect(() => {
+    if (!canConfigureModel) return;
+    const controller = new AbortController();
+    void loadPartnerConfig(controller.signal).catch((caught) => {
+      if (!controller.signal.aborted) setPartnerError(caught instanceof Error ? caught.message : "读取伙伴助手配置失败");
+    });
+    return () => controller.abort();
+  }, [canConfigureModel, loadPartnerConfig]);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -395,6 +426,96 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     }
   }
 
+  async function openPartnerSettings() {
+    setPartnerSecretId("");
+    setPartnerSecretKey("");
+    setPartnerMessage("");
+    setPartnerError("");
+    setShowPartnerConfig(true);
+    if (partnerConfig) {
+      setPartnerDraft(partnerConfig);
+      return;
+    }
+    setPartnerBusy("load");
+    try {
+      await loadPartnerConfig();
+    } catch (caught) {
+      setPartnerError(caught instanceof Error ? caught.message : "读取伙伴助手配置失败");
+    } finally {
+      setPartnerBusy("");
+    }
+  }
+
+  function togglePartnerOrganization(organizationId: string, target: "task" | "quick") {
+    setPartnerDraft((current) => {
+      if (!current) return current;
+      const taskIds = new Set(current.organizationIds);
+      const quickIds = new Set(current.quickReportOrganizationIds);
+      if (target === "task") {
+        if (taskIds.has(organizationId)) {
+          taskIds.delete(organizationId);
+          quickIds.delete(organizationId);
+        } else taskIds.add(organizationId);
+      } else if (quickIds.has(organizationId)) quickIds.delete(organizationId);
+      else {
+        quickIds.add(organizationId);
+        taskIds.add(organizationId);
+      }
+      return { ...current, organizationIds: [...taskIds], quickReportOrganizationIds: [...quickIds] };
+    });
+  }
+
+  async function testPartnerVoice() {
+    if (!partnerDraft || partnerBusy) return;
+    setPartnerBusy("test");
+    setPartnerMessage("");
+    setPartnerError("");
+    try {
+      const result = await testHermesPartnerAsr({ asr: {
+        engine: partnerDraft.asr.engine,
+        ...(partnerSecretId.trim() ? { secretId: partnerSecretId.trim() } : {}),
+        ...(partnerSecretKey.trim() ? { secretKey: partnerSecretKey.trim() } : {}),
+      } });
+      setPartnerMessage(result.message);
+    } catch (caught) {
+      setPartnerError(caught instanceof Error ? caught.message : "腾讯云语音连接测试失败");
+    } finally {
+      setPartnerBusy("");
+    }
+  }
+
+  async function savePartnerSettings() {
+    if (!partnerDraft || partnerBusy) return;
+    setPartnerBusy("save");
+    setPartnerMessage("");
+    setPartnerError("");
+    try {
+      const result = await saveHermesPartnerConfig({
+        enabled: partnerDraft.enabled,
+        textEnabled: partnerDraft.textEnabled,
+        voiceEnabled: partnerDraft.voiceEnabled,
+        organizationIds: partnerDraft.organizationIds,
+        quickReportOrganizationIds: partnerDraft.quickReportOrganizationIds,
+        userDailyLimit: Number(partnerDraft.userDailyLimit),
+        organizationDailyLimit: Number(partnerDraft.organizationDailyLimit),
+        asr: {
+          engine: partnerDraft.asr.engine,
+          ...(partnerSecretId.trim() ? { secretId: partnerSecretId.trim() } : {}),
+          ...(partnerSecretKey.trim() ? { secretKey: partnerSecretKey.trim() } : {}),
+        },
+      });
+      setPartnerConfig(result.config);
+      setPartnerDraft(result.config);
+      setPartnerSecretId("");
+      setPartnerSecretKey("");
+      setPartnerMessage("伙伴助手配置已保存；工作台快捷汇报只会向勾选的试点组织开放。");
+    } catch (caught) {
+      setPartnerError(caught instanceof Error ? caught.message : "保存伙伴助手配置失败");
+    } finally {
+      setPartnerBusy("");
+    }
+  }
+
   function investigateCase(item: HermesCase) {
     setSelectedCase(item);
     setContext({ route: item.href || "#hermes-agent", selectedRefs: [{ type: "exception_case", id: item.id }] });
@@ -413,6 +534,7 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
             <span><b>{status?.enabled === false ? "运行时未启用" : status?.modelConfigured === false ? "DeepSeek 未配置" : status?.ready ? "Hermes 就绪" : status?.status === "unavailable" ? "运行时不可用" : "状态检查中"}</b><small>{status?.model || "模型未配置"}</small></span>
           </div>
           {canConfigureModel ? <button className="hermes-model-settings-button" type="button" onClick={openModelSettings}><Settings2 size={15} />模型配置</button> : null}
+          {canConfigureModel ? <button className="hermes-model-settings-button" type="button" onClick={() => void openPartnerSettings()}><MessageSquareText size={15} />伙伴助手</button> : null}
         </div>
       </header>
 
@@ -491,6 +613,38 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
           {modelError ? <div className="hermes-model-result error"><AlertTriangle size={15} />{modelError}</div> : null}
           <footer><button type="button" className="secondary" onClick={() => void testModelConnection()} disabled={Boolean(modelBusy) || (!modelApiKey.trim() && !modelConfig?.configured)}>{modelBusy === "test" ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}测试连接</button><button type="button" className="primary" onClick={() => void saveModelSettings()} disabled={Boolean(modelBusy) || running || Boolean(status?.activeRuns) || (!modelApiKey.trim() && !modelConfig?.configured)}>{modelBusy === "save" ? <LoaderCircle size={14} className="spinning" /> : <ShieldCheck size={14} />}保存并启用</button></footer>
           {running || Boolean(status?.activeRuns) ? <small className="hermes-model-running-note">当前有智能体任务运行中，结束后才能切换模型配置。</small> : null}
+        </section>
+      </div> : null}
+      {showPartnerConfig ? <div className="hermes-model-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !partnerBusy) setShowPartnerConfig(false); }}>
+        <section className="hermes-model-modal hermes-partner-modal" role="dialog" aria-modal="true" aria-labelledby="hermes-partner-title">
+          <header><div><span>PARTNER ASSISTANT</span><h3 id="hermes-partner-title">伙伴 Hermes 配置</h3><p>任务内助手与工作台快捷汇报分别授权；未勾选试点组织时，快捷入口保持隐藏。</p></div><button type="button" aria-label="关闭" onClick={() => setShowPartnerConfig(false)} disabled={Boolean(partnerBusy)}><X size={17} /></button></header>
+          {partnerDraft ? <>
+            <div className="hermes-partner-switches">
+              <label><input type="checkbox" checked={partnerDraft.enabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, enabled: event.target.checked })} /><span><strong>启用伙伴 Hermes</strong><small>总开关；关闭不影响原手工表单</small></span></label>
+              <label><input type="checkbox" checked={partnerDraft.textEnabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, textEnabled: event.target.checked })} /><span><strong>文字助手</strong><small>允许文字识别与逐项追问</small></span></label>
+              <label><input type="checkbox" checked={partnerDraft.voiceEnabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, voiceEnabled: event.target.checked })} /><span><strong>语音助手</strong><small>需腾讯云 ASR 配置有效</small></span></label>
+            </div>
+            <section className="hermes-partner-organizations">
+              <header><div><strong>组织授权</strong><small>快捷汇报是任务内助手白名单的子集</small></div><span>{partnerDraft.quickReportOrganizationIds.length} 家试点</span></header>
+              <div className="hermes-partner-org-head"><span>协同组织</span><span>任务内助手</span><span>快捷汇报</span></div>
+              <div className="hermes-partner-org-list">
+                {partnerOrganizations.map((organization) => <label key={organization.id}><span><strong>{organization.name}</strong><small>{organization.code} · {organization.organizationType}</small></span><input type="checkbox" checked={partnerDraft.organizationIds.includes(organization.id)} onChange={() => togglePartnerOrganization(organization.id, "task")} /><input type="checkbox" checked={partnerDraft.quickReportOrganizationIds.includes(organization.id)} onChange={() => togglePartnerOrganization(organization.id, "quick")} /></label>)}
+                {!partnerOrganizations.length ? <div className="hermes-partner-empty">没有可授权的活动组织。</div> : null}
+              </div>
+            </section>
+            <div className="hermes-partner-limits">
+              <label><span>个人每日上限</span><input type="number" min="1" max="500" value={partnerDraft.userDailyLimit} onChange={(event) => setPartnerDraft({ ...partnerDraft, userDailyLimit: Number(event.target.value) })} /></label>
+              <label><span>组织每日上限</span><input type="number" min="1" max="10000" value={partnerDraft.organizationDailyLimit} onChange={(event) => setPartnerDraft({ ...partnerDraft, organizationDailyLimit: Number(event.target.value) })} /></label>
+              <label><span>语音模型</span><select value={partnerDraft.asr.engine} onChange={(event) => setPartnerDraft({ ...partnerDraft, asr: { ...partnerDraft.asr, engine: event.target.value as HermesPartnerConfig["asr"]["engine"] } })}><option value="16k_zh">普通话 16k</option><option value="16k_zh-PY">中英粤 16k</option><option value="16k_zh_dialect">方言 16k</option></select></label>
+            </div>
+            <div className="hermes-partner-secrets">
+              <label><span>腾讯云 SecretId</span><input type="password" autoComplete="new-password" value={partnerSecretId} onChange={(event) => setPartnerSecretId(event.target.value)} placeholder={partnerDraft.asr.configured ? `留空继续使用 ${partnerDraft.asr.secretIdMasked}` : "AKID..."} /></label>
+              <label><span>腾讯云 SecretKey</span><input type="password" autoComplete="new-password" value={partnerSecretKey} onChange={(event) => setPartnerSecretKey(event.target.value)} placeholder={partnerDraft.asr.configured ? "留空保持现有密钥" : "请输入 SecretKey"} /></label>
+            </div>
+          </> : <div className="hermes-partner-empty"><LoaderCircle size={16} className={partnerBusy ? "spinning" : ""} />正在读取伙伴助手配置…</div>}
+          {partnerMessage ? <div className="hermes-model-result success"><CheckCircle2 size={15} />{partnerMessage}</div> : null}
+          {partnerError ? <div className="hermes-model-result error"><AlertTriangle size={15} />{partnerError}</div> : null}
+          <footer><button type="button" className="secondary" onClick={() => void testPartnerVoice()} disabled={!partnerDraft || Boolean(partnerBusy) || (!partnerSecretId.trim() && !partnerDraft.asr.configured)}>{partnerBusy === "test" ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}测试语音</button><button type="button" className="primary" onClick={() => void savePartnerSettings()} disabled={!partnerDraft || Boolean(partnerBusy)}>{partnerBusy === "save" ? <LoaderCircle size={14} className="spinning" /> : <ShieldCheck size={14} />}保存配置</button></footer>
         </section>
       </div> : null}
     </section>

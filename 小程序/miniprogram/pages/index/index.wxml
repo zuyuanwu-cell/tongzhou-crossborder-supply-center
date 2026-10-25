@@ -33,6 +33,11 @@
   </view>
 
   <block wx:if="{{isDeliveryMode && deliveryOverview}}">
+    <view wx:if="{{isProduction && partnerAi && partnerAi.quickReportEnabled}}" class="hermes-entry" bindtap="openHermesProgress">
+      <view class="hermes-entry__mark">H</view>
+      <view class="hermes-entry__copy"><view class="eyebrow">HERMES QUICK REPORT</view><strong>说一句，快速汇报生产进度</strong><text>自动匹配加工单、补齐必填项，确认后再提交</text></view>
+      <view class="hermes-entry__action">开始汇报 ›</view>
+    </view>
     <view class="section-head production-section-head"><view><view class="eyebrow">WORKSPACE MODULES</view><view class="section-head__title">业务入口</view></view></view>
     <view class="quick-grid">
       <view wx:for="{{quickActions}}" wx:key="label" class="quick-action {{item.highlight ? 'quick-action--scan' : ''}}" data-index="{{index}}" bindtap="openShortcut"><view class="quick-icon">{{item.icon}}</view><text>{{item.label}}</text></view>

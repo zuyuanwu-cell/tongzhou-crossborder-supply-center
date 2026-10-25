@@ -249,6 +249,7 @@ export async function submitPartnerOrderReport(auth, workItemId, body, { idempot
       if (!["production_progress", "purchase_fulfillment"].includes(input.reportType)) fail("AI 快捷汇报草稿不能用于该反馈类型。", 409, "ai_draft_action_mismatch");
       await linkPartnerAiDraftToCommand(client, {
         auth, workItemId, workItemVersion: version, draftId: aiDraftId, commandId: command.id, expectedDraftType: input.reportType,
+        submittedPayload: input,
       });
     }
     const reportResult = await client.query(

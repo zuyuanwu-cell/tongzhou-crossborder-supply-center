@@ -420,7 +420,7 @@ export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
     progressPercent: z.number().int().min(0).max(100),
     completedQuantity: quantity.optional().default(0),
     expectedCompletionDate: dateOnly.optional().default(""),
-    note: limitedText(2_000).min(1),
+    note: limitedText(2_000).optional().default(""),
   }).strict(),
   z.object({
     reportType: z.literal("material_readiness"),
@@ -458,7 +458,15 @@ export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
     trackingNo: limitedText(200).optional().default(""),
     note: limitedText(2_000).optional().default(""),
   }).strict(),
-]);
+]).superRefine((value, context) => {
+  if (value.reportType === "production_progress" && value.progressPercent < 100 && !value.expectedCompletionDate) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expectedCompletionDate"],
+      message: "进度未完成时必须填写预计完成日期。",
+    });
+  }
+});
 
 export const supplierQuoteSchema = z.object({
   workItemId: z.string().uuid(),

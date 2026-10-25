@@ -315,6 +315,7 @@ function fetchDashboard() {
       productionOrders: open.filter((item) => item.itemType === "production_order").length,
       purchaseOrders: open.filter((item) => item.itemType === "purchase_order").length,
       exceptionReports: Object.values(demoPartnerOrderDetails).flatMap((detail) => detail.reports || []).filter((report) => report.reportType === "exception").length,
+      partnerAi: { enabled: true, textEnabled: true, voiceEnabled: true, quickReportEnabled: true, quickReportVoiceEnabled: true },
     } });
   }
   return request("/collaboration/v1/dashboard").then((result) => (
@@ -371,7 +372,7 @@ function fetchWorkItem(id) {
   }));
 }
 
-function submitPartnerOrderReport(workItemId, version, input, aiDraftId) {
+function submitPartnerOrderReport(workItemId, version, input, aiDraftId, idempotencyKey) {
   if (config.demoMode) {
     const detail = demoPartnerOrderDetails[workItemId] || (demoPartnerOrderDetails[workItemId] = { lines: [], reports: [] });
     const report = Object.assign({ id: randomId(), createdAt: new Date().toISOString(), details: {} }, input);
@@ -385,7 +386,7 @@ function submitPartnerOrderReport(workItemId, version, input, aiDraftId) {
   }
   return request(`/collaboration/v1/partner-orders/${workItemId}/reports`, {
     method: "POST",
-    header: Object.assign({ "Idempotency-Key": randomId(), "If-Match": String(version) }, aiDraftId ? { "X-AI-Draft-Id": aiDraftId } : {}),
+    header: Object.assign({ "Idempotency-Key": idempotencyKey || randomId(), "If-Match": String(version) }, aiDraftId ? { "X-AI-Draft-Id": aiDraftId } : {}),
     data: input,
   });
 }
@@ -607,6 +608,94 @@ function markPartnerProgressDraftApplied(workItemId, draftId, workItemVersion) {
   return request(`/collaboration/v1/work-items/${workItemId}/ai-progress-drafts/${draftId}/applied`, { method: "POST", data: { workItemVersion: Number(workItemVersion) } });
 }
 
+let demoPartnerAiSession = null;
+
+function createPartnerAiSession() {
+  if (config.demoMode) {
+    demoPartnerAiSession = {
+      id: randomId(), scenario: "production_progress", state: "identifying_order", confirmedWorkItemId: "",
+      confirmedWorkItemVersion: null, fields: {}, missingFields: [], warnings: [], latestDraftId: "",
+      voiceEnabled: true,
+      nextQuestion: "请说产品名称、SKU、条码或加工单号。", candidates: [], expiresAt: new Date(Date.now() + 18e5).toISOString(),
+    };
+    return Promise.resolve({ ok: true, resumed: false, session: demoPartnerAiSession });
+  }
+  return request("/collaboration/v1/partner-ai/sessions", { method: "POST", data: { scenario: "production_progress" } });
+}
+
+function fetchPartnerAiSession(sessionId) {
+  if (config.demoMode) return Promise.resolve({ ok: true, session: demoPartnerAiSession });
+  return request(`/collaboration/v1/partner-ai/sessions/${sessionId}`);
+}
+
+function messagePartnerAiSession(sessionId, text, transcriptionId) {
+  if (config.demoMode) {
+    if (demoPartnerAiSession?.confirmedWorkItemId) {
+      const percentMatch = String(text).match(/(?:完成|进度)[^0-9]{0,4}(\d{1,3})\s*(?:%|百分之)?/);
+      const fields = { ...(demoPartnerAiSession.fields || {}), note: [demoPartnerAiSession.fields?.note, text].filter(Boolean).join("；") };
+      if (percentMatch && Number(percentMatch[1]) <= 100) fields.progressPercent = Number(percentMatch[1]);
+      const missingFields = [];
+      if (!fields.stage) missingFields.push("stage");
+      if (!Number.isInteger(Number(fields.progressPercent))) missingFields.push("progressPercent");
+      if (Number(fields.progressPercent) < 100 && !fields.expectedCompletionDate) missingFields.push("expectedCompletionDate");
+      demoPartnerAiSession = Object.assign({}, demoPartnerAiSession, {
+        state: missingFields.length ? "collecting_progress" : "review",
+        fields,
+        missingFields,
+        nextQuestion: missingFields[0] === "stage" ? "目前进行到哪个生产阶段？" : missingFields[0] === "progressPercent" ? "目前完成进度是多少百分比？" : missingFields[0] === "expectedCompletionDate" ? "预计哪一天可以完成？" : "请核对汇报内容，确认无误后提交。",
+      });
+      return Promise.resolve({ ok: true, session: demoPartnerAiSession });
+    }
+    const candidates = demoTasks.filter((item) => item.itemType === "production_order" && ["accepted", "in_progress"].includes(item.status)).slice(0, 5).map((item) => ({
+      id: item.id, version: item.version, title: item.title, productName: item.publicPayload.productName || item.title,
+      sku: item.publicPayload.sku || "TZKJ-DEMO-001", orderNo: item.publicPayload.orderNo || item.publicPayload.referenceNo || "MO-DEMO-001",
+      imageUrl: item.publicPayload.productImageUrl || "", quantity: item.publicPayload.quantity || 1000, unit: item.publicPayload.unit || "件",
+      dueAt: item.dueAt, currentStage: "packaging", currentProgressPercent: 55,
+    }));
+    demoPartnerAiSession = Object.assign({}, demoPartnerAiSession, { state: "confirming_order", candidates, nextQuestion: "请确认你要汇报的是哪一张加工单。", sourceText: text });
+    return Promise.resolve({ ok: true, session: demoPartnerAiSession });
+  }
+  return request(`/collaboration/v1/partner-ai/sessions/${sessionId}/messages`, { method: "POST", timeout: 35_000, data: { text, ...(transcriptionId ? { transcriptionId } : {}) } });
+}
+
+function confirmPartnerAiSessionOrder(sessionId, workItemId) {
+  if (config.demoMode) {
+    const candidate = (demoPartnerAiSession.candidates || []).find((item) => item.id === workItemId);
+    demoPartnerAiSession = Object.assign({}, demoPartnerAiSession, {
+      state: "review", confirmedWorkItemId: workItemId, confirmedWorkItemVersion: candidate?.version || 1,
+      confirmedOrder: candidate, fields: { stage: "packaging", progressPercent: 60, completedQuantity: 600, expectedCompletionDate: "2026-10-30", note: demoPartnerAiSession.sourceText || "演示进度" },
+      missingFields: [], latestDraftId: randomId(), nextQuestion: "请核对汇报内容，确认无误后提交。",
+    });
+    return Promise.resolve({ ok: true, session: demoPartnerAiSession });
+  }
+  return request(`/collaboration/v1/partner-ai/sessions/${sessionId}/order-confirmation`, { method: "POST", timeout: 35_000, data: { workItemId } });
+}
+
+async function transcribePartnerAiSessionAudio(sessionId, recording) {
+  if (config.demoMode) return { transcriptionId: randomId(), transcript: "男士洁面泡沫已经包装完成百分之六十，预计十月三十日完成。", durationMs: recording.durationMs };
+  const ticket = await request(`/collaboration/v1/partner-ai/sessions/${sessionId}/audio-tickets`, { method: "POST", header: { "Idempotency-Key": recording.idempotencyKey || randomId() }, data: {
+    fileName: recording.fileName,
+    mimeType: recording.mimeType,
+    sizeBytes: Number(recording.sizeBytes),
+    durationMs: Number(recording.durationMs),
+  } });
+  if (ticket.status === "completed") return ticket;
+  if (!ticket.uploadUrl && ticket.status !== "uploaded") throw Object.assign(new Error("录音正在处理中，请稍后重试。"), { code: "transcription_in_progress" });
+  const localUpload = String(ticket.uploadUrl || "").startsWith("/collaboration/");
+  const uploadUrl = localUpload ? `${config.apiBaseUrl.replace(/\/$/, "")}${ticket.uploadUrl}` : ticket.uploadUrl;
+  if (ticket.status !== "uploaded") {
+    try {
+      await uploadBinary(uploadUrl, ticket.uploadMethod, ticket.requiredHeaders, recording.tempFilePath, localUpload);
+    } catch (uploadError) {
+      const current = await request(`/collaboration/v1/partner-ai/sessions/${sessionId}/transcriptions/${ticket.transcriptionId}`);
+      if (current.status === "created") await uploadBinary(uploadUrl, ticket.uploadMethod, ticket.requiredHeaders, recording.tempFilePath, localUpload);
+      else if (current.status === "completed") return current;
+      else if (current.status !== "uploaded") throw uploadError;
+    }
+  }
+  return request(`/collaboration/v1/partner-ai/sessions/${sessionId}/transcriptions/${ticket.transcriptionId}/complete`, { method: "POST", timeout: 25_000 });
+}
+
 module.exports = {
   config,
   clearAuth,
@@ -629,4 +718,9 @@ module.exports = {
   transcribePartnerAudio,
   createPartnerProgressDraft,
   markPartnerProgressDraftApplied,
+  createPartnerAiSession,
+  fetchPartnerAiSession,
+  messagePartnerAiSession,
+  confirmPartnerAiSessionOrder,
+  transcribePartnerAiSessionAudio,
 };

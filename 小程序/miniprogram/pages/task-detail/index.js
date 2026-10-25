@@ -192,10 +192,11 @@ Page({
     ],
     canAiReport: false, aiTextEnabled: false, aiVoiceEnabled: false, aiExpanded: true, aiText: "", aiTranscriptionId: "", aiDraft: null, aiDraftId: "", aiMissingMap: {}, aiMessage: "", aiError: "",
     aiBusy: false, aiVoiceBusy: false, aiRecording: false, aiProgressPercent: "",
+    desiredOrderTab: "",
   },
 
   onLoad(options) {
-    this.setData({ id: options.id || "" });
+    this.setData({ id: options.id || "", desiredOrderTab: options.orderTab || "" });
     this._recorder = wx.getRecorderManager();
     this._recorder.onStop((recording) => this.handleRecordingStopped(recording));
     this._recorder.onError((error) => {
@@ -274,7 +275,7 @@ Page({
           { label: "商品条码", value: payload.barcode || "—" },
         ],
         fulfillmentLabel: payload.fulfillmentMode === "turnkey" ? "全包模式 · 生产、物料与包材测试均需反馈" : item.itemType === "production_order" ? "来料加工 · 按节点反馈生产进度" : "采购履约 · 反馈备货、交付与发运结果",
-        orderTabs, orderTab: orderTabs[0]?.value || "",
+        orderTabs, orderTab: orderTabs.some((tab) => tab.value === this.data.desiredOrderTab) ? this.data.desiredOrderTab : (orderTabs[0]?.value || ""),
         isSampling, sampling,
         sampleVariants: isSampling && !sampling.approved ? [createSampleVariant(item, 0)] : [],
         canSubmitSample: isSampling && !sampling.approved && samplingReady && canAction(this.data.workspace, "artifact_submit"),

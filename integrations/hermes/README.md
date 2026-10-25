@@ -53,15 +53,16 @@ npm run test:hermes-contract
 
 ## 伙伴手机快捷汇报
 
-管理员在“同舟智能体工作台 → 伙伴汇报”配置试点组织、文字/语音开关、限额和腾讯云 ASR 凭据。伙伴端只发送当前任务白名单上下文，Hermes 使用现有 DeepSeek 配置生成草稿，不开放工具、长期记忆或跨任务会话。
+管理员在“同舟智能体工作台 → 伙伴助手”分别配置任务内助手白名单、工作台快捷汇报试点组织、文字/语音开关、限额和腾讯云 ASR 凭据。快捷汇报试点必须同时属于任务内助手白名单。伙伴端只发送当前组织可见且有进度维护权限的活动加工单上下文，Hermes 使用现有 DeepSeek 配置生成草稿，不开放工具、长期记忆或跨任务会话。
 
 - 文字和语音均只生成草稿；“填入表单”只修改小程序本地表单。
 - 腾讯云凭据加密保存在协同 PostgreSQL，不进入浏览器、Hermes 容器或日志。
 - 录音最长 50 秒、2.5MB，转写后立即删除；清理任务每 5 分钟重试未删除对象。
 - 转写文字 30 天后清空，草稿正文与字段依据 90 天后清空，模型、耗时、状态和关联提交等审计事实继续保留。
 - 正式提交仍使用原有权限、`If-Match`、幂等和审计链路，并可用 `X-AI-Draft-Id` 关联草稿效果。
+- 工作台入口通过确定性匹配返回最多 5 张候选卡；即使唯一高置信候选，也必须由用户确认订单，Hermes 不直接搜索数据库或写业务数据。
 
-运行前需完成 `collaboration/migrations/0014_partner_ai_progress.sql`，并配置 `HERMES_PARTNER_BRIDGE_SECRET`（或复用 `HERMES_BRIDGE_SECRET`）、`HERMES_PARTNER_API_KEY`、`HERMES_PARTNER_MODEL_PROXY_KEY` 与 `COLLABORATION_PARTNER_AI_BRIDGE_URL`。容器通过 `/p/tongzhou-partner-progress/` 使用独立档案、独立 API Key 和独立模型代理身份；该档案不加载同舟业务插件、工具、记忆、技能或跨任务会话。
+运行前需完成 `collaboration/migrations/0014_partner_ai_progress.sql` 与 `collaboration/migrations/0016_partner_ai_sessions.sql`，并配置 `HERMES_PARTNER_BRIDGE_SECRET`（或复用 `HERMES_BRIDGE_SECRET`）、`HERMES_PARTNER_API_KEY`、`HERMES_PARTNER_MODEL_PROXY_KEY` 与 `COLLABORATION_PARTNER_AI_BRIDGE_URL`。容器通过 `/p/tongzhou-partner-progress/` 使用独立档案、独立 API Key 和独立模型代理身份；该档案不加载同舟业务插件、工具、记忆、技能或跨任务会话。
 
 ## 分阶段授权
 

@@ -34,6 +34,7 @@ export function createHermesPartnerConfigApi({ bridge, getAuth, parseRequestBody
         appendActionLog(auth, "更新伙伴 Hermes 快捷汇报配置", "partner_ai_config", "global", {
           enabled: Boolean(result?.config?.enabled), textEnabled: Boolean(result?.config?.textEnabled), voiceEnabled: Boolean(result?.config?.voiceEnabled),
           organizationCount: Array.isArray(result?.config?.organizationIds) ? result.config.organizationIds.length : 0,
+          quickReportOrganizationCount: Array.isArray(result?.config?.quickReportOrganizationIds) ? result.config.quickReportOrganizationIds.length : 0,
         });
         sendJson(res, 200, result);
         return true;

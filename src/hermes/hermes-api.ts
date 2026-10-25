@@ -121,6 +121,30 @@ export type HermesModelConfig = {
   lastTest?: { ok: boolean; message: string; testedAt: string } | null;
 };
 
+export type HermesPartnerOrganization = {
+  id: string;
+  code: string;
+  name: string;
+  organizationType: string;
+};
+
+export type HermesPartnerConfig = {
+  enabled: boolean;
+  textEnabled: boolean;
+  voiceEnabled: boolean;
+  organizationIds: string[];
+  quickReportOrganizationIds: string[];
+  userDailyLimit: number;
+  organizationDailyLimit: number;
+  asr: {
+    configured: boolean;
+    secretIdMasked: string;
+    engine: "16k_zh" | "16k_zh-PY" | "16k_zh_dialect";
+  };
+  updatedBy?: string;
+  updatedAt?: string;
+};
+
 export type HermesEvent =
   | { type: "assistant.delta"; text: string }
   | { type: "tool.started"; toolCallId: string; tool: string; label: string }
@@ -174,6 +198,33 @@ export function testHermesModelConfig(input: { apiKey?: string; model: string })
 export function saveHermesModelConfig(input: { apiKey?: string; model: string }) {
   return request<{ ok: boolean; config: HermesModelConfig }>("/api/hermes/model-config", {
     method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchHermesPartnerConfig(signal?: AbortSignal) {
+  return request<{ ok: boolean; config: HermesPartnerConfig; organizations: HermesPartnerOrganization[] }>("/api/hermes/partner-progress-config", { signal });
+}
+
+export function saveHermesPartnerConfig(input: {
+  enabled: boolean;
+  textEnabled: boolean;
+  voiceEnabled: boolean;
+  organizationIds: string[];
+  quickReportOrganizationIds: string[];
+  userDailyLimit: number;
+  organizationDailyLimit: number;
+  asr: { engine: HermesPartnerConfig["asr"]["engine"]; secretId?: string; secretKey?: string };
+}) {
+  return request<{ ok: boolean; config: HermesPartnerConfig }>("/api/hermes/partner-progress-config", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function testHermesPartnerAsr(input: { asr: { engine: HermesPartnerConfig["asr"]["engine"]; secretId?: string; secretKey?: string } }) {
+  return request<{ ok: boolean; message: string; testedAt: string }>("/api/hermes/partner-progress-config/test", {
+    method: "POST",
     body: JSON.stringify(input),
   });
 }

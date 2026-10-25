@@ -10,7 +10,7 @@ import { actionPermission, assertWorkItemPermission } from "./access.js";
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { requestPartnerProgressDraft } from "./partner-ai-bridge.js";
-import { getPartnerAiSettings, partnerAiEnabledFor } from "./partner-ai-settings.js";
+import { getPartnerAiSettings, partnerAiEnabledFor, partnerAiQuickReportEnabledFor } from "./partner-ai-settings.js";
 import { recognizeShortAudio } from "./tencent-asr.js";
 
 const MAX_AUDIO_BYTES = 2_621_440;
@@ -27,6 +27,8 @@ const transcriptionSchema = z.object({
   durationMs: z.number().int().positive().max(MAX_AUDIO_DURATION_MS),
   workItemVersion: z.number().int().positive(),
 }).strict();
+
+const sessionTranscriptionSchema = transcriptionSchema.omit({ workItemVersion: true });
 
 const draftSchema = z.object({
   text: z.string().trim().min(1).max(2_000),
@@ -177,7 +179,7 @@ async function enforceQuota(client, auth, config, table, { checkTranscriptions =
   if (Number(counts.rows[0]?.organization_count || 0) >= config.organizationDailyLimit) fail("今日快捷汇报次数已达组织上限。", 429, "partner_ai_org_daily_limit");
 }
 
-async function transcriptionTicket(row, workItemId, { idempotentReplay = false } = {}) {
+async function transcriptionTicket(row, workItemId, { idempotentReplay = false, uploadUrl = "" } = {}) {
   const response = {
     transcriptionId: row.id,
     status: row.status,
@@ -194,7 +196,7 @@ async function transcriptionTicket(row, workItemId, { idempotentReplay = false }
       Bucket: collaborationConfig.s3.bucket, Key: row.object_key, ContentType: row.mime_type, ContentLength: Number(row.size_bytes),
     }), { expiresIn: 300 });
   } else {
-    response.uploadUrl = `/collaboration/v1/work-items/${workItemId}/ai-transcriptions/${row.id}/content`;
+    response.uploadUrl = uploadUrl || `/collaboration/v1/work-items/${workItemId}/ai-transcriptions/${row.id}/content`;
   }
   response.uploadMethod = "PUT";
   response.requiredHeaders = { "Content-Type": row.mime_type };
@@ -231,6 +233,165 @@ export async function createPartnerAiTranscription(auth, workItemId, input, opti
     )).rows[0];
     return transcriptionTicket(row, workItemId);
   });
+}
+
+async function settingsForQuickReport(auth, mode) {
+  const value = await getPartnerAiSettings();
+  if (!partnerAiQuickReportEnabledFor(value.config, auth.organization.id, mode)) fail("当前组织尚未开放 Hermes 快捷汇报。", 403, "partner_ai_not_enabled");
+  if (mode === "voice" && (!value.config.asr.secretId || !value.config.asr.secretKey)) fail("腾讯云语音识别尚未配置。", 503, "asr_not_configured");
+  return value.config;
+}
+
+async function sessionForAudio(client, auth, sessionId) {
+  const row = (await client.query(
+    "SELECT * FROM partner_ai_sessions WHERE id=$1 AND organization_id=$2 AND user_id=$3",
+    [sessionId, auth.organization.id, auth.user.id],
+  )).rows[0];
+  if (!row) fail("快捷汇报会话不存在。", 404, "session_not_found");
+  if (["submitted", "expired"].includes(row.state) || new Date(row.expires_at).getTime() <= Date.now()) fail("快捷汇报会话已结束或过期。", 409, "session_expired");
+  return row;
+}
+
+async function sessionTranscriptionForUser(client, auth, sessionId, transcriptionId) {
+  const row = (await client.query(
+    "SELECT * FROM partner_ai_transcriptions WHERE id=$1 AND organization_id=$2 AND user_id=$3 AND session_id=$4",
+    [transcriptionId, auth.organization.id, auth.user.id, sessionId],
+  )).rows[0];
+  if (!row) fail("语音任务不存在。", 404, "not_found");
+  return row;
+}
+
+export async function createPartnerAiSessionTranscription(auth, sessionId, input, options = {}) {
+  assertContributor(auth);
+  const parsed = sessionTranscriptionSchema.parse(input);
+  parsed.mimeType = normalizedMime(parsed.mimeType);
+  if (!ALLOWED_AUDIO_MIME.has(parsed.mimeType)) fail("不支持该录音格式。", 415, "unsupported_audio_format");
+  const idempotencyKey = requiredIdempotencyKey(options.idempotencyKey);
+  const hash = requestHash({ sessionId, ...parsed });
+  const config = await settingsForQuickReport(auth, "voice");
+  return withOrganization(auth.organization.id, async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`partner-ai:${auth.organization.id}:${auth.user.id}`]);
+    await sessionForAudio(client, auth, sessionId);
+    const replay = (await client.query(
+      "SELECT * FROM partner_ai_transcriptions WHERE organization_id=$1 AND user_id=$2 AND idempotency_key=$3",
+      [auth.organization.id, auth.user.id, idempotencyKey],
+    )).rows[0];
+    const uploadUrl = `/collaboration/v1/partner-ai/sessions/${sessionId}/transcriptions/${replay?.id || ""}/content`;
+    if (replay) {
+      if (replay.request_hash !== hash || replay.session_id !== sessionId) fail("Idempotency-Key 已用于不同请求。", 409, "idempotency_conflict");
+      return transcriptionTicket(replay, "", { idempotentReplay: true, uploadUrl });
+    }
+    await enforceQuota(client, auth, config, "partner_ai_transcriptions", { checkTranscriptions: true });
+    const id = randomUUID();
+    const fileName = safeName(parsed.fileName);
+    const objectKey = `${auth.organization.id}/partner-ai/sessions/${sessionId}/${id}-${fileName}`;
+    const row = (await client.query(
+      `INSERT INTO partner_ai_transcriptions(id,organization_id,session_id,user_id,object_key,file_name,mime_type,size_bytes,duration_ms,idempotency_key,request_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [id, auth.organization.id, sessionId, auth.user.id, objectKey, fileName, parsed.mimeType, parsed.sizeBytes, parsed.durationMs, idempotencyKey, hash],
+    )).rows[0];
+    return transcriptionTicket(row, "", { uploadUrl: `/collaboration/v1/partner-ai/sessions/${sessionId}/transcriptions/${id}/content` });
+  });
+}
+
+export async function getPartnerAiSessionTranscription(auth, sessionId, transcriptionId) {
+  assertContributor(auth);
+  await settingsForQuickReport(auth, "voice");
+  return withOrganization(auth.organization.id, async (client) => {
+    await sessionForAudio(client, auth, sessionId);
+    const row = await sessionTranscriptionForUser(client, auth, sessionId, transcriptionId);
+    return {
+      transcriptionId: row.id,
+      status: row.status,
+      transcript: row.status === "completed" ? row.transcript : "",
+      durationMs: Number(row.duration_ms),
+      expiresAt: new Date(row.expires_at).toISOString(),
+    };
+  });
+}
+
+export async function receivePartnerAiSessionAudio(auth, sessionId, transcriptionId, req) {
+  assertContributor(auth);
+  await settingsForQuickReport(auth, "voice");
+  if (collaborationConfig.storageDriver !== "local") fail("本地录音上传入口未启用。", 404, "not_found");
+  return withOrganization(auth.organization.id, async (client) => {
+    await sessionForAudio(client, auth, sessionId);
+    const row = await sessionTranscriptionForUser(client, auth, sessionId, transcriptionId);
+    if (row.status !== "created" || new Date(row.expires_at).getTime() <= Date.now()) fail("录音上传凭证已失效。", 409, "transcription_expired");
+    const length = Number(req.headers["content-length"] || 0);
+    const mime = normalizedMime(req.headers["content-type"]);
+    if (length !== Number(row.size_bytes) || mime !== row.mime_type) fail("录音大小或格式与申请信息不一致。", 400, "audio_metadata_mismatch");
+    const path = localPath(row.object_key);
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.uploading`;
+    try {
+      let received = 0;
+      const limiter = new Transform({ transform(chunk, encoding, callback) {
+        received += chunk.length;
+        if (received > MAX_AUDIO_BYTES || received > length) callback(fail("录音文件超过允许大小。", 413, "audio_too_large"));
+        else callback(null, chunk);
+      } });
+      await pipeline(req, limiter, createWriteStream(temporary, { flags: "wx" }));
+      if (statSync(temporary).size !== length) fail("录音上传不完整。", 400, "incomplete_upload");
+      renameSync(temporary, path);
+    } catch (error) {
+      if (existsSync(temporary)) unlinkSync(temporary);
+      throw error;
+    }
+    await client.query("UPDATE partner_ai_transcriptions SET status='uploaded' WHERE id=$1", [row.id]);
+    return { ok: true, transcriptionId: row.id };
+  });
+}
+
+export async function completePartnerAiSessionTranscription(auth, sessionId, transcriptionId) {
+  assertContributor(auth);
+  const config = await settingsForQuickReport(auth, "voice");
+  const row = await withOrganization(auth.organization.id, async (client) => {
+    await sessionForAudio(client, auth, sessionId);
+    const current = await sessionTranscriptionForUser(client, auth, sessionId, transcriptionId);
+    if (current.status === "completed") return current;
+    if (current.status === "failed") fail("上次转写已失败，请重新录音。", 409, "transcription_retry_required");
+    if (!["created", "uploaded"].includes(current.status)) fail("录音正在处理中，请勿重复提交。", 409, "transcription_in_progress");
+    await client.query("UPDATE partner_ai_transcriptions SET status='processing',error_code='' WHERE id=$1", [current.id]);
+    return current;
+  });
+  if (row.status === "completed") return { transcriptionId: row.id, transcript: row.transcript, durationMs: Number(row.duration_ms) };
+  try {
+    const buffer = await readAudio(row);
+    if (buffer.length !== Number(row.size_bytes)) fail("录音上传不完整。", 400, "incomplete_upload");
+    assertAudioContent(buffer, row.mime_type);
+    const result = await recognizeShortAudio({
+      buffer,
+      mimeType: row.mime_type,
+      fileName: row.file_name,
+      secretId: config.asr.secretId,
+      secretKey: config.asr.secretKey,
+      engine: config.asr.engine,
+      hotwords: [],
+    });
+    if (!result.transcript) fail("没有识别到清晰语音，请重录或改用文字输入。", 422, "asr_empty_transcript");
+    await withOrganization(auth.organization.id, (client) => client.query(
+      "UPDATE partner_ai_transcriptions SET status='completed',transcript=$2,asr_request_id=$3,completed_at=now() WHERE id=$1",
+      [row.id, result.transcript, result.requestId],
+    ));
+    return { transcriptionId: row.id, transcript: result.transcript, durationMs: result.durationMs || Number(row.duration_ms) };
+  } catch (error) {
+    await withOrganization(auth.organization.id, (client) => client.query(
+      "UPDATE partner_ai_transcriptions SET status='failed',error_code=$2 WHERE id=$1",
+      [row.id, String(error.code || "asr_failed").slice(0, 120)],
+    )).catch(() => {});
+    throw error;
+  } finally {
+    try {
+      await deleteAudioObject(row);
+      await withOrganization(auth.organization.id, (client) => client.query("UPDATE partner_ai_transcriptions SET deleted_at=now(),cleanup_error='',next_cleanup_at=NULL WHERE id=$1", [row.id]));
+    } catch (error) {
+      await withOrganization(auth.organization.id, (client) => client.query(
+        "UPDATE partner_ai_transcriptions SET cleanup_error=$2,cleanup_attempts=cleanup_attempts+1,next_cleanup_at=now()+interval '1 minute' WHERE id=$1",
+        [row.id, String(error?.message || "cleanup_failed").slice(0, 500)],
+      )).catch(() => {});
+    }
+  }
 }
 
 async function transcriptionForUser(client, auth, workItemId, transcriptionId) {
@@ -452,15 +613,35 @@ export async function markPartnerAiDraftApplied(auth, workItemId, draftId, workI
   });
 }
 
-export async function linkPartnerAiDraftToCommand(client, { auth, workItemId, workItemVersion, draftId, commandId, expectedDraftType }) {
+function normalizedSubmittedFields(expectedDraftType, payload = {}) {
+  if (expectedDraftType !== "production_progress") return {};
+  return {
+    stage: String(payload.stage || ""),
+    progressPercent: payload.progressPercent == null || payload.progressPercent === "" ? null : Number(payload.progressPercent),
+    completedQuantity: Number(payload.completedQuantity || 0),
+    expectedCompletionDate: String(payload.expectedCompletionDate || ""),
+    note: String(payload.note || "").trim(),
+  };
+}
+
+export async function linkPartnerAiDraftToCommand(client, { auth, workItemId, workItemVersion, draftId, commandId, expectedDraftType, submittedPayload }) {
   if (!draftId) return null;
   const row = (await client.query(
     `UPDATE partner_ai_drafts SET status='submitted',submitted_command_id=$6
       WHERE id=$1 AND organization_id=$2 AND user_id=$3 AND work_item_id=$4 AND work_item_version=$5
-        AND draft_type=$7 AND status IN ('generated','applied') AND expires_at>now() RETURNING id`,
+        AND draft_type=$7 AND status IN ('generated','applied') AND expires_at>now() RETURNING id,session_id,draft_json`,
     [draftId, auth.organization.id, auth.user.id, workItemId, workItemVersion, commandId, expectedDraftType],
   )).rows[0];
   if (!row) fail("AI 草稿不存在、已失效或与当前提交不匹配。", 409, "ai_draft_mismatch");
+  const submittedFields = normalizedSubmittedFields(expectedDraftType, submittedPayload);
+  const draftFields = normalizedSubmittedFields(expectedDraftType, row.draft_json || {});
+  const draftModified = row.session_id && submittedPayload ? JSON.stringify(submittedFields) !== JSON.stringify(draftFields) : null;
+  await client.query(
+    `UPDATE partner_ai_sessions SET state='submitted',submitted_command_id=$2,completed_at=now(),submitted_fields=$6,
+       draft_modified=$7
+      WHERE latest_draft_id=$1 AND organization_id=$3 AND user_id=$4 AND confirmed_work_item_id=$5`,
+    [draftId, commandId, auth.organization.id, auth.user.id, workItemId, submittedFields, draftModified],
+  );
   return row.id;
 }
 
@@ -487,6 +668,8 @@ export async function cleanupExpiredPartnerAiAudio() {
     await client.query("UPDATE partner_ai_drafts SET status='failed',warnings='[\"draft_worker_interrupted\"]'::jsonb WHERE status='processing' AND updated_at<now()-interval '2 minutes'");
     await client.query("UPDATE partner_ai_transcriptions SET transcript='',transcript_purged_at=now() WHERE completed_at<now()-interval '30 days' AND transcript<>'' AND transcript_purged_at IS NULL");
     await client.query("UPDATE partner_ai_drafts SET source_text='',draft_json='{}'::jsonb,evidence_json='[]'::jsonb,missing_fields='[]'::jsonb,warnings='[]'::jsonb,content_purged_at=now() WHERE created_at<now()-interval '90 days' AND content_purged_at IS NULL");
+    await client.query("UPDATE partner_ai_sessions SET state='expired' WHERE state NOT IN ('submitted','expired') AND expires_at<now()");
+    await client.query("UPDATE partner_ai_sessions SET source_text='',collected_fields='{}'::jsonb,submitted_fields='{}'::jsonb,missing_fields='[]'::jsonb,warnings='[]'::jsonb,candidate_ids='[]'::jsonb,next_question='',draft_modified=NULL,content_purged_at=now() WHERE created_at<now()-interval '90 days' AND content_purged_at IS NULL");
   });
   return rows.length;
 }
@@ -504,6 +687,13 @@ export async function getPartnerAiHealth() {
         (SELECT count(*)::int FROM partner_ai_drafts d WHERE d.created_at>=now()-interval '24 hours') AS drafts_24h,
         (SELECT count(*)::int FROM partner_ai_drafts d WHERE d.created_at>=now()-interval '24 hours' AND d.status IN ('generated','applied','submitted')) AS drafts_succeeded_24h,
         (SELECT count(*)::int FROM partner_ai_drafts d WHERE d.created_at>=now()-interval '24 hours' AND d.status='submitted') AS drafts_submitted_24h,
+        (SELECT count(*)::int FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours') AS sessions_24h,
+        (SELECT count(*)::int FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours' AND s.state='submitted') AS sessions_submitted_24h,
+        (SELECT count(*)::int FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours' AND s.candidate_count>0) AS sessions_matched_24h,
+        (SELECT count(*)::int FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours' AND s.candidate_count>1) AS sessions_ambiguous_24h,
+        (SELECT count(*)::int FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours' AND s.draft_modified=true) AS sessions_draft_modified_24h,
+        (SELECT coalesce(avg(s.question_count),0) FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours') AS average_questions_24h,
+        (SELECT coalesce(avg(s.candidate_count),0) FROM partner_ai_sessions s WHERE s.created_at>=now()-interval '24 hours' AND s.candidate_count>0) AS average_candidate_count_24h,
         (SELECT coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY d.latency_ms),0)::int FROM partner_ai_drafts d WHERE d.created_at>=now()-interval '24 hours' AND d.latency_ms>0) AS draft_p95_ms,
         max(t.created_at) AS last_transcription_at,
         (SELECT max(d.created_at) FROM partner_ai_drafts d) AS last_draft_at

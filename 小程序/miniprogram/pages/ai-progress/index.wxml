@@ -1,0 +1,82 @@
+<view class="page-shell ai-page">
+  <view class="ai-hero">
+    <view class="eyebrow">HERMES PARTNER ASSISTANT</view>
+    <view class="ai-hero__title">快捷汇报生产进度</view>
+    <view class="ai-hero__copy">说产品名和进度，Hermes 帮你找到加工单并补齐表单；正式提交前一定由你确认。</view>
+  </view>
+
+  <view wx:if="{{loading}}" class="loading-card card">正在恢复快捷汇报…</view>
+  <block wx:else>
+    <view class="step-track card">
+      <view wx:for="{{steps}}" wx:key="key" class="step-item {{index <= activeStep ? 'is-active' : ''}}">
+        <view class="step-dot">{{index + 1}}</view><text>{{item.label}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{error}}" class="error-banner"><text>!</text><view>{{error}}</view></view>
+    <view wx:if="{{versionConflict}}" class="warning-banner">
+      <view><strong>加工单刚刚有更新</strong><text>已填写内容会保留，提交前需要重新确认最新版本。</text></view>
+      <button class="secondary-button button-small" bindtap="reconfirmOrder">重新确认</button>
+    </view>
+
+    <view wx:if="{{messages.length}}" class="conversation">
+      <view wx:for="{{messages}}" wx:key="index" class="bubble bubble--{{item.role}}">{{item.text}}</view>
+    </view>
+
+    <view wx:if="{{session && (session.state === 'identifying_order' || session.state === 'confirming_order')}}" class="input-card card">
+      <view class="input-card__prompt">{{session.nextQuestion}}</view>
+      <textarea class="message-input" value="{{inputText}}" maxlength="2000" auto-height placeholder="例如：男士洁面泡沫现在灌装完成六成" bindinput="updateInput" />
+      <view class="input-actions">
+        <button wx:if="{{voiceEnabled}}" class="voice-button {{recording ? 'is-recording' : ''}}" bindtap="toggleRecording">{{recording ? '结束录音' : voiceBusy ? '转写中…' : '按住说也可以'}}</button>
+        <button class="primary-button send-button {{busy ? 'is-disabled' : ''}}" bindtap="sendText">{{busy ? '识别中…' : '识别订单'}}</button>
+      </view>
+      <button class="manual-search-button" bindtap="openManualForm">没有找到？手工查找订单</button>
+    </view>
+
+    <view wx:if="{{candidates.length && session.state === 'confirming_order'}}">
+      <view class="section-head"><view><view class="eyebrow">MATCHED ORDERS</view><view class="section-head__title">请选择加工单</view></view><view class="section-head__action">{{candidates.length}} 个候选</view></view>
+      <view wx:for="{{candidates}}" wx:key="id" class="candidate-card card">
+        <image class="candidate-image" src="{{item.imageUrl}}" mode="aspectFill" />
+        <view class="candidate-copy">
+          <strong>{{item.productName || item.title}}</strong>
+          <text>{{item.sku || '暂无 SKU'}} · {{item.orderNo || item.referenceNo}}</text>
+          <text>数量 {{item.quantity}} {{item.unit}} · 交期 {{item.dueDate || '未设置'}}</text>
+          <text wx:if="{{item.currentProgressPercent !== null}}">当前 {{item.currentStage || '进度'}} {{item.currentProgressPercent}}%</text>
+        </view>
+        <button class="candidate-confirm" data-id="{{item.id}}" bindtap="confirmOrder">就是这单</button>
+      </view>
+    </view>
+
+    <view wx:if="{{confirmedOrder}}" class="confirmed-order card">
+      <image src="{{confirmedOrder.imageUrl}}" mode="aspectFill" />
+      <view><view class="eyebrow">CONFIRMED ORDER</view><strong>{{confirmedOrder.productName || confirmedOrder.title}}</strong><text>{{confirmedOrder.sku}} · {{confirmedOrder.orderNo || confirmedOrder.referenceNo}}</text></view>
+    </view>
+
+    <view wx:if="{{session && (session.state === 'collecting_progress' || session.state === 'review')}}" class="progress-card card">
+      <view class="progress-card__head"><view><view class="eyebrow">PROGRESS DRAFT</view><view class="section-head__title">核对进度草稿</view></view><text>{{session.nextQuestion}}</text></view>
+      <view wx:if="{{assistantUnavailable}}" class="warning-copy">Hermes 暂时不可用，原话已保留。你可以继续手工填写或进入原表单。</view>
+      <view wx:if="{{exceptionSuggested}}" class="exception-copy"><strong>识别到异常语义</strong><text>缺料、停产、质量问题不能静默写成普通进度，请进入原表单选择“异常上报”。</text><button class="danger-button button-small" bindtap="openManualForm">去异常上报</button></view>
+      <view wx:if="{{session.state === 'collecting_progress' && !assistantUnavailable && !exceptionSuggested}}" class="follow-up-box">
+        <view class="follow-up-box__title">回答 Hermes 的问题</view>
+        <textarea class="message-input" value="{{inputText}}" maxlength="2000" auto-height placeholder="直接回答这一项，也可以一次说完整" bindinput="updateInput" />
+        <view class="input-actions">
+          <button wx:if="{{voiceEnabled}}" class="voice-button {{recording ? 'is-recording' : ''}}" bindtap="toggleRecording">{{recording ? '结束录音' : voiceBusy ? '转写中…' : '语音回答'}}</button>
+          <button class="primary-button send-button {{busy ? 'is-disabled' : ''}}" bindtap="sendText">{{busy ? '整理中…' : '继续补充'}}</button>
+        </view>
+      </view>
+      <view class="field-grid">
+        <view class="field"><text>生产阶段 *</text><picker range="{{stageOptions}}" range-key="label" value="{{stageIndex}}" bindchange="chooseStage"><view class="picker-field">{{stageOptions[stageIndex].label}} <text>⌄</text></view></picker></view>
+        <view class="field"><text>完成比例 *（0-100）</text><input type="number" value="{{form.progressPercent}}" data-field="progressPercent" bindinput="updateField" placeholder="例如 60" /></view>
+        <view class="field"><text>完成数量（可选）</text><input type="digit" value="{{form.completedQuantity}}" data-field="completedQuantity" bindinput="updateField" placeholder="实际完成数量" /></view>
+        <view class="field"><text>预计完成日期 {{form.progressPercent < 100 ? '*' : ''}}</text><picker mode="date" value="{{form.expectedCompletionDate}}" data-field="expectedCompletionDate" bindchange="updateField"><view class="picker-field">{{form.expectedCompletionDate || '请选择日期'}} <text>⌄</text></view></picker></view>
+      </view>
+      <view class="field field--note"><text>汇报说明（可选）</text><textarea value="{{form.note}}" data-field="note" maxlength="2000" auto-height bindinput="updateField" placeholder="可补充现场情况；Hermes 会保留原话证据" /></view>
+      <view class="review-actions"><button class="secondary-button" bindtap="openManualForm">使用原表单</button><button class="primary-button {{busy || exceptionSuggested ? 'is-disabled' : ''}}" bindtap="submit">{{busy ? '提交中…' : '确认提交'}}</button></view>
+    </view>
+
+    <view wx:if="{{submitted}}" class="success-card card">
+      <view class="success-icon">✓</view><strong>本次进度已提交</strong><text>最新进度已进入协同时间线，后续如有变化可以重新发起快捷汇报。</text>
+      <button class="secondary-button" bindtap="openManualForm">查看加工单</button>
+    </view>
+  </block>
+</view>

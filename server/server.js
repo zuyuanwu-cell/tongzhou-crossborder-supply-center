@@ -115,6 +115,7 @@ import { createHermesClient } from "./hermes-client.js";
 import { createHermesToolGateway } from "./hermes-tool-gateway.js";
 import { createHermesApi } from "./hermes-api.js";
 import { createHermesModelGateway } from "./hermes-model-gateway.js";
+import { createHermesPartnerConfigApi } from "./hermes-partner-config-api.js";
 import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
 
 if (!globalThis.fetch) {
@@ -569,6 +570,13 @@ const syncScheduler = createSyncScheduler({
 const containerLoadingApi = createContainerLoadingApi({
   service: containerLoadingService,
   getAuth,
+  appendActionLog,
+});
+const hermesPartnerConfigApi = createHermesPartnerConfigApi({
+  bridge: collaborationBridge,
+  getAuth,
+  parseRequestBody,
+  sendJson,
   appendActionLog,
 });
 
@@ -8095,6 +8103,10 @@ const server = http.createServer(async (req, res) => {
 
     if (await hermesModelGateway.handle(req, res, url)) return;
     if (await hermesToolGateway(req, res, url)) return;
+    // The general Hermes handler deliberately owns every /api/hermes/* path and
+    // returns a 404 for unknown routes. Keep the partner configuration handler
+    // ahead of it so the admin-only extension remains reachable.
+    if (await hermesPartnerConfigApi(req, res, url)) return;
     if (await hermesApi(req, res, url)) return;
 
     if (url.pathname === "/api/system-backup/status" && req.method === "GET") {

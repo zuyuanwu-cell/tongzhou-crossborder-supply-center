@@ -18,6 +18,7 @@ const inventoryBarcodeSql = readFileSync(join(dirname(fileURLToPath(import.meta.
 const partnerQualificationSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0013_partner_qualification_coverage.sql"), "utf8");
 const partnerAiSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0014_partner_ai_progress.sql"), "utf8");
 const partnerAiHardeningSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0015_partner_ai_production_hardening.sql"), "utf8");
+const partnerAiSessionsSql = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0016_partner_ai_sessions.sql"), "utf8");
 const authSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "auth.js"), "utf8");
 const identitySource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "identity.js"), "utf8");
 const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "api", "server.js"), "utf8");
@@ -244,6 +245,17 @@ test("partner AI drafts are version-bound, tenant-isolated, and never store audi
   assert.match(partnerAiHardeningSql, /uq_partner_ai_transcriptions_idempotency/);
   assert.match(partnerAiHardeningSql, /uq_partner_ai_drafts_idempotency/);
   assert.match(partnerAiHardeningSql, /cleanup_attempts/);
+  assert.match(partnerAiSessionsSql, /CREATE TABLE IF NOT EXISTS partner_ai_sessions/);
+  assert.match(partnerAiSessionsSql, /organization_id uuid NOT NULL/);
+  assert.match(partnerAiSessionsSql, /user_id uuid NOT NULL/);
+  assert.match(partnerAiSessionsSql, /ALTER TABLE partner_ai_sessions ENABLE ROW LEVEL SECURITY/);
+  assert.match(partnerAiSessionsSql, /ALTER TABLE partner_ai_sessions FORCE ROW LEVEL SECURITY/);
+  assert.match(partnerAiSessionsSql, /partner_ai_transcriptions_scope_check/);
+  assert.match(partnerAiSessionsSql, /session_id uuid REFERENCES partner_ai_sessions/);
+  assert.match(partnerAiSessionsSql, /message_count integer NOT NULL/);
+  assert.match(partnerAiSessionsSql, /draft_modified boolean/);
+  assert.match(migrateSource, /partner_ai_sessions/);
+  assert.match(migrateSource, /partner_ai_transcriptions,partner_ai_drafts,partner_ai_sessions/);
 });
 
 test("sampling quotes bind the exact system-generated final sample variant", () => {

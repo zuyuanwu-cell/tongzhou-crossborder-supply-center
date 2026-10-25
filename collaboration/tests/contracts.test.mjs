@@ -204,6 +204,8 @@ test("turnkey material tests require an explanation when testing fails", () => {
   assert.equal(partnerOrderReportSchema.safeParse(report).success, false);
   assert.equal(partnerOrderReportSchema.safeParse({ ...report, exceptionDescription: "瓶盖密封测试漏液" }).success, true);
   assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "filling", progressPercent: 101, completedQuantity: 10, expectedCompletionDate: "2026-10-20", note: "灌装中" }).success, false);
+  assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "filling", progressPercent: 60, completedQuantity: 10, expectedCompletionDate: "", note: "" }).success, false);
+  assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "ready_to_ship", progressPercent: 100, completedQuantity: 10, expectedCompletionDate: "", note: "" }).success, true);
 });
 
 test("full-service production factories can be explicitly granted production, procurement and sampling", () => {

@@ -28,6 +28,7 @@ function verifyStructure() {
       if (extension === ".js") new vm.Script(fs.readFileSync(file, "utf8"), { filename: file });
     }
   }
+  assert.ok(app.pages.includes("pages/ai-progress/index"), "应注册 Hermes 快捷汇报页面");
   for (const file of walk(root, ".wxml")) {
     const text = fs.readFileSync(file, "utf8");
     assert.equal((text.match(/{{/g) || []).length, (text.match(/}}/g) || []).length, `WXML 插值未闭合：${file}`);
@@ -41,6 +42,18 @@ function verifyStructure() {
   assert.match(partnerDetail, /实际到货条码/);
   assert.match(partnerDetail, /采购入库结算依据/, "采购单详情应展示采购入库结算依据");
   assert.match(partnerDetail, /purchaseSettlement\.inboundDocuments/, "采购入库批次应在小程序端可见");
+  const partnerHome = fs.readFileSync(path.join(root, "pages", "index", "index.wxml"), "utf8");
+  assert.match(partnerHome, /partnerAi\.quickReportEnabled/, "伙伴工作台应按快捷汇报试点开关显示 Hermes 入口");
+  assert.match(partnerHome, /openHermesProgress/, "伙伴工作台应提供 Hermes 快捷汇报入口");
+  const aiProgress = fs.readFileSync(path.join(root, "pages", "ai-progress", "index.wxml"), "utf8");
+  assert.match(aiProgress, /MATCHED ORDERS/);
+  assert.match(aiProgress, /回答 Hermes 的问题/);
+  assert.match(aiProgress, /确认提交/);
+  assert.match(aiProgress, /使用原表单/);
+  const partnerApi = fs.readFileSync(path.join(root, "utils", "api.js"), "utf8");
+  assert.match(partnerApi, /partner-ai\/sessions/);
+  assert.match(partnerApi, /order-confirmation/);
+  assert.match(partnerApi, /audio-tickets/);
   assert.match(partnerDetail, /PRODUCT COVER/, "委外加工单详情应展示工艺单产品封面");
   assert.match(partnerDetail, /bindtap="previewProductCover"/, "产品封面应支持点击预览");
   assert.match(partnerDetail, /barcode-scan-button[^>]*data-index="\{\{index\}\}"[^>]*catchtap="scanLine"/, "在途收货明细必须提供可靠的逐行扫码按钮");

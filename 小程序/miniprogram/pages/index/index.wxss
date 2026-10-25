@@ -69,3 +69,7 @@
 .risk-deadline { color: #2451a4; font-size: 18rpx; font-weight: 800; }.risk-deadline--overdue { color: #b42318; }.risk-deadline--dueSoon { color: #9a6617; }.risk-deadline--unscheduled { color: #68798d; }
 .risk-arrow { color: #9bacbe; font-size: 28rpx; }
 .production-empty { padding: 42rpx 24rpx; color: #718096; text-align: center; font-size: 21rpx; }
+.hermes-entry { position: relative; overflow: hidden; margin-top: 28rpx; padding: 28rpx; display: grid; grid-template-columns: 86rpx minmax(0,1fr) auto; align-items: center; gap: 20rpx; color: #fff; background: radial-gradient(circle at 100% 0, rgba(82,209,235,.3), transparent 260rpx), linear-gradient(135deg,#0b2b55,#175b8d); border-radius: 22rpx; box-shadow: 0 16rpx 36rpx rgba(13,58,104,.18); }
+.hermes-entry__mark { width: 78rpx; height: 78rpx; display: flex; align-items: center; justify-content: center; color: #fff; background: #f45b0b; border-radius: 19rpx; font-size: 36rpx; font-weight: 900; }
+.hermes-entry__copy { min-width: 0; }.hermes-entry__copy .eyebrow { color: #7bd8ee; font-size: 16rpx; }.hermes-entry__copy strong,.hermes-entry__copy text { display: block; }.hermes-entry__copy strong { margin-top: 8rpx; font-size: 27rpx; }.hermes-entry__copy text { margin-top: 7rpx; color: #bdd2e5; font-size: 18rpx; }
+.hermes-entry__action { color: #fff; font-size: 21rpx; font-weight: 800; white-space: nowrap; }

@@ -11,6 +11,7 @@
     "pages/admin-organizations/index",
     "pages/admin-organization/index",
     "pages/index/index",
+    "pages/ai-progress/index",
     "pages/tasks/index",
     "pages/task-detail/index",
     "pages/inventory/index",

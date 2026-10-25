@@ -25,6 +25,7 @@ Page({
     deliveryMode: "procurement",
     deliveryItems: [],
     deliveryOverview: null,
+    partnerAi: null,
   },
 
   onLoad() {
@@ -74,6 +75,7 @@ Page({
         tasks: this.data.isDeliveryMode ? [] : work.items.filter((item) => !["completed", "cancelled"].includes(item.status)).slice(0, 3).map(decorateTask),
         deliveryItems,
         deliveryOverview,
+        partnerAi: summary.dashboard.partnerAi || null,
         unread: summary.dashboard.unreadNotifications || 0,
         syncText: formatDate(workspace.kind === "warehouse" ? summary.dashboard.inventorySyncedAt : latestUpdatedAt),
         fourthMetric,
@@ -102,6 +104,7 @@ Page({
   openTask(event) { wx.navigateTo({ url: `/pages/task-detail/index?id=${event.currentTarget.dataset.id}` }); },
   openOperation(event) { wx.navigateTo({ url: `/pages/operation/index?type=${event.currentTarget.dataset.type}` }); },
   openInventory() { wx.redirectTo({ url: "/pages/inventory/index" }); },
+  openHermesProgress() { wx.navigateTo({ url: "/pages/ai-progress/index" }); },
 
   openShortcut(event) {
     const action = this.data.quickActions[Number(event.currentTarget.dataset.index)];

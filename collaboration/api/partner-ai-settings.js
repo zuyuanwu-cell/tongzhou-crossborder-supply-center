@@ -9,6 +9,7 @@ const configSchema = z.object({
   textEnabled: z.boolean().default(true),
   voiceEnabled: z.boolean().default(false),
   organizationIds: z.array(z.string().uuid()).max(100).default([]),
+  quickReportOrganizationIds: z.array(z.string().uuid()).max(100).default([]),
   userDailyLimit: z.number().int().min(1).max(500).default(30),
   organizationDailyLimit: z.number().int().min(1).max(10_000).default(120),
   asr: z.object({
@@ -42,6 +43,7 @@ function environmentDefaults() {
     textEnabled: process.env.COLLABORATION_PARTNER_AI_TEXT_ENABLED !== "false",
     voiceEnabled: process.env.COLLABORATION_PARTNER_AI_VOICE_ENABLED === "true",
     organizationIds: String(process.env.COLLABORATION_PARTNER_AI_ORGANIZATION_IDS || "").split(",").map((item) => item.trim()).filter(Boolean),
+    quickReportOrganizationIds: String(process.env.COLLABORATION_PARTNER_AI_QUICK_REPORT_ORGANIZATION_IDS || "").split(",").map((item) => item.trim()).filter(Boolean),
     userDailyLimit: Number(process.env.COLLABORATION_PARTNER_AI_USER_DAILY_LIMIT || 30),
     organizationDailyLimit: Number(process.env.COLLABORATION_PARTNER_AI_ORG_DAILY_LIMIT || 120),
     asr: {
@@ -95,6 +97,7 @@ export function publicPartnerAiSettings(value) {
     textEnabled: config.textEnabled,
     voiceEnabled: config.voiceEnabled,
     organizationIds: config.organizationIds,
+    quickReportOrganizationIds: config.quickReportOrganizationIds,
     userDailyLimit: config.userDailyLimit,
     organizationDailyLimit: config.organizationDailyLimit,
     asr: {
@@ -113,17 +116,27 @@ export function partnerAiEnabledFor(config, organizationId, mode = "text") {
     && (mode === "voice" ? config.voiceEnabled : config.textEnabled));
 }
 
+export function partnerAiQuickReportEnabledFor(config, organizationId, mode = "text") {
+  return Boolean(config.enabled
+    && config.organizationIds.includes(String(organizationId || ""))
+    && config.quickReportOrganizationIds.includes(String(organizationId || ""))
+    && (mode === "voice" ? config.voiceEnabled : config.textEnabled));
+}
+
 export async function partnerAiCapabilitiesFor(organizationId) {
   try {
     const { config } = await getPartnerAiSettings();
     const organizationEnabled = Boolean(config.enabled && config.organizationIds.includes(String(organizationId || "")));
+    const quickReportEnabled = Boolean(organizationEnabled && config.quickReportOrganizationIds.includes(String(organizationId || "")));
     return {
       enabled: Boolean(organizationEnabled && (config.textEnabled || config.voiceEnabled)),
       textEnabled: Boolean(organizationEnabled && config.textEnabled),
       voiceEnabled: Boolean(organizationEnabled && config.voiceEnabled && config.asr?.secretId && config.asr?.secretKey),
+      quickReportEnabled: Boolean(quickReportEnabled && config.textEnabled),
+      quickReportVoiceEnabled: Boolean(quickReportEnabled && config.voiceEnabled && config.asr?.secretId && config.asr?.secretKey),
     };
   } catch {
-    return { enabled: false, textEnabled: false, voiceEnabled: false };
+    return { enabled: false, textEnabled: false, voiceEnabled: false, quickReportEnabled: false, quickReportVoiceEnabled: false };
   }
 }
 

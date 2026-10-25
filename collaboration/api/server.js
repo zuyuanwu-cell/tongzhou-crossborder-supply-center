@@ -57,13 +57,23 @@ import { applyPartnerOrderProjection, submitPartnerOrderReport } from "./partner
 import {
   cleanupExpiredPartnerAiAudio,
   completePartnerAiTranscription,
+  completePartnerAiSessionTranscription,
   createPartnerAiTranscription,
+  createPartnerAiSessionTranscription,
   createPartnerProgressDraft,
   getPartnerAiTranscription,
+  getPartnerAiSessionTranscription,
   getPartnerAiHealth,
   markPartnerAiDraftApplied,
   receivePartnerAiAudio,
+  receivePartnerAiSessionAudio,
 } from "./partner-ai.js";
+import {
+  confirmPartnerAiSessionOrder,
+  createPartnerAiSession,
+  getPartnerAiSession,
+  messagePartnerAiSession,
+} from "./partner-ai-sessions.js";
 import {
   getPartnerAiSettings,
   partnerAiCapabilitiesFor,
@@ -374,10 +384,13 @@ async function route(req, res) {
   }
 
   if (url.pathname === "/collaboration/v1/dashboard" && req.method === "GET") {
-    const dashboard = await organizationDashboard(auth);
+    const [dashboard, partnerAi] = await Promise.all([
+      organizationDashboard(auth),
+      partnerAiCapabilitiesFor(auth.organization.id),
+    ]);
     sendJson(res, 200, {
       ok: true,
-      dashboard: withDataContext(dashboard, {
+      dashboard: withDataContext({ ...dashboard, partnerAi }, {
         generatedAt: new Date().toISOString(),
         effectiveAt: dashboard.inventorySyncedAt || new Date().toISOString(),
         source: "derived",
@@ -387,6 +400,46 @@ async function route(req, res) {
         coverage: { completed: dashboard.inventorySyncedAt ? 1 : 0, total: 1, unit: "warehouse" },
       }),
     });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/partner-ai/sessions" && req.method === "POST") {
+    sendJson(res, 201, await createPartnerAiSession(auth, await readJson(req)));
+    return;
+  }
+  let partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}$`));
+  if (partnerAiSessionMatch && req.method === "GET") {
+    sendJson(res, 200, await getPartnerAiSession(auth, partnerAiSessionMatch[1]));
+    return;
+  }
+  partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}/messages$`));
+  if (partnerAiSessionMatch && req.method === "POST") {
+    sendJson(res, 200, await messagePartnerAiSession(auth, partnerAiSessionMatch[1], await readJson(req)));
+    return;
+  }
+  partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}/order-confirmation$`));
+  if (partnerAiSessionMatch && req.method === "POST") {
+    sendJson(res, 200, await confirmPartnerAiSessionOrder(auth, partnerAiSessionMatch[1], await readJson(req)));
+    return;
+  }
+  partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}/audio-tickets$`));
+  if (partnerAiSessionMatch && req.method === "POST") {
+    const result = await createPartnerAiSessionTranscription(auth, partnerAiSessionMatch[1], await readJson(req), { idempotencyKey: req.headers["idempotency-key"] });
+    sendJson(res, result.idempotentReplay ? 200 : 201, { ok: true, ...result });
+    return;
+  }
+  partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}/transcriptions/${uuidPattern}/content$`));
+  if (partnerAiSessionMatch && req.method === "PUT") {
+    sendJson(res, 200, await receivePartnerAiSessionAudio(auth, partnerAiSessionMatch[1], partnerAiSessionMatch[2], req));
+    return;
+  }
+  partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}/transcriptions/${uuidPattern}$`));
+  if (partnerAiSessionMatch && req.method === "GET") {
+    sendJson(res, 200, { ok: true, ...(await getPartnerAiSessionTranscription(auth, partnerAiSessionMatch[1], partnerAiSessionMatch[2])) });
+    return;
+  }
+  partnerAiSessionMatch = url.pathname.match(new RegExp(`^/collaboration/v1/partner-ai/sessions/${uuidPattern}/transcriptions/${uuidPattern}/complete$`));
+  if (partnerAiSessionMatch && req.method === "POST") {
+    sendJson(res, 200, { ok: true, ...(await completePartnerAiSessionTranscription(auth, partnerAiSessionMatch[1], partnerAiSessionMatch[2])) });
     return;
   }
   if (url.pathname === "/collaboration/v1/admin/members" && req.method === "GET") {
