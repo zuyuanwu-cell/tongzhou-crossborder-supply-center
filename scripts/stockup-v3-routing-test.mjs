@@ -82,6 +82,15 @@ try {
     }, context, reference);
   }
 
+  // Historical V2 requests may already be in logistics before V3 allocations
+  // existed. Enabling V3 must not send those requests back to route planning.
+  const legacyHandover = createRequest("v3-legacy-handover", [{ sku: "V3-LEGACY", productName: "历史在途需求", requestedQty: 10, unit: "件", supplyMode: "外采成品" }]);
+  store.run("UPDATE stockup_requests SET status='handed_over',journey_stage='in_transit' WHERE id=?", [legacyHandover.requestId]);
+  const legacyJourney = service.getJourneyRequest(legacyHandover.requestId, context);
+  assert.equal(legacyJourney.allocations.length, 0);
+  assert.equal(legacyJourney.journeyStage, "in_transit");
+  assert.equal(legacyJourney.nextAction.key, "track_shipment");
+
   // 场景 1：全量库存覆盖，确认后直接锁库并进入待发运，不产生采购入口。
   const fullCreated = createRequest("v3-full", [{ sku: "V3-A", productName: "全量库存", requestedQty: 1000, unit: "件", supplyMode: "外采成品" }]);
   const fullPreview = service.previewRoute(fullCreated.requestId, { consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context);

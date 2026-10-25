@@ -1450,7 +1450,7 @@ export function createStockupCollaborationService(store, {
     const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const total = number(store.first(`SELECT COUNT(*) AS count FROM stockup_warehouse_work_orders w JOIN stockup_requests r ON r.id=w.request_id ${clause}`, params)?.count);
     const rows = store.all(`SELECT w.* FROM stockup_warehouse_work_orders w JOIN stockup_requests r ON r.id=w.request_id ${clause}
-      ORDER BY CASE w.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, CASE WHEN w.expected_arrival_at<datetime('now') AND w.status NOT IN ('completed','cancelled') THEN 0 ELSE 1 END, w.updated_at DESC LIMIT 300`, params);
+      ORDER BY CASE w.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, CASE WHEN w.expected_arrival_at<datetime('now') AND w.status NOT IN ('inventory_ready','ready_to_ship','partially_shipped','completed','cancelled') THEN 0 ELSE 1 END, w.updated_at DESC LIMIT 300`, params);
     return { ok: true, total, workOrders: rows.map((row) => hydrateWarehouseWorkOrder(row, context)) };
   }
 
@@ -1622,7 +1622,8 @@ export function createStockupCollaborationService(store, {
     const workOrders = listed.workOrders;
     const statuses = ["draft", "waiting_receipt", "inspecting", "inspection_review", "inventory_ready", "ready_to_ship", "partially_shipped", "completed", "exception", "cancelled"];
     const counts = Object.fromEntries(statuses.map((status) => [status, workOrders.filter((item) => item.status === status).length]));
-    counts.overdue = workOrders.filter((item) => !["completed", "cancelled"].includes(item.status) && item.expectedArrivalAt && Date.parse(item.expectedArrivalAt) < Date.now()).length;
+    const receiptCompletedStatuses = new Set(["inventory_ready", "ready_to_ship", "partially_shipped", "completed", "cancelled"]);
+    counts.overdue = workOrders.filter((item) => !receiptCompletedStatuses.has(item.status) && item.expectedArrivalAt && Date.parse(item.expectedArrivalAt) < Date.now()).length;
     const routeBreakdown = { overseas_warehouse: 0, domestic_customer: 0, hold: 0 };
     const expenseBreakdown = {};
     const waitingProducts = [];

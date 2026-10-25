@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { collaborationProjectionSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema } from "../collaboration/shared/contracts.js";
+import { collaborationProjectionSchema, internalPartnerTaskSchema, internalWarehouseTaskSchema, inventoryProjectionSchema, oemProjectionSchema, partnerOrderProjectionSchema } from "../collaboration/shared/contracts.js";
+import {
+  inferOutsourcingFactoryBinding,
+  isActiveOutsourcingStatus,
+  outsourcingFactoryOptions,
+  outsourcingOrderIdentity,
+  outsourcingProjectionFingerprint,
+  outsourcingProjectionFromRecord,
+  purchaseOrderIdentity,
+  purchaseProjectionFromRecord,
+} from "./collaboration-outsourcing-source.js";
 
 const systemUser = Object.freeze({
   id: "collaboration-bridge",
@@ -66,6 +76,17 @@ function inventoryProjectionVersion(previous = 0) {
   return Math.max(Number(previous || 0) + 1, secondsSince2020, 1);
 }
 
+function collaborationProjectionVersion() {
+  return Math.max(1, Math.floor((Date.now() - Date.UTC(2020, 0, 1)) / 1_000));
+}
+
+function generatedSamplingDocumentNo(sampleCategory) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const day = `${value.year}${value.month}${value.day}`;
+  return `DY-${sampleCategory === "packaging" ? "BC" : "LT"}-${day}-${randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+}
+
 function inventoryFingerprint(warehouseName, items) {
   return createHash("sha256").update(JSON.stringify({ warehouseName, items })).digest("hex");
 }
@@ -79,6 +100,27 @@ function storedInventoryProjectionState(store, key) {
   }
 }
 
+function parsedState(store, key, fallback) {
+  try { return JSON.parse(store.state(key, JSON.stringify(fallback))); }
+  catch { return fallback; }
+}
+
+function outsourcingBindingStateKey(organizationCode) {
+  return `outsourcing_binding:${organizationCode}`;
+}
+
+function outsourcingTrackedStateKey(organizationCode) {
+  return `outsourcing_tracked:${organizationCode}`;
+}
+
+function outsourcingProjectionStateKey(organizationCode, orderNo) {
+  return `outsourcing_projection:${organizationCode}:${createHash("sha256").update(String(orderNo)).digest("hex").slice(0, 24)}`;
+}
+
+function purchaseProjectionStateKey(organizationCode, orderNo) {
+  return `purchase_projection:${organizationCode}:${createHash("sha256").update(String(orderNo)).digest("hex").slice(0, 24)}`;
+}
+
 export function createCollaborationBridge({
   store,
   domesticInventoryService,
@@ -88,6 +130,13 @@ export function createCollaborationBridge({
   internalToken = process.env.COLLABORATION_INTERNAL_TOKEN || (process.env.NODE_ENV === "production" ? "" : "local-internal-token-change-me"),
   pollIntervalMs = Number(process.env.COLLABORATION_BRIDGE_POLL_MS || 10_000),
   inventorySyncIntervalMs = Number(process.env.COLLABORATION_INVENTORY_SYNC_MS || 60_000),
+  outsourcingSyncIntervalMs = Number(process.env.COLLABORATION_OUTSOURCING_SYNC_MS || 5 * 60_000),
+  listActiveOutsourcingOrders = async () => [],
+  listOutsourcingFactoryOrders = async () => [],
+  listFirstArticleRecords = async () => [],
+  listCraftOrderRecords = async () => [],
+  listOutsourcingPurchaseDocuments = async () => ({ purchaseRecords: [], inboundRecords: [] }),
+  recordOutsourcingPartnerFeedback = async () => ({ ok: true, skipped: true }),
   requestTimeoutMs = Number(process.env.COLLABORATION_BRIDGE_TIMEOUT_MS || 15_000),
   oemEnabled = process.env.COLLABORATION_OEM_ENABLED === "true",
   publicOrigin = process.env.COLLABORATION_PUBLIC_ORIGIN || "https://partner.tongzhoukuajing.com",
@@ -99,8 +148,9 @@ export function createCollaborationBridge({
   let timer = null;
   let running = false;
   let lastError = "";
+  let factoryOptionsCache = { loadedAt: 0, options: [] };
 
-  async function internalRequest(path, { method = "GET", body, raw = false } = {}) {
+  async function internalRequest(path, { method = "GET", body, rawBody, headers = {}, raw = false } = {}) {
     if (!enabled) fail("协同桥接尚未配置。", 503, "collaboration_bridge_disabled");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
@@ -109,9 +159,10 @@ export function createCollaborationBridge({
         method,
         headers: {
           Authorization: `Bearer ${internalToken}`,
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(body === undefined || rawBody !== undefined ? {} : { "Content-Type": "application/json" }),
+          ...headers,
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: rawBody !== undefined ? rawBody : body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -154,6 +205,7 @@ export function createCollaborationBridge({
       return {
         sku,
         productName: String(item.productName || product.name || product.productName || item.sku || "").trim(),
+        barcode: String(item.barcode || product.barcode || "").trim().slice(0, 160),
         imageUrl: publicImageUrl(item.imageUrl || product.imageUrl),
         availableQuantity: Math.max(0, Number(item.availableQty || 0)),
         lockedQuantity: Math.max(0, Number(item.reservedQty || 0)),
@@ -177,7 +229,7 @@ export function createCollaborationBridge({
     let unchanged = 0;
     let failed = 0;
     const errors = [];
-    for (const organization of organizations.filter((item) => item.organizationType === "warehouse" && item.status !== "suspended" && item.status !== "archived")) {
+    for (const organization of organizations.filter((item) => item.status !== "suspended" && item.status !== "archived")) {
       try {
         const access = await getOrganizationAccessGrants(organization.code);
         const grants = (access.grants || []).filter((grant) => grant.resourceType === "warehouse" && grant.permissions?.includes("warehouse.inventory.view"));
@@ -222,15 +274,23 @@ export function createCollaborationBridge({
     const allowedWarehouses = new Set((warehouseIds || []).map(String).filter(Boolean));
     const allowedSkus = new Set((skus || []).map(normalizedSku).filter(Boolean));
     const response = await listOrganizations({ status: "active" });
-    const warehouseOrganizations = (response.organizations || []).filter((organization) => organization.organizationType === "warehouse" && organization.status === "active");
+    const warehouseOrganizations = (response.organizations || []).filter((organization) => organization.status === "active");
     const organizations = [];
     const availability = new Map();
+    const warnings = [];
     for (const organization of warehouseOrganizations) {
       const access = await getOrganizationAccessGrants(organization.code);
       const warehouses = [];
       for (const grant of (access.grants || []).filter((item) => item.resourceType === "warehouse" && item.permissions?.includes("warehouse.task.view"))) {
         if (allowedWarehouses.size && !allowedWarehouses.has(String(grant.resourceRef))) continue;
-        const snapshot = inventoryProjectionForGrant(organization.code, grant);
+        let snapshot;
+        try {
+          snapshot = inventoryProjectionForGrant(organization.code, grant);
+        } catch (error) {
+          if (error?.code !== "granted_warehouse_not_found") throw error;
+          warnings.push(`协同组织 ${organization.name || organization.code} 仍绑定已移除仓库 ${grant.resourceRef}，已从发布选项中排除。`);
+          continue;
+        }
         warehouses.push({
           resourceRef: grant.resourceRef,
           resourceName: snapshot.warehouseName,
@@ -251,7 +311,6 @@ export function createCollaborationBridge({
         sku,
         productName: String(item.name || item.productName || sku).trim(),
         imageUrl: publicImageUrl(item.imageUrl),
-        barcode: String(item.barcode || "").trim(),
         unit: String(item.unit || "件").trim() || "件",
         availableByWarehouse: Object.fromEntries([...availability.entries()].map(([warehouseRef, balances]) => [warehouseRef, Number(balances.get(sku) || 0)])),
       });
@@ -261,6 +320,7 @@ export function createCollaborationBridge({
       portalUrl: String(publicOrigin || "").replace(/\/$/, ""),
       organizations,
       products: [...bySku.values()].sort((left, right) => left.sku.localeCompare(right.sku, "zh-CN", { numeric: true })),
+      warnings,
     };
   }
 
@@ -326,8 +386,8 @@ export function createCollaborationBridge({
   }
 
   function listWarehouseTasks(filters = {}, { warehouseIds = [], skus = [] } = {}) {
-    const query = new URLSearchParams();
-    for (const key of ["organizationCode", "status", "itemType", "keyword", "limit", "offset"]) {
+    const query = new URLSearchParams({ warehouseOnly: "true" });
+    for (const key of ["organizationCode", "status", "itemType", "keyword", "overdue", "limit", "offset"]) {
       if (filters[key] !== undefined && String(filters[key]).trim()) query.set(key, String(filters[key]));
     }
     if (warehouseIds.length) query.set("warehouseRefs", warehouseIds.map(String).filter(Boolean).join(","));
@@ -337,6 +397,7 @@ export function createCollaborationBridge({
   }
 
   function assertWarehouseTaskScope(detail, { warehouseIds = [], skus = [] } = {}) {
+    if (!String(detail?.item?.itemType || "").startsWith("warehouse_")) fail("该任务不属于仓库协同范围。", 403, "warehouse_task_type_denied");
     const allowedWarehouses = new Set(warehouseIds.map(String).filter(Boolean));
     const allowedSkus = new Set(skus.map(normalizedSku).filter(Boolean));
     if (allowedWarehouses.size && !allowedWarehouses.has(String(detail?.item?.publicPayload?.warehouseRef || ""))) fail("当前账号无权查看该仓库的协同任务。", 403, "warehouse_scope_denied");
@@ -348,6 +409,15 @@ export function createCollaborationBridge({
 
   async function getWarehouseTask(workItemId, scopes = {}) {
     return assertWarehouseTaskScope(await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}`), scopes);
+  }
+
+  async function remindWarehouseTask(workItemId, { note = "", actorName = "供应链中台" } = {}, scopes = {}) {
+    const detail = await getWarehouseTask(workItemId, scopes);
+    if (["completed", "rejected", "cancelled"].includes(detail.item.status)) fail("已结束的协同任务无需催办。", 409, "work_item_closed");
+    return internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/remind`, {
+      method: "POST",
+      body: { note: String(note || "").trim().slice(0, 1_000), actorName: String(actorName || "供应链中台").trim().slice(0, 120) },
+    });
   }
 
   async function downloadWarehouseTaskAttachment(workItemId, attachmentId, scopes = {}) {
@@ -368,6 +438,14 @@ export function createCollaborationBridge({
     return { id: row.id, status: row.status, projection };
   }
 
+  function queuePartnerOrderProjection(input) {
+    if (!oemEnabled) fail("生产与采购伙伴协同尚未启用。", 403, "feature_disabled");
+    const withId = { ...input, eventId: input.eventId || projectionId("partner-order") };
+    const projection = partnerOrderProjectionSchema.parse(withId);
+    const row = store.enqueue({ id: projection.eventId, eventType: "partner_order", payload: projection, now: nowIso() });
+    return { id: row.id, status: row.status, projection };
+  }
+
   async function flushOutbox() {
     if (!enabled) return { published: 0, failed: 0, disabled: true };
     const ready = store.readyOutbox(nowIso(), 50);
@@ -380,7 +458,9 @@ export function createCollaborationBridge({
           ? "/collaboration/internal/v1/inventory"
           : row.event_type === "oem"
             ? "/collaboration/internal/v1/oem/projections"
-            : "/collaboration/internal/v1/projections";
+            : row.event_type === "partner_order"
+              ? "/collaboration/internal/v1/partner-orders/projections"
+              : "/collaboration/internal/v1/projections";
         const result = await internalRequest(path, { method: "PUT", body: payload });
         store.markPublished(row.id, result, nowIso());
         published += 1;
@@ -429,7 +509,7 @@ export function createCollaborationBridge({
     });
   }
 
-  function applyToCore(command) {
+  async function applyToCore(command) {
     assertCommandShape(command);
     const context = systemInventoryContext();
     const idempotencyKey = `collaboration:${command.id}:${command.idempotencyKey}`;
@@ -477,6 +557,16 @@ export function createCollaborationBridge({
         lines: movementLines(command, { adjustment: true }),
       }, context, idempotencyKey);
     }
+    if (command.coreRefType === "jiandaoyun_outsourcing_order" && ["accept", "order_production_progress", "order_material_readiness", "order_exception", "order_shipment"].includes(command.commandType)) {
+      const sourceResult = await recordOutsourcingPartnerFeedback({
+        orderNo: command.coreRefId,
+        commandType: command.commandType,
+        payload: command.payload || {},
+        submittedByName: command.submittedByName,
+        submittedAt: command.submittedAt,
+      });
+      return { ok: true, eventOnly: true, sourceUpdated: !sourceResult?.skipped, reference: command.coreRefId };
+    }
     return { ok: true, eventOnly: true, reference: command.coreRefId };
   }
 
@@ -488,11 +578,11 @@ export function createCollaborationBridge({
     if (stored.local_status === "awaiting_result") return reportStoredResult(stored);
     store.markCommand(commandId, "processing");
     try {
-      const coreResult = applyToCore(stored.command);
+      const coreResult = await applyToCore(stored.command);
       const result = {
         status: "applied",
         resultCode: coreResult.idempotentReplay ? "idempotent_replay" : "applied",
-        message: coreResult.eventOnly ? "协同进度已写入内部审计记录。" : "协同操作已通过内部校验并入账。",
+        message: coreResult.sourceUpdated ? "工厂反馈已同步到千顷 ERP，并写入内部审计记录。" : coreResult.eventOnly ? "协同进度已写入内部审计记录。" : "协同操作已通过内部校验并入账。",
         coreReference: coreResult.movementNo || coreResult.movementId || coreResult.transfer?.transferNo || coreResult.reference || stored.command.coreRefId,
       };
       store.markCommand(commandId, "awaiting_result", { result });
@@ -573,6 +663,10 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/oem/quotes/${encodeURIComponent(quoteId)}/award`, { method: "POST", body: input });
   }
 
+  function reviewSampleArtifact(artifactId, input) {
+    return internalRequest(`/collaboration/internal/v1/oem/artifacts/${encodeURIComponent(artifactId)}/review`, { method: "POST", body: input });
+  }
+
   function provisionOrganization(input) {
     return internalRequest("/collaboration/internal/v1/organizations", { method: "POST", body: input });
   }
@@ -586,12 +680,375 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations${suffix}`);
   }
 
+  function getPartnerAiConfig() {
+    return internalRequest("/collaboration/internal/v1/partner-ai/config");
+  }
+
+  function savePartnerAiConfig(input) {
+    return internalRequest("/collaboration/internal/v1/partner-ai/config", { method: "PUT", body: input });
+  }
+
+  function testPartnerAiAsr(input) {
+    return internalRequest("/collaboration/internal/v1/partner-ai/config/test", { method: "POST", body: input });
+  }
+
+  function getPartnerAiHealth() {
+    return internalRequest("/collaboration/internal/v1/partner-ai/health");
+  }
+
   function getOrganizationAccess(code) {
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`);
   }
 
   function getOrganizationAccessGrants(code) {
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/access-grants`);
+  }
+
+  async function activeOutsourcingFactoryOptions({ force = false } = {}) {
+    if (!force && factoryOptionsCache.loadedAt && Date.now() - factoryOptionsCache.loadedAt < 5 * 60_000) return factoryOptionsCache.options;
+    const records = await listActiveOutsourcingOrders();
+    const options = outsourcingFactoryOptions(records);
+    factoryOptionsCache = { loadedAt: Date.now(), options };
+    return options;
+  }
+
+  function storedOutsourcingBinding(code) {
+    const binding = parsedState(store, outsourcingBindingStateKey(code), null);
+    return binding?.factoryId ? binding : null;
+  }
+
+  async function assertOutsourcingOrganization(code) {
+    const access = await getOrganizationAccessGrants(code);
+    if (access.organization?.organizationType !== "production_factory") fail("只有委外生产工厂组织可以绑定简道云委外加工单。", 409, "organization_type_mismatch");
+    const productionGrant = (access.grants || []).find((grant) => grant.resourceType === "organization" && grant.resourceRef === "production");
+    if (!productionGrant?.permissions?.includes("production.order.view")) fail("请先为该组织开通委外加工单查看权限。", 403, "resource_not_granted");
+    return access;
+  }
+
+  async function resolveOutsourcingBinding(code, organization, { infer = true, forceOptions = false } = {}) {
+    const stored = storedOutsourcingBinding(code);
+    if (stored || !infer) return stored;
+    const suggestion = inferOutsourcingFactoryBinding(organization?.name, await activeOutsourcingFactoryOptions({ force: forceOptions }));
+    if (!suggestion) return null;
+    const binding = {
+      factoryId: suggestion.factoryId,
+      factoryName: suggestion.factoryName,
+      factoryFullName: suggestion.factoryFullName,
+      inferred: true,
+      boundAt: nowIso(),
+      boundBy: "系统按组织名称精确匹配",
+    };
+    store.setState(outsourcingBindingStateKey(code), JSON.stringify(binding), nowIso());
+    return binding;
+  }
+
+  async function getOutsourcingSourceBinding(code, { refresh = false } = {}) {
+    const access = await assertOutsourcingOrganization(code);
+    const options = await activeOutsourcingFactoryOptions({ force: refresh });
+    const binding = await resolveOutsourcingBinding(code, access.organization, { forceOptions: refresh });
+    const selected = binding ? options.find((item) => item.factoryId === binding.factoryId) : null;
+    return {
+      ok: true,
+      source: { appName: "千顷 ERP", formName: "委外加工单", mode: "read_only_projection" },
+      binding,
+      options,
+      activeOrderCount: selected?.activeOrderCount || 0,
+      trackedOrderCount: parsedState(store, outsourcingTrackedStateKey(code), []).length,
+      lastSyncedAt: store.state(`outsourcing_last_sync:${code}`),
+    };
+  }
+
+  async function saveOutsourcingSourceBinding(code, input, { actorName = "供应链中台管理员" } = {}) {
+    const access = await assertOutsourcingOrganization(code);
+    const factoryId = String(input?.factoryId || "").trim().slice(0, 80);
+    if (!factoryId) fail("请选择千顷 ERP 中的委外灌装工厂。", 400, "factory_required");
+    const options = await activeOutsourcingFactoryOptions({ force: true });
+    const option = options.find((item) => item.factoryId === factoryId);
+    if (!option) fail("所选工厂当前没有进行中的委外加工单，或工厂编号已失效。", 409, "factory_not_available");
+    const existing = storedOutsourcingBinding(code);
+    const tracked = parsedState(store, outsourcingTrackedStateKey(code), []);
+    if (existing && existing.factoryId !== factoryId && tracked.length) {
+      fail("该组织已经同步过委外加工单。为防止跨工厂数据残留，请新建组织后绑定新的工厂。", 409, "binding_locked");
+    }
+    const binding = {
+      factoryId: option.factoryId,
+      factoryName: option.factoryName,
+      factoryFullName: option.factoryFullName,
+      inferred: false,
+      boundAt: nowIso(),
+      boundBy: String(actorName).slice(0, 200),
+    };
+    store.setState(outsourcingBindingStateKey(code), JSON.stringify(binding), nowIso());
+    const synchronization = await synchronizeOutsourcingProjections({ organizationCode: code, organizations: [access.organization] });
+    const delivery = await flushOutbox();
+    onAudit("绑定千顷ERP委外加工工厂", { id: factoryId, organizationCode: code, coreRefId: factoryId, commandType: "bind", submittedByName: actorName }, { binding, synchronization, delivery });
+    return { ok: true, binding, synchronization, delivery };
+  }
+
+  async function synchronizeOutsourcingProjections({ force = false, organizationCode = "", organizations: suppliedOrganizations = null } = {}) {
+    if (!enabled || !oemEnabled) return { scannedOrganizations: 0, queued: 0, unchanged: 0, skipped: 0, failed: 0, disabled: true };
+    const organizations = suppliedOrganizations || (organizationCode
+      ? [(await getOrganizationAccessGrants(organizationCode)).organization]
+      : ((await listOrganizations({ status: "active" })).organizations || []));
+    const productionOrganizations = organizations.filter((item) => item?.organizationType === "production_factory" && item.status !== "suspended" && item.status !== "archived");
+    let queued = 0;
+    let unchanged = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+    const warnings = [];
+    for (const organization of productionOrganizations) {
+      try {
+        const access = await assertOutsourcingOrganization(organization.code);
+        const binding = await resolveOutsourcingBinding(organization.code, access.organization || organization);
+        if (!binding) { skipped += 1; continue; }
+        const records = await listOutsourcingFactoryOrders(binding.factoryId);
+        let firstArticleRecords = [];
+        let craftOrderRecords = [];
+        try {
+          firstArticleRecords = await listFirstArticleRecords(records);
+        } catch (error) {
+          warnings.push(`${organization.code}: 首件记录读取失败，委外工单已继续同步（${error.message}）`);
+        }
+        try {
+          craftOrderRecords = await listCraftOrderRecords(records);
+        } catch (error) {
+          warnings.push(`${organization.code}: 工艺单产品封面读取失败，委外工单已继续同步（${error.message}）`);
+        }
+        const tracked = new Set(parsedState(store, outsourcingTrackedStateKey(organization.code), []));
+        const workItems = await listOrganizationWorkItems(organization.code, { itemType: "production_order", limit: 100 });
+        const existingByOrderNo = new Map((workItems.items || []).map((item) => [String(item.coreRefId || ""), item]));
+        const catalog = productLookup(listProducts());
+        const productionDueAt = new Map();
+        for (const record of records) {
+          const identity = outsourcingOrderIdentity(record);
+          if (!identity.orderNo || (!isActiveOutsourcingStatus(identity.status) && !tracked.has(identity.orderNo))) continue;
+          const existingItem = existingByOrderNo.get(identity.orderNo);
+          const stateKey = outsourcingProjectionStateKey(organization.code, identity.orderNo);
+          const previous = parsedState(store, stateKey, { fingerprint: "", version: 0 });
+          const version = inventoryProjectionVersion(Math.max(Number(previous.version || 0), Number(existingItem?.version || 0)));
+          const eventHash = createHash("sha256").update(`${organization.code}:${identity.orderNo}:${version}`).digest("hex").slice(0, 24);
+          let projection = outsourcingProjectionFromRecord(record, {
+            organizationCode: organization.code,
+            version,
+            currentStatus: existingItem?.status || "",
+            firstArticleRecords,
+            craftOrderRecords,
+            eventId: `jdy-outsourcing-${eventHash}`,
+          });
+          if (!projection) continue;
+          const product = catalog.get(normalizedSku(projection.lines[0]?.sku)) || {};
+          if (!projection.lines[0]?.imageUrl && product.imageUrl) {
+            const imageUrl = publicImageUrl(product.imageUrl);
+            projection = {
+              ...projection,
+              publicPayload: { ...projection.publicPayload, productImageUrl: imageUrl },
+              lines: projection.lines.map((line, index) => index === 0 ? { ...line, imageUrl } : line),
+            };
+          }
+          productionDueAt.set(identity.orderNo, projection.dueAt || "");
+          const fingerprint = outsourcingProjectionFingerprint(projection);
+          if (!force && previous.fingerprint === fingerprint) { unchanged += 1; tracked.add(identity.orderNo); continue; }
+          queuePartnerOrderProjection(projection);
+          store.setState(stateKey, JSON.stringify({ fingerprint, version, sourceUpdatedAt: identity.updatedAt }), nowIso());
+          tracked.add(identity.orderNo);
+          queued += 1;
+        }
+        const procurementGrant = (access.grants || []).find((grant) => grant.resourceType === "organization" && grant.resourceRef === "procurement" && grant.permissions?.includes("procurement.order.view"));
+        if (procurementGrant && tracked.size) {
+          try {
+            const { purchaseRecords = [], inboundRecords = [] } = await listOutsourcingPurchaseDocuments([...tracked]);
+            const purchaseWorkItems = await listOrganizationWorkItems(organization.code, { itemType: "purchase_order", limit: 500 });
+            const existingPurchaseByOrderNo = new Map((purchaseWorkItems.items || []).map((item) => [String(item.coreRefId || ""), item]));
+            const factoryNames = [binding.factoryName, binding.factoryFullName, organization.name].filter(Boolean);
+            for (const purchaseRecord of purchaseRecords) {
+              const identity = purchaseOrderIdentity(purchaseRecord);
+              if (!identity.orderNo || !tracked.has(identity.outsourcingOrderNo)) continue;
+              const existingItem = existingPurchaseByOrderNo.get(identity.orderNo);
+              const stateKey = purchaseProjectionStateKey(organization.code, identity.orderNo);
+              const previous = parsedState(store, stateKey, { fingerprint: "", version: 0 });
+              const version = inventoryProjectionVersion(Math.max(Number(previous.version || 0), Number(existingItem?.version || 0)));
+              const eventHash = createHash("sha256").update(`${organization.code}:${identity.orderNo}:${version}`).digest("hex").slice(0, 24);
+              const projection = purchaseProjectionFromRecord(purchaseRecord, {
+                organizationCode: organization.code,
+                factoryId: binding.factoryId,
+                factoryNames,
+                inboundRecords,
+                version,
+                currentStatus: existingItem?.status || "",
+                dueAt: productionDueAt.get(identity.outsourcingOrderNo) || "",
+                eventId: `jdy-purchase-${eventHash}`,
+              });
+              if (!projection) continue;
+              const fingerprint = outsourcingProjectionFingerprint(projection);
+              if (!force && previous.fingerprint === fingerprint) { unchanged += 1; continue; }
+              queuePartnerOrderProjection(projection);
+              store.setState(stateKey, JSON.stringify({ fingerprint, version, sourceUpdatedAt: identity.updatedAt }), nowIso());
+              queued += 1;
+            }
+          } catch (error) {
+            warnings.push(`${organization.code}: 采购单/采购入库单同步暂时失败，已保留上次同步数据（${error.message}）`);
+          }
+        }
+        store.setState(outsourcingTrackedStateKey(organization.code), JSON.stringify([...tracked].sort()), nowIso());
+        store.setState(`outsourcing_last_sync:${organization.code}`, nowIso(), nowIso());
+      } catch (error) {
+        failed += 1;
+        errors.push(`${organization.code}: ${error.message}`);
+      }
+    }
+    if (!failed) store.setState("outsourcing_projection_last_scan_at", nowIso(), nowIso());
+    return { scannedOrganizations: productionOrganizations.length, queued, unchanged, skipped, failed, disabled: false, errors, warnings };
+  }
+
+  function outsourcingProjectionSyncDue() {
+    const lastScan = Date.parse(store.state("outsourcing_projection_last_scan_at"));
+    return !Number.isFinite(lastScan) || Date.now() - lastScan >= Math.max(60_000, outsourcingSyncIntervalMs);
+  }
+
+  function listOrganizationWorkItems(code, filters = {}) {
+    const query = new URLSearchParams({ organizationCode: String(code) });
+    for (const key of ["status", "itemType", "keyword", "limit", "offset"]) {
+      if (filters[key] !== undefined && String(filters[key]).trim()) query.set(key, String(filters[key]));
+    }
+    return internalRequest(`/collaboration/internal/v1/work-items?${query.toString()}`);
+  }
+
+  async function getOrganizationWorkItem(code, workItemId) {
+    const detail = await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}`);
+    if (String(detail?.item?.organizationCode || "") !== String(code || "")) fail("该协同单据不属于当前组织。", 403, "organization_scope_denied");
+    if (!["production_order", "purchase_order", "sampling_task"].includes(String(detail?.item?.itemType || ""))) fail("该单据不属于伙伴生产协同范围。", 403, "partner_task_type_denied");
+    return detail;
+  }
+
+  async function downloadOrganizationWorkItemAttachment(code, workItemId, attachmentId) {
+    await getOrganizationWorkItem(code, workItemId);
+    const response = await internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/attachments/${encodeURIComponent(attachmentId)}`, { raw: true });
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") || "application/octet-stream",
+      contentDisposition: response.headers.get("content-disposition") || "attachment",
+    };
+  }
+
+  async function uploadOrganizationWorkItemAttachment(code, workItemId, file, { actorName = "供应链中台管理员" } = {}) {
+    await getOrganizationWorkItem(code, workItemId);
+    const fileName = String(file?.fileName || "").trim();
+    const mimeType = String(file?.mimeType || "").trim();
+    const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.from(file?.buffer || "");
+    if (!fileName || !mimeType || !buffer.length) fail("附件名称、类型和内容不能为空。", 400, "invalid_attachment");
+    return internalRequest(`/collaboration/internal/v1/work-items/${encodeURIComponent(workItemId)}/attachments`, {
+      method: "PUT",
+      rawBody: buffer,
+      headers: {
+        "Content-Type": mimeType,
+        "Content-Length": String(buffer.length),
+        "X-File-Name": encodeURIComponent(fileName),
+        "X-Actor-Name": encodeURIComponent(actorName),
+      },
+    });
+  }
+
+  async function publishPartnerTask(code, input, { actorName = "供应链中台管理员" } = {}) {
+    if (!oemEnabled) fail("生产、采购与打样协同尚未启用。", 403, "feature_disabled");
+    const task = internalPartnerTaskSchema.parse(input);
+    const documentNo = task.taskType === "sampling_task" ? (task.documentNo || generatedSamplingDocumentNo(task.sampleCategory)) : task.documentNo;
+    const taskTitle = task.title || `${task.productName} · ${task.sampleCategory === "packaging" ? "包材打样" : "料体打样"}`;
+    if (task.taskType === "production_order") fail("委外加工单由千顷 ERP 自动同步，请先绑定委外灌装工厂，不要重复手工录单。", 409, "source_managed_task");
+    const access = await getOrganizationAccessGrants(code);
+    const required = {
+      production_order: { resourceRef: "production", permission: "production.order.view" },
+      purchase_order: { resourceRef: "procurement", permission: "procurement.order.view" },
+      sampling_task: { resourceRef: "sampling", permission: "sampling.task.view" },
+    }[task.taskType];
+    const grant = (access.grants || []).find((item) => item.resourceType === "organization" && item.resourceRef === required.resourceRef);
+    if (!grant?.permissions?.includes(required.permission)) {
+      const label = required.resourceRef === "production" ? "委外加工" : required.resourceRef === "procurement" ? "物料采购" : "打样";
+      fail(`目标组织尚未开通${label}权限。`, 403, "resource_not_granted");
+    }
+    const version = collaborationProjectionVersion();
+    const eventId = projectionId(task.taskType === "sampling_task" ? "sampling" : "partner-order");
+    const deliveryDate = task.dueAt ? task.dueAt.slice(0, 10) : "";
+    let queued;
+    if (task.taskType === "sampling_task") {
+      queued = queueOemProjection({
+        eventId,
+        organizationCode: code,
+        coreRefType: "sampling_order",
+        coreRefId: documentNo,
+        spaceType: "sampling",
+        itemType: "sampling_task",
+        title: taskTitle,
+        description: task.description || task.requirements,
+        priority: task.priority,
+        status: "pending",
+        dueAt: task.dueAt,
+        version,
+        publicPayload: {
+          projectCode: documentNo,
+          productName: task.productName,
+          productSpec: task.productSpec,
+          documentVersion: `V${version}`,
+          requirements: task.requirements,
+          quantity: task.quantity,
+          unit: task.unit,
+          deliveryDate,
+          sampleCategory: task.sampleCategory,
+          sampleSubject: task.sampleSubject,
+          sampleGoal: task.sampleGoal,
+          evaluationCriteria: task.evaluationCriteria,
+          quoteRequired: task.quoteRequired,
+          packagingSpec: task.sampleCategory === "packaging" ? task.packagingSpec : undefined,
+        },
+        milestones: [],
+      });
+    } else {
+      const production = task.taskType === "production_order";
+      queued = queuePartnerOrderProjection({
+        eventId,
+        organizationCode: code,
+        coreRefType: production ? "outsourcing_order" : "material_purchase_order",
+        coreRefId: task.documentNo,
+        orderType: production ? "production" : "purchase",
+        itemType: task.taskType,
+        title: taskTitle,
+        description: task.description || task.requirements,
+        priority: task.priority,
+        status: "pending",
+        dueAt: task.dueAt,
+        version,
+        publicPayload: {
+          orderNo: documentNo,
+          productName: task.productName,
+          fulfillmentMode: production ? task.fulfillmentMode : "supplier",
+          requirements: task.requirements,
+          quantity: task.quantity,
+          unit: task.unit,
+          deliveryDate,
+          deliveryAddress: task.deliveryAddress,
+        },
+        lines: task.lines.map((line, index) => ({
+          lineRef: `${documentNo}-${String(index + 1).padStart(3, "0")}`.slice(0, 120),
+          lineType: line.lineType || (production ? "finished_product" : "raw_material"),
+          sku: normalizedSku(line.sku),
+          productName: line.productName,
+          specification: line.specification,
+          imageUrl: publicImageUrl(line.imageUrl),
+          plannedQuantity: line.plannedQuantity,
+          unit: line.unit,
+          responsibility: production ? "factory" : "supplier",
+        })),
+        milestones: [],
+      });
+    }
+    const delivery = await flushOutbox();
+    onAudit("发布伙伴生产/采购/打样单", { id: eventId, organizationCode: code, coreRefId: documentNo, commandType: "publish", submittedByName: actorName }, { taskType: task.taskType, status: queued.status, delivery });
+    let workItemId = "";
+    if (delivery.published > 0 && delivery.failed === 0) {
+      const published = await listOrganizationWorkItems(code, { itemType: task.taskType, keyword: documentNo, limit: 20 });
+      workItemId = published.items.find((item) => item.coreRefId === documentNo)?.id || "";
+    }
+    return { ok: true, eventId, coreRefId: documentNo, workItemId, status: queued.status, delivery };
   }
 
   async function replaceOrganizationAccessGrants(code, input) {
@@ -609,6 +1066,10 @@ export function createCollaborationBridge({
     return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}`, { method: "PATCH", body: input });
   }
 
+  function updateMemberCredentials(code, membershipId, input) {
+    return internalRequest(`/collaboration/internal/v1/organizations/${encodeURIComponent(code)}/members/${encodeURIComponent(membershipId)}/credentials`, { method: "PATCH", body: input });
+  }
+
   function reissueInvitation(invitationId, input) {
     return internalRequest(`/collaboration/internal/v1/invitations/${encodeURIComponent(invitationId)}/reissue`, { method: "POST", body: input });
   }
@@ -622,12 +1083,13 @@ export function createCollaborationBridge({
     running = true;
     try {
       const inventoryProjections = inventoryProjectionSyncDue() ? await synchronizeInventoryProjections() : { skipped: true, reason: "not_due" };
+      const outsourcingProjections = outsourcingProjectionSyncDue() ? await synchronizeOutsourcingProjections() : { skipped: true, reason: "not_due" };
       const outbox = await flushOutbox();
       const commandResults = await retryPendingResults();
       const commands = await pullCommands();
       lastError = "";
       if (enabled) store.setState("last_successful_sync_at", nowIso(), nowIso());
-      return { ok: true, inventoryProjections, outbox, commandResults, commands };
+      return { ok: true, inventoryProjections, outsourcingProjections, outbox, commandResults, commands };
     } catch (error) {
       lastError = error.message;
       return { ok: false, message: error.message, code: error.code || "sync_failed" };
@@ -637,7 +1099,7 @@ export function createCollaborationBridge({
   }
 
   function status() {
-    return { ok: true, enabled, oemEnabled, running, baseUrl: normalizedBaseUrl, pollIntervalMs, inventorySyncIntervalMs, lastError, ...store.status() };
+    return { ok: true, enabled, oemEnabled, running, baseUrl: normalizedBaseUrl, pollIntervalMs, inventorySyncIntervalMs, outsourcingSyncIntervalMs, lastError, ...store.status() };
   }
 
   function start() {
@@ -662,33 +1124,49 @@ export function createCollaborationBridge({
 
   return {
     bootstrapOrganization,
+    downloadOrganizationWorkItemAttachment,
     downloadWarehouseTaskAttachment,
     flushOutbox,
     awardOemQuote,
     getOrganizationAccess,
     getOrganizationAccessGrants,
+    getPartnerAiConfig,
+    getPartnerAiHealth,
+    getOrganizationWorkItem,
+    getOutsourcingSourceBinding,
     getWarehouseTask,
     listOrganizations,
+    listOrganizationWorkItems,
     listApprovals: () => store.listCommands(["awaiting_approval"], 200),
     listOemQuotes,
     listWarehouseTaskOptions,
     listWarehouseTasks,
     pullCommands,
     provisionOrganization,
+    publishPartnerTask,
     publishWarehouseTask,
     queueInventoryProjection,
     queueOemProjection,
+    queuePartnerOrderProjection,
     queueProjection,
     reissueInvitation,
+    remindWarehouseTask,
     replaceOrganizationAccessGrants,
     reviewCommand,
+    reviewSampleArtifact,
     revokeInvitation,
+    saveOutsourcingSourceBinding,
+    savePartnerAiConfig,
     start,
     status,
     stop,
     synchronize,
     synchronizeInventoryProjections,
+    synchronizeOutsourcingProjections,
+    testPartnerAiAsr,
     updateOrganizationStatus,
+    updateMemberCredentials,
+    uploadOrganizationWorkItemAttachment,
     waitForIdle,
   };
 }

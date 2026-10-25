@@ -252,6 +252,8 @@ import { getQualificationExpiryInfo, qualificationExpiryRank, type Qualification
 import { handoffToHermes } from "./hermes/handoff";
 import "./styles.css";
 import "./theme-refresh.css";
+import "../collaboration/shared/ui-tokens.css";
+import "../collaboration/shared/operational-ui.css";
 
 const ContainerLoadingPage = React.lazy(() => import("./container-loading/ContainerLoadingPage"));
 const HermesAgentWorkspace = React.lazy(() => import("./hermes/HermesAgentWorkspace").then((module) => ({ default: module.HermesAgentWorkspace })));
@@ -2009,7 +2011,7 @@ function App() {
             {currentUser.role !== "guest" ? (
               <>
                 {hasUserPermission(currentUser, "product_sync") ? (
-                  <button className="sync-button" onClick={handleSync} disabled={syncing}>
+                  <button className="sync-button header-sync-button" onClick={handleSync} disabled={syncing}>
                     <RefreshCw size={16} className={syncing ? "spinning" : ""} />
                     {translate(currentLocale, syncing ? "同步中" : "同步产品数据")}
                   </button>
@@ -4833,8 +4835,20 @@ function StockupCenter({
   const [workflowTab, setWorkflowTab] = React.useState<"overview" | "demands" | "execution" | "costs" | "ledger" | "coding">("overview");
   const [inboundLimit, setInboundLimit] = React.useState(100);
   const [inboundLoading, setInboundLoading] = React.useState(false);
+  const [batchAccepting, setBatchAccepting] = React.useState(false);
   const isRecommendationPage = pageMode === "recommendations";
   const inboundTotal = stockupPayload?.pagination?.inbound?.total ?? inboundOrders.length;
+  const pendingRecommendations = recommendations.filter((item) => item.decisionStatus !== "accepted");
+
+  async function acceptPendingRecommendations() {
+    if (!pendingRecommendations.length || batchAccepting) return;
+    setBatchAccepting(true);
+    try {
+      for (const item of pendingRecommendations) await onDecision(item, "accept");
+    } finally {
+      setBatchAccepting(false);
+    }
+  }
 
   async function loadMoreInbound() {
     if (!onLoadMoreInbound || inboundLoading || inboundOrders.length >= inboundTotal) return;
@@ -4951,7 +4965,7 @@ function StockupCenter({
           <div className="stockup-command-actions">
             <span className="status-pill good">建议 SKU {formatNumber(stockupPayload?.counts.recommendations ?? 0)}</span>
             <span className="status-pill muted">净建议 {formatNumber(stockupPayload?.counts.netRecommendedQty ?? 0)}</span>
-            {canManage ? <button className="sync-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS 备货单"}</button> : <span className="status-pill muted">只读查看</span>}
+            {canManage ? <><button className="sync-button" type="button" onClick={() => void acceptPendingRecommendations()} disabled={syncing || batchAccepting || !pendingRecommendations.length}><Check size={15} />{batchAccepting ? "批量采纳中" : `批量采纳 ${pendingRecommendations.length} 项`}</button><button className="ghost-button compact-button" type="button" onClick={onSyncStockup} disabled={syncing}><RefreshCw size={15} className={syncing ? "spinning" : ""} />{syncing ? "同步中" : "同步 WMS"}</button></> : <span className="status-pill muted">只读查看</span>}
           </div>
         </section>
       ) : <>
@@ -7360,8 +7374,10 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                   {robot.lastError ? <small className="wecom-error">{robot.lastError}</small> : <small>最近发送：{robot.lastSentAt ? formatDateTime(robot.lastSentAt) : "暂无"}</small>}
                 </div>
                 <span className={`status-pill ${robot.enabled ? "good" : "muted"}`}>{robot.enabled ? "启用" : "停用"}</span>
-                <button className="ghost-button compact-button" type="button" onClick={() => editRobot(robot)}>编辑</button>
-                <button className="ghost-button compact-button danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除</button>
+                <OverflowMenu label={`${robot.name} 更多操作`}>
+                  <button type="button" onClick={() => editRobot(robot)}>编辑机器人</button>
+                  <button className="danger-button" type="button" disabled={busy === robot.id} onClick={() => removeRobot(robot)}>删除机器人</button>
+                </OverflowMenu>
               </article>
             )) : <div className="stockup-empty">暂无机器人。先创建一个企业微信群机器人 webhook。</div>}
           </div>

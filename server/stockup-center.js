@@ -153,7 +153,15 @@ export function buildStockupPayload(movementPayload, stockupSync = {}, outsourci
         avgDaily7: firstNumber(item.avgDaily7),
         avgDaily30: firstNumber(item.avgDaily30),
         avgDaily90: firstNumber(item.avgDaily90),
+        trend30: Array.isArray(item.trend30) ? item.trend30.map(firstNumber) : [],
+        yesterdayOutboundQty: item.yesterdayOutboundQty === null || item.yesterdayOutboundQty === undefined
+          ? null
+          : firstNumber(item.yesterdayOutboundQty),
+        yesterdayReservedQty: item.yesterdayReservedQty === null || item.yesterdayReservedQty === undefined
+          ? null
+          : firstNumber(item.yesterdayReservedQty),
         daysCover: item.daysCover,
+        estimatedStockoutDate: firstText(item.estimatedStockoutDate),
         leadDays: firstNumber(item.leadDays),
         targetCoverDays: firstNumber(item.targetCoverDays),
         replenishQty,

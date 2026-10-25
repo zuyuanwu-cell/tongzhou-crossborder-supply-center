@@ -539,3 +539,26 @@
   .oir-hero-aside { width: 100%; padding: 15px 17px; border: 1px solid #d6e0ec; }
   .oir-control-bar { background: #fff; }
 }
+
+/* Operational typography and semantic-color convergence. */
+.oir-page { font-family: var(--op-font-sans); }
+.oir-page :where(p, span, small, em, code, label, button, input, select, textarea, th, td) { font-size: max(12px, 1em); }
+.oir-hero { min-height: 180px; padding: 25px 28px; border-left-width: 1px; }
+.oir-hero::after { display: none; }
+.oir-kicker { color: var(--op-blue-700); font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+.oir-hero h2 { margin: 10px 0 8px; color: var(--op-slate-900); font-size: 24px; line-height: 30px; }
+.oir-hero p { font-size: 14px; }
+.oir-source-row { margin-top: 20px; }
+.oir-source-chip, .oir-hero-aside > span, .oir-hero-aside > small, .oir-hero-aside > em,
+.oir-hero-aside > i, .oir-date-range, .oir-notice, .oir-metric-eyebrow,
+.oir-metric-value span, .oir-metric-foot, .oir-delta small, .oir-section-heading span,
+.oir-section-heading p, .oir-equation > div small, .oir-formula-warning,
+.oir-warehouse-name small, .oir-sku-table td small, .oir-cell-note,
+.oir-lifecycle-flow button > span, .oir-lifecycle-flow button em,
+.oir-lifecycle-flow button small, .oir-all-returns, .oir-coverage-score span,
+.oir-coverage > p { font-size: 12px; }
+.oir-button, .oir-period-tabs button, .oir-anchor-date, .oir-date-range input,
+.oir-filter-cluster select, .oir-search input { font-size: 14px; font-weight: 600; }
+.oir-warehouse-table, .oir-sku-table { font-size: 14px; }
+.oir-warehouse-table th, .oir-sku-table th { font-size: 12px; }
+.oir-equation .negative strong, .oir-warehouse-table .outbound, .oir-sku-table .outbound { color: var(--op-slate-700); }

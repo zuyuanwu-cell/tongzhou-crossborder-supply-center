@@ -125,6 +125,7 @@ try {
   assert.equal(approved.status, "inventory_ready");
   assert.equal(service.reviewInspection(workOrder.id, { action: "approve" }, context).idempotentReplay, true);
   assert.equal(service.warehouseWorkOrderDashboard({}, context).counts.inventory_ready, 1);
+  assert.equal(service.warehouseWorkOrderDashboard({}, context).counts.overdue, 0, "approved warehouse receipts must not remain overdue");
   const warehouseProgress = service.getRequest(request.id, context).lines[0];
   assert.equal(warehouseProgress.fulfilledQty, 18);
   assert.equal(warehouseProgress.warehouseReceivedQty, 19);

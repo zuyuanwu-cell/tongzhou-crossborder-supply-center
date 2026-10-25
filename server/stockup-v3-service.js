@@ -96,6 +96,18 @@ function deriveJourney(allocations, request) {
   }
   const active = allocations.filter((item) => ACTIVE_ALLOCATION_STATUSES.has(item.status));
   if (!active.length) {
+    const legacyProgressed = {
+      purchasing: { journeyStage: "sourcing", ownerRole: "supply_chain", nextAction: { key: "review_legacy_execution", label: "查看供应执行", target: "supply_execution", objectId: request.id, enabled: true, reason: "" } },
+      in_progress: { journeyStage: text(request.journeyStage) || "sourcing", ownerRole: "supply_chain", nextAction: { key: "review_legacy_execution", label: "查看供应执行", target: "supply_execution", objectId: request.id, enabled: true, reason: "" } },
+      warehouse_inspection: { journeyStage: "consolidating", ownerRole: "domestic_warehouse", nextAction: { key: "review_warehouse_work", label: "查看国内仓作业", target: "warehouse", objectId: request.id, enabled: true, reason: "" } },
+      inspection_review: { journeyStage: "consolidating", ownerRole: "domestic_warehouse", nextAction: { key: "review_inspection", label: "审核仓库验收", target: "warehouse", objectId: request.id, enabled: true, reason: "" } },
+      inventory_ready: { journeyStage: "ready_to_ship", ownerRole: "logistics", nextAction: { key: "create_shipment", label: "创建发运计划", target: "logistics", objectId: request.id, enabled: true, reason: "" } },
+      inventory_reserved: { journeyStage: "shipment_planning", ownerRole: "logistics", nextAction: { key: "continue_shipment", label: "继续处理发运批次", target: "logistics", objectId: request.id, enabled: true, reason: "" } },
+      wms_created: { journeyStage: "shipment_planning", ownerRole: "logistics", nextAction: { key: "continue_shipment", label: "继续处理发运批次", target: "logistics", objectId: request.id, enabled: true, reason: "" } },
+      instruction_issued: { journeyStage: "shipment_planning", ownerRole: "logistics", nextAction: { key: "continue_shipment", label: "继续处理发运批次", target: "logistics", objectId: request.id, enabled: true, reason: "" } },
+      handed_over: { journeyStage: "in_transit", ownerRole: "logistics", nextAction: { key: "track_shipment", label: "查看物流进度", target: "logistics", objectId: request.id, enabled: true, reason: "" } },
+    }[text(request.status)];
+    if (legacyProgressed) return { ...legacyProgressed, blockers: [] };
     return {
       journeyStage: request.status === "draft" ? "draft" : "route_planning",
       ownerRole: "supply_chain",

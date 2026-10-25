@@ -63,6 +63,7 @@ const permissionDefinitions = [
   ["warehouse_return_query", "WMS退货查询", "海外仓协同"],
   ["warehouse_ticket_report", "仓库工单提交", "海外仓协同"],
   ["warehouse_ticket_warehouse", "仓库工单处理", "海外仓协同"],
+  ["warehouse_qualification_coverage", "本仓资质覆盖查询", "海外仓协同"],
   ["warehouse_liability_settlement", "仓库责任费用核销", "海外仓协同"],
   ["collaboration_task_view", "伙伴协同任务查看", "伙伴协同"],
   ["collaboration_task_publish", "伙伴协同任务发布", "伙伴协同"],
@@ -185,6 +186,7 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "domestic_inventory_adjust",
     "after_sales_warehouse",
     "warehouse_ticket_warehouse",
+    "warehouse_qualification_coverage",
     "stockup_request_view_all",
     "stockup_receipt_confirm",
   ]),
@@ -216,7 +218,7 @@ const DOMESTIC_INVENTORY_DENIED_ROLES = new Set(["distributor", "guest"]);
 const DOMESTIC_INVENTORY_PERMISSION_KEYS = Object.freeze(["domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage"]);
 const COLLABORATION_TASK_PERMISSION_KEYS = Object.freeze(["collaboration_task_view", "collaboration_task_publish"]);
 const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync", "system_backup"]);
-const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "stockup_request_view_all", "stockup_receipt_confirm"]);
+const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "warehouse_qualification_coverage", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
   return ["admin", "direct", "warehouse", "distributor"].includes(user?.role) ? user.role : "guest";
@@ -327,6 +329,9 @@ export function effectivePermissions(user) {
     effective.add("container_loading_view");
     effective.add("container_loading_manage");
   }
+  // Warehouse users created before this scoped read-only permission existed
+  // receive it automatically. An explicit user deny below still wins.
+  if (role === "warehouse") effective.add("warehouse_qualification_coverage");
   if (effective.has("container_loading_manage") || effective.has("container_loading_confirm")) effective.add("container_loading_view");
   for (const permission of overrides.deny) effective.delete(permission);
 
@@ -347,6 +352,7 @@ export function effectivePermissions(user) {
     effective.delete("warehouse_return_query");
     effective.delete("warehouse_ticket_report");
     effective.delete("warehouse_ticket_warehouse");
+    effective.delete("warehouse_qualification_coverage");
     effective.delete("warehouse_liability_settlement");
     for (const permission of COLLABORATION_TASK_PERMISSION_KEYS) effective.delete(permission);
   }
@@ -451,7 +457,7 @@ export function sanitizePermissionUpdate(role, input) {
     overrides.allow = overrides.allow.filter((key) => !["users", "operations"].includes(key));
   }
   if (WAREHOUSE_COLLABORATION_DENIED_ROLES.has(role)) {
-    overrides.allow = overrides.allow.filter((key) => !["inventory_reconciliation", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_liability_settlement", ...COLLABORATION_TASK_PERMISSION_KEYS].includes(key));
+    overrides.allow = overrides.allow.filter((key) => !["inventory_reconciliation", "after_sales_report", "after_sales_warehouse", "warehouse_return_query", "warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_qualification_coverage", "warehouse_liability_settlement", ...COLLABORATION_TASK_PERMISSION_KEYS].includes(key));
   }
   if (MIAOSHOU_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => key !== "miaoshou" && !MIAOSHOU_PERMISSION_KEYS.includes(key));

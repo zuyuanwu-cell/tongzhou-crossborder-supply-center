@@ -1,4 +1,5 @@
 import { ZodError } from "zod";
+import { withDataContext } from "../collaboration/shared/data-context.js";
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -20,6 +21,27 @@ function readBody(req) {
       catch { reject(Object.assign(new Error("请求 JSON 格式不正确。"), { statusCode: 400 })); }
     });
     req.on("error", reject);
+  });
+}
+
+function readBinaryBody(req, maxBytes = 50 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    req.on("data", (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        settled = true;
+        reject(Object.assign(new Error("附件不能超过 50MB。"), { statusCode: 413, code: "attachment_too_large" }));
+        req.resume();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => { if (!settled) resolve(Buffer.concat(chunks, size)); });
+    req.on("error", (error) => { if (!settled) reject(error); });
   });
 }
 
@@ -58,7 +80,19 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         }
         if (suffix === "/warehouse-tasks" && req.method === "GET") {
           if (!canViewTasks(auth)) throw Object.assign(new Error("当前账号没有查看协同任务的权限。"), { statusCode: 403, code: "forbidden" });
-          sendJson(res, 200, await bridge.listWarehouseTasks(Object.fromEntries(url.searchParams.entries()), { warehouseIds, skus }));
+          const filters = Object.fromEntries(url.searchParams.entries());
+          const payload = await bridge.listWarehouseTasks(filters, { warehouseIds, skus });
+          const latest = (payload.items || []).map((item) => item.updatedAt).filter(Boolean).sort().at(-1);
+          sendJson(res, 200, withDataContext(payload, {
+            generatedAt: new Date().toISOString(),
+            effectiveAt: latest || new Date().toISOString(),
+            source: "live",
+            scopeKey: "domestic_collaboration_tasks",
+            scopeLabel: filters.organizationCode ? `协同组织 ${filters.organizationCode}` : "当前账号可见国内仓协同任务",
+            filters,
+            completeness: "complete",
+            coverage: { completed: payload.items?.length || 0, total: payload.total || 0, unit: "order" },
+          }));
           return true;
         }
         if (suffix === "/warehouse-tasks" && req.method === "POST") {
@@ -76,6 +110,16 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
           const download = await bridge.downloadWarehouseTaskAttachment(attachmentMatch[1], attachmentMatch[2], { warehouseIds, skus });
           res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
           res.end(download.buffer);
+          return true;
+        }
+        const reminderMatch = suffix.match(/^\/warehouse-tasks\/([0-9a-fA-F-]{36})\/remind$/);
+        if (reminderMatch && req.method === "POST") {
+          if (!canPublishTasks(auth)) throw Object.assign(new Error("当前账号没有催办协同任务的权限。"), { statusCode: 403, code: "forbidden" });
+          const input = await readBody(req);
+          const actorName = auth.user?.displayName || auth.user?.username || "供应链中台";
+          const result = await bridge.remindWarehouseTask(reminderMatch[1], { note: input.note, actorName }, { warehouseIds, skus });
+          appendActionLog(auth, "催办伙伴协同任务", "collaboration_work_item", reminderMatch[1], { remindedAt: result.remindedAt || "" });
+          sendJson(res, 200, result);
           return true;
         }
         const taskMatch = suffix.match(/^\/warehouse-tasks\/([0-9a-fA-F-]{36})$/);
@@ -115,6 +159,69 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 201, { ok: true, ...result });
         return true;
       }
+      const organizationOutsourcingBindingMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/outsourcing-source$/);
+      if (organizationOutsourcingBindingMatch && req.method === "GET") {
+        const code = decodeURIComponent(organizationOutsourcingBindingMatch[1]);
+        sendJson(res, 200, await bridge.getOutsourcingSourceBinding(code, { refresh: url.searchParams.get("refresh") === "1" }));
+        return true;
+      }
+      if (organizationOutsourcingBindingMatch && req.method === "PUT") {
+        const code = decodeURIComponent(organizationOutsourcingBindingMatch[1]);
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.saveOutsourcingSourceBinding(code, input, { actorName });
+        appendActionLog(auth, "绑定千顷ERP委外加工工厂", "collaboration_organization", code, { factoryId: result.binding.factoryId, factoryName: result.binding.factoryName, synchronization: result.synchronization });
+        sendJson(res, 200, result);
+        return true;
+      }
+      const organizationOutsourcingSyncMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/outsourcing-source\/sync$/);
+      if (organizationOutsourcingSyncMatch && req.method === "POST") {
+        const code = decodeURIComponent(organizationOutsourcingSyncMatch[1]);
+        const synchronization = await bridge.synchronizeOutsourcingProjections({ organizationCode: code });
+        const delivery = await bridge.flushOutbox();
+        appendActionLog(auth, "同步千顷ERP委外加工单", "collaboration_organization", code, { synchronization, delivery });
+        sendJson(res, 200, { ok: true, synchronization, delivery });
+        return true;
+      }
+      const organizationWorkItemsMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items$/);
+      if (organizationWorkItemsMatch && req.method === "GET") {
+        const code = decodeURIComponent(organizationWorkItemsMatch[1]);
+        sendJson(res, 200, { ok: true, ...(await bridge.listOrganizationWorkItems(code, Object.fromEntries(url.searchParams.entries()))) });
+        return true;
+      }
+      const organizationWorkItemAttachmentMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})\/attachments\/([0-9a-fA-F-]{36})$/);
+      if (organizationWorkItemAttachmentMatch && req.method === "GET") {
+        const download = await bridge.downloadOrganizationWorkItemAttachment(decodeURIComponent(organizationWorkItemAttachmentMatch[1]), organizationWorkItemAttachmentMatch[2], organizationWorkItemAttachmentMatch[3]);
+        res.writeHead(200, { "Content-Type": download.contentType, "Content-Disposition": download.contentDisposition, "Content-Length": download.buffer.length, "Cache-Control": "private, no-store" });
+        res.end(download.buffer);
+        return true;
+      }
+      const organizationWorkItemUploadMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})\/attachments$/);
+      if (organizationWorkItemUploadMatch && req.method === "PUT") {
+        const code = decodeURIComponent(organizationWorkItemUploadMatch[1]);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const fileName = decodeURIComponent(String(req.headers["x-file-name"] || ""));
+        const mimeType = String(req.headers["content-type"] || "").split(";")[0].trim();
+        const buffer = await readBinaryBody(req);
+        const result = await bridge.uploadOrganizationWorkItemAttachment(code, organizationWorkItemUploadMatch[2], { fileName, mimeType, buffer }, { actorName });
+        appendActionLog(auth, "上传伙伴协同需求附件", "collaboration_work_item", organizationWorkItemUploadMatch[2], { organizationCode: code, fileName, sizeBytes: buffer.length });
+        sendJson(res, 201, { ok: true, ...result });
+        return true;
+      }
+      const organizationWorkItemMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/work-items\/([0-9a-fA-F-]{36})$/);
+      if (organizationWorkItemMatch && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationWorkItem(decodeURIComponent(organizationWorkItemMatch[1]), organizationWorkItemMatch[2])) });
+        return true;
+      }
+      if (organizationWorkItemsMatch && req.method === "POST") {
+        const code = decodeURIComponent(organizationWorkItemsMatch[1]);
+        const input = await readBody(req);
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.publishPartnerTask(code, input, { actorName });
+        appendActionLog(auth, "发布伙伴生产/采购/打样单", "collaboration_work_item", result.coreRefId, { organizationCode: code, taskType: input.taskType || "", eventId: result.eventId, delivery: result.delivery });
+        sendJson(res, 201, result);
+        return true;
+      }
       const organizationMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})$/);
       if (organizationMatch && req.method === "GET") {
         sendJson(res, 200, { ok: true, ...(await bridge.getOrganizationAccess(decodeURIComponent(organizationMatch[1]))) });
@@ -125,6 +232,17 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
         const result = await bridge.updateOrganizationStatus(decodeURIComponent(organizationMatch[1]), { ...input, actorName });
         appendActionLog(auth, input.status === "active" ? "启用协作组织" : "停用协作组织", "collaboration_organization", decodeURIComponent(organizationMatch[1]), { status: input.status || "" });
+        sendJson(res, 200, { ok: true, ...result });
+        return true;
+      }
+      const memberCredentialsMatch = suffix.match(/^\/organizations\/([a-z0-9][a-z0-9_-]{1,63})\/members\/([0-9a-fA-F-]{36})\/credentials$/);
+      if (memberCredentialsMatch && req.method === "PATCH") {
+        const input = await readBody(req);
+        const code = decodeURIComponent(memberCredentialsMatch[1]);
+        const membershipId = memberCredentialsMatch[2];
+        const actorName = auth.user?.displayName || auth.user?.username || "供应链中台管理员";
+        const result = await bridge.updateMemberCredentials(code, membershipId, { ...input, actorName });
+        appendActionLog(auth, input.password ? "重置协同伙伴账号与密码" : "修改协同伙伴登录账号", "collaboration_membership", membershipId, { organizationCode: code, username: input.username || "", passwordReset: Boolean(input.password) });
         sendJson(res, 200, { ok: true, ...result });
         return true;
       }
@@ -171,6 +289,12 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         sendJson(res, 202, { ok: true, eventId: result.id, status: result.status });
         return true;
       }
+      if (suffix === "/partner-orders/projections" && req.method === "POST") {
+        const result = bridge.queuePartnerOrderProjection(await readBody(req));
+        appendActionLog(auth, "发布伙伴生产/采购订单", "partner_order_projection", result.projection.publicPayload.orderNo, { eventId: result.id, organizationCode: result.projection.organizationCode, coreRefId: result.projection.coreRefId, orderType: result.projection.orderType });
+        sendJson(res, 202, { ok: true, eventId: result.id, status: result.status });
+        return true;
+      }
       if (suffix === "/oem/quotes" && req.method === "GET") {
         sendJson(res, 200, await bridge.listOemQuotes(url.searchParams.get("coreRefId") || ""));
         return true;
@@ -180,6 +304,15 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         const input = await readBody(req);
         const result = await bridge.awardOemQuote(decodeURIComponent(awardMatch[1]), { ...input, reviewer: auth.user?.displayName || auth.user?.username || "供应链中台" });
         appendActionLog(auth, "审批并定标包装报价", "supplier_quote", decodeURIComponent(awardMatch[1]), { approvalReference: input.approvalReference || "" });
+        sendJson(res, 200, result);
+        return true;
+      }
+      const sampleReviewMatch = suffix.match(/^\/oem\/artifacts\/([0-9a-fA-F-]{36})\/review$/);
+      if (sampleReviewMatch && req.method === "POST") {
+        const input = await readBody(req);
+        const reviewer = auth.user?.displayName || auth.user?.username || "供应链中台";
+        const result = await bridge.reviewSampleArtifact(sampleReviewMatch[1], { ...input, reviewer });
+        appendActionLog(auth, input.approved ? "确认最终样" : "要求重新打样", "oem_artifact", sampleReviewMatch[1], { note: input.note || "", version: result.version });
         sendJson(res, 200, result);
         return true;
       }
