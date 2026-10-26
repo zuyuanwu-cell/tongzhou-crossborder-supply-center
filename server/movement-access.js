@@ -5,6 +5,14 @@ function matchesWarehouseScope(record, scopes) {
   return scopes.warehouseIds.includes(String(record?.warehouseId || record?.id || "").trim());
 }
 
+function matchesWarehouseConnectionScope(connection, scopes) {
+  if (!scopes.warehouseIds.length) return true;
+  const identifiers = [connection?.id, connection?.warehouseId, connection?.resolvedWarehouseId]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return identifiers.some((identifier) => scopes.warehouseIds.includes(identifier));
+}
+
 function matchesMovementScope(record, scopes) {
   return matchesWarehouseScope(record, scopes) && isWithinDataScope(record, scopes);
 }
@@ -20,7 +28,7 @@ export function scopeMovementSources({ products, warehouse, orders, connections 
     return [item.sku, item.skuNo].some((value) => visibleSkus.has(String(value || "").toUpperCase()));
   });
   const countryScope = { countries: scopes.countries, warehouseIds: [], skus: [] };
-  const scopedConnections = (connections || []).filter((item) => matchesWarehouseScope(item, scopes) && isWithinDataScope(item, countryScope));
+  const scopedConnections = (connections || []).filter((item) => matchesWarehouseConnectionScope(item, scopes) && isWithinDataScope(item, countryScope));
   const visibleWarehouseIds = new Set(scopedConnections.map((item) => item.id));
   const filterWarehouseRecord = (item) => {
     if (!matchesMovementScope(item, scopes)) return false;

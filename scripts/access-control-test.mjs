@@ -108,8 +108,8 @@ const scoped = scopeMovementSources({
     results: [{ warehouseId: "wh-id" }, { warehouseId: "wh-my" }],
   },
   connections: [
-    { id: "wh-id", country: "印度尼西亚" },
-    { id: "wh-my", country: "马来西亚" },
+    { id: "wh-id", warehouseId: "56064", resolvedWarehouseId: "56064", country: "印度尼西亚" },
+    { id: "wh-my", warehouseId: "148", resolvedWarehouseId: "148", country: "马来西亚" },
   ],
 }, distributor);
 assert.equal(scoped.products.catalog.length, 1);
