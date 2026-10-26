@@ -1,15 +1,15 @@
 <view class="login-page {{loginMode === 'admin' ? 'login-page--admin' : ''}}">
   <view class="login-hero">
     <view class="brand-row">
-      <view class="brand-mark">舟</view>
-      <view><view class="brand-name">同舟协同</view><view class="brand-en">TONGZHOU COLLABORATION</view></view>
+      <image class="brand-mark" src="/images/brand-avatar-v2.png" mode="aspectFill" />
+      <view><view class="brand-name">同舟协同</view><view class="brand-en">TONGZHOU · POWERED BY HERMES</view></view>
     </view>
     <view class="hero-grid"></view>
     <view class="hero-copy">
       <view class="eyebrow hero-eyebrow">{{loginMode === 'admin' ? 'INTERNAL CONTROL' : 'ONE TASK · ONE BOUNDARY'}}</view>
       <view wx:if="{{loginMode === 'admin'}}" class="hero-title"><text class="title-line">关键协同，</text><text class="title-line">一处看清、<text>及时决策。</text></text></view>
       <view wx:else class="hero-title"><text class="title-line">每一次交接，</text><text class="title-line">都清楚、准确、<text>有回音。</text></text></view>
-      <view class="hero-subtitle">{{loginMode === 'admin' ? '面向供应链中台管理员的移动监管与审批工作台' : '面向仓库、备案、打样、包装与生产伙伴的安全移动工作区'}}</view>
+      <view class="hero-subtitle">{{loginMode === 'admin' ? '面向供应链中台管理员的移动监管与审批工作台' : '登录后，Hermes 会陪你完成订单处理、进度汇报与异常反馈'}}</view>
     </view>
     <view class="handoff-line">
       <text>{{loginMode === 'admin' ? '跨组织总览' : '中台发布'}}</text><view class="handoff-dot"></view><text>{{loginMode === 'admin' ? '风险聚焦' : '组织执行'}}</text><view class="handoff-dot"></view><text>{{loginMode === 'admin' ? '审核留痕' : '凭证回传'}}</text>
@@ -54,6 +54,8 @@
     <button class="primary-button login-button {{loading ? 'is-disabled' : ''}}" loading="{{loading}}" disabled="{{loading}}" bindtap="submit">
       {{loading ? '正在建立安全会话…' : loginMode === 'admin' ? '进入中台工作台' : '进入协同工作台'}}
     </button>
+
+    <view wx:if="{{loginMode === 'partner'}}" class="hermes-login-tip"><view class="hermes-login-tip__mark">H</view><view><strong>Hermes 会在登录后待命</strong><text>它只能查找本组织被授权的订单，正式提交前仍由你确认。</text></view></view>
 
     <view class="security-note {{loginMode === 'admin' ? 'security-note--admin' : ''}}">
       <view class="security-shield">✓</view>

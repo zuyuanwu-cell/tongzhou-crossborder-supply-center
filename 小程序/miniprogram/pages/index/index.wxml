@@ -1,98 +1,103 @@
 <view class="page-shell home-page">
-  <view class="home-hero">
-    <view class="hero-orbit"></view>
-    <view class="home-hero__top">
-      <view>
-        <view class="home-date">{{today}}</view>
-        <view class="home-org">{{session.organization.name || '协同组织'}}</view>
+  <view class="assistant-shell">
+    <view class="assistant-grid"></view>
+    <view class="assistant-nav">
+      <view class="assistant-brand">
+        <view class="assistant-orb"><text>H</text><view class="assistant-online"></view></view>
+        <view><strong>Hermes</strong><text>同舟供应链伙伴助手</text></view>
       </view>
-      <view wx:if="{{showScan}}" class="scan-button" bindtap="scan"><view class="scan-corners">⌗</view><text>扫码</text></view>
+      <view class="assistant-clock"><text>{{clockText}}</text><view>在线</view></view>
     </view>
-    <view class="home-greeting">{{greeting}}，{{session.user.displayName || '伙伴'}}</view>
-    <view class="workspace-tag">{{profile.symbol}} · {{profile.name}}</view>
-    <view class="home-slogan"><text class="slogan-line">{{profile.slogan[0]}}</text><text class="slogan-line home-slogan__accent">{{profile.slogan[1]}}</text></view>
-    <view class="sync-chip"><text class="sync-spin">↻</text><view><text>{{profile.syncLabel}}</text><text>{{syncText}}</text></view></view>
+
+    <view class="assistant-welcome">
+      <view class="home-date">{{today}} · {{session.organization.name || '协同组织'}}</view>
+      <view class="home-greeting">{{greeting}}，{{session.user.displayName || '伙伴'}}</view>
+      <view class="home-guide">说一句、或拍张照，Hermes 帮你整理成反馈并提交。</view>
+    </view>
+
+    <view wx:if="{{isProduction && partnerAi && partnerAi.quickReportEnabled}}" class="hermes-command" bindtap="openHermesProgress">
+      <view class="hermes-command__pulse"><view class="hermes-command__mic">●</view></view>
+      <view class="hermes-command__copy"><strong>现在想汇报什么？</strong><text>长按说话或输入产品名称</text></view>
+      <view class="hermes-command__arrow">›</view>
+    </view>
+    <view wx:else class="hermes-command hermes-command--readonly" bindtap="openTasks">
+      <view class="hermes-command__pulse"><view class="hermes-command__mic">H</view></view>
+      <view class="hermes-command__copy"><strong>{{profile.name}}</strong><text>查看本组织今天需要处理的协同任务</text></view>
+      <view class="hermes-command__arrow">›</view>
+    </view>
   </view>
 
-  <view wx:if="{{loading}}" class="metrics-grid">
-    <view wx:for="{{[1,2,3,4]}}" wx:key="*this" class="metric-card card"><view class="skeleton metric-skeleton"></view></view>
+  <view wx:if="{{loading}}" class="home-loading">
+    <view class="skeleton skeleton-heading"></view>
+    <view class="skeleton skeleton-panel"></view>
   </view>
   <view wx:elif="{{error}}" class="error-state card">
     <view class="state-symbol">!</view><view class="state-title">暂时无法读取工作台</view><view class="state-copy">{{error}}</view><button class="secondary-button button-small retry-button" bindtap="load">重新加载</button>
   </view>
-  <view wx:elif="{{isDeliveryMode}}" class="metrics-grid production-metrics">
-    <view wx:for="{{deliveryOverview.metrics}}" wx:key="key" class="metric-card card metric-card--{{item.tone}}" data-type="{{item.key === 'production' ? 'production_order' : item.key === 'purchase' ? 'purchase_order' : ''}}" bindtap="openProductionType">
-      <view class="metric-icon">{{item.icon}}</view><view class="metric-label">{{item.label}}</view><view class="metric-value">{{item.value}}</view><view class="metric-note">{{item.note}}</view>
-    </view>
-  </view>
-  <view wx:else class="metrics-grid">
-    <view class="metric-card card metric-card--navy"><view class="metric-icon">单</view><view class="metric-label">进行中任务</view><view class="metric-value">{{dashboard.openTasks}}</view><view class="metric-note">本组织待处理</view></view>
-    <view class="metric-card card metric-card--orange"><view class="metric-icon">!</view><view class="metric-label">紧急任务</view><view class="metric-value">{{dashboard.urgentTasks}}</view><view class="metric-note">请优先处理</view></view>
-    <view class="metric-card card metric-card--violet"><view class="metric-icon">审</view><view class="metric-label">等待中台</view><view class="metric-value">{{dashboard.waitingTasks}}</view><view class="metric-note">已提交，勿重复</view></view>
-    <view class="metric-card card metric-card--{{fourthMetric.tone}}" bindtap="openFourthMetric"><view class="metric-icon">{{fourthMetric.icon}}</view><view class="metric-label">{{fourthMetric.label}}</view><view class="metric-value">{{fourthMetric.value}}</view><view class="metric-note">{{fourthMetric.note}}</view></view>
-  </view>
 
-  <block wx:if="{{isDeliveryMode && deliveryOverview}}">
-    <view wx:if="{{isProduction && partnerAi && partnerAi.quickReportEnabled}}" class="hermes-entry" bindtap="openHermesProgress">
-      <view class="hermes-entry__mark">H</view>
-      <view class="hermes-entry__copy"><view class="eyebrow">HERMES QUICK REPORT</view><strong>说一句，快速汇报生产进度</strong><text>自动匹配加工单、补齐必填项，确认后再提交</text></view>
-      <view class="hermes-entry__action">开始汇报 ›</view>
-    </view>
-    <view class="section-head production-section-head"><view><view class="eyebrow">WORKSPACE MODULES</view><view class="section-head__title">业务入口</view></view></view>
-    <view class="quick-grid">
-      <view wx:for="{{quickActions}}" wx:key="label" class="quick-action {{item.highlight ? 'quick-action--scan' : ''}}" data-index="{{index}}" bindtap="openShortcut"><view class="quick-icon">{{item.icon}}</view><text>{{item.label}}</text></view>
+  <block wx:else>
+    <view class="section-heading">
+      <view><view class="section-kicker">TODAY</view><view class="section-title">今日待填报</view></view>
+      <view class="section-count">{{hermesHome.activeCount || 0}} 项进行中</view>
     </view>
 
-    <view class="section-head production-section-head"><view><view class="eyebrow">ORDER PRIORITY</view><view class="section-head__title">订单优先级</view></view><view class="section-head__action" bindtap="openTasks">全部订单 ›</view></view>
-    <view class="priority-strip card">
-      <view wx:for="{{deliveryOverview.priority}}" wx:key="key" class="priority-chip {{deliveryOverview.focus === item.key ? 'is-active' : ''}}" data-focus="{{item.key}}" bindtap="selectDeliveryFocus"><strong>{{item.value}}</strong><text>{{item.label}}</text></view>
-    </view>
-
-    <view class="section-head production-section-head"><view><view class="eyebrow">14-DAY DELIVERY</view><view class="section-head__title">14 天交期</view></view><view class="section-head__action">左右滑动查看</view></view>
-    <view class="deadline-alerts">
-      <view wx:for="{{deliveryOverview.alerts}}" wx:key="key" class="deadline-alert deadline-alert--{{item.tone}} {{deliveryOverview.focus === item.key ? 'is-active' : ''}}" data-focus="{{item.key}}" bindtap="selectDeliveryFocus"><strong>{{item.value}}</strong><text>{{item.label}}</text></view>
-    </view>
-    <scroll-view class="delivery-calendar card" scroll-x enhanced show-scrollbar="{{false}}">
-      <view class="delivery-calendar__row">
-        <view wx:for="{{deliveryOverview.days}}" wx:key="key" class="delivery-day {{deliveryOverview.focus === item.focus ? 'is-active' : ''}}" data-focus="{{item.focus}}" bindtap="selectDeliveryFocus">
-          <view class="delivery-day__bar"><view style="height: {{item.barHeight}}%;"></view><text wx:if="{{item.urgent}}">{{item.urgent}}</text></view>
-          <strong>{{item.day}}</strong><small>{{item.weekday}}</small><em wx:if="{{item.count}}">{{item.count}} 单</em>
+    <view class="today-panel card">
+      <view wx:if="{{todayReportTasks.length}}">
+        <view wx:for="{{todayReportTasks}}" wx:key="id" class="today-task" data-id="{{item.id}}" bindtap="openTodayTask">
+          <view class="today-task__rail today-task__rail--{{item.tone}}"></view>
+          <view class="today-task__body">
+            <view class="today-task__meta"><view class="task-kind task-kind--{{item.tone}}">{{item.badge}}</view><text class="task-deadline task-deadline--{{item.deadlineTone}}">{{item.deadlineLabel}}</text></view>
+            <view class="today-task__title">{{item.productName}}</view>
+            <view class="today-task__reference"><text>{{item.referenceNo}}</text><text wx:if="{{item.quantityText}}">{{item.quantityText}}</text></view>
+            <view class="today-task__progress"><view class="progress-track"><view style="width: {{item.progress || 0}}%;"></view></view><text>{{item.progressText}}</text></view>
+          </view>
+          <view class="today-task__action">{{item.actionLabel}}<text>›</text></view>
         </view>
+      </view>
+      <view wx:else class="today-empty"><view>✓</view><strong>今天没有待处理事项</strong><text>新任务到达后会出现在这里</text></view>
+      <view class="today-panel__footer" bindtap="openTasks"><text>查看全部订单与任务</text><text>›</text></view>
+    </view>
+
+    <view class="metric-strip">
+      <view wx:for="{{homeMetrics}}" wx:key="key" class="compact-metric compact-metric--{{item.tone}}">
+        <view class="compact-metric__dot"></view><strong>{{item.value}}</strong><text>{{item.label}}</text>
+      </view>
+    </view>
+
+    <block wx:if="{{isDeliveryMode && deliveryOverview}}">
+      <view class="section-heading section-heading--compact">
+        <view><view class="section-kicker">TIMELINE</view><view class="section-title">未来 14 天交期</view></view>
+        <view class="section-count">{{deliveryOverview.alerts[1].value}} 项临期</view>
+      </view>
+      <scroll-view class="mini-timeline card" scroll-x enhanced show-scrollbar="{{false}}">
+        <view class="mini-timeline__row">
+          <view wx:for="{{deliveryOverview.days}}" wx:key="key" class="mini-day {{deliveryOverview.focus === item.focus ? 'is-active' : ''}}" data-focus="{{item.focus}}" bindtap="selectDeliveryFocus">
+            <small>{{item.weekday}}</small><strong>{{item.day}}</strong><view class="mini-day__signal {{item.count ? 'has-task' : ''}}"></view><text>{{item.count ? item.count + '单' : '—'}}</text>
+          </view>
+        </view>
+      </scroll-view>
+    </block>
+
+    <view wx:if="{{hermesSuggestions.length}}" class="section-heading section-heading--compact">
+      <view><view class="section-kicker">ASK HERMES</view><view class="section-title">一句话快捷处理</view></view>
+    </view>
+    <scroll-view wx:if="{{hermesSuggestions.length}}" class="suggestion-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="suggestion-row">
+        <view wx:for="{{hermesSuggestions}}" wx:key="label" class="suggestion-chip" data-index="{{index}}" bindtap="runHermesSuggestion"><text>+</text>{{item.label}}</view>
       </view>
     </scroll-view>
 
-    <view class="section-head production-section-head"><view><view class="eyebrow">PRIORITY QUEUE</view><view class="section-head__title">优先关注</view></view><view class="section-head__action">{{deliveryOverview.selectedCount}} 个事项</view></view>
-    <view wx:if="{{deliveryOverview.selected.length}}" class="production-risk-list card">
-      <view wx:for="{{deliveryOverview.selected}}" wx:key="id" class="production-risk-row" data-id="{{item.id}}" bindtap="openTask">
-        <view class="risk-marker risk-marker--{{item.deadlineKey}}"></view>
-        <view class="risk-copy"><strong>{{item.title}}</strong><text>{{item.typeLabel}} · {{item.referenceNo}}</text></view>
-        <view class="risk-deadline risk-deadline--{{item.deadlineKey}}">{{item.deadlineText}}</view><text class="risk-arrow">›</text>
+    <view class="section-heading section-heading--compact">
+      <view><view class="section-kicker">WORKSPACE</view><view class="section-title">业务入口</view></view>
+      <view class="section-count">{{profile.name}}</view>
+    </view>
+    <view class="workspace-grid">
+      <view wx:for="{{quickActions}}" wx:key="label" class="workspace-action {{item.highlight ? 'is-primary' : ''}}" data-index="{{index}}" bindtap="openShortcut">
+        <view class="workspace-action__icon">{{item.icon}}</view><view><strong>{{item.label}}</strong><text>{{item.highlight ? '优先处理' : '进入查看'}}</text></view><view class="workspace-action__arrow">›</view>
       </view>
     </view>
-    <view wx:else class="production-empty card">当前筛选没有需要优先关注的订单</view>
+
+    <view class="boundary-note"><view>盾</view><text>当前只展示“{{session.organization.name}}”被授权的订单、任务和资料，所有操作均留痕。</text></view>
   </block>
-
-  <block wx:else>
-    <view class="section-head"><view><view class="eyebrow">{{profile.eyebrow}}</view><view class="section-head__title">快捷入口</view></view></view>
-    <view class="quick-grid">
-      <view wx:for="{{quickActions}}" wx:key="label" class="quick-action {{item.highlight ? 'quick-action--scan' : ''}}" data-index="{{index}}" bindtap="openShortcut"><view class="quick-icon">{{item.icon}}</view><text>{{item.label}}</text></view>
-    </view>
-
-    <view class="section-head"><view><view class="eyebrow">ACTIVE QUEUE</view><view class="section-head__title">今日优先任务</view></view><view class="section-head__action" bindtap="openTasks">查看全部 ›</view></view>
-    <view wx:if="{{!loading && tasks.length}}">
-      <view wx:for="{{tasks}}" wx:key="id" class="task-card {{item.isUrgent ? 'task-card--urgent' : ''}}" data-id="{{item.id}}" bindtap="openTask">
-        <view class="task-card__top"><view class="type-pill">{{item.typeIcon}} · {{item.typeLabel}}</view><view class="status-pill status-pill--{{item.statusTone}}">{{item.statusLabel}}</view></view>
-        <view class="task-card__title">{{item.title}}</view>
-        <view class="task-card__desc">{{item.description}}</view>
-        <view class="task-card__route"><text>{{item.sourceName}}</text><text>›</text><text>{{item.destinationName}}</text></view>
-        <view class="task-card__foot"><text>截止 {{item.dueText}}</text><text class="task-card__ref">{{item.referenceNo}} ›</text></view>
-      </view>
-    </view>
-  </block>
-
-  <view class="safe-banner">
-    <view class="safe-banner__icon">✓</view>
-    <view><view class="safe-banner__title">你正处于“{{session.organization.name}}”数据边界</view><view class="safe-banner__copy">{{profile.boundaryCopy}}</view></view>
-  </view>
-  <tz-tab-bar active="index" unread="{{unread}}" />
+  <tz-tab-bar active="index" unread="{{unread}}" theme="dark" />
 </view>

@@ -1,4 +1,4 @@
-<view class="tabbar-safe">
+<view class="tabbar-safe tabbar-safe--{{theme}}">
   <view class="tabbar">
     <view wx:for="{{items}}" wx:key="key" class="tabbar__item {{active === item.key ? 'is-active' : ''}}" data-item="{{item}}" bindtap="navigate">
       <view class="nav-icon nav-icon--{{item.key}}">

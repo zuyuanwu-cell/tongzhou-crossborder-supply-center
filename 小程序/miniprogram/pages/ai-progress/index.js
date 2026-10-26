@@ -1,5 +1,6 @@
 const api = require("../../utils/api");
 const { requireSession } = require("../../utils/auth");
+const { preferenceStorageKey, normalizePreferences } = require("../../utils/partner-preferences");
 
 const STAGES = [
   { value: "", label: "请选择阶段" },
@@ -50,10 +51,16 @@ Page({
     assistantUnavailable: false,
     exceptionSuggested: false,
     submitted: false,
+    voicePreferred: true,
   },
 
-  onLoad() {
-    if (!requireSession("partner")) return;
+  onLoad(options) {
+    const loginSession = requireSession("partner");
+    if (!loginSession) return;
+    let preferences = null;
+    try { preferences = wx.getStorageSync(preferenceStorageKey(loginSession.user.id)); } catch (_) {}
+    this._initialPrompt = String(options?.prompt || "").trim();
+    this.setData({ voicePreferred: normalizePreferences(preferences).voiceFirst });
     this._recorder = wx.getRecorderManager();
     this._recorder.onStop((recording) => this.handleRecordingStopped(recording));
     this._recorder.onError((error) => this.setData({ recording: false, voiceBusy: false, error: error?.errMsg || "录音失败，请改用文字输入。" }));
@@ -71,6 +78,11 @@ Page({
       this.setData({ sessionId: created.session.id });
       const result = await api.fetchPartnerAiSession(created.session.id);
       this.applySession(result.session);
+      if (this._initialPrompt) {
+        const prompt = this._initialPrompt;
+        this._initialPrompt = "";
+        await this.sendMessage(prompt);
+      }
     } catch (error) {
       this.setData({ error: error.message || "Hermes 快捷汇报暂时无法使用。" });
     } finally {

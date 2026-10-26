@@ -2,6 +2,7 @@ Component({
   properties: {
     active: { type: String, value: "index" },
     unread: { type: Number, value: 0 },
+    theme: { type: String, value: "light" },
     mode: {
       type: String,
       value: "partner",

@@ -45,6 +45,9 @@ function verifyStructure() {
   const partnerHome = fs.readFileSync(path.join(root, "pages", "index", "index.wxml"), "utf8");
   assert.match(partnerHome, /partnerAi\.quickReportEnabled/, "伙伴工作台应按快捷汇报试点开关显示 Hermes 入口");
   assert.match(partnerHome, /openHermesProgress/, "伙伴工作台应提供 Hermes 快捷汇报入口");
+  assert.match(partnerHome, /今日待填报/, "伙伴工作台应以今日待填报作为主任务入口");
+  assert.match(partnerHome, /未来 14 天交期/, "伙伴工作台应提供图形化交期时间轴");
+  assert.match(partnerHome, /runHermesSuggestion/, "伙伴工作台应提供 Hermes 场景建议");
   const aiProgress = fs.readFileSync(path.join(root, "pages", "ai-progress", "index.wxml"), "utf8");
   assert.match(aiProgress, /MATCHED ORDERS/);
   assert.match(aiProgress, /回答 Hermes 的问题/);
@@ -64,6 +67,11 @@ function verifyStructure() {
   assert.match(loginPage, /data-mode="partner"/);
   assert.match(loginPage, /data-mode="admin"/);
   assert.match(loginPage, /中台登录/);
+  assert.match(loginPage, /POWERED BY HERMES/, "登录页应明确 Hermes 助手身份");
+  const profilePage = fs.readFileSync(path.join(root, "pages", "profile", "index.wxml"), "utf8");
+  assert.match(profilePage, /助手偏好/);
+  assert.match(profilePage, /语音优先/);
+  assert.match(profilePage, /我能处理的业务/);
   const adminDetail = fs.readFileSync(path.join(root, "pages", "admin-task-detail", "index.wxml"), "utf8");
   assert.match(adminDetail, /监管只读/);
   assert.doesNotMatch(adminDetail, /bindtap="(?:submit|upload|action)|>提交进度</, "中台任务详情不得提供伙伴写操作");
@@ -148,6 +156,23 @@ async function verifyDemoContract() {
   const samplingUtils = loadMiniModule(path.join(root, "utils", "sampling.js"));
   const activityUtils = loadMiniModule(path.join(root, "utils", "activity.js"));
   const receivingBarcodeUtils = loadMiniModule(path.join(root, "utils", "receiving-barcode.js"));
+  const hermesHomeUtils = loadMiniModule(path.join(root, "utils", "hermes-home.js"));
+  const preferenceUtils = loadMiniModule(path.join(root, "utils", "partner-preferences.js"));
+  const hermesHome = hermesHomeUtils.buildPartnerHome([
+    { id: "p1", itemType: "production_order", status: "in_progress", dueAt: "2026-10-18T00:00:00+08:00", publicPayload: { productName: "男士洁面泡沫", orderNo: "JG-01", quantity: 12000, unit: "件", progressPercent: 60 } },
+    { id: "p2", itemType: "purchase_order", status: "accepted", dueAt: "2026-10-30T00:00:00+08:00", publicPayload: { productName: "包材", orderNo: "CG-01" } },
+  ], { exceptionReports: 1 }, "production", new Date("2026-10-16T12:00:00+08:00"));
+  assert.equal(hermesHome.todayTasks[0].productName, "男士洁面泡沫");
+  assert.equal(hermesHome.todayTasks[0].progressText, "60%");
+  assert.equal(hermesHome.metrics.find((item) => item.key === "production").value, 1);
+  assert.equal(hermesHome.metrics.find((item) => item.key === "exception").value, 1);
+  const noDuePriority = hermesHomeUtils.buildPartnerHome([
+    { id: "later", itemType: "production_order", status: "accepted", title: "普通订单", publicPayload: {}, dueAt: "2026-10-30T00:00:00.000Z" },
+    { id: "urgent", itemType: "production_order", status: "accepted", title: "临期订单", publicPayload: {}, dueAt: "2026-10-27T00:00:00.000Z" },
+  ], {}, "production", new Date("2026-10-26T00:00:00.000Z"), { dueReminder: false });
+  assert.equal(noDuePriority.todayTasks[0].id, "later", "关闭交期提醒后不应重排伙伴原始任务顺序");
+  assert.equal(preferenceUtils.normalizePreferences({ voiceFirst: false }).voiceFirst, false);
+  assert.deepEqual(preferenceUtils.accessScopes({ capabilities: ["production.order.view", "procurement.order.view"] }).map((item) => item.label), ["委外加工单", "物料采购单"]);
   let capturedBarcode = "";
   wx.scanCode = (options) => options.success({ result: " 6971234567890 " });
   wx.showToast = () => {};

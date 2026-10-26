@@ -1,5 +1,7 @@
 {
-  "navigationBarTitleText": "工作台",
+  "navigationBarTitleText": "Hermes 工作台",
+  "navigationBarBackgroundColor": "#061831",
+  "navigationBarTextStyle": "white",
   "enablePullDownRefresh": true,
   "usingComponents": {
     "tz-tab-bar": "/components/tz-tab-bar/index"

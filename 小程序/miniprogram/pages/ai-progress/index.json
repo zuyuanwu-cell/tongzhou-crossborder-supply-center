@@ -1,4 +1,6 @@
 {
   "navigationBarTitleText": "Hermes 快捷汇报",
+  "navigationBarBackgroundColor": "#061831",
+  "navigationBarTextStyle": "white",
   "enablePullDownRefresh": false
 }

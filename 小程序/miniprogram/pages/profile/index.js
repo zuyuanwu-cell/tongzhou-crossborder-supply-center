@@ -3,6 +3,7 @@ const adminApi = require("../../utils/admin-api");
 const { requireSession, sessionMode } = require("../../utils/auth");
 const { roleLabel } = require("../../utils/format");
 const { getWorkspace } = require("../../utils/workspace");
+const { preferenceStorageKey, normalizePreferences, accessScopes } = require("../../utils/partner-preferences");
 
 Page({
   data: {
@@ -17,6 +18,8 @@ Page({
     profile: null,
     resources: [],
     adminCapabilities: [],
+    assistantPreferences: { voiceFirst: true, dueReminder: true },
+    accessScopes: [],
   },
 
   onShow() {
@@ -26,7 +29,14 @@ Page({
     if (mode === "admin") return this.showAdmin(session, true);
     const workspace = getWorkspace(session);
     const resources = workspace.resources.length ? workspace.resources : [{ name: session.organization.name, ref: session.organization.code, permissions: workspace.capabilities }];
-    this.setData({ mode, isAdmin: false, session, workspace, profile: workspace.profile, resources, roleName: roleLabel(session.membership.role), initial: String(session.user.displayName || "伙").slice(0, 1) });
+    let storedPreferences = null;
+    try { storedPreferences = wx.getStorageSync(preferenceStorageKey(session.user.id)); } catch (_) {}
+    this.setData({
+      mode, isAdmin: false, session, workspace, profile: workspace.profile, resources,
+      roleName: roleLabel(session.membership.role), initial: String(session.user.displayName || "伙").slice(0, 1),
+      assistantPreferences: normalizePreferences(storedPreferences),
+      accessScopes: accessScopes(workspace),
+    });
     api.fetchDashboard().then((result) => this.setData({ unread: result.dashboard.unreadNotifications || 0 })).catch(() => {});
   },
 
@@ -56,8 +66,18 @@ Page({
       security: this.data.isAdmin ? "中台移动会话最长 12 小时，接口会再次校验账号状态与权限。" : "账号密码与会话安全沿用伙伴门户策略。",
       help: "如需帮助，请联系同舟供应链管理员。",
       feedback: "意见反馈入口正在接入企业微信。",
+      audit: "Hermes 代填、人工修改与正式提交都会进入协同审计记录。",
     };
     wx.showModal({ title: event.currentTarget.dataset.title, content: messages[key] || "功能正在完善。", showCancel: false });
+  },
+
+  togglePreference(event) {
+    if (this.data.isAdmin) return;
+    const key = event.currentTarget.dataset.key;
+    if (!['voiceFirst', 'dueReminder'].includes(key)) return;
+    const assistantPreferences = Object.assign({}, this.data.assistantPreferences, { [key]: Boolean(event.detail.value) });
+    this.setData({ assistantPreferences });
+    try { wx.setStorageSync(preferenceStorageKey(this.data.session?.user?.id), assistantPreferences); } catch (_) {}
   },
 
   switchMode() {

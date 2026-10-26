@@ -3,6 +3,13 @@ const { requireSession } = require("../../utils/auth");
 const { decorateTask, formatDate } = require("../../utils/format");
 const { getWorkspace, quickActions } = require("../../utils/workspace");
 const { buildDeliveryOverview } = require("../../utils/production");
+const { buildPartnerHome } = require("../../utils/hermes-home");
+const { preferenceStorageKey, normalizePreferences } = require("../../utils/partner-preferences");
+
+function timeText(value) {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
 Page({
   data: {
@@ -26,6 +33,12 @@ Page({
     deliveryItems: [],
     deliveryOverview: null,
     partnerAi: null,
+    clockText: "",
+    hermesHome: null,
+    todayReportTasks: [],
+    homeMetrics: [],
+    hermesSuggestions: [],
+    assistantPreferences: { voiceFirst: true, dueReminder: true },
   },
 
   onLoad() {
@@ -33,13 +46,18 @@ Page({
     const greeting = hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
     const date = new Date();
     const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
-    this.setData({ greeting, today: `${date.getMonth() + 1}月${date.getDate()}日 · ${weekdays[date.getDay()]}` });
+    this.setData({ greeting, today: `${date.getMonth() + 1}月${date.getDate()}日 · ${weekdays[date.getDay()]}`, clockText: timeText(date) });
+    this._clockTimer = setInterval(() => this.setData({ clockText: timeText() }), 60_000);
   },
+
+  onUnload() { if (this._clockTimer) clearInterval(this._clockTimer); },
 
   onShow() {
     const session = requireSession("partner");
     if (!session) return;
     const workspace = getWorkspace(session);
+    let storedPreferences = null;
+    try { storedPreferences = wx.getStorageSync(preferenceStorageKey(session.user.id)); } catch (_) {}
     const isDeliveryMode = workspace.taskTypes.some((type) => ["production_order", "purchase_order"].includes(type));
     this.setData({
       session,
@@ -50,6 +68,7 @@ Page({
       isProduction: workspace.kind === "production_factory",
       isDeliveryMode,
       deliveryMode: workspace.kind === "production_factory" ? "production" : "procurement",
+      assistantPreferences: normalizePreferences(storedPreferences),
     });
     this.load();
   },
@@ -70,6 +89,9 @@ Page({
         ? buildDeliveryOverview(deliveryItems, summary.dashboard, "", undefined, this.data.deliveryMode)
         : null;
       if (deliveryOverview) deliveryOverview.selected = deliveryOverview.selected.map(decorateTask);
+      const hermesHome = this.data.isDeliveryMode
+        ? buildPartnerHome(deliveryItems, summary.dashboard, this.data.deliveryMode, undefined, this.data.assistantPreferences)
+        : buildPartnerHome(work.items, summary.dashboard, "general", undefined, this.data.assistantPreferences);
       this.setData({
         dashboard: summary.dashboard,
         tasks: this.data.isDeliveryMode ? [] : work.items.filter((item) => !["completed", "cancelled"].includes(item.status)).slice(0, 3).map(decorateTask),
@@ -79,6 +101,10 @@ Page({
         unread: summary.dashboard.unreadNotifications || 0,
         syncText: formatDate(workspace.kind === "warehouse" ? summary.dashboard.inventorySyncedAt : latestUpdatedAt),
         fourthMetric,
+        hermesHome,
+        todayReportTasks: hermesHome.todayTasks,
+        homeMetrics: hermesHome.metrics,
+        hermesSuggestions: hermesHome.suggestions,
       });
     } catch (error) {
       this.setData({ error: error.message || "工作台加载失败。" });
@@ -105,6 +131,24 @@ Page({
   openOperation(event) { wx.navigateTo({ url: `/pages/operation/index?type=${event.currentTarget.dataset.type}` }); },
   openInventory() { wx.redirectTo({ url: "/pages/inventory/index" }); },
   openHermesProgress() { wx.navigateTo({ url: "/pages/ai-progress/index" }); },
+
+  openHermesWithPrompt(prompt) {
+    const query = prompt ? `?prompt=${encodeURIComponent(prompt)}` : "";
+    wx.navigateTo({ url: `/pages/ai-progress/index${query}` });
+  },
+
+  openTodayTask(event) {
+    const id = event.currentTarget.dataset.id;
+    if (id) wx.navigateTo({ url: `/pages/task-detail/index?id=${encodeURIComponent(id)}` });
+  },
+
+  runHermesSuggestion(event) {
+    const suggestion = this.data.hermesSuggestions[Number(event.currentTarget.dataset.index)];
+    if (!suggestion) return;
+    if (suggestion.action === "quick_report" && this.data.partnerAi?.quickReportEnabled) return this.openHermesWithPrompt(suggestion.prompt);
+    const query = suggestion.itemType ? `?itemType=${encodeURIComponent(suggestion.itemType)}` : "";
+    wx.redirectTo({ url: `/pages/tasks/index${query}` });
+  },
 
   openShortcut(event) {
     const action = this.data.quickActions[Number(event.currentTarget.dataset.index)];
