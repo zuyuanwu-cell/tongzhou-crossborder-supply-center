@@ -1,65 +1,26 @@
 <view class="login-page {{loginMode === 'admin' ? 'login-page--admin' : ''}}">
-  <view class="login-hero">
-    <view class="brand-row">
-      <image class="brand-mark" src="/images/brand-avatar-v2.png" mode="aspectFill" />
-      <view><view class="brand-name">同舟协同</view><view class="brand-en">TONGZHOU · POWERED BY HERMES</view></view>
-    </view>
-    <view class="hero-grid"></view>
-    <view class="hero-copy">
-      <view class="eyebrow hero-eyebrow">{{loginMode === 'admin' ? 'INTERNAL CONTROL' : 'ONE TASK · ONE BOUNDARY'}}</view>
-      <view wx:if="{{loginMode === 'admin'}}" class="hero-title"><text class="title-line">关键协同，</text><text class="title-line">一处看清、<text>及时决策。</text></text></view>
-      <view wx:else class="hero-title"><text class="title-line">每一次交接，</text><text class="title-line">都清楚、准确、<text>有回音。</text></text></view>
-      <view class="hero-subtitle">{{loginMode === 'admin' ? '面向供应链中台管理员的移动监管与审批工作台' : '登录后，Hermes 会陪你完成订单处理、进度汇报与异常反馈'}}</view>
-    </view>
-    <view class="handoff-line">
-      <text>{{loginMode === 'admin' ? '跨组织总览' : '中台发布'}}</text><view class="handoff-dot"></view><text>{{loginMode === 'admin' ? '风险聚焦' : '组织执行'}}</text><view class="handoff-dot"></view><text>{{loginMode === 'admin' ? '审核留痕' : '凭证回传'}}</text>
-    </view>
-  </view>
+  <view class="login-grid"></view><view class="login-aurora login-aurora--one"></view><view class="login-aurora login-aurora--two"></view>
+  <scroll-view class="login-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="login-content" style="padding-top: {{statusBarHeight + 24}}px">
+      <view class="brand-row"><image src="/images/brand-avatar-v2.png" mode="aspectFill"/><view><strong>同舟协同</strong><text>TONGZHOU · POWERED BY HERMES</text></view></view>
 
-  <view class="login-panel">
-    <view class="login-mode-switch" aria-label="登录模式">
-      <view class="login-mode-option {{loginMode === 'partner' ? 'is-active' : ''}}" data-mode="partner" bindtap="switchMode"><text>伙伴登录</text><small>组织工作区</small></view>
-      <view class="login-mode-option {{loginMode === 'admin' ? 'is-active' : ''}}" data-mode="admin" bindtap="switchMode"><text>中台登录</text><small>监管与审批</small></view>
-    </view>
+      <view class="hero-copy"><view class="hero-kicker">{{loginMode === 'admin' ? 'INTERNAL CONTROL' : 'ONE TASK · ONE BOUNDARY'}}</view><view class="hero-title">{{loginMode === 'admin' ? '关键协同，\n一处看清、及时决策。' : '每一次交接，\n都清楚、准确、有回音。'}}</view><view class="hero-subtitle">{{loginMode === 'admin' ? '供应链中台移动监管与审批工作台' : 'Hermes 陪你完成订单、进度与异常反馈'}}</view></view>
+      <view class="handoff"><view><i>1</i><text>{{loginMode === 'admin' ? '跨组织总览' : '中台发布'}}</text></view><b></b><view><i>2</i><text>{{loginMode === 'admin' ? '风险聚焦' : '组织执行'}}</text></view><b></b><view><i>3</i><text>{{loginMode === 'admin' ? '审核留痕' : '凭证回传'}}</text></view></view>
 
-    <view class="panel-head">
-      <view><view class="eyebrow">{{loginMode === 'admin' ? 'CONTROL ACCESS' : 'PARTNER ACCESS'}}</view><view class="panel-title">{{loginMode === 'admin' ? '中台登录' : '伙伴登录'}}</view></view>
-      <view wx:if="{{demoMode && loginMode === 'partner'}}" class="demo-tag">演示环境</view>
-      <view wx:if="{{loginMode === 'admin'}}" class="admin-tag">内部账号</view>
-    </view>
-    <view class="panel-copy">{{loginMode === 'admin' ? '使用供应链中台账号进入移动监管工作台' : '使用管理员分配的账号进入本组织工作区'}}</view>
+      <view class="login-card">
+        <view class="mode-switch"><view class="{{loginMode === 'partner' ? 'is-active' : ''}}" data-mode="partner" bindtap="switchMode">伙伴登录</view><view class="{{loginMode === 'admin' ? 'is-active' : ''}}" data-mode="admin" bindtap="switchMode">中台登录</view></view>
+        <view class="card-heading"><view><text>{{loginMode === 'admin' ? 'CONTROL ACCESS' : 'PARTNER ACCESS'}}</text><strong>{{loginMode === 'admin' ? '中台登录' : '伙伴登录'}}</strong></view><view class="secure-tag"><i></i>安全连接</view></view>
+        <view class="card-copy">{{loginMode === 'admin' ? '使用中台账号进入移动监管工作台' : '使用管理员分配的账号进入组织工作区'}}</view>
 
-    <view wx:if="{{loginMode === 'admin'}}" class="admin-credential-switch" aria-label="中台登录方式">
-      <view class="admin-credential-option {{adminCredentialType === 'account_password' ? 'is-active' : ''}}" data-type="account_password" bindtap="switchAdminCredential">账号密码</view>
-      <view class="admin-credential-option {{adminCredentialType === 'access_code' ? 'is-active' : ''}}" data-type="access_code" bindtap="switchAdminCredential">中台访问码</view>
-    </view>
+        <view wx:if="{{loginMode === 'admin'}}" class="credential-switch"><view class="{{adminCredentialType === 'account_password' ? 'is-active' : ''}}" data-type="account_password" bindtap="switchAdminCredential">账号密码</view><view class="{{adminCredentialType === 'access_code' ? 'is-active' : ''}}" data-type="access_code" bindtap="switchAdminCredential">访问码</view></view>
+        <view wx:if="{{demoMode && loginMode === 'partner'}}" class="demo-accounts"><view wx:for="{{demoAccounts}}" wx:key="username" class="{{form.username === item.username ? 'is-active' : ''}}" data-username="{{item.username}}" bindtap="chooseDemo"><text>{{item.symbol}}</text><small>{{item.label}}</small></view></view>
 
-    <view wx:if="{{demoMode && loginMode === 'partner'}}" class="demo-switcher">
-      <view class="demo-switcher__label">选择伙伴类型体验</view>
-      <view class="demo-switcher__grid"><view wx:for="{{demoAccounts}}" wx:key="username" class="demo-account {{form.username === item.username ? 'is-active' : ''}}" data-username="{{item.username}}" bindtap="chooseDemo"><text>{{item.symbol}}</text><small>{{item.label}}</small></view></view>
-    </view>
-
-    <label wx:if="{{loginMode !== 'admin' || adminCredentialType === 'account_password'}}" class="field login-field">
-      <text class="field__label">{{loginMode === 'admin' ? '中台账号' : '登录账号'}}</text>
-      <input class="field__input" data-key="username" value="{{form.username}}" bindinput="updateField" placeholder="{{loginMode === 'admin' ? '请输入中台登录账号' : '请输入伙伴登录账号'}}" autocomplete="username" />
-    </label>
-    <label class="field login-field">
-      <text class="field__label">{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '中台访问码' : '登录密码'}}</text>
-      <view class="password-field">
-        <input class="field__input" data-key="password" value="{{form.password}}" bindinput="updateField" password="{{!showPassword}}" placeholder="{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '请输入网页端使用的中台访问码' : '请输入登录密码'}}" autocomplete="current-password" />
-        <view class="password-toggle" bindtap="togglePassword">{{showPassword ? '隐藏' : '显示'}}</view>
+        <label wx:if="{{loginMode !== 'admin' || adminCredentialType === 'account_password'}}" class="login-field"><text>账号</text><view><i>人</i><input data-key="username" value="{{form.username}}" bindinput="updateField" placeholder="请输入登录账号" autocomplete="username"/></view></label>
+        <label class="login-field"><text>{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '访问码' : '密码'}}</text><view><i>钥</i><input data-key="password" value="{{form.password}}" bindinput="updateField" password="{{!showPassword}}" placeholder="{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '请输入中台访问码' : '请输入登录密码'}}" autocomplete="current-password"/><view class="password-toggle" bindtap="togglePassword">{{showPassword ? '隐藏' : '显示'}}</view></view></label>
+        <button class="login-button {{loading ? 'is-disabled' : ''}}" loading="{{loading}}" disabled="{{loading}}" bindtap="submit">{{loading ? '正在建立安全会话…' : loginMode === 'admin' ? '进入中台工作台' : '进入协同工作台'}}</button>
+        <view class="hermes-note"><view>H</view><text>Hermes 只查找当前账号获授权的订单；任何正式提交都需要你确认。</text></view>
       </view>
-    </label>
-
-    <button class="primary-button login-button {{loading ? 'is-disabled' : ''}}" loading="{{loading}}" disabled="{{loading}}" bindtap="submit">
-      {{loading ? '正在建立安全会话…' : loginMode === 'admin' ? '进入中台工作台' : '进入协同工作台'}}
-    </button>
-
-    <view wx:if="{{loginMode === 'partner'}}" class="hermes-login-tip"><view class="hermes-login-tip__mark">H</view><view><strong>Hermes 会在登录后待命</strong><text>它只能查找本组织被授权的订单，正式提交前仍由你确认。</text></view></view>
-
-    <view class="security-note {{loginMode === 'admin' ? 'security-note--admin' : ''}}">
-      <view class="security-shield">✓</view>
-      <view><text>{{loginMode === 'admin' ? '权限校验与审批留痕' : '组织级数据隔离'}}</text><text>{{loginMode === 'admin' ? '仅展示账号获授权的任务、组织和审核操作' : '页面、搜索与附件仅包含本组织授权资料'}}</text></view>
+      <view class="footer-lock">⌾ 组织级数据隔离 · 登录与操作全程留痕</view>
     </view>
-  </view>
+  </scroll-view>
 </view>

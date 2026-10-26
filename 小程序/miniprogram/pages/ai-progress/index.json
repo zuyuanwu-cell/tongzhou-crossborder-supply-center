@@ -1,6 +1,5 @@
 {
-  "navigationBarTitleText": "Hermes 快捷汇报",
-  "navigationBarBackgroundColor": "#061831",
-  "navigationBarTextStyle": "white",
-  "enablePullDownRefresh": false
+  "navigationStyle": "custom",
+  "enablePullDownRefresh": false,
+  "usingComponents": { "tz-tab-bar": "/components/tz-tab-bar/index" }
 }

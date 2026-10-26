@@ -20,10 +20,15 @@ Page({
       { username: "filing.operator", label: "备案", symbol: "备" },
       { username: "sampling.operator", label: "打样", symbol: "样" },
     ],
+    statusBarHeight: 20,
   },
 
   onLoad(options) {
-    if (options?.mode === "admin") this.setData({ loginMode: "admin", form: { username: "", password: "" } });
+    let windowInfo = {};
+    try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
+    const input = { statusBarHeight: Number(windowInfo.statusBarHeight || 20) };
+    if (options?.mode === "admin") Object.assign(input, { loginMode: "admin", form: { username: "", password: "" } });
+    this.setData(input);
   },
 
   onShow() {

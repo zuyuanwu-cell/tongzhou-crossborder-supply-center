@@ -20,11 +20,15 @@ Page({
     adminCapabilities: [],
     assistantPreferences: { voiceFirst: true, dueReminder: true },
     accessScopes: [],
+    statusBarHeight: 20,
   },
 
   onShow() {
     const session = requireSession();
     if (!session) return;
+    let windowInfo = {};
+    try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
+    this.setData({ statusBarHeight: Number(windowInfo.statusBarHeight || 20) });
     const mode = sessionMode(session);
     if (mode === "admin") return this.showAdmin(session, true);
     const workspace = getWorkspace(session);
@@ -70,6 +74,8 @@ Page({
     };
     wx.showModal({ title: event.currentTarget.dataset.title, content: messages[key] || "功能正在完善。", showCancel: false });
   },
+
+  goHome() { wx.redirectTo({ url: this.data.isAdmin ? "/pages/admin/index" : "/pages/index/index" }); },
 
   togglePreference(event) {
     if (this.data.isAdmin) return;

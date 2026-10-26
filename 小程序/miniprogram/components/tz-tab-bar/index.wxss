@@ -11,6 +11,8 @@
 }
 .tabbar-safe--dark { background: rgba(6, 23, 48, .98); border-top-color: rgba(133,175,218,.16); box-shadow: 0 -10rpx 30rpx rgba(0,8,24,.28); }
 .tabbar-safe--dark .tabbar__item { color: #6f88a5; }.tabbar-safe--dark .tabbar__item.is-active { color: #54cce5; }.tabbar-safe--dark .nav-badge { border-color: #071a36; }
+.tabbar-safe--glass { background: rgba(5, 11, 25, .9); border-top-color: rgba(134, 176, 214, .13); box-shadow: 0 -12rpx 38rpx rgba(0, 3, 12, .35); backdrop-filter: blur(26rpx); }
+.tabbar-safe--glass .tabbar__item { color: #607b98; }.tabbar-safe--glass .tabbar__item.is-active { color: #48cde2; }.tabbar-safe--glass .nav-badge { border-color: #07101f; }
 .tabbar { height: 112rpx; display: flex; align-items: center; justify-content: space-around; }
 .tabbar__item { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7rpx; color: #8694a6; font-size: 20rpx; }
 .tabbar__item.is-active { color: #f45b0b; font-weight: 700; }

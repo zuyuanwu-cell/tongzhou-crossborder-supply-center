@@ -28,6 +28,19 @@ function dateText(value) {
   return value ? String(value).slice(0, 10) : "";
 }
 
+function processSteps(stage, progressPercent) {
+  const visible = STAGES.filter((item) => item.value);
+  const current = Math.max(0, visible.findIndex((item) => item.value === stage));
+  const progress = Number(progressPercent || 0);
+  return visible.map((item, index) => ({
+    key: item.value,
+    label: item.label,
+    done: index < current || (index === current && progress >= 100),
+    current: index === current && progress < 100,
+    value: index < current ? 100 : index === current ? progress : 0,
+  })).slice(0, Math.max(3, current + 1));
+}
+
 Page({
   data: {
     loading: true,
@@ -40,7 +53,7 @@ Page({
     candidates: [],
     confirmedOrder: null,
     inputText: "",
-    messages: [],
+    messages: [{ role: "assistant", text: "告诉我产品名称、SKU 或加工单号，我会先找到正确订单，再帮你整理反馈。" }],
     voiceEnabled: false,
     recording: false,
     voiceBusy: false,
@@ -52,6 +65,13 @@ Page({
     exceptionSuggested: false,
     submitted: false,
     voicePreferred: true,
+    statusBarHeight: 20,
+    editMode: false,
+    processSteps: [],
+    pendingMedia: null,
+    photoException: null,
+    affectedOptions: ["100件以内", "100–1000件", "1000件以上"],
+    delayOptions: ["不影响交期", "可能延期", "确定延期"],
   },
 
   onLoad(options) {
@@ -60,7 +80,11 @@ Page({
     let preferences = null;
     try { preferences = wx.getStorageSync(preferenceStorageKey(loginSession.user.id)); } catch (_) {}
     this._initialPrompt = String(options?.prompt || "").trim();
-    this.setData({ voicePreferred: normalizePreferences(preferences).voiceFirst });
+    this._autoVoice = options?.voice === "1";
+    this._photoMode = options?.mode === "photo";
+    let windowInfo = {};
+    try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
+    this.setData({ voicePreferred: normalizePreferences(preferences).voiceFirst, statusBarHeight: Number(windowInfo.statusBarHeight || 20) });
     this._recorder = wx.getRecorderManager();
     this._recorder.onStop((recording) => this.handleRecordingStopped(recording));
     this._recorder.onError((error) => this.setData({ recording: false, voiceBusy: false, error: error?.errMsg || "录音失败，请改用文字输入。" }));
@@ -83,6 +107,8 @@ Page({
         this._initialPrompt = "";
         await this.sendMessage(prompt);
       }
+      if (this._photoMode) this.restorePendingMedia();
+      if (this._autoVoice && this.data.voiceEnabled) setTimeout(() => this.toggleRecording(), 240);
     } catch (error) {
       this.setData({ error: error.message || "Hermes 快捷汇报暂时无法使用。" });
     } finally {
@@ -114,15 +140,21 @@ Page({
         expectedCompletionDate: dateText(fields.expectedCompletionDate || this.data.form.expectedCompletionDate),
         note: fields.note || this.data.form.note || "",
       },
+      processSteps: processSteps(fields.stage || this.data.form.stage, fields.progressPercent ?? this.data.form.progressPercent),
+      photoException: confirmedOrder && this.data.pendingMedia && !this.data.photoException ? { affected: "100件以内", delay: "可能延期" } : this.data.photoException,
     });
   },
 
   updateInput(event) { this.setData({ inputText: event.detail.value }); },
-  updateField(event) { this.setData({ [`form.${event.currentTarget.dataset.field}`]: event.detail.value }); },
+  updateField(event) {
+    const key = event.currentTarget.dataset.field;
+    const form = Object.assign({}, this.data.form, { [key]: event.detail.value });
+    this.setData({ [`form.${key}`]: event.detail.value, processSteps: processSteps(form.stage, form.progressPercent) });
+  },
   chooseStage(event) {
     const index = Number(event.detail.value);
     const stage = STAGES[index] || STAGES[0];
-    this.setData({ stageIndex: index, "form.stage": stage.value });
+    this.setData({ stageIndex: index, "form.stage": stage.value, processSteps: processSteps(stage.value, this.data.form.progressPercent) });
   },
 
   async sendText() {
@@ -166,7 +198,8 @@ Page({
 
   toggleRecording() {
     if (this.data.recording) return this._recorder.stop();
-    if (!this.data.voiceEnabled || this.data.busy || this.data.voiceBusy) return;
+    if (!this.data.voiceEnabled) return wx.showToast({ title: "当前组织未开启语音，请使用文字", icon: "none" });
+    if (this.data.busy || this.data.voiceBusy) return;
     this.setData({ recording: true, error: "" });
     this._recorder.start({ duration: 50_000, sampleRate: 16_000, numberOfChannels: 1, encodeBitRate: 48_000, format: "mp3" });
   },
@@ -199,6 +232,48 @@ Page({
     const tab = this.data.exceptionSuggested ? "&orderTab=exception" : "";
     if (workItemId) wx.navigateTo({ url: `/pages/task-detail/index?id=${encodeURIComponent(workItemId)}${tab}` });
     else wx.navigateTo({ url: "/pages/tasks/index?itemType=production_order" });
+  },
+
+  goBack() { wx.navigateBack({ delta: 1, fail: () => wx.redirectTo({ url: "/pages/index/index" }) }); },
+
+  toggleEdit() { this.setData({ editMode: !this.data.editMode }); },
+
+  resetConversation() {
+    wx.showModal({ title: "重新开始", content: "当前未提交的内容会保留在原始会话记录中，是否开始一次新的汇报？", confirmText: "重新开始", confirmColor: "#F56A22", success: (result) => {
+      if (!result.confirm) return;
+      this.setData({ messages: [{ role: "assistant", text: "好的，请告诉我产品名称、SKU 或加工单号。" }], candidates: [], confirmedOrder: null, pendingMedia: null, photoException: null, editMode: false });
+      this.startSession();
+    } });
+  },
+
+  restorePendingMedia() {
+    let media = null;
+    try { media = wx.getStorageSync("hermes_pending_media"); wx.removeStorageSync("hermes_pending_media"); } catch (_) {}
+    if (!media?.tempFilePath) return;
+    this.setData({ pendingMedia: media, messages: this.data.messages.concat({ role: "user", text: "已上传现场照片", imageUrl: media.tempFilePath }, { role: "assistant", text: "照片已保留。请先告诉我这是哪个产品或加工单，我确认订单后再帮你整理异常。" }) });
+  },
+
+  choosePhoto() {
+    wx.chooseMedia({ count: 1, mediaType: ["image"], sourceType: ["camera", "album"], success: (result) => {
+      const media = result.tempFiles?.[0];
+      if (!media?.tempFilePath) return;
+      const pendingMedia = { tempFilePath: media.tempFilePath, size: media.size || 0, type: media.fileType || "image" };
+      this.setData({ pendingMedia, photoException: this.data.confirmedOrder ? { affected: "100件以内", delay: "可能延期" } : null, messages: this.data.messages.concat({ role: "user", text: "已上传现场照片", imageUrl: media.tempFilePath }, { role: "assistant", text: this.data.confirmedOrder ? "已关联当前加工单，请确认异常影响范围。" : "请再告诉我这是哪个产品或加工单。" }) });
+    } });
+  },
+
+  previewPhoto() { if (this.data.pendingMedia?.tempFilePath) wx.previewImage({ current: this.data.pendingMedia.tempFilePath, urls: [this.data.pendingMedia.tempFilePath] }); },
+
+  chooseExceptionOption(event) {
+    const field = event.currentTarget.dataset.field;
+    this.setData({ [`photoException.${field}`]: event.currentTarget.dataset.value });
+  },
+
+  async openExceptionForm() {
+    const workItemId = this.data.session?.confirmedWorkItemId;
+    if (!workItemId) return wx.showToast({ title: "请先确认加工单", icon: "none" });
+    try { wx.setStorageSync("hermes_pending_exception", { workItemId, media: this.data.pendingMedia, affected: this.data.photoException?.affected || "", delay: this.data.photoException?.delay || "", createdAt: Date.now() }); } catch (_) {}
+    wx.navigateTo({ url: `/pages/task-detail/index?id=${encodeURIComponent(workItemId)}&orderTab=exception` });
   },
 
   async submit() {

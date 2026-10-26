@@ -1,47 +1,34 @@
-<view class="page-shell profile-page {{isAdmin ? 'profile-page--admin' : ''}}">
-  <view class="profile-hero">
-    <view class="profile-grid"></view>
-    <view class="profile-eyebrow">{{isAdmin ? 'INTERNAL PROFILE' : 'PARTNER PROFILE'}}</view>
-    <view class="profile-identity">
-      <view class="avatar"><view class="avatar-aura"></view><text>{{initial}}</text><view class="avatar-online"></view></view>
-      <view class="profile-main"><view class="profile-name">{{session.user.displayName}}</view><view class="profile-account">@{{session.user.username}}</view><view class="role-tag">{{roleName}}</view></view>
-      <view class="online-mark"><view class="online-dot"></view>在线</view>
+<view class="profile-page {{isAdmin ? 'profile-page--admin' : ''}}">
+  <view class="profile-grid"></view><view class="profile-aurora"></view>
+  <view class="profile-header" style="padding-top: {{statusBarHeight}}px"><view class="back-button" bindtap="goHome">‹</view><view><strong>我的</strong><text>{{isAdmin ? '中台账号与权限' : '伙伴账号与 Hermes 偏好'}}</text></view><view class="online-pill"><i></i>在线</view></view>
+  <scroll-view class="profile-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="profile-content">
+      <view class="identity-card glass-card"><view class="avatar"><text>{{initial}}</text><view></view></view><view class="identity-main"><strong>{{session.user.displayName}}</strong><text>@{{session.user.username}}</text><small>{{roleName}}</small></view><view class="identity-state">已验证</view></view>
+
+      <block wx:if="{{isAdmin}}">
+        <view class="org-card glass-card"><view class="org-mark">中</view><view><text>当前身份域</text><strong>供应链中台</strong><small>INTERNAL CONTROL</small></view><view class="lock-mark">✓</view></view>
+        <view class="section-title"><text>AUTHORIZED SCOPE</text><strong>移动端能力边界</strong></view>
+        <view class="list-card glass-card"><view wx:for="{{adminCapabilities}}" wx:key="key" class="scope-row"><view class="scope-icon {{item.enabled ? 'is-enabled' : ''}}">{{item.enabled ? '✓' : '—'}}</view><view><strong>{{item.label}}</strong><text>{{item.note}}</text></view><small>{{item.enabled ? '已开放' : '未开放'}}</small></view></view>
+      </block>
+
+      <block wx:else>
+        <view class="org-card glass-card"><view class="org-mark">{{profile.symbol}}</view><view><text>当前组织</text><strong>{{session.organization.name}}</strong><small>{{session.organization.code}}</small></view><view class="lock-mark">✓</view></view>
+        <view class="section-title"><text>HERMES ASSISTANT</text><strong>助手偏好</strong></view>
+        <view class="list-card glass-card"><view class="preference-row"><view class="preference-icon">声</view><view><strong>语音优先</strong><text>快捷汇报默认突出语音入口</text></view><switch color="#2cc4dc" checked="{{assistantPreferences.voiceFirst}}" data-key="voiceFirst" bindchange="togglePreference"/></view><view class="preference-row"><view class="preference-icon preference-icon--orange">期</view><view><strong>交期提醒</strong><text>首页优先展示临期和逾期订单</text></view><switch color="#2cc4dc" checked="{{assistantPreferences.dueReminder}}" data-key="dueReminder" bindchange="togglePreference"/></view></view>
+        <view class="section-title"><text>AUTHORIZED SCOPE</text><strong>我能处理的业务</strong><small>{{accessScopes.length}} 项</small></view>
+        <view class="list-card glass-card"><view wx:if="{{accessScopes.length}}"><view wx:for="{{accessScopes}}" wx:key="capability" class="scope-row"><view class="scope-icon is-enabled">✓</view><view><strong>{{item.label}}</strong><text>{{item.note}}</text></view><small>已授权</small></view></view><view wx:else class="scope-empty">当前账号仅保留基础查看权限</view></view>
+      </block>
+
+      <view class="section-title"><text>ACCOUNT</text><strong>组织与安全</strong></view>
+      <view class="list-card glass-card">
+        <view wx:if="{{!isAdmin}}" class="menu-row" data-key="organization" data-title="我的组织" bindtap="menuTap"><view class="menu-icon">组</view><view><strong>组织与数据边界</strong><text>查看当前组织和授权资源</text></view><small>›</small></view>
+        <view wx:if="{{!isAdmin && session.membership.role === 'organization_admin'}}" class="menu-row" data-key="members" data-title="成员管理" bindtap="menuTap"><view class="menu-icon">员</view><view><strong>成员管理</strong><text>账号、岗位与成员状态</text></view><small>›</small></view>
+        <view wx:if="{{isAdmin}}" class="menu-row" data-key="organizations" data-title="伙伴组织" bindtap="menuTap"><view class="menu-icon">组</view><view><strong>伙伴组织</strong><text>查看组织与成员状态</text></view><small>›</small></view>
+        <view class="menu-row" data-key="audit" data-title="操作留痕" bindtap="menuTap"><view class="menu-icon">迹</view><view><strong>操作留痕</strong><text>代填、修改与提交均可追溯</text></view><small>›</small></view>
+        <view class="menu-row" data-key="security" data-title="账号与安全" bindtap="menuTap"><view class="menu-icon">盾</view><view><strong>账号与安全</strong><text>密码、登录设备与会话保护</text></view><small>›</small></view>
+      </view>
+      <button class="switch-button" bindtap="switchMode">{{isAdmin ? '切换到伙伴登录' : '切换到中台登录'}}</button><button class="logout-button" bindtap="logout">退出登录</button><view class="version">同舟协同 · HERMES V2 · {{demoMode ? 'DEMO' : 'PRODUCTION'}}</view>
     </view>
-  </view>
-
-  <block wx:if="{{isAdmin}}">
-    <view class="org-panel admin-identity card"><view class="org-symbol">中</view><view class="org-copy"><text>当前身份域</text><strong>供应链中台</strong><code>INTERNAL CONTROL</code></view><view class="org-lock">✓</view></view>
-    <view class="scope-panel card"><view class="scope-head"><view><text class="eyebrow">MOBILE SCOPE</text><strong>移动端能力边界</strong></view><text>4 项</text></view><view wx:for="{{adminCapabilities}}" wx:key="key" class="scope-row admin-capability"><view class="scope-dot {{item.enabled ? 'is-enabled' : 'is-disabled'}}"></view><view><strong>{{item.label}}</strong><text>{{item.note}}</text></view><text>{{item.enabled ? '已开放' : '未开放'}}</text></view></view>
-    <view class="menu-group card"><view class="menu-item" data-key="organizations" data-title="伙伴组织" bindtap="menuTap"><view class="menu-icon">组</view><view><text>伙伴组织</text><small>查看组织与成员状态</small></view><text class="menu-arrow">›</text></view><view class="menu-item" data-key="security" data-title="会话安全" bindtap="menuTap"><view class="menu-icon">盾</view><view><text>会话安全</text><small>短时令牌、权限复核与操作留痕</small></view><text class="menu-arrow">›</text></view></view>
-  </block>
-
-  <block wx:else>
-    <view class="org-panel card">
-      <view class="org-symbol">{{profile.symbol}}</view><view class="org-copy"><text>当前组织</text><strong>{{session.organization.name}}</strong><code>{{session.organization.code}}</code></view><view class="org-state"><text>边界已锁定</text><view>✓</view></view>
-    </view>
-
-    <view class="preference-panel card">
-      <view class="panel-heading"><view><text class="eyebrow">HERMES ASSISTANT</text><strong>助手偏好</strong></view><view class="hermes-mini-mark">H</view></view>
-      <view class="preference-row"><view class="preference-icon">声</view><view><strong>语音优先</strong><text>进入快捷汇报时突出显示语音入口</text></view><switch color="#28bddb" checked="{{assistantPreferences.voiceFirst}}" data-key="voiceFirst" bindchange="togglePreference" /></view>
-      <view class="preference-row"><view class="preference-icon preference-icon--orange">期</view><view><strong>交期提醒</strong><text>在首页优先展示临期与逾期订单</text></view><switch color="#28bddb" checked="{{assistantPreferences.dueReminder}}" data-key="dueReminder" bindchange="togglePreference" /></view>
-    </view>
-
-    <view class="scope-panel card">
-      <view class="scope-head"><view><text class="eyebrow">AUTHORIZED SCOPE</text><strong>我能处理的业务</strong></view><text>{{accessScopes.length}} 项</text></view>
-      <view wx:if="{{accessScopes.length}}"><view wx:for="{{accessScopes}}" wx:key="capability" class="scope-row"><view class="scope-dot"></view><view><strong>{{item.label}}</strong><text>{{item.note}}</text></view><text>已授权</text></view></view>
-      <view wx:else class="scope-empty">当前账号仅保留基础查看权限</view>
-    </view>
-
-    <view class="menu-group card">
-      <view class="menu-item" data-key="organization" data-title="我的组织" bindtap="menuTap"><view class="menu-icon">组</view><view><text>组织与数据边界</text><small>查看当前组织和授权资源</small></view><text class="menu-arrow">›</text></view>
-      <view wx:if="{{session.membership.role === 'organization_admin'}}" class="menu-item" data-key="members" data-title="成员管理" bindtap="menuTap"><view class="menu-icon">员</view><view><text>成员管理</text><small>账号、岗位与成员状态</small></view><text class="menu-arrow">›</text></view>
-      <view class="menu-item" data-key="audit" data-title="操作留痕" bindtap="menuTap"><view class="menu-icon">迹</view><view><text>操作留痕</text><small>Hermes 代填与人工确认均可追溯</small></view><text class="menu-arrow">›</text></view>
-      <view class="menu-item" data-key="security" data-title="账号与安全" bindtap="menuTap"><view class="menu-icon">盾</view><view><text>账号与安全</text><small>密码与登录设备</small></view><text class="menu-arrow">›</text></view>
-    </view>
-  </block>
-
-  <button class="secondary-button switch-mode-button" bindtap="switchMode">{{isAdmin ? '切换到伙伴登录' : '切换到中台登录'}}</button>
-  <button class="danger-button logout-button" bindtap="logout">退出登录</button>
-  <view class="version">同舟协同小程序 · {{demoMode ? 'DEMO' : 'PRODUCTION'}} · HERMES</view>
-  <tz-tab-bar active="profile" mode="{{mode}}" unread="{{unread}}" theme="dark" />
+  </scroll-view>
+  <tz-tab-bar active="profile" mode="{{mode}}" unread="{{unread}}" theme="glass" />
 </view>

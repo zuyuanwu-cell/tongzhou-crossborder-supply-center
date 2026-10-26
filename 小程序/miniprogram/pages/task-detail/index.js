@@ -197,6 +197,11 @@ Page({
 
   onLoad(options) {
     this.setData({ id: options.id || "", desiredOrderTab: options.orderTab || "" });
+    try {
+      const pending = wx.getStorageSync("hermes_pending_exception");
+      if (pending?.workItemId === (options.id || "") && Date.now() - Number(pending.createdAt || 0) < 30 * 60 * 1000) this._pendingHermesException = pending;
+      wx.removeStorageSync("hermes_pending_exception");
+    } catch (_) {}
     this._recorder = wx.getRecorderManager();
     this._recorder.onStop((recording) => this.handleRecordingStopped(recording));
     this._recorder.onError((error) => {
@@ -329,6 +334,15 @@ Page({
         "quoteForm.currency": item.publicPayload?.quoteCurrency || "CNY",
         "quoteForm.minimumOrderQuantity": String(item.publicPayload?.quantity || ""),
       });
+      if (this._pendingHermesException) {
+        const pending = this._pendingHermesException;
+        this._pendingHermesException = null;
+        this.setData({
+          media: pending.media?.tempFilePath ? [pending.media] : this.data.media,
+          "exceptionForm.title": "现场图片异常",
+          "exceptionForm.description": [pending.affected ? `影响数量：${pending.affected}` : "", pending.delay ? `交期影响：${pending.delay}` : ""].filter(Boolean).join("；"),
+        });
+      }
       wx.setNavigationBarTitle({ title: item.typeLabel });
     } catch (error) { this.setData({ error: error.message || "任务详情读取失败。" }); }
     finally { this.setData({ loading: false }); }

@@ -42,6 +42,7 @@ function decorateHomeTask(item, referenceDate) {
     progressText: progress == null ? decorated.statusLabel : `${progress}%`,
     deadlineTone: deadline.key === "overdue" ? "danger" : deadline.key === "dueSoon" ? "warning" : "neutral",
     deadlineLabel: deadline.label,
+    reportPrompt: `${payload.productName || payload.productTitle || item.title || "这个产品"}现在进度是`,
   });
 }
 
@@ -70,10 +71,10 @@ function buildPartnerHome(items, dashboard, mode, referenceDate, preferences = {
     { key: "exception", label: "异常", value: numberValue(dashboard?.exceptionReports), tone: "red" },
   ];
   const suggestions = productionMode ? [
-    { label: "汇报一个产品的生产进度", action: "quick_report", prompt: "我要汇报一个产品的生产进度" },
-    { label: "拍照上报现场异常", action: "tasks", itemType: "production_order" },
-    { label: "填写发货单号", action: "tasks", itemType: "production_order" },
-    { label: "这周哪些订单要交货？", action: "tasks" },
+    { label: `${String(todayTasks[0]?.referenceNo || "941").replace(/\D/g, "").slice(-3) || "941"} 灌装完成了`, action: "quick_report", prompt: `${todayTasks[0]?.productName || "这个产品"}灌装完成了` },
+    { label: "拍照上报异常", action: "photo_report" },
+    { label: "填发货单号", action: "tasks", itemType: "production_order" },
+    { label: "这周哪些单要交货？", action: "tasks" },
   ] : [
     { label: "汇报一个订单的交付进度", action: "tasks", itemType: "purchase_order" },
     { label: "上报到货异常", action: "tasks", itemType: "purchase_order" },

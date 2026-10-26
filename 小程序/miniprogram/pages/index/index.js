@@ -39,6 +39,8 @@ Page({
     homeMetrics: [],
     hermesSuggestions: [],
     assistantPreferences: { voiceFirst: true, dueReminder: true },
+    statusBarHeight: 20,
+    composerText: "",
   },
 
   onLoad() {
@@ -46,7 +48,9 @@ Page({
     const greeting = hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
     const date = new Date();
     const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
-    this.setData({ greeting, today: `${date.getMonth() + 1}月${date.getDate()}日 · ${weekdays[date.getDay()]}`, clockText: timeText(date) });
+    let windowInfo = {};
+    try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
+    this.setData({ greeting, today: `${date.getMonth() + 1}月${date.getDate()}日 · ${weekdays[date.getDay()]}`, clockText: timeText(date), statusBarHeight: Number(windowInfo.statusBarHeight || 20) });
     this._clockTimer = setInterval(() => this.setData({ clockText: timeText() }), 60_000);
   },
 
@@ -138,16 +142,51 @@ Page({
   },
 
   openTodayTask(event) {
-    const id = event.currentTarget.dataset.id;
-    if (id) wx.navigateTo({ url: `/pages/task-detail/index?id=${encodeURIComponent(id)}` });
+    const task = this.data.todayReportTasks[Number(event.currentTarget.dataset.index)];
+    if (!task) return;
+    if (task.itemType === "production_order" && this.data.partnerAi?.quickReportEnabled) return this.openHermesWithPrompt(task.reportPrompt);
+    wx.navigateTo({ url: `/pages/task-detail/index?id=${encodeURIComponent(task.id)}` });
   },
 
   runHermesSuggestion(event) {
     const suggestion = this.data.hermesSuggestions[Number(event.currentTarget.dataset.index)];
     if (!suggestion) return;
     if (suggestion.action === "quick_report" && this.data.partnerAi?.quickReportEnabled) return this.openHermesWithPrompt(suggestion.prompt);
+    if (suggestion.action === "photo_report") return this.choosePhoto();
     const query = suggestion.itemType ? `?itemType=${encodeURIComponent(suggestion.itemType)}` : "";
     wx.redirectTo({ url: `/pages/tasks/index${query}` });
+  },
+
+  updateComposer(event) { this.setData({ composerText: event.detail.value }); },
+
+  sendComposer() {
+    if (!this.data.partnerAi?.quickReportEnabled) return this.openTasks();
+    const text = String(this.data.composerText || "").trim();
+    this.setData({ composerText: "" });
+    this.openHermesWithPrompt(text);
+  },
+
+  startVoiceReport() {
+    if (!this.data.partnerAi?.quickReportEnabled) return this.openTasks();
+    wx.navigateTo({ url: "/pages/ai-progress/index?voice=1" });
+  },
+
+  choosePhoto() {
+    if (!this.data.partnerAi?.quickReportEnabled) return this.openTasks();
+    wx.chooseMedia({ count: 1, mediaType: ["image"], sourceType: ["camera", "album"], success: (result) => {
+      const media = result.tempFiles?.[0];
+      if (!media?.tempFilePath) return;
+      try { wx.setStorageSync("hermes_pending_media", { tempFilePath: media.tempFilePath, size: media.size || 0, type: media.fileType || "image", createdAt: Date.now() }); } catch (_) {}
+      wx.navigateTo({ url: "/pages/ai-progress/index?mode=photo" });
+    } });
+  },
+
+  openHeaderMenu() {
+    wx.showActionSheet({ itemList: ["刷新工作台", "查看全部任务", "助手偏好"], success: ({ tapIndex }) => {
+      if (tapIndex === 0) this.load();
+      if (tapIndex === 1) this.openTasks();
+      if (tapIndex === 2) wx.redirectTo({ url: "/pages/profile/index" });
+    } });
   },
 
   openShortcut(event) {
