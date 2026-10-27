@@ -8,7 +8,7 @@ process.env.COLLABORATION_INTERNAL_TOKEN = "test-internal-token-at-least-thirty-
 process.env.HERMES_PARTNER_BRIDGE_SECRET = "bridge-secret-at-least-thirty-two-characters";
 process.env.COLLABORATION_PARTNER_AI_BRIDGE_URL = "http://partner-ai.test";
 
-const { requestPartnerProgressDraft } = await import("../api/partner-ai-bridge.js");
+const { requestPartnerOrderHints, requestPartnerProgressDraft } = await import("../api/partner-ai-bridge.js");
 const { recognizeShortAudio } = await import("../api/tencent-asr.js");
 const { validatePartnerAiAudioContent, partnerAiDraftReplayAction } = await import("../api/partner-ai.js");
 const { jsonbParameter } = await import("../api/jsonb-parameter.js");
@@ -40,6 +40,21 @@ test("partner draft bridge signs the exact body and uses a one-time nonce", asyn
   const digest = createHash("sha256").update(body).digest("hex");
   assert.equal(captured.options.headers["X-Hermes-Body-Sha256"], digest);
   const canonical = [captured.options.headers["X-Hermes-Timestamp"], captured.options.headers["X-Hermes-Nonce"], "POST", "/api/internal/hermes/v1/partner-progress-drafts", digest].join("\n");
+  assert.equal(captured.options.headers["X-Hermes-Signature"], createHmac("sha256", process.env.HERMES_PARTNER_BRIDGE_SECRET).update(canonical).digest("hex"));
+});
+
+test("partner order hint bridge uses the isolated Hermes endpoint and signature path", async () => {
+  let captured;
+  const payload = { principal: { organizationId: "org", userId: "user" }, text: "男士洗面奶做到六成" };
+  const hints = await requestPartnerOrderHints(payload, { fetchImpl: async (url, options) => {
+    captured = { url: String(url), options };
+    return new Response(JSON.stringify({ ok: true, hints: { terms: ["男士洁面", "洗面奶"], identifiers: {}, model: "deepseek-v4-pro" } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } });
+  assert.deepEqual(hints.terms, ["男士洁面", "洗面奶"]);
+  assert.equal(captured.url, "http://partner-ai.test/api/internal/hermes/v1/partner-order-hints");
+  const body = Buffer.from(captured.options.body);
+  const digest = createHash("sha256").update(body).digest("hex");
+  const canonical = [captured.options.headers["X-Hermes-Timestamp"], captured.options.headers["X-Hermes-Nonce"], "POST", "/api/internal/hermes/v1/partner-order-hints", digest].join("\n");
   assert.equal(captured.options.headers["X-Hermes-Signature"], createHmac("sha256", process.env.HERMES_PARTNER_BRIDGE_SECRET).update(canonical).digest("hex"));
 });
 

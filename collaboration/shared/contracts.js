@@ -416,12 +416,37 @@ const sampleVariantSchema = z.object({
 export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
   z.object({
     reportType: z.literal("production_progress"),
-    stage: z.enum(["planning", "material_preparation", "filling", "packaging", "quality_check", "ready_to_ship"]),
-    progressPercent: z.number().int().min(0).max(100),
+    stage: z.enum(["planning", "material_preparation", "filling", "packaging", "quality_check", "ready_to_ship"]).optional().default("planning"),
+    progressPercent: z.number().int().min(0).max(100).optional(),
     completedQuantity: quantity.optional().default(0),
     expectedCompletionDate: dateOnly.optional().default(""),
+    materialStatus: z.enum(["not_ready", "partial", "ready"]).optional(),
+    preproductionSampleStatus: z.enum(["not_scheduled", "scheduled", "submitted", "approved", "not_required"]).optional(),
+    preproductionSampleDate: dateOnly.optional().default(""),
+    productionStatus: z.enum(["not_scheduled", "scheduled", "started", "completed"]).optional(),
+    productionStartDate: dateOnly.optional().default(""),
+    expectedDeliveryDate: dateOnly.optional().default(""),
     note: limitedText(2_000).optional().default(""),
-  }).strict(),
+  }).strict().superRefine((value, context) => {
+    const hasMilestones = Boolean(value.materialStatus || value.preproductionSampleStatus || value.productionStatus || value.expectedDeliveryDate);
+    if (!hasMilestones) {
+      if (value.progressPercent == null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["progressPercent"], message: "请填写生产里程碑，或保留原表单的完成进度。" });
+      if (value.progressPercent != null && value.progressPercent < 100 && !value.expectedCompletionDate) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["expectedCompletionDate"], message: "进度未完成时必须填写预计完成日期。" });
+      }
+      return;
+    }
+    if (!value.materialStatus) context.addIssue({ code: z.ZodIssueCode.custom, path: ["materialStatus"], message: "请确认物料齐套状态。" });
+    if (!value.preproductionSampleStatus) context.addIssue({ code: z.ZodIssueCode.custom, path: ["preproductionSampleStatus"], message: "请确认产前样状态。" });
+    if (!value.productionStatus) context.addIssue({ code: z.ZodIssueCode.custom, path: ["productionStatus"], message: "请确认正式投产状态。" });
+    if (!value.expectedDeliveryDate) context.addIssue({ code: z.ZodIssueCode.custom, path: ["expectedDeliveryDate"], message: "请填写预计交货日期。" });
+    if (["scheduled", "submitted", "approved"].includes(value.preproductionSampleStatus) && !value.preproductionSampleDate) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["preproductionSampleDate"], message: "请填写产前样计划或实际提供日期。" });
+    }
+    if (["scheduled", "started", "completed"].includes(value.productionStatus) && !value.productionStartDate) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["productionStartDate"], message: "请填写计划或实际投产日期。" });
+    }
+  }),
   z.object({
     reportType: z.literal("material_readiness"),
     lineId: z.string().uuid(),
@@ -458,15 +483,7 @@ export const partnerOrderReportSchema = z.discriminatedUnion("reportType", [
     trackingNo: limitedText(200).optional().default(""),
     note: limitedText(2_000).optional().default(""),
   }).strict(),
-]).superRefine((value, context) => {
-  if (value.reportType === "production_progress" && value.progressPercent < 100 && !value.expectedCompletionDate) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["expectedCompletionDate"],
-      message: "进度未完成时必须填写预计完成日期。",
-    });
-  }
-});
+]);
 
 export const supplierQuoteSchema = z.object({
   workItemId: z.string().uuid(),

@@ -15,6 +15,7 @@ test("production server wires the isolated Hermes partner profile", async () => 
   assert.match(source, /partnerProxySecret:\s*hermesPartnerModelProxyKey/);
   assert.match(source, /const hermesPartnerClient = createHermesClient/);
   assert.match(source, /const hermesPartnerDraftApi = createHermesPartnerDraftApi/);
+  assert.match(source, /if \(await hermesPartnerDraftApi\(req, res, url\)\) return;/);
 });
 
 test("partner draft route is registered before the catch-all Hermes API", async () => {

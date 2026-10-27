@@ -206,6 +206,24 @@ test("turnkey material tests require an explanation when testing fails", () => {
   assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "filling", progressPercent: 101, completedQuantity: 10, expectedCompletionDate: "2026-10-20", note: "灌装中" }).success, false);
   assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "filling", progressPercent: 60, completedQuantity: 10, expectedCompletionDate: "", note: "" }).success, false);
   assert.equal(partnerOrderReportSchema.safeParse({ reportType: "production_progress", stage: "ready_to_ship", progressPercent: 100, completedQuantity: 10, expectedCompletionDate: "", note: "" }).success, true);
+  assert.equal(partnerOrderReportSchema.safeParse({
+    reportType: "production_progress",
+    materialStatus: "ready",
+    preproductionSampleStatus: "scheduled",
+    preproductionSampleDate: "2026-10-28",
+    productionStatus: "scheduled",
+    productionStartDate: "2026-10-30",
+    expectedDeliveryDate: "2026-11-05",
+    note: "物料齐全，已排产",
+  }).success, true);
+  assert.equal(partnerOrderReportSchema.safeParse({
+    reportType: "production_progress",
+    materialStatus: "ready",
+    preproductionSampleStatus: "approved",
+    productionStatus: "started",
+    productionStartDate: "2026-10-30",
+    expectedDeliveryDate: "2026-11-05",
+  }).success, false);
 });
 
 test("full-service production factories can be explicitly granted production, procurement and sampling", () => {

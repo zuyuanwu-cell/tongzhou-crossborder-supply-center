@@ -67,12 +67,37 @@ test("normalized fuzzy product matching tolerates a short recognition typo", () 
   assert.deepEqual(rankPartnerOrderCandidates("完全无关的牙刷", orders), []);
 });
 
-test("progress questions are asked one field at a time and expected date is conditional", () => {
+test("spoken product shorthand returns clickable candidates without requiring the full catalog name", () => {
+  const matched = rankPartnerOrderCandidates("男士洗面奶做到六成", orders);
+  assert.deepEqual(matched.map((item) => item.id), ["order-a", "order-b"]);
+  assert.ok(matched.every((item) => item.matchedBy.includes("product")));
+});
+
+test("Hermes semantic hints are ranked deterministically against authorized orders", () => {
+  const matched = rankPartnerOrderCandidates("那个洗脸的做到六成", orders, 5, {
+    terms: ["SJJ 男士洁面泡沫", "男士洗面奶"],
+    identifiers: {},
+  });
+  assert.deepEqual(matched.map((item) => item.id), ["order-a", "order-b"]);
+  assert.ok(matched.every((item) => item.matchedBy.startsWith("hermes_")));
+  assert.deepEqual(rankPartnerOrderCandidates("完全无关的牙刷", orders, 5, { terms: ["牙刷"] }), []);
+});
+
+test("production milestone questions are asked one field at a time with conditional dates", () => {
   const missing = partnerAiSessionInternals.requiredMissing({});
-  assert.deepEqual(missing, ["stage", "progressPercent"]);
-  assert.match(nextPartnerProgressQuestion(missing), /阶段/);
-  assert.deepEqual(partnerAiSessionInternals.requiredMissing({ stage: "filling", progressPercent: 60 }), ["expectedCompletionDate"]);
-  assert.deepEqual(partnerAiSessionInternals.requiredMissing({ stage: "ready_to_ship", progressPercent: 100 }), []);
+  assert.deepEqual(missing, ["materialStatus", "preproductionSampleStatus", "productionStatus", "expectedDeliveryDate"]);
+  assert.match(nextPartnerProgressQuestion(missing), /物料和包材/);
+  assert.deepEqual(partnerAiSessionInternals.requiredMissing({
+    materialStatus: "ready",
+    preproductionSampleStatus: "scheduled",
+    productionStatus: "scheduled",
+  }), ["preproductionSampleDate", "productionStartDate", "expectedDeliveryDate"]);
+  assert.deepEqual(partnerAiSessionInternals.requiredMissing({
+    materialStatus: "ready",
+    preproductionSampleStatus: "not_required",
+    productionStatus: "not_scheduled",
+    expectedDeliveryDate: "2026-11-05",
+  }), []);
 });
 
 test("risk language is routed to exception reporting instead of ordinary progress", () => {

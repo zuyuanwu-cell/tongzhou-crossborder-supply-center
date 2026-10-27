@@ -11,6 +11,27 @@ const STAGES = [
   { value: "quality_check", label: "质量检查" },
   { value: "ready_to_ship", label: "待发货" },
 ];
+const MATERIAL_STATUSES = [
+  { value: "", label: "请选择物料状态" },
+  { value: "not_ready", label: "未齐" },
+  { value: "partial", label: "部分到齐" },
+  { value: "ready", label: "已齐套" },
+];
+const SAMPLE_STATUSES = [
+  { value: "", label: "请选择产前样状态" },
+  { value: "not_scheduled", label: "未安排" },
+  { value: "scheduled", label: "已计划" },
+  { value: "submitted", label: "已提交" },
+  { value: "approved", label: "已确认" },
+  { value: "not_required", label: "无需产前样" },
+];
+const PRODUCTION_STATUSES = [
+  { value: "", label: "请选择投产状态" },
+  { value: "not_scheduled", label: "未排产" },
+  { value: "scheduled", label: "已排期" },
+  { value: "started", label: "已投产" },
+  { value: "completed", label: "已完工" },
+];
 const STEPS = [
   { key: "identifying_order", label: "识别订单" },
   { key: "confirming_order", label: "确认订单" },
@@ -28,23 +49,52 @@ function dateText(value) {
   return value ? String(value).slice(0, 10) : "";
 }
 
+function optionIndex(options, value) {
+  const index = options.findIndex((item) => item.value === value);
+  return index < 0 ? 0 : index;
+}
+
 function decodeRouteText(value) {
   const text = String(value || "");
   if (!text) return "";
   try { return decodeURIComponent(text); } catch (_) { return text; }
 }
 
-function processSteps(stage, progressPercent) {
-  const visible = STAGES.filter((item) => item.value);
-  const current = Math.max(0, visible.findIndex((item) => item.value === stage));
-  const progress = Number(progressPercent || 0);
-  return visible.map((item, index) => ({
-    key: item.value,
-    label: item.label,
-    done: index < current || (index === current && progress >= 100),
-    current: index === current && progress < 100,
-    value: index < current ? 100 : index === current ? progress : 0,
-  })).slice(0, Math.max(3, current + 1));
+function labelFor(options, value, fallback = "待补充") {
+  return options.find((item) => item.value === value)?.label || fallback;
+}
+
+function processSteps(form = {}) {
+  return [
+    {
+      key: "material",
+      label: "物料齐套",
+      done: form.materialStatus === "ready",
+      current: Boolean(form.materialStatus) && form.materialStatus !== "ready",
+      status: labelFor(MATERIAL_STATUSES, form.materialStatus),
+    },
+    {
+      key: "sample",
+      label: "产前样",
+      done: ["approved", "not_required"].includes(form.preproductionSampleStatus),
+      current: ["scheduled", "submitted"].includes(form.preproductionSampleStatus),
+      status: labelFor(SAMPLE_STATUSES, form.preproductionSampleStatus),
+    },
+    {
+      key: "production",
+      label: "正式投产",
+      done: form.productionStatus === "completed",
+      current: ["scheduled", "started"].includes(form.productionStatus),
+      status: labelFor(PRODUCTION_STATUSES, form.productionStatus),
+    },
+    {
+      key: "delivery",
+      label: "预计交货",
+      done: form.productionStatus === "completed" && Boolean(form.expectedDeliveryDate),
+      current: Boolean(form.expectedDeliveryDate),
+      status: form.expectedDeliveryDate || "待补充",
+    },
+  ];
 }
 
 Page({
@@ -65,7 +115,25 @@ Page({
     voiceBusy: false,
     stageOptions: STAGES,
     stageIndex: 0,
-    form: { stage: "", progressPercent: "", completedQuantity: "", expectedCompletionDate: "", note: "" },
+    materialStatusOptions: MATERIAL_STATUSES,
+    sampleStatusOptions: SAMPLE_STATUSES,
+    productionStatusOptions: PRODUCTION_STATUSES,
+    materialStatusIndex: 0,
+    sampleStatusIndex: 0,
+    productionStatusIndex: 0,
+    form: {
+      stage: "",
+      progressPercent: "",
+      completedQuantity: "",
+      expectedCompletionDate: "",
+      materialStatus: "",
+      preproductionSampleStatus: "",
+      preproductionSampleDate: "",
+      productionStatus: "",
+      productionStartDate: "",
+      expectedDeliveryDate: "",
+      note: "",
+    },
     versionConflict: false,
     assistantUnavailable: false,
     exceptionSuggested: false,
@@ -128,6 +196,19 @@ Page({
     const index = Math.max(0, STEPS.findIndex((item) => item.key === session.state));
     const candidates = (session.candidates || this.data.candidates || []).map((item) => ({ ...item, dueDate: dateText(item.dueAt) }));
     const confirmedOrder = session.confirmedOrder || this.data.confirmedOrder || candidates.find((item) => item.id === session.confirmedWorkItemId) || null;
+    const form = {
+      stage: fields.stage || this.data.form.stage || "",
+      progressPercent: fields.progressPercent == null ? this.data.form.progressPercent : String(fields.progressPercent),
+      completedQuantity: fields.completedQuantity == null ? this.data.form.completedQuantity : String(fields.completedQuantity),
+      expectedCompletionDate: dateText(fields.expectedCompletionDate || this.data.form.expectedCompletionDate),
+      materialStatus: fields.materialStatus || this.data.form.materialStatus || "",
+      preproductionSampleStatus: fields.preproductionSampleStatus || this.data.form.preproductionSampleStatus || "",
+      preproductionSampleDate: dateText(fields.preproductionSampleDate || this.data.form.preproductionSampleDate),
+      productionStatus: fields.productionStatus || this.data.form.productionStatus || "",
+      productionStartDate: dateText(fields.productionStartDate || this.data.form.productionStartDate),
+      expectedDeliveryDate: dateText(fields.expectedDeliveryDate || this.data.form.expectedDeliveryDate),
+      note: fields.note || this.data.form.note || "",
+    };
     this.setData({
       session,
       activeStep: index,
@@ -138,15 +219,12 @@ Page({
       assistantUnavailable: Boolean(extra.assistantUnavailable),
       exceptionSuggested: Boolean(session.exceptionSuggested || (session.warnings || []).includes("exception_report_recommended")),
       submitted: session.state === "submitted",
-      stageIndex: stageIndex(fields.stage || this.data.form.stage),
-      form: {
-        stage: fields.stage || this.data.form.stage || "",
-        progressPercent: fields.progressPercent == null ? this.data.form.progressPercent : String(fields.progressPercent),
-        completedQuantity: fields.completedQuantity == null ? this.data.form.completedQuantity : String(fields.completedQuantity),
-        expectedCompletionDate: dateText(fields.expectedCompletionDate || this.data.form.expectedCompletionDate),
-        note: fields.note || this.data.form.note || "",
-      },
-      processSteps: processSteps(fields.stage || this.data.form.stage, fields.progressPercent ?? this.data.form.progressPercent),
+      stageIndex: stageIndex(form.stage),
+      materialStatusIndex: optionIndex(MATERIAL_STATUSES, form.materialStatus),
+      sampleStatusIndex: optionIndex(SAMPLE_STATUSES, form.preproductionSampleStatus),
+      productionStatusIndex: optionIndex(PRODUCTION_STATUSES, form.productionStatus),
+      form,
+      processSteps: processSteps(form),
       photoException: confirmedOrder && this.data.pendingMedia && !this.data.photoException ? { affected: "100件以内", delay: "可能延期" } : this.data.photoException,
     });
   },
@@ -155,12 +233,24 @@ Page({
   updateField(event) {
     const key = event.currentTarget.dataset.field;
     const form = Object.assign({}, this.data.form, { [key]: event.detail.value });
-    this.setData({ [`form.${key}`]: event.detail.value, processSteps: processSteps(form.stage, form.progressPercent) });
+    this.setData({ [`form.${key}`]: event.detail.value, processSteps: processSteps(form) });
   },
   chooseStage(event) {
     const index = Number(event.detail.value);
     const stage = STAGES[index] || STAGES[0];
-    this.setData({ stageIndex: index, "form.stage": stage.value, processSteps: processSteps(stage.value, this.data.form.progressPercent) });
+    const form = Object.assign({}, this.data.form, { stage: stage.value });
+    this.setData({ stageIndex: index, "form.stage": stage.value, processSteps: processSteps(form) });
+  },
+
+  chooseMilestoneStatus(event) {
+    const field = event.currentTarget.dataset.field;
+    const optionsKey = event.currentTarget.dataset.options;
+    const indexKey = event.currentTarget.dataset.indexKey;
+    const options = this.data[optionsKey] || [];
+    const index = Number(event.detail.value || 0);
+    const value = options[index]?.value || "";
+    const form = Object.assign({}, this.data.form, { [field]: value });
+    this.setData({ [indexKey]: index, [`form.${field}`]: value, processSteps: processSteps(form) });
   },
 
   async sendText() {
@@ -285,13 +375,17 @@ Page({
   async submit() {
     if (this.data.busy || this.data.exceptionSuggested) return;
     const form = this.data.form;
-    const progressPercent = Number(form.progressPercent);
-    if (!form.stage) return wx.showToast({ title: "请选择生产阶段", icon: "none" });
-    if (!Number.isInteger(progressPercent) || progressPercent < 0 || progressPercent > 100) return wx.showToast({ title: "请输入 0-100 的整数进度", icon: "none" });
-    if (progressPercent < 100 && !form.expectedCompletionDate) return wx.showToast({ title: "请选择预计完成日期", icon: "none" });
+    if (!form.materialStatus) return wx.showToast({ title: "请选择物料齐套状态", icon: "none" });
+    if (!form.preproductionSampleStatus) return wx.showToast({ title: "请选择产前样状态", icon: "none" });
+    if (["scheduled", "submitted", "approved"].includes(form.preproductionSampleStatus) && !form.preproductionSampleDate) return wx.showToast({ title: "请选择产前样日期", icon: "none" });
+    if (!form.productionStatus) return wx.showToast({ title: "请选择正式投产状态", icon: "none" });
+    if (["scheduled", "started", "completed"].includes(form.productionStatus) && !form.productionStartDate) return wx.showToast({ title: "请选择投产日期", icon: "none" });
+    if (!form.expectedDeliveryDate) return wx.showToast({ title: "请选择预计交货日期", icon: "none" });
+    const progressPercent = String(form.progressPercent).trim() === "" ? null : Number(form.progressPercent);
+    if (progressPercent !== null && (!Number.isInteger(progressPercent) || progressPercent < 0 || progressPercent > 100)) return wx.showToast({ title: "辅助进度需为 0-100", icon: "none" });
     const confirmed = await new Promise((resolve) => wx.showModal({
-      title: "确认提交进度",
-      content: `将向加工单 ${this.data.confirmedOrder?.orderNo || this.data.confirmedOrder?.referenceNo || ""} 提交 ${progressPercent}% 的进度，是否继续？`,
+      title: "确认提交里程碑",
+      content: `加工单 ${this.data.confirmedOrder?.orderNo || this.data.confirmedOrder?.referenceNo || ""}：${labelFor(MATERIAL_STATUSES, form.materialStatus)}，${labelFor(PRODUCTION_STATUSES, form.productionStatus)}，预计 ${form.expectedDeliveryDate} 交货。`,
       confirmText: "确认提交", confirmColor: "#F45B0B", success: (result) => resolve(result.confirm), fail: () => resolve(false),
     }));
     if (!confirmed) return;
@@ -299,15 +393,21 @@ Page({
     try {
       await api.submitPartnerOrderReport(this.data.session.confirmedWorkItemId, this.data.session.confirmedWorkItemVersion, {
         reportType: "production_progress",
-        stage: form.stage,
-        progressPercent,
+        stage: form.productionStatus === "completed" ? "ready_to_ship" : form.productionStatus === "started" ? (form.stage || "filling") : form.materialStatus === "ready" ? "planning" : "material_preparation",
+        ...(progressPercent === null ? {} : { progressPercent }),
         completedQuantity: Number(form.completedQuantity || 0),
-        expectedCompletionDate: form.expectedCompletionDate,
+        expectedCompletionDate: form.expectedCompletionDate || "",
+        materialStatus: form.materialStatus,
+        preproductionSampleStatus: form.preproductionSampleStatus,
+        preproductionSampleDate: form.preproductionSampleDate || "",
+        productionStatus: form.productionStatus,
+        productionStartDate: form.productionStartDate || "",
+        expectedDeliveryDate: form.expectedDeliveryDate,
         note: String(form.note || "").trim(),
       }, this.data.session.latestDraftId, `partner-session-submit:${this.data.sessionId}`);
       const refreshed = await api.fetchPartnerAiSession(this.data.sessionId);
       this.applySession(refreshed.session);
-      wx.showToast({ title: "进度已提交", icon: "success" });
+      wx.showToast({ title: "里程碑已提交", icon: "success" });
     } catch (error) {
       this.setData({ error: error.message || "提交失败，请刷新订单后重试。" });
       if (error.code === "version_conflict") {

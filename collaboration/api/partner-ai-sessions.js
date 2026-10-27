@@ -3,6 +3,7 @@ import { z } from "zod";
 import { assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
 import { withOrganization } from "./db.js";
 import { createPartnerProgressDraft } from "./partner-ai.js";
+import { requestPartnerOrderHints } from "./partner-ai-bridge.js";
 import { jsonbParameter } from "./jsonb-parameter.js";
 import { getPartnerAiSettings, partnerAiQuickReportEnabledFor } from "./partner-ai-settings.js";
 
@@ -38,6 +39,22 @@ export function normalizePartnerOrderSearch(value) {
     .replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
+function canonicalProductSearch(value) {
+  return normalizePartnerOrderSearch(value)
+    .replace(/(?:洗面奶|洗脸奶|洗面乳|洁面乳|洁面霜)/gu, "洁面")
+    .replace(/(?:泡沫|慕斯)/gu, "慕斯")
+    .replace(/褥疮高/gu, "褥疮膏");
+}
+
+function characterContainment(left, right) {
+  const a = new Set(Array.from(left).filter((value) => /[\p{L}\p{N}]/u.test(value)));
+  const b = new Set(Array.from(right).filter((value) => /[\p{L}\p{N}]/u.test(value)));
+  if (a.size < 3 || b.size < 3) return { overlap: 0, ratio: 0 };
+  let overlap = 0;
+  for (const value of a) if (b.has(value)) overlap += 1;
+  return { overlap, ratio: overlap / Math.min(a.size, b.size) };
+}
+
 function bigrams(value) {
   const input = Array.from(value);
   if (input.length < 2) return new Set(input);
@@ -59,34 +76,46 @@ function values(value) {
   return [];
 }
 
-export function scorePartnerOrderCandidate(message, candidate) {
-  const query = normalizePartnerOrderSearch(message);
-  if (!query) return { score: 0, matchedBy: "" };
+export function scorePartnerOrderCandidate(message, candidate, hints = {}) {
+  const searches = [
+    { value: message, source: "local" },
+    ...values(hints?.terms).map((value) => ({ value, source: "hermes" })),
+    ...Object.values(hints?.identifiers || {}).map((value) => ({ value, source: "hermes" })),
+  ].map((item) => ({ ...item, query: normalizePartnerOrderSearch(item.value) })).filter((item) => item.query);
+  if (!searches.length) return { score: 0, matchedBy: "", matchedTerm: "" };
   const exactGroups = [
     ["order", [candidate.orderNo, candidate.referenceNo, candidate.projectCode]],
     ["sku", [candidate.sku, candidate.lineRef, candidate.barcode]],
     ["product", [candidate.productName, ...(candidate.aliases || [])]],
   ];
   const base = { order: 120, sku: 110, product: 100 };
-  let best = { score: 0, matchedBy: "" };
-  for (const [kind, group] of exactGroups) {
-    for (const raw of group.filter(Boolean)) {
-      const token = normalizePartnerOrderSearch(raw);
-      if (token.length < 2) continue;
-      if (query === token || query.includes(token)) {
-        const score = base[kind];
-        if (score > best.score) best = { score, matchedBy: kind };
-        continue;
-      }
-      if (kind === "product" && token.includes(query) && query.length >= 3) {
-        if (96 > best.score) best = { score: 96, matchedBy: kind };
-        continue;
-      }
-      if (kind === "product" && query.length >= 3 && token.length >= 3) {
-        const similarity = dice(query, token);
-        if (similarity >= 0.45) {
-          const score = Math.round(60 + similarity * 30);
-          if (score > best.score) best = { score, matchedBy: "fuzzy_product" };
+  let best = { score: 0, matchedBy: "", matchedTerm: "" };
+  for (const search of searches) {
+    const query = search.query;
+    for (const [kind, group] of exactGroups) {
+      for (const raw of group.filter(Boolean)) {
+        const token = normalizePartnerOrderSearch(raw);
+        if (token.length < 2) continue;
+        const prefix = search.source === "hermes" ? "hermes_" : "";
+        if (query === token || query.includes(token)) {
+          const score = base[kind] + (search.source === "hermes" ? 2 : 0);
+          if (score > best.score) best = { score, matchedBy: `${prefix}${kind}`, matchedTerm: String(search.value) };
+          continue;
+        }
+        if (token.includes(query) && query.length >= (kind === "product" ? 2 : 4)) {
+          const score = base[kind] - (kind === "product" ? 4 : 8) + (search.source === "hermes" ? 2 : 0);
+          if (score > best.score) best = { score, matchedBy: `${prefix}${kind}`, matchedTerm: String(search.value) };
+          continue;
+        }
+        if (kind === "product" && query.length >= 3 && token.length >= 3) {
+          const canonicalQuery = canonicalProductSearch(search.value);
+          const canonicalToken = canonicalProductSearch(raw);
+          const similarity = dice(canonicalQuery, canonicalToken);
+          const containment = characterContainment(canonicalQuery, canonicalToken);
+          if (similarity >= 0.32 || (containment.overlap >= 3 && containment.ratio >= 0.5)) {
+            const score = Math.round(58 + Math.max(similarity, containment.ratio) * 30) + (search.source === "hermes" ? 2 : 0);
+            if (score > best.score) best = { score, matchedBy: `${prefix}fuzzy_product`, matchedTerm: String(search.value) };
+          }
         }
       }
     }
@@ -119,13 +148,13 @@ function candidateFromRow(row) {
   };
 }
 
-export function rankPartnerOrderCandidates(message, candidates, limit = 5) {
+export function rankPartnerOrderCandidates(message, candidates, limit = 5, hints = {}) {
   const byOrder = new Map();
   for (const candidate of candidates) {
-    const match = scorePartnerOrderCandidate(message, candidate);
+    const match = scorePartnerOrderCandidate(message, candidate, hints);
     if (match.score < 60) continue;
     const current = byOrder.get(candidate.id);
-    if (!current || match.score > current.matchScore) byOrder.set(candidate.id, { ...candidate, matchScore: match.score, matchedBy: match.matchedBy });
+    if (!current || match.score > current.matchScore) byOrder.set(candidate.id, { ...candidate, matchScore: match.score, matchedBy: match.matchedBy, matchedTerm: match.matchedTerm });
   }
   return [...byOrder.values()]
     .sort((left, right) => right.matchScore - left.matchScore || String(left.dueAt || "9999").localeCompare(String(right.dueAt || "9999")))
@@ -183,19 +212,24 @@ async function sessionForUser(client, auth, sessionId, { lock = false, allowExpi
 
 function requiredMissing(fields = {}) {
   const missing = [];
-  if (!fields.stage) missing.push("stage");
-  const hasProgress = fields.progressPercent !== undefined && fields.progressPercent !== null && String(fields.progressPercent).trim() !== "";
-  if (!hasProgress || !Number.isInteger(Number(fields.progressPercent)) || Number(fields.progressPercent) < 0 || Number(fields.progressPercent) > 100) missing.push("progressPercent");
-  if (hasProgress && Number.isInteger(Number(fields.progressPercent)) && Number(fields.progressPercent) < 100 && !fields.expectedCompletionDate) missing.push("expectedCompletionDate");
+  if (!fields.materialStatus) missing.push("materialStatus");
+  if (!fields.preproductionSampleStatus) missing.push("preproductionSampleStatus");
+  if (["scheduled", "submitted", "approved"].includes(fields.preproductionSampleStatus) && !fields.preproductionSampleDate) missing.push("preproductionSampleDate");
+  if (!fields.productionStatus) missing.push("productionStatus");
+  if (["scheduled", "started", "completed"].includes(fields.productionStatus) && !fields.productionStartDate) missing.push("productionStartDate");
+  if (!fields.expectedDeliveryDate) missing.push("expectedDeliveryDate");
   return missing;
 }
 
 export function nextPartnerProgressQuestion(missingFields = []) {
   const field = missingFields[0] || "";
   return {
-    stage: "目前进行到哪个阶段？例如备料、灌装、包装或质检。",
-    progressPercent: "目前完成了百分之多少？",
-    expectedCompletionDate: "预计哪一天可以完成？",
+    materialStatus: "这张加工单的物料和包材齐全了吗？请选择未齐、部分到齐或已齐套。",
+    preproductionSampleStatus: "产前样目前是什么状态？请选择未安排、已计划、已提交、已确认或无需产前样。",
+    preproductionSampleDate: "计划或实际哪一天提供产前样？",
+    productionStatus: "正式生产目前是什么状态？请选择未排产、已排期、已投产或已完工。",
+    productionStartDate: "计划或实际哪一天正式投产？",
+    expectedDeliveryDate: "预计哪一天可以交货？",
   }[field] || "请核对汇报内容，确认无误后提交。";
 }
 
@@ -404,6 +438,35 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
   assertContributor(auth);
   await assertEnabled(auth, "text");
   const parsed = messageSchema.parse(input);
+  const snapshot = await withOrganization(auth.organization.id, async (client) => {
+    const session = await sessionForUser(client, auth, sessionId);
+    if (parsed.transcriptionId) {
+      const transcription = (await client.query(
+        "SELECT status FROM partner_ai_transcriptions WHERE id=$1 AND session_id=$2 AND organization_id=$3 AND user_id=$4",
+        [parsed.transcriptionId, session.id, auth.organization.id, auth.user.id],
+      )).rows[0];
+      if (!transcription || transcription.status !== "completed") fail("语音转写尚未完成或不属于本次会话。", 409, "transcription_not_completed");
+    }
+    return { confirmedWorkItemId: session.confirmed_work_item_id || "" };
+  });
+  let orderHints = {};
+  let matchingMode = "deterministic_fallback";
+  if (!snapshot.confirmedWorkItemId) {
+    try {
+      orderHints = await requestPartnerOrderHints({
+        principal: { organizationId: auth.organization.id, userId: auth.user.id },
+        text: parsed.text,
+      });
+      matchingMode = "hermes_assisted";
+    } catch (error) {
+      console.warn("[collaboration:partner-ai-match]", JSON.stringify({
+        sessionId,
+        organizationId: auth.organization.id,
+        mode: matchingMode,
+        code: String(error?.code || "partner_order_hint_failed"),
+      }));
+    }
+  }
   const prepared = await withOrganization(auth.organization.id, async (client) => {
     const session = await sessionForUser(client, auth, sessionId, { lock: true });
     if (session.state === "submitted") fail("本次汇报已经提交。", 409, "session_submitted");
@@ -417,10 +480,10 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
     }
     if (!session.confirmed_work_item_id) {
       const eligible = await eligibleProductionOrders(client, auth);
-      const candidates = rankPartnerOrderCandidates(parsed.text, eligible);
+      const candidates = rankPartnerOrderCandidates(parsed.text, eligible, 5, orderHints);
       const ids = candidates.map((item) => item.id);
       const state = candidates.length ? "confirming_order" : "identifying_order";
-      const nextQuestion = candidates.length ? "请确认你要汇报的是哪一张加工单。" : "没有找到匹配加工单，请说完整产品名、SKU、条码或加工单号。";
+      const nextQuestion = candidates.length ? "我找到了几张可能的加工单，请点击确认对应的订单。" : "暂时没有找到可靠候选。你可以说产品简称、品牌、用途、SKU 片段，或加工单号中的任意一段。";
       const updated = (await client.query(
         `UPDATE partner_ai_sessions SET source_text=$2,state=$3,candidate_ids=$4,candidate_count=$5,next_question=$6,message_count=message_count+1,
           latest_transcription_id=COALESCE($7,latest_transcription_id),expires_at=now()+($8::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
@@ -435,7 +498,15 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
           String(SESSION_TTL_MINUTES),
         ],
       )).rows[0];
-      return { direct: { ok: true, session: sessionPayload(updated, { candidates }) } };
+      console.info("[collaboration:partner-ai-match]", JSON.stringify({
+        sessionId: session.id,
+        organizationId: auth.organization.id,
+        mode: matchingMode,
+        candidateCount: candidates.length,
+        hintCount: values(orderHints?.terms).length,
+        latencyMs: Number(orderHints?.latencyMs || 0),
+      }));
+      return { direct: { ok: true, session: sessionPayload(updated, { candidates, matching: { mode: matchingMode, model: String(orderHints?.model || "") } }) } };
     }
     await client.query(
       `UPDATE partner_ai_sessions SET source_text=$2,state='collecting_progress',message_count=message_count+1,
@@ -464,7 +535,7 @@ export async function confirmPartnerAiSessionOrder(auth, sessionId, input) {
     if (!ACTIVE_STATES.has(item.status)) fail("该加工单已完成、作废或当前不可汇报。", 409, "invalid_state");
     const updated = (await client.query(
       `UPDATE partner_ai_sessions SET confirmed_work_item_id=$2,confirmed_work_item_version=$3,state='collecting_progress',
-        next_question='请说明当前阶段和完成比例。',expires_at=now()+($4::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
+        next_question='请先确认物料和包材是否已经齐套。',expires_at=now()+($4::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
       [session.id, item.id, Number(item.version), String(SESSION_TTL_MINUTES)],
     )).rows[0];
     return updated;

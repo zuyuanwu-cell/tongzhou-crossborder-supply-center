@@ -635,14 +635,25 @@ function messagePartnerAiSession(sessionId, text, transcriptionId) {
       const fields = { ...(demoPartnerAiSession.fields || {}), note: [demoPartnerAiSession.fields?.note, text].filter(Boolean).join("；") };
       if (percentMatch && Number(percentMatch[1]) <= 100) fields.progressPercent = Number(percentMatch[1]);
       const missingFields = [];
-      if (!fields.stage) missingFields.push("stage");
-      if (!Number.isInteger(Number(fields.progressPercent))) missingFields.push("progressPercent");
-      if (Number(fields.progressPercent) < 100 && !fields.expectedCompletionDate) missingFields.push("expectedCompletionDate");
+      if (!fields.materialStatus) missingFields.push("materialStatus");
+      if (!fields.preproductionSampleStatus) missingFields.push("preproductionSampleStatus");
+      if (["scheduled", "submitted", "approved"].includes(fields.preproductionSampleStatus) && !fields.preproductionSampleDate) missingFields.push("preproductionSampleDate");
+      if (!fields.productionStatus) missingFields.push("productionStatus");
+      if (["scheduled", "started", "completed"].includes(fields.productionStatus) && !fields.productionStartDate) missingFields.push("productionStartDate");
+      if (!fields.expectedDeliveryDate) missingFields.push("expectedDeliveryDate");
+      const questions = {
+        materialStatus: "物料和包材齐全了吗？",
+        preproductionSampleStatus: "产前样目前是什么状态？",
+        preproductionSampleDate: "哪一天提供产前样？",
+        productionStatus: "正式生产目前是什么状态？",
+        productionStartDate: "哪一天正式投产？",
+        expectedDeliveryDate: "预计哪一天可以交货？",
+      };
       demoPartnerAiSession = Object.assign({}, demoPartnerAiSession, {
         state: missingFields.length ? "collecting_progress" : "review",
         fields,
         missingFields,
-        nextQuestion: missingFields[0] === "stage" ? "目前进行到哪个生产阶段？" : missingFields[0] === "progressPercent" ? "目前完成进度是多少百分比？" : missingFields[0] === "expectedCompletionDate" ? "预计哪一天可以完成？" : "请核对汇报内容，确认无误后提交。",
+        nextQuestion: questions[missingFields[0]] || "请核对汇报内容，确认无误后提交。",
       });
       return Promise.resolve({ ok: true, session: demoPartnerAiSession });
     }
@@ -663,7 +674,12 @@ function confirmPartnerAiSessionOrder(sessionId, workItemId) {
     const candidate = (demoPartnerAiSession.candidates || []).find((item) => item.id === workItemId);
     demoPartnerAiSession = Object.assign({}, demoPartnerAiSession, {
       state: "review", confirmedWorkItemId: workItemId, confirmedWorkItemVersion: candidate?.version || 1,
-      confirmedOrder: candidate, fields: { stage: "packaging", progressPercent: 60, completedQuantity: 600, expectedCompletionDate: "2026-10-30", note: demoPartnerAiSession.sourceText || "演示进度" },
+      confirmedOrder: candidate, fields: {
+        stage: "packaging", progressPercent: 60, completedQuantity: 600,
+        materialStatus: "ready", preproductionSampleStatus: "approved", preproductionSampleDate: "2026-10-26",
+        productionStatus: "started", productionStartDate: "2026-10-27", expectedDeliveryDate: "2026-10-30",
+        note: demoPartnerAiSession.sourceText || "演示进度",
+      },
       missingFields: [], latestDraftId: randomId(), nextQuestion: "请核对汇报内容，确认无误后提交。",
     });
     return Promise.resolve({ ok: true, session: demoPartnerAiSession });
@@ -672,7 +688,7 @@ function confirmPartnerAiSessionOrder(sessionId, workItemId) {
 }
 
 async function transcribePartnerAiSessionAudio(sessionId, recording) {
-  if (config.demoMode) return { transcriptionId: randomId(), transcript: "男士洁面泡沫已经包装完成百分之六十，预计十月三十日完成。", durationMs: recording.durationMs };
+  if (config.demoMode) return { transcriptionId: randomId(), transcript: "男士洁面泡沫物料已齐，产前样已确认，今天正式投产，预计十月三十日交货。", durationMs: recording.durationMs };
   const ticket = await request(`/collaboration/v1/partner-ai/sessions/${sessionId}/audio-tickets`, { method: "POST", header: { "Idempotency-Key": recording.idempotencyKey || randomId() }, data: {
     fileName: recording.fileName,
     mimeType: recording.mimeType,

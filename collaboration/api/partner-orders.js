@@ -172,11 +172,41 @@ function reportPermission(itemType, reportType) {
 }
 
 function reportColumns(input, line) {
-  if (input.reportType === "production_progress") return {
-    stage: input.stage, progressPercent: input.progressPercent, result: "reported", quantity: input.completedQuantity,
-    expectedAt: input.expectedCompletionDate, title: "生产进度更新", note: input.note,
-    details: { completedQuantity: input.completedQuantity },
-  };
+  if (input.reportType === "production_progress") {
+    const hasMilestones = Boolean(input.materialStatus || input.preproductionSampleStatus || input.productionStatus || input.expectedDeliveryDate);
+    if (!hasMilestones) return {
+      stage: input.stage,
+      progressPercent: input.progressPercent,
+      result: "reported",
+      quantity: input.completedQuantity,
+      expectedAt: input.expectedCompletionDate,
+      title: "生产进度更新",
+      note: input.note,
+      details: { completedQuantity: input.completedQuantity },
+    };
+    const derivedStage = input.productionStatus === "completed" ? "ready_to_ship"
+      : input.productionStatus === "started" ? (input.stage || "filling")
+        : input.materialStatus === "ready" ? "planning" : "material_preparation";
+    return {
+      stage: derivedStage,
+      progressPercent: input.progressPercent ?? null,
+      result: "reported",
+      quantity: input.completedQuantity,
+      expectedAt: input.expectedDeliveryDate,
+      title: "生产里程碑更新",
+      note: input.note,
+      details: {
+        completedQuantity: input.completedQuantity,
+        materialStatus: input.materialStatus,
+        preproductionSampleStatus: input.preproductionSampleStatus,
+        preproductionSampleDate: input.preproductionSampleDate,
+        productionStatus: input.productionStatus,
+        productionStartDate: input.productionStartDate,
+        expectedDeliveryDate: input.expectedDeliveryDate,
+        legacyExpectedCompletionDate: input.expectedCompletionDate,
+      },
+    };
+  }
   if (input.reportType === "material_readiness") return {
     stage: input.readiness, progressPercent: null, result: input.testResult, quantity: input.arrivedQuantity,
     expectedAt: input.testedAt, title: `${line?.product_name || "物料"}到齐与测试`, note: input.note || input.exceptionDescription,

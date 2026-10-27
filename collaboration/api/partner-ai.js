@@ -649,6 +649,12 @@ function normalizedSubmittedFields(expectedDraftType, payload = {}) {
     progressPercent: payload.progressPercent == null || payload.progressPercent === "" ? null : Number(payload.progressPercent),
     completedQuantity: Number(payload.completedQuantity || 0),
     expectedCompletionDate: String(payload.expectedCompletionDate || ""),
+    materialStatus: String(payload.materialStatus || ""),
+    preproductionSampleStatus: String(payload.preproductionSampleStatus || ""),
+    preproductionSampleDate: String(payload.preproductionSampleDate || ""),
+    productionStatus: String(payload.productionStatus || ""),
+    productionStartDate: String(payload.productionStartDate || ""),
+    expectedDeliveryDate: String(payload.expectedDeliveryDate || ""),
     note: String(payload.note || "").trim(),
   };
 }

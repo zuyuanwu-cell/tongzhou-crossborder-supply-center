@@ -32,25 +32,29 @@
 
       <view wx:if="{{confirmedOrder}}" class="assistant-block rise-block">
         <view class="draft-card">
-          <view class="draft-head"><view><text>产 · 加工单</text><strong>{{submitted ? '进度反馈 · 已提交' : '进度反馈 · 草稿'}}</strong></view><view class="draft-state">{{submitted ? '已完成' : '待确认'}}</view></view>
+          <view class="draft-head"><view><text>产 · 加工单</text><strong>{{submitted ? '生产里程碑 · 已提交' : '生产里程碑 · 草稿'}}</strong></view><view class="draft-state">{{submitted ? '已完成' : '待确认'}}</view></view>
           <view class="product-strip"><image src="{{confirmedOrder.imageUrl}}" mode="aspectFill"/><view><strong>{{confirmedOrder.productName || confirmedOrder.title}}</strong><text>{{confirmedOrder.orderNo || confirmedOrder.referenceNo}} · {{confirmedOrder.quantity || 0}}{{confirmedOrder.unit || '件'}} · 期望{{confirmedOrder.dueDate || '—'}}</text></view></view>
 
           <view wx:if="{{processSteps.length}}" class="process-list">
             <view wx:for="{{processSteps}}" wx:key="key" class="process-row {{item.done ? 'is-done' : item.current ? 'is-current' : ''}}">
-              <view class="process-node">{{item.done ? '✓' : index + 1}}</view><view class="process-copy"><strong>{{item.label}}</strong><view wx:if="{{item.current}}" class="process-progress"><view style="width: {{item.value}}%"></view></view></view><text>{{item.done ? '完成' : item.current ? item.value + '%' : '待开始'}}</text>
+              <view class="process-node">{{item.done ? '✓' : index + 1}}</view><view class="process-copy"><strong>{{item.label}}</strong></view><text>{{item.status}}</text>
             </view>
           </view>
 
-          <view class="draft-fields"><view><text>预计完成</text><strong>{{form.expectedCompletionDate || '待补充'}}</strong></view><view><text>已完成数量</text><strong>{{form.completedQuantity || 0}} {{confirmedOrder.unit || '件'}}</strong></view></view>
+          <view class="draft-fields"><view><text>产前样日期</text><strong>{{form.preproductionSampleDate || (form.preproductionSampleStatus === 'not_required' ? '无需产前样' : '待补充')}}</strong></view><view><text>正式投产日期</text><strong>{{form.productionStartDate || '待补充'}}</strong></view><view><text>预计交货日期</text><strong>{{form.expectedDeliveryDate || '待补充'}}</strong></view><view><text>辅助完成数量</text><strong>{{form.completedQuantity || 0}} {{confirmedOrder.unit || '件'}}</strong></view></view>
 
           <view wx:if="{{session.state === 'collecting_progress' && !exceptionSuggested}}" class="question-callout"><view>H</view><text>{{session.nextQuestion || '还需要补充一项信息'}}</text></view>
           <view wx:if="{{exceptionSuggested}}" class="exception-callout"><strong>检测到异常情况</strong><text>停产、缺料或质量问题应按异常上报，不会写成普通进度。</text><button bindtap="openManualForm">转为异常上报</button></view>
 
           <view wx:if="{{editMode}}" class="edit-panel">
-            <view class="edit-field"><text>生产阶段</text><picker range="{{stageOptions}}" range-key="label" value="{{stageIndex}}" bindchange="chooseStage"><view>{{stageOptions[stageIndex].label}}⌄</view></picker></view>
-            <view class="edit-field"><text>完成比例</text><input type="number" value="{{form.progressPercent}}" data-field="progressPercent" bindinput="updateField" placeholder="0-100"/></view>
-            <view class="edit-field"><text>完成数量</text><input type="digit" value="{{form.completedQuantity}}" data-field="completedQuantity" bindinput="updateField" placeholder="可选"/></view>
-            <view class="edit-field"><text>预计完成</text><picker mode="date" value="{{form.expectedCompletionDate}}" data-field="expectedCompletionDate" bindchange="updateField"><view>{{form.expectedCompletionDate || '选择日期'}}⌄</view></picker></view>
+            <view class="edit-field"><text>物料与包材</text><picker range="{{materialStatusOptions}}" range-key="label" value="{{materialStatusIndex}}" data-field="materialStatus" data-options="materialStatusOptions" data-index-key="materialStatusIndex" bindchange="chooseMilestoneStatus"><view>{{materialStatusOptions[materialStatusIndex].label}}⌄</view></picker></view>
+            <view class="edit-field"><text>产前样状态</text><picker range="{{sampleStatusOptions}}" range-key="label" value="{{sampleStatusIndex}}" data-field="preproductionSampleStatus" data-options="sampleStatusOptions" data-index-key="sampleStatusIndex" bindchange="chooseMilestoneStatus"><view>{{sampleStatusOptions[sampleStatusIndex].label}}⌄</view></picker></view>
+            <view wx:if="{{form.preproductionSampleStatus === 'scheduled' || form.preproductionSampleStatus === 'submitted' || form.preproductionSampleStatus === 'approved'}}" class="edit-field"><text>产前样计划/实际日期</text><picker mode="date" value="{{form.preproductionSampleDate}}" data-field="preproductionSampleDate" bindchange="updateField"><view>{{form.preproductionSampleDate || '选择日期'}}⌄</view></picker></view>
+            <view class="edit-field"><text>正式投产状态</text><picker range="{{productionStatusOptions}}" range-key="label" value="{{productionStatusIndex}}" data-field="productionStatus" data-options="productionStatusOptions" data-index-key="productionStatusIndex" bindchange="chooseMilestoneStatus"><view>{{productionStatusOptions[productionStatusIndex].label}}⌄</view></picker></view>
+            <view wx:if="{{form.productionStatus === 'scheduled' || form.productionStatus === 'started' || form.productionStatus === 'completed'}}" class="edit-field"><text>计划/实际投产日期</text><picker mode="date" value="{{form.productionStartDate}}" data-field="productionStartDate" bindchange="updateField"><view>{{form.productionStartDate || '选择日期'}}⌄</view></picker></view>
+            <view class="edit-field"><text>预计交货日期</text><picker mode="date" value="{{form.expectedDeliveryDate}}" data-field="expectedDeliveryDate" bindchange="updateField"><view>{{form.expectedDeliveryDate || '选择日期'}}⌄</view></picker></view>
+            <view class="edit-field"><text>辅助完成比例（可选）</text><input type="number" value="{{form.progressPercent}}" data-field="progressPercent" bindinput="updateField" placeholder="0-100"/></view>
+            <view class="edit-field"><text>辅助完成数量（可选）</text><input type="digit" value="{{form.completedQuantity}}" data-field="completedQuantity" bindinput="updateField" placeholder="可选"/></view>
             <view class="edit-note"><textarea value="{{form.note}}" data-field="note" bindinput="updateField" auto-height placeholder="补充说明（可选）"/></view>
           </view>
 
