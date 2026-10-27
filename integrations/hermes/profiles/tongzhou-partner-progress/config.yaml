@@ -1,13 +1,13 @@
 model:
   provider: custom:tongzhou
-  default: deepseek-v4-pro
+  default: deepseek-v4-flash
 
 providers:
   tongzhou:
     api: http://host.docker.internal:8787/api/internal/hermes/v1/model
     key_env: HERMES_PARTNER_MODEL_API_KEY
     transport: chat_completions
-    default_model: deepseek-v4-pro
+    default_model: deepseek-v4-flash
     discover_models: false
 
 agent:

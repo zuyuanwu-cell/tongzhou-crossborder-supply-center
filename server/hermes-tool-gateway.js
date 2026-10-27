@@ -1,23 +1,14 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { hasPermission } from "./access-control.js";
 import { verifyHermesBridgeRequest } from "./hermes-bridge-auth.js";
 
-export const HERMES_READ_TOOLS = Object.freeze(new Set([
-  "tongzhou_search_resources",
-  "tongzhou_get_resource",
-  "tongzhou_query_exception_cases",
-  "tongzhou_query_inventory_risk",
-  "tongzhou_query_stockup_execution",
-  "tongzhou_query_production_timeline",
-  "tongzhou_compare_movement_inventory",
-]));
-
-export const HERMES_WRITE_TOOLS = Object.freeze(new Set([
-  "tongzhou_create_stockup_draft",
-  "tongzhou_assign_exception",
-  "tongzhou_update_exception_status",
-  "tongzhou_send_exception_reminder",
-]));
+const HERMES_TOOL_MANIFEST = JSON.parse(readFileSync(new URL("../integrations/hermes/tool-manifest.json", import.meta.url), "utf8"));
+const HERMES_TOOL_ENTRIES = Array.isArray(HERMES_TOOL_MANIFEST.tools) ? HERMES_TOOL_MANIFEST.tools : [];
+const HERMES_TOOLS_BY_NAME = new Map(HERMES_TOOL_ENTRIES.map((item) => [item.name, item]));
+const HERMES_TOOL_LABELS = Object.freeze(Object.fromEntries(HERMES_TOOL_ENTRIES.map((item) => [item.name, item.label])));
+export const HERMES_READ_TOOLS = Object.freeze(new Set(HERMES_TOOL_ENTRIES.filter((item) => item.mode === "read").map((item) => item.name)));
+export const HERMES_WRITE_TOOLS = Object.freeze(new Set(HERMES_TOOL_ENTRIES.filter((item) => item.mode === "write").map((item) => item.name)));
 
 function text(value) {
   return String(value ?? "").trim();
@@ -40,8 +31,20 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+export function sanitizeHermesToolArguments(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return {};
+  const sanitize = (value) => {
+    if (Array.isArray(value)) return value.map(sanitize);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !String(key).startsWith("_"))
+      .map(([key, item]) => [key, sanitize(item)]));
+  };
+  return sanitize(args);
+}
+
 export function hashHermesToolArguments(tool, args) {
-  return createHash("sha256").update(`${text(tool)}\n${canonicalJson(args || {})}`).digest("hex");
+  return createHash("sha256").update(`${text(tool)}\n${canonicalJson(sanitizeHermesToolArguments(args))}`).digest("hex");
 }
 
 function scopeFor(auth) {
@@ -58,16 +61,20 @@ function hasAny(auth, permissions) {
 }
 
 function requireToolPermission(auth, tool, phase) {
-  if (!hasPermission(auth, "hermes_agent_use")) throw error("当前账号没有智能体工作台权限。", 403, "hermes_permission_required");
-  if (HERMES_READ_TOOLS.has(tool)) return;
-  if (!HERMES_WRITE_TOOLS.has(tool)) throw error("Tool is not enabled for Tongzhou Hermes.", 404, "tool_not_enabled");
-  if (!hasPermission(auth, "hermes_agent_action")) throw error("当前账号没有智能体动作审批权限。", 403, "hermes_action_permission_required");
-  const allowed = tool === "tongzhou_create_stockup_draft"
-    ? hasPermission(auth, "stockup_request_create")
-    : tool === "tongzhou_send_exception_reminder"
-      ? hasAny(auth, ["notifications", "stockup_execution_manage", "stockup_execution_update"])
-      : hasAny(auth, ["operations", "stockup_workflow_manage", "stockup_execution_manage"]);
-  if (!allowed) throw error(`当前账号缺少工具 ${tool} 对应的业务权限。`, 403, "business_permission_required");
+  const entry = HERMES_TOOLS_BY_NAME.get(tool);
+  if (!entry) throw error("Tool is not enabled for Tongzhou Hermes.", 404, "tool_not_enabled");
+  const required = Array.isArray(entry.permissions) ? entry.permissions : [];
+  for (const permission of required) {
+    if (hasPermission(auth, permission)) continue;
+    const code = permission === "hermes_agent_use"
+      ? "hermes_permission_required"
+      : permission === "hermes_agent_action"
+        ? "hermes_action_permission_required"
+        : "business_permission_required";
+    throw error(`当前账号缺少工具 ${tool} 所需权限：${permission}。`, 403, code);
+  }
+  const permissionAnyOf = Array.isArray(entry.permissionAnyOf) ? entry.permissionAnyOf : [];
+  if (permissionAnyOf.length && !hasAny(auth, permissionAnyOf)) throw error(`当前账号缺少工具 ${tool} 对应的业务权限。`, 403, "business_permission_required");
   if (phase === "execute" && auth?.user?.status === "disabled") throw error("当前账号已停用，不能执行动作。", 403, "user_disabled");
 }
 
@@ -149,20 +156,6 @@ function sanitizeResult(value, depth = 0) {
     .map(([key, item]) => [key, sanitizeResult(item, depth + 1)]));
 }
 
-const TOOL_RESULT_LABELS = Object.freeze({
-  tongzhou_search_resources: "业务资源搜索完成",
-  tongzhou_get_resource: "业务资源读取完成",
-  tongzhou_query_exception_cases: "异常台账查询完成",
-  tongzhou_query_inventory_risk: "库存风险查询完成",
-  tongzhou_query_stockup_execution: "备货执行查询完成",
-  tongzhou_query_production_timeline: "生产时间线查询完成",
-  tongzhou_compare_movement_inventory: "动销库存差异计算完成",
-  tongzhou_create_stockup_draft: "备货需求草稿已创建",
-  tongzhou_assign_exception: "异常责任人已分派",
-  tongzhou_update_exception_status: "异常处理状态已更新",
-  tongzhou_send_exception_reminder: "异常催办已发送",
-});
-
 function evidenceFromResult(tool, result) {
   if (Array.isArray(result?.evidence)) return result.evidence;
   if (tool === "tongzhou_query_exception_cases") {
@@ -170,6 +163,9 @@ function evidenceFromResult(tool, result) {
   }
   if (tool === "tongzhou_query_stockup_execution") {
     return [...(result?.requests || []), ...(result?.tasks || [])].map((item) => ({ type: "stockup", id: item.id, label: item.title || item.project || item.id, href: "#stockup", updatedAt: item.updatedAt }));
+  }
+  if (tool === "tongzhou_query_partner_tasks") {
+    return (result?.tasks || []).map((item) => ({ type: "partner_task", id: item.id, label: item.title || item.id, href: "#partner-collaboration", updatedAt: item.updatedAt }));
   }
   if (result?.case) return [{ type: "exception_case", id: result.case.id, label: result.case.title, href: result.case.href || "#hermes-agent", updatedAt: result.case.updatedAt }];
   return [];
@@ -183,7 +179,7 @@ function envelopeToolResult(tool, value) {
   const eventEvidence = evidenceFromResult(tool, { ...result, evidence }).slice(0, 3).map((item) => sanitizeResult(item));
   return {
     ok: ok !== false,
-    summary: text(summary) || TOOL_RESULT_LABELS[tool] || "工具执行完成",
+    summary: text(summary) || HERMES_TOOL_LABELS[tool] || "工具执行完成",
     evidence: eventEvidence,
     ...rest,
   };
@@ -215,6 +211,10 @@ export function createHermesToolGateway({
     if (tool === "tongzhou_query_inventory_risk") return providers.queryInventoryRisk(args, auth);
     if (tool === "tongzhou_query_stockup_execution") return providers.queryStockupExecution(args, auth);
     if (tool === "tongzhou_query_production_timeline") return providers.queryProductionTimeline(args, auth);
+    if (tool === "tongzhou_query_partner_tasks") {
+      if (!hasPermission(auth, "collaboration_task_view")) throw error("当前账号没有伙伴协同任务查看权限。", 403, "business_permission_required");
+      return providers.queryPartnerTasks(args, auth);
+    }
     if (tool === "tongzhou_compare_movement_inventory") return providers.compareMovementInventory(args, auth);
     throw error("Tool is not enabled.", 404, "tool_not_enabled");
   }
@@ -268,7 +268,7 @@ export function createHermesToolGateway({
       if (!HERMES_READ_TOOLS.has(tool) && !HERMES_WRITE_TOOLS.has(tool)) throw error("Tool is not enabled for Tongzhou Hermes.", 404, "tool_not_enabled");
       const sessionId = text(payload.session_id);
       const toolCallId = text(payload.tool_call_id);
-      const args = payload.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments) ? payload.arguments : {};
+      const args = sanitizeHermesToolArguments(payload.arguments);
       if (!sessionId || !toolCallId) throw error("session_id and tool_call_id are required.", 400, "missing_tool_context");
       const conversation = store.getConversationBySession(sessionId);
       if (!conversation) throw error("Hermes session is not bound to an active Tongzhou conversation.", 403, "session_not_bound");
@@ -276,17 +276,17 @@ export function createHermesToolGateway({
       if (!auth?.user?.id || auth.role === "guest") throw error("The bound user is no longer active.", 403, "user_not_active");
       requireToolPermission(auth, tool, phase);
       const scopes = scopeFor(auth);
+      const activeRun = store.activeRunForConversation(conversation.id);
+      if (!activeRun || activeRun.userId !== conversation.userId) throw error("No active run owns this tool call.", 409, "run_not_active");
 
       if (HERMES_READ_TOOLS.has(tool)) {
         if (phase !== "execute") throw error("Read tools do not support preview.", 400, "preview_not_supported");
         const result = sanitizeResult(envelopeToolResult(tool, await executeRead(tool, args, auth, scopes)));
-        appendActionLog(auth, "Hermes 只读工具调用", "hermes_tool", tool, { toolCallId, sessionId });
+        appendActionLog(auth, "Hermes 只读工具调用", "hermes_tool", tool, { toolCallId, sessionId, runId: activeRun.id });
         sendJson(res, 200, result);
         return true;
       }
 
-      const activeRun = store.activeRunForUser(conversation.userId);
-      if (!activeRun || activeRun.conversationId !== conversation.id) throw error("No active run owns this tool call.", 409, "run_not_active");
       const idempotencyKey = toolIdempotencyKey(sessionId, toolCallId, tool);
       const argumentsHash = hashHermesToolArguments(tool, args);
       if (phase === "preview") {

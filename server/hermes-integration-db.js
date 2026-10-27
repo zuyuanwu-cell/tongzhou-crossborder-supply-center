@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { acquireSqlJsWriterLock, persistSqlJsDatabaseAtomically } from "./sqljs-durable-store.js";
 
 function text(value) {
   return String(value ?? "").trim();
@@ -190,6 +191,7 @@ function inCaseScope(item, scopes = {}) {
 export async function initHermesIntegrationStore(dbPath, { now = () => new Date() } = {}) {
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
+  const releaseWriterLock = acquireSqlJsWriterLock(dbPath);
   const db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
   db.run(`
     PRAGMA foreign_keys = ON;
@@ -348,7 +350,11 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
   if (!proposalColumns.has("arguments_hash")) db.run("ALTER TABLE hermes_action_proposals ADD COLUMN arguments_hash TEXT NOT NULL DEFAULT ''");
 
   function persist() {
-    writeFileSync(dbPath, Buffer.from(db.export()));
+    persistSqlJsDatabaseAtomically(dbPath, db.export());
+  }
+
+  function close() {
+    try { db.close(); } finally { releaseWriterLock(); }
   }
 
   function run(sql, params = []) {
@@ -807,6 +813,7 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
   persist();
   return {
     dbPath,
+    close,
     createConversation,
     listConversations,
     getConversation,

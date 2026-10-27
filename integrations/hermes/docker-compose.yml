@@ -8,14 +8,17 @@ services:
       - -ec
       - |
         umask 077
+        mkdir -p /run/tongzhou-hermes /opt/data/profiles/tongzhou-partner-progress
         printf '%s\n' \
           "HERMES_MODEL_API_KEY=$${HERMES_MODEL_API_KEY}" \
-          > /opt/data/.env
-        mkdir -p /opt/data/profiles/tongzhou-partner-progress
+          > /run/tongzhou-hermes/main.env
         printf '%s\n' \
           "API_SERVER_KEY=$${HERMES_PARTNER_API_KEY}" \
           "HERMES_PARTNER_MODEL_API_KEY=$${HERMES_PARTNER_MODEL_PROXY_KEY}" \
-          > /opt/data/profiles/tongzhou-partner-progress/.env
+          > /run/tongzhou-hermes/partner.env
+        rm -f /opt/data/.env /opt/data/profiles/tongzhou-partner-progress/.env
+        ln -s /run/tongzhou-hermes/main.env /opt/data/.env
+        ln -s /run/tongzhou-hermes/partner.env /opt/data/profiles/tongzhou-partner-progress/.env
         exec hermes gateway run
     read_only: true
     tmpfs:
@@ -38,6 +41,7 @@ services:
       - hermes-state:/opt/data
       - ./config/config.yaml:/opt/data/config.yaml:ro
       - ./config/SOUL.md:/opt/data/SOUL.md:ro
+      - ./tool-manifest.json:/opt/data/tool-manifest.json:ro
       - ./plugins/tongzhou-business:/opt/data/plugins/tongzhou-business:ro
       - ./profiles/tongzhou-partner-progress/config.yaml:/opt/data/profiles/tongzhou-partner-progress/config.yaml:ro
       - ./profiles/tongzhou-partner-progress/SOUL.md:/opt/data/profiles/tongzhou-partner-progress/SOUL.md:ro
@@ -60,7 +64,6 @@ services:
       TONGZHOU_BRIDGE_BASE_URL: ${TONGZHOU_BRIDGE_BASE_URL:-http://host.docker.internal:8787}
     networks:
       - control
-      - outbound
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8642/health"]
       interval: 20s
@@ -76,5 +79,3 @@ networks:
   control:
     name: tongzhou-hermes-control
     internal: true
-  outbound:
-    name: tongzhou-hermes-outbound

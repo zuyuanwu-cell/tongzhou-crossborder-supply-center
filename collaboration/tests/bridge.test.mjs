@@ -6,16 +6,18 @@ import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
 
-async function fixture(t, { commands = [], resultFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [], stockupWorkflowVersion = 1 } = {}) {
+async function fixture(t, { commands = [], resultFailures = 0, movementFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [], stockupWorkflowVersion = 1 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = await initCollaborationBridgeStore(join(dir, "bridge.sqlite"));
+  t.after(() => store.close());
   const requests = [];
   const movements = [];
   const stockupActions = [];
   const sourceFeedback = [];
   const stockupInspections = [];
   let remainingResultFailures = resultFailures;
+  let remainingMovementFailures = movementFailures;
   const fetchImpl = async (url, options = {}) => {
     const contentType = options.headers?.["Content-Type"] || options.headers?.get?.("Content-Type") || "";
     requests.push({ url: String(url), method: options.method || "GET", body: options.body ? (contentType === "application/json" ? JSON.parse(options.body) : options.body) : null, headers: options.headers || {}, authorization: options.headers?.Authorization });
@@ -45,6 +47,10 @@ async function fixture(t, { commands = [], resultFailures = 0, organizations = [
     store,
     domesticInventoryService: {
       createMovement(input, _context, idempotencyKey) {
+        if (remainingMovementFailures > 0) {
+          remainingMovementFailures -= 1;
+          throw Object.assign(new Error("temporary core outage"), { statusCode: 503, code: "core_temporarily_unavailable" });
+        }
         movements.push({ input, idempotencyKey });
         return { ok: true, movementId: "movement-1", movementNo: "RK-001" };
       },
@@ -474,6 +480,37 @@ test("partner inbound command is revalidated and idempotently booked in the core
   assert.equal(movements[0].idempotencyKey, `collaboration:${command.id}:warehouse-submit-1`);
   assert.equal(store.command(command.id).local_status, "applied");
   assert.equal(requests.at(-1).url, `http://collaboration.test/collaboration/internal/v1/commands/${command.id}/result`);
+});
+
+test("a transient core outage schedules a retry instead of reporting a terminal business failure", async (t) => {
+  const command = {
+    id: "10101010-1010-4101-8101-101010101010",
+    organizationCode: "warehouse-a",
+    workItemId: "20202020-2020-4202-8202-202020202020",
+    coreRefType: "domestic_inbound",
+    coreRefId: "inbound-retry-1",
+    itemType: "warehouse_inbound",
+    publicPayload: projection.publicPayload,
+    commandType: "inbound_confirm",
+    idempotencyKey: "warehouse-retry-1",
+    expectedVersion: 1,
+    payload: { action: "inbound_confirm", lines: [{ sku: "SKU-1", quantity: 3 }] },
+    riskLevel: "medium",
+    status: "pending_sync",
+    submittedByName: "仓库操作员",
+    submittedAt: "2026-10-27T08:00:00.000Z",
+  };
+  const { bridge, movements, requests, store } = await fixture(t, { commands: [command], movementFailures: 1 });
+  const first = await bridge.pullCommands();
+  assert.equal(first.processed, 0);
+  assert.equal(store.command(command.id).local_status, "retry");
+  assert.equal(store.command(command.id).attempt_count, 1);
+  assert.equal(requests.some((item) => item.url.endsWith(`/commands/${command.id}/result`)), false);
+
+  store.markCommand(command.id, "received");
+  await bridge.synchronize();
+  assert.equal(movements.length, 1);
+  assert.equal(store.command(command.id).local_status, "applied");
 });
 
 test("partner stockup processing updates the domestic warehouse work order idempotently", async (t) => {

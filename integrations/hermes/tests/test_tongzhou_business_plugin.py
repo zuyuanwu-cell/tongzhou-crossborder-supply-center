@@ -11,6 +11,7 @@ import pytest
 
 
 PLUGIN_DIR = Path(__file__).parents[1] / "plugins" / "tongzhou-business"
+HERMES_DIR = Path(__file__).parents[1]
 PACKAGE_NAME = "tongzhou_business_test_plugin"
 
 
@@ -153,13 +154,14 @@ def test_write_tool_previews_then_requests_unique_one_time_approval():
     hook = tools.make_approval_hook(bridge)
     result = hook(
         tool_name="tongzhou_assign_exception",
-        args={"caseId": "case-1", "version": 2, "assigneeId": "u-2"},
+        args={"caseId": "case-1", "version": 2, "assigneeId": "u-2", "_tongzhou_tool_call_id": "call-99"},
         session_id="tz-session",
         tool_call_id="call-99",
     )
     assert result["action"] == "approve"
     assert result["rule_key"] == "tongzhou:tongzhou_assign_exception:call-99"
     assert bridge.calls[0][0][1] == "preview"
+    assert bridge.calls[0][0][2] == {"caseId": "case-1", "version": 2, "assigneeId": "u-2"}
 
 
 def test_every_declared_write_tool_is_approval_gated():
@@ -210,3 +212,38 @@ def test_handler_never_accepts_model_supplied_identity_context():
     assert result["ok"] is True
     assert bridge.calls[0][0][2] == {"status": "open"}
     assert bridge.calls[0][1]["tool_call_id"] == "call-7"
+
+
+def test_model_facing_tool_strings_are_bounded_and_objects_are_closed():
+    def inspect(node):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "object":
+            assert node.get("additionalProperties") is False
+        if node.get("type") == "string":
+            assert node.get("minLength", 0) >= 1
+            assert 1 <= node.get("maxLength", 0) <= 2000
+        for value in node.values():
+            if isinstance(value, dict):
+                inspect(value)
+            elif isinstance(value, list):
+                for item in value:
+                    inspect(item)
+
+    for schema in schemas.TOOL_SCHEMAS.values():
+        inspect(schema["parameters"])
+
+
+def test_plugin_descriptor_and_runtime_match_the_canonical_tool_manifest():
+    manifest = json.loads((HERMES_DIR / "tool-manifest.json").read_text(encoding="utf-8"))
+    expected = {item["name"] for item in manifest["tools"]}
+    descriptor_lines = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8").splitlines()
+    start = descriptor_lines.index("provides_tools:") + 1
+    actual = set()
+    for line in descriptor_lines[start:]:
+        if not line.startswith("  - "):
+            break
+        actual.add(line.removeprefix("  - ").strip())
+    assert actual == expected
+    assert set(schemas.TOOL_SCHEMAS) == expected
+    assert schemas.READ_TOOLS | schemas.WRITE_TOOLS == expected

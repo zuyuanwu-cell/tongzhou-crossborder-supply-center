@@ -11,9 +11,10 @@ import { initHermesIntegrationStore } from "../server/hermes-integration-db.js";
 import { sha256Hex, signHermesBridgeRequest, verifyHermesBridgeRequest } from "../server/hermes-bridge-auth.js";
 import { createHermesClient, parseSseStream } from "../server/hermes-client.js";
 import { approvalToolCallId, normalizeHermesEvent } from "../server/hermes-events.js";
-import { hermesRunInstructions, isHermesBusinessTool, normalizeHermesToolCallLimit, scopeHermesRunIdempotencyKey } from "../server/hermes-api.js";
+import { hermesRunInstructions, isHermesBusinessTool, normalizeHermesToolCallLimit, requireHermesApprovalReauthentication, scopeHermesRunIdempotencyKey } from "../server/hermes-api.js";
 import { createHermesToolGateway, hashHermesToolArguments } from "../server/hermes-tool-gateway.js";
 import { createHermesModelGateway } from "../server/hermes-model-gateway.js";
+import { isInternalApiPath, isInternalApiSourceAllowed, parseInternalApiAllowedCidrs } from "../server/internal-network.js";
 
 const directory = mkdtempSync(join(tmpdir(), "tongzhou-hermes-test-"));
 let clock = new Date("2026-10-20T01:00:00.000Z");
@@ -21,12 +22,34 @@ const now = () => new Date(clock);
 
 try {
   const store = await initHermesIntegrationStore(join(directory, "hermes.sqlite"), { now });
+  await assert.rejects(
+    () => initHermesIntegrationStore(join(directory, "hermes.sqlite"), { now }),
+    (error) => error.code === "SQLJS_WRITER_LOCKED",
+  );
 
   assert(ROLE_DEFAULT_PERMISSIONS.admin.includes("hermes_agent_use"));
   assert(ROLE_DEFAULT_PERMISSIONS.admin.includes("hermes_agent_action"));
   assert(ROLE_DEFAULT_PERMISSIONS.admin.includes("hermes_agent_admin"));
   assert(!ROLE_DEFAULT_PERMISSIONS.direct.includes("hermes_agent_use"));
   assert(!ROLE_DEFAULT_PERMISSIONS.distributor.includes("hermes_agent_use"));
+
+  await assert.rejects(
+    () => requireHermesApprovalReauthentication(undefined, { user: { id: "user-a" } }, "password"),
+    (error) => error.statusCode === 503 && error.code === "reauthentication_unavailable",
+  );
+  await assert.rejects(
+    () => requireHermesApprovalReauthentication(async () => false, { user: { id: "user-a" } }, "wrong"),
+    (error) => error.statusCode === 401 && error.code === "reauthentication_failed",
+  );
+  assert.equal(await requireHermesApprovalReauthentication(async () => true, { user: { id: "user-a" } }, "correct"), true);
+
+  const internalCidrs = parseInternalApiAllowedCidrs("127.0.0.1/32,172.16.0.0/12,::1/128");
+  assert.equal(isInternalApiPath("/api/internal/hermes/v1/tools/example"), true);
+  assert.equal(isInternalApiSourceAllowed({ socket: { remoteAddress: "::ffff:172.20.0.5" } }, internalCidrs), true);
+  assert.equal(isInternalApiSourceAllowed({ socket: { remoteAddress: "203.0.113.8" }, headers: { "x-forwarded-for": "127.0.0.1" } }, internalCidrs), false);
+  assert.equal(isInternalApiSourceAllowed({ socket: { remoteAddress: "127.0.0.1" }, headers: { "x-real-ip": "203.0.113.8" } }, internalCidrs), false);
+  assert.equal(isInternalApiSourceAllowed({ socket: { remoteAddress: "127.0.0.1" }, headers: { "x-real-ip": "172.20.0.5" } }, internalCidrs), true);
+  assert.equal(isInternalApiSourceAllowed({ socket: { remoteAddress: "127.0.0.1" } }, []), false);
 
   const conversationA = store.createConversation({ userId: "user-a", title: "A", context: { route: "#movement" } });
   const conversationB = store.createConversation({ userId: "user-b", title: "B", context: { route: "#stockup" } });
@@ -185,6 +208,43 @@ try {
   const unauthorizedRequest = Object.assign(new EventEmitter(), { method: "POST", headers: { authorization: "Bearer wrong" }, payload: {} });
   await modelGateway.handle(unauthorizedRequest, unauthorizedResponse, new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions"));
   assert.equal(unauthorizedResponse.statusCode, 401);
+
+  let partnerUpstreamBody = null;
+  const partnerOnlyGateway = createHermesModelGateway({
+    cacheDir: directory,
+    encryptionSecret: "test-model-encryption-secret-0123456789",
+    proxySecret: "",
+    partnerProxySecret: "test-partner-model-proxy-secret-012345678901",
+    fetchImpl: async (_url, options = {}) => {
+      partnerUpstreamBody = JSON.parse(options.body);
+      return new Response(JSON.stringify({ id: "partner-chat-test", model: partnerUpstreamBody.model, choices: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+    getAuth: () => ({ role: "admin", user: { id: "admin-a", role: "admin", permissions: ROLE_DEFAULT_PERMISSIONS.admin } }),
+    parseRequestBody: async (request) => request.payload || {},
+    sendJson: (response, statusCode, payload) => {
+      response.statusCode = statusCode;
+      response.payload = payload;
+      response.headersSent = true;
+      response.writableEnded = true;
+    },
+  });
+  const missingBearerResponse = modelResponse();
+  await partnerOnlyGateway.handle(
+    Object.assign(new EventEmitter(), { method: "POST", headers: {}, payload: { messages: [{ role: "user", content: "hello" }] } }),
+    missingBearerResponse,
+    new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions"),
+  );
+  assert.equal(missingBearerResponse.statusCode, 401, "an unconfigured main proxy key must never authorize an empty bearer token");
+  const partnerBearerResponse = modelResponse();
+  await partnerOnlyGateway.handle(
+    Object.assign(new EventEmitter(), { method: "POST", headers: { authorization: "Bearer test-partner-model-proxy-secret-012345678901" }, payload: { messages: [{ role: "user", content: "hello" }] } }),
+    partnerBearerResponse,
+    new URL("http://tongzhou.local/api/internal/hermes/v1/model/chat/completions"),
+  );
+  assert.equal(partnerBearerResponse.statusCode, 200);
+  assert.equal(partnerUpstreamBody.model, "deepseek-v4-flash", "partner extraction must use the isolated lower-cost model");
+  assert.equal(partnerUpstreamBody.temperature, 0.1);
+  assert.equal(partnerUpstreamBody.max_tokens, 1200);
   const scopedRunKey = scopeHermesRunIdempotencyKey("user-a", conversationA.id, "client-request-key-0001");
   assert.equal(scopedRunKey, scopeHermesRunIdempotencyKey("user-a", conversationA.id, "client-request-key-0001"));
   assert.notEqual(scopedRunKey, scopeHermesRunIdempotencyKey("user-b", conversationA.id, "client-request-key-0001"));
@@ -223,6 +283,21 @@ try {
     approvedArgumentsHash,
     hashHermesToolArguments("tongzhou_assign_exception", { caseId: "case-a", version: 1, assigneeId: "user-b" }),
     "a changed write target must not match the approved arguments",
+  );
+  assert.equal(
+    approvedArgumentsHash,
+    hashHermesToolArguments("tongzhou_assign_exception", {
+      caseId: "case-a",
+      version: 1,
+      assigneeId: "user-a",
+      _tongzhou_tool_call_id: "transport-only",
+    }),
+    "trusted transport correlation must not alter approval argument hashes",
+  );
+  assert.equal(
+    hashHermesToolArguments("tongzhou_create_stockup_draft", { destinationWarehouseId: "wh-1", lines: [{ sku: "SKU-1", requestedQty: 10 }] }),
+    hashHermesToolArguments("tongzhou_create_stockup_draft", { destinationWarehouseId: "wh-1", lines: [{ sku: "SKU-1", requestedQty: 10, _internal: "transport-only" }] }),
+    "nested transport-only fields must not alter approval argument hashes",
   );
   const proposal = store.upsertActionProposal({
     runId: run.id,
@@ -288,6 +363,7 @@ try {
     bridgeSecret: gatewaySecret,
     resolveAuthForUserId: (userId) => userId === "user-a" ? { role: "admin", user: { id: "user-a", role: "admin", status: "active", dataScopes: {} } } : { role: "guest", user: null },
     providers: {
+      searchResources: async (args) => ({ ok: true, items: [{ id: "resource-1", query: args.q }] }),
       createStockupDraft: async (args) => {
         gatewayExecutions += 1;
         return { ok: true, draft: { id: "draft-1", quantity: args.lines[0].requestedQty } };
@@ -355,6 +431,21 @@ try {
   assert.equal(approvedExecution.statusCode, 200);
   assert.equal(gatewayExecutions, 1);
   assert.equal(approvedExecution.payload.result.draft.quantity, 10);
+  const readResponse = await callGateway("/api/internal/hermes/v1/tools/tongzhou_search_resources/execute", {
+    session_id: conversationA.hermesSessionId,
+    tool_call_id: "call-read-active-1",
+    arguments: { q: "SKU-1", _tongzhou_tool_call_id: "transport-only" },
+  });
+  assert.equal(readResponse.statusCode, 200);
+  assert.equal(readResponse.payload.items[0].query, "SKU-1");
+  store.updateRun(run.id, { status: "completed", completedAt: new Date().toISOString() });
+  const readWithoutRun = await callGateway("/api/internal/hermes/v1/tools/tongzhou_search_resources/execute", {
+    session_id: conversationA.hermesSessionId,
+    tool_call_id: "call-read-terminal-1",
+    arguments: { q: "SKU-1" },
+  });
+  assert.equal(readWithoutRun.statusCode, 409);
+  assert.equal(readWithoutRun.payload.code, "run_not_active");
 
   const fingerprint = exceptionFingerprint({ ruleCode: "inventory_stockout", warehouseId: "wh-1", resourceId: "sku-1", sku: "SKU-1" });
   const input = {
@@ -399,6 +490,65 @@ try {
   });
   assert.deepEqual(new Set(production.observations.map((item) => item.ruleCode)), new Set(["production_overdue", "production_material_shortage"]));
 
+  const bridgeFailure = buildExceptionObservations({
+    warehouseSync: { complete: true, syncedAt: clock.toISOString(), results: [] },
+    inventoryRisk: { complete: true, generatedAt: clock.toISOString(), items: [] },
+    stockup: { complete: true, requests: [], tasks: [] },
+    production: { complete: true, timelines: [] },
+    collaborationBridge: {
+      enabled: true,
+      complete: false,
+      lastSuccessfulSyncAt: "2026-10-20T00:00:00.000Z",
+      lastError: "upstream unavailable",
+      staleAfterMs: 30 * 60 * 1000,
+      commands: { retry: 2, awaiting_result: 1, awaiting_approval: 1 },
+      commandOldestAt: {
+        awaiting_result: "2026-10-19T23:00:00.000Z",
+        awaiting_approval: "2026-10-18T00:00:00.000Z",
+      },
+      outbox: { retry: 3 },
+    },
+    now,
+  });
+  assert.equal(bridgeFailure.complete, false);
+  assert.deepEqual(
+    new Set(bridgeFailure.observations.map((item) => item.ruleCode)),
+    new Set([
+      "collaboration_bridge_failed",
+      "collaboration_bridge_stale",
+      "collaboration_bridge_backlog",
+      "collaboration_result_delivery_overdue",
+      "collaboration_approval_overdue",
+    ]),
+  );
+
+  const partnerOverdue = buildExceptionObservations({
+    warehouseSync: { complete: true, syncedAt: clock.toISOString(), results: [] },
+    inventoryRisk: { complete: true, generatedAt: clock.toISOString(), items: [] },
+    stockup: { complete: true, requests: [], tasks: [] },
+    production: { complete: true, timelines: [] },
+    collaborationBridge: { enabled: false, complete: true },
+    partnerTasks: {
+      enabled: true,
+      complete: true,
+      items: [{
+        id: "partner-task-late",
+        organizationCode: "factory-a",
+        organizationName: "试点工厂",
+        title: "委外加工进度",
+        status: "in_progress",
+        priority: "urgent",
+        dueAt: "2026-10-19T09:00:00.000Z",
+        updatedAt: "2026-10-19T10:00:00.000Z",
+      }],
+    },
+    now,
+  });
+  assert.equal(partnerOverdue.complete, true);
+  assert.equal(partnerOverdue.observations.length, 1);
+  assert.equal(partnerOverdue.observations[0].ruleCode, "partner_task_overdue");
+  assert.equal(partnerOverdue.observations[0].severity, "critical");
+
   store.reconcileCases([], { scanId: "scan-incomplete", complete: false });
   assert.equal(store.getCase(firstScan.detected[0].id).missingScanCount, 0);
   store.reconcileCases([], { scanId: "scan-3", complete: true });
@@ -415,6 +565,7 @@ try {
   assert.equal(store.listCases({}, { countries: ["印尼"] }).length, 0);
   assert.equal(store.listCases({}, { countries: ["俄罗斯"] }).length, 1);
 
+  store.close();
   console.log("Hermes integration tests passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });

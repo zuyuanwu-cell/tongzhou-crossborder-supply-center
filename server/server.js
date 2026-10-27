@@ -118,6 +118,7 @@ import { createHermesModelGateway } from "./hermes-model-gateway.js";
 import { createHermesPartnerDraftApi } from "./hermes-partner-draft-api.js";
 import { createHermesPartnerConfigApi } from "./hermes-partner-config-api.js";
 import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
+import { isInternalApiPath, isInternalApiSourceAllowed, parseInternalApiAllowedCidrs } from "./internal-network.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
@@ -198,6 +199,7 @@ const hermesModelProxyKey = String(process.env.HERMES_MODEL_PROXY_KEY || "").tri
 const hermesPartnerModelProxyKey = String(process.env.HERMES_PARTNER_MODEL_PROXY_KEY || "").trim();
 const hermesModelProvider = String(process.env.HERMES_MODEL_PROVIDER || "custom:tongzhou").trim();
 const hermesModel = String(process.env.HERMES_MODEL || "deepseek-v4-pro").trim();
+const hermesPartnerModel = String(process.env.HERMES_PARTNER_MODEL || "deepseek-v4-flash").trim();
 const hermesMaxToolCalls = process.env.HERMES_MAX_TOOL_CALLS || 32;
 const hermesDigestTeamId = String(process.env.HERMES_DIGEST_TEAM_ID || "").trim().toLowerCase();
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
@@ -390,11 +392,16 @@ const isProductionRuntime = process.env.NODE_ENV === "production";
 const allowInsecureInternalAccessCode = process.env.ALLOW_INSECURE_INTERNAL_ACCESS_CODE === "true";
 const internalAccessCode = configuredInternalAccessCode || (isProductionRuntime ? "" : defaultInternalAccessCode);
 const sessionSecret = process.env.AUTH_SESSION_SECRET || internalAccessCode || "tongzhou-local-session";
+const internalApiAllowedCidrs = parseInternalApiAllowedCidrs(
+  process.env.INTERNAL_API_ALLOWED_CIDRS || (isProductionRuntime ? "" : "127.0.0.1/32,::1/128,172.16.0.0/12"),
+);
 const mobileAdminSessionSecret = createHash("sha256").update(`tongzhou-mobile-admin:${sessionSecret}`).digest("hex");
-const canvasCredentialSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY
-  || (isProductionRuntime ? sessionSecret : createHash("sha256").update(`tongzhou-canvas-local:${sessionSecret}`).digest("hex"));
+const configuredAiCredentialSecret = String(process.env.AI_CREDENTIAL_ENCRYPTION_KEY || "").trim();
+const canvasCredentialSecret = configuredAiCredentialSecret
+  || (isProductionRuntime ? "" : createHash("sha256").update(`tongzhou-canvas-local:${sessionSecret}`).digest("hex"));
 const integrationCredentialSecret = String(process.env.INTEGRATION_CREDENTIAL_ENCRYPTION_KEY || "").trim()
   || (isProductionRuntime ? "" : createHash("sha256").update(`tongzhou-integration-local:${sessionSecret}`).digest("hex"));
+assertSecureRuntimeConfig();
 const tongzhouCanvasAi = initTongzhouCanvasAi({
   cacheDir,
   encryptionSecret: canvasCredentialSecret,
@@ -405,6 +412,7 @@ const hermesModelGateway = createHermesModelGateway({
   proxySecret: hermesModelProxyKey,
   partnerProxySecret: hermesPartnerModelProxyKey,
   defaultModel: hermesModel,
+  partnerModel: hermesPartnerModel,
   fetchImpl: globalThis.fetch,
   getAuth,
   parseRequestBody,
@@ -423,7 +431,6 @@ const directAuth = {
     roleLabel: "管理员",
   },
 };
-assertSecureRuntimeConfig();
 let cachedUsers = loadUsersCache();
 directAuth.user.locale = normalizeUiLocale(cachedUsers.systemPreferences?.locale);
 const ozonIntegrationStore = await initOzonIntegrationStore({
@@ -1104,6 +1111,15 @@ function assertSecureRuntimeConfig() {
   }
   if (isProductionRuntime && String(process.env.INTEGRATION_CREDENTIAL_ENCRYPTION_KEY || "").trim().length < 16) {
     throw new Error("Refusing to start in production: set INTEGRATION_CREDENTIAL_ENCRYPTION_KEY to at least 16 characters.");
+  }
+  if (isProductionRuntime && configuredAiCredentialSecret.length < 32) {
+    throw new Error("Refusing to start in production: set a dedicated AI_CREDENTIAL_ENCRYPTION_KEY with at least 32 characters.");
+  }
+  if (isProductionRuntime && [sessionSecret, integrationCredentialSecret].includes(configuredAiCredentialSecret)) {
+    throw new Error("Refusing to start in production: AI_CREDENTIAL_ENCRYPTION_KEY must be independent from session and integration credential secrets.");
+  }
+  if (isProductionRuntime && !internalApiAllowedCidrs.length) {
+    throw new Error("Refusing to start in production: set INTERNAL_API_ALLOWED_CIDRS to the private Hermes/collaboration network ranges.");
   }
   if (hermesAgentEnabled && hermesApiKey.length < 16) {
     throw new Error("Refusing to enable Hermes: HERMES_API_KEY must contain at least 16 characters.");
@@ -3753,6 +3769,12 @@ function reauthenticateSystemBackupAdmin(auth, password) {
   }
   systemBackupReauthFailures.delete(key);
   return user;
+}
+
+function reauthenticateHermesAction(auth, password) {
+  if (!auth?.user?.id || ["system", "legacy-internal"].includes(auth.user.id)) return false;
+  reauthenticateSystemBackupAdmin(auth, password);
+  return true;
 }
 
 async function waitForSystemBackupApplicationIdle() {
@@ -7922,15 +7944,76 @@ async function notifyHermesDailyDigest(cases, { date } = {}) {
   ].join("\n\n"));
 }
 
-function collectHermesPatrolSources() {
+let cachedHermesPartnerTaskSource = { enabled: false, complete: true, items: [], updatedAt: "", errors: [] };
+let cachedHermesStockupSource = { requests: [], tasks: [], complete: false, updatedAt: "", errors: [] };
+
+function collectHermesStockupSource(stockupContext) {
+  try {
+    const requestPayload = stockupCollaborationService.listRequests({}, stockupContext);
+    const taskPayload = stockupCollaborationService.listTasks({}, stockupContext);
+    return {
+      requests: requestPayload.requests || [],
+      tasks: taskPayload.tasks || [],
+      complete: true,
+      updatedAt: new Date().toISOString(),
+      errors: [],
+    };
+  } catch (error) {
+    return {
+      requests: cachedHermesStockupSource.requests || [],
+      tasks: cachedHermesStockupSource.tasks || [],
+      complete: false,
+      updatedAt: cachedHermesStockupSource.updatedAt || "",
+      errors: [String(error?.message || "备货协同数据读取失败").slice(0, 500)],
+    };
+  }
+}
+
+async function collectHermesPartnerTasks(collaborationStatus) {
+  if (collaborationStatus.enabled !== true) return { enabled: false, complete: true, items: [], updatedAt: new Date().toISOString(), errors: [] };
+  try {
+    const organizations = (await collaborationBridge.listOrganizations({ status: "active" })).organizations || [];
+    const settled = await Promise.allSettled(organizations.slice(0, 100).map(async (organization) => {
+      const payload = await collaborationBridge.listOrganizationWorkItems(organization.code, { limit: 500 });
+      return (payload.items || []).map((item) => ({
+        ...item,
+        organizationCode: item.organizationCode || organization.code,
+        organizationName: item.organizationName || organization.name,
+      }));
+    }));
+    const errors = settled.filter((entry) => entry.status === "rejected").map((entry) => String(entry.reason?.message || "伙伴任务读取失败").slice(0, 500));
+    return {
+      enabled: true,
+      complete: errors.length === 0 && organizations.length <= 100,
+      items: settled.flatMap((entry) => entry.status === "fulfilled" ? entry.value : []),
+      updatedAt: new Date().toISOString(),
+      errors,
+    };
+  } catch (error) {
+    return { enabled: true, complete: false, items: cachedHermesPartnerTaskSource.items || [], updatedAt: cachedHermesPartnerTaskSource.updatedAt || "", errors: [String(error?.message || "伙伴任务读取失败").slice(0, 500)] };
+  }
+}
+
+async function collectHermesPatrolSources() {
   const movement = movementResponsePayload(directAuth);
   const stockupContext = hermesStockupContext(directAuth, { viewAll: true });
-  const requestPayload = stockupCollaborationService.listRequests({}, stockupContext);
-  const taskPayload = stockupCollaborationService.listTasks({}, stockupContext);
+  cachedHermesStockupSource = collectHermesStockupSource(stockupContext);
   const productionSource = agentSourceForType("production_timeline", directAuth);
   const inventoryItems = (movement.items || []).filter((item) => ["缺货", "补货预警"].includes(item.status));
-  return {
-    complete: true,
+  const collaborationStatus = collaborationBridge.status();
+  cachedHermesPartnerTaskSource = await collectHermesPartnerTasks(collaborationStatus);
+  const bridgeStaleAfterMs = Math.max(30 * 60 * 1000, Number(collaborationStatus.pollIntervalMs || 0) * 5);
+  const bridgeLastSuccessMs = Date.parse(String(collaborationStatus.lastSuccessfulSyncAt || ""));
+  const collaborationBridgeSource = {
+    ...collaborationStatus,
+    staleAfterMs: bridgeStaleAfterMs,
+    complete: collaborationStatus.enabled !== true || (
+      !collaborationStatus.lastError
+      && Number.isFinite(bridgeLastSuccessMs)
+      && Date.now() - bridgeLastSuccessMs <= bridgeStaleAfterMs
+    ),
+  };
+  const sources = {
     warehouseSync: {
       syncedAt: cachedWarehouseSync.syncedAt,
       results: cachedWarehouseSync.results || [],
@@ -7947,15 +8030,17 @@ function collectHermesPatrolSources() {
         && movement.syncState?.publishReady !== false
         && (movement.items || []).every((item) => item.dataCompleteness === "complete"),
     },
-    stockup: {
-      requests: requestPayload.requests || [],
-      tasks: taskPayload.tasks || [],
-      complete: true,
-    },
+    stockup: cachedHermesStockupSource,
     production: {
       timelines: productionSource.records || [],
       complete: productionSource.complete !== false && Boolean(productionSource.updatedAt),
     },
+    collaborationBridge: collaborationBridgeSource,
+    partnerTasks: cachedHermesPartnerTaskSource,
+  };
+  return {
+    ...sources,
+    complete: Object.values(sources).every((source) => source.complete !== false),
   };
 }
 
@@ -8022,6 +8107,32 @@ const hermesToolProviders = {
       complete: source.complete !== false,
       timelines,
       evidence: timelines.map((item) => ({ type: "production_timeline", id: item.orderRecordId || item.id, label: item.orderNo || item.status, href: "#production", updatedAt: item.updatedAt || source.updatedAt })),
+    };
+  },
+  queryPartnerTasks(args, auth) {
+    if (!hasPermission(auth, "collaboration_task_view")) throw Object.assign(new Error("当前账号没有伙伴协同任务查看权限。"), { statusCode: 403, code: "business_permission_required" });
+    const status = String(args.status || "").trim().toLowerCase();
+    const organization = String(args.organization || "").trim().toLowerCase();
+    const itemType = String(args.itemType || "").trim().toLowerCase();
+    const overdueOnly = args.overdueOnly === true;
+    const now = Date.now();
+    const warehouseIds = new Set((auth?.user?.dataScopes?.warehouseIds || []).map(String));
+    const tasks = (cachedHermesPartnerTaskSource.items || [])
+      .filter((item) => !status || String(item.status || "").toLowerCase() === status)
+      .filter((item) => !organization || [item.organizationCode, item.organizationName].some((value) => String(value || "").toLowerCase().includes(organization)))
+      .filter((item) => !itemType || String(item.itemType || "").toLowerCase() === itemType)
+      .filter((item) => {
+        const warehouseRef = String(item.publicPayload?.warehouseRef || "");
+        return auth.role === "admin" || !warehouseRef || warehouseIds.has(warehouseRef);
+      })
+      .filter((item) => !overdueOnly || (Number.isFinite(Date.parse(item.dueAt || "")) && Date.parse(item.dueAt) < now && !["completed", "rejected", "cancelled"].includes(item.status)))
+      .slice(0, Math.min(200, Number(args.limit) || 50));
+    return {
+      ok: true,
+      complete: cachedHermesPartnerTaskSource.complete !== false,
+      updatedAt: cachedHermesPartnerTaskSource.updatedAt,
+      tasks,
+      evidence: tasks.map((item) => ({ type: "partner_task", id: item.id, label: item.title || item.id, href: "#partner-collaboration", updatedAt: item.updatedAt })),
     };
   },
   compareMovementInventory(args, auth) {
@@ -8099,6 +8210,7 @@ const hermesApi = createHermesApi({
   appendActionLog,
   patrol: hermesPatrol,
   resolveAssignee: (userId) => hermesToolProviders.resolveAssignee(userId),
+  reauthenticateAction: reauthenticateHermesAction,
 });
 
 const server = http.createServer(async (req, res) => {
@@ -8110,6 +8222,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    if (isInternalApiPath(url.pathname) && !isInternalApiSourceAllowed(req, internalApiAllowedCidrs)) {
+      sendJson(res, 404, { ok: false, code: "not_found", message: "接口不存在。" });
+      return;
+    }
 
     maintenanceRequest = systemMaintenanceGate.beginRequest(req.method);
     if (!maintenanceRequest.allowed) {

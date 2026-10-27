@@ -115,6 +115,13 @@ export function hermesRunInstructions(context, { maxToolCalls = 32 } = {}) {
   ].join("\n");
 }
 
+export async function requireHermesApprovalReauthentication(reauthenticateAction, auth, password) {
+  if (typeof reauthenticateAction !== "function") throw fail("敏感动作密码复核服务未配置。", 503, "reauthentication_unavailable");
+  const verified = await reauthenticateAction(auth, password);
+  if (verified !== true) throw fail("当前账号密码校验失败。", 401, "reauthentication_failed");
+  return true;
+}
+
 export function createHermesApi({
   enabled,
   provider = "custom:tongzhou",
@@ -131,7 +138,7 @@ export function createHermesApi({
   appendActionLog = () => {},
   patrol,
   resolveAssignee = () => null,
-  reauthenticateAction = () => false,
+  reauthenticateAction,
 } = {}) {
   const mirrors = new Map();
   const toolCallLimit = normalizeHermesToolCallLimit(maxToolCalls);
@@ -491,7 +498,7 @@ export function createHermesApi({
         const payload = await parseRequestBody(req, 16 * 1024);
         const choice = payload.choice === "once" ? "once" : payload.choice === "deny" ? "deny" : "";
         if (!choice) throw fail("审批选择只能是 once 或 deny。", 400, "invalid_approval_choice");
-        if (choice === "once") reauthenticateAction(auth, payload.reauthPassword);
+        if (choice === "once") await requireHermesApprovalReauthentication(reauthenticateAction, auth, payload.reauthPassword);
         const proposal = store.getActionProposalByToolCall(payload.toolCallId);
         if (!proposal || proposal.runId !== run.id) throw fail("动作提案不存在。", 404, "proposal_not_found");
         if (proposal.status === "approval_submitting") throw fail("动作提案正在提交审批，请勿重复操作。", 409, "approval_in_progress");

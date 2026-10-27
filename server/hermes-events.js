@@ -1,20 +1,11 @@
+import { readFileSync } from "node:fs";
+
 function text(value) {
   return String(value ?? "").trim();
 }
 
-const TOOL_LABELS = Object.freeze({
-  tongzhou_search_resources: "搜索业务资源",
-  tongzhou_get_resource: "读取业务资源",
-  tongzhou_query_exception_cases: "查询异常台账",
-  tongzhou_query_inventory_risk: "查询库存风险",
-  tongzhou_query_stockup_execution: "查询备货执行",
-  tongzhou_query_production_timeline: "查询生产时间线",
-  tongzhou_compare_movement_inventory: "计算动销库存差异",
-  tongzhou_create_stockup_draft: "创建备货需求草稿",
-  tongzhou_assign_exception: "分派异常责任人",
-  tongzhou_update_exception_status: "更新异常处理状态",
-  tongzhou_send_exception_reminder: "发送异常催办",
-});
+const TOOL_MANIFEST = JSON.parse(readFileSync(new URL("../integrations/hermes/tool-manifest.json", import.meta.url), "utf8"));
+const TOOL_LABELS = Object.freeze(Object.fromEntries((TOOL_MANIFEST.tools || []).map((item) => [item.name, item.label])));
 
 export function hermesEventType(event) {
   return text(event?.event === "message"

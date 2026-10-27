@@ -63,6 +63,17 @@ function publicApproval(row) {
   };
 }
 
+export function collaborationCommandWithinScope(row, auth) {
+  if (auth?.role === "admin") return true;
+  const warehouseIds = Array.isArray(auth?.user?.dataScopes?.warehouseIds)
+    ? auth.user.dataScopes.warehouseIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  if (!warehouseIds.length) return false;
+  const command = row?.command || row || {};
+  const warehouseRef = String(command.publicPayload?.warehouseRef || command.public_payload?.warehouseRef || "").trim();
+  return Boolean(warehouseRef && warehouseIds.includes(warehouseRef));
+}
+
 export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canViewTasks = canManage, canPublishTasks = canManage, appendActionLog = () => {} }) {
   return async function handleCollaborationBridgeApi(req, res, url) {
     if (url.pathname !== "/api/collaboration-bridge" && !url.pathname.startsWith("/api/collaboration-bridge/")) return false;
@@ -137,7 +148,7 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
         return true;
       }
       if (suffix === "/approvals" && req.method === "GET") {
-        sendJson(res, 200, { ok: true, approvals: bridge.listApprovals().map(publicApproval) });
+        sendJson(res, 200, { ok: true, approvals: bridge.listApprovals().filter((row) => collaborationCommandWithinScope(row, auth)).map(publicApproval) });
         return true;
       }
       if (suffix === "/organizations" && req.method === "GET") {
@@ -324,13 +335,20 @@ export function createCollaborationBridgeApi({ bridge, getAuth, canManage, canVi
       }
       const reviewMatch = suffix.match(/^\/commands\/([^/]+)\/review$/);
       if (reviewMatch && req.method === "POST") {
+        const commandId = decodeURIComponent(reviewMatch[1]);
+        const stored = typeof bridge.getCommand === "function"
+          ? bridge.getCommand(commandId)
+          : bridge.listApprovals().find((row) => String(row?.command?.id || "") === commandId);
+        if (stored && !collaborationCommandWithinScope(stored, auth)) {
+          throw Object.assign(new Error("当前账号无权审批该仓库的协同指令。"), { statusCode: 403, code: "warehouse_scope_denied" });
+        }
         const input = await readBody(req);
-        const result = await bridge.reviewCommand(decodeURIComponent(reviewMatch[1]), {
+        const result = await bridge.reviewCommand(commandId, {
           approved: input.approved,
           note: input.note,
           reviewer: auth.user?.displayName || auth.user?.username || "供应链中台",
         });
-        appendActionLog(auth, input.approved ? "批准外部协同指令" : "驳回外部协同指令", "collaboration_command", decodeURIComponent(reviewMatch[1]), { note: input.note || "", resultStatus: result.status || "" });
+        appendActionLog(auth, input.approved ? "批准外部协同指令" : "驳回外部协同指令", "collaboration_command", commandId, { note: input.note || "", resultStatus: result.status || "" });
         sendJson(res, 200, { ok: true, ...result });
         return true;
       }

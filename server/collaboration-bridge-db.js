@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { acquireSqlJsWriterLock, persistSqlJsDatabaseAtomically } from "./sqljs-durable-store.js";
 
 function rows(db, sql, params = []) {
   const statement = db.prepare(sql);
@@ -17,6 +18,7 @@ function rows(db, sql, params = []) {
 export async function initCollaborationBridgeStore(dbPath) {
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
+  const releaseWriterLock = acquireSqlJsWriterLock(dbPath);
   const db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
   db.run(`
     PRAGMA foreign_keys = ON;
@@ -41,6 +43,8 @@ export async function initCollaborationBridgeStore(dbPath) {
       local_status TEXT NOT NULL,
       result_json TEXT,
       last_error TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
       submitted_at TEXT NOT NULL,
       received_at TEXT NOT NULL,
       processed_at TEXT
@@ -54,9 +58,16 @@ export async function initCollaborationBridgeStore(dbPath) {
       updated_at TEXT NOT NULL
     );
   `);
+  const commandColumns = new Set(rows(db, "PRAGMA table_info(collaboration_command_inbox)").map((item) => item.name));
+  if (!commandColumns.has("attempt_count")) db.run("ALTER TABLE collaboration_command_inbox ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+  if (!commandColumns.has("next_attempt_at")) db.run("ALTER TABLE collaboration_command_inbox ADD COLUMN next_attempt_at TEXT");
 
   function persist() {
-    writeFileSync(dbPath, Buffer.from(db.export()));
+    persistSqlJsDatabaseAtomically(dbPath, db.export());
+  }
+
+  function close() {
+    try { db.close(); } finally { releaseWriterLock(); }
   }
 
   function transaction(fn) {
@@ -137,12 +148,27 @@ export async function initCollaborationBridgeStore(dbPath) {
       .map((row) => ({ ...row, command: JSON.parse(row.payload_json), result: row.result_json ? JSON.parse(row.result_json) : null }));
   }
 
+  function readyCommands(now, limit = 100) {
+    return rows(db, `SELECT * FROM collaboration_command_inbox
+      WHERE local_status IN ('received','retry') AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+      ORDER BY submitted_at,command_id LIMIT ?`, [now, Math.max(1, Math.min(500, Number(limit) || 100))])
+      .map((row) => ({ ...row, command: JSON.parse(row.payload_json), result: row.result_json ? JSON.parse(row.result_json) : null }));
+  }
+
   function markCommand(commandId, localStatus, { result = null, error = "", processedAt = null, remoteStatus = "" } = {}) {
     transaction(() => db.run(
       `UPDATE collaboration_command_inbox SET local_status=?,
        remote_status=CASE WHEN ?='' THEN remote_status ELSE ? END,
-       result_json=?,last_error=?,processed_at=? WHERE command_id=?`,
+       result_json=?,last_error=?,processed_at=?,next_attempt_at=NULL WHERE command_id=?`,
       [localStatus, remoteStatus, remoteStatus, result ? JSON.stringify(result) : null, String(error || "").slice(0, 2_000), processedAt, commandId],
+    ));
+  }
+
+  function markCommandRetry(commandId, error, nextAttemptAt) {
+    transaction(() => db.run(
+      `UPDATE collaboration_command_inbox SET local_status='retry',attempt_count=attempt_count+1,
+       next_attempt_at=?,last_error=?,processed_at=NULL WHERE command_id=?`,
+      [nextAttemptAt, String(error || "unknown_error").slice(0, 2_000), commandId],
     ));
   }
 
@@ -161,14 +187,18 @@ export async function initCollaborationBridgeStore(dbPath) {
   function status() {
     const outbox = rows(db, "SELECT status,COUNT(*) AS count FROM collaboration_outbox GROUP BY status");
     const commands = rows(db, "SELECT local_status AS status,COUNT(*) AS count FROM collaboration_command_inbox GROUP BY local_status");
+    const outboxOldest = rows(db, "SELECT status,MIN(created_at) AS oldest_at FROM collaboration_outbox GROUP BY status");
+    const commandOldest = rows(db, "SELECT local_status AS status,MIN(submitted_at) AS oldest_at FROM collaboration_command_inbox GROUP BY local_status");
     return {
       outbox: Object.fromEntries(outbox.map((item) => [String(item.status), Number(item.count)])),
       commands: Object.fromEntries(commands.map((item) => [String(item.status), Number(item.count)])),
+      outboxOldestAt: Object.fromEntries(outboxOldest.map((item) => [String(item.status), String(item.oldest_at || "")])),
+      commandOldestAt: Object.fromEntries(commandOldest.map((item) => [String(item.status), String(item.oldest_at || "")])),
       commandCursor: state("command_cursor"),
       lastSuccessfulSyncAt: state("last_successful_sync_at"),
     };
   }
 
   persist();
-  return { command, enqueue, listCommands, markCommand, markOutboxRetry, markPublished, readyOutbox, setState, state, status, upsertCommand };
+  return { close, command, enqueue, listCommands, markCommand, markCommandRetry, markOutboxRetry, markPublished, readyCommands, readyOutbox, setState, state, status, upsertCommand };
 }

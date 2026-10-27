@@ -6,8 +6,8 @@
 |---|---|---|
 | 内部中台前端 | `npm run build` → `dist/` | 公司网络或零信任网关 |
 | 内部核心 API | `pm2 start ecosystem.config.cjs`，端口 8787 | 内网 |
-| 外部协同门户 | `npm run build:collaboration` → `dist-collaboration/` | 独立公网域名 |
-| 协同 API | PM2 应用 `tongzhou-collaboration-api`，端口 8790 | 仅通过门户反代公开 `/collaboration/*` |
+| 外部协同门户 | 生产 Docker 服务 `portal`，宿主机回环端口 8791 | 独立公网域名 |
+| 协同 API | 生产 Docker 服务 `api`，宿主机回环端口 8790 | 仅通过门户反代公开 `/collaboration/*` |
 | PostgreSQL | 独立数据库、独立 portal/integration 角色 | 私网，不对公网开放 |
 | 私有对象存储 | S3 兼容存储 | 私有桶，禁止公开读 |
 
@@ -77,11 +77,13 @@ COLLABORATION_BRIDGE_POLL_MS=10000
 
 ## 4. 构建和启动
 
+生产运行方式固定为：内部核心 API 由 PM2 管理；协同 API、协同门户、PostgreSQL 和 ClamAV 由独立 Docker Compose 栈管理。`ecosystem.config.cjs` 有意不包含 `tongzhou-collaboration-api`，不得用 PM2 再启动协同 API，否则会与 Docker 的 `127.0.0.1:8790` 冲突。
+
+内部核心 API：
+
 ```bash
 npm ci
 npm run build
-npm run build:collaboration
-npm run collaboration:migrate
 pm2 startOrReload ecosystem.config.cjs --update-env
 pm2 save
 ```
@@ -105,6 +107,8 @@ docker compose \
   -f docker-compose.collaboration.production.yml \
   up -d --build
 ```
+
+生产迁移由 Compose 中一次性的 `migrate` 服务执行，成功后 `api` 才会启动。不要在生产宿主机使用旧 Node.js 运行 `npm run collaboration:migrate`。`npm run collaboration:migrate`、`npm run collaboration:seed` 和 `npm run build:collaboration` 仅用于本地开发或明确的离线维护流程。
 
 该栈将 Node.js 20、PostgreSQL、ClamAV、协同 API 和门户 Nginx 封装在独立容器中。首期附件保存在只有协同 API 挂载的私有 Docker 卷，下载仍需重新校验组织和任务权限；接入正式 S3 后可切换为短期签名地址。宿主机只绑定 `127.0.0.1:8790` 与 `127.0.0.1:8791`，不会替换现有 Node.js、PM2 或中台 Nginx 站点。数据库、附件及病毒库分别使用独立命名卷。
 

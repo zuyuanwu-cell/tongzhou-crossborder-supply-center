@@ -576,6 +576,9 @@ export function createCollaborationBridge({
     if (["applied", "rejected", "failed"].includes(stored.local_status)) return { ok: true, idempotentReplay: true, ...stored.result };
     if (stored.local_status === "awaiting_approval") fail("该协同指令仍在等待内部审批。", 409, "approval_required");
     if (stored.local_status === "awaiting_result") return reportStoredResult(stored);
+    if (stored.local_status === "retry" && stored.next_attempt_at && new Date(stored.next_attempt_at).getTime() > new Date(nowIso()).getTime()) {
+      return { ok: false, retryScheduled: true, nextAttemptAt: stored.next_attempt_at };
+    }
     store.markCommand(commandId, "processing");
     try {
       const coreResult = await applyToCore(stored.command);
@@ -589,6 +592,17 @@ export function createCollaborationBridge({
       onAudit("应用外部协同指令", stored.command, result);
       return reportStoredResult(store.command(commandId));
     } catch (error) {
+      const statusCode = Number(error?.statusCode || error?.status || 0);
+      const retryable = statusCode >= 500
+        || ["AbortError", "TimeoutError"].includes(String(error?.name || ""))
+        || ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "SQLITE_BUSY"].includes(String(error?.code || ""));
+      const attempt = Number(stored.attempt_count || 0) + 1;
+      if (retryable && attempt < 5) {
+        const nextAttemptAt = retryAt(attempt);
+        store.markCommandRetry(commandId, error.message, nextAttemptAt);
+        lastError = `指令 ${commandId} 暂时失败，将于 ${nextAttemptAt} 重试：${error.message}`;
+        return { ok: false, retryScheduled: true, attempt, nextAttemptAt };
+      }
       const result = { status: "failed", resultCode: error.code || "core_validation_failed", message: String(error.message || error).slice(0, 2_000), coreReference: "" };
       store.markCommand(commandId, "awaiting_result", { result, error: error.message });
       onAudit("拒绝外部协同指令", stored.command, result);
@@ -618,6 +632,18 @@ export function createCollaborationBridge({
       if (!result.pendingResultDelivery) delivered += 1;
     }
     return { pending: pending.length, delivered };
+  }
+
+  async function retryPendingCommands() {
+    const ready = typeof store.readyCommands === "function" ? store.readyCommands(nowIso(), 100) : [];
+    let applied = 0;
+    let scheduled = 0;
+    for (const stored of ready) {
+      const result = await processStoredCommand(stored.command.id);
+      if (result.ok) applied += 1;
+      else if (result.retryScheduled) scheduled += 1;
+    }
+    return { ready: ready.length, applied, scheduled };
   }
 
   async function pullCommands() {
@@ -1086,10 +1112,11 @@ export function createCollaborationBridge({
       const outsourcingProjections = outsourcingProjectionSyncDue() ? await synchronizeOutsourcingProjections() : { skipped: true, reason: "not_due" };
       const outbox = await flushOutbox();
       const commandResults = await retryPendingResults();
+      const commandRetries = await retryPendingCommands();
       const commands = await pullCommands();
       lastError = "";
       if (enabled) store.setState("last_successful_sync_at", nowIso(), nowIso());
-      return { ok: true, inventoryProjections, outsourcingProjections, outbox, commandResults, commands };
+      return { ok: true, inventoryProjections, outsourcingProjections, outbox, commandResults, commandRetries, commands };
     } catch (error) {
       lastError = error.message;
       return { ok: false, message: error.message, code: error.code || "sync_failed" };
@@ -1130,6 +1157,7 @@ export function createCollaborationBridge({
     awardOemQuote,
     getOrganizationAccess,
     getOrganizationAccessGrants,
+    getCommand: (commandId) => store.command(commandId),
     getPartnerAiConfig,
     getPartnerAiHealth,
     getOrganizationWorkItem,

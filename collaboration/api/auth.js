@@ -12,6 +12,7 @@ import {
   verifyPassword,
 } from "./security.js";
 import { requiresMfaAtLogin } from "./permissions.js";
+import { clientIp } from "./request-ip.js";
 
 const SESSION_COOKIE = "tz_collab_session";
 const CSRF_COOKIE = "tz_collab_csrf";
@@ -35,13 +36,9 @@ function matchingCsrfToken(req, auth) {
     .find((value) => safeEqual(tokenHash(value), auth?.csrfTokenHash)) || "";
 }
 
-function clientIp(req) {
-  return String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
-}
-
 function pruneLoginAttempts(now = Date.now()) {
   for (const [key, value] of loginAttempts) {
-    if (now - value.windowStartedAt > 15 * 60 * 1000) loginAttempts.delete(key);
+    if (now - value.windowStartedAt > 60 * 60 * 1000 && Number(value.blockedUntil || 0) <= now) loginAttempts.delete(key);
   }
 }
 
@@ -49,10 +46,18 @@ function assertLoginRate(req, username) {
   pruneLoginAttempts();
   const key = `${clientIp(req)}:${String(username || "").toLowerCase()}`;
   const now = Date.now();
-  const entry = loginAttempts.get(key) || { count: 0, windowStartedAt: now };
-  if (entry.count >= 10) throw Object.assign(new Error("登录尝试过于频繁，请稍后再试。"), { statusCode: 429, code: "login_rate_limited" });
-  loginAttempts.set(key, { ...entry, count: entry.count + 1 });
+  const entry = loginAttempts.get(key) || { count: 0, windowStartedAt: now, blockedUntil: 0 };
+  if (Number(entry.blockedUntil || 0) > now) throw Object.assign(new Error("登录尝试过于频繁，请稍后再试。"), { statusCode: 429, code: "login_rate_limited" });
+  const count = entry.count + 1;
+  const blockedUntil = count >= 10 ? now + Math.min(15 * 60_000, 30_000 * (2 ** Math.min(5, count - 10))) : 0;
+  loginAttempts.set(key, { ...entry, count, blockedUntil });
   return () => loginAttempts.delete(key);
+}
+
+export function accountLockDurationMs(failureCount) {
+  const failures = Math.max(0, Number(failureCount) || 0);
+  if (failures < 5) return 0;
+  return Math.min(60 * 60_000, 5 * 60_000 * (2 ** Math.min(6, failures - 5)));
 }
 
 function membershipFromRow(row) {
@@ -125,7 +130,8 @@ export async function login(req, { username, password }) {
     }
     if (!(await verifyPassword(row.password_hash, password))) {
       const nextFailures = Number(row.failed_login_count || 0) + 1;
-      const lockUntil = nextFailures >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+      const lockDurationMs = accountLockDurationMs(nextFailures);
+      const lockUntil = lockDurationMs ? new Date(Date.now() + lockDurationMs) : null;
       await client.query("UPDATE collaboration_users SET failed_login_count=$2,locked_until=$3 WHERE id=$1", [row.user_id, nextFailures, lockUntil]);
       throw Object.assign(new Error("账号、密码或组织无效。"), { statusCode: 401, code: "invalid_credentials" });
     }

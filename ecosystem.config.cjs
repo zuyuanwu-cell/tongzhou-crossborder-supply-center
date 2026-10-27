@@ -9,14 +9,6 @@ module.exports = {
       },
     },
     {
-      name: "tongzhou-collaboration-api",
-      script: "collaboration/api/server.js",
-      cwd: __dirname,
-      env: {
-        NODE_ENV: "production",
-      },
-    },
-    {
       name: "tongzhou-system-restore",
       script: "server/system-restore-agent.js",
       cwd: __dirname,

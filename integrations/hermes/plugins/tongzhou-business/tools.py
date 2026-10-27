@@ -72,11 +72,13 @@ def make_approval_hook(bridge: TongzhouBridgeClient):
         tool_call_id = str(kwargs.get("tool_call_id") or "").strip()
         if not session_id or not tool_call_id:
             return {"action": "block", "message": "BLOCKED: missing Hermes session/tool correlation context"}
+        clean_args = dict(args or {})
+        clean_args.pop(_CORRELATION_ARGUMENT, None)
         try:
             result = bridge.call(
                 tool_name,
                 "preview",
-                dict(args or {}),
+                clean_args,
                 session_id=session_id,
                 tool_call_id=tool_call_id,
             )

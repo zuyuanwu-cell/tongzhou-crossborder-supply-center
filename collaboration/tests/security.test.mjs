@@ -7,6 +7,7 @@ process.env.COLLABORATION_INTERNAL_TOKEN = "test-internal-token-at-least-thirty-
 
 const security = await import("../api/security.js");
 const auth = await import("../api/auth.js");
+const requestIp = await import("../api/request-ip.js");
 
 test("Argon2id password hashes verify and reject invalid passwords", async () => {
   const encoded = await security.hashPassword("SecureWarehouse2026!");
@@ -43,4 +44,17 @@ test("CSRF validation tolerates legacy and root cookies during migration", () =>
   const refreshed = auth.refreshCsrfCookies(request, authenticated);
   assert.match(refreshed[0], new RegExp(`tz_collab_csrf=${current}; Path=/;`));
   assert.match(refreshed[1], /tz_collab_csrf=; Path=\/collaboration;.*Max-Age=0/);
+});
+
+test("client IP prefers the reverse proxy real IP and never trusts the first forwarded value", () => {
+  assert.equal(requestIp.clientIp({ headers: { "x-real-ip": "198.51.100.4", "x-forwarded-for": "127.0.0.1, 198.51.100.4" }, socket: { remoteAddress: "127.0.0.1" } }), "198.51.100.4");
+  assert.equal(requestIp.clientIp({ headers: { "x-forwarded-for": "127.0.0.1, 203.0.113.9" }, socket: { remoteAddress: "127.0.0.1" } }), "203.0.113.9");
+  assert.equal(requestIp.clientIp({ headers: { "x-real-ip": "forged" }, socket: { remoteAddress: "::ffff:127.0.0.1" } }), "::ffff:127.0.0.1");
+});
+
+test("partner account lockouts become progressively longer after repeated failures", () => {
+  assert.equal(auth.accountLockDurationMs(4), 0);
+  assert.equal(auth.accountLockDurationMs(5), 5 * 60_000);
+  assert.equal(auth.accountLockDurationMs(6), 10 * 60_000);
+  assert.equal(auth.accountLockDurationMs(20), 60 * 60_000);
 });

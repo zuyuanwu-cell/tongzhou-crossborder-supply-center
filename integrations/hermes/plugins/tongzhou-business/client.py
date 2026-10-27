@@ -12,13 +12,7 @@ import urllib.request
 import uuid
 from typing import Any, Callable
 
-
-WRITE_TOOLS = frozenset({
-    "tongzhou_create_stockup_draft",
-    "tongzhou_assign_exception",
-    "tongzhou_update_exception_status",
-    "tongzhou_send_exception_reminder",
-})
+from .schemas import WRITE_TOOLS
 
 
 class BridgeError(RuntimeError):

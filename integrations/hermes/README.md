@@ -25,9 +25,9 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 
 `hermes` 只把 API 发布到宿主机回环地址 `127.0.0.1:8642`：
 
-- `tongzhou-hermes-control` 用于同舟 Node 服务与 Hermes API 之间的控制流量。
-- `tongzhou-hermes-outbound` 只用于访问审核过的自有模型网关。
-- 插件通过 `TONGZHOU_BRIDGE_BASE_URL=http://tongzhou-api:8787` 回调同舟 Node 内部网关。
+- `tongzhou-hermes-control` 是唯一 Docker 私网；Hermes 不加入通用出站网络。
+- 同舟 Node 由 PM2 运行时使用 `HERMES_BASE_URL=http://127.0.0.1:8642` 访问 Hermes。
+- Hermes 通过受限的宿主机回环/反向代理访问模型代理与业务桥接；不得把 Hermes API 暴露到公网。
 
 如 Node 仍由 PM2 运行，需要增加受限的 Compose override 或内部反向代理；不要把 Hermes API 暴露到公网。
 
@@ -50,6 +50,10 @@ npm run test:hermes-contract
 默认契约测试只检查能力与安全边界；设置 `HERMES_CONTRACT_RUN=1` 才会产生真实模型调用和费用。
 
 6. Node 首次保持 `HERMES_AGENT_ENABLED=false`，可用 `HERMES_PATROL_ENABLED=true` 进行三天影子巡检。
+
+### AI 凭据轮换
+
+`AI_CREDENTIAL_ENCRYPTION_KEY` 必须是独立的 32 字节以上随机密钥，不能复用会话密钥、协同密钥或模型代理密钥。轮换前先由管理员重新输入并验证 DeepSeek API Key，使用新密钥重新加密配置后再切换运行环境；旧密钥未完成迁移前不得直接替换，否则已有密文将无法解密。任何密钥都不得进入 Git、前端、小程序、容器镜像或日志。
 
 ## 伙伴手机快捷汇报
 

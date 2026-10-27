@@ -222,11 +222,117 @@ function productionObservations(source = {}, nowMs) {
   return output;
 }
 
+function collaborationBridgeObservations(source = {}, nowMs, defaultStaleAfterMs) {
+  if (source.enabled !== true) return [];
+  const output = [];
+  const lastSuccessfulSyncAt = iso(source.lastSuccessfulSyncAt);
+  const staleAfterMs = Math.max(5 * 60 * 1000, number(source.staleAfterMs) || defaultStaleAfterMs);
+  const lastSuccessfulMs = Date.parse(lastSuccessfulSyncAt);
+  const lastError = text(source.lastError);
+  if (lastError) {
+    output.push(observation({
+      ruleCode: "collaboration_bridge_failed",
+      resourceType: "collaboration_bridge",
+      resourceId: "collaboration-bridge",
+      title: "协同桥接同步失败",
+      summary: lastError.slice(0, 500),
+      severity: "critical",
+      evidence: [{ type: "collaboration_bridge", id: "collaboration-bridge", label: "最近错误", value: lastError.slice(0, 500), updatedAt: lastSuccessfulSyncAt }],
+      href: "#partner-collaboration",
+      sourceUpdatedAt: lastSuccessfulSyncAt,
+    }));
+  }
+  if (!Number.isFinite(lastSuccessfulMs) || nowMs - lastSuccessfulMs > staleAfterMs) {
+    output.push(observation({
+      ruleCode: "collaboration_bridge_stale",
+      resourceType: "collaboration_bridge",
+      resourceId: "collaboration-bridge",
+      title: "协同桥接长时间未成功同步",
+      summary: lastSuccessfulSyncAt ? `最近成功同步时间为 ${lastSuccessfulSyncAt}。` : "尚未记录成功同步时间。",
+      severity: !Number.isFinite(lastSuccessfulMs) || nowMs - lastSuccessfulMs > staleAfterMs * 3 ? "critical" : "high",
+      evidence: [{ type: "collaboration_bridge", id: "collaboration-bridge", label: "最近成功同步", value: lastSuccessfulSyncAt || "missing", updatedAt: lastSuccessfulSyncAt }],
+      href: "#partner-collaboration",
+      sourceUpdatedAt: lastSuccessfulSyncAt,
+    }));
+  }
+  const retryCount = number(source.commands?.retry) + number(source.outbox?.retry);
+  if (retryCount > 0) {
+    output.push(observation({
+      ruleCode: "collaboration_bridge_backlog",
+      resourceType: "collaboration_bridge",
+      resourceId: "collaboration-bridge",
+      title: "协同桥接存在待恢复任务",
+      summary: `重试队列 ${retryCount} 条。`,
+      severity: retryCount >= 20 ? "critical" : "high",
+      evidence: [{ type: "collaboration_bridge", id: "collaboration-bridge", label: "待恢复任务", value: { retryCount }, updatedAt: lastSuccessfulSyncAt }],
+      href: "#partner-collaboration",
+      sourceUpdatedAt: lastSuccessfulSyncAt,
+    }));
+  }
+  const awaitingResultCount = number(source.commands?.awaiting_result);
+  const awaitingResultAt = iso(source.commandOldestAt?.awaiting_result);
+  const awaitingResultMs = Date.parse(awaitingResultAt);
+  if (awaitingResultCount > 0 && Number.isFinite(awaitingResultMs) && nowMs - awaitingResultMs >= 60 * 60 * 1000) {
+    output.push(observation({
+      ruleCode: "collaboration_result_delivery_overdue",
+      resourceType: "collaboration_bridge",
+      resourceId: "collaboration-result-delivery",
+      title: "伙伴指令结果回传超时",
+      summary: `${awaitingResultCount} 条指令等待回传超过 1 小时，最早提交于 ${awaitingResultAt}。`,
+      severity: nowMs - awaitingResultMs >= 6 * 60 * 60 * 1000 ? "critical" : "high",
+      evidence: [{ type: "collaboration_bridge", id: "collaboration-result-delivery", label: "结果待回传", value: { count: awaitingResultCount, oldestAt: awaitingResultAt }, updatedAt: awaitingResultAt }],
+      href: "#partner-collaboration",
+      sourceUpdatedAt: awaitingResultAt,
+    }));
+  }
+  const awaitingApprovalCount = number(source.commands?.awaiting_approval);
+  const awaitingApprovalAt = iso(source.commandOldestAt?.awaiting_approval);
+  const awaitingApprovalMs = Date.parse(awaitingApprovalAt);
+  if (awaitingApprovalCount > 0 && Number.isFinite(awaitingApprovalMs) && nowMs - awaitingApprovalMs >= 24 * 60 * 60 * 1000) {
+    output.push(observation({
+      ruleCode: "collaboration_approval_overdue",
+      resourceType: "collaboration_bridge",
+      resourceId: "collaboration-approval",
+      title: "伙伴指令审批超时",
+      summary: `${awaitingApprovalCount} 条指令等待审批超过 24 小时，最早提交于 ${awaitingApprovalAt}。`,
+      severity: nowMs - awaitingApprovalMs >= 72 * 60 * 60 * 1000 ? "critical" : "high",
+      evidence: [{ type: "collaboration_bridge", id: "collaboration-approval", label: "待审批", value: { count: awaitingApprovalCount, oldestAt: awaitingApprovalAt }, updatedAt: awaitingApprovalAt }],
+      href: "#partner-collaboration",
+      sourceUpdatedAt: awaitingApprovalAt,
+    }));
+  }
+  return output;
+}
+
+function partnerTaskObservations(source = {}, nowMs) {
+  if (source.enabled !== true) return [];
+  const activeStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync"]);
+  return (Array.isArray(source.items) ? source.items : []).flatMap((task) => {
+    const dueAt = iso(task.dueAt);
+    const dueMs = Date.parse(dueAt);
+    if (!activeStatuses.has(text(task.status)) || !Number.isFinite(dueMs) || dueMs >= nowMs) return [];
+    const lateDays = Math.max(1, Math.ceil((nowMs - dueMs) / 86_400_000));
+    return [observation({
+      ruleCode: "partner_task_overdue",
+      resourceType: "partner_task",
+      resourceId: text(task.id),
+      title: `伙伴任务逾期：${text(task.title, task.id)}`,
+      summary: `${text(task.organizationName, task.organizationCode) || "协同伙伴"}的任务已逾期 ${lateDays} 天，当前状态 ${text(task.status) || "未知"}。`,
+      severity: lateDays >= 3 || text(task.priority) === "urgent" ? "critical" : "high",
+      evidence: [{ type: "partner_task", id: text(task.id), label: "预计完成", value: dueAt, updatedAt: iso(task.updatedAt) }],
+      href: "#partner-collaboration",
+      sourceUpdatedAt: task.updatedAt || dueAt,
+    })];
+  });
+}
+
 export function buildExceptionObservations({
   warehouseSync = {},
   inventoryRisk = {},
   stockup = {},
   production = {},
+  collaborationBridge = {},
+  partnerTasks = {},
   now = () => new Date(),
   staleAfterMs = 2 * 60 * 60 * 1000,
 } = {}) {
@@ -237,12 +343,16 @@ export function buildExceptionObservations({
     inventoryRisk: inventoryRisk.complete !== false,
     stockup: stockup.complete !== false,
     production: production.complete !== false,
+    collaborationBridge: collaborationBridge.complete !== false,
+    partnerTasks: partnerTasks.complete !== false,
   };
   const observations = [
     ...syncObservations(warehouseSync, nowMs, staleAfterMs),
     ...inventoryObservations(inventoryRisk),
     ...stockupObservations(stockup, nowMs),
     ...productionObservations(production, nowMs),
+    ...collaborationBridgeObservations(collaborationBridge, nowMs, staleAfterMs),
+    ...partnerTaskObservations(partnerTasks, nowMs),
   ];
   return {
     observations,

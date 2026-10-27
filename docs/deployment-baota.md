@@ -36,6 +36,11 @@ pm2 save
 API 反向代理：
 
 ```nginx
+# 内部模型、工具与同步接口永不通过公网域名转发。
+location ^~ /api/internal/ {
+  return 404;
+}
+
 location /api/ {
   proxy_pass http://127.0.0.1:8787;
   proxy_set_header Host $host;
@@ -44,6 +49,8 @@ location /api/ {
   proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+生产 `.env` 同时必须设置 `INTERNAL_API_ALLOWED_CIDRS`，仅包含 Hermes 容器网络和内部同步服务的私网 CIDR。应用默认读取 TCP 连接源地址；只有连接确实来自本机反向代理时才采用 Nginx 写入的 `X-Real-IP`，且始终不信任客户端可追加的 `X-Forwarded-For` 第一项。
 
 系统备份采用流式大文件上传。请在通用 `/api/` 规则之前增加专用规则，避免 Nginx 默认 50MB 限制和请求体落盘缓冲：
 

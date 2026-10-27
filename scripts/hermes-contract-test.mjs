@@ -46,7 +46,7 @@ if (process.env.HERMES_CONTRACT_RUN === "1") {
     body: JSON.stringify({
       input: "Reply with exactly CONTRACT_OK. Do not call any tool.",
       session_id: `tongzhou-contract-${randomUUID()}`,
-      model: process.env.HERMES_MODEL || "anthropic/claude-sonnet-4.6",
+      model: process.env.HERMES_PARTNER_MODEL || process.env.HERMES_MODEL || "deepseek-v4-flash",
       instructions: "This is a runtime contract probe. Do not use tools.",
       model_options: { reasoning: { enabled: false } },
     }),

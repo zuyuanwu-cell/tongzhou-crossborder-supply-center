@@ -12,6 +12,7 @@ provides_tools:
   - tongzhou_query_inventory_risk
   - tongzhou_query_stockup_execution
   - tongzhou_query_production_timeline
+  - tongzhou_query_partner_tasks
   - tongzhou_compare_movement_inventory
   - tongzhou_create_stockup_draft
   - tongzhou_assign_exception

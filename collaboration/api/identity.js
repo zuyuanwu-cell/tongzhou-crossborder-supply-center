@@ -3,6 +3,7 @@ import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
 import { sendSecurityEmail } from "./notifications.js";
 import { hashPassword, randomToken, tokenHash, validateNewPassword, verifyPassword } from "./security.js";
+import { clientIp } from "./request-ip.js";
 
 const roles = ["organization_admin", "manager", "operator", "finance", "viewer"];
 const organizationTypes = ["internal", "warehouse", "filing_service", "sampling_factory", "packaging_factory", "production_factory", "material_supplier"];
@@ -82,10 +83,6 @@ const internalMemberCredentialsSchema = z.object({
 
 function fail(message, statusCode = 400, code = "invalid_request") {
   throw Object.assign(new Error(message), { statusCode, code });
-}
-
-function clientIp(req) {
-  return String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
 }
 
 function assertOrganizationAdmin(auth) {

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tools": [
+    { "name": "tongzhou_search_resources", "mode": "read", "label": "搜索业务资源", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_get_resource", "mode": "read", "label": "读取业务资源", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_query_exception_cases", "mode": "read", "label": "查询异常台账", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_query_inventory_risk", "mode": "read", "label": "查询库存风险", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_query_stockup_execution", "mode": "read", "label": "查询备货执行", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_query_production_timeline", "mode": "read", "label": "查询生产时间线", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_query_partner_tasks", "mode": "read", "label": "查询伙伴协同任务", "permissions": ["hermes_agent_use", "collaboration_task_view"] },
+    { "name": "tongzhou_compare_movement_inventory", "mode": "read", "label": "计算动销库存差异", "permissions": ["hermes_agent_use"] },
+    { "name": "tongzhou_create_stockup_draft", "mode": "write", "label": "创建备货需求草稿", "permissions": ["hermes_agent_use", "hermes_agent_action", "stockup_request_create"] },
+    { "name": "tongzhou_assign_exception", "mode": "write", "label": "分派异常责任人", "permissions": ["hermes_agent_use", "hermes_agent_action"], "permissionAnyOf": ["operations", "stockup_workflow_manage", "stockup_execution_manage"] },
+    { "name": "tongzhou_update_exception_status", "mode": "write", "label": "更新异常处理状态", "permissions": ["hermes_agent_use", "hermes_agent_action"], "permissionAnyOf": ["operations", "stockup_workflow_manage", "stockup_execution_manage"] },
+    { "name": "tongzhou_send_exception_reminder", "mode": "write", "label": "发送异常催办", "permissions": ["hermes_agent_use", "hermes_agent_action"], "permissionAnyOf": ["notifications", "stockup_execution_manage", "stockup_execution_update"] }
+  ]
+}

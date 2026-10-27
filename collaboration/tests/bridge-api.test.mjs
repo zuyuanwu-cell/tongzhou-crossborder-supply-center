@@ -93,3 +93,63 @@ test("bridge API preserves outsourcing binding and member credential routes", as
   assert.equal(calls[1][1], "songyu");
   assert.equal(calls[1][2], membershipId);
 });
+
+test("bridge API filters and protects approval commands by warehouse scope", async () => {
+  const approvals = ["wh-1", "wh-2"].map((warehouseRef, index) => ({
+    local_status: "awaiting_approval",
+    command: {
+      id: `command-${index + 1}`,
+      organizationCode: "warehouse-org",
+      workItemId: `item-${index + 1}`,
+      coreRefType: "warehouse_task",
+      coreRefId: `core-${index + 1}`,
+      itemType: "warehouse_inbound",
+      commandType: "inventory_adjustment",
+      publicPayload: { warehouseRef },
+      payload: { reason: "盘点差异" },
+      submittedByName: "仓库操作员",
+      submittedAt: "2026-10-27T08:00:00.000Z",
+      riskLevel: "high",
+    },
+  }));
+  const reviewed = [];
+  const bridge = {
+    listApprovals: () => approvals,
+    getCommand: (id) => approvals.find((row) => row.command.id === id),
+    async reviewCommand(id, input) { reviewed.push([id, input]); return { status: "applied" }; },
+  };
+  const handler = createCollaborationBridgeApi({
+    bridge,
+    getAuth: () => ({ user: { displayName: "一号仓管理员", dataScopes: { warehouseIds: ["wh-1"] } } }),
+    canManage: () => true,
+  });
+
+  const listed = await request(handler, "GET", "/api/collaboration-bridge/approvals");
+  assert.equal(listed.status, 200);
+  assert.deepEqual(json(listed).approvals.map((item) => item.commandId), ["command-1"]);
+
+  const denied = await request(handler, "POST", "/api/collaboration-bridge/commands/command-2/review", { approved: true });
+  assert.equal(denied.status, 403);
+  assert.equal(json(denied).code, "warehouse_scope_denied");
+  assert.equal(reviewed.length, 0);
+
+  const approved = await request(handler, "POST", "/api/collaboration-bridge/commands/command-1/review", { approved: true });
+  assert.equal(approved.status, 200);
+  assert.equal(reviewed.length, 1);
+
+  const emptyScopeHandler = createCollaborationBridgeApi({
+    bridge,
+    getAuth: () => ({ role: "manager", user: { displayName: "未分配仓库的经理", dataScopes: { warehouseIds: [] } } }),
+    canManage: () => true,
+  });
+  const emptyScopeList = await request(emptyScopeHandler, "GET", "/api/collaboration-bridge/approvals");
+  assert.deepEqual(json(emptyScopeList).approvals, [], "empty warehouse scope must never mean all warehouses");
+
+  const adminHandler = createCollaborationBridgeApi({
+    bridge,
+    getAuth: () => ({ role: "admin", user: { displayName: "管理员", dataScopes: { warehouseIds: [] } } }),
+    canManage: () => true,
+  });
+  const adminList = await request(adminHandler, "GET", "/api/collaboration-bridge/approvals");
+  assert.deepEqual(json(adminList).approvals.map((item) => item.commandId), ["command-1", "command-2"]);
+});
