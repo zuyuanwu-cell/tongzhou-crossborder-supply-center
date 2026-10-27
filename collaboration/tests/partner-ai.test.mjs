@@ -11,6 +11,15 @@ process.env.COLLABORATION_PARTNER_AI_BRIDGE_URL = "http://partner-ai.test";
 const { requestPartnerProgressDraft } = await import("../api/partner-ai-bridge.js");
 const { recognizeShortAudio } = await import("../api/tencent-asr.js");
 const { validatePartnerAiAudioContent } = await import("../api/partner-ai.js");
+const { jsonbParameter } = await import("../api/jsonb-parameter.js");
+
+test("partner AI JSONB values are sent as JSON documents instead of PostgreSQL array literals", () => {
+  const evidence = [{ field: "note", quote: "已经做好了", normalizedValue: "已经做好了" }];
+  const serialized = jsonbParameter(evidence, []);
+  assert.equal(serialized, JSON.stringify(evidence));
+  assert.deepEqual(JSON.parse(serialized), evidence);
+  assert.equal(jsonbParameter(undefined, []), "[]");
+});
 
 test("partner draft bridge signs the exact body and uses a one-time nonce", async () => {
   let captured;

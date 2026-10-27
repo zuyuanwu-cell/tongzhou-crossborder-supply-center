@@ -3,6 +3,7 @@ import { z } from "zod";
 import { assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
 import { withOrganization } from "./db.js";
 import { createPartnerProgressDraft } from "./partner-ai.js";
+import { jsonbParameter } from "./jsonb-parameter.js";
 import { getPartnerAiSettings, partnerAiQuickReportEnabledFor } from "./partner-ai-settings.js";
 
 const ACTIVE_STATES = new Set(["accepted", "in_progress"]);
@@ -277,7 +278,16 @@ async function createSessionDraft(auth, sessionId, transcriptionId = "") {
         `UPDATE partner_ai_sessions SET state=$2,collected_fields=$3,missing_fields=$4,warnings=$5,next_question=$6,latest_draft_id=$7,
           question_count=question_count+CASE WHEN $2='collecting_progress' THEN 1 ELSE 0 END,
           expires_at=now()+($8::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
-        [session.id, state, fields, missing, warnings, question, generated.draft.id, String(SESSION_TTL_MINUTES)],
+        [
+          session.id,
+          state,
+          jsonbParameter(fields, {}),
+          jsonbParameter(missing, []),
+          jsonbParameter(warnings, []),
+          question,
+          generated.draft.id,
+          String(SESSION_TTL_MINUTES),
+        ],
       )).rows[0];
       return { ok: true, session: sessionPayload(updated, { draft: generated.draft, exceptionSuggested: warnings.includes("exception_report_recommended") }) };
     });
@@ -309,9 +319,9 @@ async function createSessionDraft(auth, sessionId, transcriptionId = "") {
             Number(session.confirmed_work_item_version),
             prepared.effectiveTranscriptionId ? "voice" : "text",
             session.source_text,
-            fields,
-            missing,
-            warnings,
+            jsonbParameter(fields, {}),
+            jsonbParameter(missing, []),
+            jsonbParameter(warnings, []),
             fallbackKey,
             digest,
             session.id,
@@ -322,7 +332,14 @@ async function createSessionDraft(auth, sessionId, transcriptionId = "") {
         `UPDATE partner_ai_sessions SET state='collecting_progress',collected_fields=$2,missing_fields=$3,
           next_question='Hermes 暂时不可用，原话已保留，可继续手工填写并确认提交。',warnings=$4,latest_draft_id=$5,
           expires_at=now()+($6::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
-        [session.id, fields, missing, warnings, fallback.id, String(SESSION_TTL_MINUTES)],
+        [
+          session.id,
+          jsonbParameter(fields, {}),
+          jsonbParameter(missing, []),
+          jsonbParameter(warnings, []),
+          fallback.id,
+          String(SESSION_TTL_MINUTES),
+        ],
       )).rows[0];
       return {
         ok: true,
@@ -407,7 +424,16 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
       const updated = (await client.query(
         `UPDATE partner_ai_sessions SET source_text=$2,state=$3,candidate_ids=$4,candidate_count=$5,next_question=$6,message_count=message_count+1,
           latest_transcription_id=COALESCE($7,latest_transcription_id),expires_at=now()+($8::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
-        [session.id, sourceText, state, ids, candidates.length, nextQuestion, parsed.transcriptionId || null, String(SESSION_TTL_MINUTES)],
+        [
+          session.id,
+          sourceText,
+          state,
+          jsonbParameter(ids, []),
+          candidates.length,
+          nextQuestion,
+          parsed.transcriptionId || null,
+          String(SESSION_TTL_MINUTES),
+        ],
       )).rows[0];
       return { direct: { ok: true, session: sessionPayload(updated, { candidates }) } };
     }
