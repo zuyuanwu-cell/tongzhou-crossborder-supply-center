@@ -1,0 +1,175 @@
+/*
+ * Hermes V2 mobile readability layer.
+ * Keep this import last: it deliberately raises the minimum readable type,
+ * contrast and touch-label weight without changing business layout or logic.
+ */
+
+/* Login: the primary action and credential form must remain clear on phones. */
+.login-page .brand-row text { color: #9ab0c5; font-size: 18rpx; }
+.login-page .hero-kicker { font-size: 19rpx; }
+.login-page .hero-subtitle { color: rgba(232, 239, 255, .82); font-size: 24rpx; line-height: 1.55; }
+.login-page .handoff > view { color: rgba(226, 235, 250, .78); font-size: 20rpx; }
+.login-page .handoff i { font-size: 17rpx; }
+.login-page .mode-switch view { color: rgba(226, 235, 250, .72); font-size: 23rpx; }
+.login-page .card-heading text { font-size: 17rpx; }
+.login-page .card-heading strong { font-size: 34rpx; }
+.login-page .secure-tag { color: #79e6bd; font-size: 18rpx; }
+.login-page .card-copy { color: rgba(222, 233, 248, .76); font-size: 21rpx; line-height: 1.55; }
+.login-page .credential-switch view { color: rgba(222, 233, 248, .7); font-size: 21rpx; }
+.login-page .demo-accounts small { font-size: 16rpx; }
+.login-page .login-field > text { color: rgba(226, 235, 250, .78); font-size: 21rpx; font-weight: 700; }
+.login-page .login-field input { font-size: 27rpx; }
+.login-page .password-toggle { font-size: 20rpx; }
+.login-page .login-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 28rpx;
+  font-weight: 800;
+  letter-spacing: 1rpx;
+}
+.login-page .hermes-note { color: rgba(226, 235, 250, .76); font-size: 20rpx; }
+.login-page .hermes-note view { font-size: 18rpx; }
+.login-page .footer-lock { color: rgba(196, 213, 232, .68); font-size: 18rpx; }
+
+/* Partner home: secondary information should not disappear on real screens. */
+.hermes-page .welcome-date { color: rgba(226, 235, 250, .72); font-size: 20rpx; }
+.hermes-page .welcome-copy { color: rgba(232, 239, 255, .82); }
+.hermes-page .task-kind { color: rgba(226, 235, 250, .72); font-size: 20rpx; }
+.hermes-page .deadline { font-size: 19rpx; font-weight: 700; }
+.hermes-page .task-reference { color: rgba(226, 235, 250, .7); font-size: 20rpx; }
+.hermes-page .task-action { font-size: 23rpx; font-weight: 700; }
+.hermes-page .empty-today { color: rgba(226, 235, 250, .72); }
+.hermes-page .empty-today text { font-size: 21rpx; }
+.hermes-page .metric-cell text,
+.hermes-page .section-label text { color: rgba(226, 235, 250, .74); font-size: 22rpx; }
+.hermes-page .boundary-line { color: rgba(218, 229, 246, .7); font-size: 20rpx; }
+.hermes-page .composer input { font-size: 26rpx; }
+.hermes-page .composer input::placeholder { color: rgba(218, 229, 246, .62); }
+
+/* Hermes conversation: preserve the cinematic style but prioritize reading. */
+.assistant-page .assistant-id text { color: rgba(214, 230, 247, .72); font-size: 19rpx; }
+.assistant-page .conversation-date { color: rgba(197, 216, 236, .68); font-size: 18rpx; }
+.assistant-page .message-body { color: #e0e9f4; font-size: 24rpx; }
+.assistant-page .thinking-card { color: rgba(218, 231, 246, .76); font-size: 21rpx; }
+.assistant-page .inline-error text,
+.assistant-page .inline-warning text { font-size: 20rpx; }
+.assistant-page .inline-error button,
+.assistant-page .inline-warning button { font-size: 20rpx; font-weight: 700; }
+.assistant-page .block-label text { font-size: 18rpx; }
+.assistant-page .block-label strong { font-size: 26rpx; }
+.assistant-page .block-label small { color: rgba(211, 226, 243, .7); font-size: 19rpx; }
+.assistant-page .order-card__main strong { font-size: 23rpx; }
+.assistant-page .order-card__main text { color: rgba(211, 226, 243, .7); font-size: 19rpx; }
+.assistant-page .order-card button { font-size: 20rpx; font-weight: 700; }
+.assistant-page .draft-head text { font-size: 17rpx; }
+.assistant-page .draft-state { font-size: 18rpx; }
+.assistant-page .product-strip strong { font-size: 23rpx; }
+.assistant-page .product-strip text { color: rgba(211, 226, 243, .7); font-size: 19rpx; }
+.assistant-page .process-copy strong { font-size: 21rpx; }
+.assistant-page .process-row > text { color: rgba(211, 226, 243, .68); font-size: 18rpx; }
+.assistant-page .chat-composer input { font-size: 26rpx; }
+
+/* Shared business pages on dark surfaces. */
+.tasks-page .page-subtitle,
+.messages-page .message-sub,
+.messages-page .message-legend,
+.inventory-page .inventory-sub,
+.inventory-page .inventory-tools,
+.tasks-page .queue-mark text:last-child,
+.tasks-page .task-card__desc,
+.tasks-page .task-card__route,
+.tasks-page .task-card__foot,
+.inventory-page .goods-sku,
+.inventory-page .stock-grid text,
+.operation-page .type-switch view,
+.operation-page .form-title small,
+.operation-page .line-summary text,
+.operation-page .line-summary small,
+.operation-page .operation-fields label > text,
+.detail-page .facts-grid text,
+.detail-page .section-title > text,
+.detail-page .detail-ref,
+.detail-page .detail-route view text {
+  color: rgba(226, 235, 250, .74);
+}
+
+.tasks-page .page-subtitle,
+.messages-page .message-sub,
+.messages-page .message-legend,
+.inventory-page .inventory-sub,
+.inventory-page .inventory-tools { font-size: 22rpx; line-height: 1.55; }
+.tasks-page .filter-chip,
+.tasks-page .type-filter { color: rgba(238, 243, 255, .82); font-size: 22rpx; }
+.tasks-page .task-card__desc { font-size: 24rpx; }
+.tasks-page .task-card__route,
+.tasks-page .task-card__foot { font-size: 22rpx; }
+
+.messages-page .message-copy { color: rgba(234, 240, 255, .82); font-size: 23rpx; line-height: 1.58; }
+.messages-page .message-meta,
+.messages-page .message-arrow { color: rgba(215, 228, 246, .68); font-size: 20rpx; }
+
+.inventory-page .goods-sku { font-size: 21rpx; }
+.inventory-page .stock-grid text { font-size: 20rpx; }
+.inventory-page .stock-warning { font-size: 20rpx; line-height: 1.5; }
+.inventory-page .goods-actions view { font-size: 21rpx; font-weight: 700; }
+
+.operation-page .type-switch view { font-size: 22rpx; }
+.operation-page .form-title small,
+.operation-page .line-summary text,
+.operation-page .line-summary small,
+.operation-page .operation-fields label > text { font-size: 21rpx; }
+.operation-page .operation-fields input,
+.operation-page .date-picker { font-size: 24rpx; }
+.operation-page .approval-banner { font-size: 21rpx; line-height: 1.55; }
+
+.detail-page .detail-ref,
+.detail-page .detail-route view text,
+.detail-page .facts-grid text,
+.detail-page .section-title > text { font-size: 20rpx; }
+.detail-page .timeline-item small,
+.detail-page .record-row small,
+.detail-page .report-row small { color: #7589a2; font-size: 19rpx; }
+.detail-page .oem-facts text,
+.detail-page .source-facts text,
+.detail-page .form-grid label > text,
+.detail-page .block-field > text { font-size: 20rpx; }
+.detail-page .first-article__facts text,
+.detail-page .first-article__image text,
+.detail-page .bom-row text,
+.detail-page .order-line__main > text,
+.detail-page .order-line__main small { font-size: 19rpx; }
+.detail-page .process-main small,
+.detail-page .milestone-main > text,
+.detail-page .record-row text,
+.detail-page .report-row text { font-size: 20rpx; }
+
+/* Profile and persistent navigation are frequent touch/read surfaces. */
+.profile-page .profile-header text { color: rgba(213, 228, 246, .72); font-size: 18rpx; }
+.profile-page .online-pill { font-size: 18rpx; }
+.profile-page .identity-main text { color: rgba(213, 228, 246, .72); font-size: 19rpx; }
+.profile-page .identity-main small,
+.profile-page .identity-state { font-size: 18rpx; }
+.profile-page .org-card text { color: rgba(213, 228, 246, .72); font-size: 18rpx; }
+.profile-page .org-card strong { font-size: 23rpx; }
+.profile-page .org-card small { color: rgba(196, 214, 235, .65); font-size: 17rpx; }
+.profile-page .section-title text { font-size: 17rpx; }
+.profile-page .section-title strong { font-size: 25rpx; }
+.profile-page .section-title small { color: rgba(213, 228, 246, .7); font-size: 18rpx; }
+.profile-page .preference-row strong,
+.profile-page .scope-row strong,
+.profile-page .menu-row strong { font-size: 22rpx; }
+.profile-page .preference-row text,
+.profile-page .scope-row view text,
+.profile-page .menu-row text { color: rgba(213, 228, 246, .74); font-size: 19rpx; }
+.profile-page .scope-row > small { font-size: 18rpx; }
+.profile-page .scope-empty { color: rgba(213, 228, 246, .72); font-size: 20rpx; }
+.profile-page .switch-button,
+.profile-page .logout-button { font-size: 22rpx; font-weight: 700; }
+.profile-page .version { color: rgba(170, 193, 219, .64); font-size: 17rpx; }
+.profile-page button { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+.tabbar-safe--glass .tabbar__item { color: rgba(226, 235, 250, .7); }
+.tabbar__item { font-size: 21rpx; font-weight: 600; }
+.nav-badge { font-size: 17rpx; }
