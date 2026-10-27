@@ -34,5 +34,5 @@
     </view>
   </view>
   <view class="safe-banner"><view class="safe-banner__icon">✓</view><view><view class="safe-banner__title">库存边界已锁定</view><view class="safe-banner__copy">仅展示当前组织被授权仓库的库存投影，不包含成本和其他伙伴数据。</view></view></view>
-  <tz-tab-bar active="inventory" unread="{{unread}}" />
+  <tz-tab-bar active="inventory" unread="{{unread}}" theme="glass" />
 </view>

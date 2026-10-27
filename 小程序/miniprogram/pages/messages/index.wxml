@@ -15,5 +15,5 @@
       <view class="message-arrow">›</view><view wx:if="{{item.unread}}" class="unread-dot"></view>
     </view>
   </view>
-  <tz-tab-bar active="messages" unread="{{unread}}" />
+  <tz-tab-bar active="messages" unread="{{unread}}" theme="glass" />
 </view>

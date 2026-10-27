@@ -28,6 +28,12 @@ function dateText(value) {
   return value ? String(value).slice(0, 10) : "";
 }
 
+function decodeRouteText(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  try { return decodeURIComponent(text); } catch (_) { return text; }
+}
+
 function processSteps(stage, progressPercent) {
   const visible = STAGES.filter((item) => item.value);
   const current = Math.max(0, visible.findIndex((item) => item.value === stage));
@@ -79,7 +85,7 @@ Page({
     if (!loginSession) return;
     let preferences = null;
     try { preferences = wx.getStorageSync(preferenceStorageKey(loginSession.user.id)); } catch (_) {}
-    this._initialPrompt = String(options?.prompt || "").trim();
+    this._initialPrompt = decodeRouteText(options?.prompt).trim();
     this._autoVoice = options?.voice === "1";
     this._photoMode = options?.mode === "photo";
     let windowInfo = {};

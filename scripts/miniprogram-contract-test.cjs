@@ -51,12 +51,15 @@ function verifyStructure() {
   assert.match(partnerHome, /class="composer"/, "Hermes 输入栏应固定在首页底部");
   assert.match(partnerHome, /runHermesSuggestion/, "伙伴工作台应提供 Hermes 场景建议");
   const aiProgress = fs.readFileSync(path.join(root, "pages", "ai-progress", "index.wxml"), "utf8");
+  const aiProgressScript = fs.readFileSync(path.join(root, "pages", "ai-progress", "index.js"), "utf8");
   assert.match(aiProgress, /MATCHED ORDERS/);
   assert.match(aiProgress, /process-list/, "结构化草稿应以图形化工序呈现");
   assert.match(aiProgress, /pendingMedia/, "图片异常应在同一 Hermes 会话内整理");
   assert.match(aiProgress, /voice-overlay/, "语音汇报应提供录音反馈动效");
   assert.match(aiProgress, /确认提交/);
   assert.match(aiProgress, /使用原表单/);
+  assert.match(aiProgressScript, /decodeRouteText\(options\?\.prompt\)/, "首页快捷话术必须在 Hermes 会话中还原为中文");
+  assert.match(aiProgressScript, /decodeURIComponent\(text\)/, "Hermes 路由话术必须安全解码");
   const partnerApi = fs.readFileSync(path.join(root, "utils", "api.js"), "utf8");
   assert.match(partnerApi, /partner-ai\/sessions/);
   assert.match(partnerApi, /order-confirmation/);

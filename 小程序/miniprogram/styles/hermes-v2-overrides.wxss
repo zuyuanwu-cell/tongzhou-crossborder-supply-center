@@ -1,0 +1,31 @@
+/*
+ * Claude Hermes V2 shared visual overrides.
+ * These selectors only target the Hermes conversation and profile shells;
+ * business forms, permissions and API behavior stay in their original files.
+ */
+.assistant-page.assistant-page{background:radial-gradient(circle at -10% 4%,rgba(47,77,255,.52),transparent 42%),radial-gradient(circle at 112% 52%,rgba(0,184,255,.32),transparent 38%),radial-gradient(circle at 30% 108%,rgba(255,106,42,.22),transparent 40%),#070b1a}
+.assistant-page .assistant-header{border-bottom-color:rgba(255,255,255,.08);background:linear-gradient(180deg,rgba(7,11,26,.88),rgba(7,11,26,.46));backdrop-filter:blur(44rpx)}
+.assistant-page .assistant-orb,.assistant-page .mini-orb{border-radius:50%;background:conic-gradient(#5ce1ff,#3b5bff,#ff7a3d,#5ce1ff);box-shadow:0 0 28rpx rgba(92,225,255,.35)}
+.assistant-page .chat-scroll{height:calc(100vh - 336rpx - env(safe-area-inset-bottom))}
+.assistant-page .message-body{color:rgba(238,242,255,.88);background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12);border-radius:12rpx 36rpx 36rpx 36rpx;backdrop-filter:blur(40rpx)}
+.assistant-page .message--user .message-body{background:linear-gradient(135deg,#3b5bff,#2296ff);border-color:rgba(255,255,255,.14);border-radius:36rpx 12rpx 36rpx 36rpx;box-shadow:0 16rpx 48rpx -16rpx rgba(59,91,255,.7)}
+.assistant-page .order-card,.assistant-page .draft-card,.assistant-page .exception-card{background:linear-gradient(160deg,rgba(255,255,255,.13),rgba(255,255,255,.04));border-color:rgba(255,255,255,.16);border-radius:40rpx;box-shadow:inset 0 1rpx rgba(255,255,255,.18),0 28rpx 70rpx -28rpx rgba(0,0,0,.6);backdrop-filter:blur(48rpx)}
+.assistant-page .process-progress view{background:linear-gradient(90deg,#3b5bff,#5ce1ff);box-shadow:0 0 20rpx rgba(92,225,255,.65)}
+.assistant-page .submit-button,.assistant-page .send-control{background:linear-gradient(135deg,#3b5bff,#22a6ff);box-shadow:0 16rpx 40rpx -14rpx rgba(59,91,255,.85)}
+.assistant-page .chat-composer{left:24rpx;right:24rpx;bottom:calc(160rpx + env(safe-area-inset-bottom));min-height:112rpx;padding:0 12rpx;gap:16rpx;background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.16);border-radius:56rpx;box-shadow:inset 0 1rpx rgba(255,255,255,.15),0 24rpx 60rpx -20rpx rgba(0,0,0,.6);backdrop-filter:blur(48rpx)}
+.assistant-page .chat-composer .composer-plus{flex-basis:88rpx;height:88rpx;border:0;border-radius:50%;font-size:42rpx}.assistant-page .chat-composer input{height:88rpx;font-size:24rpx}.assistant-page .voice-control,.assistant-page .send-control{flex-basis:88rpx;height:88rpx;border-radius:50%;background:linear-gradient(135deg,#ff6a2a,#ff9f5c);box-shadow:0 12rpx 36rpx -8rpx rgba(255,106,42,.75)}.assistant-page .send-control{flex-basis:108rpx;border-radius:44rpx;background:linear-gradient(135deg,#3b5bff,#22a6ff)}
+.profile-page.profile-page{background:radial-gradient(circle at -8% 2%,rgba(47,77,255,.5),transparent 42%),radial-gradient(circle at 110% 18%,rgba(255,106,42,.28),transparent 35%),radial-gradient(circle at 5% 85%,rgba(0,184,255,.2),transparent 38%),#070b1a}
+.profile-page .profile-header{background:linear-gradient(180deg,rgba(7,11,26,.86),rgba(7,11,26,.42));border-bottom-color:rgba(255,255,255,.08);backdrop-filter:blur(44rpx)}
+.profile-page .profile-content{padding-bottom:190rpx}
+.profile-page .glass-card{background:linear-gradient(160deg,rgba(255,255,255,.13),rgba(255,255,255,.04));border-color:rgba(255,255,255,.15);border-radius:44rpx;box-shadow:inset 0 1rpx rgba(255,255,255,.18),0 20rpx 60rpx -20rpx rgba(0,0,0,.52);backdrop-filter:blur(48rpx)}
+.profile-page .avatar{border-radius:40rpx;background:linear-gradient(160deg,#1a2350,#0b1230);border:3rpx solid rgba(92,225,255,.62);box-shadow:0 0 30rpx rgba(92,225,255,.22)}
+.profile-page .org-mark{background:linear-gradient(135deg,#ff6a2a,#ff9f5c);box-shadow:0 12rpx 30rpx -8rpx rgba(255,106,42,.72)}
+.profile-page .section-title text{color:#ff9a66}.profile-page .list-card{background:rgba(255,255,255,.06)}
+.profile-page .preference-icon,.profile-page .menu-icon{color:#8feaff;background:rgba(92,225,255,.12);border-color:rgba(92,225,255,.25)}
+.login-page.login-page{background:radial-gradient(circle at -8% 4%,rgba(47,77,255,.52),transparent 42%),radial-gradient(circle at 112% 38%,rgba(0,184,255,.28),transparent 38%),radial-gradient(circle at 28% 108%,rgba(255,106,42,.22),transparent 40%),#070b1a}
+.login-page .hero-kicker{color:#5ce1ff}.login-page .hero-title{color:#eef2ff}.login-page .hero-subtitle{color:rgba(214,222,255,.68)}
+.login-page .login-card{background:linear-gradient(160deg,rgba(255,255,255,.13),rgba(255,255,255,.04));border-color:rgba(255,255,255,.16);border-radius:44rpx;box-shadow:inset 0 1rpx rgba(255,255,255,.18),0 28rpx 70rpx -28rpx rgba(0,0,0,.62);backdrop-filter:blur(48rpx)}
+.login-page .mode-switch{background:rgba(0,0,0,.18);border-color:rgba(255,255,255,.1)}.login-page .mode-switch .is-active{background:linear-gradient(135deg,rgba(59,91,255,.72),rgba(34,166,255,.52));box-shadow:inset 0 1rpx rgba(255,255,255,.14)}
+.login-page .login-field>view{background:rgba(0,0,0,.25);border-color:rgba(255,255,255,.12);border-radius:32rpx}.login-page .password-toggle{color:#5ce1ff;background:rgba(92,225,255,.08);padding:10rpx 16rpx;border-radius:20rpx}
+.login-page .login-button{height:104rpx;border-radius:52rpx;background:linear-gradient(135deg,#3b5bff,#22a6ff);box-shadow:0 18rpx 48rpx -14rpx rgba(59,91,255,.9)}
+.login-page .hermes-note{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.1);border-radius:32rpx}.login-page .hermes-note view{border-radius:50%;background:conic-gradient(#5ce1ff,#3b5bff,#ff7a3d,#5ce1ff)}

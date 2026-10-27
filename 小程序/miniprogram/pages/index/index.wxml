@@ -2,26 +2,28 @@
   <view class="aurora aurora--one"></view><view class="aurora aurora--two"></view><view class="grid-noise"></view>
   <view class="hermes-header" style="padding-top: {{statusBarHeight}}px">
     <view class="hermes-brand">
-      <view class="hermes-orb"><text>H</text><view class="online-dot"></view></view>
-      <view><strong>Hermes</strong><text>在线 · 同舟供应链中心</text></view>
+      <view><strong>Hermes</strong><text><i></i>在线 · 同舟供应链中心</text></view>
     </view>
-    <view class="header-actions"><view class="live-pill"><i></i>在线</view><view class="menu-button" bindtap="openHeaderMenu">•••</view></view>
+    <view class="header-actions"><view class="reset-button" bindtap="openHermesProgress">↺</view><view class="menu-button" bindtap="openHeaderMenu">•••<b></b>◎</view></view>
   </view>
 
   <scroll-view class="home-scroll" scroll-y enhanced show-scrollbar="{{false}}">
     <view class="home-content">
       <view class="welcome-block">
-        <text class="welcome-date">{{today}} · {{session.organization.name || '协同组织'}}</text>
-        <view class="welcome-title">{{greeting}}，{{session.user.displayName || '伙伴'}}</view>
-        <view class="welcome-copy">说一句、或拍张照，Hermes 帮你整理成反馈并提交。</view>
+        <view class="welcome-orb"><view class="welcome-orb__ring"></view><view class="welcome-orb__core">H</view><view class="welcome-orb__pulse"></view></view>
+        <view class="welcome-copybox">
+          <text class="welcome-date">{{today}} · {{session.organization.name || '协同组织'}}</text>
+          <view class="welcome-title">{{greeting}}，{{session.user.displayName || '伙伴'}}</view>
+          <view class="welcome-copy">说一句、或拍张照，Hermes 帮你整理成反馈并提交。</view>
+        </view>
       </view>
 
       <view wx:if="{{loading}}" class="glass-card loading-card"><view class="thinking-dots"><i></i><i></i><i></i></view><text>正在整理今天的任务…</text></view>
       <view wx:elif="{{error}}" class="glass-card error-card"><strong>暂时无法读取工作台</strong><text>{{error}}</text><button bindtap="load">重新加载</button></view>
 
       <block wx:else>
-        <view class="section-label"><view><text>TODAY</text><strong>今日待填报</strong></view><view class="section-total">{{hermesHome.activeCount || 0}}<text>全部 ›</text></view></view>
         <view class="glass-card today-card">
+          <view class="today-head" bindtap="openTasks"><view><text>TODAY</text><strong>今日待填报</strong><small>{{todayReportTasks.length}}</small></view><view>全部 ›</view></view>
           <view wx:if="{{todayReportTasks.length}}">
             <view wx:for="{{todayReportTasks}}" wx:key="id" class="task-row" data-index="{{index}}" bindtap="openTodayTask">
               <view class="task-symbol task-symbol--{{item.tone}}">{{item.badge}}</view>
@@ -30,7 +32,7 @@
                 <strong>{{item.productName}}</strong>
                 <view class="task-reference"><text>{{item.referenceNo}}</text><text wx:if="{{item.quantityText}}">{{item.quantityText}}</text><text>{{item.progressText}}</text></view>
               </view>
-              <view class="task-action">去填报 <text>›</text></view>
+              <view class="task-action {{index === 0 ? 'is-primary' : ''}}">去填报</view>
             </view>
           </view>
           <view wx:else class="empty-today"><view>✓</view><strong>今天没有待填报事项</strong><text>新任务到达后会在这里提醒你</text></view>
@@ -40,9 +42,9 @@
           <view wx:for="{{homeMetrics}}" wx:key="key" class="metric-cell metric-cell--{{item.tone}}"><strong>{{item.value}}</strong><text>{{item.label}}</text><i></i></view>
         </view>
 
-        <view class="section-label section-label--quick"><view><text>QUICK TALK</text><strong>一句话就能办</strong></view></view>
+        <view class="section-label section-label--quick"><view><text><i></i>试试这样说</text></view></view>
         <view class="quick-grid">
-          <view wx:for="{{hermesSuggestions}}" wx:key="label" class="quick-chip" data-index="{{index}}" bindtap="runHermesSuggestion"><view>{{index === 1 ? '▧' : index === 2 ? '↗' : index === 3 ? '?' : '✦'}}</view><text>{{item.label}}</text></view>
+          <view wx:for="{{hermesSuggestions}}" wx:key="label" class="quick-chip" data-index="{{index}}" bindtap="runHermesSuggestion">{{item.label}}</view>
         </view>
 
         <view class="boundary-line"><view>✓</view><text>Hermes 只能读取“{{session.organization.name}}”获授权的订单，正式提交前仍由你确认。</text></view>
@@ -54,7 +56,7 @@
     <view class="composer-plus" bindtap="choosePhoto">＋</view>
     <input value="{{composerText}}" bindinput="updateComposer" confirm-type="send" bindconfirm="sendComposer" placeholder="说说订单进展，或发张照片…" />
     <view wx:if="{{composerText}}" class="composer-send" bindtap="sendComposer">发送</view>
-    <view wx:else class="composer-voice" bindtap="startVoiceReport"><i></i>语音</view>
+    <view wx:else class="composer-voice" bindtap="startVoiceReport">语音</view>
   </view>
   <tz-tab-bar active="index" unread="{{unread}}" theme="glass" />
 </view>

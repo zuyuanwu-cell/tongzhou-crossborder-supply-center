@@ -39,5 +39,5 @@
       <view class="task-card__foot"><text>{{item.isPartnerOrder ? item.deadlineText : '截止 ' + item.dueText}}</text><text class="task-card__ref">{{item.referenceNo}} ›</text></view>
     </view>
   </view>
-  <tz-tab-bar active="tasks" unread="{{unread}}" />
+  <tz-tab-bar active="tasks" unread="{{unread}}" theme="glass" />
 </view>

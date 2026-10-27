@@ -1,0 +1,153 @@
+/*
+ * Hermes V2 visual bridge for the business pages that are not represented
+ * as complete screens in the Claude export. Layout and interaction contracts
+ * stay intact; only the shared surface, type and control tokens are migrated.
+ */
+.tasks-page.tasks-page,
+.messages-page.messages-page,
+.inventory-page.inventory-page,
+.operation-page.operation-page,
+.detail-page.detail-page {
+  color: #eef2ff;
+  background:
+    radial-gradient(circle at -10% 2%, rgba(47,77,255,.42), transparent 36%),
+    radial-gradient(circle at 108% 26%, rgba(0,184,255,.22), transparent 32%),
+    radial-gradient(circle at 20% 108%, rgba(255,106,42,.16), transparent 36%),
+    #070b1a;
+}
+
+.tasks-page .card,
+.tasks-page .task-card,
+.messages-page .card,
+.inventory-page .card,
+.operation-page .card,
+.detail-page .card {
+  color: #eef2ff;
+  background: linear-gradient(155deg, rgba(255,255,255,.12), rgba(255,255,255,.04));
+  border-color: rgba(255,255,255,.14);
+  box-shadow: inset 0 1rpx rgba(255,255,255,.14), 0 24rpx 60rpx -28rpx rgba(0,0,0,.62);
+  backdrop-filter: blur(40rpx);
+}
+
+.tasks-page .page-intro,
+.messages-page .message-head { border-bottom-color: rgba(255,255,255,.1); }
+.tasks-page .page-title,
+.messages-page .message-title,
+.inventory-page .inventory-title { color: #eef2ff; }
+.tasks-page .page-subtitle,
+.messages-page .message-sub,
+.messages-page .message-legend,
+.inventory-page .inventory-sub,
+.inventory-page .inventory-tools { color: rgba(214,222,255,.62); }
+.tasks-page .queue-mark,
+.inventory-page .scope-seal { color: #8feaff; background: rgba(92,225,255,.1); border-color: rgba(92,225,255,.25); }
+.tasks-page .queue-mark text:first-child { color: #eef2ff; }
+.tasks-page .queue-mark text:last-child { color: rgba(214,222,255,.58); }
+
+.tasks-page .search-bar,
+.inventory-page .search-bar { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.14); }
+.tasks-page .search-bar input,
+.inventory-page .search-bar input { color: #eef2ff; }
+.tasks-page .search-icon,
+.inventory-page .search-icon { color: #5ce1ff; }
+.tasks-page .search-clear { color: #eef2ff; background: rgba(255,255,255,.1); }
+.inventory-page .scan-square { background: linear-gradient(135deg,#3b5bff,#22a6ff); box-shadow: 0 14rpx 36rpx -12rpx rgba(59,91,255,.8); }
+
+.tasks-page .filter-chip,
+.tasks-page .type-filter { color: rgba(226,232,255,.72); background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); }
+.tasks-page .filter-chip text,
+.tasks-page .type-filter__count { color: rgba(226,232,255,.7); background: rgba(255,255,255,.09); }
+.tasks-page .type-filter__icon { color: #8feaff; background: rgba(92,225,255,.1); }
+.tasks-page .filter-chip.is-active,
+.tasks-page .type-filter.is-active { color: #fff; background: linear-gradient(135deg,#3b5bff,#22a6ff); border-color: transparent; box-shadow: 0 14rpx 34rpx -14rpx rgba(59,91,255,.9); }
+
+.tasks-page .task-card__title,
+.tasks-page .task-card__ref { color: #f3f6ff; }
+.tasks-page .task-card__desc,
+.tasks-page .task-card__route,
+.tasks-page .task-card__foot { color: rgba(214,222,255,.62); }
+.tasks-page .task-card__foot { border-top-color: rgba(255,255,255,.1); }
+.tasks-page .type-pill { color: #8feaff; background: rgba(92,225,255,.1); }
+
+.messages-page .read-all { color: #8feaff; background: rgba(92,225,255,.1); border: 1rpx solid rgba(92,225,255,.2); }
+.messages-page .message-card--unread { background: linear-gradient(135deg,rgba(255,106,42,.13),rgba(255,255,255,.05)); border-color: rgba(255,154,102,.34); }
+.messages-page .message-name { color: #f3f6ff; }
+.messages-page .message-copy { color: rgba(214,222,255,.67); }
+.messages-page .message-meta,
+.messages-page .message-arrow { color: rgba(214,222,255,.48); }
+.messages-page .message-icon { box-shadow: 0 12rpx 30rpx -12rpx currentColor; }
+
+.inventory-page .inventory-tools > view > view,
+.inventory-page .goods-actions view { color: #8feaff; background: rgba(92,225,255,.09); border: 1rpx solid rgba(92,225,255,.15); }
+.inventory-page .goods-name,
+.inventory-page .stock-grid strong { color: #f3f6ff; }
+.inventory-page .goods-sku,
+.inventory-page .stock-grid text { color: rgba(214,222,255,.58); }
+.inventory-page .goods-fallback { color: #8feaff; background: rgba(92,225,255,.08); border-color: rgba(92,225,255,.2); }
+.inventory-page .stock-grid { background: rgba(0,0,0,.18); }
+.inventory-page .stock-grid > view { border-left-color: rgba(255,255,255,.08); }
+.inventory-page .stock-warning { color: #ffad82; background: rgba(255,106,42,.12); }
+
+.operation-page .operation-hero,
+.detail-page .detail-hero { background: radial-gradient(circle at 100% 0,rgba(92,225,255,.2),transparent 44%),linear-gradient(145deg,#0b1230,#173d7a); }
+.operation-page .operation-body,
+.detail-page .detail-body { color: #eef2ff; }
+.operation-page .type-switch view { color: rgba(214,222,255,.62); }
+.operation-page .type-switch .is-active { color: #fff; background: linear-gradient(135deg,#3b5bff,#22a6ff); box-shadow: 0 12rpx 30rpx -12rpx rgba(59,91,255,.85); }
+.operation-page .form-title strong,
+.operation-page .line-summary strong,
+.operation-page .product-picker > view,
+.operation-page .operation-fields input,
+.operation-page .date-picker,
+.detail-page .facts-grid strong,
+.detail-page .section-title strong { color: #f3f6ff; }
+.operation-page .form-title small,
+.operation-page .line-summary text,
+.operation-page .line-summary small,
+.operation-page .operation-fields label > text,
+.detail-page .facts-grid text,
+.detail-page .section-title > text { color: rgba(214,222,255,.58); }
+.operation-page .product-picker > view,
+.operation-page .operation-fields input,
+.operation-page .date-picker,
+.operation-page .field__input,
+.operation-page .field__textarea,
+.detail-page input,
+.detail-page textarea,
+.detail-page .field__input,
+.detail-page .field__textarea,
+.detail-page .field__picker { color: #eef2ff; background: rgba(0,0,0,.2); border-color: rgba(255,255,255,.13); }
+.operation-page .selected-line { border-color: rgba(255,255,255,.12); }
+.operation-page .line-summary { background: rgba(255,255,255,.045); }
+.operation-page .line-image { color: #8feaff; background: rgba(92,225,255,.1); }
+.operation-page .add-line,
+.operation-page .barcode-scan-button { color: #fff; background: linear-gradient(135deg,#3b5bff,#22a6ff); }
+.operation-page .approval-banner { color: #ffd8c5; background: rgba(255,106,42,.11); border-left-color: #ff7a3d; }
+
+.detail-page .detail-ref,
+.detail-page .detail-route view text { color: rgba(214,222,255,.58); }
+.detail-page .facts-grid > view { border-color: rgba(255,255,255,.08); }
+.detail-page .progress-line { background: rgba(255,255,255,.1); }
+.detail-page .progress-dot { color: rgba(226,232,255,.6); background: rgba(255,255,255,.1); }
+.detail-page .progress-item.is-done { color: #8feaff; }
+.detail-page .progress-item.is-done .progress-dot,
+.detail-page .progress-item.is-done .progress-line { color: #fff; background: linear-gradient(90deg,#3b5bff,#5ce1ff); }
+.detail-page .ai-report-card { background: linear-gradient(155deg,rgba(59,91,255,.14),rgba(255,255,255,.045)); border-color: rgba(92,225,255,.2); }
+.detail-page .instruction-card,
+.detail-page .oem-facts,
+.detail-page .process-card,
+.detail-page .source-facts,
+.detail-page .first-article { color: #eef2ff; }
+
+.tasks-page .empty-state,
+.tasks-page .error-state,
+.messages-page .empty-state,
+.messages-page .error-state,
+.inventory-page .empty-state,
+.inventory-page .error-state,
+.detail-page .loading-state,
+.detail-page .error-state { color: rgba(214,222,255,.64); }
+.tasks-page .state-title,
+.messages-page .state-title,
+.inventory-page .state-title,
+.detail-page .state-title { color: #eef2ff; }
