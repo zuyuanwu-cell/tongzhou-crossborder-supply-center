@@ -134,7 +134,6 @@ Page({
   openTask(event) { wx.navigateTo({ url: `/pages/task-detail/index?id=${event.currentTarget.dataset.id}` }); },
   openOperation(event) { wx.navigateTo({ url: `/pages/operation/index?type=${event.currentTarget.dataset.type}` }); },
   openInventory() { wx.redirectTo({ url: "/pages/inventory/index" }); },
-  openHermesProgress() { wx.navigateTo({ url: "/pages/ai-progress/index" }); },
 
   openHermesWithPrompt(prompt) {
     const query = prompt ? `?prompt=${encodeURIComponent(prompt)}` : "";
@@ -178,14 +177,6 @@ Page({
       if (!media?.tempFilePath) return;
       try { wx.setStorageSync("hermes_pending_media", { tempFilePath: media.tempFilePath, size: media.size || 0, type: media.fileType || "image", createdAt: Date.now() }); } catch (_) {}
       wx.navigateTo({ url: "/pages/ai-progress/index?mode=photo" });
-    } });
-  },
-
-  openHeaderMenu() {
-    wx.showActionSheet({ itemList: ["刷新工作台", "查看全部任务", "助手偏好"], success: ({ tapIndex }) => {
-      if (tapIndex === 0) this.load();
-      if (tapIndex === 1) this.openTasks();
-      if (tapIndex === 2) wx.redirectTo({ url: "/pages/profile/index" });
     } });
   },
 

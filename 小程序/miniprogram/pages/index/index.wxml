@@ -4,7 +4,6 @@
     <view class="hermes-brand">
       <view><strong>Hermes</strong><text><i></i>在线 · 同舟供应链中心</text></view>
     </view>
-    <view class="header-actions"><view class="reset-button" bindtap="openHermesProgress">↺</view><view class="menu-button" bindtap="openHeaderMenu">•••<b></b>◎</view></view>
   </view>
 
   <scroll-view class="home-scroll" scroll-y enhanced show-scrollbar="{{false}}">

@@ -58,10 +58,6 @@ page {
 .hermes-brand strong { font-size: 32rpx; letter-spacing: 1rpx; }
 .hermes-brand text { margin-top: 4rpx; display: flex; align-items: center; gap: 10rpx; color: rgba(214, 222, 255, .65); font-size: 20rpx; }
 .hermes-brand i { width: 12rpx; height: 12rpx; background: #3ddc97; border-radius: 50%; box-shadow: 0 0 12rpx #3ddc97; animation: status-dot 2s infinite; }
-.header-actions { display: flex; align-items: center; gap: 16rpx; }
-.reset-button { width: 64rpx; height: 64rpx; display: flex; align-items: center; justify-content: center; color: #eef2ff; background: rgba(255, 255, 255, .06); border: 1rpx solid rgba(255, 255, 255, .18); border-radius: 50%; font-size: 30rpx; }
-.menu-button { height: 64rpx; padding: 0 24rpx; display: flex; align-items: center; justify-content: center; gap: 18rpx; color: #eef2ff; background: rgba(255, 255, 255, .06); border: 1rpx solid rgba(255, 255, 255, .18); border-radius: 32rpx; letter-spacing: 3rpx; }
-.menu-button b { width: 1rpx; height: 32rpx; background: rgba(255, 255, 255, .2); }
 
 .home-scroll { position: relative; z-index: 2; height: calc(100vh - 336rpx - env(safe-area-inset-bottom)); }
 .home-content { padding: 24rpx 32rpx 50rpx; }
