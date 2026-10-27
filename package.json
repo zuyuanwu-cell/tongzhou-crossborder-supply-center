@@ -63,7 +63,7 @@
     "test:wecom-routing": "node scripts/wecom-project-routing-test.mjs",
     "test:agent": "node scripts/agent-index-test.mjs",
     "test:assistant": "node scripts/ai-agent-test.mjs",
-    "test:hermes": "node scripts/hermes-test.mjs && node scripts/hermes-partner-server-wiring-test.mjs && node scripts/hermes-partner-order-hints-test.mjs",
+    "test:hermes": "node scripts/hermes-test.mjs && node scripts/hermes-partner-server-wiring-test.mjs && node scripts/hermes-partner-order-hints-test.mjs && node scripts/hermes-run-lifecycle-test.mjs",
     "test:hermes-plugin": "python -m pytest integrations/hermes/tests -q",
     "test:hermes-contract": "node scripts/hermes-contract-test.mjs",
     "test:access-control": "node scripts/access-control-test.mjs",

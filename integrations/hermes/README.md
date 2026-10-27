@@ -38,6 +38,7 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 3. 使用管理员账号打开“同舟智能体工作台 → 模型配置”，填写 DeepSeek API Key，选择模型并保存。保存前后端会连接 `https://api.deepseek.com/models` 验证密钥和模型。
 4. 核对 `config/config.yaml` 的 `custom:tongzhou` 提供商仅使用 `chat_completions`，并且只启用 API Server 和 `tongzhou-business`。
    Node 默认允许整项任务最多 32 次 `tongzhou_*` 业务工具调用，可通过 `HERMES_MAX_TOOL_CALLS` 在 12–64 之间调整；Hermes 平台内部调用不占用该预算。单个阶段达到 12 次会收口，累计 20 次会强制复盘计划，硬上限或循环检测会保存检查点并显示“继续完成”。
+   每轮“工作时间”上限由 `HERMES_RUN_TIMEOUT_MS` 控制（默认 600000，即 10 分钟，可设 1–30 分钟）；等待人工审批的时间不计入，单次审批最多等待 `HERMES_APPROVAL_TIMEOUT_MS`（默认 900000，即 15 分钟）。到点前 1 分钟会先要求模型用已有证据收尾；事件流断开会自动重连；未能启动的运行 5 分钟后自动释放，工作台的“停止”按钮也能释放卡住的运行。
 5. 运行插件和契约测试：
 
 ```powershell

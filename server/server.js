@@ -113,7 +113,7 @@ import { createSystemBackupService } from "./system-backup-service.js";
 import { initHermesIntegrationStore } from "./hermes-integration-db.js";
 import { createHermesClient } from "./hermes-client.js";
 import { createHermesToolGateway } from "./hermes-tool-gateway.js";
-import { createHermesApi } from "./hermes-api.js";
+import { createHermesApi, normalizeHermesApprovalTimeoutMs, normalizeHermesRunTimeoutMs } from "./hermes-api.js";
 import { createHermesModelGateway } from "./hermes-model-gateway.js";
 import { createHermesPartnerDraftApi } from "./hermes-partner-draft-api.js";
 import { createHermesPartnerConfigApi } from "./hermes-partner-config-api.js";
@@ -201,6 +201,8 @@ const hermesModelProvider = String(process.env.HERMES_MODEL_PROVIDER || "custom:
 const hermesModel = String(process.env.HERMES_MODEL || "deepseek-v4-pro").trim();
 const hermesPartnerModel = String(process.env.HERMES_PARTNER_MODEL || "deepseek-v4-flash").trim();
 const hermesMaxToolCalls = process.env.HERMES_MAX_TOOL_CALLS || 32;
+const hermesRunTimeoutMs = normalizeHermesRunTimeoutMs(process.env.HERMES_RUN_TIMEOUT_MS);
+const hermesApprovalTimeoutMs = normalizeHermesApprovalTimeoutMs(process.env.HERMES_APPROVAL_TIMEOUT_MS);
 const hermesDigestTeamId = String(process.env.HERMES_DIGEST_TEAM_ID || "").trim().toLowerCase();
 const domesticInventoryDbPath = resolve(process.env.DOMESTIC_INVENTORY_DB_PATH || resolve(cacheDir, "domestic-inventory.sqlite"));
 const businessChainDbPath = resolve(process.env.BUSINESS_CHAIN_DB_PATH || resolve(cacheDir, "business-chain.sqlite"));
@@ -8202,6 +8204,8 @@ const hermesApi = createHermesApi({
   model: hermesModel,
   resolveRuntimeConfig: () => hermesModelGateway.runtimeConfig(),
   maxToolCalls: hermesMaxToolCalls,
+  runTimeoutMs: hermesRunTimeoutMs,
+  approvalTimeoutMs: hermesApprovalTimeoutMs,
   store: hermesIntegrationStore,
   client: hermesClient,
   getAuth,

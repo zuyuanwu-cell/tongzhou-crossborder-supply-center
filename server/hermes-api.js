@@ -99,6 +99,35 @@ export function normalizeHermesToolCallLimit(value) {
   return Number.isFinite(parsed) ? Math.max(12, Math.min(64, Math.trunc(parsed))) : 32;
 }
 
+export const DEFAULT_HERMES_RUN_TIMEOUT_MS = 600_000;
+export const DEFAULT_HERMES_APPROVAL_TIMEOUT_MS = 900_000;
+// A run that never received a Hermes run id (for example because Node restarted
+// between recording it locally and submitting it) is released after this long.
+export const HERMES_STALE_START_MS = 300_000;
+const HERMES_SYNTHESIS_LEAD_MS = 60_000;
+const HERMES_RESUME_GRACE_MS = 60_000;
+
+function clampDuration(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+// Active working time per run (time spent waiting for a human approval is not counted).
+export function normalizeHermesRunTimeoutMs(value) {
+  return clampDuration(value, DEFAULT_HERMES_RUN_TIMEOUT_MS, 60_000, 1_800_000);
+}
+
+// How long a single pending approval may wait before the run is stopped.
+export function normalizeHermesApprovalTimeoutMs(value) {
+  return clampDuration(value, DEFAULT_HERMES_APPROVAL_TIMEOUT_MS, 60_000, 3_600_000);
+}
+
+function minutesLabel(ms) {
+  const minutes = ms / 60_000;
+  return Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
+}
+
 export function hermesRunInstructions(context, { maxToolCalls = 32 } = {}) {
   const hardLimit = normalizeHermesToolCallLimit(maxToolCalls);
   const synthesisLimit = Math.max(8, hardLimit - 8);
@@ -129,7 +158,8 @@ export function createHermesApi({
   resolveRuntimeConfig,
   maxGlobalRuns = 4,
   maxToolCalls = 32,
-  runTimeoutMs = 180_000,
+  runTimeoutMs = DEFAULT_HERMES_RUN_TIMEOUT_MS,
+  approvalTimeoutMs = DEFAULT_HERMES_APPROVAL_TIMEOUT_MS,
   store,
   client,
   getAuth,
@@ -143,7 +173,35 @@ export function createHermesApi({
   const mirrors = new Map();
   const toolCallLimit = normalizeHermesToolCallLimit(maxToolCalls);
   const synthesisToolCallLimit = Math.max(8, toolCallLimit - 8);
+  // Values are used as given so lifecycle tests can use short budgets; server.js
+  // normalizes environment input before constructing the API.
+  const activeRunTimeoutMs = Number(runTimeoutMs) > 0 ? Number(runTimeoutMs) : DEFAULT_HERMES_RUN_TIMEOUT_MS;
+  const pendingApprovalTimeoutMs = Number(approvalTimeoutMs) > 0 ? Number(approvalTimeoutMs) : DEFAULT_HERMES_APPROVAL_TIMEOUT_MS;
   let statusCache = { at: 0, value: null };
+
+  function stopReasonMessage(reason) {
+    if (reason === "timeout") {
+      return `本轮分析已持续工作超过 ${minutesLabel(activeRunTimeoutMs)} 分钟上限，已自动停止。请缩小问题范围（例如指定仓库、项目或 SKU）后重新提问。`;
+    }
+    if (reason === "approval_timeout") {
+      return `等待审批超过 ${minutesLabel(pendingApprovalTimeoutMs)} 分钟，本轮已自动停止，待审批的动作没有执行。`;
+    }
+    return "";
+  }
+
+  // Releases runs that can never finish so the user is not blocked by
+  // "已有运行中的任务" after a restart or a failed remote submission.
+  function reconcileStaleRuns() {
+    const nowMs = Date.now();
+    for (const item of store.listActiveRuns() || []) {
+      if (item.hermesRunId) continue;
+      const createdMs = Date.parse(item.createdAt || "");
+      if (!Number.isFinite(createdMs) || nowMs - createdMs < HERMES_STALE_START_MS) continue;
+      const message = "本轮运行未能成功启动（可能因服务重启中断），已自动结束，请重新提问。";
+      persistNormalizedEvent(item, { type: "run.failed", message });
+      store.updateRun(item.id, { status: "failed", error: message, completedAt: new Date(nowMs).toISOString() });
+    }
+  }
 
   function runtimeConfig() {
     const resolved = typeof resolveRuntimeConfig === "function" ? (resolveRuntimeConfig() || {}) : {};
@@ -160,6 +218,7 @@ export function createHermesApi({
     if (!enabled) value = { ok: true, enabled: false, status: "disabled", patrol: patrol.status() };
     else if (statusCache.value && Date.now() - statusCache.at < 30_000) value = statusCache.value;
     else {
+      reconcileStaleRuns();
       for (const activeRun of store.listActiveRuns()) startMirror(activeRun);
       const runtime = await client.health();
       statusCache = {
@@ -217,7 +276,7 @@ export function createHermesApi({
     return evidence;
   }
 
-  async function finishFromStatus(localRun, status) {
+  async function finishFromStatus(localRun, status, { stopMessage = "" } = {}) {
     const terminal = text(status?.status);
     if (!TERMINAL_RUN_STATUSES.has(terminal)) return false;
     if (terminal === "completed") {
@@ -242,26 +301,103 @@ export function createHermesApi({
       });
       return true;
     }
+    if (stopMessage) {
+      persistNormalizedEvent(localRun, { type: "run.failed", message: stopMessage });
+      store.updateRun(localRun.id, { status: "failed", error: stopMessage, completedAt: new Date().toISOString() });
+      return true;
+    }
     const publicType = terminal === "failed" ? "run.failed" : "run.cancelled";
     persistNormalizedEvent(localRun, { type: publicType, message: text(status.error) || (publicType === "run.failed" ? "Hermes 运行失败。" : "运行已取消。") });
     store.updateRun(localRun.id, { status: terminal, error: text(status.error), completedAt: new Date().toISOString() });
     return true;
   }
 
+  // Tracks a run's active working-time budget. Human approval pauses that budget
+  // and is governed by its own timeout so a slow approver does not kill the run.
+  function createRunBudget(localRun, { onSynthesis, onExpire }) {
+    const startedAt = Date.parse(localRun.startedAt || localRun.createdAt || "");
+    const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : 0;
+    // After a process restart, elapsed wall time can include an approval wait that
+    // was not persisted separately. Give the resumed run a bounded grace window.
+    let remainingMs = Math.max(Math.min(HERMES_RESUME_GRACE_MS, activeRunTimeoutMs), activeRunTimeoutMs - elapsedMs);
+    let deadline = 0;
+    let runTimer = null;
+    let synthesisTimer = null;
+    let approvalTimer = null;
+    let paused = false;
+    let finished = false;
+    const unref = (timer) => { timer?.unref?.(); return timer; };
+    const clearActive = () => {
+      clearTimeout(runTimer);
+      clearTimeout(synthesisTimer);
+      runTimer = null;
+      synthesisTimer = null;
+    };
+    const schedule = () => {
+      clearActive();
+      deadline = Date.now() + remainingMs;
+      runTimer = unref(setTimeout(() => { if (!finished) onExpire("timeout"); }, remainingMs));
+      const synthesisAt = remainingMs - HERMES_SYNTHESIS_LEAD_MS;
+      if (synthesisAt > 0 && remainingMs > HERMES_SYNTHESIS_LEAD_MS * 1.5) {
+        synthesisTimer = unref(setTimeout(() => { if (!finished && !paused) onSynthesis(); }, synthesisAt));
+      }
+    };
+    return {
+      start(initiallyPaused = false) {
+        if (initiallyPaused) {
+          paused = true;
+          approvalTimer = unref(setTimeout(() => { if (!finished) onExpire("approval_timeout"); }, pendingApprovalTimeoutMs));
+        } else schedule();
+      },
+      pause() {
+        if (paused || finished) return;
+        paused = true;
+        remainingMs = Math.max(1_000, deadline - Date.now());
+        clearActive();
+        approvalTimer = unref(setTimeout(() => { if (!finished) onExpire("approval_timeout"); }, pendingApprovalTimeoutMs));
+      },
+      resume() {
+        if (!paused || finished) return;
+        paused = false;
+        clearTimeout(approvalTimer);
+        approvalTimer = null;
+        schedule();
+      },
+      get paused() { return paused; },
+      stop() {
+        finished = true;
+        clearActive();
+        clearTimeout(approvalTimer);
+      },
+    };
+  }
+
+  const STREAM_RECONNECT_ATTEMPTS = 5;
+
   function startMirror(localRun) {
     if (!localRun?.hermesRunId || mirrors.has(localRun.id) || TERMINAL_RUN_STATUSES.has(localRun.status)) return;
     const task = Promise.resolve().then(async () => {
-      const startedAt = Date.parse(localRun.startedAt || localRun.createdAt || "");
-      const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : 0;
-      const remainingMs = Math.max(1_000, runTimeoutMs - elapsedMs);
-      const timeout = setTimeout(() => { void client.stop(localRun.hermesRunId).catch(() => {}); }, remainingMs);
-      timeout?.unref?.();
       let terminalSeen = false;
+      let stopReason = "";
       let observedToolStarts = 0;
       let observedBusinessToolStarts = (store.listToolEvents(localRun.id, localRun.userId, 0) || [])
         .filter((event) => event.type === "tool.started" && isHermesBusinessTool(event.tool))
         .length;
       let synthesisSteered = false;
+      const steerToSynthesis = async (message) => {
+        if (synthesisSteered) return;
+        synthesisSteered = true;
+        try { await client.steer?.(localRun.hermesRunId, message); } catch { /* best effort */ }
+      };
+      const budget = createRunBudget(localRun, {
+        onSynthesis: () => {
+          void steerToSynthesis("本轮可用时间即将用完。立即停止扩展查询，不再调用任何工具，使用已取得的证据完成当前任务；无法核实的部分明确标注。");
+        },
+        onExpire: (reason) => {
+          stopReason = reason;
+          void client.stop(localRun.hermesRunId).catch(() => {});
+        },
+      });
       const activeToolCalls = new Map();
       const nextCorrelatedToolCallId = (rawEvent, rawType) => {
         if (rawType === "approval.request") return approvalToolCallId(rawEvent);
@@ -282,37 +418,41 @@ export function createHermesApi({
         }
         return "";
       };
-      try {
-        store.updateRun(localRun.id, { status: "running", startedAt: localRun.startedAt || new Date().toISOString() });
+
+      const streamProgress = { events: 0 };
+      async function consumeStream() {
         const response = await client.events(localRun.hermesRunId, {
           lastEventId: String(store.lastToolEventSequence(localRun.id, localRun.userId) || ""),
         });
         for await (const rawEvent of parseSseStream(response)) {
+          streamProgress.events += 1;
           const rawType = hermesEventType(rawEvent);
           const remoteSequence = Number(rawEvent?.data?.seq || rawEvent?.id || 0) || undefined;
-          const normalized = normalizeHermesEvent(rawEvent, {
+          let normalized = normalizeHermesEvent(rawEvent, {
             runId: localRun.id,
             toolCallId: nextCorrelatedToolCallId(rawEvent, rawType),
             proposalForToolCall: (toolCallId) => store.getActionProposalByToolCall(toolCallId),
           });
           if (!normalized) continue;
+          if (normalized.type === "approval.required") budget.pause();
+          else if (budget.paused && !["run.completed", "run.failed", "run.cancelled"].includes(normalized.type)) {
+            budget.resume();
+            const current = store.getRun(localRun.id, localRun.userId);
+            if (current?.status === "waiting_for_approval") store.updateRun(localRun.id, { status: "running" });
+          }
           if (normalized.type === "tool.started") {
             observedToolStarts += 1;
             const persisted = persistNormalizedEvent(localRun, normalized, remoteSequence);
             if (!persisted?.idempotentReplay && isHermesBusinessTool(normalized.tool)) observedBusinessToolStarts += 1;
-            if (!synthesisSteered && observedBusinessToolStarts >= synthesisToolCallLimit) {
-              synthesisSteered = true;
-              await client.steer?.(
-                localRun.hermesRunId,
-                `你已使用 ${observedBusinessToolStarts} 次同舟业务工具。立即停止扩展查询，不再调用任何工具，使用已取得的证据完成当前任务；无法核实的部分明确标注。`,
-              ).catch(() => {});
+            if (observedBusinessToolStarts >= synthesisToolCallLimit) {
+              await steerToSynthesis(`你已使用 ${observedBusinessToolStarts} 次同舟业务工具。立即停止扩展查询，不再调用任何工具，使用已取得的证据完成当前任务；无法核实的部分明确标注。`);
             }
             if (observedBusinessToolStarts > toolCallLimit) {
               await client.stop(localRun.hermesRunId).catch(() => {});
               persistNormalizedEvent(localRun, { type: "run.failed", message: `本轮已超过 ${toolCallLimit} 次同舟业务工具安全上限，运行已停止。请缩小查询范围后重试。` });
               store.updateRun(localRun.id, { status: "failed", error: "tool_call_limit_exceeded", completedAt: new Date().toISOString() });
               terminalSeen = true;
-              break;
+              return;
             }
             if (persisted?.idempotentReplay) continue;
           }
@@ -345,25 +485,55 @@ export function createHermesApi({
             });
             terminalSeen = true;
           } else if (["run.failed", "run.cancelled"].includes(normalized.type)) {
+            if (stopReason) normalized = { type: "run.failed", message: stopReasonMessage(stopReason) };
             store.updateRun(localRun.id, { status: normalized.type === "run.failed" ? "failed" : "cancelled", error: normalized.message, completedAt: new Date().toISOString() });
             terminalSeen = true;
           }
           if (normalized.type !== "tool.started") persistNormalizedEvent(localRun, normalized, remoteSequence);
+          if (terminalSeen) return;
         }
-        if (!terminalSeen) {
-          const status = await client.getRun(localRun.hermesRunId);
-          terminalSeen = await finishFromStatus(localRun, status);
-          if (!terminalSeen) throw fail("Hermes event stream ended before the run became terminal.", 502, "stream_ended");
+      }
+
+      try {
+        const initial = store.getRun(localRun.id, localRun.userId) || localRun;
+        const waitingForApproval = initial.status === "waiting_for_approval";
+        if (!waitingForApproval) store.updateRun(localRun.id, { status: "running", startedAt: localRun.startedAt || new Date().toISOString() });
+        budget.start(waitingForApproval);
+        // A dropped SSE connection does not mean the remote run failed. Query the
+        // authoritative status and reconnect from the last stored event sequence.
+        let attempts = 0;
+        while (!terminalSeen) {
+          let streamError = null;
+          const streamStartedAt = Date.now();
+          streamProgress.events = 0;
+          try {
+            await consumeStream();
+          } catch (caught) {
+            streamError = caught;
+          }
+          if (streamProgress.events > 0 || Date.now() - streamStartedAt > 30_000) attempts = 0;
+          if (terminalSeen) break;
+          let status = null;
+          try { status = await client.getRun(localRun.hermesRunId); } catch (caught) { streamError = streamError || caught; }
+          if (status && await finishFromStatus(localRun, status, { stopMessage: stopReasonMessage(stopReason) })) {
+            terminalSeen = true;
+            break;
+          }
+          attempts += 1;
+          if (attempts > STREAM_RECONNECT_ATTEMPTS) {
+            throw streamError || fail("Hermes 事件流多次中断，且运行仍未结束。", 502, "stream_ended");
+          }
+          await new Promise((resolve) => setTimeout(resolve, Math.min(10_000, 1_000 * attempts)));
         }
       } catch (caught) {
         const current = store.getRun(localRun.id, localRun.userId);
         if (!TERMINAL_RUN_STATUSES.has(current?.status)) {
-          const message = caught?.message || "Hermes 事件流异常。";
+          const message = stopReasonMessage(stopReason) || caught?.message || "Hermes 事件流异常。";
           persistNormalizedEvent(localRun, { type: "run.failed", message });
           store.updateRun(localRun.id, { status: "failed", error: message, completedAt: new Date().toISOString() });
         }
       } finally {
-        clearTimeout(timeout);
+        budget.stop();
       }
     }).finally(() => mirrors.delete(localRun.id));
     mirrors.set(localRun.id, task);
@@ -408,6 +578,7 @@ export function createHermesApi({
         return true;
       }
       if (url.pathname === "/api/hermes/conversations" && req.method === "GET") {
+        reconcileStaleRuns();
         const activeRun = store.activeRunForUser(userId);
         if (activeRun) startMirror(activeRun);
         sendJson(res, 200, { ok: true, conversations: store.listConversations(userId).map(publicConversation), activeRun: publicRun(activeRun) });
@@ -438,7 +609,8 @@ export function createHermesApi({
         const conversationId = decodeURIComponent(match[1]);
         const conversation = store.getConversation(conversationId, userId);
         if (!conversation) throw fail("会话不存在。", 404, "conversation_not_found");
-        if (store.activeRunForUser(userId)) throw fail("当前用户已有运行中的任务。", 429, "user_run_limit");
+        reconcileStaleRuns();
+        if (store.activeRunForUser(userId)) throw fail("当前用户已有运行中的任务。请等待它结束，或先点击“停止”。", 429, "user_run_limit");
         if (store.countActiveRuns() >= maxGlobalRuns) throw fail("当前智能体运行数已达上限，请稍后重试。", 429, "global_run_limit");
         const payload = await parseRequestBody(req, 64 * 1024);
         const input = text(payload.input);
@@ -465,12 +637,23 @@ export function createHermesApi({
             instructions: hermesRunInstructions(context, { maxToolCalls: toolCallLimit }),
             idempotencyKey,
           });
+          const latest = store.getRun(localRun.id, userId);
+          if (TERMINAL_RUN_STATUSES.has(latest?.status)) {
+            // The user stopped this run while it was being submitted; do not revive it.
+            await client.stop(remote.run_id).catch(() => {});
+            store.updateRun(localRun.id, { hermesRunId: remote.run_id });
+            sendJson(res, 200, { ok: true, run: publicRun(store.getRun(localRun.id, userId)) });
+            return true;
+          }
           const started = store.updateRun(localRun.id, { hermesRunId: remote.run_id, status: "running", startedAt: new Date().toISOString() });
           startMirror(started);
           appendActionLog(auth, "发起 Hermes 运行", "hermes_run", started.id, { conversationId, model: configuredRuntime.model });
           sendJson(res, 202, { ok: true, run: publicRun(started) });
         } catch (caught) {
-          store.updateRun(localRun.id, { status: "failed", error: caught?.message || "Hermes unavailable", completedAt: new Date().toISOString() });
+          const latest = store.getRun(localRun.id, userId);
+          if (!TERMINAL_RUN_STATUSES.has(latest?.status)) {
+            store.updateRun(localRun.id, { status: "failed", error: caught?.message || "Hermes unavailable", completedAt: new Date().toISOString() });
+          }
           throw caught;
         }
         return true;
@@ -487,13 +670,39 @@ export function createHermesApi({
       match = url.pathname.match(/^\/api\/hermes\/runs\/([^/]+)\/(approval|stop)$/);
       if (match && req.method === "POST") {
         const run = store.getRun(decodeURIComponent(match[1]), userId);
-        if (!run || !run.hermesRunId) throw fail("运行不存在。", 404, "run_not_found");
+        if (!run) throw fail("运行不存在。", 404, "run_not_found");
         if (match[2] === "stop") {
-          const result = await client.stop(run.hermesRunId);
+          if (TERMINAL_RUN_STATUSES.has(run.status)) {
+            sendJson(res, 200, { ok: true, status: run.status });
+            return true;
+          }
+          const releaseLocally = (message) => {
+            persistNormalizedEvent(run, { type: "run.cancelled", message });
+            store.updateRun(run.id, { status: "cancelled", error: message, completedAt: new Date().toISOString() });
+            sendJson(res, 200, { ok: true, status: "cancelled" });
+          };
+          // A run that never reached Hermes (or that Hermes no longer knows) can only
+          // be released locally; otherwise it permanently blocks the user's next run.
+          if (!run.hermesRunId) {
+            releaseLocally("运行已停止。");
+            return true;
+          }
+          let result;
+          try {
+            result = await client.stop(run.hermesRunId);
+          } catch (caught) {
+            if (Number(caught?.statusCode) === 404) {
+              releaseLocally("运行已停止（Hermes 中已不存在该运行）。");
+              return true;
+            }
+            throw caught;
+          }
           store.updateRun(run.id, { status: "stopping" });
+          startMirror(store.getRun(run.id, userId));
           sendJson(res, 202, { ok: true, status: result.status || "stopping" });
           return true;
         }
+        if (!run.hermesRunId) throw fail("运行尚未启动，暂时无法审批。", 409, "run_not_started");
         if (!hasPermission(auth, "hermes_agent_action")) throw fail("当前账号没有智能体动作审批权限。", 403, "hermes_action_permission_required");
         const payload = await parseRequestBody(req, 16 * 1024);
         const choice = payload.choice === "once" ? "once" : payload.choice === "deny" ? "deny" : "";
