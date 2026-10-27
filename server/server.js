@@ -115,6 +115,7 @@ import { createHermesClient } from "./hermes-client.js";
 import { createHermesToolGateway } from "./hermes-tool-gateway.js";
 import { createHermesApi } from "./hermes-api.js";
 import { createHermesModelGateway } from "./hermes-model-gateway.js";
+import { createHermesPartnerDraftApi } from "./hermes-partner-draft-api.js";
 import { createHermesPartnerConfigApi } from "./hermes-partner-config-api.js";
 import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
 
@@ -189,8 +190,12 @@ const hermesAgentEnabled = process.env.HERMES_AGENT_ENABLED === "true";
 const hermesPatrolEnabled = process.env.HERMES_PATROL_ENABLED === "true";
 const hermesBaseUrl = String(process.env.HERMES_BASE_URL || "http://hermes:8642").trim();
 const hermesApiKey = String(process.env.HERMES_API_KEY || "").trim();
+const hermesPartnerBaseUrl = String(process.env.HERMES_PARTNER_BASE_URL || `${hermesBaseUrl.replace(/\/+$/, "")}/p/tongzhou-partner-progress`).trim();
+const hermesPartnerApiKey = String(process.env.HERMES_PARTNER_API_KEY || "").trim();
 const hermesBridgeSecret = String(process.env.HERMES_BRIDGE_SECRET || "").trim();
+const hermesPartnerBridgeSecret = String(process.env.HERMES_PARTNER_BRIDGE_SECRET || hermesBridgeSecret).trim();
 const hermesModelProxyKey = String(process.env.HERMES_MODEL_PROXY_KEY || "").trim();
+const hermesPartnerModelProxyKey = String(process.env.HERMES_PARTNER_MODEL_PROXY_KEY || "").trim();
 const hermesModelProvider = String(process.env.HERMES_MODEL_PROVIDER || "custom:tongzhou").trim();
 const hermesModel = String(process.env.HERMES_MODEL || "deepseek-v4-pro").trim();
 const hermesMaxToolCalls = process.env.HERMES_MAX_TOOL_CALLS || 32;
@@ -263,6 +268,7 @@ const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanc
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const hermesIntegrationStore = await initHermesIntegrationStore(hermesIntegrationDbPath);
 const hermesClient = createHermesClient({ baseUrl: hermesBaseUrl, apiKey: hermesApiKey });
+const hermesPartnerClient = createHermesClient({ baseUrl: hermesPartnerBaseUrl, apiKey: hermesPartnerApiKey, requestTimeoutMs: 30_000 });
 const domesticInventoryStore = await initDomesticInventoryStore(domesticInventoryDbPath);
 const domesticInventoryService = createDomesticInventoryService(domesticInventoryStore);
 const stockupInventoryContext = (context = {}) => ({ ...domesticInventoryContextForAuth(context.auth), warehouseIds: [], countries: [] });
@@ -397,6 +403,7 @@ const hermesModelGateway = createHermesModelGateway({
   cacheDir,
   encryptionSecret: canvasCredentialSecret,
   proxySecret: hermesModelProxyKey,
+  partnerProxySecret: hermesPartnerModelProxyKey,
   defaultModel: hermesModel,
   fetchImpl: globalThis.fetch,
   getAuth,
@@ -1101,11 +1108,17 @@ function assertSecureRuntimeConfig() {
   if (hermesAgentEnabled && hermesApiKey.length < 16) {
     throw new Error("Refusing to enable Hermes: HERMES_API_KEY must contain at least 16 characters.");
   }
+  if (hermesPartnerApiKey && (hermesPartnerApiKey.length < 16 || hermesPartnerApiKey === hermesApiKey)) {
+    throw new Error("Refusing to configure the Hermes partner profile: HERMES_PARTNER_API_KEY must be at least 16 characters and different from HERMES_API_KEY.");
+  }
   if (hermesAgentEnabled && hermesBridgeSecret.length < 32) {
     throw new Error("Refusing to enable Hermes: HERMES_BRIDGE_SECRET must contain at least 32 characters.");
   }
   if (hermesAgentEnabled && hermesModelProxyKey.length < 32) {
     throw new Error("Refusing to enable Hermes: HERMES_MODEL_PROXY_KEY must contain at least 32 characters.");
+  }
+  if (hermesPartnerApiKey && (hermesPartnerModelProxyKey.length < 32 || hermesPartnerModelProxyKey === hermesModelProxyKey)) {
+    throw new Error("Refusing to configure the Hermes partner profile: HERMES_PARTNER_MODEL_PROXY_KEY must be at least 32 characters and different from HERMES_MODEL_PROXY_KEY.");
   }
 }
 
@@ -8064,6 +8077,14 @@ const hermesToolGateway = createHermesToolGateway({
   appendActionLog,
 });
 
+const hermesPartnerDraftApi = createHermesPartnerDraftApi({
+  store: hermesIntegrationStore,
+  client: hermesPartnerClient,
+  bridgeSecret: hermesPartnerBridgeSecret,
+  resolveRuntimeConfig: () => hermesModelGateway.runtimeConfig(),
+  sendJson,
+});
+
 const hermesApi = createHermesApi({
   enabled: hermesAgentEnabled,
   provider: hermesModelProvider,
@@ -8107,6 +8128,7 @@ const server = http.createServer(async (req, res) => {
     // returns a 404 for unknown routes. Keep the partner configuration handler
     // ahead of it so the admin-only extension remains reachable.
     if (await hermesPartnerConfigApi(req, res, url)) return;
+    if (await hermesPartnerDraftApi(req, res, url)) return;
     if (await hermesApi(req, res, url)) return;
 
     if (url.pathname === "/api/system-backup/status" && req.method === "GET") {
