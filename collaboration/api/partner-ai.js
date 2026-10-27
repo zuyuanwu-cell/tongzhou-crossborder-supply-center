@@ -9,6 +9,7 @@ import { z } from "zod";
 import { actionPermission, assertWorkItemPermission } from "./access.js";
 import { collaborationConfig } from "./config.js";
 import { withOrganization, withSystem } from "./db.js";
+import { jsonbParameter } from "./jsonb-parameter.js";
 import { requestPartnerProgressDraft } from "./partner-ai-bridge.js";
 import { getPartnerAiSettings, partnerAiEnabledFor, partnerAiQuickReportEnabledFor } from "./partner-ai-settings.js";
 import { recognizeShortAudio } from "./tencent-asr.js";
@@ -587,13 +588,27 @@ export async function createPartnerProgressDraft(auth, workItemId, input, option
       return (await client.query(
         `UPDATE partner_ai_drafts SET status='generated',draft_json=$2,evidence_json=$3,missing_fields=$4,warnings=$5,
           model=$6,provider=$7,usage_json=$8,latency_ms=$9 WHERE id=$1 AND user_id=$10 AND status='processing' RETURNING *`,
-        [prepared.draft.id, generated.fields, generated.evidence, generated.missingFields, generated.warnings, generated.model || "", generated.provider || "", generated.usage || {}, Number(generated.latencyMs || 0), auth.user.id],
+        [
+          prepared.draft.id,
+          jsonbParameter(generated.fields, {}),
+          jsonbParameter(generated.evidence, []),
+          jsonbParameter(generated.missingFields, []),
+          jsonbParameter(generated.warnings, []),
+          generated.model || "",
+          generated.provider || "",
+          jsonbParameter(generated.usage, {}),
+          Number(generated.latencyMs || 0),
+          auth.user.id,
+        ],
       )).rows[0];
     });
     if (!row) fail("草稿运行已失效，请重新生成。", 409, "draft_run_stale");
     return { ok: true, idempotentReplay: false, draft: draftResponse(row) };
   } catch (error) {
-    await withOrganization(auth.organization.id, (client) => client.query("UPDATE partner_ai_drafts SET status='failed',warnings=$2 WHERE id=$1", [prepared.draft.id, [String(error.code || "draft_failed")]])).catch(() => {});
+    await withOrganization(auth.organization.id, (client) => client.query(
+      "UPDATE partner_ai_drafts SET status='failed',warnings=$2 WHERE id=$1",
+      [prepared.draft.id, jsonbParameter([String(error.code || "draft_failed")], [])],
+    )).catch(() => {});
     throw error;
   }
 }
@@ -640,7 +655,7 @@ export async function linkPartnerAiDraftToCommand(client, { auth, workItemId, wo
     `UPDATE partner_ai_sessions SET state='submitted',submitted_command_id=$2,completed_at=now(),submitted_fields=$6,
        draft_modified=$7
       WHERE latest_draft_id=$1 AND organization_id=$3 AND user_id=$4 AND confirmed_work_item_id=$5`,
-    [draftId, commandId, auth.organization.id, auth.user.id, workItemId, submittedFields, draftModified],
+    [draftId, commandId, auth.organization.id, auth.user.id, workItemId, jsonbParameter(submittedFields, {}), draftModified],
   );
   return row.id;
 }
