@@ -142,6 +142,12 @@ function draftResponse(row) {
   };
 }
 
+export function partnerAiDraftReplayAction(status) {
+  if (["generated", "applied", "submitted"].includes(status)) return "return";
+  if (status === "failed") return "retry";
+  return "wait";
+}
+
 async function settingsFor(auth, mode) {
   const value = await getPartnerAiSettings();
   if (!partnerAiEnabledFor(value.config, auth.organization.id, mode)) fail("当前组织尚未开放 Hermes 快捷汇报。", 403, "partner_ai_not_enabled");
@@ -537,12 +543,20 @@ export async function createPartnerProgressDraft(auth, workItemId, input, option
       "SELECT * FROM partner_ai_drafts WHERE organization_id=$1 AND user_id=$2 AND idempotency_key=$3",
       [auth.organization.id, auth.user.id, idempotencyKey],
     )).rows[0];
+    let retryDraft = null;
     if (replay) {
       if (replay.request_hash !== hash) fail("Idempotency-Key 已用于不同请求。", 409, "idempotency_conflict");
-      if (["generated", "applied", "submitted"].includes(replay.status)) return { replay };
-      fail(replay.status === "processing" ? "该草稿正在生成，请稍候。" : "上次草稿生成失败，请重新发起。", 409, replay.status === "processing" ? "draft_in_progress" : "draft_retry_required");
+      const replayAction = partnerAiDraftReplayAction(replay.status);
+      if (replayAction === "return") return { replay };
+      if (replayAction === "wait") fail("该草稿正在生成，请稍候。", 409, "draft_in_progress");
+      retryDraft = (await client.query(
+        `UPDATE partner_ai_drafts SET status='processing',warnings='[]'::jsonb,model='',provider='',usage_json='{}'::jsonb,
+           latency_ms=0,updated_at=now() WHERE id=$1 AND status='failed' RETURNING *`,
+        [replay.id],
+      )).rows[0];
+      if (!retryDraft) fail("草稿状态已变更，请稍后重试。", 409, "draft_in_progress");
     }
-    await enforceQuota(client, auth, config, "partner_ai_drafts");
+    if (!retryDraft) await enforceQuota(client, auth, config, "partner_ai_drafts");
     let transcription = null;
     if (parsed.transcriptionId) {
       transcription = await transcriptionForUser(client, auth, workItemId, parsed.transcriptionId);
@@ -555,7 +569,7 @@ export async function createPartnerProgressDraft(auth, workItemId, input, option
         "SELECT report_type,stage,progress_percent,quantity,expected_at,note,created_at FROM partner_order_reports WHERE work_item_id=$1 AND organization_id=$2 AND report_type=$3 ORDER BY created_at DESC LIMIT 1",
         [item.id, auth.organization.id, type],
       )).rows[0] || null : null;
-    const draft = (await client.query(
+    const draft = retryDraft || (await client.query(
       `INSERT INTO partner_ai_drafts(organization_id,work_item_id,user_id,transcription_id,work_item_version,draft_type,source_type,source_text,status,idempotency_key,request_hash)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'processing',$9,$10) RETURNING *`,
       [auth.organization.id, item.id, auth.user.id, transcription?.id || null, Number(item.version), type, transcription ? "voice" : "text", parsed.text, idempotencyKey, hash],

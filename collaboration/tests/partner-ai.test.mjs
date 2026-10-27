@@ -10,7 +10,7 @@ process.env.COLLABORATION_PARTNER_AI_BRIDGE_URL = "http://partner-ai.test";
 
 const { requestPartnerProgressDraft } = await import("../api/partner-ai-bridge.js");
 const { recognizeShortAudio } = await import("../api/tencent-asr.js");
-const { validatePartnerAiAudioContent } = await import("../api/partner-ai.js");
+const { validatePartnerAiAudioContent, partnerAiDraftReplayAction } = await import("../api/partner-ai.js");
 const { jsonbParameter } = await import("../api/jsonb-parameter.js");
 
 test("partner AI JSONB values are sent as JSON documents instead of PostgreSQL array literals", () => {
@@ -19,6 +19,13 @@ test("partner AI JSONB values are sent as JSON documents instead of PostgreSQL a
   assert.equal(serialized, JSON.stringify(evidence));
   assert.deepEqual(JSON.parse(serialized), evidence);
   assert.equal(jsonbParameter(undefined, []), "[]");
+});
+
+test("a transiently failed partner draft can retry with the same idempotency key", () => {
+  assert.equal(partnerAiDraftReplayAction("failed"), "retry");
+  assert.equal(partnerAiDraftReplayAction("processing"), "wait");
+  assert.equal(partnerAiDraftReplayAction("generated"), "return");
+  assert.equal(partnerAiDraftReplayAction("submitted"), "return");
 });
 
 test("partner draft bridge signs the exact body and uses a one-time nonce", async () => {
