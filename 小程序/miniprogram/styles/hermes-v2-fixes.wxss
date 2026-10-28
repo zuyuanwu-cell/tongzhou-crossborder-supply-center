@@ -1,0 +1,163 @@
+/*
+ * Hermes V2 layout fixes and dark-theme completion (imported before readability).
+ * Dark-theme completion is for pages that were designed light and later wrapped by
+ * hermes-v2-business.wxss. Without this, values such as order numbers, process
+ * step names and timeline actors render dark blue on the dark glass cards.
+ * Task-detail rules are generated from pages/task-detail/index.wxss: keep them
+ * in sync when that file gains new light-theme colors.
+ */
+
+/* Fixed-height buttons: app.wxss sets line-height 1.2, which pins their text to the top edge. */
+.profile-page .switch-button,
+.profile-page .logout-button,
+.admin-action,
+.exception-submit { display: flex; align-items: center; justify-content: center; }
+
+/* Login: the main action spans the card instead of the 184px default button width. */
+.login-page .login-button { width: 100%; }
+
+/* Task list: filter chips must not shrink and wrap inside the horizontal scroller. */
+.tasks-page .type-filter,
+.tasks-page .filter-chip { flex-shrink: 0; white-space: nowrap; }
+
+/* Warehouse operation: the scan button had no style and fell back to the 184px default button. */
+.operation-page .product-picker-row { align-items: stretch; }
+.operation-page .scan-product { flex: 0 0 132rpx; width: auto; height: 82rpx; margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; color: #8feaff; background: rgba(92, 225, 255, .1); border: 1rpx solid rgba(92, 225, 255, .28); border-radius: 13rpx; font-size: 23rpx; font-weight: 700; line-height: 1; }
+.operation-page .scan-product::after { border: 0; }
+.operation-page .add-line { width: auto; margin: 0; padding: 0; font-size: 23rpx; line-height: 1; }
+.operation-page .step-line > view { color: rgba(226, 235, 250, .7); }
+.operation-page .step-line .is-active { color: #fff; }
+.operation-page .step-line small { font-size: 21rpx; }
+
+/* Floating glass tab bar is 123rpx tall at 35rpx from the bottom: keep docked bars and the last card clear of it. */
+.assistant-page .chat-composer { bottom: calc(176rpx + env(safe-area-inset-bottom)); }
+.inventory-page .safe-banner { background: rgba(255, 255, 255, .06); border-color: rgba(92, 225, 255, .22); color: #eef2ff; }
+.inventory-page .safe-banner__title { color: #f3f6ff; }
+.inventory-page .safe-banner__copy { color: rgba(214, 222, 255, .72); }
+
+/* Task detail (generated) */
+.detail-page.detail-page .progress-line { background: rgba(255, 255, 255, .16); }
+.detail-page.detail-page .progress-dot { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .progress-item.is-done { color: #f3f6ff; }
+.detail-page.detail-page .facts-grid > view { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .facts-grid strong { color: #f3f6ff; }
+.detail-page.detail-page .ai-report-card { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-report-head > view > text { color: #b7aedf; }
+.detail-page.detail-page .ai-report-head strong { color: #f3f6ff; }
+.detail-page.detail-page .ai-report-head > text { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .ai-report-body { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-report-body > textarea { background: rgba(0, 0, 0, .22); color: #eef2ff; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-voice-button { background: rgba(36, 81, 164, 0.16); color: #a0bbec; }
+.detail-page.detail-page .ai-report-message { background: rgba(39, 99, 79, 0.16); color: #abe2d0; }
+.detail-page.detail-page .ai-report-error { background: rgba(167, 55, 45, 0.16); color: #e9a9a4; }
+.detail-page.detail-page .ai-draft { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-draft-title strong { color: #f3f6ff; }
+.detail-page.detail-page .ai-draft-title text { background: rgba(114, 83, 15, 0.16); color: #f3d79a; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-draft-note { color: #b2c4db; }
+.detail-page.detail-page .ai-evidence > view { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-evidence strong { color: #f3f6ff; }
+.detail-page.detail-page .ai-missing { background: rgba(157, 92, 19, 0.16); color: #f4c999; }
+.detail-page.detail-page .ai-warning { background: rgba(255, 255, 255, .06); }
+.detail-page.detail-page .ai-field-missing > text { color: #fac093 !important; }
+.detail-page.detail-page .ai-field-missing input,
+.detail-page.detail-page .ai-field-missing textarea,
+.detail-page.detail-page .ai-field-missing .select-field { background: rgba(0, 0, 0, .22) !important; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .ai-generic-form > strong { color: #f3f6ff; }
+.detail-page.detail-page .ai-generic-form label > text { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .ai-generic-form input,
+.detail-page.detail-page .ai-generic-form textarea { background: rgba(0, 0, 0, .22); color: #eef2ff; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .section-title strong { color: #f3f6ff; }
+.detail-page.detail-page .instruction-card { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .instruction-card > view { background: rgba(107, 80, 31, 0.16); color: #e8d0a5; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .product-cover-card { background: rgba(255, 255, 255, .06); }
+.detail-page.detail-page .product-cover-card image { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .product-cover-card strong { color: #f3f6ff; }
+.detail-page.detail-page .line-head { background: rgba(255, 255, 255, .16); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .line-image { background: rgba(36, 81, 164, 0.16); color: #a0bbec; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .line-head strong { color: #f3f6ff; }
+.detail-page.detail-page .line-fields input,
+.detail-page.detail-page .date-picker { background: rgba(0, 0, 0, .22); color: #eef2ff; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .oem-facts > view { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .oem-facts strong { color: #f3f6ff; }
+.detail-page.detail-page .form-grid input,
+.detail-page.detail-page .block-field input,
+.detail-page.detail-page .select-field { background: rgba(0, 0, 0, .22); color: #eef2ff; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .block-field textarea { background: rgba(0, 0, 0, .22); color: #eef2ff; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .record-row { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .record-row strong { color: #f3f6ff; }
+.detail-page.detail-page .milestone-row { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .milestone-main strong { color: #f3f6ff; }
+.detail-page.detail-page .milestone-actions button { background: rgba(36, 81, 164, 0.16); color: #a0bbec; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .milestone-actions button:last-child { background: rgba(167, 55, 45, 0.16); color: #e9a9a4; }
+.detail-page.detail-page .media-add { background: rgba(36, 81, 164, 0.16); color: #a0bbec; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .timeline-item { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .timeline-item::before { background: rgba(255, 255, 255, .16); }
+.detail-page.detail-page .timeline-dot { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .timeline-item strong { color: #f3f6ff; }
+.detail-page.detail-page .timeline-item text { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .source-facts strong { color: #f3f6ff; }
+.detail-page.detail-page .process-number { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .process-line { background: rgba(255, 255, 255, .16); }
+.detail-page.detail-page .process-main { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .process-main strong { color: #f3f6ff; }
+.detail-page.detail-page .process-main text { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .process-row--current .process-main text { background: rgba(36, 81, 164, 0.16); color: #a0bbec; }
+.detail-page.detail-page .process-row--blocked .process-main text { background: rgba(167, 55, 45, 0.16); color: #e9a9a4; }
+.detail-page.detail-page .first-article__head { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .first-article__head strong { color: #f3f6ff; }
+.detail-page.detail-page .read-only-pill { background: rgba(255, 255, 255, .06); color: rgba(214, 222, 255, .74); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .first-article__facts > view { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .first-article__facts strong { color: #f3f6ff; }
+.detail-page.detail-page .first-article__image { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .first-article__image text { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .bom-toggle { color: #a0bbec; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .bom-row { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .bom-row text { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .bom-row--head { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .bom-row--head text { color: #f3f6ff; }
+.detail-page.detail-page .first-article__foot { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .order-line { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .order-line__main strong { color: #f3f6ff; }
+.detail-page.detail-page .line-type-pill { background: rgba(36, 105, 88, 0.16); color: #a8e5d6; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-settlement__head { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-settlement__head strong { color: #a3eae0; }
+.detail-page.detail-page .purchase-settlement__head > text { background: rgba(23, 100, 77, 0.16); color: #a1ecd5; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-settlement__metrics > view { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-settlement__metrics strong { color: #f3f6ff; }
+.detail-page.detail-page .purchase-settlement__metrics .is-highlight { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-settlement__metrics .is-highlight strong { color: #f7b496; }
+.detail-page.detail-page .purchase-receipts { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-receipts__title { background: rgba(255, 255, 255, .06); }
+.detail-page.detail-page .purchase-receipts__title strong { color: #f3f6ff; }
+.detail-page.detail-page .purchase-receipt { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .purchase-receipt strong { color: #f3f6ff; }
+.detail-page.detail-page .purchase-settlement__foot { background: rgba(255, 255, 255, .06); color: rgba(214, 222, 255, .74); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .order-tab { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .report-lock { background: rgba(110, 90, 54, 0.16); color: #ddcdb0; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .report-history__title { color: #f3f6ff; }
+.detail-page.detail-page .report-row { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .report-row strong { color: #f3f6ff; }
+.detail-page.detail-page .sampling-route__step > view { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sampling-route__step i { background: rgba(255, 255, 255, .06); }
+.detail-page.detail-page .sampling-route__step.is-done { color: #a0bbec; }
+.detail-page.detail-page .sampling-brief > view { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sampling-brief strong { color: #f3f6ff; }
+.detail-page.detail-page .packaging-facts > view { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .packaging-facts strong { color: #aac3e3; }
+.detail-page.detail-page .sample-round { border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-round__main strong { color: #f3f6ff; }
+.detail-page.detail-page .sample-round__main > view > text { color: #a0bbec; }
+.detail-page.detail-page .sample-round__main p { color: rgba(214, 222, 255, .74); }
+.detail-page.detail-page .sample-round__main code { background: rgba(75, 59, 120, 0.16); color: #bcb0dd; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-round__main em { color: #f3d09a; }
+.detail-page.detail-page .sample-form-head strong { color: #f3f6ff; }
+.detail-page.detail-page .sample-variant { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-variant__head strong { color: #f3f6ff; }
+.detail-page.detail-page .sample-variant__head button { background: rgba(167, 55, 45, 0.16); color: #e9a9a4; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-variant .form-grid input,
+.detail-page.detail-page .packaging-variant-fields input { background: rgba(0, 0, 0, .22); }
+.detail-page.detail-page .sample-variant .block-field textarea { background: rgba(0, 0, 0, .22); }
+.detail-page.detail-page .packaging-variant-fields input { color: #eef2ff; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-files { background: rgba(138, 91, 18, 0.16); color: #f3d09a; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-files.is-ready { background: rgba(24, 115, 76, 0.16); color: #a0edcc; border-color: rgba(255, 255, 255, .12); }
+.detail-page.detail-page .sample-quote-record strong { color: #f3f6ff; }

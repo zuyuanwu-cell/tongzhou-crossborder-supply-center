@@ -11,8 +11,9 @@
 }
 .tabbar-safe--dark { background: rgba(6, 23, 48, .98); border-top-color: rgba(133,175,218,.16); box-shadow: 0 -10rpx 30rpx rgba(0,8,24,.28); }
 .tabbar-safe--dark .tabbar__item { color: #6f88a5; }.tabbar-safe--dark .tabbar__item.is-active { color: #54cce5; }.tabbar-safe--dark .nav-badge { border-color: #071a36; }
-.tabbar-safe--glass { left: 24rpx; right: 24rpx; bottom: calc(18rpx + env(safe-area-inset-bottom)); height: 112rpx; padding-bottom: 0; overflow: hidden; background: rgba(16, 22, 48, .64); border: 1rpx solid rgba(255, 255, 255, .12); border-radius: 48rpx; box-shadow: 0 24rpx 60rpx -20rpx rgba(0, 0, 0, .72), inset 0 1rpx rgba(255, 255, 255, .09); backdrop-filter: blur(48rpx); }
-.tabbar-safe--glass .tabbar__item { color: rgba(214, 222, 255, .5); }.tabbar-safe--glass .tabbar__item.is-active { color: #fff; }.tabbar-safe--glass .nav-badge { border-color: #101630; }
+.tabbar-safe--glass { left: 23rpx; right: 23rpx; bottom: calc(35rpx + env(safe-area-inset-bottom)); height: 123rpx; padding-bottom: 0; overflow: hidden; background: rgba(16, 22, 48, .64); border: 1rpx solid rgba(255, 255, 255, .12); border-radius: 48rpx; box-shadow: 0 24rpx 60rpx -20rpx rgba(0, 0, 0, .72), inset 0 1rpx rgba(255, 255, 255, .09); backdrop-filter: blur(48rpx); }
+.tabbar-safe--glass .tabbar { height: 123rpx; }
+.tabbar-safe--glass .tabbar__item { color: rgba(214, 222, 255, .5); font-size: 21rpx; }.tabbar-safe--glass .tabbar__item.is-active { color: #fff; }.tabbar-safe--glass .nav-badge { border-color: #101630; }
 .tabbar { height: 112rpx; display: flex; align-items: center; justify-content: space-around; }
 .tabbar__item { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7rpx; color: #8694a6; font-size: 20rpx; }
 .tabbar__item.is-active { color: #f45b0b; font-weight: 700; }
@@ -43,3 +44,33 @@
 .nav-icon--admin-organizations .nav-icon__shape::before,.nav-icon--admin-organizations .nav-icon__shape::after { content: ""; position: absolute; bottom: 5rpx; width: 6rpx; height: 9rpx; background: currentColor; border-radius: 2rpx 2rpx 0 0; }
 .nav-icon--admin-organizations .nav-icon__shape::before { left: 5rpx; }.nav-icon--admin-organizations .nav-icon__shape::after { right: 5rpx; }
 .nav-badge { position: absolute; top: -8rpx; right: -18rpx; min-width: 28rpx; height: 28rpx; padding: 0 6rpx; display: flex; align-items: center; justify-content: center; color: #fff; background: #f45b0b; border: 3rpx solid #fff; border-radius: 999rpx; font-size: 15rpx; font-weight: 800; }
+
+/* Hermes 首页 v2 (2026-10-28) tab icons: robot assistant, clipboard, chat bubble, person. */
+.ti-ring { width: 40rpx; height: 40rpx; border: 1.5px solid currentColor; border-radius: 50%; box-sizing: border-box; }
+.ti-bot { position: relative; width: 50rpx; height: 46rpx; display: flex; align-items: flex-end; justify-content: center; animation: ti-breathe 3s ease-in-out infinite; }
+.ti-bot__antenna { position: absolute; left: 50%; top: -2rpx; width: 3rpx; height: 10rpx; margin-left: -1.5rpx; background: #c9d2f5; }
+.ti-bot__bulb { position: absolute; top: -6rpx; left: -4rpx; width: 10rpx; height: 10rpx; border-radius: 50%; background: #ff7a3d; box-shadow: 0 0 12rpx #ff7a3d; }
+.ti-bot__head { width: 46rpx; height: 35rpx; display: flex; align-items: center; justify-content: center; border-radius: 13rpx 13rpx 15rpx 15rpx; background: linear-gradient(160deg, #e9eeff, #aeb9e8); }
+.ti-bot__visor { width: 35rpx; height: 19rpx; display: flex; align-items: center; justify-content: center; gap: 8rpx; border-radius: 10rpx; background: #0b1230; }
+.ti-bot__eye { width: 6rpx; height: 10rpx; border-radius: 4rpx; background: #5ce1ff; box-shadow: 0 0 8rpx #5ce1ff; animation: ti-blink 4.2s infinite; }
+.ti-clipboard { position: relative; width: 35rpx; height: 40rpx; padding: 0 6rpx; display: flex; flex-direction: column; justify-content: center; gap: 6rpx; border: 1.5px solid currentColor; border-radius: 8rpx; box-sizing: border-box; }
+.ti-clipboard__clip { position: absolute; top: -6rpx; left: 50%; width: 15rpx; height: 8rpx; margin-left: -7.5rpx; border: 1.5px solid currentColor; border-radius: 4rpx; background: #fff; box-sizing: border-box; }
+.ti-clipboard__row { display: flex; align-items: center; gap: 4rpx; }
+.ti-clipboard__dot { flex-shrink: 0; width: 5rpx; height: 5rpx; border-radius: 2rpx; background: currentColor; }
+.ti-clipboard__line { flex: 1; height: 1.5px; background: currentColor; }
+.ti-bubble { position: relative; width: 42rpx; height: 40rpx; }
+.ti-bubble__body { position: absolute; left: 0; top: 0; width: 42rpx; height: 31rpx; display: flex; align-items: center; justify-content: center; gap: 6rpx; border: 1.5px solid currentColor; border-radius: 13rpx; box-sizing: border-box; }
+.ti-bubble__dot { width: 5rpx; height: 5rpx; border-radius: 50%; background: currentColor; }
+.ti-bubble__tail { position: absolute; left: 10rpx; top: 24rpx; width: 11rpx; height: 11rpx; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; background: #fff; transform: rotate(45deg) skew(8deg, 8deg); box-sizing: border-box; }
+.ti-person { position: relative; width: 38rpx; height: 40rpx; }
+.ti-person__head { position: absolute; left: 10rpx; top: 0; width: 19rpx; height: 19rpx; border: 1.5px solid currentColor; border-radius: 50%; box-sizing: border-box; }
+.ti-person__body { position: absolute; left: 0; bottom: 0; width: 38rpx; height: 17rpx; border: 1.5px solid currentColor; border-bottom: 0; border-radius: 19rpx 19rpx 4rpx 4rpx; box-sizing: border-box; }
+.tabbar__item.is-active .ti-person { filter: drop-shadow(0 0 12rpx rgba(255, 122, 61, .7)); }
+.tabbar__item.is-active .ti-person__head,
+.tabbar__item.is-active .ti-person__body { border-color: transparent; background: linear-gradient(135deg, #ff6a2a, #ff9f5c); }
+.tabbar-safe--glass .ti-clipboard__clip,
+.tabbar-safe--glass .ti-bubble__tail { background: #0e1430; }
+.tabbar-safe--dark .ti-clipboard__clip,
+.tabbar-safe--dark .ti-bubble__tail { background: #061730; }
+@keyframes ti-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+@keyframes ti-blink { 0%, 42%, 46%, 88%, 92%, 100% { transform: scaleY(1); } 44%, 90% { transform: scaleY(.1); } }

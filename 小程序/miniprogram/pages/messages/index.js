@@ -31,11 +31,13 @@ Page({
     const unread = this.data.items.filter((item) => item.unread);
     if (!unread.length) return;
     wx.showLoading({ title: "正在处理" });
-    try {
-      await Promise.all(unread.map((item) => api.markNotificationRead(item.id)));
-      this.setData({ items: this.data.items.map((item) => Object.assign({}, item, { unread: false })), unread: 0 });
-      wx.showToast({ title: "已全部标记为已读" });
-    } catch (error) { wx.showToast({ title: error.message || "操作失败", icon: "none" }); }
-    finally { wx.hideLoading(); }
+    // hideLoading also closes any toast, so it must run before the result toast is shown.
+    const results = await Promise.all(unread.map((item) => api.markNotificationRead(item.id).then(() => item.id, () => null)));
+    wx.hideLoading();
+    const done = new Set(results.filter(Boolean));
+    const items = this.data.items.map((item) => (done.has(item.id) ? Object.assign({}, item, { unread: false }) : item));
+    this.setData({ items, unread: items.filter((item) => item.unread).length });
+    if (done.size === unread.length) wx.showToast({ title: "已全部标记为已读" });
+    else wx.showToast({ title: `${unread.length - done.size} 条没标记成功，请稍后再试`, icon: "none" });
   }
 });

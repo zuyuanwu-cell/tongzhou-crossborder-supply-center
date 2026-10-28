@@ -2,7 +2,7 @@
   <view class="aurora aurora--a"></view><view class="aurora aurora--b"></view><view class="grid-noise"></view>
   <view class="assistant-header" style="padding-top: {{statusBarHeight}}px">
     <view class="back-button" bindtap="goBack">‹</view>
-    <view class="assistant-id"><view class="assistant-orb">H<view></view></view><view><strong>Hermes</strong><text>{{busy ? '正在整理…' : recording ? '正在聆听…' : '在线 · 伙伴快捷汇报'}}</text></view></view>
+    <view class="assistant-id"><view class="assistant-orb">H<view></view></view><view><strong>同舟小助理</strong><text>{{busy ? '正在整理…' : recording ? '正在聆听…' : '在线 · 伙伴快捷汇报'}}</text></view></view>
     <view class="reset-button" bindtap="resetConversation">↻</view>
   </view>
 
@@ -73,7 +73,7 @@
         </view>
       </view>
 
-      <view class="manual-entry" bindtap="openManualForm">找不到订单或 Hermes 暂不可用？<text>使用原表单 ›</text></view>
+      <view class="manual-entry" bindtap="openManualForm">找不到订单或小助理暂不可用？<text>使用原表单 ›</text></view>
       <view class="chat-spacer"></view>
     </view>
   </scroll-view>

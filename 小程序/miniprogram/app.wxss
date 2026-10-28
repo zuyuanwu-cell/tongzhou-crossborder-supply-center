@@ -1,5 +1,6 @@
 @import "./styles/hermes-v2-overrides.wxss";
 @import "./styles/hermes-v2-business.wxss";
+@import "./styles/hermes-v2-fixes.wxss";
 @import "./styles/hermes-v2-readability.wxss";
 
 page {
@@ -20,6 +21,11 @@ button {
   background: transparent;
 }
 
+/* style v2 gives every non-mini button a fixed 184px width; let layouts size buttons instead. */
+button:not([size="mini"]) {
+  width: auto;
+}
+
 button,
 input,
 textarea {
@@ -30,7 +36,7 @@ button::after { border: 0; }
 
 .page-shell {
   min-height: 100vh;
-  padding: 28rpx 28rpx calc(150rpx + env(safe-area-inset-bottom));
+  padding: 28rpx 28rpx calc(190rpx + env(safe-area-inset-bottom));
 }
 
 .page-shell--plain { padding-top: 0; }

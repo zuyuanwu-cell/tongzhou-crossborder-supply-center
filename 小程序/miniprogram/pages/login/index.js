@@ -1,6 +1,7 @@
 const api = require("../../utils/api");
 const adminApi = require("../../utils/admin-api");
 const { homeRoute } = require("../../utils/auth");
+const { windowNavMetrics } = require("../../utils/nav");
 
 Page({
   data: {
@@ -21,19 +22,23 @@ Page({
       { username: "sampling.operator", label: "打样", symbol: "样" },
     ],
     statusBarHeight: 20,
+    navHeight: 44,
   },
 
   onLoad(options) {
-    let windowInfo = {};
-    try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
-    const input = { statusBarHeight: Number(windowInfo.statusBarHeight || 20) };
+    const nav = windowNavMetrics();
+    const input = { statusBarHeight: nav.statusBarHeight, navHeight: nav.navHeight };
     if (options?.mode === "admin") Object.assign(input, { loginMode: "admin", form: { username: "", password: "" } });
     this.setData(input);
   },
 
   onShow() {
     const session = getApp().globalData.session;
-    if (session) wx.redirectTo({ url: homeRoute(session) });
+    if (session) { wx.redirectTo({ url: homeRoute(session) }); return; }
+    // Set by the API layer when a session expires, so the user knows why they are back here.
+    let notice = "";
+    try { notice = wx.getStorageSync("tz_login_notice") || ""; wx.removeStorageSync("tz_login_notice"); } catch (_) {}
+    if (notice) wx.showToast({ title: notice, icon: "none", duration: 2500 });
   },
 
   switchMode(event) {
@@ -66,6 +71,7 @@ Page({
   },
 
   async submit() {
+    if (this.data.loading) return;
     const form = this.data.form;
     const usesAccessCode = this.data.loginMode === "admin" && this.data.adminCredentialType === "access_code";
     if ((!usesAccessCode && !form.username.trim()) || !form.password) {

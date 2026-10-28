@@ -2,7 +2,15 @@
   <view class="tabbar">
     <view wx:for="{{items}}" wx:key="key" class="tabbar__item {{active === item.key ? 'is-active' : ''}}" data-item="{{item}}" bindtap="navigate">
       <view class="nav-icon nav-icon--{{item.key}}">
-        <view class="nav-icon__shape"></view>
+        <!-- Assistant: robot head when active, outline ring otherwise (Hermes 首页 v2 design). -->
+        <block wx:if="{{item.key === 'index'}}">
+          <view wx:if="{{active === item.key}}" class="ti-bot"><view class="ti-bot__antenna"><view class="ti-bot__bulb"></view></view><view class="ti-bot__head"><view class="ti-bot__visor"><view class="ti-bot__eye"></view><view class="ti-bot__eye"></view></view></view></view>
+          <view wx:else class="ti-ring"></view>
+        </block>
+        <view wx:elif="{{item.key === 'tasks'}}" class="ti-clipboard"><view class="ti-clipboard__clip"></view><view class="ti-clipboard__row"><view class="ti-clipboard__dot"></view><view class="ti-clipboard__line"></view></view><view class="ti-clipboard__row"><view class="ti-clipboard__dot"></view><view class="ti-clipboard__line"></view></view><view class="ti-clipboard__row"><view class="ti-clipboard__dot"></view><view class="ti-clipboard__line"></view></view></view>
+        <view wx:elif="{{item.key === 'messages'}}" class="ti-bubble"><view class="ti-bubble__body"><view class="ti-bubble__dot"></view><view class="ti-bubble__dot"></view><view class="ti-bubble__dot"></view></view><view class="ti-bubble__tail"></view></view>
+        <view wx:elif="{{item.key === 'profile'}}" class="ti-person"><view class="ti-person__head"></view><view class="ti-person__body"></view></view>
+        <view wx:else class="nav-icon__shape"></view>
         <view wx:if="{{item.key === 'messages' && unread > 0}}" class="nav-badge">{{unread > 99 ? '99+' : unread}}</view>
       </view>
       <text>{{item.label}}</text>

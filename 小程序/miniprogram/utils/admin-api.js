@@ -28,6 +28,7 @@ function request(path, options) {
         if (response.statusCode >= 200 && response.statusCode < 300) return resolve(payload);
         if (response.statusCode === 401 && !opts.skipAuthRedirect) {
           clearAuth();
+          try { wx.setStorageSync("tz_login_notice", "中台登录已过期，请重新登录"); } catch (_) {}
           setTimeout(() => wx.reLaunch({ url: "/pages/login/index?mode=admin" }), 0);
         }
         const error = new Error(payload.message || `请求失败（${response.statusCode}）`);
@@ -35,7 +36,7 @@ function request(path, options) {
         error.code = payload.code || "request_failed";
         reject(error);
       },
-      fail(error) { reject(new Error(error.errMsg || "中台网络连接失败，请稍后重试。")); },
+      fail(error) { reject(new Error(/timeout/i.test(String(error?.errMsg || "")) ? "中台网络超时，请检查手机信号后重试。" : "中台网络连接失败，请检查网络后重试。")); },
     });
   });
 }

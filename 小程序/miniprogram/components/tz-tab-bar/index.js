@@ -11,7 +11,7 @@ Component({
   },
   data: {
     items: [
-      { key: "index", label: "Hermes", path: "/pages/index/index" },
+      { key: "index", label: "小助理", path: "/pages/index/index" },
       { key: "tasks", label: "任务", path: "/pages/tasks/index" },
       { key: "messages", label: "消息", path: "/pages/messages/index" },
       { key: "profile", label: "我的", path: "/pages/profile/index" }
@@ -27,7 +27,7 @@ Component({
         { key: "admin-organizations", label: "伙伴", path: "/pages/admin-organizations/index" },
         { key: "profile", label: "我的", path: "/pages/profile/index" },
       ] : [
-        { key: "index", label: "Hermes", path: "/pages/index/index" },
+        { key: "index", label: "小助理", path: "/pages/index/index" },
         { key: "tasks", label: "任务", path: "/pages/tasks/index" },
         { key: "messages", label: "消息", path: "/pages/messages/index" },
         { key: "profile", label: "我的", path: "/pages/profile/index" },

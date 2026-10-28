@@ -73,6 +73,23 @@ function timeLabel(value?: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
+const organizationTypeLabel: Record<string, string> = {
+  production_factory: "生产加工厂",
+  packaging_factory: "包材厂",
+  material_supplier: "原料供应商",
+  warehouse: "协同仓库",
+  logistics_provider: "物流服务商",
+};
+
+function runtimeView(status: HermesStatus | null) {
+  if (!status) return { tone: "loading", title: "状态检查中", hint: "", canRetry: false };
+  if (status.enabled === false) return { tone: "disabled", title: "运行时未启用", hint: "服务器未开启 Hermes（HERMES_AGENT_ENABLED），请联系系统管理员。", canRetry: true };
+  if (status.modelConfigured === false) return { tone: "configuration_required", title: "DeepSeek 未配置", hint: "", canRetry: false };
+  if (status.ready) return { tone: "ready", title: "Hermes 就绪", hint: "", canRetry: false };
+  if (status.status === "incompatible") return { tone: "unavailable", title: "运行时版本不兼容", hint: `Hermes 容器缺少能力：${(status.missingCapabilities || []).join("、") || "未知"}，请按 integrations/hermes/README.md 更新镜像。`, canRetry: true };
+  return { tone: "unavailable", title: "运行时连不上", hint: "同舟服务连不上 Hermes 容器（8642 端口）。请确认容器在运行，修好后点“重新检查”。", canRetry: true };
+}
+
 function navigate(href?: string) {
   if (href?.startsWith("#")) window.location.hash = href;
 }
@@ -126,6 +143,8 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   const [partnerMessage, setPartnerMessage] = React.useState("");
   const [partnerError, setPartnerError] = React.useState("");
   const [mobilePanel, setMobilePanel] = React.useState<"cases" | "chat" | "evidence">("chat");
+  const [statusChecking, setStatusChecking] = React.useState(false);
+  const [partnerQuery, setPartnerQuery] = React.useState("");
   const streamAbortRef = React.useRef<AbortController | null>(null);
   const endRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -133,6 +152,22 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   const approval = approvals[0] || null;
   const running = Boolean(run && ["queued", "running", "waiting_for_approval", "stopping"].includes(run.status));
   const canConfigureModel = currentUser.role === "admin" && currentUser.permissions?.includes("hermes_agent_admin");
+  const runtime = runtimeView(status);
+  const canSend = Boolean(status?.enabled && status.ready !== false && status.modelConfigured !== false);
+  const sendBlockedReason = !status ? "正在检查 Hermes 状态…"
+    : status.modelConfigured === false ? "请先配置 DeepSeek API Key"
+    : !canSend ? `${runtime.title}，暂时不能发送`
+    : "";
+  const partnerSummary = React.useMemo(() => {
+    const config = partnerConfig;
+    if (!config) return null;
+    const quick = config.quickReportOrganizationIds.length;
+    if (!config.enabled) return { on: false, text: "未开启", detail: "总开关关闭：所有伙伴在小程序上都看不到 Hermes，只能手动填写。" };
+    if (!config.textEnabled && !config.voiceEnabled) return { on: false, text: "未开启", detail: "文字和语音助手都关闭了，伙伴端没有可用的 Hermes 功能。" };
+    if (!config.textEnabled) return { on: true, text: "仅语音", detail: "文字助手关闭时快捷汇报不会生效，伙伴小程序首页不会出现 Hermes 输入框。" };
+    if (!quick) return { on: true, text: "仅任务内", detail: "还没有组织开通“快捷汇报”，伙伴小程序首页不会出现 Hermes 输入框。" };
+    return { on: true, text: `${quick} 家开通`, detail: `已对 ${quick} 家组织开通快捷汇报${config.voiceEnabled && !config.asr.configured ? "；语音需要先填写腾讯云密钥" : ""}。` };
+  }, [partnerConfig]);
   const evidence = React.useMemo(() => {
     const refs = [...(selectedCase?.evidence || []), ...activities.flatMap((item) => item.evidence || []), ...messages.flatMap((item) => item.evidence || [])];
     const seen = new Set<string>();
@@ -194,9 +229,18 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
 
   React.useEffect(() => {
     const controller = new AbortController();
+    loadWorkspace(controller.signal)
+      .catch((caught) => { if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "加载工作台失败"); });
+    return () => controller.abort();
+    // Load conversations and runtime status once; changing case filters must not refetch them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
-    Promise.all([loadWorkspace(controller.signal), loadCases(controller.signal)])
-      .catch((caught) => { if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "加载工作台失败"); })
+    loadCases(controller.signal)
+      .catch((caught) => { if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "加载异常台账失败"); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [loadCases]);
@@ -228,6 +272,19 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     controller?.abort();
     if (streamAbortRef.current === controller) streamAbortRef.current = null;
   }, []);
+
+  async function refreshStatus() {
+    if (statusChecking) return;
+    setStatusChecking(true);
+    try {
+      setStatus(await fetchHermesStatus());
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "检查 Hermes 状态失败");
+    } finally {
+      setStatusChecking(false);
+    }
+  }
 
   async function selectConversation(id: string) {
     if (running || id === conversationId) return;
@@ -330,11 +387,12 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   async function submit(event?: React.FormEvent) {
     event?.preventDefault();
     const prompt = input.trim();
-    if (!prompt || running || !status?.enabled || status.ready === false) return;
+    if (!prompt || running || !canSend) return;
     setError("");
     setApprovals([]);
     setActivities([]);
     setStreamText("");
+    let optimisticId = "";
     try {
       let id = conversationId;
       if (!id) {
@@ -343,7 +401,8 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
         setConversationId(id);
         setConversations((current) => [created.conversation, ...current]);
       }
-      const optimistic: HermesMessage = { id: `local-${Date.now()}`, conversationId: id, role: "user", content: prompt, evidence: [], createdAt: new Date().toISOString() };
+      optimisticId = `local-${Date.now()}`;
+      const optimistic: HermesMessage = { id: optimisticId, conversationId: id, role: "user", content: prompt, evidence: [], createdAt: new Date().toISOString() };
       setMessages((current) => [...current, optimistic]);
       setInput("");
       const result = await startHermesRun(id, { input: prompt, context });
@@ -352,6 +411,9 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "发起智能体运行失败");
       setRun(null);
+      // The run never started: give the question back so the user doesn't have to retype it.
+      if (optimisticId) setMessages((current) => current.filter((item) => item.id !== optimisticId));
+      setInput((current) => current || prompt);
     }
   }
 
@@ -496,8 +558,8 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
         voiceEnabled: partnerDraft.voiceEnabled,
         organizationIds: partnerDraft.organizationIds,
         quickReportOrganizationIds: partnerDraft.quickReportOrganizationIds,
-        userDailyLimit: Number(partnerDraft.userDailyLimit),
-        organizationDailyLimit: Number(partnerDraft.organizationDailyLimit),
+        userDailyLimit: Math.min(500, Math.max(1, Math.round(Number(partnerDraft.userDailyLimit) || 30))),
+        organizationDailyLimit: Math.min(10000, Math.max(1, Math.round(Number(partnerDraft.organizationDailyLimit) || 300))),
         asr: {
           engine: partnerDraft.asr.engine,
           ...(partnerSecretId.trim() ? { secretId: partnerSecretId.trim() } : {}),
@@ -508,7 +570,12 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
       setPartnerDraft(result.config);
       setPartnerSecretId("");
       setPartnerSecretKey("");
-      setPartnerMessage("伙伴助手配置已保存；工作台快捷汇报只会向勾选的试点组织开放。");
+      const saved = result.config;
+      setPartnerMessage(!saved.enabled
+        ? "已保存。总开关是关闭的，伙伴端暂时看不到 Hermes。"
+        : saved.quickReportOrganizationIds.length
+          ? `已保存。${saved.quickReportOrganizationIds.length} 家组织重新进入小程序首页后即可使用快捷汇报。`
+          : "已保存。还没有组织开通快捷汇报，伙伴只能在任务详情里使用助手。");
     } catch (caught) {
       setPartnerError(caught instanceof Error ? caught.message : "保存伙伴助手配置失败");
     } finally {
@@ -526,15 +593,16 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
   return (
     <section className={`hermes-workspace mobile-${mobilePanel}`}>
       <header className="hermes-workspace-hero">
-        <div className="hermes-hero-mark"><Bot size={24} /><i /></div>
+        <div className={`hermes-hero-mark is-${runtime.tone}`}><Bot size={24} /><i /></div>
         <div><span>HERMES BUSINESS AGENT</span><h2>同舟智能体工作台</h2><p>围绕库存、备货和生产异常，由 Hermes 调用业务工具查证、归因并推动闭环。</p></div>
         <div className="hermes-hero-actions">
-          <div className={`hermes-runtime-state is-${status?.status || "loading"}`}>
-            {status?.ready ? <CheckCircle2 size={16} /> : status?.enabled === false ? <OctagonX size={16} /> : status?.modelConfigured === false ? <KeyRound size={16} /> : <LoaderCircle size={16} className={!status ? "spinning" : ""} />}
-            <span><b>{status?.enabled === false ? "运行时未启用" : status?.modelConfigured === false ? "DeepSeek 未配置" : status?.ready ? "Hermes 就绪" : status?.status === "unavailable" ? "运行时不可用" : "状态检查中"}</b><small>{status?.model || "模型未配置"}</small></span>
+          <div className={`hermes-runtime-state is-${runtime.tone}`}>
+            {runtime.tone === "ready" ? <CheckCircle2 size={16} /> : runtime.tone === "disabled" ? <OctagonX size={16} /> : runtime.tone === "configuration_required" ? <KeyRound size={16} /> : runtime.tone === "unavailable" ? <AlertTriangle size={16} /> : <LoaderCircle size={16} className="spinning" />}
+            <span><b>{runtime.title}</b><small>{status?.model || "模型未配置"}</small></span>
+            {runtime.canRetry ? <button type="button" onClick={() => void refreshStatus()} disabled={statusChecking} title="重新检查 Hermes 状态"><RefreshCw size={13} className={statusChecking ? "spinning" : ""} />重新检查</button> : null}
           </div>
           {canConfigureModel ? <button className="hermes-model-settings-button" type="button" onClick={openModelSettings}><Settings2 size={15} />模型配置</button> : null}
-          {canConfigureModel ? <button className="hermes-model-settings-button" type="button" onClick={() => void openPartnerSettings()}><MessageSquareText size={15} />伙伴助手</button> : null}
+          {canConfigureModel ? <button className="hermes-model-settings-button" type="button" onClick={() => void openPartnerSettings()} title={partnerSummary?.detail}><MessageSquareText size={15} />伙伴 Hermes{partnerSummary ? <em className={partnerSummary.on ? "is-on" : "is-off"}>{partnerSummary.text}</em> : null}</button> : null}
         </div>
       </header>
 
@@ -577,17 +645,18 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
               <i>{message.role === "assistant" ? <Bot size={16} /> : <UserRound size={16} />}</i>
               <div>{message.role === "assistant" ? <AgentMarkdown content={message.content} /> : message.content}</div>
             </article>)}
-            {activities.map((item) => <article key={item.toolCallId} className={`hermes-tool-activity is-${item.status}`}><i>{item.status === "done" ? <CheckCircle2 size={15} /> : <LoaderCircle size={15} className="spinning" />}</i><span><strong>{item.label}</strong><small>{item.summary || (item.status === "running" ? "正在从业务系统读取和核对数据…" : "已完成")}</small></span></article>)}
-            {streamText ? <article className="hermes-message assistant streaming"><i><Bot size={16} /></i><div><AgentMarkdown content={streamText} /><span className="hermes-caret" /></div></article> : null}
+            {running ? activities.map((item) => <article key={item.toolCallId} className={`hermes-tool-activity is-${item.status}`}><i>{item.status === "done" ? <CheckCircle2 size={15} /> : <LoaderCircle size={15} className="spinning" />}</i><span><strong>{item.label}</strong><small>{item.summary || (item.status === "running" ? "正在从业务系统读取和核对数据…" : "已完成")}</small></span></article>) : null}
+            {streamText ? <article className={`hermes-message assistant${running ? " streaming" : " interrupted"}`}><i><Bot size={16} /></i><div><AgentMarkdown content={streamText} />{running ? <span className="hermes-caret" /> : <small className="hermes-interrupted-note">回答没有完成，可以点“发送”让 Hermes 继续。</small>}</div></article> : null}
             {running && !streamText && !approval && !activities.some((item) => item.status === "running") ? <div className="hermes-thinking"><LoaderCircle size={16} className="spinning" />Hermes 正在分析业务数据…</div> : null}
-            {approval ? <section className="hermes-inline-approval"><header><ShieldCheck size={18} /><div><span>业务动作需要确认{approvals.length > 1 ? ` · 另有 ${approvals.length - 1} 项待确认` : ""}</span><strong>{approval.preview.title}</strong></div></header><p>{approval.preview.summary}</p><ul>{approval.preview.effects?.map((item) => <li key={item}>{item}</li>)}</ul><div>{approval.preview.warnings?.map((item) => <small key={item}><AlertTriangle size={13} />{item}</small>)}</div><label className="hermes-reauth"><span>当前账号密码</span><input type="password" autoComplete="current-password" value={approvalPassword} onChange={(event) => setApprovalPassword(event.target.value)} disabled={busyApproval} placeholder="批准前重新鉴权" /></label><footer><button className="deny" onClick={() => void decide("deny")} disabled={busyApproval}><X size={14} />拒绝</button><button className="approve" onClick={() => void decide("once")} disabled={busyApproval || !approvalPassword}>{busyApproval ? <LoaderCircle size={14} className="spinning" /> : <Play size={14} />}仅本次允许</button></footer></section> : null}
+            {approval ? <section className="hermes-inline-approval"><header><ShieldCheck size={18} /><div><span>业务动作需要确认{approvals.length > 1 ? ` · 另有 ${approvals.length - 1} 项待确认` : ""}</span><strong>{approval.preview.title}</strong></div></header><p>{approval.preview.summary}</p><ul>{approval.preview.effects?.map((item) => <li key={item}>{item}</li>)}</ul><div>{approval.preview.warnings?.map((item) => <small key={item}><AlertTriangle size={13} />{item}</small>)}</div><label className="hermes-reauth"><span>当前账号密码</span><input type="password" autoComplete="current-password" value={approvalPassword} onChange={(event) => setApprovalPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && approvalPassword) { event.preventDefault(); void decide("once"); } }} disabled={busyApproval} placeholder="输入密码后按回车即可批准" /></label><footer><button className="deny" onClick={() => void decide("deny")} disabled={busyApproval}><X size={14} />拒绝</button><button className="approve" onClick={() => void decide("once")} disabled={busyApproval || !approvalPassword}>{busyApproval ? <LoaderCircle size={14} className="spinning" /> : <Play size={14} />}仅本次允许</button></footer></section> : null}
             {error ? <div className="hermes-error"><AlertTriangle size={16} /><span>{error}</span></div> : null}
             <div ref={endRef} />
           </div>
           <form className="hermes-composer" onSubmit={submit}>
             {context.route !== "#hermes-agent" ? <div className="hermes-context-chip"><Database size={13} /><span>来自 {context.route}</span><button type="button" onClick={() => setContext({ route: "#hermes-agent" })}><X size={12} /></button></div> : null}
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} disabled={running || status?.enabled === false || status?.modelConfigured === false} rows={3} placeholder={status?.modelConfigured === false ? "请先配置 DeepSeek API Key" : "询问异常、原因、影响或下一步…"} />
-            <button type="submit" disabled={!input.trim() || running || !status?.enabled || status.ready === false || status.modelConfigured === false} aria-label="发送"><Send size={18} /></button>
+            {status && !canSend && status.modelConfigured !== false ? <div className="hermes-composer-blocked"><AlertTriangle size={14} /><span><strong>{runtime.title}，消息暂时发不出去</strong>{runtime.hint}</span>{runtime.canRetry ? <button type="button" onClick={() => void refreshStatus()} disabled={statusChecking}><RefreshCw size={13} className={statusChecking ? "spinning" : ""} />重新检查</button> : null}</div> : null}
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} disabled={running || !canSend} rows={3} placeholder={sendBlockedReason || "询问异常、原因、影响或下一步…（回车发送，Shift+回车换行）"} />
+            <button type="submit" disabled={!input.trim() || running || !canSend} aria-label="发送" title={sendBlockedReason || "发送"}><Send size={18} /></button>
             <small><ShieldCheck size={12} />所有业务写操作都需要你逐次确认</small>
           </form>
         </main>
@@ -619,16 +688,29 @@ export function HermesAgentWorkspace({ currentUser }: Props) {
         <section className="hermes-model-modal hermes-partner-modal" role="dialog" aria-modal="true" aria-labelledby="hermes-partner-title">
           <header><div><span>PARTNER ASSISTANT</span><h3 id="hermes-partner-title">伙伴 Hermes 配置</h3><p>任务内助手与工作台快捷汇报分别授权；未勾选试点组织时，快捷入口保持隐藏。</p></div><button type="button" aria-label="关闭" onClick={() => setShowPartnerConfig(false)} disabled={Boolean(partnerBusy)}><X size={17} /></button></header>
           {partnerDraft ? <>
+            {(() => {
+              const quick = partnerDraft.quickReportOrganizationIds.length;
+              const tone = !partnerDraft.enabled || (!partnerDraft.textEnabled && !partnerDraft.voiceEnabled) ? "off" : quick && partnerDraft.textEnabled ? "on" : "partial";
+              const text = tone === "off" ? "伙伴端现在看不到 Hermes。要让伙伴用上：打开“启用伙伴 Hermes”，再给加工厂勾上“快捷汇报”，最后保存。"
+                : !partnerDraft.textEnabled ? "快捷汇报依赖“文字助手”，请把它打开，否则小程序首页不会出现 Hermes 输入框。"
+                : tone === "partial" ? "伙伴只能在任务详情里用助手。给加工厂勾上“快捷汇报”，小程序首页才会出现 Hermes 输入框。"
+                : `已对 ${quick} 家组织开通快捷汇报，保存后伙伴重新进入小程序首页即可使用。`;
+              return <div className={`hermes-partner-readiness is-${tone}`}>{tone === "on" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}<span>{text}{partnerDraft.voiceEnabled && !partnerDraft.asr.configured && !partnerSecretId.trim() ? " 语音助手还需要填写下方腾讯云密钥。" : ""}</span></div>;
+            })()}
             <div className="hermes-partner-switches">
               <label><input type="checkbox" checked={partnerDraft.enabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, enabled: event.target.checked })} /><span><strong>启用伙伴 Hermes</strong><small>总开关；关闭不影响原手工表单</small></span></label>
               <label><input type="checkbox" checked={partnerDraft.textEnabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, textEnabled: event.target.checked })} /><span><strong>文字助手</strong><small>允许文字识别与逐项追问</small></span></label>
               <label><input type="checkbox" checked={partnerDraft.voiceEnabled} onChange={(event) => setPartnerDraft({ ...partnerDraft, voiceEnabled: event.target.checked })} /><span><strong>语音助手</strong><small>需腾讯云 ASR 配置有效</small></span></label>
             </div>
             <section className="hermes-partner-organizations">
-              <header><div><strong>组织授权</strong><small>快捷汇报是任务内助手白名单的子集</small></div><span>{partnerDraft.quickReportOrganizationIds.length} 家试点</span></header>
+              <header><div><strong>组织授权</strong><small>勾“快捷汇报”会自动同时勾上“任务内助手”；快捷汇报只用于生产加工厂</small></div>{partnerOrganizations.length > 6 ? <input className="hermes-partner-search" type="search" value={partnerQuery} onChange={(event) => setPartnerQuery(event.target.value)} placeholder="搜索组织名称或编码" /> : null}<span>{partnerDraft.quickReportOrganizationIds.length} 家试点</span></header>
               <div className="hermes-partner-org-head"><span>协同组织</span><span>任务内助手</span><span>快捷汇报</span></div>
               <div className="hermes-partner-org-list">
-                {partnerOrganizations.map((organization) => <label key={organization.id}><span><strong>{organization.name}</strong><small>{organization.code} · {organization.organizationType}</small></span><input type="checkbox" checked={partnerDraft.organizationIds.includes(organization.id)} onChange={() => togglePartnerOrganization(organization.id, "task")} /><input type="checkbox" checked={partnerDraft.quickReportOrganizationIds.includes(organization.id)} onChange={() => togglePartnerOrganization(organization.id, "quick")} /></label>)}
+                {partnerOrganizations.filter((organization) => { const q = partnerQuery.trim().toLowerCase(); return !q || `${organization.name} ${organization.code}`.toLowerCase().includes(q); }).map((organization) => {
+                  const quickChecked = partnerDraft.quickReportOrganizationIds.includes(organization.id);
+                  const quickAllowed = organization.organizationType === "production_factory";
+                  return <label key={organization.id}><span><strong>{organization.name}</strong><small>{organization.code} · {organizationTypeLabel[organization.organizationType] || organization.organizationType}</small></span><input type="checkbox" aria-label={`${organization.name} 任务内助手`} checked={partnerDraft.organizationIds.includes(organization.id)} onChange={() => togglePartnerOrganization(organization.id, "task")} /><input type="checkbox" aria-label={`${organization.name} 快捷汇报`} title={quickAllowed ? "在小程序首页直接说/拍订单进展" : "快捷汇报只支持生产加工厂"} disabled={!quickAllowed && !quickChecked} checked={quickChecked} onChange={() => togglePartnerOrganization(organization.id, "quick")} /></label>;
+                })}
                 {!partnerOrganizations.length ? <div className="hermes-partner-empty">没有可授权的活动组织。</div> : null}
               </div>
             </section>

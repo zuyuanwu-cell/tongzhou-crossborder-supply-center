@@ -43,6 +43,10 @@ function decorateHomeTask(item, referenceDate) {
     deadlineTone: deadline.key === "overdue" ? "danger" : deadline.key === "dueSoon" ? "warning" : "neutral",
     deadlineLabel: deadline.label,
     reportPrompt: `${payload.productName || payload.productTitle || item.title || "这个产品"}现在进度是`,
+    // Hermes V2 design: single-character tile coloured by business line.
+    tileIcon: decorated.typeIcon || String(presentation.badge || "单").slice(0, 1),
+    tileTone: ({ production_order: "orange", purchase_order: "green", sampling_task: "violet" })[item.itemType] || "cyan",
+    statusNote: progress == null ? decorated.statusLabel : `进度 ${progress}%`,
   });
 }
 
@@ -58,16 +62,35 @@ function buildPartnerHome(items, dashboard, mode, referenceDate, preferences = {
   const purchase = active.filter((item) => item.itemType === "purchase_order");
   const sampling = active.filter((item) => item.itemType === "sampling_task");
   const todayTasks = ordered.slice(0, 3).map((item) => decorateHomeTask(item, now));
+  if (mode === "warehouse") {
+    // Warehouse partners work on inbound/outbound/stockup tasks; Hermes quick reports
+    // (production milestones) do not apply, so show warehouse-relevant counts only.
+    const pending = active.filter((item) => item.status === "pending");
+    const working = active.filter((item) => ["accepted", "in_progress"].includes(item.status));
+    const waiting = active.filter((item) => ["pending_approval", "pending_sync"].includes(item.status));
+    return {
+      metrics: [
+        { key: "pending", label: "待接单", value: pending.length, tone: "orange" },
+        { key: "working", label: "处理中", value: working.length, tone: "cyan" },
+        { key: "due", label: "7 天到期", value: dueSoon.length, tone: "orange" },
+        { key: "waiting", label: "等中台确认", value: waiting.length, tone: "violet" },
+      ],
+      todayTasks,
+      suggestions: [],
+      activeCount: active.length,
+      dueSoonCount: dueSoon.length,
+    };
+  }
   const productionMode = mode === "production";
   const metrics = productionMode ? [
-    { key: "production", label: "在加工", value: production.length, tone: "cyan" },
+    { key: "production", label: "在产加工", value: production.length, tone: "cyan" },
     { key: "purchase", label: "物料采购", value: purchase.length, tone: "violet" },
-    { key: "due", label: "7天到期", value: dueSoon.length, tone: "orange" },
+    { key: "due", label: "7 天到期", value: dueSoon.length, tone: "orange" },
     { key: "exception", label: "异常", value: numberValue(dashboard?.exceptionReports), tone: "red" },
   ] : [
     { key: "purchase", label: "履约订单", value: purchase.length, tone: "cyan" },
     { key: "sampling", label: "打样任务", value: sampling.length, tone: "violet" },
-    { key: "due", label: "7天到期", value: dueSoon.length, tone: "orange" },
+    { key: "due", label: "7 天到期", value: dueSoon.length, tone: "orange" },
     { key: "exception", label: "异常", value: numberValue(dashboard?.exceptionReports), tone: "red" },
   ];
   const suggestions = productionMode ? [

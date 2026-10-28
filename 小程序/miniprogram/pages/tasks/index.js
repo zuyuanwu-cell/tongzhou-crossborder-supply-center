@@ -69,12 +69,17 @@ Page({
   openTask(event) { wx.navigateTo({ url: `/pages/task-detail/index?id=${event.currentTarget.dataset.id}` }); },
 
   async load() {
+    const token = (this._loadToken || 0) + 1;
+    this._loadToken = token;
     this.setData({ loading: true, error: "" });
     try {
       const [result, summary] = await Promise.all([
         api.fetchWorkItems({ keyword: this.data.keyword.trim(), limit: 100 }),
-        api.fetchDashboard(),
+        // The unread badge is secondary: a dashboard failure must not hide the task list.
+        api.fetchDashboard().catch(() => null),
       ]);
+      // Ignore a slower earlier response after the user has already switched filters.
+      if (token !== this._loadToken) return;
       const categoryItems = this.data.isSamplePage
         ? result.items.filter((item) => item.itemType === "sampling_task" && item.publicPayload?.sampleCategory === this.data.sampleCategory)
         : result.items.filter((item) => item.itemType !== "sampling_task");
@@ -87,11 +92,11 @@ Page({
       const typeFilters = this.data.typeFilters.map((filter) => Object.assign({}, filter, {
         count: filter.value ? categoryItems.filter((item) => item.itemType === filter.value).length : categoryItems.length,
       }));
-      this.setData({ items: visibleItems.map(decorateTask), counts, typeFilters, unread: summary.dashboard.unreadNotifications || 0 });
+      this.setData({ items: visibleItems.map(decorateTask), counts, typeFilters, unread: summary?.dashboard?.unreadNotifications || this.data.unread || 0 });
     } catch (error) {
-      this.setData({ error: error.message || "任务读取失败。" });
+      if (token === this._loadToken) this.setData({ error: error.message || "任务读取失败。" });
     } finally {
-      this.setData({ loading: false });
+      if (token === this._loadToken) this.setData({ loading: false });
     }
   }
 });

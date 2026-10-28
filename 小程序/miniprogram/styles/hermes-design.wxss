@@ -1,0 +1,52 @@
+/* Shared Hermes V2 glass tokens (Hermes 首页 v2 design). */
+.hd-page { position: relative; min-height: 100vh; overflow: hidden; color: #EEF2FF; background: #070B1A; font-family: -apple-system, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif; }
+.hd-bg { position: fixed; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.hd-blob { position: absolute; border-radius: 50%; }
+.hd-blob--blue { width: 615rpx; height: 615rpx; top: -154rpx; left: -173rpx; background: #2F4DFF; filter: blur(173rpx); opacity: .55; }
+.hd-blob--cyan { width: 500rpx; height: 500rpx; top: 577rpx; right: -212rpx; background: #00B8FF; filter: blur(173rpx); opacity: .35; }
+.hd-blob--orange { width: 462rpx; height: 462rpx; bottom: -115rpx; left: 58rpx; background: #FF6A2A; filter: blur(192rpx); opacity: .28; }
+.hd-blob--teal { width: 538rpx; height: 538rpx; top: 346rpx; left: -231rpx; background: #14C8A0; filter: blur(192rpx); opacity: .4; }
+.hd-grid { position: absolute; left: 0; top: 0; right: 0; height: 55%; opacity: .9; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 54rpx 54rpx; -webkit-mask-image: linear-gradient(180deg, #000, transparent); mask-image: linear-gradient(180deg, #000, transparent); }
+
+.hd-nav { position: fixed; z-index: 120; left: 0; top: 0; right: 0; background: linear-gradient(180deg, rgba(7,11,26,.75), rgba(7,11,26,.35)); border-bottom: 1px solid rgba(255,255,255,.08); backdrop-filter: blur(42rpx) saturate(160%); -webkit-backdrop-filter: blur(42rpx) saturate(160%); }
+.hd-nav__bar { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 15rpx; padding-left: 31rpx; box-sizing: border-box; }
+.hd-nav__bar--center { justify-content: center; }
+.hd-nav__brand { display: flex; min-width: 0; flex-direction: column; line-height: 1.25; }
+.hd-nav__title { font-size: 31rpx; font-weight: 700; letter-spacing: .5px; color: #fff; }
+.hd-nav__center { font-size: 31rpx; font-weight: 600; color: #fff; }
+.hd-nav__status { display: flex; align-items: center; gap: 10rpx; overflow: hidden; font-size: 21rpx; color: rgba(214,222,255,.65); white-space: nowrap; text-overflow: ellipsis; }
+.hd-nav__status.is-off .hd-dot { background: #FF9A66; box-shadow: 0 0 12rpx #FF9A66; }
+.hd-nav__back { position: absolute; left: 23rpx; width: 62rpx; height: 62rpx; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; background: rgba(255,255,255,.06); font-size: 38rpx; color: #EEF2FF; }
+.hd-dot { display: inline-block; flex-shrink: 0; width: 12rpx; height: 12rpx; border-radius: 50%; background: #3DDC97; box-shadow: 0 0 12rpx #3DDC97; }
+.hd-dot--cyan { width: 10rpx; height: 10rpx; background: #5CE1FF; box-shadow: 0 0 12rpx #5CE1FF; }
+.hd-icon-button { flex-shrink: 0; width: 62rpx; height: 62rpx; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; background: rgba(255,255,255,.06); font-size: 29rpx; color: #EEF2FF; }
+.hd-icon-button.is-busy { opacity: .5; }
+
+.hd-glass { border-radius: 42rpx; background: linear-gradient(160deg, rgba(255,255,255,.12), rgba(255,255,255,.04)); border: 1px solid rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 19rpx 58rpx -19rpx rgba(0,0,0,.5); backdrop-filter: blur(46rpx) saturate(160%); -webkit-backdrop-filter: blur(46rpx) saturate(160%); }
+.hd-mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+.hd-kicker { font-size: 19rpx; letter-spacing: 4rpx; color: #5CE1FF; }
+.hd-kicker--orange { color: #FF9A66; }
+.hd-count { padding: 1px 13rpx; border-radius: 15rpx; background: rgba(255,122,61,.18); color: #FF9A66; font-family: "JetBrains Mono", Menlo, monospace; font-size: 21rpx; }
+.hd-link { font-size: 23rpx; color: rgba(214,222,255,.6); }
+.hd-pill-button { flex-shrink: 0; height: 58rpx; padding: 0 25rpx; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.22); border-radius: 29rpx; background: rgba(255,255,255,.06); color: #EEF2FF; font-size: 23rpx; }
+.hd-pill-button.is-primary { border-color: transparent; background: linear-gradient(135deg, #3B5BFF, #22A6FF); color: #fff; font-weight: 600; box-shadow: 0 8rpx 27rpx -8rpx rgba(59,91,255,.8); }
+.hd-orb-mini { position: relative; flex-shrink: 0; width: 58rpx; height: 58rpx; border-radius: 50%; background: conic-gradient(#5CE1FF, #3B5BFF, #FF7A3D, #5CE1FF); }
+.hd-orb-mini__core { position: absolute; left: 6rpx; top: 6rpx; right: 6rpx; bottom: 6rpx; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #0B1230; }
+
+/* 同舟小助理 robot mascot (Hermes 首页 v2 design, 2026-10-28). */
+.hd-bot { position: relative; width: 73rpx; height: 58rpx; border-radius: 23rpx 23rpx 27rpx 27rpx; background: linear-gradient(160deg, #E9EEFF, #AEB9E8); box-shadow: inset 0 -6rpx 0 rgba(40,60,140,.25), 0 8rpx 19rpx rgba(0,0,0,.35); animation: hd-bob 3.6s ease-in-out infinite; }
+.hd-bot__antenna { position: absolute; left: 50%; top: -17rpx; width: 4rpx; height: 17rpx; margin-left: -1px; background: #C9D2F5; transform-origin: bottom center; animation: hd-antenna 1.8s ease-in-out infinite; }
+.hd-bot__bulb { position: absolute; top: -8rpx; left: -6rpx; width: 13rpx; height: 13rpx; border-radius: 50%; background: #FF7A3D; box-shadow: 0 0 15rpx #FF7A3D; }
+.hd-bot__visor { position: absolute; left: 8rpx; right: 8rpx; top: 10rpx; height: 33rpx; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 17rpx; background: linear-gradient(180deg, #0B1230, #18245A); }
+.hd-bot__eyes { display: flex; gap: 13rpx; animation: hd-look 6s ease-in-out infinite; }
+.hd-bot__eye { width: 12rpx; height: 17rpx; border-radius: 6rpx; background: #5CE1FF; box-shadow: 0 0 12rpx #5CE1FF; animation: hd-eye-blink 4.2s infinite; }
+.hd-bot__cheek { position: absolute; bottom: 6rpx; width: 10rpx; height: 6rpx; border-radius: 4rpx; background: rgba(255,122,61,.7); }
+.hd-bot__cheek--l { left: 8rpx; }
+.hd-bot__cheek--r { right: 8rpx; }
+.hd-bot-mini { width: 33rpx; height: 25rpx; display: flex; align-items: center; justify-content: center; border-radius: 8rpx 8rpx 10rpx 10rpx; background: linear-gradient(160deg, #E9EEFF, #AEB9E8); }
+.hd-bot-mini__visor { width: 25rpx; height: 13rpx; display: flex; align-items: center; justify-content: center; gap: 4rpx; border-radius: 6rpx; background: #0B1230; }
+.hd-bot-mini__eye { width: 4rpx; height: 8rpx; border-radius: 1px; background: #5CE1FF; animation: hd-eye-blink 4.2s infinite; }
+@keyframes hd-bob { 0%, 100% { transform: translateY(0) rotate(0); } 30% { transform: translateY(-6rpx) rotate(-4deg); } 65% { transform: translateY(-1px) rotate(3deg); } }
+@keyframes hd-antenna { 0%, 100% { transform: rotate(-12deg); } 50% { transform: rotate(12deg); } }
+@keyframes hd-eye-blink { 0%, 42%, 46%, 88%, 92%, 100% { transform: scaleY(1); } 44%, 90% { transform: scaleY(.1); } }
+@keyframes hd-look { 0%, 18% { transform: translateX(0); } 24%, 40% { transform: translateX(-6rpx); } 46%, 62% { transform: translateX(6rpx) translateY(-1px); } 68%, 100% { transform: translateX(0); } }

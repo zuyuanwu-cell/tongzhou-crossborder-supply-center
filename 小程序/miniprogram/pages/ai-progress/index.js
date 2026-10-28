@@ -184,7 +184,7 @@ Page({
       if (this._photoMode) this.restorePendingMedia();
       if (this._autoVoice && this.data.voiceEnabled) setTimeout(() => this.toggleRecording(), 240);
     } catch (error) {
-      this.setData({ error: error.message || "Hermes 快捷汇报暂时无法使用。" });
+      this.setData({ error: error.message || "小助理快捷汇报暂时无法使用。" });
     } finally {
       this.setData({ loading: false });
     }

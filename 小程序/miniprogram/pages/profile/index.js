@@ -4,6 +4,7 @@ const { requireSession, sessionMode } = require("../../utils/auth");
 const { roleLabel } = require("../../utils/format");
 const { getWorkspace } = require("../../utils/workspace");
 const { preferenceStorageKey, normalizePreferences, accessScopes } = require("../../utils/partner-preferences");
+const { windowNavMetrics } = require("../../utils/nav");
 
 Page({
   data: {
@@ -21,15 +22,17 @@ Page({
     assistantPreferences: { voiceFirst: true, dueReminder: true },
     accessScopes: [],
     statusBarHeight: 20,
+    navHeight: 44,
+    avatarUrl: "",
   },
 
   onShow() {
     const session = requireSession();
     if (!session) return;
-    let windowInfo = {};
-    try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
-    this.setData({ statusBarHeight: Number(windowInfo.statusBarHeight || 20) });
+    const nav = windowNavMetrics();
+    this.setData({ statusBarHeight: nav.statusBarHeight, navHeight: nav.navHeight });
     const mode = sessionMode(session);
+    this.loadAvatar(session, mode);
     if (mode === "admin") return this.showAdmin(session, true);
     const workspace = getWorkspace(session);
     const resources = workspace.resources.length ? workspace.resources : [{ name: session.organization.name, ref: session.organization.code, permissions: workspace.capabilities }];
@@ -70,9 +73,60 @@ Page({
       security: this.data.isAdmin ? "中台移动会话最长 12 小时，接口会再次校验账号状态与权限。" : "账号密码与会话安全沿用伙伴门户策略。",
       help: "如需帮助，请联系同舟供应链管理员。",
       feedback: "意见反馈入口正在接入企业微信。",
-      audit: "Hermes 代填、人工修改与正式提交都会进入协同审计记录。",
+      audit: "小助理代填、人工修改与正式提交都会进入协同审计记录。",
     };
     wx.showModal({ title: event.currentTarget.dataset.title, content: messages[key] || "功能正在完善。", showCancel: false });
+  },
+
+  // The avatar is a per-phone personal touch: it is saved in the mini program's local file
+  // storage only and is never uploaded to the collaboration server.
+  avatarStorageKey(session, mode) {
+    return `profile_avatar:${mode || "partner"}:${session?.user?.id || "anonymous"}`;
+  },
+
+  loadAvatar(session, mode) {
+    let avatarUrl = "";
+    try {
+      avatarUrl = wx.getStorageSync(this.avatarStorageKey(session, mode)) || "";
+      if (avatarUrl && wx.getFileSystemManager) wx.getFileSystemManager().accessSync(avatarUrl);
+    } catch (_) { avatarUrl = ""; }
+    this.setData({ avatarUrl });
+  },
+
+  chooseAvatar() {
+    const session = this.data.session;
+    if (!session) return;
+    wx.chooseMedia({
+      count: 1,
+      mediaType: ["image"],
+      sizeType: ["compressed"],
+      sourceType: ["album", "camera"],
+      success: (result) => {
+        const tempFilePath = result.tempFiles?.[0]?.tempFilePath;
+        if (!tempFilePath) return;
+        const previous = this.data.avatarUrl;
+        const finish = (path) => {
+          try { wx.setStorageSync(this.avatarStorageKey(session, this.data.mode), path); } catch (_) {}
+          this.setData({ avatarUrl: path });
+          if (previous && previous !== path) this.removeSavedAvatar(previous);
+          wx.showToast({ title: "头像已更新", icon: "success" });
+        };
+        const fs = wx.getFileSystemManager ? wx.getFileSystemManager() : null;
+        if (!fs) return finish(tempFilePath);
+        fs.saveFile({ tempFilePath, success: (saved) => finish(saved.savedFilePath), fail: () => wx.showToast({ title: "头像保存失败，请重试", icon: "none" }) });
+      },
+    });
+  },
+
+  resetAvatar() {
+    const previous = this.data.avatarUrl;
+    try { wx.removeStorageSync(this.avatarStorageKey(this.data.session, this.data.mode)); } catch (_) {}
+    this.setData({ avatarUrl: "" });
+    if (previous) this.removeSavedAvatar(previous);
+  },
+
+  removeSavedAvatar(path) {
+    try { wx.getFileSystemManager().removeSavedFile({ filePath: path, fail() {} }); } catch (_) {}
   },
 
   goHome() { wx.redirectTo({ url: this.data.isAdmin ? "/pages/admin/index" : "/pages/index/index" }); },
@@ -81,7 +135,9 @@ Page({
     if (this.data.isAdmin) return;
     const key = event.currentTarget.dataset.key;
     if (!['voiceFirst', 'dueReminder'].includes(key)) return;
-    const assistantPreferences = Object.assign({}, this.data.assistantPreferences, { [key]: Boolean(event.detail.value) });
+    // Works for both the native switch (detail.value) and the design's tap-to-toggle control.
+    const next = typeof event.detail?.value === "boolean" ? event.detail.value : !this.data.assistantPreferences[key];
+    const assistantPreferences = Object.assign({}, this.data.assistantPreferences, { [key]: next });
     this.setData({ assistantPreferences });
     try { wx.setStorageSync(preferenceStorageKey(this.data.session?.user?.id), assistantPreferences); } catch (_) {}
   },

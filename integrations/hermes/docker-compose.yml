@@ -62,8 +62,14 @@ services:
       # Separate identity lets Node enforce JSON-only, low-temperature partner extraction.
       HERMES_PARTNER_MODEL_PROXY_KEY: ${HERMES_PARTNER_MODEL_PROXY_KEY:?HERMES_PARTNER_MODEL_PROXY_KEY is required}
       TONGZHOU_BRIDGE_BASE_URL: ${TONGZHOU_BRIDGE_BASE_URL:-http://host.docker.internal:8787}
+    # control: internal-only private network (no route out).
+    # host_access: ordinary bridge. Docker skips port publishing for containers that only
+    # sit on internal networks, and host.docker.internal is unreachable from them, so
+    # without this second network 127.0.0.1:8642 and the model proxy/bridge on :8787
+    # both silently break. Block outbound internet with the DOCKER-USER rule in README.
     networks:
       - control
+      - host_access
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8642/health"]
       interval: 20s
@@ -79,3 +85,8 @@ networks:
   control:
     name: tongzhou-hermes-control
     internal: true
+  host_access:
+    name: tongzhou-hermes-host
+    ipam:
+      config:
+        - subnet: ${HERMES_HOST_SUBNET:-172.30.86.0/24}

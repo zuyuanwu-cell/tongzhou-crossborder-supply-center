@@ -25,11 +25,24 @@ powershell -File integrations/hermes/scripts/record-image-digest.ps1 -Image <reg
 
 `hermes` 只把 API 发布到宿主机回环地址 `127.0.0.1:8642`：
 
-- `tongzhou-hermes-control` 是唯一 Docker 私网；Hermes 不加入通用出站网络。
+- `tongzhou-hermes-control` 是内部私网（`internal: true`，没有出网路由）。
+- `tongzhou-hermes-host`（默认网段 `172.30.86.0/24`，可用 `HERMES_HOST_SUBNET` 改）是普通桥接网，只为两件事存在：让 `127.0.0.1:8642` 端口发布生效，以及让 Hermes 通过 `host.docker.internal:8787` 访问宿主机上的 Node 模型代理与业务桥接。只挂内部网时 Docker 会跳过端口发布、也到不了宿主机，表现为“Hermes 一直连不上 / 任务没响应”。
+- 禁止 Hermes 访问公网用宿主机防火墙完成（访问宿主机本身走 INPUT 链，不受影响）：
+
+  ```bash
+  sudo iptables -I DOCKER-USER -s 172.30.86.0/24 -j DROP
+  sudo iptables -I DOCKER-USER -s 172.30.86.0/24 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # 验证：第一条应失败，第二条应返回 401/404 等 HTTP 状态
+  docker exec tongzhou-hermes curl -sS -m 5 https://api.deepseek.com || echo "公网已拦截"
+  docker exec tongzhou-hermes curl -sS -m 5 -o /dev/null -w '%{http_code}\n' http://host.docker.internal:8787/api/health
+  ```
+
+  宿主机防火墙（firewalld/ufw）需要允许该网段访问 8787；`INTERNAL_API_ALLOWED_CIDRS` 默认的 `172.16.0.0/12` 已覆盖该网段。
+- 从旧版只挂内部网的配置升级时，先 `docker compose -f integrations/hermes/docker-compose.yml down` 再 `up -d`，让 Docker 重建网络。
 - 同舟 Node 由 PM2 运行时使用 `HERMES_BASE_URL=http://127.0.0.1:8642` 访问 Hermes。
 - Hermes 通过受限的宿主机回环/反向代理访问模型代理与业务桥接；不得把 Hermes API 暴露到公网。
 
-如 Node 仍由 PM2 运行，需要增加受限的 Compose override 或内部反向代理；不要把 Hermes API 暴露到公网。
+Node 由 PM2 运行在宿主机上时，以上配置即可直接使用；不要把 Hermes API 暴露到公网。
 
 ## 启动前检查
 

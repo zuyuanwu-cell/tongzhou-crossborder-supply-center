@@ -263,8 +263,10 @@ function request(path, options) {
         captureCookies(response);
         const payload = response.data || {};
         if (response.statusCode >= 200 && response.statusCode < 300) return resolve(payload);
-        if (response.statusCode === 401) {
+        // A wrong password also answers 401: stay on the login page so its error dialog is not wiped out.
+        if (response.statusCode === 401 && !opts.skipAuthRedirect) {
           clearAuth();
+          try { wx.setStorageSync("tz_login_notice", "登录已过期，请重新登录"); } catch (_) {}
           setTimeout(() => wx.reLaunch({ url: "/pages/login/index" }), 0);
         }
         const error = new Error(payload.message || `请求失败（${response.statusCode}）`);
@@ -272,9 +274,17 @@ function request(path, options) {
         error.code = payload.code || "request_failed";
         reject(error);
       },
-      fail(error) { reject(new Error(error.errMsg || "网络连接失败，请稍后重试。")); },
+      fail(error) { reject(new Error(networkErrorMessage(error))); },
     });
   });
+}
+
+function networkErrorMessage(error) {
+  const raw = String(error?.errMsg || "");
+  if (/timeout/i.test(raw)) return "网络超时，请检查手机信号后重试。";
+  if (/domain list|合法域名/i.test(raw)) return "小程序还没有把服务器地址加入合法域名，请联系管理员。";
+  if (/ssl|certificate|证书/i.test(raw)) return "服务器证书校验失败，请联系管理员。";
+  return "网络连接失败，请检查网络后重试。";
 }
 
 function login(input) {
@@ -283,7 +293,7 @@ function login(input) {
     activeDemoSession = demoSessions[username] || demoSessions["warehouse.admin"];
     return Promise.resolve({ ok: true, session: Object.assign({ mode: "partner" }, activeDemoSession) });
   }
-  return request("/collaboration/auth/login", { method: "POST", data: input }).then((result) => Object.assign({}, result, {
+  return request("/collaboration/auth/login", { method: "POST", data: input, skipAuthRedirect: true }).then((result) => Object.assign({}, result, {
     session: Object.assign({ mode: "partner" }, result.session || {}),
   }));
 }

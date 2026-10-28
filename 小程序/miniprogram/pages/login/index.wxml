@@ -1,26 +1,51 @@
-<view class="login-page {{loginMode === 'admin' ? 'login-page--admin' : ''}}">
-  <view class="login-grid"></view><view class="login-aurora login-aurora--one"></view><view class="login-aurora login-aurora--two"></view>
-  <scroll-view class="login-scroll" scroll-y enhanced show-scrollbar="{{false}}">
-    <view class="login-content" style="padding-top: {{statusBarHeight + 24}}px">
-      <view class="brand-row"><image src="/images/brand-avatar-v2.png" mode="aspectFill"/><view><strong>同舟协同</strong><text>TONGZHOU · POWERED BY HERMES</text></view></view>
+<view class="login-page hd-page {{loginMode === 'admin' ? 'login-page--admin' : ''}}">
+  <view class="hd-bg"><view class="hd-blob hd-blob--blue lg-blob-blue"></view><view class="hd-blob {{loginMode === 'admin' ? 'hd-blob--teal' : 'hd-blob--orange lg-blob-orange'}}"></view><view class="hd-grid"></view></view>
 
-      <view class="hero-copy"><view class="hero-kicker">{{loginMode === 'admin' ? 'INTERNAL CONTROL' : 'ONE TASK · ONE BOUNDARY'}}</view><view class="hero-title">{{loginMode === 'admin' ? '关键协同，\n一处看清、及时决策。' : '每一次交接，\n都清楚、准确、有回音。'}}</view><view class="hero-subtitle">{{loginMode === 'admin' ? '供应链中台移动监管与审批工作台' : 'Hermes 陪你完成订单、进度与异常反馈'}}</view></view>
-      <view class="handoff"><view><i>1</i><text>{{loginMode === 'admin' ? '跨组织总览' : '中台发布'}}</text></view><b></b><view><i>2</i><text>{{loginMode === 'admin' ? '风险聚焦' : '组织执行'}}</text></view><b></b><view><i>3</i><text>{{loginMode === 'admin' ? '审核留痕' : '凭证回传'}}</text></view></view>
+  <view class="hd-nav hd-nav--clear" style="padding-top: {{statusBarHeight}}px">
+    <view class="hd-nav__bar hd-nav__bar--center" style="height: {{navHeight}}px"><text class="hd-nav__center">{{loginMode === 'admin' ? '中台登录' : '伙伴登录'}}</text></view>
+  </view>
 
-      <view class="login-card">
-        <view class="mode-switch"><view class="{{loginMode === 'partner' ? 'is-active' : ''}}" data-mode="partner" bindtap="switchMode">伙伴登录</view><view class="{{loginMode === 'admin' ? 'is-active' : ''}}" data-mode="admin" bindtap="switchMode">中台登录</view></view>
-        <view class="card-heading"><view><text>{{loginMode === 'admin' ? 'CONTROL ACCESS' : 'PARTNER ACCESS'}}</text><strong>{{loginMode === 'admin' ? '中台登录' : '伙伴登录'}}</strong></view><view class="secure-tag"><i></i>安全连接</view></view>
-        <view class="card-copy">{{loginMode === 'admin' ? '使用中台账号进入移动监管工作台' : '使用管理员分配的账号进入组织工作区'}}</view>
-
-        <view wx:if="{{loginMode === 'admin'}}" class="credential-switch"><view class="{{adminCredentialType === 'account_password' ? 'is-active' : ''}}" data-type="account_password" bindtap="switchAdminCredential">账号密码</view><view class="{{adminCredentialType === 'access_code' ? 'is-active' : ''}}" data-type="access_code" bindtap="switchAdminCredential">访问码</view></view>
-        <view wx:if="{{demoMode && loginMode === 'partner'}}" class="demo-accounts"><view wx:for="{{demoAccounts}}" wx:key="username" class="{{form.username === item.username ? 'is-active' : ''}}" data-username="{{item.username}}" bindtap="chooseDemo"><text>{{item.symbol}}</text><small>{{item.label}}</small></view></view>
-
-        <label wx:if="{{loginMode !== 'admin' || adminCredentialType === 'account_password'}}" class="login-field"><text>账号</text><view><i>人</i><input data-key="username" value="{{form.username}}" bindinput="updateField" placeholder="请输入登录账号" autocomplete="username"/></view></label>
-        <label class="login-field"><text>{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '访问码' : '密码'}}</text><view><i>钥</i><input data-key="password" value="{{form.password}}" bindinput="updateField" password="{{!showPassword}}" placeholder="{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '请输入中台访问码' : '请输入登录密码'}}" autocomplete="current-password"/><view class="password-toggle" bindtap="togglePassword">{{showPassword ? '隐藏' : '显示'}}</view></view></label>
-        <button class="login-button {{loading ? 'is-disabled' : ''}}" loading="{{loading}}" disabled="{{loading}}" bindtap="submit">{{loading ? '正在建立安全会话…' : loginMode === 'admin' ? '进入中台工作台' : '进入协同工作台'}}</button>
-        <view class="hermes-note"><view>H</view><text>Hermes 只查找当前账号获授权的订单；任何正式提交都需要你确认。</text></view>
+  <scroll-view class="lg-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="lg-content" style="padding-top: {{statusBarHeight + navHeight}}px">
+      <view class="lg-hero">
+        <view class="lg-brand-row"><view class="lg-brand-tile">舟</view><view class="lg-brand-copy"><text class="lg-brand-name">同舟协同</text><text class="hd-mono lg-brand-sub">TONGZHOU · AI ASSISTANT</text></view></view>
+        <view class="lg-hero-copy">
+          <text class="hd-mono lg-hero-kicker">{{loginMode === 'admin' ? 'INTERNAL CONTROL' : 'ONE TASK · ONE BOUNDARY'}}</text>
+          <view wx:if="{{loginMode === 'admin'}}" class="lg-hero-title">关键协同，<view></view>一处看清、<text class="lg-hero-accent lg-hero-accent--teal">及时决策。</text></view>
+          <view wx:else class="lg-hero-title">每一次交接，<view></view>都清楚、准确、<text class="lg-hero-accent">有回音。</text></view>
+          <text class="lg-hero-subtitle">{{loginMode === 'admin' ? '面向供应链中台管理员的移动监管与审批工作台' : '面向仓库、备案、打样、包装与生产伙伴的移动工作区'}}</text>
+        </view>
+        <view class="lg-handoff"><text class="lg-handoff-step">{{loginMode === 'admin' ? '跨组织总览' : '中台发布'}}</text><view class="lg-handoff-line"></view><text class="lg-handoff-step">{{loginMode === 'admin' ? '风险聚焦' : '组织执行'}}</text><view class="lg-handoff-line"></view><text class="lg-handoff-step">{{loginMode === 'admin' ? '审核留痕' : '凭证回传'}}</text></view>
       </view>
-      <view class="footer-lock">⌾ 组织级数据隔离 · 登录与操作全程留痕</view>
+
+      <view class="login-card lg-card">
+        <view class="lg-mode-switch">
+          <view class="lg-mode-switch__thumb {{loginMode === 'admin' ? 'is-right' : ''}}"></view>
+          <view class="lg-mode-switch__item {{loginMode === 'partner' ? 'is-active' : ''}}" data-mode="partner" bindtap="switchMode"><text class="lg-mode-switch__name">伙伴登录</text><text class="lg-mode-switch__note lg-mode-switch__note--orange">组织工作区</text></view>
+          <view class="lg-mode-switch__item {{loginMode === 'admin' ? 'is-active' : ''}}" data-mode="admin" bindtap="switchMode"><text class="lg-mode-switch__name">中台登录</text><text class="lg-mode-switch__note lg-mode-switch__note--teal">监管与审批</text></view>
+        </view>
+
+        <view wx:if="{{loginMode === 'admin'}}" class="lg-credential-switch">
+          <view class="lg-credential-chip {{adminCredentialType === 'account_password' ? 'is-active' : ''}}" data-type="account_password" bindtap="switchAdminCredential">账号密码</view>
+          <view class="lg-credential-chip {{adminCredentialType === 'access_code' ? 'is-active' : ''}}" data-type="access_code" bindtap="switchAdminCredential">中台访问码</view>
+          <text class="lg-internal-tag">内部账号</text>
+        </view>
+        <view wx:if="{{demoMode && loginMode === 'partner'}}" class="lg-demo-accounts"><view wx:for="{{demoAccounts}}" wx:key="username" class="lg-demo-chip {{form.username === item.username ? 'is-active' : ''}}" data-username="{{item.username}}" bindtap="chooseDemo">{{item.label}}</view></view>
+
+        <view wx:if="{{loginMode !== 'admin' || adminCredentialType === 'account_password'}}" class="lg-field">
+          <text class="lg-field__label">登录账号</text>
+          <view class="lg-field__box"><input data-key="username" value="{{form.username}}" bindinput="updateField" placeholder="{{loginMode === 'admin' ? '请输入中台账号' : '请输入伙伴登录账号'}}" placeholder-class="lg-placeholder" confirm-type="next" autocomplete="username"/></view>
+        </view>
+        <view class="lg-field">
+          <text class="lg-field__label">{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '中台访问码' : '登录密码'}}</text>
+          <view class="lg-field__box lg-field__box--secret"><input data-key="password" value="{{form.password}}" bindinput="updateField" password="{{!showPassword}}" confirm-type="done" bindconfirm="submit" placeholder="{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '请输入中台访问码' : '请输入登录密码'}}" placeholder-class="lg-placeholder" autocomplete="current-password"/><view class="lg-password-toggle" bindtap="togglePassword">{{showPassword ? '隐藏' : '显示'}}</view></view>
+        </view>
+
+        <view class="lg-button {{loading ? 'is-loading' : ''}}" bindtap="submit"><view wx:if="{{loading}}" class="lg-spinner"></view><text>{{loading ? '正在建立安全会话…' : loginMode === 'admin' ? '进入中台工作台' : '进入协同工作台'}}</text></view>
+
+        <view class="lg-hermes-note"><view class="hd-orb-mini"><view class="hd-orb-mini__core"><view class="hd-bot-mini"><view class="hd-bot-mini__visor"><view class="hd-bot-mini__eye"></view><view class="hd-bot-mini__eye"></view></view></view></view></view><text class="lg-hermes-note__text">{{loginMode === 'admin' ? '登录后，小助理会汇总跨组织风险与待审批事项，所有决策都会留痕。' : '登录后，小助理会先为你整理今日待填报的订单；任何正式提交都需要你确认。'}}</text></view>
+        <view class="lg-footer-lock"><text class="lg-footer-lock__mark"></text>组织级数据隔离 · 登录与操作全程留痕</view>
+      </view>
     </view>
   </scroll-view>
 </view>

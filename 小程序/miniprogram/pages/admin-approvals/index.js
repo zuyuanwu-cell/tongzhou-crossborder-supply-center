@@ -30,8 +30,10 @@ Page({
     if (!item || this.data.busy) return;
     const approving = decision === "approve";
     wx.showModal({
-      title: approving ? "批准并入账" : "驳回伙伴操作",
-      content: `${item.organizationLabel} · ${item.commandLabel}\n${item.payloadText}`,
+      // With editable: true, `content` pre-fills the input box. Passing the payload there made it
+      // the review note and let a rejection pass the "reason required" check without a real reason.
+      title: `${approving ? "批准" : "驳回"}：${item.commandLabel}`.slice(0, 24),
+      content: "",
       editable: true,
       placeholderText: approving ? "审批备注（可选）" : "请输入驳回原因（必填）",
       confirmText: approving ? "确认批准" : "确认驳回",

@@ -20,14 +20,25 @@ function normalizePreferences(value) {
   };
 }
 
+const SCOPE_TONES = ["orange", "green", "cyan", "violet"];
+
 function accessScopes(workspace) {
-  const capabilities = new Set(workspace?.capabilities || []);
-  const scopes = CAPABILITY_LABELS.filter((item) => capabilities.has(item.capability));
+  const list = workspace?.capabilities || [];
+  const capabilities = new Set(list);
+  const scopes = CAPABILITY_LABELS.filter((item) => capabilities.has(item.capability)).map((item, index) => {
+    const domain = item.capability.split(".")[0];
+    return Object.assign({}, item, {
+      tone: SCOPE_TONES[index % SCOPE_TONES.length],
+      count: list.filter((capability) => String(capability).split(".")[0] === domain).length,
+    });
+  });
   if (scopes.length) return scopes;
   return (workspace?.resources || []).slice(0, 4).map((resource) => ({
     capability: resource.ref || resource.name,
     label: resource.name || "授权资源",
     note: "只读查看",
+    tone: "cyan",
+    count: 0,
   }));
 }
 

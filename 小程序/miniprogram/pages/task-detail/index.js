@@ -295,6 +295,11 @@ Page({
         canSubmitArtifact: !isPartnerOrder && !isSampling && canAction(this.data.workspace, "artifact_submit") && !["pending_sync", "pending_approval", "completed", "cancelled", "rejected"].includes(item.status),
         canUpdateMilestone: !isPartnerOrder && canAction(this.data.workspace, "milestone_update") && !["pending_sync", "pending_approval", "completed", "cancelled", "rejected"].includes(item.status),
         canAiReport, aiTextEnabled: Boolean(partnerAi.textEnabled), aiVoiceEnabled: Boolean(partnerAi.voiceEnabled),
+        aiPlaceholder: ({
+          production_order: "例如：已经灌装 5000 瓶，完成 60%，预计周五结束。",
+          purchase_order: "例如：已备货 8000 套，明天发出，物流单号稍后补。",
+          sampling_task: "例如：两个料体样已做好，周三寄出。",
+        })[item.itemType] || (item.isWarehouse ? "例如：已到货 240 件，外箱完好，正在核对批次。" : "例如：资料已准备一半，预计周五提交。"),
         aiTranscriptionId: taskVersionChanged ? "" : this.data.aiTranscriptionId,
         aiDraft: retainedAiDraft, aiDraftId: retainedAiDraft ? this.data.aiDraftId : "", aiMissingMap: retainedAiDraft ? this.data.aiMissingMap : {},
         aiMessage: aiVersionChanged || (taskVersionChanged && this.data.aiTranscriptionId) ? "任务内容已更新，旧转写或草稿已失效，请重新生成。" : this.data.aiMessage,

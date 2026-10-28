@@ -34,18 +34,24 @@
 .login-page .footer-lock { color: rgba(196, 213, 232, .68); font-size: 18rpx; }
 
 /* Partner home: secondary information should not disappear on real screens. */
-.hermes-page .welcome-date { color: rgba(226, 235, 250, .72); font-size: 20rpx; }
-.hermes-page .welcome-copy { color: rgba(232, 239, 255, .82); }
-.hermes-page .task-kind { color: rgba(226, 235, 250, .72); font-size: 20rpx; }
-.hermes-page .deadline { font-size: 19rpx; font-weight: 700; }
-.hermes-page .task-reference { color: rgba(226, 235, 250, .7); font-size: 20rpx; }
-.hermes-page .task-action { font-size: 23rpx; font-weight: 700; }
+.hermes-page .hermes-brand text { color: rgba(226, 235, 250, .78); font-size: 23rpx; }
+.hermes-page .welcome-date { color: rgba(226, 235, 250, .72); font-size: 22rpx; }
+.hermes-page .welcome-copy { color: rgba(232, 239, 255, .86); font-size: 27rpx; }
+.hermes-page .today-head strong { font-size: 30rpx; }
+.hermes-page .task-kind { color: rgba(226, 235, 250, .76); font-size: 22rpx; }
+.hermes-page .deadline { font-size: 21rpx; font-weight: 700; }
+.hermes-page .task-main strong { font-size: 29rpx; }
+.hermes-page .task-reference { color: rgba(226, 235, 250, .74); font-size: 22rpx; }
+.hermes-page .task-action { height: 64rpx; font-size: 25rpx; font-weight: 700; }
 .hermes-page .empty-today { color: rgba(226, 235, 250, .72); }
-.hermes-page .empty-today text { font-size: 21rpx; }
+.hermes-page .empty-today text { font-size: 23rpx; }
 .hermes-page .metric-cell text,
-.hermes-page .section-label text { color: rgba(226, 235, 250, .74); font-size: 22rpx; }
-.hermes-page .boundary-line { color: rgba(218, 229, 246, .7); font-size: 20rpx; }
-.hermes-page .composer input { font-size: 26rpx; }
+.hermes-page .section-label text { color: rgba(226, 235, 250, .78); font-size: 23rpx; }
+.hermes-page .quick-chip { font-size: 25rpx; }
+.hermes-page .boundary-line { color: rgba(218, 229, 246, .74); font-size: 22rpx; }
+.hermes-page .composer input { font-size: 27rpx; }
+.hermes-page .composer-voice,
+.hermes-page .composer-send { font-size: 23rpx; }
 .hermes-page .composer input::placeholder { color: rgba(218, 229, 246, .62); }
 
 /* Hermes conversation: preserve the cinematic style but prioritize reading. */

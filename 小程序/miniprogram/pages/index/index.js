@@ -5,6 +5,43 @@ const { getWorkspace, quickActions } = require("../../utils/workspace");
 const { buildDeliveryOverview } = require("../../utils/production");
 const { buildPartnerHome } = require("../../utils/hermes-home");
 const { preferenceStorageKey, normalizePreferences } = require("../../utils/partner-preferences");
+const { navMetrics } = require("../../utils/nav");
+
+// Hermes quick reports currently build production milestone drafts, so they are only
+// offered to partners that actually receive production orders.
+function hermesAvailability(partnerAi, workspace, organizationName) {
+  const handlesProduction = Boolean(workspace?.taskTypes?.includes("production_order"));
+  const enabled = Boolean(partnerAi?.quickReportEnabled);
+  const ready = enabled && handlesProduction;
+  const name = organizationName || "你们公司";
+  if (ready) {
+    return {
+      ready: true,
+      voiceReady: Boolean(partnerAi?.quickReportVoiceEnabled),
+      needsActivation: false,
+      statusText: `在线 · ${organizationName || "同舟供应链中心"}`,
+      welcomeCopy: "说一句、或拍张照，小助理帮你整理成反馈，你确认后才会提交。",
+      placeholder: "说说订单进展，或发张照片…",
+      unavailableTitle: "",
+      unavailableText: "",
+      cardText: "",
+    };
+  }
+  const unavailableText = handlesProduction
+    ? `小助理快捷填报还没有为“${name}”开通。请联系同舟对接人开通；现在可以先在“任务”里手动填写。`
+    : "小助理快捷填报目前只用于委外生产加工单。你的任务请在“任务”里直接处理。";
+  return {
+    ready: false,
+    voiceReady: false,
+    needsActivation: handlesProduction,
+    statusText: handlesProduction ? "快捷填报未开通" : "任务助手",
+    welcomeCopy: handlesProduction ? "快捷填报暂未开通，任务可以先手动填写。" : "今天要处理的任务都在下面。",
+    placeholder: handlesProduction ? "快捷填报未开通，点这里了解" : "快捷填报仅用于生产加工单",
+    unavailableTitle: handlesProduction ? "小助理还没开通" : "暂不支持快捷填报",
+    unavailableText,
+    cardText: "请联系同舟对接人开通，现在可先在任务里手动填写。",
+  };
+}
 
 function timeText(value) {
   const date = value instanceof Date ? value : new Date(value || Date.now());
@@ -40,7 +77,12 @@ Page({
     hermesSuggestions: [],
     assistantPreferences: { voiceFirst: true, dueReminder: true },
     statusBarHeight: 20,
+    navHeight: 44,
+    capsuleSpace: 96,
     composerText: "",
+    hermes: hermesAvailability(null, null, ""),
+    isWarehouse: false,
+    homeActionLabel: "去填报",
   },
 
   onLoad() {
@@ -50,7 +92,7 @@ Page({
     const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
     let windowInfo = {};
     try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
-    this.setData({ greeting, today: `${date.getMonth() + 1}月${date.getDate()}日 · ${weekdays[date.getDay()]}`, clockText: timeText(date), statusBarHeight: Number(windowInfo.statusBarHeight || 20) });
+    this.setData(Object.assign({ greeting, today: `${date.getMonth() + 1}月${date.getDate()}日 · ${weekdays[date.getDay()]}`, clockText: timeText(date), statusBarHeight: Number(windowInfo.statusBarHeight || 20) }, navMetrics(windowInfo)));
     this._clockTimer = setInterval(() => this.setData({ clockText: timeText() }), 60_000);
   },
 
@@ -72,12 +114,19 @@ Page({
       isProduction: workspace.kind === "production_factory",
       isDeliveryMode,
       deliveryMode: workspace.kind === "production_factory" ? "production" : "procurement",
+      isWarehouse: workspace.kind === "warehouse",
+      homeActionLabel: workspace.kind === "warehouse" ? "去处理" : "去填报",
       assistantPreferences: normalizePreferences(storedPreferences),
     });
     this.load();
   },
 
   onPullDownRefresh() { this.load().finally(() => wx.stopPullDownRefresh()); },
+
+  refresh() {
+    if (this.data.loading) return;
+    this.load();
+  },
 
   async load() {
     this.setData({ loading: true, error: "" });
@@ -95,7 +144,12 @@ Page({
       if (deliveryOverview) deliveryOverview.selected = deliveryOverview.selected.map(decorateTask);
       const hermesHome = this.data.isDeliveryMode
         ? buildPartnerHome(deliveryItems, summary.dashboard, this.data.deliveryMode, undefined, this.data.assistantPreferences)
-        : buildPartnerHome(work.items, summary.dashboard, "general", undefined, this.data.assistantPreferences);
+        : buildPartnerHome(work.items, summary.dashboard, workspace.kind === "warehouse" ? "warehouse" : "general", undefined, this.data.assistantPreferences);
+      const hermes = hermesAvailability(summary.dashboard.partnerAi, workspace, this.data.session?.organization?.name);
+      // Without Hermes, only keep suggestions that are plain navigation shortcuts.
+      const suggestions = hermes.ready
+        ? hermesHome.suggestions
+        : hermesHome.suggestions.filter((item) => !["quick_report", "photo_report"].includes(item.action));
       this.setData({
         dashboard: summary.dashboard,
         tasks: this.data.isDeliveryMode ? [] : work.items.filter((item) => !["completed", "cancelled"].includes(item.status)).slice(0, 3).map(decorateTask),
@@ -108,7 +162,8 @@ Page({
         hermesHome,
         todayReportTasks: hermesHome.todayTasks,
         homeMetrics: hermesHome.metrics,
-        hermesSuggestions: hermesHome.suggestions,
+        hermesSuggestions: suggestions,
+        hermes,
       });
     } catch (error) {
       this.setData({ error: error.message || "工作台加载失败。" });
@@ -140,17 +195,28 @@ Page({
     wx.navigateTo({ url: `/pages/ai-progress/index${query}` });
   },
 
+  explainHermesUnavailable() {
+    const hermes = this.data.hermes || {};
+    wx.showModal({
+      title: hermes.unavailableTitle || "小助理暂不可用",
+      content: hermes.unavailableText || "请先在“任务”里手动填写。",
+      confirmText: "去任务",
+      cancelText: "知道了",
+      success: (result) => { if (result.confirm) this.openTasks(); },
+    });
+  },
+
   openTodayTask(event) {
     const task = this.data.todayReportTasks[Number(event.currentTarget.dataset.index)];
     if (!task) return;
-    if (task.itemType === "production_order" && this.data.partnerAi?.quickReportEnabled) return this.openHermesWithPrompt(task.reportPrompt);
+    if (task.itemType === "production_order" && this.data.hermes?.ready) return this.openHermesWithPrompt(task.reportPrompt);
     wx.navigateTo({ url: `/pages/task-detail/index?id=${encodeURIComponent(task.id)}` });
   },
 
   runHermesSuggestion(event) {
     const suggestion = this.data.hermesSuggestions[Number(event.currentTarget.dataset.index)];
     if (!suggestion) return;
-    if (suggestion.action === "quick_report" && this.data.partnerAi?.quickReportEnabled) return this.openHermesWithPrompt(suggestion.prompt);
+    if (suggestion.action === "quick_report") return this.data.hermes?.ready ? this.openHermesWithPrompt(suggestion.prompt) : this.explainHermesUnavailable();
     if (suggestion.action === "photo_report") return this.choosePhoto();
     const query = suggestion.itemType ? `?itemType=${encodeURIComponent(suggestion.itemType)}` : "";
     wx.redirectTo({ url: `/pages/tasks/index${query}` });
@@ -158,20 +224,28 @@ Page({
 
   updateComposer(event) { this.setData({ composerText: event.detail.value }); },
 
+  tapComposer() {
+    if (!this.data.hermes?.ready) this.explainHermesUnavailable();
+  },
+
   sendComposer() {
-    if (!this.data.partnerAi?.quickReportEnabled) return this.openTasks();
+    if (!this.data.hermes?.ready) return this.explainHermesUnavailable();
     const text = String(this.data.composerText || "").trim();
     this.setData({ composerText: "" });
     this.openHermesWithPrompt(text);
   },
 
   startVoiceReport() {
-    if (!this.data.partnerAi?.quickReportEnabled) return this.openTasks();
+    if (!this.data.hermes?.ready) return this.explainHermesUnavailable();
+    if (!this.data.hermes.voiceReady) {
+      wx.showToast({ title: "语音暂未开通，请打字描述", icon: "none" });
+      return;
+    }
     wx.navigateTo({ url: "/pages/ai-progress/index?voice=1" });
   },
 
   choosePhoto() {
-    if (!this.data.partnerAi?.quickReportEnabled) return this.openTasks();
+    if (!this.data.hermes?.ready) return this.explainHermesUnavailable();
     wx.chooseMedia({ count: 1, mediaType: ["image"], sourceType: ["camera", "album"], success: (result) => {
       const media = result.tempFiles?.[0];
       if (!media?.tempFilePath) return;

@@ -76,7 +76,7 @@ function verifyStructure() {
   assert.match(loginPage, /data-mode="partner"/);
   assert.match(loginPage, /data-mode="admin"/);
   assert.match(loginPage, /中台登录/);
-  assert.match(loginPage, /POWERED BY HERMES/, "登录页应明确 Hermes 助手身份");
+  assert.match(loginPage, /POWERED BY HERMES|AI ASSISTANT/, "登录页应明确 AI 助手身份");
   assert.match(loginPage, /login-card/, "登录表单应使用 Artifact 的全暗色玻璃卡片");
   assert.match(appStyles, /hermes-v2-readability\.wxss/, "小程序必须加载真机可读性修复层");
   assert.match(appStyles, /button,[\s\S]*input,[\s\S]*textarea[\s\S]*font-family/, "原生表单控件必须统一继承中文字体");
@@ -87,9 +87,9 @@ function verifyStructure() {
   assert.match(readabilityStyles, /\.inventory-page \.goods-sku[\s\S]*font-size:\s*21rpx/, "库存 SKU 必须达到真机可读字号");
   assert.match(readabilityStyles, /\.profile-page \.preference-row text[\s\S]*font-size:\s*19rpx/, "个人中心辅助说明必须达到真机可读字号");
   const profilePage = fs.readFileSync(path.join(root, "pages", "profile", "index.wxml"), "utf8");
-  assert.match(profilePage, /助手偏好/);
+  assert.match(profilePage, /助手偏好|小助理偏好/);
   assert.match(profilePage, /语音优先/);
-  assert.match(profilePage, /我能处理的业务/);
+  assert.match(profilePage, /我能处理的业务|已授权业务范围/);
   const adminDetail = fs.readFileSync(path.join(root, "pages", "admin-task-detail", "index.wxml"), "utf8");
   assert.match(adminDetail, /监管只读/);
   assert.doesNotMatch(adminDetail, /bindtap="(?:submit|upload|action)|>提交进度</, "中台任务详情不得提供伙伴写操作");
