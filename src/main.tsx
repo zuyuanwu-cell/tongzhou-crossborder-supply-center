@@ -725,6 +725,12 @@ function canViewInternalCatalog(user: AuthUser) {
 }
 
 function hasUserPermission(user: AuthUser, permission: string) {
+  // The built-in administrator role is defined by the backend as the complete
+  // permission set. Older browser sessions can still carry a pre-migration
+  // user snapshot whose `permissions` array is incomplete, so do not demote an
+  // administrator while /api/me is refreshing. Explicit denies still win.
+  if (user.permissionOverrides?.deny?.includes(permission)) return false;
+  if (user.role === "admin") return true;
   return Boolean(user.permissions?.includes(permission));
 }
 

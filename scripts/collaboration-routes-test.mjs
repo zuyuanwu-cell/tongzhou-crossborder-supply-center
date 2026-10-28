@@ -12,6 +12,8 @@ assert.match(main, /hash: "#outsourcing-collaboration"[\s\S]*hidden: true/);
 assert.match(main, /authorizedNavItems\(currentUser, true\)/);
 assert.match(main, /const allowedItems = authorizedNavItems\(currentUser, true\);/);
 assert.doesNotMatch(main, /const allowedItems = visibleNavItems\(currentUser\);/);
+assert.match(main, /if \(user\.permissionOverrides\?\.deny\?\.includes\(permission\)\) return false;/);
+assert.match(main, /if \(user\.role === "admin"\) return true;/);
 assert.match(main, /<PartnerCollaborationWorkspace taskType="production_order" \/>/);
 assert.match(identityAdmin, /organization: detail\.organization\.code, section: "factory-mapping"/);
 assert.match(workspace, /requestedOrganizationCode/);
