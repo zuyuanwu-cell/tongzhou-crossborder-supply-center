@@ -92,6 +92,16 @@ test("internal warehouse task publication only accepts public collaboration fiel
   };
   assert.equal(internalWarehouseTaskSchema.safeParse(stockup).success, true);
   assert.equal(internalWarehouseTaskSchema.safeParse({ ...stockup, workOrder: { ...stockup.workOrder, supplierUnitCost: 8 } }).success, false);
+  const transfer = {
+    ...input,
+    itemType: "warehouse_transfer",
+    coreRefType: "domestic_transfer",
+    coreRefId: "transfer-1",
+    referenceNo: "DB-001",
+    sourceWarehouseName: "松雨仓",
+    destinationWarehouseName: "冠宏仓",
+  };
+  assert.equal(internalWarehouseTaskSchema.safeParse(transfer).success, true);
 });
 
 test("organization jobs enforce role capabilities without an authenticator gate", () => {

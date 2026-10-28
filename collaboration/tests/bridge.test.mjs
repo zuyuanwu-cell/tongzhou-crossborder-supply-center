@@ -14,6 +14,7 @@ async function fixture(t, { commands = [], resultFailures = 0, movementFailures 
   const requests = [];
   const movements = [];
   const stockupActions = [];
+  const stockupTransferSyncs = [];
   const sourceFeedback = [];
   const stockupInspections = [];
   let remainingResultFailures = resultFailures;
@@ -71,6 +72,10 @@ async function fixture(t, { commands = [], resultFailures = 0, movementFailures 
         stockupActions.push({ workOrderId, payload, context, idempotencyKey });
         return { ok: true, workOrder: { id: workOrderId, workOrderNo: "DWO-001", status: "completed" } };
       },
+      syncTransferByReference(transferId, context) {
+        stockupTransferSyncs.push({ transferId, context });
+        return { ok: true, request: { requestNo: "BR-001", journeyStage: "ready_to_ship" } };
+      },
     },
     listProducts: () => [{ id: "product-1", sku: "SKU-1", name: "测试产品", barcode: "697000000001", imageUrl: "https://files.example.test/product.jpg", unit: "件", directCostPrice: 99 }],
     baseUrl: "http://collaboration.test",
@@ -85,7 +90,7 @@ async function fixture(t, { commands = [], resultFailures = 0, movementFailures 
     recordOutsourcingPartnerFeedback: async (feedback) => { sourceFeedback.push(feedback); return { ok: true, skipped: false }; },
     fetchImpl,
   });
-  return { bridge, movements, requests, stockupActions, stockupInspections, sourceFeedback, store };
+  return { bridge, movements, requests, stockupActions, stockupInspections, stockupTransferSyncs, sourceFeedback, store };
 }
 
 const projection = {
@@ -780,6 +785,71 @@ test("internal staff can publish an allowlisted warehouse task and read partner 
     () => bridge.remindWarehouseTask(workItems[0].id, { actorName: "中台管理员" }, { warehouseIds: ["warehouse-2"] }),
     /无权查看该仓库/,
   );
+});
+
+test("stockup transfer publication resolves the target warehouse organization and stays idempotent", async (t) => {
+  const accessGrants = [{
+    resourceType: "warehouse",
+    resourceRef: "warehouse-1",
+    resourceName: "冠宏仓",
+    permissions: ["warehouse.task.view", "warehouse.task.handle", "warehouse.transfer.receive"],
+  }];
+  const { bridge, requests, store } = await fixture(t, {
+    organizations: [{ code: "warehouse-guanhong", name: "冠宏", organizationType: "warehouse", status: "active" }],
+    accessGrants,
+    inventory: {
+      ok: true,
+      warehouses: [{ id: "warehouse-1", name: "冠宏仓" }],
+      balances: [{ sku: "SKU-1", productName: "测试产品", availableQty: 0, reservedQty: 0, unit: "件" }],
+    },
+  });
+  const input = {
+    transferId: "transfer-1",
+    transferNo: "DB-001",
+    requestNo: "BR-001",
+    sourceWarehouseName: "松雨仓",
+    targetWarehouseId: "warehouse-1",
+    targetWarehouseName: "冠宏仓",
+    lines: [{ sourceLineId: "line-1", sku: "SKU-1", plannedQuantity: 8903, unit: "件" }],
+  };
+  const first = await bridge.publishStockupTransferTask(input, { idempotencyKey: "stockup-transfer-task:transfer-1", actorName: "管理员" });
+  const second = await bridge.publishStockupTransferTask(input, { idempotencyKey: "stockup-transfer-task:transfer-1", actorName: "管理员" });
+  assert.equal(first.organizationCode, "warehouse-guanhong");
+  assert.equal(second.idempotentReplay, true);
+  assert.equal(store.status().outbox.published, 1);
+  const projectionRequest = requests.find((request) => request.url.endsWith("/collaboration/internal/v1/projections"));
+  assert.equal(projectionRequest.body.itemType, "warehouse_transfer");
+  assert.equal(projectionRequest.body.coreRefType, "domestic_transfer");
+  assert.equal(projectionRequest.body.coreRefId, "transfer-1");
+  assert.equal(projectionRequest.body.publicPayload.sourceWarehouseName, "松雨仓");
+  assert.equal(projectionRequest.body.publicPayload.destinationWarehouseName, "冠宏仓");
+  assert.equal(projectionRequest.body.lines[0].plannedQuantity, 8903);
+});
+
+test("partner transfer receipt also advances the linked stockup allocation", async (t) => {
+  const command = {
+    id: "31313131-3131-4313-8313-313131313131",
+    organizationCode: "warehouse-guanhong",
+    workItemId: "41414141-4141-4414-8414-414141414141",
+    coreRefType: "domestic_transfer",
+    coreRefId: "transfer-1",
+    itemType: "warehouse_transfer",
+    publicPayload: { warehouseRef: "warehouse-1", warehouseName: "冠宏仓", referenceNo: "DB-001" },
+    commandType: "transfer_receive",
+    idempotencyKey: "receive-transfer-1",
+    expectedVersion: 1,
+    payload: { action: "transfer_receive", note: "已收货", lines: [{ sku: "SKU-1", quantity: 8903 }] },
+    riskLevel: "medium",
+    status: "pending_sync",
+    submittedByName: "冠宏仓操作员",
+    submittedAt: "2026-10-28T12:00:00.000Z",
+  };
+  const { bridge, stockupTransferSyncs, requests, store } = await fixture(t, { commands: [command] });
+  const result = await bridge.pullCommands();
+  assert.equal(result.processed, 1);
+  assert.equal(stockupTransferSyncs.length, 1);
+  assert.equal(stockupTransferSyncs[0].transferId, "transfer-1");
+  assert.equal(store.command(command.id).local_status, "applied");
 });
 
 test("warehouse task options skip stale warehouse grants without hiding healthy options", async (t) => {

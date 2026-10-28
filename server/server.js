@@ -463,6 +463,7 @@ const stockupCollaborationApi = createStockupCollaborationApi({
   notifyRequestSubmitted: ({ request, payload, auth, req }) => notifyStockupRequestSubmitted(request, payload, auth, requestOrigin(req)),
   notifyRequestProgress: ({ request, event, auth, req }) => notifyStockupRequestProgress(request, event, auth, requestOrigin(req)),
   publishWarehouseTask: (...args) => collaborationBridge.publishWarehouseTask(...args),
+  publishStockupTransferTask: (...args) => collaborationBridge.publishStockupTransferTask(...args),
   generateDispatchDocuments: (shipment) => stockupDispatchDocumentService.generate(stockupShipmentWithProductImages(shipment)),
   listWarehouses: () => {
     const optionByConnectionId = new Map(currentWmsWarehouseOptions().map((option) => [String(option.connectionId || ""), option]));

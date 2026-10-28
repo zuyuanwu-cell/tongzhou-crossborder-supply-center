@@ -68,10 +68,12 @@ export const collaborationProjectionSchema = z.object({
 export const internalWarehouseTaskSchema = z.object({
   organizationCode: limitedText(64).regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),
   warehouseRef: limitedText(120).min(1),
-  itemType: z.enum(["warehouse_inbound", "warehouse_outbound", "warehouse_stockup", "warehouse_exception"]),
+  itemType: z.enum(["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception"]),
   coreRefType: limitedText(80).optional().default("internal_warehouse_task"),
   coreRefId: limitedText(160).optional().default(""),
   referenceNo: limitedText(120).optional().default(""),
+  sourceWarehouseName: limitedText(200).optional().default(""),
+  destinationWarehouseName: limitedText(200).optional().default(""),
   title: limitedText(240).min(1),
   description: limitedText(5_000).optional().default(""),
   priority: z.enum(["normal", "urgent"]).optional().default("normal"),

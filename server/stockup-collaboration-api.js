@@ -67,7 +67,7 @@ export function collaborationIsoDateTime(value) {
   return new Date(timestamp).toISOString();
 }
 
-export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), notifyRequestProgress = async () => ({ status: "skipped", message: "未配置企业微信进度通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), getDomesticAvailabilitySummary = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
+export function createStockupCollaborationApi({ service, getAuth, appendActionLog = () => {}, notifyRequestSubmitted = async () => ({ status: "skipped", message: "未配置企业微信通知服务" }), notifyRequestProgress = async () => ({ status: "skipped", message: "未配置企业微信进度通知服务" }), listWarehouses = () => [], listProjectTeams = () => [], listProducts = () => ({ ok: true, total: 0, products: [] }), listDomesticWarehouses = () => ({ ok: true, warehouses: [] }), getDomesticAvailability = () => ({ ok: true, items: [] }), getDomesticAvailabilitySummary = () => ({ ok: true, items: [] }), createDomesticOutbound = () => null, publishWarehouseTask = async () => { throw Object.assign(new Error("伙伴协同桥接尚未配置。"), { statusCode: 503 }); }, publishStockupTransferTask = async () => { throw Object.assign(new Error("跨仓调拨协同桥接尚未配置。"), { statusCode: 503 }); }, generateDispatchDocuments = async () => { throw Object.assign(new Error("发运 PDF 服务尚未配置。"), { statusCode: 503 }); }, previewWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单预览服务尚未配置。"), { statusCode: 503 }); }, createWarehouseDocument = async () => { throw Object.assign(new Error("仓库建单服务尚未配置。"), { statusCode: 503 }); }, cancelWarehouseDocument = async () => { throw Object.assign(new Error("仓库单据作废服务尚未配置。"), { statusCode: 503 }); } }) {
   async function publishStockupWorkOrder(workOrder, context, auth, idempotencyKey, { revision = false } = {}) {
     const dueAt = collaborationIsoDateTime(workOrder.expectedArrivalAt);
     const request = service.getRequest(workOrder.requestId, context);
@@ -104,6 +104,43 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
       warehouseIds: context.warehouseIds,
       skus: context.skus,
     });
+  }
+
+  async function ensureTransferTask(result, allocationId, auth) {
+    const request = result?.request;
+    const allocation = request?.allocations?.find((item) => String(item.id) === String(allocationId));
+    if (!allocation || allocation.sourceType !== "transfer" || allocation.referenceType !== "domestic_transfer" || !allocation.referenceId) return null;
+    if (allocation.status !== "transfer_in_progress" || result?.transfer?.status === "received" || result?.transfer?.status === "cancelled") return null;
+    const requestLine = request.lines?.find((line) => String(line.id) === String(allocation.requestLineId));
+    const transferLines = Array.isArray(result?.transfer?.lines) && result.transfer.lines.length
+      ? result.transfer.lines
+      : requestLine ? [{ sku: requestLine.sku, productName: requestLine.productName, quantity: allocation.plannedQty, unit: requestLine.unit }] : [];
+    try {
+      return await publishStockupTransferTask({
+        transferId: allocation.referenceId,
+        transferNo: allocation.referenceNo || result?.transfer?.transferNo,
+        requestNo: request.requestNo,
+        sourceWarehouseName: allocation.sourceWarehouseName,
+        targetWarehouseId: allocation.targetWarehouseId,
+        targetWarehouseName: allocation.targetWarehouseName,
+        priority: request.priority,
+        lines: transferLines.map((line) => ({
+          sourceLineId: line.id || allocation.requestLineId,
+          sku: line.sku,
+          plannedQuantity: Number(line.quantity || allocation.plannedQty),
+          unit: line.unit || requestLine?.unit || "件",
+        })),
+      }, {
+        idempotencyKey: `stockup-transfer-task:${allocation.referenceId}`,
+        actorName: String(auth?.user?.displayName || auth?.user?.username || "供应链中台"),
+      });
+    } catch (error) {
+      throw Object.assign(new Error(`调拨单 ${allocation.referenceNo || allocation.referenceId} 已创建，但目标仓协同工单发布失败：${error.message}。请点击“同步调拨到仓状态”重试。`), {
+        statusCode: Number(error?.statusCode || 502),
+        code: "transfer_collaboration_task_publish_failed",
+        cause: error,
+      });
+    }
   }
 
   async function attachProgressNotifications(result, requestIds, event, context, auth, req) {
@@ -410,14 +447,18 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
 
       if ((match = suffix.match(/^\/fulfillment-allocations\/([^/]+)\/confirm-transfer$/)) && req.method === "POST") {
         requireAny(auth, ["domestic_inventory_transfer", "domestic_inventory_manage", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有确认跨仓调拨的权限。");
-        const result = service.confirmTransfer(decodeURIComponent(match[1]), await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        const allocationId = decodeURIComponent(match[1]);
+        const result = service.confirmTransfer(allocationId, await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        result.collaborationTask = await ensureTransferTask(result, allocationId, auth);
         appendActionLog(auth, "确认备货履约跨仓调拨", "stockup_fulfillment_allocation", match[1], { transferNo: result.transfer?.transferNo || "" });
         sendJson(res, result.idempotentReplay ? 200 : 201, result);
         return true;
       }
       if ((match = suffix.match(/^\/fulfillment-allocations\/([^/]+)\/sync-transfer$/)) && req.method === "POST") {
         requireAny(auth, ["domestic_inventory_transfer", "domestic_inventory_manage", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有同步跨仓调拨的权限。");
-        const result = service.syncTransfer(decodeURIComponent(match[1]), context);
+        const allocationId = decodeURIComponent(match[1]);
+        const result = service.syncTransfer(allocationId, context);
+        result.collaborationTask = await ensureTransferTask(result, allocationId, auth);
         appendActionLog(auth, "同步备货履约跨仓调拨", "stockup_fulfillment_allocation", match[1], { transferNo: result.transfer?.transferNo || "", transferStatus: result.transfer?.status || "" });
         sendJson(res, 200, result);
         return true;

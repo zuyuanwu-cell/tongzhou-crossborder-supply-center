@@ -238,7 +238,7 @@ try {
   assert.equal(inventory.stockupAvailability({ warehouseId: source.id, sku: "V3-D" }, inventoryContext).items[0].reservedQty, 0);
   assert.equal(service.getJourneyRequest(mixedCreated.requestId, context).allocations.find((item) => item.id === transferAllocation.id).status, "transfer_in_progress");
   inventory.receiveTransfer(confirmedTransfer.transfer.id, inventoryContext);
-  const syncedTransfer = service.syncTransfer(transferAllocation.id, context);
+  const syncedTransfer = service.syncTransferByReference(confirmedTransfer.transfer.id, context);
   const syncedAllocation = syncedTransfer.request.allocations.find((item) => item.id === transferAllocation.id);
   assert.equal(syncedAllocation.status, "ready");
   assert.equal(syncedAllocation.readyQty, 400);

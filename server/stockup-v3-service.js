@@ -681,6 +681,16 @@ export function createStockupV3Service({
     });
   }
 
+  function syncTransferByReference(transferId, context = {}) {
+    ensureEnabled();
+    const allocation = store.first(`SELECT id FROM stockup_fulfillment_allocations
+      WHERE source_type='transfer' AND reference_type='domestic_transfer' AND reference_id=?
+        AND status NOT IN ('cancelled','superseded')
+      ORDER BY updated_at DESC,id DESC LIMIT 1`, [text(transferId)]);
+    if (!allocation) return { ok: true, skipped: true, reason: "stockup_allocation_not_found" };
+    return syncTransfer(text(allocation.id), context);
+  }
+
   function linkOutsourcing(allocationId, payload = {}, context = {}) {
     ensureEnabled();
     const allocation = allocationFromRow(store.first("SELECT * FROM stockup_fulfillment_allocations WHERE id=?", [text(allocationId)]));
@@ -844,5 +854,5 @@ export function createStockupV3Service({
     });
   }
 
-  return { cancelRoute, confirmRoute, confirmTransfer, currentAllocations, decorateRequest, enrichProductOptions, linkOutsourcing, previewRoute, recoverReservation, replaceRoute, rollbackRoute, routeReconciliation, syncTransfer, updateProductSupplyMode };
+  return { cancelRoute, confirmRoute, confirmTransfer, currentAllocations, decorateRequest, enrichProductOptions, linkOutsourcing, previewRoute, recoverReservation, replaceRoute, rollbackRoute, routeReconciliation, syncTransfer, syncTransferByReference, updateProductSupplyMode };
 }

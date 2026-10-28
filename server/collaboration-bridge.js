@@ -375,6 +375,8 @@ export function createCollaborationBridge({
         referenceNo,
         warehouseRef: warehouse.resourceRef,
         warehouseName: warehouse.resourceName,
+        sourceWarehouseName: parsed.data.sourceWarehouseName,
+        destinationWarehouseName: parsed.data.destinationWarehouseName,
         note: parsed.data.description.slice(0, 2_000),
         ...(parsed.data.workOrder ? { workOrder: parsed.data.workOrder } : {}),
       },
@@ -383,6 +385,49 @@ export function createCollaborationBridge({
     const delivery = await flushOutbox();
     onAudit("发布伙伴协同任务", { id: eventId, organizationCode: organization.code, coreRefId, commandType: "publish", submittedByName: actorName }, { status: queued.status, delivery });
     return { ok: true, eventId, coreRefId, referenceNo, status: queued.status, idempotentReplay: queued.idempotentReplay, delivery };
+  }
+
+  async function publishStockupTransferTask(input, { idempotencyKey = "", actorName = "供应链中台" } = {}) {
+    const transferId = String(input?.transferId || "").trim();
+    const transferNo = String(input?.transferNo || transferId).trim();
+    const warehouseRef = String(input?.targetWarehouseId || "").trim();
+    const sourceWarehouseName = String(input?.sourceWarehouseName || "").trim();
+    const destinationWarehouseName = String(input?.targetWarehouseName || "").trim();
+    const requestNo = String(input?.requestNo || "").trim();
+    const lines = Array.isArray(input?.lines) ? input.lines : [];
+    if (!transferId || !warehouseRef || !lines.length) fail("跨仓调拨协同任务缺少调拨单、目标仓或商品明细。", 400, "stockup_transfer_task_invalid");
+    const skus = [...new Set(lines.map((line) => normalizedSku(line.sku)).filter(Boolean))];
+    const options = await listWarehouseTaskOptions({ warehouseIds: [warehouseRef], skus });
+    const candidates = options.organizations.filter((organization) => organization.warehouses.some((warehouse) => String(warehouse.resourceRef) === warehouseRef));
+    if (!candidates.length) fail(`目标仓 ${destinationWarehouseName || warehouseRef} 尚未绑定可处理调拨的协同组织。`, 409, "transfer_target_organization_missing");
+    if (candidates.length > 1) fail(`目标仓 ${destinationWarehouseName || warehouseRef} 绑定了多个协同组织，请先保留唯一有效绑定。`, 409, "transfer_target_organization_ambiguous");
+    const organization = candidates[0];
+    const result = await publishWarehouseTask({
+      organizationCode: organization.code,
+      warehouseRef,
+      itemType: "warehouse_transfer",
+      coreRefType: "domestic_transfer",
+      coreRefId: transferId,
+      referenceNo: transferNo,
+      sourceWarehouseName,
+      destinationWarehouseName,
+      title: `${transferNo} · 调拨收货`,
+      description: `${requestNo ? `备货需求 ${requestNo}；` : ""}请核对 ${sourceWarehouseName || "源仓"} 调入商品并确认收货。`,
+      priority: input?.priority === "urgent" ? "urgent" : "normal",
+      dueAt: "",
+      lines: lines.map((line) => ({
+        sourceLineId: String(line.sourceLineId || ""),
+        sku: normalizedSku(line.sku),
+        plannedQuantity: Number(line.plannedQuantity || line.quantity || 0),
+        unit: String(line.unit || "件"),
+      })),
+    }, {
+      idempotencyKey: String(idempotencyKey || `stockup-transfer-task:${transferId}`),
+      actorName,
+      warehouseIds: [warehouseRef],
+      skus,
+    });
+    return { ...result, organizationCode: organization.code, organizationName: organization.name, warehouseRef };
   }
 
   function listWarehouseTasks(filters = {}, { warehouseIds = [], skus = [] } = {}) {
@@ -537,7 +582,9 @@ export function createCollaborationBridge({
       return { ...result, reference: result.workOrder?.workOrderNo || command.coreRefId };
     }
     if (command.commandType === "transfer_receive") {
-      return domesticInventoryService.receiveTransfer(command.coreRefId, context);
+      const result = domesticInventoryService.receiveTransfer(command.coreRefId, context);
+      const stockupSync = stockupCollaborationService?.syncTransferByReference?.(command.coreRefId, systemStockupContext()) || null;
+      return { ...result, stockupSync };
     }
     if (["inbound_confirm", "outbound_confirm"].includes(command.commandType)) {
       return domesticInventoryService.createMovement({
@@ -1172,6 +1219,7 @@ export function createCollaborationBridge({
     pullCommands,
     provisionOrganization,
     publishPartnerTask,
+    publishStockupTransferTask,
     publishWarehouseTask,
     queueInventoryProjection,
     queueOemProjection,
