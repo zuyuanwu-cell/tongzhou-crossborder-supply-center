@@ -121,6 +121,9 @@ networks:
   control:
     name: tongzhou-hermes-control
     internal: true
+    ipam:
+      config:
+        - subnet: ${HERMES_CONTROL_SUBNET:-172.31.86.0/24}
   host_access:
     name: tongzhou-hermes-host
     ipam:
