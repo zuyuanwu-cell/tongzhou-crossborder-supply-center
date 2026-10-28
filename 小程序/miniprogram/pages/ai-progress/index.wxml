@@ -81,7 +81,7 @@
   <view wx:if="{{recording}}" class="voice-overlay"><view class="voice-ring"><view>●</view></view><view class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></view><text>正在聆听，点击结束</text></view>
   <view class="chat-composer">
     <view class="composer-plus" bindtap="choosePhoto">＋</view>
-    <input value="{{inputText}}" bindinput="updateInput" confirm-type="send" bindconfirm="sendText" placeholder="{{session.nextQuestion || '说说订单进展，或发张照片…'}}" />
+    <input value="{{inputText}}" bindinput="updateInput" confirm-type="send" bindconfirm="sendText" placeholder="{{session.confirmedWorkItemId ? '说说这张单的进展…' : '说产品简称、单号，或直接点上面的订单'}}" />
     <view wx:if="{{inputText}}" class="send-control" bindtap="sendText">发送</view>
     <view wx:else class="voice-control {{recording ? 'is-active' : ''}}" bindtap="toggleRecording"><i></i>{{voiceBusy ? '转写' : recording ? '结束' : '语音'}}</view>
   </view>

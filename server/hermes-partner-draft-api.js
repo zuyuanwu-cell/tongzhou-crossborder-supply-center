@@ -5,6 +5,8 @@ import { verifyHermesBridgeRequest } from "./hermes-bridge-auth.js";
 
 const DRAFT_PATH = "/api/internal/hermes/v1/partner-progress-drafts";
 const ORDER_HINT_PATH = "/api/internal/hermes/v1/partner-order-hints";
+const CHAT_PATH = "/api/internal/hermes/v1/partner-chat-replies";
+const CHAT_INTENTS = new Set(["report_progress", "report_exception", "ask_order_info", "ask_help", "small_talk", "other"]);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const FUZZY_DATE_PATTERN = /(左右|大概|差不多|应该|可能|估计|差不离)/;
 const EXPLICIT_DATE_PATTERN = /(\d{4}[年\/-]\d{1,2}[月\/-]\d{1,2}日?|\d{1,2}[月\/-]\d{1,2}日?|今天|明天|后天|本周|下周|周[一二三四五六日天])/;
@@ -445,6 +447,66 @@ function orderHintInstructions() {
   ].join("\n");
 }
 
+function chatOrders(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 15).map((order) => ({
+    id: text(order?.id, 80),
+    orderNo: text(order?.orderNo || order?.referenceNo, 80),
+    productName: text(order?.productName, 120),
+    quantity: Number.isFinite(Number(order?.quantity)) ? Number(order.quantity) : null,
+    unit: text(order?.unit, 12),
+    dueDate: text(order?.dueAt, 10),
+    lastReportedStage: text(order?.currentStage, 40),
+    lastReportedPercent: order?.currentProgressPercent == null ? null : Number(order.currentProgressPercent),
+  })).filter((order) => order.id);
+}
+
+function chatHistory(value) {
+  return (Array.isArray(value) ? value : []).slice(-10).map((turn) => ({
+    role: turn?.role === "assistant" ? "assistant" : "partner",
+    text: text(turn?.text, 500),
+  })).filter((turn) => turn.text);
+}
+
+export function normalizePartnerChatReply(raw, orders = []) {
+  const input = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const allowed = new Set(orders.map((order) => order.id));
+  const reply = text(input.reply, 400).replace(/\s+\n/g, "\n");
+  const intent = CHAT_INTENTS.has(input.intent) ? input.intent : "other";
+  // Only ids from the list we sent may come back: the model can never surface another organisation's order.
+  const orderIds = [...new Set(hintValues(input.orderIds).map((id) => text(id, 80)).filter((id) => allowed.has(id)))].slice(0, 3);
+  if (!reply) throw fail("Hermes 未返回有效回复。", 502, "invalid_chat_output");
+  return { reply, intent, orderIds };
+}
+
+function chatPrompt(payload) {
+  return JSON.stringify({
+    request: "reply_to_partner_message",
+    partnerMessage: payload.text,
+    recentConversation: payload.history,
+    confirmedOrderId: payload.confirmedOrderId || "",
+    authorizedOrders: payload.orders,
+    today: isoDate(shanghaiToday()),
+    outputContract: {
+      reply: "给供应商的中文回复，1-3 句，口语、友好、具体",
+      intent: [...CHAT_INTENTS].join(" | "),
+      orderIds: ["对方明显在说的订单 id，只能从 authorizedOrders 里选，最多 3 个；不确定就留空"],
+    },
+  });
+}
+
+function chatInstructions() {
+  return [
+    "你是“同舟小助理”，代表同舟供应链中心和供应商/加工厂的对接人聊天，像一位靠谱、客气、说话简短的跟单同事。",
+    "你的唯一目标：弄清对方在说哪张加工单，并把生产进展（物料是否齐套、产前样、是否投产、预计交期、数量、异常）问清楚，整理好后由对方在页面上确认提交。",
+    "对方意图不明确时不要说“无法识别”，要像真人一样接话：先回应对方的话，再给一个具体、容易回答的问题；必要时点名 authorizedOrders 里最急的一两张单让对方选。",
+    "对方问“进度怎么样”这类问题时，要说明进度需要由他们来告诉你；可以引用 lastReportedStage/lastReportedPercent 作为“上次报的是…”，但不能编造任何进度、日期或数量。",
+    "只能使用 authorizedOrders 里的信息，不得编造订单、单号或产品；不得承诺价格、付款、交期变更等商务事项，这类问题请对方联系同舟对接人。",
+    "你不能自己提交或修改任何数据，提交一定要对方在页面上确认。禁止调用任何工具。",
+    "intent 判定：只要消息里出现任何生产事实（物料、包材、样品、投产、完成、数量、百分比、日期、发货）就填 report_progress；出现异常、延误、质量问题填 report_exception；问订单信息填 ask_order_info；问你能做什么填 ask_help；寒暄填 small_talk。",
+    "只输出一个 JSON 对象，根对象只含 reply(string)、intent(string)、orderIds(array)，不要 Markdown、解释或隐藏推理。",
+  ].join("\n");
+}
+
 export function createHermesPartnerDraftApi({
   store,
   client,
@@ -503,6 +565,60 @@ export function createHermesPartnerDraftApi({
       ...normalizePartnerOrderHints(parseModelJson(output), payload.text),
       model: runtime.model,
       provider: runtime.provider || "custom:tongzhou",
+      usage,
+      latencyMs: Date.now() - startedAt,
+    };
+  }
+
+  async function generateChatReply(payload) {
+    const runtime = resolveRuntimeConfig?.() || {};
+    if (runtime.configured === false) throw fail("DeepSeek 尚未配置。", 503, "model_not_configured");
+    if (!client?.configured?.()) throw fail("Hermes 伙伴轻量档案尚未配置。", 503, "partner_profile_not_configured");
+    const startedAt = Date.now();
+    const requestHash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const remote = await client.createRun({
+      input: chatPrompt(payload),
+      sessionId: `tz_partner_chat_${randomUUID()}`,
+      model: runtime.model,
+      instructions: chatInstructions(),
+      idempotencyKey: `partner_chat_${requestHash}_${randomUUID()}`,
+    });
+    let output = "";
+    let usage = {};
+    try {
+      const response = await client.events(remote.run_id, { timeoutMs });
+      for await (const event of parseSseStream(response)) {
+        const type = hermesEventType(event);
+        const data = event?.data && typeof event.data === "object" ? event.data : {};
+        if (type === "tool.started") {
+          void client.stop(remote.run_id).catch(() => {});
+          throw fail("伙伴对话禁止调用工具。", 502, "partner_tool_forbidden");
+        }
+        if (type === "run.completed") {
+          output = String(data.output || data.text || "");
+          usage = data.usage || {};
+          break;
+        }
+        if (["run.failed", "run.cancelled", "run.interrupted"].includes(type)) {
+          throw fail(text(data.error || data.message, 500) || "Hermes 回复失败。", 502, "partner_chat_failed");
+        }
+      }
+      if (!output) {
+        const status = await client.getRun(remote.run_id);
+        if (status.status !== "completed") throw fail("Hermes 回复超时。", 504, "partner_chat_timeout");
+        output = String(status.output || "");
+        usage = status.usage || {};
+      }
+    } catch (error) {
+      if (error?.name === "AbortError" || ["hermes_timeout", "partner_chat_timeout"].includes(error?.code)) {
+        void client.stop(remote.run_id).catch(() => {});
+        throw fail("Hermes 回复超时。", 504, "partner_chat_timeout");
+      }
+      throw error;
+    }
+    return {
+      ...normalizePartnerChatReply(parseModelJson(output), payload.orders),
+      model: runtime.model,
       usage,
       latencyMs: Date.now() - startedAt,
     };
@@ -590,7 +706,7 @@ export function createHermesPartnerDraftApi({
   }
 
   return async function handleHermesPartnerDraftApi(req, res, url) {
-    if (url.pathname !== DRAFT_PATH && url.pathname !== ORDER_HINT_PATH) return false;
+    if (url.pathname !== DRAFT_PATH && url.pathname !== ORDER_HINT_PATH && url.pathname !== CHAT_PATH) return false;
     if (req.method !== "POST") {
       sendJson(res, 405, { ok: false, code: "method_not_allowed", message: "Method not allowed." });
       return true;
@@ -617,6 +733,19 @@ export function createHermesPartnerDraftApi({
         text: text(payload?.text, 2_000),
         task: payload?.task && typeof payload.task === "object" ? payload.task : {},
       };
+      if (url.pathname === CHAT_PATH) {
+        if (!input.principal.organizationId || !input.principal.userId || !input.text) {
+          throw fail("Partner principal and text are required.", 400, "invalid_partner_chat_request");
+        }
+        const result = await generateChatReply({
+          ...input,
+          history: chatHistory(payload?.history),
+          orders: chatOrders(payload?.orders),
+          confirmedOrderId: text(payload?.confirmedOrderId, 80),
+        });
+        sendJson(res, 200, { ok: true, chat: result });
+        return true;
+      }
       if (url.pathname === ORDER_HINT_PATH) {
         if (!input.principal.organizationId || !input.principal.userId || !input.text) {
           throw fail("Partner principal and text are required.", 400, "invalid_partner_order_hint_request");

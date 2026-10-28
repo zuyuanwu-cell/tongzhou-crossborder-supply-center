@@ -3,6 +3,7 @@ import { collaborationConfig } from "./config.js";
 
 const DRAFT_PATH = "/api/internal/hermes/v1/partner-progress-drafts";
 const ORDER_HINT_PATH = "/api/internal/hermes/v1/partner-order-hints";
+const CHAT_PATH = "/api/internal/hermes/v1/partner-chat-replies";
 
 function fail(message, statusCode = 502, code = "partner_ai_bridge_error") {
   return Object.assign(new Error(message), { statusCode, code });
@@ -53,6 +54,11 @@ async function requestPartnerAi(path, payload, { fetchImpl = globalThis.fetch, t
 export async function requestPartnerProgressDraft(payload, options = {}) {
   const result = await requestPartnerAi(DRAFT_PATH, payload, options);
   return result.draft;
+}
+
+export async function requestPartnerChatReply(payload, options = {}) {
+  const result = await requestPartnerAi(CHAT_PATH, payload, { timeoutMs: 20_000, ...options });
+  return result.chat;
 }
 
 export async function requestPartnerOrderHints(payload, options = {}) {

@@ -176,6 +176,10 @@ Page({
       this.setData({ sessionId: created.session.id });
       const result = await api.fetchPartnerAiSession(created.session.id);
       this.applySession(result.session);
+      // The server opens with the orders due soonest (or explains why there are none).
+      if (result.session?.nextQuestion && !this._initialPrompt) {
+        this.setData({ messages: [{ role: "assistant", text: result.session.nextQuestion }] });
+      }
       if (this._initialPrompt) {
         const prompt = this._initialPrompt;
         this._initialPrompt = "";
@@ -310,8 +314,8 @@ Page({
     try {
       const result = await api.transcribePartnerAiSessionAudio(this.data.sessionId, {
         tempFilePath: recording.tempFilePath,
-        durationMs: Math.min(50_000, Number(recording.duration)),
-        sizeBytes: fileSize,
+        durationMs: Math.max(1, Math.min(50_000, Math.round(Number(recording.duration)))),
+        sizeBytes: Math.round(fileSize),
         fileName: `quick-progress-${Date.now()}.mp3`,
         mimeType: "audio/mpeg",
       });
