@@ -26,6 +26,7 @@ import {
   ExternalLink,
   Factory,
   FileText,
+  FlaskConical,
   Grid2X2,
   Globe2,
   GitBranch,
@@ -244,6 +245,7 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
+import { PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
 import { SystemBackupPage } from "./SystemBackupPage";
 import ReviewCenter from "./ReviewCenter";
 import QualificationCoveragePage from "./QualificationCoveragePage";
@@ -424,6 +426,10 @@ const navItems = [
   { label: "仓库信息", icon: Truck, hash: "#warehouse-info", section: "inventory", permission: "warehouse_info" },
   { label: "国内仓进销存", icon: WarehouseIcon, hash: "#domestic-inventory", section: "inventory", permission: "domestic_inventory_view" },
   { label: "伙伴协同", icon: Handshake, hash: "#partner-collaboration", section: "collaboration", permission: "collaboration_task_view", alternativePermission: "collaboration_task_publish" },
+  { label: "委外加工协同", icon: Factory, hash: "#outsourcing-collaboration", section: "collaboration", permission: "operations", hidden: true },
+  { label: "物料采购协同", icon: PackageCheck, hash: "#procurement-collaboration", section: "collaboration", permission: "operations", hidden: true },
+  { label: "料体打样协同", icon: FlaskConical, hash: "#material-sampling-collaboration", section: "collaboration", permission: "operations", hidden: true },
+  { label: "包材打样协同", icon: Boxes, hash: "#packaging-sampling-collaboration", section: "collaboration", permission: "operations", hidden: true },
   { label: "海外仓协同", icon: ShieldCheck, hash: "#after-sales", section: "collaboration", permission: "after_sales_report", alternativePermission: "after_sales_warehouse", additionalPermissions: ["warehouse_ticket_report", "warehouse_ticket_warehouse", "warehouse_return_query", "warehouse_liability_settlement"] },
   { label: "备货中心", icon: PackageCheck, hash: "#stockup", section: "stockup", permission: "stockup_request_view_own", additionalPermissions: ["stockup_request_view_all", "stockup_workflow_view", "stockup_execution_view"] },
   { label: "备货建议", icon: ClipboardList, hash: "#stockup-recommendations", section: "stockup", childOf: "备货中心", permission: "stockup_recommendations_view" },
@@ -477,8 +483,9 @@ function hashForView(view: string) {
   return navItems.find((item) => item.label === view)?.hash ?? "#dashboard";
 }
 
-function visibleNavItems(user: AuthUser) {
+function authorizedNavItems(user: AuthUser, includeHidden = false) {
   const allowedItems = navItems.filter((item) => {
+    if (!includeHidden && "hidden" in item && item.hidden) return false;
     if ("adminOnly" in item && item.adminOnly && user.role !== "admin") return false;
     const requiredPermissions = "requiredPermissions" in item && Array.isArray(item.requiredPermissions) ? item.requiredPermissions : [];
     if (!requiredPermissions.every((permission) => hasUserPermission(user, permission))) return false;
@@ -499,6 +506,10 @@ function visibleNavItems(user: AuthUser) {
       ? { ...item, childOf: undefined }
       : item
   ));
+}
+
+function visibleNavItems(user: AuthUser) {
+  return authorizedNavItems(user, false);
 }
 
 function formatNumber(value: number) {
@@ -1949,8 +1960,8 @@ function App() {
   }
 
   const currentLocale = normalizeUiLocale(currentUser.locale);
-  const canRenderActiveView = authReady && visibleNavItems(currentUser).some((item) => item.label === activeView);
-  const currentNavItem = visibleNavItems(currentUser).find((item) => item.label === activeView);
+  const canRenderActiveView = authReady && authorizedNavItems(currentUser, true).some((item) => item.label === activeView);
+  const currentNavItem = authorizedNavItems(currentUser, true).find((item) => item.label === activeView);
   const currentNavSection = navSections.find((section) => section.id === currentNavItem?.section);
   const activeRoute = hashForView(activeView);
   const canHandoffToHermes = activeView !== "智能体工作台"
@@ -2119,6 +2130,14 @@ function App() {
           <OzonOrderCenter currentUser={currentUser} />
         ) : activeView === "伙伴协同" ? (
           <WarehouseCollaborationTasks currentUser={currentUser} />
+        ) : activeView === "委外加工协同" ? (
+          <PartnerCollaborationWorkspace taskType="production_order" />
+        ) : activeView === "物料采购协同" ? (
+          <PartnerCollaborationWorkspace taskType="purchase_order" />
+        ) : activeView === "料体打样协同" ? (
+          <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="inner_material" />
+        ) : activeView === "包材打样协同" ? (
+          <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="packaging" />
         ) : activeView === "海外仓协同" ? (
           <WarehouseCollaborationCenter currentUser={currentUser} />
         ) : activeView === "库存快照" ? (

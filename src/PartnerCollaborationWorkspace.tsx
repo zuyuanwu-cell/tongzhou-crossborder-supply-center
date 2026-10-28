@@ -89,18 +89,25 @@ export function PartnerCollaborationWorkspace({ taskType, sampleCategory }: { ta
   const [accessLoading, setAccessLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const routeParams = useMemo(() => new URLSearchParams(window.location.hash.split("?", 2)[1] || ""), []);
+  const requestedOrganizationCode = routeParams.get("organization") || "";
+  const requestedSection = routeParams.get("section") || "";
   const notify = useCallback((message: string, isError = false) => { if (isError) setError(message); else setNotice(message); }, []);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
       const payload = await fetchCollaborationOrganizations({ status: "active" });
-      const eligible = (payload.organizations || []).filter((organization) => sampleCategory ? definition.eligibleOrganizationTypes.includes(organization.organizationType) : organizationSupportsTask(organization.organizationType, taskType));
+      const eligible = (payload.organizations || []).filter((organization) => organization.code === requestedOrganizationCode || (sampleCategory ? definition.eligibleOrganizationTypes.includes(organization.organizationType) : organizationSupportsTask(organization.organizationType, taskType)));
       setOrganizations(eligible);
-      setSelectedCode((current) => eligible.some((item) => item.code === current) ? current : (eligible[0]?.code || ""));
+      setSelectedCode((current) => {
+        if (eligible.some((item) => item.code === current)) return current;
+        if (eligible.some((item) => item.code === requestedOrganizationCode)) return requestedOrganizationCode;
+        return eligible[0]?.code || "";
+      });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "伙伴组织读取失败"); }
     finally { setLoading(false); }
-  }, [taskType, sampleCategory]);
+  }, [taskType, sampleCategory, requestedOrganizationCode]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -109,6 +116,12 @@ export function PartnerCollaborationWorkspace({ taskType, sampleCategory }: { ta
     void fetchCollaborationOrganizationAccessGrants(selectedCode).then((payload) => { if (active) setAccess(payload); }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "伙伴权限读取失败"); }).finally(() => { if (active) setAccessLoading(false); });
     return () => { active = false; };
   }, [selectedCode]);
+
+  useEffect(() => {
+    if (accessLoading || !access || requestedSection !== "factory-mapping" || selectedCode !== requestedOrganizationCode) return;
+    const frame = window.requestAnimationFrame(() => document.getElementById("outsourcing-factory-mapping")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [access, accessLoading, requestedOrganizationCode, requestedSection, selectedCode]);
 
   const visibleOrganizations = useMemo(() => { const value = keyword.trim().toLowerCase(); return value ? organizations.filter((item) => `${item.name} ${item.code}`.toLowerCase().includes(value)) : organizations; }, [organizations, keyword]);
   const selected = organizations.find((item) => item.code === selectedCode) || null;
