@@ -562,18 +562,16 @@ function ProductionProcessFlow({ value, reports }: { value?: string; reports: No
   const steps = processSteps(value);
   const progress = latestReport(reports, "production_progress");
   const exception = latestReport(reports, "exception");
-  const percent = Math.max(0, Math.min(100, Number(progress?.progressPercent || 0)));
-  const stageKeywords: Record<string, string[]> = { filling: ["灌装"], packaging: ["包装", "装盒", "装箱", "贴标", "打码"], quality_check: ["质检", "检验", "测试"], ready_to_ship: ["发货", "出库"] };
-  const stageIndex = steps.findIndex((step) => (stageKeywords[progress?.stage || ""] || []).some((keyword) => step.includes(keyword)));
-  const currentIndex = percent >= 100 ? steps.length : stageIndex >= 0 ? stageIndex : Math.min(steps.length - 1, Math.floor(percent / Math.max(1, 100 / steps.length)));
-  const blocked = Boolean(exception && (!progress || Date.parse(exception.createdAt) > Date.parse(progress.createdAt)) && percent < 100);
-  const [selected, setSelected] = React.useState(Math.max(0, currentIndex));
-  React.useEffect(() => setSelected(Math.max(0, currentIndex)), [value, currentIndex]);
-  if (!steps.length) return <section className="production-flow empty"><header><div><span>PRODUCTION ROUTE</span><h4>生产工序</h4></div></header><p>首件档案和加工单中暂未填写生产工序。</p></section>;
+  const latestNote = exception && (!progress || Date.parse(exception.createdAt) > Date.parse(progress.createdAt))
+    ? (exception.note || exception.title || "存在待处理异常")
+    : progress?.note;
+  const [selected, setSelected] = React.useState(0);
+  React.useEffect(() => setSelected(0), [value]);
+  if (!steps.length) return <section className="production-flow empty"><header><div><span>PRODUCTION REMINDERS</span><h4>生产工序提醒</h4></div></header><p>首件档案和加工单中暂未填写需要提醒的生产工序。</p></section>;
   return <section className="production-flow">
-    <header><div><span>PRODUCTION ROUTE</span><h4>生产工序流程</h4></div><strong className={blocked ? "blocked" : ""}>{blocked ? "当前有异常" : percent ? `整体进度 ${percent}%` : "等待工厂更新"}</strong></header>
-    <ol>{steps.map((step, index) => { const state = percent >= 100 || index < currentIndex ? "completed" : index === currentIndex ? (blocked ? "blocked" : "current") : "pending"; return <li className={`${state} ${selected === index ? "selected" : ""}`} key={`${step}-${index}`}><button type="button" onClick={() => setSelected(index)} aria-label={`查看工序：${step}`}><span>{state === "completed" ? <Check size={14} /> : state === "blocked" ? <AlertTriangle size={14} /> : index + 1}</span><b>{step}</b><small>{state === "completed" ? "已完成" : state === "current" ? "当前工序" : state === "blocked" ? "异常待处理" : "待开始"}</small></button></li>; })}</ol>
-    <footer><div><span>当前查看</span><b>{steps[selected]}</b></div><p>{selected === currentIndex && progress?.note ? progress.note : selected === currentIndex && blocked ? (exception?.note || exception?.title || "存在待处理异常") : selected < currentIndex || percent >= 100 ? "该工序已按当前整体进度完成。" : "等待前序工序完成后开始。"}</p></footer>
+    <header><div><span>PRODUCTION REMINDERS</span><h4>生产工序提醒</h4></div><strong>不分先后</strong></header>
+    <ol>{steps.map((step, index) => <li className={`reminder ${selected === index ? "selected" : ""}`} key={`${step}-${index}`}><button type="button" onClick={() => setSelected(index)} aria-label={`查看工序提醒：${step}`}><span>•</span><b>{step}</b><small>按实际安排</small></button></li>)}</ol>
+    <footer><div><span>提醒事项</span><b>{steps[selected]}</b></div><p>{latestNote || "这些工序仅用于提醒工厂注意，不代表固定先后顺序，也不会限制其他工序开始。"}</p></footer>
   </section>;
 }
 

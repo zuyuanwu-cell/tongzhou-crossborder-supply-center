@@ -132,26 +132,13 @@ function buildProductionOverview(items, dashboard, focus, referenceDate) {
   return buildDeliveryOverview(items, dashboard, focus, referenceDate, "production");
 }
 
-function productionSteps(processText, reports) {
-  const steps = String(processText || "").split(/[、,，;；>→\n]+/).map((item) => item.trim()).filter(Boolean);
-  const fallback = ["排产准备", "物料准备", "生产加工", "质检", "待发货"];
-  const list = steps.length ? steps : fallback;
-  const progress = [...(reports || [])].find((item) => item.reportType === "production_progress") || {};
-  const exception = [...(reports || [])].find((item) => item.reportType === "exception") || {};
-  const percent = Math.max(0, Math.min(100, Number(progress.progressPercent || 0)));
-  const stageWords = {
-    planning: ["排产", "准备"], material_preparation: ["物料", "备料"],
-    filling: ["灌装", "生产", "加工"], packaging: ["包装", "装盒", "装箱", "贴标", "打码"],
-    quality_check: ["质检", "检验", "测试"], ready_to_ship: ["发货", "出库"],
-  };
-  const matchedIndex = list.findIndex((step) => (stageWords[progress.stage] || []).some((word) => step.includes(word)));
-  const current = percent >= 100 ? list.length : matchedIndex >= 0 ? matchedIndex : Math.min(list.length - 1, Math.floor(percent / Math.max(1, 100 / list.length)));
-  const blocked = Boolean(exception.createdAt && (!progress.createdAt || Date.parse(exception.createdAt) > Date.parse(progress.createdAt)) && percent < 100);
+function productionSteps(processText) {
+  const list = [...new Set(String(processText || "").split(/[、,，;；>→\n]+/).map((item) => item.trim()).filter(Boolean))];
   return list.map((label, index) => ({
     number: index + 1,
     label,
-    state: percent >= 100 || index < current ? "completed" : index === current ? blocked ? "blocked" : "current" : "pending",
-    note: index === current ? (blocked ? exception.note || exception.title || "存在待处理异常" : progress.note || "等待工厂更新") : "",
+    state: "reminder",
+    note: "",
   }));
 }
 

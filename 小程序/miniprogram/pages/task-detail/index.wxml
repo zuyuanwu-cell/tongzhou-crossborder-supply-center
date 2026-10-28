@@ -15,11 +15,11 @@
       <view wx:if="{{canAiReport}}" class="ai-report-card card">
         <view class="ai-report-head" bindtap="toggleAiCard"><view><text>HERMES QUICK REPORT</text><strong>快速汇报</strong><small>说一段或写一段，生成可编辑草稿</small></view><text>{{aiExpanded ? '收起⌃' : '展开⌄'}}</text></view>
         <view wx:if="{{aiExpanded}}" class="ai-report-body">
-          <textarea value="{{aiText}}" bindinput="updateAiText" disabled="{{!aiTextEnabled && !aiTranscriptionId}}" maxlength="2000" placeholder="{{aiTextEnabled ? '例如：已经灌装 5000 瓶，完成 60%，预计周五结束。' : '请先录音，转写后可修改文字。'}}" />
+          <textarea value="{{aiText}}" bindinput="updateAiText" disabled="{{!aiTextEnabled && !aiTranscriptionId}}" maxlength="2000" placeholder="{{aiTextEnabled ? aiPlaceholder : '请先录音，转写后可修改文字。'}}" />
           <view class="ai-report-actions"><button wx:if="{{aiVoiceEnabled}}" class="ai-voice-button {{aiRecording ? 'is-recording' : ''}}" loading="{{aiVoiceBusy}}" disabled="{{aiBusy || aiVoiceBusy}}" bindtap="toggleAiRecording">{{aiRecording ? '■ 结束录音' : '● 语音输入'}}</button><button class="ai-generate-button" loading="{{aiBusy}}" disabled="{{aiBusy || aiVoiceBusy || (!aiTextEnabled && !aiTranscriptionId)}}" bindtap="generateAiDraft">生成草稿</button></view>
           <view wx:if="{{aiMessage}}" class="ai-report-message">{{aiMessage}}</view><view wx:if="{{aiError}}" class="ai-report-error">{{aiError}}</view>
           <view wx:if="{{aiDraft}}" class="ai-draft">
-            <view class="ai-draft-title"><strong>Hermes 草稿</strong><text>不会自动提交</text></view>
+            <view class="ai-draft-title"><strong>小助理草稿</strong><text>不会自动提交</text></view>
             <view class="ai-draft-note">{{aiDraft.fields.note}}</view>
             <view wx:if="{{aiDraft.evidence.length}}" class="ai-evidence"><view wx:for="{{aiDraft.evidence}}" wx:key="field"><strong>{{item.label}}：{{item.normalizedValue}}</strong><text>原话“{{item.sourceQuote}}”</text></view></view>
             <view wx:if="{{aiDraft.missingFields.length}}" class="ai-missing">待补字段：{{aiDraft.missingText}}</view>
@@ -41,7 +41,7 @@
       <view class="detail-section"><view class="section-title"><view><text class="eyebrow">INSTRUCTIONS</text><strong>协同要求</strong></view></view><view class="instruction-card card"><text>{{item.description || '请按任务要求完成处理并及时反馈。'}}</text><view wx:if="{{item.publicPayload.note || item.publicPayload.requirements}}">特别说明：{{item.publicPayload.note || item.publicPayload.requirements}}</view></view></view>
 
       <view wx:if="{{detailMode !== 'warehouse'}}" class="detail-section">
-        <view class="section-title"><view><text class="eyebrow">{{isPartnerOrder ? 'ORDER BRIEF' : 'PROJECT BRIEF'}}</text><strong>{{isPartnerOrder ? '订单资料' : '项目资料'}}</strong></view><text>{{isPartnerOrder ? fulfillmentLabel : item.publicPayload.documentVersion}}</text></view>
+        <view class="section-title"><view><text class="eyebrow">{{isPartnerOrder ? 'ORDER BRIEF' : 'PROJECT BRIEF'}}</text><strong>{{isPartnerOrder ? '订单资料' : '项目资料'}}</strong></view><text>{{isPartnerOrder ? fulfillmentLabel : (item.publicPayload.documentVersion || '')}}</text></view>
         <view class="oem-facts card"><view wx:for="{{facts}}" wx:key="label"><text>{{item.label}}</text><strong>{{item.value}}</strong></view></view>
       </view>
 
@@ -60,11 +60,11 @@
       </view>
 
       <view wx:if="{{detailMode === 'production'}}" class="detail-section">
-        <view class="section-title"><view><text class="eyebrow">PRODUCTION FLOW</text><strong>生产工序</strong></view><text>以最新反馈定位当前节点</text></view>
+        <view class="section-title"><view><text class="eyebrow">PRODUCTION REMINDERS</text><strong>生产工序提醒</strong></view><text>不分先后，按实际安排执行</text></view>
         <view class="process-card card">
           <view wx:for="{{processSteps}}" wx:key="number" class="process-row process-row--{{item.state}}">
-            <view class="process-axis"><view class="process-number">{{item.state === 'completed' ? '✓' : item.number}}</view><view class="process-line"></view></view>
-            <view class="process-main"><view><strong>{{item.label}}</strong><text>{{item.state === 'completed' ? '已完成' : item.state === 'current' ? '当前节点' : item.state === 'blocked' ? '存在异常' : '待开始'}}</text></view><small wx:if="{{item.note}}">{{item.note}}</small></view>
+            <view class="process-axis"><view class="process-number">•</view><view class="process-line"></view></view>
+            <view class="process-main"><view><strong>{{item.label}}</strong><text>需关注</text></view><small wx:if="{{item.note}}">{{item.note}}</small></view>
           </view>
         </view>
       </view>
