@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const sourceUrl = new URL("../server/server.js", import.meta.url);
+const composeUrl = new URL("../integrations/hermes/docker-compose.yml", import.meta.url);
 
 test("production server wires the isolated Hermes partner profile", async () => {
   const source = await readFile(sourceUrl, "utf8");
@@ -26,4 +27,14 @@ test("partner draft route is registered before the catch-all Hermes API", async 
   assert.notEqual(partnerRoute, -1, "partner draft route must be registered");
   assert.notEqual(generalRoute, -1, "general Hermes route must be registered");
   assert.ok(partnerRoute < generalRoute, "partner draft route must run before the catch-all Hermes API");
+});
+
+test("partner profile receives the current model proxy credential directly", async () => {
+  const compose = await readFile(composeUrl, "utf8");
+
+  assert.match(
+    compose,
+    /HERMES_PARTNER_MODEL_API_KEY:\s*\$\{HERMES_PARTNER_MODEL_PROXY_KEY:/,
+    "the partner provider key must not depend on a stale .env file in the persistent Hermes volume",
+  );
 });

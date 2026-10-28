@@ -61,6 +61,10 @@ services:
       HERMES_MODEL_API_KEY: ${HERMES_MODEL_PROXY_KEY:?HERMES_MODEL_PROXY_KEY is required}
       # Separate identity lets Node enforce JSON-only, low-temperature partner extraction.
       HERMES_PARTNER_MODEL_PROXY_KEY: ${HERMES_PARTNER_MODEL_PROXY_KEY:?HERMES_PARTNER_MODEL_PROXY_KEY is required}
+      # The partner profile resolves its provider credential through key_env.
+      # Keep the resolved name in the container environment instead of relying
+      # on a mutable profile .env file left in the persistent state volume.
+      HERMES_PARTNER_MODEL_API_KEY: ${HERMES_PARTNER_MODEL_PROXY_KEY:?HERMES_PARTNER_MODEL_PROXY_KEY is required}
       TONGZHOU_BRIDGE_BASE_URL: ${TONGZHOU_BRIDGE_BASE_URL:-http://host.docker.internal:8787}
     # control: internal-only private network (no route out).
     # host_access: ordinary bridge. Docker skips port publishing for containers that only
