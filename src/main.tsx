@@ -1137,7 +1137,11 @@ function App() {
 
   React.useEffect(() => {
     if (!authReady) return;
-    const allowedItems = visibleNavItems(currentUser);
+    // Hidden routes are valid deep links from administrator workspaces. They
+    // stay out of the sidebar, but must participate in the active-route guard;
+    // otherwise an authorized administrator is redirected to the first visible
+    // menu item before the hidden workspace can render.
+    const allowedItems = authorizedNavItems(currentUser, true);
     const allowed = allowedItems.some((item) => item.label === activeView);
     if (allowed) return;
     const fallbackView = allowedItems[0]?.label || "产品库";
