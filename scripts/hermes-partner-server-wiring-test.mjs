@@ -37,4 +37,7 @@ test("partner profile receives the current model proxy credential directly", asy
     /HERMES_PARTNER_MODEL_API_KEY:\s*\$\{HERMES_PARTNER_MODEL_PROXY_KEY:/,
     "the partner provider key must not depend on a stale .env file in the persistent Hermes volume",
   );
+  assert.match(compose, /hermes-secrets-init:/);
+  assert.match(compose, /tongzhou-partner-progress\/\.env\.next/);
+  assert.match(compose, /condition:\s*service_completed_successfully/);
 });

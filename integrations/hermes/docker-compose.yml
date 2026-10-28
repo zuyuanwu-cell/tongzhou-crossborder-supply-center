@@ -1,8 +1,40 @@
 services:
+  hermes-secrets-init:
+    image: ${HERMES_RUNTIME_IMAGE:?Set HERMES_RUNTIME_IMAGE to the reviewed image@sha256 digest}
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        mkdir -p /opt/data/profiles/tongzhou-partner-progress
+        printf '%s\n' \
+          "HERMES_MODEL_API_KEY=$${HERMES_MODEL_API_KEY}" \
+          > /opt/data/.env.next
+        printf '%s\n' \
+          "API_SERVER_KEY=$${HERMES_PARTNER_API_KEY}" \
+          "HERMES_PARTNER_MODEL_API_KEY=$${HERMES_PARTNER_MODEL_API_KEY}" \
+          > /opt/data/profiles/tongzhou-partner-progress/.env.next
+        chown hermes:hermes \
+          /opt/data/.env.next \
+          /opt/data/profiles/tongzhou-partner-progress/.env.next
+        mv -f /opt/data/.env.next /opt/data/.env
+        mv -f \
+          /opt/data/profiles/tongzhou-partner-progress/.env.next \
+          /opt/data/profiles/tongzhou-partner-progress/.env
+    environment:
+      HERMES_MODEL_API_KEY: ${HERMES_MODEL_PROXY_KEY:?HERMES_MODEL_PROXY_KEY is required}
+      HERMES_PARTNER_API_KEY: ${HERMES_PARTNER_API_KEY:?HERMES_PARTNER_API_KEY is required}
+      HERMES_PARTNER_MODEL_API_KEY: ${HERMES_PARTNER_MODEL_PROXY_KEY:?HERMES_PARTNER_MODEL_PROXY_KEY is required}
+    volumes:
+      - hermes-state:/opt/data
+
   hermes:
     image: ${HERMES_RUNTIME_IMAGE:?Set HERMES_RUNTIME_IMAGE to the reviewed image@sha256 digest}
     container_name: tongzhou-hermes
     restart: unless-stopped
+    depends_on:
+      hermes-secrets-init:
+        condition: service_completed_successfully
     command:
       - /bin/sh
       - -ec
