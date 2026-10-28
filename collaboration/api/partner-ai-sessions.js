@@ -3,7 +3,7 @@ import { z } from "zod";
 import { assertWorkItemPermission, workItemAccessPredicate } from "./access.js";
 import { withOrganization } from "./db.js";
 import { createPartnerProgressDraft } from "./partner-ai.js";
-import { requestPartnerOrderHints } from "./partner-ai-bridge.js";
+import { requestPartnerChatReply, requestPartnerOrderHints } from "./partner-ai-bridge.js";
 import { jsonbParameter } from "./jsonb-parameter.js";
 import { getPartnerAiSettings, partnerAiQuickReportEnabledFor } from "./partner-ai-settings.js";
 
@@ -147,6 +147,35 @@ function candidateFromRow(row) {
     status: row.status,
   };
 }
+
+const CONVERSATION_ONLY_INTENTS = new Set(["ask_order_info", "ask_help", "small_talk", "other"]);
+
+// Rebuilds a short transcript for the conversational reply: the partner's recent lines plus the
+// assistant's last question (the session keeps only those two, which is enough context).
+function conversationFor(session) {
+  const partnerLines = String(session.source_text || "").split("\n").map((line) => line.trim()).filter(Boolean).slice(-5);
+  const history = partnerLines.map((line) => ({ role: "partner", text: line }));
+  if (session.next_question) history.push({ role: "assistant", text: String(session.next_question) });
+  return history;
+}
+
+function orderSummariesForChat(orders, confirmedWorkItemId) {
+  const list = Array.isArray(orders) ? orders : [];
+  const confirmed = list.filter((order) => order.id === confirmedWorkItemId);
+  const others = list.filter((order) => order.id !== confirmedWorkItemId).slice(0, 15 - confirmed.length);
+  return [...confirmed, ...others].map((order) => ({
+    id: order.id,
+    orderNo: order.orderNo || order.referenceNo,
+    productName: order.productName,
+    quantity: order.quantity,
+    unit: order.unit,
+    dueAt: order.dueAt,
+    currentStage: order.currentStage,
+    currentProgressPercent: order.currentProgressPercent,
+  }));
+}
+
+const PARTNER_HELP_PATTERN = /(帮我做什么|能做什么|可以做什么|怎么用|你是谁|干什么的|有什么用|帮助)/;
 
 export function rankPartnerOrderCandidates(message, candidates, limit = 5, hints = {}) {
   const byOrder = new Map();
@@ -408,11 +437,17 @@ export async function createPartnerAiSession(auth, input = {}) {
       [auth.user.id, auth.organization.id, parsed.scenario],
     )).rows[0];
     if (existing) return { ok: true, resumed: true, session: sessionPayload(existing, { candidates: await cardsForIds(client, auth, existing.candidate_ids || [], existing.source_text), voiceEnabled: partnerAiQuickReportEnabledFor(config, auth.organization.id, "voice") }) };
+    // Open with the orders due soonest so the partner can tap instead of typing an order number.
+    const candidates = (await eligibleProductionOrders(client, auth)).slice(0, 5);
+    const nextQuestion = candidates.length
+      ? "这是你们最近要交的加工单，点一下要汇报的那张；也可以直接说产品简称或单号。"
+      : "目前没有可以汇报的加工单：只有已接单、正在生产的委外加工单才能用小助理汇报。如果任务里的加工单还是“待接单”，请先去任务里接单。";
     const row = (await client.query(
-      "INSERT INTO partner_ai_sessions(organization_id,user_id,scenario,next_question) VALUES ($1,$2,$3,'请说产品名称、SKU、条码或加工单号。') RETURNING *",
-      [auth.organization.id, auth.user.id, parsed.scenario],
+      `INSERT INTO partner_ai_sessions(organization_id,user_id,scenario,next_question,state,candidate_ids,candidate_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [auth.organization.id, auth.user.id, parsed.scenario, nextQuestion, candidates.length ? "confirming_order" : "identifying_order", jsonbParameter(candidates.map((item) => item.id), []), candidates.length],
     )).rows[0];
-    return { ok: true, resumed: false, session: sessionPayload(row, { candidates: [], voiceEnabled: partnerAiQuickReportEnabledFor(config, auth.organization.id, "voice") }) };
+    return { ok: true, resumed: false, session: sessionPayload(row, { candidates, voiceEnabled: partnerAiQuickReportEnabledFor(config, auth.organization.id, "voice") }) };
   });
 }
 
@@ -447,16 +482,30 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
       )).rows[0];
       if (!transcription || transcription.status !== "completed") fail("语音转写尚未完成或不属于本次会话。", 409, "transcription_not_completed");
     }
-    return { confirmedWorkItemId: session.confirmed_work_item_id || "" };
+    return {
+      confirmedWorkItemId: session.confirmed_work_item_id || "",
+      history: conversationFor(session),
+      orders: await eligibleProductionOrders(client, auth),
+    };
   });
   let orderHints = {};
   let matchingMode = "deterministic_fallback";
+  const principal = { organizationId: auth.organization.id, userId: auth.user.id };
+  // The conversational reply lets 同舟小助理 answer like a person even when the intent is unclear.
+  // It never writes data: drafts and submissions still go through the existing confirmed flow.
+  const chatPromise = requestPartnerChatReply({
+    principal,
+    text: parsed.text,
+    history: snapshot.history,
+    orders: orderSummariesForChat(snapshot.orders, snapshot.confirmedWorkItemId),
+    confirmedOrderId: snapshot.confirmedWorkItemId,
+  }).catch((error) => {
+    console.warn("[collaboration:partner-ai-chat]", JSON.stringify({ sessionId, organizationId: auth.organization.id, code: String(error?.code || "partner_chat_failed") }));
+    return null;
+  });
   if (!snapshot.confirmedWorkItemId) {
     try {
-      orderHints = await requestPartnerOrderHints({
-        principal: { organizationId: auth.organization.id, userId: auth.user.id },
-        text: parsed.text,
-      });
+      orderHints = await requestPartnerOrderHints({ principal, text: parsed.text });
       matchingMode = "hermes_assisted";
     } catch (error) {
       console.warn("[collaboration:partner-ai-match]", JSON.stringify({
@@ -467,6 +516,7 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
       }));
     }
   }
+  const chat = await chatPromise;
   const prepared = await withOrganization(auth.organization.id, async (client) => {
     const session = await sessionForUser(client, auth, sessionId, { lock: true });
     if (session.state === "submitted") fail("本次汇报已经提交。", 409, "session_submitted");
@@ -480,10 +530,21 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
     }
     if (!session.confirmed_work_item_id) {
       const eligible = await eligibleProductionOrders(client, auth);
-      const candidates = rankPartnerOrderCandidates(parsed.text, eligible, 5, orderHints);
+      const matched = rankPartnerOrderCandidates(parsed.text, eligible, 5, orderHints);
+      const chatPicked = chat?.orderIds?.length ? eligible.filter((item) => chat.orderIds.includes(item.id)) : [];
+      // A vague message ("进度怎么样" / "你能做什么") matches nothing; instead of a dead end,
+      // use the orders the conversation points to, or the ones due soonest, so the partner can just tap one.
+      const candidates = matched.length ? matched : chatPicked.length ? chatPicked : eligible.slice(0, 5);
       const ids = candidates.map((item) => item.id);
       const state = candidates.length ? "confirming_order" : "identifying_order";
-      const nextQuestion = candidates.length ? "我找到了几张可能的加工单，请点击确认对应的订单。" : "暂时没有找到可靠候选。你可以说产品简称、品牌、用途、SKU 片段，或加工单号中的任意一段。";
+      const helpIntro = PARTNER_HELP_PATTERN.test(parsed.text)
+        ? "我可以帮你把加工单的生产进度整理成汇报：先选订单，再说进展（物料、产前样、投产、交期），你确认后才会提交。"
+        : "";
+      const nextQuestion = chat?.reply ? chat.reply : matched.length
+        ? "我找到了几张可能的加工单，请点击确认对应的订单。"
+        : candidates.length
+          ? `${helpIntro || "没认出是哪张加工单。"}下面是你们最近要交的加工单，点一下就能开始；也可以直接说产品简称或单号。`
+          : `${helpIntro}目前没有可以汇报的加工单：只有已接单、正在生产的委外加工单才能用小助理汇报。如果任务里的加工单还是“待接单”，请先去任务里接单。`;
       const updated = (await client.query(
         `UPDATE partner_ai_sessions SET source_text=$2,state=$3,candidate_ids=$4,candidate_count=$5,next_question=$6,message_count=message_count+1,
           latest_transcription_id=COALESCE($7,latest_transcription_id),expires_at=now()+($8::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
@@ -507,6 +568,15 @@ export async function messagePartnerAiSession(auth, sessionId, input) {
         latencyMs: Number(orderHints?.latencyMs || 0),
       }));
       return { direct: { ok: true, session: sessionPayload(updated, { candidates, matching: { mode: matchingMode, model: String(orderHints?.model || "") } }) } };
+    }
+    if (chat?.reply && CONVERSATION_ONLY_INTENTS.has(chat.intent)) {
+      // A question or small talk about the confirmed order: answer it without turning the words into report evidence.
+      const updated = (await client.query(
+        `UPDATE partner_ai_sessions SET next_question=$2,message_count=message_count+1,
+          latest_transcription_id=COALESCE($3,latest_transcription_id),expires_at=now()+($4::text || ' minutes')::interval WHERE id=$1 RETURNING *`,
+        [session.id, chat.reply, parsed.transcriptionId || null, String(SESSION_TTL_MINUTES)],
+      )).rows[0];
+      return { direct: { ok: true, session: sessionPayload(updated, { conversational: true }) } };
     }
     await client.query(
       `UPDATE partner_ai_sessions SET source_text=$2,state='collecting_progress',message_count=message_count+1,

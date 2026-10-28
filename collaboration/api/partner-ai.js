@@ -24,8 +24,9 @@ const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7E]{16,200}$/;
 const transcriptionSchema = z.object({
   fileName: z.string().trim().min(1).max(240),
   mimeType: z.string().trim().min(1).max(160),
-  sizeBytes: z.number().int().positive().max(MAX_AUDIO_BYTES),
-  durationMs: z.number().int().positive().max(MAX_AUDIO_DURATION_MS),
+  // WeChat's recorder reports fractional milliseconds; accept them and round instead of rejecting the upload.
+  sizeBytes: z.number().positive().transform((value) => Math.round(value)).pipe(z.number().int().positive().max(MAX_AUDIO_BYTES)),
+  durationMs: z.number().positive().transform((value) => Math.round(value)).pipe(z.number().int().positive().max(MAX_AUDIO_DURATION_MS)),
   workItemVersion: z.number().int().positive(),
 }).strict();
 

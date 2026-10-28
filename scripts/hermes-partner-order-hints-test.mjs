@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizePartnerOrderHints, normalizePartnerProgressDraft } from "../server/hermes-partner-draft-api.js";
+import { normalizePartnerChatReply, normalizePartnerOrderHints, normalizePartnerProgressDraft } from "../server/hermes-partner-draft-api.js";
 
 test("Hermes order hints keep semantic product terms but reject invented identifiers", () => {
   const hints = normalizePartnerOrderHints({
@@ -56,4 +56,21 @@ test("a production date in the next clause is not reused as the pre-production s
   assert.equal(draft.fields.preproductionSampleDate, undefined);
   assert.equal(draft.fields.productionStartDate, "2026-10-28");
   assert.ok(draft.missingFields.includes("preproductionSampleDate"));
+});
+
+test("partner chat replies keep the reply but only allow order ids that were sent", () => {
+  const orders = [{ id: "order-a" }, { id: "order-b" }];
+  const chat = normalizePartnerChatReply({
+    reply: "好的～是说 DEVNEN 身体素颜霜那张单吗？物料到齐了没？",
+    intent: "ask_order_info",
+    orderIds: ["order-a", "order-from-another-org", "order-a"],
+  }, orders);
+  assert.equal(chat.intent, "ask_order_info");
+  assert.deepEqual(chat.orderIds, ["order-a"]);
+  assert.match(chat.reply, /DEVNEN/);
+});
+
+test("partner chat replies fall back to a safe intent and reject empty replies", () => {
+  assert.equal(normalizePartnerChatReply({ reply: "在的，请说。", intent: "delete_everything" }, []).intent, "other");
+  assert.throws(() => normalizePartnerChatReply({ reply: "  ", intent: "small_talk" }, []), /有效回复/);
 });
