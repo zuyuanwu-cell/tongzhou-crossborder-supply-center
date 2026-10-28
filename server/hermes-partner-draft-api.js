@@ -485,7 +485,10 @@ function chatPrompt(payload) {
     recentConversation: payload.history,
     confirmedOrderId: payload.confirmedOrderId || "",
     authorizedOrders: payload.orders,
-    today: isoDate(shanghaiToday()),
+    // shanghaiToday() already returns YYYY-MM-DD. Passing that string back to
+    // Intl.DateTimeFormat is runtime-dependent and throws "Invalid time value"
+    // on the production Node version, which disabled every partner chat reply.
+    today: shanghaiToday(),
     outputContract: {
       reply: "给供应商的中文回复，1-3 句，口语、友好、具体",
       intent: [...CHAT_INTENTS].join(" | "),
