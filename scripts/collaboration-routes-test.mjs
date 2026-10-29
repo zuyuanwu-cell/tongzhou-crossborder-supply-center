@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
-const [main, identityAdmin, workspace, identityAdminStyles, server, outsourcingSource] = await Promise.all([
+const [main, identityAdmin, workspace, identityAdminStyles, server, outsourcingSource, jiandaoyunClient] = await Promise.all([
   read("src/main.tsx"),
   read("src/CollaborationIdentityAdmin.tsx"),
   read("src/PartnerCollaborationWorkspace.tsx"),
   read("src/collaboration-identity-admin.css"),
   read("server/server.js"),
   read("server/collaboration-outsourcing-source.js"),
+  read("server/jiandaoyun-client.js"),
 ]);
 
 assert.match(main, /hash: "#outsourcing-collaboration"[\s\S]*hidden: true/);
@@ -29,6 +30,8 @@ assert.match(identityAdmin, /暂未读取到可映射工厂/);
 assert.match(identityAdminStyles, /\.cia-outsourcing-select select\{[^}]*width:100%/);
 assert.match(identityAdminStyles, /\.cia-outsourcing-source-body\{[^}]*grid-template-columns/);
 assert.match(server, /listActiveOutsourcingOrders:\s*fetchAllJdyOutsourcingOrders/);
+assert.match(server, /listOutsourcingFactoryOrders:\s*fetchJdyOutsourcingOrdersByFactoryId/);
+assert.match(jiandaoyunClient, /export async function fetchJdyOutsourcingOrdersByFactoryId\(factoryId\)[\s\S]*fields\.factoryId[\s\S]*value: \[value\]/);
 assert.doesNotMatch(outsourcingSource, /\.filter\(\(item\) => item\.activeOrderCount > 0\)/);
 
 console.log("collaboration-routes-test: ok");
