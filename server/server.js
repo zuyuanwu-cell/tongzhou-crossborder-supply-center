@@ -553,6 +553,7 @@ const collaborationBridge = createCollaborationBridge({
   store: collaborationBridgeStore,
   domesticInventoryService,
   stockupCollaborationService,
+  listActiveOutsourcingOrders: fetchAllJdyOutsourcingOrders,
   listProducts: () => domesticInventoryProductOptions(cachedProducts, { includeCosts: false }, { limit: 10000 }).products,
   onAudit: (action, command, result) => appendActionLog(
     directAuth,

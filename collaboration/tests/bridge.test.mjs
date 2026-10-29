@@ -5,6 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initCollaborationBridgeStore } from "../../server/collaboration-bridge-db.js";
 import { createCollaborationBridge } from "../../server/collaboration-bridge.js";
+import { outsourcingFactoryOptions } from "../../server/collaboration-outsourcing-source.js";
+
+test("outsourcing factory mapping keeps observed factories without active orders", () => {
+  const options = outsourcingFactoryOptions([{
+    _widget_1741698535338: { value: "factory-stable-001" },
+    _widget_1666521891102: { value: "Factory A" },
+    _widget_1744031628891: { value: "Factory A Ltd." },
+    _widget_1690015838240: { value: "completed" },
+  }]);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].factoryId, "factory-stable-001");
+  assert.equal(options[0].activeOrderCount, 0);
+});
 
 async function fixture(t, { commands = [], resultFailures = 0, movementFailures = 0, organizations = [], accessGrants = [], inventory = null, workItems = [], workItemDetail = null, oemEnabled = false, outsourcingRecords = [], firstArticleRecords = [], craftOrderRecords = [], purchaseRecords = [], purchaseInboundRecords = [], stockupWorkflowVersion = 1 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "tongzhou-collaboration-bridge-"));

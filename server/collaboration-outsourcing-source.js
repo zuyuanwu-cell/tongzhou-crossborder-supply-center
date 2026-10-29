@@ -242,7 +242,6 @@ export function outsourcingFactoryOptions(records = []) {
     factories.set(factoryId, current);
   }
   return [...factories.values()]
-    .filter((item) => item.activeOrderCount > 0)
     .sort((left, right) => right.activeOrderCount - left.activeOrderCount || left.factoryName.localeCompare(right.factoryName, "zh-CN"));
 }
 
