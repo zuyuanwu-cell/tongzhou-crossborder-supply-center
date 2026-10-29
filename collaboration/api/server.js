@@ -14,6 +14,7 @@ import {
   logout,
   refreshCsrfCookies,
 } from "./auth.js";
+import { bindWechat, unbindWechat, wechatBindingStatus, wechatLogin } from "./wechat-auth.js";
 import {
   createWarehouseOperation,
   getWorkItem,
@@ -198,9 +199,17 @@ async function route(req, res) {
 
   if (url.pathname === "/collaboration/auth/login" && req.method === "POST") {
     const result = await login(req, await readJson(req));
-    sendJson(res, 200, { ok: true, session: await publicSession(result.auth), mfaSetupRequired: result.mfaSetupRequired }, { "Set-Cookie": result.cookies });
+    const wechat = await wechatBindingStatus(result.auth.user.id).catch(() => ({ configured: false, bound: false, boundAt: "" }));
+    sendJson(res, 200, { ok: true, session: await publicSession(result.auth), mfaSetupRequired: result.mfaSetupRequired, wechat }, { "Set-Cookie": result.cookies });
     return;
   }
+
+  if (url.pathname === "/collaboration/auth/wechat/login" && req.method === "POST") {
+    const result = await wechatLogin(req, await readJson(req));
+    sendJson(res, 200, { ok: true, session: await publicSession(result.auth), mfaSetupRequired: result.mfaSetupRequired, wechat: { configured: true, bound: true } }, { "Set-Cookie": result.cookies });
+    return;
+  }
+
   if (url.pathname === "/collaboration/auth/invitations/accept" && req.method === "POST") {
     sendJson(res, 200, { ok: true, ...(await acceptInvitation(await readJson(req))) });
     return;
@@ -381,6 +390,18 @@ async function route(req, res) {
 
   if (url.pathname === "/collaboration/v1/account/profile" && req.method === "PATCH") {
     sendJson(res, 200, { ok: true, ...(await updateOwnProfile(auth, await readJson(req))) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/account/wechat" && req.method === "GET") {
+    sendJson(res, 200, { ok: true, wechat: await wechatBindingStatus(auth.user.id) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/account/wechat/bind" && req.method === "POST") {
+    sendJson(res, 200, { ok: true, wechat: await bindWechat(req, auth, await readJson(req)) });
+    return;
+  }
+  if (url.pathname === "/collaboration/v1/account/wechat/unbind" && req.method === "POST") {
+    sendJson(res, 200, { ok: true, wechat: await unbindWechat(req, auth) });
     return;
   }
   if (url.pathname === "/collaboration/v1/account/password" && req.method === "POST") {

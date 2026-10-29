@@ -52,6 +52,12 @@ export const collaborationConfig = Object.freeze({
     secretAccessKey: String(process.env.COLLABORATION_S3_SECRET_ACCESS_KEY || "").trim(),
   },
   wecomWebhook: String(process.env.COLLABORATION_WECOM_WEBHOOK || "").trim(),
+  // WeChat mini program quick login. Both empty = the feature stays off and password login still works.
+  wechat: {
+    appId: String(process.env.COLLABORATION_WECHAT_APPID || "").trim(),
+    appSecret: String(process.env.COLLABORATION_WECHAT_SECRET || "").trim(),
+    apiBaseUrl: String(process.env.COLLABORATION_WECHAT_API_BASE || "https://api.weixin.qq.com").replace(/\/+$/, ""),
+  },
   smtpUrl: String(process.env.COLLABORATION_SMTP_URL || "").trim(),
   oemEnabled: process.env.COLLABORATION_OEM_ENABLED === "true",
   commandPollMs: Math.max(5_000, Number(process.env.COLLABORATION_COMMAND_POLL_MS || 10_000)),

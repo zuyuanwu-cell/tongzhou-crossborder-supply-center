@@ -2,7 +2,7 @@
   <view class="aurora aurora--a"></view><view class="aurora aurora--b"></view><view class="grid-noise"></view>
   <view class="assistant-header" style="padding-top: {{statusBarHeight}}px">
     <view class="back-button" bindtap="goBack">‹</view>
-    <view class="assistant-id"><view class="assistant-orb">H<view></view></view><view><strong>同舟小助理</strong><text>{{busy ? '正在整理…' : recording ? '正在聆听…' : '在线 · 伙伴快捷汇报'}}</text></view></view>
+    <view class="assistant-id"><view class="assistant-orb">H<view></view></view><view><strong>同舟小助理</strong><text>{{busy ? '正在整理…' : recording ? (voiceListening ? '正在聆听…' : '叮咚后开始说话') : '在线 · 伙伴快捷汇报'}}</text></view></view>
     <view class="reset-button" bindtap="resetConversation">↻</view>
   </view>
 
@@ -78,7 +78,7 @@
     </view>
   </scroll-view>
 
-  <view wx:if="{{recording}}" class="voice-overlay"><view class="voice-ring"><view>●</view></view><view class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></view><text>正在聆听，点击结束</text></view>
+  <view wx:if="{{recording}}" class="voice-overlay"><view class="voice-ring"><view>●</view></view><view class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></view><text>{{voiceListening ? '正在聆听，说完点击结束' : '听到“叮咚”后开始说话'}}</text></view>
   <view class="chat-composer">
     <view class="composer-plus" bindtap="choosePhoto">＋</view>
     <input value="{{inputText}}" bindinput="updateInput" confirm-type="send" bindconfirm="sendText" placeholder="{{session.confirmedWorkItemId ? '说说这张单的进展…' : '说产品简称、单号，或直接点上面的订单'}}" />

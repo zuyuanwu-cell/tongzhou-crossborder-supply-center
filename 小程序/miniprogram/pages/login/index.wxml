@@ -40,8 +40,23 @@
           <text class="lg-field__label">{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '中台访问码' : '登录密码'}}</text>
           <view class="lg-field__box lg-field__box--secret"><input data-key="password" value="{{form.password}}" bindinput="updateField" password="{{!showPassword}}" confirm-type="done" bindconfirm="submit" placeholder="{{loginMode === 'admin' && adminCredentialType === 'access_code' ? '请输入中台访问码' : '请输入登录密码'}}" placeholder-class="lg-placeholder" autocomplete="current-password"/><view class="lg-password-toggle" bindtap="togglePassword">{{showPassword ? '隐藏' : '显示'}}</view></view>
         </view>
+        <view wx:if="{{loginMode !== 'admin' || adminCredentialType === 'account_password'}}" class="lg-remember" bindtap="toggleRememberPassword">
+          <view class="lg-check {{rememberPassword ? 'is-on' : ''}}"><view class="lg-check__tick"></view></view>
+          <text class="lg-remember__label">记住密码</text>
+          <text class="lg-remember__note">{{rememberPassword ? '仅保存在这台手机' : '账号会自动记住'}}</text>
+        </view>
 
         <view class="lg-button {{loading ? 'is-loading' : ''}}" bindtap="submit"><view wx:if="{{loading}}" class="lg-spinner"></view><text>{{loading ? '正在建立安全会话…' : loginMode === 'admin' ? '进入中台工作台' : '进入协同工作台'}}</text></view>
+
+        <block wx:if="{{loginMode === 'partner'}}">
+          <view class="lg-or"><view class="lg-or__line"></view><text>或</text><view class="lg-or__line"></view></view>
+          <view class="lg-wechat {{wechatLoading ? 'is-loading' : ''}}" bindtap="wechatLogin">
+            <view wx:if="{{wechatLoading}}" class="lg-spinner lg-spinner--green"></view>
+            <view wx:else class="lg-wechat__icon"><view class="lg-wechat__bubble lg-wechat__bubble--big"><view class="lg-wechat__eye"></view><view class="lg-wechat__eye"></view></view><view class="lg-wechat__bubble lg-wechat__bubble--small"><view class="lg-wechat__eye"></view><view class="lg-wechat__eye"></view></view></view>
+            <text>{{wechatLoading ? '正在用微信登录…' : '微信一键登录'}}</text>
+          </view>
+          <text class="lg-wechat-note">第一次请先用账号密码登录，按提示绑定微信后，以后打开就自动登录。</text>
+        </block>
 
         <view class="lg-hermes-note"><view class="hd-orb-mini"><view class="hd-orb-mini__core"><view class="hd-bot-mini"><view class="hd-bot-mini__visor"><view class="hd-bot-mini__eye"></view><view class="hd-bot-mini__eye"></view></view></view></view></view><text class="lg-hermes-note__text">{{loginMode === 'admin' ? '登录后，小助理会汇总跨组织风险与待审批事项，所有决策都会留痕。' : '登录后，小助理会先为你整理今日待填报的订单；任何正式提交都需要你确认。'}}</text></view>
         <view class="lg-footer-lock"><text class="lg-footer-lock__mark"></text>组织级数据隔离 · 登录与操作全程留痕</view>

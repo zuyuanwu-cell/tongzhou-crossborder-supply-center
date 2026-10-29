@@ -1,6 +1,7 @@
 const api = require("../../utils/api");
 const { requireSession } = require("../../utils/auth");
 const { preferenceStorageKey, normalizePreferences } = require("../../utils/partner-preferences");
+const { playVoiceStartCue } = require("../../utils/voice-cue");
 
 const STAGES = [
   { value: "", label: "请选择阶段" },
@@ -112,6 +113,9 @@ Page({
     messages: [{ role: "assistant", text: "告诉我产品名称、SKU 或加工单号，我会先找到正确订单，再帮你整理反馈。" }],
     voiceEnabled: false,
     recording: false,
+
+    voiceListening: false,
+
     voiceBusy: false,
     stageOptions: STAGES,
     stageIndex: 0,
@@ -160,13 +164,15 @@ Page({
     try { windowInfo = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync(); } catch (_) {}
     this.setData({ voicePreferred: normalizePreferences(preferences).voiceFirst, statusBarHeight: Number(windowInfo.statusBarHeight || 20) });
     this._recorder = wx.getRecorderManager();
-    this._recorder.onStop((recording) => this.handleRecordingStopped(recording));
-    this._recorder.onError((error) => this.setData({ recording: false, voiceBusy: false, error: error?.errMsg || "录音失败，请改用文字输入。" }));
+    this._recorder.onStart(() => { this._recorderLive = true; this.setData({ voiceListening: true }); });
+    this._recorder.onStop((recording) => { this._recorderLive = false; this.handleRecordingStopped(recording); });
+    this._recorder.onError((error) => { this._recorderLive = false; this.setData({ recording: false, voiceListening: false, voiceBusy: false, error: error?.errMsg || "录音失败，请改用文字输入。" }); });
     this.startSession();
   },
 
   onUnload() {
-    if (this.data.recording && this._recorder) this._recorder.stop();
+    this._voiceCueToken = 0;
+    if (this.data.recording && this._recorder && this._recorderLive) this._recorder.stop();
   },
 
   async startSession() {
@@ -296,16 +302,27 @@ Page({
     await this.confirmOrder({ currentTarget: { dataset: { id: this.data.session.confirmedWorkItemId } } });
   },
 
-  toggleRecording() {
-    if (this.data.recording) return this._recorder.stop();
+  async toggleRecording() {
+    if (this.data.recording) {
+      // Tapped again while the "叮咚" is still playing: just cancel, nothing was recorded yet.
+      if (!this._recorderLive) {
+        this._voiceCueToken = 0;
+        return this.setData({ recording: false, voiceListening: false });
+      }
+      return this._recorder.stop();
+    }
     if (!this.data.voiceEnabled) return wx.showToast({ title: "当前组织未开启语音，请使用文字", icon: "none" });
     if (this.data.busy || this.data.voiceBusy) return;
-    this.setData({ recording: true, error: "" });
+    const token = Date.now();
+    this._voiceCueToken = token;
+    this.setData({ recording: true, voiceListening: false, error: "" });
+    await playVoiceStartCue();
+    if (this._voiceCueToken !== token || !this.data.recording) return;
     this._recorder.start({ duration: 50_000, sampleRate: 16_000, numberOfChannels: 1, encodeBitRate: 48_000, format: "mp3" });
   },
 
   async handleRecordingStopped(recording) {
-    this.setData({ recording: false });
+    this.setData({ recording: false, voiceListening: false });
     if (!recording?.tempFilePath || Number(recording.duration || 0) < 300) return this.setData({ error: "录音太短，请重新录制。" });
     let fileSize = Number(recording.fileSize || 0);
     if (!fileSize) { try { fileSize = Number(wx.getFileSystemManager().statSync(recording.tempFilePath).size || 0); } catch (_) {} }

@@ -61,3 +61,25 @@ page { background: #070B1A; color: #EEF2FF; }
 .lg-footer-lock__mark { width: 12rpx; height: 12rpx; border-radius: 50%; background: #3DDC97; box-shadow: 0 0 12rpx #3DDC97; }
 
 @keyframes lg-spin { to { transform: rotate(360deg); } }
+
+/* Remember password + WeChat quick login (2026-10-29). */
+.lg-remember { display: flex; align-items: center; gap: 15rpx; margin-top: -8rpx; padding: 4rpx 4rpx; }
+.lg-check { position: relative; flex-shrink: 0; width: 35rpx; height: 35rpx; border-radius: 12rpx; border: 1.5px solid rgba(214,222,255,.45); background: rgba(0,0,0,.2); box-sizing: border-box; }
+.lg-check.is-on { border-color: transparent; background: linear-gradient(135deg, #FF6A2A, #FF9F5C); }
+.login-page--admin .lg-check.is-on { background: linear-gradient(135deg, #12B48E, #3DF0C0); }
+.lg-check__tick { display: none; position: absolute; left: 10rpx; top: 4rpx; width: 10rpx; height: 17rpx; border-right: 4rpx solid #fff; border-bottom: 4rpx solid #fff; transform: rotate(45deg); }
+.lg-check.is-on .lg-check__tick { display: block; }
+.lg-remember__label { font-size: 25rpx; color: #EEF2FF; }
+.lg-remember__note { margin-left: auto; font-size: 21rpx; color: rgba(214,222,255,.5); }
+.lg-or { display: flex; align-items: center; gap: 19rpx; margin: -8rpx 0; font-size: 21rpx; color: rgba(214,222,255,.45); }
+.lg-or__line { flex: 1; height: 1px; background: rgba(255,255,255,.1); }
+.lg-wechat { height: 96rpx; display: flex; align-items: center; justify-content: center; gap: 19rpx; border-radius: 48rpx; background: rgba(7,193,96,.14); border: 1px solid rgba(7,193,96,.45); color: #7FF0BE; font-size: 29rpx; font-weight: 600; }
+.lg-wechat:active { transform: scale(.97); background: rgba(7,193,96,.22); }
+.lg-wechat.is-loading { opacity: .85; }
+.lg-wechat__icon { position: relative; width: 50rpx; height: 38rpx; }
+.lg-wechat__bubble { position: absolute; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #07C160; }
+.lg-wechat__bubble--big { left: 0; top: 0; width: 33rpx; height: 27rpx; gap: 8rpx; }
+.lg-wechat__bubble--small { right: 0; bottom: 0; width: 25rpx; height: 21rpx; gap: 6rpx; border: 1.5px solid #13203a; background: #07C160; }
+.lg-wechat__eye { width: 5rpx; height: 5rpx; border-radius: 50%; background: #0B1230; }
+.lg-spinner--green { border-color: rgba(127,240,190,.35); border-top-color: #7FF0BE; }
+.lg-wechat-note { margin-top: -12rpx; font-size: 21rpx; line-height: 1.5; text-align: center; color: rgba(214,222,255,.5); }

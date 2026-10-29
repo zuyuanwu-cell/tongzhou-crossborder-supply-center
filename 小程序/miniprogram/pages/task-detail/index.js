@@ -1,5 +1,6 @@
 const api = require("../../utils/api");
 const { requireSession } = require("../../utils/auth");
+const { playVoiceStartCue } = require("../../utils/voice-cue");
 const { decorateTask, formatDate, formatFullDate } = require("../../utils/format");
 const { getWorkspace, canAction, canCapability } = require("../../utils/workspace");
 const { productionSteps } = require("../../utils/production");
@@ -203,12 +204,14 @@ Page({
       wx.removeStorageSync("hermes_pending_exception");
     } catch (_) {}
     this._recorder = wx.getRecorderManager();
-    this._recorder.onStop((recording) => this.handleRecordingStopped(recording));
+    this._recorder.onStart(() => { this._recorderLive = true; this.setData({ aiMessage: "正在聆听，最多 50 秒。说完再点一次结束。" }); });
+    this._recorder.onStop((recording) => { this._recorderLive = false; this.handleRecordingStopped(recording); });
     this._recorder.onError((error) => {
+      this._recorderLive = false;
       this.setData({ aiRecording: false, aiVoiceBusy: false, aiError: error?.errMsg || "录音失败，请改用文字输入。" });
     });
   },
-  onUnload() { if (this.data.aiRecording && this._recorder) this._recorder.stop(); },
+  onUnload() { this._voiceCueToken = 0; if (this.data.aiRecording && this._recorder && this._recorderLive) this._recorder.stop(); },
   onShow() {
     const session = requireSession("partner");
     if (!session || !this.data.id) return;
@@ -357,13 +360,21 @@ Page({
   updateAiProgressPercent(event) { this.setData({ aiProgressPercent: event.detail.value }); },
   toggleAiCard() { this.setData({ aiExpanded: !this.data.aiExpanded }); },
   updateAiText(event) { this.setData({ aiText: event.detail.value, aiDraft: null, aiDraftId: "", aiMissingMap: {}, aiMessage: "", aiError: "" }); },
-  startAiRecording() {
+  async startAiRecording() {
     if (!this.data.aiVoiceEnabled || this.data.aiBusy || this.data.aiVoiceBusy || this.data.aiRecording) return;
-    this.setData({ aiRecording: true, aiError: "", aiMessage: "正在录音，最多 50 秒。再次点击即可结束。" });
+    const token = Date.now();
+    this._voiceCueToken = token;
+    this.setData({ aiRecording: true, aiError: "", aiMessage: "听到“叮咚”后开始说话。" });
+    await playVoiceStartCue();
+    if (this._voiceCueToken !== token || !this.data.aiRecording) return;
     this._recorder.start({ duration: 50_000, sampleRate: 16_000, numberOfChannels: 1, encodeBitRate: 48_000, format: "mp3" });
   },
   toggleAiRecording() { if (this.data.aiRecording) this.stopAiRecording(); else this.startAiRecording(); },
-  stopAiRecording() { if (this.data.aiRecording && this._recorder) this._recorder.stop(); },
+  stopAiRecording() {
+    if (!this.data.aiRecording) return;
+    if (!this._recorderLive) { this._voiceCueToken = 0; return this.setData({ aiRecording: false, aiMessage: "" }); }
+    if (this._recorder) this._recorder.stop();
+  },
   async handleRecordingStopped(recording) {
     this.setData({ aiRecording: false });
     if (!recording?.tempFilePath || Number(recording.duration || 0) < 300) return this.setData({ aiError: "录音太短，请重新录制。", aiMessage: "" });

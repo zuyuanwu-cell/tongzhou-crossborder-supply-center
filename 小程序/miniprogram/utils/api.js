@@ -243,6 +243,58 @@ function clearAuth() {
   if (app) app.globalData.session = null;
 }
 
+const WECHAT_BOUND_KEY = "tz_wechat_bound";
+const WECHAT_AUTOLOGIN_OFF_KEY = "tz_wechat_autologin_off";
+let silentReloginPromise = null;
+
+function wechatQuickLoginReady() {
+  try { return Boolean(wx.getStorageSync(WECHAT_BOUND_KEY)) && !wx.getStorageSync(WECHAT_AUTOLOGIN_OFF_KEY); } catch (_) { return false; }
+}
+
+function wxLoginCode() {
+  return new Promise((resolve, reject) => {
+    wx.login({
+      timeout: 8000,
+      success(result) { if (result.code) resolve(result.code); else reject(new Error("没拿到微信授权，请重试。")); },
+      fail() { reject(new Error("微信授权失败，请检查网络后重试。")); },
+    });
+  });
+}
+
+function storeSession(session) {
+  const app = getApp();
+  if (app && typeof app.setSession === "function") app.setSession(session);
+  else wx.setStorageSync("tz_collab_session_profile", session);
+}
+
+// When the login expires, a bound WeChat signs the user back in quietly instead of
+// sending them to the login page. Several requests failing together share one attempt.
+function silentWechatRelogin() {
+  if (!silentReloginPromise) {
+    silentReloginPromise = wxLoginCode()
+      .then((code) => request("/collaboration/auth/wechat/login", { method: "POST", data: { code }, skipAuthRedirect: true, skipSilentRelogin: true }))
+      .then((result) => {
+        const session = Object.assign({ mode: "partner" }, result.session || {});
+        storeSession(session);
+        return session;
+      })
+      .catch((error) => {
+        if (error && (error.code === "wechat_not_bound" || error.code === "invalid_credentials")) {
+          try { wx.removeStorageSync(WECHAT_BOUND_KEY); } catch (_) {}
+        }
+        throw error;
+      })
+      .finally(() => { setTimeout(() => { silentReloginPromise = null; }, 0); });
+  }
+  return silentReloginPromise;
+}
+
+function redirectToLogin(notice) {
+  clearAuth();
+  try { wx.setStorageSync("tz_login_notice", notice || "登录已过期，请重新登录"); } catch (_) {}
+  setTimeout(() => wx.reLaunch({ url: "/pages/login/index" }), 0);
+}
+
 function request(path, options) {
   const opts = options || {};
   if (!config.apiBaseUrl) return Promise.reject(new Error("尚未配置协同 API 地址，请在 config.js 中填写 apiBaseUrl。"));
@@ -265,9 +317,17 @@ function request(path, options) {
         if (response.statusCode >= 200 && response.statusCode < 300) return resolve(payload);
         // A wrong password also answers 401: stay on the login page so its error dialog is not wiped out.
         if (response.statusCode === 401 && !opts.skipAuthRedirect) {
-          clearAuth();
-          try { wx.setStorageSync("tz_login_notice", "登录已过期，请重新登录"); } catch (_) {}
-          setTimeout(() => wx.reLaunch({ url: "/pages/login/index" }), 0);
+          if (!opts.skipSilentRelogin && wechatQuickLoginReady()) {
+            silentWechatRelogin()
+              .then(() => request(path, Object.assign({}, opts, { skipSilentRelogin: true })))
+              .then(resolve, (error) => {
+                if (error && error.status === 401) { reject(error); return; }
+                redirectToLogin();
+                reject(error);
+              });
+            return;
+          }
+          redirectToLogin();
         }
         const error = new Error(payload.message || `请求失败（${response.statusCode}）`);
         error.status = response.statusCode;
@@ -296,6 +356,53 @@ function login(input) {
   return request("/collaboration/auth/login", { method: "POST", data: input, skipAuthRedirect: true }).then((result) => Object.assign({}, result, {
     session: Object.assign({ mode: "partner" }, result.session || {}),
   }));
+}
+
+function wechatLogin() {
+  if (config.demoMode) {
+    activeDemoSession = demoSessions["warehouse.admin"];
+    return Promise.resolve({ ok: true, session: Object.assign({ mode: "partner" }, activeDemoSession), wechat: { configured: true, bound: true } });
+  }
+  return wxLoginCode()
+    .then((code) => request("/collaboration/auth/wechat/login", { method: "POST", data: { code }, skipAuthRedirect: true, skipSilentRelogin: true }))
+    .then((result) => {
+      try { wx.setStorageSync(WECHAT_BOUND_KEY, true); wx.removeStorageSync(WECHAT_AUTOLOGIN_OFF_KEY); } catch (_) {}
+      return Object.assign({}, result, { session: Object.assign({ mode: "partner" }, result.session || {}) });
+    })
+    .catch((error) => {
+      if (error && error.code === "wechat_not_bound") { try { wx.removeStorageSync(WECHAT_BOUND_KEY); } catch (_) {} }
+      throw error;
+    });
+}
+
+function fetchWechatBinding() {
+  if (config.demoMode) return Promise.resolve({ ok: true, wechat: { configured: true, bound: Boolean(wx.getStorageSync(WECHAT_BOUND_KEY)), boundAt: "" } });
+  return request("/collaboration/v1/account/wechat").then((result) => {
+    try { if (result.wechat?.bound) wx.setStorageSync(WECHAT_BOUND_KEY, true); else wx.removeStorageSync(WECHAT_BOUND_KEY); } catch (_) {}
+    return result;
+  });
+}
+
+function bindWechat() {
+  const done = (result) => {
+    try { wx.setStorageSync(WECHAT_BOUND_KEY, true); wx.removeStorageSync(WECHAT_AUTOLOGIN_OFF_KEY); } catch (_) {}
+    return result;
+  };
+  if (config.demoMode) return Promise.resolve(done({ ok: true, wechat: { configured: true, bound: true, boundAt: new Date().toISOString() } }));
+  return wxLoginCode()
+    .then((code) => request("/collaboration/v1/account/wechat/bind", { method: "POST", data: { code } }))
+    .then(done);
+}
+
+function unbindWechat() {
+  const done = (result) => { try { wx.removeStorageSync(WECHAT_BOUND_KEY); } catch (_) {} return result; };
+  if (config.demoMode) return Promise.resolve(done({ ok: true, wechat: { configured: true, bound: false, boundAt: "" } }));
+  return request("/collaboration/v1/account/wechat/unbind", { method: "POST", data: {} }).then(done);
+}
+
+// Called on manual logout: stop the login page from signing straight back in with WeChat.
+function pauseWechatAutoLogin() {
+  try { wx.setStorageSync(WECHAT_AUTOLOGIN_OFF_KEY, true); } catch (_) {}
 }
 
 function fetchMe() {
@@ -726,6 +833,12 @@ module.exports = {
   config,
   clearAuth,
   login,
+  wechatLogin,
+  wechatQuickLoginReady,
+  fetchWechatBinding,
+  bindWechat,
+  unbindWechat,
+  pauseWechatAutoLogin,
   fetchMe,
   logout,
   fetchDashboard,

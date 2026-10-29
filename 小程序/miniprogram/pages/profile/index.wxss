@@ -86,3 +86,8 @@ page { background: #070B1A; color: #EEF2FF; }
 .pf-camera__lens { position: absolute; left: 50%; top: 50%; width: 8rpx; height: 8rpx; margin: -4rpx 0 0 -4rpx; border: 1px solid #fff; border-radius: 50%; box-sizing: border-box; }
 .pf-role-row { display: flex; align-items: center; gap: 15rpx; }
 .pf-avatar-reset { font-size: 21rpx; color: #8FEAFF; }
+
+/* WeChat quick login row (2026-10-29). */
+.pf-menu-icon--wechat { background: rgba(7,193,96,.14); border-color: rgba(7,193,96,.4); color: #7FF0BE; }
+.pf-wechat-state { flex-shrink: 0; padding: 6rpx 17rpx; border-radius: 21rpx; background: rgba(255,122,61,.16); border: 1px solid rgba(255,140,90,.4); font-size: 21rpx; color: #FFB08A; }
+.pf-wechat-state.is-on { background: rgba(61,220,151,.12); border-color: rgba(61,220,151,.3); color: #7FF0BE; }

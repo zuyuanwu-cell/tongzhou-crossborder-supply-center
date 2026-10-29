@@ -24,6 +24,7 @@ Page({
     statusBarHeight: 20,
     navHeight: 44,
     avatarUrl: "",
+    wechat: { configured: false, bound: false, loaded: false, busy: false },
   },
 
   onShow() {
@@ -45,6 +46,49 @@ Page({
       accessScopes: accessScopes(workspace),
     });
     api.fetchDashboard().then((result) => this.setData({ unread: result.dashboard.unreadNotifications || 0 })).catch(() => {});
+    this.loadWechatBinding();
+  },
+
+  loadWechatBinding() {
+    api.fetchWechatBinding()
+      .then((result) => this.setData({ wechat: Object.assign({}, this.data.wechat, result.wechat || {}, { loaded: true }) }))
+      .catch(() => this.setData({ "wechat.loaded": true }));
+  },
+
+  wechatTap() {
+    const wechat = this.data.wechat;
+    if (wechat.busy) return;
+    if (!wechat.loaded) return;
+    if (!wechat.configured) {
+      wx.showModal({ title: "微信登录还没开通", content: "管理员还没有在服务器里配置小程序的 AppID 和密钥，开通后这里就能绑定。", showCancel: false, confirmText: "知道了" });
+      return;
+    }
+    if (wechat.bound) {
+      wx.showModal({
+        title: "解除微信绑定？",
+        content: "解除后，这个微信不能再自动登录，需要用账号密码登录。",
+        confirmText: "解除绑定",
+        confirmColor: "#B42318",
+        success: (choice) => { if (choice.confirm) this.runWechatChange(() => api.unbindWechat(), "已解除绑定"); },
+      });
+      return;
+    }
+    this.runWechatChange(() => api.bindWechat(), "已绑定微信");
+  },
+
+  async runWechatChange(action, doneText) {
+    this.setData({ "wechat.busy": true });
+    wx.showLoading({ title: "请稍候…", mask: true });
+    try {
+      const result = await action();
+      wx.hideLoading();
+      this.setData({ wechat: Object.assign({}, this.data.wechat, result.wechat || {}, { loaded: true, busy: false }) });
+      wx.showToast({ title: doneText, icon: "success" });
+    } catch (error) {
+      wx.hideLoading();
+      this.setData({ "wechat.busy": false });
+      wx.showModal({ title: "没有成功", content: error.message || "请稍后再试。", showCancel: false });
+    }
   },
 
   showAdmin(session, refreshSession) {
@@ -151,6 +195,7 @@ Page({
       confirmColor: "#116F63",
       success: async (result) => {
         if (!result.confirm) return;
+        if (!this.data.isAdmin) api.pauseWechatAutoLogin();
         wx.showLoading({ title: "正在切换" });
         try { if (this.data.isAdmin) await adminApi.logout(); else await api.logout(); }
         catch (_) { if (this.data.isAdmin) adminApi.clearAuth(); else api.clearAuth(); }
@@ -162,8 +207,12 @@ Page({
   },
 
   logout() {
-    wx.showModal({ title: "退出登录", content: "退出后需要重新输入当前模式的账号和密码。", confirmColor: "#B42318", success: async (result) => {
+    const content = !this.data.isAdmin && this.data.wechat.bound
+      ? "退出后不会再自动登录。下次可以点“微信一键登录”，或输入账号密码。"
+      : "退出后需要重新输入当前模式的账号和密码。";
+    wx.showModal({ title: "退出登录", content, confirmColor: "#B42318", success: async (result) => {
       if (!result.confirm) return;
+      if (!this.data.isAdmin) api.pauseWechatAutoLogin();
       wx.showLoading({ title: "正在退出" });
       try { if (this.data.isAdmin) await adminApi.logout(); else await api.logout(); }
       catch (_) { if (this.data.isAdmin) adminApi.clearAuth(); else api.clearAuth(); }
