@@ -53,6 +53,11 @@ function money(value) {
   return Math.round((number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function optionalTrackingNumber(value) {
+  const trackingNumber = String(value ?? "").trim();
+  return ["-", "--", "—", "暂无", "待补", "待填写", "n/a", "na", "null", "undefined"].includes(trackingNumber.toLowerCase()) ? "" : trackingNumber;
+}
+
 function normalizeLine(line, now) {
   const qty = number(line.requestedQty);
   if (qty <= 0) {
@@ -770,7 +775,7 @@ export function createStockupCollaborationService(store, {
     return store.transaction(() => {
       store.run(`INSERT INTO stockup_shipments
         (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,destination_address,destination_contact_name,destination_contact_phone,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,note,box_mark,inventory_movement_id,version,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentId, request.id, businessNo("FY"), String(payload.originWarehouse || ""), String(payload.originWarehouseId || ""), String(payload.originAddress || ""), request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, String(payload.destinationAddress || ""), String(payload.destinationContactName || ""), String(payload.destinationContactPhone || ""), String(payload.carrier || ""), String(payload.transportMode || "海运"), String(payload.trackingNo || ""), String(payload.etd || ""), String(payload.eta || ""), "", "draft", number(payload.packages), number(payload.totalWeightKg), number(payload.totalVolumeM3), number(payload.chargeableWeightKg), String(payload.note || ""), String(payload.boxMark || ""), "", 1, now, now]);
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [shipmentId, request.id, businessNo("FY"), String(payload.originWarehouse || ""), String(payload.originWarehouseId || ""), String(payload.originAddress || ""), request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, String(payload.destinationAddress || ""), String(payload.destinationContactName || ""), String(payload.destinationContactPhone || ""), String(payload.carrier || ""), String(payload.transportMode || "海运"), optionalTrackingNumber(payload.trackingNo), String(payload.etd || ""), String(payload.eta || ""), "", "draft", number(payload.packages), number(payload.totalWeightKg), number(payload.totalVolumeM3), number(payload.chargeableWeightKg), String(payload.note || ""), String(payload.boxMark || ""), "", 1, now, now]);
       requests.forEach((item) => store.run("INSERT OR IGNORE INTO stockup_shipment_request_links (shipment_id,request_id,created_at) VALUES (?,?,?)", [shipmentId, item.id, now]));
       for (const input of lines) {
         const taskRow = store.first("SELECT * FROM stockup_execution_tasks WHERE id=?", [String(input.taskId)]);
@@ -883,7 +888,7 @@ export function createStockupCollaborationService(store, {
     if (shipment.wmsPushStatus === "needs_manual_check") throw Object.assign(new Error("上次建单结果不明确，请先到仓库系统按发运单号核对，不能自动重试。"), { statusCode: 409, code: "wms_manual_check_required" });
     const now = nowIso();
     return store.transaction(() => {
-      store.run(`UPDATE stockup_shipments SET wms_provider_id=?,wms_document_type=?,wms_push_status='pushing',wms_order_no=NULL,wms_push_error='',wms_push_attempts=wms_push_attempts+1,version=version+1,updated_at=? WHERE id=?`, [String(metadata.providerId || ""), String(metadata.documentType || ""), now, shipment.id]);
+      store.run(`UPDATE stockup_shipments SET tracking_no=?,wms_provider_id=?,wms_document_type=?,wms_push_status='pushing',wms_order_no=NULL,wms_push_error='',wms_push_attempts=wms_push_attempts+1,version=version+1,updated_at=? WHERE id=?`, [optionalTrackingNumber(shipment.trackingNo), String(metadata.providerId || ""), String(metadata.documentType || ""), now, shipment.id]);
       return { alreadyCreated: false, shipment: hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [shipment.id])) };
     });
   }

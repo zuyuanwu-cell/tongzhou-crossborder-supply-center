@@ -43,18 +43,51 @@ try {
   globalThis.fetch = async (_url, options = {}) => {
     const request = extractRequest(String(options.body || ""));
     requests.push(request);
+    if (request.service === "getAsnList") {
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", nextPage: "false", data: [] }) };
+    }
     return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", message: "Success", receiving_code: "RVAEE0004-2-410-260930-TEST" }) };
   };
   const created = await createWarehouseStockupOrder(connection, input);
   assert.equal(created.orderNo, "RVAEE0004-2-410-260930-TEST");
   assert.equal(created.createMode, "verified");
-  assert.equal(requests[0].service, "createAsn");
-  assert.equal(requests[0].params.verify, 1);
-  assert.equal(requests[0].params.transit_type, 1);
-  assert.equal(requests[0].params.transit_warehouse_code, "DD002");
-  assert.equal(requests[0].params.receiving_shipping_type, "5");
-  assert.equal(requests[0].params.items.length, 200);
-  assert.equal(requests[0].params.items.every((item) => item.quantity === 72), true);
+  assert.deepEqual(requests.map((request) => request.service), ["getAsnList", "createAsn"]);
+  assert.equal(requests[1].params.verify, 1);
+  assert.equal(requests[1].params.transit_type, 1);
+  assert.equal(requests[1].params.transit_warehouse_code, "DD002");
+  assert.equal(requests[1].params.receiving_shipping_type, "5");
+  assert.equal(requests[1].params.tracking_number, "TRACK-1");
+  assert.equal(requests[1].params.items.length, 200);
+  assert.equal(requests[1].params.items.every((item) => item.quantity === 72), true);
+
+  requests.length = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    const request = extractRequest(String(options.body || ""));
+    requests.push(request);
+    if (request.service === "getAsnList") {
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", nextPage: "false", data: [] }) };
+    }
+    return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", message: "Success", receiving_code: "RVAEE0004-2-410-260930-FALLBACK" }) };
+  };
+  const generatedTracking = await createWarehouseStockupOrder(connection, { ...input, referenceNo: "FY-20261029-7RR1J", trackingNo: "-" });
+  assert.equal(generatedTracking.orderNo, "RVAEE0004-2-410-260930-FALLBACK");
+  assert.equal(requests[1].params.tracking_number, "TZ-FY-20261029-7RR1J");
+
+  requests.length = 0;
+  const existingItems = Array.from({ length: 200 }, (_, index) => ({ product_sku: "TZKJ-QL032", quantity: "72", box_no: String(index + 1) }));
+  globalThis.fetch = async (_url, options = {}) => {
+    const request = extractRequest(String(options.body || ""));
+    requests.push(request);
+    return { ok: true, status: 200, text: async () => xmlResponse({
+      ask: "Success",
+      nextPage: "false",
+      data: [{ receiving_code: "RVAEE0004-2-410-260930-EXISTING", reference_no: input.referenceNo, warehouse_code: "DD002", receiving_status: "C", box_total: "200", sku_total: "14400", items: existingItems }],
+    }) };
+  };
+  const reused = await createWarehouseStockupOrder(connection, input);
+  assert.equal(reused.orderNo, "RVAEE0004-2-410-260930-EXISTING");
+  assert.equal(reused.alreadyCreated, true);
+  assert.deepEqual(requests.map((request) => request.service), ["getAsnList", "getAsnList"]);
 
   requests.length = 0;
   let repairReadCount = 0;

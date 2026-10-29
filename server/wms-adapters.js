@@ -122,6 +122,20 @@ function firstText(...values) {
   return values.find((value) => typeof value === "string" && value.trim())?.trim() || "";
 }
 
+const TRACKING_NUMBER_PLACEHOLDERS = new Set(["-", "--", "—", "暂无", "待补", "待填写", "n/a", "na", "null", "undefined"]);
+
+function meaningfulTrackingNumber(value) {
+  const trackingNumber = firstText(value);
+  return TRACKING_NUMBER_PLACEHOLDERS.has(trackingNumber.toLowerCase()) ? "" : trackingNumber;
+}
+
+function fallbackYunTrackingNumber(referenceNo, retryNumber = 0) {
+  const suffix = retryNumber > 0 ? `-R${retryNumber + 1}` : "";
+  const prefix = "TZ-";
+  const available = Math.max(1, 50 - prefix.length - suffix.length);
+  return `${prefix}${firstText(referenceNo).slice(0, available)}${suffix}`;
+}
+
 function xmlEscape(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -1159,12 +1173,14 @@ export function buildSeaStockupItems(input) {
 export function buildYunAsnPayload(input, warehouseCode, receivingCode = "") {
   const eta = firstText(input?.eta);
   const transportMode = firstText(input?.transportMode);
+  const referenceNo = firstText(input?.referenceNo).slice(0, 50);
+  const trackingNumber = meaningfulTrackingNumber(input?.trackingNo) || fallbackYunTrackingNumber(referenceNo);
   const receivingShippingType = /快递/.test(transportMode) ? "2"
     : /海运/.test(transportMode) ? "5"
       : /铁运|铁路|陆运/.test(transportMode) ? "7"
         : "0";
   const payload = {
-    reference_no: firstText(input?.referenceNo).slice(0, 50),
+    reference_no: referenceNo,
     transit_type: 1,
     warehouse_code: firstText(warehouseCode),
     transit_warehouse_code: firstText(warehouseCode),
@@ -1174,7 +1190,7 @@ export function buildYunAsnPayload(input, warehouseCode, receivingCode = "") {
     receiving_type: "D",
     ...(firstText(receivingCode) ? { receiving_code: firstText(receivingCode) } : {}),
     ...(eta ? { eta_date: eta.slice(0, 10) } : {}),
-    ...(firstText(input?.trackingNo) ? { tracking_number: firstText(input.trackingNo) } : {}),
+    tracking_number: trackingNumber,
     ...(firstText(input?.carrier) ? { shipping_method: firstText(input.carrier) } : {}),
     ...(firstText(input?.customerNote) ? { receiving_desc: firstText(input.customerNote).slice(0, 200) } : {}),
     items: buildYunAsnItems(input),
@@ -1202,6 +1218,11 @@ async function getYunAsnByReceivingCode(credentials, receivingCode) {
   const exact = rows.filter((row) => firstText(row?.receiving_code) === receivingCode);
   if (exact.length !== 1) throw new Error(`YunWMS 入库单 ${receivingCode} 无法被唯一定位，已停止自动修正。`);
   return exact[0];
+}
+
+async function getYunAsnRowsByReference(credentials, referenceNo) {
+  const rows = await fetchYunPageList(credentials, "getAsnList", { reference_no: referenceNo }, 50, 4);
+  return rows.filter((row) => firstText(row?.reference_no) === referenceNo);
 }
 
 function yunAsnSummary(row) {
@@ -1266,7 +1287,8 @@ export async function previewWarehouseStockupOrder(connection, input) {
     const credentials = yunCredentials(connection);
     const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
     if (!configuredText(warehouseCode)) throw new Error("未解析到 YunWMS 仓库编码，不能预览入库单。");
-    const items = buildYunAsnItems(input);
+    const payload = buildYunAsnPayload(input, warehouseCode);
+    const items = payload.items;
     return {
       ok: true,
       providerId: connection.providerId,
@@ -1277,7 +1299,8 @@ export async function previewWarehouseStockupOrder(connection, input) {
       referenceNo: firstText(input.referenceNo),
       eta: firstText(input.eta),
       carrier: firstText(input.carrier),
-      trackingNo: firstText(input.trackingNo),
+      trackingNo: payload.tracking_number,
+      trackingNoGenerated: !meaningfulTrackingNumber(input.trackingNo),
       totalBoxes: new Set(items.map((item) => item.box_no)).size,
       totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
       itemCount: items.length,
@@ -1441,7 +1464,33 @@ async function createYunAsn(connection, input) {
   if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能创建入库单。");
   const warehouseCode = await resolveYunWarehouseCode(credentials, connection);
   if (!configuredText(warehouseCode)) throw new Error("未解析到 YunWMS 仓库编码，不能创建入库单。");
-  const payload = await postYun(credentials, "createAsn", buildYunAsnPayload(input, warehouseCode));
+  const referenceNo = firstText(input?.referenceNo).slice(0, 50);
+  const previousRows = await getYunAsnRowsByReference(credentials, referenceNo);
+  const activeRows = previousRows.filter((row) => firstText(row?.receiving_status).toUpperCase() !== "X");
+  if (activeRows.length > 1) {
+    throw new Error(`YunWMS 中存在多个参考号为 ${referenceNo} 的有效入库单，请先人工核对，已停止重复建单。`);
+  }
+  if (activeRows.length === 1) {
+    const receivingCode = firstText(activeRows[0]?.receiving_code);
+    const existing = receivingCode ? await getYunAsnByReceivingCode(credentials, receivingCode) : activeRows[0];
+    const expected = buildYunAsnPayload(input, warehouseCode);
+    if (firstText(existing?.warehouse_code) !== warehouseCode || !yunAsnRowsMatch(existing, expected.items)) {
+      throw new Error(`YunWMS 已存在参考号为 ${referenceNo} 的入库单，但仓库或商品明细与本次发运不一致，请人工核对。`);
+    }
+    return {
+      ok: true,
+      providerId: connection.providerId,
+      createMode: input?.verify ? "verified" : "unverified",
+      warehouseId: warehouseCode,
+      orderNo: receivingCode,
+      alreadyCreated: true,
+      raw: existing,
+    };
+  }
+  const trackingNumber = meaningfulTrackingNumber(input?.trackingNo)
+    || fallbackYunTrackingNumber(referenceNo, previousRows.length);
+  const requestPayload = buildYunAsnPayload({ ...input, trackingNo: trackingNumber }, warehouseCode);
+  const payload = await postYun(credentials, "createAsn", requestPayload);
   if (String(payload?.ask || "").toLowerCase() !== "success") {
     throw new Error(`YunWMS 创建未审核入库单失败：${firstText(payload?.message, payload?.error) || "未知错误"}`);
   }

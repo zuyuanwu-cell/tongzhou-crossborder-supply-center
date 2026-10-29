@@ -3012,7 +3012,7 @@ async function createCollaborationShipmentWmsOrder(shipmentId, options, context)
 
   let created;
   try {
-    created = await createWarehouseStockupOrder(effectiveConnection, collaborationShipmentWmsInput(shipment, options));
+    created = await createWarehouseStockupOrder(effectiveConnection, collaborationShipmentWmsInput(prepared.shipment, options));
   } catch (error) {
     const ambiguous = /避免重复建单|核实后再重试|结果不明确|fetch failed|abort|timeout|timed out|socket|network|ECONN|UND_ERR/i.test(String(error?.message || ""));
     stockupCollaborationService.failShipmentWmsPush(shipment.id, { message: error?.message || "仓库建单失败", ambiguous }, context);

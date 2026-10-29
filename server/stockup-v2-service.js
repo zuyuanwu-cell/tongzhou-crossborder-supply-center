@@ -6,6 +6,10 @@ function id(prefix) { return `${prefix}_${randomUUID()}`; }
 function number(value, fallback = 0) { const result = Number(value); return Number.isFinite(result) ? result : fallback; }
 function money(value) { return Math.round((number(value) + Number.EPSILON) * 100) / 100; }
 function text(value) { return String(value ?? "").trim(); }
+function optionalTrackingNumber(value) {
+  const trackingNumber = text(value);
+  return ["-", "--", "—", "暂无", "待补", "待填写", "n/a", "na", "null", "undefined"].includes(trackingNumber.toLowerCase()) ? "" : trackingNumber;
+}
 function json(value, fallback = {}) { try { return value ? JSON.parse(value) : fallback; } catch { return fallback; } }
 function userOf(context = {}) { return { id: text(context.auth?.user?.id) || "system", name: text(context.auth?.user?.displayName || context.auth?.user?.username) || "系统" }; }
 function fail(message, code = "stockup_v2_error", statusCode = 400) { throw Object.assign(new Error(message), { code, statusCode }); }
@@ -646,7 +650,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
         store.run(`INSERT INTO stockup_shipments (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,destination_address,destination_contact_name,destination_contact_phone,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,billing_method,carrier_packages,carrier_actual_weight_kg,chargeable_volume_m3,billing_unit_price_cny,billing_extra_fee_cny,quoted_freight_cny,note,box_mark,inventory_movement_id,wms_provider_id,wms_document_type,wms_push_status,wms_order_no,wms_push_error,wms_push_attempts,wms_pushed_at,wms_pushed_by,version,created_at,updated_at,workflow_version,forwarder_location_id,forwarder_snapshot_json,reservation_id,instruction_published_at,instruction_published_by,handed_over_at,document_version)
           VALUES (${Array(52).fill("?").join(",")})`, [
           shipmentId, first.request_id, shipmentNo, text(first.domestic_warehouse_name), text(first.domestic_warehouse_id), "", text(first.destination_warehouse_id), text(first.destination_warehouse_name), text(first.destination_country), "", "", "",
-          text(payload.carrier), transportMode, text(payload.trackingNo), text(payload.etd), text(payload.eta), "", "inventory_reserved", lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count), 0),
+          text(payload.carrier), transportMode, optionalTrackingNumber(payload.trackingNo), text(payload.etd), text(payload.eta), "", "inventory_reserved", lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count), 0),
           lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count) * number(lot.carton_weight_kg), 0), lots.reduce((sum, lot) => sum + number(lot.shipment_carton_count) * number(lot.carton_length_cm) * number(lot.carton_width_cm) * number(lot.carton_height_cm) / 1_000_000, 0),
           chargeableWeightKg, billingMethod, carrierPackages, carrierActualWeightKg, chargeableVolumeM3, billingUnitPriceCny, billingExtraFeeCny, quotedFreightCny,
           text(payload.note), text(payload.boxMark), "", "", "", "not_created", "", "", 0, "", "", 1, now, now, 2, text(location.id), JSON.stringify(snapshot), external.reservation.id, "", "", "", 0,
@@ -729,7 +733,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       store.run(`INSERT INTO stockup_shipments (id,request_id,shipment_no,origin_warehouse,origin_warehouse_id,origin_address,destination_warehouse_id,destination_warehouse_name,destination_country,destination_address,destination_contact_name,destination_contact_phone,carrier,transport_mode,tracking_no,etd,eta,actual_shipped_at,status,packages,total_weight_kg,total_volume_m3,chargeable_weight_kg,billing_method,carrier_packages,carrier_actual_weight_kg,chargeable_volume_m3,billing_unit_price_cny,billing_extra_fee_cny,quoted_freight_cny,note,box_mark,inventory_movement_id,wms_provider_id,wms_document_type,wms_push_status,wms_order_no,wms_push_error,wms_push_attempts,wms_pushed_at,wms_pushed_by,version,created_at,updated_at,workflow_version,forwarder_location_id,forwarder_snapshot_json,reservation_id,instruction_published_at,instruction_published_by,handed_over_at,document_version)
         VALUES (${Array(52).fill("?").join(",")})`, [
         shipmentId, request.id, shipmentNo, request.consolidationWarehouseName, request.consolidationWarehouseId, "", request.destinationWarehouseId, request.destinationWarehouseName, request.destinationCountry, "", "", "",
-        text(payload.carrier), transportMode, text(payload.trackingNo), text(payload.etd), text(payload.eta), "", "inventory_reserved", allocations.reduce((sum, item) => sum + item.cartonCount, 0),
+        text(payload.carrier), transportMode, optionalTrackingNumber(payload.trackingNo), text(payload.etd), text(payload.eta), "", "inventory_reserved", allocations.reduce((sum, item) => sum + item.cartonCount, 0),
         allocations.reduce((sum, item) => sum + item.weightKg, 0), allocations.reduce((sum, item) => sum + item.volumeM3, 0),
         chargeableWeightKg, billingMethod, carrierPackages, carrierActualWeightKg, chargeableVolumeM3, billingUnitPriceCny, billingExtraFeeCny, quotedFreightCny,
         text(payload.note) || splitReason, text(payload.boxMark), "", "", "", "not_created", "", "", 0, "", "", 1, now, now, 2, text(location.id), JSON.stringify(snapshot), JSON.stringify(reservationIds), "", "", "", 0,
