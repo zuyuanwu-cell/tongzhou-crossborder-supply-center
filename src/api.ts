@@ -6602,3 +6602,148 @@ export function updateDomesticInventorySafetyStock(warehouseId: string, sku: str
     { method: "PATCH", body: JSON.stringify({ safetyStockQty }) },
   );
 }
+
+// ---------- 开品需求 (product launch requests) ----------
+
+export type ProductLaunchStageKey = "submitted" | "approved" | "sourcing" | "certification" | "listing_prep" | "launched" | "on_hold" | "rejected" | "cancelled";
+export type ProductLaunchPriority = "urgent" | "high" | "normal" | "low";
+
+export type ProductLaunchTimelineEvent = {
+  id: string;
+  type: "created" | "edited" | "stage" | "updated" | "comment";
+  label: string;
+  note?: string;
+  actor: string;
+  actorId?: string;
+  createdAt: string;
+  fromStage?: ProductLaunchStageKey;
+  toStage?: ProductLaunchStageKey;
+  fields?: string[];
+};
+
+export type ProductLaunchRequest = {
+  id: string;
+  title: string;
+  category: string;
+  country: string;
+  platform: string;
+  source: string;
+  reason: string;
+  sellingPoints: string;
+  competitorLinks: string[];
+  targetPrice: number | null;
+  currency: string;
+  targetCost: number | null;
+  expectedMonthlySales: number | null;
+  firstOrderQty: number | null;
+  priority: ProductLaunchPriority;
+  expectedLaunchDate: string;
+  stage: ProductLaunchStageKey;
+  stageLabel: string;
+  stageEnteredAt: string;
+  stageHistory?: Partial<Record<ProductLaunchStageKey, string>>;
+  owner: { id: string; name: string } | null;
+  nextAction: string;
+  nextDueDate: string;
+  linkedSku: string;
+  launchedAt: string;
+  rejectReason?: string;
+  createdBy: string;
+  createdById: string;
+  createdAt: string;
+  updatedAt: string;
+  overdue: boolean;
+  closed: boolean;
+  timeline: ProductLaunchTimelineEvent[];
+};
+
+export type ProductLaunchPermissions = { view: boolean; submit: boolean; manage: boolean };
+
+export type ProductLaunchSummary = {
+  total: number;
+  pendingReview: number;
+  inProgress: number;
+  launchedThisMonth: number;
+  overdue: number;
+  mine: number;
+  onHold: number;
+  byStage: Record<string, number>;
+};
+
+export type ProductLaunchPayload = {
+  ok: boolean;
+  updatedAt: string;
+  summary: ProductLaunchSummary;
+  requests: ProductLaunchRequest[];
+  permissions: ProductLaunchPermissions;
+};
+
+export type ProductLaunchMeta = {
+  ok: boolean;
+  stages: Array<{ key: ProductLaunchStageKey; label: string; main: boolean }>;
+  sources: string[];
+  priorities: Array<{ key: ProductLaunchPriority; label: string }>;
+  platforms: string[];
+  currencies: string[];
+  countries: string[];
+  owners: Array<{ id: string; name: string }>;
+  permissions: ProductLaunchPermissions;
+};
+
+export type ProductLaunchInput = {
+  title: string;
+  category?: string;
+  country: string;
+  platform?: string;
+  source: string;
+  reason: string;
+  sellingPoints?: string;
+  competitorLinks?: string[] | string;
+  targetPrice?: number | string | null;
+  currency?: string;
+  targetCost?: number | string | null;
+  expectedMonthlySales?: number | string | null;
+  firstOrderQty?: number | string | null;
+  priority?: ProductLaunchPriority;
+  expectedLaunchDate?: string;
+};
+
+export type ProductLaunchProgressInput = {
+  stage?: ProductLaunchStageKey;
+  note?: string;
+  owner?: { id: string; name?: string } | null;
+  nextAction?: string;
+  nextDueDate?: string;
+  linkedSku?: string;
+};
+
+export function fetchProductLaunchMeta(signal?: AbortSignal) {
+  return requestJson<ProductLaunchMeta>("/api/product-launch/meta", { signal });
+}
+
+export function fetchProductLaunchRequests(input: { keyword?: string; stage?: string; country?: string; priority?: string; mine?: boolean } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.keyword) params.set("keyword", input.keyword);
+  if (input.stage) params.set("stage", input.stage);
+  if (input.country) params.set("country", input.country);
+  if (input.priority) params.set("priority", input.priority);
+  if (input.mine) params.set("mine", "1");
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<ProductLaunchPayload>(`/api/product-launch/requests${query}`, { signal });
+}
+
+export function createProductLaunchRequest(input: ProductLaunchInput) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>("/api/product-launch/requests", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateProductLaunchRequest(id: string, input: Partial<ProductLaunchInput>) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function progressProductLaunchRequest(id: string, input: ProductLaunchProgressInput) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}/stage`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function commentProductLaunchRequest(id: string, note: string) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}/comments`, { method: "POST", body: JSON.stringify({ note }) });
+}

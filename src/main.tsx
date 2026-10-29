@@ -34,6 +34,7 @@ import {
   Image,
   KeyRound,
   LayoutDashboard,
+  Lightbulb,
   List,
   LoaderCircle,
   Lock,
@@ -244,6 +245,7 @@ import { OzonOrderCenter } from "./OzonOrderCenter";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
+import { ProductLaunchCenter } from "./ProductLaunchCenter";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import { PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
 import { SystemBackupPage } from "./SystemBackupPage";
@@ -417,6 +419,7 @@ const navItems = [
   { label: "资质库", icon: FileText, hash: "#qualifications", section: "catalog", childOf: "产品库", permission: "qualifications" },
   { label: "资质覆盖", icon: ShieldCheck, hash: "#qualification-coverage", section: "catalog", childOf: "产品库", permission: "qualifications", requiredPermissions: ["qualifications", "inventory"] },
   { label: "素材库", icon: Boxes, hash: "#assets", section: "catalog", childOf: "产品库", permission: "assets" },
+  { label: "开品需求", icon: Lightbulb, hash: "#product-launch", section: "catalog", childOf: "产品库", permission: "product_launch_view" },
   { label: "库存同步", icon: DatabaseZap, hash: "#inventory", section: "inventory", permission: "inventory_sync" },
   { label: "动销监控", icon: BarChart3, hash: "#movement", section: "inventory", permission: "movement" },
   { label: "库存快照", icon: Boxes, hash: "#inventory-snapshots", section: "inventory", permission: "inventory_snapshots" },
@@ -2108,6 +2111,8 @@ function App() {
           <QualificationLibrary products={catalog} qualificationPayload={qualificationPayload} onSyncQualifications={handleQualificationSync} syncing={syncing} canSync={hasUserPermission(currentUser, "qualification_sync")} />
         ) : activeView === "资质覆盖" ? (
           <QualificationCoveragePage products={catalog} productBase={payload?.productBase || []} warehouseOnlyInventory={payload?.warehouseOnlyInventory || []} qualificationPayload={qualificationPayload} />
+        ) : activeView === "开品需求" ? (
+          <ProductLaunchCenter currentUser={currentUser} />
         ) : activeView === "素材库" ? (
           <AssetLibrary
             products={catalog}

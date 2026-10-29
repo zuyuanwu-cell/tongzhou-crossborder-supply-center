@@ -102,6 +102,8 @@ import { initBusinessChainStore } from "./business-chain-db.js";
 import { createBusinessChainSyncService } from "./business-chain-sync.js";
 import { createBusinessChainService } from "./business-chain-service.js";
 import { createBusinessChainApi } from "./business-chain-api.js";
+import { createProductLaunchService } from "./product-launch.js";
+import { createProductLaunchApi } from "./product-launch-api.js";
 import { BUSINESS_CHAIN_SYNC_INTERVAL_MS } from "./business-chain-config.js";
 import { initCollaborationBridgeStore } from "./collaboration-bridge-db.js";
 import { createCollaborationBridge } from "./collaboration-bridge.js";
@@ -177,6 +179,7 @@ const afterSalesCachePath = resolve(cacheDir, "after-sales.json");
 const afterSalesUploadDir = resolve(cacheDir, "after-sales-uploads");
 const warehouseTicketCachePath = resolve(cacheDir, "warehouse-tickets.json");
 const warehouseTicketUploadDir = resolve(cacheDir, "warehouse-ticket-uploads");
+const productLaunchCachePath = resolve(cacheDir, "product-launch-requests.json");
 const overseasInventoryReconciliationCachePath = resolve(cacheDir, "overseas-inventory-reconciliation.json");
 const ozonIntegrationCachePath = resolve(cacheDir, "ozon-integration.json");
 const ozonIntegrationDbPath = resolve(process.env.OZON_INTEGRATION_DB_PATH || resolve(cacheDir, "ozon-integration.sqlite"));
@@ -555,6 +558,22 @@ const businessChainApi = createBusinessChainApi({
   syncService: businessChainSyncService,
   getAuth,
   appendActionLog,
+});
+const productLaunchService = createProductLaunchService({ cachePath: productLaunchCachePath });
+const productLaunchApi = createProductLaunchApi({
+  service: productLaunchService,
+  getAuth,
+  appendActionLog,
+  // 可指派的开品负责人：启用中、拥有“开品评审与进度推进”权限的账号。
+  listOwners: () => (cachedUsers.users || [])
+    .filter((user) => user.status !== "disabled")
+    .map((user) => publicAccessUser(user))
+    .filter((user) => hasPermission({ user }, "product_launch_manage"))
+    .map((user) => ({ id: String(user.id || ""), name: String(user.displayName || user.username || user.id || "") }))
+    .filter((owner) => owner.id),
+  listCountries: () => Array.from(new Set([...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])]
+    .map((product) => String(product.country || "").trim())
+    .filter(Boolean))).sort((left, right) => left.localeCompare(right, "zh-CN")),
 });
 const collaborationBridge = createCollaborationBridge({
   store: collaborationBridgeStore,
@@ -8432,6 +8451,7 @@ const server = http.createServer(async (req, res) => {
     if (await mobileAdminApi(req, res, url)) return;
     if (await collaborationBridgeApi(req, res, url)) return;
     if (await businessChainApi(req, res, url)) return;
+    if (await productLaunchApi(req, res, url)) return;
 
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {

@@ -59,6 +59,7 @@ const messages: Record<string, Translation> = {
   "顶部": { en: "Top", id: "Atas" },
   "资质库": { en: "Qualifications", id: "Pusat Perizinan" },
   "素材库": { en: "Asset Library", id: "Pustaka Aset" },
+  "开品需求": { en: "Launch Requests", id: "Permintaan Produk Baru" },
   "库存同步": { en: "Inventory Sync", id: "Sinkronisasi Stok" },
   "动销监控": { en: "Inventory Risk", id: "Risiko Inventaris" },
   "库存风险": { en: "Inventory Risk", id: "Risiko Inventaris" },

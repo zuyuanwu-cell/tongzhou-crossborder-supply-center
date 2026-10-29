@@ -74,6 +74,9 @@ const permissionDefinitions = [
   ["inventory", "产品库存", "产品字段"],
   ["qualifications", "资质库", "商品与协同"],
   ["assets", "素材库", "商品与协同"],
+  ["product_launch_view", "开品需求查看", "商品与协同"],
+  ["product_launch_submit", "开品需求提交", "商品与协同"],
+  ["product_launch_manage", "开品评审与进度推进", "商品与协同"],
   ["warehouse_info", "仓库信息", "商品与协同"],
   ["quick_nav", "快捷导航", "智能与开放"],
   ["tongzhou_ai", "同舟 AI", "智能与开放"],
@@ -176,6 +179,8 @@ export const ROLE_DEFAULT_PERMISSIONS = Object.freeze({
     "ozon_config",
     "stockup_request_create",
     "stockup_request_view_own",
+    "product_launch_view",
+    "product_launch_submit",
   ]),
   warehouse: Object.freeze([
     "product_view",
@@ -217,6 +222,9 @@ const INTERNAL_SYNC_DENIED_ROLES = new Set(["distributor", "guest"]);
 const DOMESTIC_INVENTORY_DENIED_ROLES = new Set(["distributor", "guest"]);
 const DOMESTIC_INVENTORY_PERMISSION_KEYS = Object.freeze(["domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage"]);
 const COLLABORATION_TASK_PERMISSION_KEYS = Object.freeze(["collaboration_task_view", "collaboration_task_publish"]);
+// 开品需求含内部开发计划与目标成本，不开放给分销商和访客。
+const PRODUCT_LAUNCH_PERMISSION_KEYS = Object.freeze(["product_launch_view", "product_launch_submit", "product_launch_manage"]);
+const PRODUCT_LAUNCH_DENIED_ROLES = new Set(["distributor", "guest"]);
 const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync", "system_backup"]);
 const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "warehouse_qualification_coverage", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
@@ -322,6 +330,7 @@ export function effectivePermissions(user) {
     for (const permission of ["stockup_request_create", "stockup_request_accept", "stockup_cost_edit", "stockup_cost_review", "stockup_cost_lock", "stockup_cost_report_view", "stockup_supplier_view"]) effective.add(permission);
   }
   if (effective.has("stockup_execution_view")) effective.add("stockup_request_view_all");
+  if (effective.has("product_launch_submit") || effective.has("product_launch_manage")) effective.add("product_launch_view");
   if (effective.has("stockup_execution_manage")) {
     for (const permission of ["stockup_request_view_all", "stockup_execution_update", "stockup_shipment_update", "stockup_receipt_confirm", "container_loading_view", "container_loading_manage", "container_loading_confirm", "stockup_supplier_view"]) effective.add(permission);
   }
@@ -373,6 +382,9 @@ export function effectivePermissions(user) {
   }
   if (DOMESTIC_INVENTORY_DENIED_ROLES.has(role)) {
     for (const permission of DOMESTIC_INVENTORY_PERMISSION_KEYS) effective.delete(permission);
+  }
+  if (PRODUCT_LAUNCH_DENIED_ROLES.has(role)) {
+    for (const permission of PRODUCT_LAUNCH_PERMISSION_KEYS) effective.delete(permission);
   }
   if (role !== "admin") {
     for (const permission of ADMIN_ONLY_PERMISSION_KEYS) effective.delete(permission);
@@ -440,6 +452,8 @@ export function sanitizePermissionUpdate(role, input) {
     ["domestic_inventory_adjust", "domestic_inventory_view"],
     ["domestic_inventory_manage", "domestic_inventory_view"],
     ["collaboration_task_publish", "collaboration_task_view"],
+    ["product_launch_submit", "product_launch_view"],
+    ["product_launch_manage", "product_launch_view"],
   ];
   for (const [operationPermission, viewPermission] of permissionImplications) {
     if (overrides.allow.includes(operationPermission) && !overrides.deny.includes(operationPermission)) {
@@ -473,6 +487,9 @@ export function sanitizePermissionUpdate(role, input) {
   }
   if (DOMESTIC_INVENTORY_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => !DOMESTIC_INVENTORY_PERMISSION_KEYS.includes(key));
+  }
+  if (PRODUCT_LAUNCH_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => !PRODUCT_LAUNCH_PERMISSION_KEYS.includes(key));
   }
   if (role !== "admin") {
     overrides.allow = overrides.allow.filter((key) => !ADMIN_ONLY_PERMISSION_KEYS.includes(key));
