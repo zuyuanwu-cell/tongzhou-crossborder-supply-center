@@ -10,6 +10,12 @@ function fail(message, statusCode = 400, code = "invalid_request") {
 
 const internalItemTypes = new Set(["warehouse_inbound", "warehouse_outbound", "warehouse_transfer", "warehouse_stockup", "warehouse_exception", "filing_task", "sampling_task", "packaging_quote", "production_order", "purchase_order"]);
 const workItemStatuses = new Set(["pending", "accepted", "in_progress", "pending_approval", "pending_sync", "completed", "rejected", "cancelled"]);
+const terminalAppliedCommands = new Set(["complete", "stockup_process", "inbound_confirm", "outbound_confirm", "transfer_receive"]);
+
+export function workItemStatusForCommandResult(commandStatus, commandType, coreRefType = "") {
+  if (commandStatus !== "applied") return commandStatus;
+  return terminalAppliedCommands.has(commandType) || coreRefType === "partner_warehouse_operation" ? "completed" : "in_progress";
+}
 
 function internalWorkItem(row) {
   const item = {
@@ -450,7 +456,7 @@ export async function completeCommand(commandId, input) {
       [commandId, commandStatus, resultPayload.resultCode || null, resultPayload.message || null, resultPayload.coreReference || null],
     );
     await client.query("UPDATE integration_outbox SET status='sent',sent_at=COALESCE(sent_at,now()),last_error=NULL WHERE aggregate_type='partner_command' AND aggregate_id=$1", [commandId]);
-    const itemStatus = commandStatus === "applied" ? (["complete", "stockup_process"].includes(command.command_type) || command.core_ref_type === "partner_warehouse_operation" ? "completed" : "in_progress") : commandStatus;
+    const itemStatus = workItemStatusForCommandResult(commandStatus, command.command_type, command.core_ref_type);
     const versionExpression = resultPayload.workItemVersion ? "$4" : "version+1";
     const params = [command.work_item_id, command.organization_id, itemStatus];
     if (resultPayload.workItemVersion) params.push(resultPayload.workItemVersion);
@@ -466,5 +472,55 @@ export async function completeCommand(commandId, input) {
       [command.organization_id, command.work_item_id, commandStatus === "applied" ? "操作已同步" : "操作处理结果", resultPayload.message || `状态：${commandStatus}`],
     );
     return { ok: true, commandId, status: commandStatus };
+  });
+}
+
+export async function reconcileInternalWorkItems(input = {}) {
+  const coreRefType = String(input.coreRefType || "").trim();
+  const coreRefId = String(input.coreRefId || "").trim();
+  const itemType = String(input.itemType || "").trim();
+  const status = String(input.status || "completed").trim();
+  const actorName = String(input.actorName || "供应链中台").trim().slice(0, 200);
+  const body = String(input.body || "内部主账状态已同步到协同工单。").trim().slice(0, 2_000);
+  if (!coreRefType || !coreRefId) fail("缺少主账对象引用。", 400, "missing_core_reference");
+  if (itemType && !internalItemTypes.has(itemType)) fail("协同任务类型无效。", 400, "invalid_item_type");
+  if (!workItemStatuses.has(status)) fail("协同任务状态无效。", 400, "invalid_status");
+
+  return withSystem(async (client) => {
+    const params = [coreRefType, coreRefId];
+    const itemTypeClause = itemType ? " AND item_type=$3" : "";
+    if (itemType) params.push(itemType);
+    const result = await client.query(
+      `SELECT * FROM work_items WHERE core_ref_type=$1 AND core_ref_id=$2${itemTypeClause} FOR UPDATE`,
+      params,
+    );
+    let updated = 0;
+    const workItemIds = [];
+    for (const item of result.rows) {
+      workItemIds.push(item.id);
+      if (item.status === status) continue;
+      await client.query(
+        "UPDATE work_items SET status=$3,version=version+1,last_core_synced_at=now() WHERE id=$1 AND organization_id=$2",
+        [item.id, item.organization_id, status],
+      );
+      if (status === "completed") {
+        await client.query(
+          "UPDATE warehouse_task_lines SET completed_quantity=planned_quantity,updated_at=now() WHERE work_item_id=$1 AND organization_id=$2 AND completed_quantity < planned_quantity",
+          [item.id, item.organization_id],
+        );
+      }
+      await client.query(
+        `INSERT INTO work_item_events(organization_id,work_item_id,event_type,actor_name,body,metadata)
+         VALUES ($1,$2,'core.reconciled',$3,$4,$5)`,
+        [item.organization_id, item.id, actorName, body, { coreRefType, coreRefId, status }],
+      );
+      await client.query(
+        `INSERT INTO notifications(organization_id,work_item_id,title,body,channel,delivery_status)
+         VALUES ($1,$2,$3,$4,'in_app','sent')`,
+        [item.organization_id, item.id, status === "completed" ? "主账已确认完成" : "主账状态已更新", body],
+      );
+      updated += 1;
+    }
+    return { ok: true, matched: result.rows.length, updated, workItemIds, status };
   });
 }

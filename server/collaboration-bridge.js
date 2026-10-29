@@ -491,6 +491,22 @@ export function createCollaborationBridge({
     return { id: row.id, status: row.status, projection };
   }
 
+  async function reconcileWarehouseTask(input, { actorName = "供应链中台" } = {}) {
+    const payload = {
+      coreRefType: String(input?.coreRefType || "").trim(),
+      coreRefId: String(input?.coreRefId || "").trim(),
+      itemType: String(input?.itemType || "warehouse_transfer").trim(),
+      status: String(input?.status || "completed").trim(),
+      actorName: String(actorName || "供应链中台").trim(),
+      body: String(input?.body || "国内库存主账已确认收货，协同工单自动完成。").trim(),
+    };
+    if (!payload.coreRefType || !payload.coreRefId) fail("缺少协同工单主账引用。", 400, "missing_core_reference");
+    const id = `reconcile-${createHash("sha256").update(`${payload.coreRefType}:${payload.coreRefId}:${payload.itemType}:${payload.status}`).digest("hex").slice(0, 32)}`;
+    const row = store.enqueue({ id, eventType: "work_item_reconcile", payload, now: nowIso() });
+    const delivery = await flushOutbox();
+    return { ok: true, id, status: row.status, delivery };
+  }
+
   async function flushOutbox() {
     if (!enabled) return { published: 0, failed: 0, disabled: true };
     const ready = store.readyOutbox(nowIso(), 50);
@@ -505,8 +521,11 @@ export function createCollaborationBridge({
             ? "/collaboration/internal/v1/oem/projections"
             : row.event_type === "partner_order"
               ? "/collaboration/internal/v1/partner-orders/projections"
+              : row.event_type === "work_item_reconcile"
+                ? "/collaboration/internal/v1/work-items/reconcile"
               : "/collaboration/internal/v1/projections";
-        const result = await internalRequest(path, { method: "PUT", body: payload });
+        const method = row.event_type === "work_item_reconcile" ? "POST" : "PUT";
+        const result = await internalRequest(path, { method, body: payload });
         store.markPublished(row.id, result, nowIso());
         published += 1;
       } catch (error) {
@@ -1225,6 +1244,7 @@ export function createCollaborationBridge({
     queueOemProjection,
     queuePartnerOrderProjection,
     queueProjection,
+    reconcileWarehouseTask,
     reissueInvitation,
     remindWarehouseTask,
     replaceOrganizationAccessGrants,

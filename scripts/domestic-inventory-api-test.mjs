@@ -25,7 +25,16 @@ try {
       { id: "catalog-duplicate", sku: " sku-1 ", name: "重复产品一" },
     ],
   };
-  const handler = createDomesticInventoryApi({ service, getAuth: () => activeAuth, getProducts: () => productFixtures });
+  const transferReconciliations = [];
+  const handler = createDomesticInventoryApi({
+    service,
+    getAuth: () => activeAuth,
+    getProducts: () => productFixtures,
+    onTransferReceived: async (receivedTransfer, actor) => {
+      transferReconciliations.push({ receivedTransfer, actor });
+      return { ok: true, queued: true };
+    },
+  });
 
   async function invoke(method, path, auth, body, headers = {}) {
     activeAuth = auth;
@@ -109,7 +118,11 @@ try {
   const received = await invoke("POST", `/api/domestic-inventory/transfers/${encodeURIComponent(transfer.payload.transferId)}/receive`, targetOperator);
   assert.equal(received.status, 200);
   assert.equal(received.payload.transfer.status, "received");
-  assert.equal((await invoke("POST", `/api/domestic-inventory/transfers/${encodeURIComponent(transfer.payload.transferId)}/receive`, targetOperator)).payload.idempotentReplay, true);
+  assert.equal(received.payload.collaborationReconciliation.queued, true);
+  const replayedReceipt = await invoke("POST", `/api/domestic-inventory/transfers/${encodeURIComponent(transfer.payload.transferId)}/receive`, targetOperator);
+  assert.equal(replayedReceipt.payload.idempotentReplay, true);
+  assert.equal(transferReconciliations.length, 2, "an idempotent receipt retry must also repair a stale collaboration work item");
+  assert.equal(transferReconciliations[0].receivedTransfer.id, transfer.payload.transferId);
   assert.equal(service.list({ warehouseId: targetWarehouse.id }, { auth: adminAuth, countries: [], warehouseIds: [], skus: [] }).balances[0].onHandQty, 5);
   console.log("domestic inventory API tests passed");
 } finally {

@@ -133,7 +133,7 @@ test("warehouse self-service stores allowlisted images and retains approval cont
   assert.match(migrateSource, /GRANT SELECT,INSERT ON collaboration_projects,collaboration_spaces,warehouse_task_lines/);
   assert.match(integrationSource, /partner_warehouse_operation/);
   const taskDrawer = portalSource.match(/function TaskDetailDrawer[\s\S]*?function AccountPage/)?.[0] || "";
-  assert.match(taskDrawer, /completedQuantity: line\.completedQuantity > 0 \? line\.completedQuantity : ""/);
+  assert.match(taskDrawer, /completedQuantity: line\.completedQuantity > 0 \? line\.completedQuantity : value\.item\.itemType === "warehouse_transfer" \? line\.plannedQuantity : ""/);
   assert.match(taskDrawer, /hasInvalidActualQuantity/);
   assert.doesNotMatch(taskDrawer, /completedQuantity: line\.completedQuantity \|\| line\.plannedQuantity/);
 });

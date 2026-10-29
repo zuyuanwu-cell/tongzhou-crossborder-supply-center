@@ -139,7 +139,7 @@ export function domesticInventoryOpenApi() {
   };
 }
 
-export function createDomesticInventoryApi({ service, getAuth, getProducts = () => ({}), appendActionLog = () => {} }) {
+export function createDomesticInventoryApi({ service, getAuth, getProducts = () => ({}), appendActionLog = () => {}, onTransferReceived = async () => ({ ok: true, skipped: true }) }) {
   return async function handleDomesticInventoryApi(req, res, url) {
     if (url.pathname !== "/api/domestic-inventory" && !url.pathname.startsWith("/api/domestic-inventory/")) return false;
     const auth = getAuth(req);
@@ -190,7 +190,13 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
         requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有调拨收货权限。");
         const result = service.receiveTransfer(decodeURIComponent(match[1]), context);
         if (!result.idempotentReplay) appendActionLog(auth, "确认国内仓调拨收货", "domestic_inventory_transfer", result.transfer.transferNo, { transferId: result.transfer.id, targetWarehouseId: result.transfer.targetWarehouseId, movementId: result.movementId });
-        sendJson(res, 200, result);
+        let collaborationReconciliation;
+        try {
+          collaborationReconciliation = await onTransferReceived(result.transfer, { actorName: auth.user?.displayName || auth.username || "供应链中台" });
+        } catch (error) {
+          collaborationReconciliation = { ok: false, queued: false, code: error.code || "collaboration_reconcile_failed", message: String(error.message || error) };
+        }
+        sendJson(res, 200, { ...result, collaborationReconciliation });
         return true;
       }
       if ((match = suffix.match(/^\/transfers\/([^/]+)\/cancel$/)) && req.method === "POST") {

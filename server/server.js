@@ -532,6 +532,13 @@ const domesticInventoryApi = createDomesticInventoryApi({
   getAuth,
   getProducts: () => cachedProducts,
   appendActionLog,
+  onTransferReceived: (transfer, { actorName } = {}) => collaborationBridge.reconcileWarehouseTask({
+    coreRefType: "domestic_transfer",
+    coreRefId: transfer.id,
+    itemType: "warehouse_transfer",
+    status: "completed",
+    body: `调拨单 ${transfer.transferNo} 已在国内库存主账确认收货。`,
+  }, { actorName: actorName || "供应链中台" }),
 });
 const jiandaoyunDomesticInventoryApi = createJiandaoyunDomesticInventoryApi({
   service: domesticInventoryService,

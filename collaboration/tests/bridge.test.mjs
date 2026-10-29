@@ -137,6 +137,29 @@ test("core bridge persists and publishes allowlisted projections", async (t) => 
   assert.equal(store.status().outbox.published, 1);
 });
 
+test("core bridge durably reconciles a received domestic transfer with its partner work item", async (t) => {
+  const { bridge, requests, store } = await fixture(t);
+  const input = {
+    coreRefType: "domestic_transfer",
+    coreRefId: "dtr-received-1",
+    itemType: "warehouse_transfer",
+    status: "completed",
+    body: "调拨单 DB-001 已在国内库存主账确认收货。",
+  };
+
+  const first = await bridge.reconcileWarehouseTask(input, { actorName: "仓库管理员" });
+  assert.equal(first.delivery.published, 1);
+  assert.equal(store.status().outbox.published, 1);
+  const request = requests.find((entry) => entry.url.endsWith("/collaboration/internal/v1/work-items/reconcile"));
+  assert.ok(request);
+  assert.equal(request.method, "POST");
+  assert.deepEqual(request.body, { ...input, actorName: "仓库管理员" });
+
+  const replay = await bridge.reconcileWarehouseTask(input, { actorName: "仓库管理员" });
+  assert.equal(replay.delivery.published, 0);
+  assert.equal(store.status().outbox.published, 1);
+});
+
 test("core bridge publishes production and purchase orders through the private order endpoint", async (t) => {
   const { bridge, requests } = await fixture(t, { oemEnabled: true });
   const queued = bridge.queuePartnerOrderProjection(partnerOrderProjection);
