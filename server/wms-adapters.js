@@ -1221,8 +1221,13 @@ async function getYunAsnByReceivingCode(credentials, receivingCode) {
 }
 
 async function getYunAsnRowsByReference(credentials, referenceNo) {
-  const rows = await fetchYunPageList(credentials, "getAsnList", { reference_no: referenceNo }, 50, 4);
-  return rows.filter((row) => firstText(row?.reference_no) === referenceNo);
+  try {
+    const rows = await fetchYunPageList(credentials, "getAsnList", { reference_no: referenceNo }, 50, 4);
+    return rows.filter((row) => firstText(row?.reference_no) === referenceNo);
+  } catch (error) {
+    if (/没有数据|no data/i.test(String(error?.message || ""))) return [];
+    throw error;
+  }
 }
 
 function yunAsnSummary(row) {

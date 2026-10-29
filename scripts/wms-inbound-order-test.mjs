@@ -44,7 +44,7 @@ try {
     const request = extractRequest(String(options.body || ""));
     requests.push(request);
     if (request.service === "getAsnList") {
-      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", nextPage: "false", data: [] }) };
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Failure", message: "没有数据" }) };
     }
     return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", message: "Success", receiving_code: "RVAEE0004-2-410-260930-TEST" }) };
   };
@@ -65,7 +65,7 @@ try {
     const request = extractRequest(String(options.body || ""));
     requests.push(request);
     if (request.service === "getAsnList") {
-      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", nextPage: "false", data: [] }) };
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Failure", message: "没有数据" }) };
     }
     return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Success", message: "Success", receiving_code: "RVAEE0004-2-410-260930-FALLBACK" }) };
   };
