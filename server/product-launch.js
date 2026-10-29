@@ -44,6 +44,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// Production still runs on Node 16, where structuredClone is unavailable.
+// Product-launch records contain JSON-safe values only, so this keeps store
+// updates isolated without raising the runtime requirement for the API.
+function cloneRecord(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function today() {
   return nowIso().slice(0, 10);
 }
@@ -176,7 +183,7 @@ function createStore(cachePath) {
     update(id, updater) {
       const index = state.requests.findIndex((item) => item.id === id);
       if (index < 0) return null;
-      state.requests[index] = updater(structuredClone(state.requests[index]));
+      state.requests[index] = updater(cloneRecord(state.requests[index]));
       persist();
       return state.requests[index];
     },

@@ -8,8 +8,12 @@ import { createProductLaunchApi } from "../server/product-launch-api.js";
 
 const dir = mkdtempSync(join(tmpdir(), "product-launch-"));
 const cachePath = join(dir, "product-launch-requests.json");
+const nativeStructuredClone = globalThis.structuredClone;
 
 try {
+  // The production API currently runs on Node 16. Keep the full create/update/
+  // progress flow covered with the newer global deliberately unavailable.
+  globalThis.structuredClone = undefined;
   const service = createProductLaunchService({ cachePath });
   const ops = { id: "u-ops", displayName: "运营小王" };
   const other = { id: "u-other", displayName: "运营小李" };
@@ -136,5 +140,6 @@ try {
 
   console.log("product launch tests passed");
 } finally {
+  globalThis.structuredClone = nativeStructuredClone;
   rmSync(dir, { recursive: true, force: true });
 }
