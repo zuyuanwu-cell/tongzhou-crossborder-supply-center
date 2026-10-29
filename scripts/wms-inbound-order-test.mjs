@@ -74,6 +74,27 @@ try {
   assert.equal(requests[1].params.tracking_number, "TZ-FY-20261029-7RR1J");
 
   requests.length = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    const request = extractRequest(String(options.body || ""));
+    requests.push(request);
+    if (request.service === "getAsnList") {
+      return { ok: true, status: 200, text: async () => xmlResponse({ ask: "Failure", message: "没有数据" }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => xmlResponse({
+        ask: "Failure",
+        message: "SKU:TZKJ-NK042不存在,SKU:TZKJ-NK042不存在,SKU：TZKJ-NK043不存在,SKU:TZKJ-NK043不存在",
+      }),
+    };
+  };
+  await assert.rejects(
+    () => createWarehouseStockupOrder(connection, { ...input, referenceNo: "FY-20261029-MISSING" }),
+    /尚未建档 2 个 SKU：TZKJ-NK042、TZKJ-NK043.*未创建入库单，也未扣减库存/,
+  );
+
+  requests.length = 0;
   const existingItems = Array.from({ length: 200 }, (_, index) => ({ product_sku: "TZKJ-QL032", quantity: "72", box_no: String(index + 1) }));
   globalThis.fetch = async (_url, options = {}) => {
     const request = extractRequest(String(options.body || ""));

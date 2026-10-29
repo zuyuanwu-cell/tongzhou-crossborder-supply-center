@@ -1464,6 +1464,23 @@ async function createSeaStockupOrder(connection, input) {
   };
 }
 
+function readableYunAsnCreateFailure(payload) {
+  const message = firstText(payload?.message, payload?.error) || "未知错误";
+  const missingSkus = [];
+  const seen = new Set();
+  const matcher = /SKU\s*[:：]\s*([^,，;；\s]+)\s*不存在/gi;
+  for (const match of message.matchAll(matcher)) {
+    const sku = firstText(match[1]).toUpperCase();
+    if (!sku || seen.has(sku)) continue;
+    seen.add(sku);
+    missingSkus.push(sku);
+  }
+  if (missingSkus.length) {
+    return `YunWMS 尚未建档 ${missingSkus.length} 个 SKU：${missingSkus.join("、")}。请先完成商品建档后重试，本次未创建入库单，也未扣减库存。`;
+  }
+  return `YunWMS 创建未审核入库单失败：${message}`;
+}
+
 async function createYunAsn(connection, input) {
   const credentials = yunCredentials(connection);
   if (!hasYunCredentials(credentials)) throw new Error("缺少 YunWMS baseUrl / appKey / appToken，不能创建入库单。");
@@ -1497,7 +1514,7 @@ async function createYunAsn(connection, input) {
   const requestPayload = buildYunAsnPayload({ ...input, trackingNo: trackingNumber }, warehouseCode);
   const payload = await postYun(credentials, "createAsn", requestPayload);
   if (String(payload?.ask || "").toLowerCase() !== "success") {
-    throw new Error(`YunWMS 创建未审核入库单失败：${firstText(payload?.message, payload?.error) || "未知错误"}`);
+    throw new Error(readableYunAsnCreateFailure(payload));
   }
   const orderNo = firstText(payload?.data?.receiving_code, payload?.data?.receivingCode, payload?.receiving_code);
   if (!orderNo) throw new Error("YunWMS 返回成功但缺少入库单号，请在 WMS 核实后再重试，避免重复建单。");
