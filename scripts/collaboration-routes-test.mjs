@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
-const [main, identityAdmin, workspace] = await Promise.all([
+const [main, identityAdmin, workspace, identityAdminStyles] = await Promise.all([
   read("src/main.tsx"),
   read("src/CollaborationIdentityAdmin.tsx"),
   read("src/PartnerCollaborationWorkspace.tsx"),
+  read("src/collaboration-identity-admin.css"),
 ]);
 
 assert.match(main, /hash: "#outsourcing-collaboration"[\s\S]*hidden: true/);
@@ -19,5 +20,11 @@ assert.match(identityAdmin, /organization: detail\.organization\.code, section: 
 assert.match(workspace, /requestedOrganizationCode/);
 assert.match(workspace, /requestedSection !== "factory-mapping"/);
 assert.match(workspace, /getElementById\("outsourcing-factory-mapping"\)/);
+assert.match(identityAdmin, /<option value="">请选择要映射的工厂<\/option>/);
+assert.match(identityAdmin, /aria-label="选择千顷 ERP 委外工厂"/);
+assert.doesNotMatch(identityAdmin, /result\.options\[0\]\?\.factoryId/);
+assert.match(identityAdmin, /暂未读取到可映射工厂/);
+assert.match(identityAdminStyles, /\.cia-outsourcing-select select\{[^}]*width:100%/);
+assert.match(identityAdminStyles, /\.cia-outsourcing-source-body\{[^}]*grid-template-columns/);
 
 console.log("collaboration-routes-test: ok");

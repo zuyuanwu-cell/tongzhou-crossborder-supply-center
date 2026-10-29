@@ -406,6 +406,7 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
   }) : baseVisibleItems;
   const enabled = Boolean(access?.grants.some((grant) => grant.resourceType === "organization" && grant.resourceRef === selectedType.resourceRef && grant.permissions.includes(selectedType.permission)));
   const productionEnabled = Boolean(access?.grants.some((grant) => grant.resourceType === "organization" && grant.resourceRef === "production" && grant.permissions.includes("production.order.view")));
+  const selectedFactory = outsourcingSource?.options.find((item) => item.factoryId === selectedFactoryId) || null;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -418,12 +419,15 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
   }, [organization.code, fixedTaskType, notify]);
 
   const loadOutsourcingSource = useCallback(async (refresh = false) => {
-    if (!productionEnabled) { setOutsourcingSource(null); return; }
+    if (!productionEnabled) { setOutsourcingSource(null); setSelectedFactoryId(""); return; }
     setSourceLoading(true);
     try {
       const result = await fetchCollaborationOutsourcingSource(organization.code, refresh);
       setOutsourcingSource(result);
-      setSelectedFactoryId(result.binding?.factoryId || result.options[0]?.factoryId || "");
+      setSelectedFactoryId((current) => {
+        if (result.options.some((item) => item.factoryId === current)) return current;
+        return result.binding?.factoryId || "";
+      });
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : "千顷 ERP 委外加工单来源读取失败", true);
     } finally { setSourceLoading(false); }
@@ -546,15 +550,21 @@ export function PartnerTaskPanel({ organization, access, notify, fixedTaskType, 
     {!enabled ? <div className="cia-task-permission-warning"><LockKeyhole size={17} /><span>当前组织尚未开通“{selectedType.label}”。请先在上方勾选对应业务空间、使用推荐权限并保存。</span></div> : null}
     {fixedTaskType === "sampling_task" ? <SamplingDashboard items={baseVisibleItems} filter={samplingFilter} onFilter={setSamplingFilter} /> : null}
     {draft.taskType === "production_order" ? <div className="cia-outsourcing-source" id="outsourcing-factory-mapping">
-      <div className="cia-outsourcing-source-head"><div><Factory size={18} /><div><strong>千顷 ERP · 委外加工单</strong><span>绑定工厂编号后自动同步，不在中台重复录单；伙伴进度会回写源单</span></div></div><em>源单只读 · 反馈回写</em></div>
+      <div className="cia-outsourcing-source-head"><div><span className="cia-outsourcing-source-icon"><Factory size={19} /></span><div><strong>协同工厂映射</strong><span>把“{organization.name}”与千顷 ERP 的一个委外工厂绑定，绑定后只同步该工厂的加工单。</span></div></div><em className={outsourcingSource?.binding ? "bound" : "unbound"}>{outsourcingSource?.binding ? "已绑定" : "待配置"}</em></div>
       {sourceLoading ? <div className="cia-loading compact"><LoaderCircle size={18} className="cia-spin" />正在读取简道云工厂与订单…</div> : <>
-        <div className="cia-outsourcing-source-grid">
-          <label><span>该伙伴可见的委外加工工厂</span><select value={selectedFactoryId} onChange={(event) => setSelectedFactoryId(event.target.value)} disabled={!enabled || sourceBusy}>{outsourcingSource?.options.map((item) => <option key={item.factoryId} value={item.factoryId}>{item.factoryName || item.factoryFullName} · 编号 {item.factoryId} · {item.activeOrderCount} 单进行中</option>)}</select><small>绑定后，该伙伴只会同步并看到这个工厂的委外加工单。</small></label>
-          <div><span>当前绑定</span><strong>{outsourcingSource?.binding ? `${outsourcingSource.binding.factoryName || outsourcingSource.binding.factoryFullName}（${outsourcingSource.binding.factoryId}）` : "尚未绑定"}</strong><small>{outsourcingSource?.binding?.factoryFullName || "按稳定工厂编号隔离，名称变化不会串单"}</small></div>
-          <div><span>同步范围</span><strong>{outsourcingSource?.activeOrderCount || 0} 单进行中</strong><small>已纳管 {outsourcingSource?.trackedOrderCount || 0} 单 · 完结后保留进度记录</small></div>
-          <div><span>最近同步</span><strong>{formatTime(outsourcingSource?.lastSyncedAt)}</strong><small>后台每 5 分钟检查一次更新</small></div>
+        <div className="cia-outsourcing-source-body">
+          <section className="cia-outsourcing-picker">
+            <div className="cia-outsourcing-step"><b>01</b><span><strong>选择对应工厂</strong><small>工厂列表来自千顷 ERP 当前进行中的委外加工单。</small></span></div>
+            {outsourcingSource?.options.length ? <label className="cia-outsourcing-select"><span>千顷 ERP 委外工厂 <em>必选</em></span><select aria-label="选择千顷 ERP 委外工厂" value={selectedFactoryId} onChange={(event) => setSelectedFactoryId(event.target.value)} disabled={!enabled || sourceBusy}><option value="">请选择要映射的工厂</option>{outsourcingSource.options.map((item) => <option key={item.factoryId} value={item.factoryId}>{item.factoryName || item.factoryFullName} · {item.factoryId} · {item.activeOrderCount} 单进行中</option>)}</select><small>选择后先核对下方名称和编号，再保存绑定；系统不会自动替您选择。</small></label> : <div className="cia-outsourcing-empty"><AlertTriangle size={18} /><span><strong>暂未读取到可映射工厂</strong><small>当前只展示存在进行中委外加工单的工厂。请先刷新；仍为空时检查千顷 ERP 工厂编号与加工单状态。</small></span><button type="button" className="cia-secondary" onClick={() => void loadOutsourcingSource(true)} disabled={!enabled || sourceBusy}><RefreshCw size={15} />重新读取</button></div>}
+            <div className={`cia-outsourcing-selection ${selectedFactory ? "ready" : "idle"}`}><span><Factory size={17} /></span><div><small>准备绑定到</small><strong>{selectedFactory ? selectedFactory.factoryName || selectedFactory.factoryFullName : "尚未选择工厂"}</strong><p>{selectedFactory ? `${selectedFactory.factoryFullName || "未填写工厂全称"} · 编号 ${selectedFactory.factoryId} · ${selectedFactory.activeOrderCount} 单进行中` : "请从上方选择框选择该伙伴实际对应的工厂。"}</p></div></div>
+          </section>
+          <section className="cia-outsourcing-summary">
+            <article><span>当前绑定</span><strong>{outsourcingSource?.binding ? outsourcingSource.binding.factoryName || outsourcingSource.binding.factoryFullName : "尚未绑定"}</strong><small>{outsourcingSource?.binding ? `编号 ${outsourcingSource.binding.factoryId}` : "保存前不会同步任何工厂订单"}</small></article>
+            <article><span>同步范围</span><strong>{outsourcingSource?.activeOrderCount || 0} 单进行中</strong><small>已纳管 {outsourcingSource?.trackedOrderCount || 0} 单</small></article>
+            <article><span>最近同步</span><strong>{formatTime(outsourcingSource?.lastSyncedAt)}</strong><small>后台每 5 分钟检查更新</small></article>
+          </section>
         </div>
-        <div className="cia-outsourcing-source-actions"><span><ShieldCheck size={15} />仅投影本工厂订单、负责物料和执行字段；不发送成本、客户、合同及其他供应商</span><div><button type="button" className="cia-secondary" onClick={() => void loadOutsourcingSource(true)} disabled={!enabled || sourceBusy}><RefreshCw size={15} />刷新工厂</button><button type="button" className="cia-secondary" onClick={() => void syncOutsourcingOrders()} disabled={!enabled || sourceBusy || !outsourcingSource?.binding}><RefreshCw size={15} className={sourceBusy ? "cia-spin" : ""} />立即同步</button><button type="button" className="cia-primary" onClick={() => void saveOutsourcingBinding()} disabled={!enabled || sourceBusy || !selectedFactoryId}>{sourceBusy ? <LoaderCircle size={15} className="cia-spin" /> : <Save size={15} />}保存绑定并同步</button></div></div>
+        <div className="cia-outsourcing-source-actions"><span><ShieldCheck size={16} /><span><strong>组织级数据隔离</strong><small>只投影本工厂订单、负责物料和执行字段；不会发送成本、客户、合同及其他供应商数据。</small></span></span><div><button type="button" className="cia-secondary" onClick={() => void loadOutsourcingSource(true)} disabled={!enabled || sourceBusy}><RefreshCw size={15} />刷新工厂</button><button type="button" className="cia-secondary" onClick={() => void syncOutsourcingOrders()} disabled={!enabled || sourceBusy || !outsourcingSource?.binding}><RefreshCw size={15} className={sourceBusy ? "cia-spin" : ""} />立即同步</button><button type="button" className="cia-primary" onClick={() => void saveOutsourcingBinding()} disabled={!enabled || sourceBusy || !selectedFactoryId}>{sourceBusy ? <LoaderCircle size={15} className="cia-spin" /> : <Save size={15} />}保存绑定并同步</button></div></div>
       </>}
     </div> : <form className="cia-partner-task-form" onSubmit={publish}>
       <div className="cia-task-form-grid">
