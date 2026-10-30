@@ -121,26 +121,13 @@ import { createHermesPartnerDraftApi } from "./hermes-partner-draft-api.js";
 import { createHermesPartnerConfigApi } from "./hermes-partner-config-api.js";
 import { createAgentExceptionPatrol } from "./agent-exception-patrol.js";
 import { isInternalApiPath, isInternalApiSourceAllowed, parseInternalApiAllowedCidrs } from "./internal-network.js";
+import { loadEnvFile } from "./env-file.js";
 
 if (!globalThis.fetch) {
   globalThis.fetch = undiciFetch;
 }
 
-function loadEnv() {
-  if (process.env.SKIP_ENV_FILE === "true") return;
-  const envPath = resolve(process.cwd(), ".env");
-  if (!existsSync(envPath)) return;
-  const content = readFileSync(envPath, "utf8");
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const [key, ...rest] = trimmed.split("=");
-    if (!key || process.env[key]) continue;
-    process.env[key] = rest.join("=").trim();
-  }
-}
-
-loadEnv();
+loadEnvFile();
 
 const port = Number(process.env.API_PORT || 8787);
 const backgroundJobsEnabled = process.env.BACKGROUND_JOBS_ENABLED !== "false";
