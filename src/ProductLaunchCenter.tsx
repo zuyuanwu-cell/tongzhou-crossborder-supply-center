@@ -78,6 +78,8 @@ const FALLBACK_PLATFORMS = ["Ozon", "Wildberries", "Yandex Market", "Shopee", "L
 const FALLBACK_COUNTRIES = ["俄罗斯", "印度尼西亚", "马来西亚", "越南", "泰国", "菲律宾"];
 const FALLBACK_CURRENCIES = ["CNY", "USD", "RUB", "IDR", "MYR", "VND", "THB", "PHP"];
 const VIEW_STORAGE_KEY = "tz_product_launch_view";
+const CREATE_DRAFT_STORAGE_KEY = "tz_product_launch_create_draft_v2";
+const RECENT_DEFAULTS_STORAGE_KEY = "tz_product_launch_recent_defaults_v2";
 
 type FormDraft = {
   title: string;
@@ -114,6 +116,84 @@ const EMPTY_DRAFT: FormDraft = {
   priority: "normal",
   expectedLaunchDate: "",
 };
+
+type StoredCreateDraft = { savedAt: string; draft: FormDraft };
+type RecentDefaults = Pick<FormDraft, "targetCountries" | "platform" | "source" | "currency" | "priority">;
+
+function validPriority(value: unknown): ProductLaunchPriority {
+  return value === "urgent" || value === "high" || value === "low" ? value : "normal";
+}
+
+function normalizeDraft(value: unknown): FormDraft | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<Record<keyof FormDraft, unknown>>;
+  return {
+    ...EMPTY_DRAFT,
+    title: String(raw.title || ""),
+    category: String(raw.category || ""),
+    targetCountries: Array.isArray(raw.targetCountries) ? raw.targetCountries.map(String).filter(Boolean) : [],
+    platform: String(raw.platform || ""),
+    source: String(raw.source || ""),
+    reason: String(raw.reason || ""),
+    sellingPoints: String(raw.sellingPoints || ""),
+    competitorLinks: String(raw.competitorLinks || ""),
+    targetPrice: String(raw.targetPrice || ""),
+    currency: String(raw.currency || "CNY"),
+    targetCost: String(raw.targetCost || ""),
+    expectedMonthlySales: String(raw.expectedMonthlySales || ""),
+    firstOrderQty: String(raw.firstOrderQty || ""),
+    priority: validPriority(raw.priority),
+    expectedLaunchDate: String(raw.expectedLaunchDate || ""),
+  };
+}
+
+function readStoredCreateDraft(): StoredCreateDraft | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CREATE_DRAFT_STORAGE_KEY) || "null") as { savedAt?: unknown; draft?: unknown } | null;
+    const draft = normalizeDraft(parsed?.draft);
+    return draft ? { savedAt: String(parsed?.savedAt || ""), draft } : null;
+  } catch {
+    return null;
+  }
+}
+
+function readRecentDefaults(): RecentDefaults | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_DEFAULTS_STORAGE_KEY) || "null") as Partial<Record<keyof RecentDefaults, unknown>> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      targetCountries: Array.isArray(parsed.targetCountries) ? parsed.targetCountries.map(String).filter(Boolean) : [],
+      platform: String(parsed.platform || ""),
+      source: String(parsed.source || ""),
+      currency: String(parsed.currency || "CNY"),
+      priority: validPriority(parsed.priority),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function freshCreateDraft() {
+  const stored = readStoredCreateDraft();
+  if (stored) return stored.draft;
+  const recent = readRecentDefaults();
+  return recent ? { ...EMPTY_DRAFT, ...recent } : { ...EMPTY_DRAFT };
+}
+
+function clearStoredCreateDraft() {
+  try { window.localStorage.removeItem(CREATE_DRAFT_STORAGE_KEY); } catch { /* storage may be unavailable */ }
+}
+
+function rememberCreateDefaults(draft: FormDraft) {
+  const recent: RecentDefaults = {
+    targetCountries: draft.targetCountries,
+    platform: draft.platform,
+    source: draft.source,
+    currency: draft.currency,
+    priority: draft.priority,
+  };
+  try { window.localStorage.setItem(RECENT_DEFAULTS_STORAGE_KEY, JSON.stringify(recent)); } catch { /* storage may be unavailable */ }
+}
 
 function localToday() {
   const now = new Date();
@@ -260,7 +340,7 @@ export function ProductLaunchCenter({ currentUser }: { currentUser: AuthUser }) 
     try { return window.localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "board"; } catch { return "board"; }
   });
   const [selectedId, setSelectedId] = React.useState(() => hashParams().get("id") || "");
-  const [form, setForm] = React.useState<{ mode: "create" | "edit"; id?: string; draft: FormDraft } | null>(() => (hashParams().get("new") === "1" ? { mode: "create", draft: EMPTY_DRAFT } : null));
+  const [form, setForm] = React.useState<{ mode: "create" | "edit"; id?: string; draft: FormDraft } | null>(() => (hashParams().get("new") === "1" ? { mode: "create", draft: freshCreateDraft() } : null));
 
   const permissions = payload?.permissions || meta?.permissions || { view: true, submit: false, manage: false };
   const userId = String(currentUser.id || "");
@@ -358,7 +438,7 @@ export function ProductLaunchCenter({ currentUser }: { currentUser: AuthUser }) 
             {loading ? <LoaderCircle size={16} className="plc-spin" /> : <RefreshCw size={16} />}刷新
           </button>
           {permissions.submit ? (
-            <button type="button" className="plc-button plc-button--primary" onClick={() => setForm({ mode: "create", draft: EMPTY_DRAFT })}>
+            <button type="button" className="plc-button plc-button--primary" onClick={() => setForm({ mode: "create", draft: freshCreateDraft() })}>
               <Plus size={16} />提交开品需求
             </button>
           ) : null}
@@ -432,7 +512,7 @@ export function ProductLaunchCenter({ currentUser }: { currentUser: AuthUser }) 
           <Lightbulb size={30} />
           <strong>还没有开品需求</strong>
           <span>{permissions.submit ? "看到好卖的竞品、平台趋势或客户想要的东西，点右上角“提交开品需求”。" : "运营提交后会显示在这里。"}</span>
-          {permissions.submit ? <button type="button" className="plc-button plc-button--primary" onClick={() => setForm({ mode: "create", draft: EMPTY_DRAFT })}><Plus size={16} />提交第一个需求</button> : null}
+          {permissions.submit ? <button type="button" className="plc-button plc-button--primary" onClick={() => setForm({ mode: "create", draft: freshCreateDraft() })}><Plus size={16} />提交第一个需求</button> : null}
         </div>
       ) : view === "board" ? (
         <section className={`plc-board ${visibleSideStages ? "has-side" : ""}`}>
@@ -1131,6 +1211,7 @@ function ProductLaunchForm({ mode, initial, meta, countries, existing, onOpenExi
   const [draft, setDraft] = React.useState<FormDraft>(initial);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [draftSavedAt, setDraftSavedAt] = React.useState(() => (mode === "create" ? readStoredCreateDraft()?.savedAt || "" : ""));
   const sources = meta?.sources?.length ? meta.sources : FALLBACK_SOURCES;
   const platforms = meta?.platforms?.length ? meta.platforms : FALLBACK_PLATFORMS;
   const currencies = meta?.currencies?.length ? meta.currencies : FALLBACK_CURRENCIES;
@@ -1154,6 +1235,25 @@ function ProductLaunchForm({ mode, initial, meta, countries, existing, onOpenExi
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, saving]);
 
+  React.useEffect(() => {
+    if (mode !== "create") return undefined;
+    const timer = window.setTimeout(() => {
+      const savedAt = new Date().toISOString();
+      try {
+        window.localStorage.setItem(CREATE_DRAFT_STORAGE_KEY, JSON.stringify({ savedAt, draft } satisfies StoredCreateDraft));
+        setDraftSavedAt(savedAt);
+      } catch { /* storage may be unavailable */ }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [draft, mode]);
+
+  function resetCreateDraft() {
+    clearStoredCreateDraft();
+    setDraft({ ...EMPTY_DRAFT });
+    setDraftSavedAt("");
+    setError("");
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!draft.title.trim()) return setError("请填写产品名称或开品方向。");
@@ -1164,6 +1264,10 @@ function ProductLaunchForm({ mode, initial, meta, countries, existing, onOpenExi
     setError("");
     try {
       await onSubmit(draft);
+      if (mode === "create") {
+        rememberCreateDefaults(draft);
+        clearStoredCreateDraft();
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "提交失败");
       setSaving(false);
@@ -1182,6 +1286,12 @@ function ProductLaunchForm({ mode, initial, meta, countries, existing, onOpenExi
           <button type="button" className="plc-icon-button" aria-label="关闭" onClick={onClose} disabled={saving}><X size={18} /></button>
         </header>
         <form className="plc-drawer__body" onSubmit={submit}>
+          {mode === "create" ? (
+            <div className="plc-draft-notice">
+              <div><CheckCircle2 size={16} /><span>{draftSavedAt ? `已自动保存草稿 · ${dateTime(draftSavedAt)}` : "录入内容会自动保存为本机草稿"}</span></div>
+              <button type="button" onClick={resetCreateDraft} disabled={saving}><RefreshCw size={14} />清空重填</button>
+            </div>
+          ) : null}
           <fieldset className="plc-fieldset">
             <legend>1. 想开什么品</legend>
             <div className="plc-form-grid">
