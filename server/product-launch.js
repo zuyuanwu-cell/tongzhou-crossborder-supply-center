@@ -65,8 +65,10 @@ const LEGACY_STAGE_ALIASES = Object.freeze({ sourcing: "factory_validation", cer
 const STAGE_KEYS = new Set(PRODUCT_LAUNCH_STAGES.map((stage) => stage.key));
 const PRIORITY_KEYS = new Set(PRODUCT_LAUNCH_PRIORITIES.map((item) => item.key));
 const CHECKLIST_KEYS = new Set(PRODUCT_LAUNCH_CHECKLIST.map((item) => item.key));
+const FACTORY_CHECKLIST_KEYS = new Set(PRODUCT_LAUNCH_CHECKLIST.filter((item) => item.group === "factory").map((item) => item.key));
 const CHECKLIST_STATUS_KEYS = new Set(PRODUCT_LAUNCH_CHECKLIST_STATUSES.map((item) => item.key));
 const FILING_STATUS_KEYS = new Set(PRODUCT_LAUNCH_FILING_STATUSES.map((item) => item.key));
+const FACTORY_ASSIGNMENT_STATUS_KEYS = new Set(["assigned", "accepted", "in_progress", "sample_submitted", "sample_approved", "quote_submitted", "completed", "blocked", "rejected", "cancelled"]);
 const CLOSED_STAGES = new Set(["completed", "on_hold", "rejected", "cancelled"]);
 const NOTE_REQUIRED_STAGES = new Set(["rejected", "on_hold", "cancelled"]);
 const REQUESTER_EDITABLE_STAGES = new Set(["submitted", "on_hold"]);
@@ -255,6 +257,60 @@ function normalizePilotProduction(input = {}) {
   };
 }
 
+function factoryChecklistKeys(value) {
+  const keys = Array.isArray(value) ? value.map((item) => text(item)) : [];
+  const selected = [...new Set(keys.filter((key) => FACTORY_CHECKLIST_KEYS.has(key)))];
+  return selected.length ? selected : [...FACTORY_CHECKLIST_KEYS];
+}
+
+function normalizeFactoryAssignment(input = {}) {
+  const status = FACTORY_ASSIGNMENT_STATUS_KEYS.has(text(input.status)) ? text(input.status) : "assigned";
+  const sample = input.sample && typeof input.sample === "object" ? input.sample : {};
+  const quote = input.quote && typeof input.quote === "object" ? input.quote : {};
+  return {
+    id: text(input.id, 120),
+    organizationCode: text(input.organizationCode, 64),
+    organizationName: text(input.organizationName, 160),
+    organizationType: text(input.organizationType, 80),
+    checklistKeys: factoryChecklistKeys(input.checklistKeys),
+    workItemId: text(input.workItemId, 120),
+    documentNo: text(input.documentNo || input.coreRefId, 160),
+    status,
+    remoteStatus: text(input.remoteStatus, 60),
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(text(input.dueDate)) ? text(input.dueDate) : "",
+    sampleCategory: ["inner_material", "packaging"].includes(text(input.sampleCategory)) ? text(input.sampleCategory) : "inner_material",
+    sampleSubject: ["formula", "raw_material", "packaging_box", "packaging_bottle"].includes(text(input.sampleSubject)) ? text(input.sampleSubject) : "formula",
+    quoteRequired: input.quoteRequired !== false,
+    requirements: text(input.requirements, 5000),
+    sample: {
+      roundCount: Math.max(0, Number(sample.roundCount) || 0),
+      pendingReviewCount: Math.max(0, Number(sample.pendingReviewCount) || 0),
+      approvedArtifactId: text(sample.approvedArtifactId, 120),
+      approvedVersion: Number(sample.approvedVersion) > 0 ? Number(sample.approvedVersion) : null,
+      approvedVariantCode: text(sample.approvedVariantCode, 160),
+      approvedSupplierMaterialCode: text(sample.approvedSupplierMaterialCode, 160),
+      latestTitle: text(sample.latestTitle, 240),
+      latestStatus: text(sample.latestStatus, 60),
+    },
+    quote: {
+      count: Math.max(0, Number(quote.count) || 0),
+      awardedQuoteId: text(quote.awardedQuoteId, 120),
+      latestQuoteId: text(quote.latestQuoteId, 120),
+      status: text(quote.status, 60),
+      currency: text(quote.currency, 8).toUpperCase(),
+      amount: quote.amount === null || quote.amount === undefined || quote.amount === "" ? null : (Number.isFinite(Number(quote.amount)) ? Number(quote.amount) : null),
+      minimumOrderQuantity: quote.minimumOrderQuantity === null || quote.minimumOrderQuantity === undefined || quote.minimumOrderQuantity === "" ? null : (Number.isFinite(Number(quote.minimumOrderQuantity)) ? Number(quote.minimumOrderQuantity) : null),
+      leadTimeDays: quote.leadTimeDays === null || quote.leadTimeDays === undefined || quote.leadTimeDays === "" ? null : (Number.isFinite(Number(quote.leadTimeDays)) ? Number(quote.leadTimeDays) : null),
+      terms: text(quote.terms, 2000),
+      sampleVariantCode: text(quote.sampleVariantCode, 160),
+    },
+    createdAt: text(input.createdAt),
+    createdBy: text(input.createdBy, 160),
+    createdById: text(input.createdById, 120),
+    lastSyncedAt: text(input.lastSyncedAt),
+  };
+}
+
 function normalizeStoredRecord(source) {
   const request = source && typeof source === "object" ? source : {};
   const targetCountries = countriesFrom(request.targetCountries, [request.country]);
@@ -269,6 +325,7 @@ function normalizeStoredRecord(source) {
     stage: STAGE_KEYS.has(stage) ? stage : "submitted",
     stageHistory,
     checklist: normalizeChecklist(request.checklist),
+    factoryAssignments: (Array.isArray(request.factoryAssignments) ? request.factoryAssignments : []).map(normalizeFactoryAssignment).filter((item) => item.id && item.organizationCode),
     countryFilings: filingsForCountries(targetCountries, request.countryFilings),
     pilotProduction: normalizePilotProduction(request.pilotProduction),
     completedAt: text(request.completedAt || request.launchedAt),
@@ -470,7 +527,7 @@ export function createProductLaunchService({ cachePath }) {
       if (priority && priority !== "all" && request.priority !== priority) return false;
       if (mine && request.createdById !== actorId && request.owner?.id !== actorId) return false;
       if (!keyword) return true;
-      return [request.id, request.title, request.category, request.targetCountries.join(" "), request.platform, request.reason, request.linkedSku, request.createdBy, request.owner?.name]
+      return [request.id, request.title, request.category, request.targetCountries.join(" "), request.platform, request.reason, request.linkedSku, request.createdBy, request.owner?.name, ...(request.factoryAssignments || []).map((item) => item.organizationName)]
         .some((value) => text(value).toLowerCase().includes(keyword));
     });
     return { ok: true, updatedAt: nowIso(), summary: summaryFor(scoped, actorId, day), requests: requests.map((request) => decorate(request, day)) };
@@ -493,6 +550,7 @@ export function createProductLaunchService({ cachePath }) {
       stageEnteredAt: at,
       stageHistory: { submitted: at },
       checklist: defaultChecklist(),
+      factoryAssignments: [],
       countryFilings: filingsForCountries(details.targetCountries, []),
       pilotProduction: normalizePilotProduction(),
       owner: null,
@@ -649,6 +707,144 @@ export function createProductLaunchService({ cachePath }) {
     return decorate(updated, today());
   }
 
+  function assignFactory(id, input, user, { canManage = false, dataScopes } = {}) {
+    assertManager(canManage);
+    const actor = actorOf(user);
+    const current = requireVisible(id, dataScopes);
+    if (CLOSED_STAGES.has(current.stage)) throw invalid("需求已结案，不能再指派委外工厂。");
+    const organizationCode = text(input?.organizationCode, 64);
+    const organizationName = text(input?.organizationName, 160);
+    const workItemId = text(input?.workItemId, 120);
+    const documentNo = text(input?.documentNo, 160);
+    if (!organizationCode || !organizationName) throw invalid("请选择可处理打样与报价的委外工厂。");
+    if (!workItemId || !documentNo) throw invalid("协同任务尚未成功创建，请稍后重试。");
+    const duplicate = (current.factoryAssignments || []).find((item) => item.organizationCode === organizationCode && !["completed", "rejected", "cancelled"].includes(item.status));
+    if (duplicate) throw invalid(`${organizationName} 已有一条进行中的打样协同任务，请直接刷新进度。`);
+    const at = nowIso();
+    const assignment = normalizeFactoryAssignment({
+      ...input,
+      id: text(input?.id, 120) || randomUUID(),
+      organizationCode,
+      organizationName,
+      workItemId,
+      documentNo,
+      status: "assigned",
+      remoteStatus: "pending",
+      createdAt: at,
+      createdBy: actor.name,
+      createdById: actor.id,
+      lastSyncedAt: at,
+    });
+    const updated = store.update(current.id, (request) => {
+      request.factoryAssignments = [...(request.factoryAssignments || []), assignment];
+      request.checklist = request.checklist.map((item) => assignment.checklistKeys.includes(item.key) && !["completed", "not_required"].includes(item.status) ? {
+        ...item,
+        status: "in_progress",
+        dueDate: item.dueDate || assignment.dueDate,
+      } : item);
+      request.updatedAt = at;
+      request.timeline = [...request.timeline, event("factory_assignment", actor, {
+        label: `指派委外工厂：${organizationName}`,
+        note: assignment.requirements,
+        details: { assignmentId: assignment.id, organizationCode, documentNo, checklistKeys: assignment.checklistKeys },
+      })];
+      return request;
+    });
+    return decorate(updated, today());
+  }
+
+  function syncFactoryAssignment(id, assignmentIdInput, detail, user, { canManage = false, dataScopes } = {}) {
+    assertManager(canManage);
+    const actor = actorOf(user);
+    const current = requireVisible(id, dataScopes);
+    const assignmentId = text(assignmentIdInput, 120);
+    const existing = (current.factoryAssignments || []).find((item) => item.id === assignmentId);
+    if (!existing) throw invalid("委外工厂协同任务不存在。");
+    const item = detail?.item || {};
+    if (text(item.id) !== existing.workItemId || text(item.organizationCode) !== existing.organizationCode || text(item.itemType) !== "sampling_task") {
+      throw invalid("协同任务与当前开品需求不匹配，已停止同步。");
+    }
+    const artifacts = Array.isArray(detail?.oem?.artifacts) ? detail.oem.artifacts.filter((artifact) => artifact?.artifactType === "sample_result") : [];
+    const quotes = Array.isArray(detail?.oem?.quotes) ? detail.oem.quotes : [];
+    const latestArtifact = [...artifacts].sort((left, right) => Number(right.version || 0) - Number(left.version || 0))[0] || null;
+    const approvedArtifact = artifacts.find((artifact) => artifact.status === "approved") || null;
+    const latestQuote = [...quotes].sort((left, right) => Number(right.version || 0) - Number(left.version || 0))[0] || null;
+    const awardedQuote = quotes.find((quote) => quote.status === "awarded") || null;
+    const remoteStatus = text(item.status, 60);
+    let status = "assigned";
+    if (["rejected", "cancelled"].includes(remoteStatus)) status = remoteStatus;
+    else if (remoteStatus === "completed" || awardedQuote || (!existing.quoteRequired && approvedArtifact)) status = "completed";
+    else if (latestQuote) status = "quote_submitted";
+    else if (approvedArtifact) status = "sample_approved";
+    else if (artifacts.some((artifact) => artifact.status === "submitted")) status = "sample_submitted";
+    else if (["accepted"].includes(remoteStatus)) status = "accepted";
+    else if (["in_progress", "pending_sync", "pending_approval"].includes(remoteStatus)) status = "in_progress";
+    else if (remoteStatus === "blocked") status = "blocked";
+    const nextAssignment = normalizeFactoryAssignment({
+      ...existing,
+      status,
+      remoteStatus,
+      sample: {
+        roundCount: artifacts.length,
+        pendingReviewCount: artifacts.filter((artifact) => artifact.status === "submitted").length,
+        approvedArtifactId: approvedArtifact?.id || "",
+        approvedVersion: approvedArtifact?.version || null,
+        approvedVariantCode: approvedArtifact?.publicPayload?.approvedVariantCode || "",
+        approvedSupplierMaterialCode: approvedArtifact?.publicPayload?.approvedSupplierMaterialCode || "",
+        latestTitle: latestArtifact?.title || "",
+        latestStatus: latestArtifact?.status || "",
+      },
+      quote: {
+        count: quotes.length,
+        awardedQuoteId: awardedQuote?.id || "",
+        latestQuoteId: latestQuote?.id || "",
+        status: awardedQuote?.status || latestQuote?.status || "",
+        currency: (awardedQuote || latestQuote)?.currency || "",
+        amount: (awardedQuote || latestQuote)?.amount ?? null,
+        minimumOrderQuantity: (awardedQuote || latestQuote)?.minimumOrderQuantity ?? null,
+        leadTimeDays: (awardedQuote || latestQuote)?.leadTimeDays ?? null,
+        terms: (awardedQuote || latestQuote)?.terms || "",
+        sampleVariantCode: (awardedQuote || latestQuote)?.sampleVariantCode || "",
+      },
+      lastSyncedAt: nowIso(),
+    });
+    const before = JSON.stringify({ status: existing.status, remoteStatus: existing.remoteStatus, sample: existing.sample, quote: existing.quote });
+    const after = JSON.stringify({ status: nextAssignment.status, remoteStatus: nextAssignment.remoteStatus, sample: nextAssignment.sample, quote: nextAssignment.quote });
+    if (before === after) {
+      const refreshed = store.update(current.id, (request) => {
+        request.factoryAssignments = request.factoryAssignments.map((assignment) => assignment.id === assignmentId ? nextAssignment : assignment);
+        return request;
+      });
+      return decorate(refreshed, today());
+    }
+    const at = nowIso();
+    const updated = store.update(current.id, (request) => {
+      const assignments = request.factoryAssignments.map((assignment) => assignment.id === assignmentId ? nextAssignment : assignment);
+      request.factoryAssignments = assignments;
+      request.checklist = request.checklist.map((checklistItem) => {
+        if (!FACTORY_CHECKLIST_KEYS.has(checklistItem.key) || ["completed", "not_required"].includes(checklistItem.status)) return checklistItem;
+        const related = assignments.filter((assignment) => assignment.checklistKeys.includes(checklistItem.key));
+        if (!related.length) return checklistItem;
+        const completed = checklistItem.key === "factory_quote"
+          ? related.some((assignment) => assignment.quote.awardedQuoteId)
+          : related.some((assignment) => assignment.sample.approvedArtifactId);
+        const allFailed = related.every((assignment) => ["blocked", "rejected", "cancelled"].includes(assignment.status));
+        return {
+          ...checklistItem,
+          status: completed ? "completed" : allFailed ? "blocked" : "in_progress",
+          completedAt: completed ? (checklistItem.completedAt || at) : "",
+        };
+      });
+      request.updatedAt = at;
+      request.timeline = [...request.timeline, event("factory_sync", actor, {
+        label: `同步委外工厂进度：${existing.organizationName} · ${status}`,
+        details: { assignmentId, status, remoteStatus, sample: nextAssignment.sample, quote: nextAssignment.quote },
+      })];
+      return request;
+    });
+    return decorate(updated, today());
+  }
+
   function updateFiling(id, countryKeyInput, input, user, { canManage = false, dataScopes, owners = [] } = {}) {
     assertManager(canManage);
     const actor = actorOf(user);
@@ -741,7 +937,7 @@ export function createProductLaunchService({ cachePath }) {
     return decorate(updated, today());
   }
 
-  return { list, get, create, update, progress, updateChecklist, updateFiling, updatePilot, comment };
+  return { list, get, create, update, progress, updateChecklist, assignFactory, syncFactoryAssignment, updateFiling, updatePilot, comment };
 }
 
 export function productLaunchMeta({ countries = [], owners = [] } = {}) {

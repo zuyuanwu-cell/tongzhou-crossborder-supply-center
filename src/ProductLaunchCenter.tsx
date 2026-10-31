@@ -1,12 +1,15 @@
 import React from "react";
 import {
   AlertTriangle,
+  BadgeDollarSign,
   CheckCircle2,
   ChevronRight,
   Clock3,
   ClipboardCheck,
   Download,
   ExternalLink,
+  Factory,
+  FlaskConical,
   Grid2X2,
   Lightbulb,
   List,
@@ -25,16 +28,19 @@ import {
   ProductLaunchInput,
   ProductLaunchChecklistItem,
   ProductLaunchCountryFiling,
+  ProductLaunchFactoryAssignment,
   ProductLaunchMeta,
   ProductLaunchPayload,
   ProductLaunchPriority,
   ProductLaunchRequest,
   ProductLaunchStageKey,
   commentProductLaunchRequest,
+  assignProductLaunchFactory,
   createProductLaunchRequest,
   fetchProductLaunchMeta,
   fetchProductLaunchRequests,
   progressProductLaunchRequest,
+  syncProductLaunchFactoryAssignment,
   updateProductLaunchChecklist,
   updateProductLaunchFiling,
   updateProductLaunchPilot,
@@ -689,6 +695,8 @@ function ProductLaunchDetail({ request, meta, canManage, canSubmit, userId, onCl
             meta={meta}
             canManage={canManage}
             busy={busy}
+            onAssign={(input) => run("factory-assign", () => assignProductLaunchFactory(request.id, input), "已向委外工厂派发打样与报价任务")}
+            onSync={(assignmentId) => run(`factory-sync-${assignmentId}`, () => syncProductLaunchFactoryAssignment(request.id, assignmentId), "委外工厂进度已同步")}
             onSave={(itemKey, input) => run(`checklist-${itemKey}`, () => updateProductLaunchChecklist(request.id, itemKey, input), "开品清单已更新")}
           />
 
@@ -809,12 +817,14 @@ function ProgressMeter({ value, label }: { value: number; label: string }) {
   );
 }
 
-function LaunchChecklistSection({ request, meta, canManage, busy, onSave }: {
+function LaunchChecklistSection({ request, meta, canManage, busy, onSave, onAssign, onSync }: {
   request: ProductLaunchRequest;
   meta: ProductLaunchMeta | null;
   canManage: boolean;
   busy: string;
   onSave: (itemKey: string, input: ChecklistUpdate) => Promise<void>;
+  onAssign: (input: { organizationCode: string; checklistKeys: string[]; dueDate?: string; sampleSubject?: "formula" | "raw_material" | "packaging_box" | "packaging_bottle"; requirements?: string; sampleGoal?: string; evaluationCriteria?: string }) => Promise<void>;
+  onSync: (assignmentId: string) => Promise<void>;
 }) {
   const groups = Array.from(new Map(request.checklist.map((item) => [item.group, item.groupLabel])).entries());
   return (
@@ -824,6 +834,7 @@ function LaunchChecklistSection({ request, meta, canManage, busy, onSave }: {
         <strong>{request.checklistProgress.completed}/{request.checklistProgress.total}</strong>
       </div>
       <ProgressMeter value={request.checklistProgress.percent} label="必做项完成" />
+      <FactoryCollaborationPanel request={request} meta={meta} canManage={canManage} busy={busy} onAssign={onAssign} onSync={onSync} />
       <div className="plc-checklist-groups">
         {groups.map(([group, groupLabel]) => (
           <div className="plc-checklist-group" key={group}>
@@ -835,6 +846,107 @@ function LaunchChecklistSection({ request, meta, canManage, busy, onSave }: {
         ))}
       </div>
     </section>
+  );
+}
+
+const FACTORY_TASK_KEYS = ["material_test", "formula_development", "sample_test_report", "factory_quote"];
+const FACTORY_ASSIGNMENT_LABELS: Record<ProductLaunchFactoryAssignment["status"], string> = {
+  assigned: "已派发",
+  accepted: "工厂已接单",
+  in_progress: "打样进行中",
+  sample_submitted: "样品待评审",
+  sample_approved: "最终样已确认",
+  quote_submitted: "报价待确认",
+  completed: "报价已确认",
+  blocked: "有阻塞",
+  rejected: "已拒绝",
+  cancelled: "已取消",
+};
+const FACTORY_PERMISSION_LABELS: Record<string, string> = {
+  "sampling.task.view": "查看打样任务",
+  "sampling.task.handle": "接单和更新进度",
+  "sampling.artifact.submit": "提交样品与报告",
+  "sampling.quote.submit": "提交定版报价",
+};
+
+function FactoryCollaborationPanel({ request, meta, canManage, busy, onAssign, onSync }: {
+  request: ProductLaunchRequest;
+  meta: ProductLaunchMeta | null;
+  canManage: boolean;
+  busy: string;
+  onAssign: (input: { organizationCode: string; checklistKeys: string[]; dueDate?: string; sampleSubject?: "formula" | "raw_material" | "packaging_box" | "packaging_bottle"; requirements?: string; sampleGoal?: string; evaluationCriteria?: string }) => Promise<void>;
+  onSync: (assignmentId: string) => Promise<void>;
+}) {
+  const collaboration = meta?.factoryCollaboration;
+  const factories = collaboration?.factories || [];
+  const readyFactories = factories.filter((factory) => factory.ready);
+  const [organizationCode, setOrganizationCode] = React.useState(readyFactories[0]?.code || "");
+  const [dueDate, setDueDate] = React.useState(request.nextDueDate || request.expectedLaunchDate || "");
+  const [sampleSubject, setSampleSubject] = React.useState<"formula" | "raw_material" | "packaging_box" | "packaging_bottle">(request.factoryAssignments?.[0]?.sampleSubject || "formula");
+  const [requirements, setRequirements] = React.useState([request.sellingPoints, request.reason].filter(Boolean).join("\n"));
+  const [selectedKeys, setSelectedKeys] = React.useState<string[]>(FACTORY_TASK_KEYS);
+
+  React.useEffect(() => {
+    setOrganizationCode((current) => readyFactories.some((factory) => factory.code === current) ? current : (readyFactories[0]?.code || ""));
+  }, [readyFactories.map((factory) => factory.code).join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => {
+    setDueDate(request.nextDueDate || request.expectedLaunchDate || "");
+    setRequirements([request.sellingPoints, request.reason].filter(Boolean).join("\n"));
+  }, [request.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const factoryItems = request.checklist.filter((item) => FACTORY_TASK_KEYS.includes(item.key));
+  const toggleTask = (key: string) => setSelectedKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  return (
+    <div className="plc-factory-collaboration">
+      <header>
+        <div><Factory size={18} /><span><b>委外工厂协同</b><small>运营派单，工厂在协同伙伴端接单、送样、提交报告和最终报价</small></span></div>
+        <a href={["packaging_box", "packaging_bottle"].includes(sampleSubject) ? "#packaging-sampling-collaboration" : "#material-sampling-collaboration"}><FlaskConical size={14} />进入打样工作台</a>
+      </header>
+
+      {request.factoryAssignments?.length ? (
+        <div className="plc-factory-assignments">
+          {request.factoryAssignments.map((assignment) => (
+            <article key={assignment.id} className={`is-${assignment.status}`}>
+              <div className="plc-factory-assignment-head">
+                <span><Factory size={16} /><strong>{assignment.organizationName}</strong><em>{assignment.documentNo}</em></span>
+                <b>{FACTORY_ASSIGNMENT_LABELS[assignment.status] || assignment.status}</b>
+              </div>
+              <div className="plc-factory-assignment-progress">
+                <span><FlaskConical size={14} />{assignment.sample.roundCount ? `${assignment.sample.roundCount} 轮样品` : "等待工厂送样"}</span>
+                <span>{assignment.sample.approvedVersion ? `R${assignment.sample.approvedVersion} 已定版${assignment.sample.approvedVariantCode ? ` · ${assignment.sample.approvedVariantCode}` : ""}` : assignment.sample.pendingReviewCount ? `${assignment.sample.pendingReviewCount} 轮待评审` : "最终样未确认"}</span>
+                <span><BadgeDollarSign size={14} />{assignment.quote.amount !== null ? `${assignment.quote.currency} ${assignment.quote.amount.toLocaleString("zh-CN")} · ${assignment.quote.status === "awarded" ? "已确认" : "待确认"}` : assignment.quoteRequired ? "等待定版报价" : "无需报价"}</span>
+              </div>
+              <footer>
+                <span>{assignment.dueDate ? `截止 ${assignment.dueDate}` : "未设截止"} · 最近同步 {dateTime(assignment.lastSyncedAt)}</span>
+                {canManage ? <button type="button" disabled={Boolean(busy)} onClick={() => void onSync(assignment.id)}>{busy === `factory-sync-${assignment.id}` ? <LoaderCircle size={14} className="plc-spin" /> : <RefreshCw size={14} />}刷新进度</button> : null}
+              </footer>
+            </article>
+          ))}
+        </div>
+      ) : <p className="plc-factory-empty">还没有派发委外打样任务，工厂清单目前只能手工维护。</p>}
+
+      {canManage && !request.closed ? (
+        <div className="plc-factory-dispatch">
+          {!collaboration?.enabled ? <div className="plc-factory-warning"><AlertTriangle size={15} />{collaboration?.message || "协同服务暂不可用"}</div> : null}
+          {factories.some((factory) => !factory.ready) ? (
+            <div className="plc-factory-capability-list">
+              {factories.filter((factory) => !factory.ready).map((factory) => <span key={factory.code}><b>{factory.name}</b>暂不可派：{factory.missingPermissions.map((permission) => FACTORY_PERMISSION_LABELS[permission] || permission).join("、")}</span>)}
+            </div>
+          ) : null}
+          <div className="plc-factory-dispatch-grid">
+            <label><span>协同委外工厂</span><select value={organizationCode} onChange={(event) => setOrganizationCode(event.target.value)}><option value="">请选择</option>{factories.map((factory) => <option key={factory.code} value={factory.code} disabled={!factory.ready}>{factory.name}{factory.ready ? "" : "（权限未开全）"}</option>)}</select></label>
+            <label><span>打样对象</span><select value={sampleSubject} onChange={(event) => setSampleSubject(event.target.value as typeof sampleSubject)}><option value="formula">配方 / 料体</option><option value="raw_material">原料</option><option value="packaging_box">包装盒</option><option value="packaging_bottle">包装瓶 / 容器</option></select></label>
+            <label><span>要求完成日期</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>
+          </div>
+          <div className="plc-factory-task-picker">
+            <span>交给工厂处理</span>
+            {factoryItems.map((item) => <label key={item.key} className={selectedKeys.includes(item.key) ? "is-checked" : ""}><input type="checkbox" checked={selectedKeys.includes(item.key)} onChange={() => toggleTask(item.key)} />{item.label}</label>)}
+          </div>
+          <label className="plc-factory-requirements"><span>工厂可见的打样 / 测试 / 报价要求</span><textarea rows={3} maxLength={5000} value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="写明样品规格、测试标准、需回传的报告和报价口径" /></label>
+          <button type="button" className="plc-button plc-button--primary" disabled={!organizationCode || !selectedKeys.length || Boolean(busy)} onClick={() => void onAssign({ organizationCode, checklistKeys: selectedKeys, dueDate, sampleSubject, requirements, sampleGoal: `完成 ${request.title} 的打样定版`, evaluationCriteria: "原料、配方、样品测试结果满足需求并具备量产可行性" })}>{busy === "factory-assign" ? <LoaderCircle size={15} className="plc-spin" /> : <Factory size={15} />}派发打样与报价</button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

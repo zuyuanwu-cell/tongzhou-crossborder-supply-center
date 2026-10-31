@@ -6613,7 +6613,7 @@ export type ProductLaunchOwner = { id: string; name: string };
 
 export type ProductLaunchTimelineEvent = {
   id: string;
-  type: "created" | "edited" | "stage" | "updated" | "comment" | "checklist" | "filing" | "pilot";
+  type: "created" | "edited" | "stage" | "updated" | "comment" | "checklist" | "filing" | "pilot" | "factory_assignment" | "factory_sync";
   label: string;
   note?: string;
   actor: string;
@@ -6667,6 +6667,51 @@ export type ProductLaunchPilotProduction = {
   note: string;
 };
 
+export type ProductLaunchFactoryAssignmentStatus = "assigned" | "accepted" | "in_progress" | "sample_submitted" | "sample_approved" | "quote_submitted" | "completed" | "blocked" | "rejected" | "cancelled";
+
+export type ProductLaunchFactoryAssignment = {
+  id: string;
+  organizationCode: string;
+  organizationName: string;
+  organizationType: string;
+  checklistKeys: string[];
+  workItemId: string;
+  documentNo: string;
+  status: ProductLaunchFactoryAssignmentStatus;
+  remoteStatus: string;
+  dueDate: string;
+  sampleCategory: "inner_material" | "packaging";
+  sampleSubject: "formula" | "raw_material" | "packaging_box" | "packaging_bottle";
+  quoteRequired: boolean;
+  requirements: string;
+  sample: {
+    roundCount: number;
+    pendingReviewCount: number;
+    approvedArtifactId: string;
+    approvedVersion: number | null;
+    approvedVariantCode: string;
+    approvedSupplierMaterialCode: string;
+    latestTitle: string;
+    latestStatus: string;
+  };
+  quote: {
+    count: number;
+    awardedQuoteId: string;
+    latestQuoteId: string;
+    status: string;
+    currency: string;
+    amount: number | null;
+    minimumOrderQuantity: number | null;
+    leadTimeDays: number | null;
+    terms: string;
+    sampleVariantCode: string;
+  };
+  createdAt: string;
+  createdBy: string;
+  createdById: string;
+  lastSyncedAt: string;
+};
+
 export type ProductLaunchRequest = {
   id: string;
   title: string;
@@ -6702,6 +6747,7 @@ export type ProductLaunchRequest = {
   overdue: boolean;
   closed: boolean;
   checklist: ProductLaunchChecklistItem[];
+  factoryAssignments: ProductLaunchFactoryAssignment[];
   countryFilings: ProductLaunchCountryFiling[];
   pilotProduction: ProductLaunchPilotProduction;
   checklistProgress: { completed: number; total: number; percent: number };
@@ -6744,6 +6790,18 @@ export type ProductLaunchMeta = {
   filingRules: Record<string, { authority: string; requirement: string }>;
   countries: string[];
   owners: Array<{ id: string; name: string }>;
+  factoryCollaboration: {
+    enabled: boolean;
+    message: string;
+    factories: Array<{
+      code: string;
+      name: string;
+      organizationType: string;
+      ready: boolean;
+      missingPermissions: string[];
+      error?: string;
+    }>;
+  };
   permissions: ProductLaunchPermissions;
 };
 
@@ -6810,6 +6868,28 @@ export function updateProductLaunchChecklist(id: string, itemKey: string, input:
   return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(
     `/api/product-launch/requests/${encodeURIComponent(id)}/checklist/${encodeURIComponent(itemKey)}?workflowVersion=2`,
     { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export function assignProductLaunchFactory(id: string, input: {
+  organizationCode: string;
+  checklistKeys: string[];
+  dueDate?: string;
+  sampleSubject?: "formula" | "raw_material" | "packaging_box" | "packaging_bottle";
+  requirements?: string;
+  sampleGoal?: string;
+  evaluationCriteria?: string;
+}) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(
+    `/api/product-launch/requests/${encodeURIComponent(id)}/factory-assignments?workflowVersion=2`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+export function syncProductLaunchFactoryAssignment(id: string, assignmentId: string) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(
+    `/api/product-launch/requests/${encodeURIComponent(id)}/factory-assignments/${encodeURIComponent(assignmentId)}/sync?workflowVersion=2`,
+    { method: "POST", body: "{}" },
   );
 }
 

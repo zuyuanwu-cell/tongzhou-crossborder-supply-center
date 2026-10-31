@@ -275,6 +275,46 @@
 .plc-workflow-meter b { color: var(--op-slate-700, #43536a); font-weight: 700; }
 .plc-workflow-meter em { min-width: 32px; font-style: normal; font-variant-numeric: tabular-nums; text-align: right; }
 .plc-checklist-groups { display: grid; gap: 10px; }
+.plc-factory-collaboration { display: grid; gap: 10px; padding: 12px; border: 1px solid #bfd3ea; border-radius: 11px; background: linear-gradient(135deg, #f4f9ff, #fffaf5); }
+.plc-factory-collaboration > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.plc-factory-collaboration > header > div { display: flex; align-items: center; gap: 8px; }
+.plc-factory-collaboration > header > div > svg { color: var(--plc-blue); }
+.plc-factory-collaboration > header span { display: grid; gap: 1px; }
+.plc-factory-collaboration > header b { color: var(--plc-navy); font-size: 13px; }
+.plc-factory-collaboration > header small { color: var(--plc-muted); font-size: 11px; }
+.plc-factory-collaboration > header > a { display: inline-flex; align-items: center; gap: 5px; color: var(--plc-blue); font-size: 12px; font-weight: 800; text-decoration: none; }
+.plc-factory-empty { margin: 0; padding: 9px 10px; border-radius: 8px; background: rgba(255,255,255,.75); color: var(--plc-muted); font-size: 12px; }
+.plc-factory-assignments { display: grid; gap: 7px; }
+.plc-factory-assignments article { display: grid; gap: 8px; padding: 10px; border: 1px solid #d9e5f1; border-left: 3px solid var(--plc-blue); border-radius: 9px; background: #fff; }
+.plc-factory-assignments article.is-completed { border-left-color: var(--op-green-700, #14734b); }
+.plc-factory-assignments article.is-blocked, .plc-factory-assignments article.is-rejected, .plc-factory-assignments article.is-cancelled { border-left-color: var(--op-red-700, #b42318); }
+.plc-factory-assignment-head, .plc-factory-assignments footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.plc-factory-assignment-head > span { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.plc-factory-assignment-head svg { color: var(--plc-blue); }
+.plc-factory-assignment-head strong { color: var(--plc-ink); font-size: 13px; }
+.plc-factory-assignment-head em { overflow: hidden; color: var(--plc-muted); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.plc-factory-assignment-head > b { padding: 3px 8px; border-radius: 10px; background: var(--op-blue-100, #eaf2ff); color: var(--plc-blue); font-size: 11px; white-space: nowrap; }
+.plc-factory-assignments article.is-completed .plc-factory-assignment-head > b { background: var(--op-green-100, #eaf7f0); color: var(--op-green-700, #14734b); }
+.plc-factory-assignment-progress { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.plc-factory-assignment-progress span { display: flex; align-items: center; gap: 5px; min-height: 31px; padding: 5px 7px; border-radius: 7px; background: #f7f9fc; color: var(--op-slate-700, #43536a); font-size: 11px; }
+.plc-factory-assignment-progress svg { flex: 0 0 auto; color: var(--plc-blue); }
+.plc-factory-assignments footer > span { color: var(--plc-muted); font-size: 11px; }
+.plc-factory-assignments footer button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid #b8c9dd; border-radius: 7px; background: #f5f9fd; color: var(--plc-navy-2); font-size: 11px; font-weight: 800; cursor: pointer; }
+.plc-factory-dispatch { display: grid; gap: 8px; padding-top: 9px; border-top: 1px dashed #c8d8e8; }
+.plc-factory-warning { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 7px; background: var(--op-amber-100, #fff6df); color: var(--op-amber-800, #8a4b08); font-size: 12px; }
+.plc-factory-capability-list { display: grid; gap: 3px; }
+.plc-factory-capability-list span { color: var(--op-red-700, #b42318); font-size: 11px; }
+.plc-factory-capability-list b { margin-right: 5px; }
+.plc-factory-dispatch-grid { display: grid; grid-template-columns: 1.2fr 1fr .8fr; gap: 7px; }
+.plc-factory-dispatch label { display: grid; gap: 4px; }
+.plc-factory-dispatch label > span, .plc-factory-task-picker > span { color: var(--plc-muted); font-size: 11px; font-weight: 700; }
+.plc-factory-dispatch select, .plc-factory-dispatch input, .plc-factory-dispatch textarea { width: 100%; min-width: 0; min-height: 34px; padding: 5px 7px; border: 1px solid var(--op-slate-300, #cbd5e1); border-radius: 7px; background: #fff; color: var(--plc-ink); font: inherit; font-size: 12px; }
+.plc-factory-task-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.plc-factory-task-picker label { display: inline-flex; grid-auto-flow: column; align-items: center; gap: 5px; min-height: 28px; padding: 0 8px; border: 1px solid #d4dfeb; border-radius: 14px; background: #fff; color: var(--op-slate-700, #43536a); font-size: 11px; cursor: pointer; }
+.plc-factory-task-picker label.is-checked { border-color: var(--plc-blue); background: var(--op-blue-100, #eaf2ff); color: var(--plc-blue); font-weight: 800; }
+.plc-factory-task-picker input { width: 13px; min-height: 13px; margin: 0; accent-color: var(--plc-blue); }
+.plc-factory-requirements textarea { resize: vertical; }
+.plc-factory-dispatch > .plc-button { justify-self: end; }
 .plc-checklist-group { display: grid; gap: 5px; }
 .plc-checklist-group h5 { margin: 3px 0 0; color: var(--plc-navy-2); font-size: 12px; }
 .plc-check-row { display: grid; grid-template-columns: minmax(105px, .9fr) 100px 112px 130px minmax(130px, 1.4fr) 54px; align-items: center; gap: 6px; padding: 7px 8px; border: 1px solid #e3eaf2; border-radius: 9px; background: #fff; }
@@ -348,6 +388,8 @@
   .plc-check-row > .plc-mini-save { justify-self: end; }
   .plc-check-row--readonly { grid-template-columns: 76px 1fr; }
   .plc-check-row--readonly > em { grid-column: 1 / -1; text-align: left; }
+  .plc-factory-collaboration > header, .plc-factory-assignment-head, .plc-factory-assignments footer { align-items: flex-start; flex-direction: column; }
+  .plc-factory-assignment-progress, .plc-factory-dispatch-grid { grid-template-columns: 1fr; }
   .plc-filing-grid { grid-template-columns: 1fr; }
   .plc-pilot-editor { grid-template-columns: 1fr; }
   .plc-pilot-confirm, .plc-pilot-note, .plc-pilot-editor > button { grid-column: 1; grid-row: auto; }

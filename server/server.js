@@ -547,21 +547,6 @@ const businessChainApi = createBusinessChainApi({
   appendActionLog,
 });
 const productLaunchService = createProductLaunchService({ cachePath: productLaunchCachePath });
-const productLaunchApi = createProductLaunchApi({
-  service: productLaunchService,
-  getAuth,
-  appendActionLog,
-  // 可指派的开品负责人：启用中、拥有“开品评审与进度推进”权限的账号。
-  listOwners: () => (cachedUsers.users || [])
-    .filter((user) => user.status !== "disabled")
-    .map((user) => publicAccessUser(user))
-    .filter((user) => hasPermission({ user }, "product_launch_manage"))
-    .map((user) => ({ id: String(user.id || ""), name: String(user.displayName || user.username || user.id || "") }))
-    .filter((owner) => owner.id),
-  listCountries: () => Array.from(new Set([...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])]
-    .map((product) => String(product.country || "").trim())
-    .filter(Boolean))).sort((left, right) => left.localeCompare(right, "zh-CN")),
-});
 const collaborationBridge = createCollaborationBridge({
   store: collaborationBridgeStore,
   domesticInventoryService,
@@ -576,6 +561,22 @@ const collaborationBridge = createCollaborationBridge({
     command.id,
     { organizationCode: command.organizationCode, coreRefId: command.coreRefId, commandType: command.commandType, result },
   ),
+});
+const productLaunchApi = createProductLaunchApi({
+  service: productLaunchService,
+  collaborationBridge,
+  getAuth,
+  appendActionLog,
+  // 可指派的开品负责人：启用中、拥有“开品评审与进度推进”权限的账号。
+  listOwners: () => (cachedUsers.users || [])
+    .filter((user) => user.status !== "disabled")
+    .map((user) => publicAccessUser(user))
+    .filter((user) => hasPermission({ user }, "product_launch_manage"))
+    .map((user) => ({ id: String(user.id || ""), name: String(user.displayName || user.username || user.id || "") }))
+    .filter((owner) => owner.id),
+  listCountries: () => Array.from(new Set([...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])]
+    .map((product) => String(product.country || "").trim())
+    .filter(Boolean))).sort((left, right) => left.localeCompare(right, "zh-CN")),
 });
 const collaborationBridgeApi = createCollaborationBridgeApi({
   bridge: collaborationBridge,

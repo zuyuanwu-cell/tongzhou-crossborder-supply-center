@@ -37,7 +37,7 @@ export const partnerRoleDefinitions: PartnerRoleDefinition[] = [
     label: "打样协同",
     shortLabel: "打样",
     description: "闭环管理内料、包装盒与包装瓶的多轮送样、评审定版和定版报价。",
-    hash: "#sampling-collaboration",
+    hash: "#material-sampling-collaboration",
     eligibleOrganizationTypes: ["sampling_factory", "production_factory", "material_supplier", "packaging_factory"],
     resourceRef: "sampling",
     viewPermission: "sampling.task.view",

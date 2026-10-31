@@ -164,7 +164,27 @@ try {
     pm: { role: "direct", user: { ...pm, role: "direct", permissionOverrides: { allow: ["product_launch_manage"], deny: [] } } },
     guest: { role: "guest", user: { id: "g", role: "guest" } },
   };
-  const api = createProductLaunchApi({ service, getAuth: (req) => users[req.headers["x-user"]], listOwners: () => owners, listCountries: () => ["俄罗斯", "印度尼西亚", "越南"] });
+  const factoryWorkItemId = "99999999-9999-4999-8999-999999999999";
+  let publishedFactoryTask = null;
+  let factoryDetail = {
+    item: { id: factoryWorkItemId, organizationCode: "mf-guanhong", itemType: "sampling_task", status: "accepted" },
+    oem: { artifacts: [], quotes: [] },
+  };
+  const collaborationBridge = {
+    status: () => ({ oemEnabled: true }),
+    listOrganizations: async () => ({ organizations: [
+      { code: "mf-guanhong", name: "广东冠宏", organizationType: "production_factory", status: "active" },
+      { code: "mf-view-only", name: "仅查看工厂", organizationType: "production_factory", status: "active" },
+      { code: "supplier-a", name: "普通供应商", organizationType: "material_supplier", status: "active" },
+    ] }),
+    getOrganizationAccessGrants: async (code) => ({ grants: [{ resourceType: "organization", resourceRef: "sampling", permissions: code === "mf-view-only" ? ["sampling.task.view"] : ["sampling.task.view", "sampling.task.handle", "sampling.artifact.submit", "sampling.quote.submit"] }] }),
+    publishPartnerTask: async (code, input) => {
+      publishedFactoryTask = { code, input };
+      return { ok: true, coreRefId: input.documentNo, workItemId: factoryWorkItemId, delivery: { published: 1, failed: 0 } };
+    },
+    getOrganizationWorkItem: async () => factoryDetail,
+  };
+  const api = createProductLaunchApi({ service, collaborationBridge, getAuth: (req) => users[req.headers["x-user"]], listOwners: () => owners, listCountries: () => ["俄罗斯", "印度尼西亚", "越南"] });
   async function call(user, method, path, body) {
     const req = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []);
     Object.assign(req, { method, headers: { "x-user": user } });
@@ -191,6 +211,37 @@ try {
   assert.equal(moved.body.request.stage, "factory_validation");
   assert.equal((await call("viewer", "PATCH", v2(`/api/product-launch/requests/${posted.body.request.id}/checklist/material_test`), { status: "completed" })).status, 403);
   assert.equal((await call("pm", "PATCH", v2(`/api/product-launch/requests/${posted.body.request.id}/checklist/material_test`), { status: "completed" })).status, 200);
+  const managerMeta = await call("pm", "GET", v2("/api/product-launch/meta"));
+  assert.equal(managerMeta.body.factoryCollaboration.enabled, true);
+  assert.equal(managerMeta.body.factoryCollaboration.factories.find((item) => item.code === "mf-guanhong").ready, true);
+  assert.deepEqual(managerMeta.body.factoryCollaboration.factories.find((item) => item.code === "mf-view-only").missingPermissions, ["sampling.task.handle", "sampling.artifact.submit", "sampling.quote.submit"]);
+  assert.equal((await call("viewer", "POST", v2(`/api/product-launch/requests/${posted.body.request.id}/factory-assignments`), { organizationCode: "mf-guanhong" })).status, 403);
+  assert.equal((await call("pm", "POST", v2(`/api/product-launch/requests/${posted.body.request.id}/factory-assignments`), { organizationCode: "mf-view-only" })).status, 409);
+  const assigned = await call("pm", "POST", v2(`/api/product-launch/requests/${posted.body.request.id}/factory-assignments`), {
+    organizationCode: "mf-guanhong",
+    checklistKeys: ["material_test", "formula_development", "sample_test_report", "factory_quote"],
+    dueDate: "2026-11-12",
+    sampleSubject: "formula",
+    requirements: "完成料体打样、稳定性测试并按最终样报价",
+  });
+  assert.equal(assigned.status, 201);
+  assert.equal(assigned.body.request.factoryAssignments[0].organizationName, "广东冠宏");
+  assert.equal(assigned.body.request.checklist.find((item) => item.key === "formula_development").status, "in_progress");
+  assert.equal(publishedFactoryTask.code, "mf-guanhong");
+  assert.equal(publishedFactoryTask.input.taskType, "sampling_task");
+  assert.equal(publishedFactoryTask.input.quoteRequired, true);
+  factoryDetail = {
+    item: { id: factoryWorkItemId, organizationCode: "mf-guanhong", itemType: "sampling_task", status: "completed" },
+    oem: {
+      artifacts: [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", artifactType: "sample_result", title: "第 2 轮最终样", version: 2, status: "approved", publicPayload: { approvedVariantCode: "LT-GH-R02-01", approvedSupplierMaterialCode: "GH-F-02" } }],
+      quotes: [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", currency: "CNY", amount: 16800, minimumOrderQuantity: 3000, leadTimeDays: 18, terms: "含税到仓", status: "awarded", version: 1, sampleVariantCode: "LT-GH-R02-01" }],
+    },
+  };
+  const synced = await call("pm", "POST", v2(`/api/product-launch/requests/${posted.body.request.id}/factory-assignments/${assigned.body.request.factoryAssignments[0].id}/sync`), {});
+  assert.equal(synced.status, 200);
+  assert.equal(synced.body.request.factoryAssignments[0].status, "completed");
+  assert.equal(synced.body.request.factoryAssignments[0].quote.amount, 16800);
+  assert.deepEqual(synced.body.request.checklist.filter((item) => item.group === "factory").map((item) => item.status), ["completed", "completed", "completed", "completed"]);
   assert.equal((await call("pm", "PATCH", v2(`/api/product-launch/requests/${posted.body.request.id}/filings/RU`), { status: "submitted" })).status, 200);
   assert.equal((await call("pm", "PATCH", v2(`/api/product-launch/requests/${posted.body.request.id}/pilot`), { sampleConfirmed: true, approvedQty: 100 })).status, 200);
   assert.equal((await call("pm", "GET", v2("/api/product-launch/requests/NP-0"))).status, 404);
