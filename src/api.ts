@@ -6605,12 +6605,15 @@ export function updateDomesticInventorySafetyStock(warehouseId: string, sku: str
 
 // ---------- 开品需求 (product launch requests) ----------
 
-export type ProductLaunchStageKey = "submitted" | "approved" | "sourcing" | "certification" | "listing_prep" | "launched" | "on_hold" | "rejected" | "cancelled";
+export type ProductLaunchStageKey = "submitted" | "approved" | "factory_validation" | "product_definition" | "packaging" | "filing" | "pilot_production" | "completed" | "on_hold" | "rejected" | "cancelled";
 export type ProductLaunchPriority = "urgent" | "high" | "normal" | "low";
+export type ProductLaunchChecklistStatus = "pending" | "in_progress" | "completed" | "blocked" | "not_required";
+export type ProductLaunchFilingStatus = "pending" | "preparing" | "submitted" | "approved" | "blocked" | "not_required";
+export type ProductLaunchOwner = { id: string; name: string };
 
 export type ProductLaunchTimelineEvent = {
   id: string;
-  type: "created" | "edited" | "stage" | "updated" | "comment";
+  type: "created" | "edited" | "stage" | "updated" | "comment" | "checklist" | "filing" | "pilot";
   label: string;
   note?: string;
   actor: string;
@@ -6619,6 +6622,49 @@ export type ProductLaunchTimelineEvent = {
   fromStage?: ProductLaunchStageKey;
   toStage?: ProductLaunchStageKey;
   fields?: string[];
+  itemKey?: string;
+  countryKey?: string;
+  status?: string;
+  details?: Record<string, unknown>;
+};
+
+export type ProductLaunchChecklistItem = {
+  key: string;
+  label: string;
+  group: "factory" | "product" | "packaging" | "production" | string;
+  groupLabel: string;
+  required: boolean;
+  status: ProductLaunchChecklistStatus;
+  owner: ProductLaunchOwner | null;
+  dueDate: string;
+  completedAt: string;
+  note: string;
+};
+
+export type ProductLaunchCountryFiling = {
+  country: string;
+  countryKey: string;
+  authority: string;
+  requirement: string;
+  required: boolean;
+  status: ProductLaunchFilingStatus;
+  filingNo: string;
+  owner: ProductLaunchOwner | null;
+  dueDate: string;
+  submittedAt: string;
+  approvedAt: string;
+  expiresAt: string;
+  note: string;
+};
+
+export type ProductLaunchPilotProduction = {
+  sampleConfirmed: boolean;
+  sampleConfirmedAt: string;
+  approvedQty: number | null;
+  approvedAt: string;
+  producedQty: number | null;
+  completedAt: string;
+  note: string;
 };
 
 export type ProductLaunchRequest = {
@@ -6626,6 +6672,7 @@ export type ProductLaunchRequest = {
   title: string;
   category: string;
   country: string;
+  targetCountries: string[];
   platform: string;
   source: string;
   reason: string;
@@ -6642,11 +6689,11 @@ export type ProductLaunchRequest = {
   stageLabel: string;
   stageEnteredAt: string;
   stageHistory?: Partial<Record<ProductLaunchStageKey, string>>;
-  owner: { id: string; name: string } | null;
+  owner: ProductLaunchOwner | null;
   nextAction: string;
   nextDueDate: string;
   linkedSku: string;
-  launchedAt: string;
+  completedAt: string;
   rejectReason?: string;
   createdBy: string;
   createdById: string;
@@ -6654,6 +6701,11 @@ export type ProductLaunchRequest = {
   updatedAt: string;
   overdue: boolean;
   closed: boolean;
+  checklist: ProductLaunchChecklistItem[];
+  countryFilings: ProductLaunchCountryFiling[];
+  pilotProduction: ProductLaunchPilotProduction;
+  checklistProgress: { completed: number; total: number; percent: number };
+  filingProgress: { approved: number; total: number; percent: number };
   timeline: ProductLaunchTimelineEvent[];
 };
 
@@ -6663,6 +6715,7 @@ export type ProductLaunchSummary = {
   total: number;
   pendingReview: number;
   inProgress: number;
+  completedThisMonth: number;
   launchedThisMonth: number;
   overdue: number;
   mine: number;
@@ -6685,6 +6738,10 @@ export type ProductLaunchMeta = {
   priorities: Array<{ key: ProductLaunchPriority; label: string }>;
   platforms: string[];
   currencies: string[];
+  checklistDefinitions: Array<{ key: string; label: string; group: string; groupLabel: string; required: boolean }>;
+  checklistStatuses: Array<{ key: ProductLaunchChecklistStatus; label: string }>;
+  filingStatuses: Array<{ key: ProductLaunchFilingStatus; label: string }>;
+  filingRules: Record<string, { authority: string; requirement: string }>;
   countries: string[];
   owners: Array<{ id: string; name: string }>;
   permissions: ProductLaunchPermissions;
@@ -6693,7 +6750,8 @@ export type ProductLaunchMeta = {
 export type ProductLaunchInput = {
   title: string;
   category?: string;
-  country: string;
+  country?: string;
+  targetCountries: string[];
   platform?: string;
   source: string;
   reason: string;
@@ -6718,32 +6776,53 @@ export type ProductLaunchProgressInput = {
 };
 
 export function fetchProductLaunchMeta(signal?: AbortSignal) {
-  return requestJson<ProductLaunchMeta>("/api/product-launch/meta", { signal });
+  return requestJson<ProductLaunchMeta>("/api/product-launch/meta?workflowVersion=2", { signal });
 }
 
 export function fetchProductLaunchRequests(input: { keyword?: string; stage?: string; country?: string; priority?: string; mine?: boolean } = {}, signal?: AbortSignal) {
   const params = new URLSearchParams();
+  params.set("workflowVersion", "2");
   if (input.keyword) params.set("keyword", input.keyword);
   if (input.stage) params.set("stage", input.stage);
   if (input.country) params.set("country", input.country);
   if (input.priority) params.set("priority", input.priority);
   if (input.mine) params.set("mine", "1");
-  const query = params.toString() ? `?${params.toString()}` : "";
-  return requestJson<ProductLaunchPayload>(`/api/product-launch/requests${query}`, { signal });
+  return requestJson<ProductLaunchPayload>(`/api/product-launch/requests?${params.toString()}`, { signal });
 }
 
 export function createProductLaunchRequest(input: ProductLaunchInput) {
-  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>("/api/product-launch/requests", { method: "POST", body: JSON.stringify(input) });
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>("/api/product-launch/requests?workflowVersion=2", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function updateProductLaunchRequest(id: string, input: Partial<ProductLaunchInput>) {
-  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}?workflowVersion=2`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
 export function progressProductLaunchRequest(id: string, input: ProductLaunchProgressInput) {
-  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}/stage`, { method: "POST", body: JSON.stringify(input) });
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}/stage?workflowVersion=2`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function commentProductLaunchRequest(id: string, note: string) {
-  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}/comments`, { method: "POST", body: JSON.stringify({ note }) });
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(`/api/product-launch/requests/${encodeURIComponent(id)}/comments?workflowVersion=2`, { method: "POST", body: JSON.stringify({ note }) });
+}
+
+export function updateProductLaunchChecklist(id: string, itemKey: string, input: Partial<Pick<ProductLaunchChecklistItem, "status" | "owner" | "dueDate" | "note">>) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(
+    `/api/product-launch/requests/${encodeURIComponent(id)}/checklist/${encodeURIComponent(itemKey)}?workflowVersion=2`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export function updateProductLaunchFiling(id: string, countryKey: string, input: Partial<Pick<ProductLaunchCountryFiling, "status" | "authority" | "requirement" | "filingNo" | "owner" | "dueDate" | "submittedAt" | "approvedAt" | "expiresAt" | "note">>) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(
+    `/api/product-launch/requests/${encodeURIComponent(id)}/filings/${encodeURIComponent(countryKey)}?workflowVersion=2`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export function updateProductLaunchPilot(id: string, input: { sampleConfirmed?: boolean; approvedQty?: number | string | null; producedQty?: number | string | null; note?: string }) {
+  return requestJson<{ ok: boolean; request: ProductLaunchRequest }>(
+    `/api/product-launch/requests/${encodeURIComponent(id)}/pilot?workflowVersion=2`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
 }
