@@ -690,8 +690,9 @@ function OemWorkspace({ detail, busy, setBusy, reload, onChanged, notify, files 
     diameterMm: String(packagingSpec.diameterMm || ""), capacityMl: String(packagingSpec.capacityMl || ""), colorPrinting: packagingSpec.colorPrinting || "",
   }), [item.publicPayload.quantity, item.publicPayload.unit, item.publicPayload.sampleCategory, packagingSpec.material, packagingSpec.process, packagingSpec.structureType, packagingSpec.lengthMm, packagingSpec.widthMm, packagingSpec.heightMm, packagingSpec.diameterMm, packagingSpec.capacityMl, packagingSpec.colorPrinting]);
   const [sampleVariants, setSampleVariants] = React.useState(() => [blankVariant(0)]);
+  const hasApprovedSample = Boolean(detail.oem?.artifacts?.some((entry) => entry.status === "approved"));
   const isReady = !["pending", "pending_sync", "pending_approval", "completed", "rejected", "cancelled"].includes(item.status)
-    && (item.publicPayload.sampleCategory !== "inner_material" || (sampleVariants.every((variant) => variant.supplierMaterialCode.trim()) && new Set(sampleVariants.map((variant) => variant.supplierMaterialCode.trim().toUpperCase())).size === sampleVariants.length));
+    && (item.publicPayload.sampleCategory !== "inner_material" || hasApprovedSample || (sampleVariants.every((variant) => variant.supplierMaterialCode.trim()) && new Set(sampleVariants.map((variant) => variant.supplierMaterialCode.trim().toUpperCase())).size === sampleVariants.length));
 
   async function complete(operation: (version: number) => Promise<unknown>, success: string, uploadAfter = true) {
     setBusy(true);
