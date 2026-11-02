@@ -17,6 +17,68 @@ function matchesMovementScope(record, scopes) {
   return matchesWarehouseScope(record, scopes) && isWithinDataScope(record, scopes);
 }
 
+function normalizedWarehouseIdentifiers(values = []) {
+  return new Set((values || [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean));
+}
+
+function connectionIdentifiers(connection) {
+  return [connection?.id, connection?.warehouseId, connection?.resolvedWarehouseId]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+export function resolveExcludedWarehouseIdentifiers(connections = [], excludedWarehouseIds = []) {
+  const requested = normalizedWarehouseIdentifiers(excludedWarehouseIds);
+  const identifiers = new Set(requested);
+  for (const connection of connections || []) {
+    const aliases = connectionIdentifiers(connection);
+    if (aliases.some((identifier) => requested.has(identifier))) {
+      aliases.forEach((identifier) => identifiers.add(identifier));
+    }
+  }
+  return identifiers;
+}
+
+export function isExcludedWarehouseRecord(record, excludedIdentifiers) {
+  const identifiers = excludedIdentifiers instanceof Set
+    ? excludedIdentifiers
+    : normalizedWarehouseIdentifiers(excludedIdentifiers);
+  if (!identifiers.size) return false;
+  return [record?.warehouseId, record?.id, record?.resolvedWarehouseId]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .some((identifier) => identifiers.has(identifier));
+}
+
+export function excludeMovementWarehouses({ products, warehouse, orders, connections }, excludedWarehouseIds = []) {
+  const excludedIdentifiers = resolveExcludedWarehouseIdentifiers(connections, excludedWarehouseIds);
+  if (!excludedIdentifiers.size) {
+    return { products, warehouse, orders, connections, excludedIdentifiers };
+  }
+  const keepRecord = (record) => !isExcludedWarehouseRecord(record, excludedIdentifiers);
+  const keepConnection = (connection) => !connectionIdentifiers(connection)
+    .some((identifier) => excludedIdentifiers.has(identifier));
+
+  return {
+    products,
+    warehouse: {
+      ...warehouse,
+      products: (warehouse?.products || []).filter(keepRecord),
+      inventory: (warehouse?.inventory || []).filter(keepRecord),
+      results: (warehouse?.results || []).filter(keepRecord),
+    },
+    orders: {
+      ...orders,
+      orders: (orders?.orders || []).filter(keepRecord),
+      results: (orders?.results || []).filter(keepRecord),
+    },
+    connections: (connections || []).filter(keepConnection),
+    excludedIdentifiers,
+  };
+}
+
 export function scopeMovementSources({ products, warehouse, orders, connections }, user) {
   const scopes = normalizeDataScopes(user?.dataScopes);
   const catalog = (products?.catalog || []).filter((item) => isWithinDataScope(item, scopes));

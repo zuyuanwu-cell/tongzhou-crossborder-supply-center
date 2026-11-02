@@ -197,6 +197,7 @@ import {
   testWarehouseConnection,
   testMiaoshouConnection,
   testWecomNotification,
+  testWecomStockupWarning,
   testWecomProjectTeam,
   updateDistributorApplicationStatus,
   updateOrderShopAlias,
@@ -6828,6 +6829,7 @@ function ProductCodingWorkbench({ payload, onRefresh }: { payload: StockupWorkfl
 const defaultWecomScene: WecomSceneConfig = {
   enabled: false,
   robotIds: [],
+  excludedWarehouseIds: [],
   linkUrl: "",
   extraText: "",
   triggerMode: "change",
@@ -7189,6 +7191,36 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
       setMessage(failed.length ? `测试发送完成，${failed.length} 个机器人失败。` : "测试消息已发送。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "测试发送失败。");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function sendStockupWarningTest() {
+    const scene = sceneForm.stockupRecommendation || defaultWecomScene;
+    if (!scene.robotIds?.length) {
+      setMessage("请先在备货预警长图场景中选择至少一个推送机器人。");
+      return;
+    }
+    setBusy("stockup-test");
+    setMessage("");
+    try {
+      const result = await testWecomStockupWarning({
+        robotIds: scene.robotIds,
+        linkUrl: scene.linkUrl,
+        extraText: scene.extraText,
+      });
+      await refresh(result);
+      const deliveries = result.deliveries || [];
+      const failed = deliveries.filter((item) => !item.ok);
+      if (!failed.length) {
+        setMessage(`备货预警长图已测试发送到 ${deliveries.length} 个群，测试不会影响正式推送。`);
+      } else {
+        const failureDetails = failed.map((item) => `${item.robotName}：${item.message || "发送失败"}`).join("；");
+        setMessage(`备货预警长图测试发送有 ${failed.length} 个群失败：${failureDetails}`);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "备货预警长图测试发送失败。");
     } finally {
       setBusy("");
     }
@@ -7630,6 +7662,35 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                     ) : null}
                   </div>
                 ) : null}
+                {key === "stockupRecommendation" ? (
+                  <div className="wecom-stockup-exclusions">
+                    <div>
+                      <span className="field-label">排除仓库</span>
+                      <small>勾选后，该仓库不参与备货建议、库存风险和预警长图计算；不影响库存同步与其他业务页面。</small>
+                    </div>
+                    <div className="wecom-warehouse-exclusion-grid">
+                      {(warehousePayload?.warehouses || []).map((warehouse) => {
+                        const selected = new Set(scene.excludedWarehouseIds || []);
+                        return (
+                          <label className="wecom-check wecom-warehouse-exclusion" key={warehouse.id}>
+                            <input
+                              type="checkbox"
+                              checked={selected.has(warehouse.id)}
+                              onChange={(event) => updateScene(key, {
+                                excludedWarehouseIds: event.target.checked
+                                  ? [...selected, warehouse.id]
+                                  : (scene.excludedWarehouseIds || []).filter((id) => id !== warehouse.id),
+                              })}
+                            />
+                            <span><strong>{warehouse.name}</strong><small>{warehouse.country} · {warehouse.warehouseCode || warehouse.id}</small></span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {!warehousePayload?.warehouses?.length ? <small>暂无仓库资料，请先在“仓库授权”中完成配置。</small> : null}
+                    {(scene.excludedWarehouseIds || []).length ? <small className="wecom-recipient-ok">当前已排除 {(scene.excludedWarehouseIds || []).length} 个仓库。</small> : <small>当前没有排除仓库。</small>}
+                  </div>
+                ) : null}
                 {key === "stockupRequestProgress" ? (
                   <div>
                     <span className="field-label">关键推送节点</span>
@@ -7666,8 +7727,26 @@ function WecomNotificationCenter({ payload, warehousePayload, onRefresh }: { pay
                 </label>
                 <span className="field-label">推送机器人</span>
                 <RobotCheckboxes robots={robots} selected={scene.robotIds || []} onChange={(robotIds) => updateScene(key, { robotIds, ...(key === "afterSalesProgress" && robotIds.length ? { enabled: true } : {}) })} />
+                {key === "stockupRecommendation" ? (
+                  <div className="wecom-scene-actions">
+                    <a className="ghost-button compact-button" href="/api/wecom-notifications/stockup-preview" target="_blank" rel="noreferrer">预览当前长图</a>
+                    <button
+                      className="sync-button compact-button"
+                      type="button"
+                      onClick={sendStockupWarningTest}
+                      disabled={busy === "stockup-test" || !scene.robotIds?.length}
+                      title={scene.robotIds?.length ? "发送真实长图和详情链接；不影响正式推送" : "请先选择推送机器人"}
+                    >
+                      <Image size={14} />
+                      {busy === "stockup-test" ? "正在生成并发送" : "测试发送"}
+                    </button>
+                    <small>使用当前配置发送，不占用当天正式推送次数。</small>
+                  </div>
+                ) : null}
                 {scene.enabled && !(scene.robotIds || []).length ? <small className="wecom-recipient-error">已启用但未选择接收群，系统将拒绝保存和发送。</small> : null}
                 {scene.lastError ? <small className="wecom-error">最近错误：{scene.lastError}</small> : null}
+                {key === "stockupRecommendation" && scene.lastScheduleMessage ? <small>调度状态：{scene.lastScheduleMessage}</small> : null}
+                {key === "stockupRecommendation" && scene.lastScheduleAttemptAt ? <small>最近调度：{formatDateTime(scene.lastScheduleAttemptAt)}</small> : null}
                 <small>最近发送：{scene.lastSentAt ? formatDateTime(scene.lastSentAt) : "暂无"}</small>
               </article>
             );

@@ -730,15 +730,29 @@ export type WecomSchedule = {
 export type WecomSceneConfig = {
   enabled: boolean;
   robotIds: string[];
+  excludedWarehouseIds?: string[];
   linkUrl: string;
   extraText: string;
   triggerMode?: "change" | "daily" | "both";
   scheduleTime?: string;
   progressNodes?: string[];
   lastSignature?: string;
+  lastReportDate?: string;
   lastSentAt?: string;
   lastScheduleRunKey?: string;
+  lastScheduleAttemptAt?: string;
+  lastScheduleMessage?: string;
   lastError?: string;
+};
+
+export type WecomStockupTestDelivery = {
+  robotId: string;
+  robotName: string;
+  ok: boolean;
+  imageOk: boolean;
+  linkOk: boolean;
+  fallbackSent: boolean;
+  message: string;
 };
 
 export type WecomProjectTeam = {
@@ -4383,6 +4397,17 @@ export function testWecomProjectTeam(id: string) {
 
 export function testWecomNotification(input: { robotIds: string[]; text: string; linkUrl?: string; linkText?: string }) {
   return requestJson<WecomNotificationPayload & { results: Array<{ robotId: string; ok: boolean; message?: string }> }>("/api/wecom-notifications/test", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function testWecomStockupWarning(input: { robotIds: string[]; linkUrl?: string; extraText?: string }) {
+  return requestJson<WecomNotificationPayload & {
+    results: Array<{ robotId: string; ok: boolean; message?: string }>;
+    deliveries: WecomStockupTestDelivery[];
+    report: { recommendationCount: number; imageBytes: number; renderError: string };
+  }>("/api/wecom-notifications/stockup-test", {
     method: "POST",
     body: JSON.stringify(input),
   });

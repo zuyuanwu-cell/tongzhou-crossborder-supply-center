@@ -6848,6 +6848,71 @@ h3 {
   background: rgba(255, 255, 255, 0.045);
 }
 
+.wecom-stockup-exclusions {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(36, 81, 164, 0.2);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(36, 81, 164, 0.07), rgba(255, 255, 255, 0.035));
+}
+
+.wecom-stockup-exclusions > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.wecom-stockup-exclusions small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.wecom-warehouse-exclusion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.wecom-check.wecom-warehouse-exclusion {
+  display: flex;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.wecom-warehouse-exclusion > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.wecom-warehouse-exclusion strong,
+.wecom-warehouse-exclusion small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wecom-warehouse-exclusion strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.wecom-scene-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wecom-scene-actions small {
+  flex: 1 1 180px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .wecom-scene-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -10564,6 +10629,7 @@ h3 {
   .catalog-search-row,
   .wecom-form-grid,
   .wecom-warehouse-routes,
+  .wecom-warehouse-exclusion-grid,
   .stockup-plan-form,
   .wecom-scene-grid {
     grid-template-columns: 1fr;
