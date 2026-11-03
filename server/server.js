@@ -9500,6 +9500,43 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/warehouse-liabilities/export" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!canAccessWarehouseLiabilitySettlements(auth)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有导出仓库责任费用的权限。" });
+        return;
+      }
+      try {
+        const payload = await parseRequestBody(req);
+        const file = afterSalesService.exportSettlementLedger({
+          keyword: payload.keyword,
+          warehouseId: payload.warehouseId,
+          status: payload.status,
+          dateFrom: payload.dateFrom,
+          dateTo: payload.dateTo,
+          sourceIds: payload.sourceIds,
+          dataScopes: warehouseCollaborationDataScopes(auth),
+        });
+        appendActionLog(auth, "导出仓库责任费用财务核对表", "warehouse_liability_settlement", "ledger", {
+          rowCount: file.rowCount,
+          warehouseCount: file.warehouseCount,
+          totalOutstandingCny: file.totalOutstandingCny,
+        });
+        const content = Buffer.from(file.content, "utf8");
+        res.writeHead(200, {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Length": content.length,
+          "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(content);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error?.message || "导出仓库责任费用核对表失败。" });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/warehouse-liabilities/batches" && req.method === "POST") {
       const auth = getAuth(req);
       if (!canAccessWarehouseLiabilitySettlements(auth)) {

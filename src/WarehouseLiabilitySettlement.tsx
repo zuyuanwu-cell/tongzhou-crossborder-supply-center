@@ -21,6 +21,7 @@ import {
   WarehouseLiabilityPayload,
   WarehouseLiabilitySettlementBatch,
   createWarehouseLiabilitySettlementBatch,
+  downloadWarehouseLiabilityReview,
   downloadWarehouseLiabilitySettlementBatch,
   fetchWarehouseLiabilities,
   postWarehouseLiabilitySettlementBatch,
@@ -63,6 +64,16 @@ type SettlementDialog = {
   batch?: WarehouseLiabilitySettlementBatch;
 };
 
+type LiabilityFilters = {
+  keyword: string;
+  warehouseId: string;
+  status: string;
+};
+
+function isSelectableItem(item: WarehouseLiabilityItem) {
+  return !["written_off", "disputed", "source_voided"].includes(item.settlementStatus) && item.outstandingCny > 0;
+}
+
 export function WarehouseLiabilitySettlement() {
   const [payload, setPayload] = React.useState<WarehouseLiabilityPayload | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -72,6 +83,7 @@ export function WarehouseLiabilitySettlement() {
   const [keyword, setKeyword] = React.useState("");
   const [warehouseId, setWarehouseId] = React.useState("");
   const [status, setStatus] = React.useState("pending_writeoff");
+  const [appliedFilters, setAppliedFilters] = React.useState<LiabilityFilters>({ keyword: "", warehouseId: "", status: "pending_writeoff" });
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   const [dialog, setDialog] = React.useState<SettlementDialog | null>(null);
   const [amounts, setAmounts] = React.useState<Record<string, number>>({});
@@ -80,6 +92,7 @@ export function WarehouseLiabilitySettlement() {
   const [voucherNo, setVoucherNo] = React.useState("");
   const [note, setNote] = React.useState("");
   const [voucherUploads, setVoucherUploads] = React.useState<AfterSalesAttachment[]>([]);
+  const selectAllRef = React.useRef<HTMLInputElement>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -87,7 +100,8 @@ export function WarehouseLiabilitySettlement() {
     try {
       const next = await fetchWarehouseLiabilities({ keyword, warehouseId, status });
       setPayload(next);
-      setSelectedIds((current) => current.filter((id) => next.items.some((item) => item.sourceId === id && !["written_off", "disputed", "source_voided"].includes(item.settlementStatus))));
+      setAppliedFilters({ keyword, warehouseId, status });
+      setSelectedIds((current) => current.filter((id) => next.items.some((item) => item.sourceId === id && isSelectableItem(item))));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "读取仓库责任费用失败。");
     } finally {
@@ -102,22 +116,37 @@ export function WarehouseLiabilitySettlement() {
     return (payload?.items || []).filter((item) => selected.has(item.sourceId));
   }, [payload?.items, selectedIds]);
 
+  const selectableItems = React.useMemo(() => (payload?.items || []).filter(isSelectableItem), [payload?.items]);
+  const selectedWarehouseIds = React.useMemo(() => new Set(selectedItems.map((item) => item.warehouseId).filter(Boolean)), [selectedItems]);
+  const selectedOutstandingCny = React.useMemo(() => selectedItems.reduce((sum, item) => sum + Number(item.outstandingCny || 0), 0), [selectedItems]);
+  const allSelectableSelected = Boolean(selectableItems.length) && selectableItems.every((item) => selectedIds.includes(item.sourceId));
+  const someSelectableSelected = selectableItems.some((item) => selectedIds.includes(item.sourceId));
+  const canCreateBatch = Boolean(selectedItems.length) && selectedWarehouseIds.size === 1;
+
+  React.useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelectableSelected && !allSelectableSelected;
+  }, [allSelectableSelected, someSelectableSelected]);
+
   function toggleItem(item: WarehouseLiabilityItem) {
     setError("");
     setSelectedIds((current) => {
       if (current.includes(item.sourceId)) return current.filter((id) => id !== item.sourceId);
-      const selectedWarehouse = (payload?.items || []).find((candidate) => current.includes(candidate.sourceId))?.warehouseId;
-      if (selectedWarehouse && selectedWarehouse !== item.warehouseId) {
-        setError("一个核销批次只能选择同一家仓库的责任费用。");
-        return current;
-      }
       return [...current, item.sourceId];
     });
+  }
+
+  function toggleAllSelectable() {
+    setError("");
+    setSelectedIds(allSelectableSelected ? [] : selectableItems.map((item) => item.sourceId));
   }
 
   function openCreateDialog() {
     if (!selectedItems.length) {
       setError("请先勾选需要核销的责任费用。");
+      return;
+    }
+    if (selectedWarehouseIds.size !== 1) {
+      setError("已选费用来自多家仓库。财务核对表可以跨仓导出；生成核销批次前请先筛选并只选择一家仓库。");
       return;
     }
     setAmounts(Object.fromEntries(selectedItems.map((item) => [item.sourceId, item.outstandingCny])));
@@ -127,6 +156,33 @@ export function WarehouseLiabilitySettlement() {
     setNote("");
     setVoucherUploads([]);
     setDialog({ mode: "create" });
+  }
+
+  async function downloadReview() {
+    const exportItems = selectedItems.length ? selectedItems : (payload?.items || []);
+    if (!exportItems.length) {
+      setError("当前筛选范围内没有可导出的责任费用。");
+      return;
+    }
+    setBusy("download:review");
+    setError("");
+    try {
+      const blob = await downloadWarehouseLiabilityReview({
+        ...appliedFilters,
+        sourceIds: selectedItems.length ? selectedItems.map((item) => item.sourceId) : undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `海外仓责任费用财务核对表-${today()}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setMessage(selectedItems.length ? `已导出选中的 ${selectedItems.length} 笔责任费用。` : `已导出当前筛选的 ${exportItems.length} 笔责任费用。`);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "导出仓库责任费用核对表失败。");
+    } finally {
+      setBusy("");
+    }
   }
 
   function openPostDialog(batch: WarehouseLiabilitySettlementBatch) {
@@ -253,18 +309,27 @@ export function WarehouseLiabilitySettlement() {
         <div className="wls-search"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void load()} placeholder="搜索责任单号、订单、原因或 SKU" /></div>
         <select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">全部仓库</option>{(payload?.warehouses || []).map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="pending_writeoff">待核销</option><option value="partially_written_off">部分核销</option><option value="written_off">已核销</option><option value="disputed">争议中</option></select>
-        <button type="button" onClick={() => void load()} disabled={loading}>查询</button>
-        <button type="button" className="primary" onClick={openCreateDialog} disabled={!selectedItems.length}><FileSpreadsheet size={16} />生成核销批次{selectedItems.length ? `（${selectedItems.length}）` : ""}</button>
+        <div className="wls-toolbar-actions">
+          <button type="button" onClick={() => void load()} disabled={loading}>查询</button>
+          <button type="button" onClick={() => void downloadReview()} disabled={loading || busy === "download:review" || !payload?.items.length}><Download size={16} />{busy === "download:review" ? "导出中" : selectedItems.length ? `导出已选（${selectedItems.length}）` : `导出核对表（${payload?.items.length || 0}）`}</button>
+          <button type="button" className="primary" onClick={openCreateDialog} disabled={!canCreateBatch} title={selectedWarehouseIds.size > 1 ? "核销批次只能包含同一家仓库；请先按仓库筛选" : ""}><FileSpreadsheet size={16} />生成核销批次{selectedItems.length ? `（${selectedItems.length}）` : ""}</button>
+        </div>
       </header>
+
+      <div className="wls-selection-bar">
+        <button type="button" onClick={toggleAllSelectable} disabled={!selectableItems.length}>{allSelectableSelected ? "清空选择" : `全选当前可核销（${selectableItems.length}）`}</button>
+        <span>{selectedItems.length ? <>已选 <strong>{selectedItems.length}</strong> 笔，待核销合计 <strong>{money(selectedOutstandingCny)}</strong>{selectedWarehouseIds.size > 1 ? `，涉及 ${selectedWarehouseIds.size} 家仓库` : ""}</> : "未勾选时，导出按钮会导出当前筛选的全部明细。"}</span>
+        {selectedWarehouseIds.size > 1 ? <small>跨仓可导出核对；生成核销批次需先筛选单一仓库。</small> : null}
+      </div>
 
       <div className="wls-table-wrap">
         <table className="wls-table">
-          <thead><tr><th></th><th>责任来源</th><th>仓库 / 日期</th><th>责任原因与商品</th><th>原责任金额</th><th>已核销</th><th>待核销</th><th>状态</th></tr></thead>
+          <thead><tr><th><input ref={selectAllRef} type="checkbox" checked={allSelectableSelected} disabled={!selectableItems.length} onChange={toggleAllSelectable} aria-label="全选当前筛选范围内可核销的责任费用" /></th><th>责任来源</th><th>仓库 / 日期</th><th>责任原因与商品</th><th>原责任金额</th><th>已核销</th><th>待核销</th><th>状态</th></tr></thead>
           <tbody>
             {loading && !payload ? <tr><td colSpan={8} className="empty"><LoaderCircle className="spinning" size={22} />正在读取费用台账…</td></tr> : null}
             {!loading && !payload?.items.length ? <tr><td colSpan={8} className="empty"><CheckCircle2 size={24} />当前筛选条件下没有责任费用</td></tr> : null}
             {(payload?.items || []).map((item) => {
-              const selectable = !["written_off", "disputed", "source_voided"].includes(item.settlementStatus) && item.outstandingCny > 0;
+              const selectable = isSelectableItem(item);
               return <tr key={item.id} className={selectedIds.includes(item.sourceId) ? "selected" : ""}>
                 <td><input type="checkbox" checked={selectedIds.includes(item.sourceId)} disabled={!selectable} onChange={() => toggleItem(item)} aria-label={`选择 ${item.sourceNo}`} /></td>
                 <td><strong>{item.sourceNo}</strong><small>售后单 · 原订单 {item.originalOrderNumber || "—"}</small></td>

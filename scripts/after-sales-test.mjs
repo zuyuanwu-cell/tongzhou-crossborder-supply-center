@@ -321,6 +321,18 @@ try {
   const initialLedger = service.settlements();
   assert.equal(initialLedger.summary.pendingWriteoffCny, 30.7);
   assert.equal(initialLedger.items[0].settlementStatus, "pending_writeoff");
+  const ledgerExport = service.exportSettlementLedger({
+    status: "pending_writeoff",
+    sourceIds: [created.ticket.id],
+  });
+  assert.equal(ledgerExport.rowCount, 1);
+  assert.equal(ledgerExport.warehouseCount, 1);
+  assert.equal(ledgerExport.totalOutstandingCny, 30.7);
+  assert.match(ledgerExport.content, /海外仓责任费用财务核对表/);
+  assert.match(ledgerExport.content, /已勾选 1 笔/);
+  assert.match(ledgerExport.content, /待核销合计\(CNY\),30.7/);
+  assert.match(ledgerExport.content, /责任单号,来源类型,原订单号/);
+  assert.throws(() => service.exportSettlementLedger({ sourceIds: ["missing-ticket"] }), /没有可导出的责任费用/);
   const firstBatch = service.createSettlementBatch({
     idempotencyKey: "settlement-test-1",
     settlementDate: "2026-10-09",

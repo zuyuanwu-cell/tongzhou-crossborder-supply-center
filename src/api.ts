@@ -5729,6 +5729,26 @@ export async function downloadWarehouseLiabilitySettlementBatch(id: string) {
   return response.blob();
 }
 
+export async function downloadWarehouseLiabilityReview(input: {
+  keyword?: string;
+  warehouseId?: string;
+  status?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sourceIds?: string[];
+}) {
+  const response = await fetch(`${API_BASE}/api/warehouse-liabilities/export`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "导出仓库责任费用核对表失败。");
+  }
+  return response.blob();
+}
+
 export function fetchWarehouseQualificationCoverage(input: { warehouseId?: string; keyword?: string; status?: string } = {}, signal?: AbortSignal) {
   const params = new URLSearchParams();
   if (input.warehouseId) params.set("warehouseId", input.warehouseId);

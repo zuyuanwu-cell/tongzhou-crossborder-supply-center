@@ -559,6 +559,14 @@ const WAREHOUSE_LIABILITY_SETTLEMENT_METHOD_LABELS = Object.freeze({
   other: "其他",
 });
 
+const WAREHOUSE_LIABILITY_STATUS_LABELS = Object.freeze({
+  pending_writeoff: "待核销",
+  partially_written_off: "部分核销",
+  written_off: "已核销",
+  disputed: "争议中",
+  source_voided: "来源已作废",
+});
+
 function effectiveSettlementBatches(batches = [], reversals = []) {
   const reversedBatchIds = new Set(reversals.map((item) => text(item.batchId)).filter(Boolean));
   return batches.filter((batch) => batch.status === "posted" && !reversedBatchIds.has(batch.id));
@@ -638,7 +646,8 @@ function liabilitySummary(items = [], batches = [], reversals = []) {
 }
 
 function csvCell(value) {
-  const source = String(value ?? "");
+  const raw = String(value ?? "");
+  const source = /^[\t\r\n ]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
   return /[",\r\n]/.test(source) ? `"${source.replaceAll('"', '""')}"` : source;
 }
 
@@ -927,6 +936,59 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return {
       fileName: `海外仓责任费用核销-${publicBatch.id}.csv`,
       content: `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`,
+    };
+  }
+
+  function exportSettlementLedger(filters = {}) {
+    const requestedSourceIds = [...new Set((Array.isArray(filters.sourceIds) ? filters.sourceIds : []).map(text).filter(Boolean))];
+    if (requestedSourceIds.length > 2000) throw new Error("单次最多导出 2000 笔责任费用。");
+    const ledger = settlements(filters);
+    const requestedSourceIdSet = new Set(requestedSourceIds);
+    const items = requestedSourceIds.length
+      ? ledger.items.filter((item) => requestedSourceIdSet.has(item.sourceId))
+      : ledger.items;
+    if (!items.length) throw new Error("当前筛选或勾选范围内没有可导出的责任费用。");
+
+    const warehouses = [...new Set(items.map((item) => item.warehouseName).filter(Boolean))];
+    const totalOriginalCny = money(items.reduce((sum, item) => sum + number(item.originalAmountCny), 0));
+    const totalWrittenOffCny = money(items.reduce((sum, item) => sum + number(item.writtenOffCny), 0));
+    const totalOutstandingCny = money(items.reduce((sum, item) => sum + number(item.outstandingCny), 0));
+    const status = text(filters.status);
+    const exportedAt = nowIso();
+    const rows = [
+      ["海外仓责任费用财务核对表"],
+      ["导出范围", requestedSourceIds.length ? `已勾选 ${items.length} 笔` : `当前筛选 ${items.length} 笔`],
+      ["仓库范围", warehouses.length === 1 ? warehouses[0] : `多仓库（${warehouses.length} 家）：${warehouses.join("、")}`],
+      ["状态筛选", status && status !== "all" ? WAREHOUSE_LIABILITY_STATUS_LABELS[status] || status : "全部状态"],
+      ["关键词", text(filters.keyword) || "—"],
+      ["导出时间", exportedAt.replace("T", " ").slice(0, 19)],
+      ["明细笔数", items.length],
+      ["原责任金额合计(CNY)", totalOriginalCny],
+      ["已核销合计(CNY)", totalWrittenOffCny],
+      ["待核销合计(CNY)", totalOutstandingCny],
+      [],
+      ["责任单号", "来源类型", "原订单号", "仓库", "费用发生日期", "责任原因", "SKU明细", "原责任金额(CNY)", "已核销(CNY)", "待核销(CNY)", "核销状态", "创建人"],
+      ...items.map((item) => [
+        item.sourceNo,
+        item.sourceType === "after_sales" ? "售后单" : item.sourceType,
+        item.originalOrderNumber,
+        item.warehouseName,
+        text(item.occurredAt).slice(0, 10),
+        item.reason,
+        item.skuSummary,
+        item.originalAmountCny,
+        item.writtenOffCny,
+        item.outstandingCny,
+        WAREHOUSE_LIABILITY_STATUS_LABELS[item.settlementStatus] || item.settlementStatus,
+        item.createdBy,
+      ]),
+    ];
+    return {
+      fileName: `海外仓责任费用财务核对表-${exportedAt.slice(0, 10)}.csv`,
+      content: `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`,
+      rowCount: items.length,
+      warehouseCount: warehouses.length,
+      totalOutstandingCny,
     };
   }
 
@@ -1565,5 +1627,6 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     postSettlementBatch,
     reverseSettlementBatch,
     exportSettlementBatch,
+    exportSettlementLedger,
   };
 }
