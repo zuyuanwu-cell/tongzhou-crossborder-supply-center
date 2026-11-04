@@ -77,6 +77,8 @@ import {
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
+import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
+import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 import { buildDashboardMarketSnapshot, buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
@@ -142,6 +144,8 @@ const inventorySnapshotCachePath = resolve(cacheDir, "inventory-snapshots.json")
 const movementHistoryCachePath = resolve(cacheDir, "movement-history.json");
 const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || resolve(cacheDir, "movement-history.sqlite"));
 const performanceAnalyticsDbPath = resolve(process.env.PERFORMANCE_ANALYTICS_DB_PATH || resolve(cacheDir, "performance-analytics.sqlite"));
+const shopDailyReportDbPath = resolve(process.env.SHOP_DAILY_REPORT_DB_PATH || resolve(cacheDir, "shop-daily-report.sqlite"));
+const shopMetricsIngestToken = String(process.env.SHOP_METRICS_INGEST_TOKEN || "").trim();
 const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "false";
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
@@ -262,6 +266,7 @@ let cachedOutsourcingOrders = attachProductionMaterialProgress(
 );
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
+const shopDailyReportStore = await initShopDailyReportStore(shopDailyReportDbPath);
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const hermesIntegrationStore = await initHermesIntegrationStore(hermesIntegrationDbPath);
 const hermesClient = createHermesClient({ baseUrl: hermesBaseUrl, apiKey: hermesApiKey });
@@ -5587,6 +5592,181 @@ function projectPerformanceAnalyticsPayload(payload, auth, exchangeRates = []) {
     brands,
     daily: (payload.daily || []).map((row) => omitPerformanceFields(row, projection)),
     recentFacts: (payload.recentFacts || []).map((row) => omitPerformanceFields(row, projection)),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// 店铺日报
+// ---------------------------------------------------------------------------
+
+const SHOP_DAILY_COST_FIELDS = ["productCostCny", "operationFeeCny", "reviewCostCny", "reviewLossCny", "platformFeeCny"];
+const SHOP_DAILY_PROFIT_FIELDS = ["profitCny", "profitMargin"];
+
+function shopDailyActor(auth) {
+  return auth?.user?.displayName || auth?.user?.username || auth?.user?.id || "";
+}
+
+function shopDailyPermissions(auth) {
+  const revenue = hasPermission(auth, "performance_analysis") && hasPermission(auth, "performance_revenue");
+  return {
+    view: revenue,
+    edit: revenue,
+    cost: revenue && hasPermission(auth, "performance_cost"),
+    profit: revenue && hasPermission(auth, "performance_profit"),
+    manageRules: revenue && hasPermission(auth, "performance_manage") && hasPermission(auth, "performance_cost"),
+  };
+}
+
+function projectShopDailyRow(row, permissions) {
+  const next = { ...row };
+  if (!permissions.cost) for (const field of SHOP_DAILY_COST_FIELDS) delete next[field];
+  if (!permissions.profit) for (const field of SHOP_DAILY_PROFIT_FIELDS) delete next[field];
+  return next;
+}
+
+async function shopDailyContext(auth, { dateFrom = "", dateTo = "", orderNos = [] } = {}) {
+  const user = auth?.user || directAuth.user;
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+  const performanceSettings = performanceAnalyticsStore.getPerformanceSettings();
+  const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
+  const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+  const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
+  let queryResult;
+  try {
+    queryResult = await performanceAnalyticsQueryService.query({
+      dataVersion: materialization.dataVersion,
+      materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
+      cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
+      exchangeRates,
+      packagingFeeRules,
+      filters: { dateFrom, dateTo },
+      scopes,
+      queryType: "shop-daily",
+      params: { orderNos },
+    });
+  } catch (error) {
+    console.error("[shop-daily] query worker failed", error);
+    throw new Error("店铺日报后台计算暂时不可用，请稍后重试。");
+  }
+  const visibleShopKeys = queryResult.visibleShopKeys === null ? null : new Set(queryResult.visibleShopKeys || []);
+  const allShops = materialization.shopDirectory?.shops || [];
+  const directoryShopKeys = new Set(allShops.map((shop) => shop.key));
+  const shops = allShops.filter((shop) => visibleShopKeys === null || visibleShopKeys.has(shop.key));
+  return {
+    directoryShopKeys,
+    exchangeRates,
+    shops,
+    visibleShopKeys,
+    systemDaily: queryResult.payload?.rows || [],
+    orderLookup: queryResult.payload?.orderLookup || {},
+    materialization,
+  };
+}
+
+async function buildShopDailyReportResponse(params = {}, auth = directAuth) {
+  const permissions = shopDailyPermissions(auth);
+  const range = performanceDateRange(params);
+  const reviewOrders = shopDailyReportStore.listReviewOrders(range);
+  const orderNos = [...new Set(reviewOrders.filter((row) => row.amount === null && row.orderNo).map((row) => row.orderNo))].slice(0, 5000);
+  const context = await shopDailyContext(auth, { ...range, orderNos });
+  // 有数据范围限制的账号只看自己范围内的店铺；中台订单里还没有的独立店铺对所有可编辑账号可见。
+  const visible = (row) => context.visibleShopKeys === null || context.visibleShopKeys.has(row.shopKey) || !context.directoryShopKeys.has(row.shopKey);
+  const metrics = shopDailyReportStore.listMetrics(range).filter(visible);
+  const scopedReviews = reviewOrders.filter(visible);
+  const report = buildShopDailyReport({
+    shops: context.shops,
+    systemDaily: context.systemDaily,
+    metrics,
+    reviewOrders: scopedReviews,
+    reviewOrderLookup: context.orderLookup,
+    rules: shopDailyReportStore.getFeeRules(),
+    exchangeRates: context.exchangeRates,
+    filters: {
+      ...range,
+      shopKey: String(params.shopKey || ""),
+      projectGroup: String(params.projectGroup || ""),
+      country: String(params.country || ""),
+      platform: String(params.platform || ""),
+    },
+  });
+  const shopOptions = new Map();
+  for (const shop of context.shops) shopOptions.set(shop.key, { value: shop.key, label: shop.displayName || shop.rawName, country: shop.country, platform: shop.platform, projectGroup: shop.projectGroup || "" });
+  for (const row of [...report.rows, ...metrics]) if (!shopOptions.has(row.shopKey)) shopOptions.set(row.shopKey, { value: row.shopKey, label: row.shopName || row.shopKey, country: row.country || "", platform: row.platform || "", projectGroup: row.projectGroup || "", standalone: true });
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    dataVersion: context.materialization.dataVersion,
+    materializationStale: Boolean(context.materialization.stale),
+    permissions,
+    filters: report.filters,
+    totals: projectShopDailyRow(report.totals, permissions),
+    shops: report.shops.map((row) => projectShopDailyRow(row, permissions)),
+    rows: report.rows.map((row) => projectShopDailyRow(row, permissions)),
+    currencies: report.currencies,
+    quality: report.quality,
+    rules: permissions.cost ? report.rules : [],
+    reviewOrders: scopedReviews,
+    options: {
+      shops: [...shopOptions.values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
+      projectGroups: [...new Set(context.shops.map((shop) => shop.projectGroup).filter(Boolean))].sort((left, right) => left.localeCompare(right, "zh-CN")),
+      countries: [...new Set(context.shops.map((shop) => shop.country).filter(Boolean))].sort(),
+      platforms: [...new Set(context.shops.map((shop) => shop.platform).filter(Boolean))].sort(),
+    },
+    store: shopDailyReportStore.metadata(),
+    importLog: shopDailyReportStore.listImportLog(10),
+    ingestConfigured: Boolean(shopMetricsIngestToken),
+  };
+}
+
+async function importShopDailyMetrics({ rows = [], source = "import", dryRun = false, auth = directAuth, errors: parseErrors = [], skipped = 0, columns = [] } = {}) {
+  const context = await shopDailyContext(auth, {});
+  const prepared = prepareShopDailyMetrics(rows, context.shops);
+  const visibleRows = context.visibleShopKeys === null
+    ? prepared.rows
+    : prepared.rows.filter((row) => context.visibleShopKeys.has(row.shopKey) || row.standalone);
+  const scopeRejected = prepared.rows.length - visibleRows.length;
+  const errors = [...parseErrors, ...prepared.errors];
+  if (scopeRejected) errors.push({ line: 0, message: `${scopeRejected} 行属于当前账号无权查看的店铺，已忽略。` });
+  const preview = {
+    ok: true,
+    dryRun,
+    columns,
+    skipped,
+    rowCount: visibleRows.length,
+    shopCount: new Set(visibleRows.map((row) => row.shopKey)).size,
+    dateFrom: visibleRows.reduce((value, row) => (!value || row.date < value ? row.date : value), ""),
+    dateTo: visibleRows.reduce((value, row) => (!value || row.date > value ? row.date : value), ""),
+    errors: errors.slice(0, 200),
+    errorCount: errors.length,
+    warnings: prepared.warnings.slice(0, 50),
+    sample: visibleRows.slice(0, 30).map((row) => ({ date: row.date, shopKey: row.shopKey, shopName: row.shopName, country: row.country, platform: row.platform, ...row.values })),
+  };
+  if (dryRun || !visibleRows.length) return preview;
+  const result = shopDailyReportStore.upsertMetrics(visibleRows, { source, updatedBy: shopDailyActor(auth) || source });
+  return { ...preview, written: result.written };
+}
+
+function shopMetricsIngestAuthorized(req) {
+  if (shopMetricsIngestToken.length < 24) return false;
+  const header = String(req.headers["x-ingest-token"] || "").trim() || bearerToken(req);
+  const expected = Buffer.from(shopMetricsIngestToken);
+  const actual = Buffer.from(String(header || ""));
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function normalizeShopReviewInput(row = {}) {
+  return {
+    id: String(row.id || "").trim(),
+    shopKey: String(row.shopKey || "").trim(),
+    shopName: String(row.shopName || "").trim(),
+    date: String(row.date || "").trim().slice(0, 10),
+    orderNo: String(row.orderNo || "").trim().slice(0, 120),
+    amount: row.amount === "" || row.amount === null || row.amount === undefined ? null : Number(row.amount),
+    receivedAmount: row.receivedAmount === "" || row.receivedAmount === null || row.receivedAmount === undefined ? null : Number(row.receivedAmount),
+    quantity: Number(row.quantity || 1),
+    note: String(row.note || "").trim().slice(0, 300),
   };
 }
 
@@ -12284,6 +12464,161 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync" && req.method === "POST") {
       await handleOrderSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).view) {
+        sendJson(res, 403, { ok: false, message: "查看店铺日报需要经营贡献分析和经营销售金额权限。" });
+        return;
+      }
+      sendJson(res, 200, await buildShopDailyReportResponse({
+        dateFrom: url.searchParams.get("dateFrom") || "",
+        dateTo: url.searchParams.get("dateTo") || "",
+        shopKey: url.searchParams.get("shopKey") || "",
+        projectGroup: url.searchParams.get("projectGroup") || "",
+        country: url.searchParams.get("country") || "",
+        platform: url.searchParams.get("platform") || "",
+      }, auth));
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/import" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).edit) {
+        sendJson(res, 403, { ok: false, message: "导入店铺日报需要经营贡献分析和经营销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req, 6 * 1024 * 1024);
+      const content = String(body.content || "");
+      if (!content.trim()) {
+        sendJson(res, 400, { ok: false, message: "请粘贴表格内容或选择 CSV 文件。" });
+        return;
+      }
+      const parsed = parseShopDailyImport(content, {
+        defaultYear: Number(body.defaultYear) || Number(new Date().getFullYear()),
+        defaultCountry: String(body.defaultCountry || ""),
+        defaultPlatform: String(body.defaultPlatform || ""),
+      });
+      const result = await importShopDailyMetrics({
+        rows: parsed.rows,
+        errors: parsed.errors,
+        skipped: parsed.skipped,
+        columns: parsed.columns,
+        source: "import",
+        dryRun: body.dryRun !== false,
+        auth,
+      });
+      if (!result.dryRun && result.written) {
+        appendActionLog(auth, "导入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, shops: result.shopCount });
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/ingest" && req.method === "POST") {
+      if (!shopMetricsIngestAuthorized(req)) {
+        sendJson(res, shopMetricsIngestToken ? 401 : 503, { ok: false, message: shopMetricsIngestToken ? "采集令牌无效。" : "服务器未配置 SHOP_METRICS_INGEST_TOKEN，采集写入未启用。" });
+        return;
+      }
+      const body = await parseRequestBody(req, 6 * 1024 * 1024);
+      const inputRows = Array.isArray(body.rows) ? body.rows.slice(0, 20000) : [];
+      const rows = inputRows.map((row, index) => {
+        const values = {};
+        for (const field of SHOP_DAILY_METRIC_FIELDS) {
+          const value = row?.[field];
+          if (value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value))) values[field] = Number(value);
+        }
+        return {
+          line: index + 1,
+          date: String(row?.date || "").slice(0, 10),
+          shopKey: String(row?.shopKey || ""),
+          shopName: String(row?.shopName || ""),
+          country: String(row?.country || ""),
+          platform: String(row?.platform || ""),
+          currency: String(row?.currency || "").toUpperCase(),
+          ...values,
+        };
+      }).filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date));
+      const source = String(body.source || "ziniao").replace(/[^a-z0-9_-]/gi, "").slice(0, 32) || "ziniao";
+      const result = await importShopDailyMetrics({ rows, source, dryRun: Boolean(body.dryRun), auth: directAuth });
+      if (!result.dryRun && result.written) {
+        appendActionLog(directAuth, "采集写入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, source });
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/metrics" && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).edit) {
+        sendJson(res, 403, { ok: false, message: "没有修改店铺日报的权限。" });
+        return;
+      }
+      const shopKey = url.searchParams.get("shopKey") || "";
+      const date = url.searchParams.get("date") || "";
+      const removed = shopDailyReportStore.deleteMetric(shopKey, date);
+      if (removed) appendActionLog(auth, "清除店铺日报录入", "shop_daily_report", `${shopKey}@${date}`, {});
+      sendJson(res, 200, { ok: true, removed });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/review-orders" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).edit) {
+        sendJson(res, 403, { ok: false, message: "登记测评订单需要经营贡献分析和经营销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req, 2 * 1024 * 1024);
+      const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 2000).map(normalizeShopReviewInput);
+      const invalid = rows.find((row) => !row.shopKey || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)
+        || (row.amount !== null && (!Number.isFinite(row.amount) || row.amount < 0))
+        || (row.receivedAmount !== null && (!Number.isFinite(row.receivedAmount) || row.receivedAmount < 0))
+        || !Number.isFinite(row.quantity) || row.quantity < 1);
+      if (!rows.length || invalid) {
+        sendJson(res, 400, { ok: false, message: "每条测评登记都需要店铺、日期；金额不能为负数，数量至少为 1。" });
+        return;
+      }
+      const saved = shopDailyReportStore.saveReviewOrders(rows, shopDailyActor(auth));
+      appendActionLog(auth, "登记测评订单", "shop_review_orders", String(saved.length), { count: saved.length });
+      sendJson(res, 200, { ok: true, reviewOrders: saved });
+      return;
+    }
+
+    const shopReviewOrderMatch = url.pathname.match(/^\/api\/shop-daily-report\/review-orders\/([a-f0-9-]{36})$/);
+    if (shopReviewOrderMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).edit) {
+        sendJson(res, 403, { ok: false, message: "没有删除测评登记的权限。" });
+        return;
+      }
+      const removed = shopDailyReportStore.deleteReviewOrder(shopReviewOrderMatch[1]);
+      if (removed) appendActionLog(auth, "删除测评订单登记", "shop_review_orders", shopReviewOrderMatch[1], {});
+      sendJson(res, 200, { ok: true, removed });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/fee-rules" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).manageRules) {
+        sendJson(res, 403, { ok: false, message: "维护店铺费率需要经营分析维护及经营成本权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const rules = (Array.isArray(body.rules) ? body.rules : []).slice(0, 500).map(normalizeShopFeeRule);
+      const invalid = rules.map(validateShopFeeRule).find(Boolean);
+      if (invalid || !rules.some((rule) => rule.scope === "default")) {
+        sendJson(res, 400, { ok: false, message: invalid || "必须保留一条全局默认费率。" });
+        return;
+      }
+      if (new Set(rules.map((rule) => rule.id)).size !== rules.length) {
+        sendJson(res, 400, { ok: false, message: "同一店铺、平台或国家只能配置一条费率。" });
+        return;
+      }
+      const saved = shopDailyReportStore.setFeeRules(rules, shopDailyActor(auth));
+      appendActionLog(auth, "更新店铺日报费率", "shop_daily_fee_rules", String(saved.length), { count: saved.length });
+      sendJson(res, 200, { ok: true, rules: saved });
       return;
     }
 

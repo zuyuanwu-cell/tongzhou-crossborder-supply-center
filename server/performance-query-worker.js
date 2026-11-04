@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
 import { buildOrderAnalysisFromFacts } from "./order-analysis.js";
+import { aggregateSystemShopDaily } from "./shop-daily-report.js";
 
 let dataVersion = "";
 let facts = [];
@@ -106,6 +107,25 @@ function queryOrderAnalysis(message) {
   };
 }
 
+function queryShopDaily(message) {
+  const startedAt = Date.now();
+  const scopes = message.scopes || {};
+  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
+    .some((values) => Array.isArray(values) && values.length > 0);
+  const filters = message.filters || {};
+  const orderNos = Array.isArray(message.params?.orderNos) ? message.params.orderNos : [];
+  // 测评订单号可能早于查询区间，需要在全部事实里查找；否则只扫描日期区间。
+  const source = orderNos.length ? facts : dateSlice(filters);
+  const scopedFacts = hasDataScope ? source.filter((row) => withinScope(row, scopes)) : source;
+  const payload = aggregateSystemShopDaily(scopedFacts, { dateFrom: text(filters.dateFrom), dateTo: text(filters.dateTo), orderNos });
+  return {
+    payload,
+    visibleShopKeys: hasDataScope ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))] : null,
+    workerQueryDurationMs: Date.now() - startedAt,
+    scannedFactCount: scopedFacts.length,
+  };
+}
+
 function initialize(message = {}) {
   let initialFacts = Array.isArray(message.facts) ? message.facts : null;
   if (!initialFacts && message.cachePath && existsSync(message.cachePath)) {
@@ -140,7 +160,9 @@ parentPort.on("message", (message = {}) => {
   try {
     const result = message.queryType === "order-analysis"
       ? queryOrderAnalysis(message)
-      : queryPerformance(message);
+      : message.queryType === "shop-daily"
+        ? queryShopDaily(message)
+        : queryPerformance(message);
     parentPort.postMessage({ type: "result", id: message.id, dataVersion, ...result });
   } catch (error) {
     parentPort.postMessage({

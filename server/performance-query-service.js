@@ -104,6 +104,7 @@ export function createPerformanceAnalyticsQueryService() {
       queryType: input.queryType || "performance",
       onlyRussia: input.onlyRussia !== false,
       scope: input.scope || "",
+      params: input.params || {},
     });
     return result;
   }
