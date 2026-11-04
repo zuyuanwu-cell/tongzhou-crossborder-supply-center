@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { classifyMiaoshouAfterSalesStatus } from "./miaoshou-performance.js";
 
 function all(db, sql, params = []) {
   const stmt = db.prepare(sql);
@@ -176,8 +177,24 @@ function miaoshouReturnFromDb(row) {
     createdAt: text(row.created_at),
     modifiedAt: text(row.modified_at),
     finishedAt: text(row.finished_at),
-    finalized: number(row.finalized) === 1,
+    ...afterSalesClassification("return", {
+      appReturnStatus: text(row.app_return_status),
+      appReturnStatusText: text(row.app_return_status_text),
+      platformReturnStatus: text(row.platform_return_status),
+      status: text(row.status),
+      gmtFinish: text(row.finished_at),
+    }, number(row.finalized) === 1),
   };
+}
+
+// 读取时按当前规则重新判定终态，修正历史上把「申请中」误判为已完成的记录，无需重新同步。
+function afterSalesClassification(kind, statusRow, storedFinalized) {
+  const hasStatus = Object.entries(statusRow).some(([key, value]) => key !== "gmtFinish" && text(value));
+  if (!hasStatus && !text(statusRow.gmtFinish)) {
+    return { statusClass: storedFinalized ? "finalized" : "pending", finalized: storedFinalized };
+  }
+  const statusClass = classifyMiaoshouAfterSalesStatus(kind, statusRow);
+  return { statusClass, finalized: statusClass === "finalized" };
 }
 
 function miaoshouCancellationFromDb(row) {
@@ -194,7 +211,11 @@ function miaoshouCancellationFromDb(row) {
     reason: text(row.reason),
     createdAt: text(row.created_at),
     modifiedAt: text(row.modified_at),
-    finalized: number(row.finalized) === 1,
+    ...afterSalesClassification("cancellation", {
+      appCancelStatus: text(row.app_cancel_status),
+      appCancelStatusText: text(row.app_cancel_status_text),
+      status: text(row.status),
+    }, number(row.finalized) === 1),
   };
 }
 
@@ -530,9 +551,20 @@ export async function initPerformanceAnalyticsStore(dbPath) {
 
   function upsertMiaoshouPerformance({ orders = [], items = [], returns = [], cancellations = [] } = {}, syncState = null) {
     const now = new Date().toISOString();
-    const inputDataVersion = calculateMiaoshouInputVersion({ orders, items, returns, cancellations });
+    // 逐行比较写入前后的内容（忽略 updated_at），只有真实变化才升级数据版本。
+    // 增量同步每次拉到的子集不同，不能再用「本次输入的整体哈希」判断是否变化。
+    const signature = (table, column, value) => JSON.stringify(all(db, `SELECT * FROM ${table} WHERE ${column} = ? ORDER BY identity`, [value])
+      .map(({ updated_at: _updatedAt, ...row }) => row));
+    let changedRows = 0;
+    const tracked = (table, column, identities, write) => {
+      const before = new Map(identities.map((identity) => [identity, signature(table, column, identity)]));
+      write();
+      for (const identity of identities) if (signature(table, column, identity) !== before.get(identity)) changedRows += 1;
+    };
+    const ids = (rows, key = "identity") => [...new Set((Array.isArray(rows) ? rows : []).map((row) => text(row?.[key])).filter(Boolean))];
     db.run("BEGIN TRANSACTION");
     try {
+      tracked("miaoshou_performance_orders", "identity", ids(orders), () => {
       const orderStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_orders (
         identity, op_order_id, platform, shop_id, platform_order_sn, site, currency,
         product_amount, order_amount, pay_amount, estimated_shipping_fee, actual_shipping_cost,
@@ -553,9 +585,11 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       } finally {
         orderStatement.free();
       }
+      });
       // Package composition can change after split/merge. Replace the complete
       // item set for every order seen in this sync so stale package items do not
       // remain in the transaction snapshot.
+      tracked("miaoshou_performance_items", "order_identity", ids(orders), () => {
       for (const identity of new Set((Array.isArray(orders) ? orders : []).map((row) => text(row.identity)).filter(Boolean))) {
         db.run("DELETE FROM miaoshou_performance_items WHERE order_identity = ?", [identity]);
       }
@@ -572,6 +606,8 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       } finally {
         itemStatement.free();
       }
+      });
+      tracked("miaoshou_performance_returns", "identity", ids(returns), () => {
       const returnStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_returns (
         identity, order_identity, op_order_id, platform, shop_id, platform_order_sn, platform_return_sn,
         currency, refund_amount, status, platform_return_status, app_return_status, app_return_status_text,
@@ -587,6 +623,8 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       } finally {
         returnStatement.free();
       }
+      });
+      tracked("miaoshou_performance_cancellations", "identity", ids(cancellations), () => {
       const cancellationStatement = db.prepare(`INSERT OR REPLACE INTO miaoshou_performance_cancellations (
         identity, order_identity, op_order_id, platform, shop_id, platform_order_sn, status,
         app_cancel_status, app_cancel_status_text, reason, created_at, modified_at, finalized, updated_at
@@ -600,14 +638,17 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       } finally {
         cancellationStatement.free();
       }
+      });
       if (syncState) setMeta("miaoshouPerformanceSyncState", JSON.stringify(syncState));
-      if (inputDataVersion !== getMeta("miaoshouLastInputVersion")) {
+      if (changedRows > 0) {
+        const inputDataVersion = calculateMiaoshouInputVersion({ orders, items, returns, cancellations });
         setMeta("miaoshouDataVersion", createHash("sha1")
-          .update(`${getMeta("miaoshouDataVersion")}|${inputDataVersion}`)
+          .update(`${getMeta("miaoshouDataVersion")}|${inputDataVersion}|${changedRows}`)
           .digest("hex")
           .slice(0, 16));
         setMeta("miaoshouLastInputVersion", inputDataVersion);
       }
+      setMeta("miaoshouLastChangedRows", String(changedRows));
       db.run("COMMIT");
       persist();
       return getMetadata();

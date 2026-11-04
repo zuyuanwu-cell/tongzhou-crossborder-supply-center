@@ -248,6 +248,7 @@ import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryC
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { ProductLaunchCenter } from "./ProductLaunchCenter";
 import { ShopDailyReport } from "./shop-daily/ShopDailyReport";
+import { MiaoshouReconciliationDetails } from "./miaoshou/ReconciliationDetails";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import { PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
 import { SystemBackupPage } from "./SystemBackupPage";
@@ -10624,13 +10625,14 @@ function PerformanceAnalysisPage({
             {transactionSource?.sync.lastError ? <div className="notice danger">最近同步失败：{transactionSource.sync.lastError}</div> : null}
             {(transactionSource?.sync.warnings || []).length ? <div className="notice warning">售后同步警告：{transactionSource!.sync.warnings!.slice(0, 3).join("；")}</div> : null}
             <div className="performance-transaction-actions">
-              <span>{transactionMessage || (!transactionSource?.sync.enabled ? "请先在“妙手 ERP”完成 AppKey 授权并同步店铺，再开始交易对账。" : transactionSyncing ? "妙手交易正在后台同步，本页会自动刷新对账结果。" : "首次同步 90 天；每 15 分钟增量回看 3 天，并每日复扫 90 天售后状态。")}</span>
+              <span>{transactionMessage || (!transactionSource?.sync.enabled ? "请先在“妙手 ERP”完成 AppKey 授权并同步店铺，再开始交易对账。" : transactionSyncing ? "妙手交易正在后台同步，本页会自动刷新对账结果。" : `首次同步 ${transactionSource?.sync.initialBackfillDays || 90} 天；之后每 ${transactionSource?.sync.intervalMinutes || 5} 分钟按修改时间增量同步订单，售后每 30 分钟同步一次，并每日复扫 90 天售后状态。`)}</span>
               {permissions.manageTransactionSource ? <>
                 <button className="ghost-button" type="button" onClick={syncMiaoshouNow} disabled={busy || transactionSyncing || !transactionSource?.sync.enabled}><RefreshCw size={15} className={transactionSyncing ? "spinning" : ""} />{transactionSyncing ? "后台同步中" : "同步当前日期范围"}</button>
                 <button className="ghost-button" type="button" onClick={() => changeRevenueSource("shadow")} disabled={busy || transactionSource?.requested === "shadow"}>保持影子核对</button>
                 <button className="sync-button" type="button" onClick={() => changeRevenueSource("miaoshou")} disabled={busy || !transactionSource?.activationEligible || transactionSource?.effective === "miaoshou"}>启用妙手正式口径</button>
               </> : null}
             </div>
+            <MiaoshouReconciliationDetails source={transactionSource} canManage={Boolean(permissions.manageTransactionSource)} onChanged={() => onLoad(payload?.filters || {})} />
           </section>
         ) : tab === "costs" ? (
           <div className="performance-cost-workspace">

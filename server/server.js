@@ -77,6 +77,7 @@ import {
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
+import { normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
@@ -152,7 +153,9 @@ const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_
 const performanceFxEndpoint = String(process.env.PERFORMANCE_FX_ENDPOINT || "").trim() || undefined;
 const performanceFxConfiguredCurrencies = String(process.env.PERFORMANCE_FX_CURRENCIES || "").split(",").map((value) => value.trim()).filter(Boolean);
 const performanceMiaoshouAutoSyncEnabled = process.env.MIAOSHOU_PERFORMANCE_AUTO_SYNC !== "false";
-const performanceMiaoshouSyncIntervalMs = Math.max(5 * 60 * 1000, Number(process.env.MIAOSHOU_PERFORMANCE_SYNC_INTERVAL_MS || 15 * 60 * 1000));
+const performanceMiaoshouSyncIntervalMs = Math.max(5 * 60 * 1000, Number(process.env.MIAOSHOU_PERFORMANCE_SYNC_INTERVAL_MS || 5 * 60 * 1000));
+// 售后接口按创建时间查询，成本较高，默认 30 分钟一次；订单走 5 分钟游标增量快车道。
+const performanceMiaoshouAfterSalesIntervalMs = Math.max(10 * 60 * 1000, Number(process.env.MIAOSHOU_AFTER_SALES_SYNC_INTERVAL_MS || 30 * 60 * 1000));
 const performanceMiaoshouBackfillDays = Math.max(7, Math.min(365, Number(process.env.MIAOSHOU_PERFORMANCE_BACKFILL_DAYS || 90)));
 const performanceMiaoshouLookbackDays = Math.max(1, Math.min(14, Number(process.env.MIAOSHOU_PERFORMANCE_LOOKBACK_DAYS || 3)));
 const performanceMiaoshouTimezone = String(process.env.MIAOSHOU_PERFORMANCE_TIMEZONE || "Asia/Shanghai").trim() || "Asia/Shanghai";
@@ -237,6 +240,9 @@ let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", p
 let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedMovementHistory = loadJsonCache(movementHistoryCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
+const ARRAY_CONTENT_VOLATILE_KEYS = new Set(["syncedAt", "fetchedAt", "capturedAt"]);
+const arrayContentVersionCache = new WeakMap();
+let lastSavedOrderContentVersion = "";
 let cachedOrderSyncJobs = loadJsonCache(orderSyncJobsCachePath) || { updatedAt: "", jobs: [] };
 let cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(loadJsonCache(orderAnalysisSettingsPath));
 let cachedOverseasInventoryReconciliation = loadJsonCache(overseasInventoryReconciliationCachePath) || { updatedAt: "", orders: [], warehouseStates: {}, claims: {} };
@@ -368,6 +374,7 @@ const performanceMiaoshouSync = createMiaoshouPerformanceSyncService({
   intervalMs: performanceMiaoshouSyncIntervalMs,
   incrementalLookbackDays: performanceMiaoshouLookbackDays,
   initialBackfillDays: performanceMiaoshouBackfillDays,
+  afterSalesIntervalMs: performanceMiaoshouAfterSalesIntervalMs,
   timeZone: performanceMiaoshouTimezone,
 });
 const afterSalesService = createAfterSalesService({
@@ -839,8 +846,36 @@ function saveOrderCache(payload) {
   // rebuilding the 60k+ row sql.js table in the API process used to freeze all
   // endpoints for close to a minute after each order sync.
   saveJsonCache(orderCachePath, payload, 0);
-  clearPerformanceAnalyticsResponseCache();
+  // 订单内容没有变化时（定时同步大多如此），保留经营分析缓存和物化结果，避免无谓的全量重算。
+  // 每次保存都重新计算，防止数组被原地修改后沿用旧版本号。
+  if (Array.isArray(payload?.orders)) arrayContentVersionCache.delete(payload.orders);
+  const contentVersion = arrayContentVersion(payload?.orders);
+  if (contentVersion !== lastSavedOrderContentVersion) {
+    lastSavedOrderContentVersion = contentVersion;
+    clearPerformanceAnalyticsResponseCache();
+    setImmediate(() => {
+      if (backgroundJobsEnabled) void warmPerformanceAnalyticsMaterialization();
+    });
+  }
   invalidateDerivedResponses();
+}
+
+// 按内容计算快照版本：忽略同步时间等易变字段，并对行排序，接口返回顺序变化也不会误判。
+function arrayContentVersion(rows) {
+  if (!Array.isArray(rows)) return "";
+  const cached = arrayContentVersionCache.get(rows);
+  if (cached) return cached;
+  const lines = rows.map((row) => JSON.stringify(row, (key, value) => (ARRAY_CONTENT_VOLATILE_KEYS.has(key) ? undefined : value)) || "");
+  lines.sort();
+  const hash = createHash("sha1");
+  hash.update(String(rows.length));
+  for (const line of lines) {
+    hash.update(line);
+    hash.update("\n");
+  }
+  const version = hash.digest("hex").slice(0, 16);
+  arrayContentVersionCache.set(rows, version);
+  return version;
 }
 
 function saveOrderSyncJobsCache() {
@@ -5347,18 +5382,13 @@ function performanceMaterializationContext(exchangeRates, packagingFeeRules, mia
   const metadata = performanceAnalyticsStore.getMetadata();
   const miaoshouSyncState = performanceAnalyticsStore.getMiaoshouPerformanceSyncState();
   const sourceSignature = JSON.stringify({
-    orders: sourceContentVersion({
-      syncedAt: cachedOrdersSync.syncedAt || "",
-      dataRevisionAt: cachedOrdersSync.dataRevisionAt || "",
-      days: cachedOrdersSync.days || 0,
-      rows: (cachedOrdersSync.orders || []).length,
-    }),
+    // 只看内容，不看同步时间：WMS 每 10 分钟同步一次，大多数时候数据没变，不应触发全量重算。
+    orders: arrayContentVersion(cachedOrdersSync.orders || []),
     orderRows: (cachedOrdersSync.orders || []).length,
     products: sourceContentVersion({
-      syncedAt: cachedProducts.syncedAt || "",
       source: cachedProducts.source || "",
-      productBaseRows: (cachedProducts.productBase || []).length,
-      catalogRows: (cachedProducts.catalog || []).length,
+      productBase: arrayContentVersion(cachedProducts.productBase || []),
+      catalog: arrayContentVersion(cachedProducts.catalog || []),
     }),
     shopSettings: cachedOrderAnalysisSettings.updatedAt || "",
     miaoshouShops: sourceContentVersion((miaoshouShopState.shops || []).map((shop) => [
@@ -5374,6 +5404,7 @@ function performanceMaterializationContext(exchangeRates, packagingFeeRules, mia
       metadata.miaoshouReturnCount,
     ],
     revenueSource: requestedPerformanceRevenueSource(settings),
+    revenueBasis: normalizeMiaoshouRevenueBasis(settings.miaoshouRevenueBasis),
     exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.rateToCny, rate.source]),
     packagingFeeRules,
     supplementalProductCosts: supplementalProductCosts.map((row) => [
@@ -5444,6 +5475,7 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
     returnFacts: false,
     dataVersion: context.dataVersion,
     requestedSource: requestedPerformanceRevenueSource(settings),
+    revenueBasis: normalizeMiaoshouRevenueBasis(settings.miaoshouRevenueBasis),
     syncState: context.miaoshouSyncState,
     transactionSync: performanceMiaoshouSync.status(),
   }).then((result) => {
@@ -7596,7 +7628,13 @@ async function runScheduledMiaoshouPerformanceSync() {
   if (!performanceMiaoshouAutoSyncEnabled || !miaoshouAutomation.performanceContext().hasCredentials) {
     return { skipped: true, message: "Miaoshou performance sync is not configured" };
   }
-  return performanceMiaoshouSync.run({ reason: "scheduled" });
+  const versionBefore = performanceAnalyticsStore.getMetadata().miaoshouDataVersion;
+  const result = await performanceMiaoshouSync.run({ reason: "scheduled" });
+  // 只有妙手数据真的变化时才提前在后台重算，用户打开页面时直接读到新结果。
+  if (!result?.skipped && performanceAnalyticsStore.getMetadata().miaoshouDataVersion !== versionBefore) {
+    setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
+  }
+  return result;
 }
 
 async function runScheduledOzonOrderSync() {
@@ -12675,6 +12713,29 @@ const server = http.createServer(async (req, res) => {
           message: job.started ? "妙手交易同步已在后台启动，可继续使用中台。" : "妙手交易同步正在运行。",
         },
       });
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/revenue-basis" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "切换妙手金额口径需要经营分析维护及销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const revenueBasis = String(body.revenueBasis || "").trim();
+      if (!MIAOSHOU_REVENUE_BASES.includes(revenueBasis)) {
+        sendJson(res, 400, { ok: false, message: `金额口径只支持：${MIAOSHOU_REVENUE_BASES.join("、")}。` });
+        return;
+      }
+      performanceAnalyticsStore.setPerformanceSettings({
+        miaoshouRevenueBasis: revenueBasis,
+        miaoshouRevenueBasisUpdatedBy: auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员",
+      });
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
+      appendActionLog(auth, "切换妙手金额口径", "performance_revenue_basis", revenueBasis, {});
+      sendJson(res, 200, { ok: true, revenueBasis, updatedAt: new Date().toISOString() });
       return;
     }
 

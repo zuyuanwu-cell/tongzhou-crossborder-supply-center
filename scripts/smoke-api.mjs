@@ -704,6 +704,29 @@ async function main() {
   if (performance.transactionSource?.requested !== "shadow" || performance.transactionSource?.effective !== "wms" || performance.transactionSource?.activationEligible) {
     throw new Error(`/api/performance-analytics did not default to the safe Miaoshou shadow mode: ${JSON.stringify(performance.transactionSource).slice(0, 800)}`);
   }
+  const invalidRevenueBasis = await fetch(`${baseUrl}/api/performance-analytics/revenue-basis`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ revenueBasis: "gmv" }),
+  });
+  if (invalidRevenueBasis.status !== 400) throw new Error(`invalid Miaoshou revenue basis was accepted: ${invalidRevenueBasis.status}`);
+  const revenueBasis = await expectJson("/api/performance-analytics/revenue-basis", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ revenueBasis: "orderAmount" }),
+  });
+  if (revenueBasis.revenueBasis !== "orderAmount") throw new Error(`Miaoshou revenue basis was not saved: ${JSON.stringify(revenueBasis)}`);
+  // 切换口径后后台重算，期间返回上一版快照；轮询直到新口径生效。
+  let performanceWithBasis = null;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    performanceWithBasis = await expectJson("/api/performance-analytics?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
+    if (performanceWithBasis.transactionSource?.reconciliation?.revenueBasis === "orderAmount") break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  if (performanceWithBasis.transactionSource?.reconciliation?.revenueBasis !== "orderAmount" || !Array.isArray(performanceWithBasis.transactionSource?.reconciliation?.basisComparison)) {
+    throw new Error(`/api/performance-analytics did not apply the Miaoshou revenue basis: ${JSON.stringify(performanceWithBasis.transactionSource?.reconciliation).slice(0, 600)}`);
+  }
+  console.log("[ok] Miaoshou revenue basis setting and per-basis comparison");
   const unsafeSourceSwitch = await fetch(`${baseUrl}/api/performance-analytics/revenue-source`, {
     method: "PATCH",
     headers: { ...authHeaders, "Content-Type": "application/json" },

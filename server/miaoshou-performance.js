@@ -12,10 +12,24 @@ function round(value, digits = 6) {
   return Math.round((number(value) + Number.EPSILON) * factor) / factor;
 }
 
+// 妙手开放平台返回的时间不带时区（如 "2026-08-01 10:00:00"），按北京时间给出。
+// 显式补上偏移量，避免服务器或容器时区变化时整体错位。
+function miaoshouTimeOffset() {
+  const configured = text(process.env.MIAOSHOU_API_TIME_OFFSET);
+  return /^[+-]\d{2}:\d{2}$/.test(configured) ? configured : "+08:00";
+}
+
 function dateTime(value) {
   const raw = text(value);
   if (!raw) return "";
-  const parsed = Date.parse(raw.replace(" ", "T"));
+  if (/^\d{10,13}$/.test(raw)) {
+    const epoch = Number(raw.length === 10 ? `${raw}000` : raw);
+    return Number.isFinite(epoch) ? new Date(epoch).toISOString() : raw;
+  }
+  const naive = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/);
+  const parsed = naive
+    ? Date.parse(`${naive[1]}T${naive[2].length === 5 ? `${naive[2]}:00` : naive[2]}${miaoshouTimeOffset()}`)
+    : Date.parse(raw.replace(" ", "T"));
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : raw;
 }
 
@@ -169,18 +183,49 @@ export function miaoshouAfterSalesRowCount(payload, kind) {
   return afterSalesRows(payload, keys).length;
 }
 
+// 售后状态分三类：明确的「处理中」、明确的「驳回/撤销」、明确的「已完成」。
+// 只有已完成才算终态；仅仅包含 refund / cancel 字样（如 REFUND_REQUESTED、IN_CANCEL）不算。
+const PENDING_STATUS = /(request|pending|process|applying|apply|waiting|wait[_\s-]|review|judg|dispute|negotiat|arbitrat|in[_\s-]?(?:cancel|refund|return|progress)|refunding|cancell?ing|returning|to[_\s-]?be|unpaid|待|申请|处理中|审核|进行中|协商|仲裁|争议|退款中|取消中)/i;
+const REJECTED_STATUS = /(reject|denied|deny|fail|withdraw|revok|abort|close[_\s-]*no|驳回|拒绝|撤销|撤回|失败|关闭|未通过)/i;
+const REFUND_DONE_STATUS = /(refunded|refund[_\s-]*(?:success|succeeded|paid|completed?|done|finish(?:ed)?)|^(?:success|succeeded|completed?|done|finished|paid)$|退款成功|已退款|退款完成|已完成|已打款)/i;
+const CANCEL_DONE_STATUS = /(cancell?ed|cancel[_\s-]*(?:success|succeeded|completed?|done|finish(?:ed)?)|^(?:success|succeeded|completed?|done|finished)$|取消成功|已取消|取消完成|已完成)/i;
+
+function statusTokens(values) {
+  return values.map(text).filter(Boolean);
+}
+
+export function classifyMiaoshouAfterSalesStatus(kind, row = {}) {
+  const statuses = kind === "return"
+    ? statusTokens([row.appReturnStatus, row.appReturnStatusText, row.platformReturnStatus, row.status])
+    : statusTokens([row.appCancelStatus, row.appCancelStatusText, row.platformCancelStatus, row.appReturnStatusText, row.reverseTypeText, row.status]);
+  const finishedAt = kind === "return"
+    ? text(row.gmtFinish || row.gmtRefundFinish || row.gmtCompleted)
+    : text(row.gmtFinish || row.gmtCancel || row.gmtCompleted);
+  if (statuses.some((value) => REJECTED_STATUS.test(value))) return "rejected";
+  const done = kind === "return" ? REFUND_DONE_STATUS : CANCEL_DONE_STATUS;
+  if (statuses.some((value) => done.test(value))) return "finalized";
+  if (statuses.some((value) => PENDING_STATUS.test(value))) return "pending";
+  // 状态字段缺失或无法识别时，只有明确的完成时间才视为终态。
+  return finishedAt ? "finalized" : statuses.length ? "unknown" : "pending";
+}
+
 function finalizedRefund(row) {
-  const status = [row.appReturnStatus, row.appReturnStatusText, row.platformReturnStatus, row.status]
-    .map(text).join(" ").toLowerCase();
-  if (/reject|cancel|close[_\s-]*no|failed|驳回|拒绝|取消/.test(status)) return false;
-  if (text(row.gmtFinish || row.gmtRefund || row.gmtCompleted)) return true;
-  return /refund(ed)?|success|complete|completed|done|退款成功|已退款|已完成/.test(status);
+  return classifyMiaoshouAfterSalesStatus("return", row) === "finalized";
 }
 
 export function normalizeMiaoshouReturns(payload) {
   return afterSalesRows(payload, ["orderReturnList", "returnList", "orderReturns"]).map((row, index) => {
     const info = row.orderInfo && typeof row.orderInfo === "object" ? row.orderInfo : row;
-    const identity = text(row.opOrderReturnId || row.platformReturnSn || row.returnId) || `return-${index}`;
+    const fallbackOrderIdentity = orderKey({
+      platform: row.platform ?? info.platform,
+      shopId: row.shopId ?? info.shopId,
+      platformOrderSn: row.platformOrderSn ?? info.platformOrderSn,
+    });
+    // 没有退款单号时，用订单 + 创建时间 + 金额生成稳定标识；不能用序号，否则分页、分店铺的记录会互相覆盖。
+    const identity = text(row.opOrderReturnId || row.platformReturnSn || row.returnId)
+      || (fallbackOrderIdentity
+        ? `${fallbackOrderIdentity}|return|${text(row.gmtCreateTime || row.gmtCreate) || "na"}|${Math.max(0, number(row.refundAmount))}`
+        : `return-unidentified-${index}`);
     const normalized = {
       identity,
       orderIdentity: orderKey({
@@ -203,27 +248,12 @@ export function normalizeMiaoshouReturns(payload) {
       createdAt: dateTime(row.gmtCreateTime || row.gmtCreate),
       modifiedAt: dateTime(row.gmtModifiedTime || row.gmtModified),
       finishedAt: dateTime(row.gmtFinish || row.gmtRefund || row.gmtCompleted),
+      statusClass: classifyMiaoshouAfterSalesStatus("return", row),
       finalized: false,
     };
-    normalized.finalized = finalizedRefund(row);
+    normalized.finalized = normalized.statusClass === "finalized";
     return normalized;
   }).filter((row) => row.orderIdentity && row.identity);
-}
-
-function finalizedCancellation(row) {
-  const status = [
-    row.appCancelStatus,
-    row.appCancelStatusText,
-    row.platformCancelStatus,
-    row.appReturnStatusText,
-    row.appOrderStatus,
-    row.reverseTypeText,
-    row.status,
-  ]
-    .map(text).join(" ").toLowerCase();
-  if (/reject|failed|驳回|拒绝/.test(status)) return false;
-  if (text(row.gmtFinish || row.gmtCancel || row.gmtCompleted)) return true;
-  return /cancel(l?ed)?|success|complete|completed|done|取消成功|已取消|已完成/.test(status);
 }
 
 export function normalizeMiaoshouCancellations(payload) {
@@ -252,12 +282,27 @@ export function normalizeMiaoshouCancellations(payload) {
       reason: text(row.cancelReason || row.reason || row.textReasonCn || row.textReason),
       createdAt: dateTime(row.gmtCreateTime || row.gmtCreate),
       modifiedAt: dateTime(row.gmtModifiedTime || row.gmtModified),
-      finalized: finalizedCancellation(row),
+      statusClass: classifyMiaoshouAfterSalesStatus("cancellation", row),
+      finalized: classifyMiaoshouAfterSalesStatus("cancellation", row) === "finalized",
     };
   }).filter((row) => row.orderIdentity && row.identity);
 }
 
-function transactionAmount(order) {
+// 金额口径（默认 payAmount，与历史行为一致）：
+// - payAmount     买家实付（含运费、扣除平台券）
+// - orderAmount   订单金额
+// - productAmount 商品金额（接近平台后台「销售额」）
+// - escrowAmount  平台结算到账
+// 对账结果会同时给出每种口径与 WMS 金额的差异率，管理员据此选择与平台后台一致的口径。
+export const MIAOSHOU_REVENUE_BASES = Object.freeze(["payAmount", "orderAmount", "productAmount", "escrowAmount"]);
+
+export function normalizeMiaoshouRevenueBasis(value) {
+  return MIAOSHOU_REVENUE_BASES.includes(text(value)) ? text(value) : "payAmount";
+}
+
+function transactionAmount(order, basis = "payAmount") {
+  const preferred = number(order?.[normalizeMiaoshouRevenueBasis(basis)]);
+  if (preferred > 0) return preferred;
   return Math.max(0, number(order.payAmount || order.orderAmount || order.productAmount));
 }
 
@@ -304,7 +349,25 @@ function ratio(numerator, denominator) {
   return denominator > 0 ? round(numerator / denominator, 6) : 0;
 }
 
-export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = [], returns = [], cancellations = [], requestedSource = "shadow", syncState = {} } = {}) {
+function statusDictionary(rows, kind) {
+  const counts = new Map();
+  for (const row of rows) {
+    const label = [row.appReturnStatus || row.appCancelStatus, row.appReturnStatusText || row.appCancelStatusText, row.platformReturnStatus, row.status]
+      .map(text).filter(Boolean).join(" / ") || "（无状态）";
+    const key = `${label}\u0000${row.statusClass || (row.finalized ? "finalized" : "pending")}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => {
+      const [status, statusClass] = key.split("\u0000");
+      return { kind, status, statusClass, count };
+    })
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 40);
+}
+
+export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = [], returns = [], cancellations = [], requestedSource = "shadow", syncState = {}, revenueBasis = "payAmount" } = {}) {
+  const basis = normalizeMiaoshouRevenueBasis(revenueBasis);
   const orderByKey = new Map(orders.map((order) => [order.identity || orderKey(order), order]).filter(([key]) => key));
   const itemsByOrder = new Map();
   for (const item of items) {
@@ -340,6 +403,7 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
   let finalizedRefundCount = 0;
   let totalRefundCount = 0;
   let cancelledOutboundOrders = 0;
+  const basisComparison = new Map();
 
   for (const [identity, entries] of groups) {
     eligibleOrderCount += 1;
@@ -357,7 +421,8 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
     totalRefundCount += orderReturns.length;
     finalizedRefundCount += orderReturns.filter((row) => row.finalized).length;
     const currency = text(order.currency).toUpperCase();
-    const grossAmount = transactionAmount(order);
+    const grossAmount = transactionAmount(order, basis);
+    const comparisonAmount = grossAmount;
     const refundAmount = Math.min(grossAmount, orderReturns
       .filter((row) => row.finalized && (!row.currency || row.currency === currency))
       .reduce((sum, row) => sum + Math.max(0, number(row.refundAmount)), 0));
@@ -373,14 +438,26 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
     const wmsAmount = groupFacts.every((fact) => fact.salesAmountValid && text(fact.currency).toUpperCase() === currency)
       ? groupFacts.reduce((sum, fact) => sum + Math.max(0, number(fact.salesAmount)), 0)
       : 0;
-    if (grossAmount > 0 && wmsAmount > 0) {
+    if (comparisonAmount > 0 && wmsAmount > 0) {
       comparableAmountOrders += 1;
       // WMS exposes the order amount captured at fulfillment time; refunds are
       // a separate after-sales fact. Compare gross-to-gross here, otherwise any
       // legitimate refund would incorrectly fail the source activation gate.
-      amountDelta += Math.abs(grossAmount - wmsAmount);
-      miaoshouComparableAmount += grossAmount;
+      amountDelta += Math.abs(comparisonAmount - wmsAmount);
+      miaoshouComparableAmount += comparisonAmount;
     }
+    if (wmsAmount > 0) {
+      for (const candidate of MIAOSHOU_REVENUE_BASES) {
+        const value = number(order[candidate]);
+        if (value <= 0) continue;
+        const current = basisComparison.get(candidate) || { orders: 0, delta: 0, amount: 0 };
+        current.orders += 1;
+        current.delta += Math.abs(value - wmsAmount);
+        current.amount += value;
+        basisComparison.set(candidate, current);
+      }
+    }
+    const settlementAllocations = allocate(order.escrowAmount, weights);
     entries.forEach(({ index }, lineIndex) => {
       output[index] = {
         ...output[index],
@@ -391,6 +468,7 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
         miaoshouNetAmount: netAllocations[lineIndex],
         miaoshouCommissionAmount: commissionAllocations[lineIndex],
         miaoshouLogisticsAmount: logisticsAllocations[lineIndex],
+        miaoshouSettlementAmount: settlementAllocations[lineIndex],
         miaoshouCurrency: currency,
         miaoshouCancelled: cancelled,
       };
@@ -401,10 +479,13 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
   const quantityVarianceRate = ratio(Math.abs(wmsQuantity - miaoshouQuantity), Math.max(wmsQuantity, miaoshouQuantity));
   const amountVarianceRate = ratio(amountDelta, miaoshouComparableAmount);
   const refundFinalizationRate = totalRefundCount ? ratio(finalizedRefundCount, totalRefundCount) : 1;
-  const syncHealthy = syncState.status === "success" && Boolean(syncState.lastSuccessAt);
+  // 订单部分同步成功即视为健康；售后缺口单独作为阻断项，补齐后自动解除。
+  const syncHealthy = ["success", "partial"].includes(text(syncState.status)) && Boolean(syncState.lastSuccessAt) && !text(syncState.lastError);
+  const afterSalesGaps = Array.isArray(syncState.afterSalesGaps) ? syncState.afterSalesGaps : [];
   const thresholds = { orderMatchRate: 0.98, quantityVarianceRate: 0.005, amountVarianceRate: 0.01, refundFinalizationRate: 0.99 };
   const blockers = [];
   if (!syncHealthy) blockers.push("妙手交易同步尚未完整成功");
+  if (afterSalesGaps.length) blockers.push(`妙手售后同步还有 ${afterSalesGaps.length} 个时间段待补齐`);
   if (orderMatchRate < thresholds.orderMatchRate) blockers.push(`订单匹配率 ${round(orderMatchRate * 100, 2)}% 低于 98%`);
   if (quantityVarianceRate > thresholds.quantityVarianceRate) blockers.push(`数量差异率 ${round(quantityVarianceRate * 100, 2)}% 高于 0.5%`);
   if (comparableAmountOrders > 0 && amountVarianceRate > thresholds.amountVarianceRate) blockers.push(`金额差异率 ${round(amountVarianceRate * 100, 2)}% 高于 1%`);
@@ -422,7 +503,7 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
         currency: fact.miaoshouCurrency,
         salesAmountValid: !fact.miaoshouCancelled && fact.miaoshouNetAmount > 0,
         salesAmountScope: "miaoshou_order_allocated",
-        salesAmountSource: "miaoshou.payAmount-refundAmount",
+        salesAmountSource: `miaoshou.${basis}-refundAmount`,
       };
     });
   }
@@ -449,6 +530,16 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
       finalizedRefundCount,
       refundFinalizationRate,
       cancelledOutboundOrders,
+      revenueBasis: basis,
+      // 每种金额口径与 WMS 订单金额的差异率，越接近 0 说明该口径与 WMS 一致。
+      basisComparison: MIAOSHOU_REVENUE_BASES.map((candidate) => {
+        const row = basisComparison.get(candidate) || { orders: 0, delta: 0, amount: 0 };
+        return { basis: candidate, comparableOrders: row.orders, amountVarianceRate: ratio(row.delta, row.amount) };
+      }),
+      pendingRefundCount: returns.filter((row) => (row.statusClass || "") === "pending").length,
+      pendingCancellationCount: cancellations.filter((row) => (row.statusClass || "") === "pending").length,
+      afterSalesGapCount: afterSalesGaps.length,
+      statusDictionary: [...statusDictionary(returns, "return"), ...statusDictionary(cancellations, "cancellation")],
     },
   };
 }
