@@ -48,6 +48,7 @@
     "test:miaoshou-listing-platform": "node scripts/miaoshou-listing-platform-test.mjs",
     "test:tongzhou-canvas-ai": "node scripts/tongzhou-canvas-ai-test.mjs",
     "test:miaoshou-performance": "node scripts/miaoshou-performance-test.mjs",
+    "test:shop-daily-report": "node scripts/shop-daily-report-test.mjs",
     "test:miaoshou-order-alias": "node scripts/miaoshou-order-alias-test.mjs",
     "test:miaoshou-order-alias-jobs": "node scripts/miaoshou-order-alias-jobs-test.mjs",
     "test:ozon": "node scripts/ozon-integration-test.mjs",

@@ -6951,3 +6951,207 @@ export function updateProductLaunchPilot(id: string, input: { sampleConfirmed?: 
     { method: "PATCH", body: JSON.stringify(input) },
   );
 }
+
+// ---------------------------------------------------------------------------
+// 店铺日报
+// ---------------------------------------------------------------------------
+
+export type ShopDailySourceTag = "import" | "ziniao" | "system" | "registry" | "none" | string;
+
+export type ShopDailyMetrics = {
+  payCny: number;
+  payLocal: number | null;
+  impressions: number;
+  visitors: number;
+  orderCount: number;
+  addToCart: number;
+  reviewAmountCny: number;
+  reviewReceivedCny: number;
+  reviewLossCny?: number;
+  reviewCount: number;
+  reviewCostCny?: number;
+  realSalesCny: number;
+  realSalesLocal: number | null;
+  realOrders: number;
+  adOnsiteCny: number;
+  adOffsiteCny: number;
+  adTotalCny: number;
+  adOnsiteLocal: number | null;
+  adOffsiteLocal: number | null;
+  productCostCny?: number;
+  operationFeeCny?: number;
+  platformFeeCny?: number;
+  profitCny?: number;
+  profitMargin?: number | null;
+  systemOrderCount: number;
+  systemSalesCny: number;
+  roi: number | null;
+  costPerVisitorCny: number | null;
+  visitRate: number | null;
+  addToCartRate: number | null;
+  conversionRate: number | null;
+  aovCny: number | null;
+  aovLocal: number | null;
+  days?: number;
+};
+
+export type ShopDailyRow = ShopDailyMetrics & {
+  date: string;
+  shopKey: string;
+  shopName: string;
+  country: string;
+  platform: string;
+  projectGroup: string;
+  currency: string;
+  localPerCny: number;
+  rateSource: "fixed" | "market";
+  ruleId: string;
+  ruleMode: "standard" | "stacked";
+  reviewAmountLocal: number;
+  reviewReceivedLocal: number;
+  sources: { revenue: ShopDailySourceTag; traffic: ShopDailySourceTag; ad: ShopDailySourceTag; review: ShopDailySourceTag; productCost: ShopDailySourceTag; operationFee: ShopDailySourceTag };
+  flags: string[];
+  standaloneShop: boolean;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type ShopDailyShopSummary = ShopDailyMetrics & {
+  shopKey: string;
+  shopName: string;
+  country: string;
+  platform: string;
+  projectGroup: string;
+  currency: string;
+  ruleId: string;
+  ruleMode: "standard" | "stacked";
+  standaloneShop: boolean;
+  flagCounts: Record<string, number>;
+  days: number;
+};
+
+export type ShopFeeRule = {
+  id?: string;
+  scope: "default" | "country" | "platform" | "shop";
+  countryKey?: string;
+  platform?: string;
+  shopKey?: string;
+  label?: string;
+  mode: "standard" | "stacked";
+  commissionRate: number;
+  perOrderFee: number;
+  perOrderFeeCurrency: "LOCAL" | "CNY";
+  adTaxRate: number;
+  reviewUnitCostCny: number;
+  fixedLocalPerCny: number;
+  stackedNetRate: number;
+  stackedFactor1: number;
+  stackedFactor2: number;
+  stackedExtraRate: number;
+  useSystemProductCost: boolean;
+  useSystemOperationFee: boolean;
+  updatedAt?: string;
+  updatedBy?: string;
+};
+
+export type ShopReviewOrder = {
+  id: string;
+  shopKey: string;
+  shopName: string;
+  date: string;
+  orderNo: string;
+  amount: number | null;
+  receivedAmount: number | null;
+  quantity: number;
+  note: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+};
+
+export type ShopDailyShopOption = { value: string; label: string; country: string; platform: string; projectGroup: string; standalone?: boolean };
+
+export type ShopDailyReportPayload = {
+  ok: boolean;
+  generatedAt: string;
+  dataVersion: string;
+  materializationStale: boolean;
+  permissions: { view: boolean; edit: boolean; cost: boolean; profit: boolean; manageRules: boolean };
+  filters: { dateFrom: string; dateTo: string; shopKey: string; projectGroup: string; country: string; platform: string };
+  totals: ShopDailyMetrics & { days: number };
+  shops: ShopDailyShopSummary[];
+  rows: ShopDailyRow[];
+  currencies: string[];
+  quality: {
+    rowsWithoutTraffic: number;
+    rowsWithoutAd: number;
+    rowsUsingSystemRevenue: number;
+    rowsWithoutRate: number;
+    reviewOrdersWithoutAmount: number;
+    reviewOrdersWithoutReceived: number;
+    standaloneShopCount: number;
+  };
+  rules: ShopFeeRule[];
+  reviewOrders: ShopReviewOrder[];
+  options: { shops: ShopDailyShopOption[]; projectGroups: string[]; countries: string[]; platforms: string[] };
+  store: { metricCount: number; reviewOrderCount: number; latestMetricDate: string; lastImport: ShopDailyImportLog | null };
+  importLog: ShopDailyImportLog[];
+  ingestConfigured: boolean;
+};
+
+export type ShopDailyImportLog = { id: string; source: string; rowCount: number; dateFrom: string; dateTo: string; createdAt: string; createdBy: string };
+
+export type ShopDailyImportResult = {
+  ok: boolean;
+  dryRun: boolean;
+  columns: string[];
+  skipped: number;
+  rowCount: number;
+  shopCount: number;
+  dateFrom: string;
+  dateTo: string;
+  errors: Array<{ line: number; message: string }>;
+  errorCount: number;
+  warnings: Array<{ shopKey: string; message: string }>;
+  sample: Array<Record<string, string | number>>;
+  written?: number;
+};
+
+export function fetchShopDailyReport(input: { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  Object.entries(input).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<ShopDailyReportPayload>(`/api/shop-daily-report${query}`, { signal });
+}
+
+export function importShopDailyReport(input: { content: string; dryRun: boolean; defaultYear?: number; defaultCountry?: string; defaultPlatform?: string }) {
+  return requestJson<ShopDailyImportResult>("/api/shop-daily-report/import", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteShopDailyMetric(shopKey: string, date: string) {
+  const params = new URLSearchParams({ shopKey, date });
+  return requestJson<{ ok: boolean; removed: number }>(`/api/shop-daily-report/metrics?${params.toString()}`, { method: "DELETE" });
+}
+
+export function saveShopReviewOrders(rows: Array<Partial<ShopReviewOrder> & { shopKey: string; date: string }>) {
+  return requestJson<{ ok: boolean; reviewOrders: ShopReviewOrder[] }>("/api/shop-daily-report/review-orders", {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  });
+}
+
+export function deleteShopReviewOrder(id: string) {
+  return requestJson<{ ok: boolean; removed: number }>(`/api/shop-daily-report/review-orders/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function updateShopFeeRules(rules: ShopFeeRule[]) {
+  return requestJson<{ ok: boolean; rules: ShopFeeRule[] }>("/api/shop-daily-report/fee-rules", {
+    method: "PATCH",
+    body: JSON.stringify({ rules }),
+  });
+}

@@ -247,6 +247,7 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { ProductLaunchCenter } from "./ProductLaunchCenter";
+import { ShopDailyReport } from "./shop-daily/ShopDailyReport";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import { PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
 import { SystemBackupPage } from "./SystemBackupPage";
@@ -10133,7 +10134,7 @@ function PerformanceAnalysisPage({
   canSync: boolean;
 }) {
   const defaults = performanceDefaultRange();
-  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "sources" | "costs" | "shops">("products");
+  const [tab, setTab] = React.useState<"products" | "brands" | "quality" | "sources" | "costs" | "shops" | "daily">("products");
   const [busy, setBusy] = React.useState(false);
   const [dateFrom, setDateFrom] = React.useState(payload?.filters.dateFrom || defaults.dateFrom);
   const [dateTo, setDateTo] = React.useState(payload?.filters.dateTo || defaults.dateTo);
@@ -10530,6 +10531,7 @@ function PerformanceAnalysisPage({
 
       <section className="performance-workspace">
         <div className="performance-tabs">
+          {permissions.revenue ? <button className={tab === "daily" ? "active" : ""} type="button" onClick={() => setTab("daily")}><Store size={15} />店铺日报</button> : null}
           <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>产品贡献 <span>{formatNumber(payload?.resultCounts?.products ?? payload?.products.length ?? 0)}</span></button>
           <button className={tab === "brands" ? "active" : ""} type="button" onClick={() => setTab("brands")}>品牌贡献 <span>{formatNumber(payload?.resultCounts?.brands ?? payload?.brands.length ?? 0)}</span></button>
           <button className={tab === "quality" ? "active" : ""} type="button" onClick={() => setTab("quality")}>数据质量 <span>{formatNumber(qualityIssueTypeCount)} 项</span></button>
@@ -10538,7 +10540,16 @@ function PerformanceAnalysisPage({
           <button className={tab === "shops" ? "active" : ""} type="button" onClick={() => setTab("shops")}>店铺归属 <span>{formatNumber(payload?.shopDirectory.shops.length || 0)}</span></button>
         </div>
 
-        {tab === "products" ? (
+        {tab === "daily" ? (
+          <ShopDailyReport filters={{
+            dateFrom: payload?.filters.dateFrom || defaults.dateFrom,
+            dateTo: payload?.filters.dateTo || defaults.dateTo,
+            shopKey: payload?.filters.shopName || "",
+            projectGroup: payload?.filters.projectGroup || "",
+            country: payload?.filters.country || "",
+            platform: payload?.filters.platform || "",
+          }} />
+        ) : tab === "products" ? (
           <div className="performance-table-wrap">
             <div className="performance-contribution-row head">
               <span>产品 / 品牌</span><span>销量</span>{permissions.revenue ? <span>人民币销售额</span> : null}<span>贡献</span>{permissions.cost ? <span>{contributionActive ? "同口径经营成本" : "同口径销售成本"}</span> : null}{permissions.profit ? <><span>{contributionActive ? "贡献利润" : "预估毛利"}</span><span>利润率</span></> : null}<span>覆盖</span>

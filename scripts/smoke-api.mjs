@@ -87,6 +87,7 @@ const child = spawn(process.execPath, ["server/server.js"], {
     SYSTEM_BACKUP_DIR: smokeBackupDir,
     SYSTEM_BACKUP_ENV_PATH: resolve(smokeBackupDir, "target.env"),
     SKIP_ENV_FILE: "true",
+    SHOP_METRICS_INGEST_TOKEN: "smoke-shop-metrics-ingest-token-0123456789",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -728,6 +729,70 @@ async function main() {
     throw new Error("performance analytics did not filter by the configured main project group.");
   }
   console.log("[ok] shop alias, reconciliation, and main project group assignment");
+
+  const unauthenticatedShopDaily = await fetch(`${baseUrl}/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28`);
+  if (unauthenticatedShopDaily.status !== 403) throw new Error(`/api/shop-daily-report allowed anonymous access: ${unauthenticatedShopDaily.status}`);
+  const shopDailyBaseline = await expectJson("/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
+  if (shopDailyBaseline.rows.length !== 1 || shopDailyBaseline.rows[0].shopKey !== shop.key || shopDailyBaseline.rows[0].sources.revenue !== "system" || shopDailyBaseline.rows[0].orderCount !== 1) {
+    throw new Error(`/api/shop-daily-report did not fall back to central order facts: ${JSON.stringify(shopDailyBaseline.rows).slice(0, 800)}`);
+  }
+  const shopDailyTsv = ["日期\t店铺\t平台\t国家\t支付金额\t访客数\t订单数\t站内推广费", "2026-08-28\t印尼测试别称\tTikTok\t印尼\t20000\t50\t2\t1000"].join("\n");
+  const shopDailyPreview = await expectJson("/api/shop-daily-report/import", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ content: shopDailyTsv, dryRun: true }),
+  });
+  if (shopDailyPreview.rowCount !== 1 || shopDailyPreview.errorCount !== 0 || shopDailyPreview.sample[0]?.shopKey !== shop.key || shopDailyPreview.written !== undefined) {
+    throw new Error(`/api/shop-daily-report/import preview did not match the shop alias: ${JSON.stringify(shopDailyPreview).slice(0, 800)}`);
+  }
+  const shopDailyImport = await expectJson("/api/shop-daily-report/import", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ content: shopDailyTsv, dryRun: false }),
+  });
+  if (shopDailyImport.written !== 1) throw new Error(`/api/shop-daily-report/import did not write: ${JSON.stringify(shopDailyImport)}`);
+  const wrongIngest = await fetch(`${baseUrl}/api/shop-daily-report/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Ingest-Token": "wrong" },
+    body: JSON.stringify({ rows: [] }),
+  });
+  if (wrongIngest.status !== 401) throw new Error(`shop metrics ingest accepted an invalid token: ${wrongIngest.status}`);
+  const ingest = await expectJson("/api/shop-daily-report/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Ingest-Token": "smoke-shop-metrics-ingest-token-0123456789" },
+    body: JSON.stringify({ source: "ziniao", rows: [{ date: "2026-08-28", shopKey: shop.key, impressions: 999, addToCart: 7 }] }),
+  });
+  if (ingest.written !== 1) throw new Error(`shop metrics ingest did not write: ${JSON.stringify(ingest)}`);
+  await expectJson("/api/shop-daily-report/review-orders", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ rows: [{ shopKey: shop.key, date: "2026-08-28", orderNo: "REVIEW-1", amount: 5000, receivedAmount: 4000, quantity: 1 }] }),
+  });
+  const invalidFeeRules = await fetch(`${baseUrl}/api/shop-daily-report/fee-rules`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ rules: [{ scope: "country", countryKey: "ID" }] }),
+  });
+  if (invalidFeeRules.status !== 400) throw new Error(`fee rules without a global default were accepted: ${invalidFeeRules.status}`);
+  const savedFeeRules = await expectJson("/api/shop-daily-report/fee-rules", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ rules: [{ scope: "default", commissionRate: 0.165 }, { scope: "country", countryKey: "ID", perOrderFee: 1250, adTaxRate: 0.11, fixedLocalPerCny: 2400 }] }),
+  });
+  if (savedFeeRules.rules.length !== 2) throw new Error(`fee rules were not saved: ${JSON.stringify(savedFeeRules)}`);
+  const shopDaily = await expectJson("/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
+  const dailyRow = shopDaily.rows[0];
+  if (shopDaily.rows.length !== 1 || dailyRow.sources.revenue !== "import" || dailyRow.payLocal !== 20000 || dailyRow.visitors !== 50 || dailyRow.impressions !== 999 || dailyRow.addToCart !== 7) {
+    throw new Error(`/api/shop-daily-report did not merge imported and collected metrics: ${JSON.stringify(dailyRow).slice(0, 800)}`);
+  }
+  if (dailyRow.reviewCount !== 1 || dailyRow.realOrders !== 1 || Math.abs(dailyRow.realSalesCny - 15000 / 2400) > 0.01 || dailyRow.ruleId !== "country:ID") {
+    throw new Error(`/api/shop-daily-report did not apply review orders or the country fee rule: ${JSON.stringify(dailyRow).slice(0, 800)}`);
+  }
+  const expectedDailyProfit = (15000 / 2400) * (1 - 0.165) - 1250 / 2400 - (1000 * 1.11) / 2400 - ((1000 / 2400) + 10.4) - dailyRow.productCostCny - dailyRow.operationFeeCny;
+  if (Math.abs(dailyRow.profitCny - expectedDailyProfit) > 0.01) {
+    throw new Error(`/api/shop-daily-report profit formula mismatch: expected ${expectedDailyProfit}, got ${dailyRow.profitCny}`);
+  }
+  console.log("[ok] shop daily report import, collector ingest, review orders and fee rules");
 
   const movement = await expectJson("/api/movement", { headers: authHeaders });
   if ((movement.warehouseDiagnostics || []).some((item) => !item.actionTitle || !Array.isArray(item.actionItems))) {
