@@ -753,6 +753,65 @@ async function main() {
   }
   console.log("[ok] shop alias, reconciliation, and main project group assignment");
 
+  // 日汇总接口：分区物化后同步到汇总存储（内存或 PostgreSQL）。
+  let summaryTotal = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    summaryTotal = await expectJson("/api/performance-analytics/summary?dateFrom=2026-08-28&dateTo=2026-08-28&groupBy=total", { headers: authHeaders });
+    if (summaryTotal.rows[0]?.orderCount === 1) break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  if (summaryTotal.rows[0]?.orderCount !== 1 || summaryTotal.rows[0]?.quantity !== 2) {
+    throw new Error(`/api/performance-analytics/summary did not aggregate the order facts: ${JSON.stringify(summaryTotal).slice(0, 600)}`);
+  }
+  if (process.env.ANALYTICS_DATABASE_URL && summaryTotal.backend !== "postgres") throw new Error(`summary did not use PostgreSQL: ${summaryTotal.backend}`);
+  const summaryByShop = await expectJson(`/api/performance-analytics/summary?dateFrom=2026-08-28&dateTo=2026-08-28&groupBy=shop&projectGroup=${encodeURIComponent("东南亚项目")}`, { headers: authHeaders });
+  if (summaryByShop.rows.length !== 1 || summaryByShop.rows[0].shopKey !== shop.key) throw new Error(`/api/performance-analytics/summary shop grouping failed: ${JSON.stringify(summaryByShop.rows)}`);
+  const invalidSummary = await fetch(`${baseUrl}/api/performance-analytics/summary?groupBy=everything`, { headers: authHeaders });
+  if (invalidSummary.status !== 400) throw new Error(`invalid summary groupBy was accepted: ${invalidSummary.status}`);
+  const performancePartitioned = await expectJson("/api/performance-analytics?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
+  if (!performancePartitioned.partitionStats || !(performancePartitioned.partitionStats.partitionCount >= 1)) throw new Error(`/api/performance-analytics did not expose partition stats: ${JSON.stringify(performancePartitioned.partitionStats)}`);
+  console.log(`[ok] partitioned materialization and daily summary (${summaryTotal.backend})`);
+
+  const binding = await expectJson("/api/shop-directory/miaoshou-binding", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ shopKey: shop.key, miaoshouShopId: "MS-ID-1" }),
+  });
+  if (binding.shopDirectory.shops.find((item) => item.key === shop.key)?.miaoshouMatchSource !== "manual") throw new Error(`Miaoshou manual binding was not applied: ${JSON.stringify(binding).slice(0, 600)}`);
+  const invalidBinding = await fetch(`${baseUrl}/api/shop-directory/miaoshou-binding`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ shopKey: shop.key, miaoshouShopId: "NOT-A-SHOP" }),
+  });
+  if (invalidBinding.status !== 400) throw new Error(`binding to an unknown Miaoshou shop was accepted: ${invalidBinding.status}`);
+  await expectJson("/api/shop-directory/miaoshou-binding", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ shopKey: shop.key, miaoshouShopId: null }),
+  });
+  const enabledShops = await expectJson("/api/performance-analytics/miaoshou-shops", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ shopKeys: [shop.key], enabled: true }),
+  });
+  if (enabledShops.revenueSource !== "per_shop" || !enabledShops.enabledShopKeys.includes(shop.key)) throw new Error(`per-shop Miaoshou activation failed: ${JSON.stringify(enabledShops)}`);
+  let perShopPerformance = null;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    perShopPerformance = await expectJson("/api/performance-analytics?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
+    if (perShopPerformance.transactionSource?.requested === "per_shop") break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  const shopRow = perShopPerformance.transactionSource?.reconciliation?.shops?.find((row) => row.shopKey === shop.key);
+  if (perShopPerformance.transactionSource?.requested !== "per_shop" || !shopRow?.enabled || shopRow.effective || perShopPerformance.transactionSource.effective !== "wms") {
+    throw new Error(`per-shop mode did not gate the unmatched shop: ${JSON.stringify(perShopPerformance.transactionSource).slice(0, 800)}`);
+  }
+  await expectJson("/api/performance-analytics/miaoshou-shops", {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ shopKeys: [shop.key], enabled: false }),
+  });
+  console.log("[ok] Miaoshou manual shop binding and per-shop activation gate");
+
   const unauthenticatedShopDaily = await fetch(`${baseUrl}/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28`);
   if (unauthenticatedShopDaily.status !== 403) throw new Error(`/api/shop-daily-report allowed anonymous access: ${unauthenticatedShopDaily.status}`);
   const shopDailyBaseline = await expectJson("/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });

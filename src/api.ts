@@ -2351,7 +2351,12 @@ export type ShopDirectoryProfile = {
   miaoshouShopName: string;
   miaoshouAlias: string;
   miaoshouMatched: boolean;
+  miaoshouMatchSource?: "manual" | "manual_none" | "auto" | "none" | string;
+  miaoshouBindingStale?: boolean;
+  miaoshouSuggestedShopId?: string;
 };
+
+export type MiaoshouDirectoryShopOption = { shopId: string; platform: string; site: string; name: string; platformShopName: string };
 
 export type ShopDirectoryPayload = {
   shops: ShopDirectoryProfile[];
@@ -2361,6 +2366,7 @@ export type ShopDirectoryPayload = {
   unmatchedShopCount: number;
   miaoshouSyncedAt: string;
   canManage: boolean;
+  miaoshouShops?: MiaoshouDirectoryShopOption[];
 };
 
 export type PerformancePackagingFeeRule = {
@@ -3319,8 +3325,16 @@ export type PerformanceAnalyticsPayload = {
       pendingCancellationCount?: number;
       afterSalesGapCount?: number;
       statusDictionary?: Array<{ kind: "return" | "cancellation"; status: string; statusClass: "finalized" | "pending" | "rejected" | "unknown" | string; count: number }>;
+      minimumShopMatchedOrders?: number;
+      miaoshouOnlyOrderCount?: number;
+      addedMiaoshouFactCount?: number;
+      effectiveShopCount?: number;
+      eligibleShopCount?: number;
+      shops?: MiaoshouShopReconciliation[];
     };
   } | null;
+  partitionStats?: { partitionCount: number; rebuiltPartitionCount: number; reusedPartitionCount: number; removedPartitionCount: number; rebuiltFactCount: number; totalFactCount: number; durationMs: number } | null;
+  summaryStore?: { backend: "postgres" | "memory" | string; configured: boolean; lastSyncAt: string; lastSyncDurationMs: number; lastSyncedPartitions: number; lastError: string; partitionCount: number };
   shopDirectory: ShopDirectoryPayload;
   filters: {
     dateFrom: string;
@@ -4956,6 +4970,53 @@ export function syncMiaoshouPerformance(input: { dateFrom?: string; dateTo?: str
 }
 
 export type MiaoshouRevenueBasis = "payAmount" | "orderAmount" | "productAmount" | "escrowAmount";
+
+export type MiaoshouShopReconciliation = {
+  shopKey: string;
+  shopName: string;
+  platform: string;
+  country: string;
+  projectGroup: string;
+  miaoshouShopId: string;
+  miaoshouMatchSource: string;
+  enabled: boolean;
+  effective: boolean;
+  activationEligible: boolean;
+  blockers: string[];
+  eligibleOrderCount: number;
+  matchedOrderCount: number;
+  orderMatchRate: number;
+  quantityVarianceRate: number;
+  amountVarianceRate: number;
+  comparableAmountOrders: number;
+  refundFinalizationRate: number;
+  cancelledOutboundOrders: number;
+  miaoshouOnlyOrderCount: number;
+};
+
+export function updateMiaoshouShopActivation(shopKeys: string[], enabled: boolean) {
+  return requestJson<{ ok: boolean; revenueSource: string; enabledShopKeys: string[] }>("/api/performance-analytics/miaoshou-shops", {
+    method: "PATCH",
+    body: JSON.stringify({ shopKeys, enabled }),
+  });
+}
+
+export function updateShopMiaoshouBinding(shopKey: string, miaoshouShopId: string | null) {
+  return requestJson<{ ok: boolean; shopKey: string; miaoshouShopId: string }>("/api/shop-directory/miaoshou-binding", {
+    method: "PATCH",
+    body: JSON.stringify({ shopKey, miaoshouShopId }),
+  });
+}
+
+export type PerformanceSummaryGroup = "total" | "day" | "shop" | "warehouse" | "country" | "platform" | "projectGroup" | "source" | "shopDay" | "sku" | "brand";
+
+export function fetchPerformanceSummary(input: { groupBy?: PerformanceSummaryGroup; dateFrom?: string; dateTo?: string; country?: string; warehouseId?: string; platform?: string; shopKey?: string; projectGroup?: string; brand?: string; revenueSource?: string; limit?: number } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  Object.entries(input).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  });
+  return requestJson<{ ok: boolean; groupBy: string; backend: string; table: string; rows: Array<Record<string, string | number>>; queryDurationMs: number; store: NonNullable<PerformanceAnalyticsPayload["summaryStore"]> }>(`/api/performance-analytics/summary?${params.toString()}`, { signal });
+}
 
 export type MiaoshouAfterSalesGap = { kind: "return" | "cancellation"; platform: string; dateFrom: string; dateTo: string; error: string; failedAt: string };
 

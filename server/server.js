@@ -80,6 +80,7 @@ import { createPerformanceAnalyticsQueryService } from "./performance-query-serv
 import { normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
+import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
 import { buildDashboardMarketSnapshot, buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
@@ -213,6 +214,12 @@ const productionMaterialCachePath = resolve(cacheDir, "production-materials.json
 const usersCachePath = resolve(cacheDir, "users.json");
 const miaoshouTaskDbPath = resolve(process.env.MIAOSHOU_TASK_DB_PATH || resolve(cacheDir, "miaoshou-tasks.sqlite"));
 const performanceMaterializationCachePath = resolve(cacheDir, "performance-analytics-materialized.json.gz");
+const performancePartitionDir = resolve(process.env.PERFORMANCE_PARTITION_DIR || resolve(cacheDir, "performance-partitions"));
+// 配置 ANALYTICS_DATABASE_URL 后，经营日汇总写入 PostgreSQL；未配置时保存在内存。
+const analyticsSummaryStore = createAnalyticsSummaryStore({
+  databaseUrl: String(process.env.ANALYTICS_DATABASE_URL || "").trim(),
+  partitionDir: performancePartitionDir,
+});
 const performanceMaterializationMetadataPath = resolve(cacheDir, "performance-analytics-materialized.meta.json");
 const syncSchedulerCachePath = resolve(cacheDir, "sync-scheduler.json");
 const syncSchedulerHeartbeatMs = Math.max(5_000, Number(process.env.SYNC_SCHEDULER_HEARTBEAT_MS || 15_000));
@@ -802,9 +809,13 @@ function saveJsonCache(path, payload, spacing = 2) {
 }
 
 function loadPerformanceMaterializationMetadata(path, cachePath) {
-  if (!existsSync(cachePath)) return null;
   const metadata = loadJsonCache(path);
-  return metadata ? { ...metadata, facts: null } : null;
+  if (!metadata) return null;
+  // 分区模式下没有整份快照，以分区索引是否存在为准。
+  const snapshotAvailable = metadata.partitioned
+    ? existsSync(resolve(metadata.partitionDir || performancePartitionDir, "index.json"))
+    : existsSync(cachePath);
+  return snapshotAvailable ? { ...metadata, facts: null } : null;
 }
 
 function ensurePerformanceMaterializationCacheLoaded() {
@@ -5356,6 +5367,7 @@ function publicShopDirectory(directory, auth = directAuth) {
     unmatchedShopCount: directory.unmatchedShopCount || 0,
     miaoshouSyncedAt: directory.miaoshouSyncedAt || "",
     canManage: hasPermission(auth, "performance_manage"),
+    miaoshouShops: hasPermission(auth, "performance_manage") ? directory.miaoshouShops || [] : [],
   };
 }
 
@@ -5369,9 +5381,13 @@ function performanceDateRange(params = {}) {
   };
 }
 
+function miaoshouEnabledShopKeys(settings = {}) {
+  return [...new Set((Array.isArray(settings.miaoshouEnabledShops) ? settings.miaoshouEnabledShops : []).map((value) => String(value || "").trim()).filter(Boolean))].sort();
+}
+
 function requestedPerformanceRevenueSource(settings = {}) {
   const configured = String(settings.revenueSource || process.env.PERFORMANCE_REVENUE_SOURCE || "shadow").trim().toLowerCase();
-  return ["wms", "shadow", "miaoshou"].includes(configured) ? configured : "shadow";
+  return ["wms", "shadow", "miaoshou", "per_shop"].includes(configured) ? configured : "shadow";
 }
 
 function sourceContentVersion(value) {
@@ -5405,6 +5421,7 @@ function performanceMaterializationContext(exchangeRates, packagingFeeRules, mia
     ],
     revenueSource: requestedPerformanceRevenueSource(settings),
     revenueBasis: normalizeMiaoshouRevenueBasis(settings.miaoshouRevenueBasis),
+    miaoshouEnabledShops: miaoshouEnabledShopKeys(settings),
     exchangeRates: exchangeRates.map((rate) => [rate.currency, rate.effectiveDate, rate.rateToCny, rate.source]),
     packagingFeeRules,
     supplementalProductCosts: supplementalProductCosts.map((row) => [
@@ -5472,10 +5489,12 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
     supplementalProductCosts,
     cachePath: performanceMaterializationCachePath,
     metadataPath: performanceMaterializationMetadataPath,
+    partitionDir: performancePartitionDir,
     returnFacts: false,
     dataVersion: context.dataVersion,
     requestedSource: requestedPerformanceRevenueSource(settings),
     revenueBasis: normalizeMiaoshouRevenueBasis(settings.miaoshouRevenueBasis),
+    enabledShopKeys: miaoshouEnabledShopKeys(settings),
     syncState: context.miaoshouSyncState,
     transactionSync: performanceMiaoshouSync.status(),
   }).then((result) => {
@@ -5489,11 +5508,16 @@ function startPerformanceMaterialization(context, exchangeRates, packagingFeeRul
       factCount: numberOrZero(result.factCount),
       transactionReconciliation: result.reconciliation,
       transactionSync: performanceMiaoshouSync.status(),
+      partitionStats: result.partitionStats || null,
+      partitioned: Boolean(result.partitioned),
+      partitionDir: result.partitionDir || "",
       stale: false,
       targetDataVersion: context.dataVersion,
     };
     performanceAnalyticsMaterializedCacheLoaded = true;
     clearPerformanceAnalyticsResponseCache();
+    // 只同步本次重算或删除的分区到汇总表。
+    void analyticsSummaryStore.sync();
     return performanceAnalyticsMaterializedCache;
   }).finally(() => {
     if (performanceAnalyticsMaterializationJob === job) performanceAnalyticsMaterializationJob = null;
@@ -5671,6 +5695,7 @@ async function shopDailyContext(auth, { dateFrom = "", dateTo = "", orderNos = [
       dataVersion: materialization.dataVersion,
       materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
       cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
+      partitionDir: !Array.isArray(materialization.facts) && materialization.partitioned ? (materialization.partitionDir || performancePartitionDir) : "",
       exchangeRates,
       packagingFeeRules,
       filters: { dateFrom, dateTo },
@@ -5840,6 +5865,7 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
       dataVersion: materialization.dataVersion,
       materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
       cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
+      partitionDir: !Array.isArray(materialization.facts) && materialization.partitioned ? (materialization.partitionDir || performancePartitionDir) : "",
       exchangeRates,
       packagingFeeRules,
       filters,
@@ -5899,7 +5925,7 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
       effective: materialization.transactionReconciliation.effectiveSource,
       activationEligible: materialization.transactionReconciliation.activationEligible,
       roles: {
-        revenue: materialization.transactionReconciliation.effectiveSource === "miaoshou" ? "miaoshou" : "wms",
+        revenue: ["miaoshou", "mixed"].includes(materialization.transactionReconciliation.effectiveSource) ? materialization.transactionReconciliation.effectiveSource : "wms",
         refunds: "miaoshou",
         fulfillment: "wms",
         productCost: "product_catalog_country_direct_then_supplemental",
@@ -5909,12 +5935,16 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
       reconciliation: materialization.transactionReconciliation,
     },
     shopDirectory: publicShopDirectory(scopedShopDirectory, auth),
+    partitionStats: materialization.partitionStats || null,
+    summaryStore: analyticsSummaryStore.status(),
     reconciliation: {
       sourceRowCount: (cachedOrdersSync.orders || []).length,
       factRowCount: numberOrZero(materialization.factCount) || numberOrZero(materialization.facts?.length),
+      // 已切换到妙手的店铺会补入 WMS 中还没有的妙手订单，这部分不参与 WMS 行数核对。
+      miaoshouOnlyFactCount: numberOrZero(materialization.transactionReconciliation?.addedMiaoshouFactCount),
       sourceSyncedAt: cachedOrdersSync.syncedAt || "",
       factSourceSyncedAt: materialization.sourceSyncedAt || metadata.sourceSyncedAt || "",
-      rowCountMatched: (cachedOrdersSync.orders || []).length === (numberOrZero(materialization.factCount) || numberOrZero(materialization.facts?.length)),
+      rowCountMatched: (cachedOrdersSync.orders || []).length === (numberOrZero(materialization.factCount) || numberOrZero(materialization.facts?.length)) - numberOrZero(materialization.transactionReconciliation?.addedMiaoshouFactCount),
       syncedAtMatched: Boolean(cachedOrdersSync.syncedAt) && cachedOrdersSync.syncedAt === (materialization.sourceSyncedAt || metadata.sourceSyncedAt),
     },
   }, auth, exchangeRates));
@@ -6495,6 +6525,7 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
       dataVersion: materialization.dataVersion,
       materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
       cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
+      partitionDir: !Array.isArray(materialization.facts) && materialization.partitioned ? (materialization.partitionDir || performancePartitionDir) : "",
       exchangeRates,
       packagingFeeRules,
       filters,
@@ -12739,6 +12770,88 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/performance-analytics/summary" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_analysis")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有经营贡献分析权限。" });
+        return;
+      }
+      const groupBy = String(url.searchParams.get("groupBy") || "total");
+      if (!SUMMARY_GROUPS[groupBy]) {
+        sendJson(res, 400, { ok: false, message: `groupBy 只支持：${Object.keys(SUMMARY_GROUPS).join("、")}。` });
+        return;
+      }
+      const startedAt = Date.now();
+      const range = performanceDateRange({ dateFrom: url.searchParams.get("dateFrom") || "", dateTo: url.searchParams.get("dateTo") || "" });
+      const user = auth?.user || directAuth.user;
+      const result = await analyticsSummaryStore.query({
+        groupBy,
+        filters: {
+          ...range,
+          country: url.searchParams.get("country") || "",
+          warehouseId: url.searchParams.get("warehouseId") || "",
+          platform: url.searchParams.get("platform") || "",
+          shopKey: url.searchParams.get("shopKey") || url.searchParams.get("shopName") || "",
+          projectGroup: url.searchParams.get("projectGroup") || "",
+          brand: url.searchParams.get("brand") || "",
+          revenueSource: url.searchParams.get("revenueSource") || "",
+        },
+        scopes: normalizeDataScopes(user.dataScopes),
+        limit: Number(url.searchParams.get("limit") || 500),
+      });
+      const revenue = hasPermission(auth, "performance_revenue");
+      const cost = hasPermission(auth, "performance_cost");
+      const profit = revenue && cost && hasPermission(auth, "performance_profit");
+      const projection = { revenue, cost, profit };
+      sendJson(res, 200, {
+        ok: true,
+        groupBy,
+        filters: range,
+        backend: result.backend,
+        table: result.table,
+        rows: result.rows.map((row) => {
+          const projected = omitPerformanceFields(row, projection);
+          if (!profit) delete projected.profitMargin;
+          return projected;
+        }),
+        store: analyticsSummaryStore.status(),
+        queryDurationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/performance-analytics/miaoshou-shops" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
+        sendJson(res, 403, { ok: false, message: "按店铺切换妙手口径需要经营分析维护及销售金额权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const shopKeys = [...new Set((Array.isArray(body.shopKeys) ? body.shopKeys : []).map((value) => String(value || "").trim()).filter(Boolean))];
+      if (!shopKeys.length || shopKeys.length > 500) {
+        sendJson(res, 400, { ok: false, message: "请选择 1 至 500 个店铺。" });
+        return;
+      }
+      const settings = performanceAnalyticsStore.getPerformanceSettings();
+      const current = new Set(miaoshouEnabledShopKeys(settings));
+      for (const key of shopKeys) {
+        if (body.enabled) current.add(key);
+        else current.delete(key);
+      }
+      // 第一次按店铺启用时，自动从「影子核对」切到「按店铺切换」模式。
+      const nextSource = body.enabled && ["shadow", "wms"].includes(requestedPerformanceRevenueSource(settings)) ? "per_shop" : requestedPerformanceRevenueSource(settings);
+      performanceAnalyticsStore.setPerformanceSettings({
+        miaoshouEnabledShops: [...current].sort(),
+        revenueSource: nextSource,
+        revenueSourceUpdatedBy: auth.user?.displayName || auth.user?.username || auth.user?.id || "管理员",
+      });
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
+      appendActionLog(auth, body.enabled ? "按店铺启用妙手口径" : "按店铺停用妙手口径", "performance_revenue_source", shopKeys.join(",").slice(0, 1000), { count: shopKeys.length, revenueSource: nextSource });
+      sendJson(res, 200, { ok: true, revenueSource: nextSource, enabledShopKeys: [...current].sort() });
+      return;
+    }
+
     if (url.pathname === "/api/performance-analytics/revenue-source" && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "performance_manage") || !hasPermission(auth, "performance_revenue")) {
@@ -12747,8 +12860,8 @@ const server = http.createServer(async (req, res) => {
       }
       const body = await parseRequestBody(req);
       const revenueSource = String(body.revenueSource || "").trim().toLowerCase();
-      if (!["wms", "shadow", "miaoshou"].includes(revenueSource)) {
-        sendJson(res, 400, { ok: false, message: "收入来源只支持 WMS、影子核对或妙手。" });
+      if (!["wms", "shadow", "miaoshou", "per_shop"].includes(revenueSource)) {
+        sendJson(res, 400, { ok: false, message: "收入来源只支持 WMS、影子核对、按店铺切换或妙手。" });
         return;
       }
       if (revenueSource === "miaoshou") {
@@ -12901,6 +13014,40 @@ const server = http.createServer(async (req, res) => {
       void warmPerformanceAnalyticsMaterialization();
       appendActionLog(auth, "更新经营分析汇率", "performance_analytics", rates.map((rate) => String(rate.currency || "").toUpperCase()).join(","), { count: rates.length });
       sendJson(res, 200, { ok: true, exchangeRates, updatedAt: new Date().toISOString() });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-directory/miaoshou-binding" && req.method === "PATCH") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_manage")) {
+        sendJson(res, 403, { ok: false, message: "绑定妙手店铺需要经营贡献管理权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const shopKey = String(body.shopKey || "").trim();
+      // miaoshouShopId: 字符串=绑定；空字符串=明确不关联；null=清除人工设置，恢复自动匹配。
+      const clear = body.miaoshouShopId === null;
+      const miaoshouShopId = clear ? "" : String(body.miaoshouShopId ?? "").trim();
+      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      if (!directory.shops.some((shop) => shop.key === shopKey)) {
+        sendJson(res, 400, { ok: false, message: "店铺身份已变化，请刷新页面后重新选择。" });
+        return;
+      }
+      if (miaoshouShopId && !(directory.miaoshouShops || []).some((shop) => shop.shopId === miaoshouShopId)) {
+        sendJson(res, 400, { ok: false, message: "妙手店铺不存在或已失效，请先在「妙手 ERP」同步店铺。" });
+        return;
+      }
+      cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
+      const bindings = { ...(cachedOrderAnalysisSettings.shopMiaoshouBindings || {}) };
+      if (clear) delete bindings[shopKey];
+      else bindings[shopKey] = { miaoshouShopId, updatedAt: new Date().toISOString(), updatedBy: auth.user?.displayName || auth.user?.username || "管理员" };
+      cachedOrderAnalysisSettings = { ...cachedOrderAnalysisSettings, shopMiaoshouBindings: bindings };
+      saveOrderAnalysisSettings();
+      appendActionLog(auth, clear ? "恢复店铺妙手自动匹配" : miaoshouShopId ? "绑定店铺妙手 ID" : "设置店铺不关联妙手", "shop_directory", shopKey, { miaoshouShopId });
+      const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      clearPerformanceAnalyticsResponseCache();
+      void warmPerformanceAnalyticsMaterialization();
+      sendJson(res, 200, { ok: true, shopKey, miaoshouShopId, shopDirectory: publicShopDirectory(updatedDirectory, auth) });
       return;
     }
 
@@ -13664,7 +13811,10 @@ server.listen(port, () => {
     registerBackgroundSyncTasks();
     syncScheduler.start();
     collaborationBridge.start();
-    setImmediate(() => { void warmPerformanceAnalyticsMaterialization(); });
+    setImmediate(() => {
+      void analyticsSummaryStore.sync();
+      void warmPerformanceAnalyticsMaterialization();
+    });
   } else {
     console.log("Tongzhou background jobs are disabled for this process.");
   }

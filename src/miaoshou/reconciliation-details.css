@@ -134,3 +134,89 @@
   color: var(--red);
   background: rgba(180, 35, 24, 0.08);
 }
+
+.ms-recon-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.ms-recon-shop-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ms-recon-shop-toolbar button:not(.sync-button) {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ms-recon-shop-toolbar button.active {
+  color: #fff;
+  border-color: var(--blue, var(--orange));
+  background: var(--blue, var(--orange));
+}
+
+.ms-recon-shop-toolbar input,
+.ms-recon-table select {
+  min-height: 30px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel-solid);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ms-recon-table select {
+  max-width: 260px;
+}
+
+.ms-recon-table-wrap {
+  overflow: auto;
+  max-height: 60vh;
+  border-radius: 8px;
+}
+
+.ms-recon-table td small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ms-recon-table td .ms-recon-warning {
+  color: var(--red);
+}
+
+.ms-recon-status {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.ms-recon-status.good {
+  color: var(--green);
+  background: rgba(24, 115, 76, 0.1);
+}
+
+.ms-recon-status.info {
+  color: var(--blue, var(--cyan));
+  background: rgba(36, 81, 164, 0.1);
+}
+
+.ms-recon-status.warning {
+  color: #8a5300;
+  background: rgba(245, 184, 75, 0.2);
+}

@@ -1,0 +1,26 @@
+# 经营分析专用 PostgreSQL（与协同中心数据库隔离，互不影响）。
+# 启动：docker compose -f docker-compose.analytics.yml --env-file .env.analytics up -d
+# 只监听本机 127.0.0.1:5433，供宝塔上的 Node 后端（pm2）连接。
+name: tongzhou-analytics
+
+services:
+  analytics-postgres:
+    # 与协同中心一致使用 Debian Bookworm 镜像，兼容生产 CentOS 7 内核。
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tongzhou_analytics
+      POSTGRES_USER: tongzhou_analytics
+      POSTGRES_PASSWORD: ${ANALYTICS_DB_PASSWORD:?required}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - analytics_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tongzhou_analytics -d tongzhou_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  analytics_postgres_data:

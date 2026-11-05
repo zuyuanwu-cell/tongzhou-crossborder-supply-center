@@ -22,6 +22,8 @@ export function createPerformanceAnalyticsQueryService() {
       resolveReady: null,
       rejectReady: null,
       factCount: 0,
+      partitioned: Boolean(input.partitionDir),
+      refreshing: null,
     };
     target.ready = new Promise((resolve, reject) => {
       target.resolveReady = resolve;
@@ -35,6 +37,18 @@ export function createPerformanceAnalyticsQueryService() {
       }
       if (message.type === "initialization-error") {
         target.rejectReady(new Error(message.message || "经营分析快照读取失败"));
+        return;
+      }
+      if (message.type === "refreshed" || message.type === "refresh-error") {
+        const refreshing = target.refreshing;
+        target.refreshing = null;
+        if (!refreshing) return;
+        if (message.type === "refreshed") {
+          target.dataVersion = message.dataVersion;
+          target.factCount = Number(message.factCount || 0);
+          target.lastRefresh = message.stats || null;
+          refreshing.resolve(target);
+        } else refreshing.reject(new Error(message.message || "经营分析分区刷新失败"));
         return;
       }
       const pending = target.pending.get(message.id);
@@ -62,14 +76,41 @@ export function createPerformanceAnalyticsQueryService() {
       dataVersion: input.dataVersion,
       facts: Array.isArray(input.materializedFacts) ? input.materializedFacts : undefined,
       cachePath: input.cachePath || "",
+      partitionDir: input.partitionDir || "",
       exchangeRates: input.exchangeRates || [],
       packagingFeeRules: input.packagingFeeRules || [],
     });
     return target;
   }
 
+  // 分区模式下复用同一个查询线程：新版本只重新读取变化的分区，不再整份重载。
+  function refresh(target, input) {
+    if (target.refreshing?.dataVersion === input.dataVersion) return target.refreshing.promise;
+    const entry = { dataVersion: input.dataVersion };
+    entry.promise = new Promise((resolve, reject) => {
+      entry.resolve = resolve;
+      entry.reject = reject;
+    });
+    target.refreshing = entry;
+    target.worker.postMessage({
+      type: "refresh",
+      dataVersion: input.dataVersion,
+      partitionDir: input.partitionDir || "",
+      exchangeRates: input.exchangeRates || [],
+      packagingFeeRules: input.packagingFeeRules || [],
+    });
+    return entry.promise;
+  }
+
   async function ensure(input) {
     if (active?.dataVersion === input.dataVersion) return active;
+    if (active?.partitioned && input.partitionDir && !initializing) {
+      try {
+        return await refresh(active, input);
+      } catch {
+        // 刷新失败时退回重新创建线程。
+      }
+    }
     if (initializing?.dataVersion === input.dataVersion) return initializing.ready;
     if (initializing) {
       await initializing.worker.terminate();
