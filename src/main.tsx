@@ -10433,7 +10433,7 @@ function PerformanceAnalysisPage({
             <span className={`status-pill ${officialData && !loading ? "good" : "warning"}`}>{loading ? "正在读取汇总" : orderJobRunning ? "WMS 订单同步中" : officialData ? "正式数据" : payload?.syncedAt ? "暂估数据" : "等待订单同步"}</span>
             <span>{loading ? "正在读取订单事实与国家成本，请稍候" : orderJobRunning ? "同步完成后会自动刷新分析" : payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "同步订单后开始分析"}</span>
             <span>{formatNumber(payload?.metadata.rowCount || 0)} 条订单行</span>
-            {permissions.revenue && transactionSource ? <span>收入：{transactionSource.effective === "miaoshou" ? "妙手净销售额" : transactionSource.requested === "shadow" ? "WMS 正式 · 妙手影子" : "WMS"}</span> : null}
+            {permissions.revenue && transactionSource ? <span>收入：{transactionSource.effective === "miaoshou" ? "妙手净销售额" : transactionSource.effective === "mixed" ? `按店铺切换 · ${transactionSource.reconciliation.effectiveShopCount || 0} 家用妙手` : transactionSource.requested === "shadow" ? "WMS 正式 · 妙手影子" : "WMS"}</span> : null}
             {payload?.materializationStale ? <span className="status-pill warning">后台更新中 · 当前展示上一版快照</span> : null}
             {payload?.queryDurationMs !== undefined ? <span>筛选 {formatNumber(payload.queryDurationMs)} ms · 版本 {payload.dataVersion || "—"}</span> : null}
           </div>
@@ -10613,7 +10613,7 @@ function PerformanceAnalysisPage({
               <article><span>交易 / 退款</span><strong>妙手 ERP</strong><small>{transactionSource?.sync.lastSuccessAt ? `最近完整同步 ${formatDateTime(transactionSource.sync.lastSuccessAt)}` : transactionSource?.sync.lastCompletedAt ? `最近部分同步 ${formatDateTime(transactionSource.sync.lastCompletedAt)}` : "等待首次同步"}</small></article>
               <article><span>出库 / 仓库</span><strong>WMS</strong><small>{payload?.syncedAt ? `数据截至 ${formatDateTime(payload.syncedAt)}` : "等待同步"}</small></article>
               <article><span>国家直营成本</span><strong>产品库 + 补录台账</strong><small>按 SKU、国家和订单日期匹配；产品库优先</small></article>
-              <article><span>正式收入口径</span><strong>{transactionSource?.effective === "miaoshou" ? "妙手净销售额" : "WMS 销售额"}</strong><small>请求模式：{transactionSource?.requested === "miaoshou" ? "妙手正式" : transactionSource?.requested === "shadow" ? "影子核对" : "固定 WMS"}</small></article>
+              <article><span>正式收入口径</span><strong>{transactionSource?.effective === "miaoshou" ? "妙手净销售额" : transactionSource?.effective === "mixed" ? "按店铺：妙手 + WMS" : "WMS 销售额"}</strong><small>请求模式：{transactionSource?.requested === "miaoshou" ? "妙手正式" : transactionSource?.requested === "per_shop" ? "按店铺切换" : transactionSource?.requested === "shadow" ? "影子核对" : "固定 WMS"}</small></article>
             </div>
             <div className="performance-reconciliation-grid">
               <article className={(transactionSource?.reconciliation.orderMatchRate || 0) >= 0.98 ? "good" : "warning"}><span>订单匹配率</span><strong>{formatPercentValue(transactionSource?.reconciliation.orderMatchRate)}</strong><small>{formatNumber(transactionSource?.reconciliation.matchedOrderCount || 0)} / {formatNumber(transactionSource?.reconciliation.eligibleOrderCount || 0)} 单</small></article>
@@ -10632,7 +10632,7 @@ function PerformanceAnalysisPage({
                 <button className="sync-button" type="button" onClick={() => changeRevenueSource("miaoshou")} disabled={busy || !transactionSource?.activationEligible || transactionSource?.effective === "miaoshou"}>启用妙手正式口径</button>
               </> : null}
             </div>
-            <MiaoshouReconciliationDetails source={transactionSource} canManage={Boolean(permissions.manageTransactionSource)} onChanged={() => onLoad(payload?.filters || {})} />
+            <MiaoshouReconciliationDetails source={transactionSource} shopDirectory={payload?.shopDirectory} partitionStats={payload?.partitionStats} summaryStore={payload?.summaryStore} canManage={Boolean(permissions.manageTransactionSource)} onChanged={() => onLoad(payload?.filters || {})} />
           </section>
         ) : tab === "costs" ? (
           <div className="performance-cost-workspace">

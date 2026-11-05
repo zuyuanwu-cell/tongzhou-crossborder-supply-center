@@ -54,6 +54,20 @@ function matchingMiaoshouShop(profile, shops) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+// 自动匹配失败时给出建议：同平台、同站点、名称互相包含的唯一店铺。
+function suggestMiaoshouShop(profile, shops) {
+  const name = normalizedToken(profile.rawName);
+  if (!name) return null;
+  const candidates = shops.filter((shop) => {
+    if (normalizedPlatform(shop.platform) !== normalizedPlatform(profile.platform)) return false;
+    const shopSite = siteForCountry(shop.site || shop.siteName);
+    const profileSite = siteForCountry(profile.country);
+    if (shopSite && profileSite && shopSite !== profileSite) return false;
+    return miaoshouNames(shop).some((candidate) => candidate.includes(name) || name.includes(candidate));
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 function dominantValue(counts) {
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh-CN"))[0]?.[0] || "";
 }
@@ -70,10 +84,22 @@ export function normalizeShopDirectorySettings(input = {}) {
       updatedBy: text(value.updatedBy),
     };
   }
+  const bindings = {};
+  for (const [key, value] of Object.entries(source.shopMiaoshouBindings || {})) {
+    const normalizedKey = text(key);
+    if (!normalizedKey || !value || typeof value !== "object") continue;
+    // miaoshouShopId 为空表示管理员明确「不关联妙手」。
+    bindings[normalizedKey] = {
+      miaoshouShopId: text(value.miaoshouShopId),
+      updatedAt: text(value.updatedAt),
+      updatedBy: text(value.updatedBy),
+    };
+  }
   return {
     updatedAt: text(source.updatedAt),
     shopAliases: source.shopAliases && typeof source.shopAliases === "object" ? source.shopAliases : {},
     shopAssignments: assignments,
+    shopMiaoshouBindings: bindings,
     projectGroups: [...new Set((Array.isArray(source.projectGroups) ? source.projectGroups : []).map(text).filter(Boolean))],
   };
 }
@@ -105,8 +131,14 @@ export function buildShopDirectory({ orders = [], miaoshouShops = [], settings =
     profiles.set(key, current);
   }
 
+  const miaoshouById = new Map(activeMiaoshouShops.map((shop) => [text(shop.shopId), shop]));
   const publicProfiles = [...profiles.values()].map((profile) => {
-    const matchedShop = matchingMiaoshouShop(profile, activeMiaoshouShops);
+    // 人工绑定优先于名称自动匹配；绑定的妙手店铺已失效时退回自动匹配并提示。
+    const binding = normalizedSettings.shopMiaoshouBindings[profile.key] || null;
+    const boundShop = binding?.miaoshouShopId ? miaoshouById.get(binding.miaoshouShopId) || null : null;
+    const explicitlyUnbound = Boolean(binding && !binding.miaoshouShopId);
+    const autoMatchedShop = matchingMiaoshouShop(profile, activeMiaoshouShops);
+    const matchedShop = explicitlyUnbound ? null : boundShop || autoMatchedShop;
     const manualAlias = text(normalizedSettings.shopAliases?.[profile.rawName]);
     const miaoshouAlias = text(matchedShop?.shopNick);
     const platformShopName = text(matchedShop?.platformShopName);
@@ -131,6 +163,9 @@ export function buildShopDirectory({ orders = [], miaoshouShops = [], settings =
       miaoshouShopName: platformShopName,
       miaoshouAlias,
       miaoshouMatched: Boolean(matchedShop),
+      miaoshouMatchSource: explicitlyUnbound ? "manual_none" : boundShop ? "manual" : autoMatchedShop ? "auto" : "none",
+      miaoshouBindingStale: Boolean(binding?.miaoshouShopId && !boundShop),
+      miaoshouSuggestedShopId: !matchedShop ? text(suggestMiaoshouShop(profile, activeMiaoshouShops)?.shopId) : "",
     };
   }).sort((left, right) => left.displayName.localeCompare(right.displayName, "zh-CN"));
 
@@ -147,6 +182,13 @@ export function buildShopDirectory({ orders = [], miaoshouShops = [], settings =
     miaoshouShopCount: activeMiaoshouShops.length,
     matchedShopCount: publicProfiles.filter((profile) => profile.miaoshouMatched).length,
     unmatchedShopCount: publicProfiles.filter((profile) => !profile.miaoshouMatched).length,
+    miaoshouShops: activeMiaoshouShops.map((shop) => ({
+      shopId: text(shop.shopId),
+      platform: text(shop.platform),
+      site: text(shop.site || shop.siteName),
+      name: text(shop.shopNick) || text(shop.platformShopName) || text(shop.shopId),
+      platformShopName: text(shop.platformShopName),
+    })),
   };
 }
 

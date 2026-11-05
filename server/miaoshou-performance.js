@@ -366,8 +366,102 @@ function statusDictionary(rows, kind) {
     .slice(0, 40);
 }
 
-export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = [], returns = [], cancellations = [], requestedSource = "shadow", syncState = {}, revenueBasis = "payAmount" } = {}) {
+// 站点所在时区（小时）。妙手为主来源时按站点当地日期归日，与 Shopee / TikTok 后台一致。
+const SITE_UTC_OFFSET_HOURS = Object.freeze({ ID: 7, VN: 7, TH: 7, MY: 8, SG: 8, PH: 8, TW: 8, CN: 8, RU: 3, BR: -3, MX: -6, CO: -5, CL: -4 });
+const COUNTRY_SITE = Object.freeze({ 印度尼西亚: "ID", 印尼: "ID", 越南: "VN", 泰国: "TH", 马来西亚: "MY", 马来: "MY", 新加坡: "SG", 菲律宾: "PH", 俄罗斯: "RU", 俄罗斯联邦: "RU" });
+const MIN_SHOP_MATCHED_ORDERS = 10;
+const RECONCILIATION_THRESHOLDS = Object.freeze({ orderMatchRate: 0.98, quantityVarianceRate: 0.005, amountVarianceRate: 0.01, refundFinalizationRate: 0.99 });
+
+function siteOf(value) {
+  const raw = text(value);
+  if (/^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase();
+  return COUNTRY_SITE[raw] || "";
+}
+
+export function miaoshouBusinessDate(isoValue, site) {
+  const parsed = Date.parse(text(isoValue));
+  if (!Number.isFinite(parsed)) return "";
+  const offset = SITE_UTC_OFFSET_HOURS[siteOf(site)] ?? 8;
+  return new Date(parsed + offset * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function reconciliationAccumulator() {
+  return {
+    eligibleOrderCount: 0,
+    matchedOrderCount: 0,
+    matchedLineCount: 0,
+    wmsQuantity: 0,
+    miaoshouQuantity: 0,
+    comparableAmountOrders: 0,
+    amountDelta: 0,
+    miaoshouComparableAmount: 0,
+    finalizedRefundCount: 0,
+    totalRefundCount: 0,
+    cancelledOutboundOrders: 0,
+    miaoshouOnlyOrderCount: 0,
+  };
+}
+
+function evaluateAccumulator(acc, { syncHealthy, gapCount, minimumMatchedOrders = 1 }) {
+  const orderMatchRate = ratio(acc.matchedOrderCount, acc.eligibleOrderCount);
+  const quantityVarianceRate = ratio(Math.abs(acc.wmsQuantity - acc.miaoshouQuantity), Math.max(acc.wmsQuantity, acc.miaoshouQuantity));
+  const amountVarianceRate = ratio(acc.amountDelta, acc.miaoshouComparableAmount);
+  const refundFinalizationRate = acc.totalRefundCount ? ratio(acc.finalizedRefundCount, acc.totalRefundCount) : 1;
+  const thresholds = RECONCILIATION_THRESHOLDS;
+  const blockers = [];
+  if (!syncHealthy) blockers.push("妙手交易同步尚未完整成功");
+  if (gapCount) blockers.push(`妙手售后同步还有 ${gapCount} 个时间段待补齐`);
+  if (acc.matchedOrderCount < minimumMatchedOrders) blockers.push(minimumMatchedOrders > 1 ? `已匹配订单 ${acc.matchedOrderCount} 单，少于 ${minimumMatchedOrders} 单，样本不足` : "还没有可匹配的订单");
+  if (orderMatchRate < thresholds.orderMatchRate) blockers.push(`订单匹配率 ${round(orderMatchRate * 100, 2)}% 低于 98%`);
+  if (quantityVarianceRate > thresholds.quantityVarianceRate) blockers.push(`数量差异率 ${round(quantityVarianceRate * 100, 2)}% 高于 0.5%`);
+  if (acc.comparableAmountOrders > 0 && amountVarianceRate > thresholds.amountVarianceRate) blockers.push(`金额差异率 ${round(amountVarianceRate * 100, 2)}% 高于 1%`);
+  if (refundFinalizationRate < thresholds.refundFinalizationRate) blockers.push(`退款终态识别率 ${round(refundFinalizationRate * 100, 2)}% 低于 99%`);
+  if (acc.cancelledOutboundOrders > 0) blockers.push(`发现 ${acc.cancelledOutboundOrders} 个已取消但 WMS 已出库订单`);
+  return {
+    eligibleOrderCount: acc.eligibleOrderCount,
+    matchedOrderCount: acc.matchedOrderCount,
+    unmatchedOrderCount: Math.max(0, acc.eligibleOrderCount - acc.matchedOrderCount),
+    matchedLineCount: acc.matchedLineCount,
+    orderMatchRate,
+    wmsQuantity: round(acc.wmsQuantity, 4),
+    miaoshouQuantity: round(acc.miaoshouQuantity, 4),
+    quantityVarianceRate,
+    comparableAmountOrders: acc.comparableAmountOrders,
+    amountVarianceRate,
+    refundCount: acc.totalRefundCount,
+    finalizedRefundCount: acc.finalizedRefundCount,
+    refundFinalizationRate,
+    cancelledOutboundOrders: acc.cancelledOutboundOrders,
+    blockers,
+    activationEligible: blockers.length === 0,
+  };
+}
+
+const UNPAID_STATUS = /(unpaid|wait[_\s-]*pay|pending[_\s-]*payment|待付款|未付款|待支付)/i;
+
+/**
+ * 妙手 × WMS 对账。
+ * requestedSource:
+ *   wms      固定使用 WMS
+ *   shadow   只核对，不替换
+ *   miaoshou 全局门槛达标时所有店铺切换（兼容旧模式）
+ *   per_shop 只有 enabledShopKeys 中、且单店门槛达标的店铺切换
+ * 切换后的店铺以妙手为订单主来源：按站点当地支付日期归日，并补入 WMS 中还没有的妙手订单（未出库、平台履约）。
+ */
+export function reconcileMiaoshouPerformance({
+  facts = [],
+  orders = [],
+  items = [],
+  returns = [],
+  cancellations = [],
+  requestedSource = "shadow",
+  syncState = {},
+  revenueBasis = "payAmount",
+  enabledShopKeys = [],
+  shopDirectory = null,
+} = {}) {
   const basis = normalizeMiaoshouRevenueBasis(revenueBasis);
+  const mode = ["wms", "shadow", "miaoshou", "per_shop"].includes(text(requestedSource)) ? text(requestedSource) : "shadow";
   const orderByKey = new Map(orders.map((order) => [order.identity || orderKey(order), order]).filter(([key]) => key));
   const itemsByOrder = new Map();
   for (const item of items) {
@@ -382,6 +476,16 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
     returnsByOrder.set(row.orderIdentity, list);
   }
   const cancelledOrders = new Set(cancellations.filter((row) => row.finalized).map((row) => row.orderIdentity));
+  const directoryShops = Array.isArray(shopDirectory?.shops) ? shopDirectory.shops : [];
+  const shopByMiaoshouKey = new Map();
+  for (const shop of directoryShops) {
+    const shopId = text(shop.miaoshouShopId);
+    if (!shopId) continue;
+    const key = `${normalizedPlatform(shop.platform)}|${shopId}`;
+    if (!shopByMiaoshouKey.has(key)) shopByMiaoshouKey.set(key, shop);
+  }
+  const shopProfileByKey = new Map(directoryShops.map((shop) => [text(shop.key), shop]));
+
   const groups = new Map();
   const output = facts.map((fact) => ({ ...fact }));
   output.forEach((fact, index) => {
@@ -392,59 +496,57 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
     groups.set(identity, group);
   });
 
-  let eligibleOrderCount = 0;
-  let matchedOrderCount = 0;
-  let matchedLineCount = 0;
-  let wmsQuantity = 0;
-  let miaoshouQuantity = 0;
-  let comparableAmountOrders = 0;
-  let amountDelta = 0;
-  let miaoshouComparableAmount = 0;
-  let finalizedRefundCount = 0;
-  let totalRefundCount = 0;
-  let cancelledOutboundOrders = 0;
+  const total = reconciliationAccumulator();
+  const shopStats = new Map();
+  const shopAcc = (shopKey, seed = {}) => {
+    const key = text(shopKey) || "unassigned";
+    let current = shopStats.get(key);
+    if (!current) {
+      current = { shopKey: key, shopName: text(seed.shopName), platform: text(seed.platform), country: text(seed.country), miaoshouShopId: text(seed.miaoshouShopId), acc: reconciliationAccumulator() };
+      shopStats.set(key, current);
+    }
+    return current;
+  };
   const basisComparison = new Map();
+  const matchedOrderIdentities = new Set();
 
   for (const [identity, entries] of groups) {
-    eligibleOrderCount += 1;
+    const groupFacts = entries.map(({ fact }) => fact);
+    const shop = shopAcc(groupFacts[0].shopKey, groupFacts[0]);
+    total.eligibleOrderCount += 1;
+    shop.acc.eligibleOrderCount += 1;
     const order = orderByKey.get(identity);
     if (!order) continue;
-    matchedOrderCount += 1;
-    matchedLineCount += entries.length;
-    const groupFacts = entries.map(({ fact }) => fact);
+    matchedOrderIdentities.add(identity);
     const orderItems = itemsByOrder.get(identity) || [];
     const wmsQty = groupFacts.reduce((sum, fact) => sum + Math.max(0, number(fact.quantity)), 0);
     const msQty = orderItems.reduce((sum, item) => sum + Math.max(0, number(item.quantity)), 0);
-    wmsQuantity += wmsQty;
-    miaoshouQuantity += msQty;
     const orderReturns = returnsByOrder.get(identity) || [];
-    totalRefundCount += orderReturns.length;
-    finalizedRefundCount += orderReturns.filter((row) => row.finalized).length;
     const currency = text(order.currency).toUpperCase();
     const grossAmount = transactionAmount(order, basis);
-    const comparisonAmount = grossAmount;
     const refundAmount = Math.min(grossAmount, orderReturns
       .filter((row) => row.finalized && (!row.currency || row.currency === currency))
       .reduce((sum, row) => sum + Math.max(0, number(row.refundAmount)), 0));
     const cancelled = cancelledOrders.has(identity);
-    if (cancelled) cancelledOutboundOrders += 1;
     const netAmount = cancelled ? 0 : Math.max(0, round(grossAmount - refundAmount));
     const weights = lineWeights(groupFacts, orderItems);
-    const grossAllocations = allocate(grossAmount, weights);
-    const refundAllocations = allocate(refundAmount, weights);
-    const netAllocations = allocate(netAmount, weights);
-    const commissionAllocations = allocate(order.commissionFee, weights);
-    const logisticsAllocations = allocate(order.actualShippingCost || order.estimatedShippingFee, weights);
     const wmsAmount = groupFacts.every((fact) => fact.salesAmountValid && text(fact.currency).toUpperCase() === currency)
       ? groupFacts.reduce((sum, fact) => sum + Math.max(0, number(fact.salesAmount)), 0)
       : 0;
-    if (comparisonAmount > 0 && wmsAmount > 0) {
-      comparableAmountOrders += 1;
-      // WMS exposes the order amount captured at fulfillment time; refunds are
-      // a separate after-sales fact. Compare gross-to-gross here, otherwise any
-      // legitimate refund would incorrectly fail the source activation gate.
-      amountDelta += Math.abs(comparisonAmount - wmsAmount);
-      miaoshouComparableAmount += comparisonAmount;
+    for (const acc of [total, shop.acc]) {
+      acc.matchedOrderCount += 1;
+      acc.matchedLineCount += entries.length;
+      acc.wmsQuantity += wmsQty;
+      acc.miaoshouQuantity += msQty;
+      acc.totalRefundCount += orderReturns.length;
+      acc.finalizedRefundCount += orderReturns.filter((row) => row.finalized).length;
+      if (cancelled) acc.cancelledOutboundOrders += 1;
+      if (grossAmount > 0 && wmsAmount > 0) {
+        // WMS 记录的是出库时的订单金额，退款是单独的售后事实；这里按毛额对毛额比较。
+        acc.comparableAmountOrders += 1;
+        acc.amountDelta += Math.abs(grossAmount - wmsAmount);
+        acc.miaoshouComparableAmount += grossAmount;
+      }
     }
     if (wmsAmount > 0) {
       for (const candidate of MIAOSHOU_REVENUE_BASES) {
@@ -457,7 +559,13 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
         basisComparison.set(candidate, current);
       }
     }
+    const grossAllocations = allocate(grossAmount, weights);
+    const refundAllocations = allocate(refundAmount, weights);
+    const netAllocations = allocate(netAmount, weights);
+    const commissionAllocations = allocate(order.commissionFee, weights);
+    const logisticsAllocations = allocate(order.actualShippingCost || order.estimatedShippingFee, weights);
     const settlementAllocations = allocate(order.escrowAmount, weights);
+    const paidDate = miaoshouBusinessDate(order.paidAt || order.orderStartedAt, order.site || groupFacts[0].country);
     entries.forEach(({ index }, lineIndex) => {
       output[index] = {
         ...output[index],
@@ -471,32 +579,67 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
         miaoshouSettlementAmount: settlementAllocations[lineIndex],
         miaoshouCurrency: currency,
         miaoshouCancelled: cancelled,
+        miaoshouPaidDate: paidDate,
       };
     });
   }
 
-  const orderMatchRate = ratio(matchedOrderCount, eligibleOrderCount);
-  const quantityVarianceRate = ratio(Math.abs(wmsQuantity - miaoshouQuantity), Math.max(wmsQuantity, miaoshouQuantity));
-  const amountVarianceRate = ratio(amountDelta, miaoshouComparableAmount);
-  const refundFinalizationRate = totalRefundCount ? ratio(finalizedRefundCount, totalRefundCount) : 1;
-  // 订单部分同步成功即视为健康；售后缺口单独作为阻断项，补齐后自动解除。
+  // 只在妙手里出现、还没有 WMS 出库记录的订单（未发货、平台履约）。
+  const miaoshouOnlyOrders = [];
+  for (const [identity, order] of orderByKey) {
+    if (matchedOrderIdentities.has(identity) || groups.has(identity)) continue;
+    const shop = shopByMiaoshouKey.get(`${normalizedPlatform(order.platform)}|${text(order.shopId)}`);
+    if (!shop) continue;
+    miaoshouOnlyOrders.push({ identity, order, shop });
+    total.miaoshouOnlyOrderCount += 1;
+    shopAcc(shop.key, { shopName: shop.displayName, platform: shop.platform, country: shop.country, miaoshouShopId: shop.miaoshouShopId }).acc.miaoshouOnlyOrderCount += 1;
+  }
+
+  // 还没关联妙手的店铺也列出来，方便在对账页直接绑定。
+  for (const shop of directoryShops) {
+    if (!shopStats.has(text(shop.key))) shopAcc(shop.key, { shopName: shop.displayName, platform: shop.platform, country: shop.country, miaoshouShopId: shop.miaoshouShopId });
+  }
+  for (const fact of output) {
+    if (text(fact.miaoshouShopId)) continue;
+    const entry = shopStats.get(text(fact.shopKey));
+    if (entry) entry.unlinkedLines = (entry.unlinkedLines || 0) + 1;
+  }
+
+  // 订单部分同步成功即视为健康；售后缺口按平台阻断对应店铺。
   const syncHealthy = ["success", "partial"].includes(text(syncState.status)) && Boolean(syncState.lastSuccessAt) && !text(syncState.lastError);
   const afterSalesGaps = Array.isArray(syncState.afterSalesGaps) ? syncState.afterSalesGaps : [];
-  const thresholds = { orderMatchRate: 0.98, quantityVarianceRate: 0.005, amountVarianceRate: 0.01, refundFinalizationRate: 0.99 };
-  const blockers = [];
-  if (!syncHealthy) blockers.push("妙手交易同步尚未完整成功");
-  if (afterSalesGaps.length) blockers.push(`妙手售后同步还有 ${afterSalesGaps.length} 个时间段待补齐`);
-  if (orderMatchRate < thresholds.orderMatchRate) blockers.push(`订单匹配率 ${round(orderMatchRate * 100, 2)}% 低于 98%`);
-  if (quantityVarianceRate > thresholds.quantityVarianceRate) blockers.push(`数量差异率 ${round(quantityVarianceRate * 100, 2)}% 高于 0.5%`);
-  if (comparableAmountOrders > 0 && amountVarianceRate > thresholds.amountVarianceRate) blockers.push(`金额差异率 ${round(amountVarianceRate * 100, 2)}% 高于 1%`);
-  if (refundFinalizationRate < thresholds.refundFinalizationRate) blockers.push(`退款终态识别率 ${round(refundFinalizationRate * 100, 2)}% 低于 99%`);
-  if (cancelledOutboundOrders > 0) blockers.push(`发现 ${cancelledOutboundOrders} 个已取消但 WMS 已出库订单`);
-  const activationEligible = blockers.length === 0 && matchedOrderCount > 0;
-  const effectiveSource = requestedSource === "miaoshou" && activationEligible ? "miaoshou" : "wms";
+  const globalEvaluation = evaluateAccumulator(total, { syncHealthy, gapCount: afterSalesGaps.length, minimumMatchedOrders: 1 });
+  const enabled = new Set((Array.isArray(enabledShopKeys) ? enabledShopKeys : [...(enabledShopKeys || [])]).map(text).filter(Boolean));
+  const shopEvaluations = [...shopStats.values()].map((entry) => {
+    const profile = shopProfileByKey.get(entry.shopKey) || {};
+    const platformGaps = afterSalesGaps.filter((gap) => normalizedPlatform(gap.platform) === normalizedPlatform(entry.platform || profile.platform)).length;
+    const evaluation = evaluateAccumulator(entry.acc, { syncHealthy, gapCount: platformGaps, minimumMatchedOrders: MIN_SHOP_MATCHED_ORDERS });
+    if (!text(entry.miaoshouShopId || profile.miaoshouShopId)) evaluation.blockers.unshift("未关联妙手店铺");
+    evaluation.activationEligible = evaluation.blockers.length === 0;
+    const isEnabled = mode === "miaoshou" ? true : enabled.has(entry.shopKey);
+    const effective = mode === "per_shop"
+      ? isEnabled && evaluation.activationEligible
+      : mode === "miaoshou" ? globalEvaluation.activationEligible && entry.acc.matchedOrderCount > 0 : false;
+    return {
+      shopKey: entry.shopKey,
+      shopName: text(profile.displayName) || entry.shopName || entry.shopKey,
+      platform: text(profile.platform) || entry.platform,
+      country: text(profile.country) || entry.country,
+      projectGroup: text(profile.projectGroup),
+      miaoshouShopId: text(profile.miaoshouShopId) || entry.miaoshouShopId,
+      miaoshouMatchSource: text(profile.miaoshouMatchSource),
+      enabled: isEnabled,
+      effective,
+      miaoshouOnlyOrderCount: entry.acc.miaoshouOnlyOrderCount,
+      ...evaluation,
+    };
+  }).sort((left, right) => right.eligibleOrderCount - left.eligibleOrderCount || left.shopName.localeCompare(right.shopName, "zh-CN"));
+  const effectiveShopKeys = new Set(shopEvaluations.filter((row) => row.effective).map((row) => row.shopKey));
 
-  if (effectiveSource === "miaoshou") {
+  let addedFactCount = 0;
+  if (effectiveShopKeys.size) {
     output.forEach((fact, index) => {
-      if (fact.transactionMatchStatus !== "matched") return;
+      if (fact.transactionMatchStatus !== "matched" || !effectiveShopKeys.has(text(fact.shopKey) || "unassigned")) return;
       output[index] = {
         ...fact,
         salesAmount: fact.miaoshouNetAmount,
@@ -504,32 +647,101 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
         salesAmountValid: !fact.miaoshouCancelled && fact.miaoshouNetAmount > 0,
         salesAmountScope: "miaoshou_order_allocated",
         salesAmountSource: `miaoshou.${basis}-refundAmount`,
+        orderDate: fact.miaoshouPaidDate || fact.orderDate,
+        orderDateSource: fact.miaoshouPaidDate ? "miaoshou_paid" : "wms",
+        revenueSourceSystem: "miaoshou",
       };
     });
+    for (const { identity, order, shop } of miaoshouOnlyOrders) {
+      if (!effectiveShopKeys.has(text(shop.key))) continue;
+      if (cancelledOrders.has(identity)) continue;
+      if (UNPAID_STATUS.test(`${text(order.appOrderStatus)} ${text(order.appOrderStatusText)} ${text(order.platformOrderStatus)}`)) continue;
+      const orderDate = miaoshouBusinessDate(order.paidAt || order.orderStartedAt, order.site || shop.country);
+      const grossAmount = transactionAmount(order, basis);
+      if (!orderDate || grossAmount <= 0) continue;
+      const orderItems = (itemsByOrder.get(identity) || []).filter((item) => number(item.quantity) > 0);
+      const lines = orderItems.length ? orderItems : [{ identity: `${identity}|order`, platformOuterSkuId: "", quantity: 1 }];
+      const currency = text(order.currency).toUpperCase();
+      const orderReturns = returnsByOrder.get(identity) || [];
+      const refundAmount = Math.min(grossAmount, orderReturns
+        .filter((row) => row.finalized && (!row.currency || row.currency === currency))
+        .reduce((sum, row) => sum + Math.max(0, number(row.refundAmount)), 0));
+      const netAmount = Math.max(0, round(grossAmount - refundAmount));
+      const weights = lines.map((item) => {
+        const value = Math.max(0, number(item.discountedPrice || item.originalPrice)) * Math.max(0, number(item.quantity));
+        return value > 0 ? value : Math.max(0, number(item.quantity)) || 1;
+      });
+      const grossAllocations = allocate(grossAmount, weights);
+      const refundAllocations = allocate(refundAmount, weights);
+      const netAllocations = allocate(netAmount, weights);
+      const commissionAllocations = allocate(order.commissionFee, weights);
+      const logisticsAllocations = allocate(order.actualShippingCost || order.estimatedShippingFee, weights);
+      const settlementAllocations = allocate(order.escrowAmount, weights);
+      lines.forEach((item, lineIndex) => {
+        output.push({
+          id: `miaoshou|${text(item.identity) || `${identity}|${lineIndex}`}`,
+          sourceSystem: "miaoshou",
+          sourceOrderId: text(order.opOrderId) || text(order.platformOrderSn),
+          sourceLineId: text(item.identity),
+          orderNo: text(order.platformOrderSn),
+          orderDate,
+          orderDateSource: "miaoshou_paid",
+          shippedAt: "",
+          createdAt: text(order.orderStartedAt),
+          warehouseId: "",
+          warehouseName: "未出库 / 平台履约",
+          country: text(shop.country),
+          status: text(order.appOrderStatusText || order.appOrderStatus),
+          platform: text(shop.platform),
+          shopName: text(shop.displayName) || text(shop.rawName),
+          rawShopName: text(shop.rawName),
+          shopKey: text(shop.key),
+          shopAlias: text(shop.alias),
+          projectGroup: text(shop.projectGroup),
+          miaoshouShopId: text(shop.miaoshouShopId),
+          miaoshouMatched: true,
+          sku: normalizedSku(item.platformOuterSkuId || item.platformSkuId),
+          productName: "",
+          quantity: Math.max(0, number(item.quantity)) || 1,
+          salesAmount: netAllocations[lineIndex],
+          currency,
+          salesAmountValid: netAllocations[lineIndex] > 0,
+          salesAmountScope: "miaoshou_order_allocated",
+          salesAmountSource: `miaoshou.${basis}-refundAmount`,
+          salesAmountOrderTotal: netAmount,
+          salesAmountAllocationResidual: 0,
+          transactionMatchStatus: "miaoshou_only",
+          fulfillmentStatus: "pending_wms",
+          revenueSourceSystem: "miaoshou",
+          miaoshouOrderIdentity: identity,
+          miaoshouGrossAmount: grossAllocations[lineIndex],
+          miaoshouRefundAmount: refundAllocations[lineIndex],
+          miaoshouNetAmount: netAllocations[lineIndex],
+          miaoshouCommissionAmount: commissionAllocations[lineIndex],
+          miaoshouLogisticsAmount: logisticsAllocations[lineIndex],
+          miaoshouSettlementAmount: settlementAllocations[lineIndex],
+          miaoshouCurrency: currency,
+          miaoshouCancelled: false,
+          miaoshouPaidDate: orderDate,
+        });
+        addedFactCount += 1;
+      });
+    }
   }
+
+  const effectiveSource = mode === "miaoshou" && globalEvaluation.activationEligible
+    ? "miaoshou"
+    : effectiveShopKeys.size ? "mixed" : "wms";
 
   return {
     facts: output,
     reconciliation: {
-      requestedSource,
+      requestedSource: mode,
       effectiveSource,
-      activationEligible,
-      blockers,
-      thresholds,
-      eligibleOrderCount,
-      matchedOrderCount,
-      unmatchedOrderCount: Math.max(0, eligibleOrderCount - matchedOrderCount),
-      matchedLineCount,
-      orderMatchRate,
-      wmsQuantity: round(wmsQuantity, 4),
-      miaoshouQuantity: round(miaoshouQuantity, 4),
-      quantityVarianceRate,
-      comparableAmountOrders,
-      amountVarianceRate,
-      refundCount: totalRefundCount,
-      finalizedRefundCount,
-      refundFinalizationRate,
-      cancelledOutboundOrders,
+      activationEligible: globalEvaluation.activationEligible,
+      blockers: globalEvaluation.blockers,
+      thresholds: RECONCILIATION_THRESHOLDS,
+      ...Object.fromEntries(Object.entries(globalEvaluation).filter(([key]) => !["blockers", "activationEligible"].includes(key))),
       revenueBasis: basis,
       // 每种金额口径与 WMS 订单金额的差异率，越接近 0 说明该口径与 WMS 一致。
       basisComparison: MIAOSHOU_REVENUE_BASES.map((candidate) => {
@@ -540,6 +752,12 @@ export function reconcileMiaoshouPerformance({ facts = [], orders = [], items = 
       pendingCancellationCount: cancellations.filter((row) => (row.statusClass || "") === "pending").length,
       afterSalesGapCount: afterSalesGaps.length,
       statusDictionary: [...statusDictionary(returns, "return"), ...statusDictionary(cancellations, "cancellation")],
+      minimumShopMatchedOrders: MIN_SHOP_MATCHED_ORDERS,
+      miaoshouOnlyOrderCount: total.miaoshouOnlyOrderCount,
+      addedMiaoshouFactCount: addedFactCount,
+      effectiveShopCount: effectiveShopKeys.size,
+      eligibleShopCount: shopEvaluations.filter((row) => row.activationEligible).length,
+      shops: shopEvaluations.slice(0, 500),
     },
   };
 }

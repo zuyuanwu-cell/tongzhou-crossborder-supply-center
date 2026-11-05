@@ -4,6 +4,7 @@ import { gunzipSync } from "node:zlib";
 import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
 import { buildOrderAnalysisFromFacts } from "./order-analysis.js";
 import { aggregateSystemShopDaily } from "./shop-daily-report.js";
+import { readPartitionIndex, readPartitionRows } from "./performance-partitions.js";
 
 let dataVersion = "";
 let facts = [];
@@ -126,8 +127,39 @@ function queryShopDaily(message) {
   };
 }
 
+// 分区缓存：key -> { hash, rows }。刷新时只重新读取哈希变化的分区。
+const partitionCache = new Map();
+
+function loadPartitions(partitionDir) {
+  const startedAt = Date.now();
+  const index = readPartitionIndex(partitionDir);
+  const entries = Object.entries(index.partitions || {});
+  if (!entries.length) throw new Error("经营分析分区尚未生成，请稍后重试。");
+  let reloaded = 0;
+  const next = new Map();
+  for (const [key, meta] of entries) {
+    const hash = text(meta?.hash);
+    const cached = partitionCache.get(key);
+    if (cached && cached.hash === hash) {
+      next.set(key, cached);
+      continue;
+    }
+    next.set(key, { hash, rows: readPartitionRows(partitionDir, key, hash) });
+    reloaded += 1;
+  }
+  partitionCache.clear();
+  for (const [key, value] of next) partitionCache.set(key, value);
+  const rows = [];
+  for (const value of partitionCache.values()) for (const row of value.rows) rows.push(row);
+  rows.sort((left, right) => text(left.orderDate).localeCompare(text(right.orderDate)));
+  return { rows, stats: { partitionCount: entries.length, reloadedPartitionCount: reloaded, durationMs: Date.now() - startedAt } };
+}
+
 function initialize(message = {}) {
   let initialFacts = Array.isArray(message.facts) ? message.facts : null;
+  if (!initialFacts && message.partitionDir) {
+    initialFacts = loadPartitions(message.partitionDir).rows;
+  }
   if (!initialFacts && message.cachePath && existsSync(message.cachePath)) {
     const snapshot = JSON.parse(gunzipSync(readFileSync(message.cachePath)).toString("utf8"));
     if (text(message.dataVersion) && text(snapshot.dataVersion) !== text(message.dataVersion)) {
@@ -153,6 +185,25 @@ parentPort.on("message", (message = {}) => {
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : "",
       });
+    }
+    return;
+  }
+  if (message.type === "refresh") {
+    try {
+      // 读取失败（物化线程正在替换文件）时重试一次。
+      let loaded;
+      try {
+        loaded = loadPartitions(message.partitionDir);
+      } catch {
+        loaded = loadPartitions(message.partitionDir);
+      }
+      facts = loaded.rows;
+      dataVersion = text(message.dataVersion);
+      exchangeRates = Array.isArray(message.exchangeRates) ? message.exchangeRates : exchangeRates;
+      packagingFeeRules = Array.isArray(message.packagingFeeRules) ? message.packagingFeeRules : packagingFeeRules;
+      parentPort.postMessage({ type: "refreshed", dataVersion, factCount: facts.length, stats: loaded.stats });
+    } catch (error) {
+      parentPort.postMessage({ type: "refresh-error", message: error instanceof Error ? error.message : String(error) });
     }
     return;
   }
