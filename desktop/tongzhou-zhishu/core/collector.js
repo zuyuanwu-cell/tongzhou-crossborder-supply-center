@@ -442,7 +442,8 @@ class Collector {
           const result = await client.ingest(rows, { dryRun: mode === "preview" });
           entry.upload = { ok: true, dryRun: mode === "preview", rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: result.errors.slice(0, 50), warnings: result.warnings.slice(0, 50), at: new Date().toISOString() };
         } catch (error) {
-          entry.upload = { ok: false, message: error.message, at: new Date().toISOString() };
+          entry.upload = { ok: false, message: error.message, status: error.status || 0, at: new Date().toISOString() };
+          if (error.status === 401 && this.onUnauthorized) this.onUnauthorized();
         }
       }
       const failed = entry.stores.filter((store) => store.status === "failed").length;

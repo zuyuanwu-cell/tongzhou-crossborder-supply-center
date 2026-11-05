@@ -556,7 +556,6 @@ const actions = {
     });
   },
   async unpair() {
-    if (!window.confirm("断开后需要重新用中台账号登录，确定吗？")) return;
     S.state = await api("zhongtai:unpair");
     render();
   },

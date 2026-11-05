@@ -80,6 +80,13 @@ function writeToken(value) {
 const cli = new ZiniaoCli({ cliPath: store.get().ziniao.cliPath, dataDir, log });
 const zhongtai = () => new ZhongtaiClient({ baseUrl: store.get().zhongtai.baseUrl, token: readToken() });
 const collector = new Collector({ cli, store, log, zhongtaiFactory: zhongtai });
+collector.onUnauthorized = () => {
+  writeToken("");
+  store.update((config) => {
+    config.zhongtaiUser = null;
+  });
+  log("warn", "中台登录已失效，请重新登录");
+};
 
 const schedulerStateFile = path.join(dataDir, "scheduler.json");
 const scheduler = new Scheduler({
@@ -189,9 +196,22 @@ handle("settings:save", ({ zhongtai: zt = {}, ziniao = {}, schedule = {}, openAt
   return state();
 });
 
+// 令牌失效（例如服务器重新生成了令牌）时自动清除，界面会重新显示登录框。
+function dropInvalidToken(error) {
+  if (error && error.status === 401) {
+    writeToken("");
+    store.update((config) => {
+      config.zhongtaiUser = null;
+    });
+    mainWindow?.webContents.send("run-state", { running: Boolean(collector.running) });
+    error.message = "中台登录已失效，请在总览重新用中台账号登录。";
+  }
+  throw error;
+}
+
 handle("zhongtai:test", async () => {
   const client = zhongtai();
-  await client.ping();
+  await client.ping().catch(dropInvalidToken);
   const shops = await client.listShops();
   return { shops, shopsSupported: shops !== null };
 });
