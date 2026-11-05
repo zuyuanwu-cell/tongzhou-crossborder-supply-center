@@ -121,6 +121,26 @@ const BUILTIN_LOCAL = Object.freeze({
   updatedAt: "2026-11-05T00:00:00.000Z",
 });
 
+/** 店铺身份（Shopee 店铺名、登录名、店铺 ID），用于自动对应中台店铺。 */
+function identityRequests(origin) {
+  return [
+    { key: "__shop", method: "GET", url: `${origin}/api/selleraccount/shop_info/`, body: null, headers: {} },
+    { key: "__user", method: "GET", url: `${origin}/api/selleraccount/user_info/`, body: null, headers: {} },
+  ];
+}
+
+function parseIdentity(results = {}) {
+  const shop = results.__shop?.json?.data || results.__shop?.json || {};
+  const user = results.__user?.json?.data || results.__user?.json || {};
+  const identity = {
+    shopId: shop.shop_id ? String(shop.shop_id) : "",
+    shopName: String(shop.name || shop.shop_name || ""),
+    username: String(user.user_name || user.username || ""),
+    region: String(shop.shop_region || ""),
+  };
+  return identity.shopId || identity.shopName || identity.username ? identity : null;
+}
+
 function builtinTemplates() {
   return [JSON.parse(JSON.stringify(BUILTIN_LOCAL))];
 }
@@ -151,6 +171,8 @@ module.exports = {
   checkPage,
   blankTemplate,
   builtinTemplates,
+  identityRequests,
+  parseIdentity,
   defaultTemplateId: BUILTIN_LOCAL.id,
   shopIdHint: "CNSC 多站点时填写 Shopee 店铺 ID（卖家中心地址栏 cnsc_shop_id= 后面的数字）",
 };

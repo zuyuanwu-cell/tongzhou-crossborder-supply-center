@@ -248,7 +248,16 @@ class Collector {
   }
 
   /** 中台店铺自动匹配：名称（忽略大小写/空格/符号）一致且站点一致。 */
-  matchZhongtaiShop(storeName, site) {
+  matchZhongtaiShop(storeName, site, identity = null) {
+    const candidates = [identity?.username, identity?.shopName, storeName].filter(Boolean);
+    for (const name of candidates) {
+      const found = this.matchZhongtaiShopName(name, site);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  matchZhongtaiShopName(storeName, site) {
     const shops = this.config().zhongtaiShops || [];
     if (!shops.length) return null;
     const norm = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
@@ -273,7 +282,7 @@ class Collector {
       const settings = config.stores[store.storeId] || {};
       const { site } = platform.storeSite(store);
       const manual = (settings.targets || []).filter((target) => target.shopName || target.shopKey);
-      const matched = manual.length ? null : this.matchZhongtaiShop(store.storeName, site);
+      const matched = manual.length ? null : this.matchZhongtaiShop(store.storeName, site, settings.identity);
       return {
         storeId: store.storeId,
         storeName: store.storeName,
@@ -312,7 +321,7 @@ class Collector {
           skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "无法从紫鸟平台名识别站点，请在店铺里手动选择" });
           continue;
         }
-        const matched = this.matchZhongtaiShop(store.storeName, site);
+        const matched = this.matchZhongtaiShop(store.storeName, site, settings.identity);
         targets = [{ id: `auto-${store.storeId}`, shopName: matched?.shopName || store.storeName, shopKey: matched?.shopKey || "", country: site, auto: true }];
       }
       targets = targets.map((target, index) => ({ ...target, id: target.id || `t${index}`, country: target.country || site }));
@@ -339,21 +348,42 @@ class Collector {
           for (const endpoint of template.endpoints) requests.push({ key: `${target.id}|${date}|${endpoint.id}`, ...fillRequest(endpoint, values) });
         }
       }
+      if (platform.identityRequests) requests.push(...platform.identityRequests(origin));
       onProgress({ storeId: store.storeId, phase: "fetch", message: `${store.storeName}：读取 ${requests.length} 个数据接口` });
       const timeoutMs = Math.max(60, Number(storeTimeoutSec) || 240) * 1000;
       const replay = await this.cli.runInPage(store.storeId, replayBody(requests), { timeoutMs });
+      // 记住店铺身份；自动对应没对上的，用 Shopee 登录名 / 店铺名再对一次。
+      const identity = platform.parseIdentity ? platform.parseIdentity(replay.results) : null;
+      if (identity) {
+        this.store.update((config) => {
+          config.stores[store.storeId] = { ...(config.stores[store.storeId] || { storeId: store.storeId, storeName: store.storeName }), identity };
+        });
+        for (const target of targets) {
+          if (!target.auto || target.shopKey) continue;
+          const matched = this.matchZhongtaiShop(store.storeName, target.country, identity);
+          if (matched) Object.assign(target, { shopKey: matched.shopKey, shopName: matched.shopName });
+        }
+      }
       for (const target of targets) {
         const info = siteInfo(target.country);
         const targetDates = dates[target.country] || dates.default;
         for (const date of targetDates) {
           const responses = {};
+          const notReadyEndpoints = new Set();
           for (const endpoint of template.endpoints) {
             const result = replay.results?.[`${target.id}|${date}|${endpoint.id}`] || { status: 0, error: "无返回" };
             const error = result.error || (result.status !== 200 ? `HTTP ${result.status}` : businessError(result.json));
             responses[endpoint.id] = { ...result, error };
-            if (error) issues.push({ level: "error", storeName: store.storeName, shopName: target.shopName, date, message: `${endpoint.label}：${error}` });
+            if (error) {
+              const notReady = /isn'?t ready|not ready|data_ready/i.test(error);
+              if (notReady) notReadyEndpoints.add(endpoint.id);
+              issues.push(notReady
+                ? { level: "warn", storeName: store.storeName, shopName: target.shopName, date, message: `${endpoint.label}：Shopee 还没生成这一天的数据，下次采集会自动补上` }
+                : { level: "error", storeName: store.storeName, shopName: target.shopName, date, message: `${endpoint.label}：${error}` });
+            }
           }
-          const { values, missing } = extractMetrics(template, responses);
+          const { values, missing: allMissing } = extractMetrics(template, responses);
+          const missing = allMissing.filter((field) => !notReadyEndpoints.has(template.metrics[field]?.endpoint));
           if (!Object.keys(values).length) {
             issues.push({ level: "warn", storeName: store.storeName, shopName: target.shopName, date, message: "没有取到任何字段，已跳过" });
             continue;
