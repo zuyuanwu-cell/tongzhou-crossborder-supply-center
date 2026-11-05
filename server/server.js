@@ -111,6 +111,8 @@ import { createBusinessChainService } from "./business-chain-service.js";
 import { createBusinessChainApi } from "./business-chain-api.js";
 import { createProductLaunchService } from "./product-launch.js";
 import { createProductLaunchApi } from "./product-launch-api.js";
+import { createVerificationCodeCenter } from "./verification-code-center.js";
+import { createVerificationCodeApi } from "./verification-code-api.js";
 import { BUSINESS_CHAIN_SYNC_INTERVAL_MS } from "./business-chain-config.js";
 import { initCollaborationBridgeStore } from "./collaboration-bridge-db.js";
 import { createCollaborationBridge } from "./collaboration-bridge.js";
@@ -171,6 +173,7 @@ const quickNavCachePath = resolve(cacheDir, "quick-nav.json");
 const aiConfigCachePath = resolve(cacheDir, "ai-config.json");
 const wecomNotificationCachePath = resolve(cacheDir, "wecom-notifications.json");
 const actionLogCachePath = resolve(cacheDir, "action-log.json");
+const verificationCodeCenterPath = resolve(cacheDir, "verification-code-center.json");
 const distributorApplicationsPath = resolve(cacheDir, "distributor-applications.json");
 const aiUploadDir = resolve(cacheDir, "ai-uploads");
 const afterSalesCachePath = resolve(cacheDir, "after-sales.json");
@@ -468,6 +471,19 @@ const ozonIntegrationService = createOzonIntegrationService({
 function publicAccessUser(user) {
   return publicUser(user, cachedUsers.roles || []);
 }
+const verificationCodeCenter = createVerificationCodeCenter({
+  statePath: verificationCodeCenterPath,
+  encryptionKey: process.env.VERIFICATION_CODE_ENCRYPTION_KEY || "",
+  usersProvider: () => (cachedUsers.users || []).map(publicAccessUser),
+});
+const verificationCodeApi = createVerificationCodeApi({
+  service: verificationCodeCenter,
+  getAuth,
+  hasPermission,
+  parseRequestBody,
+  sendJson,
+  appendActionLog,
+});
 const stockupCollaborationApi = createStockupCollaborationApi({
   service: stockupCollaborationService,
   getAuth,
@@ -8642,6 +8658,7 @@ const server = http.createServer(async (req, res) => {
     if (await hermesPartnerConfigApi(req, res, url)) return;
     if (await hermesPartnerDraftApi(req, res, url)) return;
     if (await hermesApi(req, res, url)) return;
+    if (await verificationCodeApi.handle(req, res, url)) return;
 
     if (url.pathname === "/api/system-backup/status" && req.method === "GET") {
       const auth = systemBackupAdmin(req, res);
@@ -13811,6 +13828,7 @@ server.listen(port, () => {
     registerBackgroundSyncTasks();
     syncScheduler.start();
     collaborationBridge.start();
+    verificationCodeCenter.start(process.env.VERIFICATION_CODE_POLL_INTERVAL_MS);
     setImmediate(() => {
       void analyticsSummaryStore.sync();
       void warmPerformanceAnalyticsMaterialization();

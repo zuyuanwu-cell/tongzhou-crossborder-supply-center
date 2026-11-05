@@ -7242,3 +7242,112 @@ export function updateShopFeeRules(rules: ShopFeeRule[]) {
     body: JSON.stringify({ rules }),
   });
 }
+
+export type VerificationMailbox = {
+  id: string;
+  label: string;
+  address: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string;
+  enabled: boolean;
+  secretConfigured: boolean;
+  lastSyncedAt: string;
+  lastSuccessAt: string;
+  lastError: string;
+};
+
+export type VerificationBinding = {
+  id: string;
+  mailboxId: string;
+  mailboxAddress: string;
+  platform: string;
+  shopName: string;
+  shopKey: string;
+  senderPatterns: string[];
+  subjectKeywords: string[];
+  allowedUserIds: string[];
+  enabled: boolean;
+};
+
+export type VerificationRequest = {
+  id: string;
+  bindingId: string;
+  mailboxId: string;
+  platform: string;
+  shopKey: string;
+  shopName: string;
+  userId: string;
+  userName: string;
+  status: "pending" | "ready";
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  maskedCode?: string;
+  codeReceivedAt?: string;
+  codeExpiresAt?: string;
+  lastError?: string;
+};
+
+export type VerificationCodeCenterPayload = {
+  ok: boolean;
+  configured: boolean;
+  codeTtlSeconds: number;
+  mailboxes: VerificationMailbox[];
+  bindings: VerificationBinding[];
+  requests: VerificationRequest[];
+  users: Array<{ id: string; username: string; displayName: string; role: string; status: string }>;
+  updatedAt: string;
+};
+
+export function fetchVerificationCodeCenter() {
+  return requestJson<VerificationCodeCenterPayload>("/api/verification-code-center");
+}
+
+export function saveVerificationMailbox(input: Partial<VerificationMailbox> & { password?: string }, mailboxId = "") {
+  return requestJson(`/api/verification-code-center/mailboxes${mailboxId ? `/${encodeURIComponent(mailboxId)}` : ""}`, {
+    method: mailboxId ? "PATCH" : "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteVerificationMailbox(mailboxId: string) {
+  return requestJson(`/api/verification-code-center/mailboxes/${encodeURIComponent(mailboxId)}`, { method: "DELETE" });
+}
+
+export function testVerificationMailbox(mailboxId: string) {
+  return requestJson(`/api/verification-code-center/mailboxes/${encodeURIComponent(mailboxId)}/test`, { method: "POST", body: "{}" });
+}
+
+export function saveVerificationBinding(input: Partial<VerificationBinding>, bindingId = "") {
+  return requestJson(`/api/verification-code-center/bindings${bindingId ? `/${encodeURIComponent(bindingId)}` : ""}`, {
+    method: bindingId ? "PATCH" : "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteVerificationBinding(bindingId: string) {
+  return requestJson(`/api/verification-code-center/bindings/${encodeURIComponent(bindingId)}`, { method: "DELETE" });
+}
+
+export function createVerificationRequest(bindingId: string) {
+  return requestJson<{ request: VerificationRequest; payload: VerificationCodeCenterPayload }>("/api/verification-code-center/requests", {
+    method: "POST",
+    body: JSON.stringify({ bindingId }),
+  });
+}
+
+export function refreshVerificationRequest(requestId: string) {
+  return requestJson<{ request: VerificationRequest; payload: VerificationCodeCenterPayload }>(`/api/verification-code-center/requests/${encodeURIComponent(requestId)}/refresh`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function revealVerificationCode(requestId: string, purpose: "view" | "copy") {
+  return requestJson<{ ok: boolean; requestId: string; code: string; expiresAt: string; receivedAt: string; shopName: string; platform: string }>(`/api/verification-code-center/requests/${encodeURIComponent(requestId)}/reveal`, {
+    method: "POST",
+    body: JSON.stringify({ purpose }),
+  });
+}

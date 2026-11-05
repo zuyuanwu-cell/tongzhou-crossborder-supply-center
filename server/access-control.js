@@ -94,6 +94,8 @@ const permissionDefinitions = [
   ["warehouses", "仓库授权", "系统管理"],
   ["users", "用户与权限", "系统管理"],
   ["notifications", "企业微信通知", "系统管理"],
+  ["verification_code_view", "店铺登录验证码查看", "工具与设置"],
+  ["verification_code_manage", "验证码邮箱与店铺配置", "工具与设置"],
   ["action_log", "操作日志", "系统管理"],
   ["system_backup", "系统备份与恢复", "工具与设置"],
   ["operations", "全局同步与管理操作", "系统管理"],
@@ -225,7 +227,9 @@ const COLLABORATION_TASK_PERMISSION_KEYS = Object.freeze(["collaboration_task_vi
 // 开品需求含内部开发计划与目标成本，不开放给分销商和访客。
 const PRODUCT_LAUNCH_PERMISSION_KEYS = Object.freeze(["product_launch_view", "product_launch_submit", "product_launch_manage"]);
 const PRODUCT_LAUNCH_DENIED_ROLES = new Set(["distributor", "guest"]);
-const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync", "system_backup"]);
+const VERIFICATION_CODE_DENIED_ROLES = new Set(["warehouse", "distributor", "guest"]);
+const VERIFICATION_CODE_PERMISSION_KEYS = Object.freeze(["verification_code_view", "verification_code_manage"]);
+const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync", "system_backup", "verification_code_manage"]);
 const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "warehouse_qualification_coverage", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
@@ -386,6 +390,9 @@ export function effectivePermissions(user) {
   if (PRODUCT_LAUNCH_DENIED_ROLES.has(role)) {
     for (const permission of PRODUCT_LAUNCH_PERMISSION_KEYS) effective.delete(permission);
   }
+  if (VERIFICATION_CODE_DENIED_ROLES.has(role)) {
+    for (const permission of VERIFICATION_CODE_PERMISSION_KEYS) effective.delete(permission);
+  }
   if (role !== "admin") {
     for (const permission of ADMIN_ONLY_PERMISSION_KEYS) effective.delete(permission);
   }
@@ -454,6 +461,7 @@ export function sanitizePermissionUpdate(role, input) {
     ["collaboration_task_publish", "collaboration_task_view"],
     ["product_launch_submit", "product_launch_view"],
     ["product_launch_manage", "product_launch_view"],
+    ["verification_code_manage", "verification_code_view"],
   ];
   for (const [operationPermission, viewPermission] of permissionImplications) {
     if (overrides.allow.includes(operationPermission) && !overrides.deny.includes(operationPermission)) {
@@ -490,6 +498,9 @@ export function sanitizePermissionUpdate(role, input) {
   }
   if (PRODUCT_LAUNCH_DENIED_ROLES.has(role)) {
     overrides.allow = overrides.allow.filter((key) => !PRODUCT_LAUNCH_PERMISSION_KEYS.includes(key));
+  }
+  if (VERIFICATION_CODE_DENIED_ROLES.has(role)) {
+    overrides.allow = overrides.allow.filter((key) => !VERIFICATION_CODE_PERMISSION_KEYS.includes(key));
   }
   if (role !== "admin") {
     overrides.allow = overrides.allow.filter((key) => !ADMIN_ONLY_PERMISSION_KEYS.includes(key));

@@ -247,6 +247,7 @@ import { StockupCollaborationCenter, type StockupCollaborationSection } from "./
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { ProductLaunchCenter } from "./ProductLaunchCenter";
+import { VerificationCodeCenter } from "./VerificationCodeCenter";
 import { ShopDailyReport } from "./shop-daily/ShopDailyReport";
 import { MiaoshouReconciliationDetails } from "./miaoshou/ReconciliationDetails";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
@@ -455,6 +456,7 @@ const navItems = [
   { label: "Ozon 订单", icon: ShoppingBag, hash: "#ozon-orders", section: "settings", permission: "ozon_orders", additionalPermissions: ["ozon_order_push", "ozon_config"] },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
+  { label: "验证码中心", icon: KeyRound, hash: "#verification-codes", section: "settings", permission: "verification_code_view", alternativePermission: "verification_code_manage" },
   { label: "用户管理", icon: Lock, hash: "#users", section: "settings", permission: "users" },
   { label: "协同组织与账号", icon: ShieldCheck, hash: "#collaboration-accounts", section: "settings", permission: "operations" },
   { label: "操作日志", icon: List, hash: "#action-log", section: "settings", permission: "action_log" },
@@ -2337,6 +2339,8 @@ function App() {
           <BusinessChainCenter user={currentUser} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
+        ) : activeView === "验证码中心" ? (
+          <VerificationCodeCenter currentUser={currentUser} />
         ) : activeView === "操作日志" ? (
           <ActionLogPage payload={actionLogPayload} onRefresh={loadActionLog} />
         ) : activeView === "系统备份" ? (
