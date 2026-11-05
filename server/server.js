@@ -12603,6 +12603,28 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/shop-daily-report/ingest/shops" && req.method === "GET") {
+      // 同舟智数（桌面采集端）用采集令牌读取店铺名单，用于把紫鸟店铺对应到中台店铺。
+      if (!shopMetricsIngestAuthorized(req)) {
+        sendJson(res, shopMetricsIngestToken ? 401 : 503, { ok: false, message: shopMetricsIngestToken ? "采集令牌无效。" : "服务器未配置 SHOP_METRICS_INGEST_TOKEN，采集写入未启用。" });
+        return;
+      }
+      const context = await shopDailyContext(directAuth, {});
+      const shops = context.shops.map((shop) => ({
+        shopKey: String(shop.key || ""),
+        shopName: String(shop.displayName || shop.rawName || ""),
+        rawName: String(shop.rawName || ""),
+        alias: String(shop.alias || ""),
+        miaoshouShopName: String(shop.miaoshouShopName || ""),
+        country: String(shop.country || ""),
+        countryCode: normalizedCountryKey(shop.country || ""),
+        platform: String(shop.platform || ""),
+        projectGroup: String(shop.projectGroup || ""),
+      })).filter((shop) => shop.shopKey && shop.shopName);
+      sendJson(res, 200, { ok: true, shops });
+      return;
+    }
+
     if (url.pathname === "/api/shop-daily-report/ingest" && req.method === "POST") {
       if (!shopMetricsIngestAuthorized(req)) {
         sendJson(res, shopMetricsIngestToken ? 401 : 503, { ok: false, message: shopMetricsIngestToken ? "采集令牌无效。" : "服务器未配置 SHOP_METRICS_INGEST_TOKEN，采集写入未启用。" });

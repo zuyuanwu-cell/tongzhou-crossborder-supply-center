@@ -1,0 +1,21 @@
+{
+  "name": "tongzhou-zhishu",
+  "productName": "同舟智数",
+  "version": "0.1.0",
+  "description": "同舟智数：通过紫鸟 CLI 自动采集 Shopee 等平台店铺数据并回写同舟供应链中台",
+  "main": "main.js",
+  "type": "commonjs",
+  "private": true,
+  "author": "同舟跨境",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/collector.test.js",
+    "package:win": "node scripts/package-win.js",
+    "test:integration": "node test/integration-zhongtai.js"
+  },
+  "devDependencies": {
+    "electron": "44.10.1",
+    "pe-library": "2.0.1",
+    "resedit": "3.1.0"
+  }
+}

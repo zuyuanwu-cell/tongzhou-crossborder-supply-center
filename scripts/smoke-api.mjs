@@ -845,6 +845,12 @@ async function main() {
     body: JSON.stringify({ source: "ziniao", rows: [{ date: "2026-08-28", shopKey: shop.key, impressions: 999, addToCart: 7 }] }),
   });
   if (ingest.written !== 1) throw new Error(`shop metrics ingest did not write: ${JSON.stringify(ingest)}`);
+  const ingestShopsDenied = await fetch(`${baseUrl}/api/shop-daily-report/ingest/shops`, { headers: { "X-Ingest-Token": "wrong" } });
+  if (ingestShopsDenied.status !== 401) throw new Error(`ingest shop list accepted an invalid token: ${ingestShopsDenied.status}`);
+  const ingestShops = await expectJson("/api/shop-daily-report/ingest/shops", { headers: { "X-Ingest-Token": "smoke-shop-metrics-ingest-token-0123456789" } });
+  if (!ingestShops.shops.some((item) => item.shopKey === shop.key && item.shopName && item.countryCode)) {
+    throw new Error(`ingest shop list is missing the directory shop: ${JSON.stringify(ingestShops).slice(0, 400)}`);
+  }
   await expectJson("/api/shop-daily-report/review-orders", {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },
