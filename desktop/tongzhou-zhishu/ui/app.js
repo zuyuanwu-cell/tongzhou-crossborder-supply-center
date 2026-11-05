@@ -102,51 +102,50 @@ function guessSite(name) {
 // 页面：总览
 // ---------------------------------------------------------------------------
 
+function connectCard() {
+  const { config } = S.state;
+  return `<section class="panel connect">
+    <div class="panel-head"><div><h2>第一步：连接同舟供应链中台</h2><p>用你登录中台的账号密码登录一次即可（账号需要有「店铺日报」权限）。密码不会保存在这台电脑上。</p></div></div>
+    <div class="grid cols-4">
+      <label class="field"><span>中台地址</span><input id="pair-base" value="${esc(config.zhongtai.baseUrl)}"></label>
+      <label class="field"><span>账号</span><input id="pair-user" autocomplete="username" placeholder="中台登录账号"></label>
+      <label class="field"><span>密码</span><input id="pair-pass" type="password" autocomplete="current-password" placeholder="中台登录密码"></label>
+      <div style="align-self:end"><button class="btn primary" data-action="pair" ${S.busy.pair ? "disabled" : ""}>${S.busy.pair ? "连接中…" : "登录并连接"}</button></div>
+    </div>
+  </section>`;
+}
+
 function viewHome() {
-  const { config, history, cliPath, running } = S.state;
-  const templates = Object.values(config.templates);
-  const stores = Object.values(config.stores);
-  const enabled = stores.filter((store) => store.enabled && store.templateId && (store.targets || []).length);
-  const checks = [
-    { ok: config.zhongtai.hasToken && config.zhongtai.baseUrl, title: "1. 连接中台", desc: config.zhongtai.hasToken ? config.zhongtai.baseUrl : "填写中台地址和采集令牌", go: "settings" },
-    { ok: Boolean(cliPath), title: "2. 紫鸟 CLI", desc: cliPath ? "已找到紫鸟 CLI" : "未找到，可在设置里一键安装", go: "settings" },
-    { ok: templates.length > 0, title: "3. 采集模板", desc: templates.length ? `${templates.length} 个模板` : "用一个店铺校准一次", go: "templates" },
-    { ok: enabled.length > 0, title: "4. 店铺映射", desc: enabled.length ? `${enabled.length} 个紫鸟店铺已启用` : "把紫鸟店铺对应到中台店铺", go: "stores" },
-  ];
+  const { config, history, cliPath, running, storeOverview } = S.state;
+  const connected = config.zhongtai.hasToken;
+  const stores = storeOverview || [];
+  const enabled = stores.filter((store) => store.enabled);
+  const unmatched = enabled.filter((store) => store.targets.some((target) => target.auto && !target.matched));
   const last = history[0];
   const pct = S.progressCount.total ? Math.round((S.progressCount.index / S.progressCount.total) * 100) : 0;
+  const ready = connected && cliPath && enabled.length;
   return `
     <h1>总览</h1>
-    <p class="subtitle">从紫鸟店铺浏览器里已登录的 Shopee 卖家中心采集访客、曝光、加购、销售额、订单与广告花费，写入同舟供应链中台「店铺日报」。</p>
-    <div class="grid cols-4" style="margin-bottom:16px">
-      ${checks.map((check) => `<div class="check-card ${check.ok ? "ok" : "todo"}"><b>${check.ok ? "✓ " : ""}${esc(check.title)}</b><span>${esc(check.desc)}</span>${check.ok ? "" : `<button class="btn small" data-go="${check.go}">去设置</button>`}</div>`).join("")}
+    <p class="subtitle">自动从紫鸟里已登录的 Shopee 店铺读取访客、曝光、加购、支付金额、订单和广告花费，写入中台「店铺日报」。</p>
+    ${connected ? "" : connectCard()}
+    <div class="grid cols-3" style="margin-bottom:16px">
+      <div class="check-card ${connected ? "ok" : "todo"}"><b>${connected ? "✓ " : ""}同舟中台</b><span>${connected ? `已连接${config.zhongtaiUser ? `（${esc(config.zhongtaiUser.displayName || config.zhongtaiUser.username)}）` : ""}` : "请先登录"}</span></div>
+      <div class="check-card ${cliPath ? "ok" : "todo"}"><b>${cliPath ? "✓ " : ""}紫鸟</b><span>${cliPath ? "已连接紫鸟客户端" : "没有找到紫鸟 CLI"}</span>${cliPath ? "" : `<button class="btn small" data-action="cli-install">一键安装</button>`}</div>
+      <div class="check-card ${enabled.length ? "ok" : "todo"}"><b>${enabled.length ? "✓ " : ""}店铺</b><span>${stores.length ? `${enabled.length} 个 Shopee 店铺参与采集${unmatched.length ? `，${unmatched.length} 个未对上中台店铺` : ""}` : "正在读取紫鸟店铺…"}</span>${stores.length ? `<button class="btn small" data-go="stores">查看</button>` : ""}</div>
     </div>
     <section class="panel">
       <div class="panel-head">
-        <div><h2>立即采集</h2><p>${config.schedule.enabled ? `已开启定时：每天 ${esc(config.schedule.times.join("、"))}（最近 ${config.schedule.lookbackDays} 天）` : "未开启定时采集，可在设置里开启"}</p></div>
+        <div><h2>采集</h2><p>${config.schedule.enabled ? `每天 ${esc(config.schedule.times.join("、"))} 自动采集最近 ${config.schedule.lookbackDays} 天` : "还没开启每天自动采集"} · <button class="btn link" data-action="toggle-schedule">${config.schedule.enabled ? "关闭自动采集" : "开启每天 09:30 自动采集"}</button></p></div>
         <div class="toolbar" style="margin:0">
-          ${running ? `<button class="btn danger" data-action="cancel">取消</button>` : ""}
-          <button class="btn primary" data-action="collect" ${running || !enabled.length ? "disabled" : ""}>${running ? "采集中…" : "开始采集"}</button>
-        </div>
-      </div>
-      <div class="grid cols-4">
-        <label class="field"><span>日期</span>
-          <select data-bind="run.range">
-            <option value="auto" ${S.run.range === "auto" ? "selected" : ""}>最近 ${config.schedule.lookbackDays} 天（按站点时区，不含今天）</option>
+          <select data-bind="run.range" style="min-width:150px">
+            <option value="auto" ${S.run.range === "auto" ? "selected" : ""}>最近 ${config.schedule.lookbackDays} 天</option>
             <option value="yesterday" ${S.run.range === "yesterday" ? "selected" : ""}>仅昨天</option>
-            <option value="custom" ${S.run.range === "custom" ? "selected" : ""}>自定义区间</option>
+            <option value="custom" ${S.run.range === "custom" ? "selected" : ""}>自定义日期…</option>
           </select>
-        </label>
-        ${S.run.range === "custom" ? `
-          <label class="field"><span>开始</span><input type="date" data-bind="run.from" value="${esc(S.run.from)}"></label>
-          <label class="field"><span>结束</span><input type="date" data-bind="run.to" value="${esc(S.run.to)}"></label>` : `<div></div><div></div>`}
-        <label class="field"><span>写入方式</span>
-          <select data-bind="run.mode">
-            <option value="upload" ${S.run.mode === "upload" ? "selected" : ""}>写入中台</option>
-            <option value="preview" ${S.run.mode === "preview" ? "selected" : ""}>只在中台试匹配（不写入）</option>
-            <option value="local" ${S.run.mode === "local" ? "selected" : ""}>仅采集到本地</option>
-          </select>
-        </label>
+          ${S.run.range === "custom" ? `<input type="date" data-bind="run.from" value="${esc(S.run.from)}"><input type="date" data-bind="run.to" value="${esc(S.run.to)}">` : ""}
+          ${running ? `<button class="btn danger" data-action="cancel">停止</button>` : ""}
+          <button class="btn primary" data-action="collect" ${running || !ready ? "disabled" : ""}>${running ? "采集中…" : "开始采集并写入中台"}</button>
+        </div>
       </div>
       ${running || S.progress.length ? `
         <div class="bar"><div style="width:${running ? pct : 100}%"></div></div>
@@ -176,72 +175,42 @@ function runSummary(run, { detail = false } = {}) {
 // ---------------------------------------------------------------------------
 
 function viewStores() {
-  const { config } = S.state;
-  const cache = config.storeCache || [];
-  const mapped = config.stores;
-  const ids = new Set(cache.map((store) => store.storeId));
-  const orphan = Object.values(mapped).filter((store) => !ids.has(store.storeId)).map((store) => ({ storeId: store.storeId, storeName: store.storeName, platformName: store.platform, missing: true }));
-  const filter = S.storeFilter.trim().toLowerCase();
-  const rows = [...cache, ...orphan].filter((store) => {
-    if (S.onlyShopee && !/shopee|虾皮/i.test(`${store.platformName} ${store.storeName}`) && !mapped[store.storeId]) return false;
-    return !filter || `${store.storeName} ${store.storeId}`.toLowerCase().includes(filter);
-  });
-  const templates = Object.values(config.templates);
+  const { storeOverview, config, sites } = S.state;
+  const list = (storeOverview || []).filter((store) => !S.storeFilter.trim() || `${store.storeName} ${store.storeId}`.toLowerCase().includes(S.storeFilter.trim().toLowerCase()));
+  const shops = config.zhongtaiShops || [];
   return `
-    <h1>店铺映射</h1>
-    <p class="subtitle">把紫鸟里的店铺对应到中台的店铺。一个紫鸟店铺（例如 CNSC 跨境账号）可以对应多个站点店铺。</p>
+    <h1>店铺</h1>
+    <p class="subtitle">紫鸟里的 Shopee 店铺会自动参与采集，并按店铺名自动对应中台店铺。对不上的店铺在右侧选一下即可。</p>
     <div class="toolbar">
-      <button class="btn primary" data-action="stores-refresh" ${S.busy.stores ? "disabled" : ""}>${S.busy.stores ? "读取中…" : "从紫鸟读取店铺"}</button>
-      <button class="btn" data-action="zt-shops" ${S.busy.ztShops ? "disabled" : ""}>加载中台店铺名单</button>
-      <input placeholder="搜索店铺名 / ID" data-bind="storeFilter" value="${esc(S.storeFilter)}" style="width:220px">
-      <label class="inline small"><input type="checkbox" data-bind="onlyShopee" ${S.onlyShopee ? "checked" : ""}> 只看 Shopee</label>
+      <button class="btn" data-action="stores-refresh" ${S.busy.stores ? "disabled" : ""}>${S.busy.stores ? "读取中…" : "重新读取紫鸟店铺"}</button>
+      <input placeholder="搜索店铺" data-bind="storeFilter" value="${esc(S.storeFilter)}" style="width:200px">
       <span class="grow"></span>
-      <span class="muted small">${config.storeCacheAt ? `紫鸟店铺读取于 ${fmtTime(config.storeCacheAt)}，共 ${cache.length} 个` : "还没有读取紫鸟店铺"}${S.zhongtaiShops.length ? ` · 中台店铺 ${S.zhongtaiShops.length} 个` : ""}</span>
+      <span class="muted small">${list.length} 个店铺${config.storeCacheAt ? ` · 读取于 ${fmtTime(config.storeCacheAt)}` : ""}${shops.length ? ` · 中台店铺 ${shops.length} 个` : " · 连接中台后可自动对应店铺"}</span>
     </div>
-    ${!templates.length ? `<div class="notice warn" style="margin-bottom:12px">还没有采集模板。请先到「采集模板」用任意一个店铺校准一次，再回来给店铺选择模板。</div>` : ""}
-    <div class="table-wrap" style="max-height:none">
-      <table class="data">
-        <thead><tr><th style="width:52px">启用</th><th>紫鸟店铺</th><th style="width:200px">采集模板</th><th>对应中台店铺</th><th style="width:170px"></th></tr></thead>
-        <tbody>
-          ${rows.map((store) => storeRow(store, mapped[store.storeId], templates)).join("") || `<tr><td colspan="5" class="empty">点「从紫鸟读取店铺」获取店铺列表</td></tr>`}
-        </tbody>
-      </table>
-    </div>
-    <datalist id="zt-shop-list">${S.zhongtaiShops.map((shop) => `<option value="${esc(shop.shopName)}">${esc(`${shop.country || ""} · ${shop.platform || ""}`)}</option>`).join("")}</datalist>
+    <div class="table-wrap" style="max-height:none"><table class="data">
+      <thead><tr><th style="width:56px">采集</th><th>紫鸟店铺</th><th style="width:110px">站点</th><th>对应的中台店铺</th><th style="width:220px">上次结果</th><th style="width:70px"></th></tr></thead>
+      <tbody>${list.map((store) => {
+        const target = store.targets[0] || {};
+        const multi = store.targets.length > 1;
+        const options = shops.filter((shop) => !store.site || !shop.countryCode || shop.countryCode === store.site);
+        const selected = target.shopKey || "";
+        return `<tr>
+          <td><input type="checkbox" data-action="store-toggle" data-id="${esc(store.storeId)}" ${store.enabled ? "checked" : ""}></td>
+          <td><b>${esc(store.storeName)}</b><div class="muted small">${esc(store.platformName)}</div></td>
+          <td>${store.site ? esc((sites.find((site) => site.code === store.site) || {}).name || store.site) : `<span class="tag warn">未识别</span>`}</td>
+          <td>${multi ? store.targets.map((item) => `<span class="tag info">${esc(item.shopName)}</span>`).join(" ") : `
+            <select data-action="store-shop" data-id="${esc(store.storeId)}" style="max-width:320px">
+              <option value="">${target.auto && !target.matched ? `（未对上）按「${esc(store.storeName)}」新建` : `按「${esc(target.shopName)}」`}</option>
+              ${options.map((shop) => `<option value="${esc(shop.shopKey)}" ${shop.shopKey === selected ? "selected" : ""}>${esc(shop.shopName)}${shop.country ? ` · ${esc(shop.country)}` : ""}</option>`).join("")}
+            </select>
+            ${target.auto && target.matched ? `<span class="tag ok">自动对应</span>` : ""}${target.auto && !target.matched && shops.length ? `<span class="tag warn">请选择</span>` : ""}`}
+          </td>
+          <td>${store.last ? `${statusTag(store.last.status)} <span class="muted small">${esc(store.last.message || `${store.last.rowCount} 行`)}</span>` : `<span class="muted">—</span>`}</td>
+          <td><button class="btn small" data-action="store-trial" data-id="${esc(store.storeId)}" ${S.state.running || !config.zhongtai.hasToken ? "disabled" : ""} title="只采集昨天，并在中台试匹配，不写入">试采</button></td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="6" class="empty">没有读取到 Shopee 店铺。确认紫鸟客户端已登录，然后点「重新读取紫鸟店铺」。</td></tr>`}</tbody>
+    </table></div>
   `;
-}
-
-function storeRow(store, mapping, templates) {
-  const editing = S.editingStore === store.storeId;
-  const targets = mapping?.targets || [];
-  const main = `<tr>
-    <td><input type="checkbox" data-action="store-toggle" data-id="${esc(store.storeId)}" ${mapping?.enabled ? "checked" : ""} ${mapping && mapping.templateId && targets.length ? "" : "disabled"}></td>
-    <td><b>${esc(store.storeName)}</b>${store.missing ? ` <span class="tag warn">紫鸟里已找不到</span>` : ""}<div class="muted small">${esc(store.platformName || "")} · ID ${esc(store.storeId)}${store.ip ? ` · ${esc(store.ip)}` : ""}</div></td>
-    <td><select data-action="store-template" data-id="${esc(store.storeId)}"><option value="">— 选择模板 —</option>${templates.map((template) => `<option value="${esc(template.id)}" ${mapping?.templateId === template.id ? "selected" : ""}>${esc(template.name)}</option>`).join("")}</select></td>
-    <td><div class="chips">${targets.map((target) => `<span class="tag info">${esc(target.shopName)} · ${esc(target.country)}${target.shopId ? ` · ${esc(target.shopId)}` : ""}</span>`).join("") || `<span class="muted">未设置</span>`}</div></td>
-    <td style="text-align:right">
-      <button class="btn small" data-action="store-edit" data-id="${esc(store.storeId)}">${editing ? "收起" : "设置店铺"}</button>
-      <button class="btn small" data-action="store-trial" data-id="${esc(store.storeId)}" ${mapping?.templateId && targets.length && !S.state.running ? "" : "disabled"} title="采集最近一天并在中台试匹配，不写入">试采</button>
-    </td>
-  </tr>`;
-  if (!editing) return main;
-  const draft = S.storeDraft;
-  return `${main}<tr class="sub"><td></td><td colspan="4">
-    <div class="target-row muted small"><span>中台店铺名（与中台店铺日报里的名称一致）</span><span>站点</span><span>Shopee 店铺 ID（CNSC 多站点时填）</span><span>币种</span><span></span></div>
-    ${draft.targets.map((target, index) => `<div class="target-row">
-      <input list="zt-shop-list" data-draft="${index}.shopName" value="${esc(target.shopName)}" placeholder="例如 店铺A-马来">
-      <select data-draft="${index}.country">${siteOptions(target.country)}</select>
-      <input class="mono" data-draft="${index}.shopId" value="${esc(target.shopId || "")}" placeholder="可选">
-      <input data-draft="${index}.currency" value="${esc(target.currency || "")}" placeholder="自动">
-      <button class="btn small danger" data-action="target-remove" data-index="${index}">删除</button>
-    </div>`).join("")}
-    <div class="toolbar" style="margin:8px 0 0">
-      <button class="btn small" data-action="target-add">+ 添加站点店铺</button>
-      <span class="grow"></span>
-      <button class="btn small" data-action="store-remove" data-id="${esc(store.storeId)}">清除映射</button>
-      <button class="btn small primary" data-action="store-save" data-id="${esc(store.storeId)}">保存</button>
-    </div>
-  </td></tr>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,11 +249,11 @@ function calPageUrl() {
 
 function viewTemplates() {
   const { config, templateProblems } = S.state;
-  const templates = Object.values(config.templates);
+  const templates = [...(S.state.builtinTemplates || []), ...Object.values(config.templates)];
   if (S.cal) return viewCalibrate();
   return `
-    <h1>采集模板</h1>
-    <p class="subtitle">模板记录「在卖家中心调用哪些数据接口、每个字段在返回结果的什么位置」。同一类卖家中心（例如全部 CNSC 店铺）共用一个模板，校准一次即可。</p>
+    <h1>采集模板（高级）</h1>
+    <p class="subtitle">程序已内置 Shopee 本土店模板，正常情况下不需要动这里。只有 Shopee 卖家中心改版、数据取不到时，才需要用一个店铺重新校准。</p>
     <div class="toolbar">
       <button class="btn primary" data-action="cal-new">新建模板（校准）</button>
       <button class="btn" data-action="tpl-import">导入模板文件</button>
@@ -302,7 +271,7 @@ function viewTemplates() {
           <td><div class="chips">${fields.map((field) => `<span class="tag">${esc(field)}</span>`).join("")}</div></td>
           <td>${problems.length ? `<span class="tag warn" title="${esc(problems.join("\n"))}">${problems.length} 个提醒</span>` : `<span class="tag ok">完整</span>`}</td>
           <td class="muted">${fmtTime(template.updatedAt)}</td>
-          <td style="text-align:right"><button class="btn small" data-action="cal-edit" data-id="${esc(template.id)}">编辑 / 校准</button> <button class="btn small" data-action="tpl-export" data-id="${esc(template.id)}">导出</button> <button class="btn small danger" data-action="tpl-delete" data-id="${esc(template.id)}">删除</button></td>
+          <td style="text-align:right">${template.builtin ? `<span class="tag ok">内置 · 默认使用</span>` : `<button class="btn small" data-action="cal-edit" data-id="${esc(template.id)}">编辑 / 校准</button> <button class="btn small" data-action="tpl-export" data-id="${esc(template.id)}">导出</button> <button class="btn small danger" data-action="tpl-delete" data-id="${esc(template.id)}">删除</button>`}</td>
         </tr>`;
       }).join("") || `<tr><td colspan="7" class="empty">还没有模板。点「新建模板（校准）」，用一个已登录 Shopee 的紫鸟店铺跑一遍校准。</td></tr>`}</tbody>
     </table></div>
@@ -478,14 +447,10 @@ function viewSettings() {
   return `
     <h1>设置</h1>
     <p class="subtitle">配置保存在本机，采集令牌使用 Windows 账户加密保存。</p>
-    <section class="panel">
-      <div class="panel-head"><div><h2>同舟供应链中台</h2><p>令牌就是服务器环境变量 SHOP_METRICS_INGEST_TOKEN 的值，只能写入店铺日报，不能登录中台。</p></div></div>
-      <div class="grid cols-3">
-        <label class="field"><span>中台地址</span><input id="set-base" value="${esc(config.zhongtai.baseUrl)}" placeholder="https://gyl.tongzhoukuajing.com"></label>
-        <label class="field"><span>采集令牌</span><input id="set-token" type="password" placeholder="${config.zhongtai.hasToken ? `已保存（${esc(config.zhongtai.tokenHint)}），留空不修改` : "粘贴令牌"}"></label>
-        <div class="toolbar" style="align-self:end;margin:0"><button class="btn primary" data-action="save-zhongtai">保存</button><button class="btn" data-action="test-zhongtai" ${S.busy.zt ? "disabled" : ""}>${S.busy.zt ? "测试中…" : "测试连接"}</button></div>
-      </div>
-    </section>
+    ${config.zhongtai.hasToken ? `<section class="panel">
+      <div class="panel-head"><div><h2>同舟供应链中台</h2><p>已连接 ${esc(config.zhongtai.baseUrl)}${config.zhongtaiUser ? `（${esc(config.zhongtaiUser.displayName || config.zhongtaiUser.username)} 于 ${fmtTime(config.zhongtaiUser.at)} 登录）` : ""}</p></div>
+      <div class="toolbar" style="margin:0"><button class="btn" data-action="test-zhongtai" ${S.busy.zt ? "disabled" : ""}>${S.busy.zt ? "测试中…" : "测试连接"}</button><button class="btn" data-action="unpair">断开 / 换账号</button></div></div>
+    </section>` : connectCard()}
     <section class="panel">
       <div class="panel-head"><div><h2>紫鸟 CLI</h2><p>需要紫鸟浏览器客户端已安装并登录。CLI 当前路径：<span class="mono">${esc(cliPath || "未找到")}</span></p></div></div>
       <div class="toolbar">
@@ -520,7 +485,12 @@ function viewSettings() {
       <div class="toolbar" style="margin-top:12px"><button class="btn primary" data-action="save-collect">保存采集与定时设置</button></div>
     </section>
     <section class="panel">
-      <div class="toolbar" style="margin:0"><button class="btn" data-action="open-data">打开数据目录</button><span class="muted small">版本 ${esc(S.state.appVersion)}</span></div>
+      <div class="toolbar" style="margin:0"><button class="btn" data-action="open-data">打开数据目录</button><button class="btn" data-action="relaunch">重启程序</button><span class="muted small">版本 ${esc(S.state.appVersion)}</span></div>
+      <div style="margin-top:10px"><div class="muted small">调试工具（技术人员使用）</div>
+        <div class="toolbar" style="margin-top:8px"><input id="dbg-args" class="mono grow" value="${esc(S.debugArgs || "store list")}" placeholder="紫鸟 CLI 参数，例如 store list"><button class="btn" data-action="debug-cli">运行 CLI</button></div>
+        <div class="toolbar"><input id="dbg-store" class="mono" style="width:180px" value="${esc(S.debugStore || "")}" placeholder="店铺 ID"><input id="dbg-body" class="mono grow" value="${esc(S.debugBody || "return {href: location.href, title: document.title}")}"><button class="btn" data-action="debug-page">页面内执行</button></div>
+        <textarea id="dbg-out" class="mono" rows="16" style="width:100%" readonly>${esc(S.debugOut || "")}</textarea>
+      </div>
     </section>
   `;
 }
@@ -576,6 +546,26 @@ function collectDates() {
 }
 
 const actions = {
+  async pair() {
+    const username = $("#pair-user").value.trim();
+    const password = $("#pair-pass").value;
+    if (!username || !password) return toast("请输入中台账号和密码", "err");
+    await withBusy("pair", async () => {
+      S.state = await api("zhongtai:pair", { baseUrl: $("#pair-base").value, username, password });
+      toast("已连接中台", "ok");
+    });
+  },
+  async unpair() {
+    if (!window.confirm("断开后需要重新用中台账号登录，确定吗？")) return;
+    S.state = await api("zhongtai:unpair");
+    render();
+  },
+  async "toggle-schedule"() {
+    const enabled = !S.state.config.schedule.enabled;
+    await api("settings:save", { schedule: { enabled, times: S.state.config.schedule.times.length ? S.state.config.schedule.times : ["09:30"] }, openAtLogin: enabled ? true : undefined });
+    toast(enabled ? `已开启：每天 ${S.state.config.schedule.times.join("、") || "09:30"} 自动采集，并设为开机自动启动` : "已关闭自动采集", "ok");
+    await reload();
+  },
   async collect() {
     const dates = collectDates();
     if (dates === undefined) return;
@@ -783,7 +773,6 @@ const actions = {
     await reload();
   },
   async "test-zhongtai"() {
-    await actions["save-zhongtai"]();
     await withBusy("zt", async () => {
       const result = await api("zhongtai:test");
       if (result.shops) S.zhongtaiShops = result.shops;
@@ -814,6 +803,39 @@ const actions = {
     });
     toast("已保存", "ok");
     await reload();
+  },
+  "debug-toggle"() {
+    S.debugOpen = !S.debugOpen;
+  },
+  async "debug-cli"() {
+    S.debugOpen = true;
+    S.debugArgs = $("#dbg-args").value;
+    S.debugOut = "运行中…";
+    render();
+    try {
+      const result = await api("debug:cli", { args: S.debugArgs }, { quiet: true });
+      S.debugOut = `$ ziniao-cli ${result.args.join(" ")}\n退出码 ${result.code} · ${result.ms}ms\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`;
+    } catch (error) {
+      S.debugOut = `出错：${error.message}`;
+    }
+    render();
+  },
+  async "debug-page"() {
+    S.debugOpen = true;
+    S.debugStore = $("#dbg-store").value.trim();
+    S.debugBody = $("#dbg-body").value;
+    S.debugOut = "运行中…";
+    render();
+    try {
+      const result = await api("debug:page", { storeId: S.debugStore, body: S.debugBody }, { quiet: true });
+      S.debugOut = JSON.stringify(result, null, 2);
+    } catch (error) {
+      S.debugOut = `出错：${error.message}\n${error.detail || ""}`;
+    }
+    render();
+  },
+  async relaunch() {
+    await window.tz.call("app:relaunch");
   },
   async "open-logs"() {
     await api("open:logs");
@@ -895,11 +917,17 @@ document.addEventListener("change", (event) => {
     return;
   }
   const name = el.dataset.action;
-  if (name === "store-toggle" || name === "store-template") {
+  if (name === "store-toggle" || name === "store-shop") {
     const id = el.dataset.id;
-    const current = S.state.config.stores[id] || { storeId: id, storeName: (S.state.config.storeCache || []).find((store) => store.storeId === id)?.storeName || id, platform: "shopee", targets: [] };
-    const patch = name === "store-toggle" ? { enabled: value } : { templateId: value, enabled: Boolean(value) && (current.targets || []).length > 0 };
-    api("stores:save", { ...current, ...patch }).then(reload).catch(() => {});
+    const overview = (S.state.storeOverview || []).find((item) => item.storeId === id) || {};
+    const current = S.state.config.stores[id] || { storeId: id, storeName: overview.storeName || id };
+    let patch;
+    if (name === "store-toggle") patch = { enabled: value };
+    else {
+      const shop = (S.state.config.zhongtaiShops || []).find((item) => item.shopKey === value);
+      patch = { targets: shop ? [{ shopName: shop.shopName, shopKey: shop.shopKey, country: overview.site || shop.countryCode || "" }] : [] };
+    }
+    api("stores:save", { ...current, storeName: overview.storeName || current.storeName, ...patch }).then(reload).catch(() => {});
   }
   if (name === "cal-pick") actions["cal-pick"](el);
 });

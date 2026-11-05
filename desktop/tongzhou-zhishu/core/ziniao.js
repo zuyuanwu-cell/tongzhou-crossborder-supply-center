@@ -211,7 +211,11 @@ class ZiniaoCli {
   }
 
   async run(args, { timeoutMs, retries = 3, input = null } = {}) {
-    const fullArgs = args.includes("--format") ? args : [...args, "--format", "json"];
+    // 不是每个子命令都支持 --format：遇到 unknown flag 时记住并去掉重试。
+    const commandKey = args.slice(0, 2).join(" ");
+    this.noFormat = this.noFormat || new Set();
+    const wantFormat = !args.includes("--format") && !this.noFormat.has(commandKey);
+    let fullArgs = wantFormat ? [...args, "--format", "json"] : args;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
@@ -220,7 +224,14 @@ class ZiniaoCli {
         const out = parseJsonLoose(stdout);
         const err = parseJsonLoose(stderr);
         this.log("debug", `ziniao ${fullArgs.slice(0, 3).join(" ")} → ${code} (${Date.now() - started}ms)`);
+        if (code !== 0 && wantFormat && fullArgs.includes("--format") && /unknown flag:? --format/i.test(`${stderr}${stdout}`)) {
+          this.noFormat.add(commandKey);
+          fullArgs = args;
+          attempt -= 1;
+          continue;
+        }
         if (out && out.ok !== false && code === 0) return out.data !== undefined ? out.data : out;
+        if (!out && code === 0) return { raw: stdout.trim() };
         const errorObject = (err && err.error) || (out && out.error) || null;
         const message = errorObject?.message || stderr.trim() || stdout.trim() || `紫鸟 CLI 退出码 ${code}`;
         throw new ZiniaoError(message, {

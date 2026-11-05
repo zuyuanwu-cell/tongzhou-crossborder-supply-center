@@ -57,6 +57,50 @@ class ZhongtaiClient {
     return json;
   }
 
+  async rawJson(pathname, { method = "GET", body, headers = {} } = {}) {
+    if (!/^https?:\/\//.test(this.baseUrl)) throw new ZhongtaiError("中台地址无效");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${pathname}`, {
+        method,
+        headers: { "content-type": "application/json", "x-client": "tongzhou-zhishu", ...headers },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new ZhongtaiError(error.name === "AbortError" ? "连接中台超时" : `连接中台失败：${error.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    const textValue = await response.text();
+    let json = null;
+    try {
+      json = JSON.parse(textValue);
+    } catch {
+      json = null;
+    }
+    if (!response.ok || (json && json.ok === false)) {
+      const message = json?.message || (response.status === 404 ? "中台还没有更新到支持同舟智数的版本" : `中台返回 HTTP ${response.status}`);
+      throw new ZhongtaiError(message, { status: response.status, body: json });
+    }
+    return json;
+  }
+
+  /**
+   * 用中台账号登录并领取采集令牌（只在本机内存里用一次密码，不保存）。
+   * 需要账号有店铺日报编辑权限。
+   */
+  async pair({ username, password, device = "" }) {
+    const login = await this.rawJson("/api/login", { method: "POST", body: { username, password } });
+    if (!login?.token) throw new ZhongtaiError("登录失败");
+    const paired = await this.rawJson("/api/shop-daily-report/ingest/pair", { method: "POST", body: { device }, headers: { authorization: `Bearer ${login.token}` } });
+    if (!paired?.token) throw new ZhongtaiError("中台没有返回采集令牌");
+    this.token = paired.token;
+    return { token: paired.token, user: paired.user || login.user || { username } };
+  }
+
   /** 用 0 行试写验证地址与令牌。 */
   async ping() {
     const result = await this.request("/api/shop-daily-report/ingest", { method: "POST", body: { source: "ziniao", dryRun: true, rows: [] } });

@@ -11,7 +11,7 @@ const { ZiniaoCli, installCli, CLI_VERSION } = require("./core/ziniao");
 const { ZhongtaiClient } = require("./core/zhongtai");
 const { Collector, defaultDates } = require("./core/collector");
 const { Scheduler } = require("./core/scheduler");
-const { describePlatforms } = require("./core/platforms");
+const { describePlatforms, allTemplates } = require("./core/platforms");
 const { METRIC_FIELDS, validateTemplate } = require("./core/recipe");
 const { SITES } = require("./core/sites");
 
@@ -156,6 +156,8 @@ function state() {
     openAtLogin: app.getLoginItemSettings().openAtLogin,
     defaultDates: defaultDates(store.get().schedule),
     templateProblems: Object.fromEntries(Object.values(store.get().templates).map((template) => [template.id, validateTemplate(template)])),
+    builtinTemplates: Object.values(allTemplates({})),
+    storeOverview: collector.storeOverview(),
   };
 }
 
@@ -194,7 +196,39 @@ handle("zhongtai:test", async () => {
   return { shops, shopsSupported: shops !== null };
 });
 
-handle("zhongtai:shops", async () => (await zhongtai().listShops()) || []);
+async function refreshZhongtaiShops() {
+  const shops = await zhongtai().listShops();
+  if (Array.isArray(shops)) store.update((config) => {
+    config.zhongtaiShops = shops;
+  });
+  return shops || [];
+}
+
+handle("zhongtai:shops", () => refreshZhongtaiShops());
+
+// 用中台账号登录一次即可：领取采集令牌后加密保存，密码不保存。
+handle("zhongtai:pair", async ({ baseUrl, username, password }) => {
+  if (baseUrl) store.update((config) => {
+    config.zhongtai.baseUrl = String(baseUrl).trim().replace(/\/+$/, "");
+  });
+  const client = new ZhongtaiClient({ baseUrl: store.get().zhongtai.baseUrl });
+  const result = await client.pair({ username: String(username || "").trim(), password: String(password || ""), device: require("node:os").hostname() });
+  writeToken(result.token);
+  store.update((config) => {
+    config.zhongtaiUser = { username: result.user?.username || username, displayName: result.user?.displayName || username, at: new Date().toISOString() };
+  });
+  await refreshZhongtaiShops().catch((error) => log("warn", `读取中台店铺失败：${error.message}`));
+  log("info", `已连接中台（${result.user?.displayName || username}）`);
+  return state();
+});
+
+handle("zhongtai:unpair", () => {
+  writeToken("");
+  store.update((config) => {
+    config.zhongtaiUser = null;
+  });
+  return state();
+});
 
 handle("cli:diagnose", async () => {
   const pathFound = cli.path;
@@ -244,9 +278,29 @@ handle("stores:remove", ({ storeId }) => {
   return true;
 });
 
-handle("calibrate:discover", (payload) => collector.discover(payload));
+// 调试转储：校准/试采的原始结果写到程序目录下的 debug\ 文件夹，便于技术人员排查卖家中心改版。
+function debugDump(name, data) {
+  try {
+    const dir = path.join(path.dirname(process.execPath), "debug");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${name}.json`), JSON.stringify(data, null, 1));
+  } catch {
+    /* ignore */
+  }
+}
+
+handle("calibrate:discover", async (payload) => {
+  const result = await collector.discover(payload);
+  const raw = collector.discoveries.get(payload.storeId);
+  debugDump("discover", { payload, href: raw?.href, requests: (raw?.requests || []).map(({ json, ...rest }) => ({ ...rest, json: JSON.stringify(json).slice(0, 60000) })) });
+  return result;
+});
 handle("calibrate:build", (payload) => collector.buildTemplate(payload));
-handle("calibrate:test", (payload) => collector.testTemplate(payload));
+handle("calibrate:test", async (payload) => {
+  const result = await collector.testTemplate(payload);
+  debugDump("trial", { payload, result });
+  return result;
+});
 
 handle("templates:save", (template) => store.upsertTemplate(template));
 handle("templates:delete", ({ id }) => {
@@ -289,6 +343,28 @@ handle("history:rows", ({ id }) => store.resultRows(id));
 handle("history:reupload", ({ id, dryRun }) => collector.reupload(id, { dryRun }));
 handle("open:logs", () => shell.openPath(logDir));
 handle("open:data", () => shell.openPath(dataDir));
+function splitArgs(text) {
+  const out = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let match;
+  while ((match = re.exec(String(text || "")))) out.push(match[1] !== undefined ? match[1].replace(/\\"/g, '"') : match[2] !== undefined ? match[2] : match[3]);
+  return out;
+}
+
+// 调试：直接运行紫鸟 CLI 命令，返回原始输出（用于适配不同 CLI 版本）。
+handle("debug:cli", async ({ args }) => {
+  const list = Array.isArray(args) ? args : splitArgs(args);
+  const started = Date.now();
+  const result = await cli.runRaw(list, { timeoutMs: 180000 });
+  return { args: list, ms: Date.now() - started, ...result };
+});
+handle("debug:page", async ({ storeId, body }) => cli.runInPage(storeId, body, { timeoutMs: 120000 }));
+handle("app:relaunch", () => {
+  quitting = true;
+  app.relaunch();
+  app.exit(0);
+});
+
 handle("open:url", ({ url }) => {
   if (/^https:\/\//.test(url)) shell.openExternal(url);
   return true;
@@ -321,6 +397,7 @@ function createWindow({ hidden = false } = {}) {
     },
   });
   mainWindow.removeMenu();
+  if (!hidden) mainWindow.maximize();
   mainWindow.loadFile(path.join(__dirname, "ui", "index.html"));
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//.test(url)) shell.openExternal(url);
@@ -387,4 +464,10 @@ app.whenReady().then(() => {
   createTray();
   scheduler.start();
   log("info", `同舟智数 ${app.getVersion()} 已启动，数据目录：${dataDir}`);
+  // 启动时自动读取紫鸟店铺和中台店铺名单，用户不需要手动点。
+  setTimeout(async () => {
+    if (cli.path) await collector.refreshStores().then((list) => log("info", `读取到 ${list.length} 个紫鸟店铺`)).catch((error) => log("warn", `读取紫鸟店铺失败：${error.message}`));
+    if (readToken()) await refreshZhongtaiShops().catch(() => {});
+    mainWindow?.webContents.send("run-state", { running: Boolean(collector.running) });
+  }, 1500);
 });

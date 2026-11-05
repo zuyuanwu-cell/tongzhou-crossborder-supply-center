@@ -15,6 +15,8 @@ const DEFAULT_CONFIG = Object.freeze({
   stores: {},
   storeCache: [],
   storeCacheAt: "",
+  zhongtaiShops: [],
+  zhongtaiUser: null,
 });
 
 function clone(value) {
@@ -33,6 +35,7 @@ function mergeDefaults(input) {
     templates: input.templates && typeof input.templates === "object" ? input.templates : {},
     stores: input.stores && typeof input.stores === "object" ? input.stores : {},
     storeCache: Array.isArray(input.storeCache) ? input.storeCache : [],
+    zhongtaiShops: Array.isArray(input.zhongtaiShops) ? input.zhongtaiShops : [],
   };
 }
 

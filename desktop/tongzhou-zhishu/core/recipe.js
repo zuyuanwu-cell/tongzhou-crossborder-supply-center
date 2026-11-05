@@ -21,9 +21,10 @@ const METRIC_KEYS = METRIC_FIELDS.map((field) => field.key);
 // 占位符
 // ---------------------------------------------------------------------------
 
-function placeholderValues({ date, site, shopId = "" }) {
+function placeholderValues({ date, site, shopId = "", origin = "" }) {
   const { start, end } = dayRange(date, site);
   return {
+    origin: String(origin || ""),
     startTs: String(start),
     endTs: String(end),
     endTsNext: String(end + 1),
@@ -140,13 +141,18 @@ function templatizeRequest(request, { shopIds = [], cookies = {}, now = Date.now
   };
 
   const params = [];
-  for (const [key, value] of url.searchParams.entries()) params.push([key, mapValue(value, key)]);
+  for (const [key, value] of url.searchParams.entries()) {
+    // SPC_CDS 是会话参数（来自 Cookie），重放时不需要，去掉以免过期。
+    if (/^SPC_CDS/i.test(key) || key === "_cache_api_sw_v1_") continue;
+    params.push([key, mapValue(value, key)]);
+  }
   // 手工拼接，避免 URLSearchParams 把 { } 编码掉。
   const query = params.map(([key, value]) => {
     const encoded = String(value).startsWith("{") && String(value).endsWith("}") ? value : encodeURIComponent(value);
     return `${encodeURIComponent(key)}=${encoded}`;
   }).join("&");
-  const templUrl = `${url.origin}${url.pathname}${query ? `?${query}` : ""}`;
+  // 域名用 {origin} 占位，同一模板可用于不同站点（印尼、马来……）的卖家中心。
+  const templUrl = `{origin}${url.pathname}${query ? `?${query}` : ""}`;
 
   let body = request.body ?? null;
   if (bodyObject) {
@@ -171,6 +177,7 @@ function templatizeRequest(request, { shopIds = [], cookies = {}, now = Date.now
     endpoint: {
       id: "",
       label: url.pathname.split("/").filter(Boolean).slice(-2).join("/"),
+      origin: url.origin,
       method: (request.method || "GET").toUpperCase(),
       url: templUrl,
       body,
@@ -329,7 +336,7 @@ function validateTemplate(template) {
   const ids = new Set((template.endpoints || []).map((endpoint) => endpoint.id));
   for (const endpoint of template.endpoints || []) {
     if (!endpoint.id) problems.push("有接口缺少 ID");
-    if (!/^https:\/\//.test(endpoint.url || "")) problems.push(`接口 ${endpoint.id} 地址无效`);
+    if (!/^(https:\/\/|\{origin\}\/)/.test(endpoint.url || "")) problems.push(`接口 ${endpoint.id} 地址无效`);
     const usesDate = /\{(startTs|endTs|startMs|endMs|date|dateCompact|endTsNext)\}/.test(`${endpoint.url} ${endpoint.body || ""}`);
     if (!usesDate) problems.push(`接口 ${endpoint.label || endpoint.id} 没有日期参数，只能取到页面当前显示的日期`);
   }

@@ -3,14 +3,14 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const CHANNELS = [
-  "state", "settings:save", "zhongtai:test", "zhongtai:shops",
+  "state", "settings:save", "zhongtai:test", "zhongtai:shops", "zhongtai:pair", "zhongtai:unpair",
   "cli:diagnose", "cli:install", "cli:pick",
   "stores:refresh", "stores:save", "stores:remove",
   "calibrate:discover", "calibrate:build", "calibrate:test",
   "templates:save", "templates:delete", "templates:export", "templates:import",
   "collect:start", "collect:cancel",
   "history:list", "history:rows", "history:reupload",
-  "open:logs", "open:data", "open:url",
+  "open:logs", "open:data", "open:url", "debug:cli", "debug:page", "app:relaunch",
 ];
 
 contextBridge.exposeInMainWorld("tz", {

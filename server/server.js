@@ -2,7 +2,7 @@ import http from "node:http";
 import { Worker } from "node:worker_threads";
 import { createReadStream, mkdirSync, readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { basename, extname, relative, resolve } from "node:path";
 import { fetch as undiciFetch } from "undici";
 import { createJdyData, deleteJdyData, fetchAllJdyAssets, fetchAllJdyOutsourcingOrders, fetchAllJdyProductionMaterials, fetchAllJdyProducts, fetchAllJdyQualifications, fetchAllJdyWarehouseInfo, fetchJdyDataList, fetchJdyOutsourcingOrdersByFactoryId, hasJdyCredentials, updateJdyData } from "./jiandaoyun-client.js";
@@ -149,7 +149,28 @@ const movementHistoryCachePath = resolve(cacheDir, "movement-history.json");
 const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || resolve(cacheDir, "movement-history.sqlite"));
 const performanceAnalyticsDbPath = resolve(process.env.PERFORMANCE_ANALYTICS_DB_PATH || resolve(cacheDir, "performance-analytics.sqlite"));
 const shopDailyReportDbPath = resolve(process.env.SHOP_DAILY_REPORT_DB_PATH || resolve(cacheDir, "shop-daily-report.sqlite"));
-const shopMetricsIngestToken = String(process.env.SHOP_METRICS_INGEST_TOKEN || "").trim();
+const shopMetricsIngestTokenPath = resolve(cacheDir, "shop-metrics-ingest-token.json");
+// 采集令牌：优先用环境变量；没有配置时自动生成并保存在 .cache 里，
+// 桌面采集端（同舟智数）用中台账号登录后通过 /ingest/pair 领取，不需要手工配置服务器。
+function resolveShopMetricsIngestToken() {
+  const fromEnv = String(process.env.SHOP_METRICS_INGEST_TOKEN || "").trim();
+  if (fromEnv.length >= 24) return fromEnv;
+  try {
+    const saved = JSON.parse(readFileSync(shopMetricsIngestTokenPath, "utf8"));
+    if (String(saved?.token || "").length >= 24) return String(saved.token);
+  } catch {
+    // 尚未生成
+  }
+  const token = `tzzs_${randomBytes(24).toString("hex")}`;
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(shopMetricsIngestTokenPath, JSON.stringify({ token, createdAt: new Date().toISOString() }), { mode: 0o600 });
+  } catch (error) {
+    console.error("[shop-daily] failed to persist ingest token", error);
+  }
+  return token;
+}
+const shopMetricsIngestToken = resolveShopMetricsIngestToken();
 const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "false";
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
@@ -12600,6 +12621,23 @@ const server = http.createServer(async (req, res) => {
         appendActionLog(auth, "导入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, shops: result.shopCount });
       }
       sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/ingest/pair" && req.method === "POST") {
+      // 同舟智数用中台账号登录后领取采集令牌（需要店铺日报编辑权限）。
+      const auth = getAuth(req);
+      if (!auth.user) {
+        sendJson(res, 401, { ok: false, message: "请先登录中台账号。" });
+        return;
+      }
+      if (!shopDailyPermissions(auth).edit) {
+        sendJson(res, 403, { ok: false, message: "该账号没有店铺日报的编辑权限（需要经营贡献分析和经营销售金额权限）。" });
+        return;
+      }
+      const body = await parseRequestBody(req, 64 * 1024).catch(() => ({}));
+      appendActionLog(auth, "同舟智数配对", "shop_daily_report", String(body?.device || "").slice(0, 80) || "desktop", {});
+      sendJson(res, 200, { ok: true, token: shopMetricsIngestToken, user: { username: auth.user.username, displayName: auth.user.displayName || auth.user.username } });
       return;
     }
 

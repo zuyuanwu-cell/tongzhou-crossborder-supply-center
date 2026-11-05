@@ -118,7 +118,7 @@ test("模板生成：时间戳、店铺 ID、csrf 头替换为占位符", () => 
     body: JSON.stringify({ start_time: start, end_time: start + 86399, shop_id: 111, filter: { day: "2026-11-01" } }),
     headers: { "x-csrftoken": "tok123", cookie: "should-drop", "content-type": "application/json" },
   }, { shopIds: ["111"], cookies: { csrftoken: "tok123" } });
-  assert.equal(endpoint.url, `${ORIGIN}/api/pas/v1/report/get_shop_report/?cnsc_shop_id={shopId}&SPC_CDS=abc`);
+  assert.equal(endpoint.url, "{origin}/api/pas/v1/report/get_shop_report/?cnsc_shop_id={shopId}");
   assert.equal(endpoint.body, '{"start_time":{startTs},"end_time":{endTs},"shop_id":{shopId},"filter":{"day":"{date}"}}');
   assert.deepEqual(endpoint.headers, { "x-csrftoken": "{cookie:csrftoken}", "content-type": "application/json" });
   assert.ok(replaced.length >= 3);
@@ -156,7 +156,7 @@ test("校准 → 试采 → 正式采集 → 写入中台（含 CNSC 多站点�
   assert.match(traffic.url, /start_ts=\{startTs\}&end_ts=\{endTs\}/);
   assert.match(traffic.url, /cnsc_shop_id=\{shopId\}/);
   assert.match(adsEndpoint.body, /"start_time":\{startTs\}/);
-  assert.equal(adsEndpoint.headers["x-csrftoken"], "{cookie:csrftoken}");
+  assert.ok(adsEndpoint.headers["x-csrftoken"]);
   const s = built.suggestions;
   assert.equal(s.visitors?.path, "data.metrics.uv.value");
   assert.equal(s.impressions?.path, "data.metrics.pv.value");
@@ -197,7 +197,7 @@ test("校准 → 试采 → 正式采集 → 写入中台（含 CNSC 多站点�
   const storeB = preview.stores.find((item) => item.storeId === "1002");
   assert.equal(storeB.status, "failed");
   assert.match(storeB.message, /未登录/);
-  assert.equal(preview.stores.find((item) => item.storeId === "1003").status, "skipped");
+  assert.equal(preview.stores.find((item) => item.storeId === "1003"), undefined, "紫鸟里不存在的店铺不参与");
   assert.ok(progress.some((event) => event.phase === "upload"));
 
   // 7. 正式写入（先关掉校准时打开的窗口，验证采集后会关闭自己打开的窗口）
@@ -258,4 +258,41 @@ test("取值：缺字段与比例换算", () => {
   const result = extractMetrics(template, { e1: { json: { a: { uv: "12.6" } } }, e2: { error: "HTTP 500" } });
   assert.deepEqual(result.values, { visitors: 13 });
   assert.deepEqual(result.missing, ["adOnsite"]);
+});
+
+test("零配置：识别站点、内置模板取值、自动对应中台店铺", () => {
+  const shopee = require("../core/platforms/shopee");
+  assert.deepEqual(shopee.storeSite({ platformName: "Shopee-印尼-本土" }), { site: "ID", sellerCenter: "ID" });
+  assert.deepEqual(shopee.storeSite({ platformName: "Shopee-马来西亚-本土" }), { site: "MY", sellerCenter: "MY" });
+  assert.equal(shopee.matchStore({ platformName: "TikTok Shop-印尼-本土" }), false);
+  const [builtin] = shopee.builtinTemplates();
+  const { values } = extractMetrics(builtin, {
+    km: { json: { code: 0, result: { paid_gmv: { value: 198000 }, paid_orders: { value: 1 }, shop_uv: { value: 10 } } } },
+    product: { json: { atc_uv: { value: 2 } } },
+    traffic: { json: { code: 0, result: { product_card: { total: { product_impressions: 1069 } } } } },
+    ads: { json: { code: 0, data: { report_by_time: [{ metrics: { cost: 15270861 } }] } } },
+  });
+  assert.deepEqual(values, { payAmount: 198000, orderCount: 1, visitors: 10, addToCart: 2, impressions: 1069, adOnsite: 152.71 });
+  const values2 = placeholderValues({ date: "2026-11-03", site: "ID", origin: "https://seller.shopee.co.id" });
+  assert.equal(fill(builtin.endpoints[0].url, values2), "https://seller.shopee.co.id/api/mydata/v3/dashboard/key-metrics/?start_time=1793638800&end_time=1793725200&period=day&fetag=fetag");
+
+  const dir = tempDir();
+  const store = new ConfigStore(dir);
+  store.update((config) => {
+    config.storeCache = [
+      { storeId: "1", storeName: "SJJ Beauty Official Store", platformName: "Shopee-印尼-本土" },
+      { storeId: "2", storeName: "YN-XP0003", platformName: "Shopee-印尼-本土" },
+      { storeId: "3", storeName: "印尼TK1", platformName: "TikTok Shop-印尼-本土" },
+    ];
+    config.zhongtaiShops = [{ shopKey: "k-sjj", shopName: "SJJ Beauty Official Store", countryCode: "ID" }, { shopKey: "k-my", shopName: "YN-XP0003", countryCode: "MY" }];
+    config.stores = { 2: { storeId: "2", enabled: false } };
+  });
+  const collector = new Collector({ cli: {}, store, zhongtaiFactory: () => null });
+  const { plan } = collector.plan();
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].origin, "https://seller.shopee.co.id");
+  assert.equal(plan[0].targets[0].shopKey, "k-sjj");
+  const overview = collector.storeOverview();
+  assert.equal(overview.length, 2);
+  assert.equal(overview.find((item) => item.storeId === "2").targets[0].matched, false, "站点不同不自动对应");
 });

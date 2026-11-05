@@ -61,10 +61,6 @@ function probeBody(apiPattern, { refetch = true, maxRefetch = 40 } = {}) {
   return `
 const pattern = new RegExp(${JSON.stringify(apiPattern)}, "i");
 const w = window;
-const cookies = {};
-for (const part of String(document.cookie || "").split(";")) {
-  const i = part.indexOf("="); if (i > 0) cookies[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
-}
 const captured = (w.__tzCap || []).slice();
 // 记录器已经抓到的地址（不论 GET/POST）不再重新请求：performance 里看不出请求方法，POST 接口用 GET 重放只会报错。
 const seen = new Set(captured.map((c) => c.url));
@@ -84,7 +80,7 @@ if (${refetch ? "true" : "false"}) {
     }
   }
 }
-return { href: location.href, title: document.title, cookies, requests: captured.concat(refetched), resourceCount: resources.length };
+return { href: location.href, title: document.title, requests: captured.concat(refetched), resourceCount: resources.length };
 `;
 }
 
@@ -95,16 +91,13 @@ function pageInfoBody() {
 
 /**
  * 重放：requests = [{ key, method, url, body, headers }]；
- * headers/body 里的 {cookie:名称} 在页面内替换为当前 Cookie 值（如 csrftoken）。
+ * 注意：紫鸟 ZClaw 会拒绝执行读取 Cookie 的脚本，所以这里不读取任何 Cookie，
+ * 登录态完全依赖浏览器同源请求自动携带。
  */
 function replayBody(requests, { concurrency = 3 } = {}) {
   return `
 const list = ${JSON.stringify(requests)};
-const cookies = {};
-for (const part of String(document.cookie || "").split(";")) {
-  const i = part.indexOf("="); if (i > 0) cookies[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
-}
-const sub = (v) => typeof v === "string" ? v.replace(/\\{cookie:([^}]+)\\}/g, (a, n) => cookies[n] || "") : v;
+const sub = (v) => v;
 const results = {};
 let cursor = 0;
 async function worker() {

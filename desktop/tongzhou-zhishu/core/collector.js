@@ -2,7 +2,7 @@
 
 // 采集编排：校准（探测接口 → 生成模板 → 试采）与正式采集（逐店铺打开紫鸟 → 页面内重放接口 → 取值 → 回写中台）。
 
-const { getPlatform } = require("./platforms");
+const { getPlatform, guessPlatform, allTemplates } = require("./platforms");
 const { hookBody, probeBody, pageInfoBody, replayBody } = require("./page-scripts");
 const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
 const { siteInfo, siteToday, addDays, dateList } = require("./sites");
@@ -173,7 +173,11 @@ class Collector {
     const existing = templateId ? this.config().templates[templateId] : null;
     const template = existing ? JSON.parse(JSON.stringify(existing)) : platform.blankTemplate({ sellerCenter, name });
     if (name) template.name = name;
-    template.collectPage = discovery.href || template.collectPage;
+    try {
+      template.collectPath = new URL(discovery.href).pathname;
+    } catch {
+      /* 保留默认 */
+    }
     const notes = [];
     const samples = [];
     let next = (template.endpoints || []).length + 1;
@@ -199,12 +203,28 @@ class Collector {
     return { template, notes, suggestions, samples: sampleLeaves, problems: validateTemplate(template) };
   }
 
+  /** 店铺对应的卖家中心域名（按紫鸟平台名识别站点，可在店铺设置里覆盖）。 */
+  storeOrigin(store, platform, settings = {}) {
+    if (settings.origin) return settings.origin;
+    const { sellerCenter } = platform.storeSite(store);
+    return platform.originFor(settings.sellerCenter || sellerCenter);
+  }
+
+  templateFor(settings = {}, platform) {
+    const templates = allTemplates(this.config().templates);
+    return templates[settings.templateId] || templates[platform.defaultTemplateId] || null;
+  }
+
   /** 按模板试采某一天，返回各接口的数值叶子和取到的字段值，供人工核对。 */
   async testTemplate({ storeId, template, date, target = {} }) {
     const platform = getPlatform(template.platform);
-    await this.openAt(storeId, template.collectPage);
-    await this.ensurePage(storeId, platform, template.collectPage);
-    const values = placeholderValues({ date, site: target.country || "SG", shopId: target.shopId || "" });
+    const cached = (this.config().storeCache || []).find((item) => item.storeId === storeId) || { storeId };
+    const origin = this.storeOrigin(cached, platform, this.config().stores[storeId] || {});
+    const page = `${origin}${template.collectPath || "/"}`;
+    await this.openAt(storeId, page);
+    await this.ensurePage(storeId, platform, page);
+    const site = target.country || platform.storeSite(cached).site || "SG";
+    const values = placeholderValues({ date, site, shopId: target.shopId || "", origin });
     const requests = template.endpoints.map((endpoint) => ({ key: endpoint.id, ...fillRequest(endpoint, values) }));
     const replay = await this.cli.runInPage(storeId, replayBody(requests), { timeoutMs: 120000 });
     const responses = {};
@@ -227,52 +247,99 @@ class Collector {
     this.cancelRequested = true;
   }
 
+  /** 中台店铺自动匹配：名称（忽略大小写/空格/符号）一致且站点一致。 */
+  matchZhongtaiShop(storeName, site) {
+    const shops = this.config().zhongtaiShops || [];
+    if (!shops.length) return null;
+    const norm = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
+    const target = norm(storeName);
+    if (!target) return null;
+    const sameSite = shops.filter((shop) => !site || !shop.countryCode || shop.countryCode === site);
+    const names = (shop) => [shop.shopName, shop.rawName, shop.alias, shop.miaoshouShopName].map(norm).filter(Boolean);
+    const exact = sameSite.filter((shop) => names(shop).includes(target));
+    if (exact.length === 1) return exact[0];
+    const loose = sameSite.filter((shop) => names(shop).some((name) => name.length >= 4 && target.length >= 4 && (name.includes(target) || target.includes(name))));
+    return loose.length === 1 ? loose[0] : null;
+  }
+
+  /** 店铺页用：所有可识别平台的紫鸟店铺 + 自动识别的站点和对应的中台店铺。 */
+  storeOverview() {
+    const config = this.config();
+    const lastRun = (this.store.history() || [])[0];
+    const lastByStore = new Map((lastRun?.stores || []).map((item) => [item.storeId, item]));
+    return (config.storeCache || []).map((store) => {
+      const platform = guessPlatform(store);
+      if (!platform) return null;
+      const settings = config.stores[store.storeId] || {};
+      const { site } = platform.storeSite(store);
+      const manual = (settings.targets || []).filter((target) => target.shopName || target.shopKey);
+      const matched = manual.length ? null : this.matchZhongtaiShop(store.storeName, site);
+      return {
+        storeId: store.storeId,
+        storeName: store.storeName,
+        platformName: store.platformName,
+        platform: platform.name,
+        site,
+        enabled: settings.enabled !== false,
+        targets: manual.length ? manual : [{ shopName: matched?.shopName || store.storeName, shopKey: matched?.shopKey || "", country: site, auto: true, matched: Boolean(matched) }],
+        last: lastByStore.get(store.storeId) || null,
+      };
+    }).filter(Boolean);
+  }
+
+  /** 店铺采集计划：紫鸟里所有可识别平台的店铺默认参与，无需逐个配置。 */
   plan({ storeIds = null } = {}) {
     const config = this.config();
     const plan = [];
     const skipped = [];
-    for (const store of Object.values(config.stores)) {
+    const cache = config.storeCache || [];
+    for (const store of cache) {
+      const platform = guessPlatform(store);
+      if (!platform) continue;
       if (storeIds && !storeIds.includes(store.storeId)) continue;
-      if (!storeIds && !store.enabled) continue;
-      const targets = (store.targets || []).filter((target) => target.enabled !== false && target.shopName);
-      const template = config.templates[store.templateId];
-      if (!targets.length) {
-        skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "没有配置对应的中台店铺" });
-        continue;
-      }
+      const settings = config.stores[store.storeId] || {};
+      if (!storeIds && settings.enabled === false) continue;
+      const template = this.templateFor(settings, platform);
       if (!template) {
-        skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "没有选择采集模板" });
+        skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "没有可用的采集模板" });
         continue;
       }
-      const problems = validateTemplate(template).filter((problem) => !/没有日期参数/.test(problem));
-      if (problems.length) {
-        skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: `模板「${template.name}」不完整：${problems.join("；")}` });
-        continue;
+      const { site } = platform.storeSite(store);
+      const origin = this.storeOrigin(store, platform, settings);
+      let targets = (settings.targets || []).filter((target) => target.enabled !== false && (target.shopName || target.shopKey));
+      if (!targets.length) {
+        if (!site) {
+          skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "无法从紫鸟平台名识别站点，请在店铺里手动选择" });
+          continue;
+        }
+        const matched = this.matchZhongtaiShop(store.storeName, site);
+        targets = [{ id: `auto-${store.storeId}`, shopName: matched?.shopName || store.storeName, shopKey: matched?.shopKey || "", country: site, auto: true }];
       }
-      plan.push({ store, targets, template });
+      targets = targets.map((target, index) => ({ ...target, id: target.id || `t${index}`, country: target.country || site }));
+      plan.push({ store: { ...store, ...settings, storeId: store.storeId, storeName: store.storeName }, targets, template, platform, origin });
     }
     return { plan, skipped };
   }
 
-  async collectStore({ store, targets, template }, { dates, onProgress = () => {} }) {
-    const platform = getPlatform(template.platform);
+  async collectStore({ store, targets, template, platform, origin }, { dates, onProgress = () => {} }) {
     const { closeAfter, storeTimeoutSec } = this.config().ziniao;
+    const page = `${origin}${template.collectPath || "/"}`;
     const rows = [];
     const issues = [];
     let reused = false;
     try {
       onProgress({ storeId: store.storeId, phase: "open", message: `打开 ${store.storeName}` });
-      ({ reused } = await this.openAt(store.storeId, template.collectPage));
-      await this.ensurePage(store.storeId, platform, template.collectPage);
+      ({ reused } = await this.openAt(store.storeId, page));
+      await this.ensurePage(store.storeId, platform, page);
       const requests = [];
       for (const target of targets) {
         const targetDates = dates[target.country] || dates.default;
         for (const date of targetDates) {
-          const values = placeholderValues({ date, site: target.country, shopId: target.shopId || "" });
+          const values = placeholderValues({ date, site: target.country, shopId: target.shopId || "", origin });
           for (const endpoint of template.endpoints) requests.push({ key: `${target.id}|${date}|${endpoint.id}`, ...fillRequest(endpoint, values) });
         }
       }
-      onProgress({ storeId: store.storeId, phase: "fetch", message: `${store.storeName}：请求 ${requests.length} 个接口` });
+      onProgress({ storeId: store.storeId, phase: "fetch", message: `${store.storeName}：读取 ${requests.length} 个数据接口` });
       const timeoutMs = Math.max(60, Number(storeTimeoutSec) || 240) * 1000;
       const replay = await this.cli.runInPage(store.storeId, replayBody(requests), { timeoutMs });
       for (const target of targets) {

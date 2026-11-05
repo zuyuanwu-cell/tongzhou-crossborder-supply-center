@@ -1,7 +1,7 @@
 {
   "name": "tongzhou-zhishu",
   "productName": "同舟智数",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "同舟智数：通过紫鸟 CLI 自动采集 Shopee 等平台店铺数据并回写同舟供应链中台",
   "main": "main.js",
   "type": "commonjs",

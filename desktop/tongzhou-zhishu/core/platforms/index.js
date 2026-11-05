@@ -17,6 +17,14 @@ function guessPlatform(store) {
   return PLATFORMS.find((platform) => platform.matchStore(store)) || null;
 }
 
+/** 全部可用模板：各平台内置模板 + 用户校准/导入的模板。 */
+function allTemplates(custom = {}) {
+  const map = {};
+  for (const platform of PLATFORMS) for (const template of platform.builtinTemplates ? platform.builtinTemplates() : []) map[template.id] = template;
+  for (const [id, template] of Object.entries(custom || {})) map[id] = template;
+  return map;
+}
+
 function describePlatforms() {
   return PLATFORMS.map((platform) => ({
     id: platform.id,
@@ -27,4 +35,4 @@ function describePlatforms() {
   }));
 }
 
-module.exports = { PLATFORMS, getPlatform, guessPlatform, describePlatforms };
+module.exports = { PLATFORMS, getPlatform, guessPlatform, describePlatforms, allTemplates };
