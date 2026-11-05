@@ -3278,6 +3278,15 @@ export type PerformanceAnalyticsPayload = {
       cancellationCount?: number;
       warningCount?: number;
       warnings?: string[];
+      afterSalesStatus?: "success" | "partial" | string;
+      afterSalesGaps?: MiaoshouAfterSalesGap[];
+      lastAfterSalesAt?: string;
+      afterSalesSkipped?: boolean;
+      modifiedCursor?: string;
+      incrementalMode?: "cursor" | "window" | string;
+      packageFrom?: string;
+      packageTo?: string;
+      windowSplits?: number;
     };
     reconciliation: {
       requestedSource: string;
@@ -3304,6 +3313,12 @@ export type PerformanceAnalyticsPayload = {
       finalizedRefundCount: number;
       refundFinalizationRate: number;
       cancelledOutboundOrders: number;
+      revenueBasis?: MiaoshouRevenueBasis;
+      basisComparison?: Array<{ basis: MiaoshouRevenueBasis; comparableOrders: number; amountVarianceRate: number }>;
+      pendingRefundCount?: number;
+      pendingCancellationCount?: number;
+      afterSalesGapCount?: number;
+      statusDictionary?: Array<{ kind: "return" | "cancellation"; status: string; statusClass: "finalized" | "pending" | "rejected" | "unknown" | string; count: number }>;
     };
   } | null;
   shopDirectory: ShopDirectoryPayload;
@@ -4937,6 +4952,17 @@ export function syncMiaoshouPerformance(input: { dateFrom?: string; dateTo?: str
   }>("/api/performance-analytics/miaoshou/sync", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export type MiaoshouRevenueBasis = "payAmount" | "orderAmount" | "productAmount" | "escrowAmount";
+
+export type MiaoshouAfterSalesGap = { kind: "return" | "cancellation"; platform: string; dateFrom: string; dateTo: string; error: string; failedAt: string };
+
+export function updatePerformanceRevenueBasis(revenueBasis: MiaoshouRevenueBasis) {
+  return requestJson<{ ok: boolean; revenueBasis: MiaoshouRevenueBasis; updatedAt: string }>("/api/performance-analytics/revenue-basis", {
+    method: "PATCH",
+    body: JSON.stringify({ revenueBasis }),
   });
 }
 

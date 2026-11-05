@@ -1,0 +1,136 @@
+.ms-recon {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.ms-recon-sync,
+.ms-recon-basis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.ms-recon-sync article,
+.ms-recon-basis article {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.ms-recon-sync article.warning {
+  border-color: rgba(245, 184, 75, 0.6);
+  background: rgba(245, 184, 75, 0.08);
+}
+
+.ms-recon-sync span,
+.ms-recon-basis span,
+.ms-recon-sync small,
+.ms-recon-basis small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ms-recon-sync strong,
+.ms-recon-basis strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ms-recon-basis article.active {
+  border-color: var(--blue, var(--orange));
+  box-shadow: inset 0 0 0 1px var(--blue, var(--orange));
+}
+
+.ms-recon-basis article em {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--green);
+  background: rgba(24, 115, 76, 0.1);
+  font-size: 10.5px;
+  font-style: normal;
+}
+
+.ms-recon-basis article b {
+  color: var(--blue, var(--orange));
+  font-size: 12px;
+}
+
+.ms-recon-basis article button {
+  justify-self: start;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.ms-recon-block header h4 {
+  margin: 0 0 4px;
+}
+
+.ms-recon-block header p,
+.ms-recon-message {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.ms-recon-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12.5px;
+}
+
+.ms-recon-table th,
+.ms-recon-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.ms-recon-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.ms-recon-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ms-recon-table tr.warning td {
+  background: rgba(245, 184, 75, 0.08);
+}
+
+.ms-recon-class {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.ms-recon-class.finalized {
+  color: var(--green);
+  background: rgba(24, 115, 76, 0.1);
+}
+
+.ms-recon-class.pending {
+  color: var(--blue, var(--cyan));
+  background: rgba(36, 81, 164, 0.1);
+}
+
+.ms-recon-class.unknown {
+  color: #8a5300;
+  background: rgba(245, 184, 75, 0.2);
+}
+
+.ms-recon-class.rejected {
+  color: var(--red);
+  background: rgba(180, 35, 24, 0.08);
+}

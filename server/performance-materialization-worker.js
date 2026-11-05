@@ -28,6 +28,7 @@ async function run() {
     facts,
     ...miaoshouSnapshot,
     requestedSource: workerData.requestedSource || "shadow",
+    revenueBasis: workerData.revenueBasis || "payAmount",
     syncState: workerData.syncState || {},
   });
   const materializedFacts = materializePerformanceFacts({
