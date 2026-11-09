@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -189,6 +189,13 @@ assert.equal(details.totals.salesCny, 150, "汇总使用全部匹配订单而非
 const searchedDetails = buildShopDailyOrderDrilldown(detailFacts, { dateFrom: "2026-06-01", dateTo: "2026-06-30", shopKey: shopA.key, search: "防晒" });
 assert.equal(searchedDetails.total, 1, "支持按商品名称搜索订单");
 assert.equal(searchedDetails.orders[0].orderNo, "A2");
+
+// The order drawer may contain dozens of cards inside a fixed-height panel.
+// A CSS grid can shrink its auto rows when cards hide overflow, leaving only
+// their borders visible. Keep the list as a non-shrinking vertical scroller.
+const shopDailyCss = readFileSync(join(process.cwd(), "src", "shop-daily", "shop-daily.css"), "utf8");
+assert.match(shopDailyCss, /\.shop-daily-order-list\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+assert.match(shopDailyCss, /\.shop-daily-order-card\s*\{[^}]*flex:\s*0\s+0\s+auto;/s);
 
 // --- 筛选 ---------------------------------------------------------------------
 const filtered = buildShopDailyReport({ shops, metrics, rules, filters: { dateFrom: "2026-06-01", dateTo: "2026-06-30", projectGroup: "印尼二组" } });
