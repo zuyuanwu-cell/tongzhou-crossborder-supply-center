@@ -14,6 +14,7 @@ const { Scheduler } = require("./core/scheduler");
 const { describePlatforms, allTemplates } = require("./core/platforms");
 const { METRIC_FIELDS, validateTemplate } = require("./core/recipe");
 const { SITES } = require("./core/sites");
+const { NodeAgent } = require("./core/agent");
 
 app.setName("同舟智数");
 // 测试或便携使用时可通过环境变量指定数据目录。
@@ -33,6 +34,7 @@ let mainWindow = null;
 let tray = null;
 let quitting = false;
 const logBuffer = [];
+let agent = null;
 
 function log(level, message) {
   const line = { at: new Date().toISOString(), level, message: String(message) };
@@ -40,6 +42,7 @@ function log(level, message) {
     logBuffer.push(line);
     if (logBuffer.length > 800) logBuffer.shift();
     mainWindow?.webContents.send("log", line);
+    if (agent) agent.queueLog(line);
   }
   try {
     fs.appendFileSync(path.join(logDir, `${line.at.slice(0, 10)}.log`), `${line.at} [${level}] ${line.message}\n`);
@@ -80,13 +83,33 @@ function writeToken(value) {
 const cli = new ZiniaoCli({ cliPath: store.get().ziniao.cliPath, dataDir, log });
 const zhongtai = () => new ZhongtaiClient({ baseUrl: store.get().zhongtai.baseUrl, token: readToken() });
 const collector = new Collector({ cli, store, log, zhongtaiFactory: zhongtai });
-collector.onUnauthorized = () => {
+function markUnauthorized() {
+  if (!readToken()) return;
   writeToken("");
   store.update((config) => {
     config.zhongtaiUser = null;
   });
-  log("warn", "中台登录已失效，请重新登录");
+  log("warn", "中台登录已失效（节点可能在中台被停用或删除），请重新登录");
+  mainWindow?.webContents.send("run-state", { running: Boolean(collector.running) });
+}
+collector.onUnauthorized = markUnauthorized;
+
+// 采集节点代理：向中台采集中心上报状态、领取计划和命令。
+agent = new NodeAgent({
+  store,
+  collector,
+  cli,
+  clientFactory: zhongtai,
+  log,
+  version: app.getVersion(),
+  runCollect: (options) => startCollect(options),
+});
+agent.onUnauthorized = markUnauthorized;
+agent.onScheduleChanged = () => {
+  updateTray();
+  mainWindow?.webContents.send("run-state", { running: Boolean(collector.running) });
 };
+collector.onRunUpdate = (entry) => agent.reportRun(entry);
 
 const schedulerStateFile = path.join(dataDir, "scheduler.json");
 const scheduler = new Scheduler({
@@ -107,10 +130,10 @@ const scheduler = new Scheduler({
 // 采集
 // ---------------------------------------------------------------------------
 
-async function startCollect({ storeIds = null, dates = null, mode = "upload", trigger = "manual" } = {}) {
+async function startCollect({ storeIds = null, dates = null, mode = "upload", trigger = "manual", commandId = "" } = {}) {
   if (collector.running) throw new Error("已有采集任务在运行");
   const blocker = powerSaveBlocker.start("prevent-app-suspension");
-  log("info", `开始采集（${trigger === "schedule" ? "定时" : "手动"}，${mode === "upload" ? "写入中台" : mode === "preview" ? "中台试匹配" : "仅本地"}）`);
+  log("info", `开始采集（${trigger === "schedule" ? "定时" : trigger === "command" ? "中台下发" : "手动"}，${mode === "upload" ? "写入中台" : mode === "preview" ? "中台试匹配" : "仅本地"}）`);
   mainWindow?.webContents.send("run-state", { running: true });
   updateTray();
   try {
@@ -119,7 +142,11 @@ async function startCollect({ storeIds = null, dates = null, mode = "upload", tr
       dates,
       mode,
       trigger,
-      onProgress: (event) => mainWindow?.webContents.send("progress", event),
+      commandId,
+      onProgress: (event) => {
+        if (event.message) agent.setProgress(event.message);
+        mainWindow?.webContents.send("progress", event);
+      },
     });
     const ok = result.stores.filter((item) => item.status === "ok").length;
     const failed = result.stores.filter((item) => item.status === "failed").length;
@@ -165,6 +192,7 @@ function state() {
     templateProblems: Object.fromEntries(Object.values(store.get().templates).map((template) => [template.id, validateTemplate(template)])),
     builtinTemplates: Object.values(allTemplates({})),
     storeOverview: collector.storeOverview(),
+    node: store.get().node ? { ...store.get().node, lastHeartbeat: agent.lastHeartbeat, lastError: agent.lastError } : null,
   };
 }
 
@@ -232,11 +260,22 @@ handle("zhongtai:pair", async ({ baseUrl, username, password }) => {
     config.zhongtai.baseUrl = String(baseUrl).trim().replace(/\/+$/, "");
   });
   const client = new ZhongtaiClient({ baseUrl: store.get().zhongtai.baseUrl });
-  const result = await client.pair({ username: String(username || "").trim(), password: String(password || ""), device: require("node:os").hostname() });
+  const hostname = require("node:os").hostname();
+  const result = await client.pair({
+    username: String(username || "").trim(),
+    password: String(password || ""),
+    device: hostname,
+    nodeId: store.get().node?.id || "",
+    name: store.get().node?.name || hostname,
+    platforms: [...new Set(collector.storeOverview().map((item) => item.platform))],
+    version: app.getVersion(),
+  });
   writeToken(result.token);
   store.update((config) => {
     config.zhongtaiUser = { username: result.user?.username || username, displayName: result.user?.displayName || username, at: new Date().toISOString() };
+    config.node = result.node ? { id: result.node.id, name: result.node.name } : null;
   });
+  agent.heartbeat().catch(() => {});
   await refreshZhongtaiShops().catch((error) => log("warn", `读取中台店铺失败：${error.message}`));
   log("info", `已连接中台（${result.user?.displayName || username}）`);
   return state();
@@ -483,6 +522,7 @@ app.whenReady().then(() => {
   createWindow({ hidden });
   createTray();
   scheduler.start();
+  agent.start();
   log("info", `同舟智数 ${app.getVersion()} 已启动，数据目录：${dataDir}`);
   // 启动时自动读取紫鸟店铺和中台店铺名单，用户不需要手动点。
   setTimeout(async () => {

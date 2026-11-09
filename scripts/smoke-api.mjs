@@ -861,6 +861,30 @@ async function main() {
   if (!ingestShops.shops.some((item) => item.shopKey === shop.key && item.shopName && item.countryCode)) {
     throw new Error(`ingest shop list is missing the directory shop: ${JSON.stringify(ingestShops).slice(0, 400)}`);
   }
+  // 采集中心：节点配对、心跳、用节点令牌写入、下发命令、运行记录与日志
+  const nodePair = await expectJson("/api/collector/nodes/pair", { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ name: "冒烟节点", hostname: "SMOKE", platforms: ["Shopee"], version: "0.3.0" }) });
+  const nodeHeaders = { "X-Node-Token": nodePair.token, "Content-Type": "application/json" };
+  const nodeBeat = await expectJson("/api/collector/agent/heartbeat", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ version: "0.3.0", localSchedule: { enabled: true, times: ["09:30"], lookbackDays: 3 }, stores: [{ storeId: "s1", storeName: "冒烟店", platform: "Shopee", site: "ID", enabled: true, matched: true }] }) });
+  if (!nodeBeat.schedule?.enabled || nodeBeat.schedule.times[0] !== "09:30") throw new Error(`collector heartbeat schedule mismatch: ${JSON.stringify(nodeBeat)}`);
+  const nodeIngest = await expectJson("/api/shop-daily-report/ingest", { method: "POST", headers: { "X-Ingest-Token": nodePair.token, "Content-Type": "application/json" }, body: JSON.stringify({ source: "ziniao", dryRun: true, rows: [] }) });
+  if (!nodeIngest.dryRun) throw new Error("collector node token was not accepted by ingest");
+  const collectorNodes = await expectJson("/api/collector/nodes", { headers: authHeaders });
+  const smokeNode = collectorNodes.nodes.find((item) => item.id === nodePair.node.id);
+  if (!smokeNode?.online || smokeNode.enabledStoreCount !== 1) throw new Error(`collector node not listed online: ${JSON.stringify(collectorNodes).slice(0, 300)}`);
+  await expectJson(`/api/collector/nodes/${smokeNode.id}`, { method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ schedule: { enabled: true, times: ["21:30", "09:00"], lookbackDays: 2 } }) });
+  const collectCommand = await expectJson(`/api/collector/nodes/${smokeNode.id}/commands`, { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ type: "collect", dates: ["2026-11-07"] }) });
+  const nodeBeat2 = await expectJson("/api/collector/agent/heartbeat", { method: "POST", headers: nodeHeaders, body: "{}" });
+  if (nodeBeat2.schedule.times.join(",") !== "09:00,21:30" || nodeBeat2.commands[0]?.id !== collectCommand.command.id) throw new Error(`collector schedule/command not delivered: ${JSON.stringify(nodeBeat2)}`);
+  await expectJson("/api/collector/agent/runs", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ run: { id: "smoke_run", commandId: collectCommand.command.id, status: "partial", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), dates: ["2026-11-07"], stores: [{ storeId: "s1", storeName: "冒烟店", status: "failed", message: "未登录" }] } }) });
+  await expectJson("/api/collector/agent/logs", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ lines: [{ level: "error", message: "冒烟店 未登录" }] }) });
+  const retried = await expectJson(`/api/collector/nodes/${smokeNode.id}/runs/smoke_run/retry`, { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" }, body: "{}" });
+  if (retried.command.storeIds?.[0] !== "s1") throw new Error(`collector retry did not target failed store: ${JSON.stringify(retried)}`);
+  const collectorLogs = await expectJson(`/api/collector/nodes/${smokeNode.id}/logs`, { headers: authHeaders });
+  if (!collectorLogs.lines.some((line) => line.message.includes("未登录"))) throw new Error("collector logs missing");
+  const anonymousNodes = await fetch(`${baseUrl}/api/collector/nodes`);
+  if (anonymousNodes.status !== 401) throw new Error(`collector nodes allowed anonymous access: ${anonymousNodes.status}`);
+  const badAgent = await fetch(`${baseUrl}/api/collector/agent/heartbeat`, { method: "POST", headers: { "X-Node-Token": "tzcn_bad", "Content-Type": "application/json" }, body: "{}" });
+  if (badAgent.status !== 401) throw new Error(`collector agent accepted a bad token: ${badAgent.status}`);
   await expectJson("/api/shop-daily-report/review-orders", {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },

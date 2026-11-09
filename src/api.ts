@@ -7406,3 +7406,89 @@ export function revealVerificationCode(requestId: string, purpose: "view" | "cop
     body: JSON.stringify({ purpose }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// 采集中心（同舟智数采集节点）
+// ---------------------------------------------------------------------------
+
+export type CollectorSchedule = { enabled: boolean; times: string[]; lookbackDays: number };
+
+export type CollectorRunUpload = { ok: boolean; dryRun: boolean; rowCount: number; written: number; shopCount: number; message: string } | null;
+
+export type CollectorNodeSummary = {
+  id: string;
+  name: string;
+  hostname: string;
+  platforms: string[];
+  version: string;
+  disabled: boolean;
+  pairedBy: string;
+  pairedAt: string;
+  lastSeenAt: string;
+  online: boolean;
+  schedule: CollectorSchedule;
+  running: boolean;
+  currentRun: { id: string; startedAt: string; progress: string } | null;
+  health: { ziniaoCli: boolean; ziniaoMessage: string; zhongtai: boolean } | null;
+  storeCount: number;
+  enabledStoreCount: number;
+  unmatchedStoreCount: number;
+  nextRunAt: string;
+  lastRun: { id: string; status: string; trigger: string; startedAt: string; finishedAt: string; rowCount: number; failedStores: number; storeCount: number; upload: CollectorRunUpload } | null;
+  pendingCommands: number;
+};
+
+export type CollectorNodeStore = { storeId: string; storeName: string; platform: string; site: string; enabled: boolean; shopName: string; shopKey: string; matched: boolean; lastStatus: string; lastMessage: string };
+
+export type CollectorCommand = { id: string; type: string; storeIds: string[] | null; dates: string[] | null; mode: string; fromRunId: string; createdBy: string; createdAt: string; status: string; message?: string; runId?: string; finishedAt?: string };
+
+export type CollectorNodeDetail = CollectorNodeSummary & { stores: CollectorNodeStore[]; commands: CollectorCommand[] };
+
+export type CollectorRun = {
+  id: string;
+  trigger: string;
+  mode: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string;
+  dates: string[];
+  rowCount: number;
+  commandId: string;
+  stores: { storeId: string; storeName: string; status: string; message: string; rowCount: number }[];
+  issues: { level: string; storeName: string; shopName: string; date: string; message: string }[];
+  upload: CollectorRunUpload;
+};
+
+export type CollectorLogLine = { seq: number; at: string; level: string; message: string };
+
+export function fetchCollectorNodes(signal?: AbortSignal) {
+  return requestJson<{ ok: boolean; nodes: CollectorNodeSummary[]; onlineWindowSeconds: number; serverTime: string }>("/api/collector/nodes", { signal });
+}
+
+export function fetchCollectorNode(nodeId: string, signal?: AbortSignal) {
+  return requestJson<{ ok: boolean; node: CollectorNodeDetail }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}`, { signal });
+}
+
+export function updateCollectorNode(nodeId: string, patch: { name?: string; disabled?: boolean; schedule?: Partial<CollectorSchedule> }) {
+  return requestJson<{ ok: boolean; node: CollectorNodeDetail }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export function deleteCollectorNode(nodeId: string) {
+  return requestJson<{ ok: boolean }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
+}
+
+export function fetchCollectorRuns(nodeId: string, signal?: AbortSignal) {
+  return requestJson<{ ok: boolean; runs: CollectorRun[] }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}/runs?limit=50`, { signal });
+}
+
+export function fetchCollectorLogs(nodeId: string, after = 0, signal?: AbortSignal) {
+  return requestJson<{ ok: boolean; lines: CollectorLogLine[]; lastSeq: number }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}/logs?after=${after}&limit=500`, { signal });
+}
+
+export function sendCollectorCommand(nodeId: string, input: { type: "collect" | "refresh-stores"; storeIds?: string[]; dates?: string[]; mode?: "upload" | "preview" }) {
+  return requestJson<{ ok: boolean; command: CollectorCommand }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}/commands`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function retryCollectorRun(nodeId: string, runId: string, storeIds?: string[]) {
+  return requestJson<{ ok: boolean; command: CollectorCommand }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}/runs/${encodeURIComponent(runId)}/retry`, { method: "POST", body: JSON.stringify({ storeIds }) });
+}

@@ -14,6 +14,7 @@ const { ConfigStore } = require("../core/config");
 const { Collector } = require("../core/collector");
 const { ZhongtaiClient } = require("../core/zhongtai");
 const { startMockBrowser, ORIGIN } = require("./mock-browser");
+const { NodeAgent } = require("../core/agent");
 
 const repoRoot = path.resolve(__dirname, "..", "..", "..");
 const TOKEN = "integration-ingest-token-0123456789abcd";
@@ -70,6 +71,7 @@ async function main() {
     const cli = new ZiniaoCli({ cliPath: cliFile, extraEnv: { MOCK_ZINIAO_URL: browser.url } });
     const store = new ConfigStore(path.join(dir, "app"));
     const collector = new Collector({ cli, store, zhongtaiFactory: () => client, waits: { fresh: 10, reused: 10, visit: 10, retry: 10 } });
+    await collector.refreshStores();
     const discovery = await collector.discover({ storeId: "1001", pageUrl: `${ORIGIN}/datacenter/dashboard` });
     browser.pages.get("1001").interactAds();
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -92,6 +94,75 @@ async function main() {
     assert.equal(run.upload.written, 4);
     assert.equal(run.status, "ok");
     console.log(`[ok] 同舟智数 → 中台：试匹配 ${preview.upload.rowCount} 行，写入 ${run.upload.written} 行，店铺名单 ${shops.length} 个`);
+
+    // ---------------- 采集中心：节点配对、心跳、计划、命令、运行记录、日志、停用 ----------------
+    const session = await (await fetch(`${baseUrl}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "x" }) })).json();
+    const admin = (pathname, init = {}) => fetch(`${baseUrl}${pathname}`, { ...init, headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` } }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    const paired = await admin("/api/collector/nodes/pair", { method: "POST", body: JSON.stringify({ name: "云电脑-01", hostname: "CLOUD-01", platforms: ["Shopee"], version: "0.3.0" }) });
+    assert.equal(paired.status, 200, JSON.stringify(paired.body));
+    store.update((config) => {
+      config.node = { id: paired.body.node.id, name: paired.body.node.name };
+      config.schedule = { ...config.schedule, enabled: true, times: ["08:15"], lookbackDays: 2 };
+    });
+    const nodeClient = new ZhongtaiClient({ baseUrl, token: paired.body.token });
+    const nodeCollector = new Collector({ cli, store, zhongtaiFactory: () => nodeClient, waits: { fresh: 10, reused: 10, visit: 10, retry: 10 } });
+    const logs = [];
+    let unauthorized = 0;
+    const agent = new NodeAgent({
+      store,
+      collector: nodeCollector,
+      cli,
+      clientFactory: () => nodeClient,
+      log: (level, message) => logs.push(`${level} ${message}`),
+      version: "0.3.0",
+      runCollect: (options) => nodeCollector.collect(options),
+    });
+    agent.onUnauthorized = () => { unauthorized += 1; };
+    nodeCollector.onRunUpdate = (entry) => agent.reportRun(entry);
+
+    await agent.heartbeat();
+    let listed = await admin("/api/collector/nodes");
+    let node = listed.body.nodes.find((item) => item.id === paired.body.node.id);
+    assert.equal(node.online, true);
+    assert.deepEqual(node.schedule, { enabled: true, times: ["08:15"], lookbackDays: 2 }, "首次心跳用节点本地计划初始化");
+    assert.equal(node.storeCount, 1);
+
+    // 中台改计划 → 节点下次心跳生效
+    await admin(`/api/collector/nodes/${node.id}`, { method: "PATCH", body: JSON.stringify({ schedule: { enabled: true, times: ["09:30", "21:30"], lookbackDays: 3 } }) });
+    await agent.heartbeat();
+    assert.deepEqual(store.get().schedule.times, ["09:30", "21:30"]);
+    assert.equal(store.get().schedule.managed, true);
+
+    // 中台下发立即采集 → 节点执行并上报运行记录
+    const command = await admin(`/api/collector/nodes/${node.id}/commands`, { method: "POST", body: JSON.stringify({ type: "collect", dates: ["2026-11-03"] }) });
+    assert.equal(command.status, 200, JSON.stringify(command.body));
+    await agent.heartbeat();
+    for (let i = 0; i < 100 && (agent.draining || nodeCollector.running); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    await agent.flushRuns();
+    const runs = await admin(`/api/collector/nodes/${node.id}/runs`);
+    const commandRun = runs.body.runs.find((item) => item.commandId === command.body.command.id);
+    assert.ok(commandRun, `中台应收到命令触发的运行记录：${JSON.stringify(runs.body).slice(0, 300)}`);
+    assert.equal(commandRun.status, "ok");
+    assert.equal(commandRun.trigger, "command");
+    assert.deepEqual(commandRun.dates, ["2026-11-03"]);
+    assert.equal(commandRun.upload.written, 2);
+    const detail = await admin(`/api/collector/nodes/${node.id}`);
+    assert.equal(detail.body.node.commands.find((item) => item.id === command.body.command.id).status, "done");
+
+    // 日志回传
+    agent.queueLog({ at: new Date().toISOString(), level: "error", message: "测试：店铺B 未登录" });
+    await agent.flushLogs();
+    const nodeLogs = await admin(`/api/collector/nodes/${node.id}/logs`);
+    assert.ok(nodeLogs.body.lines.some((line) => line.message.includes("店铺B 未登录")));
+
+    // 停用节点 → 令牌立即失效，节点提示重新登录
+    await admin(`/api/collector/nodes/${node.id}`, { method: "PATCH", body: JSON.stringify({ disabled: true }) });
+    await agent.heartbeat();
+    assert.equal(unauthorized, 1);
+    listed = await admin("/api/collector/nodes");
+    node = listed.body.nodes.find((item) => item.id === paired.body.node.id);
+    assert.equal(node.disabled, true);
+    console.log(`[ok] 采集中心：节点在线、计划下发、立即采集（写入 ${commandRun.upload.written} 行）、日志回传、停用生效`);
   } finally {
     await browser.close();
     server.kill();

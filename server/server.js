@@ -80,6 +80,7 @@ import { createPerformanceAnalyticsQueryService } from "./performance-query-serv
 import { normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
+import { createCollectorCenter } from "./collector-center.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
@@ -171,6 +172,8 @@ function resolveShopMetricsIngestToken() {
   return token;
 }
 const shopMetricsIngestToken = resolveShopMetricsIngestToken();
+// 采集中心：同舟智数采集节点的配对、心跳、计划、命令、运行记录与日志。
+const collectorCenter = createCollectorCenter({ filePath: resolve(cacheDir, "collector-center.json") });
 const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "false";
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
@@ -5840,6 +5843,17 @@ async function importShopDailyMetrics({ rows = [], source = "import", dryRun = f
   if (dryRun || !visibleRows.length) return preview;
   const result = shopDailyReportStore.upsertMetrics(visibleRows, { source, updatedBy: shopDailyActor(auth) || source });
   return { ...preview, written: result.written };
+}
+
+/** 采集节点令牌（同舟智数节点配对后拿到），返回节点或 null。 */
+function collectorNodeFromRequest(req) {
+  const header = String(req.headers["x-node-token"] || req.headers["x-ingest-token"] || "").trim() || bearerToken(req);
+  return collectorCenter.authenticate(header);
+}
+
+/** 写入店铺日报：接受全局采集令牌或有效的采集节点令牌。 */
+function collectorIngestAuthorized(req) {
+  return shopMetricsIngestAuthorized(req) || Boolean(collectorNodeFromRequest(req));
 }
 
 function shopMetricsIngestAuthorized(req) {
@@ -12712,6 +12726,138 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname.startsWith("/api/collector/")) {
+      // ---- 采集节点（同舟智数）调用 ----
+      if (url.pathname === "/api/collector/nodes/pair" && req.method === "POST") {
+        const auth = getAuth(req);
+        if (!auth.user) {
+          sendJson(res, 401, { ok: false, message: "请先登录中台账号。" });
+          return;
+        }
+        if (!shopDailyPermissions(auth).edit) {
+          sendJson(res, 403, { ok: false, message: "该账号没有店铺日报的编辑权限（需要经营贡献分析和经营销售金额权限）。" });
+          return;
+        }
+        const body = await parseRequestBody(req, 64 * 1024).catch(() => ({}));
+        const paired = collectorCenter.pairNode({
+          nodeId: String(body?.nodeId || ""),
+          name: body?.name,
+          hostname: body?.hostname,
+          platforms: body?.platforms,
+          version: body?.version,
+          pairedBy: auth.user.displayName || auth.user.username,
+        });
+        appendActionLog(auth, "采集节点配对", "collector_node", paired.node.name, { nodeId: paired.node.id, hostname: paired.node.hostname });
+        sendJson(res, 200, { ok: true, node: paired.node, token: paired.token, user: { username: auth.user.username, displayName: auth.user.displayName || auth.user.username } });
+        return;
+      }
+
+      if (url.pathname.startsWith("/api/collector/agent/")) {
+        const node = collectorNodeFromRequest(req);
+        if (!node) {
+          sendJson(res, 401, { ok: false, message: "采集节点令牌无效或节点已停用，请在采集器里重新登录中台。" });
+          return;
+        }
+        if (url.pathname === "/api/collector/agent/heartbeat" && req.method === "POST") {
+          const body = await parseRequestBody(req, 512 * 1024);
+          sendJson(res, 200, { ok: true, ...collectorCenter.heartbeat(node.id, body) });
+          return;
+        }
+        if (url.pathname === "/api/collector/agent/runs" && req.method === "POST") {
+          const body = await parseRequestBody(req, 2 * 1024 * 1024);
+          const run = collectorCenter.recordRun(node.id, body?.run || body);
+          sendJson(res, 200, { ok: true, runId: run.id });
+          return;
+        }
+        if (url.pathname === "/api/collector/agent/logs" && req.method === "POST") {
+          const body = await parseRequestBody(req, 1024 * 1024);
+          sendJson(res, 200, { ok: true, ...collectorCenter.appendLogs(node.id, body?.lines) });
+          return;
+        }
+        const ackMatch = url.pathname.match(/^\/api\/collector\/agent\/commands\/([^/]+)\/ack$/);
+        if (ackMatch && req.method === "POST") {
+          const body = await parseRequestBody(req, 64 * 1024).catch(() => ({}));
+          const command = collectorCenter.ackCommand(node.id, decodeURIComponent(ackMatch[1]), body || {});
+          sendJson(res, command ? 200 : 404, { ok: Boolean(command), command });
+          return;
+        }
+        sendJson(res, 404, { ok: false, message: "未知的采集节点接口。" });
+        return;
+      }
+
+      // ---- 中台页面「采集中心」调用 ----
+      const auth = getAuth(req);
+      const permissions = shopDailyPermissions(auth);
+      if (!auth.user || !permissions.view) {
+        sendJson(res, auth.user ? 403 : 401, { ok: false, message: "没有查看采集中心的权限（需要经营贡献分析和经营销售金额权限）。" });
+        return;
+      }
+      const requireEdit = () => {
+        if (permissions.edit) return true;
+        sendJson(res, 403, { ok: false, message: "没有管理采集节点的权限。" });
+        return false;
+      };
+      if (url.pathname === "/api/collector/nodes" && req.method === "GET") {
+        sendJson(res, 200, { ok: true, nodes: collectorCenter.listNodes(), onlineWindowSeconds: 180, serverTime: new Date().toISOString() });
+        return;
+      }
+      const nodeMatch = url.pathname.match(/^\/api\/collector\/nodes\/([^/]+)(\/[a-z-]+)?(\/[^/]+)?(\/[a-z-]+)?$/);
+      if (nodeMatch) {
+        const nodeId = decodeURIComponent(nodeMatch[1]);
+        const action = nodeMatch[2] || "";
+        try {
+          if (!action && req.method === "GET") {
+            sendJson(res, 200, { ok: true, node: collectorCenter.getNode(nodeId) });
+            return;
+          }
+          if (!action && req.method === "PATCH") {
+            if (!requireEdit()) return;
+            const body = await parseRequestBody(req, 64 * 1024);
+            const node = collectorCenter.updateNode(nodeId, { name: body?.name, disabled: body?.disabled, schedule: body?.schedule });
+            appendActionLog(auth, "修改采集节点", "collector_node", node.name, { nodeId, schedule: node.schedule, disabled: node.disabled });
+            sendJson(res, 200, { ok: true, node });
+            return;
+          }
+          if (!action && req.method === "DELETE") {
+            if (!requireEdit()) return;
+            collectorCenter.removeNode(nodeId);
+            appendActionLog(auth, "删除采集节点", "collector_node", nodeId, {});
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+          if (action === "/runs" && req.method === "GET" && !nodeMatch[3]) {
+            sendJson(res, 200, { ok: true, runs: collectorCenter.getRuns(nodeId, { limit: Number(url.searchParams.get("limit")) || 50 }) });
+            return;
+          }
+          if (action === "/runs" && nodeMatch[3] && nodeMatch[4] === "/retry" && req.method === "POST") {
+            if (!requireEdit()) return;
+            const body = await parseRequestBody(req, 64 * 1024).catch(() => ({}));
+            const command = collectorCenter.retryRun(nodeId, decodeURIComponent(nodeMatch[3].slice(1)), { createdBy: auth.user.displayName || auth.user.username, storeIds: body?.storeIds });
+            appendActionLog(auth, "重试采集", "collector_node", nodeId, { commandId: command.id, storeIds: command.storeIds });
+            sendJson(res, 200, { ok: true, command });
+            return;
+          }
+          if (action === "/logs" && req.method === "GET") {
+            sendJson(res, 200, { ok: true, ...collectorCenter.getLogs(nodeId, { afterSeq: Number(url.searchParams.get("after")) || 0, limit: Number(url.searchParams.get("limit")) || 500 }) });
+            return;
+          }
+          if (action === "/commands" && req.method === "POST") {
+            if (!requireEdit()) return;
+            const body = await parseRequestBody(req, 64 * 1024);
+            const command = collectorCenter.createCommand(nodeId, { type: body?.type, storeIds: body?.storeIds, dates: body?.dates, mode: body?.mode, createdBy: auth.user.displayName || auth.user.username });
+            appendActionLog(auth, command.type === "collect" ? "下发立即采集" : "下发采集命令", "collector_node", nodeId, { commandId: command.id, dates: command.dates, storeIds: command.storeIds });
+            sendJson(res, 200, { ok: true, command });
+            return;
+          }
+        } catch (error) {
+          sendJson(res, error.statusCode || 500, { ok: false, message: error.message || "采集中心操作失败。" });
+          return;
+        }
+      }
+      sendJson(res, 404, { ok: false, message: "未知的采集中心接口。" });
+      return;
+    }
+
     if (url.pathname === "/api/shop-daily-report/ingest/pair" && req.method === "POST") {
       // 同舟智数用中台账号登录后领取采集令牌（需要店铺日报编辑权限）。
       const auth = getAuth(req);
@@ -12731,8 +12877,8 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/shop-daily-report/ingest/shops" && req.method === "GET") {
       // 同舟智数（桌面采集端）用采集令牌读取店铺名单，用于把紫鸟店铺对应到中台店铺。
-      if (!shopMetricsIngestAuthorized(req)) {
-        sendJson(res, shopMetricsIngestToken ? 401 : 503, { ok: false, message: shopMetricsIngestToken ? "采集令牌无效。" : "服务器未配置 SHOP_METRICS_INGEST_TOKEN，采集写入未启用。" });
+      if (!collectorIngestAuthorized(req)) {
+        sendJson(res, 401, { ok: false, message: "采集令牌无效。" });
         return;
       }
       const context = await shopDailyContext(directAuth, {});
@@ -12752,8 +12898,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/shop-daily-report/ingest" && req.method === "POST") {
-      if (!shopMetricsIngestAuthorized(req)) {
-        sendJson(res, shopMetricsIngestToken ? 401 : 503, { ok: false, message: shopMetricsIngestToken ? "采集令牌无效。" : "服务器未配置 SHOP_METRICS_INGEST_TOKEN，采集写入未启用。" });
+      if (!collectorIngestAuthorized(req)) {
+        sendJson(res, 401, { ok: false, message: "采集令牌无效。" });
         return;
       }
       const body = await parseRequestBody(req, 6 * 1024 * 1024);

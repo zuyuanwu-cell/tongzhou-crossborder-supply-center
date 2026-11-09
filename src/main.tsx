@@ -53,6 +53,7 @@ import {
   Store,
   Trash2,
   Video,
+  Server,
   Truck,
   Upload,
   Warehouse as WarehouseIcon,
@@ -249,6 +250,7 @@ import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { ProductLaunchCenter } from "./ProductLaunchCenter";
 import { VerificationCodeCenter } from "./VerificationCodeCenter";
 import { ShopDailyReport } from "./shop-daily/ShopDailyReport";
+import { CollectorCenter } from "./collector/CollectorCenter";
 import { MiaoshouReconciliationDetails } from "./miaoshou/ReconciliationDetails";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import { PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
@@ -453,6 +455,7 @@ const navItems = [
   { label: "同舟AI", icon: Bot, hash: "#tongzhou-ai", section: "settings", beta: true, permission: "tongzhou_ai" },
   { label: "快捷导航", icon: Globe2, hash: "#quick-nav", section: "settings", permission: "quick_nav" },
   { label: "妙手 ERP", icon: Store, hash: "#miaoshou", section: "settings", permission: "miaoshou_alias", additionalPermissions: ["miaoshou_automation", "miaoshou_config"] },
+  { label: "采集中心", icon: Server, hash: "#collectors", section: "settings", permission: "performance_analysis" },
   { label: "Ozon 订单", icon: ShoppingBag, hash: "#ozon-orders", section: "settings", permission: "ozon_orders", additionalPermissions: ["ozon_order_push", "ozon_config"] },
   { label: "仓库授权", icon: ShieldCheck, hash: "#warehouses", section: "settings", permission: "warehouses" },
   { label: "企业微信通知", icon: BellRing, hash: "#wecom-notifications", section: "settings", permission: "notifications" },
@@ -2339,6 +2342,8 @@ function App() {
           <BusinessChainCenter user={currentUser} />
         ) : activeView === "企业微信通知" ? (
           <WecomNotificationCenter payload={wecomNotificationPayload} warehousePayload={warehousePayload} onRefresh={loadWecomNotifications} />
+        ) : activeView === "采集中心" ? (
+          <CollectorCenter />
         ) : activeView === "验证码中心" ? (
           <VerificationCodeCenter currentUser={currentUser} />
         ) : activeView === "操作日志" ? (

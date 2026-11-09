@@ -92,13 +92,26 @@ class ZhongtaiClient {
    * 用中台账号登录并领取采集令牌（只在本机内存里用一次密码，不保存）。
    * 需要账号有店铺日报编辑权限。
    */
-  async pair({ username, password, device = "" }) {
+  async pair({ username, password, device = "", nodeId = "", name = "", platforms = [], version = "" }) {
     const login = await this.rawJson("/api/login", { method: "POST", body: { username, password } });
     if (!login?.token) throw new ZhongtaiError("登录失败");
-    const paired = await this.rawJson("/api/shop-daily-report/ingest/pair", { method: "POST", body: { device }, headers: { authorization: `Bearer ${login.token}` } });
+    const headers = { authorization: `Bearer ${login.token}` };
+    let paired;
+    try {
+      // 新版中台：注册为采集节点，拿到节点专属令牌（也可用于写入店铺日报）。
+      paired = await this.rawJson("/api/collector/nodes/pair", { method: "POST", body: { nodeId, name: name || device, hostname: device, platforms, version }, headers });
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      paired = await this.rawJson("/api/shop-daily-report/ingest/pair", { method: "POST", body: { device }, headers });
+    }
     if (!paired?.token) throw new ZhongtaiError("中台没有返回采集令牌");
     this.token = paired.token;
-    return { token: paired.token, user: paired.user || login.user || { username } };
+    return { token: paired.token, user: paired.user || login.user || { username }, node: paired.node || null };
+  }
+
+  /** 采集节点接口：heartbeat / runs / logs / commands/:id/ack。 */
+  agent(pathname, body) {
+    return this.request(`/api/collector/agent/${pathname}`, { method: "POST", body });
   }
 
   /** 用 0 行试写验证地址与令牌。 */

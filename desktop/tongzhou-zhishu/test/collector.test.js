@@ -296,3 +296,12 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   assert.equal(overview.length, 2);
   assert.equal(overview.find((item) => item.storeId === "2").targets[0].matched, false, "站点不同不自动对应");
 });
+
+test("节点代理：下次定时时间", () => {
+  const { nextRunAt } = require("../core/agent");
+  const now = new Date(2026, 10, 9, 10, 0);
+  assert.equal(new Date(nextRunAt({ enabled: true, times: ["09:30", "21:30"] }, now)).getHours(), 21);
+  const tomorrow = new Date(nextRunAt({ enabled: true, times: ["09:30"] }, now));
+  assert.equal(tomorrow.getDate(), 10);
+  assert.equal(nextRunAt({ enabled: false, times: ["09:30"] }, now), "");
+});

@@ -411,15 +411,29 @@ class Collector {
    * 执行采集。dates：日期数组（所有站点相同）或 null（按各店铺站点时区自动取最近 N 天）。
    * mode：upload（写入中台）| preview（中台试匹配，不写入）| local（只采集不连中台）。
    */
-  async collect({ storeIds = null, dates = null, mode = "upload", trigger = "manual", onProgress = () => {} } = {}) {
+  async collect({ storeIds = null, dates = null, mode = "upload", trigger = "manual", commandId = "", onProgress = () => {} } = {}) {
     if (this.running) throw new Error("已有采集任务在运行");
     const config = this.config();
     const runId = newId("run");
     const startedAt = new Date().toISOString();
     this.cancelRequested = false;
     const { plan, skipped } = this.plan({ storeIds });
-    const entry = { id: runId, trigger, mode, startedAt, finishedAt: "", status: "running", stores: [], rowCount: 0, issues: [], upload: null };
+    const entry = {
+      id: runId,
+      trigger,
+      mode,
+      commandId,
+      startedAt,
+      finishedAt: "",
+      status: "running",
+      dates: Array.isArray(dates) && dates.length ? dates : defaultDates(config.schedule),
+      stores: [],
+      rowCount: 0,
+      issues: [],
+      upload: null,
+    };
     this.running = entry;
+    if (this.onRunUpdate) this.onRunUpdate({ ...entry });
     const allRows = [];
     try {
       for (const item of skipped) entry.stores.push({ storeId: item.storeId, storeName: item.storeName, status: "skipped", message: item.reason, rowCount: 0 });
@@ -481,6 +495,7 @@ class Collector {
       entry.finishedAt = new Date().toISOString();
       entry.issues = entry.issues.slice(0, 300);
       this.store.appendHistory({ ...entry, rows: allRows });
+      if (this.onRunUpdate) this.onRunUpdate({ ...entry });
       return entry;
     } finally {
       this.running = null;

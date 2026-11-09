@@ -129,13 +129,13 @@ function viewHome() {
     <p class="subtitle">自动从紫鸟里已登录的 Shopee 店铺读取访客、曝光、加购、支付金额、订单和广告花费，写入中台「店铺日报」。</p>
     ${connected ? "" : connectCard()}
     <div class="grid cols-3" style="margin-bottom:16px">
-      <div class="check-card ${connected ? "ok" : "todo"}"><b>${connected ? "✓ " : ""}同舟中台</b><span>${connected ? `已连接${config.zhongtaiUser ? `（${esc(config.zhongtaiUser.displayName || config.zhongtaiUser.username)}）` : ""}` : "请先登录"}</span></div>
+      <div class="check-card ${connected ? "ok" : "todo"}"><b>${connected ? "✓ " : ""}同舟中台</b><span>${connected ? `已连接${config.zhongtaiUser ? `（${esc(config.zhongtaiUser.displayName || config.zhongtaiUser.username)}）` : ""}${S.state.node ? ` · 节点「${esc(S.state.node.name)}」${S.state.node.lastError ? `<b style="color:var(--red)">心跳失败：${esc(S.state.node.lastError)}</b>` : S.state.node.lastHeartbeat ? `，${fmtTime(S.state.node.lastHeartbeat)} 已上报` : ""}` : ""}` : "请先登录"}</span></div>
       <div class="check-card ${cliPath ? "ok" : "todo"}"><b>${cliPath ? "✓ " : ""}紫鸟</b><span>${cliPath ? "已连接紫鸟客户端" : "没有找到紫鸟 CLI"}</span>${cliPath ? "" : `<button class="btn small" data-action="cli-install">一键安装</button>`}</div>
       <div class="check-card ${enabled.length ? "ok" : "todo"}"><b>${enabled.length ? "✓ " : ""}店铺</b><span>${stores.length ? `${enabled.length} 个 Shopee 店铺参与采集${unmatched.length ? `，${unmatched.length} 个未对上中台店铺` : ""}` : "正在读取紫鸟店铺…"}</span>${stores.length ? `<button class="btn small" data-go="stores">查看</button>` : ""}</div>
     </div>
     <section class="panel">
       <div class="panel-head">
-        <div><h2>采集</h2><p>${config.schedule.enabled ? `每天 ${esc(config.schedule.times.join("、"))} 自动采集最近 ${config.schedule.lookbackDays} 天` : "还没开启每天自动采集"} · <button class="btn link" data-action="toggle-schedule">${config.schedule.enabled ? "关闭自动采集" : "开启每天 09:30 自动采集"}</button></p></div>
+        <div><h2>采集</h2><p>${config.schedule.enabled ? `每天 ${esc(config.schedule.times.join("、"))} 自动采集最近 ${config.schedule.lookbackDays} 天` : "还没开启每天自动采集"} · ${config.schedule.managed ? `<span class="tag info">由中台「采集中心」管理</span>` : `<button class="btn link" data-action="toggle-schedule">${config.schedule.enabled ? "关闭自动采集" : "开启每天 09:30 自动采集"}</button>`}</p></div>
         <div class="toolbar" style="margin:0">
           <select data-bind="run.range" style="min-width:150px">
             <option value="auto" ${S.run.range === "auto" ? "selected" : ""}>最近 ${config.schedule.lookbackDays} 天</option>
@@ -474,6 +474,7 @@ function viewSettings() {
     </section>
     <section class="panel">
       <div class="panel-head"><div><h2>定时采集</h2><p>按这台电脑的本地时间执行。电脑需要开机且紫鸟客户端处于登录状态；错过时刻 2 小时内开机会自动补跑。</p></div></div>
+      ${config.schedule.managed ? `<div class="notice" style="margin-bottom:10px">采集时间由中台「经营贡献 → 采集中心」统一管理，在这里修改会被中台计划覆盖。</div>` : ""}
       <div class="grid cols-4">
         <label class="inline"><input type="checkbox" id="set-sched" ${config.schedule.enabled ? "checked" : ""}> 开启每天定时采集</label>
         <label class="field"><span>时刻（多个用逗号分隔）</span><input id="set-times" value="${esc(config.schedule.times.join(", "))}" placeholder="09:30, 21:30"></label>
