@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   aggregateSystemShopDaily,
+  buildShopDailyOrderDrilldown,
   buildShopDailyReport,
   normalizeShopFeeRules,
   parseReportDate,
@@ -170,6 +171,24 @@ close(fallbackRow.reviewAmountCny, 115000 / rate, "登记订单号自动取订�
 close(fallbackRow.productCostCny, 30, "未导入成本时使用中台产品成本");
 close(fallbackRow.operationFeeCny, 3.8, "未导入操作费时使用中台打包费");
 assert.equal(fallback.quality.rowsUsingSystemRevenue, 1);
+
+// --- 订单穿透：多商品行合并、搜索、分页与金额汇总 -------------------------------
+const detailFacts = [
+  { ...systemFacts[0], orderIdentity: "wms|1|A1", sku: "SKU-1", productName: "洁面泡沫", imageUrl: "https://example.com/1.jpg", salesCny: 70, salesAmount: 161000, productCostCny: 14, packagingFeeCny: 1.2, status: "shipped", sourceSystem: "wms" },
+  { ...systemFacts[0], orderIdentity: "wms|1|A1", sku: "SKU-2", productName: "护手霜", quantity: 1, salesCny: 30, salesAmount: 69000, productCostCny: 6, packagingFeeCny: 0.7, status: "shipped", sourceSystem: "wms" },
+  { ...systemFacts[1], sku: "SKU-3", productName: "防晒霜", status: "pending", sourceSystem: "wms" },
+  { ...systemFacts[2], sku: "SKU-OLD", productName: "旧订单" },
+];
+const details = buildShopDailyOrderDrilldown(detailFacts, { dateFrom: "2026-06-01", dateTo: "2026-06-30", shopKey: shopA.key, page: 1, pageSize: 1 });
+assert.equal(details.total, 2, "日期与店铺范围内有两笔订单");
+assert.equal(details.pageCount, 2);
+assert.equal(details.orders[0].items.length, 2, "同一订单的多条商品行合并");
+assert.equal(details.orders[0].quantity, 3);
+assert.equal(details.orders[0].salesCny, 100);
+assert.equal(details.totals.salesCny, 150, "汇总使用全部匹配订单而非当前页");
+const searchedDetails = buildShopDailyOrderDrilldown(detailFacts, { dateFrom: "2026-06-01", dateTo: "2026-06-30", shopKey: shopA.key, search: "防晒" });
+assert.equal(searchedDetails.total, 1, "支持按商品名称搜索订单");
+assert.equal(searchedDetails.orders[0].orderNo, "A2");
 
 // --- 筛选 ---------------------------------------------------------------------
 const filtered = buildShopDailyReport({ shops, metrics, rules, filters: { dateFrom: "2026-06-01", dateTo: "2026-06-30", projectGroup: "印尼二组" } });

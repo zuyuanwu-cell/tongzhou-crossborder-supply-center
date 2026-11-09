@@ -617,6 +617,365 @@
   grid-column: span 2;
 }
 
+.shop-daily-order-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 5px 9px;
+  border: 1px solid rgba(33, 82, 164, 0.22);
+  border-radius: 7px;
+  color: #174783;
+  background: #f3f7fd;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.shop-daily-order-link:hover {
+  border-color: rgba(33, 82, 164, 0.55);
+  background: #eaf2fc;
+}
+
+.shop-daily-order-link b {
+  color: #ef5a20;
+}
+
+.shop-daily-order-link.compact {
+  margin-top: 6px;
+  padding: 3px 7px;
+}
+
+.shop-daily-order-overlay {
+  position: fixed;
+  z-index: 2300;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(4, 22, 48, 0.55);
+  backdrop-filter: blur(5px);
+  animation: shop-daily-overlay-in 160ms ease-out;
+}
+
+.shop-daily-order-drawer {
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  width: min(920px, calc(100vw - 48px));
+  height: 100vh;
+  overflow: hidden;
+  color: #102a4e;
+  background: #f6f8fc;
+  box-shadow: -24px 0 60px rgba(8, 31, 65, 0.24);
+  animation: shop-daily-drawer-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.shop-daily-order-drawer > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 28px 20px;
+  color: #fff;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(28, 180, 211, 0.32), transparent 34%),
+    linear-gradient(132deg, #0c315f 0%, #0a4c80 100%);
+}
+
+.shop-daily-order-heading h3 {
+  margin: 5px 0 6px;
+  color: #fff;
+  font-size: 24px;
+}
+
+.shop-daily-order-heading p {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 13px;
+}
+
+.shop-daily-drawer-close {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.shop-daily-order-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px 24px 8px;
+}
+
+.shop-daily-order-summary article {
+  display: grid;
+  gap: 3px;
+  min-height: 78px;
+  padding: 12px 14px;
+  border: 1px solid #dbe5f2;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.shop-daily-order-summary small,
+.shop-daily-order-summary span {
+  color: #77869a;
+  font-size: 11px;
+}
+
+.shop-daily-order-summary strong {
+  color: #113b72;
+  font-size: 19px;
+}
+
+.shop-daily-order-toolbar {
+  display: flex;
+  gap: 10px;
+  padding: 8px 24px;
+}
+
+.shop-daily-order-toolbar label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid #cfdbeb;
+  border-radius: 9px;
+  color: #64748b;
+  background: #fff;
+}
+
+.shop-daily-order-toolbar input {
+  width: 100%;
+  height: 38px;
+  border: 0;
+  outline: 0;
+  color: #102a4e;
+  background: transparent;
+}
+
+.shop-daily-order-scope-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 24px 10px;
+  padding: 9px 11px;
+  border: 1px solid #f1dbb7;
+  border-radius: 8px;
+  color: #7a5520;
+  background: #fffaf0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.shop-daily-order-scope-note svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #e88425;
+}
+
+.shop-daily-order-drawer > .shop-daily-error {
+  margin: 0 24px 10px;
+}
+
+.shop-daily-order-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 4px 24px 18px;
+  opacity: 1;
+  transition: opacity 120ms ease;
+}
+
+.shop-daily-order-list.is-loading {
+  opacity: 0.58;
+}
+
+.shop-daily-order-card {
+  overflow: hidden;
+  border: 1px solid #d9e3f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(22, 51, 91, 0.05);
+}
+
+.shop-daily-order-card-head {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 15px;
+  border-bottom: 1px solid #e9eef6;
+  background: linear-gradient(90deg, #f7faff, #fff);
+}
+
+.shop-daily-order-card-head > div:first-child,
+.shop-daily-order-amount {
+  display: grid;
+  gap: 3px;
+}
+
+.shop-daily-order-card-head small,
+.shop-daily-order-card footer {
+  color: #78869a;
+  font-size: 11.5px;
+}
+
+.shop-daily-order-card-head strong {
+  font-size: 14px;
+}
+
+.shop-daily-order-amount {
+  text-align: right;
+}
+
+.shop-daily-order-amount strong {
+  color: #e6531f;
+}
+
+.shop-daily-order-status {
+  max-width: 120px;
+  padding: 4px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: #315b84;
+  background: #eaf2fb;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-daily-order-products {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 12px 15px;
+}
+
+.shop-daily-order-product {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.shop-daily-order-product img,
+.shop-daily-product-placeholder {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid #e0e7f1;
+  border-radius: 7px;
+  object-fit: contain;
+  background: #f6f8fb;
+}
+
+.shop-daily-order-product > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.shop-daily-order-product strong,
+.shop-daily-order-product small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-daily-order-product strong {
+  font-size: 12px;
+}
+
+.shop-daily-order-product small {
+  color: #7a899c;
+  font-size: 10.5px;
+}
+
+.shop-daily-order-product b {
+  color: #194f8d;
+  font-size: 12px;
+}
+
+.shop-daily-order-card footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 15px;
+  border-top: 1px solid #eef2f7;
+  background: #fbfcfe;
+}
+
+.shop-daily-order-empty {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 60px 20px;
+  color: #78869a;
+  text-align: center;
+}
+
+.shop-daily-order-empty strong {
+  color: #24486f;
+}
+
+.shop-daily-order-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 24px;
+  border-top: 1px solid #dbe4f0;
+  color: #718096;
+  background: #fff;
+  font-size: 12px;
+}
+
+.shop-daily-order-pagination div {
+  display: flex;
+  gap: 8px;
+}
+
+.shop-daily-order-pagination button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 11px;
+  border: 1px solid #cdd9e8;
+  border-radius: 7px;
+  color: #1a4c82;
+  background: #fff;
+  cursor: pointer;
+}
+
+.shop-daily-order-pagination button:disabled {
+  color: #a8b2bf;
+  cursor: not-allowed;
+}
+
+@keyframes shop-daily-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes shop-daily-drawer-in {
+  from { transform: translateX(36px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
 @media (max-width: 720px) {
   .shop-daily {
     padding: 12px;
@@ -643,6 +1002,51 @@
 
   .shop-daily-custom-range input {
     width: 100%;
+  }
+
+  .shop-daily-order-drawer {
+    width: 100vw;
+  }
+
+  .shop-daily-order-drawer > header {
+    padding: 18px;
+  }
+
+  .shop-daily-order-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 12px 14px 6px;
+  }
+
+  .shop-daily-order-toolbar {
+    padding: 7px 14px;
+  }
+
+  .shop-daily-order-scope-note,
+  .shop-daily-order-drawer > .shop-daily-error {
+    margin-right: 14px;
+    margin-left: 14px;
+  }
+
+  .shop-daily-order-list {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .shop-daily-order-card-head {
+    grid-template-columns: 1fr auto;
+  }
+
+  .shop-daily-order-status {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .shop-daily-order-products {
+    grid-template-columns: 1fr;
+  }
+
+  .shop-daily-order-card footer {
+    display: grid;
   }
 }
 

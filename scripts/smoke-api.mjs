@@ -814,9 +814,15 @@ async function main() {
 
   const unauthenticatedShopDaily = await fetch(`${baseUrl}/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28`);
   if (unauthenticatedShopDaily.status !== 403) throw new Error(`/api/shop-daily-report allowed anonymous access: ${unauthenticatedShopDaily.status}`);
+  const unauthenticatedShopOrders = await fetch(`${baseUrl}/api/shop-daily-report/orders?dateFrom=2026-08-28&dateTo=2026-08-28&shopKey=smoke`);
+  if (unauthenticatedShopOrders.status !== 403) throw new Error(`/api/shop-daily-report/orders allowed anonymous access: ${unauthenticatedShopOrders.status}`);
   const shopDailyBaseline = await expectJson("/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28", { headers: authHeaders });
   if (shopDailyBaseline.rows.length !== 1 || shopDailyBaseline.rows[0].shopKey !== shop.key || shopDailyBaseline.rows[0].sources.revenue !== "system" || shopDailyBaseline.rows[0].orderCount !== 1) {
     throw new Error(`/api/shop-daily-report did not fall back to central order facts: ${JSON.stringify(shopDailyBaseline.rows).slice(0, 800)}`);
+  }
+  const shopDailyOrders = await expectJson(`/api/shop-daily-report/orders?dateFrom=2026-08-28&dateTo=2026-08-28&shopKey=${encodeURIComponent(shop.key)}`, { headers: authHeaders });
+  if (!shopDailyOrders.orders?.length || !shopDailyOrders.orders[0]?.orderNo || !Array.isArray(shopDailyOrders.orders[0]?.items)) {
+    throw new Error(`/api/shop-daily-report/orders did not return order drilldown: ${JSON.stringify(shopDailyOrders).slice(0, 800)}`);
   }
   const shopDailyTsv = ["日期\t店铺\t平台\t国家\t支付金额\t访客数\t订单数\t站内推广费", "2026-08-28\t印尼测试别称\tTikTok\t印尼\t20000\t50\t2\t1000"].join("\n");
   const shopDailyPreview = await expectJson("/api/shop-daily-report/import", {

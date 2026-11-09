@@ -6883,6 +6883,71 @@ async function runOrderSyncJob(jobId) {
   queueHermesPatrol(`order-sync:${job.reason || "manual"}`);
 }
 
+async function buildShopDailyOrdersResponse(params = {}, auth = directAuth) {
+  const permissions = shopDailyPermissions(auth);
+  const range = performanceDateRange(params);
+  const user = auth?.user || directAuth.user;
+  const scopes = normalizeDataScopes(user.dataScopes);
+  const exchangeRates = performanceAnalyticsStore.listExchangeRates();
+  const performanceSettings = performanceAnalyticsStore.getPerformanceSettings();
+  const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
+  const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
+  const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
+  let queryResult;
+  try {
+    queryResult = await performanceAnalyticsQueryService.query({
+      dataVersion: materialization.dataVersion,
+      materializedFacts: Array.isArray(materialization.facts) ? materialization.facts : undefined,
+      cachePath: Array.isArray(materialization.facts) ? "" : performanceMaterializationCachePath,
+      partitionDir: !Array.isArray(materialization.facts) && materialization.partitioned ? (materialization.partitionDir || performancePartitionDir) : "",
+      exchangeRates,
+      packagingFeeRules,
+      filters: range,
+      scopes,
+      queryType: "shop-daily-orders",
+      params: {
+        shopKey: String(params.shopKey || ""),
+        platform: String(params.platform || ""),
+        search: String(params.search || "").slice(0, 120),
+        page: Number(params.page) || 1,
+        pageSize: Number(params.pageSize) || 50,
+      },
+    });
+  } catch (error) {
+    console.error("[shop-daily-orders] query worker failed", error);
+    throw new Error("订单明细暂时不可用，请稍后重试。");
+  }
+  const payload = queryResult.payload || { total: 0, page: 1, pageSize: 50, pageCount: 1, totals: {}, orders: [] };
+  const orders = (payload.orders || []).map((row) => {
+    const next = { ...row, items: (row.items || []).map((item) => ({ ...item })) };
+    if (!permissions.cost) {
+      delete next.productCostCny;
+      delete next.packagingFeeCny;
+      for (const item of next.items) delete item.productCostCny;
+    }
+    return next;
+  });
+  const totals = { ...(payload.totals || {}) };
+  if (!permissions.cost) {
+    delete totals.productCostCny;
+    delete totals.packagingFeeCny;
+  }
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    dataVersion: materialization.dataVersion,
+    materializationStale: Boolean(materialization.stale),
+    permissions,
+    filters: { ...range, shopKey: String(params.shopKey || ""), platform: String(params.platform || ""), search: String(params.search || "") },
+    total: payload.total || 0,
+    page: payload.page || 1,
+    pageSize: payload.pageSize || 50,
+    pageCount: payload.pageCount || 1,
+    totals,
+    orders,
+  };
+}
+
 function warehouseTestMissingFields(connection) {
   const missing = [];
   const credentials = connection.credentials || {};
@@ -12571,6 +12636,29 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/orders/sync" && req.method === "POST") {
       await handleOrderSync(req, res);
+      return;
+    }
+
+    if (url.pathname === "/api/shop-daily-report/orders" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!shopDailyPermissions(auth).view) {
+        sendJson(res, 403, { ok: false, message: "查看店铺订单明细需要经营贡献分析和经营销售金额权限。" });
+        return;
+      }
+      const shopKey = url.searchParams.get("shopKey") || "";
+      if (!shopKey) {
+        sendJson(res, 400, { ok: false, message: "请选择需要穿透查看的店铺。" });
+        return;
+      }
+      sendJson(res, 200, await buildShopDailyOrdersResponse({
+        dateFrom: url.searchParams.get("dateFrom") || "",
+        dateTo: url.searchParams.get("dateTo") || "",
+        shopKey,
+        platform: url.searchParams.get("platform") || "",
+        search: url.searchParams.get("search") || "",
+        page: url.searchParams.get("page") || "1",
+        pageSize: url.searchParams.get("pageSize") || "50",
+      }, auth));
       return;
     }
 

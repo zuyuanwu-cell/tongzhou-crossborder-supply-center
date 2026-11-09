@@ -1,14 +1,17 @@
 import React from "react";
-import { AlertTriangle, CalendarDays, ClipboardPaste, Download, FileUp, ListChecks, Plus, RefreshCw, Save, Settings, Store, Trash2 } from "lucide-react";
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, ClipboardPaste, Download, FileUp, ListChecks, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
 import {
   deleteShopDailyMetric,
   deleteShopReviewOrder,
+  fetchShopDailyOrders,
   fetchShopDailyReport,
   importShopDailyReport,
   saveShopReviewOrders,
   updateShopFeeRules,
   type ShopDailyImportResult,
   type ShopDailyMetrics,
+  type ShopDailyOrder,
+  type ShopDailyOrderDrilldownPayload,
   type ShopDailyReportPayload,
   type ShopDailyRow,
   type ShopDailyShopSummary,
@@ -20,6 +23,7 @@ import "./shop-daily.css";
 type Filters = { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string };
 type Section = "report" | "import" | "reviews" | "rules";
 type View = "shops" | "days";
+type OrderDrilldownTarget = { shopKey: string; shopName: string; platform: string; dateFrom: string; dateTo: string; label: string };
 
 const cnyFormatter = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 2 });
 const numberFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
@@ -176,6 +180,14 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const [view, setView] = React.useState<View>("shops");
   const [expandedShop, setExpandedShop] = React.useState("");
   const requestRef = React.useRef<AbortController | null>(null);
+  const [orderTarget, setOrderTarget] = React.useState<OrderDrilldownTarget | null>(null);
+  const [orderPayload, setOrderPayload] = React.useState<ShopDailyOrderDrilldownPayload | null>(null);
+  const [orderSearch, setOrderSearch] = React.useState("");
+  const [orderPage, setOrderPage] = React.useState(1);
+  const [orderLoading, setOrderLoading] = React.useState(false);
+  const [orderError, setOrderError] = React.useState("");
+  const [orderExporting, setOrderExporting] = React.useState(false);
+  const orderRequestRef = React.useRef<AbortController | null>(null);
 
   React.useEffect(() => {
     setReportFilters((current) => ({
@@ -213,6 +225,35 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     void load();
     return () => requestRef.current?.abort();
   }, [load]);
+
+  React.useEffect(() => {
+    if (!orderTarget) {
+      orderRequestRef.current?.abort();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      orderRequestRef.current?.abort();
+      const controller = new AbortController();
+      orderRequestRef.current = controller;
+      setOrderLoading(true);
+      setOrderError("");
+      void fetchShopDailyOrders({
+        dateFrom: orderTarget.dateFrom,
+        dateTo: orderTarget.dateTo,
+        shopKey: orderTarget.shopKey,
+        platform: orderTarget.platform,
+        search: orderSearch,
+        page: orderPage,
+        pageSize: 30,
+      }, controller.signal).then(setOrderPayload).catch((requestError) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+        setOrderError(requestError instanceof Error ? requestError.message : "订单明细读取失败");
+      }).finally(() => {
+        if (orderRequestRef.current === controller) setOrderLoading(false);
+      });
+    }, orderSearch ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [orderTarget, orderSearch, orderPage]);
 
   const permissions = payload?.permissions || { view: false, edit: false, cost: false, profit: false, manageRules: false };
   const totals = payload?.totals;
@@ -268,6 +309,68 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
       SOURCE_LABEL[row.sources.revenue] || row.sources.revenue, row.flags.map((flag) => FLAG_LABEL[flag] || flag).join(" / "),
     ]);
     downloadCsv(`店铺日报-${payload?.filters.dateFrom || ""}-${payload?.filters.dateTo || ""}.csv`, header, lines);
+  }
+
+  function openOrderDrilldown(target: OrderDrilldownTarget) {
+    setOrderTarget(target);
+    setOrderPayload(null);
+    setOrderSearch("");
+    setOrderPage(1);
+    setOrderError("");
+  }
+
+  function closeOrderDrilldown() {
+    orderRequestRef.current?.abort();
+    setOrderTarget(null);
+    setOrderPayload(null);
+    setOrderSearch("");
+    setOrderError("");
+  }
+
+  async function exportOrderDetails() {
+    if (!orderTarget || orderExporting) return;
+    setOrderExporting(true);
+    setOrderError("");
+    try {
+      const allOrders: ShopDailyOrder[] = [];
+      let page = 1;
+      let pageCount = 1;
+      do {
+        const result = await fetchShopDailyOrders({
+          dateFrom: orderTarget.dateFrom,
+          dateTo: orderTarget.dateTo,
+          shopKey: orderTarget.shopKey,
+          platform: orderTarget.platform,
+          search: orderSearch,
+          page,
+          pageSize: 200,
+        });
+        allOrders.push(...result.orders);
+        pageCount = result.pageCount;
+        page += 1;
+      } while (page <= pageCount && allOrders.length < 20_000);
+      const header = ["日期", "平台订单号", "店铺", "平台", "状态", "商品明细", "商品数量", "支付金额(本币)", "币种", "成交额(人民币)", "数据来源",
+        ...(permissions.cost ? ["产品成本(人民币)", "打包费(人民币)"] : [])];
+      const lines = allOrders.map((order) => [
+        order.orderDate,
+        order.orderNo,
+        order.shopName,
+        order.platform,
+        order.status,
+        order.items.map((item) => `${item.sku || "无SKU"} ${item.productName} ×${fmtNum(item.quantity)}`).join("；"),
+        order.quantity,
+        order.salesAmount,
+        order.currency,
+        order.salesCny,
+        order.sourceSystem,
+        ...(permissions.cost ? [order.productCostCny ?? "", order.packagingFeeCny ?? ""] : []),
+      ]);
+      downloadCsv(`店铺订单-${orderTarget.shopName}-${orderTarget.dateFrom}-${orderTarget.dateTo}.csv`, header, lines);
+    } catch (requestError) {
+      setOrderError(requestError instanceof Error ? requestError.message : "订单导出失败");
+    } finally {
+      setOrderExporting(false);
+    }
   }
 
   async function clearMetric(row: ShopDailyRow) {
@@ -423,12 +526,25 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                         <strong>{shop.shopName}</strong>
                         <small>{[shop.platform, shop.country, shop.projectGroup].filter(Boolean).join(" · ")} · {shop.days} 天{shop.standaloneShop ? " · 未匹配中台" : ""}</small>
                         <span className="shop-daily-flags">{Object.entries(shop.flagCounts).map(([flag, count]) => <i key={flag}>{FLAG_LABEL[flag] || flag} {count}</i>)}</span>
+                        <button className="shop-daily-order-link" type="button" onClick={(event) => {
+                          event.stopPropagation();
+                          openOrderDrilldown({
+                            shopKey: shop.shopKey,
+                            shopName: shop.shopName,
+                            platform: shop.platform,
+                            dateFrom: payload?.filters.dateFrom || reportFilters.dateFrom || "",
+                            dateTo: payload?.filters.dateTo || reportFilters.dateTo || "",
+                            label: `${payload?.filters.dateFrom || reportFilters.dateFrom || ""} 至 ${payload?.filters.dateTo || reportFilters.dateTo || ""}`,
+                          });
+                        }}><PackageSearch size={14} />查看具体订单 <b>{fmtNum(shop.systemOrderCount)}</b></button>
                       </td>
                       <MetricCells row={shop} permissions={permissions} currency={shop.currency} />
                     </tr>
                     {expandedShop === shop.shopKey ? (rowsByShop.get(shop.shopKey) || []).map((row) => (
                       <tr className="day-row" key={`${row.shopKey}-${row.date}`}>
-                        <td className="sticky"><span>{row.date}</span><small>收入来源：{SOURCE_LABEL[row.sources.revenue] || row.sources.revenue}</small></td>
+                        <td className="sticky"><span>{row.date}</span><small>收入来源：{SOURCE_LABEL[row.sources.revenue] || row.sources.revenue}</small>
+                          <button className="shop-daily-order-link compact" type="button" onClick={() => openOrderDrilldown({ shopKey: row.shopKey, shopName: row.shopName, platform: row.platform, dateFrom: row.date, dateTo: row.date, label: row.date })}><PackageSearch size={13} />订单 {fmtNum(row.systemOrderCount)}</button>
+                        </td>
                         <MetricCells row={row} permissions={permissions} currency={row.currency} />
                       </tr>
                     )) : null}
@@ -439,6 +555,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                       <strong>{row.date} · {row.shopName}</strong>
                       <small>{row.currency} {row.localPerCny ? `1¥=${fmtNum(row.localPerCny)}` : ""} · 收入来源 {SOURCE_LABEL[row.sources.revenue] || row.sources.revenue}</small>
                       <span className="shop-daily-flags">{row.flags.map((flag) => <i key={flag}>{FLAG_LABEL[flag] || flag}</i>)}</span>
+                      <button className="shop-daily-order-link compact" type="button" onClick={() => openOrderDrilldown({ shopKey: row.shopKey, shopName: row.shopName, platform: row.platform, dateFrom: row.date, dateTo: row.date, label: row.date })}><PackageSearch size={13} />查看 {fmtNum(row.systemOrderCount)} 笔订单</button>
                     </td>
                     <MetricCells row={row} permissions={permissions} currency={row.currency} />
                     {permissions.edit ? <td>{row.updatedAt ? <button className="shop-daily-icon" type="button" title="清除这一天的导入数据" onClick={() => void clearMetric(row)}><Trash2 size={14} /></button> : null}</td> : null}
@@ -465,6 +582,134 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
       ) : (
         <RulesPanel payload={payload} onSaved={load} />
       )}
+      {orderTarget ? (
+        <OrderDrilldownDrawer
+          target={orderTarget}
+          payload={orderPayload}
+          permissions={permissions}
+          loading={orderLoading}
+          error={orderError}
+          search={orderSearch}
+          page={orderPage}
+          exporting={orderExporting}
+          onClose={closeOrderDrilldown}
+          onSearch={(value) => { setOrderSearch(value); setOrderPage(1); }}
+          onPage={setOrderPage}
+          onExport={() => void exportOrderDetails()}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function OrderDrilldownDrawer({
+  target,
+  payload,
+  permissions,
+  loading,
+  error,
+  search,
+  page,
+  exporting,
+  onClose,
+  onSearch,
+  onPage,
+  onExport,
+}: {
+  target: OrderDrilldownTarget;
+  payload: ShopDailyOrderDrilldownPayload | null;
+  permissions: ShopDailyReportPayload["permissions"];
+  loading: boolean;
+  error: string;
+  search: string;
+  page: number;
+  exporting: boolean;
+  onClose: () => void;
+  onSearch: (value: string) => void;
+  onPage: (page: number) => void;
+  onExport: () => void;
+}) {
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="shop-daily-order-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <aside className="shop-daily-order-drawer" role="dialog" aria-modal="true" aria-label={`${target.shopName}订单明细`}>
+        <header>
+          <div className="shop-daily-order-heading">
+            <span className="shop-daily-eyebrow">ORDER DRILLDOWN</span>
+            <h3>{target.shopName}</h3>
+            <p><PlatformMark platform={target.platform} /> {target.platform || "未知平台"} · {target.label}</p>
+          </div>
+          <button className="shop-daily-drawer-close" type="button" onClick={onClose} aria-label="关闭订单明细"><X size={20} /></button>
+        </header>
+
+        <div className="shop-daily-order-summary">
+          <article><small>已同步订单</small><strong>{fmtNum(payload?.total)}</strong><span>笔</span></article>
+          <article><small>商品件数</small><strong>{fmtNum(payload?.totals.quantity)}</strong><span>件</span></article>
+          <article><small>成交金额</small><strong>{fmtCny(payload?.totals.salesCny)}</strong><span>人民币口径</span></article>
+          {permissions.cost ? <article><small>产品成本</small><strong>{fmtCny(payload?.totals.productCostCny)}</strong><span>中台成本口径</span></article> : null}
+        </div>
+
+        <div className="shop-daily-order-toolbar">
+          <label><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索订单号、SKU 或商品名称" /></label>
+          <button className="ghost-button" type="button" onClick={onExport} disabled={exporting || !payload?.total}><Download size={15} />{exporting ? "导出中" : "导出明细"}</button>
+        </div>
+
+        <div className="shop-daily-order-scope-note">
+          <AlertTriangle size={15} />
+          <span>这里展示中台已同步到的具体订单。日报中的平台订单数来自运营导入时，两种口径可能因同步时点不同而暂时不一致。</span>
+        </div>
+        {error ? <div className="notice shop-daily-error">{error}</div> : null}
+
+        <div className={`shop-daily-order-list ${loading ? "is-loading" : ""}`}>
+          {payload?.orders.map((order) => (
+            <article className="shop-daily-order-card" key={order.orderKey}>
+              <div className="shop-daily-order-card-head">
+                <div>
+                  <small>{order.orderDate} · {order.sourceSystem || "中台订单"}</small>
+                  <strong>{order.orderNo}</strong>
+                </div>
+                <div className="shop-daily-order-amount">
+                  <strong>{fmtCny(order.salesCny)}</strong>
+                  <small>{order.salesAmount ? fmtLocal(order.salesAmount, order.currency) : "暂无平台金额"}</small>
+                </div>
+                <span className="shop-daily-order-status">{order.status || "状态未同步"}</span>
+              </div>
+              <div className="shop-daily-order-products">
+                {order.items.map((item) => (
+                  <div className="shop-daily-order-product" key={`${order.orderKey}-${item.sku}-${item.productName}`}>
+                    {item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" /> : <span className="shop-daily-product-placeholder"><PackageSearch size={17} /></span>}
+                    <span><strong>{item.productName}</strong><small>{item.sku || "未匹配 SKU"}</small></span>
+                    <b>× {fmtNum(item.quantity)}</b>
+                  </div>
+                ))}
+              </div>
+              <footer>
+                <span>{order.items.length} 种商品 · 共 {fmtNum(order.quantity)} 件</span>
+                {permissions.cost ? <span>产品成本 {fmtCny(order.productCostCny)} · 打包费 {fmtCny(order.packagingFeeCny)}</span> : null}
+              </footer>
+            </article>
+          ))}
+          {!loading && payload && !payload.orders.length ? (
+            <div className="shop-daily-order-empty"><PackageSearch size={32} /><strong>没有找到具体订单</strong><span>{search ? "换一个订单号、SKU 或商品名称试试。" : "该店铺在这个周期内还没有同步到中台的订单明细。"}</span></div>
+          ) : null}
+          {loading && !payload ? <div className="shop-daily-order-empty"><RefreshCw className="spin" size={28} /><strong>正在读取订单明细</strong></div> : null}
+        </div>
+
+        <footer className="shop-daily-order-pagination">
+          <span>共 {fmtNum(payload?.total)} 笔 · 第 {payload?.page || page} / {payload?.pageCount || 1} 页</span>
+          <div>
+            <button type="button" onClick={() => onPage(Math.max(1, page - 1))} disabled={loading || page <= 1}><ChevronLeft size={16} />上一页</button>
+            <button type="button" onClick={() => onPage(Math.min(payload?.pageCount || 1, page + 1))} disabled={loading || page >= (payload?.pageCount || 1)}>下一页<ChevronRight size={16} /></button>
+          </div>
+        </footer>
+      </aside>
     </div>
   );
 }

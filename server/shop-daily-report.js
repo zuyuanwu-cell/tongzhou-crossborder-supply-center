@@ -950,3 +950,132 @@ export function aggregateSystemShopDaily(facts = [], { dateFrom = "", dateTo = "
   });
   return { rows, orderLookup };
 }
+
+// ---------------------------------------------------------------------------
+// 订单穿透：按平台订单合并商品行，供店铺日报查看具体订单。
+// ---------------------------------------------------------------------------
+
+export function buildShopDailyOrderDrilldown(facts = [], {
+  dateFrom = "",
+  dateTo = "",
+  shopKey = "",
+  platform = "",
+  search = "",
+  page = 1,
+  pageSize = 50,
+} = {}) {
+  const from = text(dateFrom);
+  const to = text(dateTo);
+  const targetShop = text(shopKey);
+  const targetPlatform = normalizedPlatform(platform);
+  const keyword = text(search).normalize("NFKC").toLowerCase();
+  const groups = new Map();
+
+  for (const fact of Array.isArray(facts) ? facts : []) {
+    const date = text(fact.orderDate).slice(0, 10);
+    if (!date || (from && date < from) || (to && date > to)) continue;
+    if (targetShop && text(fact.shopKey) !== targetShop) continue;
+    if (targetPlatform && normalizedPlatform(fact.platform) !== targetPlatform) continue;
+    const orderNo = text(fact.orderNo || fact.sourceOrderId || fact.orderIdentity);
+    const identity = text(fact.orderIdentity) || [text(fact.sourceSystem), text(fact.shopKey), orderNo].join("|");
+    if (!identity || !orderNo) continue;
+    let order = groups.get(identity);
+    if (!order) {
+      order = {
+        orderKey: identity,
+        orderNo,
+        sourceOrderId: text(fact.sourceOrderId),
+        orderDate: date,
+        createdAt: text(fact.createdAt),
+        shippedAt: text(fact.shippedAt),
+        shopKey: text(fact.shopKey),
+        shopName: text(fact.shopName || fact.rawShopName || fact.shopKey),
+        platform: text(fact.platform),
+        country: text(fact.country),
+        projectGroup: text(fact.projectGroup),
+        status: text(fact.status),
+        sourceSystem: text(fact.sourceSystem),
+        currency: text(fact.currency).toUpperCase(),
+        quantity: 0,
+        salesAmount: 0,
+        salesCny: 0,
+        productCostCny: 0,
+        packagingFeeCny: 0,
+        itemsByKey: new Map(),
+      };
+      groups.set(identity, order);
+    }
+    order.quantity += Math.max(0, number(fact.quantity));
+    order.salesAmount += Math.max(0, number(fact.salesAmount));
+    order.salesCny += Math.max(0, number(fact.salesCny));
+    order.productCostCny += Math.max(0, number(fact.productCostCny));
+    order.packagingFeeCny += Math.max(0, number(fact.packagingFeeCny));
+    if (!order.status && fact.status) order.status = text(fact.status);
+    if (!order.createdAt && fact.createdAt) order.createdAt = text(fact.createdAt);
+    if (!order.shippedAt && fact.shippedAt) order.shippedAt = text(fact.shippedAt);
+    const sku = text(fact.sku || fact.skuNo || fact.countrySku);
+    const productName = text(fact.productName) || sku || "未识别商品";
+    const itemKey = `${sku}\u0000${productName}`;
+    const item = order.itemsByKey.get(itemKey) || {
+      sku,
+      productName,
+      imageUrl: text(fact.imageUrl),
+      quantity: 0,
+      salesCny: 0,
+      productCostCny: 0,
+    };
+    item.quantity += Math.max(0, number(fact.quantity));
+    item.salesCny += Math.max(0, number(fact.salesCny));
+    item.productCostCny += Math.max(0, number(fact.productCostCny));
+    order.itemsByKey.set(itemKey, item);
+  }
+
+  let orders = [...groups.values()].map((order) => ({
+    ...order,
+    quantity: round(order.quantity, 4),
+    salesAmount: round(order.salesAmount, 4),
+    salesCny: round(order.salesCny),
+    productCostCny: round(order.productCostCny),
+    packagingFeeCny: round(order.packagingFeeCny),
+    items: [...order.itemsByKey.values()].map((item) => ({
+      ...item,
+      quantity: round(item.quantity, 4),
+      salesCny: round(item.salesCny),
+      productCostCny: round(item.productCostCny),
+    })).sort((left, right) => right.quantity - left.quantity || left.sku.localeCompare(right.sku)),
+  }));
+  for (const order of orders) delete order.itemsByKey;
+
+  if (keyword) {
+    orders = orders.filter((order) => [
+      order.orderNo,
+      order.sourceOrderId,
+      order.shopName,
+      order.status,
+      order.platform,
+      ...order.items.flatMap((item) => [item.sku, item.productName]),
+    ].some((value) => text(value).normalize("NFKC").toLowerCase().includes(keyword)));
+  }
+  orders.sort((left, right) => right.orderDate.localeCompare(left.orderDate)
+    || text(right.createdAt).localeCompare(text(left.createdAt))
+    || left.orderNo.localeCompare(right.orderNo));
+
+  const safePageSize = Math.min(200, Math.max(1, Math.trunc(number(pageSize)) || 50));
+  const total = orders.length;
+  const pageCount = Math.max(1, Math.ceil(total / safePageSize));
+  const safePage = Math.min(pageCount, Math.max(1, Math.trunc(number(page)) || 1));
+  const matched = orders.slice((safePage - 1) * safePageSize, safePage * safePageSize);
+  return {
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    pageCount,
+    totals: {
+      quantity: round(orders.reduce((sum, order) => sum + order.quantity, 0), 4),
+      salesCny: round(orders.reduce((sum, order) => sum + order.salesCny, 0)),
+      productCostCny: round(orders.reduce((sum, order) => sum + order.productCostCny, 0)),
+      packagingFeeCny: round(orders.reduce((sum, order) => sum + order.packagingFeeCny, 0)),
+    },
+    orders: matched,
+  };
+}

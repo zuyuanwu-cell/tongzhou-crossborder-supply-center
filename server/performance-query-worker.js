@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { buildPerformanceAnalyticsPayload } from "./performance-analytics.js";
 import { buildOrderAnalysisFromFacts } from "./order-analysis.js";
-import { aggregateSystemShopDaily } from "./shop-daily-report.js";
+import { aggregateSystemShopDaily, buildShopDailyOrderDrilldown } from "./shop-daily-report.js";
 import { readPartitionIndex, readPartitionRows } from "./performance-partitions.js";
 
 let dataVersion = "";
@@ -127,6 +127,25 @@ function queryShopDaily(message) {
   };
 }
 
+function queryShopDailyOrders(message) {
+  const startedAt = Date.now();
+  const scopes = message.scopes || {};
+  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
+    .some((values) => Array.isArray(values) && values.length > 0);
+  const rangedFacts = dateSlice(message.filters || {});
+  const scopedFacts = hasDataScope ? rangedFacts.filter((row) => withinScope(row, scopes)) : rangedFacts;
+  const payload = buildShopDailyOrderDrilldown(scopedFacts, {
+    ...(message.filters || {}),
+    ...(message.params || {}),
+  });
+  return {
+    payload,
+    visibleShopKeys: hasDataScope ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))] : null,
+    workerQueryDurationMs: Date.now() - startedAt,
+    scannedFactCount: scopedFacts.length,
+  };
+}
+
 // 分区缓存：key -> { hash, rows }。刷新时只重新读取哈希变化的分区。
 const partitionCache = new Map();
 
@@ -211,6 +230,8 @@ parentPort.on("message", (message = {}) => {
   try {
     const result = message.queryType === "order-analysis"
       ? queryOrderAnalysis(message)
+      : message.queryType === "shop-daily-orders"
+        ? queryShopDailyOrders(message)
       : message.queryType === "shop-daily"
         ? queryShopDaily(message)
         : queryPerformance(message);

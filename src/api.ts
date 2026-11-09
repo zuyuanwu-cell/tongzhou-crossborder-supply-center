@@ -7186,6 +7186,53 @@ export type ShopDailyReportPayload = {
   ingestConfigured: boolean;
 };
 
+export type ShopDailyOrderItem = {
+  sku: string;
+  productName: string;
+  imageUrl: string;
+  quantity: number;
+  salesCny: number;
+  productCostCny?: number;
+};
+
+export type ShopDailyOrder = {
+  orderKey: string;
+  orderNo: string;
+  sourceOrderId: string;
+  orderDate: string;
+  createdAt: string;
+  shippedAt: string;
+  shopKey: string;
+  shopName: string;
+  platform: string;
+  country: string;
+  projectGroup: string;
+  status: string;
+  sourceSystem: string;
+  currency: string;
+  quantity: number;
+  salesAmount: number;
+  salesCny: number;
+  productCostCny?: number;
+  packagingFeeCny?: number;
+  items: ShopDailyOrderItem[];
+};
+
+export type ShopDailyOrderDrilldownPayload = {
+  ok: boolean;
+  generatedAt: string;
+  dataVersion: string;
+  materializationStale: boolean;
+  permissions: ShopDailyReportPayload["permissions"];
+  filters: { dateFrom: string; dateTo: string; shopKey: string; platform: string; search: string };
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  totals: { quantity: number; salesCny: number; productCostCny?: number; packagingFeeCny?: number };
+  orders: ShopDailyOrder[];
+};
+
 export type ShopDailyImportLog = { id: string; source: string; rowCount: number; dateFrom: string; dateTo: string; createdAt: string; createdBy: string };
 
 export type ShopDailyImportResult = {
@@ -7211,6 +7258,14 @@ export function fetchShopDailyReport(input: { dateFrom?: string; dateTo?: string
   });
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<ShopDailyReportPayload>(`/api/shop-daily-report${query}`, { signal });
+}
+
+export function fetchShopDailyOrders(input: { dateFrom: string; dateTo: string; shopKey: string; platform?: string; search?: string; page?: number; pageSize?: number }, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  Object.entries(input).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+  });
+  return requestJson<ShopDailyOrderDrilldownPayload>(`/api/shop-daily-report/orders?${params.toString()}`, { signal });
 }
 
 export function importShopDailyReport(input: { content: string; dryRun: boolean; defaultYear?: number; defaultCountry?: string; defaultPlatform?: string }) {
