@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, ClipboardPaste, Download, FileUp, ListChecks, Plus, RefreshCw, Save, Settings, Store, Trash2 } from "lucide-react";
+import { AlertTriangle, CalendarDays, ClipboardPaste, Download, FileUp, ListChecks, Plus, RefreshCw, Save, Settings, Store, Trash2 } from "lucide-react";
 import {
   deleteShopDailyMetric,
   deleteShopReviewOrder,
@@ -14,6 +14,7 @@ import {
   type ShopDailyShopSummary,
   type ShopFeeRule,
 } from "../api";
+import { matchingShopDailyPreset, shopDailyDateRange, SHOP_DAILY_DATE_PRESETS, type ShopDailyDatePreset } from "./date-ranges";
 import "./shop-daily.css";
 
 type Filters = { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string };
@@ -59,6 +60,35 @@ const FLAG_LABEL: Record<string, string> = {
   missing_rate: "缺汇率",
   review_amount_missing: "测评金额待补",
 };
+
+type PlatformOption = { key: string; value: string; label: string; count: number; mark: string };
+
+function normalizedPlatformKey(value: string) {
+  const token = String(value || "").normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
+  if (token.includes("shopee") || token.includes("虾皮")) return "shopee";
+  if (token.includes("tiktok") || token === "tk" || token === "tt") return "tiktok";
+  if (token.includes("tokopedia")) return "tokopedia";
+  if (token.includes("lazada")) return "lazada";
+  if (token.includes("ozon")) return "ozon";
+  return token || "other";
+}
+
+function platformPresentation(value: string) {
+  const key = normalizedPlatformKey(value);
+  const known: Record<string, { label: string; mark: string }> = {
+    shopee: { label: "Shopee", mark: "S" },
+    tiktok: { label: "TikTok Shop", mark: "♪" },
+    tokopedia: { label: "Tokopedia", mark: "T" },
+    lazada: { label: "Lazada", mark: "L" },
+    ozon: { label: "Ozon", mark: "O₃" },
+  };
+  return { key, label: known[key]?.label || value || "其他平台", mark: known[key]?.mark || String(value || "其").slice(0, 2).toUpperCase() };
+}
+
+function PlatformMark({ platform }: { platform: string }) {
+  const presentation = platformPresentation(platform);
+  return <span className={`shop-daily-platform-mark is-${presentation.key}`} aria-hidden="true">{presentation.mark}</span>;
+}
 
 const RECOGNIZED_COLUMNS = "日期、店铺、国家、平台、支付金额、展示数、访客数、订单数、加购人数、测评金额、实际收款金额、测评数量、站内推广费、站外推广费、产品成本、操作费";
 
@@ -133,6 +163,12 @@ function MetricCells({ row, permissions, currency }: { row: ShopDailyMetrics; pe
 }
 
 export function ShopDailyReport({ filters }: { filters: Filters }) {
+  const initialRange = React.useMemo(() => shopDailyDateRange("yesterday"), []);
+  const [reportFilters, setReportFilters] = React.useState<Filters>(() => ({
+    ...filters,
+    ...shopDailyDateRange("yesterday"),
+  }));
+  const [dateDraft, setDateDraft] = React.useState(initialRange);
   const [payload, setPayload] = React.useState<ShopDailyReportPayload | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -141,7 +177,20 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const [expandedShop, setExpandedShop] = React.useState("");
   const requestRef = React.useRef<AbortController | null>(null);
 
-  const filterKey = JSON.stringify(filters);
+  React.useEffect(() => {
+    setReportFilters((current) => ({
+      ...current,
+      shopKey: filters.shopKey || "",
+      projectGroup: filters.projectGroup || "",
+      country: filters.country || "",
+    }));
+  }, [filters.shopKey, filters.projectGroup, filters.country]);
+
+  React.useEffect(() => {
+    setReportFilters((current) => ({ ...current, platform: filters.platform || "" }));
+  }, [filters.platform]);
+
+  const filterKey = JSON.stringify(reportFilters);
   const load = React.useCallback(async () => {
     requestRef.current?.abort();
     const controller = new AbortController();
@@ -149,7 +198,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     setLoading(true);
     setError("");
     try {
-      const next = await fetchShopDailyReport(filters, controller.signal);
+      const next = await fetchShopDailyReport(reportFilters, controller.signal);
       setPayload(next);
     } catch (requestError) {
       if (requestError instanceof DOMException && requestError.name === "AbortError") return;
@@ -171,6 +220,33 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const singleCurrency = (payload?.currencies.length || 0) <= 1 ? payload?.currencies[0] || "" : "";
   const shopRows = payload?.shops || [];
   const dayRows = payload?.rows || [];
+  const activeDatePreset = matchingShopDailyPreset(reportFilters.dateFrom || "", reportFilters.dateTo || "");
+  const activePlatformKey = reportFilters.platform ? normalizedPlatformKey(reportFilters.platform) : "all";
+  const platformOptions = React.useMemo<PlatformOption[]>(() => {
+    const counts = new Map<string, number>();
+    const values = new Map<string, string>();
+    for (const shop of payload?.options.shops || []) {
+      const key = normalizedPlatformKey(shop.platform);
+      if (!shop.platform) continue;
+      counts.set(key, (counts.get(key) || 0) + 1);
+      if (!values.has(key)) values.set(key, shop.platform);
+    }
+    for (const value of payload?.options.platforms || []) {
+      const key = normalizedPlatformKey(value);
+      if (!values.has(key)) values.set(key, value);
+    }
+    if (reportFilters.platform) values.set(activePlatformKey, reportFilters.platform);
+    const order = ["shopee", "tiktok", "tokopedia", "lazada", "ozon"];
+    return [...values.entries()].map(([key, value]) => {
+      const presentation = platformPresentation(value);
+      return { ...presentation, value, count: counts.get(key) || 0 };
+    }).sort((left, right) => {
+      const leftIndex = order.indexOf(left.key);
+      const rightIndex = order.indexOf(right.key);
+      if (leftIndex !== rightIndex) return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+      return left.label.localeCompare(right.label, "zh-CN");
+    });
+  }, [payload?.generatedAt, reportFilters.platform, activePlatformKey]);
   const rowsByShop = React.useMemo(() => {
     const map = new Map<string, ShopDailyRow[]>();
     for (const row of dayRows) {
@@ -202,6 +278,32 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "清除失败");
     }
+  }
+
+  function selectDatePreset(preset: ShopDailyDatePreset) {
+    const range = shopDailyDateRange(preset);
+    setDateDraft(range);
+    setError("");
+    setReportFilters((current) => ({ ...current, ...range }));
+  }
+
+  function applyCustomDateRange() {
+    if (!dateDraft.dateFrom || !dateDraft.dateTo) {
+      setError("请选择完整的开始和结束日期。");
+      return;
+    }
+    if (dateDraft.dateFrom > dateDraft.dateTo) {
+      setError("开始日期不能晚于结束日期。");
+      return;
+    }
+    setError("");
+    setReportFilters((current) => ({ ...current, ...dateDraft }));
+  }
+
+  function selectPlatform(value: string) {
+    setError("");
+    setExpandedShop("");
+    setReportFilters((current) => ({ ...current, platform: value }));
   }
 
   const headCells = (
@@ -237,6 +339,50 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
 
       {section === "report" ? (
         <>
+          <section className="shop-daily-filter-console" aria-label="店铺日报快捷筛选">
+            <div className="shop-daily-filter-row date-row">
+              <div className="shop-daily-filter-title">
+                <CalendarDays size={18} />
+                <span><strong>统计周期</strong><small>默认查看昨天的完整日报</small></span>
+              </div>
+              <div className="shop-daily-period-presets" role="group" aria-label="快捷日期范围">
+                {SHOP_DAILY_DATE_PRESETS.map((preset) => (
+                  <button
+                    className={activeDatePreset === preset.value ? "active" : ""}
+                    type="button"
+                    key={preset.value}
+                    aria-pressed={activeDatePreset === preset.value}
+                    onClick={() => selectDatePreset(preset.value)}
+                  >{preset.label}</button>
+                ))}
+              </div>
+              <div className="shop-daily-custom-range">
+                <label><span>开始日期</span><input type="date" value={dateDraft.dateFrom} onChange={(event) => setDateDraft((current) => ({ ...current, dateFrom: event.target.value }))} /></label>
+                <i>至</i>
+                <label><span>结束日期</span><input type="date" value={dateDraft.dateTo} onChange={(event) => setDateDraft((current) => ({ ...current, dateTo: event.target.value }))} /></label>
+                <button className="ghost-button" type="button" onClick={applyCustomDateRange}>查询</button>
+              </div>
+            </div>
+            <div className="shop-daily-filter-row platform-row">
+              <div className="shop-daily-filter-title">
+                <Store size={18} />
+                <span><strong>销售平台</strong><small>按平台重算全部经营指标</small></span>
+              </div>
+              <div className="shop-daily-platform-presets" role="group" aria-label="快捷平台筛选">
+                <button className={activePlatformKey === "all" ? "active" : ""} type="button" aria-pressed={activePlatformKey === "all"} onClick={() => selectPlatform("")}>
+                  <span className="shop-daily-platform-mark is-all" aria-hidden="true">ALL</span>
+                  <span><strong>全部平台</strong><small>{payload?.options.shops.length || 0} 家店铺</small></span>
+                </button>
+                {platformOptions.map((option) => (
+                  <button className={activePlatformKey === option.key ? "active" : ""} type="button" key={option.key} aria-pressed={activePlatformKey === option.key} onClick={() => selectPlatform(option.value)}>
+                    <PlatformMark platform={option.value} />
+                    <span><strong>{option.label}</strong><small>{option.count} 家店铺</small></span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
           <div className="shop-daily-kpis">
             <article><small>支付金额</small><b>{fmtCny(totals?.payCny)}</b><span>{fmtNum(totals?.orderCount)} 单</span></article>
             <article><small>真实成交</small><b>{fmtCny(totals?.realSalesCny)}</b><span>{fmtNum(totals?.realOrders)} 单 · 客单 {fmtCny(totals?.aovCny)}</span></article>
@@ -263,7 +409,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
           <div className="shop-daily-view-toggle">
             <button className={view === "shops" ? "active" : ""} type="button" onClick={() => setView("shops")}>按店铺汇总 <span>{shopRows.length}</span></button>
             <button className={view === "days" ? "active" : ""} type="button" onClick={() => setView("days")}>按日明细 <span>{dayRows.length}</span></button>
-            <small>{payload ? `${payload.filters.dateFrom} 至 ${payload.filters.dateTo}` : ""}{payload?.materializationStale ? " · 中台订单正在后台更新" : ""}</small>
+            <small>{payload ? `${payload.filters.dateFrom} 至 ${payload.filters.dateTo}` : `${reportFilters.dateFrom || ""} 至 ${reportFilters.dateTo || ""}`}{payload?.materializationStale ? " · 中台订单正在后台更新" : ""}</small>
           </div>
 
           <div className="shop-daily-table-wrap">
