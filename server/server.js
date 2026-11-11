@@ -4181,21 +4181,34 @@ function validateWarehouseReturnDateRange(input) {
   return { dateFrom, dateTo };
 }
 
-function warehouseReturnProduct(item, country) {
+function warehouseReturnProductIndex() {
+  const index = new Map();
+  for (const product of [...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])]) {
+    const identifiers = new Set([product.sku, product.skuNo, product.countrySku].map(normalizeReturnIdentifier).filter(Boolean));
+    for (const identifier of identifiers) {
+      const candidates = index.get(identifier) || [];
+      candidates.push(product);
+      index.set(identifier, candidates);
+    }
+  }
+  return index;
+}
+
+function warehouseReturnProduct(item, country, productIndex) {
   const sku = normalizeReturnIdentifier(item.sku);
   if (!sku) return null;
-  const candidates = [...(cachedProducts.catalog || []), ...(cachedProducts.productBase || [])]
-    .filter((product) => [product.sku, product.skuNo, product.countrySku].some((value) => normalizeReturnIdentifier(value) === sku));
+  const candidates = productIndex.get(sku) || [];
   return candidates.find((product) => normalizedCountryKey(product.country) === normalizedCountryKey(country)) || candidates[0] || null;
 }
 
 function enrichWarehouseReturnOrders(orders, auth) {
   const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  const productIndex = warehouseReturnProductIndex();
   return (orders || []).map((order) => {
     const items = (order.items || [])
       .filter((item) => !scopes.skus.length || scopes.skus.includes(normalizeReturnIdentifier(item.sku)))
       .map((item) => {
-        const product = warehouseReturnProduct(item, order.country);
+        const product = warehouseReturnProduct(item, order.country, productIndex);
         return {
           ...item,
           productName: item.productName || product?.name || product?.nameEn || item.sku,

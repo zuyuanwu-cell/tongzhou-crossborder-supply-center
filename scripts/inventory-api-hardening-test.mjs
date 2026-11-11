@@ -45,5 +45,11 @@ assert.match(
   /const dailyLedgerCoversComparison = allowedWarehouseIds\.size > 0[\s\S]{0,350}?const dailyLedgerRows = dailyLedgerCoversComparison \? inventoryLedgerStore\.listDailyLedger/,
   "incomplete ledger coverage is detected before materializing a large comparison window",
 );
+assert.equal(serverSource.includes("function warehouseReturnProductIndex()"), true);
+assert.equal(
+  serverSource.includes("const productIndex = warehouseReturnProductIndex();"),
+  true,
+  "return-product enrichment builds one lookup index per payload instead of rescanning the full catalog for every item",
+);
 
 console.log("inventory API hardening tests passed");
