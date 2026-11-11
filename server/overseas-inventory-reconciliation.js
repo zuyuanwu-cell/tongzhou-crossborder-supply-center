@@ -311,6 +311,7 @@ function aggregateRankings(facts, field, labelField) {
 function buildPeriod({
   range,
   snapshots,
+  dailyLedgerRows,
   warehouses,
   outboundOrders,
   inboundReceipts,
@@ -323,40 +324,92 @@ function buildPeriod({
   const warehouseMap = new Map((warehouses || []).map((item) => [text(item.id), item]));
   const allowedWarehouseIds = new Set(warehouseMap.keys());
   const rowAllowed = (row) => !allowedWarehouseIds.size || allowedWarehouseIds.has(text(row?.warehouseId || row?.destinationWarehouseId));
-  const openingBoundary = snapshotAtBoundary(snapshots, previousDay(range.from), timezone);
-  const closingBoundary = snapshotAtBoundary(snapshots, range.to, timezone);
+  const rangeLedgerRows = (dailyLedgerRows || []).filter((row) => rowAllowed(row) && text(row.bizDate) >= range.from && text(row.bizDate) <= range.to);
+  const ledgerFlags = [...new Set(rangeLedgerRows.flatMap((row) => Array.isArray(row.dataFlags) ? row.dataFlags : []))];
+  const ledgerDates = new Set(rangeLedgerRows.map((row) => text(row.bizDate)).filter(Boolean));
+  const useDailyLedger = rangeLedgerRows.length > 0
+    && ledgerDates.has(range.from)
+    && ledgerDates.has(range.to)
+    && !ledgerFlags.some((flag) => /snapshot_(?:missing|off_schedule)/.test(flag));
+  const ledgerGroups = new Map();
+  for (const row of rangeLedgerRows) {
+    const key = `${text(row.warehouseId)}::${skuKey(row.sku)}`;
+    const rows = ledgerGroups.get(key) || [];
+    rows.push(row);
+    ledgerGroups.set(key, rows);
+  }
+  for (const rows of ledgerGroups.values()) rows.sort((left, right) => text(left.bizDate).localeCompare(text(right.bizDate)));
+  const ledgerOpeningRows = [...ledgerGroups.values()].map((rows) => ({ ...rows[0], availableQty: number(rows[0].openingQty), lockedQty: 0 }));
+  const ledgerClosingRows = [...ledgerGroups.values()].map((rows) => ({ ...rows.at(-1), availableQty: number(rows.at(-1).closingQty), lockedQty: 0 }));
+  const fallbackOpeningBoundary = snapshotAtBoundary(snapshots, previousDay(range.from), timezone);
+  const fallbackClosingBoundary = snapshotAtBoundary(snapshots, range.to, timezone);
+  const ledgerBoundaryStatus = !useDailyLedger
+    ? "missing"
+    : !ledgerDates.has(range.from) || !ledgerDates.has(range.to)
+      ? "partial"
+      : ledgerFlags.some((flag) => /snapshot_missing/.test(flag))
+        ? "missing"
+        : ledgerFlags.some((flag) => /snapshot_off_schedule/.test(flag))
+          ? "partial"
+          : "ready";
+  const openingBoundary = useDailyLedger ? {
+    snapshot: { date: previousDay(range.from), capturedAt: rangeLedgerRows[0]?.updatedAt || "", rows: ledgerOpeningRows },
+    requestedDate: previousDay(range.from), status: ledgerBoundaryStatus, gapDays: ledgerBoundaryStatus === "ready" ? 0 : null,
+  } : fallbackOpeningBoundary;
+  const closingBoundary = useDailyLedger ? {
+    snapshot: { date: range.to, capturedAt: rangeLedgerRows.at(-1)?.updatedAt || "", rows: ledgerClosingRows },
+    requestedDate: range.to, status: ledgerBoundaryStatus, gapDays: ledgerBoundaryStatus === "ready" ? 0 : null,
+  } : fallbackClosingBoundary;
   const openingSnapshot = openingBoundary.snapshot;
   const closingSnapshot = closingBoundary.snapshot;
   const openingRows = new Map((openingSnapshot?.rows || []).filter(rowAllowed).map((row) => [snapshotKey(row), row]));
   const closingRows = new Map((closingSnapshot?.rows || []).filter(rowAllowed).map((row) => [snapshotKey(row), row]));
   const metrics = new Map();
 
-  for (const order of outboundOrders || []) {
-    if (!rowAllowed(order) || !inRange(order.shippedAt || order.occurredAt || order.createdAt, range, timezone)) continue;
-    addMetric(metrics, order, "outboundQty", number(order.quantity || order.shippedQty));
-  }
-  for (const receipt of inboundReceipts || []) {
-    if (!rowAllowed(receipt) || !inRange(receipt.arrivedAt || receipt.receivedAt || receipt.createdAt, range, timezone)) continue;
-    addMetric(metrics, receipt, "inboundQty", Math.max(number(receipt.shelvedQty), number(receipt.goodQty), number(receipt.receivedQty)));
-  }
-  for (const movement of inventoryMovements || []) {
-    if (!rowAllowed(movement) || !inRange(movement.occurredAt || movement.createdAt, range, timezone)) continue;
-    const type = text(movement.type);
-    const qty = number(movement.quantity);
-    if (type === "transfer_in") addMetric(metrics, movement, "transferInQty", qty);
-    else if (type === "transfer_out") addMetric(metrics, movement, "transferOutQty", qty);
-    else if (type === "adjustment") addMetric(metrics, movement, "adjustmentQty", number(movement.signedQty ?? movement.quantity));
+  if (useDailyLedger) {
+    for (const row of rangeLedgerRows) {
+      addMetric(metrics, row, "inboundQty", row.inboundQty);
+      addMetric(metrics, row, "restockedQty", row.returnRestockQty);
+      addMetric(metrics, row, "transferInQty", row.transferInQty);
+      addMetric(metrics, row, "transferOutQty", row.transferOutQty);
+      addMetric(metrics, row, "outboundQty", number(row.orderOutboundQty) + number(row.otherOutboundQty));
+      addMetric(metrics, row, "adjustmentQty", row.adjustQty);
+    }
+  } else {
+    for (const order of outboundOrders || []) {
+      if (!rowAllowed(order) || !inRange(order.shippedAt || order.occurredAt || order.createdAt, range, timezone)) continue;
+      addMetric(metrics, order, "outboundQty", number(order.quantity || order.shippedQty));
+    }
+    for (const receipt of inboundReceipts || []) {
+      if (!rowAllowed(receipt) || !inRange(receipt.arrivedAt || receipt.receivedAt || receipt.createdAt, range, timezone)) continue;
+      addMetric(metrics, receipt, "inboundQty", Math.max(number(receipt.shelvedQty), number(receipt.goodQty), number(receipt.receivedQty)));
+    }
+    for (const movement of inventoryMovements || []) {
+      if (!rowAllowed(movement) || !inRange(movement.occurredAt || movement.createdAt, range, timezone)) continue;
+      const type = text(movement.type);
+      const qty = number(movement.quantity);
+      if (type === "transfer_in") addMetric(metrics, movement, "transferInQty", qty);
+      else if (type === "transfer_out") addMetric(metrics, movement, "transferOutQty", qty);
+      else if (type === "adjustment") addMetric(metrics, movement, "adjustmentQty", number(movement.signedQty ?? movement.quantity));
+    }
   }
   const periodFacts = (returnFacts || []).filter((fact) => rowAllowed(fact) && fact.activityDate >= range.from && fact.activityDate <= range.to);
   const dispositionFacts = (returnFacts || []).filter((fact) => rowAllowed(fact) && fact.dispositionDate >= range.from && fact.dispositionDate <= range.to);
   for (const fact of dispositionFacts) {
     addMetric(metrics, fact, "returnReceivedQty", fact.receivedQty);
-    addMetric(metrics, fact, "restockedQty", fact.restockedQty);
+    if (!useDailyLedger) addMetric(metrics, fact, "restockedQty", fact.restockedQty);
     addMetric(metrics, fact, "scrappedQty", fact.scrappedQty);
     addMetric(metrics, fact, "badQty", fact.badQty);
     addMetric(metrics, fact, "pendingReturnQty", fact.pendingQty);
   }
   for (const fact of periodFacts) addMetric(metrics, fact, "returnQty", fact.returnQty);
+  const factsBySku = new Map();
+  for (const fact of periodFacts) {
+    const key = `${text(fact.warehouseId)}::${skuKey(fact.sku)}`;
+    const rows = factsBySku.get(key) || [];
+    rows.push(fact);
+    factsBySku.set(key, rows);
+  }
 
   const keys = new Set([...openingRows.keys(), ...closingRows.keys(), ...metrics.keys()]);
   const skuRows = [...keys].map((key) => {
@@ -377,7 +430,7 @@ function buildPeriod({
     );
     const varianceQty = round(actualInventoryQty - theoreticalInventoryQty);
     const varianceRate = theoreticalInventoryQty ? round(varianceQty / Math.abs(theoreticalInventoryQty), 4) : varianceQty ? 1 : 0;
-    const relatedFacts = periodFacts.filter((fact) => fact.warehouseId === identity.warehouseId && fact.sku === identity.sku);
+    const relatedFacts = factsBySku.get(`${identity.warehouseId}::${identity.sku}`) || [];
     return {
       ...identity,
       openingInventoryQty,
@@ -455,10 +508,12 @@ function buildPeriod({
       coverage: {
         openingSnapshot: openingBoundary.status,
         closingSnapshot: closingBoundary.status,
-        outboundOrders: "ready",
+        outboundOrders: useDailyLedger && ledgerFlags.includes("orders_incomplete") ? "partial" : "ready",
         inboundReceipts: "ready",
         returnFacts: "ready",
-        transferMovements: (inventoryMovements || []).some((item) => text(item.warehouseId) === warehouseId && /^transfer_/.test(text(item.type))) ? "ready" : "missing",
+        transferMovements: useDailyLedger
+          ? ledgerFlags.includes("movements_incomplete") ? "missing" : "ready"
+          : (inventoryMovements || []).some((item) => text(item.warehouseId) === warehouseId && /^transfer_/.test(text(item.type))) ? "ready" : "missing",
       },
     };
   }).sort((left, right) => {
@@ -509,6 +564,9 @@ function buildPeriod({
     closingSnapshot: closingSnapshot ? { date: closingSnapshot.date, capturedAt: closingSnapshot.capturedAt || "", requestedDate: closingBoundary.requestedDate, boundaryMatch: closingBoundary.status === "ready", gapDays: closingBoundary.gapDays } : null,
     dataCompleteness: {
       status: openingBoundary.status === "ready" && closingBoundary.status === "ready" ? "ready" : openingBoundary.status === "missing" || closingBoundary.status === "missing" ? "missing" : "partial",
+      source: useDailyLedger ? "inventory_daily_ledger" : "snapshot_fallback",
+      ledgerDaysCovered: useDailyLedger ? ledgerDates.size : 0,
+      ledgerFlags,
       openingSnapshot: { requestedDate: openingBoundary.requestedDate, actualDate: openingSnapshot?.date || "", status: openingBoundary.status, gapDays: openingBoundary.gapDays },
       closingSnapshot: { requestedDate: closingBoundary.requestedDate, actualDate: closingSnapshot?.date || "", status: closingBoundary.status, gapDays: closingBoundary.gapDays },
     },
@@ -557,8 +615,10 @@ export function buildOverseasInventoryReconciliation({
   to,
   timezone = "Asia/Shanghai",
   snapshots = [],
+  dailyLedgerRows = [],
   warehouses = [],
   outboundOrders = [],
+  outboundOrderReconciliation = null,
   inboundReceipts = [],
   inboundShipments = [],
   inventoryMovements = [],
@@ -571,6 +631,7 @@ export function buildOverseasInventoryReconciliation({
   const returnData = buildReturnFacts({ wmsReturnOrders, afterSalesTickets, outboundOrders, claimMap, timezone });
   const common = {
     snapshots,
+    dailyLedgerRows,
     warehouses,
     outboundOrders,
     inboundReceipts,
@@ -614,6 +675,11 @@ export function buildOverseasInventoryReconciliation({
       shops: mergeRankingComparison(current.rankings.shops, previous.rankings.shops, "shopName"),
       warehouses: mergeRankingComparison(current.rankings.warehouses, previous.rankings.warehouses, "warehouseId"),
     },
+    outboundOrderReconciliation: outboundOrderReconciliation || {
+      coverage: "unavailable",
+      summary: { platformOrderCount: 0, wmsOrderCount: 0, expectedQty: 0, shippedQty: 0, matchedOrderCount: 0, missingWmsOrderCount: 0, missingWmsQty: 0, wmsOnlyOrderCount: 0, wmsOnlyQty: 0, quantityMismatchOrderCount: 0, quantityMismatchQty: 0 },
+      rows: [],
+    },
     sources: {
       inventory: {
         status: current.dataCompleteness.status,
@@ -622,10 +688,18 @@ export function buildOverseasInventoryReconciliation({
         requestedSnapshotDate: current.closingSnapshot?.requestedDate || resolvedRanges.current.to,
         gapDays: current.closingSnapshot?.gapDays ?? null,
       },
-      orders: { status: sources.orderComplete === false ? "partial" : "ready", syncedAt: text(sources.ordersSyncedAt) },
+      orders: { status: sources.orderComplete === false || current.dataCompleteness.ledgerFlags.includes("orders_incomplete") ? "partial" : "ready", syncedAt: text(sources.ordersSyncedAt) },
       inbound: { status: "ready", syncedAt: text(sources.inboundSyncedAt) },
       returns: { status: sources.returnComplete === false ? "partial" : "ready", syncedAt: text(sources.returnsSyncedAt), errors: Array.isArray(sources.returnErrors) ? sources.returnErrors : [] },
-      transfers: { status: (inventoryMovements || []).some((item) => /^transfer_/.test(text(item.type))) ? "ready" : "missing", syncedAt: text(sources.transferSyncedAt), message: (inventoryMovements || []).some((item) => /^transfer_/.test(text(item.type))) ? "已纳入海外仓调拨流水" : "当前 WMS 尚未提供海外仓调拨流水，剩余影响进入无法解释差异。" },
+      transfers: {
+        status: current.dataCompleteness.source === "inventory_daily_ledger"
+          ? current.dataCompleteness.ledgerFlags.includes("movements_incomplete") ? "missing" : "ready"
+          : (inventoryMovements || []).some((item) => /^transfer_/.test(text(item.type))) ? "ready" : "missing",
+        syncedAt: text(sources.transferSyncedAt),
+        message: current.dataCompleteness.source === "inventory_daily_ledger" && !current.dataCompleteness.ledgerFlags.includes("movements_incomplete")
+          ? "已使用每日库存台账中的调拨与盘点流水。"
+          : (inventoryMovements || []).some((item) => /^transfer_/.test(text(item.type))) ? "已纳入海外仓调拨流水" : "当前 WMS 尚未提供海外仓调拨流水，剩余影响进入无法解释差异。",
+      },
     },
   };
 }

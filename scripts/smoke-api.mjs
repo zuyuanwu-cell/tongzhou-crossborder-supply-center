@@ -280,7 +280,9 @@ async function main() {
     || !Array.isArray(overseasReconciliation.warehouses)
     || !Array.isArray(overseasReconciliation.returnFacts)
     || overseasReconciliation.ranges?.current?.from !== "2026-08-01"
-    || typeof overseasReconciliation.summary?.varianceQty !== "number") {
+    || typeof overseasReconciliation.summary?.varianceQty !== "number"
+    || !Array.isArray(overseasReconciliation.outboundOrderReconciliation?.rows)
+    || typeof overseasReconciliation.outboundOrderReconciliation?.summary?.shippedQty !== "number") {
     throw new Error(`Overseas inventory reconciliation payload is incomplete: ${JSON.stringify(overseasReconciliation).slice(0, 700)}`);
   }
   const anonymousOverseasReconciliation = await fetch(`${baseUrl}/api/overseas-inventory-reconciliation`);
@@ -288,6 +290,16 @@ async function main() {
     throw new Error(`Anonymous overseas inventory reconciliation was not blocked: ${anonymousOverseasReconciliation.status}`);
   }
   console.log("[ok] overseas inventory reconciliation scope, ranges and authorization");
+
+  const inventoryLedger = await expectJson("/api/inventory-ledger?from=2026-08-01&to=2026-08-31&timezone=Asia%2FShanghai", { headers: authHeaders });
+  if (!Array.isArray(inventoryLedger.rows) || typeof inventoryLedger.summary?.rowCount !== "number") {
+    throw new Error(`Inventory daily ledger payload is incomplete: ${JSON.stringify(inventoryLedger).slice(0, 500)}`);
+  }
+  const anonymousInventoryLedger = await fetch(`${baseUrl}/api/inventory-ledger?from=2026-08-01&to=2026-08-31`);
+  if (anonymousInventoryLedger.status !== 403) {
+    throw new Error(`Anonymous inventory daily ledger was not blocked: ${anonymousInventoryLedger.status}`);
+  }
+  console.log("[ok] inventory daily ledger range query and authorization");
 
   const collaborationWarehouses = await expectJson("/api/stockup/collaboration/warehouses", { headers: authHeaders });
   if (!Array.isArray(collaborationWarehouses.warehouses) || !collaborationWarehouses.warehouses.length) {
@@ -970,7 +982,7 @@ async function main() {
     body: JSON.stringify({ date: previousMonthDate, timezone: "Asia/Shanghai" }),
   });
   const unauthorizedComparison = await fetch(`${baseUrl}/api/movement-history/compare?period=month&anchorDate=${movementHistoryCapture.snapshot.date}`);
-  if (unauthorizedComparison.status !== 401) {
+  if (unauthorizedComparison.status !== 403) {
     throw new Error(`/api/movement-history/compare did not enforce admin authentication: ${unauthorizedComparison.status}`);
   }
   const movementComparison = await expectJson(`/api/movement-history/compare?period=month&anchorDate=${movementHistoryCapture.snapshot.date}&timezone=Asia%2FShanghai`, { headers: authHeaders });

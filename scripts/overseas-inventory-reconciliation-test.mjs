@@ -146,6 +146,37 @@ const claimed = buildOverseasInventoryReconciliation({
 assert.equal(claimed.returnFacts.find((item) => item.returnOrderNumber === "RET-002").claimStatus, "claimed");
 assert.equal(claimed.summary.unclaimedReturnCount, 1);
 
+const ledgerPreferred = buildOverseasInventoryReconciliation({
+  ranges: {
+    period: "custom",
+    anchorDate: "2026-10-03",
+    current: { from: "2026-10-02", to: "2026-10-03", label: "current" },
+    previous: { from: "2026-09-30", to: "2026-10-01", label: "previous" },
+  },
+  snapshots: [{
+    date: "2026-10-03", timezone: "Asia/Shanghai", capturedAt: "2026-10-03T16:00:00.000Z",
+    rows: [{ warehouseId: "wh-id", warehouseName: warehouse.name, sku: "SKU-A", availableQty: 999, lockedQty: 0 }],
+  }],
+  dailyLedgerRows: [
+    { bizDate: "2026-09-30", timezone: "Asia/Shanghai", warehouseId: "wh-id", warehouseName: warehouse.name, sku: "SKU-A", productName: "产品 A", openingQty: 110, inboundQty: 0, returnRestockQty: 0, transferInQty: 0, transferOutQty: 0, orderOutboundQty: 5, otherOutboundQty: 0, adjustQty: 0, closingQty: 105, dataFlags: [], updatedAt: "2026-09-30T16:00:00.000Z" },
+    { bizDate: "2026-10-01", timezone: "Asia/Shanghai", warehouseId: "wh-id", warehouseName: warehouse.name, sku: "SKU-A", productName: "产品 A", openingQty: 105, inboundQty: 0, returnRestockQty: 0, transferInQty: 0, transferOutQty: 0, orderOutboundQty: 5, otherOutboundQty: 0, adjustQty: 0, closingQty: 100, dataFlags: [], updatedAt: "2026-10-01T16:00:00.000Z" },
+    { bizDate: "2026-10-02", timezone: "Asia/Shanghai", warehouseId: "wh-id", warehouseName: warehouse.name, sku: "SKU-A", productName: "产品 A", openingQty: 100, inboundQty: 10, returnRestockQty: 1, transferInQty: 0, transferOutQty: 0, orderOutboundQty: 11, otherOutboundQty: 0, adjustQty: 0, closingQty: 100, dataFlags: [], updatedAt: "2026-10-02T16:00:00.000Z" },
+    { bizDate: "2026-10-03", timezone: "Asia/Shanghai", warehouseId: "wh-id", warehouseName: warehouse.name, sku: "SKU-A", productName: "产品 A", openingQty: 100, inboundQty: 0, returnRestockQty: 0, transferInQty: 0, transferOutQty: 0, orderOutboundQty: 10, otherOutboundQty: 0, adjustQty: 0, closingQty: 90, dataFlags: [], updatedAt: "2026-10-03T16:00:00.000Z" },
+  ],
+  warehouses: [warehouse],
+  timezone: "Asia/Shanghai",
+  sources: { orderComplete: true },
+});
+assert.equal(ledgerPreferred.summary.openingInventoryQty, 100);
+assert.equal(ledgerPreferred.summary.actualInventoryQty, 90, "daily ledger takes precedence over conflicting legacy snapshots");
+assert.equal(ledgerPreferred.summary.inboundQty, 10);
+assert.equal(ledgerPreferred.summary.restockedQty, 1);
+assert.equal(ledgerPreferred.summary.outboundQty, 21);
+assert.equal(ledgerPreferred.summary.varianceQty, 0);
+assert.equal(ledgerPreferred.sources.inventory.status, "ready");
+assert.equal(ledgerPreferred.sources.transfers.status, "ready");
+
 console.log("[ok] overseas reconciliation formula");
 console.log("[ok] WMS return lifecycle and unclaimed facts");
 console.log("[ok] SKU, shop, and warehouse drill-down rankings");
+console.log("[ok] indexed daily ledger preferred over compatibility snapshots");

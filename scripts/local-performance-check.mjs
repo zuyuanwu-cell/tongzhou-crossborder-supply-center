@@ -64,12 +64,17 @@ const stockupViews = await Promise.all([
   timed("/api/stockup?view=stockup-recommendations&inboundLimit=100"),
 ]);
 const warm = await Promise.all([timed("/api/movement"), timed("/api/order-analysis")]);
+const inventoryWarm = await Promise.all([
+  timed("/api/inventory-value?period=day"),
+  timed("/api/overseas-inventory-reconciliation?period=custom&from=2026-10-01&to=2026-10-31"),
+  timed("/api/inventory-ledger?from=2026-10-01&to=2026-10-31"),
+]);
 const stockupRecommendationProfile = await payloadProfile("/api/stockup?view=stockup-recommendations");
 const movementProfile = await payloadProfile("/api/movement");
 
-console.log(JSON.stringify({ movementAndSession, analysisAndSession, stockupViews, warm, stockupRecommendationProfile, movementProfile }, null, 2));
+console.log(JSON.stringify({ movementAndSession, analysisAndSession, stockupViews, warm, inventoryWarm, stockupRecommendationProfile, movementProfile }, null, 2));
 
-const requests = [...movementAndSession, ...analysisAndSession, ...stockupViews, ...warm];
+const requests = [...movementAndSession, ...analysisAndSession, ...stockupViews, ...warm, ...inventoryWarm];
 const failedRequest = requests.find((item) => item.status !== 200);
 if (failedRequest) throw new Error(`${failedRequest.path} 返回 HTTP ${failedRequest.status}。`);
 const blockedSession = [movementAndSession[1], analysisAndSession[1]].find((item) => item.durationMs > 200);
@@ -80,3 +85,5 @@ if (recommendationView && recommendationView.responseKb > 500) {
 }
 const slowWarmRequest = warm.find((item) => item.durationMs > 500);
 if (slowWarmRequest) throw new Error(`${slowWarmRequest.path} 热查询耗时 ${slowWarmRequest.durationMs}ms，超过 500ms 门槛。`);
+const slowInventoryRequest = inventoryWarm.find((item) => item.durationMs > 300);
+if (slowInventoryRequest) throw new Error(`${slowInventoryRequest.path} 热查询耗时 ${slowInventoryRequest.durationMs}ms，超过 300ms 门槛。`);

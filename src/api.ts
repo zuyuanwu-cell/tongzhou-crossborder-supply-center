@@ -1506,6 +1506,59 @@ export type InventoryValuePayload = {
   supplementalCostCount: number;
 };
 
+export type InventoryDailyLedgerRow = {
+  bizDate: string;
+  timezone: string;
+  warehouseId: string;
+  warehouseName: string;
+  sku: string;
+  productName: string;
+  openingQty: number;
+  inboundQty: number;
+  returnRestockQty: number;
+  transferInQty: number;
+  transferOutQty: number;
+  orderOutboundQty: number;
+  otherOutboundQty: number;
+  adjustQty: number;
+  closingQty: number;
+  faultyQty: number;
+  temporaryQty: number;
+  inTransitQty: number;
+  varianceQty: number;
+  unitCostCny: number | null;
+  inventoryValueCny: number;
+  costBasis: string;
+  costEffectiveDate: string;
+  rateEffectiveDate: string;
+  dataFlags: string[];
+  updatedAt: string;
+};
+
+export type InventoryDailyLedgerPayload = {
+  ok: boolean;
+  generatedAt: string;
+  filters: { from: string; to: string; warehouseId: string; sku: string };
+  summary: {
+    rowCount: number;
+    openingQty: number;
+    inboundQty: number;
+    returnRestockQty: number;
+    transferInQty: number;
+    transferOutQty: number;
+    orderOutboundQty: number;
+    otherOutboundQty: number;
+    adjustQty: number;
+    closingQty: number;
+    faultyQty: number;
+    temporaryQty: number;
+    inTransitQty: number;
+    varianceQty: number;
+    inventoryValueCny: number;
+  };
+  rows: InventoryDailyLedgerRow[];
+};
+
 export type WarehouseExportPayload = {
   ok: boolean;
   version: number;
@@ -2167,6 +2220,37 @@ export type OverseasInventoryReconciliationPayload = {
     skus: OverseasReconciliationRanking[];
     shops: OverseasReconciliationRanking[];
     warehouses: OverseasReconciliationRanking[];
+  };
+  outboundOrderReconciliation: {
+    coverage: "complete" | "scoped_to_wms" | "unavailable" | string;
+    summary: {
+      platformOrderCount: number;
+      wmsOrderCount: number;
+      expectedQty: number;
+      shippedQty: number;
+      matchedOrderCount: number;
+      missingWmsOrderCount: number;
+      missingWmsQty: number;
+      wmsOnlyOrderCount: number;
+      wmsOnlyQty: number;
+      quantityMismatchOrderCount: number;
+      quantityMismatchQty: number;
+    };
+    rows: Array<{
+      orderNumber: string;
+      status: "matched" | "missing_wms" | "wms_only" | "quantity_mismatch" | string;
+      expectedQty: number;
+      shippedQty: number;
+      varianceQty: number;
+      platform: string;
+      shopId: string;
+      shopName: string;
+      warehouseId: string;
+      warehouseName: string;
+      orderAmount: number;
+      skus: string[];
+      wmsDocuments: string[];
+    }>;
   };
   sources: Record<string, {
     status: "ready" | "partial" | "missing" | string;
@@ -4785,6 +4869,17 @@ export function fetchMovementComparison(input: {
   if (input.timezone) params.set("timezone", input.timezone);
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<MovementComparisonPayload>(`/api/movement-history/compare${query}`);
+}
+
+export function fetchInventoryDailyLedger(input: { from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (input.from) params.set("from", input.from);
+  if (input.to) params.set("to", input.to);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
+  if (input.sku) params.set("sku", input.sku);
+  if (input.timezone) params.set("timezone", input.timezone);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<InventoryDailyLedgerPayload>(`/api/inventory-ledger${query}`, { signal });
 }
 
 export function fetchOverseasInventoryReconciliation(input: {

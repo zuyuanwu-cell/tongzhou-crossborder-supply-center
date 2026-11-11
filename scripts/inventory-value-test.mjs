@@ -265,4 +265,32 @@ assert.equal(compactDateRows[0].effectiveDate, "2026-09-14", "single-digit Excel
 assert.equal(normalizeInventoryValueEffectiveDate("2026/9/14"), "2026-09-14", "the API applies the same date normalization as the browser");
 assert.equal(normalizeInventoryValueEffectiveDate("2026-9-4 00:00:00"), "2026-09-04");
 
+const materializedLedgerValue = buildInventoryValuePayload({
+  snapshots: [{
+    date: "2026-11-10",
+    rows: [{
+      materializedValuation: true,
+      warehouseId: "WH-ID",
+      warehouseName: "印尼仓",
+      country: "ID",
+      sku: "SKU-A",
+      productName: "Frozen historical value",
+      availableQty: 8,
+      lockedQty: 0,
+      inTransitQty: 2,
+      faultyQty: 1,
+      temporaryQty: 3,
+      unitCostCny: 7,
+      costBasis: "effective_dated_manual_cost",
+      costEffectiveDate: "2026-10-01",
+      rateEffectiveDate: "2026-11-10",
+    }],
+  }],
+  products: { catalog: [{ sku: "SKU-A", country: "ID", directPrice: 999, directCurrency: "CNY" }] },
+  filters: { period: "day" },
+});
+assert.equal(materializedLedgerValue.basis, "materialized_daily_ledger");
+assert.equal(materializedLedgerValue.summary.onHandValueCny, 56, "materialized history is not repriced with the current catalog cost");
+assert.equal(materializedLedgerValue.rows[0].costEffectiveDate, "2026-10-01");
+
 console.log("inventory value tests passed");

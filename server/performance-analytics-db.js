@@ -700,6 +700,35 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return { orders, items: items.map(miaoshouItemFromDb) };
   }
 
+  function listMiaoshouOrderBundles({ from = "", to = "" } = {}) {
+    const clauses = [];
+    const params = [];
+    if (dateKey(from)) {
+      clauses.push("order_started_at >= ?");
+      params.push(dateKey(from));
+    }
+    if (dateKey(to)) {
+      const next = new Date(`${dateKey(to)}T00:00:00.000Z`);
+      next.setUTCDate(next.getUTCDate() + 1);
+      clauses.push("order_started_at < ?");
+      params.push(next.toISOString().slice(0, 10));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const orders = all(db, `SELECT * FROM miaoshou_performance_orders ${where} ORDER BY order_started_at DESC, identity ASC`, params).map(miaoshouOrderFromDb);
+    const identities = [...new Set(orders.map((order) => text(order.identity)).filter(Boolean))];
+    const items = [];
+    for (let index = 0; index < identities.length; index += 300) {
+      const batch = identities.slice(index, index + 300);
+      const placeholders = batch.map(() => "?").join(", ");
+      items.push(...all(
+        db,
+        `SELECT * FROM miaoshou_performance_items WHERE order_identity IN (${placeholders}) ORDER BY order_identity ASC, identity ASC`,
+        batch,
+      ));
+    }
+    return { orders, items: items.map(miaoshouItemFromDb) };
+  }
+
   function upsertExchangeRates(rates = [], source = "manual", { preserveOverrides = false } = {}) {
     const now = new Date().toISOString();
     const normalized = (Array.isArray(rates) ? rates : []).map((rate) => ({
@@ -867,6 +896,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     getExchangeRateSyncState,
     findMiaoshouOrderBundlesByPlatformOrderSns,
     findMiaoshouOrdersByPlatformOrderSns,
+    listMiaoshouOrderBundles,
     listExchangeRates,
     listSalesCurrencies,
     listSalesFacts,

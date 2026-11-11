@@ -81,7 +81,7 @@ import {
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
-import { normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
+import { miaoshouBusinessDate, normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createCollectorCenter } from "./collector-center.js";
@@ -95,6 +95,7 @@ import { withTransientRetry } from "./transient-retry.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, listWarehouseReturns, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildOverseasInventoryReconciliation, resolveOverseasReconciliationRanges } from "./overseas-inventory-reconciliation.js";
+import { buildOutboundOrderReconciliation } from "./outbound-order-reconciliation.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
 import { selectSeaThreeWarehouseIds } from "./order-analysis.js";
 import { createOzonIntegrationService } from "./ozon-integration.js";
@@ -4266,6 +4267,7 @@ function overseasReconciliationPayload(auth, input = {}) {
   const scopes = normalizeDataScopes(auth.user?.dataScopes);
   const warehouses = overseasReconciliationWarehouses(auth);
   const allowedWarehouseIds = new Set(warehouses.map((item) => item.id));
+  const timezone = safeTimezone(input.timezone || movementHistoryTimezone, movementHistoryTimezone);
   const stockupFacts = stockupCollaborationService.reconciliationFacts({ from: ranges.previous.from, to: ranges.current.to }, {
     auth,
     viewAll: true,
@@ -4279,12 +4281,53 @@ function overseasReconciliationPayload(auth, input = {}) {
     ...snapshot,
     rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
   }));
+  const dailyLedgerRows = inventoryLedgerStore.listDailyLedger({
+    from: ranges.previous.from,
+    to: ranges.current.to,
+    timezone,
+  }).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes));
   const outboundOrders = inventoryLedgerStore.listOrders({
     warehouseIds: [...allowedWarehouseIds],
     from: ranges.previous.from,
     to: ranges.current.to,
   })
     .filter((order) => reconciliationWarehouseAllowed(order, allowedWarehouseIds) && reconciliationSkuAllowed(order, scopes));
+  const currentOutboundOrders = outboundOrders.filter((order) => {
+    const date = reconciliationDateKey(order.shippedAt || order.createdAt);
+    return date >= ranges.current.from && date <= ranges.current.to;
+  });
+  const platformBundleWindow = performanceAnalyticsStore.listMiaoshouOrderBundles({
+    from: addBusinessDays(ranges.current.from, -1),
+    to: addBusinessDays(ranges.current.to, 1),
+  });
+  const platformBundleOrderIds = new Set(platformBundleWindow.orders
+    .filter((order) => {
+      const date = miaoshouBusinessDate(order.paidAt || order.orderStartedAt, order.site);
+      return date >= ranges.current.from && date <= ranges.current.to;
+    })
+    .map((order) => String(order.identity || "")));
+  const platformBundles = {
+    orders: platformBundleWindow.orders.filter((order) => platformBundleOrderIds.has(String(order.identity || ""))),
+    items: platformBundleWindow.items.filter((item) => platformBundleOrderIds.has(String(item.orderIdentity || ""))),
+  };
+  const platformCoverageComplete = canManage(auth);
+  const visiblePlatformNumbers = new Set(currentOutboundOrders.flatMap((order) => [
+    order.externalOrderNo,
+    order.platformOrderSn,
+    order.referenceNo,
+    order.refrenceNo,
+    order.orderNo,
+  ]).map(normalizeReturnIdentifier).filter(Boolean));
+  const platformOrders = platformCoverageComplete
+    ? platformBundles.orders
+    : platformBundles.orders.filter((order) => visiblePlatformNumbers.has(normalizeReturnIdentifier(order.platformOrderSn)));
+  const platformOrderIds = new Set(platformOrders.map((order) => String(order.identity || "")));
+  const outboundOrderReconciliation = buildOutboundOrderReconciliation({
+    wmsOrders: currentOutboundOrders,
+    platformOrders,
+    platformItems: platformBundles.items.filter((item) => platformOrderIds.has(String(item.orderIdentity || ""))),
+    platformCoverage: platformCoverageComplete ? "complete" : "scoped_to_wms",
+  });
   const returnOrders = enrichWarehouseReturnOrders((cachedOverseasInventoryReconciliation.orders || [])
     .filter((order) => allowedWarehouseIds.has(String(order.warehouseId || "").trim())), auth);
   const afterSalesTickets = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth) }).tickets;
@@ -4305,10 +4348,12 @@ function overseasReconciliationPayload(auth, input = {}) {
     anchorDate: String(input.anchorDate || ""),
     from: String(input.from || ""),
     to: String(input.to || ""),
-    timezone: String(input.timezone || movementHistoryTimezone || "Asia/Shanghai"),
+    timezone,
     snapshots,
+    dailyLedgerRows,
     warehouses,
     outboundOrders,
+    outboundOrderReconciliation,
     inboundReceipts: stockupFacts.inboundReceipts || [],
     inboundShipments: stockupFacts.inboundShipments || [],
     inventoryMovements: [],
@@ -4652,7 +4697,13 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
     versions,
   };
   saveInventorySnapshotCache(cachedInventorySnapshots);
-  materializeInventoryLedgerDate(date, inventorySnapshotTimezone);
+  try {
+    materializeInventoryLedgerDate(date, inventorySnapshotTimezone);
+  } catch (error) {
+    // The immutable inventory snapshot is the primary record. A derived-ledger
+    // failure must remain visible without discarding a successful WMS capture.
+    console.error(`[inventory-ledger] ${date} materialization failed: ${error?.message || error}`);
+  }
   void notifyInventorySnapshot(snapshot);
   return snapshot;
 }
@@ -4763,8 +4814,46 @@ function inventoryValuePayload(filters, auth = directAuth) {
   if (cached) return cached;
   const warehouseOptions = activeInventoryValueWarehouseOptions(auth);
   const activeWarehouseIds = new Set(warehouseOptions.map((item) => item.value));
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  const countryByWarehouseId = new Map(warehouseOptions.map((item) => [item.value, item.country || ""]));
+  const period = ["day", "week", "month"].includes(String(filters?.period)) ? String(filters.period) : "day";
+  const ledgerLookbackDays = period === "month" ? 740 : period === "week" ? 200 : 60;
+  const ledgerFrom = addBusinessDays(dateKeyInTimezone(new Date(), inventorySnapshotTimezone), -ledgerLookbackDays);
+  const ledgerRows = inventoryLedgerStore.listDailyLedger({ from: ledgerFrom, timezone: inventorySnapshotTimezone })
+    .map((row) => ({ ...row, country: countryByWarehouseId.get(row.warehouseId) || "" }))
+    .filter((row) => activeWarehouseIds.has(String(row.warehouseId || "")) && isWithinDataScope(row, scopes));
+  const ledgerSnapshotsByDate = new Map();
+  for (const row of ledgerRows) {
+    const snapshot = ledgerSnapshotsByDate.get(row.bizDate) || { date: row.bizDate, capturedAt: row.updatedAt || "", rows: [] };
+    snapshot.rows.push({
+      warehouseId: row.warehouseId,
+      warehouseName: row.warehouseName,
+      country: row.country,
+      sku: row.sku,
+      productName: row.productName,
+      availableQty: row.closingQty,
+      lockedQty: 0,
+      waitInQty: 0,
+      inTransitQty: row.inTransitQty,
+      faultyQty: row.faultyQty,
+      temporaryQty: row.temporaryQty,
+      totalQty: row.closingQty,
+      materializedValuation: true,
+      unitCostCny: row.unitCostCny,
+      costBasis: row.costBasis,
+      costEffectiveDate: row.costEffectiveDate,
+      rateEffectiveDate: row.rateEffectiveDate,
+      dataFlags: row.dataFlags,
+    });
+    if (String(row.updatedAt || "") > snapshot.capturedAt) snapshot.capturedAt = row.updatedAt;
+    ledgerSnapshotsByDate.set(row.bizDate, snapshot);
+  }
+  const valueSnapshotsByDate = new Map(scopedInventorySnapshots(auth, activeWarehouseIds)
+    .map((snapshot) => [String(snapshot.date || ""), snapshot]));
+  for (const [date, snapshot] of ledgerSnapshotsByDate) valueSnapshotsByDate.set(date, snapshot);
+  const valueSnapshots = [...valueSnapshotsByDate.values()].sort((left, right) => String(left.date || "").localeCompare(String(right.date || "")));
   return cacheDerivedResponse(cacheKey, buildInventoryValuePayload({
-    snapshots: scopedInventorySnapshots(auth, activeWarehouseIds),
+    snapshots: valueSnapshots,
     products: cachedProducts,
     supplementalCosts: performanceAnalyticsStore.listSupplementalProductCosts(),
     exchangeRates: performanceAnalyticsStore.listExchangeRates(),
@@ -6329,7 +6418,7 @@ async function handleWarehouseSync(req, res) {
   sendJson(res, 200, { ok: true, ...cachedWarehouseSync, products: undefined, inventory: undefined });
 }
 
-async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_3am") {
+async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_eod", snapshotDate = "") {
   const results = [];
   const products = [];
   const inventory = [];
@@ -6357,7 +6446,7 @@ async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_3am"
     results,
   };
   saveWarehouseCache(cachedWarehouseSync);
-  return upsertInventorySnapshot(dateKeyInTimezone(), snapshotReason);
+  return upsertInventorySnapshot(snapshotDate || dateKeyInTimezone(), snapshotReason);
 }
 
 function dateOnlyDaysAgo(days) {
@@ -8099,12 +8188,13 @@ async function runScheduledInventorySnapshot() {
   const now = new Date();
   const date = dateKeyInTimezone(now);
   const minutes = minutesInTimezone(now);
-  if (minutes < 180 || minutes >= 190 || lastScheduledInventorySnapshotDate === date) {
+  if (minutes < 23 * 60 + 50 || minutes >= 24 * 60 || lastScheduledInventorySnapshotDate === date) {
     return { skipped: true, message: "Outside the daily inventory snapshot window" };
   }
   scheduledInventorySnapshotRunning = true;
   try {
-    await refreshWarehouseInventoryForSnapshot("daily_3am");
+    await refreshWarehouseInventoryForSnapshot("daily_eod", date);
+    upsertMovementSnapshot(date, "daily_eod", inventorySnapshotTimezone);
     lastScheduledInventorySnapshotDate = date;
     console.log(`[inventory-snapshot] captured ${date} at ${new Date().toISOString()}`);
     return { date, captured: true };

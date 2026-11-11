@@ -227,6 +227,28 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
   return { unitCostCny: null, source: "missing", sourceLabel: "缺失", costBasis: "missing", costEffectiveDate: "", rateEffectiveDate: "", product };
 }
 
+function materializedCost(item, productLookup, country) {
+  if (item?.materializedValuation !== true) return null;
+  const unitCostCny = item.unitCostCny === null || item.unitCostCny === undefined ? null : number(item.unitCostCny);
+  const costBasis = text(item.costBasis || (unitCostCny === null ? "missing" : "materialized_daily_ledger"));
+  const source = costBasis === "effective_dated_warehouse_cost"
+    ? "warehouse_weighted_price"
+    : costBasis === "effective_dated_manual_cost"
+      ? "manual_supplement"
+      : costBasis === "missing" || unitCostCny === null
+        ? "missing"
+        : "direct_price";
+  return {
+    unitCostCny,
+    source,
+    sourceLabel: source === "warehouse_weighted_price" ? "历史仓库成本" : source === "manual_supplement" ? "历史补录成本" : source === "missing" ? "缺失" : "历史核算成本",
+    costBasis,
+    costEffectiveDate: text(item.costEffectiveDate),
+    rateEffectiveDate: text(item.rateEffectiveDate),
+    product: productForCountry(productLookup, item.sku || item.countrySku, country),
+  };
+}
+
 function quantities(row) {
   const availableQty = Math.max(0, number(row?.availableQty));
   const lockedQty = Math.max(0, number(row?.lockedQty));
@@ -264,7 +286,8 @@ function aggregateSnapshot(snapshot, context) {
     const sku = text(item.sku || item.countrySku).toUpperCase();
     if (!sku) continue;
     const qty = quantities(item);
-    const cost = resolveCost({ ...context, sku, country: item.country, snapshotDate: summary.date, item });
+    const cost = materializedCost(item, context.productLookup, item.country)
+      || resolveCost({ ...context, sku, country: item.country, snapshotDate: summary.date, item });
     const warehouseIdentity = text(item.warehouseId || item.providerWarehouseCode || item.warehouseName);
     const identity = `${countryKey}|${sku}|${warehouseIdentity}`;
     const current = rows.get(identity) || {
@@ -493,7 +516,7 @@ export function buildInventoryValuePayload({
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    basis: "current_direct_price",
+    basis: (current?.snapshot?.rows || []).some((row) => row.materializedValuation === true) ? "materialized_daily_ledger" : "current_direct_price",
     period,
     filters: { warehouseId, country, keyword: text(filters.keyword) },
     permissions: { manageCosts: Boolean(manageCosts) },

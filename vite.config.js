@@ -15,8 +15,12 @@ export default defineConfig({
                         return "react-vendor";
                     if (normalizedId.indexOf("/src/api.ts") >= 0)
                         return "api-client";
-                    if (["/src/AfterSalesCenter.tsx", "/src/WarehouseCollaborationCenter.tsx", "/src/WarehouseTicketCenter.tsx"].some(function (name) { return normalizedId.indexOf(name) >= 0; }))
+                    if (normalizedId.indexOf("/src/WarehouseCollaborationCenter.tsx") >= 0)
                         return "warehouse-collaboration";
+                    if (normalizedId.indexOf("/src/AfterSalesCenter.tsx") >= 0)
+                        return "after-sales";
+                    if (normalizedId.indexOf("/src/WarehouseTicketCenter.tsx") >= 0)
+                        return "warehouse-tickets";
                     if (normalizedId.indexOf("/src/MiaoshouListingWorkspace.tsx") >= 0)
                         return "listing-workspace";
                     if (normalizedId.indexOf("/src/TongzhouCanvasAiPanel.tsx") >= 0)

@@ -39,9 +39,24 @@ try {
   assert.equal(indexes.includes("idx_warehouse_orders_range"), true);
   assert.equal(indexes.includes("idx_inventory_daily_ledger_range"), true);
 
+  const bulkOrders = Array.from({ length: 30000 }, (_, index) => ({
+    warehouseId: `WH-${index % 12}`,
+    orderId: `BULK-${index}`,
+    lineId: "1",
+    sku: `SKU-${index % 80}`,
+    quantity: 1,
+    shippedAt: `2026-10-${String(index % 28 + 1).padStart(2, "0")} 10:00:00`,
+  }));
+  store.upsertOrders(bulkOrders, { persist: false });
+  const queryStartedAt = performance.now();
+  const indexedRows = store.listOrders({ warehouseId: "WH-3", sku: "SKU-3", from: "2026-10-01", to: "2026-10-28" });
+  const queryDurationMs = performance.now() - queryStartedAt;
+  assert.equal(indexedRows.length > 0, true);
+  assert.equal(queryDurationMs < 100, true, `indexed 30k-row order query took ${queryDurationMs.toFixed(1)}ms`);
+
   const reopened = await initInventoryLedgerStore(dbPath, { orders: [{ warehouseId: "BAD", orderId: "SHOULD-NOT-REMIGRATE", sku: "BAD", shippedAt: "2026-01-01" }] });
   assert.equal(reopened.listOrders({ warehouseId: "BAD" }).length, 0, "legacy migration never overwrites an existing database");
-  console.log("inventory ledger database tests passed");
+  console.log(`inventory ledger database tests passed (30k indexed query ${queryDurationMs.toFixed(1)}ms)`);
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

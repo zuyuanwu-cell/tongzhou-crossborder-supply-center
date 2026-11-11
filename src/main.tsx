@@ -239,10 +239,7 @@ import {
 } from "./api";
 import { MiaoshouListingWorkspace } from "./MiaoshouListingWorkspace";
 import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
-import { WarehouseCollaborationCenter } from "./WarehouseCollaborationCenter";
 import { WarehouseCollaborationTasks } from "./WarehouseCollaborationTasks";
-import { InventoryValuePage } from "./InventoryValuePage";
-import { OverseasInventoryReconciliationPage } from "./OverseasInventoryReconciliationPage";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
@@ -267,6 +264,9 @@ import "../collaboration/shared/operational-ui.css";
 
 const ContainerLoadingPage = React.lazy(() => import("./container-loading/ContainerLoadingPage"));
 const HermesAgentWorkspace = React.lazy(() => import("./hermes/HermesAgentWorkspace").then((module) => ({ default: module.HermesAgentWorkspace })));
+const InventoryValuePage = React.lazy(() => import("./InventoryValuePage").then((module) => ({ default: module.InventoryValuePage })));
+const OverseasInventoryReconciliationPage = React.lazy(() => import("./OverseasInventoryReconciliationPage").then((module) => ({ default: module.OverseasInventoryReconciliationPage })));
+const WarehouseCollaborationCenter = React.lazy(() => import("./WarehouseCollaborationCenter").then((module) => ({ default: module.WarehouseCollaborationCenter })));
 
 type AlertType = "补货" | "断货" | "健康" | "滞销";
 type MovementSortKey = "sku" | "country" | "availableQty" | "sales3" | "sales7" | "sales15" | "sales30" | "sales60" | "sales90" | "avgDaily7" | "daysCover" | "status";
@@ -2162,7 +2162,7 @@ function App() {
         ) : activeView === "包材打样协同" ? (
           <PartnerCollaborationWorkspace taskType="sampling_task" sampleCategory="packaging" />
         ) : activeView === "海外仓协同" ? (
-          <WarehouseCollaborationCenter currentUser={currentUser} />
+          <React.Suspense fallback={<div className="loading-screen"><LoaderCircle className="spinning" size={24} /><span>正在加载海外仓协同中心…</span></div>}><WarehouseCollaborationCenter currentUser={currentUser} /></React.Suspense>
         ) : activeView === "库存快照" ? (
           <InventorySnapshotPage
             inventorySnapshotPayload={inventorySnapshotPayload}
@@ -2171,9 +2171,9 @@ function App() {
             canManageActions={hasUserPermission(currentUser, "inventory_snapshot_manage")}
           />
         ) : activeView === "海外仓库存对账" ? (
-          <OverseasInventoryReconciliationPage currentUser={currentUser} />
+          <React.Suspense fallback={<div className="loading-screen"><LoaderCircle className="spinning" size={24} /><span>正在加载海外仓对账台账…</span></div>}><OverseasInventoryReconciliationPage currentUser={currentUser} /></React.Suspense>
         ) : activeView === "仓库货值" ? (
-          <InventoryValuePage
+          <React.Suspense fallback={<div className="loading-screen"><LoaderCircle className="spinning" size={24} /><span>正在加载仓库货值台账…</span></div>}><InventoryValuePage
             payload={inventoryValuePayload}
             loading={inventoryValueLoading}
             onLoad={loadInventoryValue}
@@ -2234,7 +2234,7 @@ function App() {
             }}
             syncing={syncing}
             canSync={hasUserPermission(currentUser, "order_sync_run")}
-          />
+          /></React.Suspense>
         ) : activeView === "复盘中心" ? (
           <ReviewCenter />
         ) : activeView === "订单分析" ? (
