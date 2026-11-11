@@ -37,7 +37,7 @@ import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
 import { canPreviewStockupShipmentWmsOrder } from "./stockup-v2-domain.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
-import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
+import { normalizeWarehouseConnectionBindings, resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -297,7 +297,8 @@ let cachedStockupWorkflow = loadJsonCache(stockupWorkflowCachePath) || {
 };
 let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
-let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
+const warehouseConnectionBindingMigration = normalizeWarehouseConnectionBindings(loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS);
+let warehouseConnections = warehouseConnectionBindingMigration.connections;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
@@ -8896,6 +8897,12 @@ const hermesApi = createHermesApi({
   resolveAssignee: (userId) => hermesToolProviders.resolveAssignee(userId),
   reauthenticateAction: reauthenticateHermesAction,
 });
+
+if (warehouseConnectionBindingMigration.changed) {
+  saveWarehouseConnections();
+  pruneWarehouseCaches(warehouseConnectionBindingMigration.changedWarehouseIds);
+  console.info(`[warehouse-binding] normalized ${warehouseConnectionBindingMigration.changedCount} stored warehouse connections`);
+}
 
 const server = http.createServer(async (req, res) => {
   let maintenanceRequest = null;
