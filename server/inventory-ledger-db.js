@@ -80,6 +80,19 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
+  const orderQueryCache = new Map();
+  const orderQueryCacheLimit = 2;
+
+  function invalidateOrderQueryCache() {
+    orderQueryCache.clear();
+  }
+
+  function cacheOrderQuery(key, rows) {
+    orderQueryCache.delete(key);
+    orderQueryCache.set(key, rows);
+    while (orderQueryCache.size > orderQueryCacheLimit) orderQueryCache.delete(orderQueryCache.keys().next().value);
+    return rows;
+  }
 
   db.run(`
     PRAGMA user_version = 1;
@@ -174,6 +187,7 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
       insertOrderRows(rows, updatedAt);
       setMeta("ordersUpdatedAt", updatedAt);
       db.run("COMMIT");
+      invalidateOrderQueryCache();
       if (shouldPersist) persist();
     } catch (error) {
       db.run("ROLLBACK");
@@ -192,6 +206,7 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
       setMeta("ordersUpdatedAt", updatedAt);
       setMeta("orderSyncMetadata", metadata);
       db.run("COMMIT");
+      invalidateOrderQueryCache();
       if (shouldPersist) persist();
     } catch (error) {
       db.run("ROLLBACK");
@@ -206,6 +221,7 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
       for (const warehouseId of ids) db.run("DELETE FROM warehouse_orders WHERE warehouse_id = ?", [warehouseId]);
       insertOrderRows(Array.isArray(orders) ? orders : []);
       db.run("COMMIT");
+      invalidateOrderQueryCache();
       if (shouldPersist) persist();
     } catch (error) {
       db.run("ROLLBACK");
@@ -236,8 +252,23 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
       clauses.push("ship_date <= ?");
       params.push(dateKey(to));
     }
+    const cacheKey = JSON.stringify([clauses, params]);
+    const cached = orderQueryCache.get(cacheKey);
+    if (cached) {
+      orderQueryCache.delete(cacheKey);
+      orderQueryCache.set(cacheKey, cached);
+      return cached;
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    return all(db, `SELECT payload_json FROM warehouse_orders ${where} ORDER BY ship_date ASC, warehouse_id ASC, order_key ASC`, params).map(orderFromDb);
+    const statement = db.prepare(`SELECT payload_json FROM warehouse_orders ${where} ORDER BY ship_date ASC, warehouse_id ASC, order_key ASC`);
+    try {
+      statement.bind(params);
+      const rows = [];
+      while (statement.step()) rows.push(orderFromDb({ payload_json: statement.get()[0] }));
+      return cacheOrderQuery(cacheKey, rows);
+    } finally {
+      statement.free();
+    }
   }
 
   function upsertDailyLedger(rows, { persist: shouldPersist = true } = {}) {

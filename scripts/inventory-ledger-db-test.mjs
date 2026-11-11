@@ -19,6 +19,10 @@ try {
   store.upsertOrders([{ warehouseId: "WH-1", orderId: "ORDER-1", lineId: "1", sku: "SKU-A", quantity: 5, shippedAt: "2026-11-09 10:00:00" }]);
   assert.equal(store.listOrders({ warehouseId: "WH-1" }).length, 1, "order upsert is idempotent");
   assert.equal(store.listOrders({ warehouseId: "WH-1" })[0].quantity, 5);
+  const cachedOrders = store.listOrders({ warehouseId: "WH-1" });
+  assert.strictEqual(store.listOrders({ warehouseId: "WH-1" }), cachedOrders, "identical order windows reuse parsed rows");
+  store.upsertOrders([{ warehouseId: "WH-1", orderId: "ORDER-4", lineId: "1", sku: "SKU-D", quantity: 1, shippedAt: "2026-11-10 10:00:00" }]);
+  assert.notStrictEqual(store.listOrders({ warehouseId: "WH-1" }), cachedOrders, "order writes invalidate parsed-row reuse");
   store.replaceWarehouseOrders(["WH-2"], [{ warehouseId: "WH-2", orderId: "ORDER-3", lineId: "1", sku: "SKU-C", quantity: 4, shippedAt: "2026-11-11 10:00:00" }]);
   assert.deepEqual(store.listOrders({ warehouseId: "WH-2" }).map((row) => row.orderId), ["ORDER-3"]);
 

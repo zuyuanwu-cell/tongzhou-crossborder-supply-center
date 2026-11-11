@@ -206,6 +206,9 @@ try {
   const rangedBundle = reopened.listMiaoshouOrderBundles({ from: "2026-08-01", to: "2026-08-31" });
   assert.equal(rangedBundle.orders.length, 1);
   assert.equal(rangedBundle.items.length, 3);
+  assert.strictEqual(reopened.listMiaoshouOrderBundles({ from: "2026-08-01", to: "2026-08-31" }), rangedBundle, "identical bundle windows reuse decoded rows");
+  reopened.upsertMiaoshouPerformance({ orders: normalized.orders.map((order) => ({ ...order, payAmount: Number(order.payAmount || 0) + 2 })), items: normalized.items });
+  assert.notStrictEqual(reopened.listMiaoshouOrderBundles({ from: "2026-08-01", to: "2026-08-31" }), rangedBundle, "transaction changes invalidate bundle reuse");
   assert.equal(reopened.listMiaoshouOrderBundles({ from: "2026-09-01", to: "2026-09-30" }).orders.length, 0);
   assert.equal(snapshot.returns[0].refundAmount, 10);
   assert.equal(snapshot.cancellations[0].finalized, true);

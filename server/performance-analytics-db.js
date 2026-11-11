@@ -223,6 +223,19 @@ export async function initPerformanceAnalyticsStore(dbPath) {
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
+  const miaoshouBundleCache = new Map();
+  const miaoshouBundleCacheLimit = 4;
+
+  function invalidateMiaoshouBundleCache() {
+    miaoshouBundleCache.clear();
+  }
+
+  function cacheMiaoshouBundle(key, bundle) {
+    miaoshouBundleCache.delete(key);
+    miaoshouBundleCache.set(key, bundle);
+    while (miaoshouBundleCache.size > miaoshouBundleCacheLimit) miaoshouBundleCache.delete(miaoshouBundleCache.keys().next().value);
+    return bundle;
+  }
   db.run(`
     CREATE TABLE IF NOT EXISTS performance_meta (
       key TEXT PRIMARY KEY,
@@ -650,6 +663,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       }
       setMeta("miaoshouLastChangedRows", String(changedRows));
       db.run("COMMIT");
+      if (changedRows > 0) invalidateMiaoshouBundleCache();
       persist();
       return getMetadata();
     } catch (error) {
@@ -713,20 +727,28 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       clauses.push("order_started_at < ?");
       params.push(next.toISOString().slice(0, 10));
     }
-    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const orders = all(db, `SELECT * FROM miaoshou_performance_orders ${where} ORDER BY order_started_at DESC, identity ASC`, params).map(miaoshouOrderFromDb);
-    const identities = [...new Set(orders.map((order) => text(order.identity)).filter(Boolean))];
-    const items = [];
-    for (let index = 0; index < identities.length; index += 300) {
-      const batch = identities.slice(index, index + 300);
-      const placeholders = batch.map(() => "?").join(", ");
-      items.push(...all(
-        db,
-        `SELECT * FROM miaoshou_performance_items WHERE order_identity IN (${placeholders}) ORDER BY order_identity ASC, identity ASC`,
-        batch,
-      ));
+    const cacheKey = JSON.stringify([clauses, params]);
+    const cached = miaoshouBundleCache.get(cacheKey);
+    if (cached) {
+      miaoshouBundleCache.delete(cacheKey);
+      miaoshouBundleCache.set(cacheKey, cached);
+      return cached;
     }
-    return { orders, items: items.map(miaoshouItemFromDb) };
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const orders = all(db, `SELECT
+      identity, platform, shop_id, platform_order_sn, site, order_amount, pay_amount,
+      platform_order_status, app_order_status, app_order_status_text,
+      order_started_at, paid_at
+      FROM miaoshou_performance_orders ${where}
+      ORDER BY order_started_at DESC, identity ASC`, params).map(miaoshouOrderFromDb);
+    const itemWhere = clauses.length ? `WHERE ${clauses.map((clause) => `orders.${clause}`).join(" AND ")}` : "";
+    const items = all(db, `SELECT
+      items.identity, items.order_identity, items.platform_sku_id, items.platform_outer_sku_id, items.quantity
+      FROM miaoshou_performance_items items
+      INNER JOIN miaoshou_performance_orders orders ON orders.identity = items.order_identity
+      ${itemWhere}
+      ORDER BY items.order_identity ASC, items.identity ASC`, params).map(miaoshouItemFromDb);
+    return cacheMiaoshouBundle(cacheKey, { orders, items });
   }
 
   function upsertExchangeRates(rates = [], source = "manual", { preserveOverrides = false } = {}) {

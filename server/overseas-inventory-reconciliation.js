@@ -2,6 +2,7 @@ import { resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { dateDistanceInDays } from "./date-time.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const dateFormatterByTimezone = new Map();
 
 function text(value) {
   return String(value ?? "").normalize("NFKC").trim();
@@ -32,12 +33,17 @@ function dateKey(value, timezone = "Asia/Shanghai") {
   const parsed = new Date(source);
   if (Number.isNaN(parsed.getTime())) return literal?.[1] || "";
   try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(parsed);
+    let formatter = dateFormatterByTimezone.get(timezone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      dateFormatterByTimezone.set(timezone, formatter);
+    }
+    const parts = formatter.formatToParts(parsed);
     const part = (type) => parts.find((item) => item.type === type)?.value || "";
     return `${part("year")}-${part("month")}-${part("day")}`;
   } catch {
