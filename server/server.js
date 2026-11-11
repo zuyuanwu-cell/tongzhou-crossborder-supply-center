@@ -4332,12 +4332,14 @@ function overseasReconciliationPayload(auth, input = {}) {
     timezone,
   }).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)) : [];
   markTiming("dailyLedger");
-  const outboundOrders = inventoryLedgerStore.listOrders({
-    warehouseIds: [...allowedWarehouseIds],
-    from: ranges.previous.from,
-    to: ranges.current.to,
-  })
-    .filter((order) => reconciliationWarehouseAllowed(order, allowedWarehouseIds) && reconciliationSkuAllowed(order, scopes));
+  // The synchronized order snapshot is already decoded and kept in memory for
+  // analytics. Reusing it here avoids asking sql.js to materialize and JSON.parse
+  // more than 100k payload rows again for every reconciliation cache miss.
+  const outboundOrders = (cachedOrdersSync.orders || []).filter((order) => {
+    if (!reconciliationWarehouseAllowed(order, allowedWarehouseIds) || !reconciliationSkuAllowed(order, scopes)) return false;
+    const date = reconciliationDateKey(order.shippedAt || order.createdAt);
+    return date >= ranges.previous.from && date <= ranges.current.to;
+  });
   markTiming("outboundOrders");
   const currentOutboundOrders = outboundOrders.filter((order) => {
     const date = reconciliationDateKey(order.shippedAt || order.createdAt);

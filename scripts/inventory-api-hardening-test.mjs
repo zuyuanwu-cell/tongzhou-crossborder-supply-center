@@ -45,6 +45,11 @@ assert.match(
   /const dailyLedgerCoversComparison = allowedWarehouseIds\.size > 0[\s\S]{0,350}?const dailyLedgerRows = dailyLedgerCoversComparison \? inventoryLedgerStore\.listDailyLedger/,
   "incomplete ledger coverage is detected before materializing a large comparison window",
 );
+assert.match(
+  serverSource,
+  /const outboundOrders = \(cachedOrdersSync\.orders \|\| \[\]\)\.filter/,
+  "overseas reconciliation reuses the decoded order snapshot instead of reparsing the sql.js payload table",
+);
 assert.equal(serverSource.includes("function warehouseReturnProductIndex()"), true);
 assert.equal(
   serverSource.includes("const productIndex = warehouseReturnProductIndex();"),
