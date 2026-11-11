@@ -2,11 +2,31 @@ import assert from "node:assert/strict";
 import {
   buildOverseasInventoryReconciliation,
   resolveOverseasReconciliationRanges,
+  summarizeReturnSource,
 } from "../server/overseas-inventory-reconciliation.js";
 
 const ranges = resolveOverseasReconciliationRanges({ period: "month", anchorDate: "2026-10-10" });
 assert.deepEqual(ranges.current, { from: "2026-10-01", to: "2026-10-31", label: "2026年10月" });
 assert.deepEqual(ranges.previous, { from: "2026-09-01", to: "2026-09-30", label: "2026年9月" });
+
+const staleReturnSource = summarizeReturnSource({
+  states: [{ warehouseId: "wh-id", warehouseName: "测试仓", syncedAt: "2026-10-11T00:00:00.000Z", from: "2026-09-01", to: "2026-10-31", complete: true, error: "" }],
+  requiredRange: { from: "2026-10-01", to: "2026-11-30" },
+  now: new Date("2026-11-11T00:00:00.000Z"),
+  staleAfterMs: 26 * 60 * 60 * 1000,
+});
+assert.equal(staleReturnSource.status, "partial");
+assert.equal(staleReturnSource.stale, true);
+assert.equal(staleReturnSource.coverageTo, "2026-10-31");
+assert.match(staleReturnSource.message, /未完整覆盖/);
+
+const freshReturnSource = summarizeReturnSource({
+  states: [{ warehouseId: "wh-id", warehouseName: "测试仓", syncedAt: "2026-11-11T00:00:00.000Z", from: "2026-10-01", to: "2026-11-30", complete: true, error: "" }],
+  requiredRange: { from: "2026-10-01", to: "2026-11-30" },
+  now: new Date("2026-11-11T01:00:00.000Z"),
+});
+assert.equal(freshReturnSource.status, "ready");
+assert.equal(freshReturnSource.stale, false);
 
 const warehouse = { id: "wh-id", name: "印尼雅加达仓", country: "印尼", providerId: "sea_wms" };
 const snapshots = [
@@ -173,6 +193,7 @@ assert.equal(ledgerPreferred.summary.inboundQty, 10);
 assert.equal(ledgerPreferred.summary.restockedQty, 1);
 assert.equal(ledgerPreferred.summary.outboundQty, 21);
 assert.equal(ledgerPreferred.summary.varianceQty, 0);
+assert.equal(ledgerPreferred.summary.afterSalesCoverageRate, null, "zero return denominator is reported as unavailable, not 100%");
 assert.equal(ledgerPreferred.sources.inventory.status, "ready");
 assert.equal(ledgerPreferred.sources.transfers.status, "ready");
 
@@ -180,3 +201,4 @@ console.log("[ok] overseas reconciliation formula");
 console.log("[ok] WMS return lifecycle and unclaimed facts");
 console.log("[ok] SKU, shop, and warehouse drill-down rankings");
 console.log("[ok] indexed daily ledger preferred over compatibility snapshots");
+console.log("[ok] WMS return source freshness and zero-denominator coverage");

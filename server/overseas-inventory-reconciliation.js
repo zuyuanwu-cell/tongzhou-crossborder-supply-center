@@ -550,7 +550,7 @@ function buildPeriod({
     unclaimedReturnCount: unclaimedFacts.length,
     unclaimedReturnQty: round(unclaimedFacts.reduce((sum, fact) => sum + number(fact.returnQty), 0)),
     matchedReturnQty: matchedQty,
-    afterSalesCoverageRate: returnQty ? round(matchedQty / returnQty, 4) : 1,
+    afterSalesCoverageRate: returnQty ? round(matchedQty / returnQty, 4) : null,
     recordedWithoutWmsCount: periodTicketOnly.length,
     recordedWithoutWmsQty: round(periodTicketOnly.reduce((sum, ticket) => sum + number(ticket.expectedQty), 0)),
     warehouseCount: warehouseRows.length,
@@ -690,7 +690,15 @@ export function buildOverseasInventoryReconciliation({
       },
       orders: { status: sources.orderComplete === false || current.dataCompleteness.ledgerFlags.includes("orders_incomplete") ? "partial" : "ready", syncedAt: text(sources.ordersSyncedAt) },
       inbound: { status: "ready", syncedAt: text(sources.inboundSyncedAt) },
-      returns: { status: sources.returnComplete === false ? "partial" : "ready", syncedAt: text(sources.returnsSyncedAt), errors: Array.isArray(sources.returnErrors) ? sources.returnErrors : [] },
+      returns: sources.returnSource ? {
+        ...sources.returnSource,
+        syncedAt: text(sources.returnSource.syncedAt),
+        errors: Array.isArray(sources.returnSource.errors) ? sources.returnSource.errors : [],
+      } : {
+        status: sources.returnComplete === false ? "partial" : "ready",
+        syncedAt: text(sources.returnsSyncedAt),
+        errors: Array.isArray(sources.returnErrors) ? sources.returnErrors : [],
+      },
       transfers: {
         status: current.dataCompleteness.source === "inventory_daily_ledger"
           ? current.dataCompleteness.ledgerFlags.includes("movements_incomplete") ? "missing" : "ready"
@@ -701,5 +709,58 @@ export function buildOverseasInventoryReconciliation({
           : (inventoryMovements || []).some((item) => /^transfer_/.test(text(item.type))) ? "已纳入海外仓调拨流水" : "当前 WMS 尚未提供海外仓调拨流水，剩余影响进入无法解释差异。",
       },
     },
+  };
+}
+
+export function summarizeReturnSource({
+  states = [],
+  requiredRange = {},
+  now = new Date(),
+  staleAfterMs = 26 * 60 * 60 * 1000,
+} = {}) {
+  const expectedStates = Array.isArray(states) ? states.filter(Boolean) : [];
+  const dataStates = expectedStates.filter((state) => text(state.syncedAt) && text(state.from) && text(state.to));
+  const errors = expectedStates.filter((state) => text(state.error)).map((state) => ({
+    warehouseId: text(state.warehouseId),
+    warehouseName: text(state.warehouseName),
+    message: text(state.error),
+  }));
+  const syncedAt = dataStates.map((state) => text(state.syncedAt)).sort().at(0) || "";
+  const coverageFrom = dataStates.map((state) => text(state.from)).sort().at(-1) || "";
+  const coverageTo = dataStates.map((state) => text(state.to)).sort().at(0) || "";
+  const requiredFrom = text(requiredRange.from);
+  const requiredTo = text(requiredRange.to);
+  const coversRange = Boolean(
+    expectedStates.length
+    && dataStates.length === expectedStates.length
+    && (!requiredFrom || coverageFrom <= requiredFrom)
+    && (!requiredTo || coverageTo >= requiredTo),
+  );
+  const syncedTime = Date.parse(syncedAt);
+  const nowTime = now instanceof Date ? now.getTime() : Date.parse(String(now || ""));
+  const ageMs = Number.isFinite(syncedTime) && Number.isFinite(nowTime) ? Math.max(0, nowTime - syncedTime) : Number.POSITIVE_INFINITY;
+  const staleByAge = !Number.isFinite(ageMs) || ageMs > Math.max(1, number(staleAfterMs));
+  const healthy = expectedStates.length > 0
+    && expectedStates.every((state) => state.complete === true && !text(state.error));
+  const status = !dataStates.length ? "missing" : healthy && coversRange && !staleByAge ? "ready" : "partial";
+  const stale = Boolean(dataStates.length) && (!coversRange || staleByAge);
+
+  let message = "WMS 退货事实已就绪。";
+  if (!expectedStates.length) message = "当前没有可查询退货事实的 WMS 仓库。";
+  else if (!dataStates.length) message = "尚未成功同步 WMS 退货事实。";
+  else if (errors.length) message = `部分仓库同步失败，已保留上次成功数据：${errors.map((item) => item.warehouseName || item.warehouseId).filter(Boolean).join("、") || "未知仓库"}。`;
+  else if (!coversRange) message = `WMS 退货事实仅覆盖 ${coverageFrom || "—"} 至 ${coverageTo || "—"}，未完整覆盖 ${requiredFrom || "—"} 至 ${requiredTo || "—"}。`;
+  else if (staleByAge) message = `WMS 退货事实最后完整同步于 ${syncedAt || "—"}，数据已过期。`;
+  else message = `WMS 退货事实已覆盖 ${coverageFrom} 至 ${coverageTo}。`;
+
+  return {
+    status,
+    syncedAt,
+    stale,
+    ageHours: Number.isFinite(ageMs) ? round(ageMs / 3_600_000, 1) : null,
+    coverageFrom,
+    coverageTo,
+    message,
+    errors,
   };
 }

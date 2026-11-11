@@ -95,7 +95,7 @@ import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
 import { withTransientRetry } from "./transient-retry.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, listWarehouseReturns, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
-import { buildOverseasInventoryReconciliation, resolveOverseasReconciliationRanges } from "./overseas-inventory-reconciliation.js";
+import { buildOverseasInventoryReconciliation, resolveOverseasReconciliationRanges, summarizeReturnSource } from "./overseas-inventory-reconciliation.js";
 import { buildOutboundOrderReconciliation } from "./outbound-order-reconciliation.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
 import { selectSeaThreeWarehouseIds } from "./order-analysis.js";
@@ -259,6 +259,8 @@ const syncSchedulerCachePath = resolve(cacheDir, "sync-scheduler.json");
 const syncSchedulerHeartbeatMs = Math.max(5_000, Number(process.env.SYNC_SCHEDULER_HEARTBEAT_MS || 15_000));
 const warehouseReturnQueryTimeoutMs = Math.max(10_000, Number(process.env.WAREHOUSE_RETURN_QUERY_TIMEOUT_MS || 45_000));
 const warehouseReturnQueryMaxPages = Math.max(1, Math.min(30, Number(process.env.WAREHOUSE_RETURN_QUERY_MAX_PAGES || 15)));
+const warehouseReturnFactSyncIntervalMs = Math.max(30 * 60_000, Number(process.env.WAREHOUSE_RETURN_FACT_SYNC_INTERVAL_MS || 6 * 60 * 60 * 1000));
+const warehouseReturnFactStaleAfterMs = Math.max(60 * 60_000, Number(process.env.WAREHOUSE_RETURN_FACT_STALE_AFTER_MS || 26 * 60 * 60 * 1000));
 const productionSyncIntervalMs = Math.max(60_000, Number(process.env.PRODUCTION_SYNC_INTERVAL_MS || 5 * 60 * 1000));
 const warehouseInventorySyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_INVENTORY_SYNC_INTERVAL_MS || 15 * 60 * 1000));
 const warehouseOrderSyncIntervalMs = Math.max(5 * 60_000, Number(process.env.WAREHOUSE_ORDER_SYNC_INTERVAL_MS || 15 * 60 * 1000));
@@ -4279,11 +4281,16 @@ function overseasReconciliationPayload(auth, input = {}) {
     warehouseIds: warehouses.length ? warehouses.map((item) => item.id) : ["__no_overseas_warehouse__"],
     skus: scopes.skus,
   });
-  const snapshots = movementHistoryStore.getSnapshots({
-    from: addBusinessDays(ranges.previous.from, -1),
-    to: ranges.current.to,
-    timezone,
-  }, { includeRows: true }).map((snapshot) => ({
+  const snapshotBoundaryDates = [
+    addBusinessDays(ranges.previous.from, -1),
+    ranges.previous.to,
+    addBusinessDays(ranges.current.from, -1),
+    ranges.current.to,
+  ];
+  const snapshots = [...new Map(snapshotBoundaryDates
+    .map((to) => movementHistoryStore.getLatestSnapshot({ to, timezone }, { includeRows: true }))
+    .filter(Boolean)
+    .map((snapshot) => [`${snapshot.date}:${snapshot.timezone}:${snapshot.capturedAt || ""}`, snapshot])).values()].map((snapshot) => ({
     ...snapshot,
     rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
   }));
@@ -4337,12 +4344,19 @@ function overseasReconciliationPayload(auth, input = {}) {
   const returnOrders = enrichWarehouseReturnOrders((cachedOverseasInventoryReconciliation.orders || [])
     .filter((order) => allowedWarehouseIds.has(String(order.warehouseId || "").trim())), auth);
   const afterSalesTickets = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth) }).tickets;
-  const relevantStates = warehouses.map((warehouse) => cachedOverseasInventoryReconciliation.warehouseStates?.[warehouse.id]).filter(Boolean);
-  const returnErrors = relevantStates.filter((state) => state.error).map((state) => ({
-    warehouseId: state.warehouseId,
-    warehouseName: state.warehouseName,
-    message: state.error,
-  }));
+  const returnOptions = warehouseReturnOptions(auth);
+  const relevantStates = returnOptions.map((warehouse) => cachedOverseasInventoryReconciliation.warehouseStates?.[warehouse.id] || {
+    warehouseId: warehouse.id,
+    warehouseName: warehouse.name,
+    country: warehouse.country,
+    complete: false,
+    error: "尚未同步",
+  });
+  const returnSource = summarizeReturnSource({
+    states: relevantStates,
+    requiredRange: { from: ranges.previous.from, to: ranges.current.to },
+    staleAfterMs: warehouseReturnFactStaleAfterMs,
+  });
   const orderComplete = !(cachedOrdersSync.results || []).some((result) => allowedWarehouseIds.has(String(result.warehouseId || "")) && (result.ok === false || result.orderApiComplete === false || result.orderApiReachedPageLimit));
   const inboundSyncedAt = [...(stockupFacts.inboundReceipts || []), ...(stockupFacts.inboundShipments || [])]
     .map((item) => String(item.arrivedAt || item.actualShippedAt || ""))
@@ -4371,14 +4385,12 @@ function overseasReconciliationPayload(auth, input = {}) {
       ordersSyncedAt: cachedOrdersSync.syncedAt || "",
       orderComplete,
       inboundSyncedAt,
-      returnsSyncedAt: cachedOverseasInventoryReconciliation.updatedAt || "",
-      returnComplete: relevantStates.length > 0 && relevantStates.every((state) => state.complete && !state.error),
-      returnErrors,
+      returnSource,
     },
   }));
 }
 
-async function refreshOverseasReconciliationReturns(auth, input = {}) {
+async function refreshOverseasReconciliationReturns(auth, input = {}, { buildPayload = true } = {}) {
   const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
   const ranges = resolveOverseasReconciliationRanges({
     period,
@@ -4394,6 +4406,8 @@ async function refreshOverseasReconciliationReturns(auth, input = {}) {
   const targetConnections = warehouseConnections.filter((connection) => optionIds.has(String(connection.id || "")));
   const nextStates = { ...(cachedOverseasInventoryReconciliation.warehouseStates || {}) };
   let nextOrders = [...(cachedOverseasInventoryReconciliation.orders || [])];
+  let succeeded = 0;
+  let failed = 0;
   for (const connection of targetConnections) {
     const startedAt = new Date().toISOString();
     try {
@@ -4432,6 +4446,8 @@ async function refreshOverseasReconciliationReturns(auth, input = {}) {
         complete,
         error: "",
       };
+      if (complete) succeeded += 1;
+      else failed += 1;
     } catch (error) {
       nextStates[connection.id] = {
         ...(nextStates[connection.id] || {}),
@@ -4439,11 +4455,12 @@ async function refreshOverseasReconciliationReturns(auth, input = {}) {
         warehouseName: connection.name,
         country: connection.country,
         attemptedAt: startedAt,
-        from: dateFrom,
-        to: dateTo,
+        attemptedFrom: dateFrom,
+        attemptedTo: dateTo,
         complete: false,
         error: error?.message || "WMS 退货事实同步失败。",
       };
+      failed += 1;
     }
   }
   cachedOverseasInventoryReconciliation = {
@@ -4455,7 +4472,17 @@ async function refreshOverseasReconciliationReturns(auth, input = {}) {
   };
   saveJsonCache(overseasInventoryReconciliationCachePath, cachedOverseasInventoryReconciliation);
   invalidateDerivedResponses();
-  return overseasReconciliationPayload(auth, input);
+  const refresh = {
+    targets: targetConnections.length,
+    succeeded,
+    failed,
+    from: dateFrom,
+    to: dateTo,
+    orders: nextOrders.length,
+    attemptedAt: cachedOverseasInventoryReconciliation.updatedAt,
+  };
+  if (!buildPayload) return refresh;
+  return { ...overseasReconciliationPayload(auth, input), refresh };
 }
 
 function reconciliationReturnFactExists(factId) {
@@ -7933,6 +7960,26 @@ async function runScheduledOrderSync() {
   return { jobId: job.id, status: completed?.status || "completed" };
 }
 
+async function runScheduledWarehouseReturnFactSync() {
+  const auth = {
+    role: "admin",
+    user: {
+      id: "warehouse-return-scheduler",
+      username: "warehouse-return-scheduler",
+      displayName: "WMS 退货事实定时任务",
+      role: "admin",
+      permissions: [],
+      dataScopes: { warehouseIds: [], countries: [], skus: [] },
+    },
+  };
+  const anchorDate = dateKeyInTimezone(new Date(), inventorySnapshotTimezone);
+  const result = await refreshOverseasReconciliationReturns(auth, { period: "month", anchorDate }, { buildPayload: false });
+  if (!result.targets) return { ...result, skipped: true, message: "No return-capable WMS warehouses" };
+  if (result.failed) throw new Error(`WMS return fact sync incomplete: ${result.succeeded}/${result.targets} warehouses succeeded`);
+  console.log(`[sync-scheduler] WMS return facts refreshed for ${result.targets} warehouses at ${result.attemptedAt}`);
+  return result;
+}
+
 async function runScheduledMiaoshouPerformanceSync() {
   if (!performanceMiaoshouAutoSyncEnabled || !miaoshouAutomation.performanceContext().hasCredentials) {
     return { skipped: true, message: "Miaoshou performance sync is not configured" };
@@ -7985,6 +8032,12 @@ function registerBackgroundSyncTasks() {
   const minute = 60_000;
   const orderSnapshotTime = Date.parse(String(cachedOrdersSync.syncedAt || ""));
   const orderSnapshotStale = !Number.isFinite(orderSnapshotTime) || Date.now() - orderSnapshotTime >= warehouseOrderSyncIntervalMs;
+  const returnSnapshotTimes = warehouseConnections
+    .filter((connection) => ["sea_wms", "yunwms_ru"].includes(connection.providerId))
+    .map((connection) => Date.parse(String(cachedOverseasInventoryReconciliation.warehouseStates?.[connection.id]?.syncedAt || "")));
+  const returnSnapshotStale = !returnSnapshotTimes.length || returnSnapshotTimes.some((syncedAt) => (
+    !Number.isFinite(syncedAt) || Date.now() - syncedAt >= warehouseReturnFactStaleAfterMs
+  ));
   const external = (lane, definition) => syncScheduler.register({ lane, jitterMs: 20_000, ...definition });
   syncScheduler.register({
     id: "wecom-notifications",
@@ -8103,6 +8156,14 @@ function registerBackgroundSyncTasks() {
     intervalMs: warehouseStockupSyncIntervalMs,
     initialDelayMs: 3 * minute,
     run: () => runThenQueueHermesPatrol(refreshWarehouseStockupCache, "warehouse-stockup-orders"),
+  });
+  external("wms", {
+    id: "warehouse-return-facts",
+    label: "WMS 退货事实",
+    priority: 82,
+    intervalMs: warehouseReturnFactSyncIntervalMs,
+    initialDelayMs: returnSnapshotStale ? 25_000 : 5 * minute,
+    run: runScheduledWarehouseReturnFactSync,
   });
   external("wms", {
     id: "warehouse-orders",

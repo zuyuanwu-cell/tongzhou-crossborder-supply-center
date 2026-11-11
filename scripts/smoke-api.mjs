@@ -664,6 +664,9 @@ async function main() {
   if (!scheduler.enabled || !Array.isArray(scheduler.tasks) || scheduler.tasks.length < 10 || scheduler.counts?.running === undefined) {
     throw new Error(`/api/sync-scheduler did not expose the background task state: ${JSON.stringify(scheduler).slice(0, 500)}`);
   }
+  if (!scheduler.tasks.some((task) => task.id === "warehouse-return-facts")) {
+    throw new Error("/api/sync-scheduler did not register warehouse-return-facts");
+  }
   console.log("[ok] staggered sync scheduler status");
 
   const actionLog = await expectJson("/api/action-log", { headers: authHeaders });

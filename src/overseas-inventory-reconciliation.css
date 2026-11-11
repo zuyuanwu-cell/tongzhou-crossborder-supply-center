@@ -114,6 +114,9 @@
 .oir-section-heading span { color: var(--oir-teal); font-size: 9px; font-weight: 800; letter-spacing: 0.16em; }
 .oir-section-heading h3 { margin: 4px 0 0; color: #edf8f5; font-size: 18px; }
 .oir-section-heading p { margin: 4px 0 0; color: var(--oir-muted); font-size: 11px; }
+.oir-section-heading .oir-source-meta { margin-top: 7px; line-height: 1.45; letter-spacing: 0; }
+.oir-section-heading .oir-source-meta.partial,
+.oir-section-heading .oir-source-meta.missing { color: var(--oir-amber); }
 .oir-section-heading.compact > p { max-width: 480px; line-height: 1.5; text-align: right; }
 .oir-equation { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 7px 0; }
 .oir-equation > div { min-width: 112px; padding: 12px; border: 1px solid var(--oir-line); background: rgba(255, 255, 255, 0.018); }
@@ -156,6 +159,7 @@
 .oir-claim-count { display: inline-flex; padding: 3px 6px; border: 1px solid rgba(243, 185, 79, 0.25); color: var(--oir-amber); background: rgba(243, 185, 79, 0.07); }
 .oir-muted { color: #657b78; }
 .oir-empty-inline { padding: 28px; color: var(--oir-muted); font-size: 12px; text-align: center; }
+.oir-empty-inline.source-warning { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--oir-amber); }
 
 .oir-dual-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.65fr); gap: 16px; }
 .oir-total-return { color: var(--oir-amber); font-size: 22px; }

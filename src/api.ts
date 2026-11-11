@@ -2144,7 +2144,7 @@ export type OverseasReconciliationSummary = {
   unclaimedReturnCount: number;
   unclaimedReturnQty: number;
   matchedReturnQty: number;
-  afterSalesCoverageRate: number;
+  afterSalesCoverageRate: number | null;
   recordedWithoutWmsCount: number;
   recordedWithoutWmsQty: number;
   warehouseCount: number;
@@ -2258,6 +2258,10 @@ export type OverseasInventoryReconciliationPayload = {
     snapshotDate?: string;
     requestedSnapshotDate?: string;
     gapDays?: number | null;
+    stale?: boolean;
+    ageHours?: number | null;
+    coverageFrom?: string;
+    coverageTo?: string;
     message?: string;
     errors?: Array<{ warehouseId?: string; warehouseName?: string; message?: string }>;
   }>;

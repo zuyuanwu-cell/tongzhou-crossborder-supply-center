@@ -424,8 +424,12 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
     .sort((left, right) => Math.abs(right.varianceQty) - Math.abs(left.varianceQty));
   const outboundReconciliation = payload.outboundOrderReconciliation;
   const outboundMismatchTasks = outboundReconciliation.rows.filter((row) => row.status !== "matched");
+  const returnSource = payload.sources.returns;
   const rankings = payload.rankings[rankingMode];
   const rankingMax = Math.max(1, ...rankings.slice(0, 8).map((item) => item.returnQty));
+  const rankingEmptyMessage = returnSource?.status !== "ready"
+    ? returnSource?.message || "WMS 退货数据尚未完整同步，当前排名不可作为零退货结论。"
+    : "本周期 WMS 未返回实物退货，因而没有排名。";
   const lifecycleFilters: Array<{ key: ReturnFilter; value: number; detail: string }> = [
     { key: "draft", value: summary.draftReturnQty, detail: "已申请，买家尚未寄出" },
     { key: "in_transit", value: summary.inTransitReturnQty, detail: "WMS 已创建，尚未签收" },
@@ -474,7 +478,7 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
       {notice ? <div className="oir-notice success"><CheckCircle2 size={17} /><span>{notice}</span></div> : null}
       <div className={`oir-completeness ${incompleteSources.length ? "partial" : "ready"}`}>
         {incompleteSources.length ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
-        <div><strong>数据完整性：{incompleteSources.length ? "部分可用，差异仅供排查" : "本周期数据源已齐全"}</strong><span>{incompleteSources.length ? incompleteSources.map(([name, source]) => `${sourceLabels[name] || name} ${source.status === "missing" ? "缺失" : "不完整"}`).join("；") : "库存、出入库、退货和调拨均已覆盖"}</span></div>
+        <div><strong>数据完整性：{incompleteSources.length ? "部分可用，差异仅供排查" : "本周期数据源已齐全"}</strong><span>{incompleteSources.length ? incompleteSources.map(([name, source]) => source.message || `${sourceLabels[name] || name} ${source.status === "missing" ? "缺失" : "不完整"}`).join("；") : "库存、出入库、退货和调拨均已覆盖"}</span></div>
       </div>
 
       <div className="oir-metric-grid">
@@ -550,8 +554,8 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
 
         <section className="oir-section coverage">
           <div className="oir-section-heading compact"><div><span>OPERATION COVERAGE</span><h3>售后录单覆盖</h3></div><ClipboardCheck size={24} /></div>
-          <div className="oir-coverage-score"><strong>{percent(summary.afterSalesCoverageRate)}</strong><span>WMS 实物退货已匹配售后单</span></div>
-          <div className="oir-coverage-track"><i style={{ width: `${Math.min(100, summary.afterSalesCoverageRate * 100)}%` }} /></div>
+          <div className="oir-coverage-score"><strong>{summary.afterSalesCoverageRate === null ? "暂无实物退货" : percent(summary.afterSalesCoverageRate)}</strong><span>{summary.afterSalesCoverageRate === null ? "本周期没有可计算覆盖率的 WMS 实物退货" : "WMS 实物退货已匹配售后单"}</span></div>
+          <div className="oir-coverage-track"><i style={{ width: `${summary.afterSalesCoverageRate === null ? 0 : Math.min(100, summary.afterSalesCoverageRate * 100)}%` }} /></div>
           <div className="oir-coverage-grid">
             <div><small>未录单待认领</small><strong>{summary.unclaimedReturnCount} 笔 / {quantity(summary.unclaimedReturnQty)} 件</strong></div>
             <div><small>已录单未见实物</small><strong>{summary.recordedWithoutWmsCount} 笔 / {quantity(summary.recordedWithoutWmsQty)} 件</strong></div>
@@ -562,7 +566,7 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
 
       <section className="oir-section">
         <div className="oir-section-heading">
-          <div><span>RETURN RANKING</span><h3>退货穿透排名</h3></div>
+          <div><span>RETURN RANKING</span><h3>退货穿透排名</h3><p className={`oir-source-meta ${returnSource?.status || "missing"}`}>{returnSource?.coverageFrom && returnSource?.coverageTo ? `WMS 覆盖 ${returnSource.coverageFrom} 至 ${returnSource.coverageTo}` : "WMS 覆盖范围待同步"} · 最后完整同步 {dateTime(returnSource?.syncedAt || "")}</p></div>
           <div className="oir-ranking-tabs">
             <button type="button" className={rankingMode === "skus" ? "active" : ""} onClick={() => setRankingMode("skus")}><Boxes size={15} />SKU</button>
             <button type="button" className={rankingMode === "shops" ? "active" : ""} onClick={() => setRankingMode("shops")}><Store size={15} />店铺</button>
@@ -579,7 +583,7 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
               <span className={`oir-rank-change ${item.changeQty > 0 ? "up" : item.changeQty < 0 ? "down" : ""}`}>{item.changeQty > 0 ? "+" : ""}{quantity(item.changeQty)}</span>
             </article>
           ))}
-          {!rankings.length ? <div className="oir-empty-inline">本周期暂无实物退货排名</div> : null}
+          {!rankings.length ? <div className={`oir-empty-inline ${returnSource?.status !== "ready" ? "source-warning" : ""}`}>{returnSource?.status !== "ready" ? <AlertTriangle size={16} /> : null}{rankingEmptyMessage}</div> : null}
         </div>
       </section>
 

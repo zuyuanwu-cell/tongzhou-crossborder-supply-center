@@ -22,8 +22,13 @@ assert.equal(serverSource.includes("minutes < 23 * 60 + 50"), true, "daily inven
 assert.equal(serverSource.includes('refreshWarehouseInventoryForSnapshot("daily_eod", date)'), true, "end-of-day snapshot preserves its business date");
 assert.match(
   serverSource,
-  /movementHistoryStore\.getSnapshots\(\{\s*from: addBusinessDays\(ranges\.previous\.from, -1\),\s*to: ranges\.current\.to,\s*timezone,\s*\}, \{ includeRows: true \}\)/,
-  "overseas reconciliation only loads snapshot rows required by the current and previous periods",
+  /const snapshotBoundaryDates = \[[\s\S]{0,500}?\.map\(\(to\) => movementHistoryStore\.getLatestSnapshot\(\{ to, timezone \}, \{ includeRows: true \}\)\)/,
+  "overseas reconciliation loads only the four period-boundary snapshots",
+);
+assert.equal(
+  serverSource.includes("movementHistoryStore.getSnapshots({\n    from: addBusinessDays(ranges.previous.from, -1)"),
+  false,
+  "overseas reconciliation does not scan every snapshot in the full comparison window",
 );
 
 console.log("inventory API hardening tests passed");
