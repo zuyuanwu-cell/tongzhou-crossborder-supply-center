@@ -30,5 +30,10 @@ assert.equal(
   false,
   "overseas reconciliation does not scan every snapshot in the full comparison window",
 );
+assert.equal(
+  serverSource.includes("if (!result.succeeded && result.failed) throw new Error"),
+  true,
+  "partial WMS return refreshes keep the normal schedule while total failures trigger retry",
+);
 
 console.log("inventory API hardening tests passed");

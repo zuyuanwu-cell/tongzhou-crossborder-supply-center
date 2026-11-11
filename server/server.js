@@ -7975,9 +7975,10 @@ async function runScheduledWarehouseReturnFactSync() {
   const anchorDate = dateKeyInTimezone(new Date(), inventorySnapshotTimezone);
   const result = await refreshOverseasReconciliationReturns(auth, { period: "month", anchorDate }, { buildPayload: false });
   if (!result.targets) return { ...result, skipped: true, message: "No return-capable WMS warehouses" };
-  if (result.failed) throw new Error(`WMS return fact sync incomplete: ${result.succeeded}/${result.targets} warehouses succeeded`);
+  if (!result.succeeded && result.failed) throw new Error(`WMS return fact sync failed for all ${result.targets} warehouses`);
+  if (result.failed) console.warn(`[sync-scheduler] WMS return facts partially refreshed: ${result.succeeded}/${result.targets} warehouses succeeded`);
   console.log(`[sync-scheduler] WMS return facts refreshed for ${result.targets} warehouses at ${result.attemptedAt}`);
-  return result;
+  return { ...result, partial: result.failed > 0 };
 }
 
 async function runScheduledMiaoshouPerformanceSync() {
