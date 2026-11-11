@@ -166,12 +166,13 @@ const yunResult = await queryWarehouseReturns(yunConnection, {
     const service = init.body.match(/<service>(.*?)<\/service>/)?.[1] || "";
     yunServices.push(service);
     if (service === "getSpecialOrdersList") {
-      return soapResponse({ ask: "Success", nextPage: "false", data: [{ return_code: "R-001", refrence_no_platform: "00000991", spo_status: "5" }] });
+      return soapResponse({ ask: "Success", nextPage: "false", data: [{ return_code: "R-001", refrence_no_platform: "00000991", spo_status: "5", warehouse_code: "RU-MOW-01" }] });
     }
     return soapResponse({
       ask: "Success",
       data: {
         return_code: "R-001",
+        warehouse_code: "RU-MOW-01",
         spo_update_time: "2026-09-13 09:20:00",
         items: [
           { product_sku: "RU-SKU-1", back_quantity: 2, received_qty: 2, ok_qty: 0, exception_process_instruction: 1, exception_process_instruction_text: "重新上架" },
@@ -198,6 +199,8 @@ assert.equal(yunBadOnly.status, "received_pending", "unhandled bad goods remain 
 
 const normalizedSea = normalizeSeaReturnOrder({ returnSn: "RET-CANCEL", tab: "canceled", goodsSkuList: [] }, seaConnection);
 assert.equal(normalizedSea.status, "cancelled");
+const draftSea = normalizeSeaReturnOrder({ returnSn: "RET-DRAFT", tab: "draft", goodsSkuList: [{ goodsSkuOuterId: "SKU-DRAFT", quantity: 2 }] }, seaConnection);
+assert.equal(draftSea.status, "draft", "SEA draft returns remain applied-but-not-shipped instead of becoming in-transit");
 assert.equal(normalizeReturnIdentifier(" 00\u200b0123 "), "000123", "normalization preserves leading zeros");
 
 const yunNeedsDate = await queryWarehouseReturns(yunConnection, {
@@ -216,12 +219,12 @@ const yunMultiple = await queryWarehouseReturns(yunConnection, {
   fetchImpl: async (_url, init) => {
     const service = init.body.match(/<service>(.*?)<\/service>/)?.[1] || "";
     if (service === "getSpecialOrdersList") return soapResponse({ ask: "Success", nextPage: "false", data: [
-      { return_code: "R-MULTI-1", refrence_no_platform: "00000991", spo_status: "5" },
-      { return_code: "R-MULTI-2", refrence_no_platform: "00000991", spo_status: "5" },
-      { return_code: "R-NOT-EXACT", refrence_no_platform: "000009910", spo_status: "5" },
+      { return_code: "R-MULTI-1", refrence_no_platform: "00000991", spo_status: "5", warehouse_code: "RU-MOW-01" },
+      { return_code: "R-MULTI-2", refrence_no_platform: "00000991", spo_status: "5", warehouse_code: "RU-MOW-01" },
+      { return_code: "R-NOT-EXACT", refrence_no_platform: "000009910", spo_status: "5", warehouse_code: "RU-MOW-01" },
     ] });
     yunMultiDetails += 1;
-    return soapResponse({ ask: "Success", data: { items: [] } });
+    return soapResponse({ ask: "Success", data: { warehouse_code: "RU-MOW-01", items: [] } });
   },
 });
 assert.equal(yunMultiple.orders.length, 2, "all exact matches on the located page are returned for operator review");
@@ -253,15 +256,35 @@ const yunList = await listWarehouseReturns(yunConnection, {
   fetchImpl: async (_url, init) => {
     const service = init.body.match(/<service>(.*?)<\/service>/)?.[1] || "";
     if (service === "getSpecialOrdersList") return soapResponse({ ask: "Success", nextPage: "false", data: [
-      { return_code: "R-LIST-1", refrence_no_platform: "ORDER-RU-1", spo_status: "3" },
-      { return_code: "R-LIST-2", refrence_no_platform: "ORDER-RU-2", spo_status: "5" },
+      { return_code: "R-LIST-1", refrence_no_platform: "ORDER-RU-1", spo_status: "3", warehouse_code: "RU-MOW-01" },
+      { return_code: "R-LIST-2", refrence_no_platform: "ORDER-RU-2", spo_status: "5", warehouse_code: "RU-MOW-01" },
     ] });
     yunListDetails += 1;
     const returnCode = init.body.match(/R-LIST-[12]/)?.[0] || "";
-    return soapResponse({ ask: "Success", data: { return_code: returnCode, items: [{ product_sku: `${returnCode}-SKU`, received_qty: 1, ok_qty: 1, exception_process_instruction: 1 }] } });
+    return soapResponse({ ask: "Success", data: { return_code: returnCode, warehouse_code: "RU-MOW-01", items: [{ product_sku: `${returnCode}-SKU`, received_qty: 1, ok_qty: 1, exception_process_instruction: 1 }] } });
   },
 });
 assert.equal(yunList.orders.length, 2, "YunWMS period listing hydrates every return detail");
 assert.equal(yunListDetails, 2);
+
+await assert.rejects(
+  () => listWarehouseReturns({ ...yunConnection, warehouseCode: "" }, { dateFrom: "2026-09-01", dateTo: "2026-09-30" }, { fetchImpl: async () => { throw new Error("must fail before request"); } }),
+  (error) => error?.code === "unconfigured" && /warehouse_code/i.test(error.message),
+  "YunWMS return sync refuses an account-wide query when no explicit warehouse code is configured",
+);
+
+const yunWrongWarehouse = await listWarehouseReturns(yunConnection, {
+  dateFrom: "2026-09-01",
+  dateTo: "2026-09-30",
+}, {
+  fetchImpl: async (_url, init) => {
+    const service = init.body.match(/<service>(.*?)<\/service>/)?.[1] || "";
+    if (service === "getSpecialOrdersList") return soapResponse({ ask: "Success", nextPage: "false", data: [
+      { return_code: "R-WRONG", refrence_no_platform: "ORDER-WRONG", spo_status: "5", warehouse_code: "RU-MOW-02" },
+    ] });
+    throw new Error("wrong-warehouse return must not be hydrated");
+  },
+});
+assert.equal(yunWrongWarehouse.orders.length, 0, "provider rows from another warehouse are not assigned to the current connection");
 
 console.log("warehouse-return-query tests passed");

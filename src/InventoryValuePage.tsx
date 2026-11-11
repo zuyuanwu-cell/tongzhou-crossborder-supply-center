@@ -161,11 +161,11 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
         <div>
           <p className="eyebrow">INVENTORY VALUE</p>
           <h1>仓库货值</h1>
-          <p>用库存快照 × 直营供货价，查看每个周期的货值变化与具体 SKU 增减。</p>
+          <p>用日终库存快照 × 对应成本版本，查看每个周期的货值变化、缺口与具体 SKU 增减。</p>
         </div>
         <div className="iv-hero-badge">
           <Coins size={25} />
-          <span><small>当前估值口径</small><strong>在库库存 · 人民币</strong></span>
+          <span><small>当前估值口径</small><strong>可售 + 锁定 · 人民币</strong></span>
         </div>
       </section>
 
@@ -187,12 +187,20 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
         <button className="iv-primary" type="button" disabled={loading} onClick={() => void runLoad()}>{loading ? <RefreshCw className="spin" size={16} /> : <Search size={16} />}查询</button>
       </section>
 
+      <section className={`iv-completeness ${summary?.missingCostSkuCount ? "partial" : "ready"}`}>
+        {summary?.missingCostSkuCount ? <AlertTriangle size={18} /> : <Coins size={18} />}
+        <div><strong>数据完整性：{summary?.missingCostSkuCount ? "货值为已计价下限" : "当前在库均已计价"}</strong><span>{summary ? `成本覆盖率 ${percent(summary.costCoverageRate)}；未计价 ${quantity(summary.unvaluedOnHandQty)} 件；在途、待入库、不良和暂存均未混入在库货值。` : "等待库存快照"}</span></div>
+      </section>
+
       <section className="iv-kpis">
         <article className={summary?.missingCostSkuCount ? "warning" : ""}><span>{summary?.missingCostSkuCount ? "已计价在库货值（下限）" : "当前在库货值"}</span><strong>{summary ? money(summary.onHandValueCny) : "—"}</strong><small>{payload?.currentPeriod ? `${payload.currentPeriod.snapshotDate} 快照` : "等待库存快照"}</small></article>
         <article className={change > 0 ? "up" : change < 0 ? "down" : ""}><span>较上期变化</span><strong>{summary ? `${change > 0 ? "+" : ""}${money(change)}` : "—"}</strong><small>{summary?.periodChangeRate === null ? "暂无可比上期" : `${change >= 0 ? "增长" : "下降"} ${percent(Math.abs(summary?.periodChangeRate || 0))}`}</small></article>
         <article><span>在途货值</span><strong>{summary ? money(summary.inTransitValueCny) : "—"}</strong><small>{summary ? `${quantity(summary.inTransitQty)} 件在途` : "—"}</small></article>
         <article><span>成本覆盖率</span><strong>{summary ? percent(summary.costCoverageRate) : "—"}</strong><small>{summary ? `${quantity(summary.coveredOnHandQty)} / ${quantity(summary.onHandQty)} 件已估值` : "—"}</small></article>
         <article className={summary?.missingCostSkuCount ? "warning" : ""}><span>缺失成本</span><strong>{summary ? `${summary.missingCostSkuCount} SKU` : "—"}</strong><small>{summary?.missingCostSkuCount ? `${quantity(summary.unvaluedOnHandQty)} 件未计价` : "当前库存均有成本"}</small></article>
+        <article><span>待入库</span><strong>{summary ? quantity(summary.waitInQty) : "—"}</strong><small>独立口径，不计入在库</small></article>
+        <article><span>不良库存</span><strong>{summary ? quantity(summary.faultyQty) : "—"}</strong><small>独立口径，不计入在库货值</small></article>
+        <article><span>暂存库存</span><strong>{summary ? quantity(summary.temporaryQty) : "—"}</strong><small>独立口径，待仓库确认</small></article>
       </section>
 
       {message ? <div className="iv-message">{message}</div> : null}
@@ -201,7 +209,7 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
         <article className="iv-panel iv-trend-panel">
           <header><div><p className="eyebrow">VALUE TREND</p><h2>周期货值变化</h2></div><span>{payload?.previousPeriod ? `${payload.previousPeriod.snapshotDate} → ${payload.currentPeriod?.snapshotDate}` : "等待形成对比周期"}</span></header>
           {payload ? <ValueTrend payload={payload} /> : <div className="iv-empty"><RefreshCw className={loading ? "spin" : ""} /><strong>正在读取货值</strong></div>}
-          <footer><AlertTriangle size={14} /><span>该趋势按当前直营供货价统一重算，是恒定成本库存指数，不代表历史账面成本；缺失成本库存不计入金额，当前货值为已计价下限。</span></footer>
+          <footer><AlertTriangle size={14} /><span>历史补录成本和仓库成本按生效日期取版本；未版本化的直营供货价会明确标记为“当前价格追溯”，未来生效成本不会回填历史。缺失成本库存不计入金额。</span></footer>
         </article>
 
         <article className="iv-panel iv-cost-panel">
@@ -225,12 +233,12 @@ export function InventoryValuePage({ payload, loading, onLoad, onImportCosts }: 
           <div className="iv-table-controls"><button className={sortMode === "change" ? "active" : ""} type="button" onClick={() => setSortMode("change")}>按变化排序</button><button className={sortMode === "value" ? "active" : ""} type="button" onClick={() => setSortMode("value")}>按货值排序</button><label><input type="checkbox" checked={onlyMissing} onChange={(event) => setOnlyMissing(event.target.checked)} />只看缺成本</label><button type="button" title="重新查询" onClick={() => void runLoad()}><RefreshCw size={15} /></button></div>
         </header>
         <div className="iv-table">
-          <div className="iv-table-row head"><span>产品 / 仓库</span><span>在库数量</span><span>单位成本</span><span>当前货值</span><span>上期货值</span><span>货值变化</span></div>
+          <div className="iv-table-row head"><span>产品 / 仓库</span><span>在库数量</span><span>单位成本 / 成本版本</span><span>当前货值</span><span>上期货值</span><span>货值变化</span></div>
           {rows.slice(0, 300).map((row) => (
             <div className="iv-table-row" key={row.key}>
               <span className="iv-product-cell">{row.imageUrl ? <img src={resolveApiUrl(row.imageUrl)} alt="" /> : <i><PackageSearch size={18} /></i>}<span><strong>{row.productName || row.sku}</strong><small>{row.sku} · {row.country} · {row.warehouseNames.join("、") || "未标记仓库"}</small></span></span>
               <span><strong>{quantity(row.onHandQty)}</strong><small className={row.quantityChange > 0 ? "positive" : row.quantityChange < 0 ? "negative" : ""}>{row.quantityChange > 0 ? "+" : ""}{quantity(row.quantityChange)}</small></span>
-              <span>{row.unitCostCny === null ? <em className="iv-missing">待补</em> : <><strong>¥{row.unitCostCny.toFixed(2)}</strong><small>{row.costSourceLabel}</small></>}</span>
+              <span>{row.unitCostCny === null ? <em className="iv-missing">待补</em> : <><strong>¥{row.unitCostCny.toFixed(2)}</strong><small>{row.costSourceLabel} · {row.costEffectiveDate || "当前价格追溯"}</small></>}</span>
               <span><strong>{row.unitCostCny === null ? "—" : money(row.onHandValueCny)}</strong></span>
               <span><strong>{row.costSource === "missing" ? "—" : money(row.previousValueCny)}</strong></span>
               <span className={row.valueChangeCny > 0 ? "positive" : row.valueChangeCny < 0 ? "negative" : ""}>{row.valueChangeCny > 0 ? <ArrowUpRight size={15} /> : row.valueChangeCny < 0 ? <ArrowDownRight size={15} /> : null}<strong>{row.costSource === "missing" ? "—" : `${row.valueChangeCny > 0 ? "+" : ""}${money(row.valueChangeCny)}`}</strong><small>{row.valueChangeRate === null ? "新增/无上期" : percent(row.valueChangeRate)}</small></span>

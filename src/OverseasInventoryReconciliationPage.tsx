@@ -19,23 +19,27 @@ import {
 } from "lucide-react";
 import {
   claimOverseasReconciliationReturn,
+  fetchInventoryDailyLedger,
   fetchOverseasInventoryReconciliation,
   refreshOverseasInventoryReconciliation,
   type AuthUser,
+  type InventoryDailyLedgerPayload,
   type MovementComparisonPeriod,
   type OverseasInventoryReconciliationPayload,
   type OverseasReconciliationMetricDelta,
   type OverseasReconciliationRanking,
   type OverseasReconciliationReturnFact,
+  type OverseasReconciliationSkuRow,
   type OverseasReconciliationWarehouse,
 } from "./api";
+import { closedBusinessDate, datePresetOptions, resolveDatePreset, type DatePresetId } from "./date-presets";
 import "./overseas-inventory-reconciliation.css";
 
 type Props = {
   currentUser: AuthUser;
 };
 
-type ReturnFilter = "all" | "in_transit" | "pending" | "restocked" | "scrapped" | "unclaimed";
+type ReturnFilter = "all" | "draft" | "in_transit" | "pending" | "restocked" | "scrapped" | "unclaimed";
 type RankingMode = "skus" | "shops" | "warehouses";
 
 const periodOptions: Array<{ value: MovementComparisonPeriod; label: string }> = [
@@ -56,6 +60,7 @@ const sourceLabels: Record<string, string> = {
 
 const returnFilterLabels: Record<ReturnFilter, string> = {
   all: "全部实物退货",
+  draft: "已申请未寄出",
   in_transit: "退货在途",
   pending: "到仓待处理",
   restocked: "已重新上架",
@@ -150,12 +155,23 @@ function MetricCard({
 
 function returnFactMatches(fact: OverseasReconciliationReturnFact, filter: ReturnFilter) {
   if (filter === "all") return true;
+  if (filter === "draft") return fact.status === "draft";
   if (filter === "in_transit") return fact.status === "in_transit";
   if (filter === "pending") return fact.status !== "in_transit" && fact.pendingQty > 0;
   if (filter === "restocked") return fact.restockedQty > 0;
   if (filter === "scrapped") return fact.scrappedQty > 0;
   return fact.claimStatus === "unclaimed" || fact.claimStatus === "conflict";
 }
+
+const ledgerFlagLabels: Record<string, string> = {
+  opening_snapshot_missing: "期初快照缺失",
+  opening_snapshot_off_schedule: "期初非日终快照",
+  closing_snapshot_missing: "期末快照缺失",
+  closing_snapshot_off_schedule: "期末非日终快照",
+  orders_incomplete: "出库订单不完整",
+  movements_incomplete: "调拨/盘点流水不完整",
+  cost_missing: "成本缺失",
+};
 
 function rankingName(item: OverseasReconciliationRanking, mode: RankingMode) {
   if (mode === "skus") return item.sku || "未识别 SKU";
@@ -218,10 +234,12 @@ function WarehouseMatrix({
 
 export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
   const [payload, setPayload] = React.useState<OverseasInventoryReconciliationPayload | null>(null);
-  const [period, setPeriod] = React.useState<MovementComparisonPeriod>("month");
-  const [anchorDate, setAnchorDate] = React.useState(() => new Date().toISOString().slice(0, 10));
-  const [customFrom, setCustomFrom] = React.useState("");
-  const [customTo, setCustomTo] = React.useState("");
+  const defaultRange = React.useMemo(() => resolveDatePreset("last7"), []);
+  const [period, setPeriod] = React.useState<MovementComparisonPeriod>("custom");
+  const [anchorDate, setAnchorDate] = React.useState(() => closedBusinessDate());
+  const [quickRange, setQuickRange] = React.useState<DatePresetId>("last7");
+  const [customFrom, setCustomFrom] = React.useState(defaultRange.from);
+  const [customTo, setCustomTo] = React.useState(defaultRange.to);
   const [warehouseId, setWarehouseId] = React.useState("all");
   const [selectedWarehouseId, setSelectedWarehouseId] = React.useState("");
   const [keyword, setKeyword] = React.useState("");
@@ -232,6 +250,18 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
   const [claimingId, setClaimingId] = React.useState("");
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
+  const [ledgerSelection, setLedgerSelection] = React.useState<OverseasReconciliationSkuRow | null>(null);
+  const [ledgerPayload, setLedgerPayload] = React.useState<InventoryDailyLedgerPayload | null>(null);
+  const [ledgerLoading, setLedgerLoading] = React.useState(false);
+  const [ledgerError, setLedgerError] = React.useState("");
+
+  function applyQuickRange(next: DatePresetId) {
+    const range = resolveDatePreset(next);
+    setQuickRange(next);
+    setPeriod("custom");
+    setCustomFrom(range.from);
+    setCustomTo(range.to);
+  }
 
   const requestInput = React.useCallback(() => ({
     period,
@@ -292,6 +322,28 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
       setError(requestError instanceof Error ? requestError.message : "认领失败");
     } finally {
       setClaimingId("");
+    }
+  };
+
+  const openDailyLedger = async (row: OverseasReconciliationSkuRow) => {
+    if (!payload) return;
+    setLedgerSelection(row);
+    setLedgerPayload(null);
+    setLedgerError("");
+    setLedgerLoading(true);
+    try {
+      const next = await fetchInventoryDailyLedger({
+        from: payload.ranges.current.from,
+        to: payload.ranges.current.to,
+        warehouseId: row.warehouseId,
+        sku: row.sku,
+        timezone: payload.timezone,
+      });
+      setLedgerPayload(next);
+    } catch (requestError) {
+      setLedgerError(requestError instanceof Error ? requestError.message : "逐日库存台账读取失败");
+    } finally {
+      setLedgerLoading(false);
     }
   };
 
@@ -361,9 +413,21 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
 
   const summary = payload.summary;
   const comparison = payload.comparison.summary;
+  const incompleteSources = Object.entries(payload.sources).filter(([, source]) => source.status !== "ready");
+  const unreceivedTasks = payload.returnFacts
+    .filter((fact) => fact.status !== "draft" && fact.returnQty > fact.receivedQty)
+    .map((fact) => ({ ...fact, ageDays: Math.max(0, Math.floor((Date.now() - new Date(fact.activityAt).getTime()) / 86_400_000)) }))
+    .sort((left, right) => right.ageDays - left.ageDays);
+  const stockVarianceTasks = payload.warehouses.flatMap((warehouse) => warehouse.skuRows
+    .filter((row) => row.varianceQty !== 0)
+    .map((row) => ({ ...row, warehouseName: warehouse.warehouseName })))
+    .sort((left, right) => Math.abs(right.varianceQty) - Math.abs(left.varianceQty));
+  const outboundReconciliation = payload.outboundOrderReconciliation;
+  const outboundMismatchTasks = outboundReconciliation.rows.filter((row) => row.status !== "matched");
   const rankings = payload.rankings[rankingMode];
   const rankingMax = Math.max(1, ...rankings.slice(0, 8).map((item) => item.returnQty));
   const lifecycleFilters: Array<{ key: ReturnFilter; value: number; detail: string }> = [
+    { key: "draft", value: summary.draftReturnQty, detail: "已申请，买家尚未寄出" },
     { key: "in_transit", value: summary.inTransitReturnQty, detail: "WMS 已创建，尚未签收" },
     { key: "pending", value: summary.pendingReturnQty, detail: "已到仓，待质检处置" },
     { key: "restocked", value: summary.restockedQty, detail: "已恢复可售库存" },
@@ -395,6 +459,9 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
         <div className="oir-period-tabs" aria-label="对账周期">
           {periodOptions.map((item) => <button key={item.value} className={period === item.value ? "active" : ""} type="button" onClick={() => setPeriod(item.value)}>{item.label}</button>)}
         </div>
+        <select className="oir-anchor-date" value={quickRange} onChange={(event) => applyQuickRange(event.target.value as DatePresetId)} aria-label="快捷日期范围">
+          {datePresetOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+        </select>
         {period === "custom" ? (
           <div className="oir-date-range"><input type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} /><span>至</span><input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} /></div>
         ) : <input className="oir-anchor-date" type="date" value={anchorDate} onChange={(event) => setAnchorDate(event.target.value)} title="周期锚点日期" />}
@@ -405,14 +472,26 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
 
       {error ? <div className="oir-notice error"><AlertTriangle size={17} /><span>{error}</span></div> : null}
       {notice ? <div className="oir-notice success"><CheckCircle2 size={17} /><span>{notice}</span></div> : null}
+      <div className={`oir-completeness ${incompleteSources.length ? "partial" : "ready"}`}>
+        {incompleteSources.length ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
+        <div><strong>数据完整性：{incompleteSources.length ? "部分可用，差异仅供排查" : "本周期数据源已齐全"}</strong><span>{incompleteSources.length ? incompleteSources.map(([name, source]) => `${sourceLabels[name] || name} ${source.status === "missing" ? "缺失" : "不完整"}`).join("；") : "库存、出入库、退货和调拨均已覆盖"}</span></div>
+      </div>
 
       <div className="oir-metric-grid">
         <MetricCard eyebrow="海外仓实际库存" value={summary.actualInventoryQty} unit="件" delta={comparison.actualInventoryQty} tone="cyan" detail={`${summary.warehouseCount} 个海外仓`} />
         <MetricCard eyebrow="账实差异" value={summary.varianceQty} unit="件" delta={comparison.varianceQty} inverse tone={Math.abs(summary.varianceQty) > 0 ? "red" : "green"} detail={`${summary.anomalyWarehouseCount} 个仓需关注`} />
         <MetricCard eyebrow="周期实际出库" value={summary.outboundQty} unit="件" delta={comparison.outboundQty} detail={`入库 ${quantity(summary.inboundQty)} 件`} />
-        <MetricCard eyebrow="WMS 实物退货" value={summary.returnQty} unit="件" delta={comparison.returnQty} tone="amber" detail={`售后匹配率 ${percent(summary.afterSalesCoverageRate)}`} />
+        <MetricCard eyebrow="退货申请" value={summary.returnQty} unit="件" delta={comparison.returnQty} tone="amber" detail={`未寄出 ${quantity(summary.draftReturnQty)} 件`} />
+        <MetricCard eyebrow="已收退货" value={summary.returnReceivedQty} unit="件" delta={comparison.returnReceivedQty} tone="green" detail={`未收 ${quantity(summary.unreceivedReturnQty)} 件`} />
         <MetricCard eyebrow="已重新上架" value={summary.restockedQty} unit="件" delta={comparison.restockedQty} tone="green" detail={`已报废 ${quantity(summary.scrappedQty)} 件`} />
-        <MetricCard eyebrow="退货在途" value={summary.inTransitReturnQty} unit="件" delta={comparison.inTransitReturnQty} detail={`到仓待处理 ${quantity(summary.pendingReturnQty)} 件`} />
+        <MetricCard eyebrow="破损率" value={summary.damageRate * 100} unit="%" delta={comparison.damageRate} inverse tone={summary.damageRate > 0.05 ? "red" : "default"} detail={`不良 ${quantity(summary.badQty)} 件`} />
+      </div>
+
+      <div className="oir-outbound-grid">
+        <article><span>平台订单应发</span><strong>{quantity(outboundReconciliation.summary.expectedQty)}<small> 件</small></strong><em>{outboundReconciliation.summary.platformOrderCount} 笔妙手订单</em></article>
+        <article><span>WMS 实际出库</span><strong>{quantity(outboundReconciliation.summary.shippedQty)}<small> 件</small></strong><em>{outboundReconciliation.summary.wmsOrderCount} 笔出库单</em></article>
+        <article className={outboundReconciliation.summary.missingWmsOrderCount ? "alert" : ""}><span>有平台单、无 WMS 出库</span><strong>{outboundReconciliation.summary.missingWmsOrderCount}<small> 笔</small></strong><em>{quantity(outboundReconciliation.summary.missingWmsQty)} 件待核查</em></article>
+        <article className={outboundReconciliation.summary.wmsOnlyOrderCount || outboundReconciliation.summary.quantityMismatchOrderCount ? "warning" : ""}><span>多发 / 数量不一致</span><strong>{outboundReconciliation.summary.wmsOnlyOrderCount + outboundReconciliation.summary.quantityMismatchOrderCount}<small> 笔</small></strong><em>{outboundReconciliation.coverage === "complete" ? "妙手与 WMS 全量核对" : "按当前可见 WMS 单据核对"}</em></article>
       </div>
 
       <section className="oir-equation-panel">
@@ -442,6 +521,15 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
           </div>
         </div>
         <WarehouseMatrix rows={visibleWarehouses} selectedId={selectedWarehouse?.warehouseId || ""} onSelect={setSelectedWarehouseId} />
+      </section>
+
+      <section className="oir-section oir-task-board">
+        <div className="oir-section-heading"><div><span>EXCEPTION QUEUE</span><h3>运营核查任务</h3><p>先处理超期未收，再核对账实差异；缺失数据源不会伪装成正常。</p></div></div>
+        <div className="oir-task-columns">
+          <div><header><strong>未收货账龄</strong><span>{unreceivedTasks.length} 条</span></header>{unreceivedTasks.slice(0, 8).map((fact) => <article key={`age-${fact.id}`}><span><strong>{fact.returnOrderNumber || fact.originalOrderNumber}</strong><small>{fact.warehouseName} · {fact.sku}</small></span><em>{fact.ageDays} 天 / {quantity(fact.returnQty - fact.receivedQty)} 件</em></article>)}{!unreceivedTasks.length ? <p>当前没有未收退货。</p> : null}</div>
+          <div><header><strong>出库订单差异</strong><span>{outboundMismatchTasks.length} 条</span></header>{outboundMismatchTasks.slice(0, 8).map((row) => <article key={`outbound-${row.orderNumber}`}><span><strong>{row.orderNumber}</strong><small>{row.status === "missing_wms" ? "平台有单，WMS 未出库" : row.status === "wms_only" ? "WMS 手工单 / 补发" : "平台与 WMS 数量不一致"} · {row.skus.join("、") || "未识别 SKU"}</small></span><em>应发 {quantity(row.expectedQty)} / 已发 {quantity(row.shippedQty)}</em></article>)}{!outboundMismatchTasks.length ? <p>当前平台订单与 WMS 出库一致。</p> : null}</div>
+          <div><header><strong>账实差异任务</strong><span>{stockVarianceTasks.length} 条</span></header>{stockVarianceTasks.slice(0, 8).map((row) => <article key={`variance-${row.warehouseId}-${row.sku}`}><span><strong>{row.sku}</strong><small>{row.warehouseName} · 理论 {quantity(row.theoreticalInventoryQty)} / 实际 {quantity(row.actualInventoryQty)}</small></span><em>{row.varianceQty > 0 ? "+" : ""}{quantity(row.varianceQty)} 件</em></article>)}{!stockVarianceTasks.length ? <p>当前没有可确认的库存差异。</p> : null}</div>
+        </div>
       </section>
 
       <div className="oir-dual-grid">
@@ -503,19 +591,29 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
           </div>
           <div className="oir-table-shell sku-table-shell">
             <table className="oir-sku-table">
-              <thead><tr><th>SKU / 产品</th><th>期初</th><th>入库</th><th>退货上架</th><th>出库</th><th>理论期末</th><th>实际库存</th><th>差异</th><th>退货</th><th>处置</th></tr></thead>
+              <thead><tr><th>SKU / 产品</th><th>期初</th><th>入库</th><th>退货上架</th><th>出库</th><th>理论期末</th><th>实际库存</th><th>差异</th><th>退货</th><th>处置</th><th>逐日台账</th></tr></thead>
               <tbody>
                 {filteredSkuRows.slice(0, 100).map((row) => <tr key={`${row.warehouseId}-${row.sku}`}>
-                  <td><strong>{row.sku}</strong><small>{row.productName}</small></td><td>{quantity(row.openingInventoryQty)}</td><td className="inbound">+{quantity(row.inboundQty)}</td><td className="restock">+{quantity(row.restockedQty)}</td><td className="outbound">-{quantity(row.outboundQty)}</td><td>{quantity(row.theoreticalInventoryQty)}</td><td><strong>{quantity(row.actualInventoryQty)}</strong></td><td><span className={`oir-variance ${row.differenceTone}`}>{row.varianceQty > 0 ? "+" : ""}{quantity(row.varianceQty)}</span></td><td>{quantity(row.returnQty)}<small>{row.shopCount} 店铺</small></td><td><span className="oir-disposition">上架 {quantity(row.restockedQty)}</span><span className="oir-disposition scrap">报废 {quantity(row.scrappedQty)}</span></td>
+                  <td><strong>{row.sku}</strong><small>{row.productName}</small></td><td>{quantity(row.openingInventoryQty)}</td><td className="inbound">+{quantity(row.inboundQty)}</td><td className="restock">+{quantity(row.restockedQty)}</td><td className="outbound">-{quantity(row.outboundQty)}</td><td>{quantity(row.theoreticalInventoryQty)}</td><td><strong>{quantity(row.actualInventoryQty)}</strong></td><td><span className={`oir-variance ${row.differenceTone}`}>{row.varianceQty > 0 ? "+" : ""}{quantity(row.varianceQty)}</span></td><td>{quantity(row.returnQty)}<small>{row.shopCount} 店铺</small></td><td><span className="oir-disposition">上架 {quantity(row.restockedQty)}</span><span className="oir-disposition scrap">报废 {quantity(row.scrappedQty)}</span></td><td><button className="oir-ledger-open" type="button" onClick={() => void openDailyLedger(row)}>查台账</button></td>
                 </tr>)}
               </tbody>
             </table>
             {!filteredSkuRows.length ? <div className="oir-empty-inline">该仓库当前没有匹配的 SKU 对账行</div> : null}
           </div>
 
+          {ledgerSelection ? (
+            <div className="oir-ledger-panel">
+              <header><div><span>DAILY LEDGER</span><strong>{ledgerSelection.sku} · 逐日库存台账</strong><small>{payload.ranges.current.from} — {payload.ranges.current.to}；期末只含可售 + 锁定，在途/不良/暂存单列。</small></div><button type="button" onClick={() => { setLedgerSelection(null); setLedgerPayload(null); }}>关闭</button></header>
+              {ledgerLoading ? <div className="oir-ledger-status"><RefreshCw className="spin" size={17} />正在按仓库、SKU 和日期索引读取…</div> : null}
+              {ledgerError ? <div className="oir-ledger-status error"><AlertTriangle size={17} />{ledgerError}</div> : null}
+              {ledgerPayload && !ledgerPayload.rows.length ? <div className="oir-ledger-status"><AlertTriangle size={17} />该区间尚无合格的日终台账。请先补齐固定时点快照；系统不会用其他时刻数据冒充日终数据。</div> : null}
+              {ledgerPayload?.rows.length ? <div className="oir-table-shell"><table className="oir-daily-ledger-table"><thead><tr><th>日期</th><th>期初</th><th>入库</th><th>退货上架</th><th>订单出库</th><th>其他出库</th><th>调拨/调整</th><th>期末</th><th>差异</th><th>数据标记</th></tr></thead><tbody>{ledgerPayload.rows.map((row) => <tr key={`${row.bizDate}-${row.warehouseId}-${row.sku}`}><td><strong>{row.bizDate}</strong></td><td>{quantity(row.openingQty)}</td><td className="inbound">+{quantity(row.inboundQty)}</td><td className="restock">+{quantity(row.returnRestockQty)}</td><td className="outbound">-{quantity(row.orderOutboundQty)}</td><td className="outbound">-{quantity(row.otherOutboundQty)}</td><td>{row.transferInQty || row.transferOutQty || row.adjustQty ? `${quantity(row.transferInQty)} / -${quantity(row.transferOutQty)} / ${quantity(row.adjustQty)}` : "—"}</td><td><strong>{quantity(row.closingQty)}</strong><small>不良 {quantity(row.faultyQty)} · 暂存 {quantity(row.temporaryQty)} · 在途 {quantity(row.inTransitQty)}</small></td><td><span className={`oir-variance ${row.varianceQty ? "critical" : "balanced"}`}>{row.varianceQty > 0 ? "+" : ""}{quantity(row.varianceQty)}</span></td><td><div className="oir-ledger-flags">{row.dataFlags.length ? row.dataFlags.map((flag) => <span key={flag}>{ledgerFlagLabels[flag] || flag}</span>) : <em>完整</em>}</div></td></tr>)}</tbody></table></div> : null}
+            </div>
+          ) : null}
+
           <div className="oir-return-detail-heading">
             <div><Truck size={18} /><strong>{returnFilterLabels[returnFilter]}</strong><span>{visibleFacts.length} 条 WMS 事实</span></div>
-            <div className="oir-return-filter-pills">{(["all", "in_transit", "pending", "restocked", "scrapped", "unclaimed"] as ReturnFilter[]).map((filter) => <button key={filter} type="button" className={returnFilter === filter ? "active" : ""} onClick={() => setReturnFilter(filter)}>{returnFilterLabels[filter]}</button>)}</div>
+            <div className="oir-return-filter-pills">{(["all", "draft", "in_transit", "pending", "restocked", "scrapped", "unclaimed"] as ReturnFilter[]).map((filter) => <button key={filter} type="button" className={returnFilter === filter ? "active" : ""} onClick={() => setReturnFilter(filter)}>{returnFilterLabels[filter]}</button>)}</div>
           </div>
           <div className="oir-return-list">
             {visibleFacts.slice(0, 100).map((fact) => (
@@ -523,7 +621,7 @@ export function OverseasInventoryReconciliationPage({ currentUser }: Props) {
                 <div className="oir-return-icon">{fact.status === "in_transit" ? <Truck size={19} /> : fact.scrappedQty > 0 ? <Factory size={19} /> : <PackageCheck size={19} />}</div>
                 <div className="oir-return-main"><strong>{fact.returnOrderNumber || "未识别退货单"}</strong><span>{fact.sku} · {fact.productName}</span><small>原订单 {fact.originalOrderNumber || "—"} · {dateTime(fact.activityAt)}</small></div>
                 <div className="oir-return-shop"><small>来源店铺</small><strong>{fact.shopName || "未识别店铺"}</strong></div>
-                <div className="oir-return-quantities"><span>退货 <strong>{quantity(fact.returnQty)}</strong></span><span>上架 <strong>{quantity(fact.restockedQty)}</strong></span><span>报废 <strong>{quantity(fact.scrappedQty)}</strong></span><span>待处理 <strong>{quantity(fact.pendingQty)}</strong></span></div>
+                <div className="oir-return-quantities"><span>申请 <strong>{quantity(fact.returnQty)}</strong></span><span>已收 <strong>{quantity(fact.receivedQty)}</strong></span><span>上架 <strong>{quantity(fact.restockedQty)}</strong></span><span>不良 <strong>{quantity(fact.badQty)}</strong></span><span>报废 <strong>{quantity(fact.scrappedQty)}</strong></span></div>
                 <div className="oir-return-state"><span className={`state ${fact.status}`}>{fact.statusLabel}</span>{fact.claimStatus === "matched" ? <small className="matched">已匹配售后单</small> : fact.claimStatus === "claimed" ? <small className="claimed">{fact.claim?.ownerName || "已认领"}</small> : <>{hasPermission(currentUser, "after_sales_report") ? <button type="button" onClick={() => void handleClaim(fact)} disabled={claimingId === fact.id}>{claimingId === fact.id ? "认领中" : "认领并跟进"}</button> : <small className="unclaimed">待运营认领</small>}</>}</div>
               </article>
             ))}

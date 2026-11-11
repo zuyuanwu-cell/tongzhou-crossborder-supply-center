@@ -203,6 +203,10 @@ try {
   const snapshot = reopened.listMiaoshouPerformance();
   assert.equal(snapshot.orders.length, 1);
   assert.equal(snapshot.items.length, 3);
+  const rangedBundle = reopened.listMiaoshouOrderBundles({ from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(rangedBundle.orders.length, 1);
+  assert.equal(rangedBundle.items.length, 3);
+  assert.equal(reopened.listMiaoshouOrderBundles({ from: "2026-09-01", to: "2026-09-30" }).orders.length, 0);
   assert.equal(snapshot.returns[0].refundAmount, 10);
   assert.equal(snapshot.cancellations[0].finalized, true);
   assert.equal(reopened.getMiaoshouPerformanceSyncState().status, "success");

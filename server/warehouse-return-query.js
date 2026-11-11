@@ -103,6 +103,7 @@ function providerLabel(connection) {
 
 function statusMeta(status) {
   const labels = {
+    draft: "已申请未寄出",
     in_transit: "在途中",
     received_pending: "已到仓待处理",
     processing: "处理中",
@@ -116,7 +117,7 @@ function statusMeta(status) {
 }
 
 function deriveDispositionStatus(providerStatus, items) {
-  if (["cancelled", "exception", "in_transit"].includes(providerStatus)) return providerStatus;
+  if (["cancelled", "exception", "draft", "in_transit"].includes(providerStatus)) return providerStatus;
   const received = items.reduce((sum, item) => sum + item.receivedQty, 0);
   const restocked = items.reduce((sum, item) => sum + item.restockedQty, 0);
   const scrapped = items.reduce((sum, item) => sum + item.scrappedQty, 0);
@@ -167,7 +168,8 @@ export function normalizeSeaReturnOrder(row, connection) {
   const tab = text(row?.tab).toLowerCase();
   const providerStatus = tab === "canceled" ? "cancelled"
     : tab === "problem" ? "exception"
-      : ["draft", "on_way"].includes(tab) ? "in_transit"
+      : tab === "draft" ? "draft"
+        : tab === "on_way" ? "in_transit"
         : tab === "sign" ? "received_pending"
           : "processing";
   const normalizedStatus = deriveDispositionStatus(providerStatus, items);
@@ -261,7 +263,7 @@ function yunCredentials(connection) {
     baseUrl: normalizeYunEndpoint(process.env[`${prefix}_BASE_URL`] || connection.baseUrl),
     appKey: process.env[`${prefix}_APP_KEY`] || connection.credentials?.appKey || connection.credentials?.clientId || "",
     appToken: process.env[`${prefix}_APP_TOKEN`] || connection.credentials?.token || connection.credentials?.appSecret || connection.credentials?.clientSecret || "",
-    warehouseCode: process.env[`${prefix}_WAREHOUSE_CODE`] || connection.warehouseCode || connection.warehouseId || connection.resolvedWarehouseId || "",
+    warehouseCode: process.env[`${prefix}_WAREHOUSE_CODE`] || connection.warehouseCode || "",
   };
 }
 
@@ -359,6 +361,23 @@ function validateCredentials(connection, credentials) {
   if (!credentials.baseUrl || !credentials.appKey || (connection.providerId === "sea_wms" ? !credentials.appSecret : !credentials.appToken)) {
     throw new WarehouseReturnQueryError("unconfigured", `${providerLabel(connection)} 尚未完成授权配置。`);
   }
+}
+
+function requiredYunWarehouseCode(connection, credentials) {
+  const warehouseCode = text(credentials?.warehouseCode).toUpperCase();
+  if (!warehouseCode) {
+    throw new WarehouseReturnQueryError("unconfigured", `${connection?.name || connection?.id || "YunWMS"} requires an explicit warehouse_code.`);
+  }
+  return warehouseCode;
+}
+
+function yunRowWarehouseCode(row) {
+  return firstText(row?.warehouse_code, row?.warehouseCode).toUpperCase();
+}
+
+function filterYunWarehouseRows(rows, warehouseCode) {
+  const expected = text(warehouseCode).toUpperCase();
+  return (Array.isArray(rows) ? rows : []).filter((row) => yunRowWarehouseCode(row) === expected);
 }
 
 function dateTimeStart(value) {
@@ -477,12 +496,13 @@ async function postYun(fetchImpl, credentials, service, params, options) {
 async function queryYunReturns(connection, input, options) {
   const credentials = yunCredentials(connection);
   validateCredentials(connection, credentials);
+  const warehouseCode = requiredYunWarehouseCode(connection, credentials);
   const targeted = input.queryType === "return_order";
   if (!targeted && (!input.dateFrom || !input.dateTo)) {
     return { orders: [], complete: false, needsDateRange: true, pagesRead: 0, method: "needs_date_range" };
   }
   const baseParams = {
-    ...(credentials.warehouseCode ? { warehouse_code: credentials.warehouseCode } : {}),
+    warehouse_code: warehouseCode,
     ...(targeted ? { searchType: "searchCode", code: input.query } : {
       spo_update_time_from: dateTimeStart(input.dateFrom),
       spo_update_time_to: dateTimeEnd(input.dateTo),
@@ -493,7 +513,7 @@ async function queryYunReturns(connection, input, options) {
   let matchedRows = [];
   for (let page = 1; page <= options.maxPages; page += 1) {
     const payload = await postYun(options.fetchImpl, credentials, "getSpecialOrdersList", { pageSize: PAGE_SIZE, page, ...baseParams }, options);
-    const rows = Array.isArray(payload?.data) ? payload.data : [];
+    const rows = filterYunWarehouseRows(payload?.data, warehouseCode);
     pagesRead = page;
     matchedRows = rows.filter((row) => rowMatchesInput(row, input));
     if (matchedRows.length) break;
@@ -517,7 +537,7 @@ async function queryYunReturns(connection, input, options) {
         detailComplete = false;
       }
     }
-    orders.push(normalizeYunReturnOrder(detail, connection));
+    if (yunRowWarehouseCode(detail) === warehouseCode) orders.push(normalizeYunReturnOrder(detail, connection));
   }
   return { orders, complete: detailComplete, needsDateRange: false, pagesRead, method: targeted ? "targeted" : "bounded_scan" };
 }
@@ -555,8 +575,9 @@ async function listSeaReturns(connection, input, options) {
 async function listYunReturns(connection, input, options) {
   const credentials = yunCredentials(connection);
   validateCredentials(connection, credentials);
+  const warehouseCode = requiredYunWarehouseCode(connection, credentials);
   const baseParams = {
-    ...(credentials.warehouseCode ? { warehouse_code: credentials.warehouseCode } : {}),
+    warehouse_code: warehouseCode,
     spo_update_time_from: dateTimeStart(input.dateFrom),
     spo_update_time_to: dateTimeEnd(input.dateTo),
   };
@@ -565,7 +586,7 @@ async function listYunReturns(connection, input, options) {
   const rows = [];
   for (let page = 1; page <= options.maxPages; page += 1) {
     const payload = await postYun(options.fetchImpl, credentials, "getSpecialOrdersList", { pageSize: PAGE_SIZE, page, ...baseParams }, options);
-    const pageRows = Array.isArray(payload?.data) ? payload.data : [];
+    const pageRows = filterYunWarehouseRows(payload?.data, warehouseCode);
     rows.push(...pageRows);
     pagesRead = page;
     const hasNext = text(payload?.nextPage).toLowerCase() === "true" && pageRows.length > 0;
@@ -587,7 +608,7 @@ async function listYunReturns(connection, input, options) {
         detailComplete = false;
       }
     }
-    orders.push(normalizeYunReturnOrder(detail, connection));
+    if (yunRowWarehouseCode(detail) === warehouseCode) orders.push(normalizeYunReturnOrder(detail, connection));
   }
   return { orders, complete: !reachedPageLimit && detailComplete, needsDateRange: false, pagesRead, method: "period_list" };
 }

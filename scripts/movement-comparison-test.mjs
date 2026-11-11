@@ -111,6 +111,10 @@ const comparison = buildMovementComparison({
 
 assert.equal(comparison.currentSnapshot.date, "2026-08-11");
 assert.equal(comparison.previousSnapshot.date, "2026-07-31");
+assert.equal(comparison.currentSnapshot.boundaryMatch, false);
+assert.equal(comparison.currentSnapshot.gapDays, 20);
+assert.equal(comparison.previousSnapshot.boundaryMatch, true);
+assert.equal(comparison.dataCompleteness.status, "partial");
 assert.equal(comparison.summary.currentSku, 3);
 assert.equal(comparison.summary.previousSku, 3);
 assert.equal(comparison.summary.normal, 1);
@@ -145,7 +149,7 @@ assert.equal(skuA.expectedClosingQty, 80);
 assert.equal(skuA.closingOnHandQty, 70);
 assert.equal(skuA.inventoryVarianceQty, -10);
 assert.equal(skuA.inventoryAnomaly, true);
-assert.equal(skuA.inventoryReliable, true);
+assert.equal(skuA.inventoryReliable, false, "a comparison with a non-boundary snapshot is explicitly uncertain");
 
 const skuB = comparison.rows.find((row) => row.sku === "SKU-B");
 assert.equal(skuB.changeType, "improved");

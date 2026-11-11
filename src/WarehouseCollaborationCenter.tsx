@@ -1,10 +1,11 @@
 import React from "react";
-import { ClipboardCheck, Headphones, ShieldCheck, WalletCards, Warehouse } from "lucide-react";
+import { ClipboardCheck, Headphones, LoaderCircle, ShieldCheck, WalletCards, Warehouse } from "lucide-react";
 import { AuthUser } from "./api";
-import { AfterSalesCenter } from "./AfterSalesCenter";
-import { WarehouseTicketCenter } from "./WarehouseTicketCenter";
-import { WarehouseLiabilitySettlement } from "./WarehouseLiabilitySettlement";
-import { WarehouseQualificationCoveragePage } from "./WarehouseQualificationCoveragePage";
+
+const AfterSalesCenter = React.lazy(() => import("./AfterSalesCenter").then((module) => ({ default: module.AfterSalesCenter })));
+const WarehouseTicketCenter = React.lazy(() => import("./WarehouseTicketCenter").then((module) => ({ default: module.WarehouseTicketCenter })));
+const WarehouseLiabilitySettlement = React.lazy(() => import("./WarehouseLiabilitySettlement").then((module) => ({ default: module.WarehouseLiabilitySettlement })));
+const WarehouseQualificationCoveragePage = React.lazy(() => import("./WarehouseQualificationCoveragePage").then((module) => ({ default: module.WarehouseQualificationCoveragePage })));
 
 function hasPermission(user: AuthUser, permission: string) {
   return Boolean(user.permissions?.includes(permission));
@@ -69,9 +70,11 @@ export function WarehouseCollaborationCenter({ currentUser }: { currentUser: Aut
       {canQualificationCoverage ? <button className={module === "qualification_coverage" ? "active" : ""} onClick={() => changeModule("qualification_coverage")}><ShieldCheck size={20} /><span><strong>资质覆盖</strong><small>本仓商品状态与有效期</small></span></button> : null}
       {canSettlement ? <button className={module === "settlement" ? "active" : ""} onClick={() => changeModule("settlement")}><WalletCards size={20} /><span><strong>费用核销</strong><small>责任费用导出、扣款与冲销</small></span></button> : null}
     </nav>
-    {module === "after_sales" && canAfterSales ? <AfterSalesCenter currentUser={currentUser} embedded initialTicketId={deepLink.ticketId} initialView={deepLink.view === "create" ? "" : deepLink.view} /> : null}
-    {module === "tickets" && canTickets ? <WarehouseTicketCenter currentUser={currentUser} initialTicketId={deepLink.ticketId} initialView={deepLink.view === "returns" ? "" : deepLink.view} initialPrefill={{ warehouseId: deepLink.warehouseId, relatedOrderNumber: deepLink.relatedOrderNumber, category: deepLink.category, title: deepLink.title, description: deepLink.description }} /> : null}
-    {module === "qualification_coverage" && canQualificationCoverage ? <WarehouseQualificationCoveragePage /> : null}
-    {module === "settlement" && canSettlement ? <WarehouseLiabilitySettlement /> : null}
+    <React.Suspense fallback={<div className="loading-screen"><LoaderCircle className="spinning" size={24} /><span>正在加载海外仓协同模块…</span></div>}>
+      {module === "after_sales" && canAfterSales ? <AfterSalesCenter currentUser={currentUser} embedded initialTicketId={deepLink.ticketId} initialView={deepLink.view === "create" ? "" : deepLink.view} /> : null}
+      {module === "tickets" && canTickets ? <WarehouseTicketCenter currentUser={currentUser} initialTicketId={deepLink.ticketId} initialView={deepLink.view === "returns" ? "" : deepLink.view} initialPrefill={{ warehouseId: deepLink.warehouseId, relatedOrderNumber: deepLink.relatedOrderNumber, category: deepLink.category, title: deepLink.title, description: deepLink.description }} /> : null}
+      {module === "qualification_coverage" && canQualificationCoverage ? <WarehouseQualificationCoveragePage /> : null}
+      {module === "settlement" && canSettlement ? <WarehouseLiabilitySettlement /> : null}
+    </React.Suspense>
   </div>;
 }

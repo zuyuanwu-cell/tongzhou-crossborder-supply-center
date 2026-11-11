@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { transform } from "esbuild";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "../server/inventory-value.js";
+import { normalizeSeaInventory, normalizeYunInventory } from "../server/wms-adapters.js";
 
 const products = {
   productBase: [
@@ -52,9 +53,35 @@ assert.equal(payload.currentPeriod.snapshotDate, "2026-09-08");
 assert.equal(payload.previousPeriod.snapshotDate, "2026-09-01");
 assert.equal(payload.summary.onHandQty, 19, "on-hand excludes in-transit and wait-in quantities");
 assert.equal(payload.summary.inTransitQty, 3);
+const quantityBoundaryPayload = buildInventoryValuePayload({
+  snapshots: [{
+    date: "2026-09-09",
+    rows: [{
+      warehouseId: "WH-BOUNDARY",
+      warehouseName: "Boundary warehouse",
+      country: "ID",
+      sku: "SKU-A",
+      availableQty: 12,
+      lockedQty: 3,
+      waitInQty: 1,
+      inTransitQty: 4,
+      faultyQty: 5,
+      temporaryQty: 6,
+      totalQty: 31,
+    }],
+  }],
+  products,
+  filters: { period: "day" },
+});
+assert.equal(quantityBoundaryPayload.summary.onHandQty, 15);
+assert.equal(quantityBoundaryPayload.summary.totalQty, 15, "total inventory equals available plus locked only");
+assert.equal(quantityBoundaryPayload.summary.waitInQty, 1);
+assert.equal(quantityBoundaryPayload.summary.inTransitQty, 4);
+assert.equal(quantityBoundaryPayload.summary.faultyQty, 5);
+assert.equal(quantityBoundaryPayload.summary.temporaryQty, 6);
 assert.equal(payload.summary.onHandValueCny, 135, "missing-cost stock is excluded from the known value");
-assert.equal(payload.summary.previousOnHandValueCny, 117, "manual fallback can reconstruct older snapshots");
-assert.equal(payload.summary.periodChangeCny, 18);
+assert.equal(payload.summary.previousOnHandValueCny, 107, "future manual cost versions never backfill older snapshots");
+assert.equal(payload.summary.periodChangeCny, 28);
 assert.equal(payload.summary.missingCostSkuCount, 1);
 assert.equal(payload.summary.coveredOnHandQty, 15);
 assert.equal(payload.summary.costCoverageRate, 0.7895);
@@ -63,13 +90,17 @@ assert.equal(payload.permissions.manageCosts, true);
 const directRow = payload.rows.find((row) => row.sku === "SKU-A");
 assert.equal(directRow.unitCostCny, 10, "direct supply price always wins over a manual supplement");
 assert.equal(directRow.costSource, "direct_price");
+assert.equal(directRow.costBasis, "current_direct_price");
+assert.equal(directRow.costEffectiveDate, "");
 assert.equal(directRow.onHandValueCny, 120);
 assert.equal(directRow.valueChangeCny, 20);
 
 const manualRow = payload.rows.find((row) => row.sku === "SKU-B");
 assert.equal(manualRow.unitCostCny, 5);
 assert.equal(manualRow.costSource, "manual_supplement");
-assert.equal(manualRow.previousValueCny, 10);
+assert.equal(manualRow.costBasis, "effective_dated_manual_cost");
+assert.equal(manualRow.costEffectiveDate, "2026-09-08");
+assert.equal(manualRow.previousValueCny, 0);
 
 const missingRow = payload.missingCosts.find((row) => row.sku === "SKU-C");
 assert.equal(missingRow.onHandQty, 4);
@@ -112,6 +143,60 @@ const otherRussiaWarehouse = buildInventoryValuePayload({
   filters: { period: "day", warehouseId: "WH-RU-1" },
 });
 assert.equal(otherRussiaWarehouse.summary.onHandValueCny, 297, "other Russian warehouses keep their existing product catalog cost rule");
+
+const futureWarehouseCostProducts = {
+  ...russiaWarehouseProducts,
+  warehouseCosts: [{ warehouseCode: "DD001", sku: "SKU-RU", unitCostCny: 12.5, effectiveAt: "2026-10-09T08:49:37.141Z" }],
+};
+const futureWarehouseCost = buildInventoryValuePayload({
+  snapshots: [{ date: "2026-10-08", rows: [{ warehouseId: "WH-RU-2", providerWarehouseCode: "DD001", country: "RU", sku: "SKU-RU", availableQty: 2, totalQty: 2 }] }],
+  products: futureWarehouseCostProducts,
+  filters: { period: "day" },
+});
+assert.equal(futureWarehouseCost.summary.onHandValueCny, 0, "future warehouse cost versions never backfill an older snapshot");
+assert.equal(futureWarehouseCost.rows[0].costSource, "missing");
+
+const futureManualCost = buildInventoryValuePayload({
+  snapshots: [{ date: "2026-09-08", rows: [{ warehouseId: "WH-ID", country: "ID", sku: "SKU-C", availableQty: 4, totalQty: 4 }] }],
+  products,
+  supplementalCosts: [{ sku: "SKU-C", countryKey: "ID", unitCostCny: 6, effectiveDate: "2026-09-09", enabled: true }],
+  filters: { period: "day" },
+});
+assert.equal(futureManualCost.summary.unvaluedOnHandQty, 4);
+assert.equal(futureManualCost.rows[0].costSource, "missing");
+
+const missingWarehouseCode = buildInventoryValuePayload({
+  snapshots: [{
+    date: "2026-10-09",
+    rows: [{ warehouseId: "WH-RU-UNKNOWN", warehouseName: russiaWarehouseProducts.warehouseCostScopes[0].warehouseName, country: "RU", sku: "SKU-RU", availableQty: 1, totalQty: 1 }],
+  }],
+  products: russiaWarehouseProducts,
+  filters: { period: "day" },
+});
+assert.equal(missingWarehouseCode.rows[0].costSource, "direct_price", "warehouse-specific costs require the provider warehouse code and never infer it from the display name");
+
+const seaInventory = normalizeSeaInventory({
+  goodsSkuOuterId: "SEA-SKU",
+  availableStockNum: 10,
+  lockedStockNum: 2,
+  waitInStorageNum: 3,
+  onWayNum: 4,
+  faultyStockNum: 5,
+  temporaryStockNum: 6,
+  stockNum: 30,
+}, { id: "SEA-WH", name: "SEA warehouse", country: "ID", providerId: "sea_wms" });
+assert.equal(seaInventory.totalQty, 12, "SEA normalized total is available plus locked only");
+
+const yunInventory = normalizeYunInventory({
+  product_sku: "YUN-SKU",
+  sellable: 10,
+  reserved: 2,
+  pending: 3,
+  onway: 4,
+  unsellable: 5,
+  warehouse_code: "DD001",
+}, { id: "YUN-WH", name: "Yun warehouse", country: "RU", providerId: "yunwms_ru" });
+assert.equal(yunInventory.totalQty, 12, "YunWMS normalized total is available plus locked only");
 
 const weekly = buildInventoryValuePayload({ snapshots, products, supplementalCosts: [], filters: { period: "week" } });
 assert.equal(weekly.timeline.length, 2, "weekly mode keeps the latest snapshot in each week");
@@ -179,5 +264,33 @@ const compactDateRows = csvModule.parseInventoryValueCostCsv("SKU,国家代码,�
 assert.equal(compactDateRows[0].effectiveDate, "2026-09-14", "single-digit Excel month and day values are zero-padded");
 assert.equal(normalizeInventoryValueEffectiveDate("2026/9/14"), "2026-09-14", "the API applies the same date normalization as the browser");
 assert.equal(normalizeInventoryValueEffectiveDate("2026-9-4 00:00:00"), "2026-09-04");
+
+const materializedLedgerValue = buildInventoryValuePayload({
+  snapshots: [{
+    date: "2026-11-10",
+    rows: [{
+      materializedValuation: true,
+      warehouseId: "WH-ID",
+      warehouseName: "印尼仓",
+      country: "ID",
+      sku: "SKU-A",
+      productName: "Frozen historical value",
+      availableQty: 8,
+      lockedQty: 0,
+      inTransitQty: 2,
+      faultyQty: 1,
+      temporaryQty: 3,
+      unitCostCny: 7,
+      costBasis: "effective_dated_manual_cost",
+      costEffectiveDate: "2026-10-01",
+      rateEffectiveDate: "2026-11-10",
+    }],
+  }],
+  products: { catalog: [{ sku: "SKU-A", country: "ID", directPrice: 999, directCurrency: "CNY" }] },
+  filters: { period: "day" },
+});
+assert.equal(materializedLedgerValue.basis, "materialized_daily_ledger");
+assert.equal(materializedLedgerValue.summary.onHandValueCny, 56, "materialized history is not repriced with the current catalog cost");
+assert.equal(materializedLedgerValue.rows[0].costEffectiveDate, "2026-10-01");
 
 console.log("inventory value tests passed");

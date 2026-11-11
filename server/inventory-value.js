@@ -95,27 +95,34 @@ function buildWarehouseCostLookup(rows, scopes = []) {
     scopedWarehouseCodes.add(warehouseCode);
     if (unitCostCny <= 0) continue;
     for (const skuKey of normalizedSkuKeys(row?.sku)) {
-      byKey.set(`${warehouseCode}|${skuKey}`, { ...row, warehouseCode, unitCostCny });
+      const key = `${warehouseCode}|${skuKey}`;
+      const versions = byKey.get(key) || [];
+      versions.push({
+        ...row,
+        warehouseCode,
+        unitCostCny,
+        effectiveDate: dateKey(row?.effectiveDate || row?.effectiveAt) || "2000-01-01",
+      });
+      byKey.set(key, versions);
     }
   }
+  for (const versions of byKey.values()) versions.sort((left, right) => left.effectiveDate.localeCompare(right.effectiveDate));
   return { byKey, scopedWarehouseCodes };
 }
 
 function warehouseCodeForItem(item) {
-  const explicit = text(item?.providerWarehouseCode || item?.warehouseCode).toUpperCase();
-  if (explicit) return explicit;
-  const warehouseName = text(item?.warehouseName).replace(/\s+/g, "");
-  return ["俄罗斯2仓", "俄罗斯二仓"].includes(warehouseName) ? "DD001" : "";
+  return text(item?.providerWarehouseCode || item?.warehouseCode).toUpperCase();
 }
 
-function warehouseCostFor(lookup, item, sku) {
+function warehouseCostFor(lookup, item, sku, snapshotDate) {
   const warehouseCode = warehouseCodeForItem(item);
   if (!warehouseCode || !lookup.scopedWarehouseCodes.has(warehouseCode)) {
     return { warehouseCode, scoped: false, row: null };
   }
   const row = normalizedSkuKeys(sku)
-    .map((skuKey) => lookup.byKey.get(`${warehouseCode}|${skuKey}`))
-    .find(Boolean) || null;
+    .flatMap((skuKey) => lookup.byKey.get(`${warehouseCode}|${skuKey}`) || [])
+    .filter((version) => version.effectiveDate <= snapshotDate)
+    .sort((left, right) => right.effectiveDate.localeCompare(left.effectiveDate))[0] || null;
   return { warehouseCode, scoped: true, row };
 }
 
@@ -126,7 +133,6 @@ function supplementalCostFor(lookup, sku, country, snapshotDate) {
   for (const version of versions) {
     if (version.effectiveDate <= snapshotDate && (!matched || version.effectiveDate > matched.effectiveDate)) matched = version;
   }
-  if (!matched) matched = versions.find((version) => version.enabled !== false) || null;
   return matched?.enabled === false ? null : matched;
 }
 
@@ -165,12 +171,15 @@ function productForCountry(lookup, sku, country) {
 
 function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, rateLookup, sku, country, snapshotDate, item }) {
   const product = productForCountry(productLookup, sku, country);
-  const warehouseCost = warehouseCostFor(warehouseCostLookup, item, sku);
+  const warehouseCost = warehouseCostFor(warehouseCostLookup, item, sku, snapshotDate);
   if (number(warehouseCost.row?.unitCostCny) > 0) {
     return {
       unitCostCny: round(warehouseCost.row.unitCostCny, 6),
       source: "warehouse_weighted_price",
       sourceLabel: "俄罗斯2仓加权供货价",
+      costBasis: "effective_dated_warehouse_cost",
+      costEffectiveDate: warehouseCost.row.effectiveDate,
+      rateEffectiveDate: snapshotDate,
       product,
       warehouseCost: warehouseCost.row,
     };
@@ -180,6 +189,9 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
       unitCostCny: null,
       source: "missing",
       sourceLabel: "俄罗斯2仓加权供货价缺失",
+      costBasis: "missing",
+      costEffectiveDate: "",
+      rateEffectiveDate: "",
       product,
     };
   }
@@ -192,6 +204,9 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
         unitCostCny: round(directPrice * rate.rateToCny, 6),
         source: "direct_price",
         sourceLabel: "直营供货价",
+        costBasis: "current_direct_price",
+        costEffectiveDate: "",
+        rateEffectiveDate: rate.effectiveDate || "",
         product,
       };
     }
@@ -202,11 +217,36 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
       unitCostCny: round(supplemental.unitCostCny, 6),
       source: "manual_supplement",
       sourceLabel: "手工补录",
+      costBasis: "effective_dated_manual_cost",
+      costEffectiveDate: supplemental.effectiveDate,
+      rateEffectiveDate: snapshotDate,
       product,
       supplemental,
     };
   }
-  return { unitCostCny: null, source: "missing", sourceLabel: "缺失", product };
+  return { unitCostCny: null, source: "missing", sourceLabel: "缺失", costBasis: "missing", costEffectiveDate: "", rateEffectiveDate: "", product };
+}
+
+function materializedCost(item, productLookup, country) {
+  if (item?.materializedValuation !== true) return null;
+  const unitCostCny = item.unitCostCny === null || item.unitCostCny === undefined ? null : number(item.unitCostCny);
+  const costBasis = text(item.costBasis || (unitCostCny === null ? "missing" : "materialized_daily_ledger"));
+  const source = costBasis === "effective_dated_warehouse_cost"
+    ? "warehouse_weighted_price"
+    : costBasis === "effective_dated_manual_cost"
+      ? "manual_supplement"
+      : costBasis === "missing" || unitCostCny === null
+        ? "missing"
+        : "direct_price";
+  return {
+    unitCostCny,
+    source,
+    sourceLabel: source === "warehouse_weighted_price" ? "历史仓库成本" : source === "manual_supplement" ? "历史补录成本" : source === "missing" ? "缺失" : "历史核算成本",
+    costBasis,
+    costEffectiveDate: text(item.costEffectiveDate),
+    rateEffectiveDate: text(item.rateEffectiveDate),
+    product: productForCountry(productLookup, item.sku || item.countrySku, country),
+  };
 }
 
 function quantities(row) {
@@ -216,9 +256,9 @@ function quantities(row) {
   const temporaryQty = Math.max(0, number(row?.temporaryQty));
   const waitInQty = Math.max(0, number(row?.waitInQty));
   const inTransitQty = Math.max(0, number(row?.inTransitQty));
-  const onHandQty = availableQty + lockedQty + faultyQty + temporaryQty;
-  const totalQty = Math.max(onHandQty + waitInQty + inTransitQty, Math.max(0, number(row?.totalQty)));
-  return { onHandQty, waitInQty, inTransitQty, totalQty };
+  const onHandQty = availableQty + lockedQty;
+  const totalQty = onHandQty;
+  return { availableQty, lockedQty, onHandQty, waitInQty, inTransitQty, faultyQty, temporaryQty, totalQty };
 }
 
 function aggregateSnapshot(snapshot, context) {
@@ -227,7 +267,10 @@ function aggregateSnapshot(snapshot, context) {
   const summary = {
     date: dateKey(snapshot?.date),
     onHandQty: 0,
+    waitInQty: 0,
     inTransitQty: 0,
+    faultyQty: 0,
+    temporaryQty: 0,
     totalQty: 0,
     coveredOnHandQty: 0,
     unvaluedOnHandQty: 0,
@@ -243,7 +286,8 @@ function aggregateSnapshot(snapshot, context) {
     const sku = text(item.sku || item.countrySku).toUpperCase();
     if (!sku) continue;
     const qty = quantities(item);
-    const cost = resolveCost({ ...context, sku, country: item.country, snapshotDate: summary.date, item });
+    const cost = materializedCost(item, context.productLookup, item.country)
+      || resolveCost({ ...context, sku, country: item.country, snapshotDate: summary.date, item });
     const warehouseIdentity = text(item.warehouseId || item.providerWarehouseCode || item.warehouseName);
     const identity = `${countryKey}|${sku}|${warehouseIdentity}`;
     const current = rows.get(identity) || {
@@ -257,18 +301,27 @@ function aggregateSnapshot(snapshot, context) {
       imageUrl: text(cost.product?.imageUrl),
       warehouseNames: new Set(),
       onHandQty: 0,
+      waitInQty: 0,
       inTransitQty: 0,
+      faultyQty: 0,
+      temporaryQty: 0,
       totalQty: 0,
       unitCostCny: cost.unitCostCny,
       costSource: cost.source,
       costSourceLabel: cost.sourceLabel,
+      costBasis: cost.costBasis,
+      costEffectiveDate: cost.costEffectiveDate,
+      rateEffectiveDate: cost.rateEffectiveDate,
       onHandValueCny: 0,
       inTransitValueCny: 0,
       totalValueCny: 0,
     };
     if (item.warehouseName || item.warehouseId) current.warehouseNames.add(text(item.warehouseName || item.warehouseId));
     current.onHandQty += qty.onHandQty;
+    current.waitInQty += qty.waitInQty;
     current.inTransitQty += qty.inTransitQty;
+    current.faultyQty += qty.faultyQty;
+    current.temporaryQty += qty.temporaryQty;
     current.totalQty += qty.totalQty;
     if (cost.unitCostCny !== null) {
       current.onHandValueCny += qty.onHandQty * cost.unitCostCny;
@@ -279,7 +332,10 @@ function aggregateSnapshot(snapshot, context) {
     rows.set(identity, current);
 
     summary.onHandQty += qty.onHandQty;
+    summary.waitInQty += qty.waitInQty;
     summary.inTransitQty += qty.inTransitQty;
+    summary.faultyQty += qty.faultyQty;
+    summary.temporaryQty += qty.temporaryQty;
     summary.totalQty += qty.totalQty;
     if (cost.unitCostCny !== null) {
       summary.onHandValueCny += qty.onHandQty * cost.unitCostCny;
@@ -409,7 +465,10 @@ export function buildInventoryValuePayload({
     const row = currentRow || {
       ...previousRow,
       onHandQty: 0,
+      waitInQty: 0,
       inTransitQty: 0,
+      faultyQty: 0,
+      temporaryQty: 0,
       totalQty: 0,
       onHandValueCny: 0,
       inTransitValueCny: 0,
@@ -457,7 +516,7 @@ export function buildInventoryValuePayload({
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    basis: "current_direct_price",
+    basis: (current?.snapshot?.rows || []).some((row) => row.materializedValuation === true) ? "materialized_daily_ledger" : "current_direct_price",
     period,
     filters: { warehouseId, country, keyword: text(filters.keyword) },
     permissions: { manageCosts: Boolean(manageCosts) },

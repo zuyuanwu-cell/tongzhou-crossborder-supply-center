@@ -25,7 +25,11 @@ import { buildMovementDiagnostics, buildMovementPayload } from "./movement-analy
 import { buildMovementSnapshotRows, movementSnapshotTotals } from "./movement-snapshot.js";
 import { excludeMovementWarehouses, isExcludedWarehouseRecord, projectMovementPayload, resolveExcludedWarehouseIdentifiers, scopeMovementSources } from "./movement-access.js";
 import { initMovementHistoryStore } from "./movement-history-db.js";
+import { initInventoryLedgerStore } from "./inventory-ledger-db.js";
+import { buildInventoryDailyLedger } from "./inventory-daily-ledger.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
+import { addBusinessDays, dateKeyInTimezone as formatDateKeyInTimezone } from "./date-time.js";
+import { corsHeaders, encodeJsonResponse } from "./http-response.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWarningLinkMarkdown, buildWecomImageBody, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
 import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
@@ -33,7 +37,7 @@ import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
 import { canPreviewStockupShipmentWmsOrder } from "./stockup-v2-domain.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
-import { resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
+import { normalizeWarehouseConnectionBindings, resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -77,7 +81,7 @@ import {
 import { initPerformanceAnalyticsStore } from "./performance-analytics-db.js";
 import { buildPerformanceAnalyticsPayload, normalizePackagingFeeRules, normalizedCountryKey } from "./performance-analytics.js";
 import { createPerformanceAnalyticsQueryService } from "./performance-query-service.js";
-import { normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
+import { miaoshouBusinessDate, normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createCollectorCenter } from "./collector-center.js";
@@ -91,6 +95,7 @@ import { withTransientRetry } from "./transient-retry.js";
 import { createSyncScheduler } from "./sync-scheduler.js";
 import { automaticPlatformReturnDateRange, listWarehouseReturns, normalizeReturnIdentifier, queryWarehouseReturns, WarehouseReturnQueryError } from "./warehouse-return-query.js";
 import { buildOverseasInventoryReconciliation, resolveOverseasReconciliationRanges } from "./overseas-inventory-reconciliation.js";
+import { buildOutboundOrderReconciliation } from "./outbound-order-reconciliation.js";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "./inventory-value.js";
 import { selectSeaThreeWarehouseIds } from "./order-analysis.js";
 import { createOzonIntegrationService } from "./ozon-integration.js";
@@ -148,6 +153,7 @@ const warehouseCachePath = resolve(cacheDir, "warehouse-sync.json");
 const inventorySnapshotCachePath = resolve(cacheDir, "inventory-snapshots.json");
 const movementHistoryCachePath = resolve(cacheDir, "movement-history.json");
 const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || resolve(cacheDir, "movement-history.sqlite"));
+const inventoryLedgerDbPath = resolve(process.env.INVENTORY_LEDGER_DB_PATH || resolve(cacheDir, "inventory-ledger.sqlite"));
 const performanceAnalyticsDbPath = resolve(process.env.PERFORMANCE_ANALYTICS_DB_PATH || resolve(cacheDir, "performance-analytics.sqlite"));
 const shopDailyReportDbPath = resolve(process.env.SHOP_DAILY_REPORT_DB_PATH || resolve(cacheDir, "shop-daily-report.sqlite"));
 const shopMetricsIngestTokenPath = resolve(cacheDir, "shop-metrics-ingest-token.json");
@@ -269,6 +275,7 @@ const orderSyncTimeoutMs = Number(process.env.ORDER_SYNC_TIMEOUT_MS || 45 * 1000
 const orderSyncChunkDays = Math.max(1, Math.min(30, Number(process.env.ORDER_SYNC_CHUNK_DAYS || 7)));
 const inventorySnapshotTimezone = process.env.INVENTORY_SNAPSHOT_TIMEZONE || "Asia/Shanghai";
 const movementHistoryTimezone = process.env.MOVEMENT_HISTORY_TIMEZONE || inventorySnapshotTimezone;
+const corsAllowedOrigin = String(process.env.CORS_ALLOWED_ORIGIN || "https://gyl.tongzhoukuajing.com").trim();
 let cachedProducts = loadProductCache() || buildProductPayload(sampleProductBaseRecords, sampleCatalogRecords, "sample");
 let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", products: [], inventory: [], results: [] };
 let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
@@ -290,7 +297,8 @@ let cachedStockupWorkflow = loadJsonCache(stockupWorkflowCachePath) || {
 };
 let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
-let warehouseConnections = loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS;
+const warehouseConnectionBindingMigration = normalizeWarehouseConnectionBindings(loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS);
+let warehouseConnections = warehouseConnectionBindingMigration.connections;
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
@@ -305,6 +313,7 @@ let cachedOutsourcingOrders = attachProductionMaterialProgress(
   cachedProductionMaterials,
 );
 const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPath, cachedMovementHistory);
+const inventoryLedgerStore = await initInventoryLedgerStore(inventoryLedgerDbPath, cachedOrdersSync);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 const shopDailyReportStore = await initShopDailyReportStore(shopDailyReportDbPath);
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
@@ -729,7 +738,7 @@ const orderAnalysisResponseCache = new Map();
 const orderAnalysisResponseCacheTtlMs = 5 * 60 * 1000;
 const orderAnalysisResponseCacheLimit = 24;
 const derivedResponseCache = new Map();
-const derivedResponseCacheTtlMs = 5 * 60 * 1000;
+const derivedResponseCacheTtlMs = 60 * 1000;
 const derivedResponseCacheLimit = 48;
 let derivedDataRevision = 0;
 let performanceAnalyticsMaterializedCache = null;
@@ -903,6 +912,11 @@ function saveOrderCache(payload) {
   const contentVersion = arrayContentVersion(payload?.orders);
   if (contentVersion !== lastSavedOrderContentVersion) {
     lastSavedOrderContentVersion = contentVersion;
+    inventoryLedgerStore.replaceAllOrders(payload?.orders || [], {
+      syncedAt: payload?.syncedAt || "",
+      dataRevisionAt: payload?.dataRevisionAt || "",
+      results: payload?.results || [],
+    });
     clearPerformanceAnalyticsResponseCache();
     setImmediate(() => {
       if (backgroundJobsEnabled) void warmPerformanceAnalyticsMaterialization();
@@ -3827,13 +3841,14 @@ function parseRequestBody(req, maxBytes = Number.POSITIVE_INFINITY) {
 }
 
 function sendJson(res, status, payload) {
+  const encoded = encodeJsonResponse(payload, res.requestAcceptEncoding || "");
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization,Idempotency-Key,X-Backup-Upload-Token,X-Backup-Download-Ticket,X-Hermes-Timestamp,X-Hermes-Nonce,X-Hermes-Body-Sha256,X-Hermes-Signature,Last-Event-ID",
+    ...corsHeaders(corsAllowedOrigin),
+    ...(encoded.encoding ? { "Content-Encoding": encoded.encoding } : {}),
+    "Content-Length": encoded.body.length,
   });
-  res.end(JSON.stringify(payload));
+  res.end(encoded.body);
 }
 
 const staticMimeTypes = {
@@ -3869,7 +3884,7 @@ function serveFile(req, res, filePath) {
     "Content-Type": staticMimeTypes[extname(filePath).toLowerCase()] || "application/octet-stream",
     "Content-Length": stats.size,
     "Cache-Control": filePath.includes(`${resolve(distDir, "assets")}`) ? "public, max-age=31536000, immutable" : "no-cache",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
   });
   if (req.method === "HEAD") {
     res.end();
@@ -4240,16 +4255,20 @@ function reconciliationWarehouseAllowed(item, allowedWarehouseIds) {
 }
 
 function overseasReconciliationPayload(auth, input = {}) {
+  const cacheKey = derivedResponseKey(`overseas-reconciliation:${JSON.stringify(input)}`, auth);
+  const cached = cachedDerivedResponse(cacheKey);
+  if (cached) return cached;
   const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
   const ranges = resolveOverseasReconciliationRanges({
     period,
-    anchorDate: String(input.anchorDate || new Date().toISOString().slice(0, 10)),
+    anchorDate: String(input.anchorDate || dateKeyInTimezone(new Date(), inventorySnapshotTimezone)),
     from: String(input.from || ""),
     to: String(input.to || ""),
   });
   const scopes = normalizeDataScopes(auth.user?.dataScopes);
   const warehouses = overseasReconciliationWarehouses(auth);
   const allowedWarehouseIds = new Set(warehouses.map((item) => item.id));
+  const timezone = safeTimezone(input.timezone || movementHistoryTimezone, movementHistoryTimezone);
   const stockupFacts = stockupCollaborationService.reconciliationFacts({ from: ranges.previous.from, to: ranges.current.to }, {
     auth,
     viewAll: true,
@@ -4263,8 +4282,53 @@ function overseasReconciliationPayload(auth, input = {}) {
     ...snapshot,
     rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
   }));
-  const outboundOrders = (cachedOrdersSync.orders || [])
+  const dailyLedgerRows = inventoryLedgerStore.listDailyLedger({
+    from: ranges.previous.from,
+    to: ranges.current.to,
+    timezone,
+  }).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes));
+  const outboundOrders = inventoryLedgerStore.listOrders({
+    warehouseIds: [...allowedWarehouseIds],
+    from: ranges.previous.from,
+    to: ranges.current.to,
+  })
     .filter((order) => reconciliationWarehouseAllowed(order, allowedWarehouseIds) && reconciliationSkuAllowed(order, scopes));
+  const currentOutboundOrders = outboundOrders.filter((order) => {
+    const date = reconciliationDateKey(order.shippedAt || order.createdAt);
+    return date >= ranges.current.from && date <= ranges.current.to;
+  });
+  const platformBundleWindow = performanceAnalyticsStore.listMiaoshouOrderBundles({
+    from: addBusinessDays(ranges.current.from, -1),
+    to: addBusinessDays(ranges.current.to, 1),
+  });
+  const platformBundleOrderIds = new Set(platformBundleWindow.orders
+    .filter((order) => {
+      const date = miaoshouBusinessDate(order.paidAt || order.orderStartedAt, order.site);
+      return date >= ranges.current.from && date <= ranges.current.to;
+    })
+    .map((order) => String(order.identity || "")));
+  const platformBundles = {
+    orders: platformBundleWindow.orders.filter((order) => platformBundleOrderIds.has(String(order.identity || ""))),
+    items: platformBundleWindow.items.filter((item) => platformBundleOrderIds.has(String(item.orderIdentity || ""))),
+  };
+  const platformCoverageComplete = canManage(auth);
+  const visiblePlatformNumbers = new Set(currentOutboundOrders.flatMap((order) => [
+    order.externalOrderNo,
+    order.platformOrderSn,
+    order.referenceNo,
+    order.refrenceNo,
+    order.orderNo,
+  ]).map(normalizeReturnIdentifier).filter(Boolean));
+  const platformOrders = platformCoverageComplete
+    ? platformBundles.orders
+    : platformBundles.orders.filter((order) => visiblePlatformNumbers.has(normalizeReturnIdentifier(order.platformOrderSn)));
+  const platformOrderIds = new Set(platformOrders.map((order) => String(order.identity || "")));
+  const outboundOrderReconciliation = buildOutboundOrderReconciliation({
+    wmsOrders: currentOutboundOrders,
+    platformOrders,
+    platformItems: platformBundles.items.filter((item) => platformOrderIds.has(String(item.orderIdentity || ""))),
+    platformCoverage: platformCoverageComplete ? "complete" : "scoped_to_wms",
+  });
   const returnOrders = enrichWarehouseReturnOrders((cachedOverseasInventoryReconciliation.orders || [])
     .filter((order) => allowedWarehouseIds.has(String(order.warehouseId || "").trim())), auth);
   const afterSalesTickets = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth) }).tickets;
@@ -4279,16 +4343,18 @@ function overseasReconciliationPayload(auth, input = {}) {
     .map((item) => String(item.arrivedAt || item.actualShippedAt || ""))
     .sort()
     .at(-1) || "";
-  return buildOverseasInventoryReconciliation({
+  return cacheDerivedResponse(cacheKey, buildOverseasInventoryReconciliation({
     ranges,
     period,
     anchorDate: String(input.anchorDate || ""),
     from: String(input.from || ""),
     to: String(input.to || ""),
-    timezone: String(input.timezone || movementHistoryTimezone || "Asia/Shanghai"),
+    timezone,
     snapshots,
+    dailyLedgerRows,
     warehouses,
     outboundOrders,
+    outboundOrderReconciliation,
     inboundReceipts: stockupFacts.inboundReceipts || [],
     inboundShipments: stockupFacts.inboundShipments || [],
     inventoryMovements: [],
@@ -4304,14 +4370,14 @@ function overseasReconciliationPayload(auth, input = {}) {
       returnComplete: relevantStates.length > 0 && relevantStates.every((state) => state.complete && !state.error),
       returnErrors,
     },
-  });
+  }));
 }
 
 async function refreshOverseasReconciliationReturns(auth, input = {}) {
   const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
   const ranges = resolveOverseasReconciliationRanges({
     period,
-    anchorDate: String(input.anchorDate || new Date().toISOString().slice(0, 10)),
+    anchorDate: String(input.anchorDate || dateKeyInTimezone(new Date(), inventorySnapshotTimezone)),
     from: String(input.from || ""),
     to: String(input.to || ""),
   });
@@ -4383,6 +4449,7 @@ async function refreshOverseasReconciliationReturns(auth, input = {}) {
     claims: cachedOverseasInventoryReconciliation.claims || {},
   };
   saveJsonCache(overseasInventoryReconciliationCachePath, cachedOverseasInventoryReconciliation);
+  invalidateDerivedResponses();
   return overseasReconciliationPayload(auth, input);
 }
 
@@ -4469,14 +4536,7 @@ function canvasAiErrorPayload(error, fallback) {
 }
 
 function dateKeyInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const value = (type) => parts.find((part) => part.type === type)?.value || "";
-  return `${value("year")}-${value("month")}-${value("day")}`;
+  return formatDateKeyInTimezone(date, timeZone);
 }
 
 function minutesInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
@@ -4541,8 +4601,69 @@ function inventorySnapshotTotals(rows) {
     lockedQty: sum.lockedQty + numberOrZero(item.lockedQty),
     waitInQty: sum.waitInQty + numberOrZero(item.waitInQty),
     inTransitQty: sum.inTransitQty + numberOrZero(item.inTransitQty),
+    faultyQty: sum.faultyQty + numberOrZero(item.faultyQty),
+    temporaryQty: sum.temporaryQty + numberOrZero(item.temporaryQty),
     totalQty: sum.totalQty + numberOrZero(item.totalQty),
-  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, totalQty: 0 });
+  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, faultyQty: 0, temporaryQty: 0, totalQty: 0 });
+}
+
+function normalizedReturnLedgerFacts(orders, timezone) {
+  return (Array.isArray(orders) ? orders : []).flatMap((order) => {
+    if (String(order?.status || "").toLowerCase() === "cancelled") return [];
+    const dispositionAt = order?.completedAt || order?.signedAt || "";
+    const dispositionDate = dispositionAt ? dateKeyInTimezone(new Date(dispositionAt), timezone) : "";
+    return (Array.isArray(order?.items) ? order.items : []).map((item) => ({
+      warehouseId: order.warehouseId || "",
+      warehouseName: order.warehouseName || "",
+      sku: item.sku || item.skuNo || "",
+      productName: item.productName || "",
+      restockedQty: Number(item.restockedQty || 0),
+      dispositionDate,
+    }));
+  });
+}
+
+function materializeInventoryLedgerDate(bizDate, timezone = inventorySnapshotTimezone) {
+  const openingDate = addBusinessDays(bizDate, -1);
+  const sourceSnapshots = (cachedInventorySnapshots.snapshots || []).filter((snapshot) => [openingDate, bizDate].includes(String(snapshot.date || "")));
+  const closingSnapshot = sourceSnapshots.find((snapshot) => snapshot.date === bizDate) || null;
+  const valuationPayload = closingSnapshot ? buildInventoryValuePayload({
+    snapshots: [closingSnapshot],
+    products: cachedProducts,
+    supplementalCosts: performanceAnalyticsStore.listSupplementalProductCosts(),
+    exchangeRates: performanceAnalyticsStore.listExchangeRates(),
+    filters: { period: "day" },
+  }) : { rows: [] };
+  let stockupFacts = { inboundReceipts: [], inventoryMovements: [] };
+  try {
+    stockupFacts = stockupCollaborationService.reconciliationFacts({ from: bizDate, to: bizDate }, {
+      auth: directAuth,
+      viewAll: true,
+      viewCost: false,
+      revealSupplier: false,
+      countries: [],
+      warehouseIds: [],
+      skus: [],
+    });
+  } catch {
+    stockupFacts = { inboundReceipts: [], inventoryMovements: [] };
+  }
+  const warehouseIds = [...new Set((closingSnapshot?.rows || []).map((row) => String(row.warehouseId || "")).filter(Boolean))];
+  const ordersComplete = !(cachedOrdersSync.results || []).some((result) => warehouseIds.includes(String(result.warehouseId || "")) && (result.ok === false || result.orderApiComplete === false || result.orderApiReachedPageLimit));
+  const ledger = buildInventoryDailyLedger({
+    bizDate,
+    timezone,
+    snapshots: sourceSnapshots,
+    outboundOrders: inventoryLedgerStore.listOrders({ warehouseIds, from: bizDate, to: bizDate }),
+    inboundReceipts: stockupFacts.inboundReceipts || [],
+    inventoryMovements: stockupFacts.inventoryMovements || [],
+    returnFacts: normalizedReturnLedgerFacts(cachedOverseasInventoryReconciliation.orders || [], timezone),
+    valuations: valuationPayload.rows || [],
+    ordersComplete,
+    movementsComplete: Array.isArray(stockupFacts.inventoryMovements) && stockupFacts.inventoryMovements.length > 0,
+  });
+  inventoryLedgerStore.upsertDailyLedger(ledger.rows);
+  return ledger;
 }
 
 function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") {
@@ -4577,6 +4698,13 @@ function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") 
     versions,
   };
   saveInventorySnapshotCache(cachedInventorySnapshots);
+  try {
+    materializeInventoryLedgerDate(date, inventorySnapshotTimezone);
+  } catch (error) {
+    // The immutable inventory snapshot is the primary record. A derived-ledger
+    // failure must remain visible without discarding a successful WMS capture.
+    console.error(`[inventory-ledger] ${date} materialization failed: ${error?.message || error}`);
+  }
   void notifyInventorySnapshot(snapshot);
   return snapshot;
 }
@@ -4682,17 +4810,58 @@ function scopedInventorySnapshots(auth = directAuth, activeWarehouseIds = null, 
 }
 
 function inventoryValuePayload(filters, auth = directAuth) {
+  const cacheKey = derivedResponseKey(`inventory-value:${JSON.stringify(filters || {})}`, auth);
+  const cached = cachedDerivedResponse(cacheKey);
+  if (cached) return cached;
   const warehouseOptions = activeInventoryValueWarehouseOptions(auth);
   const activeWarehouseIds = new Set(warehouseOptions.map((item) => item.value));
-  return buildInventoryValuePayload({
-    snapshots: scopedInventorySnapshots(auth, activeWarehouseIds),
+  const scopes = normalizeDataScopes(auth.user?.dataScopes);
+  const countryByWarehouseId = new Map(warehouseOptions.map((item) => [item.value, item.country || ""]));
+  const period = ["day", "week", "month"].includes(String(filters?.period)) ? String(filters.period) : "day";
+  const ledgerLookbackDays = period === "month" ? 740 : period === "week" ? 200 : 60;
+  const ledgerFrom = addBusinessDays(dateKeyInTimezone(new Date(), inventorySnapshotTimezone), -ledgerLookbackDays);
+  const ledgerRows = inventoryLedgerStore.listDailyLedger({ from: ledgerFrom, timezone: inventorySnapshotTimezone })
+    .map((row) => ({ ...row, country: countryByWarehouseId.get(row.warehouseId) || "" }))
+    .filter((row) => activeWarehouseIds.has(String(row.warehouseId || "")) && isWithinDataScope(row, scopes));
+  const ledgerSnapshotsByDate = new Map();
+  for (const row of ledgerRows) {
+    const snapshot = ledgerSnapshotsByDate.get(row.bizDate) || { date: row.bizDate, capturedAt: row.updatedAt || "", rows: [] };
+    snapshot.rows.push({
+      warehouseId: row.warehouseId,
+      warehouseName: row.warehouseName,
+      country: row.country,
+      sku: row.sku,
+      productName: row.productName,
+      availableQty: row.closingQty,
+      lockedQty: 0,
+      waitInQty: 0,
+      inTransitQty: row.inTransitQty,
+      faultyQty: row.faultyQty,
+      temporaryQty: row.temporaryQty,
+      totalQty: row.closingQty,
+      materializedValuation: true,
+      unitCostCny: row.unitCostCny,
+      costBasis: row.costBasis,
+      costEffectiveDate: row.costEffectiveDate,
+      rateEffectiveDate: row.rateEffectiveDate,
+      dataFlags: row.dataFlags,
+    });
+    if (String(row.updatedAt || "") > snapshot.capturedAt) snapshot.capturedAt = row.updatedAt;
+    ledgerSnapshotsByDate.set(row.bizDate, snapshot);
+  }
+  const valueSnapshotsByDate = new Map(scopedInventorySnapshots(auth, activeWarehouseIds)
+    .map((snapshot) => [String(snapshot.date || ""), snapshot]));
+  for (const [date, snapshot] of ledgerSnapshotsByDate) valueSnapshotsByDate.set(date, snapshot);
+  const valueSnapshots = [...valueSnapshotsByDate.values()].sort((left, right) => String(left.date || "").localeCompare(String(right.date || "")));
+  return cacheDerivedResponse(cacheKey, buildInventoryValuePayload({
+    snapshots: valueSnapshots,
     products: cachedProducts,
     supplementalCosts: performanceAnalyticsStore.listSupplementalProductCosts(),
     exchangeRates: performanceAnalyticsStore.listExchangeRates(),
     warehouseOptions,
     filters,
     manageCosts: hasPermission(auth, "inventory_value_manage"),
-  });
+  }));
 }
 
 function csvCell(value) {
@@ -4902,7 +5071,11 @@ function movementComparisonPayload(params = {}, auth = directAuth) {
     .filter(Boolean)
     .map((snapshot) => ({ ...snapshot, rows: filterMovementHistoryRows(snapshot.rows || [], {}, user) }));
   const scopes = normalizeDataScopes(user.dataScopes);
-  const orders = (cachedOrdersSync.orders || []).filter((order) => {
+  const orders = inventoryLedgerStore.listOrders({
+    warehouseIds: scopes.warehouseIds,
+    from: ranges.previous.from,
+    to: ranges.current.to,
+  }).filter((order) => {
     if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(String(order.warehouseId || ""))) return false;
     return isWithinDataScope(order, scopes);
   });
@@ -6246,7 +6419,7 @@ async function handleWarehouseSync(req, res) {
   sendJson(res, 200, { ok: true, ...cachedWarehouseSync, products: undefined, inventory: undefined });
 }
 
-async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_3am") {
+async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_eod", snapshotDate = "") {
   const results = [];
   const products = [];
   const inventory = [];
@@ -6274,7 +6447,7 @@ async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_3am"
     results,
   };
   saveWarehouseCache(cachedWarehouseSync);
-  return upsertInventorySnapshot(dateKeyInTimezone(), snapshotReason);
+  return upsertInventorySnapshot(snapshotDate || dateKeyInTimezone(), snapshotReason);
 }
 
 function dateOnlyDaysAgo(days) {
@@ -7731,7 +7904,7 @@ async function handleQualificationFile(req, res, url) {
   res.writeHead(200, {
     "Content-Type": contentType,
     "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
   });
   res.end(buffer);
 }
@@ -8016,12 +8189,13 @@ async function runScheduledInventorySnapshot() {
   const now = new Date();
   const date = dateKeyInTimezone(now);
   const minutes = minutesInTimezone(now);
-  if (minutes < 180 || minutes >= 190 || lastScheduledInventorySnapshotDate === date) {
+  if (minutes < 23 * 60 + 50 || minutes >= 24 * 60 || lastScheduledInventorySnapshotDate === date) {
     return { skipped: true, message: "Outside the daily inventory snapshot window" };
   }
   scheduledInventorySnapshotRunning = true;
   try {
-    await refreshWarehouseInventoryForSnapshot("daily_3am");
+    await refreshWarehouseInventoryForSnapshot("daily_eod", date);
+    upsertMovementSnapshot(date, "daily_eod", inventorySnapshotTimezone);
     lastScheduledInventorySnapshotDate = date;
     console.log(`[inventory-snapshot] captured ${date} at ${new Date().toISOString()}`);
     return { date, captured: true };
@@ -8724,9 +8898,16 @@ const hermesApi = createHermesApi({
   reauthenticateAction: reauthenticateHermesAction,
 });
 
+if (warehouseConnectionBindingMigration.changed) {
+  saveWarehouseConnections();
+  pruneWarehouseCaches(warehouseConnectionBindingMigration.changedWarehouseIds);
+  console.info(`[warehouse-binding] normalized ${warehouseConnectionBindingMigration.changedCount} stored warehouse connections`);
+}
+
 const server = http.createServer(async (req, res) => {
   let maintenanceRequest = null;
   try {
+    res.requestAcceptEncoding = req.headers["accept-encoding"] || "";
     if (req.method === "OPTIONS") {
       sendJson(res, 200, { ok: true });
       return;
@@ -8817,7 +8998,7 @@ const server = http.createServer(async (req, res) => {
         "Content-Length": download.bytes,
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(download.fileName)}`,
         "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
       });
       const stream = createReadStream(download.path);
       stream.on("error", (error) => res.destroy(error));
@@ -9223,7 +9404,7 @@ const server = http.createServer(async (req, res) => {
             "Content-Length": content.length,
             "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
             "Cache-Control": "no-store",
-            "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
           });
           res.end(content);
           return;
@@ -9304,6 +9485,7 @@ const server = http.createServer(async (req, res) => {
           claims: { ...(cachedOverseasInventoryReconciliation.claims || {}), [factId]: claim },
         };
         saveJsonCache(overseasInventoryReconciliationCachePath, cachedOverseasInventoryReconciliation);
+        invalidateDerivedResponses();
         appendActionLog(auth, "认领海外仓退货", "overseas_return_fact", factId, {
           warehouseId: order.warehouseId,
           returnOrderNumber: order.returnOrderNumber,
@@ -9894,7 +10076,7 @@ const server = http.createServer(async (req, res) => {
           "Content-Length": content.length,
           "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
           "Cache-Control": "no-store",
-          "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
         });
         res.end(content);
       } catch (error) {
@@ -9989,7 +10171,7 @@ const server = http.createServer(async (req, res) => {
             "Content-Length": content.length,
             "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
             "Cache-Control": "no-store",
-            "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
           });
           res.end(content);
           return;
@@ -11702,7 +11884,7 @@ const server = http.createServer(async (req, res) => {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
       });
 
       try {
@@ -12400,6 +12582,41 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/inventory-ledger" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "inventory_value") && !hasPermission(auth, "movement_inventory")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有库存台账查看权限。" });
+        return;
+      }
+      const scopes = normalizeDataScopes(auth.user?.dataScopes);
+      const requestedWarehouseId = url.searchParams.get("warehouseId") || "";
+      const rows = inventoryLedgerStore.listDailyLedger({
+        from: url.searchParams.get("from") || "",
+        to: url.searchParams.get("to") || "",
+        warehouseId: requestedWarehouseId,
+        sku: url.searchParams.get("sku") || "",
+        timezone: url.searchParams.get("timezone") || "",
+      }).filter((row) => {
+        if (scopes.warehouseIds.length && !scopes.warehouseIds.includes(row.warehouseId)) return false;
+        return isWithinDataScope(row, scopes);
+      });
+      const numericFields = ["openingQty", "inboundQty", "returnRestockQty", "transferInQty", "transferOutQty", "orderOutboundQty", "otherOutboundQty", "adjustQty", "closingQty", "faultyQty", "temporaryQty", "inTransitQty", "varianceQty", "inventoryValueCny"];
+      const summary = Object.fromEntries(numericFields.map((field) => [field, rows.reduce((sum, row) => sum + Number(row[field] || 0), 0)]));
+      sendJson(res, 200, {
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        filters: {
+          from: url.searchParams.get("from") || "",
+          to: url.searchParams.get("to") || "",
+          warehouseId: requestedWarehouseId,
+          sku: url.searchParams.get("sku") || "",
+        },
+        summary: { rowCount: rows.length, ...summary },
+        rows,
+      });
+      return;
+    }
+
     if (url.pathname === "/api/inventory-value/supplemental-costs" && req.method === "PATCH") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "inventory_value_manage")) {
@@ -12494,7 +12711,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`inventory-snapshot-${payload.snapshot.date}${suffix}.csv`)}`,
-        "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
       });
       res.end(csv);
       return;
@@ -12520,7 +12737,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/movement-history/compare" && req.method === "GET") {
       const auth = getAgentAuth(req);
       if (!hasPermission(auth, "movement_analysis") || !hasPermission(auth, "movement_inventory")) {
-        sendJson(res, 401, { ok: false, message: "动销与库存对比需要动销分析和动销库存数据权限。" });
+        sendJson(res, 403, { ok: false, message: "动销与库存对比需要动销分析和动销库存数据权限。" });
         return;
       }
       try {
@@ -12591,7 +12808,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`movement-history-${range}${suffix ? `-${suffix}` : ""}.csv`)}`,
-        "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsAllowedOrigin,
       });
       res.end(csv);
       return;
