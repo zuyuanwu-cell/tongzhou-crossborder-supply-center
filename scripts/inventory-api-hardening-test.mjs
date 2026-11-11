@@ -35,5 +35,15 @@ assert.equal(
   true,
   "partial WMS return refreshes keep the normal schedule while total failures trigger retry",
 );
+assert.equal(
+  serverSource.includes("if (result.retryableFailed) throw new Error"),
+  true,
+  "transient WMS return failures retry while permanent missing warehouse-code configuration stays on the normal schedule",
+);
+assert.match(
+  serverSource,
+  /const dailyLedgerCoversComparison = allowedWarehouseIds\.size > 0[\s\S]{0,350}?const dailyLedgerRows = dailyLedgerCoversComparison \? inventoryLedgerStore\.listDailyLedger/,
+  "incomplete ledger coverage is detected before materializing a large comparison window",
+);
 
 console.log("inventory API hardening tests passed");

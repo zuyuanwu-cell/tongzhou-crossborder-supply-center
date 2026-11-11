@@ -281,6 +281,28 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
     return all(db, `SELECT * FROM inventory_daily_ledger ${where} ORDER BY biz_date ASC, warehouse_id ASC, sku ASC`, params).map(ledgerFromDb);
   }
 
+  function getDailyLedgerCoverage({ warehouseIds = [], skus = [], timezone = "" } = {}) {
+    const clauses = [];
+    const params = [];
+    const scopedWarehouseIds = [...new Set((Array.isArray(warehouseIds) ? warehouseIds : []).map((warehouseId) => firstText(warehouseId)).filter(Boolean))];
+    const scopedSkus = [...new Set((Array.isArray(skus) ? skus : []).map((sku) => firstText(sku).toUpperCase()).filter(Boolean))];
+    if (timezone) {
+      clauses.push("timezone = ?");
+      params.push(timezone);
+    }
+    if (scopedWarehouseIds.length) {
+      clauses.push(`warehouse_id IN (${scopedWarehouseIds.map(() => "?").join(", ")})`);
+      params.push(...scopedWarehouseIds);
+    }
+    if (scopedSkus.length) {
+      clauses.push(`sku IN (${scopedSkus.map(() => "?").join(", ")})`);
+      params.push(...scopedSkus);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const row = all(db, `SELECT MIN(biz_date) AS from_date, MAX(biz_date) AS to_date, COUNT(*) AS row_count FROM inventory_daily_ledger ${where}`, params)[0] || {};
+    return { from: row.from_date || "", to: row.to_date || "", rowCount: number(row.row_count) };
+  }
+
   function aggregateDailyLedger(filters = {}) {
     const rows = listDailyLedger(filters);
     const fields = ["openingQty", "inboundQty", "returnRestockQty", "transferInQty", "transferOutQty", "orderOutboundQty", "otherOutboundQty", "adjustQty", "closingQty", "faultyQty", "temporaryQty", "inTransitQty", "varianceQty", "inventoryValueCny"];
@@ -301,6 +323,7 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
   return {
     dbPath,
     aggregateDailyLedger,
+    getDailyLedgerCoverage,
     getMeta,
     listDailyLedger,
     listIndexes,

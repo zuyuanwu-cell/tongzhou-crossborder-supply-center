@@ -4294,11 +4294,20 @@ function overseasReconciliationPayload(auth, input = {}) {
     ...snapshot,
     rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
   }));
-  const dailyLedgerRows = inventoryLedgerStore.listDailyLedger({
+  const dailyLedgerCoverage = inventoryLedgerStore.getDailyLedgerCoverage({
+    warehouseIds: [...allowedWarehouseIds],
+    skus: scopes.skus,
+    timezone,
+  });
+  const dailyLedgerCoversComparison = allowedWarehouseIds.size > 0
+    && dailyLedgerCoverage.from
+    && dailyLedgerCoverage.from <= ranges.previous.from
+    && dailyLedgerCoverage.to >= ranges.current.to;
+  const dailyLedgerRows = dailyLedgerCoversComparison ? inventoryLedgerStore.listDailyLedger({
     from: ranges.previous.from,
     to: ranges.current.to,
     timezone,
-  }).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes));
+  }).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)) : [];
   const outboundOrders = inventoryLedgerStore.listOrders({
     warehouseIds: [...allowedWarehouseIds],
     from: ranges.previous.from,
@@ -4408,6 +4417,7 @@ async function refreshOverseasReconciliationReturns(auth, input = {}, { buildPay
   let nextOrders = [...(cachedOverseasInventoryReconciliation.orders || [])];
   let succeeded = 0;
   let failed = 0;
+  let retryableFailed = 0;
   for (const connection of targetConnections) {
     const startedAt = new Date().toISOString();
     try {
@@ -4447,8 +4457,12 @@ async function refreshOverseasReconciliationReturns(auth, input = {}, { buildPay
         error: "",
       };
       if (complete) succeeded += 1;
-      else failed += 1;
+      else {
+        failed += 1;
+        retryableFailed += 1;
+      }
     } catch (error) {
+      const errorMessage = error?.message || "WMS 退货事实同步失败。";
       nextStates[connection.id] = {
         ...(nextStates[connection.id] || {}),
         warehouseId: connection.id,
@@ -4458,9 +4472,10 @@ async function refreshOverseasReconciliationReturns(auth, input = {}, { buildPay
         attemptedFrom: dateFrom,
         attemptedTo: dateTo,
         complete: false,
-        error: error?.message || "WMS 退货事实同步失败。",
+        error: errorMessage,
       };
       failed += 1;
+      if (!/requires an explicit warehouse_code/i.test(errorMessage)) retryableFailed += 1;
     }
   }
   cachedOverseasInventoryReconciliation = {
@@ -4476,6 +4491,7 @@ async function refreshOverseasReconciliationReturns(auth, input = {}, { buildPay
     targets: targetConnections.length,
     succeeded,
     failed,
+    retryableFailed,
     from: dateFrom,
     to: dateTo,
     orders: nextOrders.length,
@@ -7976,6 +7992,7 @@ async function runScheduledWarehouseReturnFactSync() {
   const result = await refreshOverseasReconciliationReturns(auth, { period: "month", anchorDate }, { buildPayload: false });
   if (!result.targets) return { ...result, skipped: true, message: "No return-capable WMS warehouses" };
   if (!result.succeeded && result.failed) throw new Error(`WMS return fact sync failed for all ${result.targets} warehouses`);
+  if (result.retryableFailed) throw new Error(`WMS return fact sync has ${result.retryableFailed} retryable warehouse failures`);
   if (result.failed) console.warn(`[sync-scheduler] WMS return facts partially refreshed: ${result.succeeded}/${result.targets} warehouses succeeded`);
   console.log(`[sync-scheduler] WMS return facts refreshed for ${result.targets} warehouses at ${result.attemptedAt}`);
   return { ...result, partial: result.failed > 0 };

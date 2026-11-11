@@ -35,6 +35,12 @@ try {
   assert.equal(ledger[0].faultyQty, 2);
   assert.deepEqual(ledger[0].dataFlags, []);
   assert.equal(store.aggregateDailyLedger({ from: "2026-11-10", to: "2026-11-10" }).inventoryValueCny, 60);
+  assert.deepEqual(
+    store.getDailyLedgerCoverage({ warehouseIds: ["WH-1"], skus: ["sku-a"], timezone: "Asia/Shanghai" }),
+    { from: "2026-11-10", to: "2026-11-10", rowCount: 1 },
+    "daily-ledger coverage is resolved without materializing the full row range",
+  );
+  assert.deepEqual(store.getDailyLedgerCoverage({ warehouseIds: ["WH-MISSING"] }), { from: "", to: "", rowCount: 0 });
   const indexes = store.listIndexes().map((row) => row.name);
   assert.equal(indexes.includes("idx_warehouse_orders_range"), true);
   assert.equal(indexes.includes("idx_inventory_daily_ledger_range"), true);
