@@ -20,5 +20,10 @@ assert.equal(compareRoute?.[1], "403", "permission denial uses 403 instead of an
 assert.equal(/"Access-Control-Allow-Origin": "\*"/.test(serverSource), false, "authenticated exports never advertise wildcard CORS");
 assert.equal(serverSource.includes("minutes < 23 * 60 + 50"), true, "daily inventory snapshot runs in the end-of-day window");
 assert.equal(serverSource.includes('refreshWarehouseInventoryForSnapshot("daily_eod", date)'), true, "end-of-day snapshot preserves its business date");
+assert.match(
+  serverSource,
+  /movementHistoryStore\.getSnapshots\(\{\s*from: addBusinessDays\(ranges\.previous\.from, -1\),\s*to: ranges\.current\.to,\s*timezone,\s*\}, \{ includeRows: true \}\)/,
+  "overseas reconciliation only loads snapshot rows required by the current and previous periods",
+);
 
 console.log("inventory API hardening tests passed");

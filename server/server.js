@@ -4278,7 +4278,11 @@ function overseasReconciliationPayload(auth, input = {}) {
     warehouseIds: warehouses.length ? warehouses.map((item) => item.id) : ["__no_overseas_warehouse__"],
     skus: scopes.skus,
   });
-  const snapshots = movementHistoryStore.getSnapshots({}, { includeRows: true }).map((snapshot) => ({
+  const snapshots = movementHistoryStore.getSnapshots({
+    from: addBusinessDays(ranges.previous.from, -1),
+    to: ranges.current.to,
+    timezone,
+  }, { includeRows: true }).map((snapshot) => ({
     ...snapshot,
     rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
   }));
