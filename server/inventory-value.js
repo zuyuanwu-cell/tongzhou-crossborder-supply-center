@@ -102,10 +102,7 @@ function buildWarehouseCostLookup(rows, scopes = []) {
 }
 
 function warehouseCodeForItem(item) {
-  const explicit = text(item?.providerWarehouseCode || item?.warehouseCode).toUpperCase();
-  if (explicit) return explicit;
-  const warehouseName = text(item?.warehouseName).replace(/\s+/g, "");
-  return ["俄罗斯2仓", "俄罗斯二仓"].includes(warehouseName) ? "DD001" : "";
+  return text(item?.providerWarehouseCode || item?.warehouseCode).toUpperCase();
 }
 
 function warehouseCostFor(lookup, item, sku) {
@@ -216,9 +213,9 @@ function quantities(row) {
   const temporaryQty = Math.max(0, number(row?.temporaryQty));
   const waitInQty = Math.max(0, number(row?.waitInQty));
   const inTransitQty = Math.max(0, number(row?.inTransitQty));
-  const onHandQty = availableQty + lockedQty + faultyQty + temporaryQty;
-  const totalQty = Math.max(onHandQty + waitInQty + inTransitQty, Math.max(0, number(row?.totalQty)));
-  return { onHandQty, waitInQty, inTransitQty, totalQty };
+  const onHandQty = availableQty + lockedQty;
+  const totalQty = onHandQty;
+  return { availableQty, lockedQty, onHandQty, waitInQty, inTransitQty, faultyQty, temporaryQty, totalQty };
 }
 
 function aggregateSnapshot(snapshot, context) {
@@ -227,7 +224,10 @@ function aggregateSnapshot(snapshot, context) {
   const summary = {
     date: dateKey(snapshot?.date),
     onHandQty: 0,
+    waitInQty: 0,
     inTransitQty: 0,
+    faultyQty: 0,
+    temporaryQty: 0,
     totalQty: 0,
     coveredOnHandQty: 0,
     unvaluedOnHandQty: 0,
@@ -257,7 +257,10 @@ function aggregateSnapshot(snapshot, context) {
       imageUrl: text(cost.product?.imageUrl),
       warehouseNames: new Set(),
       onHandQty: 0,
+      waitInQty: 0,
       inTransitQty: 0,
+      faultyQty: 0,
+      temporaryQty: 0,
       totalQty: 0,
       unitCostCny: cost.unitCostCny,
       costSource: cost.source,
@@ -268,7 +271,10 @@ function aggregateSnapshot(snapshot, context) {
     };
     if (item.warehouseName || item.warehouseId) current.warehouseNames.add(text(item.warehouseName || item.warehouseId));
     current.onHandQty += qty.onHandQty;
+    current.waitInQty += qty.waitInQty;
     current.inTransitQty += qty.inTransitQty;
+    current.faultyQty += qty.faultyQty;
+    current.temporaryQty += qty.temporaryQty;
     current.totalQty += qty.totalQty;
     if (cost.unitCostCny !== null) {
       current.onHandValueCny += qty.onHandQty * cost.unitCostCny;
@@ -279,7 +285,10 @@ function aggregateSnapshot(snapshot, context) {
     rows.set(identity, current);
 
     summary.onHandQty += qty.onHandQty;
+    summary.waitInQty += qty.waitInQty;
     summary.inTransitQty += qty.inTransitQty;
+    summary.faultyQty += qty.faultyQty;
+    summary.temporaryQty += qty.temporaryQty;
     summary.totalQty += qty.totalQty;
     if (cost.unitCostCny !== null) {
       summary.onHandValueCny += qty.onHandQty * cost.unitCostCny;
@@ -409,7 +418,10 @@ export function buildInventoryValuePayload({
     const row = currentRow || {
       ...previousRow,
       onHandQty: 0,
+      waitInQty: 0,
       inTransitQty: 0,
+      faultyQty: 0,
+      temporaryQty: 0,
       totalQty: 0,
       onHandValueCny: 0,
       inTransitValueCny: 0,

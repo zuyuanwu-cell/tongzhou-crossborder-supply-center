@@ -284,7 +284,7 @@ function yunCredentials(connection) {
     baseUrl: normalizeYunEndpoint(getEnv(`${prefix}_BASE_URL`) || connection.baseUrl),
     appKey: getEnv(`${prefix}_APP_KEY`) || connection.credentials?.appKey || connection.credentials?.clientId,
     appToken: getEnv(`${prefix}_APP_TOKEN`) || connection.credentials?.token || connection.credentials?.appSecret || connection.credentials?.clientSecret,
-    warehouseCode: getEnv(`${prefix}_WAREHOUSE_CODE`) || connection.warehouseCode || connection.warehouseId || connection.resolvedWarehouseId,
+    warehouseCode: getEnv(`${prefix}_WAREHOUSE_CODE`) || connection.warehouseCode,
   };
 }
 
@@ -820,7 +820,7 @@ function normalizeSeaProduct(item, connection) {
   };
 }
 
-function normalizeSeaInventory(item, connection) {
+export function normalizeSeaInventory(item, connection) {
   const sku = firstText(item.goodsSkuOuterId, item.sku, item.skuCode, item.goodsSkuCode, item.goodsCode, item.customSku);
   const availableQty = firstNumber(item.availableStockNum, item.availableQty, item.available, item.canSaleQty);
   const lockedQty = firstNumber(item.lockedStockNum, item.lockedQty, item.locked);
@@ -842,7 +842,7 @@ function normalizeSeaInventory(item, connection) {
     inTransitQty,
     faultyQty,
     temporaryQty,
-    totalQty: explicitTotalQty || availableQty + lockedQty + waitInQty + inTransitQty + faultyQty + temporaryQty,
+    totalQty: availableQty + lockedQty,
     syncedAt: new Date().toISOString(),
   };
 }
@@ -1068,10 +1068,26 @@ export function resolveYunWarehouseCodeFromList(connection, warehouses = []) {
   return "";
 }
 
+function yunRowWarehouseCode(row) {
+  return firstText(row?.warehouse_code, row?.warehouseCode).toUpperCase();
+}
+
+export function validateYunWarehouseRows(rows, expectedWarehouseCode, resource = "row") {
+  const expected = configuredText(expectedWarehouseCode).toUpperCase();
+  if (!expected) throw new Error(`YunWMS ${resource} sync requires an explicit warehouse_code.`);
+  const safeRows = Array.isArray(rows) ? rows : [];
+  for (const row of safeRows) {
+    if (!yunRowWarehouseCode(row)) {
+      throw new Error(`YunWMS ${resource} row is missing warehouse_code; account-wide data was rejected.`);
+    }
+  }
+  return safeRows.filter((row) => yunRowWarehouseCode(row) === expected);
+}
+
 async function resolveYunWarehouseCode(credentials, connection) {
-  if (configuredText(credentials.warehouseCode)) return configuredText(credentials.warehouseCode);
-  const warehouses = await fetchYunPageList(credentials, "getWarehouse", {}, 200);
-  return resolveYunWarehouseCodeFromList(connection, warehouses);
+  const warehouseCode = configuredText(credentials.warehouseCode);
+  if (!warehouseCode) throw new Error(`YunWMS ${firstText(connection?.name, connection?.id)} sync requires an explicit warehouse_code.`);
+  return warehouseCode;
 }
 
 function validateCreateLines(input, { requirePackaging = true } = {}) {
@@ -1923,7 +1939,7 @@ function normalizeYunProduct(item, connection) {
   };
 }
 
-function normalizeYunInventory(item, connection) {
+export function normalizeYunInventory(item, connection) {
   const sku = firstText(item.product_sku, item.reference_no, item.product_barcode);
   const availableQty = firstNumber(item.sellable);
   const lockedQty = firstNumber(item.reserved);
@@ -1946,7 +1962,7 @@ function normalizeYunInventory(item, connection) {
     inTransitQty,
     faultyQty,
     temporaryQty: 0,
-    totalQty: availableQty + lockedQty + waitInQty + inTransitQty + faultyQty,
+    totalQty: availableQty + lockedQty,
     syncedAt: new Date().toISOString(),
   };
 }
@@ -2025,7 +2041,11 @@ export async function syncYunWmsOrdersRange(connection, dateFrom, dateTo) {
     ship_date_to: `${end} 23:59:59`,
     ...(warehouseCode ? { warehouse_code: warehouseCode } : {}),
   };
-  const rows = await fetchYunPageList(credentials, "getOrderList", params, 500, wmsOrderMaxPages());
+  const rows = validateYunWarehouseRows(
+    await fetchYunPageList(credentials, "getOrderList", params, 500, wmsOrderMaxPages()),
+    warehouseCode,
+    "order",
+  );
   const orders = rows.flatMap((order) => normalizeYunOrderRows(order, connection));
 
   return {
@@ -2209,8 +2229,12 @@ export async function syncYunWmsWarehouse(connection) {
   const products = (await fetchYunPageList(credentials, "getProductList", {}, 200))
     .map((item) => normalizeYunProduct(item, connection))
     .filter((item) => item.sku);
-  const inventoryParams = warehouseCode ? { warehouse_code: warehouseCode } : {};
-  const inventory = (await fetchYunPageList(credentials, "getProductInventory", inventoryParams, 200))
+  const inventoryParams = { warehouse_code: warehouseCode };
+  const inventory = validateYunWarehouseRows(
+    await fetchYunPageList(credentials, "getProductInventory", inventoryParams, 200),
+    warehouseCode,
+    "inventory",
+  )
     .map((item) => normalizeYunInventory(item, connection))
     .filter((item) => item.sku);
 

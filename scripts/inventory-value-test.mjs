@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { transform } from "esbuild";
 import { buildActiveInventoryWarehouseOptions, buildInventoryValuePayload, normalizeInventoryValueEffectiveDate } from "../server/inventory-value.js";
+import { normalizeSeaInventory, normalizeYunInventory } from "../server/wms-adapters.js";
 
 const products = {
   productBase: [
@@ -52,6 +53,32 @@ assert.equal(payload.currentPeriod.snapshotDate, "2026-09-08");
 assert.equal(payload.previousPeriod.snapshotDate, "2026-09-01");
 assert.equal(payload.summary.onHandQty, 19, "on-hand excludes in-transit and wait-in quantities");
 assert.equal(payload.summary.inTransitQty, 3);
+const quantityBoundaryPayload = buildInventoryValuePayload({
+  snapshots: [{
+    date: "2026-09-09",
+    rows: [{
+      warehouseId: "WH-BOUNDARY",
+      warehouseName: "Boundary warehouse",
+      country: "ID",
+      sku: "SKU-A",
+      availableQty: 12,
+      lockedQty: 3,
+      waitInQty: 1,
+      inTransitQty: 4,
+      faultyQty: 5,
+      temporaryQty: 6,
+      totalQty: 31,
+    }],
+  }],
+  products,
+  filters: { period: "day" },
+});
+assert.equal(quantityBoundaryPayload.summary.onHandQty, 15);
+assert.equal(quantityBoundaryPayload.summary.totalQty, 15, "total inventory equals available plus locked only");
+assert.equal(quantityBoundaryPayload.summary.waitInQty, 1);
+assert.equal(quantityBoundaryPayload.summary.inTransitQty, 4);
+assert.equal(quantityBoundaryPayload.summary.faultyQty, 5);
+assert.equal(quantityBoundaryPayload.summary.temporaryQty, 6);
 assert.equal(payload.summary.onHandValueCny, 135, "missing-cost stock is excluded from the known value");
 assert.equal(payload.summary.previousOnHandValueCny, 117, "manual fallback can reconstruct older snapshots");
 assert.equal(payload.summary.periodChangeCny, 18);
@@ -112,6 +139,39 @@ const otherRussiaWarehouse = buildInventoryValuePayload({
   filters: { period: "day", warehouseId: "WH-RU-1" },
 });
 assert.equal(otherRussiaWarehouse.summary.onHandValueCny, 297, "other Russian warehouses keep their existing product catalog cost rule");
+
+const missingWarehouseCode = buildInventoryValuePayload({
+  snapshots: [{
+    date: "2026-10-09",
+    rows: [{ warehouseId: "WH-RU-UNKNOWN", warehouseName: russiaWarehouseProducts.warehouseCostScopes[0].warehouseName, country: "RU", sku: "SKU-RU", availableQty: 1, totalQty: 1 }],
+  }],
+  products: russiaWarehouseProducts,
+  filters: { period: "day" },
+});
+assert.equal(missingWarehouseCode.rows[0].costSource, "direct_price", "warehouse-specific costs require the provider warehouse code and never infer it from the display name");
+
+const seaInventory = normalizeSeaInventory({
+  goodsSkuOuterId: "SEA-SKU",
+  availableStockNum: 10,
+  lockedStockNum: 2,
+  waitInStorageNum: 3,
+  onWayNum: 4,
+  faultyStockNum: 5,
+  temporaryStockNum: 6,
+  stockNum: 30,
+}, { id: "SEA-WH", name: "SEA warehouse", country: "ID", providerId: "sea_wms" });
+assert.equal(seaInventory.totalQty, 12, "SEA normalized total is available plus locked only");
+
+const yunInventory = normalizeYunInventory({
+  product_sku: "YUN-SKU",
+  sellable: 10,
+  reserved: 2,
+  pending: 3,
+  onway: 4,
+  unsellable: 5,
+  warehouse_code: "DD001",
+}, { id: "YUN-WH", name: "Yun warehouse", country: "RU", providerId: "yunwms_ru" });
+assert.equal(yunInventory.totalQty, 12, "YunWMS normalized total is available plus locked only");
 
 const weekly = buildInventoryValuePayload({ snapshots, products, supplementalCosts: [], filters: { period: "week" } });
 assert.equal(weekly.timeline.length, 2, "weekly mode keeps the latest snapshot in each week");

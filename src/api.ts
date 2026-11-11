@@ -1428,7 +1428,10 @@ export type InventoryValueRow = {
   imageUrl?: string;
   warehouseNames: string[];
   onHandQty: number;
+  waitInQty: number;
   inTransitQty: number;
+  faultyQty: number;
+  temporaryQty: number;
   totalQty: number;
   unitCostCny: number | null;
   costSource: "direct_price" | "warehouse_weighted_price" | "manual_supplement" | "missing";
@@ -1469,8 +1472,11 @@ export type InventoryValuePayload = {
   summary: {
     date: string;
     onHandQty: number;
+    waitInQty: number;
     unvaluedOnHandQty: number;
     inTransitQty: number;
+    faultyQty: number;
+    temporaryQty: number;
     totalQty: number;
     coveredOnHandQty: number;
     onHandValueCny: number;

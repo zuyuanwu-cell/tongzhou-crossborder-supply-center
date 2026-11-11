@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { initStockupCollaborationStore } from "../server/stockup-collaboration-db.js";
 import { createStockupCollaborationService } from "../server/stockup-collaboration-service.js";
-import { buildYunAsnItems, buildYunAsnPayload, resolveYunWarehouseCodeFromList, warehouseStockupCreateCapability } from "../server/wms-adapters.js";
+import { buildYunAsnItems, buildYunAsnPayload, resolveYunWarehouseCodeFromList, validateYunWarehouseRows, warehouseStockupCreateCapability } from "../server/wms-adapters.js";
 
 const temp = mkdtempSync(resolve(tmpdir(), "stockup-shipment-edit-wms-"));
 try {
@@ -49,6 +49,18 @@ try {
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯2仓", warehouseId: "DD001" }, yunWarehouses), "DD001");
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯仓" }, yunWarehouses), "");
   assert.equal(resolveYunWarehouseCodeFromList({ name: "俄罗斯1仓" }, [{ warehouse_code: "MX001", warehouse_name: "MX001" }]), "");
+  assert.deepEqual(validateYunWarehouseRows([
+    { warehouse_code: "DD001", order_code: "ORDER-1" },
+    { warehouse_code: "DD002", order_code: "ORDER-2" },
+  ], "DD001", "order"), [{ warehouse_code: "DD001", order_code: "ORDER-1" }]);
+  assert.throws(
+    () => validateYunWarehouseRows([{ order_code: "ORDER-NO-WAREHOUSE" }], "DD001", "order"),
+    /warehouse_code/i,
+  );
+  assert.throws(
+    () => validateYunWarehouseRows([], "", "inventory"),
+    /warehouse_code/i,
+  );
   const cartonItems = buildYunAsnItems({ lines: [{ sku: "TZKJ-QL032", quantity: 14_400, cartonCount: 200, unitsPerCarton: 72, purchasePrice: 0, purchasePriceCurrency: "CNY" }] });
   assert.equal(cartonItems.length, 200);
   assert.equal(cartonItems[0].box_no, "1");
