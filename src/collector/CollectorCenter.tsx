@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, CircleOff, Cpu, History, Play, Power, RefreshCw, RotateCcw, Save, ScrollText, Server, Store, Trash2, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, CheckCircle2, CircleOff, Cpu, History, Play, Power, RefreshCw, RotateCcw, Save, ScrollText, Server, ShieldCheck, Store, Trash2, X } from "lucide-react";
 import {
   deleteCollectorNode,
   fetchCollectorLogs,
@@ -14,6 +14,7 @@ import {
   type CollectorNodeSummary,
   type CollectorRun,
 } from "../api";
+import { DataQuality } from "./DataQuality";
 import "./collector-center.css";
 
 type DetailTab = "schedule" | "runs" | "logs" | "stores";
@@ -93,6 +94,7 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
   const [selectedId, setSelectedId] = React.useState("");
   const [detail, setDetail] = React.useState<CollectorNodeDetail | null>(null);
   const [tab, setTab] = React.useState<DetailTab>("schedule");
+  const [view, setView] = React.useState<"quality" | "nodes">("quality");
   const [runs, setRuns] = React.useState<CollectorRun[]>([]);
   const [expandedRun, setExpandedRun] = React.useState("");
   const [logs, setLogs] = React.useState<CollectorLogLine[]>([]);
@@ -220,7 +222,7 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
         <div>
           <span className="cc-eyebrow">COLLECTOR NODES</span>
           <h3>采集中心</h3>
-          <p>部署在各台电脑 / 云电脑上的「同舟智数」采集节点。在这里看在线状态、采集记录和日志，修改每天的采集时间，下发立即采集或重试失败店铺。</p>
+          <p>「数据质量」看每个店铺每天的数据是否可信：系统每天把采集值与 Shopee 后台页面核对、缺失或有误自动补采，只把需要人去处理的事列出来。「采集节点」管理各台（云）电脑上的同舟智数：在线状态、采集时间、记录和日志。</p>
         </div>
         <div className="cc-head-stats">
           <div><strong>{nodes.length}</strong><span>节点</span></div>
@@ -230,9 +232,16 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
         </div>
       </header>
 
-      {error ? <div className="cc-notice bad"><AlertTriangle size={15} />{error}</div> : null}
+      <div className="cc-view-switch">
+        <button type="button" className={view === "quality" ? "active" : ""} onClick={() => setView("quality")}><ShieldCheck size={15} />数据质量</button>
+        <button type="button" className={view === "nodes" ? "active" : ""} onClick={() => setView("nodes")}><Server size={15} />采集节点 <span>{nodes.length}</span></button>
+      </div>
 
-      {!loading && !nodes.length ? (
+      {view === "quality" ? <DataQuality canEdit={canEdit} /> : null}
+
+      {view === "nodes" && error ? <div className="cc-notice bad"><AlertTriangle size={15} />{error}</div> : null}
+
+      {view === "nodes" && !loading && !nodes.length ? (
         <div className="cc-empty">
           <Server size={28} />
           <h4>还没有采集节点</h4>
@@ -244,7 +253,7 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
         </div>
       ) : null}
 
-      {nodes.length ? (
+      {view === "nodes" && nodes.length ? (
         <div className="cc-layout">
           <aside className="cc-node-list">
             {nodes.map((node) => {
@@ -328,7 +337,7 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
                     <ul className="cc-commands">
                       {detail.commands.slice(0, 8).map((command) => (
                         <li key={command.id}>
-                          <span>{command.fromRunId ? "重试" : command.type === "collect" ? "立即采集" : "刷新店铺"}{command.storeIds ? ` · ${command.storeIds.length} 店` : ""}{command.dates ? ` · ${command.dates[0]}${command.dates.length > 1 ? ` ~ ${command.dates[command.dates.length - 1]}` : ""}` : ""}</span>
+                          <span>{command.source === "quality" ? (command.note === "手动补采" ? "手动补采" : `自动补采（${command.note || "数据质量"}）`) : command.fromRunId ? "重试" : command.type === "collect" ? "立即采集" : "刷新店铺"}{command.storeIds ? ` · ${command.storeIds.length} 店` : ""}{command.dates ? ` · ${command.dates[0]}${command.dates.length > 1 ? ` ~ ${command.dates[command.dates.length - 1]}` : ""}` : ""}</span>
                           <small>{command.createdBy} · {formatTime(command.createdAt)} · <b className={command.status}>{COMMAND_STATUS[command.status] || command.status}</b></small>
                         </li>
                       ))}
@@ -349,7 +358,7 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
                           <React.Fragment key={run.id}>
                             <tr className={expandedRun === run.id ? "open" : ""} onClick={() => setExpandedRun(expandedRun === run.id ? "" : run.id)}>
                               <td>{formatTime(run.startedAt)}</td>
-                              <td>{run.trigger === "schedule" ? "定时" : run.trigger === "command" ? "中台下发" : "本机手动"}</td>
+                              <td>{run.trigger === "schedule" ? "定时" : run.trigger === "auto" ? "自动补采" : run.trigger === "command" ? "中台下发" : "本机手动"}</td>
                               <td><RunTag status={run.status} /></td>
                               <td>{run.dates.length ? `${run.dates[0]}${run.dates.length > 1 ? ` ~ ${run.dates[run.dates.length - 1]}` : ""}` : "—"}</td>
                               <td className="num">{run.stores.filter((store) => store.status === "ok" || store.status === "partial").length}/{run.stores.length}</td>

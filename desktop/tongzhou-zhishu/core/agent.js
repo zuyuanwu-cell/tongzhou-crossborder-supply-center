@@ -130,6 +130,7 @@ class NodeAgent {
       return null;
     }
     this.applySchedule(response.schedule);
+    this.applyQuality(response.quality);
     for (const command of response.commands || []) this.enqueue(command);
     await this.flushRuns();
     await this.flushLogs();
@@ -149,10 +150,22 @@ class NodeAgent {
     if (this.onScheduleChanged) this.onScheduleChanged(next);
   }
 
+  /** 中台下发的数据质量设置（页面核对、截图留证）。 */
+  applyQuality(quality) {
+    if (!quality || typeof quality !== "object") return;
+    const current = this.store.get().quality || {};
+    const next = { ...current, pageCheck: quality.pageCheck !== false, screenshot: quality.screenshot !== false };
+    if (current.pageCheck === next.pageCheck && current.screenshot === next.screenshot) return;
+    this.store.update((config) => {
+      config.quality = next;
+    });
+  }
+
   enqueue(command) {
     if (this.commandQueue.some((item) => item.id === command.id)) return;
     this.commandQueue.push(command);
-    this.log("info", `收到中台命令：${command.fromRunId ? "重试失败店铺" : command.type === "collect" ? "立即采集" : "刷新店铺"}${command.storeIds ? `（${command.storeIds.length} 个店铺）` : ""}`);
+    const kind = command.source === "quality" ? "数据质量自动补采" : command.fromRunId ? "重试失败店铺" : command.type === "collect" ? "立即采集" : "刷新店铺";
+    this.log("info", `收到中台命令：${kind}${command.storeIds ? `（${command.storeIds.length} 个店铺）` : ""}${command.dates ? `，${command.dates.join("、")}` : ""}${command.note ? `：${command.note}` : ""}`);
     this.drain().catch(() => {});
   }
 
@@ -181,7 +194,7 @@ class NodeAgent {
       }
       if (command.type === "collect") {
         await ack("running");
-        const result = await this.runCollect({ storeIds: command.storeIds || null, dates: command.dates || null, mode: command.mode || "upload", trigger: "command", commandId: command.id });
+        const result = await this.runCollect({ storeIds: command.storeIds || null, dates: command.dates || null, mode: command.mode || "upload", trigger: command.source === "quality" ? "auto" : "command", commandId: command.id });
         await ack(result.status === "failed" ? "failed" : "done", { runId: result.id, message: `${result.rowCount} 行` });
         return;
       }

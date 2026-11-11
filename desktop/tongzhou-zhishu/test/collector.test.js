@@ -207,8 +207,15 @@ test("校准 → 试采 → 正式采集 → 写入中台（含 CNSC 多站点�
   assert.equal(sent.dryRun, false);
   assert.equal(sent.source, "ziniao");
   assert.equal(sent.rows.length, 4);
-  const row = sent.rows.find((item) => item.shopName === "店铺A-MY" && item.date === "2026-11-03");
+  const { evidence, ...row } = sent.rows.find((item) => item.shopName === "店铺A-MY" && item.date === "2026-11-03");
   const m = metricsFor("111", dayRange("2026-11-03", "MY").start);
+  // 每行带采集证据：来源店铺、模板版本、各接口返回摘要（去掉逐小时曲线）。
+  assert.equal(evidence.storeId, "1001");
+  assert.equal(evidence.site, "MY");
+  assert.equal(evidence.values.visitors, m.uv);
+  assert.ok(Object.keys(evidence.endpoints).length >= 1);
+  assert.ok(JSON.stringify(evidence).length < 60000);
+  assert.equal(evidence.pageCheck, null, "一个紫鸟店铺对应多个站点时不做页面核对");
   assert.deepEqual(row, {
     date: "2026-11-03", shopName: "店铺A-MY", country: "马来西亚", platform: "Shopee", currency: "MYR",
     visitors: m.uv, impressions: m.pv, addToCart: m.atc, orderCount: m.orders, payAmount: m.sales,
@@ -267,12 +274,20 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   assert.equal(shopee.matchStore({ platformName: "TikTok Shop-印尼-本土" }), false);
   const [builtin] = shopee.builtinTemplates();
   const { values } = extractMetrics(builtin, {
-    km: { json: { code: 0, result: { paid_gmv: { value: 198000 }, paid_orders: { value: 1 }, shop_uv: { value: 10 } } } },
+    // 2026-11-11 真实店铺核对：页面「访客」= hybrid_uv（3003），shop_uv（424）只是店铺页访客。
+    km: { json: { code: 0, result: { paid_gmv: { value: 198000 }, paid_orders: { value: 1 }, shop_uv: { value: 10 }, hybrid_uv: { value: 31 } } } },
     product: { json: { atc_uv: { value: 2 } } },
     traffic: { json: { code: 0, result: { product_card: { total: { product_impressions: 1069 } } } } },
     ads: { json: { code: 0, data: { report_by_time: [{ metrics: { cost: 15270861 } }] } } },
+    adsShop: { json: { code: 0, data: { report_by_time: [{ metrics: { cost: 1000000 } }, { metrics: { cost: 500000 } }] } } },
+    adsLive: { error: "HTTP 403" },
   });
-  assert.deepEqual(values, { payAmount: 198000, orderCount: 1, visitors: 10, addToCart: 2, impressions: 1069, adOnsite: 152.71 });
+  // 广告费 = 商品广告 + Shop+ 广告；直播广告取不到按 0 计（可选部分）。
+  assert.deepEqual(values, { payAmount: 198000, orderCount: 1, visitors: 31, addToCart: 2, impressions: 1069, adOnsite: 167.71 });
+  assert.equal(builtin.version, 2);
+  // 商品广告是必需部分：取不到时整个广告费记为缺失，而不是少算。
+  const partial = extractMetrics(builtin, { ads: { error: "HTTP 500" }, adsShop: { json: { data: { report_by_time: [] } } } });
+  assert.ok(partial.missing.includes("adOnsite"));
   const values2 = placeholderValues({ date: "2026-11-03", site: "ID", origin: "https://seller.shopee.co.id" });
   assert.equal(fill(builtin.endpoints[0].url, values2), "https://seller.shopee.co.id/api/mydata/v3/dashboard/key-metrics/?start_time=1793638800&end_time=1793725200&period=day&fetag=fetag");
 
@@ -295,6 +310,32 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   const overview = collector.storeOverview();
   assert.equal(overview.length, 2);
   assert.equal(overview.find((item) => item.storeId === "2").targets[0].matched, false, "站点不同不自动对应");
+});
+
+test("数据质量：页面数字解析与核对", () => {
+  const { parsePageNumber, comparePageCheck, trimJson, pageDateText } = require("../core/quality");
+  assert.deepEqual(parsePageNumber("Rp2.640.200", "ID"), { value: 2640200, approx: false });
+  assert.deepEqual(parsePageNumber("3.003", "ID"), { value: 3003, approx: false });
+  assert.deepEqual(parsePageNumber("RM1,234.56", "MY"), { value: 1234.56, approx: false });
+  assert.deepEqual(parsePageNumber("₫1.234.567", "VN"), { value: 1234567, approx: false });
+  assert.deepEqual(parsePageNumber("34k", "ID"), { value: 34000, approx: true });
+  assert.equal(parsePageNumber("—", "ID"), null);
+  assert.equal(pageDateText("2026-11-10"), "10-11-2026");
+  // 2026-11-11 QLEV 店铺真实数据：金额、订单一致，访客口径错误。
+  const check = comparePageCheck({ payAmount: 2640200, orderCount: 19, visitors: 424 }, { period: "10-11-2026", paid: true, values: { sales: "Rp2.640.200", orders: "19", visitors: "3.003" } }, "ID");
+  assert.equal(check.status, "mismatch");
+  assert.equal(check.fields.payAmount.match, true);
+  assert.equal(check.fields.orderCount.match, true);
+  assert.equal(check.fields.visitors.match, false);
+  assert.equal(comparePageCheck({ payAmount: 2640200, orderCount: 19, visitors: 3003 }, { period: "10-11-2026", paid: true, values: { sales: "Rp2.640.200", orders: "19", visitors: "3.003" } }, "ID").status, "match");
+  // 页面口径没切到「已付款」：只比访客数。
+  const notPaid = comparePageCheck({ payAmount: 2640200, orderCount: 19, visitors: 3003 }, { period: "10-11-2026", paid: false, values: { sales: "Rp3.119.271", orders: "25", visitors: "3.003" } }, "ID");
+  assert.equal(notPaid.status, "match");
+  assert.deepEqual(Object.keys(notPaid.fields), ["visitors"]);
+  assert.equal(comparePageCheck({ visitors: 1 }, { notes: ["找不到日期选择器"] }, "ID").status, "unchecked");
+  const trimmed = trimJson({ result: { shop_uv: { value: 1, points: [1, 2, 3] } }, list: Array.from({ length: 30 }, (_, i) => i) });
+  assert.equal(trimmed.result.shop_uv.points, undefined);
+  assert.equal(trimmed.list.length, 25);
 });
 
 test("节点代理：下次定时时间", () => {

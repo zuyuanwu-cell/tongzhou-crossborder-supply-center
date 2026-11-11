@@ -326,6 +326,32 @@ function partnerTaskObservations(source = {}, nowMs) {
   });
 }
 
+/**
+ * 店铺日报数据质量：采集中心自动补采处理不了、需要人去处理的事项
+ * （紫鸟设备未绑定、Shopee 掉登录、节点离线、多次补采仍失败、Shopee 改版等）。
+ */
+function shopDataQualityObservations(source = {}) {
+  const items = Array.isArray(source.manual) ? source.manual : [];
+  return items.map((item) => observation({
+    ruleCode: `shop_data_${text(item.code, "issue")}`,
+    resourceType: "shop_data",
+    resourceId: text(item.storeKey) || text(item.shopKey) || text(item.nodeId),
+    country: text(item.site),
+    title: `${text(item.shopName || item.storeName || item.nodeName, "店铺数据")}：${text(item.title, "需要处理")}`,
+    summary: [text(item.action), text(item.message)].filter(Boolean).join(" ") || "店铺日报数据需要人工处理。",
+    severity: ["ziniao_device", "shopee_login", "shopee_captcha", "node_offline", "template"].includes(text(item.code)) ? "high" : "medium",
+    evidence: [{
+      type: "shop_data_quality",
+      id: text(item.storeKey) || text(item.shopKey) || text(item.nodeId),
+      label: text(item.title),
+      value: (Array.isArray(item.dates) ? item.dates : []).join("、") || text(item.message),
+      updatedAt: iso(source.evaluatedAt),
+    }],
+    href: "#collectors",
+    sourceUpdatedAt: source.evaluatedAt,
+  }));
+}
+
 export function buildExceptionObservations({
   warehouseSync = {},
   inventoryRisk = {},
@@ -333,6 +359,7 @@ export function buildExceptionObservations({
   production = {},
   collaborationBridge = {},
   partnerTasks = {},
+  shopDataQuality = {},
   now = () => new Date(),
   staleAfterMs = 2 * 60 * 60 * 1000,
 } = {}) {
@@ -345,6 +372,7 @@ export function buildExceptionObservations({
     production: production.complete !== false,
     collaborationBridge: collaborationBridge.complete !== false,
     partnerTasks: partnerTasks.complete !== false,
+    shopDataQuality: shopDataQuality.complete !== false,
   };
   const observations = [
     ...syncObservations(warehouseSync, nowMs, staleAfterMs),
@@ -353,6 +381,7 @@ export function buildExceptionObservations({
     ...productionObservations(production, nowMs),
     ...collaborationBridgeObservations(collaborationBridge, nowMs, staleAfterMs),
     ...partnerTaskObservations(partnerTasks, nowMs),
+    ...shopDataQualityObservations(shopDataQuality),
   ];
   return {
     observations,

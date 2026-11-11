@@ -864,6 +864,7 @@ export function prepareShopDailyMetrics(parsedRows = [], shops = []) {
       currency: row.currency || "",
       standalone: result.status === "standalone",
       values,
+      lines: row.line ? [row.line] : [],
     });
   }
   for (const [key, name] of standalone) {
@@ -874,7 +875,7 @@ export function prepareShopDailyMetrics(parsedRows = [], shops = []) {
   for (const row of prepared) {
     const key = `${row.shopKey}\u0000${row.date}`;
     const current = merged.get(key);
-    merged.set(key, current ? { ...current, ...row, values: { ...current.values, ...row.values } } : row);
+    merged.set(key, current ? { ...current, ...row, values: { ...current.values, ...row.values }, lines: [...(current.lines || []), ...(row.lines || [])] } : row);
   }
   return { rows: [...merged.values()], errors, warnings };
 }

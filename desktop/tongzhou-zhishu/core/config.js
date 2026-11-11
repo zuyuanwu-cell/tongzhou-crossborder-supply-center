@@ -11,6 +11,8 @@ const DEFAULT_CONFIG = Object.freeze({
   zhongtai: { baseUrl: "https://gyl.tongzhoukuajing.com", tokenEnc: "", token: "" },
   ziniao: { cliPath: "", headless: false, closeAfter: true, retryPerStore: 1, storeTimeoutSec: 240 },
   schedule: { enabled: false, times: ["09:30"], lookbackDays: 3, includeToday: false, autoUpload: true },
+  // 数据质量：采集后与 Shopee 后台页面核对「昨天」的数字，并截图留证（可由中台下发关闭）。
+  quality: { pageCheck: true, screenshot: true },
   templates: {},
   stores: {},
   storeCache: [],
@@ -32,6 +34,7 @@ function mergeDefaults(input) {
     zhongtai: { ...base.zhongtai, ...(input.zhongtai || {}) },
     ziniao: { ...base.ziniao, ...(input.ziniao || {}) },
     schedule: { ...base.schedule, ...(input.schedule || {}) },
+    quality: { ...base.quality, ...(input.quality || {}) },
     templates: input.templates && typeof input.templates === "object" ? input.templates : {},
     stores: input.stores && typeof input.stores === "object" ? input.stores : {},
     storeCache: Array.isArray(input.storeCache) ? input.storeCache : [],

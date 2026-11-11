@@ -2,7 +2,8 @@
 
 // 同舟供应链中台客户端：只使用采集专用令牌（X-Ingest-Token），不需要中台登录账号。
 
-const CHUNK = 2000;
+// 每行带采集证据（接口原始返回摘要），按行数分批控制单次请求体积。
+const CHUNK = 40;
 
 class ZhongtaiError extends Error {
   constructor(message, { status = 0, body = null } = {}) {
@@ -19,6 +20,11 @@ class ZhongtaiClient {
     this.token = String(token || "").trim();
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
+  }
+
+  /** 采集节点令牌（tzcn_ 开头）才能使用采集中心接口（心跳、证据上传等）。 */
+  get isNode() {
+    return this.token.startsWith("tzcn_");
   }
 
   ensureConfigured() {

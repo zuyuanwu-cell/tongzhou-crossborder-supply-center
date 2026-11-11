@@ -7571,7 +7571,7 @@ export type CollectorNodeSummary = {
 
 export type CollectorNodeStore = { storeId: string; storeName: string; platform: string; site: string; enabled: boolean; shopName: string; shopKey: string; matched: boolean; lastStatus: string; lastMessage: string };
 
-export type CollectorCommand = { id: string; type: string; storeIds: string[] | null; dates: string[] | null; mode: string; fromRunId: string; createdBy: string; createdAt: string; status: string; message?: string; runId?: string; finishedAt?: string };
+export type CollectorCommand = { id: string; type: string; storeIds: string[] | null; dates: string[] | null; mode: string; fromRunId: string; createdBy: string; createdAt: string; status: string; message?: string; runId?: string; finishedAt?: string; source?: string; note?: string };
 
 export type CollectorNodeDetail = CollectorNodeSummary & { stores: CollectorNodeStore[]; commands: CollectorCommand[] };
 
@@ -7622,4 +7622,74 @@ export function sendCollectorCommand(nodeId: string, input: { type: "collect" | 
 
 export function retryCollectorRun(nodeId: string, runId: string, storeIds?: string[]) {
   return requestJson<{ ok: boolean; command: CollectorCommand }>(`/api/collector/nodes/${encodeURIComponent(nodeId)}/runs/${encodeURIComponent(runId)}/retry`, { method: "POST", body: JSON.stringify({ storeIds }) });
+}
+
+// ---- 采集中心 · 数据质量 ----
+export type QualityStatus = "missing" | "error" | "incomplete" | "pending" | "refresh" | "warning" | "ok" | "verified";
+export type QualityField = "payAmount" | "orderCount" | "visitors" | "impressions" | "addToCart" | "adOnsite";
+export type QualityIssue = { code: string; level: string; message: string };
+export type QualityCell = {
+  status: QualityStatus;
+  issues: QualityIssue[];
+  verified: boolean;
+  values: Partial<Record<QualityField, number | null>> | null;
+  hasEvidence: boolean;
+  hasScreenshot: boolean;
+  collectedAt: string;
+  attempts: number;
+};
+export type QualityOwner = { nodeId: string; nodeName: string; storeId: string; storeName: string; online: boolean; running: boolean; lastStatus: string; lastMessage: string };
+export type QualityRow = { shopKey: string; shopName: string; site: string; owners: QualityOwner[]; dates: string[]; cells: Record<string, QualityCell> };
+export type QualityManualItem = { code: string; title: string; action: string; message?: string; shopKey?: string; shopName?: string; nodeName?: string; storeName?: string; dates: string[] };
+export type QualityAction = { at: string; type: string; nodeName?: string; storeIds?: string[]; dates?: string[]; note?: string; cells?: number };
+export type QualitySettings = { autoBackfill: boolean; pageCheck: boolean; screenshot: boolean; windowDays: number; maxAttemptsPerDay: number; retryGapMinutes: number };
+export type CollectorQualityPayload = {
+  ok: boolean;
+  settings: QualitySettings;
+  evaluatedAt: string;
+  stats: { shops: number; cells: number; byStatus: Partial<Record<QualityStatus, number>>; yesterday: Partial<Record<QualityStatus, number>>; legacyCells: number } | null;
+  rows: QualityRow[];
+  manual: QualityManualItem[];
+  actions: QualityAction[];
+  lastCycle: { at: string; reason: string; actions: number; manual: number } | null;
+  created?: { nodeName: string; storeIds: string[]; dates: string[]; note: string }[];
+};
+export type QualityPageCheckField = { page: number | null; pageText: string; collected: number | null; match: boolean };
+export type CollectorEvidence = {
+  ok: boolean;
+  summary: {
+    shopKey: string; shopName: string; date: string; nodeId: string; storeId: string; storeName: string; site: string;
+    templateVersion: number; collectedAt: string; values: Partial<Record<QualityField, number>>; missing: string[]; notReady: string[];
+    pageCheck: { at: string; date: string; status: "match" | "mismatch" | "unchecked"; message: string; orderType: string; fields: Partial<Record<QualityField, QualityPageCheckField>>; carried?: boolean } | null;
+    hasScreenshot: boolean;
+  };
+  endpoints: Record<string, { label: string; status: number; error: string; ms: number; data: unknown }>;
+  notes: string[];
+};
+
+export function fetchCollectorQuality(refresh = false, signal?: AbortSignal) {
+  return requestJson<CollectorQualityPayload>(`/api/collector/quality${refresh ? "?refresh=1" : ""}`, { signal });
+}
+
+export function runCollectorQuality() {
+  return requestJson<CollectorQualityPayload>("/api/collector/quality/run", { method: "POST", body: "{}" });
+}
+
+export function updateCollectorQualitySettings(patch: Partial<QualitySettings>) {
+  return requestJson<{ ok: boolean; settings: QualitySettings }>("/api/collector/quality/settings", { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export function fetchCollectorEvidence(shopKey: string, date: string) {
+  return requestJson<CollectorEvidence>(`/api/collector/quality/evidence?shopKey=${encodeURIComponent(shopKey)}&date=${encodeURIComponent(date)}`);
+}
+
+export function recollectShopData(shopKey: string, dates: string[]) {
+  return requestJson<{ ok: boolean; command: CollectorCommand; nodeName: string; storeName: string }>("/api/collector/quality/recollect", { method: "POST", body: JSON.stringify({ shopKey, dates }) });
+}
+
+/** 采集截图（需要登录令牌，不能直接用 <img src>）：返回 object URL，用完调用 URL.revokeObjectURL。 */
+export async function fetchCollectorScreenshot(shopKey: string, date: string) {
+  const response = await fetch(`${API_BASE}/api/collector/quality/screenshot?shopKey=${encodeURIComponent(shopKey)}&date=${encodeURIComponent(date)}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error("没有截图");
+  return URL.createObjectURL(await response.blob());
 }

@@ -82,7 +82,24 @@ function writeToken(value) {
 
 const cli = new ZiniaoCli({ cliPath: store.get().ziniao.cliPath, dataDir, log });
 const zhongtai = () => new ZhongtaiClient({ baseUrl: store.get().zhongtai.baseUrl, token: readToken() });
-const collector = new Collector({ cli, store, log, zhongtaiFactory: zhongtai });
+/** 截图压缩为宽 1400 的 JPEG（约 100–200KB），读完删除紫鸟的临时截图文件。 */
+async function encodeScreenshot(filePath) {
+  try {
+    let image = nativeImage.createFromPath(filePath);
+    if (image.isEmpty()) return null;
+    const { width } = image.getSize();
+    if (width > 1400) image = image.resize({ width: 1400, quality: "good" });
+    const jpeg = image.toJPEG(72);
+    return { mime: "image/jpeg", base64: jpeg.toString("base64"), bytes: jpeg.length };
+  } catch (error) {
+    log("warn", `截图读取失败：${error.message}`);
+    return null;
+  } finally {
+    fs.promises.unlink(filePath).catch(() => {});
+  }
+}
+
+const collector = new Collector({ cli, store, log, zhongtaiFactory: zhongtai, imageEncoder: encodeScreenshot });
 function markUnauthorized() {
   if (!readToken()) return;
   writeToken("");

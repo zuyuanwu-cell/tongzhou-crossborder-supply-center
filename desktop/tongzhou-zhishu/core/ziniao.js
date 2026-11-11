@@ -322,6 +322,22 @@ class ZiniaoCli {
     return this.run(["page", "visit", "--store-id", String(storeId), "--url", url, "--wait-until", waitUntil, "--timeout", String(timeoutMs)], { timeoutMs: timeoutMs + 30000 });
   }
 
+  /** 给店铺当前页面截图，返回截图文件路径（紫鸟 CLI 1.2 起支持 page screenshot）。 */
+  async screenshot({ storeId, fullPage = false, timeoutMs = 60000 }) {
+    const args = ["page", "screenshot", "--store-id", String(storeId), "--timeout", String(timeoutMs)];
+    if (fullPage) args.push("--full-page");
+    const data = await this.run(args, { timeoutMs: timeoutMs + 20000, retries: 0 });
+    const stack = [data];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || typeof node !== "object") continue;
+      if (typeof node.filePath === "string" && node.filePath) return node.filePath;
+      if (typeof node.path === "string" && /\.(png|jpe?g)$/i.test(node.path)) return node.path;
+      stack.push(...Object.values(node));
+    }
+    throw new ZiniaoError("紫鸟 CLI 没有返回截图文件路径", { type: "screenshot", code: "NO_SCREENSHOT", stdout: JSON.stringify(data).slice(0, 500) });
+  }
+
   /** 根据 --help 推断「在页面里执行 JS」应使用的命令与参数名。 */
   async detectExecStyle() {
     if (this.execStyle) return this.execStyle;

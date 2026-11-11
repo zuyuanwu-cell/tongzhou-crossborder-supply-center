@@ -123,4 +123,91 @@ return { href: location.href, results };
 `;
 }
 
-module.exports = { hookBody, probeBody, pageInfoBody, replayBody };
+/**
+ * 页面核对：把商业分析首页切到「昨天」+「已付款订单」，读出页面上显示的支付金额、订单数、访客数。
+ * 与接口取数完全独立（读的是页面文字），用于发现字段口径错误、模板失效。
+ * expectDate：页面上应出现的日期文字（DD-MM-YYYY）；读完后把订单口径切回原来的选项，不改变运营的页面习惯。
+ */
+function pageCheckBody({ expectDate }) {
+  return `
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const vis = (e) => !!(e && e.offsetParent !== null);
+const leaves = () => [...document.querySelectorAll("body *")].filter((e) => e.children.length === 0 && vis(e));
+const bodyText = () => (document.body && document.body.innerText) || "";
+const expect = ${JSON.stringify(expectDate)};
+const PAID = /paid order|已付款|已付款订单|已支付|pesanan dibayar|dibayar|đã thanh toán|ชำระเงินแล้ว|pedidos? pagos?|pago/i;
+const ORDER_TYPE = /placed order|confirmed order|paid order|已下单|已确认|已付款|pesanan dibuat|pesanan dikonfirmasi|pesanan dibayar|đã đặt|đã xác nhận|đã thanh toán|สั่งซื้อ|ยืนยัน|ชำระ/i;
+const result = { lang: document.documentElement.lang || "", href: location.href, period: "", orderType: "", restored: "", values: {}, notes: [] };
+for (let i = 0; i < 20 && !document.querySelector(".eds-date-shortcut-item__text, span.label"); i += 1) await sleep(500);
+// 1. 打开日期选择器，点第二个快捷项（昨天）。快捷项顺序：实时、昨天、近 7 天…，与界面语言无关。
+let shortcuts = [...document.querySelectorAll(".eds-date-shortcut-item__text")].filter(vis);
+if (shortcuts.length < 2) {
+  const labels = [...document.querySelectorAll("span.label")].filter(vis);
+  const trigger = labels.find((e) => e.closest("[class*=date], [class*=picker], [class*=period]")) || labels[0];
+  if (trigger) { trigger.click(); await sleep(1200); }
+  shortcuts = [...document.querySelectorAll(".eds-date-shortcut-item__text")].filter(vis);
+}
+if (shortcuts.length < 2) { result.notes.push("找不到日期选择器"); return result; }
+shortcuts[1].click();
+for (let i = 0; i < 20 && !bodyText().includes(expect); i += 1) await sleep(500);
+if (!bodyText().includes(expect)) { result.notes.push("页面日期没有切到 " + expect); return result; }
+result.period = expect;
+// 2. 订单口径切到「已付款」。
+const selectors = [...document.querySelectorAll(".eds-selector__inner")].filter(vis);
+const selector = selectors.find((e) => ORDER_TYPE.test(e.textContent || "")) || null;
+let original = "";
+if (selector) {
+  original = (selector.textContent || "").trim();
+  if (!PAID.test(original)) {
+    selector.click();
+    await sleep(800);
+    const option = leaves().find((e) => PAID.test((e.textContent || "").trim()) && e !== selector);
+    if (option) { option.click(); await sleep(4500); } else { result.notes.push("找不到「已付款」选项"); }
+  } else {
+    await sleep(2500);
+  }
+  result.orderType = (selector.textContent || "").trim();
+} else {
+  result.notes.push("找不到订单口径选择");
+  await sleep(2500);
+}
+// 3. 读关键指标：标签后面三行内的第一个数字。
+const lines = bodyText().split(/\\n+/).map((s) => s.trim()).filter(Boolean);
+const LABELS = {
+  sales: /^(sales|销售额|销售|penjualan|doanh số|ยอดขาย|vendas|ventas)$/i,
+  orders: /^(orders|订单|订单数|pesanan|đơn hàng|คำสั่งซื้อ|pedidos)$/i,
+  visitors: /^(visitors|访客|访客数|pengunjung|lượt truy cập|người truy cập|ผู้เยี่ยมชม|visitantes)$/i,
+};
+const NUM = /^[^0-9\\s]{0,4}\\s?[0-9][0-9.,]*\\s?[kKmM]?$/;
+for (const [key, re] of Object.entries(LABELS)) {
+  for (let i = 0; i < lines.length && !result.values[key]; i += 1) {
+    if (!re.test(lines[i])) continue;
+    for (let j = i + 1; j <= i + 3 && j < lines.length; j += 1) {
+      if (LABELS.sales.test(lines[j]) || LABELS.orders.test(lines[j]) || LABELS.visitors.test(lines[j])) break;
+      if (NUM.test(lines[j])) { result.values[key] = lines[j]; break; }
+    }
+  }
+}
+result.paid = PAID.test(result.orderType || "");
+result.keepOrderType = original;
+return result;
+`;
+}
+
+/** 页面核对后把订单口径切回原来的选项（截图之后调用）。 */
+function restoreOrderTypeBody(original) {
+  return `
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const want = ${JSON.stringify(original || "")};
+if (!want) return { restored: false };
+const selector = [...document.querySelectorAll(".eds-selector__inner")].find((e) => e.offsetParent !== null && /order|订单|pesanan|đơn|คำสั่ง|pedido/i.test(e.textContent || ""));
+if (!selector || (selector.textContent || "").trim() === want) return { restored: false };
+selector.click();
+await sleep(800);
+const option = [...document.querySelectorAll("body *")].find((e) => e.children.length === 0 && e.offsetParent !== null && (e.textContent || "").trim() === want && e !== selector);
+if (option) option.click();
+return { restored: Boolean(option) };
+`;
+}
+
+module.exports = { hookBody, probeBody, pageInfoBody, replayBody, pageCheckBody, restoreOrderTypeBody };

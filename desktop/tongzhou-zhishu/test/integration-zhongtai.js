@@ -98,7 +98,7 @@ async function main() {
     // ---------------- 采集中心：节点配对、心跳、计划、命令、运行记录、日志、停用 ----------------
     const session = await (await fetch(`${baseUrl}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "x" }) })).json();
     const admin = (pathname, init = {}) => fetch(`${baseUrl}${pathname}`, { ...init, headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` } }).then(async (response) => ({ status: response.status, body: await response.json() }));
-    const paired = await admin("/api/collector/nodes/pair", { method: "POST", body: JSON.stringify({ name: "云电脑-01", hostname: "CLOUD-01", platforms: ["Shopee"], version: "0.3.0" }) });
+    const paired = await admin("/api/collector/nodes/pair", { method: "POST", body: JSON.stringify({ name: "云电脑-01", hostname: "CLOUD-01", platforms: ["Shopee"], version: "0.4.0" }) });
     assert.equal(paired.status, 200, JSON.stringify(paired.body));
     store.update((config) => {
       config.node = { id: paired.body.node.id, name: paired.body.node.name };
@@ -114,7 +114,7 @@ async function main() {
       cli,
       clientFactory: () => nodeClient,
       log: (level, message) => logs.push(`${level} ${message}`),
-      version: "0.3.0",
+      version: "0.4.0",
       runCollect: (options) => nodeCollector.collect(options),
     });
     agent.onUnauthorized = () => { unauthorized += 1; };
@@ -154,6 +154,33 @@ async function main() {
     await agent.flushLogs();
     const nodeLogs = await admin(`/api/collector/nodes/${node.id}/logs`);
     assert.ok(nodeLogs.body.lines.some((line) => line.message.includes("店铺B 未登录")));
+
+    // 数据质量：节点写入时附带的采集证据已归档，可查看明细、上传截图、手动补采
+    const shopKeyA = shopA.shopKey;
+    const evidence = await admin(`/api/collector/quality/evidence?shopKey=${encodeURIComponent(shopKeyA)}&date=2026-11-03`);
+    assert.equal(evidence.status, 200, JSON.stringify(evidence.body).slice(0, 300));
+    assert.equal(evidence.body.summary.storeId, "1001");
+    assert.ok(Object.keys(evidence.body.endpoints).length >= 1, "证据里有接口原始返回");
+    const shot = await nodeClient.agent("evidence/screenshot", { storeId: "1001", shopName: "店铺A-MY", date: "2026-11-03", mime: "image/jpeg", base64: Buffer.from("fake-jpeg").toString("base64") });
+    assert.equal(shot.ok, true);
+    const image = await fetch(`${baseUrl}/api/collector/quality/screenshot?shopKey=${encodeURIComponent(shopKeyA)}&date=2026-11-03`, { headers: { authorization: `Bearer ${session.token}` } });
+    assert.equal(image.status, 200);
+    assert.equal(Buffer.from(await image.arrayBuffer()).toString(), "fake-jpeg");
+    const qualityView = await admin("/api/collector/quality?refresh=1");
+    assert.equal(qualityView.status, 200, JSON.stringify(qualityView.body).slice(0, 300));
+    const qualityRow = qualityView.body.rows.find((row) => row.shopKey === shopKeyA);
+    assert.ok(qualityRow, `数据质量里应有 店铺A-MY：${JSON.stringify(qualityView.body.rows.map((row) => row.shopName))}`);
+    assert.equal(qualityRow.owners[0].storeId, "1001");
+    const recollect = await admin("/api/collector/quality/recollect", { method: "POST", body: JSON.stringify({ shopKey: shopKeyA, dates: ["2026-11-03"] }) });
+    assert.equal(recollect.status, 200, JSON.stringify(recollect.body));
+    const hb = await nodeClient.agent("heartbeat", agent.status());
+    const delivered = hb.commands.find((item) => item.id === recollect.body.command.id);
+    assert.equal(delivered.source, "quality");
+    assert.deepEqual(delivered.storeIds, ["1001"]);
+    assert.deepEqual(hb.quality, { pageCheck: true, screenshot: true });
+    const settings = await admin("/api/collector/quality/settings", { method: "PATCH", body: JSON.stringify({ autoBackfill: false }) });
+    assert.equal(settings.body.settings.autoBackfill, false);
+    console.log(`[ok] 数据质量：证据归档（${Object.keys(evidence.body.endpoints).length} 个接口）、截图、巡检、手动补采命令`);
 
     // 停用节点 → 令牌立即失效，节点提示重新登录
     await admin(`/api/collector/nodes/${node.id}`, { method: "PATCH", body: JSON.stringify({ disabled: true }) });

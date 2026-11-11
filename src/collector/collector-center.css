@@ -282,3 +282,127 @@
 
 .cc-log .warn { color: #ffcf66; }
 .cc-log .error { color: #ff8a7a; }
+
+/* ---- 视图切换 ---- */
+.cc-view-switch {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.cc-view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -1px;
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.cc-view-switch button.active { border-bottom-color: var(--blue, var(--orange)); color: var(--text); font-weight: 600; }
+.cc-view-switch button span { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+/* ---- 数据质量 ---- */
+.dq { display: grid; gap: 12px; }
+.dq-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.dq-card {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.dq-card strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.dq-card span { font-size: 13px; font-weight: 600; }
+.dq-card small { color: var(--muted); font-size: 11px; }
+.dq-card.verified { border-left-color: var(--green); }
+.dq-card.verified strong { color: var(--green); }
+.dq-card.ok { border-left-color: var(--blue, var(--cyan)); }
+.dq-card.pending { border-left-color: #d79a21; }
+.dq-card.bad { border-left-color: var(--red); }
+.dq-card.bad strong { color: var(--red); }
+.dq-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.dq-toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dq-manual { padding: 12px 14px; border: 1px solid rgba(180, 35, 24, 0.25); border-radius: 8px; background: rgba(180, 35, 24, 0.04); }
+.dq-manual h5, .dq-actions h5, .dq-evidence h5 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 14px; }
+.dq-manual ul, .dq-actions ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.dq-manual li { display: grid; gap: 3px; padding: 8px 10px; border-radius: 6px; background: var(--panel); }
+.dq-manual-title { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.dq-manual-title b { color: var(--red); }
+.dq-manual-title span { color: var(--muted); font-size: 12px; }
+.dq-manual p { margin: 0; font-size: 13px; line-height: 1.5; }
+.dq-allgood { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-radius: 8px; background: rgba(24, 115, 76, 0.08); color: var(--green); font-size: 13px; }
+.dq-matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dq-matrix th, .dq-matrix td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.dq-matrix th { color: var(--muted); font-size: 12px; font-weight: 600; }
+.dq-matrix th.dq-date, .dq-matrix td.dq-cell { text-align: center; }
+.dq-shop b, .dq-owner { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.dq-shop small, .dq-owner small { display: block; color: var(--muted); font-size: 11px; }
+.dq-owner small.bad, .dq .bad { color: var(--red); }
+.dq-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 30px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dq-chip span { display: none; font-weight: 500; }
+.dq-drawer .dq-chip span { display: inline; }
+.dq-chip.verified { background: rgba(24, 115, 76, 0.14); color: var(--green); }
+.dq-chip.ok { background: rgba(36, 81, 164, 0.1); color: var(--blue, var(--cyan)); }
+.dq-chip.warning { background: rgba(245, 184, 75, 0.25); color: #8a5300; }
+.dq-chip.pending, .dq-chip.refresh { border-color: rgba(215, 154, 33, 0.5); background: transparent; color: #8a5300; }
+.dq-chip.bad { background: rgba(180, 35, 24, 0.12); color: var(--red); }
+.dq-chip:hover { filter: brightness(0.95); box-shadow: 0 0 0 2px rgba(36, 81, 164, 0.18); }
+.dq-legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 12px; }
+.dq-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.dq-legend .dq-chip { min-width: 22px; height: 20px; cursor: default; }
+.dq-actions li { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 12px; }
+.dq-drawer-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(15, 23, 42, 0.32); }
+.dq-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  width: min(720px, 100vw);
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--panel);
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.18);
+}
+.dq-drawer header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dq-drawer header > div { display: grid; gap: 6px; justify-items: start; }
+.dq-drawer h4 { display: flex; gap: 10px; align-items: baseline; margin: 0; font-size: 17px; }
+.dq-drawer h4 span { color: var(--muted); font-size: 13px; font-weight: 400; }
+.dq-issues { display: grid; gap: 4px; margin: 0; padding-left: 18px; font-size: 13px; }
+.dq-issues li.error, .dq-issues li.incomplete { color: var(--red); }
+.dq-issues li.warning, .dq-issues li.pending, .dq-issues li.refresh { color: #8a5300; }
+.dq-values td.num, .dq-values th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dq-drawer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dq-shot { display: grid; gap: 6px; margin: 0; }
+.dq-shot figcaption { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.dq-shot figcaption a { display: inline-flex; align-items: center; gap: 3px; }
+.dq-shot img { width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+.dq-evidence details { margin-bottom: 6px; border: 1px solid var(--line); border-radius: 6px; }
+.dq-evidence summary { padding: 6px 10px; font-size: 13px; cursor: pointer; }
+.dq-evidence pre { max-height: 320px; margin: 0; padding: 8px 10px; overflow: auto; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.45; }
+@media (max-width: 720px) {
+  .dq-drawer { padding: 12px; }
+  .dq-shop b, .dq-owner { max-width: 140px; }
+}

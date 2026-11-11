@@ -82,7 +82,15 @@ function sanitizeRun(run = {}) {
     written: Number(run.upload.written) || 0,
     shopCount: Number(run.upload.shopCount) || 0,
     message: text(run.upload.message, 500),
+    screenshots: Number(run.upload.screenshots) || 0,
   } : null;
+  const pageChecks = Array.isArray(run.pageChecks) ? run.pageChecks.slice(0, 300).map((item) => ({
+    storeName: text(item.storeName, 120),
+    shopName: text(item.shopName, 160),
+    date: isDate(item.date) ? item.date : "",
+    status: ["match", "mismatch", "unchecked"].includes(item.status) ? item.status : "unchecked",
+    message: text(item.message, 300),
+  })) : [];
   return {
     id: text(run.id, 80),
     trigger: text(run.trigger, 20) || "manual",
@@ -96,6 +104,7 @@ function sanitizeRun(run = {}) {
     stores,
     issues,
     upload,
+    pageChecks,
   };
 }
 
@@ -294,7 +303,7 @@ export function createCollectorCenter({ filePath, now = () => Date.now(), saveDe
       return {
         node: { id: node.id, name: node.name },
         schedule: node.schedule,
-        commands: commands.map(({ id, type, storeIds, dates, mode, fromRunId }) => ({ id, type, storeIds, dates, mode, fromRunId })),
+        commands: commands.map(({ id, type, storeIds, dates, mode, fromRunId, source, note }) => ({ id, type, storeIds, dates, mode, fromRunId, source: source || "", note: note || "" })),
         serverTime: isoNow(),
       };
     },
@@ -386,7 +395,7 @@ export function createCollectorCenter({ filePath, now = () => Date.now(), saveDe
       return true;
     },
 
-    createCommand(nodeId, { type = "collect", storeIds = null, dates = null, mode = "upload", fromRunId = "", createdBy = "" } = {}) {
+    createCommand(nodeId, { type = "collect", storeIds = null, dates = null, mode = "upload", fromRunId = "", createdBy = "", source = "", note = "" } = {}) {
       const node = nodeOrThrow(nodeId);
       if (!COMMAND_TYPES.has(type)) {
         const error = new Error("不支持的命令。");
@@ -406,6 +415,8 @@ export function createCollectorCenter({ filePath, now = () => Date.now(), saveDe
         mode: mode === "preview" ? "preview" : "upload",
         fromRunId: text(fromRunId, 80),
         createdBy: text(createdBy, 80),
+        source: text(source, 20),
+        note: text(note, 300),
         createdAt: isoNow(),
         status: "pending",
       };
@@ -433,6 +444,34 @@ export function createCollectorCenter({ filePath, now = () => Date.now(), saveDe
         throw error;
       }
       return this.createCommand(nodeId, { type: "collect", storeIds: targets, dates: run.dates, mode: run.mode === "preview" ? "preview" : "upload", fromRunId: runId, createdBy });
+    },
+
+    /** 所有节点上报的紫鸟店铺（带节点在线状态），数据质量用它找「哪个节点负责哪个店铺」。 */
+    storeIndex() {
+      const list = [];
+      for (const node of Object.values(state.nodes)) {
+        const summary = publicNode(node);
+        for (const store of node.status?.stores || []) {
+          list.push({
+            ...store,
+            nodeId: node.id,
+            nodeName: node.name,
+            online: summary.online,
+            disabled: summary.disabled,
+            running: summary.running,
+            lastSeenAt: summary.lastSeenAt,
+          });
+        }
+      }
+      return list;
+    },
+
+    /** 节点上还没执行完的命令（可按来源过滤，例如数据质量自动补采）。 */
+    activeCommands(nodeId, { source = "" } = {}) {
+      const node = state.nodes[nodeId];
+      if (!node) return [];
+      expireCommands(node);
+      return node.commands.filter((command) => ["pending", "delivered", "running"].includes(command.status) && (!source || command.source === source));
     },
 
     getRuns(nodeId, { limit = 50 } = {}) {

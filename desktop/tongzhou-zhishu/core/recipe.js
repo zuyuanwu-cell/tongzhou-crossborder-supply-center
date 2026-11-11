@@ -304,26 +304,42 @@ function suggestMetrics(endpointsWithSamples) {
   return suggestions;
 }
 
+/** 映射的组成部分：普通映射是一项；parts 映射（例如三类广告花费相加）是多项。 */
+function mappingParts(mapping) {
+  if (!mapping) return [];
+  if (Array.isArray(mapping.parts)) return mapping.parts.filter((part) => part && part.endpoint && part.path);
+  return mapping.endpoint && mapping.path ? [mapping] : [];
+}
+
 /** 用模板的字段映射，从各接口返回里取出一组指标。 */
 function extractMetrics(template, responsesByEndpoint) {
   const values = {};
   const missing = [];
   for (const [field, mapping] of Object.entries(template.metrics || {})) {
-    if (!mapping || !mapping.endpoint || !mapping.path || !METRIC_KEYS.includes(field)) continue;
-    const response = responsesByEndpoint[mapping.endpoint];
-    if (!response || response.error) {
+    if (!METRIC_KEYS.includes(field)) continue;
+    const parts = mappingParts(mapping);
+    if (!parts.length) continue;
+    let total = 0;
+    let found = false;
+    let failed = false;
+    for (const part of parts) {
+      const response = responsesByEndpoint[part.endpoint];
+      const raw = !response || response.error ? null : readPath(response.json, part.path);
+      if (raw === null) {
+        // 可选部分（例如没开 Shop+ / 直播广告的店铺）取不到按 0 计。
+        if (part.optional) continue;
+        failed = true;
+        break;
+      }
+      const scale = Number(part.scale) > 0 ? Number(part.scale) : 1;
+      total += raw / scale;
+      found = true;
+    }
+    if (failed || !found) {
       missing.push(field);
       continue;
     }
-    const raw = readPath(response.json, mapping.path);
-    if (raw === null) {
-      missing.push(field);
-      continue;
-    }
-    const scale = Number(mapping.scale) > 0 ? Number(mapping.scale) : 1;
-    let value = raw / scale;
-    value = ["orderCount", "impressions", "visitors", "addToCart"].includes(field) ? Math.round(value) : Math.round(value * 100) / 100;
-    values[field] = value;
+    values[field] = ["orderCount", "impressions", "visitors", "addToCart"].includes(field) ? Math.round(total) : Math.round(total * 100) / 100;
   }
   return { values, missing };
 }
@@ -340,10 +356,10 @@ function validateTemplate(template) {
     const usesDate = /\{(startTs|endTs|startMs|endMs|date|dateCompact|endTsNext)\}/.test(`${endpoint.url} ${endpoint.body || ""}`);
     if (!usesDate) problems.push(`接口 ${endpoint.label || endpoint.id} 没有日期参数，只能取到页面当前显示的日期`);
   }
-  const mapped = Object.entries(template.metrics || {}).filter(([, mapping]) => mapping && mapping.path);
+  const mapped = Object.entries(template.metrics || {}).filter(([, mapping]) => mappingParts(mapping).length);
   if (!mapped.length) problems.push("还没有映射任何字段");
   for (const [field, mapping] of mapped) {
-    if (!ids.has(mapping.endpoint)) problems.push(`字段 ${field} 指向不存在的接口`);
+    if (mappingParts(mapping).some((part) => !ids.has(part.endpoint))) problems.push(`字段 ${field} 指向不存在的接口`);
   }
   return problems;
 }
@@ -361,5 +377,6 @@ module.exports = {
   flattenNumbers,
   suggestMetrics,
   extractMetrics,
+  mappingParts,
   validateTemplate,
 };

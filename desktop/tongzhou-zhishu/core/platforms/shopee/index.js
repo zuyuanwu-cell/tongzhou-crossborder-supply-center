@@ -3,7 +3,7 @@
 // Shopee 平台适配器。
 // 数据来源：已在紫鸟店铺浏览器登录的 Shopee 卖家中心，在页面内同源调用卖家中心自己的数据接口
 // （商业分析 mydata、广告 pas），不需要 Shopee 开放平台授权，也不读取 Cookie。
-// 内置模板的接口与字段于 2026-11-05 在真实印尼本土店上验证；卖家中心改版时可在「设置 → 高级」重新校准。
+// 内置模板的接口与字段于 2026-11-05 在真实印尼本土店上验证，2026-11-11 与卖家中心页面逐项核对（访客改为关键指标访客、广告费含 Shop+/直播）；卖家中心改版时可在「设置 → 高级」重新校准。
 
 const SELLER_ORIGINS = Object.freeze([
   { id: "ID", label: "印尼本土卖家中心", origin: "https://seller.shopee.co.id" },
@@ -103,22 +103,51 @@ const BUILTIN_LOCAL = Object.freeze({
     },
     {
       id: "ads",
-      label: "Shopee 广告·按天报表",
+      label: "Shopee 广告·商品广告",
       method: "POST",
       url: "{origin}/api/pas/v1/report/get_time_graph/",
       body: '{"agg_interval":4,"campaign_type":"product_homepage_v2","start_time":{startTs},"end_time":{endTs},"need_roi_target_setting":false,"filter_params":{"campaign_type":"new_cpc_homepage"}}',
       headers: { "content-type": "application/json" },
     },
+    {
+      id: "adsShop",
+      label: "Shopee 广告·Shop+ 广告",
+      method: "POST",
+      url: "{origin}/api/pas/v1/report/get_time_graph/",
+      body: '{"agg_interval":4,"campaign_type":"shop_homepage","start_time":{startTs},"end_time":{endTs},"need_roi_target_setting":false,"filter_params":{"campaign_type":"shop_homepage"}}',
+      headers: { "content-type": "application/json" },
+      optional: true,
+    },
+    {
+      id: "adsLive",
+      label: "Shopee 广告·直播广告",
+      method: "POST",
+      url: "{origin}/api/pas/v1/report/get_time_graph/",
+      body: '{"agg_interval":4,"campaign_type":"live_stream_homepage","start_time":{startTs},"end_time":{endTs},"need_roi_target_setting":false,"filter_params":{"campaign_type":"live_stream_homepage"}}',
+      headers: { "content-type": "application/json" },
+      optional: true,
+    },
   ],
   metrics: {
     payAmount: { endpoint: "km", path: "result.paid_gmv.value", scale: 1 },
     orderCount: { endpoint: "km", path: "result.paid_orders.value", scale: 1 },
-    visitors: { endpoint: "km", path: "result.shop_uv.value", scale: 1 },
+    // 「访客」= 商业分析首页关键指标的访客（hybrid_uv，店铺页 + 商品页去重）。
+    // shop_uv 只是「流量 · 店铺页面访客」，2026-11-11 前误用，已修正。
+    visitors: { endpoint: "km", path: "result.hybrid_uv.value", scale: 1 },
     addToCart: { endpoint: "product", path: "atc_uv.value", scale: 1 },
     impressions: { endpoint: "traffic", path: "result.product_card.total.product_impressions", scale: 1 },
-    adOnsite: { endpoint: "ads", path: "data.report_by_time[*].metrics.cost", scale: 100000 },
+    // 站内广告 = 商品广告 + Shop+ 广告 + 直播广告（Shopee 广告页三个标签的「花费」之和）。
+    adOnsite: {
+      parts: [
+        { endpoint: "ads", path: "data.report_by_time[*].metrics.cost", scale: 100000 },
+        { endpoint: "adsShop", path: "data.report_by_time[*].metrics.cost", scale: 100000, optional: true },
+        { endpoint: "adsLive", path: "data.report_by_time[*].metrics.cost", scale: 100000, optional: true },
+      ],
+    },
   },
-  updatedAt: "2026-11-05T00:00:00.000Z",
+  // 用于判断历史数据是否按新口径采集（中台数据质量会把旧口径的数据自动补采一遍）。
+  version: 2,
+  updatedAt: "2026-11-11T00:00:00.000Z",
 });
 
 /** 店铺身份（Shopee 店铺名、登录名、店铺 ID），用于自动对应中台店铺。 */
@@ -159,8 +188,12 @@ function blankTemplate({ sellerCenter = "ID", name = "" } = {}) {
   };
 }
 
+/** 页面核对：商业分析首页（关键指标的支付金额、订单数、访客数）。 */
+const PAGE_CHECK = Object.freeze({ path: "/datacenter/dashboard" });
+
 module.exports = {
   id: "shopee",
+  pageCheck: PAGE_CHECK,
   name: "Shopee",
   SELLER_ORIGINS,
   DISCOVERY_PAGES,

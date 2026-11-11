@@ -86,6 +86,7 @@ import { miaoshouBusinessDate, normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_B
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createCollectorCenter } from "./collector-center.js";
+import { createCollectorQuality, addDays as qualityAddDays } from "./collector-quality.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
@@ -181,6 +182,7 @@ function resolveShopMetricsIngestToken() {
 const shopMetricsIngestToken = resolveShopMetricsIngestToken();
 // 采集中心：同舟智数采集节点的配对、心跳、计划、命令、运行记录与日志。
 const collectorCenter = createCollectorCenter({ filePath: resolve(cacheDir, "collector-center.json") });
+const collectorQuality = createCollectorQuality({ dir: resolve(cacheDir, "collector-quality") });
 const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "false";
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
@@ -6108,7 +6110,88 @@ async function importShopDailyMetrics({ rows = [], source = "import", dryRun = f
   };
   if (dryRun || !visibleRows.length) return preview;
   const result = shopDailyReportStore.upsertMetrics(visibleRows, { source, updatedBy: shopDailyActor(auth) || source });
-  return { ...preview, written: result.written };
+  // resolved：每行最终写入的店铺（采集证据按它归档）；调用方用完后不返回给客户端。
+  return { ...preview, written: result.written, resolved: visibleRows.map((row) => ({ shopKey: row.shopKey, shopName: row.shopName, date: row.date, lines: row.lines || [] })) };
+}
+
+/** 采集写入后归档证据（接口原始返回摘要、页面核对结果），供数据质量判定与查看。 */
+function recordCollectorEvidence(node, inputRows, resolved = []) {
+  const items = [];
+  for (const row of resolved) {
+    const line = [...(row.lines || [])].reverse().find((item) => inputRows[item - 1]?.evidence);
+    const evidence = line ? inputRows[line - 1].evidence : null;
+    if (evidence) items.push({ shopKey: row.shopKey, shopName: row.shopName, date: row.date, evidence });
+  }
+  if (!items.length) return 0;
+  return collectorQuality.recordEvidence(node.id, items).saved;
+}
+
+let qualityCycleRunning = null;
+let qualityCycleTimer = null;
+
+/**
+ * 数据质量巡检：判定最近几天每个店铺的数据状态，按需给采集节点下发补采命令。
+ * act=false 只判定不下发（页面刷新用）。
+ */
+async function runCollectorQualityCycle({ act = true, reason = "scheduled" } = {}) {
+  if (qualityCycleRunning) return qualityCycleRunning;
+  qualityCycleRunning = (async () => {
+    const settings = collectorQuality.settings();
+    const today = new Date().toISOString().slice(0, 10);
+    const metrics = shopDailyReportStore.listMetrics({ dateFrom: qualityAddDays(today, -(settings.legacyRefreshDays + 16)), dateTo: today });
+    let systemDaily = [];
+    try {
+      const context = await shopDailyContext(directAuth, { dateFrom: qualityAddDays(today, -(settings.windowDays + 2)), dateTo: today });
+      systemDaily = context.systemDaily || [];
+    } catch (error) {
+      console.error("[collector-quality] miaoshou daily unavailable", error?.message || error);
+    }
+    const evaluation = collectorQuality.evaluate({ metrics, systemDaily, storeIndex: collectorCenter.storeIndex() });
+    const planned = collectorQuality.plan(evaluation, { activeCommands: (nodeId) => collectorCenter.activeCommands(nodeId, { source: "quality" }) });
+    const created = [];
+    if (act && settings.autoBackfill) {
+      for (const action of planned.actions) {
+        try {
+          const command = collectorCenter.createCommand(action.nodeId, { type: "collect", storeIds: action.storeIds, dates: action.dates, mode: "upload", createdBy: "数据质量（自动）", source: "quality", note: action.note });
+          collectorQuality.recordAttempts(action.keys, { nodeId: action.nodeId, commandId: command.id });
+          collectorQuality.logAction({ type: "backfill", nodeId: action.nodeId, nodeName: action.nodeName, storeIds: action.storeIds, dates: action.dates, note: action.note, commandId: command.id, cells: action.keys.length });
+          created.push({ ...action, commandId: command.id });
+        } catch (error) {
+          collectorQuality.logAction({ type: "backfill_failed", nodeId: action.nodeId, nodeName: action.nodeName, note: error.message });
+        }
+      }
+    }
+    collectorQuality.setLastCycle({ reason, actions: created.length, manual: planned.manual.length });
+    if (reason === "scheduled") collectorQuality.prune();
+    return { evaluation, manual: planned.manual, actions: created };
+  })().finally(() => {
+    qualityCycleRunning = null;
+  });
+  return qualityCycleRunning;
+}
+
+/** 采集写入后稍等再巡检一次（节点一轮采集写完、失败店铺尽快补采）。 */
+function scheduleCollectorQualityCycle(delayMs = 3 * 60 * 1000) {
+  if (!backgroundJobsEnabled || qualityCycleTimer) return;
+  qualityCycleTimer = setTimeout(() => {
+    qualityCycleTimer = null;
+    runCollectorQualityCycle({ reason: "after_ingest" }).catch((error) => console.error("[collector-quality] cycle failed", error));
+  }, delayMs);
+  qualityCycleTimer.unref?.();
+}
+
+function qualityPayload(result) {
+  const evaluation = result?.evaluation || collectorQuality.lastEvaluation();
+  return {
+    ok: true,
+    settings: collectorQuality.settings(),
+    evaluatedAt: evaluation?.evaluatedAt || "",
+    stats: evaluation?.stats || null,
+    rows: evaluation?.rows || [],
+    manual: result?.manual || evaluation?.manual || [],
+    actions: collectorQuality.actions(40),
+    lastCycle: collectorQuality.lastCycle(),
+  };
 }
 
 /** 采集节点令牌（同舟智数节点配对后拿到），返回节点或 null。 */
@@ -8113,6 +8196,16 @@ function registerBackgroundSyncTasks() {
     run: runWecomSchedules,
   });
   syncScheduler.register({
+    id: "collector-data-quality",
+    label: "店铺日报数据质量巡检（自动补采）",
+    lane: "light",
+    priority: 103,
+    intervalMs: 20 * minute,
+    initialDelayMs: 3 * minute,
+    jitterMs: 20_000,
+    run: () => runCollectorQualityCycle({ reason: "scheduled" }),
+  });
+  syncScheduler.register({
     id: "hermes-exception-patrol",
     label: "Hermes 确定性异常巡检",
     enabled: hermesPatrolEnabled,
@@ -8833,6 +8926,11 @@ async function collectHermesPatrolSources() {
     },
     collaborationBridge: collaborationBridgeSource,
     partnerTasks: cachedHermesPartnerTaskSource,
+    shopDataQuality: {
+      manual: collectorQuality.lastEvaluation()?.manual || [],
+      evaluatedAt: collectorQuality.lastEvaluation()?.evaluatedAt || "",
+      complete: true,
+    },
   };
   return {
     ...sources,
@@ -13052,6 +13150,7 @@ const server = http.createServer(async (req, res) => {
       if (!result.dryRun && result.written) {
         appendActionLog(auth, "导入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, shops: result.shopCount });
       }
+      delete result.resolved;
       sendJson(res, 200, result);
       return;
     }
@@ -13090,7 +13189,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (url.pathname === "/api/collector/agent/heartbeat" && req.method === "POST") {
           const body = await parseRequestBody(req, 512 * 1024);
-          sendJson(res, 200, { ok: true, ...collectorCenter.heartbeat(node.id, body) });
+          sendJson(res, 200, { ok: true, ...collectorCenter.heartbeat(node.id, body), quality: collectorQuality.nodeSettings() });
           return;
         }
         if (url.pathname === "/api/collector/agent/runs" && req.method === "POST") {
@@ -13102,6 +13201,12 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === "/api/collector/agent/logs" && req.method === "POST") {
           const body = await parseRequestBody(req, 1024 * 1024);
           sendJson(res, 200, { ok: true, ...collectorCenter.appendLogs(node.id, body?.lines) });
+          return;
+        }
+        if (url.pathname === "/api/collector/agent/evidence/screenshot" && req.method === "POST") {
+          const body = await parseRequestBody(req, 8 * 1024 * 1024);
+          const result = collectorQuality.attachScreenshot(node.id, { storeId: String(body?.storeId || ""), date: String(body?.date || ""), shopName: String(body?.shopName || ""), mime: String(body?.mime || "image/jpeg"), base64: String(body?.base64 || "") });
+          sendJson(res, result.ok ? 200 : 404, result);
           return;
         }
         const ackMatch = url.pathname.match(/^\/api\/collector\/agent\/commands\/([^/]+)\/ack$/);
@@ -13127,6 +13232,63 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "没有管理采集节点的权限。" });
         return false;
       };
+      // ---- 数据质量 ----
+      if (url.pathname === "/api/collector/quality" && req.method === "GET") {
+        const stale = Date.now() - (Date.parse(collectorQuality.lastEvaluation()?.evaluatedAt || "") || 0) > 5 * 60 * 1000;
+        const result = stale || url.searchParams.get("refresh") === "1" ? await runCollectorQualityCycle({ act: false, reason: "view" }) : null;
+        sendJson(res, 200, qualityPayload(result));
+        return;
+      }
+      if (url.pathname === "/api/collector/quality/run" && req.method === "POST") {
+        if (!requireEdit()) return;
+        const result = await runCollectorQualityCycle({ act: true, reason: "manual" });
+        appendActionLog(auth, "数据质量巡检", "collector_quality", `自动补采 ${result.actions.length} 个节点`, { actions: result.actions.length });
+        sendJson(res, 200, { ...qualityPayload(result), created: result.actions });
+        return;
+      }
+      if (url.pathname === "/api/collector/quality/settings" && req.method === "PATCH") {
+        if (!requireEdit()) return;
+        const body = await parseRequestBody(req, 16 * 1024);
+        const settings = collectorQuality.updateSettings(body || {});
+        appendActionLog(auth, "修改数据质量设置", "collector_quality", "settings", settings);
+        sendJson(res, 200, { ok: true, settings });
+        return;
+      }
+      if (url.pathname === "/api/collector/quality/evidence" && req.method === "GET") {
+        const detail = collectorQuality.evidenceDetail(url.searchParams.get("shopKey") || "", url.searchParams.get("date") || "");
+        sendJson(res, detail ? 200 : 404, detail ? { ok: true, ...detail } : { ok: false, message: "这一天没有采集证据（可能是旧版本采集的数据）。" });
+        return;
+      }
+      if (url.pathname === "/api/collector/quality/screenshot" && req.method === "GET") {
+        const shot = collectorQuality.screenshotFile(url.searchParams.get("shopKey") || "", url.searchParams.get("date") || "");
+        if (!shot) {
+          sendJson(res, 404, { ok: false, message: "没有截图。" });
+          return;
+        }
+        res.writeHead(200, { "content-type": shot.mime, "cache-control": "private, max-age=300" });
+        res.end(readFileSync(shot.file));
+        return;
+      }
+      if (url.pathname === "/api/collector/quality/recollect" && req.method === "POST") {
+        if (!requireEdit()) return;
+        const body = await parseRequestBody(req, 64 * 1024);
+        const shopKey = String(body?.shopKey || "");
+        const dates = (Array.isArray(body?.dates) ? body.dates : []).map(String).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)).slice(0, 31);
+        const evaluation = collectorQuality.lastEvaluation() || (await runCollectorQualityCycle({ act: false, reason: "view" })).evaluation;
+        const row = evaluation.rows.find((item) => item.shopKey === shopKey);
+        const owner = row?.owners.find((item) => item.online) || row?.owners[0];
+        if (!owner || !dates.length) {
+          sendJson(res, 400, { ok: false, message: owner ? "请选择需要补采的日期。" : "没有采集节点负责这个店铺。" });
+          return;
+        }
+        const command = collectorCenter.createCommand(owner.nodeId, { type: "collect", storeIds: [owner.storeId], dates, mode: "upload", createdBy: auth.user.displayName || auth.user.username, source: "quality", note: "手动补采" });
+        collectorQuality.recordAttempts(dates.map((date) => ({ key: `${shopKey}|${date}`, reason: "manual" })), { nodeId: owner.nodeId, commandId: command.id, manual: true });
+        collectorQuality.logAction({ type: "manual_backfill", nodeId: owner.nodeId, nodeName: owner.nodeName, storeIds: [owner.storeId], dates, note: `${row.shopName} 手动补采（${auth.user.displayName || auth.user.username}）`, commandId: command.id });
+        appendActionLog(auth, "手动补采店铺数据", "collector_quality", row.shopName, { shopKey, dates, commandId: command.id });
+        sendJson(res, 200, { ok: true, command, nodeName: owner.nodeName, storeName: owner.storeName });
+        return;
+      }
+
       if (url.pathname === "/api/collector/nodes" && req.method === "GET") {
         sendJson(res, 200, { ok: true, nodes: collectorCenter.listNodes(), onlineWindowSeconds: 180, serverTime: new Date().toISOString() });
         return;
@@ -13232,7 +13394,9 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 401, { ok: false, message: "采集令牌无效。" });
         return;
       }
-      const body = await parseRequestBody(req, 6 * 1024 * 1024);
+      const ingestNode = collectorNodeFromRequest(req);
+      // 采集节点每行带采集证据，请求体比人工导入大。
+      const body = await parseRequestBody(req, (ingestNode ? 16 : 6) * 1024 * 1024);
       const inputRows = Array.isArray(body.rows) ? body.rows.slice(0, 20000) : [];
       const rows = inputRows.map((row, index) => {
         const values = {};
@@ -13252,9 +13416,13 @@ const server = http.createServer(async (req, res) => {
         };
       }).filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date));
       const source = String(body.source || "ziniao").replace(/[^a-z0-9_-]/gi, "").slice(0, 32) || "ziniao";
-      const result = await importShopDailyMetrics({ rows, source, dryRun: Boolean(body.dryRun), auth: directAuth });
+      const { resolved, ...result } = await importShopDailyMetrics({ rows, source, dryRun: Boolean(body.dryRun), auth: directAuth });
       if (!result.dryRun && result.written) {
         appendActionLog(directAuth, "采集写入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, source });
+        if (ingestNode && Array.isArray(resolved)) {
+          result.evidenceSaved = recordCollectorEvidence(ingestNode, inputRows, resolved);
+          scheduleCollectorQualityCycle();
+        }
       }
       sendJson(res, 200, result);
       return;

@@ -3,8 +3,9 @@
 // 采集编排：校准（探测接口 → 生成模板 → 试采）与正式采集（逐店铺打开紫鸟 → 页面内重放接口 → 取值 → 回写中台）。
 
 const { getPlatform, guessPlatform, allTemplates } = require("./platforms");
-const { hookBody, probeBody, pageInfoBody, replayBody } = require("./page-scripts");
-const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
+const { hookBody, probeBody, pageInfoBody, replayBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
+const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, mappingParts, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
+const { comparePageCheck, evidenceEndpoint, pageDateText } = require("./quality");
 const { siteInfo, siteToday, addDays, dateList } = require("./sites");
 const { newId } = require("./config");
 
@@ -40,8 +41,10 @@ function defaultDates({ lookbackDays = 3, includeToday = false, site = "SG", now
 }
 
 class Collector {
-  constructor({ cli, store, log = () => {}, zhongtaiFactory, waits = {} }) {
+  constructor({ cli, store, log = () => {}, zhongtaiFactory, waits = {}, imageEncoder = null }) {
     this.cli = cli;
+    // 截图压缩（Electron 主进程里用 nativeImage 转 JPEG）；返回 { mime, base64 } 或 null。
+    this.imageEncoder = imageEncoder;
     this.waits = { fresh: 5000, reused: 2500, visit: 3000, retry: 5000, ...waits };
     this.store = store;
     this.log = log;
@@ -383,12 +386,15 @@ class Collector {
             }
           }
           const { values, missing: allMissing } = extractMetrics(template, responses);
-          const missing = allMissing.filter((field) => !notReadyEndpoints.has(template.metrics[field]?.endpoint));
+          const notReadyFields = allMissing.filter((field) => mappingParts(template.metrics[field]).some((part) => notReadyEndpoints.has(part.endpoint)));
+          const missing = allMissing.filter((field) => !notReadyFields.includes(field));
           if (!Object.keys(values).length) {
             issues.push({ level: "warn", storeName: store.storeName, shopName: target.shopName, date, message: "没有取到任何字段，已跳过" });
             continue;
           }
           if (missing.length) issues.push({ level: "warn", storeName: store.storeName, shopName: target.shopName, date, message: `缺少字段：${missing.join("、")}` });
+          const endpoints = {};
+          for (const endpoint of template.endpoints) endpoints[endpoint.id] = evidenceEndpoint(endpoint, responses[endpoint.id]);
           rows.push({
             date,
             shopKey: target.shopKey || undefined,
@@ -398,12 +404,68 @@ class Collector {
             currency: target.currency || info?.currency || "",
             ...values,
             _store: store.storeName,
+            evidence: {
+              storeId: store.storeId,
+              storeName: store.storeName,
+              site: target.country,
+              origin,
+              templateId: template.id || "",
+              templateVersion: Number(template.version) || 1,
+              collectedAt: new Date().toISOString(),
+              values,
+              missing,
+              notReady: notReadyFields,
+              endpoints,
+              pageCheck: null,
+            },
           });
         }
       }
-      return { ok: true, rows, issues };
+      const screenshots = [];
+      if (targets.length === 1 && platform.pageCheck && this.config().quality?.pageCheck !== false) {
+        await this.pageCheck({ store, target: targets[0], platform, origin, rows, issues, screenshots, onProgress });
+      }
+      return { ok: true, rows, issues, screenshots };
     } finally {
       if (closeAfter && !reused) await this.cli.closeStore({ storeId: store.storeId });
+    }
+  }
+
+  /**
+   * 页面核对：只核对站点「昨天」那一行（商业分析首页的「昨天」快捷选项）。
+   * 核对失败不影响采集结果，只记为「未核对」。
+   */
+  async pageCheck({ store, target, platform, origin, rows, issues, screenshots, onProgress = () => {} }) {
+    const yesterday = addDays(siteToday(target.country), -1);
+    const row = rows.find((item) => item.date === yesterday);
+    if (!row) return;
+    const settings = this.config().quality || {};
+    let page = null;
+    try {
+      onProgress({ storeId: store.storeId, phase: "check", message: `${store.storeName}：与 Shopee 后台页面核对 ${yesterday}` });
+      await this.cli.visit({ storeId: store.storeId, url: `${origin}${platform.pageCheck.path}` });
+      await sleep(this.waits.visit);
+      page = await this.cli.runInPage(store.storeId, pageCheckBody({ expectDate: pageDateText(yesterday) }), { timeoutMs: 90000 });
+    } catch (error) {
+      page = { notes: [`页面核对失败：${error.message}`] };
+    }
+    const check = comparePageCheck(row.evidence.values, page, target.country);
+    row.evidence.pageCheck = { at: new Date().toISOString(), date: yesterday, ...check, orderType: page?.orderType || "", lang: page?.lang || "", raw: page?.values || {}, notes: page?.notes || [] };
+    if (check.status === "mismatch") {
+      const detail = Object.entries(check.fields).filter(([, item]) => !item.match).map(([field, item]) => `${field} 采集 ${item.collected} / 页面 ${item.page}`).join("；");
+      issues.push({ level: "warn", storeName: store.storeName, shopName: target.shopName, date: yesterday, message: `与 Shopee 后台页面不一致：${detail}` });
+    }
+    if (page?.period && settings.screenshot !== false && this.cli.screenshot) {
+      try {
+        const filePath = await this.cli.screenshot({ storeId: store.storeId });
+        const image = this.imageEncoder ? await this.imageEncoder(filePath) : null;
+        if (image?.base64) screenshots.push({ storeId: store.storeId, storeName: store.storeName, shopName: target.shopName, date: yesterday, ...image });
+      } catch (error) {
+        this.log("warn", `${store.storeName} 截图失败（不影响采集）：${error.message}`);
+      }
+    }
+    if (page?.keepOrderType) {
+      await this.cli.runInPage(store.storeId, restoreOrderTypeBody(page.keepOrderType), { timeoutMs: 30000 }).catch(() => null);
     }
   }
 
@@ -435,6 +497,7 @@ class Collector {
     this.running = entry;
     if (this.onRunUpdate) this.onRunUpdate({ ...entry });
     const allRows = [];
+    const allScreenshots = [];
     try {
       for (const item of skipped) entry.stores.push({ storeId: item.storeId, storeName: item.storeName, status: "skipped", message: item.reason, rowCount: 0 });
       for (let index = 0; index < plan.length; index += 1) {
@@ -464,6 +527,7 @@ class Collector {
         }
         if (result) {
           allRows.push(...result.rows);
+          allScreenshots.push(...(result.screenshots || []));
           entry.issues.push(...result.issues);
           const hasError = result.issues.some((issue) => issue.level === "error");
           entry.stores.push({ storeId: item.store.storeId, storeName: item.store.storeName, status: hasError ? "partial" : "ok", message: hasError ? "部分接口失败" : "", rowCount: result.rows.length });
@@ -475,6 +539,7 @@ class Collector {
         onProgress({ index: index + 1, total: plan.length, storeId: item.store.storeId, phase: "done", message: `${item.store.storeName} 完成` });
       }
       entry.rowCount = allRows.length;
+      entry.pageChecks = allRows.filter((row) => row.evidence?.pageCheck).map((row) => ({ storeName: row._store, shopName: row.shopName, date: row.date, status: row.evidence.pageCheck.status, message: row.evidence.pageCheck.message }));
       const rows = allRows.map(({ _store, ...row }) => {
         for (const key of Object.keys(row)) if (row[key] === undefined) delete row[key];
         return row;
@@ -485,6 +550,18 @@ class Collector {
           const client = this.zhongtaiFactory();
           const result = await client.ingest(rows, { dryRun: mode === "preview" });
           entry.upload = { ok: true, dryRun: mode === "preview", rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: result.errors.slice(0, 50), warnings: result.warnings.slice(0, 50), at: new Date().toISOString() };
+          if (mode === "upload" && allScreenshots.length && typeof client.agent === "function" && client.isNode) {
+            let sent = 0;
+            for (const shot of allScreenshots) {
+              try {
+                await client.agent("evidence/screenshot", shot);
+                sent += 1;
+              } catch (error) {
+                this.log("warn", `上传 ${shot.storeName} 截图失败：${error.message}`);
+              }
+            }
+            entry.upload.screenshots = sent;
+          }
         } catch (error) {
           entry.upload = { ok: false, message: error.message, status: error.status || 0, at: new Date().toISOString() };
           if (error.status === 401 && this.onUnauthorized) this.onUnauthorized();
@@ -508,7 +585,13 @@ class Collector {
     if (!rows.length) throw new Error("这次采集没有可上传的数据");
     const result = await this.zhongtaiFactory().ingest(rows, { dryRun });
     const upload = { ok: true, dryRun, rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: result.errors.slice(0, 50), warnings: result.warnings.slice(0, 50), at: new Date().toISOString() };
-    if (!dryRun) this.store.updateHistory(runId, { upload, status: "ok" });
+    if (!dryRun) {
+      // 重新写入只修复「写入中台失败」，不把采集失败的店铺标成成功。
+      const run = (this.store.history() || []).find((item) => item.id === runId);
+      const failed = (run?.stores || []).filter((store) => store.status === "failed").length;
+      const status = !run ? "ok" : failed && failed === run.stores.length ? "failed" : failed || (run.issues || []).some((issue) => issue.level === "error") ? "partial" : "ok";
+      this.store.updateHistory(runId, { upload, status });
+    }
     return upload;
   }
 }
