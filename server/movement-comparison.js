@@ -1,3 +1,5 @@
+import { dateDistanceInDays } from "./date-time.js";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_VARIANCE_QTY = 5;
 const DEFAULT_VARIANCE_RATE = 0.05;
@@ -256,7 +258,7 @@ function round(value, digits = 2) {
   return Math.round(numberOrZero(value) * factor) / factor;
 }
 
-function inventoryComparison({ previous, current, outboundQty, coverage, varianceThresholdQty, varianceThresholdRate }) {
+function inventoryComparison({ previous, current, outboundQty, coverage, snapshotCoverageComplete, varianceThresholdQty, varianceThresholdRate }) {
   if (!previous || !current) {
     return {
       openingOnHandQty: previous ? numberOrZero(previous.availableQty) + numberOrZero(previous.lockedQty) : null,
@@ -281,8 +283,10 @@ function inventoryComparison({ previous, current, outboundQty, coverage, varianc
   let explanation = "实际期末在库与按出库量推算的理论库存一致。";
   if (variance > 0) explanation = "实际库存高于理论库存，可能存在入库、退货、盘盈或正向库存调整。";
   if (variance < 0) explanation = "实际库存低于理论库存，可能存在未同步出库、盘亏、报损或负向库存调整。";
-  if (!coverage.complete) explanation = `订单缓存未完整覆盖 ${coverage.requestedFrom} 至 ${coverage.requestedTo}，当前差异仅供排查参考。`;
+  if (!snapshotCoverageComplete) explanation = "期初或期末快照未落在要求的业务日边界，当前差异仅供排查参考。";
+  else if (!coverage.complete) explanation = `订单缓存未完整覆盖 ${coverage.requestedFrom} 至 ${coverage.requestedTo}，当前差异仅供排查参考。`;
   const severe = anomaly && Math.abs(variance) >= Math.max(20, varianceThresholdQty * 4) && rate >= Math.max(0.2, varianceThresholdRate * 2);
+  const reliable = coverage.complete && snapshotCoverageComplete;
   return {
     openingOnHandQty: round(openingOnHandQty),
     closingOnHandQty: round(closingOnHandQty),
@@ -291,20 +295,24 @@ function inventoryComparison({ previous, current, outboundQty, coverage, varianc
     inventoryVarianceQty: round(variance),
     inventoryVarianceRate: round(rate),
     inventoryAnomaly: anomaly,
-    inventorySeverity: !coverage.complete ? "uncertain" : severe ? "danger" : anomaly ? "warning" : "normal",
-    inventoryReliable: coverage.complete,
+    inventorySeverity: !reliable ? "uncertain" : severe ? "danger" : anomaly ? "warning" : "normal",
+    inventoryReliable: reliable,
     inventoryExplanation: explanation,
   };
 }
 
-function snapshotDigest(snapshot) {
+function snapshotDigest(snapshot, requestedDate = "") {
   if (!snapshot) return null;
+  const gapDays = requestedDate ? dateDistanceInDays(snapshot.date, requestedDate) : null;
   return {
     date: snapshot.date || "",
     timezone: snapshot.timezone || "",
     capturedAt: snapshot.capturedAt || "",
     orderSyncedAt: snapshot.orderSyncedAt || "",
     inventorySyncedAt: snapshot.inventorySyncedAt || "",
+    requestedDate,
+    boundaryMatch: gapDays === 0,
+    gapDays,
   };
 }
 
@@ -324,6 +332,9 @@ export function buildMovementComparison({
   if (!ranges?.current || !ranges?.previous) throw new Error("缺少动销对比区间。");
   const currentSnapshot = latestSnapshotInRange(snapshots, ranges.current);
   const previousSnapshot = latestSnapshotInRange(snapshots, ranges.previous);
+  const currentSnapshotComplete = Boolean(currentSnapshot && currentSnapshot.date === ranges.current.to);
+  const previousSnapshotComplete = Boolean(previousSnapshot && previousSnapshot.date === ranges.previous.to);
+  const snapshotCoverageComplete = currentSnapshotComplete && previousSnapshotComplete;
   const currentRows = filterRows(currentSnapshot?.rows || [], { warehouseId, sku });
   const previousRows = filterRows(previousSnapshot?.rows || [], { warehouseId, sku });
   const currentByKey = rowsByKey(currentRows);
@@ -361,6 +372,7 @@ export function buildMovementComparison({
       current,
       outboundQty: outbound.quantityByRow.get(key) || 0,
       coverage,
+      snapshotCoverageComplete,
       varianceThresholdQty,
       varianceThresholdRate,
     });
@@ -415,8 +427,13 @@ export function buildMovementComparison({
     ranges,
     filters: { warehouseId, sku },
     thresholds: { quantity: varianceThresholdQty, rate: varianceThresholdRate },
-    currentSnapshot: snapshotDigest(currentSnapshot),
-    previousSnapshot: snapshotDigest(previousSnapshot),
+    currentSnapshot: snapshotDigest(currentSnapshot, ranges.current.to),
+    previousSnapshot: snapshotDigest(previousSnapshot, ranges.previous.to),
+    dataCompleteness: {
+      status: snapshotCoverageComplete ? "ready" : currentSnapshot && previousSnapshot ? "partial" : "missing",
+      currentSnapshot: currentSnapshot ? (currentSnapshotComplete ? "ready" : "partial") : "missing",
+      previousSnapshot: previousSnapshot ? (previousSnapshotComplete ? "ready" : "partial") : "missing",
+    },
     comparisonAvailable: Boolean(currentSnapshot),
     baselineAvailable: Boolean(previousSnapshot),
     summary: {

@@ -1436,6 +1436,9 @@ export type InventoryValueRow = {
   unitCostCny: number | null;
   costSource: "direct_price" | "warehouse_weighted_price" | "manual_supplement" | "missing";
   costSourceLabel: string;
+  costBasis: "current_direct_price" | "effective_dated_warehouse_cost" | "effective_dated_manual_cost" | "missing" | string;
+  costEffectiveDate: string;
+  rateEffectiveDate: string;
   onHandValueCny: number;
   inTransitValueCny: number;
   totalValueCny: number;
@@ -1908,8 +1911,13 @@ export type MovementComparisonPayload = {
   };
   filters: { warehouseId: string; sku: string };
   thresholds: { quantity: number; rate: number };
-  currentSnapshot: { date: string; timezone: string; capturedAt: string; orderSyncedAt: string; inventorySyncedAt: string } | null;
-  previousSnapshot: { date: string; timezone: string; capturedAt: string; orderSyncedAt: string; inventorySyncedAt: string } | null;
+  currentSnapshot: { date: string; timezone: string; capturedAt: string; orderSyncedAt: string; inventorySyncedAt: string; requestedDate: string; boundaryMatch: boolean; gapDays: number | null } | null;
+  previousSnapshot: { date: string; timezone: string; capturedAt: string; orderSyncedAt: string; inventorySyncedAt: string; requestedDate: string; boundaryMatch: boolean; gapDays: number | null } | null;
+  dataCompleteness: {
+    status: "ready" | "partial" | "missing";
+    currentSnapshot: "ready" | "partial" | "missing";
+    previousSnapshot: "ready" | "partial" | "missing";
+  };
   comparisonAvailable: boolean;
   baselineAvailable: boolean;
   summary: {
@@ -2010,11 +2018,15 @@ export type OverseasReconciliationSkuRow = {
   returnReceivedQty: number;
   restockedQty: number;
   scrappedQty: number;
+  badQty: number;
   pendingReturnQty: number;
   returnQty: number;
+  draftReturnQty: number;
+  unreceivedReturnQty: number;
+  damageRate: number;
   shopCount: number;
   returnFactCount: number;
-  returnFacts: OverseasReconciliationReturnFact[];
+  returnFactIds: string[];
   snapshotComparable: boolean;
 };
 
@@ -2038,8 +2050,12 @@ export type OverseasReconciliationWarehouse = {
   returnReceivedQty: number;
   restockedQty: number;
   scrappedQty: number;
+  badQty: number;
   pendingReturnQty: number;
   inTransitReturnQty: number;
+  draftReturnQty: number;
+  unreceivedReturnQty: number;
+  damageRate: number;
   inboundInTransitQty: number;
   unclaimedReturnCount: number;
   unclaimedReturnQty: number;
@@ -2064,9 +2080,13 @@ export type OverseasReconciliationSummary = {
   returnQty: number;
   returnReceivedQty: number;
   inTransitReturnQty: number;
+  draftReturnQty: number;
+  unreceivedReturnQty: number;
   pendingReturnQty: number;
   restockedQty: number;
   scrappedQty: number;
+  badQty: number;
+  damageRate: number;
   inboundInTransitQty: number;
   unclaimedReturnCount: number;
   unclaimedReturnQty: number;
@@ -2089,8 +2109,12 @@ export type OverseasReconciliationRanking = {
   receivedQty: number;
   restockedQty: number;
   scrappedQty: number;
+  badQty: number;
   pendingQty: number;
   inTransitQty: number;
+  draftQty: number;
+  unreceivedQty: number;
+  damageRate: number;
   factCount: number;
   warehouseCount: number;
   shopCount: number;
@@ -2118,10 +2142,10 @@ export type OverseasInventoryReconciliationPayload = {
     previousSummary: OverseasReconciliationSummary;
   };
   snapshots: {
-    opening: { date: string; capturedAt: string } | null;
-    closing: { date: string; capturedAt: string } | null;
-    previousOpening: { date: string; capturedAt: string } | null;
-    previousClosing: { date: string; capturedAt: string } | null;
+    opening: { date: string; capturedAt: string; requestedDate: string; boundaryMatch: boolean; gapDays: number | null } | null;
+    closing: { date: string; capturedAt: string; requestedDate: string; boundaryMatch: boolean; gapDays: number | null } | null;
+    previousOpening: { date: string; capturedAt: string; requestedDate: string; boundaryMatch: boolean; gapDays: number | null } | null;
+    previousClosing: { date: string; capturedAt: string; requestedDate: string; boundaryMatch: boolean; gapDays: number | null } | null;
   };
   warehouses: OverseasReconciliationWarehouse[];
   returnFacts: OverseasReconciliationReturnFact[];
@@ -2148,6 +2172,8 @@ export type OverseasInventoryReconciliationPayload = {
     status: "ready" | "partial" | "missing" | string;
     syncedAt: string;
     snapshotDate?: string;
+    requestedSnapshotDate?: string;
+    gapDays?: number | null;
     message?: string;
     errors?: Array<{ warehouseId?: string; warehouseName?: string; message?: string }>;
   }>;

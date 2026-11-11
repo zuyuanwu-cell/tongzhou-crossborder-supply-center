@@ -48,7 +48,7 @@ const wmsReturnOrders = [
   {
     id: "return-1", warehouseId: "wh-id", warehouseName: warehouse.name, country: warehouse.country,
     returnOrderNumber: "RET-001", originalOrderNumber: "ORDER-1", status: "mixed", statusLabel: "混合处理",
-    createdAt: "2026-10-06 10:00:00", updatedAt: "2026-10-07 10:00:00",
+    createdAt: "2026-10-06 10:00:00", completedAt: "2026-10-07 09:00:00", updatedAt: "2026-10-09 10:00:00",
     items: [{ id: "r1-a", sku: "SKU-A", productName: "产品 A", expectedQty: 5, receivedQty: 5, restockedQty: 3, scrappedQty: 1, pendingQty: 1, badQty: 1 }],
   },
   {
@@ -56,6 +56,18 @@ const wmsReturnOrders = [
     returnOrderNumber: "RET-002", originalOrderNumber: "ORDER-2", status: "in_transit", statusLabel: "在途中",
     createdAt: "2026-10-08 10:00:00", updatedAt: "2026-10-08 10:00:00",
     items: [{ id: "r2-b", sku: "SKU-B", productName: "产品 B", expectedQty: 2, receivedQty: 0, restockedQty: 0, scrappedQty: 0, pendingQty: 0 }],
+  },
+  {
+    id: "return-draft", warehouseId: "wh-id", warehouseName: warehouse.name, country: warehouse.country,
+    returnOrderNumber: "RET-DRAFT", originalOrderNumber: "ORDER-2", status: "draft", statusLabel: "已申请未寄出",
+    createdAt: "2026-10-09 10:00:00", updatedAt: "2026-10-10 10:00:00",
+    items: [{ id: "draft-b", sku: "SKU-B", productName: "产品 B", expectedQty: 2, receivedQty: 0, restockedQty: 0, scrappedQty: 0, pendingQty: 0 }],
+  },
+  {
+    id: "return-cancelled", warehouseId: "wh-id", warehouseName: warehouse.name, country: warehouse.country,
+    returnOrderNumber: "RET-CANCELLED", originalOrderNumber: "ORDER-2", status: "cancelled", statusLabel: "已取消",
+    createdAt: "2026-10-09 10:00:00", updatedAt: "2026-10-10 10:00:00",
+    items: [{ id: "cancelled-b", sku: "SKU-B", productName: "产品 B", expectedQty: 99, receivedQty: 0, restockedQty: 0, scrappedQty: 0, pendingQty: 0 }],
   },
 ];
 
@@ -81,6 +93,11 @@ const payload = buildOverseasInventoryReconciliation({
 
 assert.equal(payload.scope, "overseas");
 assert.equal(payload.warehouses.length, 1);
+assert.equal(payload.sources.inventory.status, "partial");
+assert.equal(payload.sources.inventory.requestedSnapshotDate, "2026-10-31");
+assert.equal(payload.sources.inventory.gapDays, 21);
+assert.equal(payload.snapshots.closing.boundaryMatch, false);
+assert.equal(payload.warehouses[0].coverage.closingSnapshot, "partial");
 assert.equal(payload.summary.actualInventoryQty, 134);
 assert.equal(payload.summary.openingInventoryQty, 140);
 assert.equal(payload.summary.inboundQty, 15);
@@ -88,24 +105,32 @@ assert.equal(payload.summary.outboundQty, 28);
 assert.equal(payload.summary.restockedQty, 3);
 assert.equal(payload.summary.theoreticalInventoryQty, 130);
 assert.equal(payload.summary.varianceQty, 4);
-assert.equal(payload.summary.returnQty, 7);
+assert.equal(payload.summary.returnQty, 9);
 assert.equal(payload.summary.inTransitReturnQty, 2);
+assert.equal(payload.summary.draftReturnQty, 2);
+assert.equal(payload.summary.unreceivedReturnQty, 2, "draft requests are excluded from unreceived/in-transit quantities");
 assert.equal(payload.summary.pendingReturnQty, 1);
 assert.equal(payload.summary.scrappedQty, 1);
-assert.equal(payload.summary.unclaimedReturnCount, 1);
-assert.equal(payload.summary.unclaimedReturnQty, 2);
+assert.equal(payload.summary.badQty, 1);
+assert.equal(payload.summary.damageRate, 0.4);
+assert.equal(payload.summary.unclaimedReturnCount, 2);
+assert.equal(payload.summary.unclaimedReturnQty, 4);
 assert.equal(payload.summary.inboundInTransitQty, 12);
-assert.equal(payload.returnFacts.length, 2);
+assert.equal(payload.returnFacts.length, 3);
+assert.equal(payload.returnFacts.some((item) => item.returnOrderNumber === "RET-CANCELLED"), false, "cancelled returns do not enter return quantities");
+assert.equal(payload.returnFacts.find((item) => item.returnOrderNumber === "RET-002").dispositionDate, "", "mutable updatedAt is not used as a completion/disposition date");
 assert.equal(payload.returnFacts.find((item) => item.returnOrderNumber === "RET-001").claimStatus, "matched");
 assert.equal(payload.returnFacts.find((item) => item.returnOrderNumber === "RET-002").claimStatus, "unclaimed");
 assert.equal(payload.rankings.skus[0].sku, "SKU-A");
 assert.equal(payload.rankings.skus[0].returnQty, 5);
 assert.equal(payload.rankings.shops.find((item) => item.shopName === "店铺 Alpha").returnQty, 5);
-assert.equal(payload.rankings.shops.find((item) => item.shopName === "店铺 Beta").returnQty, 2);
+assert.equal(payload.rankings.shops.find((item) => item.shopName === "店铺 Beta").returnQty, 4);
 assert.equal(payload.warehouses[0].skuRows.find((item) => item.sku === "SKU-A").varianceQty, 2);
 assert.equal(payload.warehouses[0].skuRows.find((item) => item.sku === "SKU-B").varianceQty, 2);
+assert.deepEqual(payload.warehouses[0].skuRows.find((item) => item.sku === "SKU-A").returnFactIds, ["return-1::SKU-A"]);
+assert.equal("returnFacts" in payload.warehouses[0].skuRows.find((item) => item.sku === "SKU-A"), false, "return facts are returned once at the top level");
 assert.equal(payload.warehouses[0].coverage.transferMovements, "missing");
-assert.equal(payload.comparison.summary.returnQty.change, 7);
+assert.equal(payload.comparison.summary.returnQty.change, 9);
 
 const claimed = buildOverseasInventoryReconciliation({
   ranges,
@@ -119,7 +144,7 @@ const claimed = buildOverseasInventoryReconciliation({
   claimMap: { "return-2::SKU-B": { ownerId: "u-1", ownerName: "运营小舟", claimedAt: "2026-10-10T18:10:00.000Z" } },
 });
 assert.equal(claimed.returnFacts.find((item) => item.returnOrderNumber === "RET-002").claimStatus, "claimed");
-assert.equal(claimed.summary.unclaimedReturnCount, 0);
+assert.equal(claimed.summary.unclaimedReturnCount, 1);
 
 console.log("[ok] overseas reconciliation formula");
 console.log("[ok] WMS return lifecycle and unclaimed facts");

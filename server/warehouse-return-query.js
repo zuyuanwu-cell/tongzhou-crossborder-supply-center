@@ -103,6 +103,7 @@ function providerLabel(connection) {
 
 function statusMeta(status) {
   const labels = {
+    draft: "已申请未寄出",
     in_transit: "在途中",
     received_pending: "已到仓待处理",
     processing: "处理中",
@@ -116,7 +117,7 @@ function statusMeta(status) {
 }
 
 function deriveDispositionStatus(providerStatus, items) {
-  if (["cancelled", "exception", "in_transit"].includes(providerStatus)) return providerStatus;
+  if (["cancelled", "exception", "draft", "in_transit"].includes(providerStatus)) return providerStatus;
   const received = items.reduce((sum, item) => sum + item.receivedQty, 0);
   const restocked = items.reduce((sum, item) => sum + item.restockedQty, 0);
   const scrapped = items.reduce((sum, item) => sum + item.scrappedQty, 0);
@@ -167,7 +168,8 @@ export function normalizeSeaReturnOrder(row, connection) {
   const tab = text(row?.tab).toLowerCase();
   const providerStatus = tab === "canceled" ? "cancelled"
     : tab === "problem" ? "exception"
-      : ["draft", "on_way"].includes(tab) ? "in_transit"
+      : tab === "draft" ? "draft"
+        : tab === "on_way" ? "in_transit"
         : tab === "sign" ? "received_pending"
           : "processing";
   const normalizedStatus = deriveDispositionStatus(providerStatus, items);

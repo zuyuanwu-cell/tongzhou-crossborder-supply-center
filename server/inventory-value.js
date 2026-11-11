@@ -95,9 +95,18 @@ function buildWarehouseCostLookup(rows, scopes = []) {
     scopedWarehouseCodes.add(warehouseCode);
     if (unitCostCny <= 0) continue;
     for (const skuKey of normalizedSkuKeys(row?.sku)) {
-      byKey.set(`${warehouseCode}|${skuKey}`, { ...row, warehouseCode, unitCostCny });
+      const key = `${warehouseCode}|${skuKey}`;
+      const versions = byKey.get(key) || [];
+      versions.push({
+        ...row,
+        warehouseCode,
+        unitCostCny,
+        effectiveDate: dateKey(row?.effectiveDate || row?.effectiveAt) || "2000-01-01",
+      });
+      byKey.set(key, versions);
     }
   }
+  for (const versions of byKey.values()) versions.sort((left, right) => left.effectiveDate.localeCompare(right.effectiveDate));
   return { byKey, scopedWarehouseCodes };
 }
 
@@ -105,14 +114,15 @@ function warehouseCodeForItem(item) {
   return text(item?.providerWarehouseCode || item?.warehouseCode).toUpperCase();
 }
 
-function warehouseCostFor(lookup, item, sku) {
+function warehouseCostFor(lookup, item, sku, snapshotDate) {
   const warehouseCode = warehouseCodeForItem(item);
   if (!warehouseCode || !lookup.scopedWarehouseCodes.has(warehouseCode)) {
     return { warehouseCode, scoped: false, row: null };
   }
   const row = normalizedSkuKeys(sku)
-    .map((skuKey) => lookup.byKey.get(`${warehouseCode}|${skuKey}`))
-    .find(Boolean) || null;
+    .flatMap((skuKey) => lookup.byKey.get(`${warehouseCode}|${skuKey}`) || [])
+    .filter((version) => version.effectiveDate <= snapshotDate)
+    .sort((left, right) => right.effectiveDate.localeCompare(left.effectiveDate))[0] || null;
   return { warehouseCode, scoped: true, row };
 }
 
@@ -123,7 +133,6 @@ function supplementalCostFor(lookup, sku, country, snapshotDate) {
   for (const version of versions) {
     if (version.effectiveDate <= snapshotDate && (!matched || version.effectiveDate > matched.effectiveDate)) matched = version;
   }
-  if (!matched) matched = versions.find((version) => version.enabled !== false) || null;
   return matched?.enabled === false ? null : matched;
 }
 
@@ -162,12 +171,15 @@ function productForCountry(lookup, sku, country) {
 
 function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, rateLookup, sku, country, snapshotDate, item }) {
   const product = productForCountry(productLookup, sku, country);
-  const warehouseCost = warehouseCostFor(warehouseCostLookup, item, sku);
+  const warehouseCost = warehouseCostFor(warehouseCostLookup, item, sku, snapshotDate);
   if (number(warehouseCost.row?.unitCostCny) > 0) {
     return {
       unitCostCny: round(warehouseCost.row.unitCostCny, 6),
       source: "warehouse_weighted_price",
       sourceLabel: "俄罗斯2仓加权供货价",
+      costBasis: "effective_dated_warehouse_cost",
+      costEffectiveDate: warehouseCost.row.effectiveDate,
+      rateEffectiveDate: snapshotDate,
       product,
       warehouseCost: warehouseCost.row,
     };
@@ -177,6 +189,9 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
       unitCostCny: null,
       source: "missing",
       sourceLabel: "俄罗斯2仓加权供货价缺失",
+      costBasis: "missing",
+      costEffectiveDate: "",
+      rateEffectiveDate: "",
       product,
     };
   }
@@ -189,6 +204,9 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
         unitCostCny: round(directPrice * rate.rateToCny, 6),
         source: "direct_price",
         sourceLabel: "直营供货价",
+        costBasis: "current_direct_price",
+        costEffectiveDate: "",
+        rateEffectiveDate: rate.effectiveDate || "",
         product,
       };
     }
@@ -199,11 +217,14 @@ function resolveCost({ productLookup, supplementalLookup, warehouseCostLookup, r
       unitCostCny: round(supplemental.unitCostCny, 6),
       source: "manual_supplement",
       sourceLabel: "手工补录",
+      costBasis: "effective_dated_manual_cost",
+      costEffectiveDate: supplemental.effectiveDate,
+      rateEffectiveDate: snapshotDate,
       product,
       supplemental,
     };
   }
-  return { unitCostCny: null, source: "missing", sourceLabel: "缺失", product };
+  return { unitCostCny: null, source: "missing", sourceLabel: "缺失", costBasis: "missing", costEffectiveDate: "", rateEffectiveDate: "", product };
 }
 
 function quantities(row) {
@@ -265,6 +286,9 @@ function aggregateSnapshot(snapshot, context) {
       unitCostCny: cost.unitCostCny,
       costSource: cost.source,
       costSourceLabel: cost.sourceLabel,
+      costBasis: cost.costBasis,
+      costEffectiveDate: cost.costEffectiveDate,
+      rateEffectiveDate: cost.rateEffectiveDate,
       onHandValueCny: 0,
       inTransitValueCny: 0,
       totalValueCny: 0,

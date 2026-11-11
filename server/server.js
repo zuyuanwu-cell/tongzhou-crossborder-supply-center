@@ -26,6 +26,7 @@ import { buildMovementSnapshotRows, movementSnapshotTotals } from "./movement-sn
 import { excludeMovementWarehouses, isExcludedWarehouseRecord, projectMovementPayload, resolveExcludedWarehouseIdentifiers, scopeMovementSources } from "./movement-access.js";
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
+import { dateKeyInTimezone as formatDateKeyInTimezone } from "./date-time.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWarningLinkMarkdown, buildWecomImageBody, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
 import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
@@ -4243,7 +4244,7 @@ function overseasReconciliationPayload(auth, input = {}) {
   const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
   const ranges = resolveOverseasReconciliationRanges({
     period,
-    anchorDate: String(input.anchorDate || new Date().toISOString().slice(0, 10)),
+    anchorDate: String(input.anchorDate || dateKeyInTimezone(new Date(), inventorySnapshotTimezone)),
     from: String(input.from || ""),
     to: String(input.to || ""),
   });
@@ -4311,7 +4312,7 @@ async function refreshOverseasReconciliationReturns(auth, input = {}) {
   const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
   const ranges = resolveOverseasReconciliationRanges({
     period,
-    anchorDate: String(input.anchorDate || new Date().toISOString().slice(0, 10)),
+    anchorDate: String(input.anchorDate || dateKeyInTimezone(new Date(), inventorySnapshotTimezone)),
     from: String(input.from || ""),
     to: String(input.to || ""),
   });
@@ -4469,14 +4470,7 @@ function canvasAiErrorPayload(error, fallback) {
 }
 
 function dateKeyInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const value = (type) => parts.find((part) => part.type === type)?.value || "";
-  return `${value("year")}-${value("month")}-${value("day")}`;
+  return formatDateKeyInTimezone(date, timeZone);
 }
 
 function minutesInTimezone(date = new Date(), timeZone = inventorySnapshotTimezone) {
@@ -4541,8 +4535,10 @@ function inventorySnapshotTotals(rows) {
     lockedQty: sum.lockedQty + numberOrZero(item.lockedQty),
     waitInQty: sum.waitInQty + numberOrZero(item.waitInQty),
     inTransitQty: sum.inTransitQty + numberOrZero(item.inTransitQty),
+    faultyQty: sum.faultyQty + numberOrZero(item.faultyQty),
+    temporaryQty: sum.temporaryQty + numberOrZero(item.temporaryQty),
     totalQty: sum.totalQty + numberOrZero(item.totalQty),
-  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, totalQty: 0 });
+  }), { availableQty: 0, lockedQty: 0, waitInQty: 0, inTransitQty: 0, faultyQty: 0, temporaryQty: 0, totalQty: 0 });
 }
 
 function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") {

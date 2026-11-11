@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { fetch as undiciFetch } from "undici";
+import { addBusinessDays, dateKeyInTimezone } from "./date-time.js";
 
 if (!globalThis.fetch) globalThis.fetch = undiciFetch;
 
@@ -219,10 +220,8 @@ export function allocateOrderSalesAmount(items = [], orderAmount = 0) {
   });
 }
 
-function isoDateDaysAgo(days) {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
+function isoDateDaysAgo(days, timezone = "Asia/Shanghai") {
+  return addBusinessDays(dateKeyInTimezone(new Date(), timezone), -Math.max(0, Number(days) || 0));
 }
 
 function formatDateTimeForWms(date) {
@@ -230,8 +229,8 @@ function formatDateTimeForWms(date) {
 }
 
 function normalizeDateOnly(date) {
-  if (!date) return new Date().toISOString().slice(0, 10);
-  if (date instanceof Date) return date.toISOString().slice(0, 10);
+  if (!date) return dateKeyInTimezone(new Date(), "Asia/Shanghai");
+  if (date instanceof Date) return dateKeyInTimezone(date, "Asia/Shanghai");
   return String(date).slice(0, 10);
 }
 
@@ -2059,7 +2058,9 @@ export async function syncYunWmsOrdersRange(connection, dateFrom, dateTo) {
 }
 
 export async function syncYunWmsOrders(connection, days = 90) {
-  return syncYunWmsOrdersRange(connection, isoDateDaysAgo(days), new Date().toISOString().slice(0, 10));
+  const timezone = firstText(connection?.timezone) || "Europe/Moscow";
+  const end = dateKeyInTimezone(new Date(), timezone);
+  return syncYunWmsOrdersRange(connection, isoDateDaysAgo(days, timezone), end);
 }
 
 export async function syncSeaOrders(connection) {
@@ -2128,7 +2129,9 @@ async function syncSeaOrdersFromApiRange(connection, dateFrom, dateTo) {
 }
 
 async function syncSeaOrdersFromApi(connection, days = 90) {
-  return syncSeaOrdersFromApiRange(connection, isoDateDaysAgo(days), new Date().toISOString().slice(0, 10));
+  const timezone = firstText(connection?.timezone) || "Asia/Shanghai";
+  const end = dateKeyInTimezone(new Date(), timezone);
+  return syncSeaOrdersFromApiRange(connection, isoDateDaysAgo(days, timezone), end);
 }
 
 async function syncSeaStockupOrdersFromApi(connection) {

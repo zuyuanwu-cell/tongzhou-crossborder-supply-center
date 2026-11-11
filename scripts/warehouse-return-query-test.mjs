@@ -199,6 +199,8 @@ assert.equal(yunBadOnly.status, "received_pending", "unhandled bad goods remain 
 
 const normalizedSea = normalizeSeaReturnOrder({ returnSn: "RET-CANCEL", tab: "canceled", goodsSkuList: [] }, seaConnection);
 assert.equal(normalizedSea.status, "cancelled");
+const draftSea = normalizeSeaReturnOrder({ returnSn: "RET-DRAFT", tab: "draft", goodsSkuList: [{ goodsSkuOuterId: "SKU-DRAFT", quantity: 2 }] }, seaConnection);
+assert.equal(draftSea.status, "draft", "SEA draft returns remain applied-but-not-shipped instead of becoming in-transit");
 assert.equal(normalizeReturnIdentifier(" 00\u200b0123 "), "000123", "normalization preserves leading zeros");
 
 const yunNeedsDate = await queryWarehouseReturns(yunConnection, {

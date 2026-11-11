@@ -80,8 +80,8 @@ assert.equal(quantityBoundaryPayload.summary.inTransitQty, 4);
 assert.equal(quantityBoundaryPayload.summary.faultyQty, 5);
 assert.equal(quantityBoundaryPayload.summary.temporaryQty, 6);
 assert.equal(payload.summary.onHandValueCny, 135, "missing-cost stock is excluded from the known value");
-assert.equal(payload.summary.previousOnHandValueCny, 117, "manual fallback can reconstruct older snapshots");
-assert.equal(payload.summary.periodChangeCny, 18);
+assert.equal(payload.summary.previousOnHandValueCny, 107, "future manual cost versions never backfill older snapshots");
+assert.equal(payload.summary.periodChangeCny, 28);
 assert.equal(payload.summary.missingCostSkuCount, 1);
 assert.equal(payload.summary.coveredOnHandQty, 15);
 assert.equal(payload.summary.costCoverageRate, 0.7895);
@@ -90,13 +90,17 @@ assert.equal(payload.permissions.manageCosts, true);
 const directRow = payload.rows.find((row) => row.sku === "SKU-A");
 assert.equal(directRow.unitCostCny, 10, "direct supply price always wins over a manual supplement");
 assert.equal(directRow.costSource, "direct_price");
+assert.equal(directRow.costBasis, "current_direct_price");
+assert.equal(directRow.costEffectiveDate, "");
 assert.equal(directRow.onHandValueCny, 120);
 assert.equal(directRow.valueChangeCny, 20);
 
 const manualRow = payload.rows.find((row) => row.sku === "SKU-B");
 assert.equal(manualRow.unitCostCny, 5);
 assert.equal(manualRow.costSource, "manual_supplement");
-assert.equal(manualRow.previousValueCny, 10);
+assert.equal(manualRow.costBasis, "effective_dated_manual_cost");
+assert.equal(manualRow.costEffectiveDate, "2026-09-08");
+assert.equal(manualRow.previousValueCny, 0);
 
 const missingRow = payload.missingCosts.find((row) => row.sku === "SKU-C");
 assert.equal(missingRow.onHandQty, 4);
@@ -139,6 +143,27 @@ const otherRussiaWarehouse = buildInventoryValuePayload({
   filters: { period: "day", warehouseId: "WH-RU-1" },
 });
 assert.equal(otherRussiaWarehouse.summary.onHandValueCny, 297, "other Russian warehouses keep their existing product catalog cost rule");
+
+const futureWarehouseCostProducts = {
+  ...russiaWarehouseProducts,
+  warehouseCosts: [{ warehouseCode: "DD001", sku: "SKU-RU", unitCostCny: 12.5, effectiveAt: "2026-10-09T08:49:37.141Z" }],
+};
+const futureWarehouseCost = buildInventoryValuePayload({
+  snapshots: [{ date: "2026-10-08", rows: [{ warehouseId: "WH-RU-2", providerWarehouseCode: "DD001", country: "RU", sku: "SKU-RU", availableQty: 2, totalQty: 2 }] }],
+  products: futureWarehouseCostProducts,
+  filters: { period: "day" },
+});
+assert.equal(futureWarehouseCost.summary.onHandValueCny, 0, "future warehouse cost versions never backfill an older snapshot");
+assert.equal(futureWarehouseCost.rows[0].costSource, "missing");
+
+const futureManualCost = buildInventoryValuePayload({
+  snapshots: [{ date: "2026-09-08", rows: [{ warehouseId: "WH-ID", country: "ID", sku: "SKU-C", availableQty: 4, totalQty: 4 }] }],
+  products,
+  supplementalCosts: [{ sku: "SKU-C", countryKey: "ID", unitCostCny: 6, effectiveDate: "2026-09-09", enabled: true }],
+  filters: { period: "day" },
+});
+assert.equal(futureManualCost.summary.unvaluedOnHandQty, 4);
+assert.equal(futureManualCost.rows[0].costSource, "missing");
 
 const missingWarehouseCode = buildInventoryValuePayload({
   snapshots: [{
