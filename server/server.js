@@ -38,6 +38,7 @@ import { canPreviewStockupShipmentWmsOrder } from "./stockup-v2-domain.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
 import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { normalizeWarehouseConnectionBindings, resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
+import { collectWarehouseInventorySync } from "./warehouse-inventory-sync.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
 import { authenticateLocalUser, createLocalUser, createSessionToken, jdyUserRecordData, jdyUserStatusData, normalizeRole, normalizeStoredUser, normalizeUiLocale, publicUser, userPermissionConfiguration, verifySessionToken } from "./user-auth.js";
 import { hasPermission, isWithinDataScope, normalizeDataScopes, projectCatalogProduct, projectProductBase, sanitizePermissionUpdate } from "./access-control.js";
@@ -6390,25 +6391,17 @@ async function handleWarehouseSync(req, res) {
     return;
   }
 
-  const results = [];
-  const products = [];
-  const inventory = [];
-
-  for (const connection of warehouseConnections) {
-    const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
-    const connectionChanged = updateResolvedWarehouseId(connection, result);
-    if (connectionChanged) saveWarehouseConnections();
-    results.push({
-      warehouseId: result.warehouseId,
-      ok: result.ok,
-      skipped: result.skipped,
-      message: result.message || "",
-      productCount: result.products.length,
-      inventoryCount: result.inventory.length,
-    });
-    products.push(...result.products);
-    inventory.push(...result.inventory);
-  }
+  const { results, products, inventory } = await collectWarehouseInventorySync({
+    connections: warehouseConnections,
+    previousProducts: cachedWarehouseSync.products,
+    previousInventory: cachedWarehouseSync.inventory,
+    syncConnection: async (connection) => {
+      const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
+      const connectionChanged = updateResolvedWarehouseId(connection, result);
+      if (connectionChanged) saveWarehouseConnections();
+      return result;
+    },
+  });
 
   cachedWarehouseSync = {
     syncedAt: new Date().toISOString(),
@@ -6424,25 +6417,17 @@ async function handleWarehouseSync(req, res) {
 }
 
 async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_eod", snapshotDate = "") {
-  const results = [];
-  const products = [];
-  const inventory = [];
-
-  for (const connection of warehouseConnections) {
-    const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
-    const connectionChanged = updateResolvedWarehouseId(connection, result);
-    if (connectionChanged) saveWarehouseConnections();
-    results.push({
-      warehouseId: result.warehouseId,
-      ok: result.ok,
-      skipped: result.skipped,
-      message: result.message || "",
-      productCount: result.products.length,
-      inventoryCount: result.inventory.length,
-    });
-    products.push(...result.products);
-    inventory.push(...result.inventory);
-  }
+  const { results, products, inventory } = await collectWarehouseInventorySync({
+    connections: warehouseConnections,
+    previousProducts: cachedWarehouseSync.products,
+    previousInventory: cachedWarehouseSync.inventory,
+    syncConnection: async (connection) => {
+      const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
+      const connectionChanged = updateResolvedWarehouseId(connection, result);
+      if (connectionChanged) saveWarehouseConnections();
+      return result;
+    },
+  });
 
   cachedWarehouseSync = {
     syncedAt: new Date().toISOString(),
