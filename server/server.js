@@ -4274,6 +4274,14 @@ function overseasReconciliationPayload(auth, input = {}) {
   const cacheKey = derivedResponseKey(`overseas-reconciliation:${JSON.stringify(input)}`, auth);
   const cached = cachedDerivedResponse(cacheKey);
   if (cached) return cached;
+  const timingStartedAt = performance.now();
+  let timingMarkAt = timingStartedAt;
+  const timings = {};
+  const markTiming = (name) => {
+    const now = performance.now();
+    timings[name] = Math.round(now - timingMarkAt);
+    timingMarkAt = now;
+  };
   const period = ["week", "month", "quarter", "year", "custom"].includes(String(input.period)) ? String(input.period) : "month";
   const ranges = resolveOverseasReconciliationRanges({
     period,
@@ -4294,6 +4302,7 @@ function overseasReconciliationPayload(auth, input = {}) {
     warehouseIds: warehouses.length ? warehouses.map((item) => item.id) : ["__no_overseas_warehouse__"],
     skus: scopes.skus,
   });
+  markTiming("stockupFacts");
   const snapshotBoundaryDates = [
     addBusinessDays(ranges.previous.from, -1),
     ranges.previous.to,
@@ -4307,6 +4316,7 @@ function overseasReconciliationPayload(auth, input = {}) {
     ...snapshot,
     rows: (snapshot.rows || []).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)),
   }));
+  markTiming("snapshots");
   const dailyLedgerCoverage = inventoryLedgerStore.getDailyLedgerCoverage({
     warehouseIds: [...allowedWarehouseIds],
     skus: scopes.skus,
@@ -4321,12 +4331,14 @@ function overseasReconciliationPayload(auth, input = {}) {
     to: ranges.current.to,
     timezone,
   }).filter((row) => reconciliationWarehouseAllowed(row, allowedWarehouseIds) && reconciliationSkuAllowed(row, scopes)) : [];
+  markTiming("dailyLedger");
   const outboundOrders = inventoryLedgerStore.listOrders({
     warehouseIds: [...allowedWarehouseIds],
     from: ranges.previous.from,
     to: ranges.current.to,
   })
     .filter((order) => reconciliationWarehouseAllowed(order, allowedWarehouseIds) && reconciliationSkuAllowed(order, scopes));
+  markTiming("outboundOrders");
   const currentOutboundOrders = outboundOrders.filter((order) => {
     const date = reconciliationDateKey(order.shippedAt || order.createdAt);
     return date >= ranges.current.from && date <= ranges.current.to;
@@ -4335,6 +4347,7 @@ function overseasReconciliationPayload(auth, input = {}) {
     from: addBusinessDays(ranges.current.from, -1),
     to: addBusinessDays(ranges.current.to, 1),
   });
+  markTiming("platformBundles");
   const platformBundleOrderIds = new Set(platformBundleWindow.orders
     .filter((order) => {
       const date = miaoshouBusinessDate(order.paidAt || order.orderStartedAt, order.site);
@@ -4363,9 +4376,12 @@ function overseasReconciliationPayload(auth, input = {}) {
     platformItems: platformBundles.items.filter((item) => platformOrderIds.has(String(item.orderIdentity || ""))),
     platformCoverage: platformCoverageComplete ? "complete" : "scoped_to_wms",
   });
+  markTiming("outboundReconciliation");
   const returnOrders = enrichWarehouseReturnOrders((cachedOverseasInventoryReconciliation.orders || [])
     .filter((order) => allowedWarehouseIds.has(String(order.warehouseId || "").trim())), auth);
+  markTiming("returnEnrichment");
   const afterSalesTickets = afterSalesService.list({ dataScopes: warehouseCollaborationDataScopes(auth) }).tickets;
+  markTiming("afterSales");
   const returnOptions = warehouseReturnOptions(auth);
   const relevantStates = returnOptions.map((warehouse) => cachedOverseasInventoryReconciliation.warehouseStates?.[warehouse.id] || {
     warehouseId: warehouse.id,
@@ -4384,7 +4400,7 @@ function overseasReconciliationPayload(auth, input = {}) {
     .map((item) => String(item.arrivedAt || item.actualShippedAt || ""))
     .sort()
     .at(-1) || "";
-  return cacheDerivedResponse(cacheKey, buildOverseasInventoryReconciliation({
+  const payload = buildOverseasInventoryReconciliation({
     ranges,
     period,
     anchorDate: String(input.anchorDate || ""),
@@ -4409,7 +4425,21 @@ function overseasReconciliationPayload(auth, input = {}) {
       inboundSyncedAt,
       returnSource,
     },
-  }));
+  });
+  markTiming("payloadBuild");
+  const totalMs = Math.round(performance.now() - timingStartedAt);
+  if (totalMs >= 1_000) console.log(`[overseas-reconciliation] ${JSON.stringify({
+    totalMs,
+    timings,
+    snapshots: snapshots.length,
+    dailyLedgerRows: dailyLedgerRows.length,
+    outboundOrders: outboundOrders.length,
+    platformOrders: platformBundles.orders.length,
+    platformItems: platformBundles.items.length,
+    returnOrders: returnOrders.length,
+    afterSalesTickets: afterSalesTickets.length,
+  })}`);
+  return cacheDerivedResponse(cacheKey, payload);
 }
 
 async function refreshOverseasReconciliationReturns(auth, input = {}, { buildPayload = true } = {}) {
