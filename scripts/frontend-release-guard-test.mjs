@@ -35,11 +35,12 @@ fs.writeFileSync(contractPath, JSON.stringify({
     description: "关键页面",
     allOf: ["经营工作台", "俄罗斯", "汇率", "产品中心", "catalog-view-toolbar", "catalog-grid"],
   }],
-  forbiddenText: [],
+  forbiddenText: ["activeView ==="],
 }, null, 2));
 
 const good = writeDistribution("good", "经营工作台 俄罗斯 汇率 产品中心 catalog-view-toolbar catalog-grid");
 const bad = writeDistribution("bad", "经营工作台 俄罗斯 产品中心 catalog-view-toolbar catalog-grid");
+const malformedRoute = writeDistribution("malformed-route", "经营工作台 俄罗斯 汇率 产品中心 catalog-view-toolbar catalog-grid ) : activeView === 经营贡献");
 
 try {
   const passing = spawnSync(process.execPath, [verifier, "--candidate", good, "--baseline", good, "--contract", contractPath], { encoding: "utf8" });
@@ -48,6 +49,10 @@ try {
   const failing = spawnSync(process.execPath, [verifier, "--candidate", bad, "--baseline", good, "--contract", contractPath], { encoding: "utf8" });
   assert.notEqual(failing.status, 0, "缺少受保护功能的候选包必须被拒绝");
   assert.match(`${failing.stdout}\n${failing.stderr}`, /缺少关键标记：汇率/);
+
+  const malformed = spawnSync(process.execPath, [verifier, "--candidate", malformedRoute, "--baseline", good, "--contract", contractPath], { encoding: "utf8" });
+  assert.notEqual(malformed.status, 0, "路由条件被构建为文本时必须拒绝候选包");
+  assert.match(`${malformed.stdout}\n${malformed.stderr}`, /构建产物包含禁止文本.*activeView/);
 
   console.log("frontend release guard tests passed");
 } finally {

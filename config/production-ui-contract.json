@@ -55,6 +55,7 @@
     }
   ],
   "forbiddenText": [
-    "经营快照"
+    "经营快照",
+    "activeView ==="
   ]
 }

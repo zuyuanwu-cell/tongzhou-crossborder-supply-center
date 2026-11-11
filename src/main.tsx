@@ -2182,7 +2182,7 @@ function App() {
               await loadInventoryValue(inventoryValuePayload?.filters || {});
               return result;
             }}
-          />
+          /></React.Suspense>
         ) : activeView === "经营贡献" ? (
           <PerformanceAnalysisPage
             payload={performanceAnalyticsPayload}
@@ -2234,7 +2234,7 @@ function App() {
             }}
             syncing={syncing}
             canSync={hasUserPermission(currentUser, "order_sync_run")}
-          /></React.Suspense>
+          />
         ) : activeView === "复盘中心" ? (
           <ReviewCenter />
         ) : activeView === "订单分析" ? (
