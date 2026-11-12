@@ -195,6 +195,7 @@ export function createCollectorCenter({ filePath, now = () => Date.now(), saveDe
       enabledStoreCount: stores.filter((store) => store.enabled).length,
       unmatchedStoreCount: stores.filter((store) => store.enabled && !store.matched).length,
       nextRunAt: node.status?.nextRunAt || "",
+      update: node.status?.update || null,
       lastRun: lastRun ? {
         id: lastRun.id,
         status: lastRun.status,
@@ -287,6 +288,17 @@ export function createCollectorCenter({ filePath, now = () => Date.now(), saveDe
         } : null,
         stores: sanitizeStores(payload.stores),
         nextRunAt: text(payload.nextRunAt, 40),
+        // 自动更新状态（同舟智数 0.5.1 起上报）。
+        update: payload.update && typeof payload.update === "object" ? {
+          current: text(payload.update.current, 20),
+          shell: text(payload.update.shell, 20),
+          source: text(payload.update.source, 10),
+          enabled: Boolean(payload.update.enabled),
+          state: text(payload.update.state, 20),
+          target: text(payload.update.target, 20),
+          lastError: text(payload.update.lastError, 300),
+          lastFailure: payload.update.lastFailure && typeof payload.update.lastFailure === "object" ? { version: text(payload.update.lastFailure.version, 20), reason: text(payload.update.lastFailure.reason, 300), at: text(payload.update.lastFailure.at, 40) } : null,
+        } : null,
       };
       // 节点第一次上报时，用它本地的计划初始化中台计划（之后以中台为准）。
       if (!node.scheduleInitialized && payload.localSchedule) {

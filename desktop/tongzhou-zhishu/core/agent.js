@@ -31,7 +31,7 @@ function nextRunAt(schedule, now = new Date()) {
 }
 
 class NodeAgent {
-  constructor({ store, collector, cli, clientFactory, log = () => {}, runCollect, version = "", intervalMs = 60000, logFlushMs = 15000, miaoshou = null }) {
+  constructor({ store, collector, cli, clientFactory, log = () => {}, runCollect, version = "", intervalMs = 60000, logFlushMs = 15000, miaoshou = null, updater = null }) {
     this.store = store;
     this.collector = collector;
     this.cli = cli;
@@ -40,6 +40,7 @@ class NodeAgent {
     this.runCollect = runCollect;
     this.version = version;
     this.miaoshou = miaoshou;
+    this.updater = updater;
     this.onMiaoshouPlanChanged = null;
     this.intervalMs = intervalMs;
     this.logFlushMs = logFlushMs;
@@ -116,6 +117,7 @@ class NodeAgent {
       localSchedule: config.schedule,
       nextRunAt: nextRunAt(config.schedule),
       miaoshou: this.miaoshou ? this.miaoshou.report() : null,
+      update: this.updater ? this.updater.status() : null,
     };
   }
 
@@ -135,6 +137,11 @@ class NodeAgent {
     this.applySchedule(response.schedule);
     this.applyQuality(response.quality);
     this.applyMiaoshou(response.miaoshou);
+    if (this.updater) {
+      // 能连上中台说明这个版本可用；随后看中台有没有给这台电脑安排新版本。
+      this.updater.confirm();
+      this.updater.consider(response.update || null).catch(() => {});
+    }
     for (const command of response.commands || []) this.enqueue(command);
     await this.flushRuns();
     await this.flushLogs();

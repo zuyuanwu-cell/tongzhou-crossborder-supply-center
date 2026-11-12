@@ -392,3 +392,7 @@ details summary { cursor: pointer; color: var(--accent); }
 
 /* 状态卡片同一行等高 */
 .grid:has(> .check-card) { align-items: stretch; }
+
+/* 侧栏底部的自动更新状态 */
+.side-update { margin-top: 6px; color: #9fd8ff; font-size: 11.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.side-update.err { color: #ffb59a; }

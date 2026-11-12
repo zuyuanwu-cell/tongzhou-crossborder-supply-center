@@ -120,6 +120,28 @@ class ZhongtaiClient {
     return this.request(`/api/collector/agent/${pathname}`, { method: "POST", body });
   }
 
+  /** 下载自动更新包（二进制）。只有采集节点令牌可以下载。 */
+  async agentDownload(pathname, { maxBytes = 30 * 1024 * 1024 } = {}) {
+    this.ensureConfigured();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(this.timeoutMs, 120000));
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/api/collector/agent/${pathname}`, {
+        headers: { "x-ingest-token": this.token, "x-client": "tongzhou-zhishu" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new ZhongtaiError(response.status === 404 ? "中台上没有这个更新包" : `下载更新包失败：HTTP ${response.status}`, { status: response.status });
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > maxBytes) throw new ZhongtaiError("更新包过大");
+      return buffer;
+    } catch (error) {
+      if (error instanceof ZhongtaiError) throw error;
+      throw new ZhongtaiError(error.name === "AbortError" ? "下载更新包超时" : `下载更新包失败：${error.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** 用 0 行试写验证地址与令牌。 */
   async ping() {
     const result = await this.request("/api/shop-daily-report/ingest", { method: "POST", body: { source: "ziniao", dryRun: true, rows: [] } });

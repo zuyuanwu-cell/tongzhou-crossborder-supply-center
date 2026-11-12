@@ -579,7 +579,9 @@ function render() {
   document.querySelectorAll("#nav button").forEach((button) => button.classList.toggle("active", button.dataset.tab === S.tab));
   $("#app-version").textContent = `v${S.state.appVersion} · 店铺数据采集`;
   const { config, running } = S.state;
-  $("#side-status").innerHTML = `<div><span class="dot ${running ? "busy" : config.schedule.enabled ? "on" : ""}"></span>${running ? "采集中" : config.schedule.enabled ? `定时 ${esc(config.schedule.times.join("、"))}` : "未开启定时"}</div>`;
+  const update = S.state.update || {};
+  const updateText = { downloading: `正在下载 ${update.target || ""}`, staged: `${update.staged || ""} 已下载，空闲时重启`, restarting: "正在重启更新", pending: "新版本确认中", error: update.lastError || "" }[update.state] || "";
+  $("#side-status").innerHTML = `<div><span class="dot ${running ? "busy" : config.schedule.enabled ? "on" : ""}"></span>${running ? "采集中" : config.schedule.enabled ? `定时 ${esc(config.schedule.times.join("、"))}` : "未开启定时"}</div>${updateText ? `<div class="side-update ${update.state === "error" ? "err" : ""}" title="${esc(updateText)}">${esc(updateText)}</div>` : ""}`;
 }
 
 function setPath(target, pathText, value) {

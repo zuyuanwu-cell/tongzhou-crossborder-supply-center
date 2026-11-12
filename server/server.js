@@ -94,6 +94,7 @@ import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createCollectorCenter } from "./collector-center.js";
 import { createCollectorQuality, addDays as qualityAddDays } from "./collector-quality.js";
 import { createMiaoshouRuleSchedule } from "./miaoshou-rule-schedule.js";
+import { createCollectorReleases } from "./collector-releases.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings, normalizeShopUrl, resolveShopScope } from "./shop-directory.js";
@@ -191,6 +192,18 @@ const shopMetricsIngestToken = resolveShopMetricsIngestToken();
 const collectorCenter = createCollectorCenter({ filePath: resolve(cacheDir, "collector-center.json") });
 const collectorQuality = createCollectorQuality({ dir: resolve(cacheDir, "collector-quality") });
 const miaoshouRuleSchedule = createMiaoshouRuleSchedule({ filePath: resolve(cacheDir, "miaoshou-rule-schedule.json") });
+
+// 同舟智数自动更新：更新包由发版脚本签名后上传（COLLECTOR_RELEASE_TOKEN），服务器只保存和分发。
+const collectorReleases = createCollectorReleases({
+  dir: resolve(cacheDir, "collector-releases"),
+  publicKeyFile: resolve(process.env.COLLECTOR_UPDATE_PUBLIC_KEY_FILE || resolve(process.cwd(), "desktop", "tongzhou-zhishu", "core", "update-key.json")),
+  releaseToken: process.env.COLLECTOR_RELEASE_TOKEN || "",
+});
+
+/** 自动更新的人工待办（更新失败已回退、需要手动安装、长时间没更新）。 */
+function collectorReleaseIssues() {
+  return collectorReleases.issues(collectorCenter.listNodes()).map((issue) => ({ ...issue, storeKey: `collector-update-${issue.nodeId}`, shopName: issue.nodeName || "同舟智数", dates: [] }));
+}
 
 /** 妙手排单定时的人工待办（节点离线、妙手掉登录、规则状态长时间不一致）。 */
 function miaoshouRuleIssues() {
@@ -9180,7 +9193,7 @@ async function collectHermesPatrolSources() {
     collaborationBridge: collaborationBridgeSource,
     partnerTasks: cachedHermesPartnerTaskSource,
     shopDataQuality: {
-      manual: [...(collectorQuality.lastEvaluation()?.manual || []), ...miaoshouRuleIssues()],
+      manual: [...(collectorQuality.lastEvaluation()?.manual || []), ...miaoshouRuleIssues(), ...collectorReleaseIssues()],
       evaluatedAt: collectorQuality.lastEvaluation()?.evaluatedAt || "",
       complete: true,
     },
@@ -13605,7 +13618,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === "/api/collector/agent/heartbeat" && req.method === "POST") {
           const body = await parseRequestBody(req, 512 * 1024);
           const beat = collectorCenter.heartbeat(node.id, body);
-          sendJson(res, 200, { ok: true, ...beat, quality: collectorQuality.nodeSettings(), miaoshou: miaoshouRuleSchedule.report(node.id, body?.miaoshou) });
+          sendJson(res, 200, { ok: true, ...beat, quality: collectorQuality.nodeSettings(), miaoshou: miaoshouRuleSchedule.report(node.id, body?.miaoshou), update: collectorReleases.targetFor(node, collectorCenter.listNodes()) });
           return;
         }
         if (url.pathname === "/api/collector/agent/runs" && req.method === "POST") {
@@ -13625,6 +13638,17 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, result.ok ? 200 : 404, result);
           return;
         }
+        const bundleMatch = url.pathname.match(/^\/api\/collector\/agent\/releases\/([^/]+)\/bundle$/);
+        if (bundleMatch && req.method === "GET") {
+          const found = collectorReleases.bundle(decodeURIComponent(bundleMatch[1]));
+          if (!found) {
+            sendJson(res, 404, { ok: false, message: "没有这个版本的更新包。" });
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": found.buffer.length, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+          res.end(found.buffer);
+          return;
+        }
         const ackMatch = url.pathname.match(/^\/api\/collector\/agent\/commands\/([^/]+)\/ack$/);
         if (ackMatch && req.method === "POST") {
           const body = await parseRequestBody(req, 64 * 1024).catch(() => ({}));
@@ -13633,6 +13657,23 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         sendJson(res, 404, { ok: false, message: "未知的采集节点接口。" });
+        return;
+      }
+
+      // ---- 发版脚本上传更新包（发版令牌；更新包自带签名，服务器校验后才保存）----
+      if (url.pathname === "/api/collector/releases" && req.method === "POST" && req.headers["x-release-token"]) {
+        if (!collectorReleases.tokenValid(req.headers["x-release-token"])) {
+          sendJson(res, 401, { ok: false, message: "发版令牌无效，或服务器没有配置 COLLECTOR_RELEASE_TOKEN。" });
+          return;
+        }
+        try {
+          const body = await parseRequestBody(req, 48 * 1024 * 1024);
+          const result = collectorReleases.upload({ manifest: body?.manifest, bundle: body?.bundle }, { by: "发版脚本" });
+          appendActionLog({ user: { username: "release-script", displayName: "发版脚本" } }, "上传同舟智数更新包", "collector_release", result.release.version, { sha256: result.release.sha256, size: result.release.size });
+          sendJson(res, 200, { ok: true, ...result });
+        } catch (error) {
+          sendJson(res, error.statusCode || 500, { ok: false, message: error.message || "上传更新包失败。" });
+        }
         return;
       }
 
@@ -13648,6 +13689,23 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "没有管理采集节点的权限。" });
         return false;
       };
+      // ---- 同舟智数版本更新 ----
+      if (url.pathname === "/api/collector/releases" && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...collectorReleases.view({ nodes: collectorCenter.listNodes() }) });
+        return;
+      }
+      if (url.pathname === "/api/collector/releases/rollout" && req.method === "PATCH") {
+        if (!requireEdit()) return;
+        try {
+          const body = await parseRequestBody(req, 16 * 1024);
+          const rollout = collectorReleases.setRollout({ version: body?.version, mode: body?.mode, canaryNodeIds: body?.canaryNodeIds, autoPromoteMinutes: body?.autoPromoteMinutes }, { by: auth.user.displayName || auth.user.username });
+          appendActionLog(auth, "调整同舟智数版本推送", "collector_release", rollout.version || "—", { mode: rollout.mode, canaryNodeIds: rollout.canaryNodeIds });
+          sendJson(res, 200, { ok: true, ...collectorReleases.view({ nodes: collectorCenter.listNodes() }) });
+        } catch (error) {
+          sendJson(res, error.statusCode || 500, { ok: false, message: error.message || "操作失败。" });
+        }
+        return;
+      }
       // ---- 妙手排单定时 ----
       if (url.pathname === "/api/collector/miaoshou-rules" && req.method === "GET") {
         sendJson(res, 200, { ok: true, ...miaoshouRuleSchedule.view({ nodes: collectorCenter.listNodes() }), nodes: collectorCenter.listNodes().map((item) => ({ id: item.id, name: item.name, online: item.online, disabled: item.disabled, version: item.version })) });
