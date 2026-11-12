@@ -9,6 +9,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
+const { spawn } = require("node:child_process");
 
 const { ZiniaoCli, findMarkedString, decodeMarked, parseJsonLoose } = require("../core/ziniao");
 const { ConfigStore } = require("../core/config");
@@ -25,12 +26,13 @@ function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tzzs-test-"));
 }
 
-function cliWrapper(dir) {
-  // 用 shell 包装成「可执行文件」，模拟真实 exe 的调用方式（spawn 不经过 shell）。
-  const file = path.join(dir, "ziniao-cli");
-  fs.writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${path.join(__dirname, "mock-ziniao-cli.js")}" "$@"\n`);
-  fs.chmodSync(file, 0o755);
-  return file;
+function cliWrapper() {
+  // 测试环境统一通过 Node 启动模拟 CLI，避免 Windows 无法直接执行无扩展名 shell 包装器。
+  const script = path.join(__dirname, "mock-ziniao-cli.js");
+  return {
+    cliPath: process.execPath,
+    spawnImpl: (bin, args, options) => spawn(bin, [script, ...args], options),
+  };
 }
 
 function startMockZhongtai() {
@@ -76,7 +78,7 @@ async function setup({ options = {}, stores } = {}) {
   const browser = await startMockBrowser({ stores: storeList, options });
   const zhongtai = await startMockZhongtai();
   const logs = [];
-  const cli = new ZiniaoCli({ cliPath: cliWrapper(dir), extraEnv: { MOCK_ZINIAO_URL: browser.url }, log: (level, message) => logs.push(`${level} ${message}`) });
+  const cli = new ZiniaoCli({ ...cliWrapper(), extraEnv: { MOCK_ZINIAO_URL: browser.url }, log: (level, message) => logs.push(`${level} ${message}`) });
   const store = new ConfigStore(path.join(dir, "data"));
   store.update((config) => {
     config.zhongtai.baseUrl = zhongtai.url;
