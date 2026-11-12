@@ -29,7 +29,9 @@ import { initInventoryLedgerStore } from "./inventory-ledger-db.js";
 import { buildInventoryDailyLedger } from "./inventory-daily-ledger.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { addBusinessDays, dateKeyInTimezone as formatDateKeyInTimezone } from "./date-time.js";
-import { corsHeaders, encodeJsonResponse } from "./http-response.js";
+import { corsHeaders, encodeJsonResponseAsync } from "./http-response.js";
+import { createRequestTiming } from "./request-timing.js";
+import { flushAllPersistSchedulers, persistSchedulerStatus, setPersistBlockReporter } from "./sqljs-persist-scheduler.js";
 import { buildStockupPayload } from "./stockup-center.js";
 import { buildStockupWarningLinkMarkdown, buildWecomImageBody, summarizeStockupWarningDeliveries } from "./stockup-warning-report.js";
 import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
@@ -3853,15 +3855,36 @@ function parseRequestBody(req, maxBytes = Number.POSITIVE_INFINITY) {
   });
 }
 
+// 接口耗时记录（Server-Timing、慢接口、事件循环卡顿）；整库写盘的耗时也记为「主线程阻塞」。
+const requestTiming = createRequestTiming({ slowMs: Number(process.env.SLOW_REQUEST_MS || 1000) });
+setPersistBlockReporter((name, ms) => requestTiming.recordBlock(name, ms));
+
 function sendJson(res, status, payload) {
-  const encoded = encodeJsonResponse(payload, res.requestAcceptEncoding || "");
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    ...corsHeaders(corsAllowedOrigin),
-    ...(encoded.encoding ? { "Content-Encoding": encoded.encoding } : {}),
-    "Content-Length": encoded.body.length,
+  // 大响应在线程池里压缩，压缩期间其他请求照常处理；同一个响应只发一次。
+  if (res.sendJsonPending || res.headersSent) {
+    console.warn(`[sendJson] 重复响应已忽略：${status}`);
+    return;
+  }
+  res.sendJsonPending = true;
+  let syncError = null;
+  encodeJsonResponseAsync(payload, res.requestAcceptEncoding || "", (error, encoded) => {
+    if (error) {
+      // JSON 序列化失败是同步报告的，交给调用方原有的错误处理。
+      res.sendJsonPending = false;
+      syncError = error;
+      return;
+    }
+    if (res.writableEnded || res.destroyed) return;
+    res.timing?.setRawBytes(encoded.rawBytes);
+    res.writeHead(status, {
+      "Content-Type": "application/json; charset=utf-8",
+      ...corsHeaders(corsAllowedOrigin),
+      ...(encoded.encoding ? { "Content-Encoding": encoded.encoding } : {}),
+      "Content-Length": encoded.body.length,
+    });
+    res.end(encoded.body);
   });
-  res.end(encoded.body);
+  if (syncError) throw syncError;
 }
 
 const staticMimeTypes = {
@@ -4022,6 +4045,8 @@ async function waitForSystemBackupApplicationIdle() {
   while (scheduledInventorySnapshotRunning || activeWarehouseReturnQueries.size) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
+  // 合并写盘的库：备份前把内存里未写的改动写完，备份文件才是最新的。
+  flushAllPersistSchedulers();
 }
 
 function getAgentAuth(req) {
@@ -6038,17 +6063,23 @@ async function shopDailyContext(auth, { dateFrom = "", dateTo = "", orderNos = [
   };
 }
 
-async function buildShopDailyReportResponse(params = {}, auth = directAuth) {
+/** 计时工具：有 res.timing 时记录阶段耗时（Server-Timing / 慢接口日志），没有时直接执行。 */
+function phaseTimer(timing) {
+  return timing || { time: (_name, fn) => fn(), timeAsync: (_name, fn) => fn(), mark() {} };
+}
+
+async function buildShopDailyReportResponse(params = {}, auth = directAuth, timing = null) {
+  const t = phaseTimer(timing);
   const permissions = shopDailyPermissions(auth);
   const range = performanceDateRange(params);
   const reviewOrders = shopDailyReportStore.listReviewOrders(range);
   const orderNos = [...new Set(reviewOrders.filter((row) => row.amount === null && row.orderNo).map((row) => row.orderNo))].slice(0, 5000);
-  const context = await shopDailyContext(auth, { ...range, orderNos });
+  const context = await t.timeAsync("context", () => shopDailyContext(auth, { ...range, orderNos }));
   // 有数据范围限制的账号只看自己范围内的店铺；中台订单里还没有的独立店铺对所有可编辑账号可见。
   const visible = (row) => context.visibleShopKeys === null || context.visibleShopKeys.has(row.shopKey) || !context.directoryShopKeys.has(row.shopKey);
   const metrics = shopDailyReportStore.listMetrics(range).filter(visible);
   const scopedReviews = reviewOrders.filter(visible);
-  const report = buildShopDailyReport({
+  const report = t.time("build", () => buildShopDailyReport({
     shops: context.shops,
     systemDaily: context.systemDaily,
     metrics,
@@ -6063,7 +6094,9 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth) {
       country: String(params.country || ""),
       platform: String(params.platform || ""),
     },
-  });
+  }));
+  // 默认视图（按店铺汇总）不需要逐日明细；90 天全部店铺的明细有十几 MB，只在「按日明细」、展开店铺、导出时再取。
+  const includeRows = String(params.rows ?? "1") !== "0";
   const shopOptions = new Map();
   for (const shop of context.shops) shopOptions.set(shop.key, { value: shop.key, label: shop.displayName || shop.rawName, country: shop.country, platform: shop.platform, projectGroup: shop.projectGroup || "" });
   for (const row of [...report.rows, ...metrics]) if (!shopOptions.has(row.shopKey)) shopOptions.set(row.shopKey, { value: row.shopKey, label: row.shopName || row.shopKey, country: row.country || "", platform: row.platform || "", projectGroup: row.projectGroup || "", standalone: true });
@@ -6076,7 +6109,9 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth) {
     filters: report.filters,
     totals: projectShopDailyRow(report.totals, permissions),
     shops: report.shops.map((row) => projectShopDailyRow(row, permissions)),
-    rows: report.rows.map((row) => projectShopDailyRow(row, permissions)),
+    rows: includeRows ? report.rows.map((row) => projectShopDailyRow(row, permissions)) : [],
+    rowCount: report.rows.length,
+    rowsIncluded: includeRows,
     currencies: report.currencies,
     quality: report.quality,
     rules: permissions.cost ? report.rules : [],
@@ -6094,7 +6129,12 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth) {
 }
 
 async function importShopDailyMetrics({ rows = [], source = "import", dryRun = false, auth = directAuth, errors: parseErrors = [], skipped = 0, columns = [] } = {}) {
-  const context = await shopDailyContext(auth, {});
+  // 写入只需要店铺名单和可见范围。没有数据范围限制的账号（含采集节点）不必汇总全部历史订单，只查当天即可；
+  // 有数据范围限制的账号仍按全部历史判断可见店铺。
+  const scopes = normalizeDataScopes((auth?.user || directAuth.user).dataScopes);
+  const scoped = Boolean(scopes.countries.length || scopes.warehouseIds.length || scopes.skus.length);
+  const today = new Date().toISOString().slice(0, 10);
+  const context = await shopDailyContext(auth, scoped ? {} : { dateFrom: today, dateTo: today });
   const prepared = prepareShopDailyMetrics(rows, context.shops);
   const visibleRows = context.visibleShopKeys === null
     ? prepared.rows
@@ -8410,6 +8450,8 @@ async function runScheduledInventorySnapshot() {
   try {
     await refreshWarehouseInventoryForSnapshot("daily_eod", date);
     upsertMovementSnapshot(date, "daily_eod", inventorySnapshotTimezone);
+    // 日终快照是对账基准，立即写盘，不等合并。
+    movementHistoryStore.flush?.();
     lastScheduledInventorySnapshotDate = date;
     console.log(`[inventory-snapshot] captured ${date} at ${new Date().toISOString()}`);
     return { date, captured: true };
@@ -9133,6 +9175,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+    if (url.pathname.startsWith("/api/")) requestTiming.begin(req, res, url.pathname);
 
     if (isInternalApiPath(url.pathname) && !isInternalApiSourceAllowed(req, internalApiAllowedCidrs)) {
       sendJson(res, 404, { ok: false, code: "not_found", message: "接口不存在。" });
@@ -9159,6 +9202,30 @@ const server = http.createServer(async (req, res) => {
     if (await hermesPartnerDraftApi(req, res, url)) return;
     if (await hermesApi(req, res, url)) return;
     if (await verificationCodeApi.handle(req, res, url)) return;
+
+    // 接口耗时与主线程卡顿统计（管理员）：每个接口的 P50 / P95、最近的慢请求、整库写盘等阻塞。
+    if (url.pathname === "/api/system/performance" && ["GET", "DELETE"].includes(req.method)) {
+      const auth = getAuth(req);
+      if (auth.role !== "admin") {
+        sendJson(res, auth.role === "guest" ? 401 : 403, { ok: false, message: "仅管理员可查看。" });
+        return;
+      }
+      if (req.method === "DELETE") {
+        requestTiming.reset();
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      const memory = process.memoryUsage();
+      sendJson(res, 200, {
+        ok: true,
+        node: process.version,
+        uptimeSeconds: Math.round(process.uptime()),
+        memoryMb: { rss: Math.round(memory.rss / 1048576), heapUsed: Math.round(memory.heapUsed / 1048576), external: Math.round(memory.external / 1048576) },
+        persist: persistSchedulerStatus(),
+        ...requestTiming.snapshot({ limit: Number(url.searchParams.get("limit") || 60) }),
+      });
+      return;
+    }
 
     if (url.pathname === "/api/system-backup/status" && req.method === "GET") {
       const auth = systemBackupAdmin(req, res);
@@ -13118,14 +13185,17 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "查看店铺日报需要经营贡献分析和经营销售金额权限。" });
         return;
       }
-      sendJson(res, 200, await buildShopDailyReportResponse({
+      const payload = await buildShopDailyReportResponse({
         dateFrom: url.searchParams.get("dateFrom") || "",
         dateTo: url.searchParams.get("dateTo") || "",
         shopKey: url.searchParams.get("shopKey") || "",
         projectGroup: url.searchParams.get("projectGroup") || "",
         country: url.searchParams.get("country") || "",
         platform: url.searchParams.get("platform") || "",
-      }, auth));
+        rows: url.searchParams.get("rows") ?? "1",
+      }, auth, res.timing);
+      res.timing?.time("serialize", () => {});
+      sendJson(res, 200, payload);
       return;
     }
 
@@ -14669,3 +14739,20 @@ server.listen(port, () => {
     console.log("Tongzhou background jobs are disabled for this process.");
   }
 });
+
+// 退出（PM2 重载 / 停止）前把合并写盘的库写完，避免丢最后几秒的改动。
+let shuttingDown = false;
+function shutdownGracefully(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const started = Date.now();
+  try {
+    const flushed = flushAllPersistSchedulers();
+    console.log(`[shutdown] ${signal}：已写盘 ${flushed.join("、") || "无待写改动"}，用时 ${Date.now() - started} ms`);
+  } catch (error) {
+    console.error("[shutdown] 写盘失败", error);
+  }
+  process.exit(0);
+}
+process.once("SIGINT", () => shutdownGracefully("SIGINT"));
+process.once("SIGTERM", () => shutdownGracefully("SIGTERM"));

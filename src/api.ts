@@ -7313,6 +7313,9 @@ export type ShopDailyReportPayload = {
   totals: ShopDailyMetrics & { days: number };
   shops: ShopDailyShopSummary[];
   rows: ShopDailyRow[];
+  /** 逐日明细总行数（rows=0 时 rows 为空，但这里仍是真实行数）。 */
+  rowCount?: number;
+  rowsIncluded?: boolean;
   currencies: string[];
   quality: {
     rowsWithoutTraffic: number;
@@ -7396,11 +7399,13 @@ export type ShopDailyImportResult = {
   written?: number;
 };
 
-export function fetchShopDailyReport(input: { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string } = {}, signal?: AbortSignal) {
+export function fetchShopDailyReport(input: { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string } = {}, signal?: AbortSignal, options: { rows?: boolean } = {}) {
   const params = new URLSearchParams();
   Object.entries(input).forEach(([key, value]) => {
     if (value) params.set(key, value);
   });
+  // 默认不带逐日明细（几十倍体积），需要时由页面单独取。
+  if (options.rows === false) params.set("rows", "0");
   const query = params.toString() ? `?${params.toString()}` : "";
   return requestJson<ShopDailyReportPayload>(`/api/shop-daily-report${query}`, { signal });
 }

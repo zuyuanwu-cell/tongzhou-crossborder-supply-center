@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { createPersistScheduler } from "./sqljs-persist-scheduler.js";
 
 function all(db, sql, params = []) {
   const statement = db.prepare(sql);
@@ -146,8 +147,13 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
     CREATE INDEX IF NOT EXISTS idx_inventory_daily_ledger_warehouse_date ON inventory_daily_ledger (warehouse_id, biz_date);
   `);
 
-  function persist() {
+  function persistNow() {
     writeFileSync(dbPath, Buffer.from(db.export()));
+  }
+  // 合并写盘：30 秒内的多次改动只整库写一次；退出、备份前会立即写完（见 sqljs-persist-scheduler.js）。
+  const persistScheduler = createPersistScheduler({ name: "inventory-ledger", persistNow, delayMs: 30000 });
+  function persist() {
+    persistScheduler.request();
   }
 
   function setMeta(key, value) {
@@ -349,9 +355,10 @@ export async function initInventoryLedgerStore(dbPath, legacyOrderPayload = {}) 
     upsertOrders(legacyOrderPayload.orders, { persist: false });
     setMeta("orderSyncMetadata", { ...legacyOrderPayload, orders: undefined });
   }
-  persist();
+  persistNow();
 
   return {
+    flush: () => persistScheduler.flush(),
     dbPath,
     aggregateDailyLedger,
     getDailyLedgerCoverage,

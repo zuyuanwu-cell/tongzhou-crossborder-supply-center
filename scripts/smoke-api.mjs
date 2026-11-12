@@ -948,6 +948,15 @@ async function main() {
     throw new Error(`/api/shop-daily-report profit formula mismatch: expected ${expectedDailyProfit}, got ${dailyRow.profitCny}`);
   }
   console.log("[ok] shop daily report import, collector ingest, review orders and fee rules");
+  const shopDailySummary = await expectJson("/api/shop-daily-report?dateFrom=2026-08-28&dateTo=2026-08-28&rows=0", { headers: authHeaders });
+  if (shopDailySummary.rows.length !== 0 || shopDailySummary.rowCount !== 1 || shopDailySummary.shops.length !== shopDaily.shops.length || shopDailySummary.totals.payCny !== shopDaily.totals.payCny) {
+    throw new Error(`/api/shop-daily-report rows=0 should keep summary and omit rows: ${JSON.stringify({ rows: shopDailySummary.rows.length, rowCount: shopDailySummary.rowCount })}`);
+  }
+  const systemPerformance = await expectJson("/api/system/performance", { headers: authHeaders });
+  if (!systemPerformance.routes?.some((route) => route.route === "GET /api/shop-daily-report") || !Array.isArray(systemPerformance.persist)) {
+    throw new Error(`/api/system/performance missing request timing: ${JSON.stringify(systemPerformance).slice(0, 600)}`);
+  }
+  console.log("[ok] shop daily summary without rows, /api/system/performance");
 
   const movement = await expectJson("/api/movement", { headers: authHeaders });
   if ((movement.warehouseDiagnostics || []).some((item) => !item.actionTitle || !Array.isArray(item.actionItems))) {

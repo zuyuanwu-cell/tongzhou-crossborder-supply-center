@@ -199,6 +199,7 @@ try {
     cancellations: cancellation,
   }, { status: "success", lastSuccessAt: "2026-08-04T02:00:00.000Z" });
   assert.notEqual(store.getMetadata().miaoshouDataVersion, initialDataVersion, "real transaction changes must invalidate the analytics materialization");
+  store.flush(); // 写盘已改为合并延迟写，模拟正常退出先写完
   const reopened = await initPerformanceAnalyticsStore(dbPath);
   const snapshot = reopened.listMiaoshouPerformance();
   assert.equal(snapshot.orders.length, 1);

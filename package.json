@@ -10,6 +10,7 @@
     "dev:all": "concurrently \"npm run api\" \"npm run dev\"",
     "build": "tsc -b && vite build",
     "smoke:api": "node scripts/smoke-api.mjs",
+    "test:server-performance": "node --single-threaded scripts/server-performance-test.mjs",
     "test:movement-comparison": "node scripts/movement-comparison-test.mjs",
     "test:product-packaging-fields": "node scripts/product-packaging-fields-test.mjs",
     "test:overseas-reconciliation": "node scripts/overseas-inventory-reconciliation-test.mjs",

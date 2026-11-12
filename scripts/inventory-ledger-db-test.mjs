@@ -64,6 +64,7 @@ try {
   assert.equal(indexedRows.length > 0, true);
   assert.equal(queryDurationMs < 100, true, `indexed 30k-row order query took ${queryDurationMs.toFixed(1)}ms`);
 
+  store.flush(); // 写盘已改为合并延迟写，模拟正常退出先写完
   const reopened = await initInventoryLedgerStore(dbPath, { orders: [{ warehouseId: "BAD", orderId: "SHOULD-NOT-REMIGRATE", sku: "BAD", shippedAt: "2026-01-01" }] });
   assert.equal(reopened.listOrders({ warehouseId: "BAD" }).length, 0, "legacy migration never overwrites an existing database");
   console.log(`inventory ledger database tests passed (30k indexed query ${queryDurationMs.toFixed(1)}ms)`);

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
 import { BUSINESS_CHAIN_FORMS } from "./business-chain-config.js";
+import { createPersistScheduler } from "./sqljs-persist-scheduler.js";
 
 function rows(db, sql, params = []) {
   const statement = db.prepare(sql);
@@ -148,8 +149,13 @@ export async function initBusinessChainStore(dbPath) {
     );
   `);
 
-  function persist() {
+  function persistNow() {
     writeFileSync(dbPath, Buffer.from(db.export()));
+  }
+  // 合并写盘：5 秒内的多次改动只整库写一次；退出、备份前会立即写完（见 sqljs-persist-scheduler.js）。
+  const persistScheduler = createPersistScheduler({ name: "business-chain", persistNow, delayMs: 5000 });
+  function persist() {
+    persistScheduler.request();
   }
   function all(sql, params = []) {
     return rows(db, sql, params);
@@ -311,6 +317,6 @@ export async function initBusinessChainStore(dbPath) {
     }));
   }
 
-  persist();
-  return { all, dbPath, first, markSyncFailed, markSyncStarted, persist, rebuildRelations, rowToDocument, run, syncStates, transaction, upsertForm };
+  persistNow();
+  return { flush: () => persistScheduler.flush(), all, dbPath, first, markSyncFailed, markSyncStarted, persist, rebuildRelations, rowToDocument, run, syncStates, transaction, upsertForm };
 }

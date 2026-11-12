@@ -23,6 +23,7 @@ import "./shop-daily.css";
 type Filters = { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string };
 type Section = "report" | "import" | "reviews" | "rules";
 type View = "shops" | "days";
+const DAY_PAGE_SIZE = 200;
 type OrderDrilldownTarget = { shopKey: string; shopName: string; platform: string; dateFrom: string; dateTo: string; label: string };
 
 const cnyFormatter = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 2 });
@@ -180,6 +181,12 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const [view, setView] = React.useState<View>("shops");
   const [expandedShop, setExpandedShop] = React.useState("");
   const requestRef = React.useRef<AbortController | null>(null);
+  // 逐日明细按需加载：按日明细 / 下载 CSV 取全部；展开某个店铺只取该店铺。
+  const [detail, setDetail] = React.useState<{ key: string; rows: ShopDailyRow[] } | null>(null);
+  const [shopDetail, setShopDetail] = React.useState<Record<string, ShopDailyRow[]>>({});
+  const [detailLoading, setDetailLoading] = React.useState("");
+  const [dayLimit, setDayLimit] = React.useState(DAY_PAGE_SIZE);
+  const detailRequestRef = React.useRef<AbortController | null>(null);
   const [orderTarget, setOrderTarget] = React.useState<OrderDrilldownTarget | null>(null);
   const [orderPayload, setOrderPayload] = React.useState<ShopDailyOrderDrilldownPayload | null>(null);
   const [orderSearch, setOrderSearch] = React.useState("");
@@ -210,8 +217,11 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     setLoading(true);
     setError("");
     try {
-      const next = await fetchShopDailyReport(reportFilters, controller.signal);
+      const next = await fetchShopDailyReport(reportFilters, controller.signal, { rows: false });
       setPayload(next);
+      setDetail(null);
+      setShopDetail({});
+      setDayLimit(DAY_PAGE_SIZE);
     } catch (requestError) {
       if (requestError instanceof DOMException && requestError.name === "AbortError") return;
       setError(requestError instanceof Error ? requestError.message : "店铺日报读取失败");
@@ -225,6 +235,49 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     void load();
     return () => requestRef.current?.abort();
   }, [load]);
+
+  const loadDetail = React.useCallback(async (): Promise<ShopDailyRow[] | null> => {
+    if (detail?.key === filterKey) return detail.rows;
+    detailRequestRef.current?.abort();
+    const controller = new AbortController();
+    detailRequestRef.current = controller;
+    setDetailLoading("all");
+    try {
+      const next = await fetchShopDailyReport(reportFilters, controller.signal);
+      setDetail({ key: filterKey, rows: next.rows || [] });
+      return next.rows || [];
+    } catch (requestError) {
+      if (requestError instanceof DOMException && requestError.name === "AbortError") return null;
+      setError(requestError instanceof Error ? requestError.message : "逐日明细读取失败");
+      return null;
+    } finally {
+      if (detailRequestRef.current === controller) setDetailLoading("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, detail]);
+
+  React.useEffect(() => {
+    if (view === "days" && section === "report" && payload && payload.rowCount !== undefined && !payload.rowsIncluded && detail?.key !== filterKey) void loadDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, section, payload, filterKey, detail?.key]);
+
+  async function toggleShop(shopKey: string) {
+    if (expandedShop === shopKey) {
+      setExpandedShop("");
+      return;
+    }
+    setExpandedShop(shopKey);
+    if (detail?.key === filterKey || inlineRows || shopDetail[shopKey]) return;
+    setDetailLoading(shopKey);
+    try {
+      const next = await fetchShopDailyReport({ ...reportFilters, shopKey });
+      setShopDetail((current) => ({ ...current, [shopKey]: next.rows || [] }));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "店铺明细读取失败");
+    } finally {
+      setDetailLoading((current) => (current === shopKey ? "" : current));
+    }
+  }
 
   React.useEffect(() => {
     if (!orderTarget) {
@@ -260,7 +313,10 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const quality = payload?.quality;
   const singleCurrency = (payload?.currencies.length || 0) <= 1 ? payload?.currencies[0] || "" : "";
   const shopRows = payload?.shops || [];
-  const dayRows = payload?.rows || [];
+  // 兼容旧后端：若主请求已带明细（rowsIncluded 或没有 rowCount 字段），直接用。
+  const inlineRows = payload && (payload.rowsIncluded || payload.rowCount === undefined) ? payload.rows || [] : null;
+  const dayRows = detail?.key === filterKey ? detail.rows : inlineRows || [];
+  const dayRowCount = payload?.rowCount ?? dayRows.length;
   const activeDatePreset = matchingShopDailyPreset(reportFilters.dateFrom || "", reportFilters.dateTo || "");
   const activePlatformKey = reportFilters.platform ? normalizedPlatformKey(reportFilters.platform) : "all";
   const platformOptions = React.useMemo<PlatformOption[]>(() => {
@@ -290,19 +346,22 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   }, [payload?.generatedAt, reportFilters.platform, activePlatformKey]);
   const rowsByShop = React.useMemo(() => {
     const map = new Map<string, ShopDailyRow[]>();
+    for (const [shopKey, rows] of Object.entries(shopDetail)) map.set(shopKey, rows);
     for (const row of dayRows) {
       const list = map.get(row.shopKey) || [];
-      list.push(row);
+      if (!shopDetail[row.shopKey]) list.push(row);
       map.set(row.shopKey, list);
     }
     return map;
-  }, [dayRows]);
+  }, [dayRows, shopDetail]);
 
-  function exportCsv() {
+  async function exportCsv() {
+    const allRows = inlineRows && payload?.rowCount === undefined ? inlineRows : await loadDetail();
+    if (!allRows) return;
     const header = ["日期", "店铺", "国家", "平台", "项目组", "币种", "汇率(本币/人民币)", "支付金额(本币)", "支付金额(人民币)", "展示数", "访客数", "订单数", "加购人数", "测评数量", "测评金额(人民币)", "实际收款(人民币)",
       ...(permissions.cost ? ["测评成本"] : []), "真实成交(人民币)", "真实订单数", "站内推广费(人民币)", "站外推广费(人民币)", "总推广费(人民币)", "ROI", "点击率", "加购率", "转化率", "客单价(人民币)",
       ...(permissions.cost ? ["产品成本", "操作费", "平台扣费"] : []), ...(permissions.profit ? ["利润预估", "利润率"] : []), "支付金额来源", "提示"];
-    const lines = dayRows.map((row) => [
+    const lines = allRows.map((row) => [
       row.date, row.shopName, row.country, row.platform, row.projectGroup, row.currency, row.localPerCny, row.payLocal ?? "", row.payCny, row.impressions, row.visitors, row.orderCount, row.addToCart, row.reviewCount, row.reviewAmountCny, row.reviewReceivedCny,
       ...(permissions.cost ? [row.reviewCostCny] : []), row.realSalesCny, row.realOrders, row.adOnsiteCny, row.adOffsiteCny, row.adTotalCny, row.roi ?? "", row.visitRate ?? "", row.addToCartRate ?? "", row.conversionRate ?? "", row.aovCny ?? "",
       ...(permissions.cost ? [row.productCostCny, row.operationFeeCny, row.platformFeeCny] : []), ...(permissions.profit ? [row.profitCny, row.profitMargin ?? ""] : []),
@@ -427,7 +486,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
         </div>
         <div className="shop-daily-actions">
           <button className="ghost-button" type="button" onClick={() => void load()} disabled={loading}><RefreshCw size={15} />{loading ? "计算中" : "刷新"}</button>
-          <button className="ghost-button" type="button" onClick={exportCsv} disabled={!dayRows.length}><Download size={15} />下载 CSV</button>
+          <button className="ghost-button" type="button" onClick={() => void exportCsv()} disabled={!dayRowCount || detailLoading === "all"}><Download size={15} />{detailLoading === "all" ? "准备中…" : "下载 CSV"}</button>
         </div>
       </div>
 
@@ -511,7 +570,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
 
           <div className="shop-daily-view-toggle">
             <button className={view === "shops" ? "active" : ""} type="button" onClick={() => setView("shops")}>按店铺汇总 <span>{shopRows.length}</span></button>
-            <button className={view === "days" ? "active" : ""} type="button" onClick={() => setView("days")}>按日明细 <span>{dayRows.length}</span></button>
+            <button className={view === "days" ? "active" : ""} type="button" onClick={() => setView("days")}>按日明细 <span>{dayRowCount}</span></button>
             <small>{payload ? `${payload.filters.dateFrom} 至 ${payload.filters.dateTo}` : `${reportFilters.dateFrom || ""} 至 ${reportFilters.dateTo || ""}`}{payload?.materializationStale ? " · 中台订单正在后台更新" : ""}</small>
           </div>
 
@@ -521,7 +580,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
               <tbody>
                 {view === "shops" ? shopRows.map((shop: ShopDailyShopSummary) => (
                   <React.Fragment key={shop.shopKey}>
-                    <tr className="shop-row" onClick={() => setExpandedShop(expandedShop === shop.shopKey ? "" : shop.shopKey)}>
+                    <tr className="shop-row" onClick={() => void toggleShop(shop.shopKey)}>
                       <td className="sticky">
                         <strong>{shop.shopName}</strong>
                         <small>{[shop.platform, shop.country, shop.projectGroup].filter(Boolean).join(" · ")} · {shop.days} 天{shop.standaloneShop ? " · 未匹配中台" : ""}</small>
@@ -540,6 +599,9 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                       </td>
                       <MetricCells row={shop} permissions={permissions} currency={shop.currency} />
                     </tr>
+                    {expandedShop === shop.shopKey && detailLoading === shop.shopKey ? (
+                      <tr className="day-row"><td className="sticky"><small>正在读取逐日明细…</small></td></tr>
+                    ) : null}
                     {expandedShop === shop.shopKey ? (rowsByShop.get(shop.shopKey) || []).map((row) => (
                       <tr className="day-row" key={`${row.shopKey}-${row.date}`}>
                         <td className="sticky"><span>{row.date}</span><small>收入来源：{SOURCE_LABEL[row.sources.revenue] || row.sources.revenue}</small>
@@ -549,7 +611,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                       </tr>
                     )) : null}
                   </React.Fragment>
-                )) : dayRows.map((row) => (
+                )) : dayRows.slice(0, dayLimit).map((row) => (
                   <tr key={`${row.shopKey}-${row.date}`}>
                     <td className="sticky">
                       <strong>{row.date} · {row.shopName}</strong>
@@ -562,11 +624,18 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                   </tr>
                 ))}
               </tbody>
-              {totals && (view === "shops" ? shopRows.length : dayRows.length) ? (
+              {totals && (view === "shops" ? shopRows.length : dayRowCount) ? (
                 <tfoot><tr><td className="sticky"><strong>合计</strong><small>比率按合计重新计算</small></td><MetricCells row={totals} permissions={permissions} currency={singleCurrency} />{view === "days" && permissions.edit ? <td /> : null}</tr></tfoot>
               ) : null}
             </table>
-            {!loading && !dayRows.length ? (
+            {view === "days" && detailLoading === "all" ? <div className="shop-daily-empty"><p>正在读取逐日明细…</p></div> : null}
+            {view === "days" && dayRows.length > dayLimit ? (
+              <div className="shop-daily-empty">
+                <p>已显示 {dayLimit} / {dayRows.length} 行</p>
+                <button className="ghost-button" type="button" onClick={() => setDayLimit((current) => current + DAY_PAGE_SIZE * 5)}>再显示 {Math.min(DAY_PAGE_SIZE * 5, dayRows.length - dayLimit)} 行</button>
+              </div>
+            ) : null}
+            {!loading && !dayRowCount ? (
               <div className="shop-daily-empty">
                 <Store size={30} />
                 <h4>当前筛选范围暂无日报数据</h4>

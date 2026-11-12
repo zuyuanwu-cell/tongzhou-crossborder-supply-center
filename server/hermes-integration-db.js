@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
 import { acquireSqlJsWriterLock, persistSqlJsDatabaseAtomically } from "./sqljs-durable-store.js";
+import { createPersistScheduler } from "./sqljs-persist-scheduler.js";
 
 function text(value) {
   return String(value ?? "").trim();
@@ -349,11 +350,17 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
   const proposalColumns = new Set(rows(db, "PRAGMA table_info(hermes_action_proposals)").map((item) => item.name));
   if (!proposalColumns.has("arguments_hash")) db.run("ALTER TABLE hermes_action_proposals ADD COLUMN arguments_hash TEXT NOT NULL DEFAULT ''");
 
-  function persist() {
+  function persistNow() {
     persistSqlJsDatabaseAtomically(dbPath, db.export());
+  }
+  // 合并写盘：5 秒内的多次改动只整库写一次；退出、备份前会立即写完（见 sqljs-persist-scheduler.js）。
+  const persistScheduler = createPersistScheduler({ name: "hermes-integration", persistNow, delayMs: 5000 });
+  function persist() {
+    persistScheduler.request();
   }
 
   function close() {
+    try { persistScheduler.flush(); } catch (error) { console.error("[sqljs] flush before close failed", error); }
     try { db.close(); } finally { releaseWriterLock(); }
   }
 
@@ -810,8 +817,9 @@ export async function initHermesIntegrationStore(dbPath, { now = () => new Date(
     });
   }
 
-  persist();
+  persistNow();
   return {
+    flush: () => persistScheduler.flush(),
     dbPath,
     close,
     createConversation,
