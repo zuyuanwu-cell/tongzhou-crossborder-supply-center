@@ -63,3 +63,40 @@
 - `PATCH /api/collector/quality/settings`：`{ autoBackfill, pageCheck, screenshot }`（页面核对与截图开关随心跳下发给节点）
 - `GET /api/collector/quality/evidence?shopKey&date`、`GET /api/collector/quality/screenshot?shopKey&date`
 - `POST /api/collector/quality/recollect`：`{ shopKey, dates[] }` 手动补采
+
+## 妙手排单定时（同舟智数 0.5.0）
+
+目标：每天按中台设置的时间，自动开启 / 关闭妙手「订单 → 订单规则 → 自动标记」里的排单规则（当前：OZON 排单 11:00–23:00，WB 排单 11:00–24:00，北京时间）。
+
+妙手开放平台没有标记规则接口，所以由一台同舟智数节点在已登录的妙手网页会话里调用妙手页面自己的接口（2026-11-12 在真实账号上记录并验证）：
+
+| 用途 | 妙手接口（`erp.91miaoshou.com`，登录 Cookie 鉴权） |
+|---|---|
+| 读规则与状态 | `GET /api/order/package_marking_rule/searchOpOrderPackageMarkingRuleList` |
+| 开 / 关 | `POST /api/order/package_marking_rule/setOpOrderPackageMarkingRuleIsEnabled`，表单 `opOrderPackageMarkingRuleId`、`isEnabled=1|0` |
+
+这是妙手的内部接口，没有官方保证；妙手改版后可能需要重新适配（节点会报「规则列表的格式变了」）。
+
+### 使用
+1. 在一台常开的电脑上打开同舟智数「妙手排单」，点「登录妙手」，在弹出的妙手窗口里登录后关掉窗口。妙手密码只输入在妙手自己的页面里，同舟智数不读取、不保存。
+2. 1 分钟内，中台「采集中心 → 妙手排单」会列出妙手里的标记规则。选择执行节点，勾选要托管的规则，填开启 / 关闭时间，保存。
+3. 之后节点每 2 分钟比对一次；到点的规则会在 1 分钟内执行。
+
+### 规则
+- 时间按北京时间。关闭时间可填 `24:00`；关闭时间早于开启时间表示跨零点。
+- 节点按「应有状态」对齐：先读妙手里的实际状态，不一致才开 / 关，操作后重新读一次确认。节点离线或妙手掉登录恢复后会自动补上。
+- 只操作中台托管的规则，其他规则不碰。托管期间在妙手里手动改状态会被下一次比对改回来，要临时改请用中台的「开 / 关」。
+- 中台「开 / 关」是手动干预：保持到下一个计划时间点，之后回到时间表；「恢复」立即回到时间表。
+- 时间表缓存在节点本地，中台连不上时照常执行。
+- 妙手的规则在订单同步进妙手（待处理 / 待审核）时打标，按同步时间而不是买家下单时间；关闭期间进来的订单不会补标。
+
+### 需要人工处理（同时进入 Hermes 异常工作台）
+没有指定执行节点、执行节点离线、妙手登录失效、托管的规则在妙手里被删、状态超过 10 分钟仍与时间表不一致。
+
+### 接口
+- 节点心跳 `POST /api/collector/agent/heartbeat`：请求带 `miaoshou: { session, rules, rulesAt, events }`，返回 `miaoshou: { assigned, checkSeconds, rules: [{ ruleId, name, onTime, offTime, override }] }`。
+- `GET /api/collector/miaoshou-rules`：配置、妙手实际状态、最近开关记录、人工待办、可选节点。
+- `PATCH /api/collector/miaoshou-rules`：`{ nodeId, rules: [{ ruleId, managed, onTime, offTime }] }`（需编辑权限）。
+- `POST /api/collector/miaoshou-rules/:ruleId/override`：`{ state: "on" | "off" | "auto" }`（需编辑权限）。
+
+数据保存在 `.cache/miaoshou-rule-schedule.json`（运行时数据，不进 Git）。测试：`npm run test:miaoshou-rule-schedule`，桌面端 `npm test`。

@@ -15,6 +15,8 @@ const { describePlatforms, allTemplates } = require("./core/platforms");
 const { METRIC_FIELDS, validateTemplate } = require("./core/recipe");
 const { SITES } = require("./core/sites");
 const { NodeAgent } = require("./core/agent");
+const { MiaoshouApi, MiaoshouKeeper } = require("./core/miaoshou");
+const { MiaoshouSession } = require("./core/miaoshou-session");
 
 app.setName("同舟智数");
 // 测试或便携使用时可通过环境变量指定数据目录。
@@ -111,6 +113,22 @@ function markUnauthorized() {
 }
 collector.onUnauthorized = markUnauthorized;
 
+// 妙手排单定时：在独立的妙手登录窗口里按中台时间表开关「自动标记」规则。
+const miaoshouSession = new MiaoshouSession({
+  BrowserWindow,
+  icon: fs.existsSync(iconPath()) ? iconPath() : undefined,
+  log,
+  // 用户登录完关掉妙手窗口后，马上检查一次登录状态。
+  onClosed: () => miaoshouKeeper.tick({ force: true }).catch(() => {}),
+});
+const miaoshouKeeper = new MiaoshouKeeper({
+  api: new MiaoshouApi({ request: (method, pathname, form) => miaoshouSession.request(method, pathname, form) }),
+  getPlan: () => store.get().miaoshou.plan,
+  isActive: () => Boolean(store.get().miaoshou.active),
+  log,
+  onChange: () => mainWindow?.webContents.send("miaoshou", miaoshouKeeper.view()),
+});
+
 // 采集节点代理：向中台采集中心上报状态、领取计划和命令。
 agent = new NodeAgent({
   store,
@@ -120,8 +138,10 @@ agent = new NodeAgent({
   log,
   version: app.getVersion(),
   runCollect: (options) => startCollect(options),
+  miaoshou: miaoshouKeeper,
 });
 agent.onUnauthorized = markUnauthorized;
+agent.onMiaoshouPlanChanged = () => miaoshouKeeper.tick({ force: true }).catch(() => {});
 agent.onScheduleChanged = () => {
   updateTray();
   mainWindow?.webContents.send("run-state", { running: Boolean(collector.running) });
@@ -209,6 +229,7 @@ function state() {
     templateProblems: Object.fromEntries(Object.values(store.get().templates).map((template) => [template.id, validateTemplate(template)])),
     builtinTemplates: Object.values(allTemplates({})),
     storeOverview: collector.storeOverview(),
+    miaoshou: miaoshouKeeper.view(),
     node: store.get().node ? { ...store.get().node, lastHeartbeat: agent.lastHeartbeat, lastError: agent.lastError } : null,
   };
 }
@@ -404,6 +425,29 @@ handle("templates:import", async () => {
   return store.upsertTemplate({ ...template, id: "" });
 });
 
+// 妙手：打开登录窗口（用户自己输入妙手账号密码，程序不接触密码）。
+handle("miaoshou:login", async () => {
+  store.update((config) => {
+    config.miaoshou.active = true;
+  });
+  await miaoshouSession.showLogin();
+  return miaoshouKeeper.view();
+});
+handle("miaoshou:check", async () => {
+  miaoshouSession.hide();
+  await miaoshouKeeper.tick({ force: true });
+  agent.heartbeat().catch(() => {});
+  return miaoshouKeeper.view();
+});
+handle("miaoshou:disable", () => {
+  store.update((config) => {
+    config.miaoshou.active = false;
+  });
+  miaoshouSession.hide();
+  log("info", "这台电脑已停用妙手排单");
+  return miaoshouKeeper.view();
+});
+
 handle("collect:start", (payload) => {
   // 不等待完成：进度通过事件推送，结果写入历史。
   startCollect(payload).catch((error) => log("error", `采集失败：${error.message}`));
@@ -463,7 +507,7 @@ function createWindow({ hidden = false } = {}) {
     title: "同舟智数",
     icon: fs.existsSync(iconPath()) ? iconPath() : undefined,
     show: !hidden,
-    backgroundColor: "#f5f6f8",
+    backgroundColor: "#eaf0f8",
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -529,6 +573,7 @@ function createTray() {
 app.on("second-instance", showWindow);
 app.on("before-quit", () => {
   quitting = true;
+  miaoshouSession.destroy();
 });
 app.on("window-all-closed", () => {
   /* 常驻托盘 */
@@ -540,6 +585,7 @@ app.whenReady().then(() => {
   createTray();
   scheduler.start();
   agent.start();
+  miaoshouKeeper.start();
   log("info", `同舟智数 ${app.getVersion()} 已启动，数据目录：${dataDir}`);
   // 启动时自动读取紫鸟店铺和中台店铺名单，用户不需要手动点。
   setTimeout(async () => {

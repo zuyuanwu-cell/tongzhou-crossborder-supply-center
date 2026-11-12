@@ -9,6 +9,7 @@ const CHANNELS = [
   "calibrate:discover", "calibrate:build", "calibrate:test",
   "templates:save", "templates:delete", "templates:export", "templates:import",
   "collect:start", "collect:cancel",
+  "miaoshou:login", "miaoshou:check", "miaoshou:disable",
   "history:list", "history:rows", "history:reupload",
   "open:logs", "open:data", "open:url", "debug:cli", "debug:page", "app:relaunch",
 ];
@@ -19,7 +20,7 @@ contextBridge.exposeInMainWorld("tz", {
     return ipcRenderer.invoke(channel, payload);
   },
   on(event, handler) {
-    if (!["log", "progress", "run-state"].includes(event)) return () => {};
+    if (!["log", "progress", "run-state", "miaoshou"].includes(event)) return () => {};
     const listener = (_event, data) => handler(data);
     ipcRenderer.on(event, listener);
     return () => ipcRenderer.removeListener(event, listener);

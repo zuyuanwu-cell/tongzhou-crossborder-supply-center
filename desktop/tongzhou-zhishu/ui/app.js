@@ -496,6 +496,57 @@ function viewSettings() {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// 页面：妙手排单
+// ---------------------------------------------------------------------------
+
+function bjClock(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function viewMiaoshou() {
+  const ms = S.state.miaoshou || { active: false, rules: [], events: [], session: {} };
+  const loggedIn = ms.active && ms.session?.loggedIn;
+  const managed = ms.rules.filter((rule) => rule.managed);
+  const synced = managed.filter((rule) => rule.desiredOn === rule.isEnabled);
+  const sessionText = !ms.active ? "这台电脑还没有启用" : loggedIn ? `已登录${ms.session.checkedAt ? ` · ${fmtTime(ms.session.checkedAt)} 检查` : ""}` : ms.session?.message || "未登录";
+  return `
+    <h1>妙手排单</h1>
+    <p class="subtitle">按中台「采集中心 → 妙手排单」设置的时间，每天自动开启和关闭妙手「自动标记」里的排单规则。时间按北京时间，只操作中台托管的规则。</p>
+    <div class="grid cols-3" style="margin-bottom:16px">
+      <div class="check-card ${loggedIn ? "ok" : "todo"}"><b>${loggedIn ? "✓ " : ""}妙手登录</b><span>${esc(sessionText)}</span>
+        <div class="toolbar" style="margin:4px 0 0">
+          <button class="btn small ${loggedIn ? "" : "primary"}" data-action="miaoshou-login">${loggedIn ? "打开妙手" : "登录妙手"}</button>
+          ${ms.active ? `<button class="btn small" data-action="miaoshou-check" ${S.busy.miaoshou ? "disabled" : ""}>${S.busy.miaoshou ? "检查中…" : "立即检查"}</button>` : ""}
+        </div>
+      </div>
+      <div class="check-card ${ms.assigned ? "ok" : "todo"}"><b>${ms.assigned ? "✓ " : ""}中台时间表</b><span>${ms.assigned ? `中台已指定这台电脑执行，托管 ${managed.length} 条规则` : "中台还没有指定这台电脑执行。登录妙手后，到中台「采集中心 → 妙手排单」选择这个节点并保存时间。"}</span></div>
+      <div class="check-card ${managed.length && synced.length === managed.length ? "ok" : managed.length ? "todo" : ""}"><b>${managed.length && synced.length === managed.length ? "✓ " : ""}规则状态</b><span>${managed.length ? `${synced.length}/${managed.length} 条与时间表一致${ms.lastTickAt ? ` · 每 ${Math.round(ms.checkSeconds / 60)} 分钟比对一次` : ""}` : "还没有托管的规则"}</span></div>
+    </div>
+    ${ms.active && !loggedIn ? `<div class="notice warn" style="margin-bottom:16px">点「登录妙手」会打开妙手窗口，请在窗口里用妙手账号登录，登录后直接关掉窗口即可。同舟智数不会读取或保存你的妙手密码。</div>` : ""}
+    <section class="panel">
+      <div class="panel-head"><div><h2>妙手里的标记规则</h2><p>${ms.rulesAt ? `${fmtTime(ms.rulesAt)} 读取` : "登录妙手后自动读取"} · 开启 / 关闭时间在中台修改，1 分钟内生效</p></div></div>
+      ${ms.rules.length ? `<div class="table-wrap"><table class="data">
+        <thead><tr><th>规则</th><th>时间表</th><th>现在应为</th><th>妙手实际</th></tr></thead>
+        <tbody>${ms.rules.map((rule) => `<tr>
+          <td><b>${esc(rule.name)}</b><div class="muted small">${rule.shopCount ? `${rule.shopCount} 个店铺` : ""}${rule.detail ? ` · ${esc(rule.detail)}` : ""}</div></td>
+          <td>${rule.managed ? `<span class="tag info">${esc(rule.onTime)} – ${esc(rule.offTime)}</span>` : `<span class="muted">不托管</span>`}</td>
+          <td>${rule.managed && rule.desiredOn !== null ? `<span class="tag ${rule.desiredOn ? "ok" : ""}">${rule.desiredOn ? "开启" : "关闭"}</span>${rule.desiredSource === "override" ? ` <span class="muted small">中台手动，到 ${esc(bjClock(rule.overrideUntil))}</span>` : ""}` : "—"}</td>
+          <td><span class="tag ${rule.isEnabled ? "ok" : ""}">${rule.isEnabled ? "已开启" : "已关闭"}</span>${rule.managed && rule.desiredOn !== null && rule.desiredOn !== rule.isEnabled ? ` <span class="tag warn">待执行</span>` : ""}</td>
+        </tr>`).join("")}</tbody></table></div>` : `<div class="empty">${ms.active ? "还没有读到规则" : "这台电脑还没有启用妙手排单。只需要在一台常开的电脑上登录妙手。"}</div>`}
+    </section>
+    <section class="panel">
+      <div class="panel-head"><div><h2>最近开关记录</h2></div>${ms.active ? `<button class="btn small danger" data-action="miaoshou-disable">这台电脑停用妙手排单</button>` : ""}</div>
+      ${ms.events.length ? `<div class="table-wrap"><table class="data">
+        <thead><tr><th>时间</th><th>规则</th><th>操作</th><th>来源</th><th>结果</th></tr></thead>
+        <tbody>${ms.events.map((event) => `<tr><td>${esc(fmtTime(event.at))}</td><td>${esc(event.name)}</td><td>${event.action === "on" ? "开启" : "关闭"}</td><td>${event.trigger === "override" ? "中台手动" : "定时"}</td><td><span class="tag ${event.ok ? "ok" : "err"}">${event.ok ? "成功" : "失败"}</span> <span class="muted small">${esc(event.message || "")}</span></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">还没有记录</div>`}
+    </section>
+  `;
+}
+
 function viewLogs() {
   return `
     <h1>日志</h1>
@@ -510,10 +561,21 @@ function viewLogs() {
 
 function render() {
   if (!S.state) return;
-  const views = { home: viewHome, stores: viewStores, templates: viewTemplates, history: viewHistory, settings: viewSettings, logs: viewLogs };
+  const views = { home: viewHome, stores: viewStores, templates: viewTemplates, history: viewHistory, miaoshou: viewMiaoshou, settings: viewSettings, logs: viewLogs };
   const scroll = $("#main").scrollTop;
   $("#main").innerHTML = views[S.tab]();
-  $("#main").scrollTop = scroll;
+  // 切换页面时播放一次入场动效；同一页面的数据刷新不重播、也保留滚动位置。
+  if (S.renderedTab !== S.tab) {
+    S.renderedTab = S.tab;
+    const main = $("#main");
+    main.classList.remove("enter");
+    void main.offsetWidth;
+    main.classList.add("enter");
+    clearTimeout(S.enterTimer);
+    S.enterTimer = setTimeout(() => main.classList.remove("enter"), 900);
+  } else {
+    $("#main").scrollTop = scroll;
+  }
   document.querySelectorAll("#nav button").forEach((button) => button.classList.toggle("active", button.dataset.tab === S.tab));
   $("#app-version").textContent = `v${S.state.appVersion} · 店铺数据采集`;
   const { config, running } = S.state;
@@ -547,6 +609,22 @@ function collectDates() {
 }
 
 const actions = {
+  async "miaoshou-login"() {
+    S.state.miaoshou = await api("miaoshou:login");
+    render();
+    toast("已打开妙手窗口。登录后关掉窗口即可。", "ok");
+  },
+  async "miaoshou-check"() {
+    await withBusy("miaoshou", async () => {
+      S.state.miaoshou = await api("miaoshou:check");
+      const session = S.state.miaoshou.session || {};
+      toast(session.loggedIn ? "妙手已登录，规则状态已比对" : `妙手未登录：${session.message || ""}`, session.loggedIn ? "ok" : "err");
+    });
+  },
+  async "miaoshou-disable"() {
+    S.state.miaoshou = await api("miaoshou:disable");
+    render();
+  },
   async pair() {
     const username = $("#pair-user").value.trim();
     const password = $("#pair-pass").value;
@@ -955,6 +1033,11 @@ window.tz.on("log", (line) => {
   S.state.logs.push(line);
   if (S.state.logs.length > 400) S.state.logs.shift();
   if (S.tab === "logs") render();
+});
+window.tz.on("miaoshou", (view) => {
+  if (!S.state) return;
+  S.state.miaoshou = view;
+  if (S.tab === "miaoshou") render();
 });
 window.tz.on("run-state", async ({ running }) => {
   if (!S.state) return;

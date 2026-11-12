@@ -31,7 +31,7 @@ function nextRunAt(schedule, now = new Date()) {
 }
 
 class NodeAgent {
-  constructor({ store, collector, cli, clientFactory, log = () => {}, runCollect, version = "", intervalMs = 60000, logFlushMs = 15000 }) {
+  constructor({ store, collector, cli, clientFactory, log = () => {}, runCollect, version = "", intervalMs = 60000, logFlushMs = 15000, miaoshou = null }) {
     this.store = store;
     this.collector = collector;
     this.cli = cli;
@@ -39,6 +39,8 @@ class NodeAgent {
     this.log = log;
     this.runCollect = runCollect;
     this.version = version;
+    this.miaoshou = miaoshou;
+    this.onMiaoshouPlanChanged = null;
     this.intervalMs = intervalMs;
     this.logFlushMs = logFlushMs;
     this.logQueue = [];
@@ -113,6 +115,7 @@ class NodeAgent {
       stores,
       localSchedule: config.schedule,
       nextRunAt: nextRunAt(config.schedule),
+      miaoshou: this.miaoshou ? this.miaoshou.report() : null,
     };
   }
 
@@ -131,6 +134,7 @@ class NodeAgent {
     }
     this.applySchedule(response.schedule);
     this.applyQuality(response.quality);
+    this.applyMiaoshou(response.miaoshou);
     for (const command of response.commands || []) this.enqueue(command);
     await this.flushRuns();
     await this.flushLogs();
@@ -159,6 +163,30 @@ class NodeAgent {
     this.store.update((config) => {
       config.quality = next;
     });
+  }
+
+  /** 中台下发的妙手排单时间表：缓存到本地，变化时立即对齐一次。 */
+  applyMiaoshou(plan) {
+    if (!plan || typeof plan !== "object") return;
+    const next = {
+      assigned: Boolean(plan.assigned),
+      checkSeconds: Number(plan.checkSeconds) || 120,
+      rules: Array.isArray(plan.rules) ? plan.rules.map((rule) => ({
+        ruleId: String(rule.ruleId || ""),
+        name: String(rule.name || ""),
+        onTime: String(rule.onTime || ""),
+        offTime: String(rule.offTime || ""),
+        override: rule.override && typeof rule.override === "object" ? { state: String(rule.override.state || ""), until: String(rule.override.until || "") } : null,
+      })).filter((rule) => rule.ruleId) : [],
+    };
+    const current = this.store.get().miaoshou?.plan || null;
+    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    this.store.update((config) => {
+      config.miaoshou.plan = next;
+    });
+    if (next.assigned) this.log("info", `中台妙手排单时间表已更新：${next.rules.map((rule) => `${rule.name} ${rule.onTime}–${rule.offTime}${rule.override ? `（手动${rule.override.state === "on" ? "开启" : "关闭"}中）` : ""}`).join("；") || "没有托管规则"}`);
+    else if (current?.assigned) this.log("info", "这台电脑不再负责妙手排单定时");
+    if (this.onMiaoshouPlanChanged) this.onMiaoshouPlanChanged(next);
   }
 
   enqueue(command) {

@@ -13,6 +13,8 @@ const DEFAULT_CONFIG = Object.freeze({
   schedule: { enabled: false, times: ["09:30"], lookbackDays: 3, includeToday: false, autoUpload: true },
   // 数据质量：采集后与 Shopee 后台页面核对「昨天」的数字，并截图留证（可由中台下发关闭）。
   quality: { pageCheck: true, screenshot: true },
+  // 妙手排单定时：active = 这台电脑登录过妙手；plan = 中台下发的时间表（缓存在本地，中台连不上也照常执行）。
+  miaoshou: { active: false, plan: null },
   templates: {},
   stores: {},
   storeCache: [],
@@ -35,6 +37,7 @@ function mergeDefaults(input) {
     ziniao: { ...base.ziniao, ...(input.ziniao || {}) },
     schedule: { ...base.schedule, ...(input.schedule || {}) },
     quality: { ...base.quality, ...(input.quality || {}) },
+    miaoshou: { ...base.miaoshou, ...(input.miaoshou || {}) },
     templates: input.templates && typeof input.templates === "object" ? input.templates : {},
     stores: input.stores && typeof input.stores === "object" ? input.stores : {},
     storeCache: Array.isArray(input.storeCache) ? input.storeCache : [],

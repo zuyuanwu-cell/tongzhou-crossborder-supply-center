@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, CircleOff, Cpu, History, Play, Power, RefreshCw, RotateCcw, Save, ScrollText, Server, ShieldCheck, Store, Trash2, X } from "lucide-react";
+import { AlarmClock, AlertTriangle, CalendarClock, CheckCircle2, CircleOff, Cpu, History, Play, Power, RefreshCw, RotateCcw, Save, ScrollText, Server, ShieldCheck, Store, Trash2, X } from "lucide-react";
 import {
   deleteCollectorNode,
   fetchCollectorLogs,
@@ -15,6 +15,7 @@ import {
   type CollectorRun,
 } from "../api";
 import { DataQuality } from "./DataQuality";
+import { MiaoshouRules } from "./MiaoshouRules";
 import "./collector-center.css";
 
 type DetailTab = "schedule" | "runs" | "logs" | "stores";
@@ -94,7 +95,7 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
   const [selectedId, setSelectedId] = React.useState("");
   const [detail, setDetail] = React.useState<CollectorNodeDetail | null>(null);
   const [tab, setTab] = React.useState<DetailTab>("schedule");
-  const [view, setView] = React.useState<"quality" | "nodes">("quality");
+  const [view, setView] = React.useState<"quality" | "nodes" | "miaoshou">("quality");
   const [runs, setRuns] = React.useState<CollectorRun[]>([]);
   const [expandedRun, setExpandedRun] = React.useState("");
   const [logs, setLogs] = React.useState<CollectorLogLine[]>([]);
@@ -235,9 +236,11 @@ export function CollectorCenter({ canEdit = true }: { canEdit?: boolean }) {
       <div className="cc-view-switch">
         <button type="button" className={view === "quality" ? "active" : ""} onClick={() => setView("quality")}><ShieldCheck size={15} />数据质量</button>
         <button type="button" className={view === "nodes" ? "active" : ""} onClick={() => setView("nodes")}><Server size={15} />采集节点 <span>{nodes.length}</span></button>
+        <button type="button" className={view === "miaoshou" ? "active" : ""} onClick={() => setView("miaoshou")}><AlarmClock size={15} />妙手排单</button>
       </div>
 
       {view === "quality" ? <DataQuality canEdit={canEdit} /> : null}
+      {view === "miaoshou" ? <MiaoshouRules canEdit={canEdit} /> : null}
 
       {view === "nodes" && error ? <div className="cc-notice bad"><AlertTriangle size={15} />{error}</div> : null}
 

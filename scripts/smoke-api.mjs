@@ -896,6 +896,24 @@ async function main() {
   if (retried.command.storeIds?.[0] !== "s1") throw new Error(`collector retry did not target failed store: ${JSON.stringify(retried)}`);
   const collectorLogs = await expectJson(`/api/collector/nodes/${smokeNode.id}/logs`, { headers: authHeaders });
   if (!collectorLogs.lines.some((line) => line.message.includes("未登录"))) throw new Error("collector logs missing");
+  // 妙手排单定时：节点上报规则 → 中台托管并指定节点 → 心跳拿到时间表 → 手动干预
+  const msCatalog = [{ ruleId: "7657", name: "OZON排单", isEnabled: false, shopCount: 20 }, { ruleId: "7658", name: "WB排单", isEnabled: false, shopCount: 7 }];
+  const msBeat1 = await expectJson("/api/collector/agent/heartbeat", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ miaoshou: { session: { loggedIn: true }, rules: msCatalog } }) });
+  if (msBeat1.miaoshou?.assigned !== false) throw new Error(`miaoshou plan should be unassigned: ${JSON.stringify(msBeat1.miaoshou)}`);
+  const msView1 = await expectJson("/api/collector/miaoshou-rules", { headers: authHeaders });
+  if (msView1.rules.length !== 2 || msView1.rules.find((rule) => rule.ruleId === "7658")?.offTime !== "24:00" || !msView1.nodes.some((item) => item.id === smokeNode.id)) throw new Error(`miaoshou rules view mismatch: ${JSON.stringify(msView1).slice(0, 400)}`);
+  const msBad = await fetch(`${baseUrl}/api/collector/miaoshou-rules`, { method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ rules: [{ ruleId: "7657", managed: true, onTime: "11:00", offTime: "11:00" }] }) });
+  if (msBad.status !== 400) throw new Error(`miaoshou invalid schedule accepted: ${msBad.status}`);
+  const msSaved = await expectJson("/api/collector/miaoshou-rules", { method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ nodeId: smokeNode.id, rules: [{ ruleId: "7657", name: "OZON排单", managed: true, onTime: "11:00", offTime: "23:00" }, { ruleId: "7658", name: "WB排单", managed: true, onTime: "11:00", offTime: "24:00" }] }) });
+  if (msSaved.nodeId !== smokeNode.id || msSaved.rules.filter((rule) => rule.managed).length !== 2) throw new Error(`miaoshou schedule not saved: ${JSON.stringify(msSaved).slice(0, 400)}`);
+  const msOverride = await expectJson("/api/collector/miaoshou-rules/7657/override", { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ state: "on" }) });
+  if (msOverride.rules.find((rule) => rule.ruleId === "7657")?.desiredSource !== "override") throw new Error("miaoshou override not applied");
+  const msBeat2 = await expectJson("/api/collector/agent/heartbeat", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ miaoshou: { session: { loggedIn: true }, rules: msCatalog, events: [{ id: "smoke_ms_1", ruleId: "7657", name: "OZON排单", action: "on", ok: true, trigger: "override" }] } }) });
+  if (!msBeat2.miaoshou?.assigned || msBeat2.miaoshou.rules.length !== 2 || msBeat2.miaoshou.rules[0].override?.state !== "on") throw new Error(`miaoshou plan not delivered: ${JSON.stringify(msBeat2.miaoshou)}`);
+  const msView2 = await expectJson("/api/collector/miaoshou-rules", { headers: authHeaders });
+  if (msView2.events[0]?.id !== "smoke_ms_1" || !msView2.session?.loggedIn) throw new Error("miaoshou events/session missing");
+  const msAnonymous = await fetch(`${baseUrl}/api/collector/miaoshou-rules`);
+  if (msAnonymous.status !== 401) throw new Error(`miaoshou rules allowed anonymous access: ${msAnonymous.status}`);
   const anonymousNodes = await fetch(`${baseUrl}/api/collector/nodes`);
   if (anonymousNodes.status !== 401) throw new Error(`collector nodes allowed anonymous access: ${anonymousNodes.status}`);
   const badAgent = await fetch(`${baseUrl}/api/collector/agent/heartbeat`, { method: "POST", headers: { "X-Node-Token": "tzcn_bad", "Content-Type": "application/json" }, body: "{}" });

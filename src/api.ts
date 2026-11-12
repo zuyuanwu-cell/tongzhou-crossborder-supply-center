@@ -7693,3 +7693,52 @@ export async function fetchCollectorScreenshot(shopKey: string, date: string) {
   if (!response.ok) throw new Error("没有截图");
   return URL.createObjectURL(await response.blob());
 }
+
+// ---- 采集中心 · 妙手排单定时 ----
+export type MiaoshouRuleOverride = { state: "on" | "off"; until: string; by?: string; at?: string } | null;
+export type MiaoshouRule = {
+  ruleId: string;
+  name: string;
+  managed: boolean;
+  onTime: string;
+  offTime: string;
+  override: MiaoshouRuleOverride;
+  exists: boolean;
+  isEnabled: boolean | null;
+  shopCount: number;
+  detail: string;
+  desiredOn: boolean | null;
+  desiredSource: "" | "schedule" | "override";
+  nextChangeAt: string;
+  inSync: boolean | null;
+};
+export type MiaoshouRuleEvent = { id: string; at: string; ruleId: string; name: string; action: "on" | "off"; ok: boolean; trigger: "schedule" | "override"; message: string };
+export type MiaoshouRuleIssue = { code: string; title: string; action: string; message?: string; ruleId?: string; nodeName?: string };
+export type MiaoshouRulePayload = {
+  ok: boolean;
+  nodeId: string;
+  node: { id: string; name: string; online: boolean; version: string } | null;
+  session: { loggedIn: boolean; message: string; checkedAt: string } | null;
+  reportAt: string;
+  reportFresh: boolean;
+  rulesAt: string;
+  rules: MiaoshouRule[];
+  events: MiaoshouRuleEvent[];
+  issues: MiaoshouRuleIssue[];
+  checkSeconds: number;
+  timezone: string;
+  serverTime: string;
+  nodes?: { id: string; name: string; online: boolean; disabled: boolean; version: string }[];
+};
+
+export function fetchMiaoshouRules(signal?: AbortSignal) {
+  return requestJson<MiaoshouRulePayload>("/api/collector/miaoshou-rules", { signal });
+}
+
+export function saveMiaoshouRules(input: { nodeId?: string; rules?: { ruleId: string; name?: string; managed?: boolean; onTime?: string; offTime?: string }[] }) {
+  return requestJson<MiaoshouRulePayload>("/api/collector/miaoshou-rules", { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function overrideMiaoshouRule(ruleId: string, state: "on" | "off" | "auto") {
+  return requestJson<MiaoshouRulePayload>(`/api/collector/miaoshou-rules/${encodeURIComponent(ruleId)}/override`, { method: "POST", body: JSON.stringify({ state }) });
+}

@@ -339,7 +339,7 @@ function shopDataQualityObservations(source = {}) {
     country: text(item.site),
     title: `${text(item.shopName || item.storeName || item.nodeName, "店铺数据")}：${text(item.title, "需要处理")}`,
     summary: [text(item.action), text(item.message)].filter(Boolean).join(" ") || "店铺日报数据需要人工处理。",
-    severity: ["ziniao_device", "shopee_login", "shopee_captcha", "node_offline", "template"].includes(text(item.code)) ? "high" : "medium",
+    severity: ["ziniao_device", "shopee_login", "shopee_captcha", "node_offline", "template", "miaoshou_logged_out", "miaoshou_node_offline", "miaoshou_rule_mismatch"].includes(text(item.code)) ? "high" : "medium",
     evidence: [{
       type: "shop_data_quality",
       id: text(item.storeKey) || text(item.shopKey) || text(item.nodeId),

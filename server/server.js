@@ -87,6 +87,7 @@ import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepa
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
 import { createCollectorCenter } from "./collector-center.js";
 import { createCollectorQuality, addDays as qualityAddDays } from "./collector-quality.js";
+import { createMiaoshouRuleSchedule } from "./miaoshou-rule-schedule.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
@@ -183,6 +184,13 @@ const shopMetricsIngestToken = resolveShopMetricsIngestToken();
 // 采集中心：同舟智数采集节点的配对、心跳、计划、命令、运行记录与日志。
 const collectorCenter = createCollectorCenter({ filePath: resolve(cacheDir, "collector-center.json") });
 const collectorQuality = createCollectorQuality({ dir: resolve(cacheDir, "collector-quality") });
+const miaoshouRuleSchedule = createMiaoshouRuleSchedule({ filePath: resolve(cacheDir, "miaoshou-rule-schedule.json") });
+
+/** 妙手排单定时的人工待办（节点离线、妙手掉登录、规则状态长时间不一致）。 */
+function miaoshouRuleIssues() {
+  const view = miaoshouRuleSchedule.view({ nodes: collectorCenter.listNodes() });
+  return view.issues.map((issue) => ({ ...issue, shopKey: `miaoshou-rule-${issue.ruleId || issue.code}`, shopName: "妙手排单", dates: [] }));
+}
 const performanceFxAutoSyncEnabled = process.env.PERFORMANCE_FX_AUTO_SYNC !== "false";
 const performanceFxSyncIntervalMs = Math.max(60 * 60 * 1000, Number(process.env.PERFORMANCE_FX_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const performanceFxBackfillDays = Math.max(7, Number(process.env.PERFORMANCE_FX_BACKFILL_DAYS || 120));
@@ -8927,7 +8935,7 @@ async function collectHermesPatrolSources() {
     collaborationBridge: collaborationBridgeSource,
     partnerTasks: cachedHermesPartnerTaskSource,
     shopDataQuality: {
-      manual: collectorQuality.lastEvaluation()?.manual || [],
+      manual: [...(collectorQuality.lastEvaluation()?.manual || []), ...miaoshouRuleIssues()],
       evaluatedAt: collectorQuality.lastEvaluation()?.evaluatedAt || "",
       complete: true,
     },
@@ -13189,7 +13197,8 @@ const server = http.createServer(async (req, res) => {
         }
         if (url.pathname === "/api/collector/agent/heartbeat" && req.method === "POST") {
           const body = await parseRequestBody(req, 512 * 1024);
-          sendJson(res, 200, { ok: true, ...collectorCenter.heartbeat(node.id, body), quality: collectorQuality.nodeSettings() });
+          const beat = collectorCenter.heartbeat(node.id, body);
+          sendJson(res, 200, { ok: true, ...beat, quality: collectorQuality.nodeSettings(), miaoshou: miaoshouRuleSchedule.report(node.id, body?.miaoshou) });
           return;
         }
         if (url.pathname === "/api/collector/agent/runs" && req.method === "POST") {
@@ -13232,6 +13241,37 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "没有管理采集节点的权限。" });
         return false;
       };
+      // ---- 妙手排单定时 ----
+      if (url.pathname === "/api/collector/miaoshou-rules" && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...miaoshouRuleSchedule.view({ nodes: collectorCenter.listNodes() }), nodes: collectorCenter.listNodes().map((item) => ({ id: item.id, name: item.name, online: item.online, disabled: item.disabled, version: item.version })) });
+        return;
+      }
+      if (url.pathname === "/api/collector/miaoshou-rules" && req.method === "PATCH") {
+        if (!requireEdit()) return;
+        try {
+          const body = await parseRequestBody(req, 64 * 1024);
+          if (body?.nodeId) collectorCenter.getNode(String(body.nodeId));
+          miaoshouRuleSchedule.update({ nodeId: body?.nodeId, rules: body?.rules }, { by: auth.user.displayName || auth.user.username });
+          appendActionLog(auth, "修改妙手排单定时", "miaoshou_rule_schedule", "settings", { nodeId: body?.nodeId, rules: body?.rules });
+          sendJson(res, 200, { ok: true, ...miaoshouRuleSchedule.view({ nodes: collectorCenter.listNodes() }) });
+        } catch (error) {
+          sendJson(res, error.statusCode || 500, { ok: false, message: error.message || "保存妙手排单定时失败。" });
+        }
+        return;
+      }
+      const miaoshouOverrideMatch = url.pathname.match(/^\/api\/collector\/miaoshou-rules\/([^/]+)\/override$/);
+      if (miaoshouOverrideMatch && req.method === "POST") {
+        if (!requireEdit()) return;
+        try {
+          const body = await parseRequestBody(req, 16 * 1024);
+          const rule = miaoshouRuleSchedule.setOverride(decodeURIComponent(miaoshouOverrideMatch[1]), String(body?.state || ""), { by: auth.user.displayName || auth.user.username });
+          appendActionLog(auth, "手动开关妙手排单规则", "miaoshou_rule_schedule", rule.name, { ruleId: rule.ruleId, state: body?.state });
+          sendJson(res, 200, { ok: true, ...miaoshouRuleSchedule.view({ nodes: collectorCenter.listNodes() }) });
+        } catch (error) {
+          sendJson(res, error.statusCode || 500, { ok: false, message: error.message || "操作失败。" });
+        }
+        return;
+      }
       // ---- 数据质量 ----
       if (url.pathname === "/api/collector/quality" && req.method === "GET") {
         const stale = Date.now() - (Date.parse(collectorQuality.lastEvaluation()?.evaluatedAt || "") || 0) > 5 * 60 * 1000;
