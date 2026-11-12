@@ -65,6 +65,7 @@
     "test:collector-center": "node scripts/collector-center-test.mjs",
     "test:collector-quality": "node scripts/collector-quality-test.mjs",
     "test:miaoshou-rule-schedule": "node scripts/miaoshou-rule-schedule-test.mjs",
+    "test:collector-releases": "node scripts/collector-releases-test.mjs",
     "test:miaoshou-order-alias": "node scripts/miaoshou-order-alias-test.mjs",
     "test:miaoshou-order-alias-jobs": "node scripts/miaoshou-order-alias-jobs-test.mjs",
     "test:ozon": "node scripts/ozon-integration-test.mjs",

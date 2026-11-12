@@ -8012,3 +8012,19 @@ export function saveMiaoshouRules(input: { scheduleEnabled?: boolean; nodeId?: s
 export function overrideMiaoshouRule(ruleId: string, state: "on" | "off" | "auto") {
   return requestJson<MiaoshouRulePayload>(`/api/collector/miaoshou-rules/${encodeURIComponent(ruleId)}/override`, { method: "POST", body: JSON.stringify({ state }) });
 }
+
+// ---- 采集中心 · 同舟智数版本更新 ----
+export type CollectorRelease = { version: string; electron: string; sha256: string; size: number; notes: string; createdAt: string; uploadedAt: string; uploadedBy: string };
+export type CollectorRolloutMode = "paused" | "canary" | "all";
+export type CollectorRollout = { version: string; mode: CollectorRolloutMode; label: string; canaryNodeIds: string[]; autoPromoteMinutes: number; canaryOkSince: string; updatedAt: string; updatedBy: string };
+export type CollectorReleaseNode = { id: string; name: string; online: boolean; disabled: boolean; current: string; shell: string; targeted: boolean; canary: boolean; status: "current" | "waiting" | "updating" | "confirming" | "held" | "failed" | "manual"; message: string };
+export type CollectorReleaseIssue = { code: string; nodeId: string; nodeName: string; title: string; action: string; message?: string };
+export type CollectorReleasePayload = { ok: boolean; publicKeyConfigured: boolean; uploadTokenConfigured: boolean; releases: CollectorRelease[]; rollout: CollectorRollout; nodes: CollectorReleaseNode[]; issues: CollectorReleaseIssue[]; serverTime: string };
+
+export function fetchCollectorReleases(signal?: AbortSignal) {
+  return requestJson<CollectorReleasePayload>("/api/collector/releases", { signal });
+}
+
+export function updateCollectorRollout(patch: { version?: string; mode?: CollectorRolloutMode; canaryNodeIds?: string[]; autoPromoteMinutes?: number }) {
+  return requestJson<CollectorReleasePayload>("/api/collector/releases/rollout", { method: "PATCH", body: JSON.stringify(patch) });
+}

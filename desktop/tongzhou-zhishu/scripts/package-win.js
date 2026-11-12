@@ -178,7 +178,7 @@ async function main() {
   fs.renameSync(path.join(target, "electron.exe"), path.join(target, `${productName}.exe`));
   fs.rmSync(path.join(target, "resources", "default_app.asar"), { force: true });
   const appDir = path.join(target, "resources", "app");
-  for (const item of ["main.js", "preload.js"]) {
+  for (const item of ["bootstrap.js", "main.js", "preload.js"]) {
     fs.mkdirSync(appDir, { recursive: true });
     fs.copyFileSync(path.join(root, item), path.join(appDir, item));
   }

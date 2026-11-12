@@ -17,6 +17,8 @@ const timeoutMs = 60000;
 const smokeCacheDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-"));
 const smokeBackupDir = mkdtempSync(join(tmpdir(), "tongzhou-smoke-backup-"));
 const movementHistoryDbPath = resolve(smokeCacheDir, "movement-history.sqlite");
+const releaseToken = "smoke-release-token-0123456789abcdef";
+const updatePublicKeyFile = resolve(smokeCacheDir, "update-key.json");
 const webhookPayloads = [];
 const webhookServer = createServer((req, res) => {
   let body = "";
@@ -88,6 +90,8 @@ const child = spawn(process.execPath, ["server/server.js"], {
     SYSTEM_BACKUP_ENV_PATH: resolve(smokeBackupDir, "target.env"),
     SKIP_ENV_FILE: "true",
     SHOP_METRICS_INGEST_TOKEN: "smoke-shop-metrics-ingest-token-0123456789",
+    COLLECTOR_RELEASE_TOKEN: releaseToken,
+    COLLECTOR_UPDATE_PUBLIC_KEY_FILE: updatePublicKeyFile,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -912,6 +916,31 @@ async function main() {
   if (!msBeat2.miaoshou?.assigned || msBeat2.miaoshou.rules.length !== 2 || msBeat2.miaoshou.rules[0].override?.state !== "on") throw new Error(`miaoshou plan not delivered: ${JSON.stringify(msBeat2.miaoshou)}`);
   const msView2 = await expectJson("/api/collector/miaoshou-rules", { headers: authHeaders });
   if (msView2.events[0]?.id !== "smoke_ms_1" || !msView2.session?.loggedIn) throw new Error("miaoshou events/session missing");
+  // 同舟智数自动更新：签名包上传 → 试跑节点拿到目标 → 下载 → 推全部；无签名 / 错令牌被拒
+  const { generateKeyPairSync, createHash, sign: signData } = await import("node:crypto");
+  const { gzipSync } = await import("node:zlib");
+  const updateKeys = generateKeyPairSync("ed25519");
+  writeFileSync(updatePublicKeyFile, JSON.stringify({ publicKey: updateKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64") }));
+  const updateBundle = gzipSync(Buffer.from(JSON.stringify({ format: 1, version: "9.0.1", electron: "44", files: { "main.js": "", "package.json": "" } })));
+  const updateManifest = { version: "9.0.1", electron: "44", sha256: createHash("sha256").update(updateBundle).digest("hex"), size: updateBundle.length, signature: signData(null, updateBundle, updateKeys.privateKey).toString("base64") };
+  const releaseHeaders = { "X-Release-Token": releaseToken, "Content-Type": "application/json" };
+  const badToken = await fetch(`${baseUrl}/api/collector/releases`, { method: "POST", headers: { ...releaseHeaders, "X-Release-Token": "wrong-token-000000000000000000" }, body: JSON.stringify({ manifest: updateManifest, bundle: updateBundle.toString("base64") }) });
+  if (badToken.status !== 401) throw new Error(`release upload accepted a wrong token: ${badToken.status}`);
+  const forged = await fetch(`${baseUrl}/api/collector/releases`, { method: "POST", headers: releaseHeaders, body: JSON.stringify({ manifest: { ...updateManifest, signature: signData(null, updateBundle, generateKeyPairSync("ed25519").privateKey).toString("base64") }, bundle: updateBundle.toString("base64") }) });
+  if (forged.status !== 403) throw new Error(`release upload accepted a forged signature: ${forged.status}`);
+  const uploaded = await expectJson("/api/collector/releases", { method: "POST", headers: releaseHeaders, body: JSON.stringify({ manifest: updateManifest, bundle: updateBundle.toString("base64") }) });
+  if (uploaded.rollout.mode !== "paused" || uploaded.release.version !== "9.0.1") throw new Error(`release upload mismatch: ${JSON.stringify(uploaded)}`);
+  const beatBeforeRollout = await expectJson("/api/collector/agent/heartbeat", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ update: { current: "0.5.1", shell: "0.5.1", enabled: true, state: "idle" } }) });
+  if (beatBeforeRollout.update !== null) throw new Error("paused rollout must not target nodes");
+  await expectJson("/api/collector/releases/rollout", { method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ canaryNodeIds: [smokeNode.id], mode: "canary" }) });
+  const beatCanary = await expectJson("/api/collector/agent/heartbeat", { method: "POST", headers: nodeHeaders, body: JSON.stringify({ update: { current: "0.5.1", shell: "0.5.1", enabled: true, state: "idle" } }) });
+  if (beatCanary.update?.version !== "9.0.1" || beatCanary.update.signature !== updateManifest.signature) throw new Error(`canary node did not get the target: ${JSON.stringify(beatCanary.update)}`);
+  const downloaded = await fetch(`${baseUrl}/api/collector/agent/releases/9.0.1/bundle`, { headers: nodeHeaders });
+  if (downloaded.status !== 200 || createHash("sha256").update(Buffer.from(await downloaded.arrayBuffer())).digest("hex") !== updateManifest.sha256) throw new Error("release bundle download mismatch");
+  const anonymousBundle = await fetch(`${baseUrl}/api/collector/agent/releases/9.0.1/bundle`);
+  if (anonymousBundle.status !== 401) throw new Error(`release bundle allowed anonymous download: ${anonymousBundle.status}`);
+  const releaseView = await expectJson("/api/collector/releases", { headers: authHeaders });
+  if (releaseView.rollout.version !== "9.0.1" || releaseView.nodes.find((item) => item.id === smokeNode.id)?.status !== "waiting") throw new Error(`release view mismatch: ${JSON.stringify(releaseView).slice(0, 400)}`);
   const msAnonymous = await fetch(`${baseUrl}/api/collector/miaoshou-rules`);
   if (msAnonymous.status !== 401) throw new Error(`miaoshou rules allowed anonymous access: ${msAnonymous.status}`);
   const anonymousNodes = await fetch(`${baseUrl}/api/collector/nodes`);

@@ -17,6 +17,11 @@ const { SITES } = require("./core/sites");
 const { NodeAgent } = require("./core/agent");
 const { MiaoshouApi, MiaoshouKeeper } = require("./core/miaoshou");
 const { MiaoshouSession } = require("./core/miaoshou-session");
+const { Updater } = require("./core/updater");
+
+// 启动信息由 bootstrap.js 提供（运行的是安装包自带的程序还是自动更新下载的版本）。直接运行 main.js 时按安装包处理。
+const APP_VERSION = require("./package.json").version;
+const BOOT = global.__TZZS_BOOT__ || { shellDir: __dirname, shellVersion: APP_VERSION, updatesDir: "", version: APP_VERSION, source: "shell", note: "" };
 
 app.setName("同舟智数");
 // 测试或便携使用时可通过环境变量指定数据目录。
@@ -129,6 +134,37 @@ const miaoshouKeeper = new MiaoshouKeeper({
   onChange: () => mainWindow?.webContents.send("miaoshou", miaoshouKeeper.view()),
 });
 
+// 自动更新：中台安排新版本后下载、校验签名，空闲时重启生效。
+const updater = new Updater({
+  updatesDir: BOOT.updatesDir || path.join(dataDir, "updates"),
+  currentVersion: APP_VERSION,
+  shellVersion: BOOT.shellVersion,
+  source: BOOT.source,
+  bootNote: BOOT.note,
+  electronVersion: process.versions.electron,
+  publicKey: (() => {
+    try {
+      return String(require("./core/update-key.json").publicKey || "");
+    } catch {
+      return "";
+    }
+  })(),
+  download: (version) => zhongtai().agentDownload(`releases/${encodeURIComponent(version)}/bundle`),
+  isIdle: () => !collector.running && !miaoshouKeeper.busy,
+  relaunch: () => relaunchApp(),
+  log,
+});
+
+function relaunchApp() {
+  quitting = true;
+  miaoshouSession.destroy();
+  // 窗口没显示（后台运行）时，重启后也保持在后台。
+  const args = process.argv.slice(1).filter((arg) => arg !== "--hidden");
+  if (!mainWindow || !mainWindow.isVisible()) args.push("--hidden");
+  app.relaunch({ args });
+  app.exit(0);
+}
+
 // 采集节点代理：向中台采集中心上报状态、领取计划和命令。
 agent = new NodeAgent({
   store,
@@ -136,9 +172,10 @@ agent = new NodeAgent({
   cli,
   clientFactory: zhongtai,
   log,
-  version: app.getVersion(),
+  version: APP_VERSION,
   runCollect: (options) => startCollect(options),
   miaoshou: miaoshouKeeper,
+  updater,
 });
 agent.onUnauthorized = markUnauthorized;
 agent.onMiaoshouPlanChanged = () => miaoshouKeeper.tick({ force: true }).catch(() => {});
@@ -196,6 +233,8 @@ async function startCollect({ storeIds = null, dates = null, mode = "upload", tr
     powerSaveBlocker.stop(blocker);
     mainWindow?.webContents.send("run-state", { running: false });
     updateTray();
+    // 采集期间下载好的新版本，等采集结束再重启生效。
+    setTimeout(() => updater.applyIfIdle(), 3000);
   }
 }
 
@@ -214,7 +253,7 @@ function publicConfig() {
 
 function state() {
   return {
-    appVersion: app.getVersion(),
+    appVersion: APP_VERSION,
     config: publicConfig(),
     platforms: describePlatforms(),
     metricFields: METRIC_FIELDS,
@@ -230,6 +269,7 @@ function state() {
     builtinTemplates: Object.values(allTemplates({})),
     storeOverview: collector.storeOverview(),
     miaoshou: miaoshouKeeper.view(),
+    update: updater.status(),
     node: store.get().node ? { ...store.get().node, lastHeartbeat: agent.lastHeartbeat, lastError: agent.lastError } : null,
   };
 }
@@ -306,7 +346,7 @@ handle("zhongtai:pair", async ({ baseUrl, username, password }) => {
     nodeId: store.get().node?.id || "",
     name: store.get().node?.name || hostname,
     platforms: [...new Set(collector.storeOverview().map((item) => item.platform))],
-    version: app.getVersion(),
+    version: APP_VERSION,
   });
   writeToken(result.token);
   store.update((config) => {
@@ -480,9 +520,7 @@ handle("debug:cli", async ({ args }) => {
 });
 handle("debug:page", async ({ storeId, body }) => cli.runInPage(storeId, body, { timeoutMs: 120000 }));
 handle("app:relaunch", () => {
-  quitting = true;
-  app.relaunch();
-  app.exit(0);
+  relaunchApp();
 });
 
 handle("open:url", ({ url }) => {
@@ -586,7 +624,7 @@ app.whenReady().then(() => {
   scheduler.start();
   agent.start();
   miaoshouKeeper.start();
-  log("info", `同舟智数 ${app.getVersion()} 已启动，数据目录：${dataDir}`);
+  log("info", `同舟智数 ${APP_VERSION} 已启动，数据目录：${dataDir}`);
   // 启动时自动读取紫鸟店铺和中台店铺名单，用户不需要手动点。
   setTimeout(async () => {
     if (cli.path) await collector.refreshStores().then((list) => log("info", `读取到 ${list.length} 个紫鸟店铺`)).catch((error) => log("warn", `读取紫鸟店铺失败：${error.message}`));

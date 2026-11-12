@@ -100,3 +100,35 @@
 - `POST /api/collector/miaoshou-rules/:ruleId/override`：`{ state: "on" | "off" | "auto" }`（需编辑权限）。
 
 数据保存在 `.cache/miaoshou-rule-schedule.json`（运行时数据，不进 Git）。测试：`npm run test:miaoshou-rule-schedule`，桌面端 `npm test`。
+
+## 同舟智数自动更新（0.5.1 起）
+
+目标：发新版本后不用再逐台登录云电脑安装。只更新程序代码（约 200 KB），不动 Electron 运行环境。
+
+### 流程
+1. **发版**（打包电脑上，Codex 执行）：`cd desktop/tongzhou-zhishu && npm run release:update -- --publish --notes "更新说明"`。脚本把 `main.js / preload.js / package.json / core / ui / build` 打成更新包，用本机私钥签名，上传到中台。
+2. **试跑**：新版本默认只推给中台「采集中心 → 版本更新」里勾选的试跑节点；没有勾选试跑节点时先暂停，等人来选。
+3. **推全部**：试跑节点更新成功并在线稳定运行 30 分钟后，自动推给其余节点；也可以手动点「推送全部」或「暂停」。
+4. **节点侧**：心跳拿到目标版本 → 下载 → 校验哈希和签名 → 解包到数据目录 `updates/v<版本>/` → 等采集结束 → 重启生效。
+5. **确认与回退**：新版本启动后第一次成功心跳即确认。连续 2 次启动都没确认（连不上中台）或一加载就报错，自动回退到上一个版本，并记入 `updates/failed.json`，同一个包不再重试；中台显示「更新失败，已回退」并进入人工待办和 Hermes。
+
+### 安全
+- 更新包必须带 Ed25519 签名。私钥只在打包电脑上（默认 `~/.tongzhou-zhishu/update-private-key.pem`，`npm run update:keygen` 生成），**不进 Git、不放服务器**；公钥在 `desktop/tongzhou-zhishu/core/update-key.json`，随安装包和中台发布。
+- 服务器接收时校验一次签名，节点下载后再校验一次。服务器没有私钥，即使被人控制也推不了未签名的程序。
+- 上传接口另需发版令牌：服务器环境变量 `COLLECTOR_RELEASE_TOKEN`（≥ 24 位），发版脚本用同名环境变量。令牌只决定谁能上传，不能替代签名。
+- 更新包只允许写 `main.js / preload.js / package.json / core/ ui/ build/`，路径越界直接拒绝；节点只升级不降级。
+- 私钥丢失：已安装的节点无法再自动更新，需要重新生成密钥、发布，并手动安装一次完整包。
+
+### 限制
+- 第一次仍需手动安装带自动更新的完整包（0.5.1 或以上）。0.5.0 及更早的节点在页面上显示「需手动安装」。
+- Electron 主版本升级（`package.json` 里 `devDependencies.electron` 的主版本变化）不能自动更新，节点会提示手动安装完整包。
+- `bootstrap.js` 和它用到的 `core/boot-select.js` 的启动逻辑属于外壳，只有重装完整包才会变，改动要格外谨慎。
+
+### 接口
+- `POST /api/collector/releases`（请求头 `X-Release-Token`）：`{ manifest: { version, electron, sha256, size, signature, notes }, bundle: <base64> }`。
+- 心跳返回 `update: { version, electron, sha256, size, signature } | null`；节点上报 `update: { current, shell, source, enabled, state, target, lastError, lastFailure }`。
+- `GET /api/collector/agent/releases/:version/bundle`（节点令牌）：下载更新包。
+- `GET /api/collector/releases`、`PATCH /api/collector/releases/rollout`：`{ version?, mode?: "paused" | "canary" | "all", canaryNodeIds?, autoPromoteMinutes? }`（需编辑权限）。
+
+数据保存在 `.cache/collector-releases/`（保留最近 5 个版本的更新包）。测试：`npm run test:collector-releases`，桌面端 `npm test`（含 `test/updater.test.js`）。
+2026-11-12 在 Linux 上用真实 Electron 进程做过端到端验证：0.5.1 → 0.5.2 下载、校验、重启、确认；以及故意损坏的更新包启动报错后自动回退并上报。
