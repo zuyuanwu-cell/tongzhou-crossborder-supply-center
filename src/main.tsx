@@ -12829,12 +12829,31 @@ function textOrDash(value?: string | number) {
   return text || "未配置";
 }
 
-function productDimensionText(product: CatalogProduct, base?: ProductBase) {
-  const length = textOrDash(base?.length || product.length);
-  const width = textOrDash(base?.width || product.width);
-  const height = textOrDash(base?.height || product.height);
-  if ([length, width, height].every((item) => item === "未配置")) return "未配置";
-  return `${length} × ${width} × ${height}`;
+function positiveMeasurement(...values: Array<string | number | undefined>) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  }
+  return 0;
+}
+
+function measurementText(value: number, unit: string, maximumFractionDigits = 3) {
+  if (!(value > 0)) return "未配置";
+  return `${value.toLocaleString("zh-CN", { maximumFractionDigits })} ${unit}`;
+}
+
+function productGrossWeightText(product: CatalogProduct, base?: ProductBase) {
+  const grossWeightKg = positiveMeasurement(base?.grossWeightKg, product.grossWeightKg, base?.weight, product.weight);
+  const grossWeightG = positiveMeasurement(base?.grossWeightG, product.grossWeightG, grossWeightKg > 0 ? grossWeightKg * 1_000 : 0);
+  if (!(grossWeightKg > 0) && !(grossWeightG > 0)) return "未配置";
+  return `${measurementText(grossWeightKg, "kg", 4)}（${measurementText(grossWeightG, "g", 2)}）`;
+}
+
+function productCartonSpecText(product: CatalogProduct, base?: ProductBase) {
+  const cartonSpec = String(base?.cartonSpec || product.cartonSpec || "").trim();
+  if (!cartonSpec) return "未配置";
+  if (/^\d+(?:\.\d+)?$/.test(cartonSpec)) return `${cartonSpec} ${base?.unit || product.unit || "件"}/箱`;
+  return cartonSpec;
 }
 
 function QualificationCards({
@@ -13019,6 +13038,16 @@ function ProductDetailModal({
   const base = findProductBase(product, productBase);
   const canManageListings = hasMiaoshouCapability(currentUser, "miaoshou_listing")
     && hasUserPermission(currentUser, "tongzhou_ai");
+  const packageLengthCm = positiveMeasurement(base?.packageLengthCm, product.packageLengthCm, base?.length, product.length);
+  const packageWidthCm = positiveMeasurement(base?.packageWidthCm, product.packageWidthCm, base?.width, product.width);
+  const packageHeightCm = positiveMeasurement(base?.packageHeightCm, product.packageHeightCm, base?.height, product.height);
+  const volumeM3 = positiveMeasurement(
+    base?.volumeM3,
+    product.volumeM3,
+    packageLengthCm && packageWidthCm && packageHeightCm
+      ? (packageLengthCm * packageWidthCm * packageHeightCm) / 1_000_000
+      : 0,
+  );
   const detailRows = [
     ["产品流水号", base?.skuNo || product.skuNo],
     ["SKU", product.sku],
@@ -13033,8 +13062,12 @@ function ProductDetailModal({
     ["产品条码", base?.barcode || product.barcode],
     ["规格型号", base?.specification || product.specification],
     ["归属项目", base?.project || product.project],
-    ["重量", base?.weight || product.weight],
-    ["长宽高尺寸", productDimensionText(product, base)],
+    ["包装长", measurementText(packageLengthCm, "cm", 2)],
+    ["包装宽", measurementText(packageWidthCm, "cm", 2)],
+    ["包装高", measurementText(packageHeightCm, "cm", 2)],
+    ["包装体积", measurementText(volumeM3, "m³", 6)],
+    ["毛重", productGrossWeightText(product, base)],
+    ["箱规", productCartonSpecText(product, base)],
   ];
   const productImageUrl = base?.imageUrl || product.imageUrl;
   const qualificationImageUrl = base?.qualificationImageUrl || product.qualificationImageUrl;

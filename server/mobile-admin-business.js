@@ -388,7 +388,7 @@ export function createMobileAdminBusinessProviders({
     const merged = { ...base, ...catalog };
     const imageUrl = merged.imageUrl || merged.qualificationImageUrl || "";
     const fields = [
-      "id", "sku", "skuNo", "countrySku", "name", "nameEn", "country", "channel", "category", "functionCategory", "productType", "skuAttribute", "unit", "brand", "barcode", "specification", "weight", "length", "width", "height", "project", "status", "alert", "stockQty", "warehouseTotalQty", "inTransitQty", "publicDescription", "sellingPoints", "sellingPointsEn", "directPrice", "directCurrency", "distributionPrice", "distributionCurrency", "salesPrice", "salesCurrency",
+      "id", "sku", "skuNo", "countrySku", "name", "nameEn", "country", "channel", "category", "functionCategory", "productType", "skuAttribute", "unit", "brand", "barcode", "specification", "weight", "length", "width", "height", "packageLengthCm", "packageWidthCm", "packageHeightCm", "volumeM3", "grossWeightG", "grossWeightKg", "cartonSpec", "project", "status", "alert", "stockQty", "warehouseTotalQty", "inTransitQty", "publicDescription", "sellingPoints", "sellingPointsEn", "directPrice", "directCurrency", "distributionPrice", "distributionCurrency", "salesPrice", "salesCurrency",
     ];
     const detail = Object.fromEntries(fields.filter((key) => merged[key] !== undefined).map((key) => [key, merged[key]]));
     return { ...detail, id: item.id, imageUrl, imageKey: imageKeyFor(imageUrl) };

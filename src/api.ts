@@ -98,6 +98,13 @@ export type CatalogProduct = {
   length?: string;
   width?: string;
   height?: string;
+  packageLengthCm?: number;
+  packageWidthCm?: number;
+  packageHeightCm?: number;
+  volumeM3?: number;
+  grossWeightG?: number;
+  grossWeightKg?: number;
+  cartonSpec?: string;
   project?: string;
   publicDescription?: string;
   sellingPoints?: string;
@@ -128,6 +135,13 @@ export type ProductBase = {
   length?: string;
   width?: string;
   height?: string;
+  packageLengthCm?: number;
+  packageWidthCm?: number;
+  packageHeightCm?: number;
+  volumeM3?: number;
+  grossWeightG?: number;
+  grossWeightKg?: number;
+  cartonSpec?: string;
   project?: string;
   publicDescription?: string;
   sellingPoints?: string;

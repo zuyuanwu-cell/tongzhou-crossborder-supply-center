@@ -18,6 +18,16 @@ function number(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function positiveNumber(value) {
+  const numeric = number(value);
+  return numeric > 0 ? numeric : 0;
+}
+
+function positiveNumberText(value) {
+  const numeric = positiveNumber(value);
+  return numeric > 0 ? String(numeric) : "";
+}
+
 function firstImageUrl(value) {
   if (!value) return "";
   const items = Array.isArray(value) ? value : [value];
@@ -57,38 +67,61 @@ function statusToAlert(status, stockQty) {
 
 export function normalizeProductBase(records) {
   const fields = JIANYUN_FORMS.productBase.fields;
-  return records.map((record) => ({
-    id: record.data_id || record._id || text(valueOf(record, fields.skuNo)),
-    skuNo: text(valueOf(record, fields.skuNo)),
-    sku: text(valueOf(record, fields.sku)),
-    name: text(valueOf(record, fields.productName)),
-    nameEn: text(valueOf(record, fields.productNameEn)),
-    unit: text(valueOf(record, fields.unit), "件"),
-    category: text(valueOf(record, fields.category), "未分类"),
-    functionCategory: text(valueOf(record, fields.functionCategory)),
-    productType: text(valueOf(record, fields.productType)),
-    skuAttribute: text(valueOf(record, fields.skuAttribute)),
-    brand: text(valueOf(record, fields.brand), "同舟"),
-    supplier: text(valueOf(record, fields.supplier)),
-    launchDate: text(valueOf(record, fields.launchDate)),
-    imageUrl: firstImageUrl(valueOf(record, fields.imageFiles)),
-    imageSource: firstImageUrl(valueOf(record, fields.imageFiles)) ? "jiandaoyun" : "",
-    qualificationImageUrl: firstImageUrl(valueOf(record, fields.qualificationImages)),
-    barcode: text(valueOf(record, fields.barcode)),
-    specification: text(valueOf(record, fields.specification)),
-    weight: text(valueOf(record, fields.weight)),
-    length: text(valueOf(record, fields.length)),
-    width: text(valueOf(record, fields.width)),
-    height: text(valueOf(record, fields.height)),
-    project: text(valueOf(record, fields.project)),
-    publicDescription: text(valueOf(record, fields.publicDescription)),
-    sellingPoints: text(valueOf(record, fields.sellingPoints)),
-    sellingPointsEn: text(valueOf(record, fields.sellingPointsEn)),
-    latestCostBatchId: text(valueOf(record, fields.latestCostBatchId)),
-    latestLandedUnitCostCny: number(valueOf(record, fields.latestLandedUnitCostCny)),
-    latestCostEffectiveAt: text(valueOf(record, fields.latestCostEffectiveAt)),
-    raw: record,
-  }));
+  return records.map((record) => {
+    const packageLengthCm = positiveNumber(valueOf(record, fields.packageLengthCm));
+    const packageWidthCm = positiveNumber(valueOf(record, fields.packageWidthCm));
+    const packageHeightCm = positiveNumber(valueOf(record, fields.packageHeightCm));
+    const explicitVolumeM3 = positiveNumber(valueOf(record, fields.volumeM3));
+    const calculatedVolumeM3 = packageLengthCm && packageWidthCm && packageHeightCm
+      ? (packageLengthCm * packageWidthCm * packageHeightCm) / 1_000_000
+      : 0;
+    const explicitGrossWeightG = positiveNumber(valueOf(record, fields.grossWeightG));
+    const explicitGrossWeightKg = positiveNumber(valueOf(record, fields.grossWeightKg));
+    const grossWeightKg = explicitGrossWeightKg || (explicitGrossWeightG > 0 ? explicitGrossWeightG / 1_000 : 0);
+    const grossWeightG = explicitGrossWeightG || (explicitGrossWeightKg > 0 ? explicitGrossWeightKg * 1_000 : 0);
+    const imageUrl = firstImageUrl(valueOf(record, fields.imageFiles));
+
+    return {
+      id: record.data_id || record._id || text(valueOf(record, fields.skuNo)),
+      skuNo: text(valueOf(record, fields.skuNo)),
+      sku: text(valueOf(record, fields.sku)),
+      name: text(valueOf(record, fields.productName)),
+      nameEn: text(valueOf(record, fields.productNameEn)),
+      unit: text(valueOf(record, fields.unit), "件"),
+      category: text(valueOf(record, fields.category), "未分类"),
+      functionCategory: text(valueOf(record, fields.functionCategory)),
+      productType: text(valueOf(record, fields.productType)),
+      skuAttribute: text(valueOf(record, fields.skuAttribute)),
+      brand: text(valueOf(record, fields.brand), "同舟"),
+      supplier: text(valueOf(record, fields.supplier)),
+      launchDate: text(valueOf(record, fields.launchDate)),
+      imageUrl,
+      imageSource: imageUrl ? "jiandaoyun" : "",
+      qualificationImageUrl: firstImageUrl(valueOf(record, fields.qualificationImages)),
+      barcode: text(valueOf(record, fields.barcode)),
+      specification: text(valueOf(record, fields.specification)),
+      packageLengthCm,
+      packageWidthCm,
+      packageHeightCm,
+      volumeM3: explicitVolumeM3 || calculatedVolumeM3,
+      grossWeightG,
+      grossWeightKg,
+      cartonSpec: text(valueOf(record, fields.cartonSpec)),
+      // 兼容装柜、妙手刊登等仍读取旧字段名的现有功能。
+      weight: grossWeightKg > 0 ? String(grossWeightKg) : "",
+      length: positiveNumberText(packageLengthCm),
+      width: positiveNumberText(packageWidthCm),
+      height: positiveNumberText(packageHeightCm),
+      project: text(valueOf(record, fields.project)),
+      publicDescription: text(valueOf(record, fields.publicDescription)),
+      sellingPoints: text(valueOf(record, fields.sellingPoints)),
+      sellingPointsEn: text(valueOf(record, fields.sellingPointsEn)),
+      latestCostBatchId: text(valueOf(record, fields.latestCostBatchId)),
+      latestLandedUnitCostCny: number(valueOf(record, fields.latestLandedUnitCostCny)),
+      latestCostEffectiveAt: text(valueOf(record, fields.latestCostEffectiveAt)),
+      raw: record,
+    };
+  });
 }
 
 export function normalizeCatalog(records, baseProducts = []) {
@@ -144,6 +177,13 @@ export function normalizeCatalog(records, baseProducts = []) {
       length: base?.length || "",
       width: base?.width || "",
       height: base?.height || "",
+      packageLengthCm: base?.packageLengthCm || 0,
+      packageWidthCm: base?.packageWidthCm || 0,
+      packageHeightCm: base?.packageHeightCm || 0,
+      volumeM3: base?.volumeM3 || 0,
+      grossWeightG: base?.grossWeightG || 0,
+      grossWeightKg: base?.grossWeightKg || 0,
+      cartonSpec: base?.cartonSpec || "",
       project: base?.project || "",
       publicDescription: base?.publicDescription || text(valueOf(record, fields.publicDescription)),
       sellingPoints: base?.sellingPoints || text(valueOf(record, fields.sellingPoints)),

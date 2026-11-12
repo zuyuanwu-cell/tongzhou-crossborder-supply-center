@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "smoke:api": "node scripts/smoke-api.mjs",
     "test:movement-comparison": "node scripts/movement-comparison-test.mjs",
+    "test:product-packaging-fields": "node scripts/product-packaging-fields-test.mjs",
     "test:overseas-reconciliation": "node scripts/overseas-inventory-reconciliation-test.mjs",
     "test:business-date": "node scripts/business-date-test.mjs",
     "test:inventory-ledger-db": "node scripts/inventory-ledger-db-test.mjs",
