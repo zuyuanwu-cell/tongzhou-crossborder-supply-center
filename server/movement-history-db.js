@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { createPersistScheduler } from "./sqljs-persist-scheduler.js";
 
 function jsonParse(value, fallback) {
   try {
@@ -250,8 +251,13 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
     CREATE INDEX IF NOT EXISTS idx_movement_versions_date_tz ON movement_snapshot_versions (date, timezone, captured_at DESC);
   `);
 
-  function persist() {
+  function persistNow() {
     writeFileSync(dbPath, Buffer.from(db.export()));
+  }
+  // 合并写盘：60 秒内的多次改动只整库写一次；退出、备份前会立即写完（见 sqljs-persist-scheduler.js）。
+  const persistScheduler = createPersistScheduler({ name: "movement-history", persistNow, delayMs: 60000 });
+  function persist() {
+    persistScheduler.request();
   }
 
   function setMeta(key, value) {
@@ -291,7 +297,8 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
           date,
           timezone,
           capturedAt,
-          JSON.stringify({ ...snapshot, date, timezone, capturedAt, rows }),
+          // 版本只记录时间、原因和汇总；行明细已在 movement_snapshot_rows 里，不再每次整份复制（2026-11 之前每次同步都复制，库涨到 1.3 GB）。
+          JSON.stringify({ ...snapshot, date, timezone, capturedAt, rows: undefined, rowCount: rows.length }),
         ],
       );
       db.run(
@@ -555,6 +562,66 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
     });
   }
 
+  /**
+   * 一次性瘦身：旧版本记录里带着整份行明细（listVersions 只用时间、原因、汇总，从来不读行明细）。
+   * 去掉后整理数据库文件。先把原文件备份为 .before-compact.bak，备份失败就不动。
+   * 大库（生产 1.3 GB）整理要几十秒，期间进程无响应，所以不在启动时自动执行，
+   * 由维护脚本 scripts/compact-movement-history.mjs 在停服务时执行。
+   */
+  function compactVersions({ backup = true } = {}) {
+    if (getMeta("versionsCompactedAt")) return { skipped: "done" };
+    const ids = all(db, "SELECT version_id FROM movement_snapshot_versions WHERE length(snapshot_json) > 4096").map((row) => row.version_id);
+    if (!ids.length) {
+      setMeta("versionsCompactedAt", new Date().toISOString());
+      return { compacted: 0 };
+    }
+    const started = Date.now();
+    const sizeBefore = existsSync(dbPath) ? statSync(dbPath).size : 0;
+    if (backup && sizeBefore > 0) {
+      const backupPath = `${dbPath}.before-compact.bak`;
+      try {
+        if (!existsSync(backupPath)) copyFileSync(dbPath, backupPath);
+      } catch (error) {
+        console.error("[movement-history] 备份失败，跳过瘦身", error);
+        return { skipped: "backup_failed" };
+      }
+    }
+    const select = db.prepare("SELECT snapshot_json FROM movement_snapshot_versions WHERE version_id = ?");
+    const update = db.prepare("UPDATE movement_snapshot_versions SET snapshot_json = ? WHERE version_id = ?");
+    db.run("BEGIN TRANSACTION");
+    try {
+      for (const id of ids) {
+        select.bind([id]);
+        if (select.step()) {
+          const parsed = jsonParse(select.getAsObject().snapshot_json, {});
+          const rowCount = Array.isArray(parsed.rows) ? parsed.rows.length : Number(parsed.rowCount || 0);
+          update.run([JSON.stringify({ ...parsed, rows: undefined, rowCount }), id]);
+        }
+        select.reset();
+      }
+      setMeta("versionsCompactedAt", new Date().toISOString());
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    } finally {
+      select.free();
+      update.free();
+    }
+    // 整理文件（释放空页）。内存库不需要回滚日志，关掉可避免整理时再占一份内存。
+    const journalMode = String(first(db, "PRAGMA journal_mode")?.journal_mode || "delete");
+    db.run("PRAGMA journal_mode = OFF");
+    try {
+      db.run("VACUUM");
+    } finally {
+      db.run(`PRAGMA journal_mode = ${/^[a-z]+$/i.test(journalMode) ? journalMode : "delete"}`);
+    }
+    persistNow();
+    const sizeAfter = existsSync(dbPath) ? statSync(dbPath).size : 0;
+    console.log(`[movement-history] 版本记录瘦身完成：${ids.length} 个版本，${Math.round(sizeBefore / 1048576)} MB → ${Math.round(sizeAfter / 1048576)} MB，用时 ${Date.now() - started} ms`);
+    return { compacted: ids.length, sizeBefore, sizeAfter, ms: Date.now() - started };
+  }
+
   if (!hasSnapshots() && Array.isArray(legacyPayload.snapshots) && legacyPayload.snapshots.length) {
     for (const snapshot of legacyPayload.snapshots) upsertSnapshot(snapshot, { persist: false });
     persist();
@@ -563,6 +630,8 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
   }
 
   return {
+    compactVersions,
+    flush: () => persistScheduler.flush(),
     dbPath,
     getLatestSnapshot,
     getMetadata,

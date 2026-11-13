@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
 import { acquireSqlJsWriterLock, persistSqlJsDatabaseAtomically } from "./sqljs-durable-store.js";
+import { createPersistScheduler } from "./sqljs-persist-scheduler.js";
 
 function rows(db, sql, params = []) {
   const statement = db.prepare(sql);
@@ -62,11 +63,17 @@ export async function initCollaborationBridgeStore(dbPath) {
   if (!commandColumns.has("attempt_count")) db.run("ALTER TABLE collaboration_command_inbox ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
   if (!commandColumns.has("next_attempt_at")) db.run("ALTER TABLE collaboration_command_inbox ADD COLUMN next_attempt_at TEXT");
 
-  function persist() {
+  function persistNow() {
     persistSqlJsDatabaseAtomically(dbPath, db.export());
+  }
+  // 合并写盘：5 秒内的多次改动只整库写一次；退出、备份前会立即写完（见 sqljs-persist-scheduler.js）。
+  const persistScheduler = createPersistScheduler({ name: "collaboration-bridge", persistNow, delayMs: 5000 });
+  function persist() {
+    persistScheduler.request();
   }
 
   function close() {
+    try { persistScheduler.flush(); } catch (error) { console.error("[sqljs] flush before close failed", error); }
     try { db.close(); } finally { releaseWriterLock(); }
   }
 
@@ -199,6 +206,6 @@ export async function initCollaborationBridgeStore(dbPath) {
     };
   }
 
-  persist();
-  return { close, command, enqueue, listCommands, markCommand, markCommandRetry, markOutboxRetry, markPublished, readyCommands, readyOutbox, setState, state, status, upsertCommand };
+  persistNow();
+  return { flush: () => persistScheduler.flush(), close, command, enqueue, listCommands, markCommand, markCommandRetry, markOutboxRetry, markPublished, readyCommands, readyOutbox, setState, state, status, upsertCommand };
 }

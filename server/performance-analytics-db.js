@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
 import { classifyMiaoshouAfterSalesStatus } from "./miaoshou-performance.js";
+import { createPersistScheduler } from "./sqljs-persist-scheduler.js";
 
 function all(db, sql, params = []) {
   const stmt = db.prepare(sql);
@@ -403,8 +404,17 @@ export async function initPerformanceAnalyticsStore(dbPath) {
   }
   db.run("PRAGMA user_version = 4");
 
-  function persist() {
+  function persistNow() {
     writeFileSync(dbPath, Buffer.from(db.export()));
+  }
+  // 合并写盘：15 秒内的多次改动只整库写一次；退出、备份前会立即写完（见 sqljs-persist-scheduler.js）。
+  const persistScheduler = createPersistScheduler({ name: "performance-analytics", persistNow, delayMs: 15000 });
+  function persist() {
+    persistScheduler.request();
+  }
+  function persistImmediately() {
+    persistScheduler.request();
+    persistScheduler.flush();
   }
 
   function setMeta(key, value) {
@@ -775,7 +785,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
         );
       }
       db.run("COMMIT");
-      persist();
+      if (source === "manual") persistImmediately(); else persist();
       return listExchangeRates();
     } catch (error) {
       db.run("ROLLBACK");
@@ -852,7 +862,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
         );
       }
       db.run("COMMIT");
-      persist();
+      persistImmediately(); // 人工录入的成本立即写盘
       return listSupplementalProductCosts();
     } catch (error) {
       db.run("ROLLBACK");
@@ -891,7 +901,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
       updatedAt: new Date().toISOString(),
     };
     setMeta("performanceSettings", JSON.stringify(next));
-    persist();
+    persistImmediately(); // 人工修改的设置立即写盘
     return getPerformanceSettings();
   }
 
@@ -908,9 +918,10 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     { currency: "CNY", effectiveDate: "2000-01-01", rateToCny: 1, source: "system" },
     { currency: "RMB", effectiveDate: "2000-01-01", rateToCny: 1, source: "system" },
   ], "system");
-  persist();
+  persistNow();
 
   return {
+    flush: () => persistScheduler.flush(),
     dbPath,
     getMiaoshouPerformanceSyncState,
     getPerformanceSettings,
