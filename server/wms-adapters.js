@@ -361,6 +361,76 @@ export function warehouseProductCreateCapability(connection) {
   };
 }
 
+export function warehouseProductPriceSyncCapability(connection) {
+  if (connection?.providerId === "sea_wms") {
+    const configured = hasSeaCredentials(seaCredentials(connection));
+    return {
+      supported: true,
+      configured,
+      priceField: "purchasePrice",
+      priceLabel: "采购价",
+      message: configured
+        ? "可将产品库直营供货价同步到 SEA WMS 采购价。"
+        : "需要先配置 SEA WMS 授权。",
+    };
+  }
+  if (connection?.providerId === "yunwms_ru") {
+    return {
+      supported: false,
+      configured: hasYunCredentials(yunCredentials(connection)),
+      priceField: "",
+      priceLabel: "采购价",
+      message: "当前 YunWMS 开放接口尚未确认采购价更新服务；本功能不会用申报价值代替采购价。",
+    };
+  }
+  return {
+    supported: false,
+    configured: false,
+    priceField: "",
+    priceLabel: "采购价",
+    message: `当前 WMS 类型 ${connection?.providerId || "未知"} 尚未接入采购价同步。`,
+  };
+}
+
+export async function updateWarehouseProductPurchasePrice(connection, input) {
+  const capability = warehouseProductPriceSyncCapability(connection);
+  if (!capability.supported || !capability.configured) throw new Error(capability.message);
+  if (connection.providerId !== "sea_wms") throw new Error(capability.message);
+
+  const credentials = seaCredentials(connection);
+  const goodsSkuId = firstText(input?.goodsSkuId);
+  const sku = firstText(input?.sku).toUpperCase();
+  const productName = firstText(input?.productName, sku);
+  const purchasePrice = firstNumber(input?.purchasePrice);
+  const purchasePriceCurrency = firstText(input?.purchasePriceCurrency).toUpperCase();
+  if (!goodsSkuId) throw new Error("WMS 商品缺少 goodsSkuId，不能安全更新采购价。");
+  if (!sku) throw new Error("WMS 商品缺少 SKU，不能安全更新采购价。");
+  if (!(purchasePrice > 0)) throw new Error("采购价必须大于 0。");
+  if (!/^[A-Z]{3}$/.test(purchasePriceCurrency)) throw new Error("采购价币种必须是 3 位币种代码。");
+
+  // Deliberately keep this payload minimal. In particular, never send
+  // productPrice (declared value), dimensions, weight, stock, or images.
+  const payload = await postSea(credentials, "/goods/save_single_sku_goods", {
+    goodsSkuId,
+    goodsSkuOuterId: sku,
+    goodsName: productName,
+    purchasePrice,
+    purchasePriceCurrency,
+  });
+  if (!isSuccessfulPayload(payload) || payload?.success === false) {
+    throw new Error(`SEA WMS 更新采购价失败：${payloadMessage(payload)}`);
+  }
+  return {
+    ok: true,
+    providerId: connection.providerId,
+    connectionId: connection.id,
+    goodsSkuId,
+    sku,
+    purchasePrice,
+    purchasePriceCurrency,
+  };
+}
+
 function validateWarehouseProductInput(input, providerId) {
   const product = {
     sku: firstText(input?.sku).toUpperCase(),
@@ -813,6 +883,8 @@ function normalizeSeaProduct(item, connection) {
     sku,
     countrySku: firstText(item.customCode, item.countrySku, `${connection.country}-${sku}`),
     name: firstText(item.goodsName, item.skuName, item.productName, item.name),
+    purchasePrice: firstNumber(item.purchasePrice, item.purchase_price, item.costPrice, item.cost_price),
+    purchasePriceCurrency: firstText(item.purchasePriceCurrency, item.purchase_price_currency, item.currencyCode, item.currency).toUpperCase(),
     imageUrl: firstText(item.logoUrl, item.imageUrl, item.picUrl, item.pictureUrl, item.mainImageUrl),
     imageSource: "wms",
     rawProvider: connection.providerId,
@@ -1932,6 +2004,8 @@ function normalizeYunProduct(item, connection) {
     sku,
     countrySku: `${connection.country}-${sku}`,
     name: firstText(item.product_title, item.product_title_en, sku),
+    purchasePrice: firstNumber(item.purchase_price, item.purchasePrice, item.cost_price, item.costPrice),
+    purchasePriceCurrency: firstText(item.purchase_price_currency, item.purchasePriceCurrency, item.currency).toUpperCase(),
     imageUrl,
     imageSource: imageUrl ? "wms" : "",
     rawProvider: connection.providerId,

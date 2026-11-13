@@ -36,7 +36,8 @@ import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
 import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
 import { canPreviewStockupShipmentWmsOrder } from "./stockup-v2-domain.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, updateWarehouseProductPurchasePrice, warehouseProductPriceSyncCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { createWmsProductPriceSyncService } from "./wms-product-price-sync.js";
 import { normalizeWarehouseConnectionBindings, resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { collectWarehouseInventorySync } from "./warehouse-inventory-sync.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
@@ -207,6 +208,7 @@ const orderCachePath = resolve(cacheDir, "orders-sync.json");
 const orderSyncJobsCachePath = resolve(cacheDir, "order-sync-jobs.json");
 const orderAnalysisSettingsPath = resolve(cacheDir, "order-analysis-settings.json");
 const warehouseConnectionsPath = resolve(cacheDir, "warehouse-connections.json");
+const wmsProductPriceSyncPath = resolve(cacheDir, "wms-product-price-sync.json");
 const qualificationCachePath = resolve(cacheDir, "qualifications.json");
 const assetCachePath = resolve(cacheDir, "assets.json");
 const warehouseInfoCachePath = resolve(cacheDir, "warehouse-info.json");
@@ -312,6 +314,16 @@ let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 const warehouseConnectionBindingMigration = normalizeWarehouseConnectionBindings(loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS);
 let warehouseConnections = warehouseConnectionBindingMigration.connections;
+const wmsProductPriceSyncService = createWmsProductPriceSyncService({
+  cachePath: wmsProductPriceSyncPath,
+  loadJsonCache,
+  saveJsonCache,
+  listConnections: () => warehouseConnections,
+  listProducts: () => cachedProducts.catalog || [],
+  capabilityFor: (connection) => warehouseProductPriceSyncCapability(effectiveWarehousePriceConnection(connection)),
+  fetchWarehouseCatalog: (connection) => syncWarehouseConnection(effectiveWarehousePriceConnection(connection)),
+  updatePurchasePrice: (connection, input) => updateWarehouseProductPurchasePrice(effectiveWarehousePriceConnection(connection), input),
+});
 let cachedQualifications = loadJsonCache(qualificationCachePath) || buildQualificationPayload([], "empty");
 let cachedAssets = loadJsonCache(assetCachePath) || buildAssetPayload([], "empty");
 let cachedWarehouseInfo = loadJsonCache(warehouseInfoCachePath) || buildWarehouseInfoPayload([], "empty");
@@ -3151,6 +3163,12 @@ function sameSystemCredentialFallback(connection) {
 
 function effectiveWarehouseCreateConnection(connection) {
   if (warehouseStockupCreateCapability(connection).configured) return connection;
+  const fallback = sameSystemCredentialFallback(connection);
+  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+}
+
+function effectiveWarehousePriceConnection(connection) {
+  if (warehouseProductPriceSyncCapability(connection).configured) return connection;
   const fallback = sameSystemCredentialFallback(connection);
   return fallback ? { ...connection, credentials: fallback.credentials } : connection;
 }
@@ -12763,6 +12781,74 @@ const server = http.createServer(async (req, res) => {
           "SEA WMS: 各国家 baseUrl / clientId / clientSecret / warehouseCode",
         ],
       });
+      return;
+    }
+
+    if (url.pathname === "/api/wms/product-prices/options" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "product_sync")) {
+        sendJson(res, 403, { ok: false, code: "product_sync_permission_required", message: "当前账号没有产品价格同步权限。" });
+        return;
+      }
+      const scopes = normalizeDataScopes(auth.user?.dataScopes);
+      const payload = wmsProductPriceSyncService.options();
+      const allowedCountryKeys = new Set(scopes.countries.map(normalizedCountryKey).filter(Boolean));
+      sendJson(res, 200, {
+        ...payload,
+        warehouses: payload.warehouses.filter((warehouse) => (
+          (!scopes.warehouseIds.length || scopes.warehouseIds.includes(warehouse.id))
+          && (!allowedCountryKeys.size || allowedCountryKeys.has(normalizedCountryKey(warehouse.country)))
+        )),
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/wms/product-prices/preview" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "product_sync")) {
+        sendJson(res, 403, { ok: false, code: "product_sync_permission_required", message: "当前账号没有产品价格同步权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req, 64 * 1024);
+      const scopes = normalizeDataScopes(auth.user?.dataScopes);
+      const result = await wmsProductPriceSyncService.preview({
+        warehouseIds: payload.warehouseIds,
+        actorId: auth.user?.id || auth.user?.username,
+        allowedWarehouseIds: scopes.warehouseIds,
+        allowedSkus: scopes.skus,
+        allowedCountries: scopes.countries,
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/wms/product-prices/sync" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "product_sync")) {
+        sendJson(res, 403, { ok: false, code: "product_sync_permission_required", message: "当前账号没有产品价格同步权限。" });
+        return;
+      }
+      const idempotencyKey = String(req.headers["idempotency-key"] || "").trim();
+      if (!idempotencyKey) {
+        sendJson(res, 400, { ok: false, code: "idempotency_key_required", message: "同步价格前缺少 Idempotency-Key，请重新打开预览。" });
+        return;
+      }
+      const payload = await parseRequestBody(req, 32 * 1024);
+      const scopes = normalizeDataScopes(auth.user?.dataScopes);
+      const result = await wmsProductPriceSyncService.execute({
+        previewToken: payload.previewToken,
+        idempotencyKey,
+        actorId: auth.user?.id || auth.user?.username,
+        allowedWarehouseIds: scopes.warehouseIds,
+      });
+      if (!result.idempotentReplay) {
+        appendActionLog(auth, "同步产品直营供货价到 WMS 采购价", "wms_product_price_sync", result.executionId, {
+          warehouseIds: result.rows.map((row) => row.warehouseId).filter((value, index, values) => values.indexOf(value) === index),
+          succeeded: result.summary.succeeded,
+          failed: result.summary.failed,
+        });
+      }
+      sendJson(res, result.ok ? 200 : 207, result);
       return;
     }
 

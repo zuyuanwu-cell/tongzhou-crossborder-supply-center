@@ -1389,6 +1389,86 @@ export type InventorySnapshotPayload = {
   versions?: Array<Omit<InventorySnapshot, "rows">>;
 };
 
+export type WmsProductPriceSyncCapability = {
+  supported: boolean;
+  configured: boolean;
+  priceField: string;
+  priceLabel: string;
+  message: string;
+};
+
+export type WmsProductPriceSyncWarehouse = {
+  id: string;
+  name: string;
+  country: string;
+  providerId: string;
+  status: string;
+  capability: WmsProductPriceSyncCapability;
+};
+
+export type WmsProductPriceSyncRow = {
+  id: string;
+  warehouseId: string;
+  warehouseName: string;
+  country: string;
+  providerId: string;
+  sku: string;
+  productName: string;
+  goodsSkuId: string;
+  sourcePrice: number;
+  sourceCurrency: string;
+  currentPrice: number;
+  currentCurrency: string;
+  status: "pending" | "unchanged" | "missing_price" | "unmatched" | "conflict" | "succeeded" | "failed";
+  reason: string;
+};
+
+export type WmsProductPriceSyncSummary = {
+  total: number;
+  pending: number;
+  unchanged: number;
+  missing_price: number;
+  unmatched: number;
+  conflict: number;
+  succeeded: number;
+  failed: number;
+};
+
+export type WmsProductPriceSyncOptions = {
+  ok: boolean;
+  mapping: { sourceField: string; targetField: string; protectedFields: string[] };
+  warehouses: WmsProductPriceSyncWarehouse[];
+};
+
+export type WmsProductPriceSyncPreview = {
+  ok: boolean;
+  previewToken: string;
+  createdAt: string;
+  expiresAt: string;
+  warehouseIds: string[];
+  warehouseSummaries: Array<{
+    warehouseId: string;
+    warehouseName: string;
+    country: string;
+    providerId: string;
+    status: string;
+    message: string;
+    counts: WmsProductPriceSyncSummary;
+  }>;
+  rows: WmsProductPriceSyncRow[];
+  summary: WmsProductPriceSyncSummary;
+};
+
+export type WmsProductPriceSyncExecution = {
+  ok: boolean;
+  executionId: string;
+  previewToken: string;
+  createdAt: string;
+  rows: WmsProductPriceSyncRow[];
+  summary: WmsProductPriceSyncSummary;
+  idempotentReplay: boolean;
+};
+
 export type AiAgentMetric = {
   label: string;
   value: string | number;
@@ -4812,6 +4892,25 @@ export function qualificationFileDownloadUrl(fileId: string, fileName?: string) 
 
 export function fetchWarehouses() {
   return requestJson<WarehousePayload>("/api/warehouses");
+}
+
+export function fetchWmsProductPriceSyncOptions() {
+  return requestJson<WmsProductPriceSyncOptions>("/api/wms/product-prices/options");
+}
+
+export function previewWmsProductPriceSync(warehouseIds: string[]) {
+  return requestJson<WmsProductPriceSyncPreview>("/api/wms/product-prices/preview", {
+    method: "POST",
+    body: JSON.stringify({ warehouseIds }),
+  });
+}
+
+export function executeWmsProductPriceSync(previewToken: string, idempotencyKey: string) {
+  return requestJson<WmsProductPriceSyncExecution>("/api/wms/product-prices/sync", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ previewToken }),
+  });
 }
 
 export function syncWarehouses() {

@@ -248,6 +248,7 @@ import { ProductLaunchCenter } from "./ProductLaunchCenter";
 import { VerificationCodeCenter } from "./VerificationCodeCenter";
 import { ShopDailyReport } from "./shop-daily/ShopDailyReport";
 import { CollectorCenter } from "./collector/CollectorCenter";
+import { WmsProductPriceSyncDialog } from "./WmsProductPriceSyncDialog";
 import { MiaoshouReconciliationDetails } from "./miaoshou/ReconciliationDetails";
 import { CollaborationIdentityAdmin } from "./CollaborationIdentityAdmin";
 import { PartnerCollaborationWorkspace } from "./PartnerCollaborationWorkspace";
@@ -14076,6 +14077,7 @@ function ProductLibrary({
   const [partnerCtaVisible, setPartnerCtaVisible] = React.useState(true);
   const [partnerApplicationSku, setPartnerApplicationSku] = React.useState("");
   const [visibleProductCount, setVisibleProductCount] = React.useState(24);
+  const [priceSyncOpen, setPriceSyncOpen] = React.useState(false);
   const visibleChannels = internal ? (["全部", "直营", "分销"] as const) : (["分销"] as const);
   const showDistributionPrice = hasUserPermission(currentUser, "distribution_price");
   const showDirectPrice = hasUserPermission(currentUser, "direct_price");
@@ -14242,9 +14244,17 @@ function ProductLibrary({
             {payload?.syncedAt ? new Date(payload.syncedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "等待同步"}
           </span>
         </div>
-        <div className="catalog-heading-count">
-          <strong>{payload ? formatNumber(filteredFamilies.length) : "—"}</strong>
-          <span>个基础 SKU</span>
+        <div className="catalog-heading-actions">
+          {internal && hasUserPermission(currentUser, "product_sync") ? (
+            <button className="ghost-button compact-button catalog-price-sync-button" type="button" onClick={() => setPriceSyncOpen(true)}>
+              <Coins size={16} />
+              同步价格到 WMS
+            </button>
+          ) : null}
+          <div className="catalog-heading-count">
+            <strong>{payload ? formatNumber(filteredFamilies.length) : "—"}</strong>
+            <span>个基础 SKU</span>
+          </div>
         </div>
       </section>
 
@@ -14436,6 +14446,7 @@ function ProductLibrary({
         onRemove={removeBundleItem}
         onClear={() => setBundleItems([])}
       />
+      <WmsProductPriceSyncDialog open={priceSyncOpen} onClose={() => setPriceSyncOpen(false)} />
       <button
         className={`back-to-top-button ${showBackTop ? "visible" : ""}`}
         type="button"

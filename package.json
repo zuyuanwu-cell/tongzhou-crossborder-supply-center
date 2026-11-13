@@ -39,6 +39,7 @@
     "test:container-loading": "node scripts/container-loading-test.mjs",
     "test:wms-inbound": "node scripts/wms-inbound-order-test.mjs",
     "test:wms-product-create": "node scripts/wms-product-create-test.mjs",
+    "test:wms-product-price-sync": "node scripts/wms-product-price-sync-test.mjs",
     "test:warehouse-binding": "node scripts/warehouse-binding-test.mjs",
     "test:stockup-costing": "node scripts/stockup-costing-test.mjs",
     "test:stockup-notification": "node scripts/stockup-notification-test.mjs",
