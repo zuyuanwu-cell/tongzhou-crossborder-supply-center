@@ -5791,6 +5791,14 @@ export function addStockupCollaborationCostItem(payload: Record<string, unknown>
   return requestJson<{ ok: boolean; costItem: Record<string, unknown> }>("/api/stockup/collaboration/cost-items", { method: "POST", body: JSON.stringify(payload) });
 }
 
+export function updateStockupCollaborationCostItem(costItemId: string, payload: Record<string, unknown>) {
+  return requestJson<{ ok: boolean; costItem: Record<string, unknown> }>(`/api/stockup/collaboration/cost-items/${encodeURIComponent(costItemId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function voidStockupCollaborationCostItem(costItemId: string) {
+  return requestJson<{ ok: boolean; costItem: Record<string, unknown> }>(`/api/stockup/collaboration/cost-items/${encodeURIComponent(costItemId)}`, { method: "DELETE" });
+}
+
 export function previewStockupCollaborationCost(receiptId: string) {
   return requestJson<Record<string, any>>(`/api/stockup/collaboration/costs/${encodeURIComponent(receiptId)}/preview`);
 }

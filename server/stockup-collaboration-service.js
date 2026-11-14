@@ -1102,6 +1102,7 @@ export function createStockupCollaborationService(store, {
     const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(payload.receiptId)]));
     if (!receipt) throw Object.assign(new Error("收货批次不存在。"), { statusCode: 404 });
     if (receipt.lifecycleStatus !== "active") throw Object.assign(new Error("归档或回收站中的成本批次不能新增费用，请先恢复。"), { statusCode: 409 });
+    if (receipt.status === "costed") throw Object.assign(new Error("成本已锁定，请先发起调整版后再修改费用。"), { statusCode: 409 });
     ensureShipmentVisible(receipt.shipmentId, context);
     const originalAmount = number(payload.originalAmount);
     const exchangeRate = number(payload.exchangeRate, 1);
@@ -1111,8 +1112,51 @@ export function createStockupCollaborationService(store, {
     return store.transaction(() => {
       store.run(`INSERT INTO stockup_cost_items (id,request_id,shipment_id,receipt_id,category,name,stage,vendor,invoice_no,occurred_at,original_amount,currency,exchange_rate,amount_cny,included,allocation_method,note,status,created_by,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'recorded',?,?,?)`, [itemId, receipt.requestId, receipt.shipmentId, receipt.id, required(payload.category, "费用分类"), required(payload.name || payload.category, "费用名称"), String(payload.stage || "实际"), String(payload.vendor || ""), String(payload.invoiceNo || ""), String(payload.occurredAt || now.slice(0, 10)), originalAmount, String(payload.currency || "CNY"), exchangeRate, money(originalAmount * exchangeRate), payload.included === false ? 0 : 1, String(payload.allocationMethod || "quantity"), String(payload.note || ""), userOf(context).id, now, now]);
+      store.run("UPDATE stockup_receipts SET status='cost_draft',version=version+1,updated_at=? WHERE id=?", [now, receipt.id]);
       addEvent(receipt.requestId, "cost_item_added", "已登记费用", `${payload.category} · ¥${money(originalAmount * exchangeRate).toFixed(2)}`, context, { receiptId: receipt.id, visibility: "cost_only" });
       return { ok: true, costItem: costItemFromRow(store.first("SELECT * FROM stockup_cost_items WHERE id=?", [itemId])) };
+    });
+  }
+
+  function updateCostItem(itemId, payload, context) {
+    const row = store.first("SELECT ci.*,rc.status AS receipt_status,rc.lifecycle_status AS receipt_lifecycle_status FROM stockup_cost_items ci JOIN stockup_receipts rc ON rc.id=ci.receipt_id WHERE ci.id=?", [String(itemId)]);
+    if (!row) throw Object.assign(new Error("费用记录不存在。"), { statusCode: 404 });
+    const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(row.receipt_id)]));
+    ensureShipmentVisible(receipt.shipmentId, context);
+    if (receipt.lifecycleStatus !== "active") throw Object.assign(new Error("归档或回收站中的成本批次不能修改费用，请先恢复。"), { statusCode: 409 });
+    if (receipt.status === "costed") throw Object.assign(new Error("成本已锁定，请先发起调整版后再修改费用。"), { statusCode: 409 });
+    if (String(row.status) === "voided") throw Object.assign(new Error("已作废的费用不能修改。"), { statusCode: 409 });
+    const originalAmount = number(payload.originalAmount, number(row.original_amount));
+    const exchangeRate = number(payload.exchangeRate, number(row.exchange_rate, 1));
+    if (!exchangeRate || originalAmount < 0) throw Object.assign(new Error("费用金额或汇率无效。"), { statusCode: 400 });
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run(`UPDATE stockup_cost_items SET category=?,name=?,stage=?,vendor=?,invoice_no=?,occurred_at=?,original_amount=?,currency=?,exchange_rate=?,amount_cny=?,included=?,allocation_method=?,note=?,updated_at=? WHERE id=?`, [
+        required(payload.category ?? row.category, "费用分类"), required(payload.name ?? row.name, "费用名称"), String(payload.stage ?? row.stage ?? "实际"),
+        String(payload.vendor ?? row.vendor ?? ""), String(payload.invoiceNo ?? row.invoice_no ?? ""), String(payload.occurredAt ?? row.occurred_at ?? now.slice(0, 10)),
+        originalAmount, String(payload.currency ?? row.currency ?? "CNY"), exchangeRate, money(originalAmount * exchangeRate), payload.included === undefined ? number(row.included) : payload.included === false ? 0 : 1,
+        String(payload.allocationMethod ?? row.allocation_method ?? "quantity"), String(payload.note ?? row.note ?? ""), now, String(itemId),
+      ]);
+      store.run("UPDATE stockup_receipts SET status='cost_draft',version=version+1,updated_at=? WHERE id=?", [now, receipt.id]);
+      addEvent(receipt.requestId, "cost_item_updated", "费用已修改，复核结果已失效", `${payload.name ?? row.name} · ¥${money(originalAmount * exchangeRate).toFixed(2)}`, context, { receiptId: receipt.id, costItemId: String(itemId), visibility: "cost_only" });
+      return { ok: true, costItem: costItemFromRow(store.first("SELECT * FROM stockup_cost_items WHERE id=?", [String(itemId)])) };
+    });
+  }
+
+  function voidCostItem(itemId, context) {
+    const row = store.first("SELECT ci.* FROM stockup_cost_items ci WHERE ci.id=?", [String(itemId)]);
+    if (!row) throw Object.assign(new Error("费用记录不存在。"), { statusCode: 404 });
+    const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(row.receipt_id)]));
+    ensureShipmentVisible(receipt.shipmentId, context);
+    if (receipt.lifecycleStatus !== "active") throw Object.assign(new Error("归档或回收站中的成本批次不能作废费用，请先恢复。"), { statusCode: 409 });
+    if (receipt.status === "costed") throw Object.assign(new Error("成本已锁定，请先发起调整版后再作废费用。"), { statusCode: 409 });
+    if (String(row.status) === "voided") return { ok: true, costItem: costItemFromRow(row) };
+    const now = nowIso();
+    return store.transaction(() => {
+      store.run("UPDATE stockup_cost_items SET status='voided',included=0,updated_at=? WHERE id=?", [now, String(itemId)]);
+      store.run("UPDATE stockup_receipts SET status='cost_draft',version=version+1,updated_at=? WHERE id=?", [now, receipt.id]);
+      addEvent(receipt.requestId, "cost_item_voided", "费用已作废，复核结果已失效", `${row.name} · ¥${money(row.amount_cny).toFixed(2)}`, context, { receiptId: receipt.id, costItemId: String(itemId), visibility: "cost_only" });
+      return { ok: true, costItem: costItemFromRow(store.first("SELECT * FROM stockup_cost_items WHERE id=?", [String(itemId)])) };
     });
   }
 
@@ -1120,7 +1164,7 @@ export function createStockupCollaborationService(store, {
     const receipt = receiptFromRow(store.first("SELECT * FROM stockup_receipts WHERE id=?", [String(receiptId)]));
     if (!receipt) throw Object.assign(new Error("收货批次不存在。"), { statusCode: 404 });
     ensureShipmentVisible(receipt.shipmentId, { ...context, viewAll: context.viewAll || context.viewCost });
-    const allLines = store.all(`SELECT rl.*,sl.base_unit_cost_cny,sl.weight_kg,sl.volume_m3,sl.purchase_order_line_id,
+    const allLines = store.all(`SELECT rl.*,sl.shipped_qty,sl.base_unit_cost_cny,sl.weight_kg,sl.volume_m3,sl.purchase_order_line_id,
       pol.quantity AS purchase_qty,pol.allocated_amount_cny,pol.refunded_amount_cny,
       (SELECT COALESCE(SUM(il.quantity),0) FROM stockup_inspection_lots il WHERE il.purchase_order_line_id=pol.id AND il.status='approved') AS approved_good_qty
       FROM stockup_receipt_lines rl JOIN stockup_shipment_lines sl ON sl.id=rl.shipment_line_id
@@ -1128,27 +1172,55 @@ export function createStockupCollaborationService(store, {
       const purchaseNetAmountCny = money(number(row.allocated_amount_cny) - number(row.refunded_amount_cny));
       const approvedGoodQty = number(row.approved_good_qty);
       const purchaseUnitCostCny = purchaseNetAmountCny > 0 && approvedGoodQty > 0 ? money(purchaseNetAmountCny / approvedGoodQty) : number(row.base_unit_cost_cny);
+      const goodQty = number(row.good_qty);
+      const shippedQty = number(row.shipped_qty);
+      const receiptRatio = shippedQty > 0 ? Math.min(1, goodQty / shippedQty) : 0;
+      const shipmentWeightKg = number(row.weight_kg);
+      const shipmentVolumeM3 = number(row.volume_m3);
+      const weightKg = Number((shipmentWeightKg * receiptRatio).toFixed(6));
+      const volumeM3 = Number((shipmentVolumeM3 * receiptRatio).toFixed(9));
       return {
-        receiptLineId: String(row.id), sku: String(row.sku), productName: String(row.product_name), goodQty: number(row.good_qty), baseUnitCostCny: purchaseUnitCostCny,
+        receiptLineId: String(row.id), sku: String(row.sku), productName: String(row.product_name), goodQty, shippedQty, receiptRatio, baseUnitCostCny: purchaseUnitCostCny,
         purchaseOrderLineId: String(row.purchase_order_line_id || ""), purchaseNetAmountCny, purchaseQty: number(row.purchase_qty), approvedGoodQty,
-        weightKg: number(row.weight_kg), volumeM3: number(row.volume_m3), goodsCostCny: money(number(row.good_qty) * purchaseUnitCostCny), allocatedCostCny: 0,
+        shipmentWeightKg, shipmentVolumeM3, weightKg, volumeM3, goodsCostCny: money(goodQty * purchaseUnitCostCny), allocatedCostCny: 0, allocationBreakdown: [],
+        weightFormula: `${shipmentWeightKg.toFixed(4)} kg × (${goodQty} ÷ ${shippedQty || 0}) = ${weightKg.toFixed(4)} kg`,
+        volumeFormula: `${shipmentVolumeM3.toFixed(6)} m³ × (${goodQty} ÷ ${shippedQty || 0}) = ${volumeM3.toFixed(6)} m³`,
       };
     });
     const requestIds = hydrateShipment(store.first("SELECT * FROM stockup_shipments WHERE id=?", [receipt.shipmentId]))?.requestIds || [receipt.requestId];
     const requestPlaceholders = requestIds.map(() => "?").join(",");
-    const items = store.all(`SELECT ci.* FROM stockup_cost_items ci WHERE ci.included=1 AND ci.category!='purchase' AND (
+    const allItems = store.all(`SELECT ci.* FROM stockup_cost_items ci WHERE ci.status!='voided' AND (
       ci.receipt_id=? OR ci.shipment_id=? OR (ci.request_id IN (${requestPlaceholders}) AND COALESCE(ci.receipt_id,'')='' AND COALESCE(ci.shipment_id,'')='')
     ) AND NOT EXISTS (SELECT 1 FROM stockup_cost_allocations ca JOIN stockup_receipt_lines used ON used.id=ca.receipt_line_id WHERE ca.cost_item_id=ci.id AND used.receipt_id!=?)`, [receipt.id, receipt.shipmentId, ...requestIds, receipt.id]).map(costItemFromRow);
-    for (const item of items) {
+    const allocationItems = allItems.filter((item) => item.included && item.category !== "purchase");
+    for (const item of allocationItems) {
+      const requestedMethod = item.allocationMethod;
+      let appliedMethod = requestedMethod;
+      let fallbackReason = "";
       let bases = allLines.map((line) => item.allocationMethod === "weight" ? line.weightKg : item.allocationMethod === "volume" ? line.volumeM3 : item.allocationMethod === "value" ? line.goodsCostCny : line.goodQty);
-      if (item.allocationMethod === "weight" && bases.reduce((sum, value) => sum + value, 0) <= 0) bases = allLines.map((line) => line.volumeM3);
-      if (bases.reduce((sum, value) => sum + value, 0) <= 0) bases = allLines.map((line) => line.goodQty);
+      if (item.allocationMethod === "weight" && bases.reduce((sum, value) => sum + value, 0) <= 0) {
+        bases = allLines.map((line) => line.volumeM3);
+        appliedMethod = "volume";
+        fallbackReason = "重量合计为 0，自动回退为按体积分摊";
+      }
+      if (bases.reduce((sum, value) => sum + value, 0) <= 0) {
+        bases = allLines.map((line) => line.goodQty);
+        appliedMethod = "quantity";
+        fallbackReason = fallbackReason || "所选分摊依据合计为 0，自动回退为按数量分摊";
+      }
       const totalBasis = bases.reduce((sum, value) => sum + value, 0);
       let allocated = 0;
       allLines.forEach((line, index) => {
         const isLast = index === allLines.length - 1;
         const share = isLast ? money(item.amountCny - allocated) : money(item.amountCny * (totalBasis > 0 ? bases[index] / totalBasis : 1 / Math.max(1, allLines.length)));
         line.allocatedCostCny = money(line.allocatedCostCny + share);
+        line.allocationBreakdown.push({
+          costItemId: item.id, category: item.category, name: item.name, requestedMethod, appliedMethod, fallbackReason,
+          originalAmount: item.originalAmount, currency: item.currency, exchangeRate: item.exchangeRate, amountCny: item.amountCny,
+          basis: number(bases[index]), totalBasis: number(totalBasis), ratio: totalBasis > 0 ? number(bases[index]) / totalBasis : 1 / Math.max(1, allLines.length),
+          allocatedAmountCny: share,
+          formula: `¥${item.amountCny.toFixed(2)} × (${number(bases[index]).toFixed(4)} ÷ ${number(totalBasis).toFixed(4)}) = ¥${share.toFixed(2)}`,
+        });
         allocated = money(allocated + share);
       });
     }
@@ -1156,26 +1228,84 @@ export function createStockupCollaborationService(store, {
       ? allLines.filter((line) => context.skus.includes(line.sku.toUpperCase()))
       : allLines;
     const resultLines = lines.map((line) => ({ ...line, totalCostCny: money(line.goodsCostCny + line.allocatedCostCny), unitCostCny: line.goodQty > 0 ? money((line.goodsCostCny + line.allocatedCostCny) / line.goodQty) : 0 }));
-    const totals = resultLines.reduce((acc, line) => ({ costingQty: acc.costingQty + line.goodQty, goodsCostCny: money(acc.goodsCostCny + line.goodsCostCny), allocatedCostCny: money(acc.allocatedCostCny + line.allocatedCostCny), totalCostCny: money(acc.totalCostCny + line.totalCostCny) }), { costingQty: 0, goodsCostCny: 0, allocatedCostCny: 0, totalCostCny: 0 });
+    const totals = resultLines.reduce((acc, line) => ({ costingQty: acc.costingQty + line.goodQty, totalWeightKg: acc.totalWeightKg + line.weightKg, totalVolumeM3: acc.totalVolumeM3 + line.volumeM3, goodsCostCny: money(acc.goodsCostCny + line.goodsCostCny), allocatedCostCny: money(acc.allocatedCostCny + line.allocatedCostCny), totalCostCny: money(acc.totalCostCny + line.totalCostCny) }), { costingQty: 0, totalWeightKg: 0, totalVolumeM3: 0, goodsCostCny: 0, allocatedCostCny: 0, totalCostCny: 0 });
+    const skuGroups = new Map();
+    for (const line of resultLines) {
+      const group = skuGroups.get(line.sku) || {
+        sku: line.sku, productName: line.productName, sourceLineCount: 0, goodQty: 0, weightKg: 0, volumeM3: 0,
+        goodsCostCny: 0, allocatedCostCny: 0, totalCostCny: 0, unitCostCny: 0,
+        calculation: { quantity: [], weight: [], volume: [], goodsCost: [], allocatedCost: [], totalCost: [], unitCost: [] },
+        allocationBreakdown: [],
+      };
+      group.sourceLineCount += 1;
+      group.goodQty += line.goodQty;
+      group.weightKg += line.weightKg;
+      group.volumeM3 += line.volumeM3;
+      group.goodsCostCny = money(group.goodsCostCny + line.goodsCostCny);
+      group.allocatedCostCny = money(group.allocatedCostCny + line.allocatedCostCny);
+      group.totalCostCny = money(group.totalCostCny + line.totalCostCny);
+      group.calculation.quantity.push(`批次行 ${line.receiptLineId}: ${line.goodQty}`);
+      group.calculation.weight.push(`批次行 ${line.receiptLineId}: ${line.weightFormula}`);
+      group.calculation.volume.push(`批次行 ${line.receiptLineId}: ${line.volumeFormula}`);
+      group.calculation.goodsCost.push(`${line.goodQty} × ¥${line.baseUnitCostCny.toFixed(6)} = ¥${line.goodsCostCny.toFixed(2)}`);
+      for (const allocation of line.allocationBreakdown) {
+        group.allocationBreakdown.push(allocation);
+        group.calculation.allocatedCost.push(`${allocation.name}: ${allocation.formula}${allocation.fallbackReason ? `（${allocation.fallbackReason}）` : ""}`);
+      }
+      skuGroups.set(line.sku, group);
+    }
+    const skuSummary = [...skuGroups.values()].map((group) => {
+      group.unitCostCny = group.goodQty > 0 ? money(group.totalCostCny / group.goodQty) : 0;
+      group.calculation.totalCost = [`货品成本 ¥${group.goodsCostCny.toFixed(2)} + 分摊费用 ¥${group.allocatedCostCny.toFixed(2)} = ¥${group.totalCostCny.toFixed(2)}`];
+      group.calculation.unitCost = [`到仓总成本 ¥${group.totalCostCny.toFixed(2)} ÷ 良品数量 ${group.goodQty} = ¥${group.unitCostCny.toFixed(6)}`];
+      return group;
+    });
+    const totalValues = { ...totals, totalWeightKg: number(totals.totalWeightKg), totalVolumeM3: number(totals.totalVolumeM3), unitCostCny: totals.costingQty > 0 ? money(totals.totalCostCny / totals.costingQty) : 0 };
+    const metricExplanations = {
+      costingQty: { label: "良品数量", formula: "Σ 各 SKU 良品数量", details: skuSummary.map((row) => `${row.sku}: ${row.goodQty}`) },
+      totalWeightKg: { label: "总重量", formula: "Σ 各收货行重量", details: skuSummary.map((row) => `${row.sku}: ${row.weightKg.toFixed(4)} kg`) },
+      totalVolumeM3: { label: "总体积", formula: "Σ 各收货行体积", details: skuSummary.map((row) => `${row.sku}: ${row.volumeM3.toFixed(6)} m³`) },
+      goodsCostCny: { label: "货品成本", formula: "Σ（良品数量 × 货品单位成本）", details: skuSummary.map((row) => `${row.sku}: ¥${row.goodsCostCny.toFixed(2)}`) },
+      allocatedCostCny: { label: "分摊费用", formula: "Σ（费用人民币金额 × SKU 分摊依据 ÷ 全部依据）", details: allocationItems.map((item) => `${item.name}: ${item.originalAmount} ${item.currency} × ${item.exchangeRate} = ¥${item.amountCny.toFixed(2)}`) },
+      totalCostCny: { label: "到仓总成本", formula: "货品成本 + 分摊费用", details: [`¥${totalValues.goodsCostCny.toFixed(2)} + ¥${totalValues.allocatedCostCny.toFixed(2)} = ¥${totalValues.totalCostCny.toFixed(2)}`] },
+      unitCostCny: { label: "加权单价", formula: "到仓总成本 ÷ 良品总数量", details: [`¥${totalValues.totalCostCny.toFixed(2)} ÷ ${totalValues.costingQty} = ¥${totalValues.unitCostCny.toFixed(6)}`] },
+    };
+    const versions = context.skus?.length ? [] : store.all("SELECT * FROM stockup_cost_versions WHERE receipt_id=? ORDER BY version DESC", [receipt.id]).map((row) => ({
+      id: String(row.id), receiptId: String(row.receipt_id), version: number(row.version), versionType: String(row.version_type), status: String(row.status),
+      costingQty: number(row.costing_qty), goodsCostCny: number(row.goods_cost_cny), allocatedCostCny: number(row.allocated_cost_cny), totalCostCny: number(row.total_cost_cny),
+      unitCostCny: number(row.unit_cost_cny), note: String(row.note || ""), createdBy: String(row.created_by), createdAt: String(row.created_at), lockedBy: String(row.locked_by || ""), lockedAt: String(row.locked_at || ""),
+    }));
     const lossPool = resultLines.filter((line) => line.purchaseOrderLineId).map((line) => ({ purchaseOrderLineId: line.purchaseOrderLineId, sku: line.sku, purchasedQty: line.purchaseQty, approvedGoodQty: line.approvedGoodQty, lossQty: Math.max(0, money(line.purchaseQty - line.approvedGoodQty)), netPurchaseAmountCny: line.purchaseNetAmountCny }));
-    return { ok: true, receipt, items: context.skus?.length ? [] : items, lines: resultLines, lossPool, totals: { ...totals, unitCostCny: totals.costingQty > 0 ? money(totals.totalCostCny / totals.costingQty) : 0 }, canLock: resultLines.length > 0 && resultLines.every((line) => line.goodQty > 0 && line.baseUnitCostCny > 0) };
+    return {
+      ok: true, receipt, items: context.skus?.length ? [] : allItems, lines: resultLines, skuSummary, lossPool, totals: totalValues,
+      metricExplanations, versions, formulaVersion: "landed-cost-v2-2026-11", calculatedAt: nowIso(),
+      editable: receipt.lifecycleStatus === "active" && receipt.status !== "costed", adjustmentRequired: receipt.status === "costed",
+      canLock: receipt.status !== "costed" && resultLines.length > 0 && resultLines.every((line) => line.goodQty > 0 && line.baseUnitCostCny > 0),
+    };
   }
 
   function saveCostVersion(receiptId, payload, context, lock = false) {
     const preview = costPreview(receiptId, { ...context, viewAll: true, viewCost: true });
     if (preview.receipt.lifecycleStatus !== "active") throw Object.assign(new Error("归档或回收站中的成本批次不能修改，请先恢复。"), { statusCode: 409 });
+    const isAdjustment = String(payload.versionType || "") === "adjustment";
+    if (isAdjustment && preview.receipt.status !== "costed") throw Object.assign(new Error("当前批次尚未锁定，无需发起调整版，可直接修改并重新提交复核。"), { statusCode: 409 });
+    if (!isAdjustment && preview.receipt.status === "costed") throw Object.assign(new Error("成本已锁定，请先发起调整版。"), { statusCode: 409 });
     if (lock && !preview.canLock) throw Object.assign(new Error("存在良品数量或货品成本缺失，不能锁定正式成本。"), { statusCode: 409 });
     const latest = number(store.first("SELECT MAX(version) AS value FROM stockup_cost_versions WHERE receipt_id=?", [receiptId])?.value);
     const version = latest + 1;
     const now = nowIso();
     const versionId = id("scv");
     return store.transaction(() => {
+      const versionStatus = lock ? "locked" : isAdjustment ? "adjustment_draft" : "review";
       store.run(`INSERT INTO stockup_cost_versions (id,receipt_id,version,version_type,status,costing_qty,goods_cost_cny,allocated_cost_cny,total_cost_cny,unit_cost_cny,snapshot_json,note,created_by,created_at,locked_by,locked_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [versionId, receiptId, version, String(payload.versionType || (latest ? "adjustment" : "formal")), lock ? "locked" : "review", preview.totals.costingQty, preview.totals.goodsCostCny, preview.totals.allocatedCostCny, preview.totals.totalCostCny, preview.totals.unitCostCny, JSON.stringify(preview), String(payload.note || ""), userOf(context).id, now, lock ? userOf(context).id : "", lock ? now : ""]);
-      if (lock) {
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [versionId, receiptId, version, String(payload.versionType || (latest ? "adjustment" : "formal")), versionStatus, preview.totals.costingQty, preview.totals.goodsCostCny, preview.totals.allocatedCostCny, preview.totals.totalCostCny, preview.totals.unitCostCny, JSON.stringify(preview), String(payload.note || ""), userOf(context).id, now, lock ? userOf(context).id : "", lock ? now : ""]);
+      if (isAdjustment) {
+        store.run("UPDATE stockup_receipts SET status='cost_adjusting',version=version+1,updated_at=? WHERE id=?", [now, receiptId]);
+        addEvent(preview.receipt.requestId, "cost_adjustment_started", "已发起成本调整版", `版本 ${version} · ${String(payload.note || "未填写调整原因")}`, context, { receiptId, visibility: "cost_only" });
+      } else if (lock) {
         store.run("UPDATE stockup_receipts SET status='costed',version=version+1,updated_at=? WHERE id=?", [now, receiptId]);
         store.run("DELETE FROM stockup_cost_allocations WHERE receipt_line_id IN (SELECT id FROM stockup_receipt_lines WHERE receipt_id=?)", [receiptId]);
-        for (const item of preview.items) {
+        for (const item of preview.items.filter((entry) => entry.included && entry.category !== "purchase")) {
           let bases = preview.lines.map((line) => item.allocationMethod === "weight" ? line.weightKg : item.allocationMethod === "volume" ? line.volumeM3 : item.allocationMethod === "value" ? line.goodsCostCny : line.goodQty);
           if (item.allocationMethod === "weight" && bases.reduce((sum, value) => sum + value, 0) <= 0) bases = preview.lines.map((line) => line.volumeM3);
           if (bases.reduce((sum, value) => sum + value, 0) <= 0) bases = preview.lines.map((line) => line.goodQty);
@@ -1193,8 +1323,11 @@ export function createStockupCollaborationService(store, {
           store.run("UPDATE stockup_shipments SET status='cost_locked',version=version+1,updated_at=? WHERE id=?", [now, shipment.id]);
           for (const requestId of shipment.requestIds || [shipment.requestId]) store.run("UPDATE stockup_requests SET status='cost_locked',version=version+1,updated_at=? WHERE id=?", [now, requestId]);
         } else refreshRequestStatus(preview.receipt.requestId);
+      } else {
+        store.run("UPDATE stockup_receipts SET status='cost_review',version=version+1,updated_at=? WHERE id=?", [now, receiptId]);
+        addEvent(preview.receipt.requestId, "cost_review_submitted", "成本已提交复核", `版本 ${version} · ¥${preview.totals.totalCostCny.toFixed(2)}`, context, { receiptId, visibility: "cost_only" });
       }
-      return { ok: true, version, status: lock ? "locked" : "review", preview };
+      return { ok: true, version, status: versionStatus, preview };
     });
   }
 
@@ -1690,7 +1823,7 @@ export function createStockupCollaborationService(store, {
   }
 
   return {
-    addCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
+    addCostItem, updateCostItem, voidCostItem, beginShipmentWmsPush, completeShipmentWmsPush, confirmReceipt, costPreview, createRequest, createShipment, createTask, dispatchShipment, failShipmentWmsPush, getRequest, getShipment,
     listMonthlyCostPeriods, listNotifications, listReceipts, listRequests, listShipments, listTasks, markNotificationRead, monthlyCostReport, reconciliationFacts, reconcileDeletedShipmentWmsOrder, voidShipmentWmsOrder,
     applyWarehouseWorkOrderAction, createWarehouseWorkOrder, getWarehouseWorkOrder, listWarehouseWorkOrders, markWarehouseWorkOrderPublished, warehouseWorkOrderDashboard,
     rollbackRequest, saveCostVersion, setRequestStatus, updateMonthlyCostPeriod, updateReceiptLifecycle, updateRequest, updateShipment, updateTask,

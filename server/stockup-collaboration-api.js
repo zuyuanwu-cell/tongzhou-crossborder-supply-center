@@ -685,6 +685,20 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         sendJson(res, 201, result);
         return true;
       }
+      if ((match = suffix.match(/^\/cost-items\/([^/]+)$/)) && req.method === "PATCH") {
+        requireAny(auth, ["stockup_cost_edit", "stockup_workflow_manage"], "当前账号没有费用修改权限。");
+        const result = service.updateCostItem(decodeURIComponent(match[1]), await readBody(req), context);
+        appendActionLog(auth, "修改备货费用", "stockup_collaboration_cost", result.costItem.id, { amountCny: result.costItem.amountCny });
+        sendJson(res, 200, result);
+        return true;
+      }
+      if ((match = suffix.match(/^\/cost-items\/([^/]+)$/)) && req.method === "DELETE") {
+        requireAny(auth, ["stockup_cost_edit", "stockup_workflow_manage"], "当前账号没有费用作废权限。");
+        const result = service.voidCostItem(decodeURIComponent(match[1]), context);
+        appendActionLog(auth, "作废备货费用", "stockup_collaboration_cost", result.costItem.id, { amountCny: result.costItem.amountCny });
+        sendJson(res, 200, result);
+        return true;
+      }
       if ((match = suffix.match(/^\/costs\/([^/]+)\/preview$/)) && req.method === "GET") {
         requireAny(auth, ["stockup_cost_edit", "stockup_cost_review", "stockup_cost_lock", "stockup_cost_report_view", "stockup_workflow_manage"], "当前账号没有成本查看权限。");
         sendJson(res, 200, service.costPreview(decodeURIComponent(match[1]), context));
@@ -696,7 +710,7 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         const payload = await readBody(req);
         if (action === "adjust") payload.versionType = "adjustment";
         const result = service.saveCostVersion(decodeURIComponent(match[1]), payload, context, action === "lock");
-        appendActionLog(auth, action === "lock" ? "锁定备货到仓成本" : "提交备货成本复核", "stockup_collaboration_cost_version", match[1], { version: result.version });
+        appendActionLog(auth, action === "lock" ? "锁定备货到仓成本" : action === "adjust" ? "发起备货成本调整" : "提交备货成本复核", "stockup_collaboration_cost_version", match[1], { version: result.version });
         if (action === "lock") {
           await attachProgressNotifications(result, result.preview?.receipt?.requestId, {
             node: "cost_locked",

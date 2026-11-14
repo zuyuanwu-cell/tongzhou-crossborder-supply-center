@@ -126,6 +126,7 @@
     "@resvg/resvg-js": "2.6.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^8.2.2",
+    "fflate": "0.6.11",
     "imapflow": "^1.0.195",
     "lucide-react": "^0.468.0",
     "mailparser": "^3.9.0",
