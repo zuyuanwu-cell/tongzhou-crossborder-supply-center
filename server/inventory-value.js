@@ -378,6 +378,48 @@ function aggregateSnapshot(snapshot, context) {
   };
 }
 
+function keywordMatch(row, keyword) {
+  if (!keyword) return true;
+  return [row?.sku, row?.productName, row?.country, ...(row?.warehouseNames || [])]
+    .join(" ")
+    .toLowerCase()
+    .includes(keyword);
+}
+
+function filterAggregatedValue(value, keyword) {
+  if (!keyword) return value;
+  const rows = (value?.rows || []).filter((row) => keywordMatch(row, keyword));
+  const missing = (value?.missing || []).filter((row) => keywordMatch(row, keyword));
+  const summary = {
+    date: text(value?.summary?.date),
+    onHandQty: 0,
+    waitInQty: 0,
+    inTransitQty: 0,
+    faultyQty: 0,
+    temporaryQty: 0,
+    totalQty: 0,
+    coveredOnHandQty: 0,
+    unvaluedOnHandQty: 0,
+    onHandValueCny: 0,
+    inTransitValueCny: 0,
+    totalValueCny: 0,
+    missingCostSkuCount: missing.length,
+    costCoverageRate: 0,
+  };
+  for (const row of rows) {
+    for (const field of ["onHandQty", "waitInQty", "inTransitQty", "faultyQty", "temporaryQty", "totalQty", "onHandValueCny", "inTransitValueCny", "totalValueCny"]) {
+      summary[field] += number(row?.[field]);
+    }
+    if (row?.unitCostCny !== null && row?.unitCostCny !== undefined) summary.coveredOnHandQty += number(row.onHandQty);
+  }
+  summary.onHandValueCny = round(summary.onHandValueCny);
+  summary.inTransitValueCny = round(summary.inTransitValueCny);
+  summary.totalValueCny = round(summary.totalValueCny);
+  summary.unvaluedOnHandQty = Math.max(0, summary.onHandQty - summary.coveredOnHandQty);
+  summary.costCoverageRate = summary.onHandQty > 0 ? round(summary.coveredOnHandQty / summary.onHandQty, 4) : 1;
+  return { summary, rows, missing };
+}
+
 function matchesFilters(row, filters) {
   if (filters.warehouseId && text(row.warehouseId) !== filters.warehouseId) return false;
   if (filters.country && normalizedCountryKey(row.country) !== normalizedCountryKey(filters.country)) return false;
@@ -453,7 +495,10 @@ export function buildInventoryValuePayload({
     warehouseCostLookup: buildWarehouseCostLookup(products?.warehouseCosts, products?.warehouseCostScopes),
     rateLookup: buildRateLookup(exchangeRates),
   };
-  const valuedPeriods = periods.map((item) => ({ ...item, value: aggregateSnapshot(item.snapshot, context) }));
+  const valuedPeriods = periods.map((item) => ({
+    ...item,
+    value: filterAggregatedValue(aggregateSnapshot(item.snapshot, context), keyword),
+  }));
   const current = valuedPeriods.at(-1) || null;
   const previous = valuedPeriods.at(-2) || null;
   const previousRows = new Map((previous?.value.rows || []).map((row) => [row.key, row]));
@@ -485,9 +530,6 @@ export function buildInventoryValuePayload({
       valueChangeRate: previousValueCny > 0 ? round(valueChangeCny / previousValueCny, 4) : null,
     };
   });
-  if (keyword) {
-    rows = rows.filter((row) => [row.sku, row.productName, row.country, ...row.warehouseNames].join(" ").toLowerCase().includes(keyword));
-  }
   rows.sort((left, right) => Math.abs(right.valueChangeCny) - Math.abs(left.valueChangeCny) || right.onHandValueCny - left.onHandValueCny);
 
   const currentSummary = current?.value.summary || aggregateSnapshot({ date: "", rows: [] }, context).summary;

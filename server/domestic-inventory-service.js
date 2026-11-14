@@ -76,12 +76,13 @@ function warehouseFromRow(row) {
 function balanceFromRow(row) {
   const onHandQty = number(row.on_hand_qty);
   const reservedQty = number(row.reserved_qty);
-  const safetyStockQty = number(row.safety_stock_qty);
+  const safetyStockConfigured = Number(row.safety_stock_configured) === 1;
+  const safetyStockQty = safetyStockConfigured ? number(row.safety_stock_qty) : null;
   const availableQty = onHandQty - reservedQty;
   return {
     warehouseId: text(row.warehouse_id), warehouseName: text(row.warehouse_name), productId: text(row.product_id), sku: text(row.sku),
     productName: text(row.product_name), imageUrl: text(row.image_url), specification: text(row.specification), unit: text(row.unit) || "件",
-    onHandQty, reservedQty, availableQty, safetyStockQty, lowStock: safetyStockQty > 0 && availableQty <= safetyStockQty, updatedAt: text(row.updated_at),
+    onHandQty, reservedQty, availableQty, safetyStockQty, safetyStockConfigured, lowStock: safetyStockConfigured && availableQty <= number(safetyStockQty), updatedAt: text(row.updated_at),
   };
 }
 
@@ -272,7 +273,7 @@ export function createDomesticInventoryService(store) {
       const keyword = `%${text(filters.keyword)}%`;
       params.push(keyword, keyword, keyword);
     }
-    if (String(filters.lowStock || "") === "1") where.push("b.safety_stock_qty>0 AND (b.on_hand_qty-b.reserved_qty)<=b.safety_stock_qty");
+    if (String(filters.lowStock || "") === "1") where.push("b.safety_stock_configured=1 AND (b.on_hand_qty-b.reserved_qty)<=b.safety_stock_qty");
     const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const balances = store.all(`SELECT b.*,w.name AS warehouse_name FROM domestic_inventory_balances b JOIN domestic_warehouses w ON w.id=b.warehouse_id ${clause} ORDER BY w.name,b.sku LIMIT 1000`, params).map(balanceFromRow);
     const warehouseTotals = new Map();
@@ -318,6 +319,15 @@ export function createDomesticInventoryService(store) {
 
   function updateWarehouse(warehouseId, input, context) {
     const warehouse = ensureWarehouse(warehouseId, context);
+    const disabling = warehouse.status !== "inactive" && input.status === "inactive";
+    const impact = disabling ? warehouseDisableImpact(warehouse.id, context).impact : null;
+    if (disabling && input.confirmDisable !== true) {
+      throw Object.assign(new Error("停用仓库前必须确认受影响的库存、任务和预约。"), {
+        statusCode: 409,
+        code: "warehouse_disable_confirmation_required",
+        details: { impact },
+      });
+    }
     const now = nowIso();
     const next = {
       name: required(input.name ?? warehouse.name, "仓库名称"), province: text(input.province ?? warehouse.province), city: text(input.city ?? warehouse.city),
@@ -327,6 +337,24 @@ export function createDomesticInventoryService(store) {
     store.transaction(() => store.run("UPDATE domestic_warehouses SET name=?,province=?,city=?,address=?,contact_name=?,contact_phone=?,status=?,note=?,updated_at=? WHERE id=?",
       [next.name, next.province, next.city, next.address, next.contactName, next.contactPhone, next.status, next.note, now, warehouse.id]));
     return { ok: true, warehouse: ensureWarehouse(warehouse.id, context) };
+  }
+
+  function warehouseDisableImpact(warehouseId, context = {}) {
+    const warehouse = ensureWarehouse(warehouseId, context);
+    const balances = store.first("SELECT COUNT(*) AS sku_count,COALESCE(SUM(on_hand_qty),0) AS on_hand_qty,COALESCE(SUM(reserved_qty),0) AS reserved_qty FROM domestic_inventory_balances WHERE warehouse_id=? AND (on_hand_qty<>0 OR reserved_qty<>0)", [warehouse.id]) || {};
+    const transfers = store.first("SELECT COUNT(*) AS count FROM domestic_inventory_transfers WHERE status='in_transit' AND (source_warehouse_id=? OR target_warehouse_id=?)", [warehouse.id, warehouse.id]) || {};
+    const reservations = store.first("SELECT COUNT(*) AS count FROM domestic_inventory_reservations WHERE warehouse_id=? AND status='reserved'", [warehouse.id]) || {};
+    return {
+      ok: true,
+      warehouse,
+      impact: {
+        skuCount: number(balances.sku_count),
+        onHandQty: number(balances.on_hand_qty),
+        reservedQty: number(balances.reserved_qty),
+        inTransitTransferCount: number(transfers.count),
+        activeReservationCount: number(reservations.count),
+      },
+    };
   }
 
   function normalizeMovement(input, context) {
@@ -400,10 +428,12 @@ export function createDomesticInventoryService(store) {
         if (line.signedQty < 0 && line.quantity > beforeQty - reservedQty) {
           fail(`${line.sku} 可用库存不足：当前可用 ${Math.max(0, beforeQty - reservedQty)} ${line.unit}，本次需出库 ${line.quantity} ${line.unit}。`, 409, "insufficient_stock");
         }
-        store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,0,?,?)
-          ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,safety_stock_qty=excluded.safety_stock_qty,updated_at=excluded.updated_at`,
-          [warehouse.id, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, afterQty, line.safetyStockQty === null ? number(current?.safety_stock_qty) : line.safetyStockQty, movement.createdAt]);
+        const safetyStockConfigured = line.safetyStockQty === null ? Boolean(Number(current?.safety_stock_configured)) : true;
+        const safetyStockQty = line.safetyStockQty === null ? number(current?.safety_stock_qty) : line.safetyStockQty;
+        store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,safety_stock_configured,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,0,?,?,?)
+          ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,safety_stock_qty=excluded.safety_stock_qty,safety_stock_configured=excluded.safety_stock_configured,updated_at=excluded.updated_at`,
+          [warehouse.id, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, afterQty, safetyStockQty, safetyStockConfigured ? 1 : 0, movement.createdAt]);
         const movementLineId = id("dml");
         store.run(`INSERT INTO domestic_inventory_movement_lines (id,movement_id,product_id,sku,product_name,image_url,specification,unit,quantity,signed_qty,before_qty,after_qty,unit_cost_cny) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [movementLineId, movement.id, line.productId, line.sku, line.productName, line.imageUrl, line.specification, line.unit, line.quantity, line.signedQty, beforeQty, afterQty, line.unitCostCny]);
@@ -628,9 +658,9 @@ export function createDomesticInventoryService(store) {
           const current = store.first("SELECT * FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [targetWarehouse.id, text(line.sku)]);
           const beforeQty = number(current?.on_hand_qty);
           const afterQty = beforeQty + quantity;
-          store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,0,?,?) ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,updated_at=excluded.updated_at`,
-            [targetWarehouse.id, text(line.product_id), text(line.sku), text(line.product_name), text(line.image_url), text(line.specification), text(line.unit) || "件", afterQty, number(current?.safety_stock_qty), now]);
+          store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,safety_stock_configured,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,0,?,?,?) ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,updated_at=excluded.updated_at`,
+            [targetWarehouse.id, text(line.product_id), text(line.sku), text(line.product_name), text(line.image_url), text(line.specification), text(line.unit) || "件", afterQty, number(current?.safety_stock_qty), Number(current?.safety_stock_configured) ? 1 : 0, now]);
           const movementLineId = id("dml");
           const unitCostCny = number(allocation.unit_cost_cny, number(line.unit_cost_cny));
           store.run(`INSERT INTO domestic_inventory_movement_lines (id,movement_id,product_id,sku,product_name,image_url,specification,unit,quantity,signed_qty,before_qty,after_qty,unit_cost_cny) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -882,10 +912,11 @@ export function createDomesticInventoryService(store) {
     if (context.skus?.length && !context.skus.includes(normalizedSku)) fail("该产品不在当前账号的数据范围内。", 403, "forbidden");
     const current = store.first("SELECT 1 AS found FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [warehouse.id, normalizedSku]);
     if (!current) fail("库存产品不存在。", 404, "not_found");
-    const safetyStockQty = number(input.safetyStockQty);
+    const configured = input.safetyStockQty !== undefined && input.safetyStockQty !== null && String(input.safetyStockQty).trim() !== "";
+    const safetyStockQty = configured ? number(input.safetyStockQty) : 0;
     if (safetyStockQty < 0) fail("安全库存不能小于 0。");
-    store.transaction(() => store.run("UPDATE domestic_inventory_balances SET safety_stock_qty=?,updated_at=? WHERE warehouse_id=? AND sku=?", [safetyStockQty, nowIso(), warehouse.id, normalizedSku]));
-    return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty };
+    store.transaction(() => store.run("UPDATE domestic_inventory_balances SET safety_stock_qty=?,safety_stock_configured=?,updated_at=? WHERE warehouse_id=? AND sku=?", [safetyStockQty, configured ? 1 : 0, nowIso(), warehouse.id, normalizedSku]));
+    return { ok: true, warehouseId: warehouse.id, sku: normalizedSku, safetyStockQty: configured ? safetyStockQty : null, safetyStockConfigured: configured };
   }
 
   function reservationFromRow(row) {
@@ -1041,9 +1072,13 @@ export function createDomesticInventoryService(store) {
     return store.transaction(() => {
       const onHandQty = number(source.on_hand_qty) + number(target?.on_hand_qty);
       const reservedQty = number(source.reserved_qty) + number(target?.reserved_qty);
-      store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,reserved_qty=excluded.reserved_qty,safety_stock_qty=MAX(domestic_inventory_balances.safety_stock_qty,excluded.safety_stock_qty),updated_at=excluded.updated_at`,
-        [warehouse.id, text(input.productId || source.product_id || target?.product_id), newSku, text(input.productName || source.product_name), text(source.image_url), text(source.specification), text(source.unit) || "件", onHandQty, reservedQty, Math.max(number(source.safety_stock_qty), number(target?.safety_stock_qty)), now]);
+      const sourceSafetyConfigured = Boolean(Number(source.safety_stock_configured));
+      const targetSafetyConfigured = Boolean(Number(target?.safety_stock_configured));
+      const safetyStockConfigured = sourceSafetyConfigured || targetSafetyConfigured;
+      const safetyStockQty = Math.max(sourceSafetyConfigured ? number(source.safety_stock_qty) : 0, targetSafetyConfigured ? number(target?.safety_stock_qty) : 0);
+      store.run(`INSERT INTO domestic_inventory_balances (warehouse_id,product_id,sku,product_name,image_url,specification,unit,on_hand_qty,reserved_qty,safety_stock_qty,safety_stock_configured,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(warehouse_id,sku) DO UPDATE SET product_id=excluded.product_id,product_name=excluded.product_name,image_url=excluded.image_url,specification=excluded.specification,unit=excluded.unit,on_hand_qty=excluded.on_hand_qty,reserved_qty=excluded.reserved_qty,safety_stock_qty=excluded.safety_stock_qty,safety_stock_configured=excluded.safety_stock_configured,updated_at=excluded.updated_at`,
+        [warehouse.id, text(input.productId || source.product_id || target?.product_id), newSku, text(input.productName || source.product_name), text(source.image_url), text(source.specification), text(source.unit) || "件", onHandQty, reservedQty, safetyStockQty, safetyStockConfigured ? 1 : 0, now]);
       store.run("DELETE FROM domestic_inventory_balances WHERE warehouse_id=? AND sku=?", [warehouse.id, oldSku]);
       store.run("UPDATE domestic_inventory_lots SET sku=?,product_id=COALESCE(NULLIF(?,''),product_id),product_name=COALESCE(NULLIF(?,''),product_name),updated_at=? WHERE warehouse_id=? AND sku=? AND remaining_qty>0", [newSku, text(input.productId), text(input.productName), now, warehouse.id, oldSku]);
       store.run("UPDATE domestic_inventory_reservation_lines SET sku=?,product_id=COALESCE(NULLIF(?,''),product_id),product_name=COALESCE(NULLIF(?,''),product_name) WHERE sku=? AND reservation_id IN (SELECT id FROM domestic_inventory_reservations WHERE warehouse_id=? AND status='reserved')", [newSku, text(input.productId), text(input.productName), oldSku, warehouse.id]);
@@ -1056,6 +1091,6 @@ export function createDomesticInventoryService(store) {
   return {
     cancelTransfer, createMovement, createTransfer, createWarehouse, getMovement, getTransfer, importOpeningBalances, list, listLots, listMovements,
     commitReservation, getReservation, listTransfers, listTransferTargets, listWarehouses, previewMovement, receiveTransfer, recodeSku, releaseReservation, reserveStock,
-    splitLot, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse,
+    splitLot, stockupAvailability, updateLot, updateSafetyStock, updateWarehouse, warehouseDisableImpact,
   };
 }

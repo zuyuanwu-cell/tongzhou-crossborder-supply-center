@@ -227,6 +227,11 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
         sendJson(res, 200, service.listWarehouses(context));
         return true;
       }
+      if ((match = suffix.match(/^\/warehouses\/([^/]+)\/disable-impact$/)) && req.method === "GET") {
+        if (!hasPermission(auth, "domestic_inventory_manage")) throw Object.assign(new Error("当前账号没有仓库档案维护权限。"), { statusCode: 403 });
+        sendJson(res, 200, service.warehouseDisableImpact(decodeURIComponent(match[1]), context));
+        return true;
+      }
       if (suffix === "/lots" && req.method === "GET") {
         sendJson(res, 200, service.listLots(Object.fromEntries(url.searchParams.entries()), context));
         return true;
@@ -296,7 +301,7 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
       sendJson(res, 404, { ok: false, code: "not_found", message: "国内仓库存接口不存在。" });
       return true;
     } catch (error) {
-      sendJson(res, Number(error?.statusCode || 400), { ok: false, code: error?.code || "domestic_inventory_error", message: error?.message || "国内仓库存操作失败。" });
+      sendJson(res, Number(error?.statusCode || 400), { ok: false, code: error?.code || "domestic_inventory_error", message: error?.message || "国内仓库存操作失败。", ...(error?.details ? { details: error.details } : {}) });
       return true;
     }
   };

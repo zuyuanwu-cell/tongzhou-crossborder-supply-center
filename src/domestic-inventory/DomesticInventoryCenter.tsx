@@ -41,6 +41,7 @@ import {
   fetchDomesticInventoryTransfer,
   fetchDomesticInventoryTransfers,
   fetchDomesticInventoryTransferTargets,
+  fetchDomesticWarehouseDisableImpact,
   importDomesticOpeningInventory,
   receiveDomesticInventoryTransfer,
   splitDomesticInventoryLot,
@@ -336,9 +337,10 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
     setQuery(keyword.trim());
   }
 
-  async function saveSafetyStock(itemWarehouseId: string, sku: string, current: number) {
-    const value = Number(safetyDrafts[`${itemWarehouseId}:${sku}`] ?? current);
-    if (!Number.isFinite(value) || value < 0) {
+  async function saveSafetyStock(itemWarehouseId: string, sku: string, current: number | null) {
+    const raw = safetyDrafts[`${itemWarehouseId}:${sku}`] ?? (current === null ? "" : String(current));
+    const value = raw.trim() === "" ? null : Number(raw);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
       setError("安全库存必须是大于或等于 0 的数字。");
       return;
     }
@@ -354,7 +356,15 @@ export function DomesticInventoryCenter({ products, canManage, canReceive, canIs
   async function toggleWarehouse(warehouse: DomesticWarehouse) {
     setError("");
     try {
-      await updateDomesticWarehouse(warehouse.id, { ...warehouse, status: warehouse.status === "active" ? "inactive" : "active" });
+      const disabling = warehouse.status === "active";
+      if (disabling) {
+        const { impact } = await fetchDomesticWarehouseDisableImpact(warehouse.id);
+        const confirmed = window.confirm(
+          `停用 ${warehouse.name} 将影响：${impact.skuCount} 个 SKU、在库 ${impact.onHandQty}、已预留 ${impact.reservedQty}、在途调拨 ${impact.inTransitTransferCount} 单、活动预留 ${impact.activeReservationCount} 单。\n\n确认停用吗？`,
+        );
+        if (!confirmed) return;
+      }
+      await updateDomesticWarehouse(warehouse.id, { ...warehouse, status: disabling ? "inactive" : "active", confirmDisable: disabling });
       setSuccess(`${warehouse.name}已${warehouse.status === "active" ? "停用" : "启用"}。`);
       await loadInventory();
     } catch (requestError) {
@@ -504,7 +514,7 @@ function InventoryTable({ payload, loading, canManage, safetyDrafts, setSafetyDr
   canManage: boolean;
   safetyDrafts: Record<string, string>;
   setSafetyDrafts: (value: Record<string, string>) => void;
-  onSaveSafety: (warehouseId: string, sku: string, current: number) => void;
+  onSaveSafety: (warehouseId: string, sku: string, current: number | null) => void;
 }) {
   if (!loading && !payload.balances.length) return <EmptyState title="当前没有在库商品" description="入库后将在这里展示；库存为 0 的商品已自动隐藏。" />;
   return (
@@ -521,7 +531,7 @@ function InventoryTable({ payload, loading, canManage, safetyDrafts, setSafetyDr
                 <td className="number-cell">{numberText(item.onHandQty)} <small>{item.unit}</small></td>
                 <td className="number-cell muted">{numberText(item.reservedQty)}</td>
                 <td className="number-cell"><strong>{numberText(item.availableQty)}</strong></td>
-                <td>{canManage ? <div className="safety-editor"><input type="number" min="0" value={safetyDrafts[draftKey] ?? item.safetyStockQty} onChange={(event) => setSafetyDrafts({ ...safetyDrafts, [draftKey]: event.target.value })} /><button aria-label="保存安全库存" type="button" onClick={() => onSaveSafety(item.warehouseId, item.sku, item.safetyStockQty)}><Check size={15} /></button></div> : numberText(item.safetyStockQty)}</td>
+                <td>{canManage ? <div className="safety-editor"><input type="number" min="0" placeholder="未设置" value={safetyDrafts[draftKey] ?? (item.safetyStockQty ?? "")} onChange={(event) => setSafetyDrafts({ ...safetyDrafts, [draftKey]: event.target.value })} /><button aria-label="保存安全库存" type="button" onClick={() => onSaveSafety(item.warehouseId, item.sku, item.safetyStockQty)}><Check size={15} /></button></div> : item.safetyStockConfigured ? numberText(item.safetyStockQty ?? 0) : "未设置"}</td>
                 <td><span className={`domestic-status ${item.lowStock ? "low" : "normal"}`}>{item.lowStock ? "需补货" : "正常"}</span></td>
                 <td className="muted">{dateTime(item.updatedAt)}</td>
               </tr>

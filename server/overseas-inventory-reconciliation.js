@@ -1,8 +1,7 @@
 import { resolveMovementComparisonRanges } from "./movement-comparison.js";
-import { dateDistanceInDays } from "./date-time.js";
+import { dateDistanceInDays, dateSemantics, eventDateInTimezone } from "./date-time.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const dateFormatterByTimezone = new Map();
 
 function text(value) {
   return String(value ?? "").normalize("NFKC").trim();
@@ -27,28 +26,7 @@ function identifier(value) {
 }
 
 function dateKey(value, timezone = "Asia/Shanghai") {
-  const source = text(value);
-  const literal = source.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (literal && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(source)) return literal[1];
-  const parsed = new Date(source);
-  if (Number.isNaN(parsed.getTime())) return literal?.[1] || "";
-  try {
-    let formatter = dateFormatterByTimezone.get(timezone);
-    if (!formatter) {
-      formatter = new Intl.DateTimeFormat("en-CA", {
-        timeZone: timezone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
-      dateFormatterByTimezone.set(timezone, formatter);
-    }
-    const parts = formatter.formatToParts(parsed);
-    const part = (type) => parts.find((item) => item.type === type)?.value || "";
-    return `${part("year")}-${part("month")}-${part("day")}`;
-  } catch {
-    return parsed.toISOString().slice(0, 10);
-  }
+  return eventDateInTimezone(value, timezone);
 }
 
 function inRange(value, range, timezone) {
@@ -660,11 +638,47 @@ export function buildOverseasInventoryReconciliation({
       scrappedQty: metricDelta(item.scrappedQty, previousWarehouseMap.get(item.warehouseId)?.scrappedQty),
     },
   }));
+  const transferStatus = current.dataCompleteness.source === "inventory_daily_ledger"
+    ? current.dataCompleteness.ledgerFlags.includes("movements_incomplete") ? "missing" : "ready"
+    : (inventoryMovements || []).some((item) => /^transfer_/.test(text(item.type))) ? "ready" : "missing";
+  const sourceStatuses = {
+    inventory: current.dataCompleteness.status,
+    orders: sources.orderComplete === false || current.dataCompleteness.ledgerFlags.includes("orders_incomplete") ? "partial" : "ready",
+    inbound: "ready",
+    returns: text(sources.returnSource?.status) || (sources.returnComplete === false ? "partial" : "ready"),
+    transfers: transferStatus,
+  };
+  const missingSources = Object.entries(sourceStatuses)
+    .filter(([, status]) => status !== "ready")
+    .map(([source, status]) => ({ source, status }));
+  const actualDates = [
+    ...(snapshots || []).map((item) => text(item?.date)),
+    ...(dailyLedgerRows || []).map((item) => text(item?.bizDate)),
+    ...(outboundOrders || []).map((item) => dateKey(item?.shippedAt || item?.occurredAt || item?.createdAt, timezone)),
+    ...(inboundReceipts || []).map((item) => dateKey(item?.arrivedAt || item?.receivedAt || item?.createdAt, timezone)),
+    ...(inboundShipments || []).map((item) => dateKey(item?.actualShippedAt || item?.createdAt, timezone)),
+    ...(inventoryMovements || []).map((item) => dateKey(item?.occurredAt || item?.createdAt, timezone)),
+    ...returnData.facts.flatMap((item) => [text(item?.activityDate), text(item?.dispositionDate)]),
+  ].filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item)).sort();
+  const lastSyncedAt = [sources.inventorySyncedAt, sources.ordersSyncedAt, sources.inboundSyncedAt, sources.returnsSyncedAt, sources.transferSyncedAt, sources.returnSource?.syncedAt]
+    .map(text)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || "";
   return {
     ok: true,
     scope: "overseas",
     generatedAt: new Date().toISOString(),
     timezone,
+    dateBasis: dateSemantics(timezone),
+    dataWindow: {
+      requested: { ...resolvedRanges.current },
+      actual: { from: actualDates[0] || "", to: actualDates.at(-1) || "" },
+      status: missingSources.length ? "partial" : "complete",
+      complete: missingSources.length === 0,
+      lastSyncedAt,
+      missingSources,
+    },
     ranges: resolvedRanges,
     filters: { period, anchorDate, from: text(from), to: text(to) },
     summary: current.summary,

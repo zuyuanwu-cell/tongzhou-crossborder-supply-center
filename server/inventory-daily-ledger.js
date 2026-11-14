@@ -1,4 +1,4 @@
-import { addBusinessDays, dateKeyInTimezone } from "./date-time.js";
+import { addBusinessDays, eventDateInTimezone } from "./date-time.js";
 
 function text(value) {
   return String(value ?? "").trim();
@@ -60,13 +60,6 @@ function endOfDaySnapshot(snapshot, bizDate, timezone) {
     || (localDate === addBusinessDays(bizDate, 1) && minutes <= 15);
 }
 
-function eventDate(value, timezone) {
-  const source = text(value);
-  const literal = source.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (literal && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(source)) return literal[1];
-  return dateKeyInTimezone(source, timezone);
-}
-
 function addMetric(rows, source, field, value) {
   const rowIdentity = identity(source);
   if (!rowIdentity.warehouseId || !rowIdentity.sku) return;
@@ -87,6 +80,26 @@ function addMetric(rows, source, field, value) {
   };
   current[field] = round(number(current[field]) + number(value));
   rows.set(rowIdentity.key, current);
+}
+
+export function inventoryMovementsFromDailyLedger(rows = []) {
+  const movements = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const common = {
+      warehouseId: text(row?.warehouseId),
+      warehouseName: text(row?.warehouseName),
+      sku: sku(row?.sku),
+      productName: text(row?.productName),
+      occurredAt: text(row?.bizDate),
+      createdAt: text(row?.updatedAt || row?.bizDate),
+      source: "inventory_daily_ledger",
+    };
+    if (!common.warehouseId || !common.sku || !common.occurredAt) continue;
+    if (number(row?.transferInQty)) movements.push({ ...common, type: "transfer_in", quantity: Math.abs(number(row.transferInQty)) });
+    if (number(row?.transferOutQty)) movements.push({ ...common, type: "transfer_out", quantity: Math.abs(number(row.transferOutQty)) });
+    if (number(row?.adjustQty)) movements.push({ ...common, type: "adjustment", quantity: Math.abs(number(row.adjustQty)), signedQty: number(row.adjustQty) });
+  }
+  return movements;
 }
 
 export function buildInventoryDailyLedger({
@@ -114,16 +127,16 @@ export function buildInventoryDailyLedger({
     addMetric(rows, row, "inTransitQty", row.inTransitQty);
   }
   for (const order of outboundOrders || []) {
-    if (eventDate(order.shippedAt || order.createdAt, timezone) !== bizDate) continue;
+    if (eventDateInTimezone(order.shippedAt || order.createdAt, timezone) !== bizDate) continue;
     const type = text(order.outboundType || order.type).toLowerCase();
     addMetric(rows, order, ["other", "b2b", "fbo", "reship", "replacement"].includes(type) ? "otherOutboundQty" : "orderOutboundQty", number(order.quantity || order.shippedQty));
   }
   for (const receipt of inboundReceipts || []) {
-    if (eventDate(receipt.arrivedAt || receipt.receivedAt || receipt.createdAt, timezone) !== bizDate) continue;
+    if (eventDateInTimezone(receipt.arrivedAt || receipt.receivedAt || receipt.createdAt, timezone) !== bizDate) continue;
     addMetric(rows, receipt, "inboundQty", Math.max(number(receipt.shelvedQty), number(receipt.goodQty), number(receipt.receivedQty)));
   }
   for (const movement of inventoryMovements || []) {
-    if (eventDate(movement.occurredAt || movement.createdAt, timezone) !== bizDate) continue;
+    if (eventDateInTimezone(movement.occurredAt || movement.createdAt, timezone) !== bizDate) continue;
     const type = text(movement.type).toLowerCase();
     if (type === "transfer_in") addMetric(rows, movement, "transferInQty", movement.quantity);
     else if (type === "transfer_out") addMetric(rows, movement, "transferOutQty", movement.quantity);

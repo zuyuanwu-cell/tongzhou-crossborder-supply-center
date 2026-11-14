@@ -2285,6 +2285,20 @@ export type OverseasInventoryReconciliationPayload = {
   scope: "overseas";
   generatedAt: string;
   timezone: string;
+  dateBasis: {
+    timezone: string;
+    businessDate: string;
+    activityDate: string;
+    dispositionDate: string;
+  };
+  dataWindow: {
+    requested: { from: string; to: string; label?: string };
+    actual: { from: string; to: string };
+    status: "complete" | "partial" | string;
+    complete: boolean;
+    lastSyncedAt: string;
+    missingSources: Array<{ source: string; status: string }>;
+  };
   ranges: {
     period: MovementComparisonPeriod;
     anchorDate: string;
@@ -6688,7 +6702,8 @@ export type DomesticInventoryBalance = {
   onHandQty: number;
   reservedQty: number;
   availableQty: number;
-  safetyStockQty: number;
+  safetyStockQty: number | null;
+  safetyStockConfigured: boolean;
   lowStock: boolean;
   updatedAt: string;
 };
@@ -6928,7 +6943,20 @@ export function createDomesticWarehouse(input: Pick<DomesticWarehouse, "code" | 
   return requestJson<{ ok: boolean; warehouse: DomesticWarehouse }>("/api/domestic-inventory/warehouses", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function updateDomesticWarehouse(id: string, input: Partial<DomesticWarehouse>) {
+export type DomesticWarehouseDisableImpact = {
+  warehouseId: string;
+  skuCount: number;
+  onHandQty: number;
+  reservedQty: number;
+  inTransitTransferCount: number;
+  activeReservationCount: number;
+};
+
+export function fetchDomesticWarehouseDisableImpact(id: string) {
+  return requestJson<{ ok: boolean; impact: DomesticWarehouseDisableImpact }>(`/api/domestic-inventory/warehouses/${encodeURIComponent(id)}/disable-impact`);
+}
+
+export function updateDomesticWarehouse(id: string, input: Partial<DomesticWarehouse> & { confirmDisable?: boolean }) {
   return requestJson<{ ok: boolean; warehouse: DomesticWarehouse }>(`/api/domestic-inventory/warehouses/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
@@ -6993,8 +7021,8 @@ export function importDomesticOpeningInventory(input: {
   });
 }
 
-export function updateDomesticInventorySafetyStock(warehouseId: string, sku: string, safetyStockQty: number) {
-  return requestJson<{ ok: boolean; warehouseId: string; sku: string; safetyStockQty: number }>(
+export function updateDomesticInventorySafetyStock(warehouseId: string, sku: string, safetyStockQty: number | null) {
+  return requestJson<{ ok: boolean; warehouseId: string; sku: string; safetyStockQty: number | null; safetyStockConfigured: boolean }>(
     `/api/domestic-inventory/balances/${encodeURIComponent(warehouseId)}/${encodeURIComponent(sku)}`,
     { method: "PATCH", body: JSON.stringify({ safetyStockQty }) },
   );

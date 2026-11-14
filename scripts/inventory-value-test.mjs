@@ -87,6 +87,16 @@ assert.equal(payload.summary.coveredOnHandQty, 15);
 assert.equal(payload.summary.costCoverageRate, 0.7895);
 assert.equal(payload.permissions.manageCosts, true);
 
+const keywordFiltered = buildInventoryValuePayload({
+  snapshots,
+  products,
+  supplementalCosts: [],
+  filters: { period: "day", keyword: "SKU-A" },
+});
+assert.deepEqual(keywordFiltered.rows.map((row) => row.sku), ["SKU-A"]);
+assert.equal(keywordFiltered.summary.onHandQty, 12, "keyword filters recompute the visible-period summary");
+assert.equal(keywordFiltered.summary.onHandValueCny, 120, "keyword filters recompute value instead of retaining the unfiltered KPI");
+
 const directRow = payload.rows.find((row) => row.sku === "SKU-A");
 assert.equal(directRow.unitCostCny, 10, "direct supply price always wins over a manual supplement");
 assert.equal(directRow.costSource, "direct_price");

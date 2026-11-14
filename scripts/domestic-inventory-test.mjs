@@ -124,6 +124,14 @@ try {
   service.updateSafetyStock(warehouseA.id, "SKU-A", { safetyStockQty: 6 }, admin);
   const lowStock = service.list({ lowStock: "1" }, admin);
   assert.deepEqual(lowStock.balances.map((item) => item.sku), ["SKU-A"]);
+  service.updateSafetyStock(warehouseA.id, "SKU-A", { safetyStockQty: null }, admin);
+  const unsetSafetyStock = service.list({ warehouseId: warehouseA.id }, admin).balances.find((item) => item.sku === "SKU-A");
+  assert.equal(unsetSafetyStock.safetyStockQty, null, "blank safety stock remains unconfigured instead of becoming zero");
+  assert.equal(unsetSafetyStock.safetyStockConfigured, false);
+  service.updateSafetyStock(warehouseA.id, "SKU-A", { safetyStockQty: 0 }, admin);
+  const zeroSafetyStock = service.list({ warehouseId: warehouseA.id }, admin).balances.find((item) => item.sku === "SKU-A");
+  assert.equal(zeroSafetyStock.safetyStockQty, 0, "explicit zero remains a configured value");
+  assert.equal(zeroSafetyStock.safetyStockConfigured, true);
 
   const sourceWarehouseUser = { ...admin, warehouseIds: [warehouseA.id] };
   const targetWarehouseUser = { ...admin, warehouseIds: [warehouseB.id] };
@@ -169,7 +177,13 @@ try {
   assert.throws(() => service.createMovement({ warehouseId: warehouseB.id, type: "inbound", lines: [{ sku: "SKU-A", productName: "产品A", quantity: 1 }] }, scoped), (error) => error?.statusCode === 403);
   assert.throws(() => service.createMovement({ warehouseId: warehouseA.id, type: "inbound", lines: [{ sku: "SKU-B", productName: "产品B", quantity: 1 }] }, scoped), (error) => error?.statusCode === 403);
 
-  service.updateWarehouse(warehouseB.id, { status: "inactive" }, admin);
+  assert.throws(
+    () => service.updateWarehouse(warehouseB.id, { status: "inactive" }, admin),
+    (error) => error?.code === "warehouse_disable_confirmation_required" && error?.details?.impact?.skuCount > 0,
+  );
+  const disableImpact = service.warehouseDisableImpact(warehouseB.id, admin);
+  assert.equal(disableImpact.impact.skuCount, 2);
+  service.updateWarehouse(warehouseB.id, { status: "inactive", confirmDisable: true }, admin);
   assert.throws(() => service.createMovement({ warehouseId: warehouseB.id, type: "inbound", lines: [{ sku: "SKU-A", productName: "产品A", quantity: 1 }] }, admin), (error) => error?.code === "warehouse_inactive");
   assert.equal(service.listMovements({}, admin).movements.length, 13);
   console.log("domestic inventory tests passed");

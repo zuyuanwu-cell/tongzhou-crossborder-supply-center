@@ -26,7 +26,7 @@ import { buildMovementSnapshotRows, movementSnapshotTotals } from "./movement-sn
 import { excludeMovementWarehouses, isExcludedWarehouseRecord, projectMovementPayload, resolveExcludedWarehouseIdentifiers, scopeMovementSources } from "./movement-access.js";
 import { initMovementHistoryStore } from "./movement-history-db.js";
 import { initInventoryLedgerStore } from "./inventory-ledger-db.js";
-import { buildInventoryDailyLedger } from "./inventory-daily-ledger.js";
+import { buildInventoryDailyLedger, inventoryMovementsFromDailyLedger } from "./inventory-daily-ledger.js";
 import { buildMovementComparison, resolveMovementComparisonRanges } from "./movement-comparison.js";
 import { addBusinessDays, dateKeyInTimezone as formatDateKeyInTimezone } from "./date-time.js";
 import { corsHeaders, encodeJsonResponseAsync } from "./http-response.js";
@@ -4487,6 +4487,11 @@ function overseasReconciliationPayload(auth, input = {}) {
     .map((item) => String(item.arrivedAt || item.actualShippedAt || ""))
     .sort()
     .at(-1) || "";
+  const transferSyncedAt = (dailyLedgerRows || [])
+    .map((item) => String(item.updatedAt || item.bizDate || ""))
+    .filter(Boolean)
+    .sort()
+    .at(-1) || "";
   const payload = buildOverseasInventoryReconciliation({
     ranges,
     period,
@@ -4501,7 +4506,7 @@ function overseasReconciliationPayload(auth, input = {}) {
     outboundOrderReconciliation,
     inboundReceipts: stockupFacts.inboundReceipts || [],
     inboundShipments: stockupFacts.inboundShipments || [],
-    inventoryMovements: [],
+    inventoryMovements: inventoryMovementsFromDailyLedger(dailyLedgerRows),
     wmsReturnOrders: returnOrders,
     afterSalesTickets,
     claimMap: cachedOverseasInventoryReconciliation.claims || {},
@@ -4510,6 +4515,7 @@ function overseasReconciliationPayload(auth, input = {}) {
       ordersSyncedAt: cachedOrdersSync.syncedAt || "",
       orderComplete,
       inboundSyncedAt,
+      transferSyncedAt,
       returnSource,
     },
   });

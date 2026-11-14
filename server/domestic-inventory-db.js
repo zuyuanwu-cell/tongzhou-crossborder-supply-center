@@ -370,6 +370,11 @@ export async function initDomesticInventoryStore(dbPath) {
   if (!idempotencyColumns.includes("request_hash")) {
     db.run("ALTER TABLE domestic_inventory_idempotency ADD COLUMN request_hash TEXT");
   }
+  const balanceColumns = rows(db, "PRAGMA table_info('domestic_inventory_balances')").map((column) => String(column.name));
+  if (!balanceColumns.includes("safety_stock_configured")) {
+    db.run("ALTER TABLE domestic_inventory_balances ADD COLUMN safety_stock_configured INTEGER NOT NULL DEFAULT 0");
+    db.run("UPDATE domestic_inventory_balances SET safety_stock_configured=1 WHERE safety_stock_qty>0");
+  }
 
   function persist() {
     persistSqlJsDatabaseAtomically(dbPath, db.export());

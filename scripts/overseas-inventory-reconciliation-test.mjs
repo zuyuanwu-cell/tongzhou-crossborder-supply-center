@@ -196,6 +196,10 @@ assert.equal(ledgerPreferred.summary.varianceQty, 0);
 assert.equal(ledgerPreferred.summary.afterSalesCoverageRate, null, "zero return denominator is reported as unavailable, not 100%");
 assert.equal(ledgerPreferred.sources.inventory.status, "ready");
 assert.equal(ledgerPreferred.sources.transfers.status, "ready");
+assert.equal(ledgerPreferred.dateBasis.timezone, "Asia/Shanghai");
+assert.deepEqual(ledgerPreferred.dataWindow.requested, { from: "2026-10-02", to: "2026-10-03", label: "current" });
+assert.deepEqual(ledgerPreferred.dataWindow.actual, { from: "2026-09-30", to: "2026-10-03" });
+assert.equal(ledgerPreferred.dataWindow.complete, true);
 
 console.log("[ok] overseas reconciliation formula");
 console.log("[ok] WMS return lifecycle and unclaimed facts");
