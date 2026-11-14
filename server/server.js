@@ -298,6 +298,8 @@ let cachedProducts = loadProductCache() || buildProductPayload(sampleProductBase
 let cachedWarehouseSync = loadJsonCache(warehouseCachePath) || { syncedAt: "", products: [], inventory: [], results: [] };
 let cachedInventorySnapshots = loadJsonCache(inventorySnapshotCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
 let cachedMovementHistory = loadJsonCache(movementHistoryCachePath) || { updatedAt: "", lastSnapshotAt: "", snapshots: [] };
+const inventorySnapshotCapturesInFlight = new Set();
+const movementSnapshotCapturesInFlight = new Set();
 let cachedOrdersSync = loadJsonCache(orderCachePath) || { syncedAt: "", orders: [], results: [] };
 const ARRAY_CONTENT_VOLATILE_KEYS = new Set(["syncedAt", "fetchedAt", "capturedAt"]);
 const arrayContentVersionCache = new WeakMap();
@@ -930,10 +932,12 @@ function saveWarehouseCache(payload) {
 
 function saveInventorySnapshotCache(payload) {
   saveJsonCache(inventorySnapshotCachePath, payload);
+  invalidateDerivedResponses();
 }
 
 function saveMovementHistoryCache(payload) {
   saveJsonCache(movementHistoryCachePath, payload);
+  invalidateDerivedResponses();
 }
 
 function saveOrderCache(payload) {
@@ -3142,9 +3146,42 @@ function sanitizeWarehouse(connection) {
   const { credentials, ...safeConnection } = connection;
   return {
     ...safeConnection,
-    status: hasCredentials ? "已授权" : safeConnection.status,
+    status: normalizeWarehouseConnectionStatus(safeConnection.status, hasCredentials),
     hasCredentials,
   };
+}
+
+function warehouseExportMetadata(connection) {
+  const safe = sanitizeWarehouse(connection);
+  return {
+    id: safe.id || "",
+    name: safe.name || "",
+    country: safe.country || "",
+    providerId: safe.providerId || "",
+    providerName: safe.providerName || "",
+    baseUrl: safe.baseUrl || "",
+    warehouseCode: safe.warehouseCode || "",
+    warehouseId: safe.warehouseId || "",
+    resolvedWarehouseId: safe.resolvedWarehouseId || "",
+    status: safe.status,
+    hasCredentials: safe.hasCredentials,
+    orderSyncStrategy: safe.orderSyncStrategy || "",
+    syncScope: Array.isArray(safe.syncScope) ? safe.syncScope : [],
+    lastSyncedAt: safe.lastSyncedAt || "",
+    lastTestAt: safe.lastTestAt || "",
+    lastTestStatus: safe.lastTestStatus || "",
+  };
+}
+
+const WAREHOUSE_CONNECTION_STATUSES = new Set(["未配置", "检测中", "已授权", "异常", "已停用"]);
+
+function normalizeWarehouseConnectionStatus(status, hasCredentials = false) {
+  const value = String(status || "").trim();
+  if (WAREHOUSE_CONNECTION_STATUSES.has(value)) return value;
+  if (["inactive", "disabled"].includes(value.toLowerCase())) return "已停用";
+  if (["testing", "pending"].includes(value.toLowerCase())) return "检测中";
+  if (["error", "failed"].includes(value.toLowerCase())) return "异常";
+  return hasCredentials ? "已授权" : "未配置";
 }
 
 function hasWarehouseCredentials(connection) {
@@ -3161,27 +3198,12 @@ function normalizedConnectionBaseUrl(connection) {
   return String(connection.baseUrl || "").replace(/\/$/, "").toLowerCase();
 }
 
-function sameSystemCredentialFallback(connection) {
-  const baseUrl = normalizedConnectionBaseUrl(connection);
-  if (!baseUrl || connection.providerId !== "sea_wms") return null;
-  return warehouseConnections.find((candidate) => (
-    candidate.id !== connection.id &&
-    candidate.providerId === connection.providerId &&
-    normalizedConnectionBaseUrl(candidate) === baseUrl &&
-    hasWarehouseCredentials(candidate)
-  ));
-}
-
 function effectiveWarehouseCreateConnection(connection) {
-  if (warehouseStockupCreateCapability(connection).configured) return connection;
-  const fallback = sameSystemCredentialFallback(connection);
-  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+  return connection;
 }
 
 function effectiveWarehousePriceConnection(connection) {
-  if (warehouseProductPriceSyncCapability(connection).configured) return connection;
-  const fallback = sameSystemCredentialFallback(connection);
-  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+  return connection;
 }
 
 function parseFirstMileContact(value) {
@@ -3194,9 +3216,7 @@ function parseFirstMileContact(value) {
 }
 
 function effectiveWarehouseReturnConnection(connection) {
-  if (hasWarehouseCredentials(connection)) return connection;
-  const fallback = sameSystemCredentialFallback(connection);
-  return fallback ? { ...connection, credentials: fallback.credentials } : connection;
+  return connection;
 }
 
 function currentWmsWarehouseOptions() {
@@ -3747,23 +3767,19 @@ async function confirmWmsStockupPush(taskId, auth) {
   };
 }
 
-async function syncWithSameSystemFallback(connection, syncer) {
-  try {
-    return await syncer(connection);
-  } catch (error) {
-    const fallback = sameSystemCredentialFallback(connection);
-    if (!fallback || !/AppKey|Signature|签名|授权|credential/i.test(error.message || "")) throw error;
-    const retriedConnection = {
-      ...connection,
-      credentials: fallback.credentials,
-    };
-    const result = await syncer(retriedConnection);
-    return {
-      ...result,
-      message: result.message || `已复用同系统授权：${fallback.name}`,
-      credentialFallbackFrom: fallback.id,
-    };
-  }
+const warehouseSyncFlights = new Map();
+
+async function syncWarehouseSingleFlight(connection, taskName, syncer) {
+  const key = `${String(connection?.id || connection?.warehouseId || "unknown")}:${String(taskName || "sync")}`;
+  const active = warehouseSyncFlights.get(key);
+  if (active) return active;
+  const promise = Promise.resolve()
+    .then(() => syncer(connection))
+    .finally(() => {
+      if (warehouseSyncFlights.get(key) === promise) warehouseSyncFlights.delete(key);
+    });
+  warehouseSyncFlights.set(key, promise);
+  return promise;
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -3805,6 +3821,19 @@ function buildWarehouseConnection(payload, existingConnection = null) {
   const providerId = payload.providerId || existingConnection?.providerId || "sea_wms";
   const credentials = payload.credentials || {};
   const warehouseBinding = resolveWarehouseBinding({ ...payload, providerId }, existingConnection);
+  const mergedCredentials = {
+    appKey: payload.appKey || credentials.appKey || existingConnection?.credentials?.appKey || "",
+    appSecret: payload.appSecret || credentials.appSecret || existingConnection?.credentials?.appSecret || "",
+    clientId: payload.clientId || credentials.clientId || existingConnection?.credentials?.clientId || "",
+    clientSecret: payload.clientSecret || credentials.clientSecret || existingConnection?.credentials?.clientSecret || "",
+    token: payload.token || payload.appToken || credentials.token || credentials.appToken || existingConnection?.credentials?.token || "",
+  };
+  const credentialsConfigured = Object.values(mergedCredentials).some(Boolean);
+  const requestedStatus = payload.status === undefined ? "" : String(payload.status || "").trim();
+  const currentStatus = normalizeWarehouseConnectionStatus(existingConnection?.status, hasWarehouseCredentials(existingConnection || {}));
+  const status = existingConnection && currentStatus === "已停用" && !requestedStatus
+    ? "已停用"
+    : normalizeWarehouseConnectionStatus(requestedStatus || (existingConnection ? currentStatus : ""), credentialsConfigured);
   return {
     ...(existingConnection || {}),
     id: existingConnection?.id || payload.id || slugifyWarehouseId(payload.name),
@@ -3815,7 +3844,7 @@ function buildWarehouseConnection(payload, existingConnection = null) {
     baseUrl: payload.baseUrl || existingConnection?.baseUrl || "待配置",
     warehouseCode: warehouseBinding.warehouseCode,
     warehouseId: warehouseBinding.warehouseId,
-    status: "已授权",
+    status,
     lastSyncedAt: existingConnection?.lastSyncedAt || "",
     lastTestAt: existingConnection?.lastTestAt || "",
     lastTestStatus: existingConnection?.lastTestStatus || "",
@@ -3824,13 +3853,7 @@ function buildWarehouseConnection(payload, existingConnection = null) {
     orderSyncStrategy: payload.orderSyncStrategy || existingConnection?.orderSyncStrategy || (providerId === "yunwms_ru" ? "date_chunk" : "cursor"),
     skuMatched: existingConnection?.skuMatched || 0,
     syncScope: payload.syncScope?.length ? payload.syncScope : existingConnection?.syncScope || ["库存同步", "订单出库日报", "动销监控"],
-    credentials: {
-      appKey: payload.appKey || credentials.appKey || existingConnection?.credentials?.appKey || "",
-      appSecret: payload.appSecret || credentials.appSecret || existingConnection?.credentials?.appSecret || "",
-      clientId: payload.clientId || credentials.clientId || existingConnection?.credentials?.clientId || "",
-      clientSecret: payload.clientSecret || credentials.clientSecret || existingConnection?.credentials?.clientSecret || "",
-      token: payload.token || payload.appToken || credentials.token || credentials.appToken || existingConnection?.credentials?.token || "",
-    },
+    credentials: mergedCredentials,
   };
 }
 
@@ -4821,10 +4844,38 @@ function materializeInventoryLedgerDate(bizDate, timezone = inventorySnapshotTim
   return ledger;
 }
 
-function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual") {
+function snapshotIdempotencyHash(value) {
+  const raw = String(value || "").trim();
+  return raw ? createHash("sha256").update(raw).digest("hex") : "";
+}
+
+function snapshotCaptureId(prefix, date, idempotencyKeyHash = "") {
+  const seed = idempotencyKeyHash || `${date}|${new Date().toISOString()}|${randomBytes(8).toString("hex")}`;
+  return `${prefix}-${createHash("sha256").update(seed).digest("hex").slice(0, 20)}`;
+}
+
+function findInventorySnapshotReplay(date, idempotencyKeyHash) {
+  if (!idempotencyKeyHash) return null;
+  return [
+    ...(cachedInventorySnapshots.snapshots || []),
+    ...(cachedInventorySnapshots.versions || []),
+  ].find((item) => item.date === date && item.idempotencyKeyHash === idempotencyKeyHash) || null;
+}
+
+function upsertInventorySnapshot(date = dateKeyInTimezone(), reason = "manual", options = {}) {
   const rows = buildInventorySnapshotRows();
   const totals = inventorySnapshotTotals(rows);
+  const sameDayVersions = [
+    ...(cachedInventorySnapshots.snapshots || []),
+    ...(cachedInventorySnapshots.versions || []),
+  ].filter((item) => item.date === date);
+  const version = Math.max(0, ...sameDayVersions.map((item) => Number(item.version || 0))) + 1;
+  const idempotencyKeyHash = String(options.idempotencyKeyHash || "");
   const snapshot = {
+    captureId: snapshotCaptureId("inventory", date, idempotencyKeyHash),
+    version,
+    status: "completed",
+    idempotencyKeyHash,
     date,
     capturedAt: new Date().toISOString(),
     sourceSyncedAt: cachedWarehouseSync.syncedAt || "",
@@ -5049,7 +5100,7 @@ function inventorySnapshotCsv(snapshot) {
   return `\uFEFF${lines.join("\r\n")}`;
 }
 
-function upsertMovementSnapshot(date = dateKeyInTimezone(new Date(), movementHistoryTimezone), reason = "manual", timeZone = movementHistoryTimezone) {
+function upsertMovementSnapshot(date = dateKeyInTimezone(new Date(), movementHistoryTimezone), reason = "manual", timeZone = movementHistoryTimezone, options = {}) {
   const resolvedTimezone = safeTimezone(timeZone, movementHistoryTimezone);
   // Snapshots are the audit source of truth. Always persist every warehouse and
   // apply the stockup display exclusion only while reading/calculating views.
@@ -5063,7 +5114,14 @@ function upsertMovementSnapshot(date = dateKeyInTimezone(new Date(), movementHis
     };
   }
   const rows = buildMovementSnapshotRows(movementPayload, warehouseConnections);
+  const idempotencyKeyHash = String(options.idempotencyKeyHash || "");
+  const previousVersions = movementHistoryStore.listVersions({ date, timezone: resolvedTimezone });
+  const version = Math.max(0, ...previousVersions.map((item) => Number(item.version || 0))) + 1;
   const snapshot = {
+    captureId: snapshotCaptureId("movement", `${date}|${resolvedTimezone}`, idempotencyKeyHash),
+    version,
+    status: "completed",
+    idempotencyKeyHash,
     date,
     timezone: resolvedTimezone,
     capturedAt: new Date().toISOString(),
@@ -6642,7 +6700,7 @@ async function handleWarehouseSync(req, res) {
     previousProducts: cachedWarehouseSync.products,
     previousInventory: cachedWarehouseSync.inventory,
     syncConnection: async (connection) => {
-      const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
+      const result = await syncWarehouseSingleFlight(connection, "inventory", (target) => syncWarehouseConnection(target));
       const connectionChanged = updateResolvedWarehouseId(connection, result);
       if (connectionChanged) saveWarehouseConnections();
       return result;
@@ -6668,7 +6726,7 @@ async function refreshWarehouseInventoryForSnapshot(snapshotReason = "daily_eod"
     previousProducts: cachedWarehouseSync.products,
     previousInventory: cachedWarehouseSync.inventory,
     syncConnection: async (connection) => {
-      const result = await syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target));
+      const result = await syncWarehouseSingleFlight(connection, "inventory", (target) => syncWarehouseConnection(target));
       const connectionChanged = updateResolvedWarehouseId(connection, result);
       if (connectionChanged) saveWarehouseConnections();
       return result;
@@ -6865,8 +6923,9 @@ function orderSyncMetaFromResult(result = {}) {
 }
 
 async function syncCompleteOrderRange(connection, from, to) {
-  const runRange = (rangeFrom, rangeTo) => syncWithSameSystemFallback(
+  const runRange = (rangeFrom, rangeTo) => syncWarehouseSingleFlight(
     connection,
+    `orders:${rangeFrom}:${rangeTo}`,
     (target) => syncWarehouseOrdersRange(target, rangeFrom, rangeTo),
   );
   const initial = await runRange(from, to);
@@ -7418,7 +7477,7 @@ async function testWarehouseConnectionPayload(payload) {
   let inventoryResult;
   try {
     inventoryResult = await withTimeout(
-      syncWithSameSystemFallback(connection, (target) => syncWarehouseConnection(target)),
+      syncWarehouseSingleFlight(connection, "connection-test:inventory", (target) => syncWarehouseConnection(target)),
       testTimeoutMs,
       `${connection.name || connection.id} inventory test timeout`,
     );
@@ -7436,7 +7495,7 @@ async function testWarehouseConnectionPayload(payload) {
   let orderResult;
   try {
     orderResult = await withTimeout(
-      syncWithSameSystemFallback(connection, (target) => syncWarehouseOrders(target, 1)),
+      syncWarehouseSingleFlight(connection, "connection-test:orders", (target) => syncWarehouseOrders(target, 1)),
       testTimeoutMs,
       `${connection.name || connection.id} order test timeout`,
     );
@@ -7471,10 +7530,19 @@ async function handleWarehouseTest(req, res) {
   }
   const payload = await parseRequestBody(req);
   const existingIndex = payload.id ? warehouseConnections.findIndex((connection) => connection.id === payload.id) : -1;
+  const wasDisabled = existingIndex >= 0 && normalizeWarehouseConnectionStatus(
+    warehouseConnections[existingIndex].status,
+    hasWarehouseCredentials(warehouseConnections[existingIndex]),
+  ) === "已停用";
+  if (existingIndex >= 0 && !wasDisabled) {
+    warehouseConnections[existingIndex] = { ...warehouseConnections[existingIndex], status: "检测中" };
+    saveWarehouseConnections();
+  }
   const result = await testWarehouseConnectionPayload(payload);
   if (existingIndex >= 0) {
     warehouseConnections[existingIndex] = {
       ...warehouseConnections[existingIndex],
+      status: wasDisabled ? "已停用" : result.ok ? "已授权" : "异常",
       lastTestAt: new Date().toISOString(),
       lastTestStatus: result.ok ? "ok" : result.stage || "failed",
       lastTestMessage: result.message || "",
@@ -7514,7 +7582,7 @@ async function refreshOrderCache(days = 90) {
 
   const syncResults = await Promise.all(warehouseConnections.map(async (connection) => {
     let result;
-    const syncPromise = syncWithSameSystemFallback(connection, (target) => syncWarehouseOrders(target, normalizedDays));
+    const syncPromise = syncWarehouseSingleFlight(connection, `orders:${normalizedDays}`, (target) => syncWarehouseOrders(target, normalizedDays));
     try {
       result = await withTimeout(
         syncPromise,
@@ -13069,8 +13137,35 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有库存快照操作权限。" });
         return;
       }
-      const snapshot = upsertInventorySnapshot(dateKeyInTimezone(), "manual");
-      sendJson(res, 200, { ok: true, snapshot, ...inventorySnapshotPayload(snapshot.date, auth) });
+      const idempotencyKey = String(req.headers["idempotency-key"] || "").trim();
+      if (!idempotencyKey) {
+        sendJson(res, 428, { ok: false, code: "idempotency_key_required", message: "生成库存快照需要 Idempotency-Key，请刷新后重试。" });
+        return;
+      }
+      const date = dateKeyInTimezone();
+      const idempotencyKeyHash = snapshotIdempotencyHash(idempotencyKey);
+      const replay = findInventorySnapshotReplay(date, idempotencyKeyHash);
+      if (replay) {
+        sendJson(res, 200, { ok: true, idempotentReplay: true, snapshot: replay, ...inventorySnapshotPayload(date, auth) });
+        return;
+      }
+      if (inventorySnapshotCapturesInFlight.has(date)) {
+        sendJson(res, 409, { ok: false, code: "snapshot_capture_in_progress", message: "该日期的库存快照正在采集，请稍后重试。" });
+        return;
+      }
+      inventorySnapshotCapturesInFlight.add(date);
+      try {
+        const snapshot = upsertInventorySnapshot(date, "manual", { idempotencyKeyHash });
+        appendActionLog(auth, "生成库存快照", "inventory_snapshot", snapshot.captureId, {
+          date: snapshot.date,
+          version: snapshot.version,
+          status: snapshot.status,
+          rowCount: snapshot.rowCount,
+        });
+        sendJson(res, 200, { ok: true, idempotentReplay: false, snapshot, ...inventorySnapshotPayload(snapshot.date, auth) });
+      } finally {
+        inventorySnapshotCapturesInFlight.delete(date);
+      }
       return;
     }
 
@@ -13147,18 +13242,54 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 403, { ok: false, message: "当前账号没有生成动销快照权限。" });
         return;
       }
+      const idempotencyKey = String(req.headers["idempotency-key"] || "").trim();
+      if (!idempotencyKey) {
+        sendJson(res, 428, { ok: false, code: "idempotency_key_required", message: "生成动销快照需要 Idempotency-Key，请刷新后重试。" });
+        return;
+      }
       const payload = await parseRequestBody(req);
       const timezone = safeTimezone(payload.timezone || url.searchParams.get("timezone") || "", movementHistoryTimezone);
       const date = String(payload.date || url.searchParams.get("date") || dateKeyInTimezone(new Date(), timezone)).trim();
-      const snapshot = upsertMovementSnapshot(date, "manual", timezone);
-      sendJson(res, 200, { ok: true, ...movementHistoryPayload({
-        date: snapshot.date,
-        from: String(payload.from || ""),
-        to: String(payload.to || ""),
-        warehouseId: String(payload.warehouseId || ""),
-        sku: String(payload.sku || ""),
-        timezone,
-      }, auth) });
+      const lockKey = `${date}|${timezone}`;
+      const idempotencyKeyHash = snapshotIdempotencyHash(idempotencyKey);
+      const replay = movementHistoryStore.listVersions({ date, timezone })
+        .find((item) => item.idempotencyKeyHash === idempotencyKeyHash);
+      if (replay) {
+        sendJson(res, 200, { ok: true, idempotentReplay: true, capture: replay, ...movementHistoryPayload({
+          date,
+          from: String(payload.from || ""),
+          to: String(payload.to || ""),
+          warehouseId: String(payload.warehouseId || ""),
+          sku: String(payload.sku || ""),
+          timezone,
+        }, auth) });
+        return;
+      }
+      if (movementSnapshotCapturesInFlight.has(lockKey)) {
+        sendJson(res, 409, { ok: false, code: "snapshot_capture_in_progress", message: "该日期和时区的动销快照正在采集，请稍后重试。" });
+        return;
+      }
+      movementSnapshotCapturesInFlight.add(lockKey);
+      try {
+        const snapshot = upsertMovementSnapshot(date, "manual", timezone, { idempotencyKeyHash });
+        appendActionLog(auth, "生成动销快照", "movement_snapshot", snapshot.captureId, {
+          date: snapshot.date,
+          timezone: snapshot.timezone,
+          version: snapshot.version,
+          status: snapshot.status,
+          rowCount: snapshot.totals?.rowCount || 0,
+        });
+        sendJson(res, 200, { ok: true, idempotentReplay: false, capture: snapshot, ...movementHistoryPayload({
+          date: snapshot.date,
+          from: String(payload.from || ""),
+          to: String(payload.to || ""),
+          warehouseId: String(payload.warehouseId || ""),
+          sku: String(payload.sku || ""),
+          timezone,
+        }, auth) });
+      } finally {
+        movementSnapshotCapturesInFlight.delete(lockKey);
+      }
       return;
     }
 
@@ -13205,9 +13336,10 @@ const server = http.createServer(async (req, res) => {
 
       sendJson(res, 200, {
         ok: true,
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
-        warehouses: warehouseConnections,
+        credentialsIncluded: false,
+        warehouses: warehouseConnections.map(warehouseExportMetadata),
       });
       return;
     }

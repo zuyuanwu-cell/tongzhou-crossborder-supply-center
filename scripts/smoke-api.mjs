@@ -991,7 +991,7 @@ async function main() {
 
   const movementHistoryCapture = await expectJson("/api/movement-history/capture", {
     method: "POST",
-    headers: { ...authHeaders, "Content-Type": "application/json" },
+    headers: { ...authHeaders, "Content-Type": "application/json", "Idempotency-Key": `smoke-movement-current-${Date.now()}` },
     body: JSON.stringify({ timezone: "Asia/Shanghai" }),
   });
   if (!movementHistoryCapture.snapshot?.date || !Array.isArray(movementHistoryCapture.snapshot?.rows)) {
@@ -1008,7 +1008,7 @@ async function main() {
   const previousMonthDate = new Date(Date.UTC(snapshotYear, snapshotMonth - 2, 15)).toISOString().slice(0, 10);
   await expectJson("/api/movement-history/capture", {
     method: "POST",
-    headers: { ...authHeaders, "Content-Type": "application/json" },
+    headers: { ...authHeaders, "Content-Type": "application/json", "Idempotency-Key": `smoke-movement-previous-${Date.now()}` },
     body: JSON.stringify({ date: previousMonthDate, timezone: "Asia/Shanghai" }),
   });
   const unauthorizedComparison = await fetch(`${baseUrl}/api/movement-history/compare?period=month&anchorDate=${movementHistoryCapture.snapshot.date}`);

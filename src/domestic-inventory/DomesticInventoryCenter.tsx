@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownToLine,
@@ -566,6 +566,13 @@ function TransferList({ transfers, loading, focusedId, busyId, canOperate, wareh
 
 type TransferDraftLine = { sku: string; productName: string; imageUrl: string; unit: string; availableQty: number; quantity: number };
 
+function createClientIdempotencyKey(prefix: string) {
+  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+
 function TransferModal({ warehouses, onClose, onSaved, onError }: {
   warehouses: DomesticWarehouse[];
   onClose: () => void;
@@ -582,6 +589,7 @@ function TransferModal({ warehouses, onClose, onSaved, onError }: {
   const [loadingTargets, setLoadingTargets] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
+  const idempotencyKeyRef = useRef(createClientIdempotencyKey("transfer"));
   useEscapeClose(onClose, saving);
 
   useEffect(() => {
@@ -624,7 +632,7 @@ function TransferModal({ warehouses, onClose, onSaved, onError }: {
     setLocalError("");
     onError("");
     try {
-      const result = await createDomesticInventoryTransfer({ sourceWarehouseId, targetWarehouseId, note, lines: lines.map((line) => ({ sku: line.sku, quantity: line.quantity })) }, `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const result = await createDomesticInventoryTransfer({ sourceWarehouseId, targetWarehouseId, note, lines: lines.map((line) => ({ sku: line.sku, quantity: line.quantity })) }, idempotencyKeyRef.current);
       await onSaved(result.transfer);
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "库存调拨发起失败。";
@@ -807,6 +815,7 @@ function MovementModal({ type, warehouses, products, productsLoading, productLoa
   const [warehouseProducts, setWarehouseProducts] = useState<SelectableProduct[]>([]);
   const [warehouseProductsLoading, setWarehouseProductsLoading] = useState(true);
   const [warehouseProductsError, setWarehouseProductsError] = useState("");
+  const idempotencyKeyRef = useRef(createClientIdempotencyKey(`inventory-${type}`));
   useEscapeClose(onClose, saving);
   const selectableProducts = useMemo(() => type === "outbound"
     ? uniqueProducts(warehouseProducts.filter((product) => Number(product.availableQty || 0) > 0))
@@ -866,7 +875,7 @@ function MovementModal({ type, warehouses, products, productsLoading, productLoa
     }
     setSaving(true);
     try {
-      const result = await createDomesticInventoryMovement({ warehouseId, type, referenceNo, note, lines: lines.map((line) => ({ ...line, quantity: type === "adjustment" ? undefined : line.quantity, deltaQty: type === "adjustment" ? line.deltaQty : undefined })) }, `inventory-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const result = await createDomesticInventoryMovement({ warehouseId, type, referenceNo, note, lines: lines.map((line) => ({ ...line, quantity: type === "adjustment" ? undefined : line.quantity, deltaQty: type === "adjustment" ? line.deltaQty : undefined })) }, idempotencyKeyRef.current);
       await onSaved(`${movementLabel(type)}已登记，单号 ${result.movementNo}。`);
     } catch (requestError) {
       onError(requestError instanceof Error ? requestError.message : "库存流水登记失败。");
@@ -955,6 +964,7 @@ function OpeningImportModal({ warehouses, products, onClose, onSaved, onError }:
   const [localError, setLocalError] = useState("");
   const [saving, setSaving] = useState(false);
   const productsBySku = useMemo(() => new Map(products.map((product) => [skuKey(product.sku || product.skuNo), product])), [products]);
+  const idempotencyKeyRef = useRef(createClientIdempotencyKey("opening"));
   useEscapeClose(onClose, saving);
 
   async function readFile(file?: File) {
@@ -1006,7 +1016,7 @@ function OpeningImportModal({ warehouses, products, onClose, onSaved, onError }:
     setSaving(true);
     setLocalError("");
     try {
-      const result = await importDomesticOpeningInventory({ warehouseId, note: `期初库存导入：${fileName}`, lines }, `opening-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const result = await importDomesticOpeningInventory({ warehouseId, note: `期初库存导入：${fileName}`, lines }, idempotencyKeyRef.current);
       onSaved(`已导入 ${lines.length} 个 SKU，期初单号 ${result.movementNo}。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "期初库存导入失败。";

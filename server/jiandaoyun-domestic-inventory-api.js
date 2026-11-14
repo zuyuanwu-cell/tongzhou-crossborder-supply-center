@@ -145,8 +145,21 @@ function buildMovement(body, warehouse) {
     text(body.operatorName, 100) ? `经办人：${text(body.operatorName, 100)}` : "",
     text(body.note, 500),
   ].filter(Boolean);
-  const identity = [sourceType, sourceRecordId, sourceLineId || sku, receiptBatch, warehouse.id, sku].join("|");
-  const idempotencyKey = `jdy-inbound-${createHash("sha256").update(identity).digest("hex")}`;
+  // 简道云同一条记录可能在仓库验收时被改单。幂等摘要必须包含业务版本和
+  // 会影响库存/批次的字段，否则数量、箱规或批次变化会被旧请求误判为重放。
+  const identity = JSON.stringify({
+    schemaVersion: 2,
+    sourceType,
+    sourceRecordId,
+    sourceLineId: sourceLineId || sku,
+    sourceVersion: text(body.sourceVersion || body.version || body.updatedAt, 200),
+    warehouseId: warehouse.id,
+    receiptBatch,
+    referenceNo,
+    occurredAt: occurredAt(body.occurredAt),
+    line,
+  });
+  const idempotencyKey = `jdy-inbound-v2-${createHash("sha256").update(identity).digest("hex")}`;
 
   return {
     sourceRecordId,

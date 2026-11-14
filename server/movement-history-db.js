@@ -551,6 +551,10 @@ export async function initMovementHistoryStore(dbPath, legacyPayload = {}) {
       const snapshot = jsonParse(row.snapshot_json, {});
       return {
         versionId: row.version_id || "",
+        captureId: snapshot.captureId || "",
+        version: Number(snapshot.version || 0),
+        status: snapshot.status || "completed",
+        idempotencyKeyHash: snapshot.idempotencyKeyHash || "",
         date: row.date || "",
         timezone: row.timezone || "",
         capturedAt: row.captured_at || "",

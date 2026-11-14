@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import initSqlJs from "sql.js";
+import { acquireSqlJsWriterLock, persistSqlJsDatabaseAtomically } from "./sqljs-durable-store.js";
 
 function rows(db, sql, params = []) {
   const statement = db.prepare(sql);
@@ -94,7 +95,51 @@ function migrateLotSplittingSchema(db) {
 export async function initDomesticInventoryStore(dbPath) {
   const SQL = await initSqlJs();
   mkdirSync(dirname(dbPath), { recursive: true });
-  const db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
+  const releaseWriterLock = acquireSqlJsWriterLock(dbPath);
+  const backupPath = `${dbPath}.bak`;
+  let db;
+  function openValidated(bytes) {
+    const candidate = new SQL.Database(bytes);
+    try {
+      const check = rows(candidate, "PRAGMA quick_check");
+      if (!check.length || String(check[0].quick_check || "").toLowerCase() !== "ok") throw new Error("SQLite quick_check 未通过");
+      return candidate;
+    } catch (error) {
+      try { candidate.close(); } catch { /* ignore cleanup errors */ }
+      throw error;
+    }
+  }
+  try {
+    if (existsSync(dbPath)) {
+      try {
+        db = openValidated(readFileSync(dbPath));
+      } catch (primaryError) {
+        if (!existsSync(backupPath)) {
+          throw Object.assign(new Error(`国内库存数据库无法读取，且不存在可恢复备份：${primaryError.message}`), { code: "DOMESTIC_INVENTORY_DB_CORRUPT", cause: primaryError });
+        }
+        try {
+          const backupBytes = readFileSync(backupPath);
+          db = openValidated(backupBytes);
+          persistSqlJsDatabaseAtomically(dbPath, backupBytes, { backupExisting: false });
+        } catch (backupError) {
+          throw Object.assign(new Error(`国内库存数据库及其备份均无法读取：${backupError.message}`), { code: "DOMESTIC_INVENTORY_DB_CORRUPT", cause: backupError });
+        }
+      }
+    } else if (existsSync(backupPath)) {
+      try {
+        const backupBytes = readFileSync(backupPath);
+        db = openValidated(backupBytes);
+        persistSqlJsDatabaseAtomically(dbPath, backupBytes, { backupExisting: false });
+      } catch (backupError) {
+        throw Object.assign(new Error(`国内库存数据库缺失，且备份无法恢复：${backupError.message}`), { code: "DOMESTIC_INVENTORY_DB_CORRUPT", cause: backupError });
+      }
+    } else {
+      db = new SQL.Database();
+    }
+  } catch (error) {
+    releaseWriterLock();
+    throw error;
+  }
   db.run(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS domestic_warehouses (
@@ -321,9 +366,13 @@ export async function initDomesticInventoryStore(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_domestic_inventory_sku_recodes ON domestic_inventory_sku_recodes(old_sku,new_sku,created_at);
   `);
   migrateLotSplittingSchema(db);
+  const idempotencyColumns = rows(db, "PRAGMA table_info('domestic_inventory_idempotency')").map((column) => String(column.name));
+  if (!idempotencyColumns.includes("request_hash")) {
+    db.run("ALTER TABLE domestic_inventory_idempotency ADD COLUMN request_hash TEXT");
+  }
 
   function persist() {
-    writeFileSync(dbPath, Buffer.from(db.export()));
+    persistSqlJsDatabaseAtomically(dbPath, db.export());
   }
 
   function run(sql, params = []) {
@@ -352,5 +401,5 @@ export async function initDomesticInventoryStore(dbPath) {
   }
 
   persist();
-  return { all, dbPath, first, persist, run, transaction };
+  return { all, dbPath, first, persist, releaseWriterLock, run, transaction };
 }

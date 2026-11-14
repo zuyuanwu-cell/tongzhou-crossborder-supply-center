@@ -79,10 +79,9 @@ try {
   assert.equal(service.listLots({ warehouseId: warehouse.id, lotNo: "LOT-A" }, context).lots[0].remainingQty, 6);
   assert.equal(service.listLots({ warehouseId: warehouse.id, lotNo: "LOT-B" }, context).lots[0].remainingQty, 8);
 
-  const replay = await invoke({ ...base, quantity: 12 });
-  assert.equal(replay.status, 200);
-  assert.equal(replay.payload.idempotentReplay, true);
-  assert.equal(replay.payload.quantity, 4);
+  const conflict = await invoke({ ...base, quantity: 12 });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.payload.code, "idempotency_key_conflict");
   assert.equal(service.list({ warehouseId: warehouse.id }, context).balances[0].onHandQty, 14);
 
   const insufficientBatch = await invoke({ ...base, sourceRecordId: "jdy-outbound-002", sourceLineId: "line-002", quantity: 7 });
@@ -99,7 +98,7 @@ try {
   const insufficient = await invoke({ ...base, sourceRecordId: "jdy-outbound-004", sourceLineId: "line-004", lotNo: "", quantity: 7 });
   assert.equal(insufficient.status, 409);
   assert.equal(insufficient.payload.code, "insufficient_stock");
-  assert.equal(actions.length, 3);
+  assert.equal(actions.length, 2, "conflicting idempotency retries must not create a success audit event");
 
   console.log("jiandaoyun domestic inventory outbound API tests passed");
 } finally {

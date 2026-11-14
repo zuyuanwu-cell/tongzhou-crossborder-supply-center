@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 function text(value) {
   return String(value ?? "").trim();
@@ -26,6 +26,18 @@ function optionalDate(value, label) {
 
 function id(prefix) {
   return `${prefix}_${randomUUID()}`;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function requestHash(operation, input) {
+  return createHash("sha256").update(stableJson({ operation, input })).digest("hex");
 }
 
 function businessNo(type) {
@@ -197,6 +209,21 @@ function chinaAllowed(context) {
 }
 
 export function createDomesticInventoryService(store) {
+  function replayIdempotent(key, userId, hash) {
+    if (!key) return null;
+    const existing = store.first("SELECT response_json,request_hash FROM domestic_inventory_idempotency WHERE key=? AND user_id=?", [key, userId]);
+    if (!existing) return null;
+    if (text(existing.request_hash) && text(existing.request_hash) !== hash) {
+      fail("同一个幂等键不能用于不同的请求内容，请刷新页面后重试。", 409, "idempotency_key_conflict");
+    }
+    return { ...JSON.parse(existing.response_json), idempotentReplay: true };
+  }
+
+  function saveIdempotent(key, userId, hash, response, createdAt) {
+    if (!key) return;
+    store.run("INSERT INTO domestic_inventory_idempotency (key,user_id,response_json,request_hash,created_at) VALUES (?,?,?,?,?)", [key, userId, JSON.stringify(response), hash, createdAt]);
+  }
+
   function warehouseById(warehouseId, options = {}) {
     const warehouse = warehouseFromRow(store.first("SELECT * FROM domestic_warehouses WHERE id=?", [text(warehouseId)]));
     if (!warehouse) fail("国内仓库不存在。", 404, "not_found");
@@ -355,10 +382,9 @@ export function createDomesticInventoryService(store) {
 
   function createMovement(input, context, idempotencyKey = "") {
     const actor = userOf(context);
-    if (idempotencyKey) {
-      const existing = store.first("SELECT response_json FROM domestic_inventory_idempotency WHERE key=? AND user_id=?", [idempotencyKey, actor.id]);
-      if (existing) return { ...JSON.parse(existing.response_json), idempotentReplay: true };
-    }
+    const digest = requestHash("movement:create", input);
+    const replay = replayIdempotent(idempotencyKey, actor.id, digest);
+    if (replay) return replay;
     const { warehouse, type, lines: normalized } = normalizeMovement(input, context);
     const movement = { id: id("dim"), movementNo: businessNo(type), occurredAt: text(input.occurredAt) || nowIso(), createdAt: nowIso() };
     const response = store.transaction(() => {
@@ -420,8 +446,8 @@ export function createDomesticInventoryService(store) {
           createdLines.push({ sourceLineId: line.sourceLineId, movementLineId, lotId: line.lotId, sku: line.sku, quantity: line.quantity });
         }
       }
-      const result = { ok: true, movementId: movement.id, movementNo: movement.movementNo, type, warehouseId: warehouse.id, lines: createdLines };
-      if (idempotencyKey) store.run("INSERT INTO domestic_inventory_idempotency (key,user_id,response_json,created_at) VALUES (?,?,?,?)", [idempotencyKey, actor.id, JSON.stringify(result), movement.createdAt]);
+      const result = { ok: true, idempotentReplay: false, movementId: movement.id, movementNo: movement.movementNo, type, warehouseId: warehouse.id, lines: createdLines };
+      saveIdempotent(idempotencyKey, actor.id, digest, result, movement.createdAt);
       return result;
     });
     return response;
@@ -529,10 +555,9 @@ export function createDomesticInventoryService(store) {
   function createTransfer(input, context = {}, idempotencyKey = "") {
     const actor = userOf(context);
     const storedKey = idempotencyKey ? `transfer:create:${idempotencyKey}` : "";
-    if (storedKey) {
-      const existing = store.first("SELECT response_json FROM domestic_inventory_idempotency WHERE key=? AND user_id=?", [storedKey, actor.id]);
-      if (existing) return { ...JSON.parse(existing.response_json), idempotentReplay: true };
-    }
+    const digest = requestHash("transfer:create", input);
+    const replay = replayIdempotent(storedKey, actor.id, digest);
+    if (replay) return replay;
     const { sourceWarehouse, targetWarehouse, lines } = normalizeTransfer(input, context);
     const now = nowIso();
     const transferId = id("dtr");
@@ -572,7 +597,7 @@ export function createDomesticInventoryService(store) {
         }
       }
       const result = { ok: true, transferId, transferNo, status: "in_transit", sourceWarehouseId: sourceWarehouse.id, targetWarehouseId: targetWarehouse.id };
-      if (storedKey) store.run("INSERT INTO domestic_inventory_idempotency (key,user_id,response_json,created_at) VALUES (?,?,?,?)", [storedKey, actor.id, JSON.stringify(result), now]);
+      saveIdempotent(storedKey, actor.id, digest, result, now);
       return result;
     });
     return { ...response, transfer: getTransfer(transferId, context).transfer };
@@ -680,9 +705,10 @@ export function createDomesticInventoryService(store) {
   }
 
   function listMovements(filters = {}, context = {}) {
-    if (!chinaAllowed(context)) return { ok: true, movements: [] };
+    if (!chinaAllowed(context)) return { ok: true, total: 0, limit: 100, offset: 0, complete: true, movements: [] };
     const where = [];
     const params = [];
+    if (filters.movementId) { where.push("m.id=?"); params.push(text(filters.movementId)); }
     if (filters.warehouseId) { where.push("m.warehouse_id=?"); params.push(text(filters.warehouseId)); }
     if (filters.type) { where.push("m.movement_type=?"); params.push(text(filters.type)); }
     if (context.warehouseIds?.length) { where.push(`m.warehouse_id IN (${context.warehouseIds.map(() => "?").join(",")})`); params.push(...context.warehouseIds); }
@@ -692,7 +718,11 @@ export function createDomesticInventoryService(store) {
       const keyword = `%${text(filters.keyword)}%`;
       params.push(keyword, keyword, keyword, keyword);
     }
-    const movements = store.all(`SELECT m.*,w.name AS warehouse_name FROM domestic_inventory_movements m JOIN domestic_warehouses w ON w.id=m.warehouse_id ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY m.occurred_at DESC,m.created_at DESC LIMIT 300`, params).map(movementFromRow);
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const limit = Math.max(1, Math.min(500, Math.floor(number(filters.limit, 100))));
+    const offset = Math.max(0, Math.floor(number(filters.offset)));
+    const total = number(store.first(`SELECT COUNT(*) AS total FROM domestic_inventory_movements m JOIN domestic_warehouses w ON w.id=m.warehouse_id ${clause}`, params)?.total);
+    const movements = store.all(`SELECT m.*,w.name AS warehouse_name FROM domestic_inventory_movements m JOIN domestic_warehouses w ON w.id=m.warehouse_id ${clause} ORDER BY m.occurred_at DESC,m.created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]).map(movementFromRow);
     for (const movement of movements) {
       movement.lines = store.all("SELECT * FROM domestic_inventory_movement_lines WHERE movement_id=? ORDER BY sku", [movement.id])
         .filter((line) => !context.skus?.length || context.skus.includes(skuKey(line.sku)))
@@ -703,7 +733,7 @@ export function createDomesticInventoryService(store) {
           return { id: text(line.id), sku: text(line.sku), productName: text(line.product_name), imageUrl: text(line.image_url), unit: text(line.unit), quantity: number(line.quantity), signedQty: number(line.signed_qty), beforeQty: number(line.before_qty), afterQty: number(line.after_qty), unitCostCny: number(line.unit_cost_cny), lot: lots[0] || null, lots, allocations };
         });
     }
-    return { ok: true, movements };
+    return { ok: true, total, limit, offset, complete: offset + movements.length >= total, movements };
   }
 
   function listWarehouses(context = {}) {
@@ -722,7 +752,7 @@ export function createDomesticInventoryService(store) {
     const row = store.first("SELECT m.*,w.name AS warehouse_name FROM domestic_inventory_movements m JOIN domestic_warehouses w ON w.id=m.warehouse_id WHERE m.id=?", [text(movementId)]);
     if (!row) fail("库存单据不存在。", 404, "not_found");
     ensureWarehouse(row.warehouse_id, context);
-    const result = listMovements({ warehouseId: row.warehouse_id }, context).movements.find((item) => item.id === text(movementId));
+    const result = listMovements({ movementId: text(movementId), warehouseId: row.warehouse_id, limit: 1 }, context).movements[0];
     if (!result || !result.lines.length) fail("库存单据不存在或不在当前账号的数据范围内。", 404, "not_found");
     return { ok: true, movement: result };
   }
@@ -884,6 +914,12 @@ export function createDomesticInventoryService(store) {
   function reserveStock(input, context = {}, idempotencyKey = "") {
     const actor = userOf(context);
     const referenceNo = required(input.referenceNo, "预约业务单号");
+    const storedKey = `reservation:${idempotencyKey || referenceNo}`;
+    const digest = requestHash("reservation:create", input);
+    const replay = replayIdempotent(storedKey, actor.id, digest);
+    if (replay?.reservationId) {
+      return { ok: true, idempotentReplay: true, reservation: reservationFromRow(store.first("SELECT * FROM domestic_inventory_reservations WHERE id=?", [replay.reservationId])) };
+    }
     const existing = store.first("SELECT * FROM domestic_inventory_reservations WHERE reference_no=?", [referenceNo]);
     if (existing) return { ok: true, idempotentReplay: true, reservation: reservationFromRow(existing) };
     const warehouse = ensureWarehouse(input.warehouseId, context, { active: true });
@@ -932,7 +968,7 @@ export function createDomesticInventoryService(store) {
       for (const line of expanded) store.run(`INSERT INTO domestic_inventory_reservation_lines (id,reservation_id,product_id,sku,product_name,image_url,specification,unit,quantity,lot_id,unit_cost_cny,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         [id("dirl"), reservationId, text(line.balance.product_id || line.productId), line.sku, text(line.balance.product_name || line.productName), text(line.balance.image_url || line.imageUrl), text(line.balance.specification || line.specification), text(line.balance.unit || line.unit) || "件", line.quantity, line.lotId || null, line.unitCostCny, now]);
       for (const [sku, quantity] of requestedBySku) store.run("UPDATE domestic_inventory_balances SET reserved_qty=reserved_qty+?,updated_at=? WHERE warehouse_id=? AND sku=?", [quantity, now, warehouse.id, sku]);
-      if (idempotencyKey) store.run("INSERT OR REPLACE INTO domestic_inventory_idempotency (key,user_id,response_json,created_at) VALUES (?,?,?,?)", [`reservation:${idempotencyKey}`, actor.id, JSON.stringify({ reservationId }), now]);
+      saveIdempotent(storedKey, actor.id, digest, { reservationId }, now);
       return { ok: true, idempotentReplay: false, reservation: reservationFromRow(store.first("SELECT * FROM domestic_inventory_reservations WHERE id=?", [reservationId])) };
     });
     return result;

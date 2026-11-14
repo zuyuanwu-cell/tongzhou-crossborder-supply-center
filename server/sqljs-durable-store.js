@@ -72,22 +72,43 @@ export function acquireSqlJsWriterLock(dbPath) {
   return release;
 }
 
-export function persistSqlJsDatabaseAtomically(dbPath, bytes) {
-  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+function writeDurableFile(filePath, bytes) {
   let fd;
   try {
-    fd = openSync(tempPath, "wx", 0o600);
+    fd = openSync(filePath, "wx", 0o600);
     writeFileSync(fd, Buffer.from(bytes));
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(tempPath, dbPath);
   } catch (error) {
     if (fd !== undefined) {
       try { closeSync(fd); } catch {}
     }
+    if (existsSync(filePath)) {
+      try { unlinkSync(filePath); } catch {}
+    }
+    throw error;
+  }
+}
+
+export function persistSqlJsDatabaseAtomically(dbPath, bytes, { backupExisting = true } = {}) {
+  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  const backupPath = `${dbPath}.bak`;
+  const backupTempPath = `${backupPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeDurableFile(tempPath, bytes);
+    if (backupExisting && existsSync(dbPath)) {
+      writeDurableFile(backupTempPath, readFileSync(dbPath));
+      if (existsSync(backupPath)) unlinkSync(backupPath);
+      renameSync(backupTempPath, backupPath);
+    }
+    renameSync(tempPath, dbPath);
+  } catch (error) {
     if (existsSync(tempPath)) {
       try { unlinkSync(tempPath); } catch {}
+    }
+    if (existsSync(backupTempPath)) {
+      try { unlinkSync(backupTempPath); } catch {}
     }
     throw error;
   }

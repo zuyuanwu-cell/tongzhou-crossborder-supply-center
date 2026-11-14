@@ -72,11 +72,16 @@ try {
   assert.equal(created.payload.sku, "TZKJ-TEST-001");
   assert.equal(service.list({}, context).balances[0].onHandQty, 21);
 
-  const replay = await invoke({ ...base, quantity: 99 });
+  const replay = await invoke(base);
   assert.equal(replay.status, 200);
   assert.equal(replay.payload.idempotentReplay, true);
   assert.equal(service.list({}, context).balances[0].onHandQty, 21);
-  assert.equal(actions.length, 2);
+
+  const amended = await invoke({ ...base, sourceVersion: "2", quantity: 31, cartonCount: 3 });
+  assert.equal(amended.status, 201);
+  assert.equal(amended.payload.idempotentReplay, false);
+  assert.equal(service.list({}, context).balances[0].onHandQty, 52, "quantity or source-version amendments must not be mistaken for the previous inbound event");
+  assert.equal(actions.length, 3);
 
   const invalidCarton = await invoke({ ...base, sourceRecordId: "jdy-data-002", cartonCount: 1 });
   assert.equal(invalidCarton.status, 400);

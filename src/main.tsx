@@ -1048,6 +1048,14 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; o
 
 type CoreResourceState = { phase: "idle" | "loading" | "refreshing" | "success" | "error"; error: string };
 
+function createBrowserIdempotencyKey(prefix: string) {
+  const browserCrypto = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  const value = browserCrypto && typeof browserCrypto.randomUUID === "function"
+    ? browserCrypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${value}`;
+}
+
 function App() {
   const [activeView, setActiveView] = React.useState(getInitialView);
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
@@ -1064,6 +1072,8 @@ function App() {
   const inventoryValueAbortRef = React.useRef<AbortController | null>(null);
   const [movementPayload, setMovementPayload] = React.useState<MovementPayload | null>(null);
   const [movementHistoryPayload, setMovementHistoryPayload] = React.useState<MovementHistoryPayload | null>(null);
+  const inventorySnapshotIdempotencyRef = React.useRef("");
+  const movementSnapshotIdempotencyRef = React.useRef<{ fingerprint: string; key: string }>({ fingerprint: "", key: "" });
   const [orderAnalysisPayload, setOrderAnalysisPayload] = React.useState<OrderAnalysisPayload | null>(null);
   const [performanceAnalyticsPayload, setPerformanceAnalyticsPayload] = React.useState<PerformanceAnalyticsPayload | null>(null);
   const [performanceAnalyticsLoading, setPerformanceAnalyticsLoading] = React.useState(false);
@@ -1384,10 +1394,15 @@ function App() {
   }
 
   async function handleCaptureMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
+    const fingerprint = JSON.stringify(input);
+    if (!movementSnapshotIdempotencyRef.current.key || movementSnapshotIdempotencyRef.current.fingerprint !== fingerprint) {
+      movementSnapshotIdempotencyRef.current = { fingerprint, key: createBrowserIdempotencyKey("movement-snapshot") };
+    }
     try {
-      const data = await captureMovementHistoryRequest(input);
+      const data = await captureMovementHistoryRequest(input, movementSnapshotIdempotencyRef.current.key);
       setMovementHistoryPayload(data);
       setModuleLoadError(["#movement-analysis"]);
+      movementSnapshotIdempotencyRef.current = { fingerprint: "", key: "" };
       return data;
     } catch (requestError) {
       setModuleLoadError(["#movement-analysis"], requestError instanceof Error ? requestError.message : "Snapshot capture failed");
@@ -1653,9 +1668,11 @@ function App() {
 
   async function handleCaptureInventorySnapshot() {
     setError("");
+    if (!inventorySnapshotIdempotencyRef.current) inventorySnapshotIdempotencyRef.current = createBrowserIdempotencyKey("inventory-snapshot");
     try {
-      const data = await captureInventorySnapshot();
+      const data = await captureInventorySnapshot(inventorySnapshotIdempotencyRef.current);
       setInventorySnapshotPayload(data);
+      inventorySnapshotIdempotencyRef.current = "";
       return data;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "库存快照生成失败");

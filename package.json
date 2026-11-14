@@ -18,6 +18,8 @@
     "test:inventory-ledger-db": "node scripts/inventory-ledger-db-test.mjs",
     "test:inventory-daily-ledger": "node scripts/inventory-daily-ledger-test.mjs",
     "test:inventory-api-hardening": "node scripts/inventory-api-hardening-test.mjs",
+    "test:inventory-integrity-hardening": "node scripts/inventory-integrity-hardening-test.mjs",
+    "audit:warehouse-credential-contamination": "node scripts/warehouse-credential-contamination-audit.mjs",
     "test:inventory-pages-contract": "node scripts/inventory-pages-contract-test.mjs",
     "test:outbound-order-reconciliation": "node scripts/outbound-order-reconciliation-test.mjs",
     "test:movement-history-db": "node scripts/movement-history-db-test.mjs",

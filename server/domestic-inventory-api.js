@@ -25,6 +25,23 @@ function readBody(req) {
   });
 }
 
+function requireIdempotencyKey(req) {
+  const key = String(req.headers["idempotency-key"] || "").trim();
+  if (!key) {
+    throw Object.assign(new Error("写操作必须提供 Idempotency-Key，重试时请复用同一个值。"), {
+      statusCode: 428,
+      code: "idempotency_key_required",
+    });
+  }
+  if (key.length > 160) {
+    throw Object.assign(new Error("Idempotency-Key 不能超过 160 个字符。"), {
+      statusCode: 400,
+      code: "idempotency_key_too_long",
+    });
+  }
+  return key;
+}
+
 export function domesticInventoryContextForAuth(auth) {
   const scopes = auth?.user?.dataScopes || {};
   return {
@@ -250,21 +267,21 @@ export function createDomesticInventoryApi({ service, getAuth, getProducts = () 
         const body = await readBody(req);
         const requiredPermission = body.type === "inbound" ? "domestic_inventory_receive" : body.type === "outbound" ? "domestic_inventory_issue" : "domestic_inventory_adjust";
         requireAnyPermission(auth, [requiredPermission, "domestic_inventory_manage"], "当前账号没有对应的库存流水登记权限。");
-        const result = service.createMovement(body, context, String(req.headers["idempotency-key"] || ""));
+        const result = service.createMovement(body, context, requireIdempotencyKey(req));
         appendActionLog(auth, "登记国内仓库存流水", "domestic_inventory_movement", result.movementNo, { movementId: result.movementId, type: result.type, warehouseId: result.warehouseId });
         sendJson(res, 201, result);
         return true;
       }
       if (suffix === "/transfers" && req.method === "POST") {
         requireAnyPermission(auth, ["domestic_inventory_transfer", "domestic_inventory_manage"], "当前账号没有库存调拨权限。");
-        const result = service.createTransfer(await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        const result = service.createTransfer(await readBody(req), context, requireIdempotencyKey(req));
         if (!result.idempotentReplay) appendActionLog(auth, "发起国内仓库存调拨", "domestic_inventory_transfer", result.transferNo, { transferId: result.transferId, sourceWarehouseId: result.sourceWarehouseId, targetWarehouseId: result.targetWarehouseId });
         sendJson(res, 201, result);
         return true;
       }
       if (suffix === "/opening-import" && req.method === "POST") {
         if (!hasPermission(auth, "domestic_inventory_manage")) throw Object.assign(new Error("当前账号没有期初库存导入权限。"), { statusCode: 403 });
-        const result = service.importOpeningBalances(await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        const result = service.importOpeningBalances(await readBody(req), context, requireIdempotencyKey(req));
         appendActionLog(auth, "导入国内仓期初库存", "domestic_inventory_movement", result.movementNo, { movementId: result.movementId, warehouseId: result.warehouseId });
         sendJson(res, 201, result);
         return true;

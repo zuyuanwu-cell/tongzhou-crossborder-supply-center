@@ -1355,6 +1355,9 @@ export type InventorySnapshotRow = {
 };
 
 export type InventorySnapshot = {
+  captureId?: string;
+  version?: number;
+  status?: string;
   date: string;
   capturedAt: string;
   sourceSyncedAt: string;
@@ -1374,6 +1377,7 @@ export type InventorySnapshot = {
 
 export type InventorySnapshotPayload = {
   ok: boolean;
+  idempotentReplay?: boolean;
   updatedAt: string;
   lastSnapshotAt: string;
   selectedDate: string;
@@ -1932,6 +1936,9 @@ export type MovementHistoryRow = {
 };
 
 export type MovementHistorySnapshot = {
+  captureId?: string;
+  version?: number;
+  status?: string;
   date: string;
   timezone: string;
   capturedAt: string;
@@ -1959,6 +1966,8 @@ export type MovementHistorySnapshot = {
 
 export type MovementHistoryPayload = {
   ok: boolean;
+  idempotentReplay?: boolean;
+  capture?: MovementHistorySnapshot | null;
   updatedAt: string;
   lastSnapshotAt: string;
   databasePath?: string;
@@ -4922,8 +4931,11 @@ export function fetchInventorySnapshots(date?: string) {
   return requestJson<InventorySnapshotPayload>(`/api/inventory-snapshots${query}`);
 }
 
-export function captureInventorySnapshot() {
-  return requestJson<InventorySnapshotPayload>("/api/inventory-snapshots/capture", { method: "POST" });
+export function captureInventorySnapshot(idempotencyKey: string) {
+  return requestJson<InventorySnapshotPayload>("/api/inventory-snapshots/capture", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
 }
 
 export async function downloadInventorySnapshotCsv(date?: string, warehouseId?: string) {
@@ -5042,9 +5054,10 @@ export function claimOverseasReconciliationReturn(factId: string) {
   );
 }
 
-export function captureMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}) {
+export function captureMovementHistory(input: { date?: string; from?: string; to?: string; warehouseId?: string; sku?: string; timezone?: string } = {}, idempotencyKey: string) {
   return requestJson<MovementHistoryPayload>("/api/movement-history/capture", {
     method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(input),
   });
 }
