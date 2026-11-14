@@ -646,7 +646,16 @@ export function AfterSalesCenter({
       setWarehouseId(result.order.warehouseId || "");
       setItems(result.order.items.map((item) => ({ ...item })));
       setReissueItems([]);
-      setMessage(result.warning || (result.source === "miaoshou_live" ? "已从妙手实时同步原订单。" : "已从本地妙手缓存读取原订单。"));
+      const sourceMessage = result.source === "miaoshou_live"
+        ? "已从妙手实时同步原订单。"
+        : result.source === "local_cache"
+          ? "已从本地妙手缓存读取原订单。"
+          : result.source === "warehouse_wms_cache"
+            ? "妙手未命中，已从当前授权仓库的 WMS 缓存读取原订单。"
+            : result.source === "warehouse_wms_live"
+              ? "妙手未命中，已从当前授权仓库的 WMS 实时同步原订单。"
+              : "已同步原订单。";
+      setMessage(result.warning ? `${sourceMessage} ${result.warning}` : sourceMessage);
     } catch (syncError) {
       setError(syncError instanceof Error ? syncError.message : "同步原订单失败。");
     } finally {
@@ -1146,13 +1155,13 @@ export function AfterSalesCenter({
               <div className="as-step-heading"><span>01</span><div><p>同步原单</p><h2>输入平台后台订单号</h2></div></div>
               <div className="as-order-search">
                 <input value={orderNumber} onChange={(event) => setOrderNumber(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void handleSyncOrder()} placeholder="例如：576239876543210987" />
-                <button type="button" onClick={() => void handleSyncOrder()} disabled={busy === "sync"}>{busy === "sync" ? <LoaderCircle className="spinning" size={18} /> : <RefreshCw size={18} />}{busy === "sync" ? "正在查询妙手" : "同步原订单"}</button>
+                <button type="button" onClick={() => void handleSyncOrder()} disabled={busy === "sync"}>{busy === "sync" ? <LoaderCircle className="spinning" size={18} /> : <RefreshCw size={18} />}{busy === "sync" ? "正在查询订单" : "同步原订单"}</button>
               </div>
-              <p className="as-helper">严格按平台后台订单号精确匹配；本地缓存优先，必要时实时补查妙手。</p>
+              <p className="as-helper">严格按平台后台订单号精确匹配；妙手优先，妙手未绑定或无记录时，仅在当前账号授权的仓库 WMS 中补查。</p>
 
               {syncedOrder ? (
                 <div className="as-synced-order">
-                  <header><div><span>{syncedOrder.platform || "妙手订单"} · {syncedOrder.site}</span><strong>{syncedOrder.orderNumber}</strong></div><div><span>店铺别名</span><strong>{syncedOrder.shopAlias || "未配置"}</strong></div><div><span>下单时间</span><strong>{dateTime(syncedOrder.orderStartedAt)}</strong></div></header>
+                  <header><div><span>{syncedOrder.platform || "平台订单"} · {syncedOrder.site}</span><strong>{syncedOrder.orderNumber}</strong></div><div><span>店铺 / WMS来源</span><strong>{syncedOrder.shopAlias || "未配置"}</strong></div><div><span>下单时间</span><strong>{dateTime(syncedOrder.orderStartedAt)}</strong></div></header>
                   {syncedOrder.existingTickets.length ? <div className="as-duplicate-warning"><AlertTriangle size={16} />该原订单已有 {syncedOrder.existingTickets.length} 张售后单，请确认不是重复填报。</div> : null}
                   <div className="as-routing-grid">
                     <label><span>处理仓库</span><select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}><option value="">请选择处理仓库</option>{(syncedOrder.warehouseOptions || []).map((warehouse) => <option value={warehouse.id} key={warehouse.id}>{warehouse.name} · {warehouse.country}</option>)}</select><small>{syncedOrder.warehouseOptions?.length === 1 ? "已按订单国家自动匹配" : "请确认实际负责补发或处理的仓库"}</small></label>

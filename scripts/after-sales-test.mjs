@@ -19,6 +19,7 @@ import {
   buildAfterSalesReminderMarkdown,
   notificationRobotIds,
 } from "../server/after-sales-notifications.js";
+import { lookupAfterSalesWmsOrder } from "../server/after-sales-wms-lookup.js";
 
 const tempDir = mkdtempSync(resolve(tmpdir(), "tongzhou-after-sales-"));
 
@@ -103,6 +104,82 @@ try {
   assert.equal(synced.order.customer.name, "Tester");
   assert.match(synced.order.customer.recipientInfo, /电话：081234/);
   assert.equal(upserts.length, 1);
+
+  const wmsFallbackCalls = [];
+  const wmsFallbackService = createAfterSalesService({
+    cachePath: resolve(tempDir, "after-sales-wms-fallback.json"),
+    uploadDir: resolve(tempDir, "uploads-wms-fallback"),
+    performanceStore,
+    connector: { performanceContext: () => ({ hasCredentials: false, shops: [] }) },
+    getProducts: () => ({
+      catalog: [{ sku: "TZKJ-RU-1", country: "俄罗斯", name: "俄罗斯测试品", directCostPrice: 10, directCostCurrency: "CNY" }],
+      productBase: [],
+    }),
+    async lookupWarehouseOrder(input) {
+      wmsFallbackCalls.push(input);
+      return {
+        found: true,
+        source: "warehouse_wms_live",
+        warning: "",
+        order: {
+          orderNumber: input.orderNumber,
+          orderIdentity: "wms:ru-2:ORDER-RU-2",
+          platform: "ozon",
+          site: "俄罗斯",
+          shopId: "OZON-RU-2",
+          shopAlias: "俄罗斯二仓 Ozon",
+          platformShopName: "OZON-RU-2",
+          orderStartedAt: "2026-11-13 12:00:00",
+          warehouseId: "ru-2",
+          warehouseName: "俄罗斯2仓",
+          customer: {},
+          rawItems: [{ sku: "TZKJ-RU-1", orderedQty: 2 }],
+        },
+      };
+    },
+  });
+  const wmsFallbackSynced = await wmsFallbackService.syncOrder("ORDER-RU-2", {
+    dataScopes: { warehouseIds: ["ru-2"] },
+  });
+  assert.equal(wmsFallbackSynced.source, "warehouse_wms_live");
+  assert.equal(wmsFallbackSynced.order.warehouseId, "ru-2");
+  assert.equal(wmsFallbackSynced.order.items[0].productName, "俄罗斯测试品");
+  assert.equal(wmsFallbackSynced.order.items[0].unitCostCny, 10);
+  assert.deepEqual(wmsFallbackCalls[0].dataScopes.warehouseIds, ["ru-2"]);
+
+  const scopedWmsLookup = await lookupAfterSalesWmsOrder({
+    orderNumber: "WB-ORDER-1",
+    dataScopes: { warehouseIds: ["ru-2"] },
+    connections: [
+      { id: "ru-1", name: "俄罗斯1仓", country: "俄罗斯", providerId: "yunwms_ru" },
+      { id: "ru-2", name: "俄罗斯2仓", country: "俄罗斯", providerId: "yunwms_ru" },
+    ],
+    cachedOrders: [
+      { warehouseId: "ru-1", orderNo: "WB-ORDER-1", sku: "SECRET-SKU", quantity: 1 },
+      { warehouseId: "ru-2", externalOrderNo: "WB-ORDER-1", platform: "WB", shopName: "WB 二仓店", sku: "TZKJ-RU-1", productName: "俄罗斯测试品", quantity: 2 },
+    ],
+  });
+  assert.equal(scopedWmsLookup.found, true);
+  assert.equal(scopedWmsLookup.source, "warehouse_wms_cache");
+  assert.equal(scopedWmsLookup.order.warehouseId, "ru-2");
+  assert.deepEqual(scopedWmsLookup.order.rawItems.map((item) => item.sku), ["TZKJ-RU-1"]);
+
+  const liveQueriedWarehouses = [];
+  const liveWmsLookup = await lookupAfterSalesWmsOrder({
+    orderNumber: "OZON-LIVE-1",
+    dataScopes: { warehouseIds: ["ru-2"] },
+    connections: [
+      { id: "ru-1", name: "俄罗斯1仓", country: "俄罗斯", providerId: "yunwms_ru" },
+      { id: "ru-2", name: "俄罗斯2仓", country: "俄罗斯", providerId: "yunwms_ru" },
+    ],
+    cachedOrders: [],
+    async findOutboundOrder(connection) {
+      liveQueriedWarehouses.push(connection.id);
+      return { found: true, orderNo: "WMS-1", platform: "Ozon", platformShop: "Ozon 二仓店", items: [{ sku: "TZKJ-RU-1", quantity: 3 }] };
+    },
+  });
+  assert.deepEqual(liveQueriedWarehouses, ["ru-2"], "warehouse WMS lookup must never query outside the account scope");
+  assert.equal(liveWmsLookup.order.rawItems[0].orderedQty, 3);
 
   const resilientSearches = [];
   const invalidatedPerformanceShops = [];

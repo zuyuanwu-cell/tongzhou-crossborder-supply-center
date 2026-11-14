@@ -274,6 +274,7 @@ const warehousePermissions = effectivePermissions({
   permissionOverrides: { allow: ["after_sales_report", "warehouse_return_query", "inventory_value", "product_view", "users"], deny: [] },
 });
 assert.equal(warehousePermissions.includes("product_view"), true, "warehouse operators can select scoped products for domestic inventory movements");
+assert.equal(warehousePermissions.includes("after_sales_report"), true, "warehouse operators may receive scoped after-sales reporting when explicitly granted");
 assert.equal(warehousePermissions.includes("domestic_inventory_view"), true, "warehouse operators can view their scoped domestic warehouse ledger");
 assert.equal(warehousePermissions.includes("domestic_inventory_receive"), true, "warehouse operators can receive scoped domestic inventory");
 assert.equal(warehousePermissions.includes("domestic_inventory_issue"), true, "warehouse operators can issue scoped domestic inventory");

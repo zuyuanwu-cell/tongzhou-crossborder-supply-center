@@ -676,7 +676,7 @@ function summaryFor(tickets, batches = [], reversals = []) {
   });
 }
 
-export function createAfterSalesService({ cachePath, uploadDir, performanceStore, connector, getProducts }) {
+export function createAfterSalesService({ cachePath, uploadDir, performanceStore, connector, getProducts, lookupWarehouseOrder }) {
   const store = createStore(cachePath);
 
   function currentSummary(tickets = store.list()) {
@@ -1043,7 +1043,60 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     return { ok: true, country, products: uniqueProducts };
   }
 
-  async function syncOrder(orderNumberInput) {
+  function enrichSyncedOrder({ orderNumber, source, warning = "", sourceOrder, rawItems, customer = {} }) {
+    const products = getProducts?.() || {};
+    const rates = performanceStore?.listExchangeRates?.() || [];
+    const supplementalCosts = performanceStore?.listSupplementalProductCosts?.() || [];
+    const orderDate = text(sourceOrder?.orderStartedAt).slice(0, 10);
+    const country = text(sourceOrder?.site).toUpperCase();
+    const normalizedRawItems = Array.isArray(rawItems) ? rawItems : [];
+    const enrichedItems = normalizedRawItems.map((item) => ({
+      ...item,
+      ...resolveItemProduct(item.sku, country, products, rates, supplementalCosts, orderDate),
+      affectedQty: item.orderedQty,
+    }));
+    const packagingRules = normalizePackagingFeeRules(settings().packagingFeeRules);
+    const packagingFeeCny = money(calculatePackagingFeeCny(
+      country,
+      normalizedRawItems.reduce((sum, item) => sum + item.orderedQty, 0),
+      packagingRules,
+    ));
+    const normalizedCustomer = {
+      name: "",
+      phone: "",
+      country: country,
+      province: "",
+      city: "",
+      district: "",
+      address: "",
+      postalCode: "",
+      ...customer,
+    };
+    normalizedCustomer.recipientInfo ||= formatAfterSalesRecipientInfo(normalizedCustomer);
+    return {
+      ok: true,
+      source,
+      warning,
+      order: {
+        orderNumber,
+        orderIdentity: text(sourceOrder?.orderIdentity),
+        platform: text(sourceOrder?.platform),
+        site: country,
+        shopId: text(sourceOrder?.shopId),
+        shopAlias: text(sourceOrder?.shopAlias) || "未配置别名",
+        platformShopName: text(sourceOrder?.platformShopName),
+        orderStartedAt: text(sourceOrder?.orderStartedAt),
+        warehouseId: text(sourceOrder?.warehouseId),
+        warehouseName: text(sourceOrder?.warehouseName),
+        customer: normalizedCustomer,
+        items: enrichedItems,
+        packagingFeeCny,
+        existingTickets: store.byOrder(orderNumber).map(publicListTicket),
+      },
+    };
+  }
+
+  async function syncOrder(orderNumberInput, options = {}) {
     const orderNumber = text(orderNumberInput);
     if (!orderNumber || orderNumber.length > 160 || /[\r\n,]/.test(orderNumber)) throw new Error("请输入有效的平台后台订单号。");
     const cached = performanceStore?.findMiaoshouOrderBundlesByPlatformOrderSns?.([orderNumber]) || { orders: [], items: [] };
@@ -1102,31 +1155,35 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
     const liveWarning = [...new Set(liveWarnings)].join("；");
     const exactOrders = [...new Map(orders.filter((order) => text(order.platformOrderSn) === orderNumber).map((order) => [order.identity, order])).values()];
     const shopIds = [...new Set(exactOrders.map((order) => text(order.shopId)).filter(Boolean))];
-    if (!exactOrders.length) throw new Error(liveWarning || "妙手未查询到该平台订单号，请核对后重试。");
+    if (!exactOrders.length) {
+      const fallback = typeof lookupWarehouseOrder === "function"
+        ? await lookupWarehouseOrder({ orderNumber, dataScopes: options.dataScopes || {} })
+        : null;
+      if (fallback?.found && fallback.order) {
+        return enrichSyncedOrder({
+          orderNumber,
+          source: fallback.source || "warehouse_wms_live",
+          warning: fallback.warning || liveWarning,
+          sourceOrder: fallback.order,
+          rawItems: fallback.order.rawItems || [],
+          customer: fallback.order.customer || {},
+        });
+      }
+      const warnings = [...new Set([liveWarning, fallback?.warning].filter(Boolean))];
+      throw new Error(warnings.join("；") || "妙手与授权仓 WMS 均未查询到该平台订单号，请核对后重试。");
+    }
     if (shopIds.length !== 1) throw new Error(`该订单号命中 ${shopIds.length} 家店铺，为避免串单已停止同步，请核对订单号。`);
     const order = exactOrders.find((row) => text(row.shopId) === shopIds[0]) || exactOrders[0];
     const shop = (context.shops || []).find((row) => text(row.shopId) === shopIds[0]) || {};
     const uniqueItems = [...new Map(items.map((item) => [text(item.identity), item])).values()];
     const rawItems = aggregateOrderItems(uniqueItems, order.identity);
     if (!rawItems.length) throw new Error("已找到订单，但妙手未返回商品明细，请稍后重试或检查订单状态。");
-    const products = getProducts?.() || {};
-    const rates = performanceStore?.listExchangeRates?.() || [];
-    const supplementalCosts = performanceStore?.listSupplementalProductCosts?.() || [];
-    const orderDate = text(order.orderStartedAt).slice(0, 10);
     const country = text(order.site || shop.site).toUpperCase();
-    const enrichedItems = rawItems.map((item) => ({
-      ...item,
-      ...resolveItemProduct(item.sku, country, products, rates, supplementalCosts, orderDate),
-      affectedQty: item.orderedQty,
-    }));
-    const packagingRules = normalizePackagingFeeRules(settings().packagingFeeRules);
-    const packagingFeeCny = money(calculatePackagingFeeCny(country, rawItems.reduce((sum, item) => sum + item.orderedQty, 0), packagingRules));
-    return {
-      ok: true,
+    return enrichSyncedOrder({
+      orderNumber,
       source: rawRows.length ? "miaoshou_live" : "local_cache",
       warning: liveWarning,
-      order: {
-        orderNumber,
+      sourceOrder: {
         orderIdentity: order.identity,
         platform: text(order.platform || shop.platform),
         site: country,
@@ -1134,12 +1191,10 @@ export function createAfterSalesService({ cachePath, uploadDir, performanceStore
         shopAlias: text(shop.shopNick) || "未配置别名",
         platformShopName: text(shop.platformShopName),
         orderStartedAt: text(order.orderStartedAt),
-        customer: customerFromPackageRows(rawRows, orderNumber),
-        items: enrichedItems,
-        packagingFeeCny,
-        existingTickets: store.byOrder(orderNumber).map(publicListTicket),
       },
-    };
+      rawItems,
+      customer: customerFromPackageRows(rawRows, orderNumber),
+    });
   }
 
   function saveUploadBytes(input, actor, requestOrigin) {

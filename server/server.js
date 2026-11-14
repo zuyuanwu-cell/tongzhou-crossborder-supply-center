@@ -56,6 +56,7 @@ import { createMiaoshouPerformanceSyncService } from "./miaoshou-performance-syn
 import { createMiaoshouOrderAliasMatcher } from "./miaoshou-order-alias.js";
 import { createMiaoshouOrderAliasJobService } from "./miaoshou-order-alias-jobs.js";
 import { createAfterSalesService } from "./after-sales.js";
+import { lookupAfterSalesWmsOrder } from "./after-sales-wms-lookup.js";
 import { createWarehouseTicketService } from "./warehouse-tickets.js";
 import { buildReviewCenterPayload, canAccessReviewCenter } from "./review-center.js";
 import {
@@ -453,6 +454,14 @@ const afterSalesService = createAfterSalesService({
   performanceStore: performanceAnalyticsStore,
   connector: miaoshouAutomation,
   getProducts: () => cachedProducts,
+  lookupWarehouseOrder: ({ orderNumber, dataScopes }) => lookupAfterSalesWmsOrder({
+    orderNumber,
+    dataScopes,
+    connections: warehouseConnections,
+    cachedOrders: cachedOrdersSync.orders || [],
+    findOutboundOrder: findWarehouseOutboundOrder,
+    prepareConnection: effectiveWarehouseReturnConnection,
+  }),
 });
 const warehouseTicketService = createWarehouseTicketService({
   cachePath: warehouseTicketCachePath,
@@ -10594,7 +10603,9 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const payload = await parseRequestBody(req);
-        const result = await afterSalesService.syncOrder(payload.orderNumber);
+        const result = await afterSalesService.syncOrder(payload.orderNumber, {
+          dataScopes: warehouseCollaborationDataScopes(auth),
+        });
         const warehouseOptions = afterSalesWarehouseOptions(
           result.order,
           warehouseConnections,

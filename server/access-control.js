@@ -230,7 +230,7 @@ const PRODUCT_LAUNCH_DENIED_ROLES = new Set(["distributor", "guest"]);
 const VERIFICATION_CODE_DENIED_ROLES = new Set(["warehouse", "distributor", "guest"]);
 const VERIFICATION_CODE_PERMISSION_KEYS = Object.freeze(["verification_code_view", "verification_code_manage"]);
 const ADMIN_ONLY_PERMISSION_KEYS = Object.freeze(["business_chain_view", "business_chain_sync", "system_backup", "verification_code_manage"]);
-const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_warehouse", "warehouse_ticket_warehouse", "warehouse_qualification_coverage", "stockup_request_view_all", "stockup_receipt_confirm"]);
+const WAREHOUSE_ALLOWED_PERMISSIONS = new Set(["product_view", "domestic_inventory_view", "domestic_inventory_receive", "domestic_inventory_issue", "domestic_inventory_transfer", "domestic_inventory_adjust", "domestic_inventory_manage", "after_sales_report", "after_sales_warehouse", "warehouse_ticket_warehouse", "warehouse_qualification_coverage", "stockup_request_view_all", "stockup_receipt_confirm"]);
 
 function roleOf(user) {
   return ["admin", "direct", "warehouse", "distributor"].includes(user?.role) ? user.role : "guest";
