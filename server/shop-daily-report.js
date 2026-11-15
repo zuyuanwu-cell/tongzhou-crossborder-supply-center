@@ -991,6 +991,7 @@ export function buildShopDailyOrderDrilldown(facts = [], {
         shippedAt: text(fact.shippedAt),
         shopKey: text(fact.shopKey),
         shopName: text(fact.shopName || fact.rawShopName || fact.shopKey),
+        shopUrl: text(fact.shopUrl),
         platform: text(fact.platform),
         country: text(fact.country),
         projectGroup: text(fact.projectGroup),
@@ -1014,6 +1015,7 @@ export function buildShopDailyOrderDrilldown(facts = [], {
     if (!order.status && fact.status) order.status = text(fact.status);
     if (!order.createdAt && fact.createdAt) order.createdAt = text(fact.createdAt);
     if (!order.shippedAt && fact.shippedAt) order.shippedAt = text(fact.shippedAt);
+    if (!order.shopUrl && fact.shopUrl) order.shopUrl = text(fact.shopUrl);
     const sku = text(fact.sku || fact.skuNo || fact.countrySku);
     const productName = text(fact.productName) || sku || "未识别商品";
     const itemKey = `${sku}\u0000${productName}`;

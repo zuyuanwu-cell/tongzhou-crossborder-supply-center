@@ -94,7 +94,7 @@ import { createCollectorQuality, addDays as qualityAddDays } from "./collector-q
 import { createMiaoshouRuleSchedule } from "./miaoshou-rule-schedule.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
-import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings } from "./shop-directory.js";
+import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings, normalizeShopUrl, resolveShopScope } from "./shop-directory.js";
 import { buildDashboardMarketSnapshot, buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
@@ -5081,6 +5081,41 @@ function csvCell(value) {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function parseShopDirectoryCsv(source) {
+  const input = String(source || "").replace(/^\uFEFF/, "");
+  if (input.includes("\uFFFD")) throw new Error("CSV 编码无法识别，请使用 UTF-8 编码的 CSV 或系统导出的文件。");
+  const rows = [];
+  let row = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (quoted) {
+      if (character === '"' && input[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else if (character === '"') quoted = false;
+      else value += character;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === ",") {
+      row.push(value.trim());
+      value = "";
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\r" && input[index + 1] === "\n") index += 1;
+      row.push(value.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      value = "";
+    } else value += character;
+  }
+  if (quoted) throw new Error("CSV 存在未闭合的双引号，请检查文件格式。");
+  row.push(value.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+}
+
 function inventorySnapshotCsv(snapshot) {
   const headers = ["日期", "仓库", "国家/地区", "SKU", "国家SKU", "产品名称", "可售", "锁定", "待入库", "在途", "不良", "暂存", "总库存", "库存同步时间", "快照时间"];
   const lines = [headers.map(csvCell).join(",")];
@@ -5791,15 +5826,30 @@ function shopDirectoryForOrders(orders = []) {
 }
 
 function publicShopDirectory(directory, auth = directAuth) {
+  const user = auth?.user || directAuth.user;
+  const canManageAll = hasPermission(auth, "performance_manage");
+  const shopScope = resolveShopScope({ user, directory, canManageAll });
   return {
     shops: directory.shops || [],
     projectGroups: directory.projectGroups || [],
+    projectGroupTeams: (directory.projectGroupTeams || []).map((team) => ({
+      name: team.name,
+      leaderIds: team.leaderIds || [],
+      memberIds: team.memberIds || [],
+      inheritUnassignedShops: team.inheritUnassignedShops || false,
+      updatedAt: team.updatedAt || "",
+      updatedBy: team.updatedBy || "",
+    })),
     miaoshouShopCount: directory.miaoshouShopCount || 0,
     matchedShopCount: directory.matchedShopCount || 0,
     unmatchedShopCount: directory.unmatchedShopCount || 0,
+    ownerCount: directory.ownerCount || 0,
+    unassignedOwnerCount: directory.unassignedOwnerCount || 0,
     miaoshouSyncedAt: directory.miaoshouSyncedAt || "",
-    canManage: hasPermission(auth, "performance_manage"),
-    miaoshouShops: hasPermission(auth, "performance_manage") ? directory.miaoshouShops || [] : [],
+    canManage: canManageAll,
+    canManageOwnGroup: shopScope.leaderGroups.length > 0,
+    managedGroups: shopScope.leaderGroups,
+    miaoshouShops: canManageAll ? directory.miaoshouShops || [] : [],
   };
 }
 
@@ -6121,6 +6171,13 @@ async function shopDailyContext(auth, { dateFrom = "", dateTo = "", orderNos = [
   const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
   const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
+  const canManageAll = hasPermission(auth, "performance_manage");
+  const shopScope = resolveShopScope({ user, directory: materialization.shopDirectory, canManageAll });
+  const scopesWithShops = {
+    ...scopes,
+    shopScopeApplied: shopScope.visibleShopKeys !== null,
+    shopKeys: shopScope.visibleShopKeys === null ? [] : [...shopScope.visibleShopKeys],
+  };
   let queryResult;
   try {
     queryResult = await performanceAnalyticsQueryService.query({
@@ -6131,7 +6188,7 @@ async function shopDailyContext(auth, { dateFrom = "", dateTo = "", orderNos = [
       exchangeRates,
       packagingFeeRules,
       filters: { dateFrom, dateTo },
-      scopes,
+      scopes: scopesWithShops,
       queryType: "shop-daily",
       params: { orderNos },
     });
@@ -6387,6 +6444,13 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
   const supplementalProductCosts = performanceAnalyticsStore.listSupplementalProductCosts();
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
   const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
+  const canManageAll = hasPermission(auth, "performance_manage");
+  const shopScope = resolveShopScope({ user, directory: materialization.shopDirectory, canManageAll });
+  const scopesWithShops = {
+    ...scopes,
+    shopScopeApplied: shopScope.visibleShopKeys !== null,
+    shopKeys: shopScope.visibleShopKeys === null ? [] : [...shopScope.visibleShopKeys],
+  };
   const cacheKey = JSON.stringify({
     dataVersion: materialization.dataVersion,
     filters,
@@ -6394,7 +6458,7 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
     role: auth.role || user.role || "",
     permissions: ["performance_revenue", "performance_cost", "performance_profit"]
       .map((permission) => [permission, hasPermission(auth, permission)]),
-    scopes,
+    scopes: scopesWithShops,
   });
   const cachedResponse = cachedPerformanceAnalyticsResponse(cacheKey);
   if (cachedResponse) return cachedResponse;
@@ -6474,6 +6538,13 @@ async function buildPerformanceAnalyticsResponse(params = {}, auth = directAuth)
       reconciliation: materialization.transactionReconciliation,
     },
     shopDirectory: publicShopDirectory(scopedShopDirectory, auth),
+    shopScope: {
+      mode: shopScope.mode,
+      teams: shopScope.teams,
+      leaderGroups: shopScope.leaderGroups,
+      ownedShopCount: shopScope.ownedShopCount,
+      visibleShopCount: scopedShopDirectory.shops.length,
+    },
     partitionStats: materialization.partitionStats || null,
     summaryStore: analyticsSummaryStore.status(),
     reconciliation: {
@@ -7031,6 +7102,13 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
   const packagingFeeRules = normalizePackagingFeeRules(settings.packagingFeeRules);
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
   const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, settings);
+  const canManageAll = hasPermission(auth, "performance_manage");
+  const shopScope = resolveShopScope({ user, directory: materialization.shopDirectory, canManageAll });
+  const scopesWithShops = {
+    ...scopes,
+    shopScopeApplied: shopScope.visibleShopKeys !== null,
+    shopKeys: shopScope.visibleShopKeys === null ? [] : [...shopScope.visibleShopKeys],
+  };
   const cacheKey = JSON.stringify({
     dataVersion: materialization.dataVersion,
     filters,
@@ -7038,7 +7116,7 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
     scope,
     role: accessUser.role || auth.role || "anonymous",
     permissions: [...(accessUser.permissions || [])].sort(),
-    scopes,
+    scopes: scopesWithShops,
   });
   const cached = cachedOrderAnalysisResponse(cacheKey);
   if (cached) return cached;
@@ -7053,7 +7131,7 @@ async function buildOrderAnalysisResponse(params = {}, auth = directAuth) {
       exchangeRates,
       packagingFeeRules,
       filters,
-      scopes,
+      scopes: scopesWithShops,
       onlyRussia,
       scope,
       limits: { recentOrders: 200 },
@@ -7380,6 +7458,13 @@ async function buildShopDailyOrdersResponse(params = {}, auth = directAuth) {
   const packagingFeeRules = normalizePackagingFeeRules(performanceSettings.packagingFeeRules);
   const miaoshouShopState = miaoshouAutomation.publicPayload({ taskLimit: 1, eventLimit: 1 });
   const materialization = await performanceMaterialization(exchangeRates, packagingFeeRules, miaoshouShopState, performanceSettings);
+  const canManageAll = hasPermission(auth, "performance_manage");
+  const shopScope = resolveShopScope({ user, directory: materialization.shopDirectory, canManageAll });
+  const scopesWithShops = {
+    ...scopes,
+    shopScopeApplied: shopScope.visibleShopKeys !== null,
+    shopKeys: shopScope.visibleShopKeys === null ? [] : [...shopScope.visibleShopKeys],
+  };
   let queryResult;
   try {
     queryResult = await performanceAnalyticsQueryService.query({
@@ -7390,7 +7475,7 @@ async function buildShopDailyOrdersResponse(params = {}, auth = directAuth) {
       exchangeRates,
       packagingFeeRules,
       filters: range,
-      scopes,
+      scopes: scopesWithShops,
       queryType: "shop-daily-orders",
       params: {
         shopKey: String(params.shopKey || ""),
@@ -14207,46 +14292,86 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/shop-directory/project-group" && req.method === "PATCH") {
       const auth = getAuth(req);
-      if (!hasPermission(auth, "performance_manage")) {
-        sendJson(res, 403, { ok: false, message: "设置店铺项目组需要经营贡献管理权限。" });
+      const canManageAll = hasPermission(auth, "performance_manage");
+      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      const user = auth?.user || directAuth.user;
+      const shopScope = resolveShopScope({ user, directory, canManageAll });
+      if (!canManageAll && !shopScope.leaderGroups.length) {
+        sendJson(res, 403, { ok: false, message: "设置店铺归属需要经营贡献管理权限或项目组组长身份。" });
         return;
       }
       const body = await parseRequestBody(req);
       const shopKeys = [...new Set((Array.isArray(body.shopKeys) ? body.shopKeys : []).map((value) => String(value || "").trim()).filter(Boolean))];
-      const projectGroup = String(body.projectGroup || "").trim();
+      const projectGroup = body.projectGroup !== undefined ? String(body.projectGroup || "").trim() : undefined;
+      const ownerId = body.ownerId !== undefined ? String(body.ownerId || "").trim() : undefined;
+      const ownerName = body.ownerName !== undefined ? String(body.ownerName || "").trim() : undefined;
+      const shopUrl = body.shopUrl !== undefined ? normalizeShopUrl(body.shopUrl) : undefined;
       if (!shopKeys.length || shopKeys.length > 500) {
         sendJson(res, 400, { ok: false, message: "请选择 1 至 500 个店铺。" });
         return;
       }
-      if (!projectGroup || projectGroup.length > 80) {
-        sendJson(res, 400, { ok: false, message: "主项目组名称不能为空，且不能超过 80 个字符。" });
+      if (projectGroup !== undefined && projectGroup.length > 80) {
+        sendJson(res, 400, { ok: false, message: "主项目组名称不能超过 80 个字符。" });
         return;
       }
-      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      if (ownerId !== undefined && ownerId.length > 128) {
+        sendJson(res, 400, { ok: false, message: "负责人 ID 不能超过 128 个字符。" });
+        return;
+      }
+      if (ownerName !== undefined && ownerName.length > 80) {
+        sendJson(res, 400, { ok: false, message: "负责人姓名不能超过 80 个字符。" });
+        return;
+      }
+      if (body.shopUrl !== undefined && String(body.shopUrl || "").trim() && !shopUrl) {
+        sendJson(res, 400, { ok: false, message: "店铺链接必须是有效的 http 或 https 地址。" });
+        return;
+      }
       const knownKeys = new Set(directory.shops.map((shop) => shop.key));
       const unknownKeys = shopKeys.filter((key) => !knownKeys.has(key));
       if (unknownKeys.length) {
         sendJson(res, 400, { ok: false, message: `有 ${unknownKeys.length} 个店铺身份已变化，请刷新页面后重新选择。` });
         return;
       }
+      if (!canManageAll) {
+        const managedGroupSet = new Set(shopScope.leaderGroups);
+        const byKey = new Map(directory.shops.map((shop) => [shop.key, shop]));
+        const outOfScope = shopKeys.filter((key) => {
+          const shop = byKey.get(key);
+          return shop && !managedGroupSet.has(shop.projectGroup);
+        });
+        if (outOfScope.length) {
+          sendJson(res, 403, { ok: false, message: `您只能维护本组店铺，有 ${outOfScope.length} 个店铺不在您的项目组范围内。` });
+          return;
+        }
+      }
       cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
       const now = new Date().toISOString();
       const actor = auth.user?.displayName || auth.user?.username || "管理员";
       for (const key of shopKeys) {
+        const current = cachedOrderAnalysisSettings.shopAssignments[key] || {};
         cachedOrderAnalysisSettings.shopAssignments[key] = {
-          projectGroup,
+          projectGroup: projectGroup !== undefined ? projectGroup : (current.projectGroup || ""),
+          ownerId: ownerId !== undefined ? ownerId : (current.ownerId || ""),
+          ownerName: ownerName !== undefined ? ownerName : (current.ownerName || ""),
+          shopUrl: shopUrl !== undefined ? shopUrl : (current.shopUrl || ""),
           updatedAt: now,
           updatedBy: actor,
         };
       }
-      cachedOrderAnalysisSettings.projectGroups = [...new Set([
-        ...cachedOrderAnalysisSettings.projectGroups,
-        projectGroup,
-      ])].sort((left, right) => left.localeCompare(right, "zh-CN"));
+      if (projectGroup) {
+        cachedOrderAnalysisSettings.projectGroups = [...new Set([
+          ...cachedOrderAnalysisSettings.projectGroups,
+          projectGroup,
+        ])].sort((left, right) => left.localeCompare(right, "zh-CN"));
+      }
       saveOrderAnalysisSettings();
-      appendActionLog(auth, "批量设置店铺主项目组", "shop_directory", projectGroup, {
+      appendActionLog(auth, "批量设置店铺归属", "shop_directory", [projectGroup, ownerId, ownerName, shopUrl].filter(Boolean).join(" / ") || "清空", {
         shopCount: shopKeys.length,
         shopKeys,
+        projectGroup,
+        ownerId,
+        ownerName,
+        shopUrl,
       });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       if (performanceAnalyticsMaterializedCache) {
@@ -14264,8 +14389,220 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         updatedCount: shopKeys.length,
         projectGroup,
+        ownerId,
+        ownerName,
+        shopUrl,
         shopDirectory: publicShopDirectory(updatedDirectory, auth),
       });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-directory/project-group-teams" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_manage")) {
+        sendJson(res, 403, { ok: false, message: "配置项目组团队需要经营贡献管理权限。" });
+        return;
+      }
+      const body = await parseRequestBody(req);
+      const rawTeams = Array.isArray(body.teams) ? body.teams : [];
+      if (rawTeams.length > 50) {
+        sendJson(res, 400, { ok: false, message: "项目组团队不能超过 50 个。" });
+        return;
+      }
+      cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
+      const now = new Date().toISOString();
+      const actor = auth.user?.displayName || auth.user?.username || "管理员";
+      cachedOrderAnalysisSettings.projectGroupTeams = rawTeams.map((team) => ({
+        name: String(team?.name || "").trim(),
+        leaderIds: Array.isArray(team?.leaderIds) ? team.leaderIds.map((id) => String(id || "").trim()).filter(Boolean) : [],
+        memberIds: Array.isArray(team?.memberIds) ? team.memberIds.map((id) => String(id || "").trim()).filter(Boolean) : [],
+        inheritUnassignedShops: team?.inheritUnassignedShops === true,
+        updatedAt: now,
+        updatedBy: actor,
+      })).filter((team) => team.name && team.name.length <= 80);
+      cachedOrderAnalysisSettings.updatedAt = now;
+      saveOrderAnalysisSettings();
+      appendActionLog(auth, "配置项目组团队", "shop_directory_team", `${cachedOrderAnalysisSettings.projectGroupTeams.length} 个团队`, {
+        teamCount: cachedOrderAnalysisSettings.projectGroupTeams.length,
+        teams: cachedOrderAnalysisSettings.projectGroupTeams.map((team) => team.name),
+      });
+      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      clearPerformanceAnalyticsResponseCache();
+      await performanceAnalyticsQueryService.close();
+      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
+      sendJson(res, 200, { ok: true, shopDirectory: publicShopDirectory(directory, auth) });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-directory/export" && req.method === "GET") {
+      const auth = getAuth(req);
+      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      const canManageAll = hasPermission(auth, "performance_manage");
+      const shopScope = resolveShopScope({ user: auth?.user || directAuth.user, directory, canManageAll });
+      if (!canManageAll && !shopScope.leaderGroups.length) {
+        sendJson(res, 403, { ok: false, message: "导出店铺归属需要经营贡献管理权限或项目组组长身份。" });
+        return;
+      }
+      const visibleShops = shopScope.visibleShopKeys === null
+        ? directory.shops
+        : directory.shops.filter((shop) => shopScope.visibleShopKeys.has(shop.key));
+      const headers = ["店铺ID", "店铺 / WMS 原名", "平台", "国家", "负责人ID", "负责人姓名", "主项目组", "店铺链接", "妙手店铺ID", "妙手别名", "订单行数", "最近订单"];
+      const rows = visibleShops.map((shop) => [
+        shop.key,
+        shop.rawName,
+        shop.platform || "",
+        shop.country || "",
+        shop.ownerId || "",
+        shop.ownerName || "",
+        shop.projectGroup || "",
+        shop.shopUrl || "",
+        shop.miaoshouShopId || "",
+        shop.miaoshouAlias || "",
+        shop.orderLines || 0,
+        shop.latestOrderAt || "",
+      ]);
+      const csv = `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`shop-directory-${new Date().toISOString().slice(0, 10)}.csv`)}`,
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(csv);
+      return;
+    }
+
+    if (url.pathname === "/api/shop-directory/import" && req.method === "POST") {
+      const auth = getAuth(req);
+      const canManageAll = hasPermission(auth, "performance_manage");
+      const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      const shopScope = resolveShopScope({ user: auth?.user || directAuth.user, directory, canManageAll });
+      if (!canManageAll && !shopScope.leaderGroups.length) {
+        sendJson(res, 403, { ok: false, message: "导入店铺归属需要经营贡献管理权限或项目组组长身份。" });
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 5 * 1024 * 1024) {
+          sendJson(res, 413, { ok: false, message: "上传文件不能超过 5MB。" });
+          return;
+        }
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+      let grid;
+      try {
+        const isXlsx = buffer.length > 3 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+        if (isXlsx) {
+          const { parseXlsx } = await import("./xlsx-lite.js");
+          grid = parseXlsx(buffer);
+        } else {
+          grid = parseShopDirectoryCsv(buffer.toString("utf8"));
+        }
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error instanceof Error ? error.message : "文件解析失败，请确认是有效的 CSV 或 xlsx 格式。" });
+        return;
+      }
+      if (grid.length < 2) {
+        sendJson(res, 400, { ok: false, message: "文件只有表头，没有可导入的店铺数据。" });
+        return;
+      }
+      const headers = grid[0].map((value) => String(value || "").replace(/[\s()（）_\-]/g, "").toLowerCase());
+      const indexOf = (...aliases) => headers.findIndex((header) => aliases.map((alias) => alias.replace(/[\s()（）_\-]/g, "").toLowerCase()).includes(header));
+      const indexes = {
+        key: indexOf("店铺ID", "shopkey", "key"),
+        ownerId: indexOf("负责人ID", "ownerid"),
+        ownerName: indexOf("负责人姓名", "负责人", "ownername"),
+        projectGroup: indexOf("主项目组", "项目组", "projectgroup"),
+        shopUrl: indexOf("店铺链接", "店铺网址", "shopurl", "url"),
+      };
+      if (indexes.key < 0) {
+        sendJson(res, 400, { ok: false, message: "文件缺少必填列：店铺ID。请使用系统导出的 CSV 模板。" });
+        return;
+      }
+      const knownKeys = new Set(directory.shops.map((shop) => shop.key));
+      const errors = [];
+      const updates = [];
+      grid.slice(1).forEach((cells, rowIndex) => {
+        const rowNumber = rowIndex + 2;
+        const key = String(cells[indexes.key] || "").trim();
+        const projectGroup = indexes.projectGroup >= 0 ? String(cells[indexes.projectGroup] || "").trim() : undefined;
+        const ownerId = indexes.ownerId >= 0 ? String(cells[indexes.ownerId] || "").trim() : undefined;
+        const ownerName = indexes.ownerName >= 0 ? String(cells[indexes.ownerName] || "").trim() : undefined;
+        const rawShopUrl = indexes.shopUrl >= 0 ? String(cells[indexes.shopUrl] || "").trim() : undefined;
+        const shopUrl = rawShopUrl !== undefined ? normalizeShopUrl(rawShopUrl) : undefined;
+        if (!key) errors.push(`第 ${rowNumber} 行：店铺ID 为空`);
+        else if (!knownKeys.has(key)) errors.push(`第 ${rowNumber} 行：店铺ID “${key}” 不存在，可能已变更`);
+        else if (projectGroup !== undefined && projectGroup.length > 80) errors.push(`第 ${rowNumber} 行：项目组名称不能超过 80 字符`);
+        else if (ownerId !== undefined && ownerId.length > 128) errors.push(`第 ${rowNumber} 行：负责人ID 不能超过 128 字符`);
+        else if (ownerName !== undefined && ownerName.length > 80) errors.push(`第 ${rowNumber} 行：负责人姓名不能超过 80 字符`);
+        else if (rawShopUrl && !shopUrl) errors.push(`第 ${rowNumber} 行：店铺链接必须是 http 或 https 地址`);
+        else updates.push({ key, projectGroup, ownerId, ownerName, shopUrl });
+      });
+      if (errors.length) {
+        sendJson(res, 400, {
+          ok: false,
+          message: `${errors.length} 行未通过校验：${errors.slice(0, 5).join("；")}${errors.length > 5 ? "；其余错误请修正后重试" : ""}。未写入任何数据。`,
+          errors: errors.slice(0, 50),
+        });
+        return;
+      }
+      if (!updates.length) {
+        sendJson(res, 400, { ok: false, message: "没有可导入的有效数据行。" });
+        return;
+      }
+      if (!canManageAll) {
+        const managedGroups = new Set(shopScope.leaderGroups);
+        const byKey = new Map(directory.shops.map((shop) => [shop.key, shop]));
+        const outOfScope = updates.filter((update) => !managedGroups.has(byKey.get(update.key)?.projectGroup));
+        if (outOfScope.length) {
+          sendJson(res, 403, { ok: false, message: `您只能导入本组店铺，有 ${outOfScope.length} 个店铺不在您的项目组范围内。` });
+          return;
+        }
+      }
+      cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
+      const now = new Date().toISOString();
+      const actor = auth.user?.displayName || auth.user?.username || "管理员";
+      const newProjectGroups = new Set();
+      for (const update of updates) {
+        const current = cachedOrderAnalysisSettings.shopAssignments[update.key] || {};
+        cachedOrderAnalysisSettings.shopAssignments[update.key] = {
+          projectGroup: update.projectGroup !== undefined ? update.projectGroup : (current.projectGroup || ""),
+          ownerId: update.ownerId !== undefined ? update.ownerId : (current.ownerId || ""),
+          ownerName: update.ownerName !== undefined ? update.ownerName : (current.ownerName || ""),
+          shopUrl: update.shopUrl !== undefined ? update.shopUrl : (current.shopUrl || ""),
+          updatedAt: now,
+          updatedBy: actor,
+        };
+        if (update.projectGroup) newProjectGroups.add(update.projectGroup);
+      }
+      cachedOrderAnalysisSettings.projectGroups = [...new Set([
+        ...cachedOrderAnalysisSettings.projectGroups,
+        ...newProjectGroups,
+      ])].sort((left, right) => left.localeCompare(right, "zh-CN"));
+      cachedOrderAnalysisSettings.updatedAt = now;
+      saveOrderAnalysisSettings();
+      appendActionLog(auth, "导入店铺归属", "shop_directory", `${updates.length} 个店铺`, { shopCount: updates.length });
+      const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
+      clearPerformanceAnalyticsResponseCache();
+      await performanceAnalyticsQueryService.close();
+      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
+      sendJson(res, 200, { ok: true, importedCount: updates.length, shopDirectory: publicShopDirectory(updatedDirectory, auth) });
+      return;
+    }
+
+    if (url.pathname === "/api/shop-directory/user-options" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "performance_manage")) {
+        sendJson(res, 403, { ok: false, message: "获取用户选项需要经营贡献管理权限。" });
+        return;
+      }
+      const users = (cachedUsers.users || [])
+        .filter((user) => user.status !== "disabled")
+        .map((user) => ({ id: user.id, username: user.username, displayName: user.displayName || user.username }))
+        .sort((left, right) => left.displayName.localeCompare(right.displayName, "zh-CN"));
+      sendJson(res, 200, { ok: true, users });
       return;
     }
 

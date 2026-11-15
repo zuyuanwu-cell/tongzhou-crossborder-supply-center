@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, ClipboardPaste, Download, FileUp, ListChecks, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, ClipboardPaste, Download, ExternalLink, FileUp, ListChecks, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
 import {
   deleteShopDailyMetric,
   deleteShopReviewOrder,
@@ -35,6 +35,34 @@ function fmtCny(value: number | null | undefined) {
 
 function fmtNum(value: number | null | undefined) {
   return value === null || value === undefined || !Number.isFinite(value) ? "—" : numberFormatter.format(value);
+}
+
+function safeExternalUrl(value: string | null | undefined) {
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function formatOrderStatus(value: string | null | undefined) {
+  const raw = String(value || "").trim();
+  const normalized = raw.toLowerCase();
+  const labels: Record<string, string> = {
+    completed: "已完成",
+    delivered: "已送达",
+    shipped: "已发货",
+    paid: "已付款",
+    processing: "处理中",
+    pending: "待处理",
+    cancelled: "已取消",
+    canceled: "已取消",
+    refunded: "已退款",
+    has_out_storage: "已出库",
+  };
+  return labels[normalized] || raw || "状态未同步";
 }
 
 function fmtPct(value: number | null | undefined, digits = 2) {
@@ -698,6 +726,7 @@ function OrderDrilldownDrawer({
   onPage: (page: number) => void;
   onExport: () => void;
 }) {
+  const shopUrl = safeExternalUrl(payload?.orders.find((order) => order.shopUrl)?.shopUrl);
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -714,6 +743,7 @@ function OrderDrilldownDrawer({
             <span className="shop-daily-eyebrow">ORDER DRILLDOWN</span>
             <h3>{target.shopName}</h3>
             <p><PlatformMark platform={target.platform} /> {target.platform || "未知平台"} · {target.label}</p>
+            {shopUrl ? <a className="shop-daily-shop-link" href={shopUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开店铺</a> : null}
           </div>
           <button className="shop-daily-drawer-close" type="button" onClick={onClose} aria-label="关闭订单明细"><X size={20} /></button>
         </header>
@@ -743,12 +773,19 @@ function OrderDrilldownDrawer({
                 <div>
                   <small>{order.orderDate} · {order.sourceSystem || "中台订单"}</small>
                   <strong>{order.orderNo}</strong>
+                  <div className="shop-daily-order-meta">
+                    {order.sourceOrderId && order.sourceOrderId !== order.orderNo ? <span>平台单号：{order.sourceOrderId}</span> : null}
+                    {order.country ? <span>国家：{order.country}</span> : null}
+                    {order.projectGroup ? <span>项目组：{order.projectGroup}</span> : null}
+                    {order.createdAt ? <span>下单：{order.createdAt}</span> : null}
+                    {order.shippedAt ? <span>发货：{order.shippedAt}</span> : null}
+                  </div>
                 </div>
                 <div className="shop-daily-order-amount">
                   <strong>{fmtCny(order.salesCny)}</strong>
                   <small>{order.salesAmount ? fmtLocal(order.salesAmount, order.currency) : "暂无平台金额"}</small>
                 </div>
-                <span className="shop-daily-order-status">{order.status || "状态未同步"}</span>
+                <span className="shop-daily-order-status" title={order.status || ""}>{formatOrderStatus(order.status)}</span>
               </div>
               <div className="shop-daily-order-products">
                 {order.items.map((item) => (

@@ -19,13 +19,21 @@ function withinScope(row, scopes = {}) {
   const warehouseIds = Array.isArray(scopes.warehouseIds) ? scopes.warehouseIds : [];
   const countries = Array.isArray(scopes.countries) ? scopes.countries : [];
   const skus = Array.isArray(scopes.skus) ? scopes.skus : [];
+  const shopKeys = Array.isArray(scopes.shopKeys) ? scopes.shopKeys : [];
   if (warehouseIds.length && !warehouseIds.includes(text(row.warehouseId))) return false;
   if (countries.length && !countries.includes(text(row.country))) return false;
+  if (scopes.shopScopeApplied === true && !shopKeys.includes(text(row.shopKey))) return false;
   if (skus.length) {
     const rowSkus = [row.sku, row.skuNo, row.countrySku].map((value) => text(value).toUpperCase()).filter(Boolean);
     if (!rowSkus.some((sku) => skus.includes(sku))) return false;
   }
   return true;
+}
+
+function hasDataScope(scopes = {}) {
+  if (scopes.shopScopeApplied === true) return true;
+  return [scopes.warehouseIds, scopes.countries, scopes.skus]
+    .some((values) => Array.isArray(values) && values.length > 0);
 }
 
 function lowerBound(rows, date) {
@@ -61,14 +69,13 @@ function dateSlice(filters = {}) {
 function queryPerformance(message) {
   const startedAt = Date.now();
   const scopes = message.scopes || {};
-  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
-    .some((values) => Array.isArray(values) && values.length > 0);
-  const scopedAllFacts = hasDataScope ? facts.filter((row) => withinScope(row, scopes)) : facts;
-  const visibleShopKeys = hasDataScope
+  const scoped = hasDataScope(scopes);
+  const scopedAllFacts = scoped ? facts.filter((row) => withinScope(row, scopes)) : facts;
+  const visibleShopKeys = scoped
     ? [...new Set(scopedAllFacts.map((row) => text(row.shopKey)).filter(Boolean))]
     : null;
   const rangedFacts = dateSlice(message.filters);
-  const queryFacts = hasDataScope ? rangedFacts.filter((row) => withinScope(row, scopes)) : rangedFacts;
+  const queryFacts = scoped ? rangedFacts.filter((row) => withinScope(row, scopes)) : rangedFacts;
   const payload = buildPerformanceAnalyticsPayload({
     materializedFacts: queryFacts,
     exchangeRates,
@@ -87,10 +94,9 @@ function queryPerformance(message) {
 function queryOrderAnalysis(message) {
   const startedAt = Date.now();
   const scopes = message.scopes || {};
-  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
-    .some((values) => Array.isArray(values) && values.length > 0);
-  const scopedFacts = hasDataScope ? facts.filter((row) => withinScope(row, scopes)) : facts;
-  const visibleShopKeys = hasDataScope
+  const scoped = hasDataScope(scopes);
+  const scopedFacts = scoped ? facts.filter((row) => withinScope(row, scopes)) : facts;
+  const visibleShopKeys = scoped
     ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))]
     : null;
   const payload = buildOrderAnalysisFromFacts({
@@ -111,17 +117,16 @@ function queryOrderAnalysis(message) {
 function queryShopDaily(message) {
   const startedAt = Date.now();
   const scopes = message.scopes || {};
-  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
-    .some((values) => Array.isArray(values) && values.length > 0);
+  const scoped = hasDataScope(scopes);
   const filters = message.filters || {};
   const orderNos = Array.isArray(message.params?.orderNos) ? message.params.orderNos : [];
   // 测评订单号可能早于查询区间，需要在全部事实里查找；否则只扫描日期区间。
   const source = orderNos.length ? facts : dateSlice(filters);
-  const scopedFacts = hasDataScope ? source.filter((row) => withinScope(row, scopes)) : source;
+  const scopedFacts = scoped ? source.filter((row) => withinScope(row, scopes)) : source;
   const payload = aggregateSystemShopDaily(scopedFacts, { dateFrom: text(filters.dateFrom), dateTo: text(filters.dateTo), orderNos });
   return {
     payload,
-    visibleShopKeys: hasDataScope ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))] : null,
+    visibleShopKeys: scoped ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))] : null,
     workerQueryDurationMs: Date.now() - startedAt,
     scannedFactCount: scopedFacts.length,
   };
@@ -130,17 +135,16 @@ function queryShopDaily(message) {
 function queryShopDailyOrders(message) {
   const startedAt = Date.now();
   const scopes = message.scopes || {};
-  const hasDataScope = [scopes.warehouseIds, scopes.countries, scopes.skus]
-    .some((values) => Array.isArray(values) && values.length > 0);
+  const scoped = hasDataScope(scopes);
   const rangedFacts = dateSlice(message.filters || {});
-  const scopedFacts = hasDataScope ? rangedFacts.filter((row) => withinScope(row, scopes)) : rangedFacts;
+  const scopedFacts = scoped ? rangedFacts.filter((row) => withinScope(row, scopes)) : rangedFacts;
   const payload = buildShopDailyOrderDrilldown(scopedFacts, {
     ...(message.filters || {}),
     ...(message.params || {}),
   });
   return {
     payload,
-    visibleShopKeys: hasDataScope ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))] : null,
+    visibleShopKeys: scoped ? [...new Set(scopedFacts.map((row) => text(row.shopKey)).filter(Boolean))] : null,
     workerQueryDurationMs: Date.now() - startedAt,
     scannedFactCount: scopedFacts.length,
   };

@@ -1760,6 +1760,47 @@
 .performance-health-rates span.danger { color: #9a2018; }
 .performance-source-blockers { color: #6f4b24; border-color: #efd29b; background: #fff9ed; }
 
+.shop-directory-list {
+  border-color: #d9e2ed;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(23,61,122,.06);
+}
+.shop-directory-row { border-color: #e1e7ef; background: #fff; }
+.shop-directory-row.head { color: #52647d; background: #edf3ff; border-color: #d9e2ed; }
+.shop-directory-row:not(.head):hover { background: #fff8f3; }
+.shop-directory-row strong { color: #173d7a; font-size: 13px; }
+.shop-directory-row small { color: #63738b; font-size: 11px; }
+.shop-directory-row.head span,
+.shop-directory-row.head label span { color: #52647d; font-size: 11px; }
+.shop-directory-row.pending { background: #fff4ea; box-shadow: inset 3px 0 0 #f45b0b; }
+.shop-directory-pending-tag { color: #b8420a; }
+.shop-directory-message { color: #125a3c; border-color: #bce3d1; background: #effaf5; }
+.shop-directory-message.danger { color: #8f1d16; border-color: #ebbbb7; background: #fff3f2; }
+.shop-directory-save-bar { color: #6f4b24; border-color: #f1c5a9; background: #fff8f3; }
+.shop-directory-save-bar strong { color: #173d7a; }
+.shop-directory-empty { color: #63738b; }
+.shop-directory-empty strong { color: #173d7a; }
+.shop-directory-actions { border-color: #f1c5a9; background: #fff8f3; }
+.shop-directory-actions label { color: #52647d; }
+.shop-directory-actions > span { color: #63738b; }
+.shop-directory-group-cell input {
+  color: #18273f;
+  border-color: #cfd9e6;
+  background: #fff;
+}
+.shop-directory-group-cell input::placeholder { color: #8592a3; }
+.shop-directory-group-cell input:focus { border-color: #f45b0b; box-shadow: 0 0 0 3px rgba(244,91,11,.12); }
+.shop-directory-toolbar input[type="text"],
+.shop-directory-toolbar > label input,
+.shop-directory-toolbar select {
+  color: #18273f;
+  border-color: #cfd9e6;
+  background: #fff;
+}
+.shop-directory-toolbar > label svg { color: #8592a3; }
+.shop-directory-toolbar > label input::placeholder { color: #8592a3; }
+.shop-directory-toolbar > label input:focus { border-color: #f45b0b; box-shadow: 0 0 0 3px rgba(244,91,11,.12); }
+
 .miaoshou-hero,
 .miaoshou-metrics article,
 .miaoshou-flow article,

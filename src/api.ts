@@ -2584,6 +2584,9 @@ export type ShopDirectoryProfile = {
   latestOrderAt: string;
   projectGroup: string;
   projectGroupSource: "manual" | "inferred" | "unassigned" | string;
+  ownerId: string;
+  ownerName: string;
+  shopUrl: string;
   miaoshouShopId: string;
   miaoshouShopName: string;
   miaoshouAlias: string;
@@ -2598,11 +2601,16 @@ export type MiaoshouDirectoryShopOption = { shopId: string; platform: string; si
 export type ShopDirectoryPayload = {
   shops: ShopDirectoryProfile[];
   projectGroups: string[];
+  projectGroupTeams: Array<{ name: string; leaderIds: string[]; memberIds: string[]; inheritUnassignedShops: boolean; updatedAt: string; updatedBy: string }>;
   miaoshouShopCount: number;
   matchedShopCount: number;
   unmatchedShopCount: number;
+  ownerCount: number;
+  unassignedOwnerCount: number;
   miaoshouSyncedAt: string;
   canManage: boolean;
+  canManageOwnGroup: boolean;
+  managedGroups: string[];
   miaoshouShops?: MiaoshouDirectoryShopOption[];
 };
 
@@ -5305,11 +5313,14 @@ export function updatePerformanceRevenueSource(revenueSource: "wms" | "shadow" |
   });
 }
 
-export function updateShopProjectGroup(input: { shopKeys: string[]; projectGroup: string }) {
+export function updateShopProjectGroup(input: { shopKeys: string[]; projectGroup?: string; ownerId?: string; ownerName?: string; shopUrl?: string }) {
   return requestJson<{
     ok: boolean;
     updatedCount: number;
-    projectGroup: string;
+    projectGroup?: string;
+    ownerId?: string;
+    ownerName?: string;
+    shopUrl?: string;
     shopDirectory: ShopDirectoryPayload;
   }>("/api/shop-directory/project-group", {
     method: "PATCH",
@@ -5604,6 +5615,37 @@ export function previewStockupFulfillmentRoute(requestId: string, payload: Recor
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function updateProjectGroupTeams(teams: ShopDirectoryPayload["projectGroupTeams"]) {
+  return requestJson<{ ok: boolean; shopDirectory: ShopDirectoryPayload }>("/api/shop-directory/project-group-teams", {
+    method: "POST",
+    body: JSON.stringify({ teams }),
+  });
+}
+
+export async function exportShopDirectory() {
+  const response = await fetch(`${API_BASE}/api/shop-directory/export`, { headers: authHeaders() });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "店铺归属导出失败。");
+  }
+  return response.blob();
+}
+
+export async function importShopDirectory(file: File) {
+  const response = await fetch(`${API_BASE}/api/shop-directory/import`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || "店铺归属导入失败。");
+  return payload as { ok: boolean; importedCount: number; shopDirectory: ShopDirectoryPayload };
+}
+
+export function fetchShopDirectoryUserOptions() {
+  return requestJson<{ ok: boolean; users: Array<{ id: string; username: string; displayName: string }> }>("/api/shop-directory/user-options");
 }
 
 export function fetchStockupRouteReconciliation(requestId: string) {
@@ -7500,6 +7542,7 @@ export type ShopDailyOrder = {
   shippedAt: string;
   shopKey: string;
   shopName: string;
+  shopUrl: string;
   platform: string;
   country: string;
   projectGroup: string;

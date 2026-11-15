@@ -696,6 +696,25 @@
   font-size: 13px;
 }
 
+.shop-daily-shop-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.shop-daily-shop-link:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .shop-daily-drawer-close {
   display: inline-grid;
   flex: 0 0 auto;
@@ -836,6 +855,20 @@
 
 .shop-daily-order-card-head strong {
   font-size: 14px;
+}
+
+.shop-daily-order-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.shop-daily-order-meta span {
+  overflow-wrap: anywhere;
 }
 
 .shop-daily-order-amount {

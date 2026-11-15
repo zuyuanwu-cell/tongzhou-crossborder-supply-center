@@ -173,6 +173,7 @@ import {
   fetchWarehouseInfo,
   getStoredUser,
   importWarehouseConnections,
+  importShopDirectory,
   initializeAdmin,
   downloadInventorySnapshotCsv,
   downloadMovementHistoryCsv,
@@ -10183,6 +10184,11 @@ function PerformanceAnalysisPage({
   const [selectedShopKeys, setSelectedShopKeys] = React.useState<Set<string>>(new Set());
   const [projectGroupDraft, setProjectGroupDraft] = React.useState("");
   const [shopMessage, setShopMessage] = React.useState("");
+  const [shopSearch, setShopSearch] = React.useState("");
+  const [shopGroupFilter, setShopGroupFilter] = React.useState("__all__");
+  const [shopMatchFilter, setShopMatchFilter] = React.useState("__all__");
+  const [pendingShopGroups, setPendingShopGroups] = React.useState<Record<string, string>>({});
+  const shopImportFileRef = React.useRef<HTMLInputElement | null>(null);
   const [transactionMessage, setTransactionMessage] = React.useState("");
   const totals = payload?.totals;
   const permissions = payload?.permissions || { revenue: false, cost: false, profit: false, manageRates: false, manageCosts: false, manageTransactionSource: false };
@@ -10203,6 +10209,29 @@ function PerformanceAnalysisPage({
     return supplementalCosts.filter((row) => [row.sku, row.productName, row.countryName, row.countryKey, row.note]
       .some((value) => String(value || "").toLowerCase().includes(term)));
   }, [supplementalCosts, supplementalCostSearch]);
+  const shopDirectory = payload?.shopDirectory;
+  const shopRows = shopDirectory?.shops || [];
+  const canEditShops = Boolean(shopDirectory?.canManage || shopDirectory?.canManageOwnGroup);
+  const canEditShop = React.useCallback((shop: { projectGroup?: string }) => Boolean(shopDirectory?.canManage
+    || (shopDirectory?.canManageOwnGroup && shop.projectGroup && (shopDirectory.managedGroups || []).includes(shop.projectGroup))), [shopDirectory]);
+  const filteredShops = React.useMemo(() => {
+    const term = shopSearch.trim().toLowerCase();
+    return shopRows.filter((shop) => {
+      const effectiveGroup = shop.key in pendingShopGroups ? pendingShopGroups[shop.key] : (shop.projectGroup || "");
+      if (shopGroupFilter === "__unassigned__" && effectiveGroup) return false;
+      if (shopGroupFilter !== "__all__" && shopGroupFilter !== "__unassigned__" && effectiveGroup !== shopGroupFilter) return false;
+      if (shopMatchFilter === "matched" && !shop.miaoshouMatched) return false;
+      if (shopMatchFilter === "unmatched" && shop.miaoshouMatched) return false;
+      if (!term) return true;
+      return [shop.displayName, shop.rawName, shop.platform, shop.country, effectiveGroup, shop.ownerName, shop.miaoshouAlias, shop.miaoshouShopName]
+        .some((value) => String(value || "").toLowerCase().includes(term));
+    });
+  }, [shopRows, shopSearch, shopGroupFilter, shopMatchFilter, pendingShopGroups]);
+  const editableFilteredShops = React.useMemo(() => filteredShops.filter(canEditShop), [filteredShops, canEditShop]);
+  const pendingShopEntries = React.useMemo(() => Object.entries(pendingShopGroups).map(([key, group]) => {
+    const shop = shopRows.find((item) => item.key === key);
+    return { key, group, displayName: shop?.displayName || key };
+  }), [pendingShopGroups, shopRows]);
 
   React.useEffect(() => {
     if (!payload) return;
@@ -10391,6 +10420,98 @@ function PerformanceAnalysisPage({
       setSelectedShopKeys(new Set());
     } catch (requestError) {
       setShopMessage(requestError instanceof Error ? requestError.message : "项目组保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function stageShopGroup(shopKey: string, currentGroup: string, nextGroup: string) {
+    setPendingShopGroups((current) => {
+      const next = { ...current };
+      if (nextGroup.trim() === (currentGroup || "")) delete next[shopKey];
+      else next[shopKey] = nextGroup;
+      return next;
+    });
+  }
+
+  function discardPendingShopGroups() {
+    setPendingShopGroups({});
+    setShopMessage("已放弃未保存的项目组修改。");
+  }
+
+  async function savePendingShopGroups() {
+    if (!pendingShopEntries.length) return;
+    const byGroup = new Map<string, string[]>();
+    for (const entry of pendingShopEntries) {
+      const group = entry.group.trim();
+      if (group.length > 80) {
+        setShopMessage(`“${entry.displayName}”的项目组名称超过 80 个字符，请缩短后再保存。`);
+        return;
+      }
+      const keys = byGroup.get(group) || [];
+      keys.push(entry.key);
+      byGroup.set(group, keys);
+    }
+    setBusy(true);
+    setShopMessage("");
+    let savedCount = 0;
+    try {
+      for (const [group, keys] of byGroup) {
+        await onAssignProjectGroup(keys, group);
+        savedCount += keys.length;
+        setPendingShopGroups((current) => {
+          const next = { ...current };
+          for (const key of keys) delete next[key];
+          return next;
+        });
+      }
+      setShopMessage(`已保存 ${savedCount} 个店铺的项目组修改${byGroup.size > 1 ? `（涉及 ${byGroup.size} 个项目组）` : ""}。留空的项目组已清除归属。`);
+    } catch (requestError) {
+      setShopMessage(`已保存 ${savedCount} 个店铺；${requestError instanceof Error ? requestError.message : "其余修改保存失败"}。未保存的修改仍保留在表格中。`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function exportShopDirectoryCsv() {
+    if (!filteredShops.length) {
+      setShopMessage("当前筛选结果为空，没有可导出的店铺。");
+      return;
+    }
+    const header = ["店铺ID", "店铺 / WMS 原名", "平台", "国家", "负责人ID", "负责人姓名", "主项目组", "店铺链接", "妙手店铺ID", "妙手别名", "订单行数", "最近订单"];
+    const body = filteredShops.map((shop) => [
+      shop.key,
+      shop.rawName,
+      shop.platform || "",
+      shop.country || "",
+      shop.ownerId || "",
+      shop.ownerName || "",
+      shop.key in pendingShopGroups ? pendingShopGroups[shop.key] : (shop.projectGroup || ""),
+      shop.shopUrl || "",
+      shop.miaoshouShopId || "",
+      shop.miaoshouAlias || "",
+      shop.orderLines || 0,
+      shop.latestOrderAt || "",
+    ]);
+    downloadTextFile(`tongzhou-shop-directory-${new Date().toISOString().slice(0, 10)}.csv`, `\uFEFF${[header, ...body].map((cells) => cells.map(csvCell).join(",")).join("\r\n")}`, "text/csv;charset=utf-8");
+    setShopMessage(`已按当前筛选导出 ${filteredShops.length} 个店铺。修改“主项目组、负责人或店铺链接”列后可直接导入回系统。`);
+  }
+
+  async function importShopDirectoryFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    setShopMessage("");
+    try {
+      const result = await importShopDirectory(file);
+      if (!result.importedCount) throw new Error("文件中没有可导入的有效数据行。");
+      setPendingShopGroups({});
+      setSelectedShopKeys(new Set());
+      setShopMessage(`导入成功：${result.importedCount} 个店铺资料已更新，经营贡献正在重算。`);
+      await onLoad(payload?.filters || {});
+    } catch (requestError) {
+      setShopMessage(requestError instanceof Error ? requestError.message : "店铺资料导入失败，未写入任何数据。");
     } finally {
       setBusy(false);
     }
@@ -10734,30 +10855,61 @@ function PerformanceAnalysisPage({
         ) : (
           <div className="shop-directory-panel">
             <div className="shop-directory-summary">
-              <div><p className="eyebrow">Shop Directory</p><h3>店铺别称与主项目组</h3><p>业绩仍以 WMS 已出库订单为准；妙手只提供店铺别称。一个店铺只能归属一个主项目组。</p></div>
-              <div><span><strong>{formatNumber(payload?.shopDirectory.matchedShopCount || 0)}</strong>已匹配妙手别称</span><span><strong>{formatNumber(payload?.shopDirectory.unmatchedShopCount || 0)}</strong>待匹配店铺</span><span><strong>{formatNumber(payload?.shopDirectory.projectGroups.length || 0)}</strong>主项目组</span></div>
+              <div><p className="eyebrow">Shop Directory</p><h3>店铺别称与主项目组</h3><p>业绩仍以 WMS 已出库订单为准；妙手只提供店铺别称。可直接修改单行项目组，或导出 CSV / Excel 批量维护后导入。</p></div>
+              <div><span><strong>{formatNumber(shopDirectory?.matchedShopCount || 0)}</strong>已匹配妙手别称</span><span><strong>{formatNumber(shopDirectory?.unmatchedShopCount || 0)}</strong>待匹配店铺</span><span><strong>{formatNumber(shopDirectory?.projectGroups.length || 0)}</strong>主项目组</span></div>
             </div>
-            {payload?.shopDirectory.canManage ? (
+            <div className="shop-directory-toolbar">
+              <label><Search size={15} /><input value={shopSearch} onChange={(event) => setShopSearch(event.target.value)} placeholder="搜索店铺、WMS 原名、平台、国家、负责人或项目组" /></label>
+              <select value={shopGroupFilter} onChange={(event) => setShopGroupFilter(event.target.value)}>
+                <option value="__all__">全部项目组</option>
+                <option value="__unassigned__">仅未设置项目组</option>
+                {(shopDirectory?.projectGroups || []).map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+              <select value={shopMatchFilter} onChange={(event) => setShopMatchFilter(event.target.value)}>
+                <option value="__all__">全部妙手关联</option>
+                <option value="matched">已匹配妙手</option>
+                <option value="unmatched">未匹配妙手</option>
+              </select>
+              <div>
+                <button className="ghost-button" type="button" onClick={exportShopDirectoryCsv} disabled={!filteredShops.length}><Download size={15} />导出 CSV</button>
+                {canEditShops ? <>
+                  <input ref={shopImportFileRef} className="visually-hidden" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={importShopDirectoryFile} />
+                  <button className="sync-button" type="button" onClick={() => shopImportFileRef.current?.click()} disabled={busy}><Upload size={15} />{busy ? "处理中" : "导入文件"}</button>
+                </> : null}
+              </div>
+            </div>
+            {canEditShops ? (
               <div className="shop-directory-actions">
-                <label><span>主项目组</span><input list="performance-project-groups" value={projectGroupDraft} onChange={(event) => setProjectGroupDraft(event.target.value)} placeholder="选择已有项目组或输入新名称" /></label>
-                <datalist id="performance-project-groups">{payload.shopDirectory.projectGroups.map((item) => <option key={item} value={item} />)}</datalist>
-                <button className="sync-button" type="button" onClick={assignProjectGroup} disabled={busy || !selectedShopKeys.size}>保存 {selectedShopKeys.size ? `${selectedShopKeys.size} 个店铺` : "项目组"}</button>
-                <span>{shopMessage}</span>
+                <label><span>勾选店铺后批量设置主项目组</span><input list="performance-project-groups" value={projectGroupDraft} onChange={(event) => setProjectGroupDraft(event.target.value)} placeholder="选择已有项目组或输入新名称" /></label>
+                <datalist id="performance-project-groups">{shopDirectory!.projectGroups.map((item) => <option key={item} value={item} />)}</datalist>
+                <button className="ghost-button" type="button" onClick={assignProjectGroup} disabled={busy || !selectedShopKeys.size}>应用到 {selectedShopKeys.size ? `${selectedShopKeys.size} 个已勾选店铺` : "已勾选店铺"}</button>
+                <span>已显示 {formatNumber(filteredShops.length)} / {formatNumber(shopRows.length)} 个店铺{selectedShopKeys.size ? ` · 已勾选 ${formatNumber(selectedShopKeys.size)} 个` : ""}{shopDirectory?.canManage ? "" : " · 组长仅能维护本组店铺"}</span>
               </div>
             ) : <div className="notice">当前账号可以查看店铺归属，但没有修改权限。</div>}
+            {shopMessage ? <div className={`shop-directory-message ${/失败|错误|缺少|为空|必须|不存在|未通过|无法|只能/.test(shopMessage) ? "danger" : ""}`}>{shopMessage}</div> : null}
+            <datalist id="shop-row-project-groups">{shopDirectory?.projectGroups.map((item) => <option key={item} value={item} />)}</datalist>
             <div className="shop-directory-list">
               <div className="shop-directory-row head">
-                <label><input type="checkbox" checked={Boolean(payload?.shopDirectory.shops.length) && payload!.shopDirectory.shops.every((shop) => selectedShopKeys.has(shop.key))} onChange={(event) => setSelectedShopKeys(event.target.checked ? new Set(payload?.shopDirectory.shops.map((shop) => shop.key) || []) : new Set())} disabled={!payload?.shopDirectory.canManage} /><span>店铺 / WMS 原名</span></label><span>平台 / 国家</span><span>妙手关联</span><span>主项目组</span>
+                <label><input type="checkbox" checked={Boolean(editableFilteredShops.length) && editableFilteredShops.every((shop) => selectedShopKeys.has(shop.key))} onChange={(event) => setSelectedShopKeys(event.target.checked ? new Set([...selectedShopKeys, ...editableFilteredShops.map((shop) => shop.key)]) : new Set([...selectedShopKeys].filter((key) => !editableFilteredShops.some((shop) => shop.key === key))))} disabled={!editableFilteredShops.length} /><span>店铺 / WMS 原名</span></label><span>平台 / 国家</span><span>妙手关联</span><span>主项目组（可直接修改）</span>
               </div>
-              {(payload?.shopDirectory.shops || []).map((shop) => (
-                <article className="shop-directory-row" key={shop.key}>
-                  <label><input type="checkbox" checked={selectedShopKeys.has(shop.key)} onChange={(event) => toggleShopSelection(shop.key, event.target.checked)} disabled={!payload?.shopDirectory.canManage} /><span><strong>{shop.displayName}</strong><small>{shop.displayName !== shop.rawName ? `WMS：${shop.rawName}` : `WMS 原名 · ${formatNumber(shop.orderLines)} 行`}</small></span></label>
-                  <span><strong>{shop.platform || "未识别平台"}</strong><small>{shop.country || "未识别国家"}</small></span>
-                  <span><i className={`status-pill ${shop.miaoshouMatched ? "good" : "warning"}`}>{shop.miaoshouMatched ? "已匹配" : "未匹配"}</i><small>{shop.miaoshouAlias || shop.miaoshouShopName || "使用 WMS 原名"}</small></span>
-                  <span><strong>{shop.projectGroup || "未设置"}</strong><small>{shop.projectGroupSource === "manual" ? "人工设置" : "沿用历史推断"}</small></span>
-                </article>
-              ))}
+              {filteredShops.map((shop) => {
+                const pending = shop.key in pendingShopGroups;
+                const editable = canEditShop(shop);
+                return (
+                  <article className={`shop-directory-row${pending ? " pending" : ""}`} key={shop.key}>
+                    <label><input type="checkbox" checked={selectedShopKeys.has(shop.key)} onChange={(event) => toggleShopSelection(shop.key, event.target.checked)} disabled={!editable} /><span><strong>{shop.displayName}</strong><small>{shop.displayName !== shop.rawName ? `WMS：${shop.rawName}` : `WMS 原名 · ${formatNumber(shop.orderLines)} 行`}{shop.ownerName ? ` · 负责人：${shop.ownerName}` : ""}</small></span></label>
+                    <span><strong>{shop.platform || "未识别平台"}</strong><small>{shop.country || "未识别国家"}</small></span>
+                    <span><i className={`status-pill ${shop.miaoshouMatched ? "good" : "warning"}`}>{shop.miaoshouMatched ? "已匹配" : "未匹配"}</i><small>{shop.miaoshouAlias || shop.miaoshouShopName || "使用 WMS 原名"}</small></span>
+                    <span className="shop-directory-group-cell">
+                      {editable ? <input list="shop-row-project-groups" value={pending ? pendingShopGroups[shop.key] : (shop.projectGroup || "")} onChange={(event) => stageShopGroup(shop.key, shop.projectGroup, event.target.value)} placeholder="未设置（留空保存即清除）" /> : <strong>{shop.projectGroup || "未设置"}</strong>}
+                      <small>{pending ? <em className="shop-directory-pending-tag">待保存</em> : !editable && shop.projectGroup ? "不属于您管理的项目组" : shop.projectGroup ? (shop.projectGroupSource === "manual" ? "人工设置" : "沿用历史推断") : "未归属任何项目组"}{shop.shopUrl ? " · 已配置店铺链接" : ""}</small>
+                    </span>
+                  </article>
+                );
+              })}
+              {!filteredShops.length ? <div className="shop-directory-empty"><Search size={22} /><strong>{shopRows.length ? "没有符合筛选条件的店铺" : "暂无店铺数据"}</strong><span>{shopRows.length ? "试试清空搜索，或把项目组筛选切回“全部项目组”。" : "店铺会在订单同步后自动出现。"}</span></div> : null}
             </div>
+            {pendingShopEntries.length ? <div className="shop-directory-save-bar"><span><strong>{formatNumber(pendingShopEntries.length)} 个店铺</strong>有未保存的项目组修改：{pendingShopEntries.slice(0, 3).map((entry) => `${entry.displayName} → ${entry.group || "未设置"}`).join("；")}{pendingShopEntries.length > 3 ? " 等" : ""}</span><div><button className="ghost-button" type="button" onClick={discardPendingShopGroups} disabled={busy}>放弃修改</button><button className="sync-button" type="button" onClick={savePendingShopGroups} disabled={busy}>{busy ? "保存中" : `保存 ${pendingShopEntries.length} 项修改`}</button></div></div> : null}
           </div>
         )}
       </section>

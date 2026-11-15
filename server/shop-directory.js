@@ -72,17 +72,56 @@ function dominantValue(counts) {
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh-CN"))[0]?.[0] || "";
 }
 
+function uniqueIdList(value) {
+  return [...new Set((Array.isArray(value) ? value : []).map((item) => text(item)).filter(Boolean))];
+}
+
+export function normalizeShopUrl(value) {
+  const candidate = text(value);
+  if (!candidate) return "";
+  try {
+    const parsed = new URL(candidate);
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeProjectGroupTeams(input) {
+  const seen = new Set();
+  return (Array.isArray(input) ? input : []).map((team) => {
+    const name = text(team?.name);
+    if (!name || seen.has(name)) return null;
+    seen.add(name);
+    const leaderIds = uniqueIdList(team?.leaderIds);
+    const leaderIdSet = new Set(leaderIds);
+    return {
+      name,
+      leaderIds,
+      memberIds: uniqueIdList(team?.memberIds).filter((id) => !leaderIdSet.has(id)),
+      inheritUnassignedShops: team?.inheritUnassignedShops === true,
+      updatedAt: text(team?.updatedAt),
+      updatedBy: text(team?.updatedBy),
+    };
+  }).filter(Boolean);
+}
+
 export function normalizeShopDirectorySettings(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const assignments = {};
   for (const [key, value] of Object.entries(source.shopAssignments || {})) {
     const normalizedKey = text(key);
     if (!normalizedKey || !value || typeof value !== "object") continue;
-    assignments[normalizedKey] = {
+    const assignment = {
       projectGroup: text(value.projectGroup),
+      ownerId: text(value.ownerId),
+      ownerName: text(value.ownerName),
+      shopUrl: normalizeShopUrl(value.shopUrl),
       updatedAt: text(value.updatedAt),
       updatedBy: text(value.updatedBy),
     };
+    if (!assignment.projectGroup && !assignment.ownerId && !assignment.ownerName && !assignment.shopUrl) continue;
+    assignments[normalizedKey] = assignment;
   }
   const bindings = {};
   for (const [key, value] of Object.entries(source.shopMiaoshouBindings || {})) {
@@ -101,6 +140,7 @@ export function normalizeShopDirectorySettings(input = {}) {
     shopAssignments: assignments,
     shopMiaoshouBindings: bindings,
     projectGroups: [...new Set((Array.isArray(source.projectGroups) ? source.projectGroups : []).map(text).filter(Boolean))],
+    projectGroupTeams: normalizeProjectGroupTeams(source.projectGroupTeams),
   };
 }
 
@@ -159,6 +199,9 @@ export function buildShopDirectory({ orders = [], miaoshouShops = [], settings =
       latestOrderAt: profile.latestOrderAt,
       projectGroup,
       projectGroupSource: assignment?.projectGroup ? "manual" : inferredProjectGroup ? "inferred" : "unassigned",
+      ownerId: text(assignment?.ownerId),
+      ownerName: text(assignment?.ownerName),
+      shopUrl: normalizeShopUrl(assignment?.shopUrl),
       miaoshouShopId: text(matchedShop?.shopId),
       miaoshouShopName: platformShopName,
       miaoshouAlias,
@@ -179,9 +222,12 @@ export function buildShopDirectory({ orders = [], miaoshouShops = [], settings =
     shops: publicProfiles,
     byKey,
     projectGroups,
+    projectGroupTeams: normalizedSettings.projectGroupTeams,
     miaoshouShopCount: activeMiaoshouShops.length,
     matchedShopCount: publicProfiles.filter((profile) => profile.miaoshouMatched).length,
     unmatchedShopCount: publicProfiles.filter((profile) => !profile.miaoshouMatched).length,
+    ownerCount: new Set(publicProfiles.map((profile) => profile.ownerId).filter(Boolean)).size,
+    unassignedOwnerCount: publicProfiles.filter((profile) => !profile.ownerId).length,
     miaoshouShops: activeMiaoshouShops.map((shop) => ({
       shopId: text(shop.shopId),
       platform: text(shop.platform),
@@ -203,7 +249,51 @@ export function applyShopDirectoryProfile(order = {}, directory) {
     shopName: profile?.displayName || rawName,
     shopAlias: profile?.alias || "",
     projectGroup: profile?.projectGroup || text(order.projectGroup),
+    shopOwnerId: profile?.ownerId || "",
+    shopOwnerName: profile?.ownerName || "",
+    shopUrl: profile?.shopUrl || "",
     miaoshouShopId: profile?.miaoshouShopId || "",
     miaoshouMatched: Boolean(profile?.miaoshouMatched),
+  };
+}
+
+function identityTokens(user = {}) {
+  return [user.id, user.username, user.displayName]
+    .map((value) => text(value).toLowerCase())
+    .filter(Boolean);
+}
+
+export function resolveShopScope({ user = {}, directory, canManageAll = false } = {}) {
+  const teams = normalizeProjectGroupTeams(directory?.projectGroupTeams);
+  const tokens = new Set(identityTokens(user));
+  const teamsOfUser = tokens.size
+    ? teams.filter((team) => [...team.leaderIds, ...team.memberIds].some((id) => tokens.has(text(id).toLowerCase())))
+    : [];
+
+  if (canManageAll) {
+    return { mode: "all", visibleShopKeys: null, teams: teamsOfUser, leaderGroups: [], ownedShopCount: 0 };
+  }
+  if (!teamsOfUser.length) {
+    return { mode: "unscoped", visibleShopKeys: null, teams: [], leaderGroups: [], ownedShopCount: 0 };
+  }
+
+  const leaderGroups = teamsOfUser
+    .filter((team) => team.leaderIds.some((id) => tokens.has(text(id).toLowerCase())))
+    .map((team) => team.name);
+  const visible = new Set();
+  let ownedShopCount = 0;
+  for (const shop of Array.isArray(directory?.shops) ? directory.shops : []) {
+    const ownerTokens = [shop.ownerId, shop.ownerName].map((value) => text(value).toLowerCase()).filter(Boolean);
+    const ownedByUser = ownerTokens.some((token) => tokens.has(token));
+    if (ownedByUser) ownedShopCount += 1;
+    if (ownedByUser || leaderGroups.includes(text(shop.projectGroup))) visible.add(shop.key);
+  }
+
+  return {
+    mode: leaderGroups.length ? "leader" : "member",
+    visibleShopKeys: visible,
+    teams: teamsOfUser.map((team) => team.name),
+    leaderGroups,
+    ownedShopCount,
   };
 }

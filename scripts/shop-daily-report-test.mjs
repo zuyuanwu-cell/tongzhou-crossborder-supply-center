@@ -174,7 +174,7 @@ assert.equal(fallback.quality.rowsUsingSystemRevenue, 1);
 
 // --- 订单穿透：多商品行合并、搜索、分页与金额汇总 -------------------------------
 const detailFacts = [
-  { ...systemFacts[0], orderIdentity: "wms|1|A1", sku: "SKU-1", productName: "洁面泡沫", imageUrl: "https://example.com/1.jpg", salesCny: 70, salesAmount: 161000, productCostCny: 14, packagingFeeCny: 1.2, status: "shipped", sourceSystem: "wms" },
+  { ...systemFacts[0], orderIdentity: "wms|1|A1", sku: "SKU-1", productName: "洁面泡沫", imageUrl: "https://example.com/1.jpg", shopUrl: "https://seller.example.com/shop/alpha", salesCny: 70, salesAmount: 161000, productCostCny: 14, packagingFeeCny: 1.2, status: "shipped", sourceSystem: "wms" },
   { ...systemFacts[0], orderIdentity: "wms|1|A1", sku: "SKU-2", productName: "护手霜", quantity: 1, salesCny: 30, salesAmount: 69000, productCostCny: 6, packagingFeeCny: 0.7, status: "shipped", sourceSystem: "wms" },
   { ...systemFacts[1], sku: "SKU-3", productName: "防晒霜", status: "pending", sourceSystem: "wms" },
   { ...systemFacts[2], sku: "SKU-OLD", productName: "旧订单" },
@@ -185,6 +185,7 @@ assert.equal(details.pageCount, 2);
 assert.equal(details.orders[0].items.length, 2, "同一订单的多条商品行合并");
 assert.equal(details.orders[0].quantity, 3);
 assert.equal(details.orders[0].salesCny, 100);
+assert.equal(details.orders[0].shopUrl, "https://seller.example.com/shop/alpha", "订单穿透应携带已配置店铺链接");
 assert.equal(details.totals.salesCny, 150, "汇总使用全部匹配订单而非当前页");
 const searchedDetails = buildShopDailyOrderDrilldown(detailFacts, { dateFrom: "2026-06-01", dateTo: "2026-06-30", shopKey: shopA.key, search: "防晒" });
 assert.equal(searchedDetails.total, 1, "支持按商品名称搜索订单");
