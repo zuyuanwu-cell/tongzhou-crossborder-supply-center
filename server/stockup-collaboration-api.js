@@ -404,6 +404,13 @@ export function createStockupCollaborationApi({ service, getAuth, appendActionLo
         sendJson(res, result.idempotentReplay ? 200 : 201, result);
         return true;
       }
+      if ((match = suffix.match(/^\/requests\/([^/]+)\/lines$/)) && req.method === "POST") {
+        requireAny(auth, ["stockup_request_accept", "stockup_execution_update", "stockup_execution_manage", "stockup_workflow_manage"], "当前账号没有向备货需求追加产品的权限。");
+        const result = service.addRequestProducts(decodeURIComponent(match[1]), await readBody(req), context, String(req.headers["idempotency-key"] || ""));
+        appendActionLog(auth, "向备货需求追加产品", "stockup_collaboration_request", result.request?.requestNo || match[1], { addedLineIds: result.addedLineIds || [] });
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+        return true;
+      }
       if ((match = suffix.match(/^\/requests\/([^/]+)$/)) && req.method === "PATCH") {
         requireAny(auth, ["stockup_request_create", "stockup_workflow_manage"], "当前账号没有编辑备货需求权限。");
         const result = service.updateRequest(decodeURIComponent(match[1]), await readBody(req), context);

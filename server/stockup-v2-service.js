@@ -141,27 +141,35 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     return productRef;
   }
 
+  function prepareRequestLines(rawLines, context = {}, at = nowIso()) {
+    if (!Array.isArray(rawLines) || !rawLines.length) fail("请至少添加一个产品。", "request_lines_required");
+    let lines = rawLines.map((line, index) => {
+      const quantity = number(line.requestedQty ?? line.quantity);
+      if (quantity <= 0) fail(`第 ${index + 1} 行需求数量必须大于 0。`, "invalid_quantity");
+      const productRef = ensureProductRef(line, at);
+      return { id: id("srl"), ...line, input: line, quantity, productRef, sku: productRef.formalSku || productRef.temporarySku };
+    });
+    const productRefIds = lines.map((line) => text(line.productRef?.id)).filter(Boolean);
+    const normalizedSkus = lines.map((line) => text(line.sku).replace(/\s+/g, "").toUpperCase()).filter(Boolean);
+    if (new Set(productRefIds).size !== productRefIds.length || new Set(normalizedSkus).size !== normalizedSkus.length) {
+      fail("同一商品不能在本次操作中重复添加。", "duplicate_product_ref", 409);
+    }
+    lines = planInventory(lines, context);
+    return lines;
+  }
+
   function createSpotRequest(payload, context = {}, idempotencyKey = "") {
     const actor = userOf(context);
     const storedKey = idempotencyKey ? `v2-request:${actor.id}:${idempotencyKey}` : "";
     const replay = storedKey ? store.first("SELECT response_json FROM stockup_idempotency WHERE key=?", [storedKey]) : null;
     if (replay) return { ...json(replay.response_json, {}), idempotentReplay: true };
     const rawLines = Array.isArray(payload.lines) ? payload.lines : [];
-    if (!rawLines.length) fail("请至少添加一个产品。", "request_lines_required");
     const now = nowIso();
     const requestId = id("spr");
     const requestNo = businessNo("BR");
     const status = payload.submit ? "submitted" : "draft";
     const result = store.transaction(() => {
-      let lines = rawLines.map((line, index) => {
-        const quantity = number(line.requestedQty);
-        if (quantity <= 0) fail(`第 ${index + 1} 行需求数量必须大于 0。`, "invalid_quantity");
-        const productRef = ensureProductRef(line, now);
-        return { id: id("srl"), ...line, quantity, productRef, sku: productRef.formalSku || productRef.temporarySku };
-      });
-      const normalizedSkus = lines.map((line) => line.sku.toUpperCase());
-      if (new Set(normalizedSkus).size !== normalizedSkus.length) fail("同一商品不能在需求中重复添加。", "duplicate_product_ref");
-      lines = planInventory(lines, context);
+      const lines = prepareRequestLines(rawLines, context, now);
       store.run(`INSERT INTO stockup_requests
         (id,request_no,project,destination_country,destination_warehouse_id,destination_warehouse_name,expected_arrival_at,priority,reason,platform,note,status,requester_id,requester_name,assignee_id,assignee_name,exception_count,version,created_at,updated_at,workflow_version,source_type,source_ref,source_snapshot_json)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'','',0,1,?,?,?,?,?,?)`, [requestId, requestNo, required(payload.project, "项目/团队"), required(payload.destinationCountry, "目的国家"), text(payload.destinationWarehouseId),
@@ -897,6 +905,7 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
     createReservedShipment,
     createRouteShipment,
     createSpotRequest,
+    prepareAdditionalLines: prepareRequestLines,
     updateSpotRequest,
     refreshInventoryPlan,
     issueDispatchInstruction,

@@ -155,6 +155,7 @@ export function createStockupV3Service({
   inventoryGateway = {},
   getRequest,
   addEvent,
+  prepareAdditionalLines,
   enabled = true,
   pilotRequestRefs = [],
   adminOnly = false,
@@ -444,6 +445,160 @@ export function createStockupV3Service({
       blockers,
       canConfirm: blockers.length === 0,
     };
+  }
+
+  function allocationsForAdditionalLines(request, lines, payload, context) {
+    const targetId = text(request.consolidationWarehouseId);
+    const targetName = text(request.consolidationWarehouseName);
+    if (!targetId) fail("请先确认现有履约方案和目标集货仓，再追加产品。", "consolidation_warehouse_required", 409);
+    const availability = availabilityFor(lines, context);
+    const overrides = payload.supplyModeOverrides && typeof payload.supplyModeOverrides === "object" ? payload.supplyModeOverrides : {};
+    const allocations = [];
+    for (const line of lines) {
+      const item = availability.bySku.get(normalizedSku(line.sku)) || {};
+      const warehouses = (item.warehouses || []).map((warehouse) => ({
+        id: text(warehouse.warehouseId || warehouse.id),
+        name: text(warehouse.warehouseName || warehouse.name),
+        availableQty: Math.max(0, number(warehouse.availableQty)),
+      })).filter((warehouse) => warehouse.id && warehouse.availableQty > 0);
+      warehouses.sort((left, right) => (left.id === targetId ? -1 : right.id === targetId ? 1 : right.availableQty - left.availableQty));
+      let remaining = number(line.quantity);
+      for (const warehouse of warehouses) {
+        if (remaining <= 0) break;
+        const quantity = Math.min(remaining, warehouse.availableQty);
+        if (quantity <= 0) continue;
+        allocations.push({
+          id: id("sfa"), requestId: request.id, requestLineId: line.id,
+          sourceType: warehouse.id === targetId ? "domestic_stock" : "transfer",
+          sourceWarehouseId: warehouse.id, sourceWarehouseName: warehouse.name,
+          targetWarehouseId: targetId, targetWarehouseName: targetName,
+          plannedQty: quantity, expectedReadyAt: "",
+        });
+        remaining -= quantity;
+      }
+      if (remaining > 0) {
+        const supplyMode = supplyModeFor({
+          ...line,
+          requestedQty: line.quantity,
+          effectiveSupplyMode: text(line.supplyMode) || text(line.productRef?.defaultSupplyMode),
+          defaultSupplyMode: text(line.productRef?.defaultSupplyMode),
+        }, overrides);
+        allocations.push({
+          id: id("sfa"), requestId: request.id, requestLineId: line.id,
+          sourceType: modeToSource(supplyMode), sourceWarehouseId: "", sourceWarehouseName: "",
+          targetWarehouseId: targetId, targetWarehouseName: targetName,
+          plannedQty: remaining, expectedReadyAt: "", supplyMode,
+        });
+      }
+    }
+    const unresolved = allocations.filter((allocation) => allocation.sourceType === "unresolved");
+    if (unresolved.length) fail(`${unresolved.length} 个新增产品的缺口尚未选择采购或委外生产。`, "supply_mode_required", 409);
+    return { allocations, availability };
+  }
+
+  function addRequestProducts(requestId, payload = {}, context = {}, idempotencyKey = "") {
+    const actor = userOf(context);
+    const key = text(idempotencyKey);
+    if (!key) fail("追加产品必须提供 Idempotency-Key。", "idempotency_key_required", 400);
+    const replay = store.first("SELECT response_json FROM stockup_route_command_receipts WHERE idempotency_key=?", [key]);
+    if (replay) return { ...json(replay.response_json, {}), idempotentReplay: true };
+    const request = getRequest(text(requestId), { ...context, viewAll: true });
+    ensureRequestEnabled(request, context);
+    if (number(payload.expectedVersion, request.version) !== request.version) {
+      fail("需求已被其他人更新，请刷新后重新添加产品。", "version_conflict", 409, { latestVersion: request.version });
+    }
+    if (["cancelled", "rejected", "completed", "cost_locked", "handed_over", "overseas_received"].includes(text(request.status))) {
+      fail("当前需求阶段不能继续追加产品。", "request_add_products_state", 409);
+    }
+    const shipment = activeShipmentForRequest(request.id);
+    if (shipment) {
+      fail(`需求已创建活动发运批次 ${text(shipment.shipment_no)}，不能再追加产品。`, "request_add_products_has_shipment", 409, {
+        shipmentId: text(shipment.id), shipmentNo: text(shipment.shipment_no), shipmentStatus: text(shipment.status),
+      });
+    }
+    if (typeof prepareAdditionalLines !== "function") fail("追加产品服务尚未配置。", "request_add_products_unavailable", 503);
+    const now = nowIso();
+    const lines = prepareAdditionalLines(Array.isArray(payload.lines) ? payload.lines : [], context, now);
+    const existingRefs = new Set(request.lines.map((line) => text(line.productRefId)).filter(Boolean));
+    const existingSkus = new Set(request.lines.map((line) => normalizedSku(line.sku)).filter(Boolean));
+    const duplicate = lines.find((line) => existingRefs.has(text(line.productRef?.id)) || existingSkus.has(normalizedSku(line.sku)));
+    if (duplicate) fail(`${duplicate.sku || duplicate.productRef?.productName} 已在该需求中，不能重复添加。`, "request_product_exists", 409);
+
+    const planVersion = number(request.routePlanVersion);
+    const routed = planVersion > 0 ? allocationsForAdditionalLines(request, lines, payload, context) : { allocations: [], availability: null };
+    const inventoryAllocations = routed.allocations.filter((item) => ["domestic_stock", "transfer"].includes(item.sourceType));
+    const reservations = [];
+    try {
+      for (const allocation of inventoryAllocations) {
+        const line = lines.find((item) => item.id === allocation.requestLineId);
+        const referenceNo = `stockup-route:${request.requestNo}:v${planVersion}:add:${allocation.id}`;
+        const result = inventoryGateway.reserveStock?.({
+          warehouseId: allocation.sourceWarehouseId,
+          referenceNo,
+          note: `备货追加产品锁库：${request.requestNo} / V${planVersion}`,
+          lines: [{ sku: line?.sku, quantity: allocation.plannedQty, unitCostCny: number(line?.targetUnitCostCny) }],
+        }, context, `stockup-route-add:${request.id}:${planVersion}:${allocation.id}`);
+        if (!result?.reservation?.id) fail(`仓库 ${allocation.sourceWarehouseName || allocation.sourceWarehouseId} 库存锁定失败。`, "inventory_reservation_failed", 503);
+        reservations.push({ allocation, line, reservation: result.reservation, referenceNo });
+      }
+      const response = store.transaction(() => {
+        const lineStatus = planVersion > 0 ? "in_progress" : text(request.status) || "submitted";
+        for (const line of lines) {
+          const lineAllocations = routed.allocations.filter((allocation) => allocation.requestLineId === line.id);
+          const stockQty = lineAllocations.filter((allocation) => ["domestic_stock", "transfer"].includes(allocation.sourceType)).reduce((sum, allocation) => sum + allocation.plannedQty, 0);
+          const purchaseQty = lineAllocations.filter((allocation) => allocation.sourceType === "purchase").reduce((sum, allocation) => sum + allocation.plannedQty, 0);
+          const effectiveMode = text(line.supplyMode) || text(line.productRef?.defaultSupplyMode) || "待判断";
+          store.run(`INSERT INTO stockup_request_lines
+            (id,request_id,product_id,sku,product_name,image_url,specification,method,requested_qty,unit,target_unit_cost_cny,expected_arrival_at,note,status,fulfilled_qty,created_at,updated_at,product_ref_id,procurement_url,shelf_life_managed,domestic_available_qty,domestic_allocated_qty,procurement_required_qty,inventory_snapshot_json,inventory_checked_at,default_supply_mode,effective_supply_mode)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?)`, [line.id, request.id, line.productRef.productId, line.sku, line.productRef.productName, line.productRef.imageUrl, line.productRef.specification,
+            planVersion > 0 ? lineAllocations.map((allocation) => allocation.sourceType).join("+") : line.method, line.quantity, text(line.unit) || "件", line.targetUnitCostCny === "" || line.targetUnitCostCny == null ? null : number(line.targetUnitCostCny), text(line.expectedArrivalAt),
+            text(line.note), lineStatus, now, now, line.productRef.id, text(line.procurementUrl || line.orderUrl), line.productRef.shelfLifeManaged ? 1 : 0,
+            number(line.domesticAvailableQty), planVersion > 0 ? stockQty : number(line.domesticAllocatedQty), planVersion > 0 ? purchaseQty : number(line.procurementRequiredQty), JSON.stringify(line.inventorySnapshot || {}), text(line.inventoryCheckedAt) || now,
+            text(line.productRef.defaultSupplyMode) || "待判断", effectiveMode]);
+        }
+
+        const reservationByAllocation = new Map(reservations.map((item) => [item.allocation.id, item]));
+        for (const allocation of routed.allocations) {
+          const reservation = reservationByAllocation.get(allocation.id);
+          const isInventory = ["domestic_stock", "transfer"].includes(allocation.sourceType);
+          const ready = allocation.sourceType === "domestic_stock" ? allocation.plannedQty : 0;
+          const status = allocation.sourceType === "domestic_stock" ? "ready"
+            : allocation.sourceType === "transfer" ? "transfer_suggested"
+              : allocation.sourceType === "purchase" ? "pending_purchase" : "pending_outsourcing";
+          store.run(`INSERT INTO stockup_fulfillment_allocations
+            (id,request_id,request_line_id,plan_version,source_type,source_warehouse_id,source_warehouse_name,target_warehouse_id,target_warehouse_name,planned_qty,reserved_qty,received_qty,ready_qty,shipped_qty,exception_qty,status,external_reservation_id,reference_type,reference_id,reference_no,expected_ready_at,version,created_by,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)`, [allocation.id, request.id, allocation.requestLineId, planVersion, allocation.sourceType, allocation.sourceWarehouseId, allocation.sourceWarehouseName,
+            text(request.consolidationWarehouseId), text(request.consolidationWarehouseName), allocation.plannedQty, isInventory ? allocation.plannedQty : 0, 0, ready, 0, 0, status,
+            text(reservation?.reservation?.id), isInventory ? "inventory_reservation" : "", text(reservation?.reservation?.id), text(reservation?.referenceNo), text(allocation.expectedReadyAt), actor.id, now, now]);
+          if (reservation?.reservation?.id) store.run(`INSERT INTO stockup_fulfillment_reservations
+            (id,allocation_id,external_reservation_id,warehouse_id,sku,quantity,status,shipment_id,reference_no,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,'reserved','',?,?,?)`, [id("sfr"), allocation.id, reservation.reservation.id, allocation.sourceWarehouseId, text(reservation.line?.sku), allocation.plannedQty, reservation.referenceNo, now, now]);
+        }
+
+        let nextStatus = text(request.status);
+        let nextJourney = text(request.journeyStage);
+        if (planVersion > 0) {
+          const combined = currentAllocations(request.id);
+          const allReady = combined.length > 0 && combined.every((allocation) => allocation.readyQty >= allocation.plannedQty);
+          nextStatus = allReady ? "inventory_ready" : "in_progress";
+          nextJourney = allReady ? "ready_to_ship" : (combined.some((allocation) => allocation.sourceType === "transfer" && allocation.readyQty < allocation.plannedQty) ? "consolidating" : "sourcing");
+        }
+        store.run("UPDATE stockup_requests SET status=?,journey_stage=?,version=version+1,updated_at=? WHERE id=?", [nextStatus, nextJourney, now, request.id]);
+        addEvent(request.id, "request_products_added", "备货需求已追加产品", `${lines.length} 个产品，共 ${lines.reduce((sum, line) => sum + line.quantity, 0)} 件${text(payload.reason) ? ` · ${text(payload.reason)}` : ""}`, context, {
+          payload: { planVersion, lineIds: lines.map((line) => line.id), skus: lines.map((line) => line.sku), routingSummary: routeSummary(routed.allocations) },
+        });
+        const hydrated = decorateRequest(getRequest(request.id, { ...context, viewAll: true }), context);
+        const result = { ok: true, idempotentReplay: false, request: hydrated, addedLineIds: lines.map((line) => line.id), allocations: routed.allocations };
+        store.run("INSERT INTO stockup_route_command_receipts (idempotency_key,request_id,command_type,response_json,created_at) VALUES (?,?,?,?,?)", [key, request.id, "add_products", JSON.stringify(result), now]);
+        return result;
+      });
+      return response;
+    } catch (error) {
+      for (const item of reservations.reverse()) {
+        try { inventoryGateway.releaseReservation?.(item.reservation.id, context); } catch { /* preserve primary error */ }
+      }
+      throw error;
+    }
   }
 
   function confirmRoute(requestId, payload = {}, context = {}, idempotencyKey = "") {
@@ -854,5 +1009,5 @@ export function createStockupV3Service({
     });
   }
 
-  return { cancelRoute, confirmRoute, confirmTransfer, currentAllocations, decorateRequest, enrichProductOptions, linkOutsourcing, previewRoute, recoverReservation, replaceRoute, rollbackRoute, routeReconciliation, syncTransfer, syncTransferByReference, updateProductSupplyMode };
+  return { addRequestProducts, cancelRoute, confirmRoute, confirmTransfer, currentAllocations, decorateRequest, enrichProductOptions, linkOutsourcing, previewRoute, recoverReservation, replaceRoute, rollbackRoute, routeReconciliation, syncTransfer, syncTransferByReference, updateProductSupplyMode };
 }

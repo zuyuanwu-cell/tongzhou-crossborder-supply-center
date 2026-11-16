@@ -5670,6 +5670,14 @@ export function confirmStockupFulfillmentRoute(requestId: string, payload: Recor
   });
 }
 
+export function addStockupCollaborationRequestProducts(requestId: string, payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
+  return requestJson<{ ok: boolean; request: StockupRequest; idempotentReplay: boolean }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/lines`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function replanStockupFulfillmentRoute(requestId: string, payload: Record<string, unknown>, idempotencyKey = createStockupIdempotencyKey()) {
   return requestJson<{ ok: boolean; request: StockupRequest; planVersion: number; idempotentReplay: boolean }>(`/api/stockup/collaboration/requests/${encodeURIComponent(requestId)}/route-replan`, {
     method: "POST",

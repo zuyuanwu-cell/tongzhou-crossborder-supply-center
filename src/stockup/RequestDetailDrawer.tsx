@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Ban, Boxes, CalendarClock, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Factory, PackageCheck, Plus, Route, Send, Truck, Undo2, X } from "lucide-react";
+import { AlertTriangle, Ban, Boxes, CalendarClock, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Factory, PackageCheck, PackagePlus, Plus, Route, Send, Truck, Undo2, X } from "lucide-react";
 import { changeStockupCollaborationRequest, confirmStockupTransferAllocation, createStockupCollaborationTask, recoverStockupFulfillmentReservation, syncStockupTransferAllocation, updateStockupCollaborationTask } from "../api";
 import type { StockupExecutionTask, StockupRequest } from "./types";
 import { formatStockupDate, statusTone, stockupRequestStatusLabels, stockupTaskStatusLabels } from "./status";
 import { ProgressTimeline } from "./ProgressTimeline";
 import { RouteConfirmationPanel } from "./RouteConfirmationPanel";
 import { OutsourcingLinkPanel } from "./OutsourcingLinkPanel";
+import { AddRequestProductsPanel } from "./AddRequestProductsPanel";
 
 type Props = {
   request: StockupRequest;
@@ -27,6 +28,7 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
   const [taskForm, setTaskForm] = useState({ plannedQty: 0, supplierName: "", expectedOrderAt: "", expectedCompletedAt: "" });
   const [editingTask, setEditingTask] = useState<StockupExecutionTask | null>(null);
   const [routeOpen, setRouteOpen] = useState(false);
+  const [addProductsOpen, setAddProductsOpen] = useState(false);
   const [outsourcingOpen, setOutsourcingOpen] = useState(false);
   const [lifecycleAction, setLifecycleAction] = useState<"cancel" | "rollback" | "">("");
   const [lifecycleReason, setLifecycleReason] = useState("");
@@ -43,14 +45,15 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (lifecycleAction) setLifecycleAction("");
+      if (addProductsOpen) setAddProductsOpen(false);
+      else if (lifecycleAction) setLifecycleAction("");
       else if (editingTask) setEditingTask(null);
       else if (taskLineId) setTaskLineId("");
       else if (!busy) onClose();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [busy, editingTask, lifecycleAction, onClose, taskLineId]);
+  }, [addProductsOpen, busy, editingTask, lifecycleAction, onClose, taskLineId]);
 
   async function run(label: string, action: () => Promise<unknown>) {
     setBusy(label);
@@ -143,6 +146,11 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
     });
   }
 
+  const canAddProducts = request.workflowVersion === 2
+    && (canAccept || canExecute || canWorkflowManage)
+    && !(request.shipments || []).some((shipment) => !["cancelled", "voided"].includes(shipment.status))
+    && !["inventory_reserved", "wms_created", "instruction_issued", "handed_over", "overseas_received", "cost_locked", "cancelled", "rejected", "completed"].includes(request.status);
+
   return (
     <div className="sc-drawer-backdrop" role="presentation">
       <aside className="sc-drawer" role="dialog" aria-modal="true" aria-label={`备货需求 ${request.requestNo}`}>
@@ -175,7 +183,7 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
           {canAccept && request.status === "pending_acceptance" ? <section className="sc-action-strip"><div><b>这张需求正在等待供应链受理</b><span>受理后可按产品创建采购或生产任务。</span></div><div><button className="sc-button sc-button-secondary" disabled={Boolean(busy)} onClick={() => run("changes", () => changeStockupCollaborationRequest(request.id, "request-changes", { note: window.prompt("请填写需要运营补充的内容") || "请补充需求资料" }))}>要求补充</button><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("accept", () => changeStockupCollaborationRequest(request.id, "accept"))}><Check size={17} />受理需求</button></div></section> : null}
 
           <section className="sc-detail-section">
-            <div className="sc-panel-head compact"><div><span className="sc-eyebrow">PRODUCT LINES</span><h3>产品与执行任务</h3></div><div className="sc-panel-head-actions">{request.routePlanVersion > 0 && (canAccept || canExecute) && !["inventory_reserved", "wms_created", "instruction_issued", "handed_over", "overseas_received", "cost_locked", "cancelled", "rejected"].includes(request.status) ? <button type="button" className="sc-button sc-button-secondary" onClick={() => setRouteOpen(true)}><Route size={15} />调整执行方案</button> : null}<span className="sc-count-chip">{request.lines.length} 个产品</span></div></div>
+            <div className="sc-panel-head compact"><div><span className="sc-eyebrow">PRODUCT LINES</span><h3>产品与执行任务</h3></div><div className="sc-panel-head-actions">{canAddProducts ? <button type="button" className="sc-button sc-button-secondary" onClick={() => setAddProductsOpen(true)}><PackagePlus size={16} />增加产品</button> : null}{request.routePlanVersion > 0 && (canAccept || canExecute) && !["inventory_reserved", "wms_created", "instruction_issued", "handed_over", "overseas_received", "cost_locked", "cancelled", "rejected"].includes(request.status) ? <button type="button" className="sc-button sc-button-secondary" onClick={() => setRouteOpen(true)}><Route size={15} />调整执行方案</button> : null}<span className="sc-count-chip">{request.lines.length} 个产品</span></div></div>
             <div className="sc-detail-lines">
               {request.lines.map((line) => (
                 <article key={line.id}>
@@ -213,6 +221,7 @@ export function RequestDetailDrawer({ request, canAccept, canExecute, canWarehou
 
       {editingTask ? <div className="sc-submodal"><div><header><h3>更新执行进度</h3><button onClick={() => setEditingTask(null)}><X size={18} /></button></header><div className="sc-form-grid"><label>当前节点<select value={progressForm.status} onChange={(event) => setProgressForm({ ...progressForm, status: event.target.value })}>{Object.entries(stockupTaskStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>已下单数量<input type="number" value={progressForm.orderedQty} onChange={(event) => setProgressForm({ ...progressForm, orderedQty: Number(event.target.value) })} /></label><label>已完成数量<input type="number" value={progressForm.completedQty} onChange={(event) => setProgressForm({ ...progressForm, completedQty: Number(event.target.value) })} /></label><label>预计完成日<input type="date" value={progressForm.expectedCompletedAt} onChange={(event) => setProgressForm({ ...progressForm, expectedCompletedAt: event.target.value })} /></label><label>异常类型<select value={progressForm.exceptionType} onChange={(event) => setProgressForm({ ...progressForm, exceptionType: event.target.value })}><option value="">无异常</option><option>延期</option><option>数量异常</option><option>质量异常</option></select></label><label>异常说明<input value={progressForm.exceptionNote} onChange={(event) => setProgressForm({ ...progressForm, exceptionNote: event.target.value })} /></label></div><footer><button className="sc-button sc-button-secondary" onClick={() => setEditingTask(null)}>取消</button><button className="sc-button sc-button-primary" disabled={Boolean(busy)} onClick={() => run("progress", async () => { await updateStockupCollaborationTask(editingTask.id, { version: editingTask.version, ...progressForm }); setEditingTask(null); })}><Send size={16} />保存进度</button></footer></div></div> : null}
       {lifecycleAction ? <div className="sc-submodal"><div className="sc-flow-action-modal"><header><div><span className="sc-eyebrow">CONTROLLED ACTION</span><h3>{lifecycleAction === "cancel" ? "作废备货需求" : "退回上一步调整"}</h3></div><button type="button" aria-label="关闭" onClick={() => setLifecycleAction("")}><X size={18} /></button></header>{error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}<div className={`sc-flow-action-warning ${lifecycleAction === "cancel" ? "is-danger" : ""}`}><AlertTriangle size={20} /><div><b>{lifecycleAction === "cancel" ? "作废不会删除任何历史记录" : "只退回到当前可安全恢复的节点"}</b><p>{lifecycleAction === "cancel" ? "未交接货代的库存锁定会释放；已产生的采购单、委外单或仓库单据仍保留，便于后续核对和单独关闭。" : "如已存在活动发运、在途调拨或外部采购/委外单据，系统会拒绝回退并明确告诉你先处理哪张单。"}</p></div></div><label className="sc-flow-reason">{lifecycleAction === "cancel" ? "作废原因" : "回退原因"}<textarea autoFocus rows={4} maxLength={500} value={lifecycleReason} onChange={(event) => setLifecycleReason(event.target.value)} placeholder="请说明原因，内容将写入进度时间线和审计记录" /><small>{lifecycleReason.trim().length}/500</small></label><footer><button className="sc-button sc-button-secondary" disabled={Boolean(busy)} onClick={() => setLifecycleAction("")}>取消</button><button className={`sc-button ${lifecycleAction === "cancel" ? "sc-button-danger" : "sc-button-primary"}`} disabled={Boolean(busy) || !lifecycleReason.trim()} onClick={() => void submitLifecycleAction()}>{lifecycleAction === "cancel" ? <Ban size={16} /> : <Undo2 size={16} />}{busy ? "处理中…" : lifecycleAction === "cancel" ? "确认作废" : "确认回退"}</button></footer></div></div> : null}
+      {addProductsOpen ? <AddRequestProductsPanel request={request} onClose={() => setAddProductsOpen(false)} onChanged={onChanged} /> : null}
       {routeOpen ? <RouteConfirmationPanel request={request} onClose={() => setRouteOpen(false)} onConfirmed={onChanged} /> : null}
       {outsourcingOpen ? <OutsourcingLinkPanel request={request} onClose={() => setOutsourcingOpen(false)} onChanged={onChanged} onNavigateWarehouse={() => { setOutsourcingOpen(false); onNavigate("warehouse"); }} /> : null}
     </div>

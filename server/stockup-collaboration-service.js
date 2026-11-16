@@ -1812,6 +1812,7 @@ export function createStockupCollaborationService(store, {
     inventoryGateway,
     getRequest,
     addEvent,
+    prepareAdditionalLines: v2Service.prepareAdditionalLines,
     enabled: fulfillmentV3Enabled,
     pilotRequestRefs: fulfillmentV3PilotRequestRefs,
     adminOnly: fulfillmentV3AdminOnly,

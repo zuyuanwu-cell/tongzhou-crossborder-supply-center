@@ -392,6 +392,54 @@ try {
   const noReasonCreated = createRequest("v3-no-cancel-reason", [{ sku: "V3-NO-STOCK", productName: "取消原因校验", requestedQty: 1, unit: "件", supplyMode: "外采成品" }]);
   assert.throws(() => service.setRequestStatus(noReasonCreated.requestId, "cancelled", {}, context), (error) => error?.code === "required");
 
+  // A submitted request may receive more product lines before its route is
+  // confirmed. Replaying the same command must not create duplicate lines.
+  const addPendingCreated = createRequest("v3-add-pending", [{ sku: "V3-ADD-BASE", productName: "原始产品", requestedQty: 3, unit: "件", supplyMode: "外采成品" }]);
+  const addPendingBefore = service.getJourneyRequest(addPendingCreated.requestId, context);
+  const addPending = service.addRequestProducts(addPendingCreated.requestId, {
+    expectedVersion: addPendingBefore.version,
+    lines: [{ sku: "V3-ADD-PENDING", productName: "待规划追加产品", requestedQty: 4, unit: "件", supplyMode: "外采成品" }],
+  }, context, "add-pending-products");
+  assert.equal(addPending.request.lines.length, 2);
+  assert.equal(addPending.request.allocations.length, 0, "unconfirmed requests must wait for one combined route plan");
+  assert.equal(service.addRequestProducts(addPendingCreated.requestId, {
+    expectedVersion: addPendingBefore.version,
+    lines: [{ sku: "V3-ADD-PENDING", productName: "待规划追加产品", requestedQty: 4, unit: "件", supplyMode: "外采成品" }],
+  }, context, "add-pending-products").idempotentReplay, true);
+
+  // When a route is already confirmed, only the newly added lines are routed.
+  // Existing allocations stay intact and procurement is created only for the
+  // uncovered quantity of the new products.
+  inbound(target.id, "OPEN-ADD-STOCK", "V3-ADD-STOCK", 5);
+  const addRoutedCreated = createRequest("v3-add-routed", [{ sku: "V3-ADD-ORIGINAL", productName: "原采购产品", requestedQty: 2, unit: "件", supplyMode: "外采成品" }]);
+  const addRoutedPreview = service.previewRoute(addRoutedCreated.requestId, { consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context);
+  const addRoutedConfirmed = service.confirmRoute(addRoutedCreated.requestId, {
+    expectedVersion: addRoutedPreview.expectedRequestVersion,
+    consolidationWarehouseId: target.id,
+    consolidationWarehouseName: target.name,
+  }, context, "confirm-add-routed");
+  const originalAllocationIds = addRoutedConfirmed.request.allocations.map((item) => item.id);
+  const addRouted = service.addRequestProducts(addRoutedCreated.requestId, {
+    expectedVersion: addRoutedConfirmed.request.version,
+    lines: [
+      { sku: "V3-ADD-STOCK", productName: "追加库存产品", requestedQty: 5, unit: "件", supplyMode: "外采成品" },
+      { sku: "V3-ADD-PURCHASE", productName: "追加采购产品", requestedQty: 7, unit: "件", supplyMode: "外采成品" },
+    ],
+  }, context, "add-routed-products");
+  assert.equal(addRouted.request.lines.length, 3);
+  assert.ok(originalAllocationIds.every((allocationId) => addRouted.request.allocations.some((item) => item.id === allocationId)), "existing allocations must be preserved");
+  const addedStockAllocation = addRouted.request.allocations.find((item) => item.requestLineId === addRouted.addedLineIds[0]);
+  const addedPurchaseAllocation = addRouted.request.allocations.find((item) => item.requestLineId === addRouted.addedLineIds[1]);
+  assert.equal(addedStockAllocation?.sourceType, "domestic_stock");
+  assert.equal(addedStockAllocation?.readyQty, 5);
+  assert.equal(addedPurchaseAllocation?.sourceType, "purchase");
+  assert.equal(addedPurchaseAllocation?.plannedQty, 7);
+  assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ADD-STOCK" }, inventoryContext).items[0].reservedQty, 5);
+  assert.throws(() => service.addRequestProducts(addRoutedCreated.requestId, {
+    expectedVersion: addRouted.request.version,
+    lines: [{ sku: "V3-ADD-STOCK", productName: "重复产品", requestedQty: 1, unit: "件", supplyMode: "外采成品" }],
+  }, context, "add-duplicate-product"), (error) => error?.code === "request_product_exists");
+
   // 生产试点必须同时受需求白名单和管理员身份约束，避免开启开关后
   // 把所有历史 V2 需求一起切到新状态机。
   const mixedRequestNo = service.getRequest(mixedCreated.requestId, context).requestNo;
