@@ -4396,6 +4396,28 @@ export type SystemBackupJob = {
   };
 };
 
+export type SkuCodingRule = {
+  id: string; name: string; prefix: string; digits: number; kind: string; brand: string; country: string;
+  description: string; enabled: boolean; observedMax: number; issuedMax: number; currentMax: number;
+  currentSku: string; nextSequence: number; nextSku: string; updatedAt: string; updatedBy: string;
+};
+
+export type SkuCodingWarehouseResult = {
+  connectionId: string; warehouseName: string; providerId: string; status: string; externalId: string; message: string; updatedAt: string;
+};
+
+export type SkuCodingReservation = {
+  id: string; ruleId: string; productRecordId: string; productName: string; sequence: number; sku: string; status: string;
+  requestedById: string; requestedByName: string; createdAt: string; updatedAt: string; cancelledAt?: string; cancelReason?: string;
+  jdyRecordId?: string; jdyStatus?: string; message?: string; warehouseResults?: SkuCodingWarehouseResult[]; targetConnectionIds?: string[];
+};
+
+export type SkuCodingCenterPayload = {
+  ok: boolean; version: number; rules: SkuCodingRule[]; reservations: SkuCodingReservation[];
+  queue: StockupWorkflowPayload["productCodingQueue"]; warehouseOptions: StockupWmsWarehouseOption[];
+  updatedAt: string; catalogSkuCount?: number; catalogSyncedAt?: string; catalogSource?: string;
+};
+
 export type SystemBackupAuditEntry = {
   id?: string;
   createdAt: string;
@@ -5398,8 +5420,16 @@ export function voidWorkflowShipment(input: { shipmentRecordId: string; reason?:
   return requestJson<{ ok: boolean; dryRun: boolean; shipmentRecordId: string; shipmentNo?: string; status: string; reversedLineCount: number; reason: string }>("/api/stockup/workflow/shipments/void", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function completeWorkflowProductCoding(input: { productRecordId: string; sku: string; dryRun?: boolean }) {
-  return requestJson<{ ok: boolean; dryRun: boolean; productRecordId?: string; demandRecordId?: string; sku?: string }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
+export function fetchSkuCodingCenter() {
+  return requestJson<SkuCodingCenterPayload>("/api/stockup/workflow/product-coding");
+}
+
+export function reserveWorkflowSku(input: { productRecordId: string; ruleId: string; mode?: "direct"; productName?: string; product?: Record<string, unknown> }) {
+  return requestJson<{ ok: boolean; reservation: SkuCodingReservation }>("/api/stockup/workflow/product-coding/reservations", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function completeWorkflowProductCoding(input: { productRecordId: string; sku?: string; reservationId?: string; mode?: "direct" | "queue"; productName?: string; product?: Record<string, unknown>; warehouseConnectionIds?: string[]; dryRun?: boolean }) {
+  return requestJson<{ ok: boolean; dryRun?: boolean; productRecordId?: string; sourceProductRecordId?: string; demandRecordId?: string; sku?: string; status?: string }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function previewStockupCost(input: {

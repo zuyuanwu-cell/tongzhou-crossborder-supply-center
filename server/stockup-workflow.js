@@ -1861,8 +1861,18 @@ export async function voidWorkflowShipment(input, workflow) {
 }
 
 export async function completeProductCoding(input, workflow) {
-  const product = workflow.productCodingQueue.find((item) => item.id === input.productRecordId);
+  const direct = input.mode === "direct" && /^manual:/i.test(textValue(input.productRecordId));
+  const details = input.product && typeof input.product === "object" ? input.product : {};
+  const product = workflow.productCodingQueue.find((item) => item.id === input.productRecordId) || (direct ? {
+    id: textValue(input.productRecordId),
+    productName: textValue(details.productName || input.productName),
+    specification: textValue(details.specification),
+    temporaryProductNo: textValue(details.temporaryProductNo),
+    sourceDemandRecordId: "",
+    sourceDemandBatchNo: "",
+  } : null);
   if (!product) throw new Error("未找到待编码新品，请刷新后重试。");
+  if (!textValue(product.productName)) throw new Error("请先填写新品中文名称。");
   const sku = textValue(input.sku).toUpperCase();
   if (!sku) throw new Error("请输入正式 SKU。");
   const duplicate = workflow.productOptions?.find((item) => item.sku.toUpperCase() === sku && item.id !== product.id);
@@ -1874,8 +1884,9 @@ export async function completeProductCoding(input, workflow) {
     [productFields.sku]: jdyField(sku),
     [productFields.officialSku]: jdyField(sku),
     [productFields.productName]: jdyField(product.productName || sourceDemand?.productName || ""),
-    [productFields.unit]: jdyField("件"),
-    [productFields.project]: jdyField(sourceDemand?.project || ""),
+    [productFields.specification]: jdyField(details.specification || product.specification || ""),
+    [productFields.unit]: jdyField(details.unit || "件"),
+    [productFields.project]: jdyField(details.project || sourceDemand?.project || ""),
     [productFields.temporaryProductNo]: jdyField(temporaryProductNo),
     [productFields.skuCodingStatus]: jdyField("已编码"),
     [productFields.archiveStatus]: jdyField("正式档案"),
@@ -1885,22 +1896,32 @@ export async function completeProductCoding(input, workflow) {
     [productFields.codingCompletedAt]: jdyField(new Date().toISOString()),
   });
   const demandFields = JIANYUN_FORMS.stockupDemands.fields;
-  const demandData = compactJdyData({
+  const demandData = direct ? {} : compactJdyData({
     [demandFields.productRecordId]: jdyField(product.id.startsWith("demand:") ? "" : product.id),
     [demandFields.temporaryProductNo]: jdyField(temporaryProductNo),
     [demandFields.officialSku]: jdyField(sku),
     [demandFields.skuCodingStatus]: jdyField("已编码"),
     [demandFields.businessStatus]: jdyField("待受理"),
   });
-  if (input.dryRun) return { ok: true, dryRun: true, productData, demandData };
+  if (input.dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      productRecordId: direct ? "" : product.id,
+      demandRecordId: direct ? "" : sourceDemand?.id || product.sourceDemandRecordId || "",
+      sku,
+      productData,
+      demandData,
+    };
+  }
   let productRecordId = product.id;
-  if (product.id.startsWith("demand:")) {
+  if (direct || product.id.startsWith("demand:")) {
     productRecordId = createdDataId(await createJdyData(JIANYUN_FORMS.productBase, productData));
-    demandData[demandFields.productRecordId] = jdyField(productRecordId);
+    if (!direct) demandData[demandFields.productRecordId] = jdyField(productRecordId);
   } else {
     await updateJdyData(JIANYUN_FORMS.productBase, product.id, productData);
   }
-  const demandRecordId = sourceDemand?.id || product.sourceDemandRecordId;
+  const demandRecordId = direct ? "" : sourceDemand?.id || product.sourceDemandRecordId;
   if (demandRecordId) await updateJdyData(JIANYUN_FORMS.stockupDemands, demandRecordId, demandData);
   return { ok: true, dryRun: false, productRecordId, demandRecordId, sku };
 }

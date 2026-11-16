@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Check, PackagePlus, Search, Trash2, X } from "lucide-react";
+import { Check, PackagePlus, Search, Sparkles, Trash2, X } from "lucide-react";
 import { addStockupCollaborationRequestProducts, fetchStockupCollaborationProducts } from "../api";
 import type { CatalogProduct } from "../api";
 import type { StockupRequest } from "./types";
 import "./add-request-products-panel.css";
+import "./add-request-products-temporary.css";
 
 type Props = {
   request: StockupRequest;
   onClose: () => void;
   onChanged: () => Promise<void>;
+  onOpenSkuCoding?: () => void;
 };
 
 type DraftLine = {
@@ -47,7 +49,21 @@ function toDraft(product: CatalogProduct): DraftLine {
   };
 }
 
-export function AddRequestProductsPanel({ request, onClose, onChanged }: Props) {
+function temporaryDraft(): DraftLine {
+  return {
+    key: `temporary-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    productId: "",
+    sku: "",
+    productName: "",
+    imageUrl: "",
+    specification: "",
+    requestedQty: 1,
+    unit: "件",
+    supplyMode: "待判断",
+  };
+}
+
+export function AddRequestProductsPanel({ request, onClose, onChanged, onOpenSkuCoding }: Props) {
   const [products, setProducts] = useState<CatalogProduct[]>([]);
   const [query, setQuery] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([]);
@@ -102,6 +118,11 @@ export function AddRequestProductsPanel({ request, onClose, onChanged }: Props) 
     setLines((current) => current.map((line) => line.key === key ? { ...line, ...patch } : line));
   }
 
+  function addTemporaryProduct() {
+    setLines((current) => [...current, temporaryDraft()]);
+    setError("");
+  }
+
   async function submit() {
     if (!lines.length) {
       setError("请至少选择一个产品");
@@ -109,6 +130,10 @@ export function AddRequestProductsPanel({ request, onClose, onChanged }: Props) 
     }
     if (lines.some((line) => !Number.isFinite(line.requestedQty) || line.requestedQty <= 0)) {
       setError("需求数量必须大于 0");
+      return;
+    }
+    if (lines.some((line) => !line.productName.trim())) {
+      setError("无 SKU 商品必须填写产品名称");
       return;
     }
     setSaving(true);
@@ -153,6 +178,7 @@ export function AddRequestProductsPanel({ request, onClose, onChanged }: Props) 
           <div className="sc-add-products-picker">
             <div className="sc-add-products-title"><strong>选择产品</strong><span>{loading ? "正在读取…" : `${matches.length} 个可见结果`}</span></div>
             <label className="sc-add-products-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 SKU、产品名或条码" autoFocus /></label>
+            <button type="button" className="sc-add-products-temporary" onClick={addTemporaryProduct}><PackagePlus size={17} /><span><strong>新增无 SKU 商品</strong><small>保存时自动生成临时编码，后续可转正式 SKU</small></span></button>
             <div className="sc-add-products-options">
               {matches.map((product) => {
                 const existing = isExisting(product);
@@ -169,8 +195,13 @@ export function AddRequestProductsPanel({ request, onClose, onChanged }: Props) 
           <div className="sc-add-products-cart">
             <div className="sc-add-products-title"><strong>本次新增</strong><span>{lines.length} 个产品</span></div>
             <div className="sc-add-products-lines">
-              {lines.map((line, index) => <article className="sc-add-products-line" key={line.key}>
-                <div className="sc-add-products-line-head"><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{line.productName}</strong><small>{line.sku}</small></div><button type="button" onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))} aria-label="删除"><Trash2 size={16} /></button></div>
+              {lines.map((line, index) => <article className={`sc-add-products-line${line.productId || line.sku ? "" : " is-temporary"}`} key={line.key}>
+                <div className="sc-add-products-line-head"><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{line.productName || "待填写新品"}</strong><small>{line.sku || "保存后自动生成临时编码"}</small></div><button type="button" onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))} aria-label="删除"><Trash2 size={16} /></button></div>
+                {!line.productId && !line.sku ? <div className="sc-add-products-temporary-fields">
+                  <label><span>产品名称 <em>*</em></span><input value={line.productName} onChange={(event) => updateLine(line.key, { productName: event.target.value })} placeholder="例如：新品男士洁面乳" /></label>
+                  <label><span>规格</span><input value={line.specification} onChange={(event) => updateLine(line.key, { specification: event.target.value })} placeholder="例如：100ml" /></label>
+                  <label><span>单位</span><input value={line.unit} onChange={(event) => updateLine(line.key, { unit: event.target.value })} placeholder="件 / 盒 / 瓶" /></label>
+                </div> : null}
                 <div className="sc-add-products-fields">
                   <label><span>需求数量</span><div className="sc-add-products-quantity"><input type="number" min="0.0001" step="any" value={line.requestedQty} onChange={(event) => updateLine(line.key, { requestedQty: Number(event.target.value) })} /><em>{line.unit}</em></div></label>
                   <label><span>供应方式</span><select value={line.supplyMode} onChange={(event) => updateLine(line.key, { supplyMode: event.target.value })}>{supplyModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label>
@@ -180,7 +211,7 @@ export function AddRequestProductsPanel({ request, onClose, onChanged }: Props) 
             </div>
           </div>
         </div>
-        <footer className="sc-add-products-footer"><span>保存后会保留完整的新增人与新增时间记录。</span><div><button type="button" className="sc-button sc-button-secondary" onClick={onClose} disabled={saving}>取消</button><button type="button" className="sc-button sc-button-primary" onClick={() => void submit()} disabled={saving || !lines.length}><PackagePlus size={16} />{saving ? "正在增加…" : `确认增加${lines.length ? `（${lines.length}）` : ""}`}</button></div></footer>
+        <footer className="sc-add-products-footer"><span>无 SKU 商品会先生成临时编码，不影响当前需求继续流转。</span><div>{onOpenSkuCoding ? <button type="button" className="sc-button sc-button-secondary" onClick={onOpenSkuCoding} disabled={saving}><Sparkles size={16} />新品 SKU 编码</button> : null}<button type="button" className="sc-button sc-button-secondary" onClick={onClose} disabled={saving}>取消</button><button type="button" className="sc-button sc-button-primary" onClick={() => void submit()} disabled={saving || !lines.length}><PackagePlus size={16} />{saving ? "正在增加…" : `确认增加${lines.length ? `（${lines.length}）` : ""}`}</button></div></footer>
       </section>
     </div>
   );

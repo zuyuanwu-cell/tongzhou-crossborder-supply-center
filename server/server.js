@@ -38,8 +38,10 @@ import { renderStockupWarningReport } from "./stockup-warning-renderer.js";
 import { shouldRunStockupDailySchedule } from "./wecom-stockup-schedule.js";
 import { canPreviewStockupShipmentWmsOrder } from "./stockup-v2-domain.js";
 import { buildStockupWorkflowPayload, calculateShipmentCosts, cancelStockupExecution, completeProductCoding, createShipmentFee, createStockupDemand, createStockupExecution, createWorkflowShipment, loadStockupWorkflow, lockShipmentCostVersion, persistShipmentCostBatches, rollbackStockupExecutionLine, updateStockupExecutionLine, voidWorkflowShipment } from "./stockup-workflow.js";
-import { cancelWarehouseStockupOrder, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, updateWarehouseProductPurchasePrice, warehouseProductPriceSyncCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
+import { cancelWarehouseStockupOrder, createWarehouseProduct, createWarehouseStockupOrder, findWarehouseOutboundOrder, mergeWarehouseDataIntoProducts, previewWarehouseStockupOrder, syncWarehouseConnection, syncWarehouseOrders, syncWarehouseOrdersRange, syncWarehouseStockupOrders, updateAndVerifyWarehouseOutboundOrder, updateWarehouseProductPurchasePrice, warehouseProductPriceSyncCapability, warehouseStockupCreateCapability } from "./wms-adapters.js";
 import { createWmsProductPriceSyncService } from "./wms-product-price-sync.js";
+import { createSkuCodingRegistry } from "./sku-coding-registry.js";
+import { createSkuCodingService } from "./sku-coding-service.js";
 import { normalizeWarehouseConnectionBindings, resolveWarehouseBinding, warehouseBindingChanged } from "./warehouse-binding.js";
 import { collectWarehouseInventorySync } from "./warehouse-inventory-sync.js";
 import { buildWmsPushTask, buildWmsWarehouseOptions, normalizeWmsPushStore, publicWmsPushTasks, recoverInterruptedWmsPushes, upsertWmsPushTask } from "./wms-stockup-push.js";
@@ -235,6 +237,7 @@ const stockupCachePath = resolve(cacheDir, "stockup-sync.json");
 const stockupDecisionCachePath = resolve(cacheDir, "stockup-decisions.json");
 const stockupPlanCachePath = resolve(cacheDir, "stockup-plans.json");
 const stockupWorkflowCachePath = resolve(cacheDir, "stockup-workflow.json");
+const skuCodingRegistryPath = resolve(cacheDir, "sku-coding.json");
 const stockupCollaborationDbPath = resolve(process.env.STOCKUP_COLLABORATION_DB_PATH || resolve(cacheDir, "stockup-collaboration.sqlite"));
 const hermesIntegrationDbPath = resolve(process.env.HERMES_INTEGRATION_DB_PATH || resolve(cacheDir, "hermes-integration.sqlite"));
 const hermesAgentEnabled = process.env.HERMES_AGENT_ENABLED === "true";
@@ -319,6 +322,16 @@ let stockupWorkflowRefreshError = "";
 let cachedWmsStockupPushes = recoverInterruptedWmsPushes(loadJsonCache(wmsStockupPushCachePath));
 const warehouseConnectionBindingMigration = normalizeWarehouseConnectionBindings(loadJsonCache(warehouseConnectionsPath) || WAREHOUSE_CONNECTIONS);
 let warehouseConnections = warehouseConnectionBindingMigration.connections;
+const skuCodingRegistry = createSkuCodingRegistry({ filePath: skuCodingRegistryPath });
+const skuCodingService = createSkuCodingService({
+  registry: skuCodingRegistry,
+  completeProductCodingFn: completeProductCoding,
+  createWarehouseProductFn: createWarehouseProduct,
+  resolveConnection: (connectionId) => {
+    const connection = warehouseConnections.find((item) => String(item.id) === String(connectionId));
+    return connection ? effectiveWarehouseCreateConnection(connection) : null;
+  },
+});
 const wmsProductPriceSyncService = createWmsProductPriceSyncService({
   cachePath: wmsProductPriceSyncPath,
   loadJsonCache,
@@ -4149,6 +4162,10 @@ const stockupViewPermissions = [
   "stockup_execution_view",
   "production_view",
 ];
+
+function skuCodingActor(auth) {
+  return { id: String(auth?.user?.id || "system"), name: String(auth?.user?.name || auth?.user?.username || "系统") };
+}
 
 function stockupPermissionForView(view) {
   if (view === "stockup-recommendations" || view === "dashboard") return "stockup_recommendations_view";
@@ -14913,6 +14930,62 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "GET") {
+      const auth = getAuth(req);
+      if (!hasAnyPermission(auth, stockupViewPermissions)) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有备货业务链路权限。" });
+        return;
+      }
+      sendJson(res, 200, skuCodingService.snapshot(cachedStockupWorkflow, currentWmsWarehouseOptions()));
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/product-coding/rules" && req.method === "PUT") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有 SKU 编码规则维护权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const rule = skuCodingService.upsertRule(payload, skuCodingActor(auth));
+      appendActionLog(auth, "维护 SKU 编码规则", "sku_coding_rule", rule.id, { prefix: rule.prefix, name: rule.name, enabled: rule.enabled });
+      sendJson(res, 200, { ok: true, rule, codingCenter: skuCodingService.snapshot(cachedStockupWorkflow, currentWmsWarehouseOptions()) });
+      return;
+    }
+
+    if (url.pathname === "/api/stockup/workflow/product-coding/reservations" && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) {
+        sendJson(res, 403, { ok: false, message: "当前账号没有新品编码权限。" });
+        return;
+      }
+      const payload = await parseRequestBody(req);
+      const reservation = skuCodingService.reserve(payload, cachedStockupWorkflow, skuCodingActor(auth));
+      appendActionLog(auth, "预占新品 SKU", "product_coding", reservation.sku, { reservationId: reservation.id, productRecordId: reservation.productRecordId, ruleId: reservation.ruleId });
+      sendJson(res, 201, { ok: true, reservation });
+      return;
+    }
+
+    const codingRetryMatch = url.pathname.match(/^\/api\/stockup\/workflow\/product-coding\/reservations\/([^/]+)\/retry$/);
+    if (codingRetryMatch && req.method === "POST") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) { sendJson(res, 403, { ok: false, message: "当前账号没有 WMS 商品建档重试权限。" }); return; }
+      const payload = await parseRequestBody(req);
+      const result = await skuCodingService.retry({ ...payload, reservationId: decodeURIComponent(codingRetryMatch[1]) }, skuCodingActor(auth));
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const codingReservationMatch = url.pathname.match(/^\/api\/stockup\/workflow\/product-coding\/reservations\/([^/]+)$/);
+    if (codingReservationMatch && req.method === "DELETE") {
+      const auth = getAuth(req);
+      if (!hasPermission(auth, "stockup_workflow_manage")) { sendJson(res, 403, { ok: false, message: "当前账号没有新品编码权限。" }); return; }
+      const payload = await parseRequestBody(req);
+      const reservation = skuCodingService.cancel({ ...payload, reservationId: decodeURIComponent(codingReservationMatch[1]) }, skuCodingActor(auth));
+      sendJson(res, 200, { ok: true, reservation });
+      return;
+    }
+
     if (url.pathname === "/api/stockup/workflow/product-coding" && req.method === "POST") {
       const auth = getAuth(req);
       if (!hasPermission(auth, "stockup_workflow_manage")) {
@@ -14920,8 +14993,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = await parseRequestBody(req);
-      const workflow = await loadStockupWorkflow();
-      const result = await completeProductCoding(payload, workflow);
+      const result = await skuCodingService.complete(payload, cachedStockupWorkflow, skuCodingActor(auth));
       if (!payload.dryRun) appendActionLog(auth, "完成新品编码", "product_coding", result.sku, { productRecordId: result.productRecordId, demandRecordId: result.demandRecordId });
       if (!payload.dryRun) queueStockupWorkflowRefresh("product_coded");
       sendJson(res, 200, result);
