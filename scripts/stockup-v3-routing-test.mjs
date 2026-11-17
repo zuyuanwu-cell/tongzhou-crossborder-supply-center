@@ -181,6 +181,52 @@ try {
   assert.equal(adjustUp.request.allocations[0].plannedQty, 18);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ADJUST" }, inventoryContext).items[0].reservedQty, 18);
 
+  // Replanning must validate the replacement before superseding the current
+  // allocations. A deterministic form error must leave the confirmed route
+  // intact, while an already-partial historical route must expose a recovery
+  // action instead of sending inactive quantities to procurement.
+  const recoveryCreated = createRequest("v3-route-recovery", [
+    { sku: "V3-RECOVERY-A", productName: "route recovery A", requestedQty: 3, unit: "件", supplyMode: "外采成品" },
+    { sku: "V3-RECOVERY-B", productName: "route recovery B", requestedQty: 4, unit: "件", supplyMode: "外采成品" },
+  ]);
+  const recoveryPreview = service.previewRoute(recoveryCreated.requestId, { consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context);
+  const recoveryConfirmed = service.confirmRoute(recoveryCreated.requestId, {
+    expectedVersion: recoveryPreview.expectedRequestVersion,
+    consolidationWarehouseId: target.id,
+    consolidationWarehouseName: target.name,
+  }, context, "confirm-route-recovery");
+  const recoveryAllocationIds = recoveryConfirmed.request.allocations.map((item) => item.id);
+  const supersededRecoveryQty = Number(recoveryConfirmed.request.allocations[0]?.plannedQty || 0);
+  assert.throws(() => service.replaceRoute(recoveryCreated.requestId, {
+    expectedVersion: recoveryConfirmed.request.version,
+    consolidationWarehouseId: target.id,
+    consolidationWarehouseName: target.name,
+    quantityOverrides: { [recoveryConfirmed.request.lines[0].id]: 2 },
+  }, context, "invalid-route-recovery"), (error) => error?.code === "route_override_reason_required");
+  const afterRejectedReplacement = service.getJourneyRequest(recoveryCreated.requestId, context);
+  assert.deepEqual(afterRejectedReplacement.allocations.map((item) => item.id), recoveryAllocationIds);
+  assert.equal(afterRejectedReplacement.routingSummary.purchase, 7);
+
+  store.run("UPDATE stockup_fulfillment_allocations SET status='superseded' WHERE id=?", [recoveryAllocationIds[0]]);
+  store.persist();
+  const brokenRoute = service.getJourneyRequest(recoveryCreated.requestId, context);
+  assert.equal(brokenRoute.journeyStage, "route_recovery");
+  assert.equal(brokenRoute.nextAction.target, "route_confirmation");
+  assert.equal(brokenRoute.allocations.length, 1);
+  assert.equal(brokenRoute.routingSummary.purchase, 7 - supersededRecoveryQty);
+  const recoveredRoute = service.replaceRoute(recoveryCreated.requestId, {
+    expectedVersion: brokenRoute.version,
+    consolidationWarehouseId: target.id,
+    consolidationWarehouseName: target.name,
+  }, context, "recover-partial-route");
+  assert.equal(recoveredRoute.request.allocations.length, 2);
+  assert.equal(recoveredRoute.request.routingSummary.purchase, 7);
+  assert.equal(service.replaceRoute(recoveryCreated.requestId, {
+    expectedVersion: brokenRoute.version,
+    consolidationWarehouseId: target.id,
+    consolidationWarehouseName: target.name,
+  }, context, "recover-partial-route").idempotentReplay, true);
+
   // 场景 2/3/4：同一需求同时包含部分现货+采购、纯委外、跨仓调拨。
   // Replan/cancel releases cross a service boundary. If only part of a
   // multi-SKU lock is released, stop in recovery instead of claiming every
@@ -361,7 +407,7 @@ try {
   const rolledBack = service.rollbackRequest(rollbackCreated.requestId, { reason: "调整履约来源" }, context).request;
   assert.equal(rolledBack.status, "submitted");
   assert.equal(rolledBack.nextAction.key, "confirm_route");
-  assert.equal(rolledBack.allocations[0].status, "superseded");
+  assert.equal(rolledBack.allocations.length, 0, "rolled-back allocations are history and must not be exposed as active routing");
   assert.equal(rolledBack.lifecycleActions.rollback.enabled, false, "the same route plan cannot be rolled back twice");
   assert.match(rolledBack.lifecycleActions.rollback.reason, /已经退回/);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ROLLBACK" }, inventoryContext).items[0].reservedQty, 0);

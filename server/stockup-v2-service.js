@@ -337,6 +337,9 @@ export function createStockupV2Service({ store, inventoryGateway = {}, getReques
       const purchaseAllocation = activePlanVersion > 0 ? store.first(`SELECT * FROM stockup_fulfillment_allocations
         WHERE request_line_id=? AND plan_version=? AND source_type='purchase' AND status NOT IN ('cancelled','superseded')
         ORDER BY created_at LIMIT 1`, [requestLine.id, activePlanVersion]) : null;
+      if (activePlanVersion > 0 && !purchaseAllocation) {
+        fail(`${requestLine.sku} 没有生效中的采购履约分配，请先重新计算并确认执行方案。`, "purchase_allocation_missing", 409);
+      }
       const procurementRequiredQty = purchaseAllocation ? number(purchaseAllocation.planned_qty)
         : requestLine.procurement_required_qty == null ? number(requestLine.requested_qty) : number(requestLine.procurement_required_qty);
       const remaining = procurementRequiredQty - number(store.first("SELECT SUM(quantity-cancelled_qty) AS qty FROM stockup_purchase_order_lines WHERE request_line_id=? AND status!='cancelled'", [requestLine.id])?.qty);

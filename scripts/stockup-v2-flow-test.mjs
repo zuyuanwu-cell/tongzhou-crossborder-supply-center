@@ -45,6 +45,21 @@ try {
   const stockedPurchase = service.createPurchaseOrder({ supplierName: "缺口采购", paidTotalCny: 10, lines: [{ requestLineId: stockedRequest.lines[0].id, quantity: 2, merchandiseAmount: 10 }] }, context, "stocked-purchase").purchaseOrder;
   assert.equal(stockedPurchase.lines[0].quantity, 2);
 
+  // Once V3 routing is active, procurement must be backed by a live purchase
+  // allocation. Inactive/superseded route rows must never create an orphan PO.
+  const routedPurchaseRequestResult = service.createSpotRequest({
+    workflowVersion: 2, project: "履约采购保护", destinationCountry: "印度尼西亚", destinationWarehouseId: "id-jkt-1", destinationWarehouseName: "雅加达仓", expectedArrivalAt: "2026-12-02", priority: "常规", reason: "补库存", submit: true,
+    lines: [{ sku: "ROUTED-PURCHASE-001", productName: "履约采购保护商品", requestedQty: 3, unit: "件" }],
+  }, context, "routed-purchase-guard");
+  const routedPurchaseRequest = service.getRequest(routedPurchaseRequestResult.requestId, context);
+  store.run("UPDATE stockup_requests SET route_plan_version=1 WHERE id=?", [routedPurchaseRequest.id]);
+  store.persist();
+  assert.throws(() => service.createPurchaseOrder({
+    supplierName: "不应创建的采购单",
+    paidTotalCny: 15,
+    lines: [{ requestLineId: routedPurchaseRequest.lines[0].id, quantity: 3, merchandiseAmount: 15 }],
+  }, context, "orphan-purchase"), (error) => error?.code === "purchase_allocation_missing");
+
   // Admins may roll a V2 request back while no real execution has started. Once
   // task progress exists, rollback is blocked, but audited cancellation remains
   // available and must preserve the task record.

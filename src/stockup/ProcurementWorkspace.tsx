@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ban, CheckCircle2, CircleDollarSign, PackagePlus, Plus, RefreshCw, RotateCcw, Tag, Truck, X } from "lucide-react";
 import {
   bindStockupFormalSku,
@@ -20,13 +20,16 @@ type Props = {
   canManage: boolean;
   onChanged: () => void | Promise<void>;
   onHandoff: (requestId: string) => void;
+  initialRequestId?: string;
+  handoffToken?: number;
 };
 
 type PurchaseLineDraft = { id?: string; requestLineId: string; quantity: number; merchandiseAmount: number; allocatedAmount: number; selected: boolean };
 
 const currency = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 2 });
+const inactiveAllocationStatuses = new Set(["cancelled", "superseded"]);
 
-export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff }: Props) {
+export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff, initialRequestId = "", handoffToken = 0 }: Props) {
   const [orders, setOrders] = useState<StockupPurchaseOrder[]>([]);
   const [productRefs, setProductRefs] = useState<StockupProductRef[]>([]);
   const [forwarders, setForwarders] = useState<StockupForwarder[]>([]);
@@ -42,6 +45,7 @@ export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff
   const [lineDrafts, setLineDrafts] = useState<Record<string, PurchaseLineDraft>>({});
   const [skuInputs, setSkuInputs] = useState<Record<string, string>>({});
   const [selectedPurchaseLines, setSelectedPurchaseLines] = useState<string[]>([]);
+  const consumedHandoffToken = useRef(0);
   const [forwarder, setForwarder] = useState({ code: "", name: "", locationName: "", country: "中国", province: "", city: "", address: "", contactName: "", contactPhone: "", routingRequirements: "" });
 
   const load = useCallback(async () => {
@@ -67,8 +71,13 @@ export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff
     return result;
   }, {}), [orders]);
   const purchasableLines = useMemo(() => requests
-    .filter((request) => request.workflowVersion === 2 && ["submitted", "purchasing"].includes(request.status))
-    .flatMap((request) => request.lines.filter((line) => line.status !== "procurement_cancelled").map((line) => ({ request, line, remainingQty: Math.max(0, (line.procurementRequiredQty ?? line.requestedQty) - (purchasedByRequestLine[line.id] || 0)) })))
+    .filter((request) => request.workflowVersion === 2 && ["submitted", "in_progress", "purchasing"].includes(request.status))
+    .flatMap((request) => request.lines.filter((line) => line.status !== "procurement_cancelled").map((line) => {
+      const routedPurchaseQty = request.fulfillmentRoutingEnabled && request.routePlanVersion > 0
+        ? (line.allocations || []).filter((allocation) => allocation.sourceType === "purchase" && !inactiveAllocationStatuses.has(allocation.status)).reduce((sum, allocation) => sum + allocation.plannedQty, 0)
+        : (line.procurementRequiredQty ?? line.requestedQty);
+      return { request, line, remainingQty: Math.max(0, routedPurchaseQty - (purchasedByRequestLine[line.id] || 0)) };
+    }))
     .filter((item) => item.remainingQty > 0), [purchasedByRequestLine, requests]);
   const closedLines = useMemo(() => requests.flatMap((request) => request.lines
     .filter((line) => line.status === "procurement_cancelled")
@@ -84,14 +93,25 @@ export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff
     return item.status === "ordered" && item.lines.every((line) => line.receivedQty === 0 && line.cancelledQty === 0 && line.refundedAmountCny === 0 && line.status === "ordered");
   }
 
-  function openPurchase() {
+  function openPurchase(requestId = "") {
     setError(""); setSuccess("");
     setEditingPurchaseOrder(null);
-    setLineDrafts(Object.fromEntries(purchasableLines.map(({ line, remainingQty }) => [line.id, { requestLineId: line.id, quantity: remainingQty, merchandiseAmount: 0, allocatedAmount: 0, selected: false }])));
+    const scopedLines = requestId ? purchasableLines.filter(({ request }) => request.id === requestId) : purchasableLines;
+    if (requestId && !scopedLines.length) {
+      setError("该需求没有可登记的采购缺口，请先刷新需求或重新计算履约方案。");
+      return;
+    }
+    setLineDrafts(Object.fromEntries(scopedLines.map(({ line, remainingQty }) => [line.id, { requestLineId: line.id, quantity: remainingQty, merchandiseAmount: 0, allocatedAmount: 0, selected: Boolean(requestId) }])));
     setOrder({ supplierName: "", externalOrderNo: "", orderUrl: "", paidTotalCny: 0, orderedAt: new Date().toISOString().slice(0, 10), note: "" });
     setManualAllocation(false); setAllocationReason("");
     setModal("purchase");
   }
+
+  useEffect(() => {
+    if (!handoffToken || !initialRequestId || loading || consumedHandoffToken.current === handoffToken) return;
+    consumedHandoffToken.current = handoffToken;
+    openPurchase(initialRequestId);
+  }, [handoffToken, initialRequestId, loading, purchasableLines]);
 
   function openEditPurchase(item: StockupPurchaseOrder) {
     setError(""); setSuccess("");
@@ -199,7 +219,7 @@ export function ProcurementWorkspace({ requests, canManage, onChanged, onHandoff
   return <section className="sc-warehouse-workbench">
     <header className="sc-warehouse-command">
       <div><span className="sc-eyebrow"><i /> SPOT PROCUREMENT</span><h2>现货采购与商品编码</h2><p>登记 1688 实付成本、自动分摊共享金额，并在 WMS 建单前完成正式 SKU 绑定。</p></div>
-      <div className="sc-warehouse-command-actions"><button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button>{canManage ? <><button className="sc-button sc-button-secondary" onClick={() => setModal("forwarder")}><Truck size={16} />新增货代</button><button className="sc-button sc-button-primary" onClick={openPurchase}><Plus size={17} />登记采购单</button></> : null}</div>
+      <div className="sc-warehouse-command-actions"><button className="sc-button sc-button-secondary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button>{canManage ? <><button className="sc-button sc-button-secondary" onClick={() => setModal("forwarder")}><Truck size={16} />新增货代</button><button className="sc-button sc-button-primary" onClick={() => openPurchase()}><Plus size={17} />登记采购单</button></> : null}</div>
     </header>
     {error ? <div className="sc-alert sc-alert-danger">{error}</div> : null}
     {success ? <div className="sc-warehouse-success"><CheckCircle2 size={17} />{success}<button onClick={() => setSuccess("")}><X size={14} /></button></div> : null}

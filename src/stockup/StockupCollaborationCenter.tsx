@@ -60,6 +60,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
   const [projectTeams, setProjectTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [defaultProjectTeamId, setDefaultProjectTeamId] = useState("");
   const [productOptions, setProductOptions] = useState<CatalogProduct[]>(products);
+  const [procurementHandoff, setProcurementHandoff] = useState<{ requestId: string; token: number }>({ requestId: "", token: 0 });
   const [warehouseHandoff, setWarehouseHandoff] = useState<{ requestId: string; token: number }>({ requestId: "", token: 0 });
   const [shipmentHandoff, setShipmentHandoff] = useState<{ requestId: string; token: number }>({ requestId: "", token: 0 });
   const openedDeepLink = useRef("");
@@ -165,7 +166,7 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     {notice ? <div className={`sc-alert ${notice.tone === "success" ? "sc-alert-success" : "sc-alert-warning"}`}>{notice.text}</div> : null}
 
     {section === "requests" ? <MyRequests payload={payload} loading={loading} onOpen={(request) => void openDetail(request)} /> : null}
-    {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} onChanged={() => loadAll(true)} onHandoff={(requestId) => { setWarehouseHandoff((current) => ({ requestId, token: current.token + 1 })); setSection("warehouse"); }} /> : null}
+    {section === "procurement" ? <ProcurementWorkspace requests={payload?.items || []} canManage={permissions.canExecute || permissions.canAccept} initialRequestId={procurementHandoff.requestId} handoffToken={procurementHandoff.token} onChanged={() => loadAll(true)} onHandoff={(requestId) => { setWarehouseHandoff((current) => ({ requestId, token: current.token + 1 })); setSection("warehouse"); }} /> : null}
     {section === "execution" ? <ExecutionQueue requests={payload?.items || []} loading={loading} onOpen={(request) => { if (request.workflowVersion === 2 && ["inventory_ready", "inventory_reserved", "wms_created", "instruction_issued"].includes(request.status)) { if (request.status === "inventory_ready") setShipmentHandoff((current) => ({ requestId: request.id, token: current.token + 1 })); setSection("logistics"); return; } void openDetail(request); }} /> : null}
     {section === "coding" ? <ProductCodingWorkspace /> : null}
     {section === "warehouse" ? <WarehouseOperationsWorkbench requests={payload?.items || []} canManage={permissions.canWarehouseManage} canCost={permissions.canCost} initialRequestId={warehouseHandoff.requestId} handoffToken={warehouseHandoff.token} onChanged={() => loadAll(true)} /> : null}
@@ -176,6 +177,6 @@ export function StockupCollaborationCenter({ user, products, warehouses = [], in
     <section className="sc-guidance"><Sparkles size={18} /><div><b>无需再记复杂步骤</b><span>系统根据当前角色和单据状态，只展示下一步要处理的动作。</span></div></section>
 
     {showCreate ? <RequestCreatePanel products={productOptions} warehouses={warehouseOptions} projectTeams={projectTeams} defaultProjectTeamId={defaultProjectTeamId} onClose={() => setShowCreate(false)} onSave={async (data) => { const result = await createStockupCollaborationRequest(data); setShowCreate(false); await loadAll(true); setSelected((await fetchStockupCollaborationRequest(result.requestId)).request); const notification = result.notification; setNotice(notification ? { tone: notification.status === "sent" ? "success" : "warning", text: notification.message } : null); }} /> : null}
-    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} canWarehouseManage={permissions.canWarehouseManage} canShip={permissions.canShip} canCost={permissions.canCost} canWorkflowManage={permissions.canWorkflowManage} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { setSelected(null); setSection(target); }} /> : null}
+    {selected ? <RequestDetailDrawer request={selected} canAccept={permissions.canAccept} canExecute={permissions.canExecute} canWarehouseManage={permissions.canWarehouseManage} canShip={permissions.canShip} canCost={permissions.canCost} canWorkflowManage={permissions.canWorkflowManage} onClose={() => setSelected(null)} onChanged={reloadSelected} onNavigate={(target) => { if (target === "procurement") setProcurementHandoff((current) => ({ requestId: selected.id, token: current.token + 1 })); setSelected(null); setSection(target); }} /> : null}
   </main>;
 }

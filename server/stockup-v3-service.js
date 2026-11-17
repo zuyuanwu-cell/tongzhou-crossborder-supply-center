@@ -202,6 +202,10 @@ export function createStockupV3Service({
       ORDER BY a.request_line_id,a.source_type,a.created_at`, [text(requestId)]).map(allocationFromRow);
   }
 
+  function activeCurrentAllocations(requestId) {
+    return currentAllocations(requestId).filter((allocation) => ACTIVE_ALLOCATION_STATUSES.has(allocation.status));
+  }
+
   function activeShipmentForRequest(requestId) {
     return store.first(`SELECT DISTINCT s.id,s.shipment_no,s.status
       FROM stockup_shipments s
@@ -578,7 +582,7 @@ export function createStockupV3Service({
         let nextStatus = text(request.status);
         let nextJourney = text(request.journeyStage);
         if (planVersion > 0) {
-          const combined = currentAllocations(request.id);
+          const combined = activeCurrentAllocations(request.id);
           const allReady = combined.length > 0 && combined.every((allocation) => allocation.readyQty >= allocation.plannedQty);
           nextStatus = allReady ? "inventory_ready" : "in_progress";
           nextJourney = allReady ? "ready_to_ship" : (combined.some((allocation) => allocation.sourceType === "transfer" && allocation.readyQty < allocation.plannedQty) ? "consolidating" : "sourcing");
@@ -695,9 +699,24 @@ export function createStockupV3Service({
   }
 
   function replaceRoute(requestId, payload = {}, context = {}, idempotencyKey = "") {
+    const key = text(idempotencyKey);
+    if (!key) fail("重新计算执行方案必须提供 Idempotency-Key。", "idempotency_key_required", 400);
+    const replay = store.first("SELECT response_json FROM stockup_route_command_receipts WHERE idempotency_key=?", [key]);
+    if (replay) return { ...JSON.parse(replay.response_json), idempotentReplay: true };
     const request = getRequest(text(requestId), { ...context, viewAll: true });
     ensureRequestEnabled(request, context);
-    const active = currentAllocations(request.id);
+    if (number(payload.expectedVersion, request.version) !== request.version) {
+      fail("需求已被其他人更新，请刷新后重新计算。", "version_conflict", 409, { latestVersion: request.version });
+    }
+    const preview = previewRoute(request.id, payload, context);
+    if (!preview.canConfirm) fail("履约方案仍有阻塞项，暂时不能替换。", "route_blocked", 409, { blockers: preview.blockers });
+    const quantityOverrides = payload.quantityOverrides && typeof payload.quantityOverrides === "object" ? payload.quantityOverrides : {};
+    const quantityChanges = request.lines.filter((line) => Object.prototype.hasOwnProperty.call(quantityOverrides, line.id) && number(quantityOverrides[line.id]) !== number(line.requestedQty));
+    const hasSupplyChanges = request.lines.some((line) => text(payload.supplyModeOverrides?.[line.id]) && text(payload.supplyModeOverrides?.[line.id]) !== text(line.defaultSupplyMode));
+    if ((quantityChanges.length || hasSupplyChanges) && !text(payload.overrideReason)) {
+      fail("调整需求数量或默认供应方式时必须填写原因。", "route_override_reason_required", 400);
+    }
+    const active = activeCurrentAllocations(request.id);
     if (active.some((allocation) => allocation.shippedQty > 0 || ["purchase_order_line", "outsourcing_order", "domestic_transfer"].includes(allocation.referenceType))) {
       fail("已有发运或外部单据关联，不能直接替换方案；请先处理对应分支异常。", "route_replace_has_execution", 409);
     }
@@ -711,7 +730,7 @@ export function createStockupV3Service({
       store.run("UPDATE stockup_requests SET journey_stage='route_planning',status='submitted',version=version+1,updated_at=? WHERE id=?", [now, request.id]);
     });
     const fresh = getRequest(request.id, { ...context, viewAll: true });
-    return confirmRoute(request.id, { ...payload, expectedVersion: fresh.version }, context, idempotencyKey);
+    return confirmRoute(request.id, { ...payload, expectedVersion: fresh.version }, context, key);
   }
 
   function confirmTransfer(allocationId, payload = {}, context = {}, idempotencyKey = "") {
@@ -939,8 +958,32 @@ export function createStockupV3Service({
     const routingEnabled = isEnabledForRequest(request, context);
     request.fulfillmentRoutingEnabled = routingEnabled;
     if (!routingEnabled) return request;
-    const allocations = currentAllocations(request.id);
-    const journey = deriveJourney(allocations, request);
+    const allocations = activeCurrentAllocations(request.id);
+    const requestedQty = (request.lines || []).reduce((sum, line) => sum + number(line.requestedQty), 0);
+    const plannedQty = allocations.reduce((sum, allocation) => sum + number(allocation.plannedQty), 0);
+    const currentPlan = number(request.routePlanVersion) > 0
+      ? store.first("SELECT plan_status FROM stockup_route_plan_versions WHERE request_id=? AND plan_version=?", [request.id, request.routePlanVersion])
+      : null;
+    const routeNeedsRecovery = number(request.routePlanVersion) > 0
+      && !["cancelled", "rejected", "completed", "cost_locked"].includes(text(request.status))
+      && text(currentPlan?.plan_status) !== "rolled_back"
+      && requestedQty !== plannedQty;
+    const journey = routeNeedsRecovery ? {
+      journeyStage: "route_recovery",
+      ownerRole: "supply_chain",
+      blockers: [{
+        code: "allocation_quantity_mismatch",
+        message: `当前有效履约分配 ${plannedQty} 与需求 ${requestedQty} 不一致，请重新计算执行方案后再继续。`,
+      }],
+      nextAction: {
+        key: "recalculate_route",
+        label: "重新计算履约方案",
+        target: "route_confirmation",
+        objectId: request.id,
+        enabled: true,
+        reason: "现有履约分配不完整，禁止继续登记采购或发运。",
+      },
+    } : deriveJourney(allocations, request);
     const byLine = new Map();
     for (const allocation of allocations) {
       const values = byLine.get(allocation.requestLineId) || [];
