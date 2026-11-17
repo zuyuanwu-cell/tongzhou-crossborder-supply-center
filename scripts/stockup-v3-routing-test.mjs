@@ -411,6 +411,26 @@ try {
   assert.equal(rolledBack.lifecycleActions.rollback.enabled, false, "the same route plan cannot be rolled back twice");
   assert.match(rolledBack.lifecycleActions.rollback.reason, /已经退回/);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ROLLBACK" }, inventoryContext).items[0].reservedQty, 0);
+  // Adding products after a rollback used to create allocations only for the
+  // newly added lines on the rolled-back plan. The request then exposed a
+  // procurement action for that partial quantity and silently skipped all
+  // original lines. It must instead stop in route recovery until one complete
+  // plan covers every request line.
+  const rollbackAddCreated = createRequest("v3-rollback-add", [{ sku: "V3-ROLLBACK-BASE", productName: "Rollback base", requestedQty: 5, unit: "item", supplyMode: "外采成品" }]);
+  const rollbackAddPreview = service.previewRoute(rollbackAddCreated.requestId, { consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context);
+  const rollbackAddConfirmed = service.confirmRoute(rollbackAddCreated.requestId, { expectedVersion: rollbackAddPreview.expectedRequestVersion, consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context, "confirm-rollback-add");
+  const rollbackAddRolledBack = service.rollbackRequest(rollbackAddCreated.requestId, { reason: "Add products after rollback" }, context).request;
+  const rollbackAddResult = service.addRequestProducts(rollbackAddCreated.requestId, {
+    expectedVersion: rollbackAddRolledBack.version,
+    lines: [{ sku: "V3-ROLLBACK-NEW", productName: "Rollback added", requestedQty: 2, unit: "item", supplyMode: "外采成品" }],
+  }, context, "add-after-rollback");
+  assert.equal(rollbackAddResult.request.lines.length, 2);
+  assert.equal(rollbackAddResult.request.allocations.length, 1);
+  assert.equal(rollbackAddResult.request.routingSummary.planned, 2);
+  assert.equal(rollbackAddResult.request.journeyStage, "route_recovery");
+  assert.equal(rollbackAddResult.request.nextAction.key, "recalculate_route");
+  assert.equal(rollbackAddResult.request.blockers[0].code, "allocation_quantity_mismatch");
+
   const rollbackReplanned = service.replaceRoute(rollbackCreated.requestId, { expectedVersion: rolledBack.version, consolidationWarehouseId: target.id, consolidationWarehouseName: target.name }, context, "replan-after-rollback");
   assert.equal(rollbackReplanned.planVersion, 2);
   assert.equal(inventory.stockupAvailability({ warehouseId: target.id, sku: "V3-ROLLBACK" }, inventoryContext).items[0].reservedQty, 5);

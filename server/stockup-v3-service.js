@@ -966,8 +966,13 @@ export function createStockupV3Service({
       : null;
     const routeNeedsRecovery = number(request.routePlanVersion) > 0
       && !["cancelled", "rejected", "completed", "cost_locked"].includes(text(request.status))
-      && text(currentPlan?.plan_status) !== "rolled_back"
-      && requestedQty !== plannedQty;
+      && requestedQty !== plannedQty
+      // A clean rollback has no active allocations and must remain available for
+      // replanning. If new products were added afterwards, however, the legacy
+      // plan version can contain only those new allocations. That hybrid state
+      // is incomplete and must be recovered instead of opening procurement for
+      // just a subset of the request.
+      && !(text(currentPlan?.plan_status) === "rolled_back" && allocations.length === 0);
     const journey = routeNeedsRecovery ? {
       journeyStage: "route_recovery",
       ownerRole: "supply_chain",
