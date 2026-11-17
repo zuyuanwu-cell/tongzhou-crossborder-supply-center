@@ -5424,12 +5424,33 @@ export function fetchSkuCodingCenter() {
   return requestJson<SkuCodingCenterPayload>("/api/stockup/workflow/product-coding");
 }
 
+export function updateSkuCodingRule(input: Partial<SkuCodingRule> & { name: string; prefix: string; digits: number }) {
+  return requestJson<{ ok: boolean; rule: SkuCodingRule; codingCenter: SkuCodingCenterPayload }>("/api/stockup/workflow/product-coding/rules", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
 export function reserveWorkflowSku(input: { productRecordId: string; ruleId: string; mode?: "direct"; productName?: string; product?: Record<string, unknown> }) {
   return requestJson<{ ok: boolean; reservation: SkuCodingReservation }>("/api/stockup/workflow/product-coding/reservations", { method: "POST", body: JSON.stringify(input) });
 }
 
+export function cancelWorkflowSkuReservation(reservationId: string, reason = "") {
+  return requestJson<{ ok: boolean; reservation: SkuCodingReservation }>(`/api/stockup/workflow/product-coding/reservations/${encodeURIComponent(reservationId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export function completeWorkflowProductCoding(input: { productRecordId: string; sku?: string; reservationId?: string; mode?: "direct" | "queue"; productName?: string; product?: Record<string, unknown>; warehouseConnectionIds?: string[]; dryRun?: boolean }) {
-  return requestJson<{ ok: boolean; dryRun?: boolean; productRecordId?: string; sourceProductRecordId?: string; demandRecordId?: string; sku?: string; status?: string }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
+  return requestJson<{ ok: boolean; dryRun?: boolean; productRecordId?: string; sourceProductRecordId?: string; demandRecordId?: string; sku?: string; status?: string; reservationId?: string; message?: string; warehouseResults?: SkuCodingWarehouseResult[] }>("/api/stockup/workflow/product-coding", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function retryWorkflowWmsProduct(reservationId: string, warehouseConnectionIds?: string[]) {
+  return requestJson<SkuCodingReservation & { ok: boolean }>(`/api/stockup/workflow/product-coding/reservations/${encodeURIComponent(reservationId)}/retry`, {
+    method: "POST",
+    body: JSON.stringify({ warehouseConnectionIds }),
+  });
 }
 
 export function previewStockupCost(input: {
