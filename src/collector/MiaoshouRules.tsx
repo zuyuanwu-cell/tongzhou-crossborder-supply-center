@@ -43,6 +43,7 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
   const [nodes, setNodes] = React.useState<NonNullable<MiaoshouRulePayload["nodes"]>>([]);
   const [drafts, setDrafts] = React.useState<Record<string, Draft>>({});
   const [nodeDraft, setNodeDraft] = React.useState("");
+  const [scheduleEnabledDraft, setScheduleEnabledDraft] = React.useState(true);
   const [dirty, setDirty] = React.useState(false);
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
@@ -57,6 +58,7 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
     if (resetDraft || !dirtyRef.current) {
       setDrafts(Object.fromEntries(result.rules.map((rule) => [rule.ruleId, draftOf(rule)])));
       setNodeDraft(result.nodeId);
+      setScheduleEnabledDraft(result.scheduleEnabled !== false);
       setDirty(false);
     }
   }, []);
@@ -104,6 +106,7 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
   const save = () => act("save", async () => {
     if (!data) return;
     const result = await saveMiaoshouRules({
+      scheduleEnabled: scheduleEnabledDraft,
       nodeId: nodeDraft,
       rules: data.rules.map((rule) => ({ ruleId: rule.ruleId, name: rule.name, ...drafts[rule.ruleId] })),
     });
@@ -136,10 +139,10 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
           <span>妙手登录</span>
           <small>{data?.reportAt ? `${formatTime(data.reportAt)} 上报` : "节点还没有上报"}</small>
         </div>
-        <div className={`dq-card ${managedCount && syncedCount === managedCount ? "verified" : managedCount ? "pending" : ""}`}>
-          <strong>{syncedCount}/{managedCount}</strong>
-          <span>状态一致</span>
-          <small>托管规则的实际状态与时间表</small>
+        <div className={`dq-card ${!data?.scheduleEnabled ? "" : managedCount && syncedCount === managedCount ? "verified" : managedCount ? "pending" : ""}`}>
+          <strong>{data?.scheduleEnabled ? `${syncedCount}/${managedCount}` : "已关闭"}</strong>
+          <span>{data?.scheduleEnabled ? "状态一致" : "定时托管"}</span>
+          <small>{data?.scheduleEnabled ? "托管规则的实际状态与时间表" : "不会自动开关任何妙手规则"}</small>
         </div>
         <div className={`dq-card ${data?.issues.length ? "bad" : "verified"}`}>
           <strong>{data?.issues.length || 0}</strong>
@@ -167,6 +170,16 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
 
       <section className="cc-panel mr-panel">
         <div className="mr-toolbar">
+          <label className={`mr-master-switch ${scheduleEnabledDraft ? "on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={scheduleEnabledDraft}
+              disabled={!canEdit}
+              onChange={(event) => { setScheduleEnabledDraft(event.target.checked); setDirty(true); }}
+            />
+            <span className="mr-master-switch-track" aria-hidden="true"><i /></span>
+            <span><strong>{scheduleEnabledDraft ? "定时托管已开启" : "不托管"}</strong><small>{scheduleEnabledDraft ? "按下方时间表自动开关" : "关闭全部定时开关"}</small></span>
+          </label>
           <label className="cc-field">
             <span>执行节点</span>
             <select value={nodeDraft} disabled={!canEdit} onChange={(event) => { setNodeDraft(event.target.value); setDirty(true); }}>
@@ -177,7 +190,7 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
             </select>
           </label>
           <p className="cc-muted">
-            时间按{data?.timezone || "北京时间"}。关闭时间可以填 24:00；关闭时间早于开启时间表示跨零点。节点每 {Math.round((data?.checkSeconds || 120) / 60)} 分钟比对一次，实际状态和时间表不一致才会操作，离线或掉登录恢复后自动补上。
+            {scheduleEnabledDraft ? <>时间按{data?.timezone || "北京时间"}。关闭时间可以填 24:00；关闭时间早于开启时间表示跨零点。节点每 {Math.round((data?.checkSeconds || 120) / 60)} 分钟比对一次，实际状态和时间表不一致才会操作，离线或掉登录恢复后自动补上。</> : <>保存后中台将停止下发全部妙手定时开关计划；当前妙手规则保持现状，不会被自动开启或关闭。已填写的时间表会保留，重新开启即可继续使用。</>}
           </p>
           <div className="mr-toolbar-actions">
             <button type="button" className="cc-btn" onClick={load}><RefreshCw size={14} />刷新</button>
@@ -203,7 +216,7 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
           <div className="cc-table-wrap">
             <table className="cc-table mr-table">
               <thead>
-                <tr><th>托管</th><th>妙手规则</th><th>开启</th><th>关闭</th><th>现在应为</th><th>妙手实际</th><th>下次变化</th><th>手动</th></tr>
+                <tr><th>定时方式</th><th>妙手规则</th><th>开启</th><th>关闭</th><th>现在应为</th><th>妙手实际</th><th>下次变化</th><th>手动</th></tr>
               </thead>
               <tbody>
                 {data.rules.map((rule) => {
@@ -211,17 +224,22 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
                   const actual = stateLabel(rule);
                   return (
                     <tr key={rule.ruleId} className={draft.managed ? "" : "mr-off"}>
-                      <td><input type="checkbox" checked={draft.managed} disabled={!canEdit || !rule.exists && !rule.managed} onChange={(event) => edit(rule.ruleId, { managed: event.target.checked })} aria-label={`托管 ${rule.name}`} /></td>
+                      <td>
+                        <label className={`mr-rule-toggle ${draft.managed ? "on" : ""}`}>
+                          <input type="checkbox" checked={draft.managed} disabled={!canEdit || !rule.exists && !rule.managed} onChange={(event) => edit(rule.ruleId, { managed: event.target.checked })} aria-label={`托管 ${rule.name}`} />
+                          <span>{draft.managed ? "定时托管" : "不托管"}</span>
+                        </label>
+                      </td>
                       <td><strong>{rule.name}</strong><small>{rule.shopCount ? `${rule.shopCount} 个店铺` : ""}{rule.detail ? ` · ${rule.detail}` : ""}</small></td>
                       <td><input className="mr-time" value={draft.onTime} disabled={!canEdit || !draft.managed} onChange={(event) => edit(rule.ruleId, { onTime: event.target.value.trim() })} placeholder="11:00" inputMode="numeric" aria-label={`${rule.name} 开启时间`} /></td>
                       <td><input className="mr-time" value={draft.offTime} disabled={!canEdit || !draft.managed} onChange={(event) => edit(rule.ruleId, { offTime: event.target.value.trim() })} placeholder="23:00" inputMode="numeric" aria-label={`${rule.name} 关闭时间`} /></td>
                       <td>
-                        {rule.managed && rule.desiredOn !== null ? (
+                        {data.scheduleEnabled && rule.managed && rule.desiredOn !== null ? (
                           <>
                             <span className={`cc-tag ${rule.desiredOn ? "good" : "muted"}`}>{rule.desiredOn ? "开启" : "关闭"}</span>
                             {rule.desiredSource === "override" ? <small>手动，到 {beijingClock(rule.override?.until)}</small> : null}
                           </>
-                        ) : <span className="cc-muted">不托管</span>}
+                        ) : <span className="cc-muted">{data.scheduleEnabled ? "不托管" : "定时已关闭"}</span>}
                       </td>
                       <td>
                         <span className={`cc-tag ${actual.tone}`}>{actual.text}</span>
@@ -229,7 +247,7 @@ export function MiaoshouRules({ canEdit = true }: { canEdit?: boolean }) {
                       </td>
                       <td>{rule.managed && rule.nextChangeAt ? beijingClock(rule.nextChangeAt) : "—"}</td>
                       <td>
-                        {canEdit && rule.managed ? (
+                        {canEdit && data.scheduleEnabled && rule.managed ? (
                           <div className="mr-actions">
                             <button type="button" className="cc-btn" disabled={Boolean(busy)} onClick={() => override(rule, "on")} title="立即开启，保持到下一个计划时间点"><Power size={13} />开</button>
                             <button type="button" className="cc-btn" disabled={Boolean(busy)} onClick={() => override(rule, "off")} title="立即关闭，保持到下一个计划时间点"><PowerOff size={13} />关</button>

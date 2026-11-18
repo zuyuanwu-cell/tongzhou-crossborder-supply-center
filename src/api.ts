@@ -7985,6 +7985,7 @@ export type MiaoshouRuleEvent = { id: string; at: string; ruleId: string; name: 
 export type MiaoshouRuleIssue = { code: string; title: string; action: string; message?: string; ruleId?: string; nodeName?: string };
 export type MiaoshouRulePayload = {
   ok: boolean;
+  scheduleEnabled: boolean;
   nodeId: string;
   node: { id: string; name: string; online: boolean; version: string } | null;
   session: { loggedIn: boolean; message: string; checkedAt: string } | null;
@@ -8004,7 +8005,7 @@ export function fetchMiaoshouRules(signal?: AbortSignal) {
   return requestJson<MiaoshouRulePayload>("/api/collector/miaoshou-rules", { signal });
 }
 
-export function saveMiaoshouRules(input: { nodeId?: string; rules?: { ruleId: string; name?: string; managed?: boolean; onTime?: string; offTime?: string }[] }) {
+export function saveMiaoshouRules(input: { scheduleEnabled?: boolean; nodeId?: string; rules?: { ruleId: string; name?: string; managed?: boolean; onTime?: string; offTime?: string }[] }) {
   return requestJson<MiaoshouRulePayload>("/api/collector/miaoshou-rules", { method: "PATCH", body: JSON.stringify(input) });
 }
 

@@ -13658,8 +13658,8 @@ const server = http.createServer(async (req, res) => {
         try {
           const body = await parseRequestBody(req, 64 * 1024);
           if (body?.nodeId) collectorCenter.getNode(String(body.nodeId));
-          miaoshouRuleSchedule.update({ nodeId: body?.nodeId, rules: body?.rules }, { by: auth.user.displayName || auth.user.username });
-          appendActionLog(auth, "修改妙手排单定时", "miaoshou_rule_schedule", "settings", { nodeId: body?.nodeId, rules: body?.rules });
+          miaoshouRuleSchedule.update({ scheduleEnabled: body?.scheduleEnabled, nodeId: body?.nodeId, rules: body?.rules }, { by: auth.user.displayName || auth.user.username });
+          appendActionLog(auth, "修改妙手排单定时", "miaoshou_rule_schedule", "settings", { scheduleEnabled: body?.scheduleEnabled, nodeId: body?.nodeId, rules: body?.rules });
           sendJson(res, 200, { ok: true, ...miaoshouRuleSchedule.view({ nodes: collectorCenter.listNodes() }) });
         } catch (error) {
           sendJson(res, error.statusCode || 500, { ok: false, message: error.message || "保存妙手排单定时失败。" });

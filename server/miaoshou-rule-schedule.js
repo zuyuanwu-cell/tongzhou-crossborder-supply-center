@@ -77,7 +77,7 @@ function defaultTimes(name) {
 }
 
 function emptyState() {
-  return { version: 1, nodeId: "", rules: {}, report: null, events: [], mismatchSince: {} };
+  return { version: 2, scheduleEnabled: true, nodeId: "", rules: {}, report: null, events: [], mismatchSince: {} };
 }
 
 function fail(message, statusCode = 400) {
@@ -120,9 +120,12 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
   /** 下发给执行节点的计划：只包含托管中的规则，节点绝不会动其他规则。 */
   function planFor(nodeId) {
     clearExpiredOverrides();
-    if (!state.nodeId || state.nodeId !== nodeId) return { assigned: false, rules: [], checkSeconds: MIAOSHOU_RULE_CHECK_SECONDS };
+    if (!state.scheduleEnabled || !state.nodeId || state.nodeId !== nodeId) {
+      return { assigned: false, scheduleEnabled: Boolean(state.scheduleEnabled), rules: [], checkSeconds: MIAOSHOU_RULE_CHECK_SECONDS };
+    }
     return {
       assigned: true,
+      scheduleEnabled: true,
       checkSeconds: MIAOSHOU_RULE_CHECK_SECONDS,
       rules: managedRules().map((rule) => ({
         ruleId: rule.ruleId,
@@ -143,6 +146,7 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
   function issues({ nodeOnline = null, nodeName = "" } = {}) {
     clearExpiredOverrides();
     const list = [];
+    if (!state.scheduleEnabled) return list;
     const managed = managedRules();
     if (!managed.length) return list;
     const add = (code, title, action, extra = {}) => list.push({ code, title, action, ...extra });
@@ -234,7 +238,7 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
       for (const rule of Object.values(state.rules)) {
         const current = observed.get(rule.ruleId);
         if (current?.name) rule.name = current.name;
-        const want = rule.managed && assigned && rules ? desiredState(rule, now()) : null;
+        const want = state.scheduleEnabled && rule.managed && assigned && rules ? desiredState(rule, now()) : null;
         if (want && current && current.isEnabled !== want.on) state.mismatchSince[rule.ruleId] ||= isoNow();
         else if (rules || !rule.managed) delete state.mismatchSince[rule.ruleId];
       }
@@ -255,8 +259,8 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
         const name = current?.name || config?.name || ruleId;
         const times = config ? { onTime: config.onTime, offTime: config.offTime } : defaultTimes(name);
         const rule = { ruleId, name, managed: Boolean(config?.managed), ...times, override: config?.override || null };
-        const want = rule.managed ? desiredState(rule, now()) : null;
-        const boundary = rule.managed ? nextBoundary(rule.onTime, rule.offTime, now()) : null;
+        const want = state.scheduleEnabled && rule.managed ? desiredState(rule, now()) : null;
+        const boundary = state.scheduleEnabled && rule.managed ? nextBoundary(rule.onTime, rule.offTime, now()) : null;
         return {
           ...rule,
           exists: Boolean(current),
@@ -270,6 +274,7 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
         };
       }).sort((a, b) => Number(b.managed) - Number(a.managed) || a.name.localeCompare(b.name, "zh-CN"));
       return {
+        scheduleEnabled: Boolean(state.scheduleEnabled),
         nodeId: state.nodeId,
         node: node ? { id: node.id, name: node.name, online: node.online, version: node.version } : null,
         session: state.report?.session || null,
@@ -286,7 +291,17 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
     },
 
     /** 保存执行节点和各规则的时间表。 */
-    update({ nodeId, rules } = {}, { by = "" } = {}) {
+    update({ scheduleEnabled, nodeId, rules } = {}, { by = "" } = {}) {
+      if (scheduleEnabled !== undefined) {
+        const nextEnabled = Boolean(scheduleEnabled);
+        if (nextEnabled !== state.scheduleEnabled) {
+          state.scheduleEnabled = nextEnabled;
+          state.mismatchSince = {};
+          if (!nextEnabled) {
+            for (const rule of Object.values(state.rules)) rule.override = null;
+          }
+        }
+      }
       if (nodeId !== undefined) {
         const next = text(nodeId, 80);
         if (next !== state.nodeId) {
@@ -324,6 +339,7 @@ export function createMiaoshouRuleSchedule({ filePath, now = () => Date.now() } 
 
     /** 手动干预：立即开启 / 关闭，保持到下一个计划时间点；"auto" 取消干预。 */
     setOverride(ruleId, stateName, { by = "" } = {}) {
+      if (!state.scheduleEnabled) throw fail("定时托管总开关已关闭，请先开启后再执行手动开关。", 409);
       const rule = state.rules[text(ruleId, 40)];
       if (!rule || !rule.managed) throw fail("这条规则还没有托管，先保存时间表。", 409);
       if (stateName === "auto") {

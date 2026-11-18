@@ -416,10 +416,25 @@
 .mr-toolbar .cc-field select { min-width: 200px; }
 .mr-toolbar p { flex: 1 1 320px; margin: 0; font-size: 12px; line-height: 1.6; }
 .mr-toolbar-actions { display: flex; gap: 8px; margin-left: auto; }
+.mr-master-switch { display: flex; align-items: center; gap: 10px; min-width: 210px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; }
+.mr-master-switch > input, .mr-rule-toggle > input { position: absolute; opacity: 0; pointer-events: none; }
+.mr-master-switch-track { position: relative; width: 38px; height: 22px; flex: 0 0 auto; border-radius: 999px; background: #cbd5e1; transition: background .18s ease; }
+.mr-master-switch-track i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, .25); transition: transform .18s ease; }
+.mr-master-switch.on { border-color: rgba(5, 150, 105, .35); background: rgba(5, 150, 105, .06); }
+.mr-master-switch.on .mr-master-switch-track { background: #059669; }
+.mr-master-switch.on .mr-master-switch-track i { transform: translateX(16px); }
+.mr-master-switch strong, .mr-master-switch small { display: block; }
+.mr-master-switch strong { font-size: 13px; color: var(--text); }
+.mr-master-switch small { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.mr-master-switch:has(input:focus-visible), .mr-rule-toggle:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 2px; }
+.mr-master-switch:has(input:disabled) { cursor: default; opacity: .7; }
 .mr-table td { vertical-align: middle; }
 .mr-table td strong { display: block; }
 .mr-table td small { display: block; color: var(--muted); font-size: 11px; }
 .mr-table tr.mr-off td { color: var(--muted); }
+.mr-rule-toggle { display: inline-flex; align-items: center; min-width: 72px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel); font-size: 11px; font-weight: 700; cursor: pointer; }
+.mr-rule-toggle.on { border-color: rgba(5, 150, 105, .35); color: #047857; background: rgba(5, 150, 105, .08); }
+.mr-rule-toggle:has(input:disabled) { cursor: default; opacity: .55; }
 .mr-time { width: 76px; min-height: 32px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; text-align: center; }
 .mr-time:disabled { opacity: 0.55; }
 .mr-wait { color: var(--orange) !important; }

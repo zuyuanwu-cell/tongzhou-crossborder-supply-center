@@ -95,6 +95,23 @@ assert.equal(schedule.view({ nodes }).rules.find((rule) => rule.ruleId === "7657
 assert.equal(schedule.view({ nodes }).rules.find((rule) => rule.ruleId === "7658").desiredOn, true);
 assert.throws(() => schedule.setOverride("3660", "on"), /还没有托管/);
 
+// 总开关关闭后，保留每条规则的时间配置，但节点不再收到计划，也不再产生状态告警。
+schedule.update({ scheduleEnabled: false }, { by: "管理员" });
+plan = schedule.planFor("node_a");
+assert.equal(plan.assigned, false);
+assert.equal(plan.scheduleEnabled, false);
+assert.deepEqual(plan.rules, []);
+view = schedule.view({ nodes });
+assert.equal(view.scheduleEnabled, false);
+assert.equal(view.rules.find((rule) => rule.ruleId === "7657").managed, true);
+assert.equal(view.rules.find((rule) => rule.ruleId === "7657").desiredOn, null);
+assert.equal(view.issues.length, 0);
+assert.throws(() => schedule.setOverride("7657", "on"), /总开关已关闭/);
+
+// 再次开启后恢复原时间表，不需要重新配置规则。
+schedule.update({ scheduleEnabled: true }, { by: "管理员" });
+assert.equal(schedule.planFor("node_a").rules.length, 2);
+
 // 掉登录、节点离线、规则被删
 schedule.report("node_a", { session: { loggedIn: false, message: "需要重新登录" } });
 view = schedule.view({ nodes });
