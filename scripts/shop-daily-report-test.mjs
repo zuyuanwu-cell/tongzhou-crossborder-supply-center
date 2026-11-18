@@ -198,6 +198,23 @@ const shopDailyCss = readFileSync(join(process.cwd(), "src", "shop-daily", "shop
 assert.match(shopDailyCss, /\.shop-daily-order-list\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
 assert.match(shopDailyCss, /\.shop-daily-order-card\s*\{[^}]*flex:\s*0\s+0\s+auto;/s);
 
+// Every visible operating metric must explain its source and formula on hover/focus.
+const shopDailyUi = readFileSync(join(process.cwd(), "src", "shop-daily", "ShopDailyReport.tsx"), "utf8");
+assert.match(shopDailyUi, /const METRIC_DEFINITIONS:[\s\S]*数据来源[\s\S]*计算公式/);
+assert.match(shopDailyUi, /Shopee 本币支付销售额 = 订单小计 − 卖家承担优惠券/);
+assert.match(shopDailyUi, /createPortal\([\s\S]*role="tooltip"/);
+for (const metric of [
+  "payAmount", "impressions", "visitors", "orderCount", "addToCart", "review", "realSales",
+  "adOnsite", "adOffsite", "roi", "visitRate", "addToCartRate", "conversionRate", "aov",
+  "productCost", "operationFee", "platformFee", "profit", "profitMargin",
+]) {
+  assert.match(shopDailyUi, new RegExp(`MetricValue metric="${metric}"`), `${metric} 的表格数值必须支持悬停说明`);
+}
+for (const metric of ["payAmount", "realSales", "adTotal", "trafficSummary", "reviewCost", "profit", "syncedOrders", "itemQuantity", "systemSales", "systemProductCost"]) {
+  assert.match(shopDailyUi, new RegExp(`MetricLabel metric="${metric}"`), `${metric} 的汇总指标必须支持悬停说明`);
+}
+assert.match(shopDailyCss, /\.shop-daily-metric-tooltip\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*10000;/s);
+
 // --- 筛选 ---------------------------------------------------------------------
 const filtered = buildShopDailyReport({ shops, metrics, rules, filters: { dateFrom: "2026-06-01", dateTo: "2026-06-30", projectGroup: "印尼二组" } });
 assert.deepEqual([...new Set(filtered.rows.map((row) => row.shopKey))], [shopB.key]);

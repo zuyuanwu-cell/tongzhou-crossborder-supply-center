@@ -124,6 +124,83 @@ return { href: location.href, results };
 }
 
 /**
+ * 在已登录的 Shopee 卖家中心生成并下载官方订单报表。
+ * 登录参数只在页面进程里从同源请求继承，不会返回给 Node，也不会写入日志或配置。
+ */
+function orderReportBody({ startDate, endDate, language = "en", maxBytes = 5 * 1024 * 1024 }) {
+  return `
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const resources = performance.getEntriesByType("resource").map((entry) => entry.name || "");
+const candidates = [location.href, ...resources].reverse();
+let auth = null;
+for (const candidate of candidates) {
+  try {
+    const url = new URL(candidate, location.href);
+    if (url.origin === location.origin && url.searchParams.get("SPC_CDS")) { auth = url; break; }
+  } catch (error) {}
+}
+if (!auth) throw new Error("当前 Shopee 页面没有可复用的登录请求上下文，请刷新订单页后重试。");
+const apiUrl = (pathname, params = {}) => {
+  const url = new URL(pathname, location.origin);
+  for (const key of ["SPC_CDS", "SPC_CDS_VER"]) {
+    const value = auth.searchParams.get(key);
+    if (value) url.searchParams.set(key, value);
+  }
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+  return url.href;
+};
+const readJson = async (pathname, params) => {
+  const response = await fetch(apiUrl(pathname, params), { credentials: "include" });
+  const json = await response.json().catch(() => null);
+  if (!response.ok) throw new Error("Shopee 订单报表接口 HTTP " + response.status);
+  const code = json && (json.code ?? json.err_code ?? json.error_code);
+  if (code !== undefined && ![0, "0", 200, "200"].includes(code)) throw new Error((json && (json.message || json.msg)) || ("Shopee 订单报表接口错误 " + code));
+  return json || {};
+};
+const created = await readJson("/api/v3/order/request_order_report", {
+  start_date: ${JSON.stringify(startDate)},
+  end_date: ${JSON.stringify(endDate)},
+  language: ${JSON.stringify(language)},
+  screening_condition: "order_creation_date",
+  parcel_level_filter: 0,
+});
+const createdData = created.data || created.result || created;
+const reportId = createdData.report_id || createdData.reportId || createdData.id;
+if (!reportId) throw new Error("Shopee 没有返回订单报表任务编号。");
+let report = null;
+for (let attempt = 0; attempt < 60; attempt += 1) {
+  const polled = await readJson("/api/v3/settings/get_report/", { report_id: reportId });
+  report = polled.data || polled.result || polled;
+  if (report.report) report = report.report;
+  const status = report.status ?? report.report_status ?? report.state;
+  if (status === 2 || /complete|success|ready/i.test(String(status))) break;
+  if (status === 3 || status === -1 || /fail|error/i.test(String(status))) throw new Error("Shopee 生成订单报表失败。");
+  report = null;
+  await sleep(1000);
+}
+if (!report) throw new Error("等待 Shopee 订单报表生成超时。");
+const response = await fetch(apiUrl("/api/v3/settings/download_report/", { report_id: reportId }), { credentials: "include" });
+if (!response.ok) throw new Error("下载 Shopee 订单报表失败：HTTP " + response.status);
+const bytes = new Uint8Array(await response.arrayBuffer());
+if (!bytes.length) throw new Error("Shopee 返回了空订单报表。");
+if (bytes.length > ${Math.max(1, Number(maxBytes) || 1)}) throw new Error("Shopee 订单报表超过安全大小限制。");
+const parts = [];
+for (let offset = 0; offset < bytes.length; offset += 0x8000) parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
+const disposition = response.headers.get("content-disposition") || "";
+const fileName = /filename\*?=(?:UTF-8''|\")?([^\";]+)/i.exec(disposition)?.[1] || report.file_name || report.filename || "order-report.xlsx";
+return {
+  reportId: String(reportId),
+  fileName: decodeURIComponent(String(fileName).replace(/^\"|\"$/g, "")),
+  recordCount: Number(report.record_count ?? report.total_count ?? report.count ?? createdData.record_count ?? 0) || 0,
+  bytes: bytes.length,
+  startDate: ${JSON.stringify(startDate)},
+  endDate: ${JSON.stringify(endDate)},
+  base64: btoa(parts.join("")),
+};
+`;
+}
+
+/**
  * 页面核对：把商业分析首页切到「昨天」+「已付款订单」，读出页面上显示的支付金额、订单数、访客数。
  * 与接口取数完全独立（读的是页面文字），用于发现字段口径错误、模板失效。
  * expectDate：页面上应出现的日期文字（DD-MM-YYYY）；读完后把订单口径切回原来的选项，不改变运营的页面习惯。
@@ -210,4 +287,4 @@ return { restored: Boolean(option) };
 `;
 }
 
-module.exports = { hookBody, probeBody, pageInfoBody, replayBody, pageCheckBody, restoreOrderTypeBody };
+module.exports = { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, pageCheckBody, restoreOrderTypeBody };

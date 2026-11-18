@@ -33,8 +33,21 @@ async function download(url, file) {
 
 function unzip(zip, dest) {
   fs.mkdirSync(dest, { recursive: true });
-  if (process.platform === "win32") run("tar", ["-xf", zip, "-C", dest]);
-  else run("unzip", ["-q", "-o", zip, "-d", dest]);
+  if (process.platform === "win32") {
+    // Windows 自带 tar 在部分中文系统上会按当前代码页解析 -C 路径，导致中文目录
+    // 变成问号并解压失败。先在纯 ASCII 临时目录解压，再由 Node 复制到目标目录。
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "tongzhou-zhishu-unzip-"));
+    const temporaryZip = path.join(temporary, "electron.zip");
+    const extracted = path.join(temporary, "extracted");
+    try {
+      fs.mkdirSync(extracted, { recursive: true });
+      fs.copyFileSync(zip, temporaryZip);
+      run("tar", ["-xf", temporaryZip, "-C", extracted]);
+      copyDir(extracted, dest);
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  } else run("unzip", ["-q", "-o", zip, "-d", dest]);
 }
 
 function copyDir(from, to) {
@@ -48,8 +61,9 @@ function copyDir(from, to) {
 }
 
 async function patchExe(exePath) {
-  const ResEdit = require("resedit");
-  const PELibrary = require("pe-library");
+  // resedit 3.x 与 pe-library 2.x 以 ESM 发布；CommonJS 打包脚本需动态导入。
+  const ResEdit = await import("resedit");
+  const PELibrary = await import("pe-library");
   const data = fs.readFileSync(exePath);
   const exe = PELibrary.NtExecutable.from(data, { ignoreCert: true });
   const res = PELibrary.NtExecutableResource.from(exe);

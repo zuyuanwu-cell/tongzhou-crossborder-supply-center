@@ -1,5 +1,6 @@
 import React from "react";
-import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, ClipboardPaste, Download, ExternalLink, FileUp, ListChecks, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, CircleHelp, ClipboardPaste, Download, ExternalLink, FileUp, ListChecks, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
 import {
   deleteShopDailyMetric,
   deleteShopReviewOrder,
@@ -165,31 +166,324 @@ function downloadCsv(name: string, header: string[], lines: Array<Array<unknown>
   URL.revokeObjectURL(url);
 }
 
+type MetricDefinitionKey =
+  | "payAmount" | "impressions" | "visitors" | "orderCount" | "addToCart" | "review"
+  | "realSales" | "adOnsite" | "adOffsite" | "roi" | "visitRate" | "addToCartRate"
+  | "conversionRate" | "aov" | "productCost" | "operationFee" | "platformFee" | "profit"
+  | "profitMargin" | "adTotal" | "trafficSummary" | "reviewCost"
+  | "syncedOrders" | "itemQuantity" | "systemSales" | "systemProductCost";
+
+type MetricDefinition = {
+  label: string;
+  source: string;
+  formula?: string | string[];
+  note?: string;
+};
+
+const METRIC_DEFINITIONS: Record<MetricDefinitionKey, MetricDefinition> = {
+  payAmount: {
+    label: "支付金额",
+    source: "优先取平台导入或紫鸟采集；Shopee 使用官方订单导表并按平台订单号去重。缺少平台数据时，暂用中台已同步订单成交额。外币按费率规则中的固定汇率或经营汇率换算成人民币。",
+    formula: [
+      "Shopee 本币支付销售额 = 订单小计 − 卖家承担优惠券",
+      "人民币支付金额 = 本币支付金额 ÷ 汇率（1¥ = 本币）",
+    ],
+    note: "平台承担的优惠券、平台折扣和金币不扣减；商品折扣已经包含在订单小计内，不重复扣减。",
+  },
+  impressions: {
+    label: "展示数",
+    source: "取平台导入或紫鸟采集的展示/曝光字段。",
+    formula: "汇总展示数 = Σ 每日展示数",
+  },
+  visitors: {
+    label: "访客数",
+    source: "取平台导入或紫鸟采集的访客字段；Shopee 使用商业分析的去重访客口径（hybrid_uv）。",
+    formula: "汇总访客数 = Σ 每日访客数",
+    note: "跨日汇总为每日访客相加，不做跨日用户去重。",
+  },
+  orderCount: {
+    label: "订单数",
+    source: "优先取平台导入或紫鸟采集的支付订单；Shopee 官方导表按支付日期、平台订单号去重。缺少平台数据时使用中台订单。",
+    formula: "汇总订单数 = Σ 每日支付订单数",
+  },
+  addToCart: {
+    label: "加购",
+    source: "取平台导入或紫鸟采集的加购人数。",
+    formula: "汇总加购人数 = Σ 每日加购人数",
+  },
+  review: {
+    label: "测评",
+    source: "有测评订单登记时按登记订单统计；没有登记时使用导入的测评金额、实际收款和测评数量。",
+    formula: [
+      "测评损失 = 测评金额 − 实际收款",
+      "测评成本 = 测评损失（折人民币）+ 测评数量 × 测评单位成本",
+    ],
+    note: "表格主值显示测评数量；拥有成本权限时，下方同时显示测评成本。",
+  },
+  realSales: {
+    label: "真实成交",
+    source: "由支付金额和测评登记计算，不直接采集。",
+    formula: [
+      "真实成交 = max(0, 支付金额（人民币）− 测评金额（人民币）)",
+      "真实订单数 = max(0, 订单数 − 测评数量)",
+    ],
+  },
+  adOnsite: {
+    label: "站内推广",
+    source: "取平台导入或紫鸟采集的站内广告费，再按费率规则计税并换算人民币。",
+    formula: "站内推广费（人民币）= 本币站内广告费 × (1 + 推广税率) ÷ 汇率",
+  },
+  adOffsite: {
+    label: "站外推广",
+    source: "取平台导入或紫鸟采集的站外广告费，再按费率规则计税并换算人民币。",
+    formula: "站外推广费（人民币）= 本币站外广告费 × (1 + 推广税率) ÷ 汇率",
+  },
+  roi: {
+    label: "ROI",
+    source: "由真实成交和含税推广费计算。",
+    formula: "ROI = 真实成交 ÷ (站内推广费 + 站外推广费)",
+    note: "没有推广费时显示“—”。汇总值用合计金额重新计算，不对每日 ROI 求和或平均。",
+  },
+  visitRate: {
+    label: "点击率",
+    source: "由平台展示数和访客数计算。",
+    formula: "点击率 = 访客数 ÷ 展示数 × 100%",
+    note: "当前系统以访客数作为从展示进入店铺/商品页的访问量。",
+  },
+  addToCartRate: {
+    label: "加购率",
+    source: "由加购人数和访客数计算。",
+    formula: "加购率 = 加购人数 ÷ 访客数 × 100%",
+  },
+  conversionRate: {
+    label: "转化率",
+    source: "由真实订单数和访客数计算。",
+    formula: "转化率 = 真实订单数 ÷ 访客数 × 100%",
+  },
+  aov: {
+    label: "客单价",
+    source: "由真实成交和真实订单数计算。",
+    formula: "客单价 = 真实成交（人民币）÷ 真实订单数",
+  },
+  productCost: {
+    label: "产品成本",
+    source: "优先使用运营导入的产品成本；未导入且费率规则允许时，使用中台订单按 SKU、国家匹配的直营产品成本。",
+    formula: "产品成本 = Σ 订单商品数量 × 对应产品成本单价",
+  },
+  operationFee: {
+    label: "操作费",
+    source: "优先使用运营导入的操作费；未导入且费率规则允许时，使用中台订单打包费。",
+    formula: "操作费 = Σ 每笔订单对应的操作费/打包费",
+  },
+  platformFee: {
+    label: "平台扣费",
+    source: "不是独立采集字段，而是用利润公式倒推出佣金、每单费用和叠乘系数等未单列扣费。",
+    formula: "平台扣费 = 真实成交 − 推广费 − 测评成本 − 产品成本 − 操作费 − 利润预估",
+  },
+  profit: {
+    label: "利润预估",
+    source: "按每个店铺命中的费率规则逐日计算，汇总值为各行利润之和。",
+    formula: [
+      "标准公式：真实成交 × (1 − 佣金率) − 真实单量 × 每单费用 − 推广费 − 测评成本 − 产品成本 − 操作费",
+      "叠乘公式：((真实成交 × 净收比例 − 推广费) × 系数1) × 系数2 − 测评成本 − 真实单量 × 每单费用 − 产品成本 − 真实成交 × 额外扣点 − 操作费",
+    ],
+  },
+  profitMargin: {
+    label: "利润率",
+    source: "由利润预估和真实成交计算。",
+    formula: "利润率 = 利润预估 ÷ 真实成交 × 100%",
+    note: "汇总值使用合计利润和合计真实成交重新计算。",
+  },
+  adTotal: {
+    label: "推广费（含税）",
+    source: "站内、站外推广费取自平台导入或紫鸟采集，并按费率规则计税、换算人民币。",
+    formula: "推广费（含税）= 站内推广费（含税）+ 站外推广费（含税）",
+  },
+  trafficSummary: {
+    label: "访客 / 转化率",
+    source: "访客取平台导入或紫鸟采集；转化率、加购率由汇总后的订单、加购和访客重新计算。",
+    formula: ["转化率 = 真实订单数 ÷ 访客数 × 100%", "加购率 = 加购人数 ÷ 访客数 × 100%"],
+  },
+  reviewCost: {
+    label: "测评成本",
+    source: "优先取测评订单登记；没有登记时使用导入的测评数据和费率规则中的测评单位成本。",
+    formula: "测评成本 = (测评金额 − 实际收款)折人民币 + 测评数量 × 测评单位成本",
+  },
+  syncedOrders: {
+    label: "已同步订单",
+    source: "取中台已同步订单事实，按订单唯一标识去重。",
+    formula: "已同步订单 = 当前店铺与日期范围内的去重订单数",
+  },
+  itemQuantity: {
+    label: "商品件数",
+    source: "取中台订单商品明细数量。",
+    formula: "商品件数 = Σ 订单商品行数量",
+  },
+  systemSales: {
+    label: "成交金额",
+    source: "取中台已同步订单中具备有效收入覆盖的订单商品行。",
+    formula: "成交金额（人民币）= Σ 有效订单商品行成交额（人民币）",
+  },
+  systemProductCost: {
+    label: "产品成本",
+    source: "取中台订单按 SKU、国家匹配的直营产品成本。",
+    formula: "产品成本 = Σ 订单商品数量 × 对应产品成本单价",
+  },
+};
+
+const BASE_METRIC_HEADERS: MetricDefinitionKey[] = [
+  "payAmount", "impressions", "visitors", "orderCount", "addToCart", "review", "realSales",
+  "adOnsite", "adOffsite", "roi", "visitRate", "addToCartRate", "conversionRate", "aov",
+];
+const COST_METRIC_HEADERS: MetricDefinitionKey[] = ["productCost", "operationFee", "platformFee"];
+const PROFIT_METRIC_HEADERS: MetricDefinitionKey[] = ["profit", "profitMargin"];
+
+type MetricTooltipPosition = { left: number; top: number; width: number; above: boolean };
+
+function MetricExplain({
+  metric,
+  children,
+  detail,
+  variant = "value",
+}: {
+  metric: MetricDefinitionKey;
+  children?: React.ReactNode;
+  detail?: string;
+  variant?: "label" | "value";
+}) {
+  const definition = METRIC_DEFINITIONS[metric];
+  const tooltipId = React.useId();
+  const triggerRef = React.useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = React.useState<MetricTooltipPosition | null>(null);
+
+  const show = React.useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.min(380, Math.max(260, window.innerWidth - 24));
+    const left = Math.max(12, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 12));
+    const above = window.innerHeight - rect.bottom < 250 && rect.top > 250;
+    setPosition({ left, top: above ? rect.top - 8 : rect.bottom + 8, width, above });
+  }, []);
+
+  const hide = React.useCallback(() => setPosition(null), []);
+
+  React.useEffect(() => {
+    if (!position) return undefined;
+    window.addEventListener("resize", hide);
+    window.addEventListener("scroll", hide, true);
+    return () => {
+      window.removeEventListener("resize", hide);
+      window.removeEventListener("scroll", hide, true);
+    };
+  }, [hide, position]);
+
+  const formulas = definition.formula ? (Array.isArray(definition.formula) ? definition.formula : [definition.formula]) : [];
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        className={`shop-daily-metric-help is-${variant}`}
+        tabIndex={0}
+        aria-describedby={position ? tooltipId : undefined}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+      >
+        <span className="shop-daily-metric-help-content">{children ?? definition.label}</span>
+        {variant === "label" ? <CircleHelp size={12} aria-hidden="true" /> : null}
+      </span>
+      {position ? createPortal(
+        <div
+          id={tooltipId}
+          className={`shop-daily-metric-tooltip${position.above ? " is-above" : ""}`}
+          role="tooltip"
+          style={{ left: position.left, top: position.top, width: position.width }}
+        >
+          <strong>{definition.label}</strong>
+          <section><b>数据来源</b><span>{definition.source}</span></section>
+          {formulas.length ? <section><b>计算公式</b>{formulas.map((formula) => <code key={formula}>{formula}</code>)}</section> : null}
+          {detail ? <section><b>当前数据</b><span>{detail}</span></section> : null}
+          {definition.note ? <small>{definition.note}</small> : null}
+        </div>,
+        document.body,
+      ) : null}
+    </>
+  );
+}
+
+function sourceName(value: string | undefined) {
+  return value ? SOURCE_LABEL[value] || value : "";
+}
+
+function metricDetail(metric: MetricDefinitionKey, row: ShopDailyMetrics, currency: string) {
+  const sourced = row as ShopDailyMetrics & {
+    sources?: { revenue?: string; traffic?: string; ad?: string; review?: string; productCost?: string; operationFee?: string };
+    ruleMode?: "standard" | "stacked";
+  };
+  const sourceFor = (key: keyof NonNullable<typeof sourced.sources>) => sourceName(sourced.sources?.[key]);
+  const withSource = (value: string, ...sources: Array<string>) => {
+    const names = [...new Set(sources.filter(Boolean))];
+    return names.length ? `${value}；本行来源：${names.join("、")}` : value;
+  };
+  switch (metric) {
+    case "payAmount": return withSource(`当前结果 ${fmtCny(row.payCny)}${row.payLocal === null ? "" : `（${fmtLocal(row.payLocal, currency)}）`}`, sourceFor("revenue"));
+    case "impressions": return withSource(`当前结果 ${fmtNum(row.impressions)}`, sourceFor("traffic"));
+    case "visitors": return withSource(`当前结果 ${fmtNum(row.visitors)}`, sourceFor("traffic"));
+    case "orderCount": return withSource(`当前结果 ${fmtNum(row.orderCount)} 单`, sourceFor("revenue"));
+    case "addToCart": return withSource(`当前结果 ${fmtNum(row.addToCart)} 人`, sourceFor("traffic"));
+    case "review": return withSource(`当前 ${fmtNum(row.reviewCount)} 单；测评金额 ${fmtCny(row.reviewAmountCny)}；测评成本 ${fmtCny(row.reviewCostCny)}`, sourceFor("review"));
+    case "realSales": return withSource(`${fmtCny(row.payCny)} − ${fmtCny(row.reviewAmountCny)} = ${fmtCny(row.realSalesCny)}；真实订单 ${fmtNum(row.realOrders)} 单`, sourceFor("revenue"), sourceFor("review"));
+    case "adOnsite": return withSource(`当前结果 ${fmtCny(row.adOnsiteCny)}`, sourceFor("ad"));
+    case "adOffsite": return withSource(`当前结果 ${fmtCny(row.adOffsiteCny)}`, sourceFor("ad"));
+    case "roi": return `${fmtCny(row.realSalesCny)} ÷ ${fmtCny(row.adTotalCny)} = ${fmtRatio(row.roi)}`;
+    case "visitRate": return `${fmtNum(row.visitors)} ÷ ${fmtNum(row.impressions)} = ${fmtPct(row.visitRate)}`;
+    case "addToCartRate": return `${fmtNum(row.addToCart)} ÷ ${fmtNum(row.visitors)} = ${fmtPct(row.addToCartRate)}`;
+    case "conversionRate": return `${fmtNum(row.realOrders)} ÷ ${fmtNum(row.visitors)} = ${fmtPct(row.conversionRate)}`;
+    case "aov": return `${fmtCny(row.realSalesCny)} ÷ ${fmtNum(row.realOrders)} 单 = ${fmtCny(row.aovCny)}`;
+    case "productCost": return withSource(`当前结果 ${fmtCny(row.productCostCny)}`, sourceFor("productCost"));
+    case "operationFee": return withSource(`当前结果 ${fmtCny(row.operationFeeCny)}`, sourceFor("operationFee"));
+    case "platformFee": return `${fmtCny(row.realSalesCny)} − ${fmtCny(row.adTotalCny)} − ${fmtCny(row.reviewCostCny)} − ${fmtCny(row.productCostCny)} − ${fmtCny(row.operationFeeCny)} − ${fmtCny(row.profitCny)} = ${fmtCny(row.platformFeeCny)}`;
+    case "profit": return `当前结果 ${fmtCny(row.profitCny)}${sourced.ruleMode ? `；使用${sourced.ruleMode === "stacked" ? "叠乘" : "标准"}公式` : ""}`;
+    case "profitMargin": return `${fmtCny(row.profitCny)} ÷ ${fmtCny(row.realSalesCny)} = ${fmtPct(row.profitMargin, 1)}`;
+    default: return "";
+  }
+}
+
+function MetricLabel({ metric, label, detail }: { metric: MetricDefinitionKey; label?: string; detail?: string }) {
+  return <MetricExplain metric={metric} variant="label" detail={detail}>{label || METRIC_DEFINITIONS[metric].label}</MetricExplain>;
+}
+
+function MetricValue({ metric, row, currency, children }: { metric: MetricDefinitionKey; row: ShopDailyMetrics; currency: string; children: React.ReactNode }) {
+  return <MetricExplain metric={metric} detail={metricDetail(metric, row, currency)}>{children}</MetricExplain>;
+}
+
 function MetricCells({ row, permissions, currency }: { row: ShopDailyMetrics; permissions: ShopDailyReportPayload["permissions"]; currency: string }) {
   return (
     <>
-      <td className="num"><strong>{fmtCny(row.payCny)}</strong><small>{fmtLocal(row.payLocal, currency)}</small></td>
-      <td className="num">{fmtNum(row.impressions)}</td>
-      <td className="num">{fmtNum(row.visitors)}</td>
-      <td className="num">{fmtNum(row.orderCount)}</td>
-      <td className="num">{fmtNum(row.addToCart)}</td>
-      <td className="num">{row.reviewCount ? <>{fmtNum(row.reviewCount)} 单{permissions.cost ? <small>{fmtCny(row.reviewCostCny)}</small> : null}</> : "—"}</td>
-      <td className="num"><strong>{fmtCny(row.realSalesCny)}</strong><small>{fmtNum(row.realOrders)} 单</small></td>
-      <td className="num">{fmtCny(row.adOnsiteCny)}</td>
-      <td className="num">{fmtCny(row.adOffsiteCny)}</td>
-      <td className="num"><strong>{fmtRatio(row.roi)}</strong></td>
-      <td className="num">{fmtPct(row.visitRate)}</td>
-      <td className="num">{fmtPct(row.addToCartRate)}</td>
-      <td className="num">{fmtPct(row.conversionRate)}</td>
-      <td className="num">{fmtCny(row.aovCny)}</td>
+      <td className="num"><MetricValue metric="payAmount" row={row} currency={currency}><strong>{fmtCny(row.payCny)}</strong><small>{fmtLocal(row.payLocal, currency)}</small></MetricValue></td>
+      <td className="num"><MetricValue metric="impressions" row={row} currency={currency}>{fmtNum(row.impressions)}</MetricValue></td>
+      <td className="num"><MetricValue metric="visitors" row={row} currency={currency}>{fmtNum(row.visitors)}</MetricValue></td>
+      <td className="num"><MetricValue metric="orderCount" row={row} currency={currency}>{fmtNum(row.orderCount)}</MetricValue></td>
+      <td className="num"><MetricValue metric="addToCart" row={row} currency={currency}>{fmtNum(row.addToCart)}</MetricValue></td>
+      <td className="num"><MetricValue metric="review" row={row} currency={currency}>{row.reviewCount ? <>{fmtNum(row.reviewCount)} 单{permissions.cost ? <small>{fmtCny(row.reviewCostCny)}</small> : null}</> : "—"}</MetricValue></td>
+      <td className="num"><MetricValue metric="realSales" row={row} currency={currency}><strong>{fmtCny(row.realSalesCny)}</strong><small>{fmtNum(row.realOrders)} 单</small></MetricValue></td>
+      <td className="num"><MetricValue metric="adOnsite" row={row} currency={currency}>{fmtCny(row.adOnsiteCny)}</MetricValue></td>
+      <td className="num"><MetricValue metric="adOffsite" row={row} currency={currency}>{fmtCny(row.adOffsiteCny)}</MetricValue></td>
+      <td className="num"><MetricValue metric="roi" row={row} currency={currency}><strong>{fmtRatio(row.roi)}</strong></MetricValue></td>
+      <td className="num"><MetricValue metric="visitRate" row={row} currency={currency}>{fmtPct(row.visitRate)}</MetricValue></td>
+      <td className="num"><MetricValue metric="addToCartRate" row={row} currency={currency}>{fmtPct(row.addToCartRate)}</MetricValue></td>
+      <td className="num"><MetricValue metric="conversionRate" row={row} currency={currency}>{fmtPct(row.conversionRate)}</MetricValue></td>
+      <td className="num"><MetricValue metric="aov" row={row} currency={currency}>{fmtCny(row.aovCny)}</MetricValue></td>
       {permissions.cost ? <>
-        <td className="num">{fmtCny(row.productCostCny)}</td>
-        <td className="num">{fmtCny(row.operationFeeCny)}</td>
-        <td className="num">{fmtCny(row.platformFeeCny)}</td>
+        <td className="num"><MetricValue metric="productCost" row={row} currency={currency}>{fmtCny(row.productCostCny)}</MetricValue></td>
+        <td className="num"><MetricValue metric="operationFee" row={row} currency={currency}>{fmtCny(row.operationFeeCny)}</MetricValue></td>
+        <td className="num"><MetricValue metric="platformFee" row={row} currency={currency}>{fmtCny(row.platformFeeCny)}</MetricValue></td>
       </> : null}
       {permissions.profit ? <>
-        <td className={`num ${Number(row.profitCny) < 0 ? "negative" : "positive"}`}><strong>{fmtCny(row.profitCny)}</strong></td>
-        <td className="num">{fmtPct(row.profitMargin, 1)}</td>
+        <td className={`num ${Number(row.profitCny) < 0 ? "negative" : "positive"}`}><MetricValue metric="profit" row={row} currency={currency}><strong>{fmtCny(row.profitCny)}</strong></MetricValue></td>
+        <td className="num"><MetricValue metric="profitMargin" row={row} currency={currency}>{fmtPct(row.profitMargin, 1)}</MetricValue></td>
       </> : null}
     </>
   );
@@ -498,9 +792,9 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
 
   const headCells = (
     <>
-      <th>支付金额</th><th>展示数</th><th>访客数</th><th>订单数</th><th>加购</th><th>测评</th><th>真实成交</th><th>站内推广</th><th>站外推广</th><th>ROI</th><th>点击率</th><th>加购率</th><th>转化率</th><th>客单价</th>
-      {permissions.cost ? <><th>产品成本</th><th>操作费</th><th>平台扣费</th></> : null}
-      {permissions.profit ? <><th>利润预估</th><th>利润率</th></> : null}
+      {BASE_METRIC_HEADERS.map((metric) => <th key={metric}><MetricLabel metric={metric} /></th>)}
+      {permissions.cost ? COST_METRIC_HEADERS.map((metric) => <th key={metric}><MetricLabel metric={metric} /></th>) : null}
+      {permissions.profit ? PROFIT_METRIC_HEADERS.map((metric) => <th key={metric}><MetricLabel metric={metric} /></th>) : null}
     </>
   );
 
@@ -574,12 +868,12 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
           </section>
 
           <div className="shop-daily-kpis">
-            <article><small>支付金额</small><b>{fmtCny(totals?.payCny)}</b><span>{fmtNum(totals?.orderCount)} 单</span></article>
-            <article><small>真实成交</small><b>{fmtCny(totals?.realSalesCny)}</b><span>{fmtNum(totals?.realOrders)} 单 · 客单 {fmtCny(totals?.aovCny)}</span></article>
-            <article><small>推广费（含税）</small><b>{fmtCny(totals?.adTotalCny)}</b><span>ROI {fmtRatio(totals?.roi)}</span></article>
-            <article><small>访客 / 转化率</small><b>{fmtNum(totals?.visitors)}</b><span>转化 {fmtPct(totals?.conversionRate)} · 加购 {fmtPct(totals?.addToCartRate)}</span></article>
-            {permissions.cost ? <article><small>测评成本</small><b>{fmtCny(totals?.reviewCostCny)}</b><span>{fmtNum(totals?.reviewCount)} 单</span></article> : null}
-            {permissions.profit ? <article className={Number(totals?.profitCny) < 0 ? "negative" : "positive"}><small>利润预估</small><b>{fmtCny(totals?.profitCny)}</b><span>利润率 {fmtPct(totals?.profitMargin, 1)}</span></article> : null}
+            <article><small><MetricLabel metric="payAmount" detail={totals ? metricDetail("payAmount", totals, singleCurrency) : undefined} /></small><b>{fmtCny(totals?.payCny)}</b><span>{fmtNum(totals?.orderCount)} 单</span></article>
+            <article><small><MetricLabel metric="realSales" detail={totals ? metricDetail("realSales", totals, singleCurrency) : undefined} /></small><b>{fmtCny(totals?.realSalesCny)}</b><span>{fmtNum(totals?.realOrders)} 单 · 客单 {fmtCny(totals?.aovCny)}</span></article>
+            <article><small><MetricLabel metric="adTotal" detail={totals ? `${fmtCny(totals.adOnsiteCny)} + ${fmtCny(totals.adOffsiteCny)} = ${fmtCny(totals.adTotalCny)}；ROI ${fmtRatio(totals.roi)}` : undefined} /></small><b>{fmtCny(totals?.adTotalCny)}</b><span>ROI {fmtRatio(totals?.roi)}</span></article>
+            <article><small><MetricLabel metric="trafficSummary" detail={totals ? `${fmtNum(totals.realOrders)} ÷ ${fmtNum(totals.visitors)} = ${fmtPct(totals.conversionRate)}；${fmtNum(totals.addToCart)} ÷ ${fmtNum(totals.visitors)} = ${fmtPct(totals.addToCartRate)}` : undefined} /></small><b>{fmtNum(totals?.visitors)}</b><span>转化 {fmtPct(totals?.conversionRate)} · 加购 {fmtPct(totals?.addToCartRate)}</span></article>
+            {permissions.cost ? <article><small><MetricLabel metric="reviewCost" detail={totals ? `当前 ${fmtNum(totals.reviewCount)} 单；测评损失 ${fmtCny(totals.reviewLossCny)}；测评成本 ${fmtCny(totals.reviewCostCny)}` : undefined} /></small><b>{fmtCny(totals?.reviewCostCny)}</b><span>{fmtNum(totals?.reviewCount)} 单</span></article> : null}
+            {permissions.profit ? <article className={Number(totals?.profitCny) < 0 ? "negative" : "positive"}><small><MetricLabel metric="profit" detail={totals ? metricDetail("profit", totals, singleCurrency) : undefined} /></small><b>{fmtCny(totals?.profitCny)}</b><span>利润率 {fmtPct(totals?.profitMargin, 1)}</span></article> : null}
           </div>
 
           {quality && (quality.rowsUsingSystemRevenue || quality.rowsWithoutTraffic || quality.rowsWithoutAd || quality.rowsWithoutRate || quality.reviewOrdersWithoutAmount || quality.standaloneShopCount) ? (
@@ -749,10 +1043,10 @@ function OrderDrilldownDrawer({
         </header>
 
         <div className="shop-daily-order-summary">
-          <article><small>已同步订单</small><strong>{fmtNum(payload?.total)}</strong><span>笔</span></article>
-          <article><small>商品件数</small><strong>{fmtNum(payload?.totals.quantity)}</strong><span>件</span></article>
-          <article><small>成交金额</small><strong>{fmtCny(payload?.totals.salesCny)}</strong><span>人民币口径</span></article>
-          {permissions.cost ? <article><small>产品成本</small><strong>{fmtCny(payload?.totals.productCostCny)}</strong><span>中台成本口径</span></article> : null}
+          <article><small><MetricLabel metric="syncedOrders" detail={payload ? `当前范围去重后共 ${fmtNum(payload.total)} 笔` : undefined} /></small><strong>{fmtNum(payload?.total)}</strong><span>笔</span></article>
+          <article><small><MetricLabel metric="itemQuantity" detail={payload ? `当前范围合计 ${fmtNum(payload.totals.quantity)} 件` : undefined} /></small><strong>{fmtNum(payload?.totals.quantity)}</strong><span>件</span></article>
+          <article><small><MetricLabel metric="systemSales" detail={payload ? `当前范围合计 ${fmtCny(payload.totals.salesCny)}` : undefined} /></small><strong>{fmtCny(payload?.totals.salesCny)}</strong><span>人民币口径</span></article>
+          {permissions.cost ? <article><small><MetricLabel metric="systemProductCost" detail={payload ? `当前范围合计 ${fmtCny(payload.totals.productCostCny)}` : undefined} /></small><strong>{fmtCny(payload?.totals.productCostCny)}</strong><span>中台成本口径</span></article> : null}
         </div>
 
         <div className="shop-daily-order-toolbar">

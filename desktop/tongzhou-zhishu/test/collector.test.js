@@ -10,6 +10,7 @@ const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
 const { spawn } = require("node:child_process");
+const { deflateRawSync } = require("node:zlib");
 
 const { ZiniaoCli, findMarkedString, decodeMarked, parseJsonLoose } = require("../core/ziniao");
 const { ConfigStore } = require("../core/config");
@@ -18,12 +19,85 @@ const { ZhongtaiClient } = require("../core/zhongtai");
 const { templatizeRequest, readPath, extractMetrics, placeholderValues, fill } = require("../core/recipe");
 const { dayRange, siteToday, dateList } = require("../core/sites");
 const { dueSlots } = require("../core/scheduler");
+const { orderReportWindows, parseMoney, parseShopeeOrderReport } = require("../core/shopee-order-report");
 const { startMockBrowser, metricsFor, ORIGIN } = require("./mock-browser");
 
 const TOKEN = "test-ingest-token-0123456789abcdef";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tzzs-test-"));
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipFiles(files) {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of Object.entries(files)) {
+    const nameBuffer = Buffer.from(name);
+    const source = Buffer.from(content);
+    const compressed = deflateRawSync(source);
+    const checksum = crc32(source);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(8, 8);
+    header.writeUInt32LE(checksum, 14);
+    header.writeUInt32LE(compressed.length, 18);
+    header.writeUInt32LE(source.length, 22);
+    header.writeUInt16LE(nameBuffer.length, 26);
+    local.push(header, nameBuffer, compressed);
+    const directory = Buffer.alloc(46);
+    directory.writeUInt32LE(0x02014b50, 0);
+    directory.writeUInt16LE(20, 4);
+    directory.writeUInt16LE(20, 6);
+    directory.writeUInt16LE(8, 10);
+    directory.writeUInt32LE(checksum, 16);
+    directory.writeUInt32LE(compressed.length, 20);
+    directory.writeUInt32LE(source.length, 24);
+    directory.writeUInt16LE(nameBuffer.length, 28);
+    directory.writeUInt32LE(offset, 42);
+    central.push(directory, nameBuffer);
+    offset += header.length + nameBuffer.length + compressed.length;
+  }
+  const localData = Buffer.concat(local);
+  const centralData = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(centralData.length, 12);
+  end.writeUInt32LE(localData.length, 16);
+  return Buffer.concat([localData, centralData, end]);
+}
+
+function xlsxColumn(index) {
+  let value = index + 1;
+  let result = "";
+  while (value > 0) {
+    value -= 1;
+    result = String.fromCharCode(65 + (value % 26)) + result;
+    value = Math.floor(value / 26);
+  }
+  return result;
+}
+
+function escapeXml(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function fakeShopeeOrderXlsx(rows) {
+  const xmlRows = rows.map((row, rowIndex) => `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => `<c r="${xlsxColumn(columnIndex)}${rowIndex + 1}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`).join("")}</row>`).join("");
+  const sheet = `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:A1"/><sheetData>${xmlRows}</sheetData></worksheet>`;
+  return zipFiles({ "xl/worksheets/sheet1.xml": sheet });
 }
 
 function cliWrapper() {
@@ -104,6 +178,107 @@ test("工具函数：日期、时区、取值、占位符", () => {
   assert.equal(businessError({ code: 0, data: {} }), "");
   assert.equal(businessError({ code: 401, message: "need login" }), "need login");
   assert.equal(businessError({ error: 0 }), "");
+});
+
+test("Shopee 官方订单导表：订单去重，支付销售额只减卖家券并保留买家实付", () => {
+  const header = Array(41).fill("");
+  Object.assign(header, {
+    0: "No. Pesanan",
+    1: "Status Pesanan",
+    9: "Waktu Pesanan Dibuat",
+    10: "Waktu Pembayaran Dilakukan",
+    21: "Subtotal Pesanan",
+    28: "Voucher Ditanggung Penjual",
+    30: "Voucher Ditanggung Shopee",
+    34: "Potongan Koin Shopee",
+    39: "Total Pembayaran",
+    40: "Perkiraan Ongkos Kirim",
+  });
+  const row = (orderId, paidAt, subtotal, total, sellerVoucher = "", platformVoucher = "") => {
+    const values = Array(41).fill("");
+    Object.assign(values, {
+      0: orderId,
+      1: "Telah Dikirim",
+      9: "2026-11-16 08:00",
+      10: paidAt,
+      21: subtotal,
+      28: sellerVoucher,
+      30: platformVoucher,
+      39: total,
+    });
+    return values;
+  };
+  const report = parseShopeeOrderReport(fakeShopeeOrderXlsx([
+    header,
+    row("A", "2026-11-17 10:00", "100.000", "125.000", "5.000", "20.000"),
+    row("A", "2026-11-17 10:00", "50.000", "125.000"),
+    row("B", "17/11/2026 12:00", "80.000", "73.317"),
+    row("C", "-", "10.000", "0"),
+  ]), { site: "ID" });
+  assert.equal(report.rowCount, 4);
+  assert.equal(report.uniqueOrderCount, 3);
+  assert.equal(report.days["2026-11-17"].orderCount, 2);
+  assert.equal(report.days["2026-11-17"].payAmount, 225000);
+  assert.equal(report.days["2026-11-17"].buyerPaid, 198317);
+  assert.equal(report.days["2026-11-17"].subtotal, 230000);
+  assert.equal(report.days["2026-11-17"].sellerVoucher, 5000);
+  assert.equal(report.days["2026-11-17"].platformVoucher, 20000);
+  assert.equal(parseMoney("1,310.43", "MY"), 1310.43);
+  assert.deepEqual(orderReportWindows(["2026-11-01", "2026-11-07", "2026-11-08"]), [
+    { startDate: "2026-10-18", endDate: "2026-11-07", dates: ["2026-11-01", "2026-11-07"] },
+    { startDate: "2026-10-25", endDate: "2026-11-08", dates: ["2026-11-08"] },
+  ]);
+});
+
+test("Shopee 官方订单导表采集：页面内下载、内存解析且证据不保留明细", async () => {
+  const header = Array(41).fill("");
+  Object.assign(header, {
+    0: "No. Pesanan",
+    1: "Status Pesanan",
+    9: "Waktu Pesanan Dibuat",
+    10: "Waktu Pembayaran Dilakukan",
+    21: "Subtotal Pesanan",
+    39: "Total Pembayaran",
+    40: "Perkiraan Ongkos Kirim",
+  });
+  const order = Array(41).fill("");
+  Object.assign(order, {
+    0: "SAFE-TEST-ORDER",
+    1: "Telah Dikirim",
+    9: "2026-11-16 08:00",
+    10: "2026-11-17 10:00",
+    21: "171.356",
+    39: "125.000",
+  });
+  const xlsx = fakeShopeeOrderXlsx([header, order]);
+  let reportRuns = 0;
+  const cli = {
+    visit: async () => null,
+    runInPage: async (_storeId, body) => {
+      if (body.includes("request_order_report")) {
+        reportRuns += 1;
+        return { reportId: "test-report", recordCount: 1, bytes: xlsx.length, base64: xlsx.toString("base64") };
+      }
+      return { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+    },
+  };
+  const collector = new Collector({ cli, store: new ConfigStore(tempDir()), zhongtaiFactory: () => null, waits: { visit: 0 } });
+  const shopee = require("../core/platforms/shopee");
+  const result = await collector.collectShopeeOrderReport({
+    store: { storeId: "test", storeName: "Test Store" },
+    target: { country: "ID" },
+    platform: shopee,
+    origin: "https://seller.shopee.co.id",
+    dates: ["2026-11-17"],
+    timeoutMs: 90000,
+  });
+  assert.equal(reportRuns, 1);
+  assert.equal(result.days["2026-11-17"].payAmount, 171356);
+  assert.equal(result.days["2026-11-17"].buyerPaid, 125000);
+  assert.equal(result.days["2026-11-17"].orderCount, 1);
+  assert.equal(result.reports[0].uniqueOrderCount, 1);
+  assert.equal(JSON.stringify(result).includes("SAFE-TEST-ORDER"), false);
+  assert.equal(Object.hasOwn(result, "base64"), false);
 });
 
 test("紫鸟输出解析：标记字符串可在任意位置、可被二次编码", () => {
@@ -286,7 +461,7 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   });
   // 广告费 = 商品广告 + Shop+ 广告；直播广告取不到按 0 计（可选部分）。
   assert.deepEqual(values, { payAmount: 198000, orderCount: 1, visitors: 31, addToCart: 2, impressions: 1069, adOnsite: 167.71 });
-  assert.equal(builtin.version, 2);
+  assert.equal(builtin.version, 3);
   // 商品广告是必需部分：取不到时整个广告费记为缺失，而不是少算。
   const partial = extractMetrics(builtin, { ads: { error: "HTTP 500" }, adsShop: { json: { data: { report_by_time: [] } } } });
   assert.ok(partial.missing.includes("adOnsite"));

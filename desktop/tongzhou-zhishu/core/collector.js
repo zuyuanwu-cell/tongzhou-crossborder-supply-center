@@ -3,11 +3,12 @@
 // 采集编排：校准（探测接口 → 生成模板 → 试采）与正式采集（逐店铺打开紫鸟 → 页面内重放接口 → 取值 → 回写中台）。
 
 const { getPlatform, guessPlatform, allTemplates } = require("./platforms");
-const { hookBody, probeBody, pageInfoBody, replayBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
+const { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
 const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, mappingParts, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
 const { comparePageCheck, evidenceEndpoint, pageDateText } = require("./quality");
 const { siteInfo, siteToday, addDays, dateList } = require("./sites");
 const { newId } = require("./config");
+const { ORDER_REPORT_LOOKBACK_DAYS, emptyDay, orderReportWindows, parseShopeeOrderReport } = require("./shopee-order-report");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -218,6 +219,44 @@ class Collector {
     return templates[settings.templateId] || templates[platform.defaultTemplateId] || null;
   }
 
+  /**
+   * 读取 Shopee 官方订单导表并按付款日期汇总。报表明细只在内存中解析，
+   * 不落盘、不上传；返回给采集证据的只有按日汇总和非敏感任务元数据。
+   */
+  async collectShopeeOrderReport({ store, target, platform, origin, dates, timeoutMs, onProgress = () => {} }) {
+    const windows = orderReportWindows(dates);
+    const result = {
+      source: "shopee-order-export",
+      screeningCondition: "order_creation_date",
+      payAmountFormula: "order_subtotal_minus_seller_voucher",
+      lookbackDays: ORDER_REPORT_LOOKBACK_DAYS,
+      days: {},
+      reports: [],
+    };
+    if (!windows.length) return result;
+    const page = `${origin}/portal/sale/order`;
+    await this.cli.visit({ storeId: store.storeId, url: page });
+    await sleep(this.waits.visit);
+    await this.ensurePage(store.storeId, platform, page);
+    for (const window of windows) {
+      onProgress({ storeId: store.storeId, phase: "order-report", message: `${store.storeName}：导出 Shopee 官方订单表 ${window.startDate} 至 ${window.endDate}` });
+      const downloaded = await this.cli.runInPage(store.storeId, orderReportBody(window), { timeoutMs: Math.max(timeoutMs, 90000) });
+      const buffer = Buffer.from(String(downloaded?.base64 || ""), "base64");
+      if (!buffer.length || buffer.length !== Number(downloaded?.bytes || 0)) throw new Error("Shopee 订单报表下载数据不完整。");
+      const parsed = parseShopeeOrderReport(buffer, { site: target.country });
+      for (const date of window.dates) result.days[date] = parsed.days[date] || emptyDay();
+      result.reports.push({
+        reportId: downloaded.reportId,
+        startDate: window.startDate,
+        endDate: window.endDate,
+        bytes: buffer.length,
+        rowCount: parsed.rowCount,
+        uniqueOrderCount: parsed.uniqueOrderCount,
+      });
+    }
+    return result;
+  }
+
   /** 按模板试采某一天，返回各接口的数值叶子和取到的字段值，供人工核对。 */
   async testTemplate({ storeId, template, date, target = {} }) {
     const platform = getPlatform(template.platform);
@@ -367,6 +406,16 @@ class Collector {
           if (matched) Object.assign(target, { shopKey: matched.shopKey, shopName: matched.shopName });
         }
       }
+      let orderReport = null;
+      if (platform.id === "shopee" && template.builtin === true && targets.length === 1) {
+        const target = targets[0];
+        const targetDates = dates[target.country] || dates.default || [];
+        try {
+          orderReport = await this.collectShopeeOrderReport({ store, target, platform, origin, dates: targetDates, timeoutMs, onProgress });
+        } catch (error) {
+          throw new Error(`Shopee 官方订单导表失败，已停止本店采集以避免写入错误支付口径：${error.message}`, { cause: error });
+        }
+      }
       for (const target of targets) {
         const info = siteInfo(target.country);
         const targetDates = dates[target.country] || dates.default;
@@ -386,8 +435,25 @@ class Collector {
             }
           }
           const { values, missing: allMissing } = extractMetrics(template, responses);
-          const notReadyFields = allMissing.filter((field) => mappingParts(template.metrics[field]).some((part) => notReadyEndpoints.has(part.endpoint)));
-          const missing = allMissing.filter((field) => !notReadyFields.includes(field));
+          const dashboard = { payAmount: values.payAmount, orderCount: values.orderCount };
+          const reportDay = orderReport?.days?.[date] || null;
+          if (reportDay) {
+            values.payAmount = reportDay.payAmount;
+            values.orderCount = reportDay.orderCount;
+            const different = Number(dashboard.payAmount) !== Number(reportDay.payAmount) || Number(dashboard.orderCount) !== Number(reportDay.orderCount);
+            if (different) {
+              issues.push({
+                level: "warn",
+                storeName: store.storeName,
+                shopName: target.shopName,
+                date,
+                message: `支付销售口径差异已记录：订单小计减卖家券 ${reportDay.payAmount} / ${reportDay.orderCount} 单，商业分析 ${dashboard.payAmount ?? "缺失"} / ${dashboard.orderCount ?? "缺失"} 单`,
+              });
+            }
+          }
+          const suppliedByOrderReport = reportDay ? new Set(["payAmount", "orderCount"]) : new Set();
+          const notReadyFields = allMissing.filter((field) => !suppliedByOrderReport.has(field) && mappingParts(template.metrics[field]).some((part) => notReadyEndpoints.has(part.endpoint)));
+          const missing = allMissing.filter((field) => !suppliedByOrderReport.has(field) && !notReadyFields.includes(field));
           if (!Object.keys(values).length) {
             issues.push({ level: "warn", storeName: store.storeName, shopName: target.shopName, date, message: "没有取到任何字段，已跳过" });
             continue;
@@ -413,6 +479,15 @@ class Collector {
               templateVersion: Number(template.version) || 1,
               collectedAt: new Date().toISOString(),
               values,
+              orderReport: reportDay ? {
+                source: orderReport.source,
+                screeningCondition: orderReport.screeningCondition,
+                payAmountFormula: orderReport.payAmountFormula,
+                lookbackDays: orderReport.lookbackDays,
+                dashboard,
+                summary: reportDay,
+                reports: orderReport.reports,
+              } : null,
               missing,
               notReady: notReadyFields,
               endpoints,
@@ -449,7 +524,8 @@ class Collector {
     } catch (error) {
       page = { notes: [`页面核对失败：${error.message}`] };
     }
-    const check = comparePageCheck(row.evidence.values, page, target.country);
+    const pageCheckValues = row.evidence.orderReport?.dashboard || row.evidence.values;
+    const check = comparePageCheck(pageCheckValues, page, target.country);
     row.evidence.pageCheck = { at: new Date().toISOString(), date: yesterday, ...check, orderType: page?.orderType || "", lang: page?.lang || "", raw: page?.values || {}, notes: page?.notes || [] };
     if (check.status === "mismatch") {
       const detail = Object.entries(check.fields).filter(([, item]) => !item.match).map(([field, item]) => `${field} 采集 ${item.collected} / 页面 ${item.page}`).join("；");

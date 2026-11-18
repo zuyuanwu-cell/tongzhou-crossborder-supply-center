@@ -330,6 +330,107 @@
   font-variant-numeric: tabular-nums;
 }
 
+.shop-daily-metric-help {
+  max-width: 100%;
+  cursor: help;
+  outline: none;
+}
+
+.shop-daily-metric-help.is-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.shop-daily-metric-help.is-label svg {
+  flex: none;
+  opacity: 0.72;
+}
+
+.shop-daily-metric-help.is-value {
+  display: inline-block;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: color-mix(in srgb, var(--muted) 42%, transparent);
+  text-underline-offset: 3px;
+}
+
+.shop-daily-metric-help:hover,
+.shop-daily-metric-help:focus-visible {
+  color: var(--blue, #2451a4);
+  border-bottom-color: var(--blue, #2451a4);
+  text-decoration-color: var(--blue, #2451a4);
+}
+
+.shop-daily-metric-help:focus-visible {
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue, #2451a4) 22%, transparent);
+}
+
+.shop-daily-metric-tooltip {
+  position: fixed;
+  z-index: 10000;
+  display: grid;
+  gap: 10px;
+  box-sizing: border-box;
+  max-height: min(430px, calc(100vh - 24px));
+  padding: 14px 15px;
+  overflow: auto;
+  border: 1px solid rgba(45, 75, 121, 0.2);
+  border-radius: 10px;
+  color: #233956;
+  background: #fff;
+  box-shadow: 0 14px 38px rgba(19, 43, 77, 0.22);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.shop-daily-metric-tooltip.is-above {
+  transform: translateY(-100%);
+}
+
+.shop-daily-metric-tooltip > strong {
+  color: #123d73;
+  font-size: 14px;
+}
+
+.shop-daily-metric-tooltip section {
+  display: grid;
+  gap: 4px;
+}
+
+.shop-daily-metric-tooltip section > b {
+  color: #6f7f94;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.shop-daily-metric-tooltip section > span,
+.shop-daily-metric-tooltip code {
+  color: #2e435f;
+}
+
+.shop-daily-metric-tooltip code {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f2f6fb;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: normal;
+}
+
+.shop-daily-metric-tooltip > small {
+  padding-top: 8px;
+  border-top: 1px solid #e4eaf2;
+  color: #6c7d91;
+}
+
 .shop-daily-kpis article.positive b,
 .shop-daily-table .positive strong {
   color: var(--green);

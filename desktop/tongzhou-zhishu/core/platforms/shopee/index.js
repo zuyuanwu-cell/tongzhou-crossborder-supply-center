@@ -129,6 +129,8 @@ const BUILTIN_LOCAL = Object.freeze({
     },
   ],
   metrics: {
+    // 商业分析口径保留为页面核对基线；正式采集时，单店内置模板会用官方订单导表的
+    // 「订单小计 - 卖家承担优惠券」与按付款时间去重的订单数覆盖这两个字段。
     payAmount: { endpoint: "km", path: "result.paid_gmv.value", scale: 1 },
     orderCount: { endpoint: "km", path: "result.paid_orders.value", scale: 1 },
     // 「访客」= 商业分析首页关键指标的访客（hybrid_uv，店铺页 + 商品页去重）。
@@ -146,8 +148,8 @@ const BUILTIN_LOCAL = Object.freeze({
     },
   },
   // 用于判断历史数据是否按新口径采集（中台数据质量会把旧口径的数据自动补采一遍）。
-  version: 2,
-  updatedAt: "2026-11-11T00:00:00.000Z",
+  version: 3,
+  updatedAt: "2026-11-18T00:00:00.000Z",
 });
 
 /** 店铺身份（Shopee 店铺名、登录名、店铺 ID），用于自动对应中台店铺。 */
