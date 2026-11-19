@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, CircleHelp, ClipboardPaste, Download, ExternalLink, FileUp, ListChecks, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, CircleHelp, ClipboardPaste, Download, ExternalLink, FileUp, ListChecks, Maximize2, Minimize2, PackageSearch, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from "lucide-react";
 import {
   deleteShopDailyMetric,
   deleteShopReviewOrder,
@@ -24,6 +24,7 @@ import "./shop-daily.css";
 type Filters = { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string };
 type Section = "report" | "import" | "reviews" | "rules";
 type View = "shops" | "days";
+type DataStatus = "complete" | "incomplete";
 const DAY_PAGE_SIZE = 200;
 type OrderDrilldownTarget = { shopKey: string; shopName: string; platform: string; dateFrom: string; dateTo: string; label: string };
 
@@ -91,8 +92,12 @@ const FLAG_LABEL: Record<string, string> = {
   missing_traffic: "流量未填",
   missing_ad: "推广费未填",
   system_revenue: "用中台订单",
+  missing_platform_revenue: "平台支付金额未采集",
+  missing_platform_orders: "平台订单数未采集",
   missing_rate: "缺汇率",
   review_amount_missing: "测评金额待补",
+  review_received_missing: "测评实收待补",
+  missing_system_orders: "未匹配中台订单",
 };
 
 type PlatformOption = { key: string; value: string; label: string; count: number; mark: string };
@@ -501,6 +506,8 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const [error, setError] = React.useState("");
   const [section, setSection] = React.useState<Section>("report");
   const [view, setView] = React.useState<View>("shops");
+  const [dataStatus, setDataStatus] = React.useState<DataStatus>("complete");
+  const [tableFullscreen, setTableFullscreen] = React.useState(false);
   const [expandedShop, setExpandedShop] = React.useState("");
   const requestRef = React.useRef<AbortController | null>(null);
   // 逐日明细按需加载：按日明细 / 下载 CSV 取全部；展开某个店铺只取该店铺。
@@ -517,6 +524,20 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const [orderError, setOrderError] = React.useState("");
   const [orderExporting, setOrderExporting] = React.useState(false);
   const orderRequestRef = React.useRef<AbortController | null>(null);
+
+  React.useEffect(() => {
+    if (!tableFullscreen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTableFullscreen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [tableFullscreen]);
 
   React.useEffect(() => {
     setReportFilters((current) => ({
@@ -634,11 +655,16 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   const totals = payload?.totals;
   const quality = payload?.quality;
   const singleCurrency = (payload?.currencies.length || 0) <= 1 ? payload?.currencies[0] || "" : "";
-  const shopRows = payload?.shops || [];
+  const completeShopRows = payload?.shops || [];
+  const incompleteShopRows = payload?.incompleteShops || [];
+  const shopRows = dataStatus === "complete" ? completeShopRows : incompleteShopRows;
   // 兼容旧后端：若主请求已带明细（rowsIncluded 或没有 rowCount 字段），直接用。
   const inlineRows = payload && (payload.rowsIncluded || payload.rowCount === undefined) ? payload.rows || [] : null;
-  const dayRows = detail?.key === filterKey ? detail.rows : inlineRows || [];
-  const dayRowCount = payload?.rowCount ?? dayRows.length;
+  const allDayRows = detail?.key === filterKey ? detail.rows : inlineRows || [];
+  const dayRows = allDayRows.filter((row) => (row.dataStatus || "complete") === dataStatus);
+  const dayRowCount = dataStatus === "complete"
+    ? payload?.completeRowCount ?? quality?.completeRows ?? dayRows.length
+    : payload?.incompleteRowCount ?? quality?.incompleteRows ?? dayRows.length;
   const activeDatePreset = matchingShopDailyPreset(reportFilters.dateFrom || "", reportFilters.dateTo || "");
   const activePlatformKey = reportFilters.platform ? normalizedPlatformKey(reportFilters.platform) : "all";
   const platformOptions = React.useMemo<PlatformOption[]>(() => {
@@ -666,6 +692,12 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
       return left.label.localeCompare(right.label, "zh-CN");
     });
   }, [payload?.generatedAt, reportFilters.platform, activePlatformKey]);
+  const availableShopOptions = React.useMemo(() => (payload?.options.shops || []).filter((shop) => {
+    if (reportFilters.projectGroup && shop.projectGroup !== reportFilters.projectGroup) return false;
+    if (reportFilters.platform && normalizedPlatformKey(shop.platform) !== activePlatformKey) return false;
+    if (reportFilters.country && shop.country !== reportFilters.country) return false;
+    return true;
+  }), [payload?.generatedAt, reportFilters.projectGroup, reportFilters.platform, reportFilters.country, activePlatformKey]);
   const rowsByShop = React.useMemo(() => {
     const map = new Map<string, ShopDailyRow[]>();
     for (const [shopKey, rows] of Object.entries(shopDetail)) map.set(shopKey, rows);
@@ -680,16 +712,17 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   async function exportCsv() {
     const allRows = inlineRows && payload?.rowCount === undefined ? inlineRows : await loadDetail();
     if (!allRows) return;
-    const header = ["日期", "店铺", "国家", "平台", "项目组", "币种", "汇率(本币/人民币)", "支付金额(本币)", "支付金额(人民币)", "展示数", "访客数", "订单数", "加购人数", "测评数量", "测评金额(人民币)", "实际收款(人民币)",
+    const selectedRows = allRows.filter((row) => (row.dataStatus || "complete") === dataStatus);
+    const header = ["日期", "店铺", "国家", "平台", "项目组", "数据状态", "币种", "汇率(本币/人民币)", "支付金额(本币)", "支付金额(人民币)", "展示数", "访客数", "订单数", "加购人数", "测评数量", "测评金额(人民币)", "实际收款(人民币)",
       ...(permissions.cost ? ["测评成本"] : []), "真实成交(人民币)", "真实订单数", "站内推广费(人民币)", "站外推广费(人民币)", "总推广费(人民币)", "ROI", "点击率", "加购率", "转化率", "客单价(人民币)",
       ...(permissions.cost ? ["产品成本", "操作费", "平台扣费"] : []), ...(permissions.profit ? ["利润预估", "利润率"] : []), "支付金额来源", "提示"];
-    const lines = allRows.map((row) => [
-      row.date, row.shopName, row.country, row.platform, row.projectGroup, row.currency, row.localPerCny, row.payLocal ?? "", row.payCny, row.impressions, row.visitors, row.orderCount, row.addToCart, row.reviewCount, row.reviewAmountCny, row.reviewReceivedCny,
+    const lines = selectedRows.map((row) => [
+      row.date, row.shopName, row.country, row.platform, row.projectGroup, row.dataStatus === "incomplete" ? "待补数据" : "完整数据", row.currency, row.localPerCny, row.payLocal ?? "", row.payCny, row.impressions, row.visitors, row.orderCount, row.addToCart, row.reviewCount, row.reviewAmountCny, row.reviewReceivedCny,
       ...(permissions.cost ? [row.reviewCostCny] : []), row.realSalesCny, row.realOrders, row.adOnsiteCny, row.adOffsiteCny, row.adTotalCny, row.roi ?? "", row.visitRate ?? "", row.addToCartRate ?? "", row.conversionRate ?? "", row.aovCny ?? "",
       ...(permissions.cost ? [row.productCostCny, row.operationFeeCny, row.platformFeeCny] : []), ...(permissions.profit ? [row.profitCny, row.profitMargin ?? ""] : []),
       SOURCE_LABEL[row.sources.revenue] || row.sources.revenue, row.flags.map((flag) => FLAG_LABEL[flag] || flag).join(" / "),
     ]);
-    downloadCsv(`店铺日报-${payload?.filters.dateFrom || ""}-${payload?.filters.dateTo || ""}.csv`, header, lines);
+    downloadCsv(`店铺日报-${dataStatus === "complete" ? "完整数据" : "待补数据"}-${payload?.filters.dateFrom || ""}-${payload?.filters.dateTo || ""}.csv`, header, lines);
   }
 
   function openOrderDrilldown(target: OrderDrilldownTarget) {
@@ -787,7 +820,33 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   function selectPlatform(value: string) {
     setError("");
     setExpandedShop("");
-    setReportFilters((current) => ({ ...current, platform: value }));
+    setReportFilters((current) => {
+      const selectedShop = (payload?.options.shops || []).find((shop) => shop.value === current.shopKey);
+      const keepShop = !value || !selectedShop || normalizedPlatformKey(selectedShop.platform) === normalizedPlatformKey(value);
+      return { ...current, platform: value, shopKey: keepShop ? current.shopKey : "" };
+    });
+  }
+
+  function selectProjectGroup(value: string) {
+    setError("");
+    setExpandedShop("");
+    setReportFilters((current) => {
+      const selectedShop = (payload?.options.shops || []).find((shop) => shop.value === current.shopKey);
+      const keepShop = !value || !selectedShop || selectedShop.projectGroup === value;
+      return { ...current, projectGroup: value, shopKey: keepShop ? current.shopKey : "" };
+    });
+  }
+
+  function selectShop(value: string) {
+    setError("");
+    setExpandedShop("");
+    setReportFilters((current) => ({ ...current, shopKey: value }));
+  }
+
+  function selectDataStatus(value: DataStatus) {
+    setDataStatus(value);
+    setExpandedShop("");
+    setDayLimit(DAY_PAGE_SIZE);
   }
 
   const headCells = (
@@ -865,7 +924,36 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                 ))}
               </div>
             </div>
+            <div className="shop-daily-filter-row scope-row">
+              <div className="shop-daily-filter-title">
+                <Search size={18} />
+                <span><strong>归属与店铺</strong><small>可组合筛选，指标会同步重算</small></span>
+              </div>
+              <div className="shop-daily-scope-controls">
+                <label>
+                  <span>项目组</span>
+                  <select value={reportFilters.projectGroup || ""} onChange={(event) => selectProjectGroup(event.target.value)}>
+                    <option value="">全部项目组</option>
+                    {(payload?.options.projectGroups || []).map((group) => <option key={group} value={group}>{group}</option>)}
+                  </select>
+                </label>
+                <label className="shop-select">
+                  <span>店铺</span>
+                  <select value={reportFilters.shopKey || ""} onChange={(event) => selectShop(event.target.value)}>
+                    <option value="">全部店铺（{availableShopOptions.length}）</option>
+                    {availableShopOptions.map((shop) => (
+                      <option key={shop.value} value={shop.value}>{shop.label}{[shop.platform, shop.country].filter(Boolean).length ? ` · ${[shop.platform, shop.country].filter(Boolean).join(" / ")}` : ""}</option>
+                    ))}
+                  </select>
+                </label>
+                {(reportFilters.projectGroup || reportFilters.shopKey) ? (
+                  <button className="ghost-button" type="button" onClick={() => setReportFilters((current) => ({ ...current, projectGroup: "", shopKey: "" }))}>清除筛选</button>
+                ) : null}
+              </div>
+            </div>
           </section>
+
+          <div className="shop-daily-summary-scope"><ListChecks size={15} /><span>经营合计仅统计 <b>{fmtNum(quality?.completeRows)}</b> 行完整数据；待补数据单独查看，不参与下方指标与利润。</span></div>
 
           <div className="shop-daily-kpis">
             <article><small><MetricLabel metric="payAmount" detail={totals ? metricDetail("payAmount", totals, singleCurrency) : undefined} /></small><b>{fmtCny(totals?.payCny)}</b><span>{fmtNum(totals?.orderCount)} 单</span></article>
@@ -876,36 +964,48 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
             {permissions.profit ? <article className={Number(totals?.profitCny) < 0 ? "negative" : "positive"}><small><MetricLabel metric="profit" detail={totals ? metricDetail("profit", totals, singleCurrency) : undefined} /></small><b>{fmtCny(totals?.profitCny)}</b><span>利润率 {fmtPct(totals?.profitMargin, 1)}</span></article> : null}
           </div>
 
-          {quality && (quality.rowsUsingSystemRevenue || quality.rowsWithoutTraffic || quality.rowsWithoutAd || quality.rowsWithoutRate || quality.reviewOrdersWithoutAmount || quality.standaloneShopCount) ? (
+          {quality && (quality.incompleteRows || quality.rowsUsingSystemRevenue || quality.rowsWithoutTraffic || quality.rowsWithoutAd || quality.rowsWithoutRate || quality.reviewOrdersWithoutAmount || quality.standaloneShopCount) ? (
             <div className="shop-daily-quality">
               <AlertTriangle size={16} />
               <span>
+                {quality.incompleteRows ? `${quality.incompleteRows} 行关键数据待补，已从经营合计中排除；` : ""}
                 {quality.rowsUsingSystemRevenue ? `${quality.rowsUsingSystemRevenue} 行未导入平台支付金额，暂用中台出库订单；` : ""}
-                {quality.rowsWithoutTraffic ? `${quality.rowsWithoutTraffic} 行未填展示/访客；` : ""}
+                {quality.rowsWithoutTraffic ? `${quality.rowsWithoutTraffic} 行未填展示/访客/加购；` : ""}
                 {quality.rowsWithoutAd ? `${quality.rowsWithoutAd} 行未填推广费（没有投放可忽略）；` : ""}
                 {quality.rowsWithoutRate ? `${quality.rowsWithoutRate} 行缺汇率；` : ""}
                 {quality.reviewOrdersWithoutAmount ? `${quality.reviewOrdersWithoutAmount} 条测评订单找不到金额；` : ""}
+                {quality.reviewOrdersWithoutReceived ? `${quality.reviewOrdersWithoutReceived} 条测评订单未填实际收款；` : ""}
                 {quality.standaloneShopCount ? `${quality.standaloneShopCount} 个店铺在中台订单中尚未出现。` : ""}
               </span>
             </div>
           ) : null}
 
-          <div className="shop-daily-view-toggle">
-            <button className={view === "shops" ? "active" : ""} type="button" onClick={() => setView("shops")}>按店铺汇总 <span>{shopRows.length}</span></button>
-            <button className={view === "days" ? "active" : ""} type="button" onClick={() => setView("days")}>按日明细 <span>{dayRowCount}</span></button>
-            <small>{payload ? `${payload.filters.dateFrom} 至 ${payload.filters.dateTo}` : `${reportFilters.dateFrom || ""} 至 ${reportFilters.dateTo || ""}`}{payload?.materializationStale ? " · 中台订单正在后台更新" : ""}</small>
-          </div>
+          <div className={`shop-daily-table-shell ${tableFullscreen ? "is-fullscreen" : ""}`}>
+            <div className="shop-daily-table-toolbar">
+              <div className="shop-daily-view-toggle">
+                <button className={view === "shops" ? "active" : ""} type="button" onClick={() => setView("shops")}>按店铺汇总 <span>{shopRows.length}</span></button>
+                <button className={view === "days" ? "active" : ""} type="button" onClick={() => setView("days")}>按日明细 <span>{dayRowCount}</span></button>
+              </div>
+              <div className="shop-daily-data-toggle" role="group" aria-label="数据完整性筛选">
+                <button className={dataStatus === "complete" ? "active complete" : ""} type="button" onClick={() => selectDataStatus("complete")}>完整数据 <span>{quality?.completeRows || 0}</span></button>
+                <button className={dataStatus === "incomplete" ? "active incomplete" : ""} type="button" onClick={() => selectDataStatus("incomplete")}>待补数据 <span>{quality?.incompleteRows || 0}</span></button>
+              </div>
+              <small className="shop-daily-table-range">{payload ? `${payload.filters.dateFrom} 至 ${payload.filters.dateTo}` : `${reportFilters.dateFrom || ""} 至 ${reportFilters.dateTo || ""}`}{payload?.materializationStale ? " · 中台订单正在后台更新" : ""}</small>
+              <button className="shop-daily-fullscreen-button" type="button" onClick={() => setTableFullscreen((current) => !current)} aria-label={tableFullscreen ? "退出全屏" : "全屏查看数据表"} title={tableFullscreen ? "退出全屏（Esc）" : "全屏查看数据表"}>
+                {tableFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}{tableFullscreen ? "退出全屏" : "全屏"}
+              </button>
+            </div>
 
-          <div className="shop-daily-table-wrap">
+            <div className="shop-daily-table-wrap">
             <table className="shop-daily-table">
               <thead><tr><th className="sticky">{view === "shops" ? "店铺" : "日期 / 店铺"}</th>{headCells}{view === "days" && permissions.edit ? <th /> : null}</tr></thead>
               <tbody>
                 {view === "shops" ? shopRows.map((shop: ShopDailyShopSummary) => (
                   <React.Fragment key={shop.shopKey}>
-                    <tr className="shop-row" onClick={() => void toggleShop(shop.shopKey)}>
+                    <tr className={`shop-row ${dataStatus === "incomplete" ? "is-incomplete" : ""}`} onClick={() => void toggleShop(shop.shopKey)}>
                       <td className="sticky">
                         <strong>{shop.shopName}</strong>
-                        <small>{[shop.platform, shop.country, shop.projectGroup].filter(Boolean).join(" · ")} · {shop.days} 天{shop.standaloneShop ? " · 未匹配中台" : ""}</small>
+                        <small>{[shop.platform, shop.country, shop.projectGroup].filter(Boolean).join(" · ")} · {dataStatus === "complete" ? `完整 ${shop.days} 天${shop.incompleteDays ? ` · 待补 ${shop.incompleteDays} 天` : ""}` : `待补 ${shop.days} 天 · 已排除出合计${shop.completeDays ? ` · 另有完整 ${shop.completeDays} 天` : ""}`}{shop.standaloneShop ? " · 未匹配中台" : ""}</small>
                         <span className="shop-daily-flags">{Object.entries(shop.flagCounts).map(([flag, count]) => <i key={flag}>{FLAG_LABEL[flag] || flag} {count}</i>)}</span>
                         <button className="shop-daily-order-link" type="button" onClick={(event) => {
                           event.stopPropagation();
@@ -924,8 +1024,8 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                     {expandedShop === shop.shopKey && detailLoading === shop.shopKey ? (
                       <tr className="day-row"><td className="sticky"><small>正在读取逐日明细…</small></td></tr>
                     ) : null}
-                    {expandedShop === shop.shopKey ? (rowsByShop.get(shop.shopKey) || []).map((row) => (
-                      <tr className="day-row" key={`${row.shopKey}-${row.date}`}>
+                    {expandedShop === shop.shopKey ? (rowsByShop.get(shop.shopKey) || []).filter((row) => (row.dataStatus || "complete") === dataStatus).map((row) => (
+                      <tr className={`day-row ${row.dataStatus === "incomplete" ? "is-incomplete" : ""}`} key={`${row.shopKey}-${row.date}`}>
                         <td className="sticky"><span>{row.date}</span><small>收入来源：{SOURCE_LABEL[row.sources.revenue] || row.sources.revenue}</small>
                           <button className="shop-daily-order-link compact" type="button" onClick={() => openOrderDrilldown({ shopKey: row.shopKey, shopName: row.shopName, platform: row.platform, dateFrom: row.date, dateTo: row.date, label: row.date })}><PackageSearch size={13} />订单 {fmtNum(row.systemOrderCount)}</button>
                         </td>
@@ -934,7 +1034,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                     )) : null}
                   </React.Fragment>
                 )) : dayRows.slice(0, dayLimit).map((row) => (
-                  <tr key={`${row.shopKey}-${row.date}`}>
+                  <tr className={row.dataStatus === "incomplete" ? "is-incomplete" : ""} key={`${row.shopKey}-${row.date}`}>
                     <td className="sticky">
                       <strong>{row.date} · {row.shopName}</strong>
                       <small>{row.currency} {row.localPerCny ? `1¥=${fmtNum(row.localPerCny)}` : ""} · 收入来源 {SOURCE_LABEL[row.sources.revenue] || row.sources.revenue}</small>
@@ -946,7 +1046,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                   </tr>
                 ))}
               </tbody>
-              {totals && (view === "shops" ? shopRows.length : dayRowCount) ? (
+              {dataStatus === "complete" && totals && (view === "shops" ? shopRows.length : dayRowCount) ? (
                 <tfoot><tr><td className="sticky"><strong>合计</strong><small>比率按合计重新计算</small></td><MetricCells row={totals} permissions={permissions} currency={singleCurrency} />{view === "days" && permissions.edit ? <td /> : null}</tr></tfoot>
               ) : null}
             </table>
@@ -960,10 +1060,11 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
             {!loading && !dayRowCount ? (
               <div className="shop-daily-empty">
                 <Store size={30} />
-                <h4>当前筛选范围暂无日报数据</h4>
-                <p>先到「导入数据」把运营表粘贴进来，或调整上方日期和店铺筛选。</p>
+                <h4>{dataStatus === "complete" ? "当前筛选范围暂无完整日报数据" : "当前筛选范围没有待补数据"}</h4>
+                <p>{dataStatus === "complete" ? "可切换到「待补数据」查看缺口，或调整上方日期和店铺筛选。" : "当前范围的数据均已满足经营合计口径。"}</p>
               </div>
             ) : null}
+            </div>
           </div>
         </>
       ) : section === "import" ? (

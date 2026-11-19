@@ -7492,6 +7492,8 @@ export type ShopDailyRow = ShopDailyMetrics & {
   reviewReceivedLocal: number;
   sources: { revenue: ShopDailySourceTag; traffic: ShopDailySourceTag; ad: ShopDailySourceTag; review: ShopDailySourceTag; productCost: ShopDailySourceTag; operationFee: ShopDailySourceTag };
   flags: string[];
+  dataStatus: "complete" | "incomplete";
+  incompleteReasons: string[];
   standaloneShop: boolean;
   updatedAt: string;
   updatedBy: string;
@@ -7508,6 +7510,9 @@ export type ShopDailyShopSummary = ShopDailyMetrics & {
   ruleMode: "standard" | "stacked";
   standaloneShop: boolean;
   flagCounts: Record<string, number>;
+  dataStatus: "complete" | "incomplete";
+  completeDays?: number;
+  incompleteDays?: number;
   days: number;
 };
 
@@ -7560,12 +7565,17 @@ export type ShopDailyReportPayload = {
   permissions: { view: boolean; edit: boolean; cost: boolean; profit: boolean; manageRules: boolean };
   filters: { dateFrom: string; dateTo: string; shopKey: string; projectGroup: string; country: string; platform: string };
   totals: ShopDailyMetrics & { days: number };
+  incompleteTotals: ShopDailyMetrics & { days: number };
   shops: ShopDailyShopSummary[];
+  incompleteShops: ShopDailyShopSummary[];
   rows: ShopDailyRow[];
   /** 逐日明细总行数（rows=0 时 rows 为空，但这里仍是真实行数）。 */
   rowCount?: number;
+  completeRowCount?: number;
+  incompleteRowCount?: number;
   rowsIncluded?: boolean;
   currencies: string[];
+  incompleteCurrencies: string[];
   quality: {
     rowsWithoutTraffic: number;
     rowsWithoutAd: number;
@@ -7574,6 +7584,9 @@ export type ShopDailyReportPayload = {
     reviewOrdersWithoutAmount: number;
     reviewOrdersWithoutReceived: number;
     standaloneShopCount: number;
+    completeRows: number;
+    incompleteRows: number;
+    incompleteByReason: Record<string, number>;
   };
   rules: ShopFeeRule[];
   reviewOrders: ShopReviewOrder[];
