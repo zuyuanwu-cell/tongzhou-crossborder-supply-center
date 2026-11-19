@@ -107,7 +107,7 @@
     "test:production-materials": "node scripts/production-materials-test.mjs",
     "test:outsourcing-cache-policy": "node scripts/outsourcing-cache-policy-test.mjs",
     "test:movement-explainability": "node scripts/movement-explainability-test.mjs",
-    "test:shop-directory": "node scripts/shop-directory-test.mjs",
+    "test:shop-directory": "node scripts/shop-directory-test.mjs && node scripts/shop-directory-import-file-test.mjs",
     "test:exchange-rate-sync": "node scripts/exchange-rate-sync-test.mjs",
     "test:sync-scheduler": "node scripts/sync-scheduler-test.mjs",
     "test:business-chain": "node scripts/business-chain-test.mjs",

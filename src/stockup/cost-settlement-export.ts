@@ -48,7 +48,7 @@ function worksheet(rows: Cell[][]) {
 </worksheet>`;
 }
 
-function makeWorkbook(sheets: Array<{ name: string; rows: Cell[][] }>) {
+export function makeWorkbook(sheets: Array<{ name: string; rows: Cell[][] }>) {
   const contentTypes = sheets.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("");
   const workbookSheets = sheets.map((sheet, index) => `<sheet name="${xml(sheet.name.slice(0, 31))}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("");
   const relationships = sheets.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("");
