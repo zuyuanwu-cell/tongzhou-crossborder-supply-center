@@ -98,6 +98,7 @@ import { createCollectorReleases } from "./collector-releases.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
 import { applyShopDirectoryProfile, buildShopDirectory, normalizeShopDirectorySettings, normalizeShopUrl, resolveShopScope } from "./shop-directory.js";
+import { containsQuestionMarkEncodingDamage, decodeShopDirectoryCsv, parseShopDirectoryCsv } from "./shop-directory-file.js";
 import { buildDashboardMarketSnapshot, buildWarehouseDataState, summarizeDataHealth, summarizeOrderAmounts } from "./dashboard-summary.js";
 import { replaceWarehouseOrderRows, selectWarehouseOrderSnapshot } from "./order-cache-policy.js";
 import { recoverInterruptedOrderSyncJobs } from "./order-sync-job-state.js";
@@ -5111,41 +5112,6 @@ function csvCell(value) {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function parseShopDirectoryCsv(source) {
-  const input = String(source || "").replace(/^\uFEFF/, "");
-  if (input.includes("\uFFFD")) throw new Error("CSV 编码无法识别，请使用 UTF-8 编码的 CSV 或系统导出的文件。");
-  const rows = [];
-  let row = [];
-  let value = "";
-  let quoted = false;
-  for (let index = 0; index < input.length; index += 1) {
-    const character = input[index];
-    if (quoted) {
-      if (character === '"' && input[index + 1] === '"') {
-        value += '"';
-        index += 1;
-      } else if (character === '"') quoted = false;
-      else value += character;
-      continue;
-    }
-    if (character === '"') quoted = true;
-    else if (character === ",") {
-      row.push(value.trim());
-      value = "";
-    } else if (character === "\n" || character === "\r") {
-      if (character === "\r" && input[index + 1] === "\n") index += 1;
-      row.push(value.trim());
-      if (row.some(Boolean)) rows.push(row);
-      row = [];
-      value = "";
-    } else value += character;
-  }
-  if (quoted) throw new Error("CSV 存在未闭合的双引号，请检查文件格式。");
-  row.push(value.trim());
-  if (row.some(Boolean)) rows.push(row);
-  return rows;
-}
-
 function inventorySnapshotCsv(snapshot) {
   const headers = ["日期", "仓库", "国家/地区", "SKU", "国家SKU", "产品名称", "可售", "锁定", "待入库", "在途", "不良", "暂存", "总库存", "库存同步时间", "快照时间"];
   const lines = [headers.map(csvCell).join(",")];
@@ -6088,6 +6054,17 @@ async function warmPerformanceAnalyticsMaterialization({ throwOnError = false } 
     console.error("[performance] materialization failed", error);
     if (throwOnError) throw error;
   }
+}
+
+let performanceAnalyticsRefreshQueue = Promise.resolve();
+function queuePerformanceAnalyticsRefresh(reason = "data-change") {
+  performanceAnalyticsRefreshQueue = performanceAnalyticsRefreshQueue
+    .catch(() => {})
+    .then(async () => {
+      await performanceAnalyticsQueryService.close();
+      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
+    })
+    .catch((error) => console.error(`[performance] queued refresh failed (${reason})`, error));
 }
 
 function omitPerformanceFields(row, { revenue, cost, profit }) {
@@ -14463,8 +14440,7 @@ const server = http.createServer(async (req, res) => {
             : {}),
         };
       }
-      await performanceAnalyticsQueryService.close();
-      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
+      queuePerformanceAnalyticsRefresh("shop-directory-project-group");
       sendJson(res, 200, {
         ok: true,
         updatedCount: shopKeys.length,
@@ -14508,8 +14484,7 @@ const server = http.createServer(async (req, res) => {
       });
       const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       clearPerformanceAnalyticsResponseCache();
-      await performanceAnalyticsQueryService.close();
-      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
+      queuePerformanceAnalyticsRefresh("shop-directory-project-group-teams");
       sendJson(res, 200, { ok: true, shopDirectory: publicShopDirectory(directory, auth) });
       return;
     }
@@ -14578,7 +14553,7 @@ const server = http.createServer(async (req, res) => {
           const { parseXlsx } = await import("./xlsx-lite.js");
           grid = parseXlsx(buffer);
         } else {
-          grid = parseShopDirectoryCsv(buffer.toString("utf8"));
+          grid = parseShopDirectoryCsv(decodeShopDirectoryCsv(buffer));
         }
       } catch (error) {
         sendJson(res, 400, { ok: false, message: error instanceof Error ? error.message : "文件解析失败，请确认是有效的 CSV 或 xlsx 格式。" });
@@ -14586,6 +14561,13 @@ const server = http.createServer(async (req, res) => {
       }
       if (grid.length < 2) {
         sendJson(res, 400, { ok: false, message: "文件只有表头，没有可导入的店铺数据。" });
+        return;
+      }
+      if (containsQuestionMarkEncodingDamage(grid[0])) {
+        sendJson(res, 400, {
+          ok: false,
+          message: "文件中的中文已被保存为问号，原内容无法恢复。请从系统重新导出 Excel 文件，修改后直接上传 .xlsx；不要继续使用这份 CSV。未写入任何数据。",
+        });
         return;
       }
       const headers = grid[0].map((value) => String(value || "").replace(/[\s()（）_\-]/g, "").toLowerCase());
@@ -14598,7 +14580,17 @@ const server = http.createServer(async (req, res) => {
         shopUrl: indexOf("店铺链接", "店铺网址", "shopurl", "url"),
       };
       if (indexes.key < 0) {
-        sendJson(res, 400, { ok: false, message: "文件缺少必填列：店铺ID。请使用系统导出的 CSV 模板。" });
+        sendJson(res, 400, { ok: false, message: "文件缺少必填列：店铺ID。请使用系统导出的 Excel 模板。" });
+        return;
+      }
+      const damagedEditableRows = grid.slice(1).reduce((count, cells) => (
+        containsQuestionMarkEncodingDamage([cells[indexes.projectGroup], cells[indexes.ownerName]]) ? count + 1 : count
+      ), 0);
+      if (damagedEditableRows) {
+        sendJson(res, 400, {
+          ok: false,
+          message: `有 ${damagedEditableRows} 行的项目组或负责人姓名已变成问号，无法确定原值。请从系统重新导出 Excel 文件后再修改。未写入任何数据。`,
+        });
         return;
       }
       const knownKeys = new Set(directory.shops.map((shop) => shop.key));
@@ -14666,9 +14658,13 @@ const server = http.createServer(async (req, res) => {
       appendActionLog(auth, "导入店铺归属", "shop_directory", `${updates.length} 个店铺`, { shopCount: updates.length });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       clearPerformanceAnalyticsResponseCache();
-      await performanceAnalyticsQueryService.close();
-      await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
-      sendJson(res, 200, { ok: true, importedCount: updates.length, shopDirectory: publicShopDirectory(updatedDirectory, auth) });
+      queuePerformanceAnalyticsRefresh("shop-directory-import");
+      sendJson(res, 200, {
+        ok: true,
+        importedCount: updates.length,
+        message: `已导入 ${updates.length} 个店铺，经营贡献正在后台重算。`,
+        shopDirectory: publicShopDirectory(updatedDirectory, auth),
+      });
       return;
     }
 

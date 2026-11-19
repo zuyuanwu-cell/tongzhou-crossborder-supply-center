@@ -243,6 +243,7 @@ import { TongzhouCanvasAiPanel } from "./TongzhouCanvasAiPanel";
 import { WarehouseCollaborationTasks } from "./WarehouseCollaborationTasks";
 import { OzonOrderCenter } from "./OzonOrderCenter";
 import { StockupCollaborationCenter, type StockupCollaborationSection } from "./stockup/StockupCollaborationCenter";
+import { makeWorkbook } from "./stockup/cost-settlement-export";
 import { DomesticInventoryCenter } from "./domestic-inventory/DomesticInventoryCenter";
 import { BusinessChainCenter } from "./business-chain/BusinessChainCenter";
 import { ProductLaunchCenter } from "./ProductLaunchCenter";
@@ -10473,7 +10474,7 @@ function PerformanceAnalysisPage({
     }
   }
 
-  function exportShopDirectoryCsv() {
+  function exportShopDirectoryWorkbook() {
     if (!filteredShops.length) {
       setShopMessage("当前筛选结果为空，没有可导出的店铺。");
       return;
@@ -10493,8 +10494,17 @@ function PerformanceAnalysisPage({
       shop.orderLines || 0,
       shop.latestOrderAt || "",
     ]);
-    downloadTextFile(`tongzhou-shop-directory-${new Date().toISOString().slice(0, 10)}.csv`, `\uFEFF${[header, ...body].map((cells) => cells.map(csvCell).join(",")).join("\r\n")}`, "text/csv;charset=utf-8");
-    setShopMessage(`已按当前筛选导出 ${filteredShops.length} 个店铺。修改“主项目组、负责人或店铺链接”列后可直接导入回系统。`);
+    const bytes = makeWorkbook([{ name: "店铺归属", rows: [header, ...body] }]);
+    const workbookBuffer = new Uint8Array(bytes).buffer;
+    const url = URL.createObjectURL(new Blob([workbookBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `tongzhou-shop-directory-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setShopMessage(`已按当前筛选导出 ${filteredShops.length} 个店铺的 Excel。请直接修改并上传该 .xlsx 文件，不要另存为普通 CSV。`);
   }
 
   async function importShopDirectoryFile(event: React.ChangeEvent<HTMLInputElement>) {
@@ -10871,7 +10881,7 @@ function PerformanceAnalysisPage({
                 <option value="unmatched">未匹配妙手</option>
               </select>
               <div>
-                <button className="ghost-button" type="button" onClick={exportShopDirectoryCsv} disabled={!filteredShops.length}><Download size={15} />导出 CSV</button>
+                <button className="ghost-button" type="button" onClick={exportShopDirectoryWorkbook} disabled={!filteredShops.length}><Download size={15} />导出 Excel</button>
                 {canEditShops ? <>
                   <input ref={shopImportFileRef} className="visually-hidden" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={importShopDirectoryFile} />
                   <button className="sync-button" type="button" onClick={() => shopImportFileRef.current?.click()} disabled={busy}><Upload size={15} />{busy ? "处理中" : "导入文件"}</button>
