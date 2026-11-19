@@ -365,6 +365,9 @@ export function buildShopDailyReport({
     reviewOrdersWithoutAmount: 0,
     reviewOrdersWithoutReceived: 0,
     standaloneShopCount: 0,
+    completeRows: 0,
+    incompleteRows: 0,
+    incompleteByReason: {},
   };
 
   for (const entry of cells.values()) {
@@ -409,6 +412,8 @@ export function buildShopDailyReport({
       paySource = "none";
     }
     const orderCount = metricOrders !== null ? metricOrders : number(system.orderCount);
+    if (metricPay === null) flags.push("missing_platform_revenue");
+    if (metricOrders === null) flags.push("missing_platform_orders");
 
     // 测评：有订单登记时以登记为准，否则使用导入的当日测评汇总。
     let reviewAmountLocal = 0;
@@ -426,16 +431,31 @@ export function buildShopDailyReport({
           quality.reviewOrdersWithoutAmount += 1;
         }
         const received = nullableNumber(review.receivedAmount);
-        if (received === null) quality.reviewOrdersWithoutReceived += 1;
+        if (received === null) {
+          flags.push("review_received_missing");
+          quality.reviewOrdersWithoutReceived += 1;
+        }
         reviewAmountLocal += number(amount);
         reviewReceivedLocal += number(received);
         reviewCount += Math.max(1, number(review.quantity) || 1);
       }
     } else if (nullableNumber(metric.reviewAmount) !== null || nullableNumber(metric.reviewCount) !== null) {
       reviewSource = "import";
-      reviewAmountLocal = number(metric.reviewAmount);
-      reviewReceivedLocal = number(metric.reviewReceived);
-      reviewCount = number(metric.reviewCount);
+      const importedReviewAmount = nullableNumber(metric.reviewAmount);
+      const importedReviewReceived = nullableNumber(metric.reviewReceived);
+      const importedReviewCount = nullableNumber(metric.reviewCount);
+      reviewAmountLocal = number(importedReviewAmount);
+      reviewReceivedLocal = number(importedReviewReceived);
+      reviewCount = number(importedReviewCount);
+      const hasImportedReview = reviewAmountLocal > 0 || reviewCount > 0;
+      if (hasImportedReview && importedReviewAmount === null) {
+        flags.push("review_amount_missing");
+        quality.reviewOrdersWithoutAmount += 1;
+      }
+      if (hasImportedReview && importedReviewReceived === null) {
+        flags.push("review_received_missing");
+        quality.reviewOrdersWithoutReceived += 1;
+      }
     }
     const reviewAmountCny = toCny(reviewAmountLocal);
     const reviewReceivedCny = toCny(reviewReceivedLocal);
@@ -461,10 +481,26 @@ export function buildShopDailyReport({
     const impressions = nullableNumber(metric.impressions);
     const visitors = nullableNumber(metric.visitors);
     const addToCart = nullableNumber(metric.addToCart);
-    if (impressions === null && visitors === null) {
+    if (impressions === null || visitors === null || addToCart === null) {
       flags.push("missing_traffic");
       quality.rowsWithoutTraffic += 1;
     }
+    if (shop.standalone) flags.push("missing_system_orders");
+
+    // 广告费为空可能代表当天确实没有投放，只提示、不阻断完整性。
+    // 其余关键原始数据缺失会让成交、流量、测评或利润口径失真，必须从经营合计中隔离。
+    const incompleteReasons = [...new Set(flags.filter((flag) => [
+      "missing_platform_revenue",
+      "missing_platform_orders",
+      "missing_traffic",
+      "missing_rate",
+      "review_amount_missing",
+      "review_received_missing",
+      "missing_system_orders",
+    ].includes(flag)))];
+    const dataStatus = incompleteReasons.length ? "incomplete" : "complete";
+    quality[dataStatus === "complete" ? "completeRows" : "incompleteRows"] += 1;
+    for (const reason of incompleteReasons) quality.incompleteByReason[reason] = (quality.incompleteByReason[reason] || 0) + 1;
 
     // 成本：导入值优先；未导入且规则允许时，使用中台产品成本 / 打包费。
     const metricProductCost = nullableNumber(metric.productCostCny);
@@ -536,6 +572,8 @@ export function buildShopDailyReport({
         operationFee: operationFeeSource,
       },
       flags: [...new Set(flags)],
+      dataStatus,
+      incompleteReasons,
       standaloneShop: Boolean(shop.standalone),
       updatedAt: text(metric.updatedAt),
       updatedBy: text(metric.updatedBy),
@@ -545,30 +583,37 @@ export function buildShopDailyReport({
 
   rows.sort((left, right) => right.date.localeCompare(left.date) || left.shopName.localeCompare(right.shopName, "zh-CN"));
 
-  const shopSummaries = new Map();
-  const total = emptySums();
-  const currencies = new Set();
-  for (const row of rows) {
-    const summary = shopSummaries.get(row.shopKey) || {
-      shopKey: row.shopKey,
-      shopName: row.shopName,
-      country: row.country,
-      platform: row.platform,
-      projectGroup: row.projectGroup,
-      currency: row.currency,
-      ruleId: row.ruleId,
-      ruleMode: row.ruleMode,
-      standaloneShop: row.standaloneShop,
-      flagCounts: {},
-      sums: emptySums(),
-    };
-    addSums(summary.sums, row);
-    for (const flag of row.flags) summary.flagCounts[flag] = (summary.flagCounts[flag] || 0) + 1;
-    shopSummaries.set(row.shopKey, summary);
-    addSums(total, row);
-    currencies.add(row.currency);
+  function summarize(sourceRows, dataStatus) {
+    const shopSummaries = new Map();
+    const total = emptySums();
+    const currencies = new Set();
+    for (const row of sourceRows) {
+      const summary = shopSummaries.get(row.shopKey) || {
+        shopKey: row.shopKey,
+        shopName: row.shopName,
+        country: row.country,
+        platform: row.platform,
+        projectGroup: row.projectGroup,
+        currency: row.currency,
+        ruleId: row.ruleId,
+        ruleMode: row.ruleMode,
+        standaloneShop: row.standaloneShop,
+        dataStatus,
+        flagCounts: {},
+        sums: emptySums(),
+      };
+      addSums(summary.sums, row);
+      for (const flag of row.flags) summary.flagCounts[flag] = (summary.flagCounts[flag] || 0) + 1;
+      shopSummaries.set(row.shopKey, summary);
+      addSums(total, row);
+      currencies.add(row.currency);
+    }
+    return { shopSummaries, total, currencies };
   }
-  quality.standaloneShopCount = [...shopSummaries.values()].filter((item) => item.standaloneShop).length;
+
+  const complete = summarize(rows.filter((row) => row.dataStatus === "complete"), "complete");
+  const incomplete = summarize(rows.filter((row) => row.dataStatus === "incomplete"), "incomplete");
+  quality.standaloneShopCount = new Set(rows.filter((row) => row.standaloneShop).map((row) => row.shopKey)).size;
 
   const publicRows = rows.map((row) => {
     const sums = withRatios({ ...emptySums(), ...Object.fromEntries(Object.keys(emptySums()).map((key) => [key, row[key] ?? 0])) }, { singleCurrency: row.payLocal !== null });
@@ -586,14 +631,22 @@ export function buildShopDailyReport({
   return {
     filters: { dateFrom, dateTo, shopKey: shopFilter, projectGroup: groupFilter, country: text(filters.country), platform: text(filters.platform) },
     rows: publicRows,
-    shops: [...shopSummaries.values()]
+    shops: [...complete.shopSummaries.values()]
       .map((summary) => {
         const { sums, ...rest } = summary;
-        return { ...rest, ...withRatios(sums, { singleCurrency: true }) };
+        return { ...rest, incompleteDays: incomplete.shopSummaries.get(summary.shopKey)?.sums.days || 0, ...withRatios(sums, { singleCurrency: true }) };
       })
       .sort((left, right) => right.realSalesCny - left.realSalesCny || left.shopName.localeCompare(right.shopName, "zh-CN")),
-    totals: withRatios(total, { singleCurrency: currencies.size <= 1 }),
-    currencies: [...currencies],
+    incompleteShops: [...incomplete.shopSummaries.values()]
+      .map((summary) => {
+        const { sums, ...rest } = summary;
+        return { ...rest, completeDays: complete.shopSummaries.get(summary.shopKey)?.sums.days || 0, ...withRatios(sums, { singleCurrency: true }) };
+      })
+      .sort((left, right) => right.days - left.days || left.shopName.localeCompare(right.shopName, "zh-CN")),
+    totals: withRatios(complete.total, { singleCurrency: complete.currencies.size <= 1 }),
+    incompleteTotals: withRatios(incomplete.total, { singleCurrency: incomplete.currencies.size <= 1 }),
+    currencies: [...complete.currencies],
+    incompleteCurrencies: [...incomplete.currencies],
     quality,
     rules: normalizedRules,
   };

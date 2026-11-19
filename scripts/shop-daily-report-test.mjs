@@ -165,12 +165,21 @@ const fallbackRow = fallback.rows[0];
 assert.equal(fallbackRow.sources.revenue, "system");
 assert.ok(fallbackRow.flags.includes("system_revenue"));
 assert.ok(fallbackRow.flags.includes("missing_traffic"));
+assert.equal(fallbackRow.dataStatus, "incomplete", "中台支付兜底和缺流量的行必须标记为待补");
+assert.ok(fallbackRow.incompleteReasons.includes("missing_platform_revenue"));
+assert.ok(fallbackRow.incompleteReasons.includes("missing_platform_orders"));
 assert.equal(fallbackRow.orderCount, 2);
 assert.equal(fallbackRow.reviewCount, 1);
 close(fallbackRow.reviewAmountCny, 115000 / rate, "登记订单号自动取订单金额");
 close(fallbackRow.productCostCny, 30, "未导入成本时使用中台产品成本");
 close(fallbackRow.operationFeeCny, 3.8, "未导入操作费时使用中台打包费");
 assert.equal(fallback.quality.rowsUsingSystemRevenue, 1);
+assert.equal(fallback.quality.completeRows, 0);
+assert.equal(fallback.quality.incompleteRows, 1);
+assert.equal(fallback.shops.length, 0, "待补行不得进入完整店铺汇总");
+assert.equal(fallback.incompleteShops.length, 1);
+assert.equal(fallback.totals.payCny, 0, "待补行不得影响经营合计");
+close(fallback.incompleteTotals.payCny, 150, "待补数据保留独立参考汇总");
 
 // --- 订单穿透：多商品行合并、搜索、分页与金额汇总 -------------------------------
 const detailFacts = [
@@ -214,6 +223,12 @@ for (const metric of ["payAmount", "realSales", "adTotal", "trafficSummary", "re
   assert.match(shopDailyUi, new RegExp(`MetricLabel metric="${metric}"`), `${metric} 的汇总指标必须支持悬停说明`);
 }
 assert.match(shopDailyCss, /\.shop-daily-metric-tooltip\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*10000;/s);
+assert.match(shopDailyUi, /全部项目组/);
+assert.match(shopDailyUi, /全部店铺/);
+assert.match(shopDailyUi, /完整数据/);
+assert.match(shopDailyUi, /待补数据/);
+assert.match(shopDailyUi, /全屏查看数据表/);
+assert.match(shopDailyCss, /\.shop-daily-table-shell\.is-fullscreen\s*\{[^}]*position:\s*fixed;/s);
 
 // --- 筛选 ---------------------------------------------------------------------
 const filtered = buildShopDailyReport({ shops, metrics, rules, filters: { dateFrom: "2026-06-01", dateTo: "2026-06-30", projectGroup: "印尼二组" } });
