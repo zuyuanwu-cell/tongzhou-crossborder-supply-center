@@ -54,6 +54,7 @@ const importRoute = serverSource.slice(
   serverSource.indexOf('url.pathname === "/api/shop-directory/user-options"'),
 );
 assert.match(importRoute, /queuePerformanceAnalyticsRefresh\("shop-directory-import"\)/);
+assert.match(importRoute, /refreshPerformanceAnalyticsShopDirectoryCache\(updatedDirectory\)/);
 assert.doesNotMatch(importRoute, /await warmPerformanceAnalyticsMaterialization/);
 
 const uiSource = await readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
