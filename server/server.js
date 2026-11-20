@@ -6067,6 +6067,18 @@ function queuePerformanceAnalyticsRefresh(reason = "data-change") {
     .catch((error) => console.error(`[performance] queued refresh failed (${reason})`, error));
 }
 
+function refreshPerformanceAnalyticsShopDirectoryCache(updatedDirectory) {
+  if (!performanceAnalyticsMaterializedCache) return;
+  performanceAnalyticsMaterializedCache = {
+    ...performanceAnalyticsMaterializedCache,
+    shopDirectory: updatedDirectory,
+    ...(Array.isArray(performanceAnalyticsMaterializedCache.facts)
+      ? { facts: performanceAnalyticsMaterializedCache.facts.map((fact) => applyShopDirectoryProfile(fact, updatedDirectory)) }
+      : {}),
+  };
+  clearPerformanceAnalyticsResponseCache();
+}
+
 function omitPerformanceFields(row, { revenue, cost, profit }) {
   if (!row || typeof row !== "object") return row;
   const projected = { ...row };
@@ -14431,15 +14443,7 @@ const server = http.createServer(async (req, res) => {
         shopUrl,
       });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
-      if (performanceAnalyticsMaterializedCache) {
-        performanceAnalyticsMaterializedCache = {
-          ...performanceAnalyticsMaterializedCache,
-          shopDirectory: updatedDirectory,
-          ...(Array.isArray(performanceAnalyticsMaterializedCache.facts)
-            ? { facts: performanceAnalyticsMaterializedCache.facts.map((fact) => applyShopDirectoryProfile(fact, updatedDirectory)) }
-            : {}),
-        };
-      }
+      refreshPerformanceAnalyticsShopDirectoryCache(updatedDirectory);
       queuePerformanceAnalyticsRefresh("shop-directory-project-group");
       sendJson(res, 200, {
         ok: true,
@@ -14657,7 +14661,7 @@ const server = http.createServer(async (req, res) => {
       saveOrderAnalysisSettings();
       appendActionLog(auth, "导入店铺归属", "shop_directory", `${updates.length} 个店铺`, { shopCount: updates.length });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
-      clearPerformanceAnalyticsResponseCache();
+      refreshPerformanceAnalyticsShopDirectoryCache(updatedDirectory);
       queuePerformanceAnalyticsRefresh("shop-directory-import");
       sendJson(res, 200, {
         ok: true,
