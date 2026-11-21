@@ -3,7 +3,7 @@
 // 采集编排：校准（探测接口 → 生成模板 → 试采）与正式采集（逐店铺打开紫鸟 → 页面内重放接口 → 取值 → 回写中台）。
 
 const { getPlatform, guessPlatform, allTemplates } = require("./platforms");
-const { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
+const { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
 const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, mappingParts, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
 const { comparePageCheck, evidenceEndpoint, pageDateText } = require("./quality");
 const { siteInfo, siteToday, addDays, dateList } = require("./sites");
@@ -12,6 +12,16 @@ const { ORDER_REPORT_LOOKBACK_DAYS, emptyDay, orderReportWindows, parseShopeeOrd
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shopeeRateLimitDetails(error) {
+  const message = String(error?.message || error || "");
+  const marked = /SHOPEE_RATE_LIMIT\|(\d+)\|([^\r\n]*)/i.exec(message);
+  if (marked) return { limited: true, retryAfterMs: Math.max(0, Number(marked[1]) || 0), message: marked[2] || "Shopee 订单报表接口限流。" };
+  if (/Shopee[^\r\n]{0,80}(?:HTTP\s*429|接口限流)|HTTP\s*429/i.test(message)) {
+    return { limited: true, retryAfterMs: 0, message: "Shopee 订单报表接口限流。" };
+  }
+  return { limited: false, retryAfterMs: 0, message };
 }
 
 function parseJson(textValue) {
@@ -93,13 +103,25 @@ class Collector {
     this.cli = cli;
     // 截图压缩（Electron 主进程里用 nativeImage 转 JPEG）；返回 { mime, base64 } 或 null。
     this.imageEncoder = imageEncoder;
-    this.waits = { fresh: 5000, reused: 2500, visit: 3000, retry: 5000, ...waits };
+    this.waits = {
+      fresh: 5000,
+      reused: 2500,
+      visit: 3000,
+      retry: 5000,
+      shopeeLogin: 8000,
+      shopeeReportGap: 20000,
+      shopeeRateLimitCooldown: 10 * 60 * 1000,
+      shopeeReportRetries: 1,
+      ...waits,
+    };
     this.store = store;
     this.log = log;
     this.zhongtaiFactory = zhongtaiFactory;
     this.discoveries = new Map();
     this.running = null;
     this.cancelRequested = false;
+    this.shopeeRateLimitUntil = 0;
+    this.shopeeLastReportAt = 0;
   }
 
   config() {
@@ -151,12 +173,52 @@ class Collector {
       info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
       check = platform.checkPage(info);
     }
+    if (!check.ok && check.code === "NOT_LOGGED_IN" && platform?.id === "shopee") {
+      this.log("info", "检测到 Shopee 登录失效，正在尝试使用浏览器已保存的账号密码自动登录。");
+      const recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 }).catch((error) => ({ attempted: false, reason: error.message }));
+      if (recovery?.requiresManual) {
+        check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
+      } else if (recovery?.attempted) {
+        await this.waitCancelable(this.waits.shopeeLogin);
+        await this.cli.visit({ storeId, url });
+        await this.waitCancelable(this.waits.visit);
+        info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+        check = platform.checkPage(info);
+        if (check.ok) this.log("info", "Shopee 已使用浏览器保存的登录信息自动恢复。");
+      } else {
+        check = { ok: false, code: "NOT_LOGGED_IN", message: `Shopee 卖家中心未登录。${recovery?.reason || "自动登录未成功。"} 请在紫鸟里确认已保存密码；如有验证码请手动完成一次。` };
+      }
+    }
     if (!check.ok) {
       const error = new Error(check.message);
       error.code = check.code;
       throw error;
     }
     return info;
+  }
+
+  async waitCancelable(ms) {
+    let remaining = Math.max(0, Number(ms) || 0);
+    while (remaining > 0) {
+      if (this.cancelRequested) {
+        const error = new Error("采集已取消");
+        error.code = "CANCELLED";
+        error.retryable = false;
+        throw error;
+      }
+      const part = Math.min(1000, remaining);
+      await sleep(part);
+      remaining -= part;
+    }
+  }
+
+  async waitForShopeeReportSlot({ storeId, onProgress = () => {} } = {}) {
+    const gapUntil = this.shopeeLastReportAt + Math.max(0, Number(this.waits.shopeeReportGap) || 0);
+    const until = Math.max(this.shopeeRateLimitUntil, gapUntil);
+    const waitMs = Math.max(0, until - Date.now());
+    if (!waitMs) return;
+    onProgress({ storeId, phase: "order-report-cooldown", message: `Shopee 报表接口冷却中，约 ${Math.ceil(waitMs / 60000)} 分钟后自动续跑` });
+    await this.waitCancelable(waitMs);
   }
 
   async runReplayBatches({
@@ -358,7 +420,28 @@ class Collector {
     await this.ensurePage(store.storeId, platform, page);
     for (const window of windows) {
       onProgress({ storeId: store.storeId, phase: "order-report", message: `${store.storeName}：导出 Shopee 官方订单表 ${window.startDate} 至 ${window.endDate}` });
-      const downloaded = await this.cli.runInPage(store.storeId, orderReportBody(window), { timeoutMs: Math.max(timeoutMs, 90000) });
+      let downloaded = null;
+      const maxAttempts = 1 + Math.max(0, Number(this.waits.shopeeReportRetries) || 0);
+      for (let attempt = 1; attempt <= maxAttempts && !downloaded; attempt += 1) {
+        await this.waitForShopeeReportSlot({ storeId: store.storeId, onProgress });
+        try {
+          downloaded = await this.cli.runInPage(store.storeId, orderReportBody(window), { timeoutMs: Math.max(timeoutMs, 5 * 60 * 1000) });
+          this.shopeeLastReportAt = Date.now();
+        } catch (error) {
+          const rateLimit = shopeeRateLimitDetails(error);
+          if (!rateLimit.limited) throw error;
+          const configured = Math.max(0, Number(this.waits.shopeeRateLimitCooldown) || 0);
+          const cooldown = Math.max(configured, rateLimit.retryAfterMs);
+          this.shopeeRateLimitUntil = Math.max(this.shopeeRateLimitUntil, Date.now() + cooldown);
+          this.log("warn", `${store.storeName}：Shopee 报表接口触发限流，冷却 ${Math.ceil(cooldown / 60000)} 分钟后从当前报表续跑。`);
+          if (attempt >= maxAttempts) {
+            const limited = new Error("Shopee 订单报表接口持续限流，本店已暂停；稍后可从该店重新补采，不会写入错误口径。");
+            limited.code = "SHOPEE_RATE_LIMIT";
+            limited.retryable = false;
+            throw limited;
+          }
+        }
+      }
       const buffer = Buffer.from(String(downloaded?.base64 || ""), "base64");
       if (!buffer.length || buffer.length !== Number(downloaded?.bytes || 0)) throw new Error("Shopee 订单报表下载数据不完整。");
       const parsed = parseShopeeOrderReport(buffer, { site: target.country });
@@ -804,6 +887,7 @@ module.exports = {
   businessError,
   buildReplayBatches,
   isCommandLineTooLong,
+  shopeeRateLimitDetails,
   DEFAULT_REPLAY_BATCH_REQUESTS,
   DEFAULT_REPLAY_SCRIPT_CHARS,
   METRIC_KEYS,
