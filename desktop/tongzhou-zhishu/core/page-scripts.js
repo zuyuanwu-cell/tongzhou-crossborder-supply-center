@@ -149,8 +149,29 @@ const apiUrl = (pathname, params = {}) => {
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
   return url.href;
 };
+const retryAfterMs = (response, fallbackMs) => {
+  const raw = response.headers.get("retry-after") || "";
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, Math.min(120000, seconds * 1000));
+  const at = Date.parse(raw);
+  if (Number.isFinite(at)) return Math.max(1000, Math.min(120000, at - Date.now()));
+  return fallbackMs;
+};
+const fetchWithRateLimit = async (url, label) => {
+  const delays = [5000, 15000, 30000, 60000];
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    const response = await fetch(url, { credentials: "include" });
+    if (response.status !== 429) return response;
+    const delay = retryAfterMs(response, delays[attempt]);
+    if (attempt === delays.length - 1) {
+      throw new Error("SHOPEE_RATE_LIMIT|" + delay + "|Shopee 订单报表接口限流（" + label + "），需要冷却后续跑。");
+    }
+    await sleep(delay);
+  }
+  throw new Error("SHOPEE_RATE_LIMIT|60000|Shopee 订单报表接口持续限流。");
+};
 const readJson = async (pathname, params) => {
-  const response = await fetch(apiUrl(pathname, params), { credentials: "include" });
+  const response = await fetchWithRateLimit(apiUrl(pathname, params), pathname);
   const json = await response.json().catch(() => null);
   if (!response.ok) throw new Error("Shopee 订单报表接口 HTTP " + response.status);
   const code = json && (json.code ?? json.err_code ?? json.error_code);
@@ -176,10 +197,10 @@ for (let attempt = 0; attempt < 60; attempt += 1) {
   if (status === 2 || /complete|success|ready/i.test(String(status))) break;
   if (status === 3 || status === -1 || /fail|error/i.test(String(status))) throw new Error("Shopee 生成订单报表失败。");
   report = null;
-  await sleep(1000);
+  await sleep(3000);
 }
 if (!report) throw new Error("等待 Shopee 订单报表生成超时。");
-const response = await fetch(apiUrl("/api/v3/settings/download_report/", { report_id: reportId }), { credentials: "include" });
+const response = await fetchWithRateLimit(apiUrl("/api/v3/settings/download_report/", { report_id: reportId }), "download_report");
 if (!response.ok) throw new Error("下载 Shopee 订单报表失败：HTTP " + response.status);
 const bytes = new Uint8Array(await response.arrayBuffer());
 if (!bytes.length) throw new Error("Shopee 返回了空订单报表。");
@@ -197,6 +218,54 @@ return {
   endDate: ${JSON.stringify(endDate)},
   base64: btoa(parts.join("")),
 };
+`;
+}
+
+/**
+ * Shopee 登录恢复。只判断浏览器是否已经自动填充密码并触发表单，
+ * 不读取、不返回、更不会记录账号或密码内容。
+ */
+function loginRecoveryBody() {
+  return `
+// TZ_SHOPEE_LOGIN_RECOVERY
+const visible = (element) => !!(element && element.offsetParent !== null);
+const text = (document.body && document.body.innerText) || "";
+if (/captcha|security check|验证码|安全验证|二次验证|one.time.password|otp/i.test(location.href + " " + text)) {
+  return { attempted: false, requiresManual: true, reason: "Shopee 要求验证码或安全验证。" };
+}
+if (!/\\/account\\/signin|\\/login|accounts\\.shopee/i.test(location.href)) {
+  return { attempted: false, alreadyLoggedIn: true };
+}
+const inputs = Array.from(document.querySelectorAll("input") || []).filter(visible);
+const password = inputs.find((element) => element.type === "password" || /password|密码|kata sandi|mật khẩu/i.test(element.name + " " + element.placeholder));
+const username = inputs.find((element) => element !== password && /text|email|tel/.test(element.type || "text"));
+const buttons = Array.from(document.querySelectorAll("button, [role=button], input[type=submit]") || []).filter(visible);
+const submit = buttons.find((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập/i.test((element.innerText || element.value || "").trim()))
+  || buttons.find((element) => element.type === "submit");
+const savedAccount = buttons.find((element) => /继续|使用此账号|continue|saved account|lanjutkan/i.test((element.innerText || element.value || "").trim()));
+if (savedAccount && !password) {
+  savedAccount.click();
+  return { attempted: true, method: "saved-account" };
+}
+if (!password || !String(password.value || "").length) {
+  if (username) { username.focus(); username.click(); }
+  if (password) { password.focus(); password.click(); }
+  return { attempted: false, autofillMissing: true, reason: "浏览器没有自动填入已保存的密码。" };
+}
+password.focus();
+password.dispatchEvent(new Event("input", { bubbles: true }));
+password.dispatchEvent(new Event("change", { bubbles: true }));
+if (submit && !submit.disabled && submit.getAttribute("aria-disabled") !== "true") {
+  submit.click();
+  return { attempted: true, method: "button" };
+}
+const form = password.form || username?.form || document.querySelector("form");
+if (form) {
+  if (typeof form.requestSubmit === "function") form.requestSubmit();
+  else form.submit();
+  return { attempted: true, method: "form" };
+}
+return { attempted: false, reason: "没有找到可提交的 Shopee 登录按钮。" };
 `;
 }
 
@@ -287,4 +356,4 @@ return { restored: Boolean(option) };
 `;
 }
 
-module.exports = { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, pageCheckBody, restoreOrderTypeBody };
+module.exports = { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody };
