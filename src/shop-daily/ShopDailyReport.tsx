@@ -21,7 +21,7 @@ import {
 import { matchingShopDailyPreset, shopDailyDateRange, SHOP_DAILY_DATE_PRESETS, type ShopDailyDatePreset } from "./date-ranges";
 import "./shop-daily.css";
 
-type Filters = { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string };
+type Filters = { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string; salesChannel?: string };
 type Section = "report" | "import" | "reviews" | "rules";
 type View = "shops" | "days";
 type DataStatus = "complete" | "incomplete";
@@ -127,6 +127,16 @@ function platformPresentation(value: string) {
 function PlatformMark({ platform }: { platform: string }) {
   const presentation = platformPresentation(platform);
   return <span className={`shop-daily-platform-mark is-${presentation.key}`} aria-hidden="true">{presentation.mark}</span>;
+}
+
+function salesChannelLabel(value: string) {
+  const normalized = String(value || "").trim().toUpperCase();
+  const labels: Record<string, string> = {
+    TIKTOK_SHOP: "TikTok Shop",
+    TOKOPEDIA: "Tokopedia",
+    UNSPECIFIED: "待确认渠道",
+  };
+  return labels[normalized] || value || "未标记渠道";
 }
 
 const RECOGNIZED_COLUMNS = "日期、店铺、国家、平台、支付金额、展示数、访客数、订单数、加购人数、测评金额、实际收款金额、测评数量、站内推广费、站外推广费、产品成本、操作费";
@@ -549,8 +559,8 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
   }, [filters.shopKey, filters.projectGroup, filters.country]);
 
   React.useEffect(() => {
-    setReportFilters((current) => ({ ...current, platform: filters.platform || "" }));
-  }, [filters.platform]);
+    setReportFilters((current) => ({ ...current, platform: filters.platform || "", salesChannel: filters.salesChannel || "" }));
+  }, [filters.platform, filters.salesChannel]);
 
   const filterKey = JSON.stringify(reportFilters);
   const load = React.useCallback(async () => {
@@ -667,6 +677,8 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     : payload?.incompleteRowCount ?? quality?.incompleteRows ?? dayRows.length;
   const activeDatePreset = matchingShopDailyPreset(reportFilters.dateFrom || "", reportFilters.dateTo || "");
   const activePlatformKey = reportFilters.platform ? normalizedPlatformKey(reportFilters.platform) : "all";
+  const tiktok = payload?.tiktok;
+  const showTikTokPanel = activePlatformKey === "tiktok" || Boolean(tiktok?.available);
   const platformOptions = React.useMemo<PlatformOption[]>(() => {
     const counts = new Map<string, number>();
     const values = new Map<string, string>();
@@ -713,12 +725,14 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     const allRows = inlineRows && payload?.rowCount === undefined ? inlineRows : await loadDetail();
     if (!allRows) return;
     const selectedRows = allRows.filter((row) => (row.dataStatus || "complete") === dataStatus);
-    const header = ["日期", "店铺", "国家", "平台", "项目组", "数据状态", "币种", "汇率(本币/人民币)", "支付金额(本币)", "支付金额(人民币)", "展示数", "访客数", "订单数", "加购人数", "测评数量", "测评金额(人民币)", "实际收款(人民币)",
+    const header = ["日期", "店铺", "国家", "平台", "销售渠道", "购买渠道", "统计时区", "口径版本", "来源完整度", "缺失模块", "项目组", "数据状态", "币种", "汇率(本币/人民币)", "支付金额(本币)", "支付金额(人民币)", "展示数", "访客数", "订单数", "加购人数", "测评数量", "测评金额(人民币)", "实际收款(人民币)",
       ...(permissions.cost ? ["测评成本"] : []), "真实成交(人民币)", "真实订单数", "站内推广费(人民币)", "站外推广费(人民币)", "总推广费(人民币)", "ROI", "点击率", "加购率", "转化率", "客单价(人民币)",
+      "TikTok买家数", "卖家自营GMV(人民币)", "联盟达人GMV(人民币)", "商品卡GMV(人民币)", "短视频GMV(人民币)", "直播GMV(人民币)", "未归因GMV(人民币)", "广告花费(人民币)", "广告归因成交额(人民币)", "退款金额(人民币)", "取消金额(人民币)", "期末库存",
       ...(permissions.cost ? ["产品成本", "操作费", "平台扣费"] : []), ...(permissions.profit ? ["利润预估", "利润率"] : []), "支付金额来源", "提示"];
     const lines = selectedRows.map((row) => [
-      row.date, row.shopName, row.country, row.platform, row.projectGroup, row.dataStatus === "incomplete" ? "待补数据" : "完整数据", row.currency, row.localPerCny, row.payLocal ?? "", row.payCny, row.impressions, row.visitors, row.orderCount, row.addToCart, row.reviewCount, row.reviewAmountCny, row.reviewReceivedCny,
+      row.date, row.shopName, row.country, row.platform, (row.salesChannels?.length ? row.salesChannels : [row.salesChannel]).filter(Boolean).map((value) => salesChannelLabel(String(value))).join(" / "), row.purchaseChannel || "", row.timezone || "", row.definitionVersion || "", row.sourceDataStatus || "", (row.missingModules || []).join(" / "), row.projectGroup, row.dataStatus === "incomplete" ? "待补数据" : "完整数据", row.currency, row.localPerCny, row.payLocal ?? "", row.payCny, row.impressions, row.visitors, row.orderCount, row.addToCart, row.reviewCount, row.reviewAmountCny, row.reviewReceivedCny,
       ...(permissions.cost ? [row.reviewCostCny] : []), row.realSalesCny, row.realOrders, row.adOnsiteCny, row.adOffsiteCny, row.adTotalCny, row.roi ?? "", row.visitRate ?? "", row.addToCartRate ?? "", row.conversionRate ?? "", row.aovCny ?? "",
+      row.buyerCount ?? "", row.sellerGmvCny ?? "", row.affiliateGmvCny ?? "", row.productCardGmvCny ?? "", row.videoGmvCny ?? "", row.liveGmvCny ?? "", row.unattributedGmvCny ?? "", row.adsCostCny ?? "", row.adsGrossRevenueCny ?? "", row.refundAmountCny ?? "", row.cancelAmountCny ?? "", row.stockOnHand ?? "",
       ...(permissions.cost ? [row.productCostCny, row.operationFeeCny, row.platformFeeCny] : []), ...(permissions.profit ? [row.profitCny, row.profitMargin ?? ""] : []),
       SOURCE_LABEL[row.sources.revenue] || row.sources.revenue, row.flags.map((flag) => FLAG_LABEL[flag] || flag).join(" / "),
     ]);
@@ -823,7 +837,7 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
     setReportFilters((current) => {
       const selectedShop = (payload?.options.shops || []).find((shop) => shop.value === current.shopKey);
       const keepShop = !value || !selectedShop || normalizedPlatformKey(selectedShop.platform) === normalizedPlatformKey(value);
-      return { ...current, platform: value, shopKey: keepShop ? current.shopKey : "" };
+      return { ...current, platform: value, salesChannel: normalizedPlatformKey(value) === "tiktok" ? current.salesChannel : "", shopKey: keepShop ? current.shopKey : "" };
     });
   }
 
@@ -946,8 +960,17 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
                     ))}
                   </select>
                 </label>
-                {(reportFilters.projectGroup || reportFilters.shopKey) ? (
-                  <button className="ghost-button" type="button" onClick={() => setReportFilters((current) => ({ ...current, projectGroup: "", shopKey: "" }))}>清除筛选</button>
+                {(activePlatformKey === "tiktok" || Boolean(payload?.options.salesChannels?.length)) ? (
+                  <label>
+                    <span>销售渠道</span>
+                    <select value={reportFilters.salesChannel || ""} onChange={(event) => setReportFilters((current) => ({ ...current, salesChannel: event.target.value }))}>
+                      <option value="">全部销售渠道</option>
+                      {(payload?.options.salesChannels || []).map((channel) => <option key={channel} value={channel}>{salesChannelLabel(channel)}</option>)}
+                    </select>
+                  </label>
+                ) : null}
+                {(reportFilters.projectGroup || reportFilters.shopKey || reportFilters.salesChannel) ? (
+                  <button className="ghost-button" type="button" onClick={() => setReportFilters((current) => ({ ...current, projectGroup: "", shopKey: "", salesChannel: "" }))}>清除筛选</button>
                 ) : null}
               </div>
             </div>
@@ -963,6 +986,26 @@ export function ShopDailyReport({ filters }: { filters: Filters }) {
             {permissions.cost ? <article><small><MetricLabel metric="reviewCost" detail={totals ? `当前 ${fmtNum(totals.reviewCount)} 单；测评损失 ${fmtCny(totals.reviewLossCny)}；测评成本 ${fmtCny(totals.reviewCostCny)}` : undefined} /></small><b>{fmtCny(totals?.reviewCostCny)}</b><span>{fmtNum(totals?.reviewCount)} 单</span></article> : null}
             {permissions.profit ? <article className={Number(totals?.profitCny) < 0 ? "negative" : "positive"}><small><MetricLabel metric="profit" detail={totals ? metricDetail("profit", totals, singleCurrency) : undefined} /></small><b>{fmtCny(totals?.profitCny)}</b><span>利润率 {fmtPct(totals?.profitMargin, 1)}</span></article> : null}
           </div>
+
+          {showTikTokPanel ? (
+            <section className="shop-daily-tiktok" aria-label="TikTok 经营拆解">
+              <header>
+                <div><PlatformMark platform="tiktok" /><span><strong>TikTok 经营拆解</strong><small>店铺成交、订单来源、内容归因和广告口径分开统计</small></span></div>
+                <div className="shop-daily-tiktok-status">
+                  <span className={tiktok?.dataStatus === "COMPLETE" ? "is-complete" : "is-partial"}>{tiktok?.dataStatus === "COMPLETE" ? "数据完整" : "数据待补"}</span>
+                  {(tiktok?.channels || []).map((channel) => <em key={channel}>{salesChannelLabel(channel)}</em>)}
+                </div>
+              </header>
+              {tiktok?.missingModules?.length ? <div className="shop-daily-tiktok-warning"><AlertTriangle size={15} />缺少：{tiktok.missingModules.join("、")}。缺失数据以“—”展示，不按 0 参与判断。</div> : null}
+              <div className="shop-daily-tiktok-grid">
+                <article><small>业务大盘</small><b>{fmtCny(tiktok?.business.gmvCny)}</b><span>{fmtNum(tiktok?.business.orders)} 单 · {fmtNum(tiktok?.business.buyers)} 位买家</span><p>退款 {fmtCny(tiktok?.business.refundCny)} · 取消 {fmtCny(tiktok?.business.cancelCny)} · 库存 {fmtNum(tiktok?.business.stockOnHand)}</p></article>
+                <article><small>订单来源</small><b>{fmtCny(tiktok?.source.sellerGmvCny)}</b><span>卖家自营</span><p>联盟达人 {fmtCny(tiktok?.source.affiliateGmvCny)}</p></article>
+                <article><small>内容归因</small><b>{fmtCny(tiktok?.content.videoGmvCny)}</b><span>短视频成交</span><p>商品卡 {fmtCny(tiktok?.content.productCardGmvCny)} · 直播 {fmtCny(tiktok?.content.liveGmvCny)} · 未归因 {fmtCny(tiktok?.content.unattributedGmvCny)}</p></article>
+                <article><small>广告口径（不重复计入 GMV）</small><b>{fmtCny(tiktok?.ads.costCny)}</b><span>广告花费 · ROAS {fmtRatio(tiktok?.ads.roas)}</span><p>广告归因成交 {fmtCny(tiktok?.ads.grossRevenueCny)}</p></article>
+              </div>
+              <footer>印尼店铺按 TikTok Shop / Tokopedia 渠道先去重、再汇总；广告归因成交额仅用于评估广告，不与店铺 GMV 相加。</footer>
+            </section>
+          ) : null}
 
           {quality && (quality.incompleteRows || quality.rowsUsingSystemRevenue || quality.rowsWithoutTraffic || quality.rowsWithoutAd || quality.rowsWithoutRate || quality.reviewOrdersWithoutAmount || quality.standaloneShopCount) ? (
             <div className="shop-daily-quality">

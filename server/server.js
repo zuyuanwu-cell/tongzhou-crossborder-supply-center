@@ -6261,6 +6261,7 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth, timi
       projectGroup: String(params.projectGroup || ""),
       country: String(params.country || ""),
       platform: String(params.platform || ""),
+      salesChannel: String(params.salesChannel || ""),
     },
   }));
   // 默认视图（按店铺汇总）不需要逐日明细；90 天全部店铺的明细有十几 MB，只在「按日明细」、展开店铺、导出时再取。
@@ -6287,6 +6288,7 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth, timi
     currencies: report.currencies,
     incompleteCurrencies: report.incompleteCurrencies,
     quality: report.quality,
+    tiktok: report.tiktok,
     rules: permissions.cost ? report.rules : [],
     reviewOrders: scopedReviews,
     options: {
@@ -6294,6 +6296,7 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth, timi
       projectGroups: [...new Set(context.shops.map((shop) => shop.projectGroup).filter(Boolean))].sort((left, right) => left.localeCompare(right, "zh-CN")),
       countries: [...new Set(context.shops.map((shop) => shop.country).filter(Boolean))].sort(),
       platforms: [...new Set(context.shops.map((shop) => shop.platform).filter(Boolean))].sort(),
+      salesChannels: [...new Set(metrics.map((row) => String(row.salesChannel || "").trim()).filter(Boolean))].sort(),
     },
     store: shopDailyReportStore.metadata(),
     importLog: shopDailyReportStore.listImportLog(10),
@@ -13537,6 +13540,7 @@ const server = http.createServer(async (req, res) => {
         projectGroup: url.searchParams.get("projectGroup") || "",
         country: url.searchParams.get("country") || "",
         platform: url.searchParams.get("platform") || "",
+        salesChannel: url.searchParams.get("salesChannel") || "",
         rows: url.searchParams.get("rows") ?? "1",
       }, auth, res.timing);
       res.timing?.time("serialize", () => {});
@@ -13912,6 +13916,14 @@ const server = http.createServer(async (req, res) => {
           country: String(row?.country || ""),
           platform: String(row?.platform || ""),
           currency: String(row?.currency || "").toUpperCase(),
+          salesChannel: String(row?.salesChannel || row?.evidence?.salesChannel || "").toUpperCase(),
+          purchaseChannel: String(row?.purchaseChannel || row?.evidence?.purchaseChannel || "").toUpperCase(),
+          timezone: String(row?.timezone || row?.evidence?.timezone || ""),
+          definitionVersion: String(row?.definitionVersion || row?.evidence?.definitionVersion || ""),
+          dataStatus: String(row?.dataStatus || row?.evidence?.dataStatus || "").toUpperCase(),
+          missingModules: Array.isArray(row?.missingModules)
+            ? row.missingModules
+            : Array.isArray(row?.evidence?.missingModules) ? row.evidence.missingModules : [],
           ...values,
         };
       }).filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date));

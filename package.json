@@ -62,6 +62,7 @@
     "test:miaoshou-sync-incremental": "node scripts/miaoshou-sync-incremental-test.mjs",
     "test:performance-partitions": "node scripts/performance-partitions-test.mjs",
     "test:shop-daily-report": "node scripts/shop-daily-report-test.mjs",
+    "test:tiktok-daily-report": "node scripts/tiktok-daily-report-test.mjs",
     "test:collector-center": "node scripts/collector-center-test.mjs",
     "test:collector-quality": "node scripts/collector-quality-test.mjs",
     "test:miaoshou-rule-schedule": "node scripts/miaoshou-rule-schedule-test.mjs",

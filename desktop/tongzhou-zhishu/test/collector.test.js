@@ -608,7 +608,8 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   assert.equal(plan[0].origin, "https://seller.shopee.co.id");
   assert.equal(plan[0].targets[0].shopKey, "k-sjj");
   const overview = collector.storeOverview();
-  assert.equal(overview.length, 2);
+  assert.equal(overview.length, 3);
+  assert.equal(overview.find((item) => item.storeId === "3").platform, "TikTok Shop");
   assert.equal(overview.find((item) => item.storeId === "2").targets[0].matched, false, "站点不同不自动对应");
 });
 

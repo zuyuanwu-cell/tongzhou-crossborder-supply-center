@@ -6,8 +6,9 @@
 // 2. 在下面的列表里登记。采集调度、校准、回写中台都无需改动。
 
 const shopee = require("./shopee");
+const tiktok = require("./tiktok");
 
-const PLATFORMS = [shopee];
+const PLATFORMS = [shopee, tiktok];
 
 function getPlatform(id) {
   return PLATFORMS.find((platform) => platform.id === id) || null;

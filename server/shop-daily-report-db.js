@@ -44,6 +44,7 @@ const COLUMN_BY_FIELD = Object.freeze({
   productCostCny: "product_cost_cny",
   operationFeeCny: "operation_fee_cny",
 });
+const LEGACY_METRIC_FIELDS = Object.freeze(Object.keys(COLUMN_BY_FIELD));
 
 function parseFieldSources(value) {
   try {
@@ -67,7 +68,49 @@ function metricFromDb(row) {
     updatedAt: text(row.updated_at),
     updatedBy: text(row.updated_by),
   };
-  for (const field of METRIC_FIELDS) metric[field] = nullable(row[COLUMN_BY_FIELD[field]]);
+  for (const [field, column] of Object.entries(COLUMN_BY_FIELD)) metric[field] = nullable(row[column]);
+  return metric;
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(text(value) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(text(value) || "[]");
+    return Array.isArray(parsed) ? parsed.map(text).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function metricFromChannelDb(row) {
+  const values = parseJsonObject(row.values_json);
+  const metric = {
+    shopKey: text(row.shop_key),
+    date: text(row.metric_date),
+    salesChannel: text(row.sales_channel) || "TIKTOK_SHOP",
+    shopName: text(row.shop_name),
+    country: text(row.country),
+    platform: text(row.platform),
+    currency: text(row.currency),
+    purchaseChannel: text(row.purchase_channel),
+    timezone: text(row.timezone),
+    definitionVersion: text(row.definition_version),
+    dataStatus: text(row.data_status) || "PARTIAL",
+    missingModules: parseJsonArray(row.missing_modules),
+    source: text(row.source),
+    fieldSources: parseFieldSources(row.field_sources),
+    updatedAt: text(row.updated_at),
+    updatedBy: text(row.updated_by),
+  };
+  for (const field of METRIC_FIELDS) metric[field] = nullable(values[field]);
   return metric;
 }
 
@@ -123,6 +166,27 @@ export async function initShopDailyReportStore(dbPath) {
       PRIMARY KEY (shop_key, metric_date)
     );
     CREATE INDEX IF NOT EXISTS idx_shop_daily_metrics_date ON shop_daily_metrics (metric_date);
+    CREATE TABLE IF NOT EXISTS shop_daily_channel_metrics (
+      shop_key TEXT NOT NULL,
+      metric_date TEXT NOT NULL,
+      sales_channel TEXT NOT NULL,
+      shop_name TEXT,
+      country TEXT,
+      platform TEXT,
+      currency TEXT,
+      purchase_channel TEXT,
+      timezone TEXT,
+      definition_version TEXT,
+      data_status TEXT,
+      missing_modules TEXT,
+      values_json TEXT NOT NULL,
+      source TEXT,
+      field_sources TEXT,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT,
+      PRIMARY KEY (shop_key, metric_date, sales_channel)
+    );
+    CREATE INDEX IF NOT EXISTS idx_shop_daily_channel_metrics_date ON shop_daily_channel_metrics (metric_date);
     CREATE TABLE IF NOT EXISTS shop_review_orders (
       id TEXT PRIMARY KEY,
       shop_key TEXT NOT NULL,
@@ -186,11 +250,23 @@ export async function initShopDailyReportStore(dbPath) {
   }
 
   function listMetrics({ dateFrom = "", dateTo = "" } = {}) {
-    return all(
+    const legacy = all(
       db,
-      "SELECT * FROM shop_daily_metrics WHERE (? = '' OR metric_date >= ?) AND (? = '' OR metric_date <= ?) ORDER BY metric_date DESC, shop_key",
+      `SELECT * FROM shop_daily_metrics legacy
+       WHERE (? = '' OR metric_date >= ?) AND (? = '' OR metric_date <= ?)
+         AND NOT EXISTS (
+           SELECT 1 FROM shop_daily_channel_metrics channel
+           WHERE channel.shop_key = legacy.shop_key AND channel.metric_date = legacy.metric_date
+         )
+       ORDER BY metric_date DESC, shop_key`,
       [dateFrom, dateFrom, dateTo, dateTo],
     ).map(metricFromDb);
+    const channels = all(
+      db,
+      "SELECT * FROM shop_daily_channel_metrics WHERE (? = '' OR metric_date >= ?) AND (? = '' OR metric_date <= ?) ORDER BY metric_date DESC, shop_key, sales_channel",
+      [dateFrom, dateFrom, dateTo, dateTo],
+    ).map(metricFromChannelDb);
+    return [...channels, ...legacy].sort((a, b) => b.date.localeCompare(a.date) || a.shopKey.localeCompare(b.shopKey));
   }
 
   /**
@@ -208,6 +284,48 @@ export async function initShopDailyReportStore(dbPath) {
         const shopKey = text(row.shopKey);
         const date = text(row.date);
         if (!shopKey || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+        // Keep historical/manual TikTok imports on the legacy daily table unless the
+        // collector explicitly identifies a sales channel.  Otherwise old rows that
+        // predate channel-aware collection would be reclassified as PARTIAL and vanish
+        // from the established complete-shop aggregates.
+        const isChannelMetric = Boolean(text(row.salesChannel));
+        if (isChannelMetric) {
+          const salesChannel = text(row.salesChannel).toUpperCase() || "TIKTOK_SHOP";
+          const existing = first(db, "SELECT * FROM shop_daily_channel_metrics WHERE shop_key = ? AND metric_date = ? AND sales_channel = ?", [shopKey, date, salesChannel]);
+          const previous = existing ? metricFromChannelDb(existing) : { fieldSources: {} };
+          const values = {};
+          const fieldSources = { ...(previous.fieldSources || {}) };
+          for (const field of METRIC_FIELDS) {
+            const incoming = nullable(row.values?.[field]);
+            const value = incoming === null ? nullable(previous[field]) : incoming;
+            if (value !== null) values[field] = value;
+            if (incoming !== null) fieldSources[field] = source;
+          }
+          db.run(
+            `INSERT OR REPLACE INTO shop_daily_channel_metrics (
+              shop_key, metric_date, sales_channel, shop_name, country, platform, currency,
+              purchase_channel, timezone, definition_version, data_status, missing_modules,
+              values_json, source, field_sources, updated_at, updated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              shopKey, date, salesChannel,
+              text(row.shopName) || text(previous.shopName),
+              text(row.country) || text(previous.country),
+              text(row.platform) || text(previous.platform) || "TikTok Shop",
+              text(row.currency).toUpperCase() || text(previous.currency),
+              text(row.purchaseChannel) || text(previous.purchaseChannel),
+              text(row.timezone) || text(previous.timezone),
+              text(row.definitionVersion) || text(previous.definitionVersion) || "tiktok-daily-v1",
+              text(row.dataStatus).toUpperCase() || text(previous.dataStatus) || "PARTIAL",
+              JSON.stringify(Array.isArray(row.missingModules) ? row.missingModules.map(text).filter(Boolean) : (previous.missingModules || [])),
+              JSON.stringify(values), source, JSON.stringify(fieldSources), now, updatedBy,
+            ],
+          );
+          written += 1;
+          if (!dateFrom || date < dateFrom) dateFrom = date;
+          if (!dateTo || date > dateTo) dateTo = date;
+          continue;
+        }
         const existing = first(db, "SELECT * FROM shop_daily_metrics WHERE shop_key = ? AND metric_date = ?", [shopKey, date]);
         const next = existing ? metricFromDb(existing) : { shopKey, date, fieldSources: {} };
         // 记录每个字段最后由谁写入：同一行的流量可能来自紫鸟，推广费来自人工导入。
@@ -233,7 +351,7 @@ export async function initShopDailyReportStore(dbPath) {
             text(row.country) || text(next.country),
             text(row.platform) || text(next.platform),
             text(row.currency).toUpperCase() || text(next.currency),
-            ...METRIC_FIELDS.map((field) => nullable(next[field])),
+            ...LEGACY_METRIC_FIELDS.map((field) => nullable(next[field])),
             source,
             JSON.stringify(fieldSources),
             now,
@@ -261,7 +379,9 @@ export async function initShopDailyReportStore(dbPath) {
 
   function deleteMetric(shopKey, date) {
     db.run("DELETE FROM shop_daily_metrics WHERE shop_key = ? AND metric_date = ?", [text(shopKey), text(date)]);
-    const changed = db.getRowsModified();
+    const legacyChanged = db.getRowsModified();
+    db.run("DELETE FROM shop_daily_channel_metrics WHERE shop_key = ? AND metric_date = ?", [text(shopKey), text(date)]);
+    const changed = legacyChanged + db.getRowsModified();
     if (changed) persist();
     return changed;
   }
@@ -339,10 +459,13 @@ export async function initShopDailyReportStore(dbPath) {
   }
 
   function metadata() {
+    const legacyMetricCount = Number(first(db, "SELECT COUNT(*) AS count FROM shop_daily_metrics")?.count) || 0;
+    const channelMetricCount = Number(first(db, "SELECT COUNT(*) AS count FROM shop_daily_channel_metrics")?.count) || 0;
     return {
-      metricCount: Number(first(db, "SELECT COUNT(*) AS count FROM shop_daily_metrics")?.count) || 0,
+      metricCount: legacyMetricCount + channelMetricCount,
+      channelMetricCount,
       reviewOrderCount: Number(first(db, "SELECT COUNT(*) AS count FROM shop_review_orders")?.count) || 0,
-      latestMetricDate: text(first(db, "SELECT MAX(metric_date) AS value FROM shop_daily_metrics")?.value),
+      latestMetricDate: text(first(db, "SELECT MAX(value) AS value FROM (SELECT MAX(metric_date) AS value FROM shop_daily_metrics UNION ALL SELECT MAX(metric_date) AS value FROM shop_daily_channel_metrics)")?.value),
       lastImport: listImportLog(1)[0] || null,
     };
   }

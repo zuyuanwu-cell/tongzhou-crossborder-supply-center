@@ -205,6 +205,9 @@ const METRIC_FIELDS = Object.freeze([
   "payAmount", "orderCount", "impressions", "visitors", "addToCart",
   "reviewAmount", "reviewReceived", "reviewCount",
   "adOnsite", "adOffsite", "productCostCny", "operationFeeCny",
+  "buyerCount", "sellerGmv", "affiliateGmv",
+  "productCardGmv", "videoGmv", "liveGmv", "unattributedGmv",
+  "adsCost", "adsGrossRevenue", "refundAmount", "cancelAmount", "stockOnHand",
 ]);
 
 export { METRIC_FIELDS };
@@ -219,6 +222,40 @@ function emptySums() {
     systemOrderCount: 0, systemSalesCny: 0,
     days: 0,
   };
+}
+
+const SNAPSHOT_METRIC_FIELDS = new Set(["stockOnHand"]);
+
+function mergeChannelMetrics(rows = []) {
+  const sourceRows = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!sourceRows.length) return {};
+  const firstRow = sourceRows[0];
+  const merged = {
+    ...firstRow,
+    salesChannel: sourceRows.length === 1 ? text(firstRow.salesChannel) : "ALL",
+    salesChannels: [...new Set(sourceRows.map((row) => text(row.salesChannel)).filter(Boolean))],
+    missingModules: [...new Set(sourceRows.flatMap((row) => Array.isArray(row.missingModules) ? row.missingModules : []))],
+    fieldSources: {},
+  };
+  for (const field of METRIC_FIELDS) {
+    const supplied = sourceRows.map((row) => nullableNumber(row[field])).filter((value) => value !== null);
+    merged[field] = supplied.length
+      ? SNAPSHOT_METRIC_FIELDS.has(field) ? Math.max(...supplied) : supplied.reduce((sum, value) => sum + value, 0)
+      : null;
+    for (const row of sourceRows) {
+      if (row.fieldSources?.[field]) merged.fieldSources[field] = row.fieldSources[field];
+    }
+  }
+  const statuses = sourceRows.map((row) => text(row.dataStatus).toUpperCase()).filter(Boolean);
+  merged.dataStatus = statuses.length
+    ? statuses.every((status) => status === "COMPLETE") ? "COMPLETE" : "PARTIAL"
+    : "";
+  if (sourceRows.length > 1 && nullableNumber(merged.buyerCount) !== null) {
+    merged.missingModules = [...new Set([...merged.missingModules, "buyer_dedup"])];
+    merged.dataStatus = "PARTIAL";
+  }
+  merged.updatedAt = sourceRows.map((row) => text(row.updatedAt)).sort().at(-1) || "";
+  return merged;
 }
 
 function addSums(target, row) {
@@ -304,7 +341,7 @@ export function buildShopDailyReport({
     const key = `${shopKey}\u0000${date}`;
     let current = cells.get(key);
     if (!current) {
-      current = { shopKey, date, system: null, metric: null, reviews: [] };
+      current = { shopKey, date, system: null, metrics: [], reviews: [] };
       cells.set(key, current);
     }
     return current;
@@ -341,7 +378,7 @@ export function buildShopDailyReport({
     const date = text(row.date);
     if (!shopKey || !inRange(date)) continue;
     ensureShop(shopKey, row);
-    cell(shopKey, date).metric = row;
+    cell(shopKey, date).metrics.push(row);
   }
   for (const row of Array.isArray(reviewOrders) ? reviewOrders : []) {
     const shopKey = text(row.shopKey);
@@ -355,6 +392,7 @@ export function buildShopDailyReport({
   const groupFilter = text(filters.projectGroup);
   const countryFilter = text(filters.country) ? normalizedCountryKey(filters.country) : "";
   const platformFilter = normalizedPlatform(filters.platform);
+  const salesChannelFilter = text(filters.salesChannel).toUpperCase();
 
   const rows = [];
   const quality = {
@@ -376,15 +414,25 @@ export function buildShopDailyReport({
     if (groupFilter && shop.projectGroup !== groupFilter) continue;
     if (countryFilter && shop.countryKey !== countryFilter) continue;
     if (platformFilter && normalizedPlatform(shop.platform) !== platformFilter) continue;
+    const matchingMetrics = salesChannelFilter
+      ? entry.metrics.filter((metricRow) => text(metricRow.salesChannel).toUpperCase() === salesChannelFilter)
+      : entry.metrics;
+    if (salesChannelFilter && !matchingMetrics.length) continue;
 
     const rule = resolveShopFeeRule(normalizedRules, shop);
-    const metric = entry.metric || {};
+    const metric = mergeChannelMetrics(matchingMetrics);
     const system = entry.system || {};
     const currency = text(metric.currency).toUpperCase() || text(system.currency).toUpperCase() || currencyForCountry(shop.country) || "CNY";
     const rateToCny = rule.fixedLocalPerCny > 0 ? 1 / rule.fixedLocalPerCny : marketRateToCny(rateLookup, currency, entry.date);
     const localPerCny = rateToCny > 0 ? 1 / rateToCny : 0;
     const toCny = (value) => (rateToCny > 0 ? number(value) * rateToCny : 0);
+    const nullableToCny = (value) => {
+      const numeric = nullableNumber(value);
+      return numeric === null || rateToCny <= 0 ? null : numeric * rateToCny;
+    };
     const flags = [];
+    const sourceMissingModules = Array.isArray(metric.missingModules) ? metric.missingModules : [];
+    if (text(metric.dataStatus).toUpperCase() === "PARTIAL" || sourceMissingModules.length) flags.push("source_partial");
     if (rateToCny <= 0) {
       flags.push("missing_rate");
       quality.rowsWithoutRate += 1;
@@ -497,6 +545,7 @@ export function buildShopDailyReport({
       "review_amount_missing",
       "review_received_missing",
       "missing_system_orders",
+      "source_partial",
     ].includes(flag)))];
     const dataStatus = incompleteReasons.length ? "incomplete" : "complete";
     quality[dataStatus === "complete" ? "completeRows" : "incompleteRows"] += 1;
@@ -561,6 +610,25 @@ export function buildShopDailyReport({
       operationFeeCny,
       platformFeeCny,
       profitCny,
+      salesChannel: text(metric.salesChannel),
+      salesChannels: Array.isArray(metric.salesChannels) ? metric.salesChannels : [],
+      purchaseChannel: text(metric.purchaseChannel),
+      timezone: text(metric.timezone),
+      definitionVersion: text(metric.definitionVersion),
+      sourceDataStatus: text(metric.dataStatus).toUpperCase(),
+      missingModules: sourceMissingModules,
+      buyerCount: nullableNumber(metric.buyerCount),
+      sellerGmvCny: nullableToCny(metric.sellerGmv),
+      affiliateGmvCny: nullableToCny(metric.affiliateGmv),
+      productCardGmvCny: nullableToCny(metric.productCardGmv),
+      videoGmvCny: nullableToCny(metric.videoGmv),
+      liveGmvCny: nullableToCny(metric.liveGmv),
+      unattributedGmvCny: nullableToCny(metric.unattributedGmv),
+      adsCostCny: nullableToCny(metric.adsCost),
+      adsGrossRevenueCny: nullableToCny(metric.adsGrossRevenue),
+      refundAmountCny: nullableToCny(metric.refundAmount),
+      cancelAmountCny: nullableToCny(metric.cancelAmount),
+      stockOnHand: nullableNumber(metric.stockOnHand),
       systemOrderCount: number(system.orderCount),
       systemSalesCny: number(system.salesCny),
       sources: {
@@ -627,9 +695,50 @@ export function buildShopDailyReport({
       reviewReceivedLocal: round(row.reviewReceivedLocal, 0),
     };
   });
+  const tiktokRows = publicRows.filter((row) => normalizedPlatform(row.platform) === "tiktok");
+  const sumTikTok = (field) => {
+    const supplied = tiktokRows.map((row) => nullableNumber(row[field])).filter((value) => value !== null);
+    return supplied.length ? round(supplied.reduce((sum, value) => sum + value, 0), 2) : null;
+  };
+  const latestStockByShop = new Map();
+  for (const row of [...tiktokRows].sort((left, right) => left.date.localeCompare(right.date))) {
+    const stock = nullableNumber(row.stockOnHand);
+    if (stock !== null) latestStockByShop.set(row.shopKey, stock);
+  }
+  const stockOnHand = latestStockByShop.size
+    ? round([...latestStockByShop.values()].reduce((sum, value) => sum + value, 0), 2)
+    : null;
+  const adsCostCny = sumTikTok("adsCostCny");
+  const adsGrossRevenueCny = sumTikTok("adsGrossRevenueCny");
+  const tiktok = {
+    available: tiktokRows.length > 0,
+    channels: [...new Set(tiktokRows.flatMap((row) => row.salesChannels?.length ? row.salesChannels : [row.salesChannel]).filter(Boolean))],
+    dataStatus: tiktokRows.length && tiktokRows.every((row) => row.sourceDataStatus === "COMPLETE" && !row.missingModules?.length) ? "COMPLETE" : "PARTIAL",
+    missingModules: [...new Set(tiktokRows.flatMap((row) => row.missingModules || []))],
+    business: {
+      gmvCny: sumTikTok("payCny"),
+      orders: sumTikTok("orderCount"),
+      buyers: sumTikTok("buyerCount"),
+      refundCny: sumTikTok("refundAmountCny"),
+      cancelCny: sumTikTok("cancelAmountCny"),
+      stockOnHand,
+    },
+    source: { sellerGmvCny: sumTikTok("sellerGmvCny"), affiliateGmvCny: sumTikTok("affiliateGmvCny") },
+    content: {
+      productCardGmvCny: sumTikTok("productCardGmvCny"),
+      videoGmvCny: sumTikTok("videoGmvCny"),
+      liveGmvCny: sumTikTok("liveGmvCny"),
+      unattributedGmvCny: sumTikTok("unattributedGmvCny"),
+    },
+    ads: {
+      costCny: adsCostCny,
+      grossRevenueCny: adsGrossRevenueCny,
+      roas: adsCostCny === null || adsGrossRevenueCny === null ? null : ratio(adsGrossRevenueCny, adsCostCny),
+    },
+  };
 
   return {
-    filters: { dateFrom, dateTo, shopKey: shopFilter, projectGroup: groupFilter, country: text(filters.country), platform: text(filters.platform) },
+    filters: { dateFrom, dateTo, shopKey: shopFilter, projectGroup: groupFilter, country: text(filters.country), platform: text(filters.platform), salesChannel: salesChannelFilter },
     rows: publicRows,
     shops: [...complete.shopSummaries.values()]
       .map((summary) => {
@@ -649,6 +758,7 @@ export function buildShopDailyReport({
     incompleteCurrencies: [...incomplete.currencies],
     quality,
     rules: normalizedRules,
+    tiktok,
   };
 }
 
@@ -675,6 +785,24 @@ const HEADER_ALIASES = [
   ["adOffsite", ["站外推广费", "站外推广", "adoffsite"]],
   ["productCostCny", ["产品成本", "productcost", "productcostcny"]],
   ["operationFeeCny", ["操作费", "operationfee", "operationfeecny"]],
+  ["salesChannel", ["销售渠道", "渠道", "saleschannel"]],
+  ["purchaseChannel", ["购买渠道", "purchasechannel"]],
+  ["timezone", ["时区", "timezone"]],
+  ["definitionVersion", ["口径版本", "定义版本", "definitionversion"]],
+  ["dataStatus", ["数据状态", "完整度", "datastatus"]],
+  ["missingModules", ["缺失模块", "missingmodules"]],
+  ["buyerCount", ["买家数", "买家人数", "buyers", "buyercount"]],
+  ["sellerGmv", ["商家自营gmv", "自营gmv", "sellergmv"]],
+  ["affiliateGmv", ["达人gmv", "联盟gmv", "affiliategmv"]],
+  ["productCardGmv", ["商品卡gmv", "productcardgmv"]],
+  ["videoGmv", ["短视频gmv", "videogmv"]],
+  ["liveGmv", ["直播gmv", "livegmv"]],
+  ["unattributedGmv", ["未归因gmv", "unattributedgmv"]],
+  ["adsCost", ["广告消耗", "广告成本", "adscost"]],
+  ["adsGrossRevenue", ["广告成交额", "广告归因收入", "adsgrossrevenue"]],
+  ["refundAmount", ["退款金额", "refundamount"]],
+  ["cancelAmount", ["取消金额", "cancelamount"]],
+  ["stockOnHand", ["期末库存", "可用库存", "stockonhand"]],
 ];
 
 function headerKey(value) {
@@ -829,6 +957,12 @@ export function parseShopDailyImport(content, { defaultYear = new Date().getFull
       country: text(record.country) || defaultCountry,
       platform: text(record.platform) || defaultPlatform,
       currency: text(record.currency).toUpperCase(),
+      salesChannel: text(record.salesChannel).toUpperCase(),
+      purchaseChannel: text(record.purchaseChannel).toUpperCase(),
+      timezone: text(record.timezone),
+      definitionVersion: text(record.definitionVersion),
+      dataStatus: text(record.dataStatus).toUpperCase(),
+      missingModules: text(record.missingModules).split(/[|,，、]/u).map(text).filter(Boolean),
       ...values,
     });
   }
@@ -915,6 +1049,12 @@ export function prepareShopDailyMetrics(parsedRows = [], shops = []) {
       platform: result.shop.platform,
       date: row.date,
       currency: row.currency || "",
+      salesChannel: text(row.salesChannel).toUpperCase(),
+      purchaseChannel: text(row.purchaseChannel).toUpperCase(),
+      timezone: text(row.timezone),
+      definitionVersion: text(row.definitionVersion),
+      dataStatus: text(row.dataStatus).toUpperCase(),
+      missingModules: Array.isArray(row.missingModules) ? row.missingModules : [],
       standalone: result.status === "standalone",
       values,
       lines: row.line ? [row.line] : [],
@@ -926,7 +1066,7 @@ export function prepareShopDailyMetrics(parsedRows = [], shops = []) {
   // 同一店铺同一天出现多次时，以最后一行为准。
   const merged = new Map();
   for (const row of prepared) {
-    const key = `${row.shopKey}\u0000${row.date}`;
+    const key = `${row.shopKey}\u0000${row.date}\u0000${text(row.salesChannel).toUpperCase()}`;
     const current = merged.get(key);
     merged.set(key, current ? { ...current, ...row, values: { ...current.values, ...row.values }, lines: [...(current.lines || []), ...(row.lines || [])] } : row);
   }

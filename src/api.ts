@@ -7473,6 +7473,18 @@ export type ShopDailyMetrics = {
   conversionRate: number | null;
   aovCny: number | null;
   aovLocal: number | null;
+  buyerCount?: number | null;
+  sellerGmvCny?: number | null;
+  affiliateGmvCny?: number | null;
+  productCardGmvCny?: number | null;
+  videoGmvCny?: number | null;
+  liveGmvCny?: number | null;
+  unattributedGmvCny?: number | null;
+  adsCostCny?: number | null;
+  adsGrossRevenueCny?: number | null;
+  refundAmountCny?: number | null;
+  cancelAmountCny?: number | null;
+  stockOnHand?: number | null;
   days?: number;
 };
 
@@ -7482,6 +7494,13 @@ export type ShopDailyRow = ShopDailyMetrics & {
   shopName: string;
   country: string;
   platform: string;
+  salesChannel?: string;
+  salesChannels?: string[];
+  purchaseChannel?: string;
+  timezone?: string;
+  definitionVersion?: string;
+  sourceDataStatus?: "COMPLETE" | "PARTIAL" | string;
+  missingModules?: string[];
   projectGroup: string;
   currency: string;
   localPerCny: number;
@@ -7563,7 +7582,7 @@ export type ShopDailyReportPayload = {
   dataVersion: string;
   materializationStale: boolean;
   permissions: { view: boolean; edit: boolean; cost: boolean; profit: boolean; manageRules: boolean };
-  filters: { dateFrom: string; dateTo: string; shopKey: string; projectGroup: string; country: string; platform: string };
+  filters: { dateFrom: string; dateTo: string; shopKey: string; projectGroup: string; country: string; platform: string; salesChannel?: string };
   totals: ShopDailyMetrics & { days: number };
   incompleteTotals: ShopDailyMetrics & { days: number };
   shops: ShopDailyShopSummary[];
@@ -7588,9 +7607,31 @@ export type ShopDailyReportPayload = {
     incompleteRows: number;
     incompleteByReason: Record<string, number>;
   };
+  tiktok?: {
+    available: boolean;
+    channels: string[];
+    dataStatus: "COMPLETE" | "PARTIAL" | string;
+    missingModules: string[];
+    business: {
+      gmvCny: number | null;
+      orders: number | null;
+      buyers: number | null;
+      refundCny: number | null;
+      cancelCny: number | null;
+      stockOnHand: number | null;
+    };
+    source: { sellerGmvCny: number | null; affiliateGmvCny: number | null };
+    content: {
+      productCardGmvCny: number | null;
+      videoGmvCny: number | null;
+      liveGmvCny: number | null;
+      unattributedGmvCny: number | null;
+    };
+    ads: { costCny: number | null; grossRevenueCny: number | null; roas: number | null };
+  };
   rules: ShopFeeRule[];
   reviewOrders: ShopReviewOrder[];
-  options: { shops: ShopDailyShopOption[]; projectGroups: string[]; countries: string[]; platforms: string[] };
+  options: { shops: ShopDailyShopOption[]; projectGroups: string[]; countries: string[]; platforms: string[]; salesChannels?: string[] };
   store: { metricCount: number; reviewOrderCount: number; latestMetricDate: string; lastImport: ShopDailyImportLog | null };
   importLog: ShopDailyImportLog[];
   ingestConfigured: boolean;
@@ -7662,7 +7703,7 @@ export type ShopDailyImportResult = {
   written?: number;
 };
 
-export function fetchShopDailyReport(input: { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string } = {}, signal?: AbortSignal, options: { rows?: boolean } = {}) {
+export function fetchShopDailyReport(input: { dateFrom?: string; dateTo?: string; shopKey?: string; projectGroup?: string; country?: string; platform?: string; salesChannel?: string } = {}, signal?: AbortSignal, options: { rows?: boolean } = {}) {
   const params = new URLSearchParams();
   Object.entries(input).forEach(([key, value]) => {
     if (value) params.set(key, value);

@@ -556,6 +556,14 @@ class Collector {
         skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "没有可用的采集模板" });
         continue;
       }
+      if (template.requiresCalibration) {
+        skipped.push({
+          storeId: store.storeId,
+          storeName: store.storeName,
+          reason: "TikTok 采集模板需要先在模板校准中采样真实店铺接口，未校准前不会写入 0 值。",
+        });
+        continue;
+      }
       const { site } = platform.storeSite(store);
       const origin = this.storeOrigin(store, platform, settings);
       let targets = (settings.targets || []).filter((target) => target.enabled !== false && (target.shopName || target.shopKey));
@@ -670,6 +678,21 @@ class Collector {
           if (missing.length) issues.push({ level: "warn", storeName: store.storeName, shopName: target.shopName, date, message: `缺少字段：${missing.join("、")}` });
           const endpoints = {};
           for (const endpoint of template.endpoints) endpoints[endpoint.id] = evidenceEndpoint(endpoint, responses[endpoint.id]);
+          const salesChannel = String(target.salesChannel || template.salesChannel || platform.defaultSalesChannel?.(target.country) || "").trim().toUpperCase();
+          const metadataMissing = [
+            ...missing,
+            ...notReadyFields,
+            ...(platform.id === "tiktok" && (!salesChannel || salesChannel === "UNSPECIFIED") ? ["sales_channel"] : []),
+          ];
+          const dataStatus = metadataMissing.length ? "PARTIAL" : "COMPLETE";
+          const channelMetadata = platform.id === "tiktok" ? {
+            salesChannel,
+            purchaseChannel: String(target.purchaseChannel || salesChannel || "").trim().toUpperCase(),
+            timezone: platform.siteTimezones?.[target.country] || info?.timezone || "",
+            definitionVersion: "tiktok-daily-v1",
+            dataStatus,
+            missingModules: [...new Set(metadataMissing)],
+          } : {};
           rows.push({
             date,
             shopKey: target.shopKey || undefined,
@@ -677,6 +700,7 @@ class Collector {
             country: info?.name || target.country,
             platform: platform.name,
             currency: target.currency || info?.currency || "",
+            ...channelMetadata,
             ...values,
             _store: store.storeName,
             evidence: {
