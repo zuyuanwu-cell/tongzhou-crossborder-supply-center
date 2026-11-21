@@ -12,9 +12,16 @@ const http = require("node:http");
 const { spawn } = require("node:child_process");
 const { deflateRawSync } = require("node:zlib");
 
-const { ZiniaoCli, findMarkedString, decodeMarked, parseJsonLoose } = require("../core/ziniao");
+const {
+  ZiniaoCli,
+  findMarkedString,
+  decodeMarked,
+  parseJsonLoose,
+  estimateCommandLineUnits,
+  MAX_WINDOWS_COMMAND_LINE_UNITS,
+} = require("../core/ziniao");
 const { ConfigStore } = require("../core/config");
-const { Collector, defaultDates, businessError } = require("../core/collector");
+const { Collector, defaultDates, businessError, buildReplayBatches, isCommandLineTooLong } = require("../core/collector");
 const { ZhongtaiClient } = require("../core/zhongtai");
 const { templatizeRequest, readPath, extractMetrics, placeholderValues, fill } = require("../core/recipe");
 const { dayRange, siteToday, dateList } = require("../core/sites");
@@ -178,6 +185,122 @@ test("工具函数：日期、时区、取值、占位符", () => {
   assert.equal(businessError({ code: 0, data: {} }), "");
   assert.equal(businessError({ code: 401, message: "need login" }), "need login");
   assert.equal(businessError({ error: 0 }), "");
+});
+
+test("采集拆批：保持接口顺序并限制单批请求数", () => {
+  const requests = Array.from({ length: 31 }, (_, index) => ({
+    key: `batch-${index}`,
+    method: "GET",
+    url: `https://seller.shopee.test/api/metric?shop=${index}`,
+    headers: {},
+  }));
+  const batches = buildReplayBatches(requests, { maxRequests: 5, maxScriptChars: 12000 });
+  assert.equal(batches.length, 7);
+  assert.ok(batches.every((batch) => batch.length <= 5));
+  assert.deepEqual(batches.flat().map((item) => item.key), requests.map((item) => item.key));
+});
+
+test("采集拆批：中间批失败只重试当前批并保留前序结果", async () => {
+  const requests = Array.from({ length: 6 }, (_, index) => ({
+    key: `retry-${index}`,
+    method: "GET",
+    url: `https://seller.shopee.test/api/metric?shop=${index}`,
+    headers: {},
+  }));
+  const calls = [];
+  let failedOnce = false;
+  const cli = {
+    async runInPage(_storeId, body) {
+      const keys = requests.filter((item) => body.includes(`\"${item.key}\"`)).map((item) => item.key);
+      calls.push(keys);
+      if (keys.includes("retry-2") && !failedOnce) {
+        failedOnce = true;
+        const error = new Error("temporary timeout");
+        error.code = "TIMEOUT";
+        throw error;
+      }
+      return { results: Object.fromEntries(keys.map((key) => [key, { ok: true, text: "{}" }])) };
+    },
+  };
+  const collector = new Collector({
+    cli,
+    store: { get: () => ({ ziniao: { retryPerStore: 1 } }) },
+    waits: { retry: 0 },
+  });
+  collector.ensurePage = async () => null;
+  const replay = await collector.runReplayBatches({
+    storeId: "store-1",
+    storeName: "测试店铺",
+    requests,
+    platform: {},
+    page: "https://seller.shopee.test/",
+    timeoutMs: 1000,
+    maxRequests: 2,
+    maxScriptChars: 12000,
+  });
+  assert.deepEqual(Object.keys(replay.results), requests.map((item) => item.key));
+  assert.deepEqual(calls, [
+    ["retry-0", "retry-1"],
+    ["retry-2", "retry-3"],
+    ["retry-2", "retry-3"],
+    ["retry-4", "retry-5"],
+  ]);
+});
+
+test("采集拆批：命令行过长时自动二分到可执行批次", async () => {
+  const requests = Array.from({ length: 4 }, (_, index) => ({
+    key: `split-${index}`,
+    method: "GET",
+    url: `https://seller.shopee.test/api/metric?shop=${index}`,
+    headers: {},
+  }));
+  const calls = [];
+  const collector = new Collector({
+    cli: {
+      async runInPage(_storeId, body) {
+        const keys = requests.filter((item) => body.includes(`\"${item.key}\"`)).map((item) => item.key);
+        calls.push(keys);
+        if (keys.length > 1) {
+          const error = new Error("spawn ENAMETOOLONG");
+          error.code = "ENAMETOOLONG";
+          throw error;
+        }
+        return { results: { [keys[0]]: { ok: true, text: "{}" } } };
+      },
+    },
+    store: { get: () => ({ ziniao: { retryPerStore: 0 } }) },
+  });
+  const replay = await collector.runReplayBatches({
+    storeId: "store-1",
+    storeName: "测试店铺",
+    requests,
+    platform: {},
+    page: "https://seller.shopee.test/",
+    timeoutMs: 1000,
+    maxRequests: 4,
+    maxScriptChars: 12000,
+  });
+  assert.deepEqual(Object.keys(replay.results), requests.map((item) => item.key));
+  assert.ok(calls.some((keys) => keys.length > 1));
+  assert.equal(calls.filter((keys) => keys.length === 1).length, 4);
+  assert.equal(isCommandLineTooLong(Object.assign(new Error("spawn ENAMETOOLONG"), { code: "ENAMETOOLONG" })), true);
+});
+
+test("紫鸟 CLI：超出 Windows 安全长度时在启动进程前拒绝", async () => {
+  let spawnCount = 0;
+  const cli = new ZiniaoCli({
+    cliPath: process.execPath,
+    spawnImpl: () => {
+      spawnCount += 1;
+      throw new Error("不应启动进程");
+    },
+  });
+  const args = ["page", "exec", "--script", "x".repeat(20000)];
+  assert.ok(estimateCommandLineUnits(process.execPath, args) > MAX_WINDOWS_COMMAND_LINE_UNITS);
+  if (process.platform === "win32") {
+    await assert.rejects(cli.runRaw(args), (error) => error.code === "COMMAND_LINE_TOO_LONG");
+    assert.equal(spawnCount, 0);
+  }
 });
 
 test("Shopee 官方订单导表：订单去重，支付销售额只减卖家券并保留买家实付", () => {
