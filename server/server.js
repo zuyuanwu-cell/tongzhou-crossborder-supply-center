@@ -6065,6 +6065,7 @@ function queuePerformanceAnalyticsRefresh(reason = "data-change") {
       await warmPerformanceAnalyticsMaterialization({ throwOnError: true });
     })
     .catch((error) => console.error(`[performance] queued refresh failed (${reason})`, error));
+  return performanceAnalyticsRefreshQueue;
 }
 
 function refreshPerformanceAnalyticsShopDirectoryCache(updatedDirectory) {
@@ -14444,7 +14445,7 @@ const server = http.createServer(async (req, res) => {
       });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       refreshPerformanceAnalyticsShopDirectoryCache(updatedDirectory);
-      queuePerformanceAnalyticsRefresh("shop-directory-project-group");
+      await queuePerformanceAnalyticsRefresh("shop-directory-project-group");
       sendJson(res, 200, {
         ok: true,
         updatedCount: shopKeys.length,
@@ -14488,7 +14489,7 @@ const server = http.createServer(async (req, res) => {
       });
       const directory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       clearPerformanceAnalyticsResponseCache();
-      queuePerformanceAnalyticsRefresh("shop-directory-project-group-teams");
+      await queuePerformanceAnalyticsRefresh("shop-directory-project-group-teams");
       sendJson(res, 200, { ok: true, shopDirectory: publicShopDirectory(directory, auth) });
       return;
     }
@@ -14662,7 +14663,7 @@ const server = http.createServer(async (req, res) => {
       appendActionLog(auth, "导入店铺归属", "shop_directory", `${updates.length} 个店铺`, { shopCount: updates.length });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
       refreshPerformanceAnalyticsShopDirectoryCache(updatedDirectory);
-      queuePerformanceAnalyticsRefresh("shop-directory-import");
+      await queuePerformanceAnalyticsRefresh("shop-directory-import");
       sendJson(res, 200, {
         ok: true,
         importedCount: updates.length,
