@@ -15,6 +15,12 @@ const crypto = require("node:crypto");
 const IS_WIN = process.platform === "win32";
 const CLI_VERSION = "1.2.0";
 const DOWNLOAD_BASE = "https://ziniao-open-prod.s3.cn-northwest-1.amazonaws.com.cn/ziniao-cli/releases";
+const MAX_WINDOWS_COMMAND_LINE_UNITS = 30000;
+
+function estimateCommandLineUnits(bin, args = []) {
+  // Windows CreateProcess 的命令行是 UTF-16；这里按最保守的引号与转义开销预估。
+  return [bin, ...args].reduce((total, value) => total + (String(value).length * 2) + 3, 0);
+}
 
 class ZiniaoError extends Error {
   constructor(message, { type = "unknown", code = "", hint = "", stdout = "", stderr = "", args = [] } = {}) {
@@ -166,6 +172,13 @@ class ZiniaoCli {
     const bin = this.path;
     if (!bin) {
       return Promise.reject(new ZiniaoError("没有找到紫鸟 CLI（ziniao-cli.exe）。请在「设置」里一键安装或指定路径。", { type: "setup", code: "CLI_NOT_FOUND" }));
+    }
+    const commandUnits = estimateCommandLineUnits(bin, args);
+    if (IS_WIN && commandUnits > MAX_WINDOWS_COMMAND_LINE_UNITS) {
+      return Promise.reject(new ZiniaoError(
+        `紫鸟 CLI 参数过长（预计 ${commandUnits}，安全上限 ${MAX_WINDOWS_COMMAND_LINE_UNITS}），采集任务需要拆成更小批次。`,
+        { type: "exec", code: "COMMAND_LINE_TOO_LONG", args: args.slice(0, 2) },
+      ));
     }
     return new Promise((resolve, reject) => {
       const child = this.spawnImpl(bin, args, {
@@ -493,4 +506,17 @@ async function installCli({ dataDir, version = CLI_VERSION, log = () => {}, fetc
   return target;
 }
 
-module.exports = { ZiniaoCli, ZiniaoError, locateCli, candidatePaths, installCli, parseJsonLoose, findMarkedString, decodeMarked, isSocksError, CLI_VERSION };
+module.exports = {
+  ZiniaoCli,
+  ZiniaoError,
+  locateCli,
+  candidatePaths,
+  installCli,
+  parseJsonLoose,
+  findMarkedString,
+  decodeMarked,
+  isSocksError,
+  estimateCommandLineUnits,
+  MAX_WINDOWS_COMMAND_LINE_UNITS,
+  CLI_VERSION,
+};

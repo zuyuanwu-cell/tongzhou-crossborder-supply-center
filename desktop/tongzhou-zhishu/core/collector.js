@@ -22,6 +22,53 @@ function parseJson(textValue) {
   }
 }
 
+const DEFAULT_REPLAY_BATCH_REQUESTS = 12;
+const DEFAULT_REPLAY_SCRIPT_CHARS = 12000;
+
+function isCommandLineTooLong(error) {
+  const code = String(error?.code || error?.cause?.code || "").toUpperCase();
+  const message = String(error?.message || "");
+  return ["ENAMETOOLONG", "E2BIG", "COMMAND_LINE_TOO_LONG"].includes(code)
+    || /ENAMETOOLONG|E2BIG|command line.{0,30}(too long|过长)|参数.{0,20}过长/i.test(message);
+}
+
+function replayRequestTooLarge(request, scriptLength, maxScriptChars) {
+  const error = new Error(`单个采集接口脚本过长（${scriptLength} 字符，上限 ${maxScriptChars}），请检查采集模板`);
+  error.code = "REPLAY_REQUEST_TOO_LARGE";
+  error.requestKey = request?.key || "";
+  error.retryable = false;
+  return error;
+}
+
+/**
+ * 页面重放脚本最终会作为 Windows 命令行参数交给紫鸟 CLI。
+ * 同时限制接口数量和脚本字符数，避免还没进入店铺页面就触发 ENAMETOOLONG。
+ */
+function buildReplayBatches(requests, {
+  maxRequests = DEFAULT_REPLAY_BATCH_REQUESTS,
+  maxScriptChars = DEFAULT_REPLAY_SCRIPT_CHARS,
+} = {}) {
+  const batches = [];
+  let current = [];
+  for (const request of requests || []) {
+    const candidate = [...current, request];
+    const candidateLength = replayBody(candidate).length;
+    if (current.length && (candidate.length > maxRequests || candidateLength > maxScriptChars)) {
+      batches.push(current);
+      current = [request];
+      const singleLength = replayBody(current).length;
+      if (singleLength > maxScriptChars) throw replayRequestTooLarge(request, singleLength, maxScriptChars);
+    } else {
+      current = candidate;
+      if (current.length === 1 && candidateLength > maxScriptChars) {
+        throw replayRequestTooLarge(request, candidateLength, maxScriptChars);
+      }
+    }
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
 /** 平台接口常见的「HTTP 200 但业务失败」结构。 */
 function businessError(json) {
   if (!json || typeof json !== "object") return "";
@@ -110,6 +157,77 @@ class Collector {
       throw error;
     }
     return info;
+  }
+
+  async runReplayBatches({
+    storeId,
+    storeName,
+    requests,
+    platform,
+    page,
+    timeoutMs,
+    onProgress = () => {},
+    maxRequests = DEFAULT_REPLAY_BATCH_REQUESTS,
+    maxScriptChars = DEFAULT_REPLAY_SCRIPT_CHARS,
+  }) {
+    const queue = buildReplayBatches(requests, { maxRequests, maxScriptChars });
+    const results = {};
+    let replayMeta = {};
+    let completedRequests = 0;
+    const retryPerBatch = Math.max(0, Number(this.config().ziniao?.retryPerStore) || 0);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      if (this.cancelRequested) {
+        const error = new Error("采集已取消");
+        error.code = "CANCELLED";
+        error.retryable = false;
+        error.batchCheckpointed = true;
+        throw error;
+      }
+      const batch = queue[index];
+      onProgress({
+        storeId,
+        phase: "fetch",
+        message: `${storeName}：读取第 ${index + 1}/${queue.length} 批（${batch.length} 个接口，已完成 ${completedRequests}/${requests.length}）`,
+      });
+
+      let replay = null;
+      let lastError = null;
+      for (let attempt = 0; attempt <= retryPerBatch && !replay; attempt += 1) {
+        try {
+          replay = await this.cli.runInPage(storeId, replayBody(batch), { timeoutMs });
+        } catch (error) {
+          lastError = error;
+          if (isCommandLineTooLong(error) || ["NOT_LOGGED_IN", "CAPTCHA", "CANCELLED"].includes(error.code)) break;
+          this.log("warn", `${storeName} 第 ${index + 1} 批第 ${attempt + 1} 次失败：${error.message}`);
+          if (attempt < retryPerBatch) {
+            await this.ensurePage(storeId, platform, page).catch(() => null);
+            await sleep(this.waits.retry);
+          }
+        }
+      }
+
+      if (!replay && isCommandLineTooLong(lastError) && batch.length > 1) {
+        const middle = Math.ceil(batch.length / 2);
+        queue.splice(index, 1, batch.slice(0, middle), batch.slice(middle));
+        index -= 1;
+        this.log("warn", `${storeName} 第 ${index + 2} 批命令仍过长，已自动拆成更小批次`);
+        continue;
+      }
+      if (!replay) {
+        const error = lastError || new Error("页面批次采集失败");
+        error.message = `${storeName} 第 ${index + 1}/${queue.length} 批采集失败（前 ${completedRequests} 个接口已完成）：${error.message}`;
+        error.batchCheckpointed = true;
+        error.retryable = false;
+        throw error;
+      }
+
+      replayMeta = { ...replayMeta, ...replay };
+      delete replayMeta.results;
+      Object.assign(results, replay.results || {});
+      completedRequests += batch.length;
+    }
+    return { ...replayMeta, results };
   }
 
   // -------------------------------------------------------------------------
@@ -393,7 +511,15 @@ class Collector {
       if (platform.identityRequests) requests.push(...platform.identityRequests(origin));
       onProgress({ storeId: store.storeId, phase: "fetch", message: `${store.storeName}：读取 ${requests.length} 个数据接口` });
       const timeoutMs = Math.max(60, Number(storeTimeoutSec) || 240) * 1000;
-      const replay = await this.cli.runInPage(store.storeId, replayBody(requests), { timeoutMs });
+      const replay = await this.runReplayBatches({
+        storeId: store.storeId,
+        storeName: store.storeName,
+        requests,
+        platform,
+        page,
+        timeoutMs,
+        onProgress,
+      });
       // 记住店铺身份；自动对应没对上的，用 Shopee 登录名 / 店铺名再对一次。
       const identity = platform.parseIdentity ? platform.parseIdentity(replay.results) : null;
       if (identity) {
@@ -597,7 +723,7 @@ class Collector {
           } catch (error) {
             lastError = error;
             this.log("warn", `${item.store.storeName} 第 ${attempt} 次采集失败：${error.message}`);
-            if (["NOT_LOGGED_IN", "CAPTCHA"].includes(error.code)) break;
+            if (["NOT_LOGGED_IN", "CAPTCHA"].includes(error.code) || error.retryable === false || error.batchCheckpointed) break;
             if (attempt < attempts) await sleep(this.waits.retry);
           }
         }
@@ -672,4 +798,13 @@ class Collector {
   }
 }
 
-module.exports = { Collector, defaultDates, businessError, METRIC_KEYS };
+module.exports = {
+  Collector,
+  defaultDates,
+  businessError,
+  buildReplayBatches,
+  isCommandLineTooLong,
+  DEFAULT_REPLAY_BATCH_REQUESTS,
+  DEFAULT_REPLAY_SCRIPT_CHARS,
+  METRIC_KEYS,
+};
