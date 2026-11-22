@@ -3,7 +3,7 @@
 // 采集模板（recipe）：把一次「探测」抓到的平台接口请求变成可按日期重放的模板，
 // 并用 JSON 路径把返回值映射到中台店铺日报字段。模板与平台无关，各平台适配器复用。
 
-const { dayRange } = require("./sites");
+const { addDays, dayRange, siteInfo } = require("./sites");
 
 /** 中台 /api/shop-daily-report/ingest 接受的指标字段。 */
 const METRIC_FIELDS = Object.freeze([
@@ -23,6 +23,8 @@ const METRIC_KEYS = METRIC_FIELDS.map((field) => field.key);
 
 function placeholderValues({ date, site, shopId = "", origin = "" }) {
   const { start, end } = dayRange(date, site);
+  const normalizedSite = String(site || "").trim().toUpperCase();
+  const tokopedia = normalizedSite === "ID";
   return {
     origin: String(origin || ""),
     startTs: String(start),
@@ -32,6 +34,24 @@ function placeholderValues({ date, site, shopId = "", origin = "" }) {
     endMs: String(end * 1000 + 999),
     date,
     dateCompact: date.replace(/-/g, ""),
+    compareDate: addDays(date, -1),
+    timezoneOffset: String((siteInfo(normalizedSite)?.offset ?? 8) * 60),
+    statsPath: tokopedia
+      ? "/api/v2/insights/seller/unified/query/toko_overview_stats"
+      : "/api/v2/insights/seller/unified/query/us_overview_stats",
+    statsMetrics: JSON.stringify(tokopedia
+      ? [
+          { metric_id: 6189, metric_type: 201 },
+          { metric_id: 6187, metric_type: 1 },
+          { metric_id: 6196, metric_type: 1 },
+          { metric_id: 6198, metric_type: 1 },
+        ]
+      : [
+          { metric_id: 4024, metric_type: 201 },
+          { metric_id: 4031, metric_type: 1 },
+          { metric_id: 6068, metric_type: 1 },
+          { metric_id: 6070, metric_type: 1 },
+        ]),
     shopId: String(shopId || ""),
   };
 }
@@ -352,7 +372,7 @@ function validateTemplate(template) {
   const ids = new Set((template.endpoints || []).map((endpoint) => endpoint.id));
   for (const endpoint of template.endpoints || []) {
     if (!endpoint.id) problems.push("有接口缺少 ID");
-    if (!/^(https:\/\/|\{origin\}\/)/.test(endpoint.url || "")) problems.push(`接口 ${endpoint.id} 地址无效`);
+    if (!/^(https:\/\/|\{origin\})/.test(endpoint.url || "")) problems.push(`接口 ${endpoint.id} 地址无效`);
     const usesDate = /\{(startTs|endTs|startMs|endMs|date|dateCompact|endTsNext)\}/.test(`${endpoint.url} ${endpoint.body || ""}`);
     if (!usesDate) problems.push(`接口 ${endpoint.label || endpoint.id} 没有日期参数，只能取到页面当前显示的日期`);
   }

@@ -46,25 +46,59 @@ function checkPage(info = {}) {
   return { ok: false, code: "WRONG_PAGE", message: "当前页面不是 TikTok Shop 卖家中心。" };
 }
 
-function calibrationTemplate() {
+function calibratedTemplate() {
   return {
-    id: "builtin:tiktok-calibration",
+    id: "builtin:tiktok-daily-v1",
     platform: "tiktok",
-    name: "TikTok 三国采集模板（待校准）",
-    version: 1,
+    name: "TikTok 三国店铺日报（官方概览）",
+    version: 2,
     builtin: true,
-    requiresCalibration: true,
-    endpoints: [],
-    metrics: {},
+    endpoints: [{
+      id: "overview",
+      label: "店铺概览",
+      method: "POST",
+      url: "{origin}{statsPath}",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query_condition: [{
+          query_time: { start: "{date}", end: "{date}", timezone_offset: "@@{timezoneOffset}@@" },
+          compare_to_time: { start: "{compareDate}", end: "{compareDate}" },
+          metrics: "@@{statsMetrics}@@",
+          date_completion: { enabled: true, granularity: 0 },
+          where_filter: { ready_time: { value_list: ["{date}"] } },
+          group_by: [],
+        }],
+      })
+        .replace('"@@{timezoneOffset}@@"', "{timezoneOffset}")
+        .replace('"@@{statsMetrics}@@"', "{statsMetrics}"),
+    }],
+    metrics: {
+      payAmount: { parts: [
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.4024", optional: true },
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.6189", optional: true },
+      ] },
+      orderCount: { parts: [
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.4031", optional: true },
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.6187", optional: true },
+      ] },
+      impressions: { parts: [
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.6068", optional: true },
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.6196", optional: true },
+      ] },
+      visitors: { parts: [
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.6070", optional: true },
+        { endpoint: "overview", path: "data[0].intervals[0].rows[0].values.6198", optional: true },
+      ] },
+    },
     notes: [
-      "首次使用请在模板校准页采样真实店铺接口。",
-      "未校准前不会把缺失字段写成 0，避免污染店铺日报。",
-      "印尼 TikTok Shop 与 Tokopedia 必须保留 salesChannel 后再汇总。",
+      "内置模板已按印尼、马来西亚、越南真实卖家中心概览接口完成只读校准。",
+      "接口缺失的字段保持缺失，不会写成 0，避免污染店铺日报。",
+      "印尼 TikTok Shop 与 Tokopedia 继续分别保留 salesChannel 后再汇总。",
     ],
   };
 }
 
-function builtinTemplates() { return [calibrationTemplate()]; }
+function builtinTemplates() { return [calibratedTemplate()]; }
 
 function blankTemplate({ name = "TikTok 自定义采集模板" } = {}) {
   return {
@@ -93,7 +127,7 @@ module.exports = {
   blankTemplate,
   identityRequests: () => [],
   parseIdentity: () => null,
-  defaultTemplateId: "builtin:tiktok-calibration",
+  defaultTemplateId: "builtin:tiktok-daily-v1",
   shopIdHint: "TikTok Shop 店铺 ID / Tokopedia 店铺 ID",
   pageCheck: { path: "/compass/overview" },
   siteTimezones: Object.freeze({ ID: "Asia/Jakarta", MY: "Asia/Kuala_Lumpur", VN: "Asia/Ho_Chi_Minh" }),

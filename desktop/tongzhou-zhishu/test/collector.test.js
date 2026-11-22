@@ -604,9 +604,13 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   });
   const collector = new Collector({ cli: {}, store, zhongtaiFactory: () => null });
   const { plan } = collector.plan();
-  assert.equal(plan.length, 1);
-  assert.equal(plan[0].origin, "https://seller.shopee.co.id");
-  assert.equal(plan[0].targets[0].shopKey, "k-sjj");
+  assert.equal(plan.length, 2);
+  const shopeePlan = plan.find((item) => item.platform.id === "shopee");
+  const tiktokPlan = plan.find((item) => item.platform.id === "tiktok");
+  assert.equal(shopeePlan.origin, "https://seller.shopee.co.id");
+  assert.equal(shopeePlan.targets[0].shopKey, "k-sjj");
+  assert.equal(tiktokPlan.origin, "https://seller-id.tiktok.com");
+  assert.equal(tiktokPlan.template.id, "builtin:tiktok-daily-v1");
   const overview = collector.storeOverview();
   assert.equal(overview.length, 3);
   assert.equal(overview.find((item) => item.storeId === "3").platform, "TikTok Shop");
