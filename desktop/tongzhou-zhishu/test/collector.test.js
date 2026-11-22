@@ -569,6 +569,7 @@ test("取值：缺字段与比例换算", () => {
 
 test("零配置：识别站点、内置模板取值、自动对应中台店铺", () => {
   const shopee = require("../core/platforms/shopee");
+  const tiktok = require("../core/platforms/tiktok");
   assert.deepEqual(shopee.storeSite({ platformName: "Shopee-印尼-本土" }), { site: "ID", sellerCenter: "ID" });
   assert.deepEqual(shopee.storeSite({ platformName: "Shopee-马来西亚-本土" }), { site: "MY", sellerCenter: "MY" });
   assert.equal(shopee.matchStore({ platformName: "TikTok Shop-印尼-本土" }), false);
@@ -599,8 +600,25 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
       { storeId: "2", storeName: "YN-XP0003", platformName: "Shopee-印尼-本土" },
       { storeId: "3", storeName: "印尼TK1", platformName: "TikTok Shop-印尼-本土" },
     ];
-    config.zhongtaiShops = [{ shopKey: "k-sjj", shopName: "SJJ Beauty Official Store", countryCode: "ID" }, { shopKey: "k-my", shopName: "YN-XP0003", countryCode: "MY" }];
-    config.stores = { 2: { storeId: "2", enabled: false } };
+    config.zhongtaiShops = [
+      { shopKey: "k-sjj", shopName: "SJJ Beauty Official Store", countryCode: "ID", platform: "shopee" },
+      { shopKey: "k-my", shopName: "YN-XP0003", countryCode: "MY", platform: "shopee" },
+      { shopKey: "k-tk-generic", shopName: "NatureKiss", rawName: "NatureKiss", countryCode: "ID", platform: "tiktok" },
+      { shopKey: "k-tk-sjj", shopName: "SJJ-NatureKiss", rawName: "SJJ-NatureKiss", countryCode: "ID", platform: "tiktok" },
+      { shopKey: "k-shopee-sjj", shopName: "SJJ-NatureKiss", rawName: "SJJ-NatureKiss", countryCode: "ID", platform: "shopee" },
+    ];
+    config.stores = {
+      2: { storeId: "2", enabled: false },
+      3: {
+        storeId: "3",
+        identity: tiktok.normalizePageIdentity({
+          href: "https://seller-id.tokopedia.com/homepage?shop_region=ID",
+          bodyText: "Home\nAssistant\nSJJ-NatureKissBodyCare\nOrders\nProducts",
+          selectorTexts: [],
+          storageKeys: ["data_compass#7494815587214788302", "user_7670037873403528208"],
+        }),
+      },
+    };
   });
   const collector = new Collector({ cli: {}, store, zhongtaiFactory: () => null });
   const { plan } = collector.plan();
@@ -611,10 +629,34 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   assert.equal(shopeePlan.targets[0].shopKey, "k-sjj");
   assert.equal(tiktokPlan.origin, "https://seller-id.tiktok.com");
   assert.equal(tiktokPlan.template.id, "builtin:tiktok-daily-v1");
+  assert.equal(tiktokPlan.targets[0].shopKey, "k-tk-sjj");
+  assert.equal(tiktokPlan.targets[0].shopName, "SJJ-NatureKiss");
+  assert.equal(tiktok.checkPage({ href: "https://seller-id.tokopedia.com/homepage?shop_region=ID" }).ok, true);
+  const storedIdentity = store.get().stores[3].identity;
+  assert.equal(storedIdentity.shopName, "SJJ-NatureKissBodyCare");
+  assert.equal(storedIdentity.compassId, "7494815587214788302");
+  assert.equal(storedIdentity.userId, "7670037873403528208");
+  assert.equal(storedIdentity.region, "ID");
   const overview = collector.storeOverview();
   assert.equal(overview.length, 3);
   assert.equal(overview.find((item) => item.storeId === "3").platform, "TikTok Shop");
   assert.equal(overview.find((item) => item.storeId === "2").targets[0].matched, false, "站点不同不自动对应");
+  assert.equal(overview.find((item) => item.storeId === "3").targets[0].shopKey, "k-tk-sjj");
+
+  store.update((config) => {
+    config.zhongtaiShops.push({
+      shopKey: "k-tk-sjj-duplicate",
+      shopName: "SJJ-NatureKiss",
+      rawName: "SJJ-NatureKiss",
+      countryCode: "ID",
+      platform: "tiktok",
+    });
+  });
+  assert.equal(
+    collector.matchZhongtaiShopName("SJJ-NatureKiss", "ID", "tiktok"),
+    null,
+    "同分候选必须交给用户确认，不能静默串店",
+  );
 });
 
 test("数据质量：页面数字解析与核对", () => {

@@ -491,27 +491,50 @@ class Collector {
   }
 
   /** 中台店铺自动匹配：名称（忽略大小写/空格/符号）一致且站点一致。 */
-  matchZhongtaiShop(storeName, site, identity = null) {
-    const candidates = [identity?.username, identity?.shopName, storeName].filter(Boolean);
+  matchZhongtaiShop(storeName, site, identity = null, platformId = "") {
+    const candidates = [
+      ...(Array.isArray(identity?.shopNames) ? identity.shopNames : []),
+      identity?.username,
+      identity?.shopName,
+      storeName,
+    ].filter(Boolean);
     for (const name of candidates) {
-      const found = this.matchZhongtaiShopName(name, site);
+      const found = this.matchZhongtaiShopName(name, site, platformId);
       if (found) return found;
     }
     return null;
   }
 
-  matchZhongtaiShopName(storeName, site) {
+  matchZhongtaiShopName(storeName, site, platformId = "") {
     const shops = this.config().zhongtaiShops || [];
     if (!shops.length) return null;
     const norm = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
     const target = norm(storeName);
     if (!target) return null;
-    const sameSite = shops.filter((shop) => !site || !shop.countryCode || shop.countryCode === site);
-    const names = (shop) => [shop.shopName, shop.rawName, shop.alias, shop.miaoshouShopName].map(norm).filter(Boolean);
-    const exact = sameSite.filter((shop) => names(shop).includes(target));
-    if (exact.length === 1) return exact[0];
-    const loose = sameSite.filter((shop) => names(shop).some((name) => name.length >= 4 && target.length >= 4 && (name.includes(target) || target.includes(name))));
-    return loose.length === 1 ? loose[0] : null;
+    const expectedSite = String(site || "").toUpperCase();
+    const expectedPlatform = norm(platformId);
+    const sameScope = shops.filter((shop) => {
+      const country = String(shop.countryCode || "").toUpperCase();
+      const platform = norm(shop.platform);
+      return (!expectedSite || !country || country === expectedSite)
+        && (!expectedPlatform || !platform || platform === expectedPlatform);
+    });
+    const names = (shop) => [shop.shopName, shop.rawName, shop.alias, shop.miaoshouShopName, shop.miaoshouAlias]
+      .map(norm)
+      .filter(Boolean);
+    const scored = sameScope.map((shop) => {
+      let score = 0;
+      for (const name of names(shop)) {
+        if (name === target) score = Math.max(score, 10000 + name.length);
+        else if (name.length >= 4 && target.length >= 4 && (name.includes(target) || target.includes(name))) {
+          score = Math.max(score, 1000 + Math.min(name.length, target.length));
+        }
+      }
+      return { shop, score };
+    }).filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score);
+    if (!scored.length) return null;
+    if (scored[1] && scored[1].score === scored[0].score) return null;
+    return scored[0].shop;
   }
 
   /** 店铺页用：所有可识别平台的紫鸟店铺 + 自动识别的站点和对应的中台店铺。 */
@@ -525,7 +548,7 @@ class Collector {
       const settings = config.stores[store.storeId] || {};
       const { site } = platform.storeSite(store);
       const manual = (settings.targets || []).filter((target) => target.shopName || target.shopKey);
-      const matched = manual.length ? null : this.matchZhongtaiShop(store.storeName, site, settings.identity);
+      const matched = manual.length ? null : this.matchZhongtaiShop(store.storeName, site, settings.identity, platform.id);
       return {
         storeId: store.storeId,
         storeName: store.storeName,
@@ -572,7 +595,7 @@ class Collector {
           skipped.push({ storeId: store.storeId, storeName: store.storeName, reason: "无法从紫鸟平台名识别站点，请在店铺里手动选择" });
           continue;
         }
-        const matched = this.matchZhongtaiShop(store.storeName, site, settings.identity);
+        const matched = this.matchZhongtaiShop(store.storeName, site, settings.identity, platform.id);
         targets = [{ id: `auto-${store.storeId}`, shopName: matched?.shopName || store.storeName, shopKey: matched?.shopKey || "", country: site, auto: true }];
       }
       targets = targets.map((target, index) => ({ ...target, id: target.id || `t${index}`, country: target.country || site }));
@@ -591,6 +614,30 @@ class Collector {
       onProgress({ storeId: store.storeId, phase: "open", message: `打开 ${store.storeName}` });
       ({ reused } = await this.openAt(store.storeId, page));
       await this.ensurePage(store.storeId, platform, page);
+      let pageIdentity = null;
+      if (platform.identityPageBody && platform.parsePageIdentity) {
+        const snapshot = await this.cli.runInPage(store.storeId, platform.identityPageBody(), { timeoutMs: 30000 });
+        pageIdentity = platform.parsePageIdentity(snapshot);
+        if (pageIdentity) {
+          this.store.update((config) => {
+            config.stores[store.storeId] = {
+              ...(config.stores[store.storeId] || { storeId: store.storeId, storeName: store.storeName }),
+              identity: pageIdentity,
+            };
+          });
+          for (const target of targets) {
+            if (!target.auto || target.shopKey) continue;
+            const matched = this.matchZhongtaiShop(store.storeName, target.country, pageIdentity, platform.id);
+            if (matched) Object.assign(target, { shopKey: matched.shopKey, shopName: matched.shopName });
+          }
+        }
+      }
+      if (platform.id === "tiktok" && targets.some((target) => target.auto && !target.shopKey)) {
+        const error = new Error(`无法把紫鸟 TikTok 店铺“${pageIdentity?.shopName || store.storeName}”唯一对应到妙手店铺，请检查妙手店铺名称、平台和国家。`);
+        error.code = "STORE_MAPPING_REQUIRED";
+        error.retryable = false;
+        throw error;
+      }
       const requests = [];
       for (const target of targets) {
         const targetDates = dates[target.country] || dates.default;
@@ -612,14 +659,14 @@ class Collector {
         onProgress,
       });
       // 记住店铺身份；自动对应没对上的，用 Shopee 登录名 / 店铺名再对一次。
-      const identity = platform.parseIdentity ? platform.parseIdentity(replay.results) : null;
+      const identity = pageIdentity || (platform.parseIdentity ? platform.parseIdentity(replay.results) : null);
       if (identity) {
         this.store.update((config) => {
           config.stores[store.storeId] = { ...(config.stores[store.storeId] || { storeId: store.storeId, storeName: store.storeName }), identity };
         });
         for (const target of targets) {
           if (!target.auto || target.shopKey) continue;
-          const matched = this.matchZhongtaiShop(store.storeName, target.country, identity);
+          const matched = this.matchZhongtaiShop(store.storeName, target.country, identity, platform.id);
           if (matched) Object.assign(target, { shopKey: matched.shopKey, shopName: matched.shopName });
         }
       }

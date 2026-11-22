@@ -42,8 +42,58 @@ function checkPage(info = {}) {
   if (/login|passport|登录|登入/iu.test(content)) {
     return { ok: false, code: "NOT_LOGGED_IN", message: "TikTok Shop 卖家中心未登录，请先打开该店铺完成登录。" };
   }
-  if (/seller-(id|my|vn)\.tiktok\.com|seller\.tiktokglobalshop\.com/iu.test(href)) return { ok: true };
+  if (/seller-(id|my|vn)\.tiktok\.com|seller\.tiktokglobalshop\.com|seller-(id|my|vn)\.tokopedia\.com/iu.test(href)) return { ok: true };
   return { ok: false, code: "WRONG_PAGE", message: "当前页面不是 TikTok Shop 卖家中心。" };
+}
+
+function identityPageBody() {
+  return `
+const bodyText = String(document.body && document.body.innerText || "").slice(0, 12000);
+const selectorTexts = [];
+for (const selector of ["[data-testid*=shop]", "[class*=shop-name]", "[class*=shopName]", "header [class*=name]"]) {
+  for (const node of document.querySelectorAll(selector)) {
+    const value = String(node && node.textContent || "").trim();
+    if (value && value.length <= 120 && !selectorTexts.includes(value)) selectorTexts.push(value);
+  }
+}
+const storageKeys = [];
+for (const storage of [window.localStorage, window.sessionStorage]) {
+  try { for (let index = 0; index < storage.length; index += 1) storageKeys.push(storage.key(index)); } catch (error) {}
+}
+return { href: location.href, title: document.title, bodyText, selectorTexts, storageKeys };
+`;
+}
+
+function normalizePageIdentity(snapshot = {}) {
+  const bodyText = text(snapshot.bodyText || snapshot.text);
+  const lines = bodyText.split(/[\r\n]+/u).map((line) => line.trim()).filter(Boolean);
+  const assistantIndex = lines.findIndex((line) => /^assistant$/iu.test(line));
+  // Tokopedia/TikTok Seller Center 把真实店名放在 Assistant 后的第一行；
+  // 后续行是导航和帮助文案，不能作为店铺候选，否则可能误匹配同名档案。
+  const afterAssistant = assistantIndex >= 0 ? lines.slice(assistantIndex + 1, assistantIndex + 2) : [];
+  const excluded = /^(home|homepage|dashboard|orders?|products?|analytics|assistant|seller center|tiktok shop)$/iu;
+  const shopNames = [...(snapshot.selectorTexts || []), ...afterAssistant]
+    .map(text)
+    .filter((value) => value && value.length <= 120 && !excluded.test(value));
+  const uniqueShopNames = [...new Set(shopNames)];
+  const storageText = (snapshot.storageKeys || []).map(text).join(" ");
+  const compassId = /data_compass#(\d{8,})/iu.exec(storageText)?.[1] || "";
+  const userId = /(?:^|\s)user_(\d{8,})(?:\s|$)/iu.exec(` ${storageText} `)?.[1] || "";
+  let region = "";
+  try {
+    const url = new URL(text(snapshot.href));
+    region = text(url.searchParams.get("shop_region")).toUpperCase();
+    if (!region) region = /seller-(id|my|vn)\./iu.exec(url.hostname)?.[1]?.toUpperCase() || "";
+  } catch {}
+  if (!uniqueShopNames.length && !compassId && !userId) return null;
+  return {
+    shopName: uniqueShopNames[0] || "",
+    shopNames: uniqueShopNames,
+    compassId,
+    userId,
+    region,
+    href: text(snapshot.href),
+  };
 }
 
 function calibratedTemplate() {
@@ -123,6 +173,9 @@ module.exports = {
   originFor,
   defaultSalesChannel,
   checkPage,
+  identityPageBody,
+  parsePageIdentity: normalizePageIdentity,
+  normalizePageIdentity,
   builtinTemplates,
   blankTemplate,
   identityRequests: () => [],
