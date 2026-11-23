@@ -13884,6 +13884,7 @@ const server = http.createServer(async (req, res) => {
         rawName: String(shop.rawName || ""),
         alias: String(shop.alias || ""),
         miaoshouShopName: String(shop.miaoshouShopName || ""),
+        miaoshouAlias: String(shop.miaoshouAlias || ""),
         country: String(shop.country || ""),
         countryCode: normalizedCountryKey(shop.country || ""),
         platform: String(shop.platform || ""),

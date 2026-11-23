@@ -645,6 +645,22 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
 
   store.update((config) => {
     config.zhongtaiShops.push({
+      shopKey: "k-tk-alias",
+      shopName: "TikTok Indonesia 11",
+      rawName: "TikTok Indonesia 11",
+      miaoshouAlias: "印尼TK11",
+      countryCode: "ID",
+      platform: "tiktok",
+    });
+  });
+  assert.equal(
+    collector.matchZhongtaiShopName("印尼TK11", "ID", "tiktok")?.shopKey,
+    "k-tk-alias",
+    "紫鸟 TikTok 店铺名应能通过妙手别名自动匹配中台店铺",
+  );
+
+  store.update((config) => {
+    config.zhongtaiShops.push({
       shopKey: "k-tk-sjj-duplicate",
       shopName: "SJJ-NatureKiss",
       rawName: "SJJ-NatureKiss",

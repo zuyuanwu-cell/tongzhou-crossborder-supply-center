@@ -880,6 +880,9 @@ async function main() {
   if (!ingestShops.shops.some((item) => item.shopKey === shop.key && item.shopName && item.countryCode)) {
     throw new Error(`ingest shop list is missing the directory shop: ${JSON.stringify(ingestShops).slice(0, 400)}`);
   }
+  if (!ingestShops.shops.every((item) => Object.prototype.hasOwnProperty.call(item, "miaoshouAlias"))) {
+    throw new Error(`ingest shop list is missing the miaoshouAlias contract: ${JSON.stringify(ingestShops).slice(0, 400)}`);
+  }
   // 采集中心：节点配对、心跳、用节点令牌写入、下发命令、运行记录与日志
   const nodePair = await expectJson("/api/collector/nodes/pair", { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ name: "冒烟节点", hostname: "SMOKE", platforms: ["Shopee"], version: "0.3.0" }) });
   const nodeHeaders = { "X-Node-Token": nodePair.token, "Content-Type": "application/json" };
