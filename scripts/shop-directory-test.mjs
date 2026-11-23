@@ -26,6 +26,8 @@ const directory = buildShopDirectory({
         projectGroup: "东南亚项目",
         ownerId: "operator-1",
         ownerName: "运营一号",
+        viewerIds: ["operator-2"],
+        viewerNames: ["运营二号"],
         shopUrl: "https://seller.example.com/shop/id-1",
       },
     },
@@ -41,6 +43,8 @@ assert.equal(directory.byKey.get(indonesiaKey)?.aliasSource, "miaoshou");
 assert.equal(directory.byKey.get(indonesiaKey)?.projectGroup, "东南亚项目");
 assert.equal(directory.byKey.get(indonesiaKey)?.projectGroupSource, "manual");
 assert.equal(directory.byKey.get(indonesiaKey)?.ownerName, "运营一号");
+assert.deepEqual(directory.byKey.get(indonesiaKey)?.viewerIds, ["operator-2"]);
+assert.deepEqual(directory.byKey.get(indonesiaKey)?.viewerNames, ["运营二号"]);
 assert.equal(directory.byKey.get(indonesiaKey)?.shopUrl, "https://seller.example.com/shop/id-1");
 
 const enriched = applyShopDirectoryProfile(orders[0], directory);
@@ -49,6 +53,8 @@ assert.equal(enriched.projectGroup, "东南亚项目");
 assert.equal(enriched.miaoshouShopId, "ID-1");
 assert.equal(enriched.shopOwnerId, "operator-1");
 assert.equal(enriched.shopOwnerName, "运营一号");
+assert.deepEqual(enriched.shopViewerIds, ["operator-2"]);
+assert.deepEqual(enriched.shopViewerNames, ["运营二号"]);
 assert.equal(enriched.shopUrl, "https://seller.example.com/shop/id-1");
 
 const manualAliasDirectory = buildShopDirectory({
@@ -73,6 +79,8 @@ const normalized = normalizeShopDirectorySettings({
       projectGroup: "东南亚项目",
       ownerId: "operator-1",
       ownerName: "运营一号",
+      viewerIds: ["operator-2", "operator-2", ""],
+      viewerNames: ["运营二号"],
       shopUrl: "https://seller.example.com/shop/id-1",
       updatedBy: "管理员",
     },
@@ -95,8 +103,18 @@ const malaysiaKey = shopDirectoryKey(orders[2]);
 assert.equal(leaderScope.visibleShopKeys.has(malaysiaKey), false, "项目组长不能管理其他项目组店铺");
 
 const memberScope = resolveShopScope({ user: { id: "operator-1" }, directory });
-assert.equal(memberScope.mode, "member");
+assert.equal(memberScope.mode, "assigned");
 assert.ok(memberScope.visibleShopKeys.has(indonesiaKey), "负责人应能访问自己负责的店铺");
+
+const viewerScope = resolveShopScope({ user: { id: "operator-2" }, directory });
+assert.equal(viewerScope.mode, "assigned");
+assert.ok(viewerScope.visibleShopKeys.has(indonesiaKey), "额外可查看人应能访问已授权店铺");
+assert.equal(viewerScope.ownedShopCount, 0);
+assert.equal(viewerScope.sharedShopCount, 1);
+
+const unassignedScope = resolveShopScope({ user: { id: "operator-3" }, directory });
+assert.equal(unassignedScope.mode, "unassigned");
+assert.equal(unassignedScope.visibleShopKeys.size, 0, "未分配店铺的普通用户必须看不到店铺数据");
 
 const adminScope = resolveShopScope({ user: { id: "admin" }, directory, canManageAll: true });
 assert.equal(adminScope.mode, "all");

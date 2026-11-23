@@ -1783,6 +1783,19 @@
 .shop-directory-actions { border-color: #f1c5a9; background: #fff8f3; }
 .shop-directory-actions label { color: #52647d; }
 .shop-directory-actions > span { color: #63738b; }
+.shop-directory-scope-notice { color: #2451a4; border-color: #bdd0ee; background: #f1f6ff; }
+.shop-directory-scope-notice strong,
+.shop-directory-access-heading strong { color: #173d7a; }
+.shop-directory-scope-notice small,
+.shop-directory-access-heading small { color: #63738b; }
+.shop-directory-access-editor { border-color: #d4dfef; background: #f7faff; }
+.shop-directory-access-heading em { color: #2451a4; }
+.shop-directory-access-fields > label,
+.shop-directory-viewers { color: #52647d; }
+.shop-directory-access-fields select,
+.shop-directory-viewers > div { color: #18273f; border-color: #cfd9e6; background: #fff; }
+.shop-directory-viewers label { color: #263b55; background: #edf3ff; }
+.shop-directory-viewers label small { color: #63738b; }
 .shop-directory-group-cell input {
   color: #18273f;
   border-color: #cfd9e6;

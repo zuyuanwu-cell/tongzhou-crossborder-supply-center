@@ -60,5 +60,8 @@ assert.doesNotMatch(importRoute, /await warmPerformanceAnalyticsMaterialization/
 const uiSource = await readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
 assert.match(uiSource, /tongzhou-shop-directory-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}\.xlsx/);
 assert.match(uiSource, />导出 Excel<\/button>/);
+assert.match(uiSource, /额外可查看人ID/);
+assert.match(importRoute, /viewerIds/);
+assert.match(importRoute, /viewerNames/);
 
 console.log("shop directory import file tests passed");

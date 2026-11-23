@@ -2586,6 +2586,8 @@ export type ShopDirectoryProfile = {
   projectGroupSource: "manual" | "inferred" | "unassigned" | string;
   ownerId: string;
   ownerName: string;
+  viewerIds: string[];
+  viewerNames: string[];
   shopUrl: string;
   miaoshouShopId: string;
   miaoshouShopName: string;
@@ -2611,6 +2613,14 @@ export type ShopDirectoryPayload = {
   canManage: boolean;
   canManageOwnGroup: boolean;
   managedGroups: string[];
+  scope?: {
+    mode: "all" | "scoped" | string;
+    visibleShopCount: number;
+    ownedShopCount: number;
+    sharedShopCount: number;
+    teams: string[];
+    leaderGroups: string[];
+  };
   miaoshouShops?: MiaoshouDirectoryShopOption[];
 };
 
@@ -5335,13 +5345,15 @@ export function updatePerformanceRevenueSource(revenueSource: "wms" | "shadow" |
   });
 }
 
-export function updateShopProjectGroup(input: { shopKeys: string[]; projectGroup?: string; ownerId?: string; ownerName?: string; shopUrl?: string }) {
+export function updateShopProjectGroup(input: { shopKeys: string[]; projectGroup?: string; ownerId?: string; ownerName?: string; viewerIds?: string[]; shopUrl?: string }) {
   return requestJson<{
     ok: boolean;
     updatedCount: number;
     projectGroup?: string;
     ownerId?: string;
     ownerName?: string;
+    viewerIds?: string[];
+    viewerNames?: string[];
     shopUrl?: string;
     shopDirectory: ShopDirectoryPayload;
   }>("/api/shop-directory/project-group", {
@@ -5696,7 +5708,7 @@ export async function importShopDirectory(file: File) {
 }
 
 export function fetchShopDirectoryUserOptions() {
-  return requestJson<{ ok: boolean; users: Array<{ id: string; username: string; displayName: string }> }>("/api/shop-directory/user-options");
+  return requestJson<{ ok: boolean; users: Array<{ id: string; username: string; displayName: string; role: string; roleLabel: string }> }>("/api/shop-directory/user-options");
 }
 
 export function fetchStockupRouteReconciliation(requestId: string) {

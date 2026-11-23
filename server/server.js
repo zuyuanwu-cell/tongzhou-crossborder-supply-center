@@ -5825,10 +5825,16 @@ function publicShopDirectory(directory, auth = directAuth) {
   const user = auth?.user || directAuth.user;
   const canManageAll = hasPermission(auth, "performance_manage");
   const shopScope = resolveShopScope({ user, directory, canManageAll });
+  const visibleShops = shopScope.visibleShopKeys === null
+    ? directory.shops || []
+    : (directory.shops || []).filter((shop) => shopScope.visibleShopKeys.has(shop.key));
+  const visibleGroups = new Set(visibleShops.map((shop) => shop.projectGroup).filter(Boolean));
   return {
-    shops: directory.shops || [],
-    projectGroups: directory.projectGroups || [],
-    projectGroupTeams: (directory.projectGroupTeams || []).map((team) => ({
+    shops: visibleShops,
+    projectGroups: canManageAll
+      ? directory.projectGroups || []
+      : (directory.projectGroups || []).filter((group) => visibleGroups.has(group)),
+    projectGroupTeams: (directory.projectGroupTeams || []).filter((team) => canManageAll || visibleGroups.has(team.name)).map((team) => ({
       name: team.name,
       leaderIds: team.leaderIds || [],
       memberIds: team.memberIds || [],
@@ -5837,14 +5843,22 @@ function publicShopDirectory(directory, auth = directAuth) {
       updatedBy: team.updatedBy || "",
     })),
     miaoshouShopCount: directory.miaoshouShopCount || 0,
-    matchedShopCount: directory.matchedShopCount || 0,
-    unmatchedShopCount: directory.unmatchedShopCount || 0,
-    ownerCount: directory.ownerCount || 0,
-    unassignedOwnerCount: directory.unassignedOwnerCount || 0,
+    matchedShopCount: visibleShops.filter((shop) => shop.miaoshouMatched).length,
+    unmatchedShopCount: visibleShops.filter((shop) => !shop.miaoshouMatched).length,
+    ownerCount: new Set(visibleShops.map((shop) => shop.ownerId).filter(Boolean)).size,
+    unassignedOwnerCount: visibleShops.filter((shop) => !shop.ownerId).length,
     miaoshouSyncedAt: directory.miaoshouSyncedAt || "",
     canManage: canManageAll,
     canManageOwnGroup: shopScope.leaderGroups.length > 0,
     managedGroups: shopScope.leaderGroups,
+    scope: {
+      mode: shopScope.mode,
+      visibleShopCount: visibleShops.length,
+      ownedShopCount: shopScope.ownedShopCount || 0,
+      sharedShopCount: shopScope.sharedShopCount || 0,
+      teams: shopScope.teams || [],
+      leaderGroups: shopScope.leaderGroups || [],
+    },
     miaoshouShops: canManageAll ? directory.miaoshouShops || [] : [],
   };
 }
@@ -6243,8 +6257,8 @@ async function buildShopDailyReportResponse(params = {}, auth = directAuth, timi
   const reviewOrders = shopDailyReportStore.listReviewOrders(range);
   const orderNos = [...new Set(reviewOrders.filter((row) => row.amount === null && row.orderNo).map((row) => row.orderNo))].slice(0, 5000);
   const context = await t.timeAsync("context", () => shopDailyContext(auth, { ...range, orderNos }));
-  // 有数据范围限制的账号只看自己范围内的店铺；中台订单里还没有的独立店铺对所有可编辑账号可见。
-  const visible = (row) => context.visibleShopKeys === null || context.visibleShopKeys.has(row.shopKey) || !context.directoryShopKeys.has(row.shopKey);
+  // 店铺授权由后端统一强制执行；独立导入但未分配的店铺也不能绕过授权范围。
+  const visible = (row) => context.visibleShopKeys === null || context.visibleShopKeys.has(row.shopKey);
   const metrics = shopDailyReportStore.listMetrics(range).filter(visible);
   const scopedReviews = reviewOrders.filter(visible);
   const report = t.time("build", () => buildShopDailyReport({
@@ -6314,7 +6328,7 @@ async function importShopDailyMetrics({ rows = [], source = "import", dryRun = f
   const prepared = prepareShopDailyMetrics(rows, context.shops);
   const visibleRows = context.visibleShopKeys === null
     ? prepared.rows
-    : prepared.rows.filter((row) => context.visibleShopKeys.has(row.shopKey) || row.standalone);
+    : prepared.rows.filter((row) => context.visibleShopKeys.has(row.shopKey));
   const scopeRejected = prepared.rows.length - visibleRows.length;
   const errors = [...parseErrors, ...prepared.errors];
   if (scopeRejected) errors.push({ line: 0, message: `${scopeRejected} 行属于当前账号无权查看的店铺，已忽略。` });
@@ -14387,8 +14401,17 @@ const server = http.createServer(async (req, res) => {
       const shopKeys = [...new Set((Array.isArray(body.shopKeys) ? body.shopKeys : []).map((value) => String(value || "").trim()).filter(Boolean))];
       const projectGroup = body.projectGroup !== undefined ? String(body.projectGroup || "").trim() : undefined;
       const ownerId = body.ownerId !== undefined ? String(body.ownerId || "").trim() : undefined;
-      const ownerName = body.ownerName !== undefined ? String(body.ownerName || "").trim() : undefined;
+      let ownerName = body.ownerName !== undefined ? String(body.ownerName || "").trim() : undefined;
+      const viewerIds = body.viewerIds !== undefined
+        ? [...new Set((Array.isArray(body.viewerIds) ? body.viewerIds : []).map((value) => String(value || "").trim()).filter(Boolean))]
+        : undefined;
+      let viewerNames;
       const shopUrl = body.shopUrl !== undefined ? normalizeShopUrl(body.shopUrl) : undefined;
+      const assignmentRequested = ownerId !== undefined || ownerName !== undefined || viewerIds !== undefined;
+      if (!canManageAll && assignmentRequested) {
+        sendJson(res, 403, { ok: false, message: "只有管理员可以设置店铺负责人和额外可查看人；项目组组长只能维护本组名称与店铺链接。" });
+        return;
+      }
       if (!shopKeys.length || shopKeys.length > 500) {
         sendJson(res, 400, { ok: false, message: "请选择 1 至 500 个店铺。" });
         return;
@@ -14403,6 +14426,10 @@ const server = http.createServer(async (req, res) => {
       }
       if (ownerName !== undefined && ownerName.length > 80) {
         sendJson(res, 400, { ok: false, message: "负责人姓名不能超过 80 个字符。" });
+        return;
+      }
+      if (viewerIds !== undefined && viewerIds.length > 50) {
+        sendJson(res, 400, { ok: false, message: "单个店铺最多分配 50 位额外可查看人。" });
         return;
       }
       if (body.shopUrl !== undefined && String(body.shopUrl || "").trim() && !shopUrl) {
@@ -14427,6 +14454,22 @@ const server = http.createServer(async (req, res) => {
           return;
         }
       }
+      if (canManageAll && assignmentRequested) {
+        const activeUsers = new Map((cachedUsers.users || [])
+          .filter((candidate) => candidate.status !== "disabled")
+          .map((candidate) => [String(candidate.id || ""), publicAccessUser(candidate)]));
+        if (ownerId && (!activeUsers.has(ownerId) || activeUsers.get(ownerId)?.role !== "direct")) {
+          sendJson(res, 400, { ok: false, message: "所选店铺负责人不存在、已停用或不是直营运营账号，请刷新用户列表后重试。" });
+          return;
+        }
+        const invalidViewerIds = (viewerIds || []).filter((id) => !activeUsers.has(id) || activeUsers.get(id)?.role !== "direct");
+        if (invalidViewerIds.length) {
+          sendJson(res, 400, { ok: false, message: `有 ${invalidViewerIds.length} 位额外可查看人不存在、已停用或不是直营运营账号，请刷新用户列表后重试。` });
+          return;
+        }
+        if (ownerId !== undefined) ownerName = ownerId ? activeUsers.get(ownerId)?.displayName || activeUsers.get(ownerId)?.username || "" : "";
+        if (viewerIds !== undefined) viewerNames = viewerIds.map((id) => activeUsers.get(id)?.displayName || activeUsers.get(id)?.username || id);
+      }
       cachedOrderAnalysisSettings = normalizeOrderAnalysisSettings(cachedOrderAnalysisSettings);
       const now = new Date().toISOString();
       const actor = auth.user?.displayName || auth.user?.username || "管理员";
@@ -14436,6 +14479,8 @@ const server = http.createServer(async (req, res) => {
           projectGroup: projectGroup !== undefined ? projectGroup : (current.projectGroup || ""),
           ownerId: ownerId !== undefined ? ownerId : (current.ownerId || ""),
           ownerName: ownerName !== undefined ? ownerName : (current.ownerName || ""),
+          viewerIds: viewerIds !== undefined ? viewerIds : (current.viewerIds || []),
+          viewerNames: viewerNames !== undefined ? viewerNames : (current.viewerNames || []),
           shopUrl: shopUrl !== undefined ? shopUrl : (current.shopUrl || ""),
           updatedAt: now,
           updatedBy: actor,
@@ -14454,6 +14499,8 @@ const server = http.createServer(async (req, res) => {
         projectGroup,
         ownerId,
         ownerName,
+        viewerIds,
+        viewerNames,
         shopUrl,
       });
       const updatedDirectory = shopDirectoryForOrders(cachedOrdersSync.orders || []);
@@ -14465,6 +14512,8 @@ const server = http.createServer(async (req, res) => {
         projectGroup,
         ownerId,
         ownerName,
+        viewerIds,
+        viewerNames,
         shopUrl,
         shopDirectory: publicShopDirectory(updatedDirectory, auth),
       });
@@ -14519,7 +14568,7 @@ const server = http.createServer(async (req, res) => {
       const visibleShops = shopScope.visibleShopKeys === null
         ? directory.shops
         : directory.shops.filter((shop) => shopScope.visibleShopKeys.has(shop.key));
-      const headers = ["店铺ID", "店铺 / WMS 原名", "平台", "国家", "负责人ID", "负责人姓名", "主项目组", "店铺链接", "妙手店铺ID", "妙手别名", "订单行数", "最近订单"];
+      const headers = ["店铺ID", "店铺 / WMS 原名", "平台", "国家", "负责人ID", "负责人姓名", "可查看用户ID", "可查看用户姓名", "主项目组", "店铺链接", "妙手店铺ID", "妙手别名", "订单行数", "最近订单"];
       const rows = visibleShops.map((shop) => [
         shop.key,
         shop.rawName,
@@ -14527,6 +14576,8 @@ const server = http.createServer(async (req, res) => {
         shop.country || "",
         shop.ownerId || "",
         shop.ownerName || "",
+        (shop.viewerIds || []).join(";"),
+        (shop.viewerNames || []).join(";"),
         shop.projectGroup || "",
         shop.shopUrl || "",
         shop.miaoshouShopId || "",
@@ -14594,6 +14645,8 @@ const server = http.createServer(async (req, res) => {
         key: indexOf("店铺ID", "shopkey", "key"),
         ownerId: indexOf("负责人ID", "ownerid"),
         ownerName: indexOf("负责人姓名", "负责人", "ownername"),
+        viewerIds: indexOf("可查看用户ID", "额外可查看人ID", "viewerids"),
+        viewerNames: indexOf("可查看用户姓名", "额外可查看人", "viewernames"),
         projectGroup: indexOf("主项目组", "项目组", "projectgroup"),
         shopUrl: indexOf("店铺链接", "店铺网址", "shopurl", "url"),
       };
@@ -14602,33 +14655,48 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const damagedEditableRows = grid.slice(1).reduce((count, cells) => (
-        containsQuestionMarkEncodingDamage([cells[indexes.projectGroup], cells[indexes.ownerName]]) ? count + 1 : count
+        containsQuestionMarkEncodingDamage([cells[indexes.projectGroup], cells[indexes.ownerName], cells[indexes.viewerNames]]) ? count + 1 : count
       ), 0);
       if (damagedEditableRows) {
         sendJson(res, 400, {
           ok: false,
-          message: `有 ${damagedEditableRows} 行的项目组或负责人姓名已变成问号，无法确定原值。请从系统重新导出 Excel 文件后再修改。未写入任何数据。`,
+          message: `有 ${damagedEditableRows} 行的项目组、负责人或可查看人姓名已变成问号，无法确定原值。请从系统重新导出 Excel 文件后再修改。未写入任何数据。`,
         });
         return;
       }
       const knownKeys = new Set(directory.shops.map((shop) => shop.key));
+      const activeUsers = new Map((cachedUsers.users || [])
+        .filter((candidate) => candidate.status !== "disabled")
+        .map((candidate) => [String(candidate.id || ""), publicAccessUser(candidate)]));
       const errors = [];
       const updates = [];
       grid.slice(1).forEach((cells, rowIndex) => {
         const rowNumber = rowIndex + 2;
         const key = String(cells[indexes.key] || "").trim();
         const projectGroup = indexes.projectGroup >= 0 ? String(cells[indexes.projectGroup] || "").trim() : undefined;
-        const ownerId = indexes.ownerId >= 0 ? String(cells[indexes.ownerId] || "").trim() : undefined;
-        const ownerName = indexes.ownerName >= 0 ? String(cells[indexes.ownerName] || "").trim() : undefined;
+        const ownerId = canManageAll && indexes.ownerId >= 0 ? String(cells[indexes.ownerId] || "").trim() : undefined;
+        const suppliedOwnerName = canManageAll && indexes.ownerName >= 0 ? String(cells[indexes.ownerName] || "").trim() : undefined;
+        const viewerIds = canManageAll && indexes.viewerIds >= 0
+          ? [...new Set(String(cells[indexes.viewerIds] || "").split(/[;,，；]/).map((value) => value.trim()).filter(Boolean))]
+          : undefined;
+        const invalidViewerIds = (viewerIds || []).filter((id) => !activeUsers.has(id) || activeUsers.get(id)?.role !== "direct");
+        const ownerName = ownerId !== undefined
+          ? ownerId ? activeUsers.get(ownerId)?.displayName || activeUsers.get(ownerId)?.username || suppliedOwnerName || "" : ""
+          : undefined;
+        const viewerNames = viewerIds !== undefined
+          ? viewerIds.map((id) => activeUsers.get(id)?.displayName || activeUsers.get(id)?.username || id)
+          : undefined;
         const rawShopUrl = indexes.shopUrl >= 0 ? String(cells[indexes.shopUrl] || "").trim() : undefined;
         const shopUrl = rawShopUrl !== undefined ? normalizeShopUrl(rawShopUrl) : undefined;
         if (!key) errors.push(`第 ${rowNumber} 行：店铺ID 为空`);
         else if (!knownKeys.has(key)) errors.push(`第 ${rowNumber} 行：店铺ID “${key}” 不存在，可能已变更`);
         else if (projectGroup !== undefined && projectGroup.length > 80) errors.push(`第 ${rowNumber} 行：项目组名称不能超过 80 字符`);
         else if (ownerId !== undefined && ownerId.length > 128) errors.push(`第 ${rowNumber} 行：负责人ID 不能超过 128 字符`);
-        else if (ownerName !== undefined && ownerName.length > 80) errors.push(`第 ${rowNumber} 行：负责人姓名不能超过 80 字符`);
+        else if (ownerId && (!activeUsers.has(ownerId) || activeUsers.get(ownerId)?.role !== "direct")) errors.push(`第 ${rowNumber} 行：负责人不存在、已停用或不是直营运营账号`);
+        else if (viewerIds !== undefined && viewerIds.length > 50) errors.push(`第 ${rowNumber} 行：可查看用户不能超过 50 人`);
+        else if (invalidViewerIds.length) errors.push(`第 ${rowNumber} 行：有 ${invalidViewerIds.length} 位可查看用户不存在、已停用或不是直营运营账号`);
         else if (rawShopUrl && !shopUrl) errors.push(`第 ${rowNumber} 行：店铺链接必须是 http 或 https 地址`);
-        else updates.push({ key, projectGroup, ownerId, ownerName, shopUrl });
+        else updates.push({ key, projectGroup, ownerId, ownerName, viewerIds, viewerNames, shopUrl });
       });
       if (errors.length) {
         sendJson(res, 400, {
@@ -14661,6 +14729,8 @@ const server = http.createServer(async (req, res) => {
           projectGroup: update.projectGroup !== undefined ? update.projectGroup : (current.projectGroup || ""),
           ownerId: update.ownerId !== undefined ? update.ownerId : (current.ownerId || ""),
           ownerName: update.ownerName !== undefined ? update.ownerName : (current.ownerName || ""),
+          viewerIds: update.viewerIds !== undefined ? update.viewerIds : (current.viewerIds || []),
+          viewerNames: update.viewerNames !== undefined ? update.viewerNames : (current.viewerNames || []),
           shopUrl: update.shopUrl !== undefined ? update.shopUrl : (current.shopUrl || ""),
           updatedAt: now,
           updatedBy: actor,
@@ -14694,7 +14764,9 @@ const server = http.createServer(async (req, res) => {
       }
       const users = (cachedUsers.users || [])
         .filter((user) => user.status !== "disabled")
-        .map((user) => ({ id: user.id, username: user.username, displayName: user.displayName || user.username }))
+        .map((user) => publicAccessUser(user))
+        .filter((user) => user.role === "direct")
+        .map((user) => ({ id: user.id, username: user.username, displayName: user.displayName || user.username, role: user.role, roleLabel: user.roleLabel || user.role }))
         .sort((left, right) => left.displayName.localeCompare(right.displayName, "zh-CN"));
       sendJson(res, 200, { ok: true, users });
       return;

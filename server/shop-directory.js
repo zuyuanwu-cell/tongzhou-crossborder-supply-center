@@ -116,11 +116,14 @@ export function normalizeShopDirectorySettings(input = {}) {
       projectGroup: text(value.projectGroup),
       ownerId: text(value.ownerId),
       ownerName: text(value.ownerName),
+      viewerIds: uniqueIdList(value.viewerIds),
+      viewerNames: uniqueIdList(value.viewerNames),
       shopUrl: normalizeShopUrl(value.shopUrl),
       updatedAt: text(value.updatedAt),
       updatedBy: text(value.updatedBy),
     };
-    if (!assignment.projectGroup && !assignment.ownerId && !assignment.ownerName && !assignment.shopUrl) continue;
+    if (!assignment.projectGroup && !assignment.ownerId && !assignment.ownerName
+      && !assignment.viewerIds.length && !assignment.viewerNames.length && !assignment.shopUrl) continue;
     assignments[normalizedKey] = assignment;
   }
   const bindings = {};
@@ -201,6 +204,8 @@ export function buildShopDirectory({ orders = [], miaoshouShops = [], settings =
       projectGroupSource: assignment?.projectGroup ? "manual" : inferredProjectGroup ? "inferred" : "unassigned",
       ownerId: text(assignment?.ownerId),
       ownerName: text(assignment?.ownerName),
+      viewerIds: uniqueIdList(assignment?.viewerIds),
+      viewerNames: uniqueIdList(assignment?.viewerNames),
       shopUrl: normalizeShopUrl(assignment?.shopUrl),
       miaoshouShopId: text(matchedShop?.shopId),
       miaoshouShopName: platformShopName,
@@ -251,6 +256,8 @@ export function applyShopDirectoryProfile(order = {}, directory) {
     projectGroup: profile?.projectGroup || text(order.projectGroup),
     shopOwnerId: profile?.ownerId || "",
     shopOwnerName: profile?.ownerName || "",
+    shopViewerIds: profile?.viewerIds || [],
+    shopViewerNames: profile?.viewerNames || [],
     shopUrl: profile?.shopUrl || "",
     miaoshouShopId: profile?.miaoshouShopId || "",
     miaoshouMatched: Boolean(profile?.miaoshouMatched),
@@ -271,10 +278,15 @@ export function resolveShopScope({ user = {}, directory, canManageAll = false } 
     : [];
 
   if (canManageAll) {
-    return { mode: "all", visibleShopKeys: null, teams: teamsOfUser, leaderGroups: [], ownedShopCount: 0 };
-  }
-  if (!teamsOfUser.length) {
-    return { mode: "unscoped", visibleShopKeys: null, teams: [], leaderGroups: [], ownedShopCount: 0 };
+    return {
+      mode: "all",
+      visibleShopKeys: null,
+      teams: teamsOfUser.map((team) => team.name),
+      leaderGroups: [],
+      ownedShopCount: 0,
+      sharedShopCount: 0,
+      visibleShopCount: Array.isArray(directory?.shops) ? directory.shops.length : 0,
+    };
   }
 
   const leaderGroups = teamsOfUser
@@ -282,18 +294,31 @@ export function resolveShopScope({ user = {}, directory, canManageAll = false } 
     .map((team) => team.name);
   const visible = new Set();
   let ownedShopCount = 0;
+  let sharedShopCount = 0;
   for (const shop of Array.isArray(directory?.shops) ? directory.shops : []) {
     const ownerTokens = [shop.ownerId, shop.ownerName].map((value) => text(value).toLowerCase()).filter(Boolean);
+    const viewerTokens = [...(shop.viewerIds || []), ...(shop.viewerNames || [])]
+      .map((value) => text(value).toLowerCase())
+      .filter(Boolean);
     const ownedByUser = ownerTokens.some((token) => tokens.has(token));
+    const sharedWithUser = viewerTokens.some((token) => tokens.has(token));
+    const inheritedByTeam = teamsOfUser.some((team) => team.inheritUnassignedShops
+      && team.name === text(shop.projectGroup)
+      && !text(shop.ownerId)
+      && !(shop.viewerIds || []).length
+      && !(shop.viewerNames || []).length);
     if (ownedByUser) ownedShopCount += 1;
-    if (ownedByUser || leaderGroups.includes(text(shop.projectGroup))) visible.add(shop.key);
+    if (sharedWithUser) sharedShopCount += 1;
+    if (ownedByUser || sharedWithUser || inheritedByTeam || leaderGroups.includes(text(shop.projectGroup))) visible.add(shop.key);
   }
 
   return {
-    mode: leaderGroups.length ? "leader" : "member",
+    mode: leaderGroups.length ? "leader" : visible.size ? "assigned" : "unassigned",
     visibleShopKeys: visible,
     teams: teamsOfUser.map((team) => team.name),
     leaderGroups,
     ownedShopCount,
+    sharedShopCount,
+    visibleShopCount: visible.size,
   };
 }

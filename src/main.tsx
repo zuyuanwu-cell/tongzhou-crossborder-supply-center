@@ -160,6 +160,7 @@ import {
   fetchMiaoshouOrderAliasJobs,
   fetchOrderAnalysis,
   fetchPerformanceAnalytics,
+  fetchShopDirectoryUserOptions,
   fetchProducts,
   fetchMiaoshouWaybill,
   fetchQuickNav,
@@ -2237,8 +2238,8 @@ function App() {
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
             }}
             onSyncOrders={() => handleOrderSync()}
-            onAssignProjectGroup={async (shopKeys, projectGroup) => {
-              await updateShopProjectGroup({ shopKeys, projectGroup });
+            onUpdateShopAssignments={async (input) => {
+              await updateShopProjectGroup(input);
               await loadPerformanceAnalytics(performanceAnalyticsPayload?.filters || {});
               await loadOrderAnalysis(orderAnalysisPayload?.filters ? {
                 dateFrom: orderAnalysisPayload.filters.dateFrom,
@@ -10144,7 +10145,7 @@ function PerformanceAnalysisPage({
   onSyncMiaoshou,
   onChangeRevenueSource,
   onSyncOrders,
-  onAssignProjectGroup,
+  onUpdateShopAssignments,
   syncing,
   canSync,
 }: {
@@ -10159,7 +10160,7 @@ function PerformanceAnalysisPage({
   onSyncMiaoshou: (input: { dateFrom?: string; dateTo?: string; days?: number }) => Promise<{ message?: string; status?: string; orderCount?: number; warningCount?: number }>;
   onChangeRevenueSource: (source: "wms" | "shadow" | "miaoshou") => Promise<void>;
   onSyncOrders: () => Promise<void>;
-  onAssignProjectGroup: (shopKeys: string[], projectGroup: string) => Promise<void>;
+  onUpdateShopAssignments: (input: { shopKeys: string[]; projectGroup?: string; ownerId?: string; viewerIds?: string[] }) => Promise<void>;
   syncing: boolean;
   canSync: boolean;
 }) {
@@ -10189,6 +10190,9 @@ function PerformanceAnalysisPage({
   const [shopGroupFilter, setShopGroupFilter] = React.useState("__all__");
   const [shopMatchFilter, setShopMatchFilter] = React.useState("__all__");
   const [pendingShopGroups, setPendingShopGroups] = React.useState<Record<string, string>>({});
+  const [shopUserOptions, setShopUserOptions] = React.useState<Array<{ id: string; username: string; displayName: string; role: string; roleLabel: string }>>([]);
+  const [shopOwnerDraft, setShopOwnerDraft] = React.useState("");
+  const [shopViewerDrafts, setShopViewerDrafts] = React.useState<string[]>([]);
   const shopImportFileRef = React.useRef<HTMLInputElement | null>(null);
   const [transactionMessage, setTransactionMessage] = React.useState("");
   const totals = payload?.totals;
@@ -10224,7 +10228,7 @@ function PerformanceAnalysisPage({
       if (shopMatchFilter === "matched" && !shop.miaoshouMatched) return false;
       if (shopMatchFilter === "unmatched" && shop.miaoshouMatched) return false;
       if (!term) return true;
-      return [shop.displayName, shop.rawName, shop.platform, shop.country, effectiveGroup, shop.ownerName, shop.miaoshouAlias, shop.miaoshouShopName]
+      return [shop.displayName, shop.rawName, shop.platform, shop.country, effectiveGroup, shop.ownerName, ...(shop.viewerNames || []), shop.miaoshouAlias, shop.miaoshouShopName]
         .some((value) => String(value || "").toLowerCase().includes(term));
     });
   }, [shopRows, shopSearch, shopGroupFilter, shopMatchFilter, pendingShopGroups]);
@@ -10233,6 +10237,9 @@ function PerformanceAnalysisPage({
     const shop = shopRows.find((item) => item.key === key);
     return { key, group, displayName: shop?.displayName || key };
   }), [pendingShopGroups, shopRows]);
+  const assignableShopUsers = React.useMemo(() => [...shopUserOptions]
+    .filter((item) => item.role === "direct")
+    .sort((left, right) => (left.displayName || left.username).localeCompare(right.displayName || right.username, "zh-CN")), [shopUserOptions]);
 
   React.useEffect(() => {
     if (!payload) return;
@@ -10253,6 +10260,32 @@ function PerformanceAnalysisPage({
     for (const currencyCode of relevantCurrencies) next[currencyCode] = latestRates.get(currencyCode)?.toString() || "";
     setRateDrafts(next);
   }, [relevantCurrencies.join("|"), payload?.exchangeRates]);
+
+  React.useEffect(() => {
+    if (tab !== "shops" || !shopDirectory?.canManage) return;
+    let cancelled = false;
+    fetchShopDirectoryUserOptions()
+      .then((result) => {
+        if (!cancelled) setShopUserOptions(result.users || []);
+      })
+      .catch((requestError) => {
+        if (!cancelled) setShopMessage(requestError instanceof Error ? requestError.message : "读取可分配用户失败。");
+      });
+    return () => { cancelled = true; };
+  }, [tab, shopDirectory?.canManage]);
+
+  React.useEffect(() => {
+    const selected = shopRows.filter((shop) => selectedShopKeys.has(shop.key));
+    if (!selected.length) {
+      setShopOwnerDraft("");
+      setShopViewerDrafts([]);
+      return;
+    }
+    const ownerId = selected[0].ownerId || "";
+    const viewerKey = (shop: (typeof selected)[number]) => [...(shop.viewerIds || [])].sort().join("|");
+    setShopOwnerDraft(selected.every((shop) => (shop.ownerId || "") === ownerId) ? ownerId : "");
+    setShopViewerDrafts(selected.every((shop) => viewerKey(shop) === viewerKey(selected[0])) ? [...(selected[0].viewerIds || [])] : []);
+  }, [selectedShopKeys, shopRows]);
 
   async function submitFilters(event?: React.FormEvent) {
     event?.preventDefault();
@@ -10416,7 +10449,7 @@ function PerformanceAnalysisPage({
     setBusy(true);
     setShopMessage("");
     try {
-      await onAssignProjectGroup([...selectedShopKeys], group);
+      await onUpdateShopAssignments({ shopKeys: [...selectedShopKeys], projectGroup: group });
       setShopMessage(`已将 ${selectedShopKeys.size} 个店铺设置为“${group}”。`);
       setSelectedShopKeys(new Set());
     } catch (requestError) {
@@ -10458,7 +10491,7 @@ function PerformanceAnalysisPage({
     let savedCount = 0;
     try {
       for (const [group, keys] of byGroup) {
-        await onAssignProjectGroup(keys, group);
+        await onUpdateShopAssignments({ shopKeys: keys, projectGroup: group });
         savedCount += keys.length;
         setPendingShopGroups((current) => {
           const next = { ...current };
@@ -10474,12 +10507,36 @@ function PerformanceAnalysisPage({
     }
   }
 
+  async function saveShopAccessAssignments() {
+    if (!selectedShopKeys.size) {
+      setShopMessage("请先勾选需要分配查看权限的店铺。");
+      return;
+    }
+    const viewerIds = shopViewerDrafts.filter((id) => id && id !== shopOwnerDraft);
+    setBusy(true);
+    setShopMessage("");
+    try {
+      await onUpdateShopAssignments({
+        shopKeys: [...selectedShopKeys],
+        ownerId: shopOwnerDraft,
+        viewerIds,
+      });
+      const owner = shopUserOptions.find((item) => item.id === shopOwnerDraft);
+      setShopMessage(`已更新 ${selectedShopKeys.size} 个店铺的查看权限：主负责人${owner ? `为 ${owner.displayName || owner.username}` : "已清空"}，额外可查看人 ${viewerIds.length} 人。`);
+      setSelectedShopKeys(new Set());
+    } catch (requestError) {
+      setShopMessage(requestError instanceof Error ? requestError.message : "店铺查看权限保存失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function exportShopDirectoryWorkbook() {
     if (!filteredShops.length) {
       setShopMessage("当前筛选结果为空，没有可导出的店铺。");
       return;
     }
-    const header = ["店铺ID", "店铺 / WMS 原名", "平台", "国家", "负责人ID", "负责人姓名", "主项目组", "店铺链接", "妙手店铺ID", "妙手别名", "订单行数", "最近订单"];
+    const header = ["店铺ID", "店铺 / WMS 原名", "平台", "国家", "负责人ID", "负责人姓名", "额外可查看人ID", "额外可查看人姓名", "主项目组", "店铺链接", "妙手店铺ID", "妙手别名", "订单行数", "最近订单"];
     const body = filteredShops.map((shop) => [
       shop.key,
       shop.rawName,
@@ -10487,6 +10544,8 @@ function PerformanceAnalysisPage({
       shop.country || "",
       shop.ownerId || "",
       shop.ownerName || "",
+      (shop.viewerIds || []).join(";"),
+      (shop.viewerNames || []).join(";"),
       shop.key in pendingShopGroups ? pendingShopGroups[shop.key] : (shop.projectGroup || ""),
       shop.shopUrl || "",
       shop.miaoshouShopId || "",
@@ -10865,9 +10924,10 @@ function PerformanceAnalysisPage({
         ) : (
           <div className="shop-directory-panel">
             <div className="shop-directory-summary">
-              <div><p className="eyebrow">Shop Directory</p><h3>店铺别称与主项目组</h3><p>业绩仍以 WMS 已出库订单为准；妙手只提供店铺别称。可直接修改单行项目组，或导出 CSV / Excel 批量维护后导入。</p></div>
+              <div><p className="eyebrow">Shop Directory</p><h3>店铺归属与查看权限</h3><p>管理员可维护主负责人和额外可查看人；直营运营只会看到获授权店铺的日报、订单穿透和导出数据。</p></div>
               <div><span><strong>{formatNumber(shopDirectory?.matchedShopCount || 0)}</strong>已匹配妙手别称</span><span><strong>{formatNumber(shopDirectory?.unmatchedShopCount || 0)}</strong>待匹配店铺</span><span><strong>{formatNumber(shopDirectory?.projectGroups.length || 0)}</strong>主项目组</span></div>
             </div>
+            {shopDirectory?.scope && !shopDirectory.canManage ? <div className="shop-directory-scope-notice"><ShieldCheck size={18} /><span><strong>当前账号可查看 {formatNumber(shopDirectory.scope.visibleShopCount)} 个店铺</strong><small>其中主负责人店铺 {formatNumber(shopDirectory.scope.ownedShopCount)} 个、额外授权店铺 {formatNumber(shopDirectory.scope.sharedShopCount)} 个；项目组长还可查看所负责项目组。</small></span></div> : null}
             <div className="shop-directory-toolbar">
               <label><Search size={15} /><input value={shopSearch} onChange={(event) => setShopSearch(event.target.value)} placeholder="搜索店铺、WMS 原名、平台、国家、负责人或项目组" /></label>
               <select value={shopGroupFilter} onChange={(event) => setShopGroupFilter(event.target.value)}>
@@ -10896,6 +10956,15 @@ function PerformanceAnalysisPage({
                 <span>已显示 {formatNumber(filteredShops.length)} / {formatNumber(shopRows.length)} 个店铺{selectedShopKeys.size ? ` · 已勾选 ${formatNumber(selectedShopKeys.size)} 个` : ""}{shopDirectory?.canManage ? "" : " · 组长仅能维护本组店铺"}</span>
               </div>
             ) : <div className="notice">当前账号可以查看店铺归属，但没有修改权限。</div>}
+            {shopDirectory?.canManage ? <div className="shop-directory-access-editor">
+              <div className="shop-directory-access-heading"><div><ShieldCheck size={18} /><span><strong>店铺查看权限</strong><small>先勾选店铺，再批量设置一名主负责人和多名额外可查看人。留空保存可清除原授权。</small></span></div><em>{selectedShopKeys.size ? `已选 ${selectedShopKeys.size} 个店铺` : "尚未选择店铺"}</em></div>
+              <div className="shop-directory-access-fields">
+                <label><span>主负责人</span><select value={shopOwnerDraft} onChange={(event) => { setShopOwnerDraft(event.target.value); setShopViewerDrafts((current) => current.filter((id) => id !== event.target.value)); }} disabled={!selectedShopKeys.size || busy}><option value="">未分配 / 清空负责人</option>{assignableShopUsers.map((user) => <option key={user.id} value={user.id}>{user.displayName || user.username} · {user.roleLabel || user.role}</option>)}</select></label>
+                <div className="shop-directory-viewers"><span>额外可查看人</span><div>{assignableShopUsers.filter((user) => user.id !== shopOwnerDraft).map((user) => <label key={user.id}><input type="checkbox" checked={shopViewerDrafts.includes(user.id)} onChange={(event) => setShopViewerDrafts((current) => event.target.checked ? [...new Set([...current, user.id])] : current.filter((id) => id !== user.id))} disabled={!selectedShopKeys.size || busy} /><span>{user.displayName || user.username}<small>{user.roleLabel || user.role}</small></span></label>)}</div></div>
+                <button className="sync-button" type="button" onClick={saveShopAccessAssignments} disabled={busy || !selectedShopKeys.size}>{busy ? "保存中" : `应用查看权限${selectedShopKeys.size ? `（${selectedShopKeys.size}）` : ""}`}</button>
+              </div>
+              <p>权限口径：管理员可看全部；项目组长可看本组；直营运营只看自己负责或额外授权的店铺。未分配店铺不会自动向普通运营开放。</p>
+            </div> : null}
             {shopMessage ? <div className={`shop-directory-message ${/失败|错误|缺少|为空|必须|不存在|未通过|无法|只能/.test(shopMessage) ? "danger" : ""}`}>{shopMessage}</div> : null}
             <datalist id="shop-row-project-groups">{shopDirectory?.projectGroups.map((item) => <option key={item} value={item} />)}</datalist>
             <div className="shop-directory-list">
@@ -10907,7 +10976,7 @@ function PerformanceAnalysisPage({
                 const editable = canEditShop(shop);
                 return (
                   <article className={`shop-directory-row${pending ? " pending" : ""}`} key={shop.key}>
-                    <label><input type="checkbox" checked={selectedShopKeys.has(shop.key)} onChange={(event) => toggleShopSelection(shop.key, event.target.checked)} disabled={!editable} /><span><strong>{shop.displayName}</strong><small>{shop.displayName !== shop.rawName ? `WMS：${shop.rawName}` : `WMS 原名 · ${formatNumber(shop.orderLines)} 行`}{shop.ownerName ? ` · 负责人：${shop.ownerName}` : ""}</small></span></label>
+                    <label><input type="checkbox" checked={selectedShopKeys.has(shop.key)} onChange={(event) => toggleShopSelection(shop.key, event.target.checked)} disabled={!editable} /><span><strong>{shop.displayName}</strong><small>{shop.displayName !== shop.rawName ? `WMS：${shop.rawName}` : `WMS 原名 · ${formatNumber(shop.orderLines)} 行`}{shop.ownerName ? ` · 负责人：${shop.ownerName}` : " · 未分配负责人"}{shop.viewerNames?.length ? ` · 额外可看：${shop.viewerNames.join("、")}` : ""}</small></span></label>
                     <span><strong>{shop.platform || "未识别平台"}</strong><small>{shop.country || "未识别国家"}</small></span>
                     <span><i className={`status-pill ${shop.miaoshouMatched ? "good" : "warning"}`}>{shop.miaoshouMatched ? "已匹配" : "未匹配"}</i><small>{shop.miaoshouAlias || shop.miaoshouShopName || "使用 WMS 原名"}</small></span>
                     <span className="shop-directory-group-cell">
