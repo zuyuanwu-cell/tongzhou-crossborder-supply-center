@@ -3,24 +3,26 @@
 const { parseXlsx } = require("./xlsx-lite");
 const { addDays } = require("./sites");
 
+const SHOPEE_REPORT_SCHEMA_VERSION = "2026-11-v2";
+
 const COLUMN_SPECS = Object.freeze({
-  orderId: { index: 0, names: ["No. Pesanan", "Order ID", "Order No."] },
-  status: { index: 1, names: ["Status Pesanan", "Order Status"] },
-  createdAt: { index: 9, names: ["Waktu Pesanan Dibuat", "Order Creation Date", "Order Created Time"] },
-  paidAt: { index: 10, names: ["Waktu Pembayaran Dilakukan", "Order Paid Time", "Payment Time"] },
-  subtotal: { index: 21, names: ["Subtotal Pesanan", "Product Subtotal", "Order Subtotal"] },
-  sellerVoucher: { index: 28, names: ["Voucher Ditanggung Penjual", "Seller Voucher"] },
-  cashback: { index: 29, names: ["Cashback Koin", "Coin Cashback"] },
-  platformVoucher: { index: 30, names: ["Voucher Ditanggung Shopee", "Shopee Voucher"] },
-  bundleShopee: { index: 32, names: ["Paket Diskon (Diskon dari Shopee)", "Bundle Deal (Shopee Discount)"] },
-  bundleSeller: { index: 33, names: ["Paket Diskon (Diskon dari Penjual)", "Bundle Deal (Seller Discount)"] },
-  coins: { index: 34, names: ["Potongan Koin Shopee", "Shopee Coins Offset"] },
-  creditCardDiscount: { index: 35, names: ["Diskon Kartu Kredit", "Credit Card Discount"] },
-  buyerShipping: { index: 36, names: ["Ongkos Kirim Dibayar oleh Pembeli", "Shipping Fee Paid by Buyer"] },
-  shippingDiscount: { index: 37, names: ["Estimasi Potongan Biaya Pengiriman", "Estimated Shipping Fee Discount"] },
-  reverseShipping: { index: 38, names: ["Ongkos Kirim Pengembalian Barang", "Return Shipping Fee"] },
-  totalPayment: { index: 39, names: ["Total Pembayaran", "Total Payment"] },
-  estimatedShipping: { index: 40, names: ["Perkiraan Ongkos Kirim", "Estimated Shipping Fee"] },
+  orderId: { index: 0, names: ["No. Pesanan", "ID Pesanan", "Order ID", "Order No.", "订单编号", "訂單編號", "Mã đơn hàng"] },
+  status: { index: 1, names: ["Status Pesanan", "Order Status", "订单状态", "訂單狀態", "Trạng thái đơn hàng"] },
+  createdAt: { index: 9, names: ["Waktu Pesanan Dibuat", "Masa Pesanan Dibuat", "Order Creation Date", "Order Created Time", "订单创建时间", "訂單建立時間", "Thời gian tạo đơn hàng"] },
+  paidAt: { index: 10, names: ["Waktu Pembayaran Dilakukan", "Masa Pembayaran", "Order Paid Time", "Payment Time", "付款时间", "付款時間", "Thời gian thanh toán"] },
+  subtotal: { index: 21, names: ["Subtotal Pesanan", "Subjumlah Produk", "Product Subtotal", "Order Subtotal", "商品小计", "商品小計", "Tổng tiền sản phẩm", "Tổng phụ đơn hàng"] },
+  sellerVoucher: { index: 28, names: ["Voucher Ditanggung Penjual", "Baucar Penjual", "Seller Voucher", "卖家优惠券", "賣家優惠券", "Voucher của Người bán", "Voucher do Người bán tài trợ"] },
+  cashback: { index: 29, names: ["Cashback Koin", "Coin Cashback", "金币返现", "金幣回饋", "Hoàn xu"] },
+  platformVoucher: { index: 30, names: ["Voucher Ditanggung Shopee", "Baucar Shopee", "Shopee Voucher", "Shopee 优惠券", "Shopee 優惠券", "Voucher Shopee"] },
+  bundleShopee: { index: 32, names: ["Paket Diskon (Diskon dari Shopee)", "Bundle Deal (Shopee Discount)", "Shopee 套装优惠", "Shopee 套裝優惠", "Combo khuyến mãi (Shopee tài trợ)"] },
+  bundleSeller: { index: 33, names: ["Paket Diskon (Diskon dari Penjual)", "Bundle Deal (Seller Discount)", "卖家套装优惠", "賣家套裝優惠", "Combo khuyến mãi (Người bán tài trợ)"] },
+  coins: { index: 34, names: ["Potongan Koin Shopee", "Shopee Coins Offset", "Shopee 金币抵扣", "Shopee 金幣折抵", "Xu Shopee"] },
+  creditCardDiscount: { index: 35, names: ["Diskon Kartu Kredit", "Credit Card Discount", "信用卡优惠", "信用卡優惠", "Giảm giá thẻ tín dụng"] },
+  buyerShipping: { index: 36, names: ["Ongkos Kirim Dibayar oleh Pembeli", "Shipping Fee Paid by Buyer", "买家支付运费", "買家支付運費", "Phí vận chuyển người mua trả"] },
+  shippingDiscount: { index: 37, names: ["Estimasi Potongan Biaya Pengiriman", "Estimated Shipping Fee Discount", "预估运费优惠", "預估運費優惠", "Ước tính giảm phí vận chuyển"] },
+  reverseShipping: { index: 38, names: ["Ongkos Kirim Pengembalian Barang", "Return Shipping Fee", "退货运费", "退貨運費", "Phí vận chuyển trả hàng"] },
+  totalPayment: { index: 39, names: ["Total Pembayaran", "Jumlah Bayaran", "Total Payment", "买家实付金额", "買家實付金額", "订单总金额", "訂單總金額", "Tổng thanh toán"] },
+  estimatedShipping: { index: 40, names: ["Perkiraan Ongkos Kirim", "Estimated Shipping Fee", "预估运费", "預估運費", "Phí vận chuyển ước tính"] },
 });
 
 const ZERO_DECIMAL_SITES = new Set(["ID", "VN", "TW", "CL", "CO"]);
@@ -28,7 +30,16 @@ const ORDER_REPORT_LOOKBACK_DAYS = 14;
 const ORDER_REPORT_MAX_RANGE_DAYS = 21;
 
 function normalizeHeader(value) {
-  return String(value || "").trim().toLocaleLowerCase().replace(/[\s._/()\-]+/g, "");
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\uFEFF\u200B-\u200D\u2060]/g, "")
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[\s._/()\-:：\[\]【】]+/g, "");
+}
+
+function safeHeaderPreview(header) {
+  return header.slice(0, 12).map((value) => String(value || "").replace(/[\r\n\t]+/g, " ").slice(0, 48));
 }
 
 function columnMap(header) {
@@ -42,7 +53,7 @@ function columnMap(header) {
   const recognizedPayment = COLUMN_SPECS.totalPayment.names.map(normalizeHeader).includes(normalized[columns.totalPayment]);
   const recognizedPaidAt = COLUMN_SPECS.paidAt.names.map(normalizeHeader).includes(normalized[columns.paidAt]);
   if (header.length < 41 || !recognizedOrder || !recognizedPayment || !recognizedPaidAt) {
-    throw new Error("Shopee 订单报表列结构不符合预期，已停止替换支付金额。");
+    throw new Error(`Shopee 订单报表列结构不符合预期，已停止替换支付金额。schema=${SHOPEE_REPORT_SCHEMA_VERSION}; columns=${header.length}; headers=${JSON.stringify(safeHeaderPreview(header))}`);
   }
   return columns;
 }
@@ -160,4 +171,16 @@ function orderReportWindows(dates, { lookbackDays = ORDER_REPORT_LOOKBACK_DAYS, 
   return windows;
 }
 
-module.exports = { ORDER_REPORT_LOOKBACK_DAYS, ORDER_REPORT_MAX_RANGE_DAYS, emptyDay, orderReportWindows, parseDate, parseMoney, parseShopeeOrderReport };
+module.exports = {
+  COLUMN_SPECS,
+  SHOPEE_REPORT_SCHEMA_VERSION,
+  ORDER_REPORT_LOOKBACK_DAYS,
+  ORDER_REPORT_MAX_RANGE_DAYS,
+  columnMap,
+  emptyDay,
+  normalizeHeader,
+  orderReportWindows,
+  parseDate,
+  parseMoney,
+  parseShopeeOrderReport,
+};

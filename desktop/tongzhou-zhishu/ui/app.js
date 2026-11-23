@@ -16,7 +16,7 @@ const S = {
   historyDetail: null,
   historyRows: null,
   diag: null,
-  run: { range: "auto", from: "", to: "", mode: "upload" },
+  run: { range: "auto", from: "", to: "", mode: "upload", storeId: "" },
   busy: {},
 };
 
@@ -79,7 +79,8 @@ function yesterday() {
 
 const STATUS = {
   ok: ["成功", "ok"], partial: ["部分成功", "warn"], failed: ["失败", "err"], skipped: ["已跳过", ""],
-  cancelled: ["已取消", ""], running: ["进行中", "info"], upload_failed: ["写入中台失败", "err"],
+  cancelled: ["已取消", ""], running: ["进行中", "info"],
+  upload_queued: ["等待补传", "warn"], uploading: ["正在补传", "info"], upload_failed: ["写入中台失败", "err"],
 };
 const statusTag = (status) => {
   const [label, kind] = STATUS[status] || [status, ""];
@@ -121,9 +122,15 @@ function viewHome() {
   const stores = storeOverview || [];
   const enabled = stores.filter((store) => store.enabled);
   const unmatched = enabled.filter((store) => store.targets.some((target) => target.auto && !target.matched));
+  const selectedStore = enabled.find((store) => store.storeId === S.run.storeId) || null;
+  const selectedUnmatched = selectedStore?.targets.some((target) => target.auto && !target.matched);
+  const customDayCount = S.run.range === "custom" && S.run.from && S.run.to && S.run.from <= S.run.to
+    ? Math.floor((new Date(`${S.run.to}T00:00:00Z`) - new Date(`${S.run.from}T00:00:00Z`)) / 86400000) + 1
+    : 0;
+  const reportChunks = customDayCount ? Math.ceil(customDayCount / 7) : 0;
   const last = history[0];
   const pct = S.progressCount.total ? Math.round((S.progressCount.index / S.progressCount.total) * 100) : 0;
-  const ready = connected && cliPath && enabled.length;
+  const ready = connected && cliPath && enabled.length && (!S.run.storeId || selectedStore) && !selectedUnmatched;
   return `
     <h1>总览</h1>
     <p class="subtitle">自动从紫鸟里已登录的 Shopee 店铺读取访客、曝光、加购、支付金额、订单和广告花费，写入中台「店铺日报」。</p>
@@ -137,6 +144,10 @@ function viewHome() {
       <div class="panel-head">
         <div><h2>采集</h2><p>${config.schedule.enabled ? `每天 ${esc(config.schedule.times.join("、"))} 自动采集最近 ${config.schedule.lookbackDays} 天` : "还没开启每天自动采集"} · ${config.schedule.managed ? `<span class="tag info">由中台「采集中心」管理</span>` : `<button class="btn link" data-action="toggle-schedule">${config.schedule.enabled ? "关闭自动采集" : "开启每天 09:30 自动采集"}</button>`}</p></div>
         <div class="toolbar" style="margin:0">
+          <select data-bind="run.storeId" style="min-width:190px">
+            <option value="">全部启用店铺</option>
+            ${enabled.map((store) => `<option value="${esc(store.storeId)}" ${S.run.storeId === store.storeId ? "selected" : ""}>${esc(store.storeName)}</option>`).join("")}
+          </select>
           <select data-bind="run.range" style="min-width:150px">
             <option value="auto" ${S.run.range === "auto" ? "selected" : ""}>最近 ${config.schedule.lookbackDays} 天</option>
             <option value="yesterday" ${S.run.range === "yesterday" ? "selected" : ""}>仅昨天</option>
@@ -144,9 +155,14 @@ function viewHome() {
           </select>
           ${S.run.range === "custom" ? `<input type="date" data-bind="run.from" value="${esc(S.run.from)}"><input type="date" data-bind="run.to" value="${esc(S.run.to)}">` : ""}
           ${running ? `<button class="btn danger" data-action="cancel">停止</button>` : ""}
-          <button class="btn primary" data-action="collect" ${running || !ready ? "disabled" : ""}>${running ? "采集中…" : "开始采集并写入中台"}</button>
+          <button class="btn primary" data-action="collect" ${running || !ready ? "disabled" : ""}>${running ? "采集中…" : S.run.storeId ? "补采此店并写入中台" : "开始采集并写入中台"}</button>
         </div>
       </div>
+      ${selectedStore ? `<div class="notice ${selectedUnmatched ? "err" : ""}" style="margin-bottom:10px">
+        <b>${esc(selectedStore.storeName)}</b> · ${selectedStore.targets.length} 个中台店铺映射
+        ${customDayCount ? ` · ${customDayCount} 天 · 每个映射约 ${reportChunks} 个七天分片，共约 ${reportChunks * Math.max(1, selectedStore.targets.length)} 次官方导表` : ""}
+        ${selectedUnmatched ? " · 尚未完成中台店铺映射，正式补采已禁止；请先到「店铺」完成映射。" : " · 可按自定义日期单店补采；重复执行由稳定幂等键去重。"}
+      </div>` : ""}
       ${running || S.progress.length ? `
         <div class="bar"><div style="width:${running ? pct : 100}%"></div></div>
         <ul class="progress-list">${S.progress.slice(-80).reverse().map((item) => `<li><span class="muted">${esc(item.time)}</span> ${esc(item.message)}</li>`).join("")}</ul>` : ""}
@@ -188,7 +204,7 @@ function viewStores() {
       <span class="muted small">${list.length} 个店铺${config.storeCacheAt ? ` · 读取于 ${fmtTime(config.storeCacheAt)}` : ""}${shops.length ? ` · 中台店铺 ${shops.length} 个` : " · 连接中台后可自动对应店铺"}</span>
     </div>
     <div class="table-wrap" style="max-height:none"><table class="data">
-      <thead><tr><th style="width:56px">采集</th><th>紫鸟店铺</th><th style="width:110px">站点</th><th>对应的中台店铺</th><th style="width:220px">上次结果</th><th style="width:70px"></th></tr></thead>
+      <thead><tr><th style="width:56px">采集</th><th>紫鸟店铺</th><th style="width:110px">站点</th><th>对应的中台店铺</th><th style="width:220px">上次结果</th><th style="width:132px"></th></tr></thead>
       <tbody>${list.map((store) => {
         const target = store.targets[0] || {};
         const multi = store.targets.length > 1;
@@ -206,7 +222,7 @@ function viewStores() {
             ${target.auto && target.matched ? `<span class="tag ok">自动对应</span>` : ""}${target.auto && !target.matched && shops.length ? `<span class="tag warn">请选择</span>` : ""}`}
           </td>
           <td>${store.last ? `${statusTag(store.last.status)} <span class="muted small">${esc(store.last.message || `${store.last.rowCount} 行`)}</span>` : `<span class="muted">—</span>`}</td>
-          <td><button class="btn small" data-action="store-trial" data-id="${esc(store.storeId)}" ${S.state.running || !config.zhongtai.hasToken ? "disabled" : ""} title="只采集昨天，并在中台试匹配，不写入">试采</button></td>
+          <td><div class="toolbar" style="margin:0;gap:6px"><button class="btn small" data-action="store-trial" data-id="${esc(store.storeId)}" ${S.state.running || !config.zhongtai.hasToken ? "disabled" : ""} title="只采集昨天，并在中台试匹配，不写入">试采</button><button class="btn small" data-action="store-backfill" data-id="${esc(store.storeId)}" ${S.state.running || !config.zhongtai.hasToken ? "disabled" : ""} title="回到总览选择日期，仅补采此店">补采</button></div></td>
         </tr>`;
       }).join("") || `<tr><td colspan="6" class="empty">没有读取到 Shopee 店铺。确认紫鸟客户端已登录，然后点「重新读取紫鸟店铺」。</td></tr>`}</tbody>
     </table></div>
@@ -404,10 +420,18 @@ function viewHistory() {
   if (detail) {
     const rows = S.historyRows || [];
     const fields = S.state.metricFields;
+    const retrying = Boolean(S.busy[`history-reupload:${detail.id}`]);
+    const uploadState = detail.upload?.state || detail.status;
+    const uploadHint = uploadState === "upload_failed"
+      ? `<div class="notice err">上次补传失败${detail.upload?.lastError ? `：${esc(detail.upload.lastError)}` : ""}${detail.upload?.nextRetryAt ? `；系统将在 ${fmtTime(detail.upload.nextRetryAt)} 自动重试` : ""}</div>`
+      : uploadState === "upload_queued" || uploadState === "uploading"
+        ? `<div class="notice warn">${uploadState === "uploading" ? "正在写入中台" : "已进入本地补传队列"}，关闭程序后下次启动仍会继续。</div>`
+        : "";
     return `
       <div class="toolbar"><button class="btn small" data-action="history-back">← 返回记录列表</button><span class="grow"></span>
-        <button class="btn small" data-action="history-reupload" data-id="${esc(detail.id)}" data-dry="1">中台试匹配</button>
-        <button class="btn small primary" data-action="history-reupload" data-id="${esc(detail.id)}">重新写入中台</button></div>
+        <button class="btn small" data-action="history-reupload" data-id="${esc(detail.id)}" data-dry="1" ${retrying ? "disabled" : ""}>中台试匹配</button>
+        <button class="btn small primary" data-action="history-reupload" data-id="${esc(detail.id)}" ${retrying ? "disabled" : ""}>${retrying ? "补传中…" : "重新写入中台"}</button></div>
+      ${uploadHint}
       <section class="panel">${runSummary(detail, { detail: true })}</section>
       ${detail.upload?.errors?.length || detail.upload?.warnings?.length ? `<section class="panel"><h3>中台返回</h3>
         ${(detail.upload.errors || []).map((error) => `<div class="small" style="color:var(--red)">✗ ${esc(error.message)}</div>`).join("")}
@@ -651,7 +675,7 @@ const actions = {
     if (dates === undefined) return;
     S.progress = [];
     S.progressCount = { index: 0, total: 0 };
-    await api("collect:start", { dates, mode: S.run.mode });
+    await api("collect:start", { storeIds: S.run.storeId ? [S.run.storeId] : null, dates, mode: S.run.mode });
     S.state.running = true;
     render();
   },
@@ -714,6 +738,18 @@ const actions = {
     S.state.running = true;
     S.tab = "home";
     toast("已开始试采（只在中台试匹配，不写入），进度见总览");
+    render();
+  },
+  "store-backfill"(el) {
+    const end = yesterday();
+    const startDate = new Date(`${end}T00:00:00Z`);
+    startDate.setUTCDate(startDate.getUTCDate() - 6);
+    S.run.storeId = el.dataset.id;
+    S.run.range = "custom";
+    S.run.from = startDate.toISOString().slice(0, 10);
+    S.run.to = end;
+    S.tab = "home";
+    toast("已选择此店，默认最近 7 天；可修改起止日期后补采。", "ok");
     render();
   },
   "cal-new"() {
@@ -841,9 +877,13 @@ const actions = {
   },
   async "history-reupload"(el) {
     const dryRun = Boolean(el.dataset.dry);
-    const result = await api("history:reupload", { id: el.dataset.id, dryRun });
-    toast(`${dryRun ? "试匹配" : "写入"}完成：${dryRun ? result.rowCount : result.written} 行${result.errors.length ? `，${result.errors.length} 条错误` : ""}`, result.errors.length ? "err" : "ok");
-    await reload();
+    const key = `history-reupload:${el.dataset.id}`;
+    await withBusy(key, async () => {
+      toast(dryRun ? "正在向中台试匹配…" : "正在补传，结果已保存在本机…");
+      const result = await api("history:reupload", { id: el.dataset.id, dryRun });
+      toast(`${dryRun ? "试匹配" : "写入"}完成：${dryRun ? result.rowCount : result.written} 行${result.errors.length ? `，${result.errors.length} 条错误` : ""}`, result.errors.length ? "err" : "ok");
+      await reload();
+    });
   },
   async "save-zhongtai"() {
     const token = $("#set-token").value.trim();

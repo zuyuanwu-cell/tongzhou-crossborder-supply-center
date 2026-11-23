@@ -158,17 +158,11 @@ const retryAfterMs = (response, fallbackMs) => {
   return fallbackMs;
 };
 const fetchWithRateLimit = async (url, label) => {
-  const delays = [5000, 15000, 30000, 60000];
-  for (let attempt = 0; attempt < delays.length; attempt += 1) {
-    const response = await fetch(url, { credentials: "include" });
-    if (response.status !== 429) return response;
-    const delay = retryAfterMs(response, delays[attempt]);
-    if (attempt === delays.length - 1) {
-      throw new Error("SHOPEE_RATE_LIMIT|" + delay + "|Shopee 订单报表接口限流（" + label + "），需要冷却后续跑。");
-    }
-    await sleep(delay);
-  }
-  throw new Error("SHOPEE_RATE_LIMIT|60000|Shopee 订单报表接口持续限流。");
+  const response = await fetch(url, { credentials: "include" });
+  if (response.status !== 429) return response;
+  const delay = retryAfterMs(response, 0);
+  // 页面脚本不在同一店铺快速重试；Node 侧会全局熔断所有后续店铺。
+  throw new Error("SHOPEE_RATE_LIMIT|" + delay + "|Shopee 订单报表接口限流（" + label + "），已进入全局冷却。");
 };
 const readJson = async (pathname, params) => {
   const response = await fetchWithRateLimit(apiUrl(pathname, params), pathname);

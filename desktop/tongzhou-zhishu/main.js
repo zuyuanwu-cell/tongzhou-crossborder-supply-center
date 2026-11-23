@@ -625,6 +625,13 @@ app.whenReady().then(() => {
   agent.start();
   miaoshouKeeper.start();
   log("info", `同舟智数 ${APP_VERSION} 已启动，数据目录：${dataDir}`);
+  // 采集结果会先落盘再上传。启动后立即恢复未完成补传，并定期重试；
+  // 这样即使上次因为断网、关机或中台短暂不可用退出，也不会丢数据。
+  collector.flushUploadOutbox().catch((error) => log("warn", `恢复待补传数据失败：${error.message}`));
+  const uploadRetryTimer = setInterval(() => {
+    if (!collector.running) collector.flushUploadOutbox().catch((error) => log("warn", `自动补传失败：${error.message}`));
+  }, 60_000);
+  uploadRetryTimer.unref?.();
   // 启动时自动读取紫鸟店铺和中台店铺名单，用户不需要手动点。
   setTimeout(async () => {
     if (cli.path) await collector.refreshStores().then((list) => log("info", `读取到 ${list.length} 个紫鸟店铺`)).catch((error) => log("warn", `读取紫鸟店铺失败：${error.message}`));

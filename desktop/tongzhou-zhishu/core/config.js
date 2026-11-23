@@ -48,8 +48,22 @@ function mergeDefaults(input) {
 function writeAtomic(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, data);
-  fs.renameSync(temp, file);
+  let handle = null;
+  try {
+    handle = fs.openSync(temp, "w");
+    fs.writeFileSync(handle, data);
+    fs.fsyncSync(handle);
+    fs.closeSync(handle);
+    handle = null;
+    fs.renameSync(temp, file);
+  } finally {
+    if (handle !== null) fs.closeSync(handle);
+    try {
+      if (fs.existsSync(temp)) fs.unlinkSync(temp);
+    } catch {
+      /* best effort cleanup */
+    }
+  }
 }
 
 function newId(prefix) {
@@ -61,6 +75,7 @@ class ConfigStore {
     this.dir = dir;
     this.file = path.join(dir, "config.json");
     this.historyFile = path.join(dir, "history.json");
+    this.outboxFile = path.join(dir, "upload-outbox.json");
     this.resultsDir = path.join(dir, "results");
     this.data = this.load();
   }
@@ -123,7 +138,7 @@ class ConfigStore {
 
   appendHistory(entry) {
     const { rows, ...meta } = entry;
-    if (rows) writeAtomic(path.join(this.resultsDir, `${entry.id}.json`), JSON.stringify(rows));
+    if (rows) this.saveResultRows(entry.id, rows);
     const list = [meta, ...this.history()].slice(0, 200);
     writeAtomic(this.historyFile, JSON.stringify(list, null, 2));
     return list;
@@ -141,6 +156,42 @@ class ConfigStore {
       return [];
     }
   }
+
+  saveResultRows(id, rows) {
+    if (!id) throw new Error("result id is required");
+    writeAtomic(path.join(this.resultsDir, `${id}.json`), JSON.stringify(Array.isArray(rows) ? rows : []));
+  }
+
+  uploadOutbox() {
+    try {
+      const value = JSON.parse(fs.readFileSync(this.outboxFile, "utf8"));
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+
+  upsertUploadJob(job) {
+    if (!job?.id || !job?.runId) throw new Error("upload job id and runId are required");
+    const now = new Date().toISOString();
+    const list = this.uploadOutbox();
+    const index = list.findIndex((item) => item.id === job.id);
+    const next = {
+      ...(index >= 0 ? list[index] : { createdAt: now, attempts: 0 }),
+      ...job,
+      updatedAt: now,
+    };
+    if (index >= 0) list[index] = next;
+    else list.push(next);
+    writeAtomic(this.outboxFile, JSON.stringify(list, null, 2));
+    return next;
+  }
+
+  removeUploadJob(id) {
+    const list = this.uploadOutbox().filter((item) => item.id !== id);
+    writeAtomic(this.outboxFile, JSON.stringify(list, null, 2));
+    return list;
+  }
 }
 
-module.exports = { ConfigStore, DEFAULT_CONFIG, mergeDefaults, newId };
+module.exports = { ConfigStore, DEFAULT_CONFIG, mergeDefaults, newId, writeAtomic };

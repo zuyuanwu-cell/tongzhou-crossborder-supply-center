@@ -26,7 +26,7 @@ const { ZhongtaiClient } = require("../core/zhongtai");
 const { templatizeRequest, readPath, extractMetrics, placeholderValues, fill } = require("../core/recipe");
 const { dayRange, siteToday, dateList } = require("../core/sites");
 const { dueSlots } = require("../core/scheduler");
-const { orderReportWindows, parseMoney, parseShopeeOrderReport } = require("../core/shopee-order-report");
+const { SHOPEE_REPORT_SCHEMA_VERSION, columnMap, orderReportWindows, parseMoney, parseShopeeOrderReport } = require("../core/shopee-order-report");
 const { startMockBrowser, metricsFor, ORIGIN } = require("./mock-browser");
 
 const TOKEN = "test-ingest-token-0123456789abcdef";
@@ -353,6 +353,42 @@ test("Shopee 官方订单导表：订单去重，支付销售额只减卖家券�
   ]);
 });
 
+test("Shopee 官方订单导表：支持中文、越南语和马来语关键表头且未知结构安全失败", () => {
+  const header = Array(41).fill("");
+  Object.assign(header, {
+    0: "\uFEFF订单编号：",
+    1: "订单状态",
+    9: "订单创建时间",
+    10: "付款时间",
+    21: "商品小计",
+    28: "卖家优惠券",
+    39: "买家实付金额",
+    40: "预估运费",
+  });
+  const columns = columnMap(header);
+  assert.equal(columns.orderId, 0);
+  assert.equal(columns.paidAt, 10);
+  assert.equal(columns.totalPayment, 39);
+
+  const vietnamese = [...header];
+  vietnamese[0] = "Mã đơn hàng";
+  vietnamese[10] = "Thời gian thanh toán";
+  vietnamese[39] = "Tổng thanh toán";
+  assert.equal(columnMap(vietnamese).paidAt, 10);
+
+  const malay = [...header];
+  malay[0] = "ID Pesanan";
+  malay[10] = "Masa Pembayaran";
+  malay[39] = "Jumlah Bayaran";
+  assert.equal(columnMap(malay).totalPayment, 39);
+
+  assert.throws(() => columnMap(Array(41).fill("未知列")), (error) => {
+    assert.match(error.message, new RegExp(`schema=${SHOPEE_REPORT_SCHEMA_VERSION}`));
+    assert.match(error.message, /columns=41/);
+    return true;
+  });
+});
+
 test("Shopee 官方订单导表采集：页面内下载、内存解析且证据不保留明细", async () => {
   const header = Array(41).fill("");
   Object.assign(header, {
@@ -550,6 +586,77 @@ test("CLI 把脚本当作表达式时同样可用；中台令牌错误时给出�
   assert.equal((await good.ping()).ok, true);
   assert.equal((await good.listShops()).length, 1);
   await assert.rejects(() => new ZhongtaiClient({ baseUrl: "", token: TOKEN }).ping(), /中台地址/);
+});
+
+test("上传队列：中台失败后重启程序只补传落盘数据，不重新采集", async () => {
+  const dir = tempDir();
+  const dataDir = path.join(dir, "data");
+  const runId = "run_restart_reupload";
+  const rows = [
+    {
+      date: "2026-10-01",
+      shopName: "逐梦测试店",
+      country: "印度尼西亚",
+      platform: "Shopee",
+      currency: "IDR",
+      orderCount: 12,
+      payAmount: 345600,
+      _store: { storeId: "ziniao-store-1", storeName: "逐梦测试店" },
+    },
+  ];
+  const firstStore = new ConfigStore(dataDir);
+  firstStore.appendHistory({
+    id: runId,
+    status: "ok",
+    startedAt: "2026-11-23T10:00:00.000Z",
+    finishedAt: "2026-11-23T10:01:00.000Z",
+    stores: [{ storeId: "ziniao-store-1", status: "ok" }],
+    rows,
+  });
+  const noCollectionCli = new Proxy({}, {
+    get(_target, property) {
+      throw new Error(`补传不应调用紫鸟采集：${String(property)}`);
+    },
+  });
+  const firstCollector = new Collector({
+    cli: noCollectionCli,
+    store: firstStore,
+    zhongtaiFactory: () => ({
+      async ingest() {
+        const error = new Error("中台暂时不可用");
+        error.status = 503;
+        throw error;
+      },
+    }),
+  });
+  const queued = firstCollector.queueUpload(runId, { source: "restart-test" });
+  const failed = await firstCollector.attemptUploadJob(queued, { force: true });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.queued, true);
+  assert.equal(firstStore.uploadOutbox().length, 1);
+  assert.deepEqual(firstStore.resultRows(runId), rows);
+
+  // 新建 ConfigStore 与 Collector，模拟同舟智数进程彻底退出后重新启动。
+  const restartedStore = new ConfigStore(dataDir);
+  const uploaded = [];
+  const restartedCollector = new Collector({
+    cli: noCollectionCli,
+    store: restartedStore,
+    zhongtaiFactory: () => ({
+      async ingest(uploadRows, options) {
+        uploaded.push({ rows: uploadRows, options });
+        return { rowCount: uploadRows.length, written: uploadRows.length, shopCount: 1, errors: [], warnings: [] };
+      },
+    }),
+  });
+  const flushed = await restartedCollector.flushUploadOutbox({ force: true });
+  assert.equal(flushed.length, 1);
+  assert.equal(flushed[0].ok, true);
+  assert.equal(restartedStore.uploadOutbox().length, 0);
+  assert.equal(uploaded.length, 1);
+  assert.equal(uploaded[0].options.runId, runId);
+  assert.deepEqual(uploaded[0].rows, rows.map(({ _store, ...row }) => row));
+  assert.equal(restartedStore.history().find((item) => item.id === runId)?.status, "ok");
 });
 
 test("定时：到点触发一次、错过 2 小时内补跑、不重复", () => {

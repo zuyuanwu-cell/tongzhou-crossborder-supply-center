@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Collector, shopeeRateLimitDetails } = require("../core/collector");
+const { Collector, shopeeRateLimitDetails, shopeeRateLimitCooldown } = require("../core/collector");
 const { orderReportBody, loginRecoveryBody } = require("../core/page-scripts");
 const shopee = require("../core/platforms/shopee");
 
@@ -23,9 +23,17 @@ test("Shopee 报表限流标记可解析，普通错误不会误判", () => {
 test("Shopee 报表脚本使用 Retry-After、退避与较慢轮询", () => {
   const script = orderReportBody({ startDate: "2026-10-01", endDate: "2026-10-31" });
   assert.match(script, /retry-after/i);
-  assert.match(script, /5000, 15000, 30000, 60000/);
+  assert.doesNotMatch(script, /5000, 15000, 30000, 60000/);
   assert.match(script, /await sleep\(3000\)/);
   assert.match(script, /SHOPEE_RATE_LIMIT/);
+});
+
+test("Shopee 429 使用全局 15/30/60 分钟退避并遵守 Retry-After", () => {
+  const options = { jitterMinMs: 0, jitterMaxMs: 0, random: () => 0 };
+  assert.equal(shopeeRateLimitCooldown(1, 0, options), 15 * 60_000);
+  assert.equal(shopeeRateLimitCooldown(2, 0, options), 30 * 60_000);
+  assert.equal(shopeeRateLimitCooldown(3, 0, options), 60 * 60_000);
+  assert.equal(shopeeRateLimitCooldown(4, 90 * 60_000, options), 90 * 60_000);
 });
 
 test("Shopee 自动登录只触发浏览器保存凭据，不返回密码内容", () => {
@@ -81,11 +89,41 @@ test("Shopee 自动登录遇到验证码或未自动填充时明确转人工", a
   }
 });
 
+test("Shopee about:blank 会重新打开当前店铺页面", async () => {
+  let checks = 0;
+  let visits = 0;
+  const collector = new Collector({
+    cli: {
+      visit: async ({ url }) => {
+        visits += 1;
+        assert.equal(url, "https://seller.shopee.co.id/portal/sale/order");
+      },
+      runInPage: async () => {
+        checks += 1;
+        return checks === 1
+          ? { href: "about:blank", title: "", text: "" }
+          : { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+      },
+    },
+    store: storeStub(),
+    waits: { visit: 0 },
+  });
+  const info = await collector.ensurePage("blank-store", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(visits, 1);
+  assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+});
+
 test("Shopee 429 只重试当前报表窗口，不回到整店采集", async () => {
   const collector = new Collector({
     cli: {},
     store: storeStub(),
-    waits: { shopeeReportGap: 0, shopeeRateLimitCooldown: 0, shopeeReportRetries: 1 },
+    waits: {
+      shopeeReportGap: 0,
+      shopeeRateLimitSchedule: [0],
+      shopeeRateLimitJitterMin: 0,
+      shopeeRateLimitJitterMax: 0,
+      shopeeReportRetries: 1,
+    },
   });
   let attempts = 0;
   collector.waitForShopeeReportSlot = async () => null;

@@ -91,6 +91,7 @@ import { createPerformanceAnalyticsQueryService } from "./performance-query-serv
 import { miaoshouBusinessDate, normalizeMiaoshouRevenueBasis, MIAOSHOU_REVENUE_BASES } from "./miaoshou-performance.js";
 import { buildShopDailyReport, normalizeShopFeeRule, parseShopDailyImport, prepareShopDailyMetrics, validateShopFeeRule, METRIC_FIELDS as SHOP_DAILY_METRIC_FIELDS } from "./shop-daily-report.js";
 import { initShopDailyReportStore } from "./shop-daily-report-db.js";
+import { createShopDailyIngestIdempotency } from "./shop-daily-ingest-idempotency.js";
 import { createCollectorCenter } from "./collector-center.js";
 import { createCollectorQuality, addDays as qualityAddDays } from "./collector-quality.js";
 import { createMiaoshouRuleSchedule } from "./miaoshou-rule-schedule.js";
@@ -167,6 +168,7 @@ const movementHistoryDbPath = resolve(process.env.MOVEMENT_HISTORY_DB_PATH || re
 const inventoryLedgerDbPath = resolve(process.env.INVENTORY_LEDGER_DB_PATH || resolve(cacheDir, "inventory-ledger.sqlite"));
 const performanceAnalyticsDbPath = resolve(process.env.PERFORMANCE_ANALYTICS_DB_PATH || resolve(cacheDir, "performance-analytics.sqlite"));
 const shopDailyReportDbPath = resolve(process.env.SHOP_DAILY_REPORT_DB_PATH || resolve(cacheDir, "shop-daily-report.sqlite"));
+const shopDailyIngestIdempotencyPath = resolve(cacheDir, "shop-daily-ingest-idempotency.json");
 const shopMetricsIngestTokenPath = resolve(cacheDir, "shop-metrics-ingest-token.json");
 // 采集令牌：优先用环境变量；没有配置时自动生成并保存在 .cache 里，
 // 桌面采集端（同舟智数）用中台账号登录后通过 /ingest/pair 领取，不需要手工配置服务器。
@@ -191,6 +193,7 @@ function resolveShopMetricsIngestToken() {
 const shopMetricsIngestToken = resolveShopMetricsIngestToken();
 // 采集中心：同舟智数采集节点的配对、心跳、计划、命令、运行记录与日志。
 const collectorCenter = createCollectorCenter({ filePath: resolve(cacheDir, "collector-center.json") });
+const shopDailyIngestIdempotency = createShopDailyIngestIdempotency({ filePath: shopDailyIngestIdempotencyPath });
 const collectorQuality = createCollectorQuality({ dir: resolve(cacheDir, "collector-quality") });
 const miaoshouRuleSchedule = createMiaoshouRuleSchedule({ filePath: resolve(cacheDir, "miaoshou-rule-schedule.json") });
 
@@ -13916,6 +13919,31 @@ const server = http.createServer(async (req, res) => {
       const ingestNode = collectorNodeFromRequest(req);
       // 采集节点每行带采集证据，请求体比人工导入大。
       const body = await parseRequestBody(req, (ingestNode ? 16 : 6) * 1024 * 1024);
+      const rawIdempotencyKey = Array.isArray(req.headers["idempotency-key"])
+        ? req.headers["idempotency-key"][0]
+        : req.headers["idempotency-key"];
+      const idempotencyKey = String(rawIdempotencyKey || "").trim().slice(0, 240);
+      const requestDigest = idempotencyKey
+        ? createHash("sha256").update(JSON.stringify(body)).digest("hex")
+        : "";
+      const idempotency = shopDailyIngestIdempotency.begin(idempotencyKey, requestDigest);
+      if (idempotency.status === "conflict") {
+        sendJson(res, 409, { ok: false, code: "IDEMPOTENCY_KEY_REUSED", message: "同一幂等键不能提交不同的采集内容。" });
+        return;
+      }
+      if (idempotency.status === "pending") {
+        sendJson(res, 409, {
+          ok: false,
+          code: "IDEMPOTENCY_IN_PROGRESS",
+          message: "该批数据正在写入，请稍后直接重试，不要重新采集。",
+          retryAfterSeconds: idempotency.retryAfterSeconds,
+        });
+        return;
+      }
+      if (idempotency.status === "replay") {
+        sendJson(res, 200, idempotency.result);
+        return;
+      }
       const inputRows = Array.isArray(body.rows) ? body.rows.slice(0, 20000) : [];
       const rows = inputRows.map((row, index) => {
         const values = {};
@@ -13943,15 +13971,21 @@ const server = http.createServer(async (req, res) => {
         };
       }).filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date));
       const source = String(body.source || "ziniao").replace(/[^a-z0-9_-]/gi, "").slice(0, 32) || "ziniao";
-      const { resolved, ...result } = await importShopDailyMetrics({ rows, source, dryRun: Boolean(body.dryRun), auth: directAuth });
-      if (!result.dryRun && result.written) {
-        appendActionLog(directAuth, "采集写入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, source });
-        if (ingestNode && Array.isArray(resolved)) {
-          result.evidenceSaved = recordCollectorEvidence(ingestNode, inputRows, resolved);
-          scheduleCollectorQualityCycle();
+      try {
+        const { resolved, ...result } = await importShopDailyMetrics({ rows, source, dryRun: Boolean(body.dryRun), auth: directAuth });
+        if (!result.dryRun && result.written) {
+          appendActionLog(directAuth, "采集写入店铺日报", "shop_daily_report", `${result.dateFrom}~${result.dateTo}`, { rows: result.written, source });
+          if (ingestNode && Array.isArray(resolved)) {
+            result.evidenceSaved = recordCollectorEvidence(ingestNode, inputRows, resolved);
+            scheduleCollectorQualityCycle();
+          }
         }
+        shopDailyIngestIdempotency.complete(idempotencyKey, requestDigest, result);
+        sendJson(res, 200, result);
+      } catch (error) {
+        shopDailyIngestIdempotency.abort(idempotencyKey, requestDigest);
+        throw error;
       }
-      sendJson(res, 200, result);
       return;
     }
 

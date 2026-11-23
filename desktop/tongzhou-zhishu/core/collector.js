@@ -14,6 +14,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function uploadRetryDelay(attempts) {
+  const schedule = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
+  return schedule[Math.min(Math.max(0, Number(attempts || 1) - 1), schedule.length - 1)];
+}
+
 function shopeeRateLimitDetails(error) {
   const message = String(error?.message || error || "");
   const marked = /SHOPEE_RATE_LIMIT\|(\d+)\|([^\r\n]*)/i.exec(message);
@@ -22,6 +27,20 @@ function shopeeRateLimitDetails(error) {
     return { limited: true, retryAfterMs: 0, message: "Shopee 订单报表接口限流。" };
   }
   return { limited: false, retryAfterMs: 0, message };
+}
+
+function shopeeRateLimitCooldown(strikes, retryAfterMs = 0, {
+  schedule = [15 * 60_000, 30 * 60_000, 60 * 60_000],
+  jitterMinMs = 20_000,
+  jitterMaxMs = 45_000,
+  random = Math.random,
+} = {}) {
+  const safeSchedule = Array.isArray(schedule) && schedule.length ? schedule : [15 * 60_000, 30 * 60_000, 60 * 60_000];
+  const index = Math.min(Math.max(1, Number(strikes) || 1) - 1, safeSchedule.length - 1);
+  const min = Math.max(0, Number(jitterMinMs) || 0);
+  const max = Math.max(min, Number(jitterMaxMs) || min);
+  const jitter = min + Math.floor(Math.max(0, Math.min(1, Number(random()) || 0)) * (max - min + 1));
+  return Math.max(0, Number(retryAfterMs) || 0, Number(safeSchedule[index]) || 0) + jitter;
 }
 
 function parseJson(textValue) {
@@ -110,7 +129,9 @@ class Collector {
       retry: 5000,
       shopeeLogin: 8000,
       shopeeReportGap: 20000,
-      shopeeRateLimitCooldown: 10 * 60 * 1000,
+      shopeeRateLimitSchedule: [15 * 60_000, 30 * 60_000, 60 * 60_000],
+      shopeeRateLimitJitterMin: 20_000,
+      shopeeRateLimitJitterMax: 45_000,
       shopeeReportRetries: 1,
       ...waits,
     };
@@ -121,11 +142,131 @@ class Collector {
     this.running = null;
     this.cancelRequested = false;
     this.shopeeRateLimitUntil = 0;
+    this.shopeeRateLimitStrikes = 0;
     this.shopeeLastReportAt = 0;
+    this.uploadFlushPromise = null;
   }
 
   config() {
     return this.store.get();
+  }
+
+  uploadJobId(runId) {
+    return `upload:${runId}`;
+  }
+
+  baseRunStatus(run) {
+    const stores = Array.isArray(run?.stores) ? run.stores : [];
+    const failed = stores.filter((item) => item.status === "failed").length;
+    if (run?.status === "cancelled") return "cancelled";
+    if (failed && failed === stores.length) return "failed";
+    if (failed || (run?.issues || []).some((issue) => issue.level === "error")) return "partial";
+    return "ok";
+  }
+
+  queueUpload(runId, { source = "ziniao" } = {}) {
+    if (!this.store.resultRows(runId).length) throw new Error("No persisted rows are available for upload");
+    const job = this.store.upsertUploadJob({
+      id: this.uploadJobId(runId),
+      runId,
+      source,
+      status: "queued",
+      nextAttemptAt: new Date().toISOString(),
+      lastError: "",
+    });
+    const upload = {
+      ok: false,
+      queued: true,
+      attempts: Number(job.attempts || 0),
+      message: "Data is safely stored locally and queued for upload",
+      at: new Date().toISOString(),
+    };
+    this.store.updateHistory(runId, { upload, status: "upload_queued" });
+    return job;
+  }
+
+  async attemptUploadJob(inputJob, { force = false, throwOnError = false } = {}) {
+    let job = this.store.uploadOutbox().find((item) => item.id === inputJob?.id) || inputJob;
+    if (!job?.runId) throw new Error("Invalid upload job");
+    if (!force && job.nextAttemptAt && Date.parse(job.nextAttemptAt) > Date.now()) return null;
+    const rows = this.store.resultRows(job.runId).map(({ _store, ...row }) => row);
+    if (!rows.length) {
+      this.store.removeUploadJob(job.id);
+      const error = new Error("Persisted upload rows are missing");
+      this.store.updateHistory(job.runId, { upload: { ok: false, queued: false, message: error.message, at: new Date().toISOString() }, status: "upload_failed" });
+      if (throwOnError) throw error;
+      return { ok: false, queued: false, message: error.message };
+    }
+
+    const attempt = Number(job.attempts || 0) + 1;
+    job = this.store.upsertUploadJob({
+      ...job,
+      attempts: attempt,
+      status: "uploading",
+      lastAttemptAt: new Date().toISOString(),
+    });
+    this.store.updateHistory(job.runId, {
+      upload: { ok: false, queued: true, uploading: true, attempts: attempt, message: `Uploading ${rows.length} persisted rows`, at: new Date().toISOString() },
+      status: "uploading",
+    });
+
+    try {
+      const result = await this.zhongtaiFactory().ingest(rows, { dryRun: false, runId: job.runId });
+      const upload = {
+        ok: true,
+        queued: false,
+        attempts: attempt,
+        rowCount: result.rowCount,
+        written: result.written,
+        shopCount: result.shopCount,
+        errors: (result.errors || []).slice(0, 50),
+        warnings: (result.warnings || []).slice(0, 50),
+        at: new Date().toISOString(),
+      };
+      this.store.removeUploadJob(job.id);
+      const run = (this.store.history() || []).find((item) => item.id === job.runId);
+      this.store.updateHistory(job.runId, { upload, status: this.baseRunStatus(run) });
+      return upload;
+    } catch (error) {
+      const nextAttemptAt = new Date(Date.now() + uploadRetryDelay(attempt)).toISOString();
+      this.store.upsertUploadJob({
+        ...job,
+        status: "retry_wait",
+        nextAttemptAt,
+        lastError: error.message,
+        lastStatus: Number(error.status || 0),
+      });
+      const upload = {
+        ok: false,
+        queued: true,
+        attempts: attempt,
+        message: error.message,
+        status: Number(error.status || 0),
+        nextAttemptAt,
+        at: new Date().toISOString(),
+      };
+      this.store.updateHistory(job.runId, { upload, status: "upload_failed" });
+      if (error.status === 401 && this.onUnauthorized) this.onUnauthorized();
+      if (throwOnError) throw error;
+      return upload;
+    }
+  }
+
+  async flushUploadOutbox({ force = false } = {}) {
+    if (this.uploadFlushPromise) return this.uploadFlushPromise;
+    this.uploadFlushPromise = (async () => {
+      const results = [];
+      for (const job of this.store.uploadOutbox()) {
+        const result = await this.attemptUploadJob(job, { force, throwOnError: false });
+        if (result) results.push({ runId: job.runId, ...result });
+      }
+      return results;
+    })();
+    try {
+      return await this.uploadFlushPromise;
+    } finally {
+      this.uploadFlushPromise = null;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -151,7 +292,21 @@ class Collector {
   }
 
   async ensurePage(storeId, platform, url) {
-    let info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+    let info;
+    try {
+      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+    } catch (error) {
+      this.log("warn", `店铺页面连接失效，正在重新打开当前店铺页面：${error.message}`);
+      await this.cli.visit({ storeId, url });
+      await this.waitCancelable(this.waits.visit);
+      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+    }
+    if (!info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href))) {
+      this.log("warn", "检测到空白页，正在重新打开当前店铺页面。");
+      await this.cli.visit({ storeId, url });
+      await this.waitCancelable(this.waits.visit);
+      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+    }
     let check = platform.checkPage(info);
     const wantOrigin = (() => {
       try {
@@ -404,7 +559,9 @@ class Collector {
    * 不落盘、不上传；返回给采集证据的只有按日汇总和非敏感任务元数据。
    */
   async collectShopeeOrderReport({ store, target, platform, origin, dates, timeoutMs, onProgress = () => {} }) {
-    const windows = orderReportWindows(dates);
+    // 历史补采使用更小的七天分片，降低单次导表数据量和 Shopee 429 风险；
+    // 日常短周期采集仍沿用平台允许的默认窗口。
+    const windows = orderReportWindows(dates, { maxRangeDays: dates.length > 7 ? 7 : undefined });
     const result = {
       source: "shopee-order-export",
       screeningCondition: "order_creation_date",
@@ -427,11 +584,16 @@ class Collector {
         try {
           downloaded = await this.cli.runInPage(store.storeId, orderReportBody(window), { timeoutMs: Math.max(timeoutMs, 5 * 60 * 1000) });
           this.shopeeLastReportAt = Date.now();
+          this.shopeeRateLimitStrikes = 0;
         } catch (error) {
           const rateLimit = shopeeRateLimitDetails(error);
           if (!rateLimit.limited) throw error;
-          const configured = Math.max(0, Number(this.waits.shopeeRateLimitCooldown) || 0);
-          const cooldown = Math.max(configured, rateLimit.retryAfterMs);
+          this.shopeeRateLimitStrikes += 1;
+          const cooldown = shopeeRateLimitCooldown(this.shopeeRateLimitStrikes, rateLimit.retryAfterMs, {
+            schedule: this.waits.shopeeRateLimitSchedule,
+            jitterMinMs: this.waits.shopeeRateLimitJitterMin,
+            jitterMaxMs: this.waits.shopeeRateLimitJitterMax,
+          });
           this.shopeeRateLimitUntil = Math.max(this.shopeeRateLimitUntil, Date.now() + cooldown);
           this.log("warn", `${store.storeName}：Shopee 报表接口触发限流，冷却 ${Math.ceil(cooldown / 60000)} 分钟后从当前报表续跑。`);
           if (attempt >= maxAttempts) {
@@ -604,7 +766,7 @@ class Collector {
     return { plan, skipped };
   }
 
-  async collectStore({ store, targets, template, platform, origin }, { dates, onProgress = () => {} }) {
+  async collectStore({ store, targets, template, platform, origin }, { dates, mode = "upload", onProgress = () => {} }) {
     const { closeAfter, storeTimeoutSec } = this.config().ziniao;
     const page = `${origin}${template.collectPath || "/"}`;
     const rows = [];
@@ -632,7 +794,7 @@ class Collector {
           }
         }
       }
-      if (platform.id === "tiktok" && targets.some((target) => target.auto && !target.shopKey)) {
+      if (mode === "upload" && platform.id === "tiktok" && targets.some((target) => target.auto && !target.shopKey)) {
         const error = new Error(`无法把紫鸟 TikTok 店铺“${pageIdentity?.shopName || store.storeName}”唯一对应到妙手店铺，请检查妙手店铺名称、平台和国家。`);
         error.code = "STORE_MAPPING_REQUIRED";
         error.retryable = false;
@@ -669,6 +831,12 @@ class Collector {
           const matched = this.matchZhongtaiShop(store.storeName, target.country, identity, platform.id);
           if (matched) Object.assign(target, { shopKey: matched.shopKey, shopName: matched.shopName });
         }
+      }
+      if (mode === "upload" && targets.some((target) => target.auto && !target.shopKey)) {
+        const error = new Error(`店铺“${identity?.shopName || pageIdentity?.shopName || store.storeName}”没有唯一中台映射，正式上传已停止。请先完成店铺映射后重试；预览模式仍可用于校准。`);
+        error.code = "STORE_MAPPING_REQUIRED";
+        error.retryable = false;
+        throw error;
       }
       let orderReport = null;
       if (platform.id === "shopee" && template.builtin === true && targets.length === 1) {
@@ -851,6 +1019,7 @@ class Collector {
       upload: null,
     };
     this.running = entry;
+    this.store.appendHistory(entry);
     if (this.onRunUpdate) this.onRunUpdate({ ...entry });
     const allRows = [];
     const allScreenshots = [];
@@ -873,7 +1042,7 @@ class Collector {
         let lastError = null;
         for (let attempt = 1; attempt <= attempts && !result; attempt += 1) {
           try {
-            result = await this.collectStore(item, { dates: dateMap, onProgress });
+            result = await this.collectStore(item, { dates: dateMap, mode, onProgress });
           } catch (error) {
             lastError = error;
             this.log("warn", `${item.store.storeName} 第 ${attempt} 次采集失败：${error.message}`);
@@ -892,6 +1061,15 @@ class Collector {
           entry.stores.push({ storeId: item.store.storeId, storeName: item.store.storeName, status: "failed", message: lastError?.message || "失败", rowCount: 0 });
           entry.issues.push({ level: "error", storeName: item.store.storeName, message: lastError?.message || "失败" });
         }
+        entry.rowCount = allRows.length;
+        this.store.saveResultRows(runId, allRows);
+        this.store.updateHistory(runId, {
+          stores: entry.stores,
+          issues: entry.issues.slice(0, 300),
+          rowCount: entry.rowCount,
+          status: "running",
+          lastCheckpointAt: new Date().toISOString(),
+        });
         onProgress({ index: index + 1, total: plan.length, storeId: item.store.storeId, phase: "done", message: `${item.store.storeName} 完成` });
       }
       entry.rowCount = allRows.length;
@@ -900,13 +1078,33 @@ class Collector {
         for (const key of Object.keys(row)) if (row[key] === undefined) delete row[key];
         return row;
       });
-      if (rows.length && mode !== "local") {
-        onProgress({ phase: "upload", message: mode === "preview" ? "中台试匹配…" : `写入中台 ${rows.length} 行…` });
+      entry.status = this.cancelRequested ? "cancelled" : this.baseRunStatus(entry);
+      entry.finishedAt = new Date().toISOString();
+      entry.issues = entry.issues.slice(0, 300);
+      // 采集结果必须先完整落盘，随后才允许发起网络上传。即使上传时断网，
+      // 重启程序后也能从结果文件和 outbox 中继续补传，不会重新采集店铺。
+      this.store.saveResultRows(runId, allRows);
+      this.store.updateHistory(runId, { ...entry });
+
+      if (rows.length && mode === "preview") {
+        onProgress({ phase: "upload", message: "中台试匹配…" });
         try {
+          const result = await this.zhongtaiFactory().ingest(rows, { dryRun: true, runId });
+          entry.upload = { ok: true, dryRun: true, queued: false, rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: (result.errors || []).slice(0, 50), warnings: (result.warnings || []).slice(0, 50), at: new Date().toISOString() };
+        } catch (error) {
+          entry.upload = { ok: false, dryRun: true, queued: false, message: error.message, status: error.status || 0, at: new Date().toISOString() };
+          entry.status = "upload_failed";
+          if (error.status === 401 && this.onUnauthorized) this.onUnauthorized();
+        }
+        this.store.updateHistory(runId, { upload: entry.upload, status: entry.status });
+      } else if (rows.length && mode === "upload") {
+        onProgress({ phase: "upload", message: `写入中台 ${rows.length} 行…` });
+        const job = this.queueUpload(runId);
+        entry.upload = await this.attemptUploadJob(job, { force: true, throwOnError: false });
+        entry.status = entry.upload?.ok ? this.baseRunStatus(entry) : "upload_failed";
+        if (entry.upload?.ok && allScreenshots.length) {
           const client = this.zhongtaiFactory();
-          const result = await client.ingest(rows, { dryRun: mode === "preview" });
-          entry.upload = { ok: true, dryRun: mode === "preview", rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: result.errors.slice(0, 50), warnings: result.warnings.slice(0, 50), at: new Date().toISOString() };
-          if (mode === "upload" && allScreenshots.length && typeof client.agent === "function" && client.isNode) {
+          if (typeof client.agent === "function" && client.isNode) {
             let sent = 0;
             for (const shot of allScreenshots) {
               try {
@@ -918,16 +1116,9 @@ class Collector {
             }
             entry.upload.screenshots = sent;
           }
-        } catch (error) {
-          entry.upload = { ok: false, message: error.message, status: error.status || 0, at: new Date().toISOString() };
-          if (error.status === 401 && this.onUnauthorized) this.onUnauthorized();
         }
+        this.store.updateHistory(runId, { upload: entry.upload, status: entry.status });
       }
-      const failed = entry.stores.filter((store) => store.status === "failed").length;
-      entry.status = this.cancelRequested ? "cancelled" : entry.upload && !entry.upload.ok ? "upload_failed" : failed && failed === plan.length ? "failed" : failed || entry.issues.some((issue) => issue.level === "error") ? "partial" : "ok";
-      entry.finishedAt = new Date().toISOString();
-      entry.issues = entry.issues.slice(0, 300);
-      this.store.appendHistory({ ...entry, rows: allRows });
       if (this.onRunUpdate) this.onRunUpdate({ ...entry });
       return entry;
     } finally {
@@ -939,16 +1130,12 @@ class Collector {
   async reupload(runId, { dryRun = false } = {}) {
     const rows = this.store.resultRows(runId).map(({ _store, ...row }) => row);
     if (!rows.length) throw new Error("这次采集没有可上传的数据");
-    const result = await this.zhongtaiFactory().ingest(rows, { dryRun });
-    const upload = { ok: true, dryRun, rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: result.errors.slice(0, 50), warnings: result.warnings.slice(0, 50), at: new Date().toISOString() };
-    if (!dryRun) {
-      // 重新写入只修复「写入中台失败」，不把采集失败的店铺标成成功。
-      const run = (this.store.history() || []).find((item) => item.id === runId);
-      const failed = (run?.stores || []).filter((store) => store.status === "failed").length;
-      const status = !run ? "ok" : failed && failed === run.stores.length ? "failed" : failed || (run.issues || []).some((issue) => issue.level === "error") ? "partial" : "ok";
-      this.store.updateHistory(runId, { upload, status });
+    if (dryRun) {
+      const result = await this.zhongtaiFactory().ingest(rows, { dryRun: true, runId });
+      return { ok: true, dryRun: true, queued: false, rowCount: result.rowCount, written: result.written, shopCount: result.shopCount, errors: (result.errors || []).slice(0, 50), warnings: (result.warnings || []).slice(0, 50), at: new Date().toISOString() };
     }
-    return upload;
+    const job = this.queueUpload(runId, { source: "manual-retry" });
+    return this.attemptUploadJob(job, { force: true, throwOnError: true });
   }
 }
 
@@ -959,6 +1146,7 @@ module.exports = {
   buildReplayBatches,
   isCommandLineTooLong,
   shopeeRateLimitDetails,
+  shopeeRateLimitCooldown,
   DEFAULT_REPLAY_BATCH_REQUESTS,
   DEFAULT_REPLAY_SCRIPT_CHARS,
   METRIC_KEYS,

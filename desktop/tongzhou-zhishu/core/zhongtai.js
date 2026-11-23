@@ -1,9 +1,14 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 // 同舟供应链中台客户端：只使用采集专用令牌（X-Ingest-Token），不需要中台登录账号。
 
 // 每行带采集证据（接口原始返回摘要），按行数分批控制单次请求体积。
 const CHUNK = 40;
+const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 class ZhongtaiError extends Error {
   constructor(message, { status = 0, body = null } = {}) {
@@ -15,11 +20,26 @@ class ZhongtaiError extends Error {
 }
 
 class ZhongtaiClient {
-  constructor({ baseUrl = "", token = "", fetchImpl = fetch, timeoutMs = 60000 } = {}) {
+  constructor({
+    baseUrl = "",
+    token = "",
+    nodeId = "",
+    fetchImpl = fetch,
+    timeoutMs = 60000,
+    maxRetries = 2,
+    retryBaseMs = 500,
+    sleepImpl = sleep,
+    randomImpl = Math.random,
+  } = {}) {
     this.baseUrl = String(baseUrl || "").trim().replace(/\/+$/, "");
     this.token = String(token || "").trim();
+    this.nodeId = String(nodeId || "").trim();
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
+    this.maxRetries = Math.max(0, Number(maxRetries) || 0);
+    this.retryBaseMs = Math.max(1, Number(retryBaseMs) || 500);
+    this.sleepImpl = sleepImpl;
+    this.randomImpl = randomImpl;
   }
 
   /** 采集节点令牌（tzcn_ 开头）才能使用采集中心接口（心跳、证据上传等）。 */
@@ -32,35 +52,47 @@ class ZhongtaiClient {
     if (this.token.length < 24) throw new ZhongtaiError("请先在「设置」里填写采集令牌（服务器 SHOP_METRICS_INGEST_TOKEN 的值，至少 24 位）");
   }
 
-  async request(pathname, { method = "GET", body } = {}) {
+  async request(pathname, { method = "GET", body, headers = {}, retries = this.maxRetries } = {}) {
     this.ensureConfigured();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response;
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}${pathname}`, {
-        method,
-        headers: { "content-type": "application/json", "x-ingest-token": this.token, "x-client": "tongzhou-zhishu" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      throw new ZhongtaiError(error.name === "AbortError" ? "连接中台超时" : `连接中台失败：${error.message}`);
-    } finally {
-      clearTimeout(timer);
+    const maxAttempts = Math.max(1, Number(retries) + 1);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await this.fetchImpl(`${this.baseUrl}${pathname}`, {
+          method,
+          headers: { "content-type": "application/json", "x-ingest-token": this.token, "x-client": "tongzhou-zhishu", ...headers },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const textValue = await response.text();
+        let json = null;
+        try {
+          json = JSON.parse(textValue);
+        } catch {
+          json = null;
+        }
+        if (response.ok && (!json || json.ok !== false)) return json;
+        const message = json?.message || (response.status === 404 ? "中台没有这个接口（可能需要先更新中台版本）" : `中台返回 HTTP ${response.status}`);
+        const failure = new ZhongtaiError(message, { status: response.status, body: json || textValue.slice(0, 500) });
+        if (!TRANSIENT_STATUS.has(response.status) || attempt + 1 >= maxAttempts) throw failure;
+        const retryAfter = Number(response.headers?.get?.("retry-after"));
+        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : this.retryBaseMs * (2 ** attempt) + Math.floor(this.randomImpl() * this.retryBaseMs);
+        await this.sleepImpl(waitMs);
+      } catch (error) {
+        if (error instanceof ZhongtaiError) throw error;
+        if (attempt + 1 >= maxAttempts) {
+          throw new ZhongtaiError(error.name === "AbortError" ? "连接中台超时" : `连接中台失败：${error.message}`);
+        }
+        const waitMs = this.retryBaseMs * (2 ** attempt) + Math.floor(this.randomImpl() * this.retryBaseMs);
+        await this.sleepImpl(waitMs);
+      } finally {
+        clearTimeout(timer);
+      }
     }
-    const textValue = await response.text();
-    let json = null;
-    try {
-      json = JSON.parse(textValue);
-    } catch {
-      json = null;
-    }
-    if (!response.ok || (json && json.ok === false)) {
-      const message = json?.message || (response.status === 404 ? "中台没有这个接口（可能需要先更新中台版本）" : `中台返回 HTTP ${response.status}`);
-      throw new ZhongtaiError(message, { status: response.status, body: json || textValue.slice(0, 500) });
-    }
-    return json;
+    throw new ZhongtaiError("连接中台失败");
   }
 
   async rawJson(pathname, { method = "GET", body, headers = {} } = {}) {
@@ -160,13 +192,28 @@ class ZhongtaiClient {
   }
 
   /** 分批写入；dryRun 时只预览匹配结果。返回合并后的结果。 */
-  async ingest(rows, { dryRun = false, source = "ziniao" } = {}) {
+  async ingest(rows, { dryRun = false, source = "ziniao", runId = "", nodeId = this.nodeId } = {}) {
     const merged = { rowCount: 0, shopCount: 0, written: 0, errors: [], warnings: [], sample: [], batches: 0 };
     const shopKeys = new Set();
     let reportedShops = 0;
-    for (let index = 0; index < rows.length; index += CHUNK) {
-      const chunk = rows.slice(index, index + CHUNK);
-      const result = await this.request("/api/shop-daily-report/ingest", { method: "POST", body: { source, dryRun, rows: chunk } });
+    const chunks = [];
+    for (let index = 0; index < rows.length; index += CHUNK) chunks.push(rows.slice(index, index + CHUNK));
+    if (!chunks.length) chunks.push([]);
+    const stableRunId = String(runId || `run-${digest({ source, dryRun, rows }).slice(0, 24)}`);
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex];
+      const hash = digest({ source, dryRun, rows: chunk });
+      const idempotencyKey = `tzzs:${String(nodeId || "node")}:${stableRunId}:${chunkIndex}:${hash}`;
+      const result = await this.request("/api/shop-daily-report/ingest", {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: {
+          source,
+          dryRun,
+          rows: chunk,
+          upload: { runId: stableRunId, chunkIndex, chunkCount: chunks.length, hash },
+        },
+      });
       merged.batches += 1;
       merged.rowCount += Number(result.rowCount || 0);
       merged.written += Number(result.written || 0);
