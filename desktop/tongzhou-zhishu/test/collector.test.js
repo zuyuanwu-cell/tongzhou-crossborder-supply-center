@@ -21,7 +21,7 @@ const {
   MAX_WINDOWS_COMMAND_LINE_UNITS,
 } = require("../core/ziniao");
 const { ConfigStore } = require("../core/config");
-const { Collector, defaultDates, businessError, buildReplayBatches, isCommandLineTooLong } = require("../core/collector");
+const { Collector, defaultDates, requestedDates, businessError, buildReplayBatches, isCommandLineTooLong, collectionCheckpointKey } = require("../core/collector");
 const { ZhongtaiClient } = require("../core/zhongtai");
 const { templatizeRequest, readPath, extractMetrics, placeholderValues, fill } = require("../core/recipe");
 const { dayRange, siteToday, dateList } = require("../core/sites");
@@ -353,6 +353,38 @@ test("Shopee 官方订单导表：订单去重，支付销售额只减卖家券�
   ]);
 });
 
+test("历史补采：后端拒绝超过 21 天和无效日期，允许 21 天边界", () => {
+  const days = dateList("2026-10-01", "2026-10-21");
+  assert.deepEqual(requestedDates([...days].reverse()), days);
+  assert.throws(() => requestedDates(["2026-10-01", "2026-10-22"]), (error) => error.code === "BACKFILL_RANGE_TOO_LARGE" && error.retryable === false);
+  assert.throws(() => requestedDates(["2026-02-30"]), (error) => error.code === "INVALID_BACKFILL_DATES" && error.retryable === false);
+  assert.equal(requestedDates([]), null);
+});
+
+test("页面恢复：about:blank 时只重开当前店铺并重新附着", async () => {
+  const calls = [];
+  let pageRead = 0;
+  const collector = new Collector({
+    cli: {
+      async runInPage(storeId) {
+        calls.push(["runInPage", storeId]);
+        pageRead += 1;
+        return pageRead === 1 ? { href: "about:blank" } : { href: "https://seller.shopee.test/home" };
+      },
+      async closeStore({ storeId }) { calls.push(["closeStore", storeId]); },
+      async openStore({ storeId, url }) { calls.push(["openStore", storeId, url]); return { reused: false }; },
+      async visit() { throw new Error("空白页恢复不应只调用 visit"); },
+    },
+    store: { get: () => ({ ziniao: { headless: false } }) },
+    waits: { fresh: 0, visit: 0 },
+  });
+  const platform = { checkPage: (info) => ({ ok: /^https:\/\/seller\.shopee\.test\//.test(info?.href || ""), code: "NOT_LOGGED_IN", message: "not ready" }) };
+  const info = await collector.ensurePage("store-current", platform, "https://seller.shopee.test/home");
+  assert.equal(info.href, "https://seller.shopee.test/home");
+  assert.deepEqual(calls.filter(([name]) => name === "closeStore"), [["closeStore", "store-current"]]);
+  assert.deepEqual(calls.filter(([name]) => name === "openStore"), [["openStore", "store-current", "https://seller.shopee.test/home"]]);
+});
+
 test("Shopee 官方订单导表：支持中文、越南语和马来语关键表头且未知结构安全失败", () => {
   const header = Array(41).fill("");
   Object.assign(header, {
@@ -659,6 +691,110 @@ test("上传队列：中台失败后重启程序只补传落盘数据，不重�
   assert.equal(restartedStore.history().find((item) => item.id === runId)?.status, "ok");
 });
 
+test("上传队列：中台逐行拒绝时停在人工处理，修复后补传成功才写采集断点", async () => {
+  const dir = tempDir();
+  const dataDir = path.join(dir, "data");
+  const runId = "run_attention_then_resume";
+  const checkpointKey = collectionCheckpointKey({
+    storeId: "ziniao-store-2",
+    targetId: "target-2",
+    country: "ID",
+    date: "2026-10-02",
+  });
+  const rows = [{
+    date: "2026-10-02",
+    shopName: "逐梦映射待修店",
+    country: "印度尼西亚",
+    platform: "Shopee",
+    currency: "IDR",
+    orderCount: 3,
+    payAmount: 90000,
+    _store: "逐梦紫鸟店",
+    _storeId: "ziniao-store-2",
+    _targetId: "target-2",
+    _targetCountry: "ID",
+    _checkpointKey: checkpointKey,
+  }];
+  const store = new ConfigStore(dataDir);
+  store.appendHistory({
+    id: runId,
+    status: "ok",
+    startedAt: "2026-11-23T11:00:00.000Z",
+    finishedAt: "2026-11-23T11:01:00.000Z",
+    stores: [{ storeId: "ziniao-store-2", status: "ok" }],
+    rows,
+  });
+  let rejectRows = true;
+  let ingestCalls = 0;
+  let uploadedRows = [];
+  const collector = new Collector({
+    cli: {},
+    store,
+    zhongtaiFactory: () => ({
+      async ingest(inputRows) {
+        ingestCalls += 1;
+        uploadedRows = inputRows;
+        if (rejectRows) {
+          return {
+            rowCount: 0,
+            written: 0,
+            shopCount: 0,
+            errors: [{ row: 1, message: "店铺映射不存在" }],
+            warnings: [],
+          };
+        }
+        return { rowCount: inputRows.length, written: inputRows.length, shopCount: 1, errors: [], warnings: [] };
+      },
+    }),
+  });
+  const job = collector.queueUpload(runId, { source: "attention-test" });
+  const rejected = await collector.attemptUploadJob(job, { force: true });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.needsAttention, true);
+  assert.equal(store.uploadOutbox()[0]?.status, "needs_attention");
+  assert.equal(store.hasCollectionCheckpoint(checkpointKey), false, "中台拒绝数据时不得写成功断点");
+  assert.equal(ingestCalls, 1);
+
+  const backgroundFlush = await collector.flushUploadOutbox();
+  assert.deepEqual(backgroundFlush, [], "人工处理队列不得被后台无限重试");
+  assert.equal(ingestCalls, 1);
+
+  rejectRows = false;
+  const resumed = await collector.flushUploadOutbox({ force: true });
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].ok, true);
+  assert.equal(store.uploadOutbox().length, 0);
+  assert.equal(store.hasCollectionCheckpoint(checkpointKey), true, "只有正式写入成功后才记录日期断点");
+  assert.equal(store.collectionCheckpoints()[checkpointKey]?.runId, runId);
+  assert.deepEqual(uploadedRows, rows.map(publicRow => Object.fromEntries(Object.entries(publicRow).filter(([key]) => !key.startsWith("_")))));
+});
+
+test("采集断点：已成功上传的店铺日期不会重新打开紫鸟或再次采集", async () => {
+  const dir = tempDir();
+  const store = new ConfigStore(path.join(dir, "data"));
+  const checkpointKey = collectionCheckpointKey({ storeId: "store-done", targetId: "target-done", country: "ID", date: "2026-10-03" });
+  store.markCollectionCheckpoints([{ key: checkpointKey, storeId: "store-done", targetId: "target-done", country: "ID", date: "2026-10-03", runId: "run-done" }]);
+  const noCollectionCli = new Proxy({}, {
+    get(_target, property) {
+      throw new Error(`已完成日期不应调用紫鸟：${String(property)}`);
+    },
+  });
+  const collector = new Collector({ cli: noCollectionCli, store, zhongtaiFactory: () => ({}) });
+  const result = await collector.collectStore({
+    store: { storeId: "store-done", storeName: "已完成店铺" },
+    targets: [{ id: "target-done", shopName: "已完成店铺", shopKey: "shop-done", country: "ID" }],
+    template: {},
+    platform: {},
+    origin: "https://seller.shopee.co.id",
+  }, {
+    dates: { ID: ["2026-10-03"] },
+    mode: "upload",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.rows.length, 0);
+  assert.equal(result.skippedCheckpoints, 1);
+});
+
 test("定时：到点触发一次、错过 2 小时内补跑、不重复", () => {
   const now = new Date(2026, 10, 5, 9, 40);
   const due = dueSlots({ times: ["09:30", "21:00", "bad"], now });
@@ -747,6 +883,9 @@ test("零配置：识别站点、内置模板取值、自动对应中台店铺",
   const overview = collector.storeOverview();
   assert.equal(overview.length, 3);
   assert.equal(overview.find((item) => item.storeId === "3").platform, "TikTok Shop");
+  assert.equal(overview.find((item) => item.storeId === "1").templateReady, true);
+  assert.ok(overview.find((item) => item.storeId === "1").endpointCount > 0);
+  assert.equal(overview.find((item) => item.storeId === "1").officialReport, true);
   assert.equal(overview.find((item) => item.storeId === "2").targets[0].matched, false, "站点不同不自动对应");
   assert.equal(overview.find((item) => item.storeId === "3").targets[0].shopKey, "k-tk-sjj");
 

@@ -92,12 +92,15 @@ test("Shopee 自动登录遇到验证码或未自动填充时明确转人工", a
 test("Shopee about:blank 会重新打开当前店铺页面", async () => {
   let checks = 0;
   let visits = 0;
+  const reopened = [];
   const collector = new Collector({
     cli: {
       visit: async ({ url }) => {
         visits += 1;
         assert.equal(url, "https://seller.shopee.co.id/portal/sale/order");
       },
+      closeStore: async ({ storeId }) => reopened.push(["close", storeId]),
+      openStore: async ({ storeId, url }) => reopened.push(["open", storeId, url]),
       runInPage: async () => {
         checks += 1;
         return checks === 1
@@ -109,7 +112,11 @@ test("Shopee about:blank 会重新打开当前店铺页面", async () => {
     waits: { visit: 0 },
   });
   const info = await collector.ensurePage("blank-store", shopee, "https://seller.shopee.co.id/portal/sale/order");
-  assert.equal(visits, 1);
+  assert.equal(visits, 0);
+  assert.deepEqual(reopened, [
+    ["close", "blank-store"],
+    ["open", "blank-store", "https://seller.shopee.co.id/portal/sale/order"],
+  ]);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
 });
 

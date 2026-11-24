@@ -81,6 +81,7 @@ const STATUS = {
   ok: ["成功", "ok"], partial: ["部分成功", "warn"], failed: ["失败", "err"], skipped: ["已跳过", ""],
   cancelled: ["已取消", ""], running: ["进行中", "info"],
   upload_queued: ["等待补传", "warn"], uploading: ["正在补传", "info"], upload_failed: ["写入中台失败", "err"],
+  needs_attention: ["需要处理", "err"],
 };
 const statusTag = (status) => {
   const [label, kind] = STATUS[status] || [status, ""];
@@ -124,13 +125,29 @@ function viewHome() {
   const unmatched = enabled.filter((store) => store.targets.some((target) => target.auto && !target.matched));
   const selectedStore = enabled.find((store) => store.storeId === S.run.storeId) || null;
   const selectedUnmatched = selectedStore?.targets.some((target) => target.auto && !target.matched);
+  const blockedByMapping = S.run.storeId ? Boolean(selectedUnmatched) : unmatched.length > 0;
   const customDayCount = S.run.range === "custom" && S.run.from && S.run.to && S.run.from <= S.run.to
     ? Math.floor((new Date(`${S.run.to}T00:00:00Z`) - new Date(`${S.run.from}T00:00:00Z`)) / 86400000) + 1
     : 0;
-  const reportChunks = customDayCount ? Math.ceil(customDayCount / 7) : 0;
+  const estimatedDays = S.run.range === "custom"
+    ? customDayCount
+    : (S.run.range === "yesterday" ? 1 : Math.max(1, Number(config.schedule.lookbackDays) || 1));
+  const estimatedStores = selectedStore ? [selectedStore] : enabled;
+  const estimatedMappings = estimatedStores.reduce((sum, store) => sum + Math.max(1, store.targets.length), 0);
+  const estimatedApiCalls = estimatedStores.reduce((sum, store) => (
+    sum + Math.max(1, store.targets.length) * estimatedDays * Math.max(0, Number(store.endpointCount) || 0)
+  ), 0);
+  const estimatedReports = estimatedStores.reduce((sum, store) => (
+    sum + (store.officialReport ? Math.max(1, store.targets.length) * Math.ceil(estimatedDays / 7) : 0)
+  ), 0);
+  const throttleRisk = estimatedReports >= 12 || estimatedApiCalls >= 500
+    ? { label: "高", css: "err", hint: "建议拆成单店、7 天一批，避免 Shopee 429" }
+    : (estimatedReports >= 5 || estimatedApiCalls >= 180
+      ? { label: "中", css: "warn", hint: "系统会按店铺串行并执行全局冷却" }
+      : { label: "低", css: "", hint: "可直接开始" });
   const last = history[0];
   const pct = S.progressCount.total ? Math.round((S.progressCount.index / S.progressCount.total) * 100) : 0;
-  const ready = connected && cliPath && enabled.length && (!S.run.storeId || selectedStore) && !selectedUnmatched;
+  const ready = connected && cliPath && enabled.length && (!S.run.storeId || selectedStore) && !blockedByMapping;
   return `
     <h1>总览</h1>
     <p class="subtitle">自动从紫鸟里已登录的 Shopee 店铺读取访客、曝光、加购、支付金额、订单和广告花费，写入中台「店铺日报」。</p>
@@ -160,8 +177,15 @@ function viewHome() {
       </div>
       ${selectedStore ? `<div class="notice ${selectedUnmatched ? "err" : ""}" style="margin-bottom:10px">
         <b>${esc(selectedStore.storeName)}</b> · ${selectedStore.targets.length} 个中台店铺映射
-        ${customDayCount ? ` · ${customDayCount} 天 · 每个映射约 ${reportChunks} 个七天分片，共约 ${reportChunks * Math.max(1, selectedStore.targets.length)} 次官方导表` : ""}
+        ${estimatedDays ? ` · ${estimatedDays} 天` : ""}
         ${selectedUnmatched ? " · 尚未完成中台店铺映射，正式补采已禁止；请先到「店铺」完成映射。" : " · 可按自定义日期单店补采；重复执行由稳定幂等键去重。"}
+      </div>` : unmatched.length ? `<div class="notice err" style="margin-bottom:10px">
+        <b>${unmatched.length} 个启用店铺尚未完成中台映射</b> · 为避免采集结果写入错误店铺，全部店铺采集已暂停。请先到「店铺」完成映射，或改为选择一间已映射店铺补采。
+        <button class="btn small" data-go="stores">去完成映射</button>
+      </div>` : ""}
+      ${estimatedStores.length ? `<div class="notice ${throttleRisk.css}" style="margin-bottom:10px">
+        <b>执行前估算</b> · ${estimatedStores.length} 家店 · ${estimatedMappings} 个映射 · ${estimatedDays} 天 · 约 ${estimatedApiCalls} 次数据接口${estimatedReports ? ` + ${estimatedReports} 次官方导表` : ""}
+        · 限流风险：<b>${throttleRisk.label}</b>（${throttleRisk.hint}）
       </div>` : ""}
       ${running || S.progress.length ? `
         <div class="bar"><div style="width:${running ? pct : 100}%"></div></div>
@@ -422,8 +446,10 @@ function viewHistory() {
     const fields = S.state.metricFields;
     const retrying = Boolean(S.busy[`history-reupload:${detail.id}`]);
     const uploadState = detail.upload?.state || detail.status;
-    const uploadHint = uploadState === "upload_failed"
-      ? `<div class="notice err">上次补传失败${detail.upload?.lastError ? `：${esc(detail.upload.lastError)}` : ""}${detail.upload?.nextRetryAt ? `；系统将在 ${fmtTime(detail.upload.nextRetryAt)} 自动重试` : ""}</div>`
+    const uploadHint = uploadState === "needs_attention"
+      ? `<div class="notice err">中台拒绝了部分数据，系统已保留本地结果并暂停自动重试${detail.upload?.message ? `：${esc(detail.upload.message)}` : ""}。请处理下方具体错误后再手动补传。</div>`
+      : uploadState === "upload_failed"
+      ? `<div class="notice err">上次补传失败${detail.upload?.message || detail.upload?.lastError ? `：${esc(detail.upload.message || detail.upload.lastError)}` : ""}${detail.upload?.nextAttemptAt || detail.upload?.nextRetryAt ? `；系统将在 ${fmtTime(detail.upload.nextAttemptAt || detail.upload.nextRetryAt)} 自动重试` : ""}</div>`
       : uploadState === "upload_queued" || uploadState === "uploading"
         ? `<div class="notice warn">${uploadState === "uploading" ? "正在写入中台" : "已进入本地补传队列"}，关闭程序后下次启动仍会继续。</div>`
         : "";
@@ -434,7 +460,7 @@ function viewHistory() {
       ${uploadHint}
       <section class="panel">${runSummary(detail, { detail: true })}</section>
       ${detail.upload?.errors?.length || detail.upload?.warnings?.length ? `<section class="panel"><h3>中台返回</h3>
-        ${(detail.upload.errors || []).map((error) => `<div class="small" style="color:var(--red)">✗ ${esc(error.message)}</div>`).join("")}
+        ${(detail.upload.errors || []).map((error) => `<div class="small" style="color:var(--red)">✗ ${esc(error.message || error.error || JSON.stringify(error))}</div>`).join("")}
         ${(detail.upload.warnings || []).map((warning) => `<div class="small" style="color:var(--amber)">! ${esc(warning.message)}</div>`).join("")}</section>` : ""}
       ${detail.issues?.length ? `<section class="panel"><h3>采集提醒（${detail.issues.length}）</h3><div class="table-wrap" style="max-height:260px"><table class="data"><tbody>
         ${detail.issues.map((issue) => `<tr><td>${issue.level === "error" ? `<span class="tag err">错误</span>` : `<span class="tag warn">提醒</span>`}</td><td>${esc(issue.storeName)}</td><td>${esc(issue.shopName || "")}</td><td>${esc(issue.date || "")}</td><td>${esc(issue.message)}</td></tr>`).join("")}
@@ -622,8 +648,15 @@ function collectDates() {
       toast("请选择正确的日期区间", "err");
       return undefined;
     }
+    const from = new Date(`${S.run.from}T00:00:00Z`);
+    const to = new Date(`${S.run.to}T00:00:00Z`);
+    const dayCount = Math.floor((to.getTime() - from.getTime()) / 86400000) + 1;
+    if (dayCount > 21) {
+      toast(`单次历史补采最多 21 天，当前选择 ${dayCount} 天，请拆分日期后重试`, "err");
+      return undefined;
+    }
     const list = [];
-    for (let day = S.run.from; day <= S.run.to && list.length < 62;) {
+    for (let day = S.run.from; day <= S.run.to;) {
       list.push(day);
       const next = new Date(`${day}T00:00:00Z`);
       next.setUTCDate(next.getUTCDate() + 1);
@@ -671,6 +704,16 @@ const actions = {
     await reload();
   },
   async collect() {
+    const enabled = (S.state.storeOverview || []).filter((store) => store.enabled);
+    const selectedStore = enabled.find((store) => store.storeId === S.run.storeId) || null;
+    const blockingStores = S.run.storeId
+      ? (selectedStore?.targets.some((target) => target.auto && !target.matched) ? [selectedStore] : [])
+      : enabled.filter((store) => store.targets.some((target) => target.auto && !target.matched));
+    if (blockingStores.length) {
+      toast(`请先完成 ${blockingStores.length} 个店铺的中台映射，系统不会把未映射数据写入中台`, "err");
+      S.page = "stores";
+      return render();
+    }
     const dates = collectDates();
     if (dates === undefined) return;
     S.progress = [];

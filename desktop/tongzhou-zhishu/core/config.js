@@ -76,6 +76,7 @@ class ConfigStore {
     this.file = path.join(dir, "config.json");
     this.historyFile = path.join(dir, "history.json");
     this.outboxFile = path.join(dir, "upload-outbox.json");
+    this.checkpointsFile = path.join(dir, "collection-checkpoints.json");
     this.resultsDir = path.join(dir, "results");
     this.data = this.load();
   }
@@ -191,6 +192,37 @@ class ConfigStore {
     const list = this.uploadOutbox().filter((item) => item.id !== id);
     writeAtomic(this.outboxFile, JSON.stringify(list, null, 2));
     return list;
+  }
+
+  collectionCheckpoints() {
+    try {
+      const value = JSON.parse(fs.readFileSync(this.checkpointsFile, "utf8"));
+      return value && typeof value === "object" && value.items && typeof value.items === "object"
+        ? value.items
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  hasCollectionCheckpoint(key) {
+    return Boolean(key && this.collectionCheckpoints()[key]);
+  }
+
+  markCollectionCheckpoints(entries) {
+    const list = (Array.isArray(entries) ? entries : []).filter((entry) => entry?.key);
+    if (!list.length) return this.collectionCheckpoints();
+    const now = new Date().toISOString();
+    const items = this.collectionCheckpoints();
+    for (const entry of list) {
+      items[entry.key] = {
+        ...(items[entry.key] || {}),
+        ...entry,
+        uploadedAt: entry.uploadedAt || now,
+      };
+    }
+    writeAtomic(this.checkpointsFile, JSON.stringify({ version: 1, items }, null, 2));
+    return items;
   }
 }
 

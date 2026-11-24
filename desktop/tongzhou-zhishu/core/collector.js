@@ -2,6 +2,7 @@
 
 // 采集编排：校准（探测接口 → 生成模板 → 试采）与正式采集（逐店铺打开紫鸟 → 页面内重放接口 → 取值 → 回写中台）。
 
+const crypto = require("node:crypto");
 const { getPlatform, guessPlatform, allTemplates } = require("./platforms");
 const { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
 const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, mappingParts, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
@@ -17,6 +18,34 @@ function sleep(ms) {
 function uploadRetryDelay(attempts) {
   const schedule = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000];
   return schedule[Math.min(Math.max(0, Number(attempts || 1) - 1), schedule.length - 1)];
+}
+
+function publicUploadRow(row) {
+  const result = {};
+  for (const [key, value] of Object.entries(row || {})) {
+    if (!key.startsWith("_") && value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function collectionCheckpointKey({ storeId = "", targetId = "", country = "", date = "" } = {}) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify([String(storeId), String(targetId), String(country), String(date)]))
+    .digest("hex");
+}
+
+function classifyFailure(error) {
+  const code = String(error?.code || "").toUpperCase();
+  const message = String(error?.message || error || "");
+  if (code === "STORE_MAPPING_REQUIRED" || /mapping|required.*shop|店铺.*映射|映射.*店铺/i.test(message)) return "mapping";
+  if (code === "NOT_LOGGED_IN" || /not logged|未登录|登录失效/i.test(message)) return "login";
+  if (code === "CAPTCHA" || /captcha|验证码|二次验证|mfa/i.test(message)) return "manual_verification";
+  if (code === "SHOPEE_RATE_LIMIT" || /HTTP\s*429|rate.?limit|限流/i.test(message)) return "rate_limit";
+  if (["ENAMETOOLONG", "E2BIG", "COMMAND_LINE_TOO_LONG"].includes(code)
+    || /ENAMETOOLONG|E2BIG|CDP|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message)) return "browser_session";
+  if (/报表|表头|header|schema|字段.*缺失/i.test(message)) return "report_schema";
+  if (/UPLOAD_|写入中台|upload|fetch failed|ECONN|ETIMEDOUT|timeout|network/i.test(`${code} ${message}`)) return "upload_network";
+  return "unknown";
 }
 
 function shopeeRateLimitDetails(error) {
@@ -117,6 +146,43 @@ function defaultDates({ lookbackDays = 3, includeToday = false, site = "SG", now
   return dateList(addDays(to, -(Math.max(1, lookbackDays) - 1)), to);
 }
 
+function requestedDates(input, { maxDays = 21 } = {}) {
+  if (input == null || (Array.isArray(input) && input.length === 0)) return null;
+  if (!Array.isArray(input)) {
+    const error = new Error("补采日期格式无效，请重新选择日期范围。");
+    error.code = "INVALID_BACKFILL_DATES";
+    error.retryable = false;
+    throw error;
+  }
+  const dates = [...new Set(input.map((value) => String(value || "").trim()))].sort();
+  for (const date of dates) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const error = new Error(`补采日期“${date || "空值"}”格式无效。`);
+      error.code = "INVALID_BACKFILL_DATES";
+      error.retryable = false;
+      throw error;
+    }
+    const [year, month, day] = date.split("-").map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+      const error = new Error(`补采日期“${date}”不存在。`);
+      error.code = "INVALID_BACKFILL_DATES";
+      error.retryable = false;
+      throw error;
+    }
+  }
+  const spanDays = dates.length
+    ? Math.round((Date.parse(`${dates.at(-1)}T00:00:00Z`) - Date.parse(`${dates[0]}T00:00:00Z`)) / 86400000) + 1
+    : 0;
+  if (dates.length > maxDays || spanDays > maxDays) {
+    const error = new Error(`单次历史补采最多 ${maxDays} 天，请缩短日期范围后重试。`);
+    error.code = "BACKFILL_RANGE_TOO_LARGE";
+    error.retryable = false;
+    throw error;
+  }
+  return dates;
+}
+
 class Collector {
   constructor({ cli, store, log = () => {}, zhongtaiFactory, waits = {}, imageEncoder = null }) {
     this.cli = cli;
@@ -188,9 +254,11 @@ class Collector {
   async attemptUploadJob(inputJob, { force = false, throwOnError = false } = {}) {
     let job = this.store.uploadOutbox().find((item) => item.id === inputJob?.id) || inputJob;
     if (!job?.runId) throw new Error("Invalid upload job");
+    if (!force && job.status === "needs_attention") return null;
     if (!force && job.nextAttemptAt && Date.parse(job.nextAttemptAt) > Date.now()) return null;
-    const rows = this.store.resultRows(job.runId).map(({ _store, ...row }) => row);
-    if (!rows.length) {
+    const persistedRows = this.store.resultRows(job.runId);
+    const rows = persistedRows.map(publicUploadRow);
+    if (!persistedRows.length) {
       this.store.removeUploadJob(job.id);
       const error = new Error("Persisted upload rows are missing");
       this.store.updateHistory(job.runId, { upload: { ok: false, queued: false, message: error.message, at: new Date().toISOString() }, status: "upload_failed" });
@@ -212,6 +280,33 @@ class Collector {
 
     try {
       const result = await this.zhongtaiFactory().ingest(rows, { dryRun: false, runId: job.runId });
+      const errors = Array.isArray(result.errors) ? result.errors : [];
+      const acceptedRows = Number(result.rowCount);
+      if (errors.length) {
+        const error = new Error(`中台拒绝了 ${errors.length} 条数据，请先处理映射或字段错误后重试`);
+        error.code = "UPLOAD_ROW_ERRORS";
+        error.retryable = false;
+        error.details = errors.slice(0, 50);
+        throw error;
+      }
+      if (Number.isFinite(acceptedRows) && acceptedRows < rows.length) {
+        const error = new Error(`中台仅确认 ${acceptedRows}/${rows.length} 条数据，已保留本地队列等待处理`);
+        error.code = "UPLOAD_INCOMPLETE";
+        error.retryable = false;
+        throw error;
+      }
+      const checkpoints = persistedRows
+        .filter((row) => row?._checkpointKey)
+        .map((row) => ({
+          key: row._checkpointKey,
+          storeId: row._storeId || "",
+          storeName: row._store || "",
+          targetId: row._targetId || "",
+          country: row._targetCountry || "",
+          date: row.date || "",
+          runId: job.runId,
+        }));
+      this.store.markCollectionCheckpoints(checkpoints);
       const upload = {
         ok: true,
         queued: false,
@@ -219,8 +314,9 @@ class Collector {
         rowCount: result.rowCount,
         written: result.written,
         shopCount: result.shopCount,
-        errors: (result.errors || []).slice(0, 50),
+        errors: [],
         warnings: (result.warnings || []).slice(0, 50),
+        checkpointCount: checkpoints.length,
         at: new Date().toISOString(),
       };
       this.store.removeUploadJob(job.id);
@@ -228,24 +324,31 @@ class Collector {
       this.store.updateHistory(job.runId, { upload, status: this.baseRunStatus(run) });
       return upload;
     } catch (error) {
-      const nextAttemptAt = new Date(Date.now() + uploadRetryDelay(attempt)).toISOString();
+      const retryable = error.retryable !== false;
+      const nextAttemptAt = retryable ? new Date(Date.now() + uploadRetryDelay(attempt)).toISOString() : "";
+      const failureCategory = classifyFailure(error);
       this.store.upsertUploadJob({
         ...job,
-        status: "retry_wait",
+        status: retryable ? "retry_wait" : "needs_attention",
         nextAttemptAt,
         lastError: error.message,
         lastStatus: Number(error.status || 0),
+        failureCategory,
+        details: Array.isArray(error.details) ? error.details : [],
       });
       const upload = {
         ok: false,
         queued: true,
+        needsAttention: !retryable,
         attempts: attempt,
         message: error.message,
         status: Number(error.status || 0),
         nextAttemptAt,
+        failureCategory,
+        errors: Array.isArray(error.details) ? error.details : [],
         at: new Date().toISOString(),
       };
-      this.store.updateHistory(job.runId, { upload, status: "upload_failed" });
+      this.store.updateHistory(job.runId, { upload, status: retryable ? "upload_failed" : "needs_attention" });
       if (error.status === 401 && this.onUnauthorized) this.onUnauthorized();
       if (throwOnError) throw error;
       return upload;
@@ -291,21 +394,26 @@ class Collector {
     return { reused, opened };
   }
 
+  async reopenCurrentStore(storeId, url) {
+    const { headless } = this.config().ziniao;
+    await this.cli.closeStore({ storeId });
+    await this.waitCancelable(500);
+    await this.cli.openStore({ storeId, url, headless });
+    await this.waitCancelable(this.waits.fresh);
+    return this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+  }
+
   async ensurePage(storeId, platform, url) {
     let info;
     try {
       info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
     } catch (error) {
-      this.log("warn", `店铺页面连接失效，正在重新打开当前店铺页面：${error.message}`);
-      await this.cli.visit({ storeId, url });
-      await this.waitCancelable(this.waits.visit);
-      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+      this.log("warn", `店铺页面连接失效，正在只重开当前店铺并重新附着：${error.message}`);
+      info = await this.reopenCurrentStore(storeId, url);
     }
     if (!info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href))) {
-      this.log("warn", "检测到空白页，正在重新打开当前店铺页面。");
-      await this.cli.visit({ storeId, url });
-      await this.waitCancelable(this.waits.visit);
-      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+      this.log("warn", "检测到空白页，正在只重开当前店铺并重新附着。");
+      info = await this.reopenCurrentStore(storeId, url);
     }
     let check = platform.checkPage(info);
     const wantOrigin = (() => {
@@ -708,6 +816,7 @@ class Collector {
       const platform = guessPlatform(store);
       if (!platform) return null;
       const settings = config.stores[store.storeId] || {};
+      const template = this.templateFor(settings, platform);
       const { site } = platform.storeSite(store);
       const manual = (settings.targets || []).filter((target) => target.shopName || target.shopKey);
       const matched = manual.length ? null : this.matchZhongtaiShop(store.storeName, site, settings.identity, platform.id);
@@ -717,6 +826,9 @@ class Collector {
         platformName: store.platformName,
         platform: platform.name,
         site,
+        templateReady: Boolean(template && !template.requiresCalibration),
+        endpointCount: Array.isArray(template?.endpoints) ? template.endpoints.length : 0,
+        officialReport: platform.id === "shopee" && template?.builtin === true,
         enabled: settings.enabled !== false,
         targets: manual.length ? manual : [{ shopName: matched?.shopName || store.storeName, shopKey: matched?.shopKey || "", country: site, auto: true, matched: Boolean(matched) }],
         last: lastByStore.get(store.storeId) || null,
@@ -771,11 +883,32 @@ class Collector {
     const page = `${origin}${template.collectPath || "/"}`;
     const rows = [];
     const issues = [];
+    let skippedCheckpoints = 0;
+    const pendingDates = new Map();
+    for (const target of targets) {
+      const requested = dates[target.country] || dates.default || [];
+      const pending = mode === "upload"
+        ? requested.filter((date) => {
+          const key = collectionCheckpointKey({ storeId: store.storeId, targetId: target.id, country: target.country, date });
+          const completed = this.store.hasCollectionCheckpoint(key);
+          if (completed) skippedCheckpoints += 1;
+          return !completed;
+        })
+        : requested;
+      pendingDates.set(target.id, pending);
+    }
+    targets = targets.filter((target) => (pendingDates.get(target.id) || []).length > 0);
+    if (!targets.length) {
+      onProgress({ storeId: store.storeId, phase: "checkpoint", message: `${store.storeName}：所选日期均已成功写入中台，已跳过` });
+      return { ok: true, rows, issues, screenshots: [], skippedCheckpoints };
+    }
     let reused = false;
     try {
+      onProgress({ storeId: store.storeId, phase: "preflight", message: `${store.storeName}：预检模板、店铺映射与历史断点` });
       onProgress({ storeId: store.storeId, phase: "open", message: `打开 ${store.storeName}` });
       ({ reused } = await this.openAt(store.storeId, page));
       await this.ensurePage(store.storeId, platform, page);
+      onProgress({ storeId: store.storeId, phase: "preflight", message: `${store.storeName}：紫鸟网络、CDP、卖家中心页面与登录态正常` });
       let pageIdentity = null;
       if (platform.identityPageBody && platform.parsePageIdentity) {
         const snapshot = await this.cli.runInPage(store.storeId, platform.identityPageBody(), { timeoutMs: 30000 });
@@ -802,7 +935,7 @@ class Collector {
       }
       const requests = [];
       for (const target of targets) {
-        const targetDates = dates[target.country] || dates.default;
+        const targetDates = pendingDates.get(target.id) || [];
         for (const date of targetDates) {
           const values = placeholderValues({ date, site: target.country, shopId: target.shopId || "", origin });
           for (const endpoint of template.endpoints) requests.push({ key: `${target.id}|${date}|${endpoint.id}`, ...fillRequest(endpoint, values) });
@@ -838,10 +971,11 @@ class Collector {
         error.retryable = false;
         throw error;
       }
+      onProgress({ storeId: store.storeId, phase: "preflight", message: `${store.storeName}：中台店铺映射与报表模板检查通过` });
       let orderReport = null;
       if (platform.id === "shopee" && template.builtin === true && targets.length === 1) {
         const target = targets[0];
-        const targetDates = dates[target.country] || dates.default || [];
+        const targetDates = pendingDates.get(target.id) || [];
         try {
           orderReport = await this.collectShopeeOrderReport({ store, target, platform, origin, dates: targetDates, timeoutMs, onProgress });
         } catch (error) {
@@ -850,7 +984,7 @@ class Collector {
       }
       for (const target of targets) {
         const info = siteInfo(target.country);
-        const targetDates = dates[target.country] || dates.default;
+        const targetDates = pendingDates.get(target.id) || [];
         for (const date of targetDates) {
           const responses = {};
           const notReadyEndpoints = new Set();
@@ -918,6 +1052,10 @@ class Collector {
             ...channelMetadata,
             ...values,
             _store: store.storeName,
+            _storeId: store.storeId,
+            _targetId: target.id,
+            _targetCountry: target.country,
+            _checkpointKey: collectionCheckpointKey({ storeId: store.storeId, targetId: target.id, country: target.country, date }),
             evidence: {
               storeId: store.storeId,
               storeName: store.storeName,
@@ -948,7 +1086,7 @@ class Collector {
       if (targets.length === 1 && platform.pageCheck && this.config().quality?.pageCheck !== false) {
         await this.pageCheck({ store, target: targets[0], platform, origin, rows, issues, screenshots, onProgress });
       }
-      return { ok: true, rows, issues, screenshots };
+      return { ok: true, rows, issues, screenshots, skippedCheckpoints };
     } finally {
       if (closeAfter && !reused) await this.cli.closeStore({ storeId: store.storeId });
     }
@@ -1000,6 +1138,7 @@ class Collector {
   async collect({ storeIds = null, dates = null, mode = "upload", trigger = "manual", commandId = "", onProgress = () => {} } = {}) {
     if (this.running) throw new Error("已有采集任务在运行");
     const config = this.config();
+    const selectedDates = requestedDates(dates);
     const runId = newId("run");
     const startedAt = new Date().toISOString();
     this.cancelRequested = false;
@@ -1012,7 +1151,7 @@ class Collector {
       startedAt,
       finishedAt: "",
       status: "running",
-      dates: Array.isArray(dates) && dates.length ? dates : defaultDates(config.schedule),
+      dates: selectedDates || defaultDates(config.schedule),
       stores: [],
       rowCount: 0,
       issues: [],
@@ -1033,9 +1172,9 @@ class Collector {
         }
         const dateMap = { default: [] };
         for (const target of item.targets) {
-          dateMap[target.country] = Array.isArray(dates) && dates.length ? dates : defaultDates({ ...config.schedule, site: target.country });
+          dateMap[target.country] = selectedDates || defaultDates({ ...config.schedule, site: target.country });
         }
-        dateMap.default = Array.isArray(dates) && dates.length ? dates : defaultDates(config.schedule);
+        dateMap.default = selectedDates || defaultDates(config.schedule);
         onProgress({ index, total: plan.length, storeId: item.store.storeId, phase: "start", message: `(${index + 1}/${plan.length}) ${item.store.storeName}` });
         const attempts = 1 + Math.max(0, Number(config.ziniao.retryPerStore) || 0);
         let result = null;
@@ -1055,11 +1194,20 @@ class Collector {
           allScreenshots.push(...(result.screenshots || []));
           entry.issues.push(...result.issues);
           const hasError = result.issues.some((issue) => issue.level === "error");
-          entry.stores.push({ storeId: item.store.storeId, storeName: item.store.storeName, status: hasError ? "partial" : "ok", message: hasError ? "部分接口失败" : "", rowCount: result.rows.length });
-          this.log("info", `${item.store.storeName}：${result.rows.length} 行`);
+          const skippedCheckpoints = Number(result.skippedCheckpoints || 0);
+          entry.stores.push({
+            storeId: item.store.storeId,
+            storeName: item.store.storeName,
+            status: hasError ? "partial" : "ok",
+            message: hasError ? "部分接口失败" : (skippedCheckpoints ? `已跳过 ${skippedCheckpoints} 个成功日期` : ""),
+            rowCount: result.rows.length,
+            skippedCheckpoints,
+          });
+          this.log("info", `${item.store.storeName}：${result.rows.length} 行${skippedCheckpoints ? `，跳过 ${skippedCheckpoints} 个已成功日期` : ""}`);
         } else {
-          entry.stores.push({ storeId: item.store.storeId, storeName: item.store.storeName, status: "failed", message: lastError?.message || "失败", rowCount: 0 });
-          entry.issues.push({ level: "error", storeName: item.store.storeName, message: lastError?.message || "失败" });
+          const failureCategory = classifyFailure(lastError);
+          entry.stores.push({ storeId: item.store.storeId, storeName: item.store.storeName, status: "failed", message: lastError?.message || "失败", rowCount: 0, failureCategory });
+          entry.issues.push({ level: "error", storeName: item.store.storeName, message: lastError?.message || "失败", failureCategory });
         }
         entry.rowCount = allRows.length;
         this.store.saveResultRows(runId, allRows);
@@ -1074,10 +1222,7 @@ class Collector {
       }
       entry.rowCount = allRows.length;
       entry.pageChecks = allRows.filter((row) => row.evidence?.pageCheck).map((row) => ({ storeName: row._store, shopName: row.shopName, date: row.date, status: row.evidence.pageCheck.status, message: row.evidence.pageCheck.message }));
-      const rows = allRows.map(({ _store, ...row }) => {
-        for (const key of Object.keys(row)) if (row[key] === undefined) delete row[key];
-        return row;
-      });
+      const rows = allRows.map(publicUploadRow);
       entry.status = this.cancelRequested ? "cancelled" : this.baseRunStatus(entry);
       entry.finishedAt = new Date().toISOString();
       entry.issues = entry.issues.slice(0, 300);
@@ -1101,7 +1246,9 @@ class Collector {
         onProgress({ phase: "upload", message: `写入中台 ${rows.length} 行…` });
         const job = this.queueUpload(runId);
         entry.upload = await this.attemptUploadJob(job, { force: true, throwOnError: false });
-        entry.status = entry.upload?.ok ? this.baseRunStatus(entry) : "upload_failed";
+        entry.status = entry.upload?.ok
+          ? this.baseRunStatus(entry)
+          : (entry.upload?.needsAttention ? "needs_attention" : "upload_failed");
         if (entry.upload?.ok && allScreenshots.length) {
           const client = this.zhongtaiFactory();
           if (typeof client.agent === "function" && client.isNode) {
@@ -1128,7 +1275,7 @@ class Collector {
 
   /** 重新上传某次采集结果（例如当时中台不可用）。 */
   async reupload(runId, { dryRun = false } = {}) {
-    const rows = this.store.resultRows(runId).map(({ _store, ...row }) => row);
+    const rows = this.store.resultRows(runId).map(publicUploadRow);
     if (!rows.length) throw new Error("这次采集没有可上传的数据");
     if (dryRun) {
       const result = await this.zhongtaiFactory().ingest(rows, { dryRun: true, runId });
@@ -1142,11 +1289,15 @@ class Collector {
 module.exports = {
   Collector,
   defaultDates,
+  requestedDates,
   businessError,
   buildReplayBatches,
   isCommandLineTooLong,
   shopeeRateLimitDetails,
   shopeeRateLimitCooldown,
+  publicUploadRow,
+  collectionCheckpointKey,
+  classifyFailure,
   DEFAULT_REPLAY_BATCH_REQUESTS,
   DEFAULT_REPLAY_SCRIPT_CHARS,
   METRIC_KEYS,
