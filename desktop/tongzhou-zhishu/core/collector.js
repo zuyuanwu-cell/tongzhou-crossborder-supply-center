@@ -626,14 +626,47 @@ class Collector {
       if (recovery?.requiresManual) {
         check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
       } else if (recovery?.attempted) {
-        await this.waitCancelable(this.waits.shopeeLogin);
-        const maxPolls = Math.max(1, Math.round(Number(this.waits.shopeeLoginPollAttempts) || 1));
-        for (let poll = 1; poll <= maxPolls; poll += 1) {
-          info = await this.readPageInfoWithRetry(storeId);
-          this.logDismissedObstructions(info);
-          check = platform.checkPage(info);
-          if (check.ok || check.code === "CAPTCHA") break;
-          if (poll < maxPolls) await this.waitCancelable(this.waits.shopeeLoginPollRetry);
+        const runNativeLoginClick = async (action) => {
+          if (!action?.nativeSelector) return;
+          if (typeof this.cli.clickElement !== "function") {
+            const error = new Error("当前紫鸟连接器不支持可信登录点击，请更新同舟智数后重试。");
+            error.code = "NATIVE_CLICK_UNAVAILABLE";
+            throw error;
+          }
+          await this.cli.clickElement({
+            storeId,
+            selector: action.nativeSelector,
+            hint: action.method === "saved-account" ? "Shopee 已保存账号继续按钮" : "Shopee 登录按钮",
+          }, { timeoutMs: 30000 });
+          this.log("info", action.method === "saved-account"
+            ? "已通过紫鸟原生点击选择保存账号，等待登录表单。"
+            : "已通过紫鸟原生点击提交保存的账号密码，等待进入卖家中心。");
+        };
+        const pollLoginResult = async () => {
+          await this.waitCancelable(this.waits.shopeeLogin);
+          const maxPolls = Math.max(1, Math.round(Number(this.waits.shopeeLoginPollAttempts) || 1));
+          for (let poll = 1; poll <= maxPolls; poll += 1) {
+            info = await this.readPageInfoWithRetry(storeId);
+            this.logDismissedObstructions(info);
+            check = platform.checkPage(info);
+            if (check.ok || check.code === "CAPTCHA") break;
+            if (poll < maxPolls) await this.waitCancelable(this.waits.shopeeLoginPollRetry);
+          }
+        };
+
+        await runNativeLoginClick(recovery);
+        await pollLoginResult();
+        if (!check.ok && check.code === "NOT_LOGGED_IN" && recovery.method === "saved-account") {
+          const secondStep = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
+          if (secondStep?.requiresManual) {
+            check = { ok: false, code: "CAPTCHA", message: `${secondStep.reason} 请在紫鸟里完成验证后重试。` };
+          } else if (secondStep?.attempted) {
+            await runNativeLoginClick(secondStep);
+            await pollLoginResult();
+          } else if (secondStep?.alreadyLoggedIn) {
+            info = await this.readPageInfoWithRetry(storeId);
+            check = platform.checkPage(info);
+          }
         }
         if (check.ok) this.log("info", "Shopee 已使用浏览器保存的登录信息自动恢复。");
       } else if (recovery?.alreadyLoggedIn) {

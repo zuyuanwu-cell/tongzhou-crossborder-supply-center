@@ -285,20 +285,27 @@ const label = (element) => String(
   || ""
 ).trim();
 const enabled = (element) => !!(element && !element.disabled && element.getAttribute("aria-disabled") !== "true");
+const passwordToggle = (element) => /show password|hide password|password.*(?:show|hide)|eye|visibility|显示密码|隐藏密码/i.test([
+  label(element),
+  element && element.getAttribute("aria-label"),
+  element && element.getAttribute("title"),
+  element && typeof element.className === "string" ? element.className : "",
+].filter(Boolean).join(" "));
 const savedAccount = buttons.find((element) => enabled(element) && /继续|使用此账号|continue|saved account|lanjutkan|一键登录/i.test(label(element)));
-const submit = buttons.find((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录/i.test(label(element)))
-  || buttons.find((element) => String(element.type || element.getAttribute("type") || "").toLowerCase() === "submit");
+const submit = buttons.find((element) => enabled(element) && element.getAttribute("elementtiming") === "shopee:heroComponentPaint")
+  || buttons.find((element) => enabled(element) && !passwordToggle(element) && /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录/i.test(label(element)))
+  || buttons.find((element) => enabled(element) && !passwordToggle(element) && String(element.type || element.getAttribute("type") || "").toLowerCase() === "submit");
 const loginUrl = /\\/account\\/signin|\\/login|accounts\\.shopee/i.test(location.href);
 if (!loginUrl && !password && !submit && !savedAccount) {
   return { attempted: false, alreadyLoggedIn: true };
 }
 if (savedAccount) {
-  savedAccount.click();
-  return { attempted: true, method: "saved-account" };
+  savedAccount.setAttribute("data-tz-login-target", "saved-account");
+  return { attempted: true, nativeClick: true, nativeSelector: '[data-tz-login-target="saved-account"]', method: "saved-account" };
 }
 if (password && enabled(submit)) {
-  submit.click();
-  return { attempted: true, method: "login-button" };
+  submit.setAttribute("data-tz-login-target", "login-button");
+  return { attempted: true, nativeClick: true, nativeSelector: '[data-tz-login-target="login-button"]', method: "login-button" };
 }
 return {
   attempted: false,

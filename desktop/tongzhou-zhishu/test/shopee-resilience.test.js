@@ -50,7 +50,10 @@ test("Shopee 自动登录只触发浏览器保存凭据，不返回密码内容"
   assert.match(script, /TZ_SHOPEE_LOGIN_RECOVERY/);
   assert.match(script, /savedAccount/);
   assert.match(script, /!loginUrl && !password && !submit && !savedAccount/);
-  assert.match(script, /submit\.click\(\)/);
+  assert.match(script, /shopee:heroComponentPaint/);
+  assert.match(script, /nativeSelector/);
+  assert.match(script, /data-tz-login-target/);
+  assert.doesNotMatch(script, /submit\.click\(\)/);
   assert.doesNotMatch(script, /password\.?\.value/);
   assert.doesNotMatch(script, /password\.(focus|click|dispatchEvent)/);
   assert.doesNotMatch(script, /form\.(requestSubmit|submit)/);
@@ -102,12 +105,17 @@ test("Shopee 白屏外壳不会被当成已加载完成", async () => {
 test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () => {
   let pageChecks = 0;
   let loginRuns = 0;
+  let nativeClicks = 0;
   const cli = {
     visit: async () => null,
+    clickElement: async ({ selector }) => {
+      nativeClicks += 1;
+      assert.match(selector, /data-tz-login-target/);
+    },
     runInPage: async (_storeId, body) => {
       if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
         loginRuns += 1;
-        return { attempted: true, method: "button" };
+        return { attempted: true, method: "login-button", nativeSelector: '[data-tz-login-target="login-button"]' };
       }
       pageChecks += 1;
       if (pageChecks === 1) {
@@ -119,6 +127,7 @@ test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () =
   const collector = new Collector({ cli, store: storeStub(), waits: { visit: 0, shopeeLogin: 0 } });
   const info = await collector.ensurePage("store-login", shopee, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(loginRuns, 1);
+  assert.equal(nativeClicks, 1);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
 });
 
@@ -223,13 +232,17 @@ test("Shopee 登录恢复阶段 CDP 瞬断后重开当前店铺并继续登录",
 test("Shopee 等待页面加载完成并识别卖家中心内嵌登录层", async () => {
   let reads = 0;
   let recoveryRuns = 0;
+  let nativeClicks = 0;
   const collector = new Collector({
     cli: {
       visit: async () => null,
+      clickElement: async () => {
+        nativeClicks += 1;
+      },
       runInPage: async (_storeId, body) => {
         if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
           recoveryRuns += 1;
-          return { attempted: true, method: "saved-account" };
+          return { attempted: true, method: "saved-account", nativeSelector: '[data-tz-login-target="saved-account"]' };
         }
         reads += 1;
         if (reads === 1) return { href: "https://seller.shopee.co.id/portal/sale/order", ready: "loading", text: "" };
@@ -249,6 +262,7 @@ test("Shopee 等待页面加载完成并识别卖家中心内嵌登录层", asyn
   });
   const info = await collector.ensurePage("store-overlay", shopee, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(recoveryRuns, 1);
+  assert.equal(nativeClicks, 1);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(reads, 3);
 });

@@ -268,6 +268,27 @@ class ZiniaoCli {
     throw lastError;
   }
 
+  invokeZclaw(tool, args, { timeoutMs = 60000 } = {}) {
+    return this.run(
+      ["zclaw", "invoke", String(tool), "--args", JSON.stringify(args || {})],
+      { timeoutMs: timeoutMs + 30000, retries: 0 },
+    );
+  }
+
+  clickElement({ storeId, selector, hint = "" }, { timeoutMs = 30000 } = {}) {
+    if (!storeId || !selector) {
+      throw new ZiniaoError("紫鸟原生点击缺少店铺或选择器。", {
+        type: "input",
+        code: "INVALID_NATIVE_CLICK",
+      });
+    }
+    return this.invokeZclaw("click_element", {
+      storeId: String(storeId),
+      selector: String(selector),
+      hint: String(hint || ""),
+    }, { timeoutMs });
+  }
+
   async help(sub) {
     if (this.helpCache.has(sub)) return this.helpCache.get(sub);
     let textValue = "";

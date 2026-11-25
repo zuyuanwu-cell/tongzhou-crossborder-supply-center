@@ -35,6 +35,35 @@ function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tzzs-test-"));
 }
 
+test("紫鸟原生点击只透传店铺、临时选择器和提示，不接触登录凭据", async () => {
+  const cli = new ZiniaoCli();
+  let invocation = null;
+  cli.invokeZclaw = async (tool, args, options) => {
+    invocation = { tool, args, options };
+    return { ok: true };
+  };
+
+  await cli.clickElement({
+    storeId: "store-1",
+    selector: '[data-tz-login-target="login-button"]',
+    hint: "Shopee 登录按钮",
+  }, { timeoutMs: 12345 });
+
+  assert.deepEqual(invocation, {
+    tool: "click_element",
+    args: {
+      storeId: "store-1",
+      selector: '[data-tz-login-target="login-button"]',
+      hint: "Shopee 登录按钮",
+    },
+    options: { timeoutMs: 12345 },
+  });
+  assert.throws(
+    () => cli.clickElement({ storeId: "", selector: "" }),
+    (error) => error.code === "INVALID_NATIVE_CLICK",
+  );
+});
+
 test("Shopee 58-column reports produce a complete bounded header diagnostic", () => {
   const header = Array.from({ length: 58 }, (_, index) => `Column ${index + 1}`);
   header[0] = "Order ID";
