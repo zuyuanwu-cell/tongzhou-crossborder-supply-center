@@ -206,6 +206,28 @@ async function setup({ options = {}, stores } = {}) {
   } };
 }
 
+test("紫鸟店铺刷新：临时空结果不会覆盖有效缓存，后续成功结果会正常更新", async (t) => {
+  const env = await setup();
+  t.after(() => env.close());
+  const { collector, cli, store, logs } = env;
+
+  const initial = await collector.refreshStores({ attempts: 1, retryDelayMs: 0 });
+  assert.equal(initial.length, 2);
+
+  const originalListStores = cli.listStores.bind(cli);
+  cli.listStores = async () => [];
+  const preserved = await collector.refreshStores({ attempts: 2, retryDelayMs: 0 });
+  assert.equal(preserved.length, 2);
+  assert.equal(store.get().storeCache.length, 2);
+  assert.equal(store.get().storeCacheLastProbeStatus, "empty_preserved");
+  assert.ok(logs.some((line) => line.includes("已保留本地缓存")));
+
+  cli.listStores = originalListStores;
+  const refreshed = await collector.refreshStores({ attempts: 1, retryDelayMs: 0 });
+  assert.equal(refreshed.length, 2);
+  assert.equal(store.get().storeCacheLastProbeStatus, "ok");
+});
+
 test("工具函数：日期、时区、取值、占位符", () => {
   assert.deepEqual(dayRange("2026-11-04", "MY"), { start: Date.parse("2026-11-03T16:00:00Z") / 1000, end: Date.parse("2026-11-04T15:59:59Z") / 1000 });
   assert.equal(dayRange("2026-11-04", "ID").start, Date.parse("2026-11-03T17:00:00Z") / 1000);

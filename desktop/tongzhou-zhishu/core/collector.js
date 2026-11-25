@@ -440,11 +440,35 @@ class Collector {
   // 店铺
   // -------------------------------------------------------------------------
 
-  async refreshStores() {
-    const stores = await this.cli.listStores();
+  async refreshStores({ attempts = 2, retryDelayMs = 5000, preserveCacheOnEmpty = true } = {}) {
+    const previous = Array.isArray(this.config().storeCache) ? this.config().storeCache : [];
+    const maxAttempts = Math.max(1, Math.round(Number(attempts) || 1));
+    let stores = [];
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      stores = await this.cli.listStores();
+      if (stores.length) break;
+      if (attempt < maxAttempts) {
+        this.log("warn", `紫鸟暂未返回店铺，${Math.max(0, Number(retryDelayMs) || 0) / 1000} 秒后重试（${attempt}/${maxAttempts}）。`);
+        await this.waitCancelable(Math.max(0, Number(retryDelayMs) || 0));
+      }
+    }
+
+    const probedAt = new Date().toISOString();
+    if (!stores.length && previous.length && preserveCacheOnEmpty) {
+      this.store.update((config) => {
+        config.storeCacheLastProbeAt = probedAt;
+        config.storeCacheLastProbeStatus = "empty_preserved";
+      });
+      this.log("warn", `紫鸟连续 ${maxAttempts} 次返回 0 家店铺，已保留本地缓存的 ${previous.length} 家，避免清空可采集店铺；后续刷新成功后会自动更新。`);
+      return previous;
+    }
+
     this.store.update((config) => {
       config.storeCache = stores.map(({ raw, ...store }) => store);
-      config.storeCacheAt = new Date().toISOString();
+      config.storeCacheAt = probedAt;
+      config.storeCacheLastProbeAt = probedAt;
+      config.storeCacheLastProbeStatus = stores.length ? "ok" : "empty";
     });
     return this.config().storeCache;
   }
