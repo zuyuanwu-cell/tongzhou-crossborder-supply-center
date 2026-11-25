@@ -242,14 +242,14 @@ class Collector {
     // 截图压缩（Electron 主进程里用 nativeImage 转 JPEG）；返回 { mime, base64 } 或 null。
     this.imageEncoder = imageEncoder;
     this.waits = {
-      fresh: 5000,
-      reused: 2500,
-      visit: 3000,
+      fresh: 8000,
+      reused: 4000,
+      visit: 5000,
       retry: 5000,
       pageProbeRetry: 1000,
       pageProbeAttempts: 3,
-      pageReadyRetry: 1500,
-      pageReadyAttempts: 8,
+      pageReadyRetry: 2000,
+      pageReadyAttempts: 20,
       storeReconnectAttempts: 2,
       storeReconnectDelay: 1500,
       shopeeLogin: 8000,
@@ -516,7 +516,8 @@ class Collector {
     const href = String(info?.href || "");
     return Boolean(href)
       && !/^about:blank(?:$|[?#])/i.test(href)
-      && String(info?.ready || "complete").toLowerCase() !== "loading";
+      && String(info?.ready || "complete").toLowerCase() !== "loading"
+      && info?.visuallyBlank !== true;
   }
 
   logDismissedObstructions(info) {

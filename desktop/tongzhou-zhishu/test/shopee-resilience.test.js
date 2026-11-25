@@ -48,11 +48,12 @@ test("Shopee 429 使用全局 15/30/60 分钟退避并遵守 Retry-After", () =>
 test("Shopee 自动登录只触发浏览器保存凭据，不返回密码内容", () => {
   const script = loginRecoveryBody();
   assert.match(script, /TZ_SHOPEE_LOGIN_RECOVERY/);
-  assert.match(script, /password\.value/);
   assert.match(script, /savedAccount/);
   assert.match(script, /!loginUrl && !password && !submit && !savedAccount/);
-  assert.doesNotMatch(script, /value:\s*password\.value/);
-  assert.doesNotMatch(script, /password:\s*password\.value/);
+  assert.match(script, /submit\.click\(\)/);
+  assert.doesNotMatch(script, /password\.?\.value/);
+  assert.doesNotMatch(script, /password\.(focus|click|dispatchEvent)/);
+  assert.doesNotMatch(script, /form\.(requestSubmit|submit)/);
 });
 
 test("Shopee preflight only closes known non-security overlays and reports login controls", () => {
@@ -60,9 +61,42 @@ test("Shopee preflight only closes known non-security overlays and reports login
   assert.match(script, /TZ_PAGE_PREFLIGHT/);
   assert.match(script, /protectedText/);
   assert.match(script, /不再显示/);
+  assert.match(script, /visuallyBlank/);
+  assert.match(script, /data-testid/);
   assert.match(script, /hasPassword/);
   assert.match(script, /hasLoginControl/);
   assert.match(script, /hasCaptcha/);
+});
+
+test("Shopee 白屏外壳不会被当成已加载完成", async () => {
+  let reads = 0;
+  const collector = new Collector({
+    cli: {
+      visit: async () => null,
+      runInPage: async () => {
+        reads += 1;
+        if (reads === 1) {
+          return {
+            href: "https://seller.shopee.co.id/portal/sale/order",
+            ready: "complete",
+            visuallyBlank: true,
+            text: "",
+          };
+        }
+        return {
+          href: "https://seller.shopee.co.id/portal/sale/order",
+          ready: "complete",
+          visuallyBlank: false,
+          text: "Orders",
+        };
+      },
+    },
+    store: storeStub(),
+    waits: { pageReadyRetry: 0, pageReadyAttempts: 2, visit: 0 },
+  });
+  const info = await collector.ensurePage("store-white-shell", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(reads, 2);
+  assert.equal(info.text, "Orders");
 });
 
 test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () => {

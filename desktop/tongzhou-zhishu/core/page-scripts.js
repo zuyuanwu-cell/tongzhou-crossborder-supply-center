@@ -84,14 +84,14 @@ return { href: location.href, title: document.title, requests: captured.concat(r
 `;
 }
 
-/** 页面基本信息（用于判断是否掉登录）。 */
+/** 页面基本信息（用于等待页面、清理非安全弹窗及判断是否掉登录）。 */
 function pageInfoBody() {
   return `
 // TZ_PAGE_PREFLIGHT
 const visible = (element) => !!(element && element.offsetParent !== null);
-const safeClose = /^(关闭|稍后|以后再说|不再显示|知道了|我知道了|跳过|close|dismiss|not now|later|skip|tutup|nanti|lewati|đóng|để sau|bỏ qua)$/i;
-const protectedText = /captcha|security check|验证码|安全验证|二次验证|one.time.password|otp|登录|登入|log[ -]?in|sign[ -]?in/i;
-const containers = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="popup"], [class*="announcement"], [class*="notice"], [class*="tutorial"], [class*="guide"]'))
+const safeClose = /^(关闭|取消|暂不|暂不处理|稍后|以后|以后再说|不再显示|知道了|我知道了|好的|确认|跳过|close|dismiss|not now|maybe later|later|skip|got it|ok|tutup|batal|nanti|lewati|đóng|để sau|bỏ qua)$/i;
+const protectedText = /captcha|security check|验证码|安全验证|二次验证|身份验证|授权|one.time.password|otp|登录|登入|log[ -]?in|sign[ -]?in/i;
+const containers = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="popup"], [class*="announcement"], [class*="notice"], [class*="tutorial"], [class*="guide"], [class*="intercom"]'))
   .filter(visible);
 let dismissed = 0;
 for (const container of containers.slice(0, 8)) {
@@ -100,7 +100,13 @@ for (const container of containers.slice(0, 8)) {
   const controls = Array.from(container.querySelectorAll('button, [role="button"], [aria-label], [title]')).filter(visible);
   const close = controls.find((element) => {
     const label = String(element.innerText || element.getAttribute('aria-label') || element.getAttribute('title') || '').trim();
-    return safeClose.test(label);
+    const identity = String(
+      (typeof element.className === 'string' ? element.className : '')
+      + ' ' + (element.getAttribute('data-testid') || '')
+      + ' ' + (element.getAttribute('name') || '')
+    );
+    return safeClose.test(label)
+      || (!label && /(?:^|[\s_-])(?:modal|dialog|popup)?[\s_-]*close(?:[\s_-]|$)|(?:^|[\s_-])close[\s_-]*(?:button|btn|icon)(?:[\s_-]|$)/i.test(identity));
   });
   if (close && !close.disabled && close.getAttribute('aria-disabled') !== 'true') {
     close.click();
@@ -108,16 +114,21 @@ for (const container of containers.slice(0, 8)) {
   }
 }
 const bodyText = (document.body && document.body.innerText) || "";
+const bodyNodes = document.body && typeof document.body.querySelectorAll === 'function'
+  ? document.body.querySelectorAll('*').length
+  : (document.body ? 1 : 0);
 const inputs = Array.from(document.querySelectorAll("input") || []).filter(visible);
 const buttons = Array.from(document.querySelectorAll("button, [role=button], input[type=submit]") || []).filter(visible);
 const hasPassword = inputs.some((element) => element.type === "password" || /password|密码|kata sandi|mật khẩu/i.test((element.name || "") + " " + (element.placeholder || "")));
-const hasLoginControl = buttons.some((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录|使用此账号|continue|lanjutkan/i.test(String(element.innerText || element.value || "").trim()));
+const hasLoginControl = buttons.some((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录|使用此账号|continue|lanjutkan/i.test(String(element.innerText || element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || "").trim()));
 return {
   href: location.href,
   title: document.title,
   ready: document.readyState,
   text: bodyText.slice(0, 600),
   dismissed,
+  bodyNodes,
+  visuallyBlank: bodyText.trim().length < 2 && bodyNodes < 8 && !hasPassword && !hasLoginControl,
   hasPassword,
   hasLoginControl,
   hasCaptcha: /captcha|security check|验证码|安全验证|二次验证|one.time.password|otp/i.test(location.href + " " + bodyText.slice(0, 3000)),
@@ -259,48 +270,43 @@ function loginRecoveryBody() {
   return `
 // TZ_SHOPEE_LOGIN_RECOVERY
 const visible = (element) => !!(element && element.offsetParent !== null);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const text = (document.body && document.body.innerText) || "";
 if (/captcha|security check|验证码|安全验证|二次验证|one.time.password|otp/i.test(location.href + " " + text)) {
   return { attempted: false, requiresManual: true, reason: "Shopee 要求验证码或安全验证。" };
 }
 const inputs = Array.from(document.querySelectorAll("input") || []).filter(visible);
-const password = inputs.find((element) => element.type === "password" || /password|密码|kata sandi|mật khẩu/i.test(element.name + " " + element.placeholder));
-const username = inputs.find((element) => element !== password && /text|email|tel/.test(element.type || "text"));
+const password = inputs.find((element) => element.type === "password" || /password|密码|kata sandi|mật khẩu/i.test((element.name || "") + " " + (element.placeholder || "")));
 const buttons = Array.from(document.querySelectorAll("button, [role=button], input[type=submit]") || []).filter(visible);
-const submit = buttons.find((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录/i.test((element.innerText || element.value || "").trim()))
-  || buttons.find((element) => element.type === "submit");
-const savedAccount = buttons.find((element) => /继续|使用此账号|continue|saved account|lanjutkan|一键登录/i.test((element.innerText || element.value || "").trim()));
+const label = (element) => String(
+  element.innerText
+  || element.textContent
+  || element.getAttribute("aria-label")
+  || element.getAttribute("title")
+  || ""
+).trim();
+const enabled = (element) => !!(element && !element.disabled && element.getAttribute("aria-disabled") !== "true");
+const savedAccount = buttons.find((element) => enabled(element) && /继续|使用此账号|continue|saved account|lanjutkan|一键登录/i.test(label(element)));
+const submit = buttons.find((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录/i.test(label(element)))
+  || buttons.find((element) => String(element.type || element.getAttribute("type") || "").toLowerCase() === "submit");
 const loginUrl = /\\/account\\/signin|\\/login|accounts\\.shopee/i.test(location.href);
 if (!loginUrl && !password && !submit && !savedAccount) {
   return { attempted: false, alreadyLoggedIn: true };
 }
-if (savedAccount && (!password || !String(password.value || "").length)) {
+if (savedAccount) {
   savedAccount.click();
   return { attempted: true, method: "saved-account" };
 }
-if (!password || !String(password.value || "").length) {
-  if (username) { username.focus(); username.click(); }
-  if (password) { password.focus(); password.click(); }
-  await sleep(800);
-  if (!password || !String(password.value || "").length) {
-    return { attempted: false, autofillMissing: true, reason: "浏览器没有自动填入已保存的密码。" };
-  }
-}
-password.focus();
-password.dispatchEvent(new Event("input", { bubbles: true }));
-password.dispatchEvent(new Event("change", { bubbles: true }));
-if (submit && !submit.disabled && submit.getAttribute("aria-disabled") !== "true") {
+if (password && enabled(submit)) {
   submit.click();
-  return { attempted: true, method: "button" };
+  return { attempted: true, method: "login-button" };
 }
-const form = password.form || username?.form || document.querySelector("form");
-if (form) {
-  if (typeof form.requestSubmit === "function") form.requestSubmit();
-  else form.submit();
-  return { attempted: true, method: "form" };
-}
-return { attempted: false, reason: "没有找到可提交的 Shopee 登录按钮。" };
+return {
+  attempted: false,
+  autofillMissing: true,
+  reason: password
+    ? "Shopee 登录按钮尚不可用，请确认紫鸟已记住账号密码。"
+    : "没有找到可安全提交的 Shopee 登录入口。"
+};
 `;
 }
 
