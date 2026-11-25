@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Collector, shopeeRateLimitDetails, shopeeRateLimitCooldown, shopeeReportGap } = require("../core/collector");
+const { Collector, classifyFailure, shopeeRateLimitDetails, shopeeRateLimitCooldown, shopeeReportGap } = require("../core/collector");
 const { orderReportBody, loginRecoveryBody } = require("../core/page-scripts");
 const shopee = require("../core/platforms/shopee");
 
@@ -74,6 +74,90 @@ test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () =
   const info = await collector.ensurePage("store-login", shopee, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(loginRuns, 1);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+});
+
+test("Shopee 已登录页面首次 CDP 瞬断时原位重附着，不关闭店铺窗口", async () => {
+  let pageReads = 0;
+  const storeActions = [];
+  const collector = new Collector({
+    cli: {
+      runInPage: async () => {
+        pageReads += 1;
+        if (pageReads === 1) {
+          const error = new Error("Browser automation failed: temporary CDP disconnect");
+          error.code = "CDP_ERROR";
+          throw error;
+        }
+        return { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+      },
+      closeStore: async ({ storeId }) => storeActions.push(["close", storeId]),
+      openStore: async ({ storeId }) => storeActions.push(["open", storeId]),
+      visit: async () => null,
+    },
+    store: storeStub(),
+    waits: { pageProbeRetry: 0, pageProbeAttempts: 3, visit: 0 },
+  });
+  const info = await collector.ensurePage("store-cdp", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(pageReads, 2);
+  assert.deepEqual(storeActions, []);
+});
+
+test("Shopee 登录检测与恢复之间已完成登录时重新确认页面，不误报未登录", async () => {
+  let pageReads = 0;
+  let recoveryRuns = 0;
+  const collector = new Collector({
+    cli: {
+      visit: async () => null,
+      runInPage: async (_storeId, body) => {
+        if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
+          recoveryRuns += 1;
+          return { attempted: false, alreadyLoggedIn: true };
+        }
+        pageReads += 1;
+        return pageReads === 1
+          ? { href: "https://seller.shopee.co.id/account/signin", title: "Login", text: "Login" }
+          : { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+      },
+    },
+    store: storeStub(),
+    waits: { pageProbeRetry: 0, visit: 0, shopeeLogin: 0 },
+  });
+  const info = await collector.ensurePage("store-race", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(recoveryRuns, 1);
+  assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+});
+
+test("Shopee 登录恢复阶段的 CDP 错误保留浏览器会话分类", async () => {
+  const collector = new Collector({
+    cli: {
+      runInPage: async (_storeId, body) => {
+        if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
+          const error = new Error("Browser automation failed");
+          error.code = "CDP_ERROR";
+          throw error;
+        }
+        return { href: "https://seller.shopee.co.id/account/signin", title: "Login", text: "Login" };
+      },
+    },
+    store: storeStub(),
+    waits: { pageProbeRetry: 0, visit: 0, shopeeLogin: 0 },
+  });
+  await assert.rejects(
+    collector.ensurePage("store-recovery-cdp", shopee, "https://seller.shopee.co.id/portal/sale/order"),
+    (error) => error.code === "CDP_ERROR" && classifyFailure(error) === "browser_session",
+  );
+  const wrapped = new Error("Shopee 官方订单导表失败：卖家中心未登录", {
+    cause: Object.assign(new Error("Browser automation failed"), { code: "CDP_ERROR" }),
+  });
+  assert.equal(classifyFailure(wrapped), "browser_session");
+});
+
+test("Shopee 页面脚本内的 429 仍归入限流，不被浏览器会话分类吞掉", () => {
+  const wrapped = Object.assign(new Error("页面脚本出错：Error: Shopee 订单报表接口 HTTP 429"), {
+    code: "PAGE_SCRIPT_ERROR",
+  });
+  assert.equal(classifyFailure(wrapped), "rate_limit");
 });
 
 test("Shopee 自动登录遇到验证码或未自动填充时明确转人工", async () => {

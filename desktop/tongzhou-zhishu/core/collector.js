@@ -34,17 +34,58 @@ function collectionCheckpointKey({ storeId = "", targetId = "", country = "", da
     .digest("hex");
 }
 
+function errorChain(error) {
+  const chain = [];
+  const seen = new Set();
+  let current = error;
+  while (current && !seen.has(current) && chain.length < 8) {
+    seen.add(current);
+    chain.push(current);
+    current = current.cause;
+  }
+  return chain;
+}
+
+function errorDetails(error) {
+  const chain = errorChain(error);
+  return {
+    codes: chain.map((item) => String(item?.code || "").toUpperCase()).filter(Boolean),
+    message: chain.map((item) => String(item?.message || item || "")).filter(Boolean).join(" | "),
+  };
+}
+
+function isBrowserSessionError(error) {
+  const { codes, message } = errorDetails(error);
+  return codes.some((code) => [
+    "CDP_ERROR",
+    "PAGE_RELOADED",
+    "ZCLAW_TIMEOUT",
+    "ENAMETOOLONG",
+    "E2BIG",
+    "COMMAND_LINE_TOO_LONG",
+  ].includes(code))
+    || /ENAMETOOLONG|E2BIG|CDP|Browser automation failed|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message);
+}
+
+function isTransientPageProbeError(error) {
+  const { codes, message } = errorDetails(error);
+  if (codes.includes("CANCELLED") || codes.some((code) => ["ENAMETOOLONG", "E2BIG", "COMMAND_LINE_TOO_LONG"].includes(code))) return false;
+  return isBrowserSessionError(error)
+    || codes.some((code) => ["PAGE_SCRIPT_ERROR", "TIMEOUT", "ETIMEDOUT"].includes(code))
+    || /timed?\s*out|请求超时/i.test(message);
+}
+
 function classifyFailure(error) {
-  const code = String(error?.code || "").toUpperCase();
-  const message = String(error?.message || error || "");
-  if (code === "STORE_MAPPING_REQUIRED" || /mapping|required.*shop|店铺.*映射|映射.*店铺/i.test(message)) return "mapping";
-  if (code === "NOT_LOGGED_IN" || /not logged|未登录|登录失效/i.test(message)) return "login";
-  if (code === "CAPTCHA" || /captcha|验证码|二次验证|mfa/i.test(message)) return "manual_verification";
-  if (code === "SHOPEE_RATE_LIMIT" || /HTTP\s*429|rate.?limit|限流/i.test(message)) return "rate_limit";
-  if (["ENAMETOOLONG", "E2BIG", "COMMAND_LINE_TOO_LONG"].includes(code)
-    || /ENAMETOOLONG|E2BIG|CDP|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message)) return "browser_session";
+  const { codes, message } = errorDetails(error);
+  if (codes.includes("STORE_MAPPING_REQUIRED") || /mapping|required.*shop|店铺.*映射|映射.*店铺/i.test(message)) return "mapping";
+  // 业务脚本抛出的 429 也可能被 ZClaw 包成 PAGE_SCRIPT_ERROR，必须优先进入全局限流熔断。
+  if (codes.includes("SHOPEE_RATE_LIMIT") || /HTTP\s*429|rate.?limit|限流/i.test(message)) return "rate_limit";
+  // 浏览器/CDP 断流不能因为外层错误文字带有“未登录”而被归到账号问题。
+  if (isBrowserSessionError(error)) return "browser_session";
+  if (codes.includes("NOT_LOGGED_IN") || /not logged|未登录|登录失效/i.test(message)) return "login";
+  if (codes.includes("CAPTCHA") || /captcha|验证码|二次验证|mfa/i.test(message)) return "manual_verification";
   if (/报表|表头|header|schema|字段.*缺失/i.test(message)) return "report_schema";
-  if (/UPLOAD_|写入中台|upload|fetch failed|ECONN|ETIMEDOUT|timeout|network/i.test(`${code} ${message}`)) return "upload_network";
+  if (/UPLOAD_|写入中台|upload|fetch failed|ECONN|ETIMEDOUT|timeout|network/i.test(`${codes.join(" ")} ${message}`)) return "upload_network";
   return "unknown";
 }
 
@@ -204,6 +245,8 @@ class Collector {
       reused: 2500,
       visit: 3000,
       retry: 5000,
+      pageProbeRetry: 1000,
+      pageProbeAttempts: 3,
       shopeeLogin: 8000,
       shopeeReportGapMin: 20_000,
       shopeeReportGapMax: 45_000,
@@ -414,17 +457,30 @@ class Collector {
     await this.waitCancelable(500);
     await this.cli.openStore({ storeId, url, headless });
     await this.waitCancelable(this.waits.fresh);
-    return this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+    return this.readPageInfoWithRetry(storeId);
+  }
+
+  async readPageInfoWithRetry(storeId, {
+    attempts = this.waits.pageProbeAttempts,
+    delayMs = this.waits.pageProbeRetry,
+  } = {}) {
+    const maxAttempts = Math.max(1, Math.round(Number(attempts) || 1));
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts || !isTransientPageProbeError(error)) throw error;
+        this.log("warn", `店铺页面连接瞬时中断，正在原位重新附着（${attempt}/${maxAttempts - 1}）：${error.message}`);
+        await this.waitCancelable(delayMs);
+      }
+    }
+    throw lastError;
   }
 
   async ensurePage(storeId, platform, url) {
-    let info;
-    try {
-      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
-    } catch (error) {
-      this.log("warn", `店铺页面连接失效，正在只重开当前店铺并重新附着：${error.message}`);
-      info = await this.reopenCurrentStore(storeId, url);
-    }
+    let info = await this.readPageInfoWithRetry(storeId);
     if (!info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href))) {
       this.log("warn", "检测到空白页，正在只重开当前店铺并重新附着。");
       info = await this.reopenCurrentStore(storeId, url);
@@ -447,21 +503,32 @@ class Collector {
     if (check.ok && !onOrigin && wantOrigin) {
       await this.cli.visit({ storeId, url });
       await sleep(this.waits.visit);
-      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+      info = await this.readPageInfoWithRetry(storeId);
       check = platform.checkPage(info);
     }
     if (!check.ok && check.code === "NOT_LOGGED_IN" && platform?.id === "shopee") {
       this.log("info", "检测到 Shopee 登录失效，正在尝试使用浏览器已保存的账号密码自动登录。");
-      const recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 }).catch((error) => ({ attempted: false, reason: error.message }));
+      let recovery;
+      try {
+        recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
+      } catch (error) {
+        this.log("warn", `Shopee 登录状态恢复脚本未能连接页面，保留浏览器会话错误：${error.message}`);
+        throw error;
+      }
       if (recovery?.requiresManual) {
         check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
       } else if (recovery?.attempted) {
         await this.waitCancelable(this.waits.shopeeLogin);
         await this.cli.visit({ storeId, url });
         await this.waitCancelable(this.waits.visit);
-        info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+        info = await this.readPageInfoWithRetry(storeId);
         check = platform.checkPage(info);
         if (check.ok) this.log("info", "Shopee 已使用浏览器保存的登录信息自动恢复。");
+      } else if (recovery?.alreadyLoggedIn) {
+        // 检测与恢复之间页面可能已由浏览器自动跳回卖家中心，重新读取后再定性。
+        info = await this.readPageInfoWithRetry(storeId);
+        check = platform.checkPage(info);
+        if (check.ok) this.log("info", "Shopee 页面已自行恢复登录，继续当前店铺采集。");
       } else {
         check = { ok: false, code: "NOT_LOGGED_IN", message: `Shopee 卖家中心未登录。${recovery?.reason || "自动登录未成功。"} 请在紫鸟里确认已保存密码；如有验证码请手动完成一次。` };
       }

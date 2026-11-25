@@ -109,6 +109,8 @@ class FakePage {
       document: {
         title: "Shopee 卖家中心 - 商业分析",
         readyState: "complete",
+        querySelectorAll: () => [],
+        querySelector: () => null,
         get cookie() { return Object.entries(page.cookies).filter(([key]) => key !== "SPC_EC").map(([key, value]) => `${key}=${value}`).join("; "); },
         body: { innerText: "商业分析 访客数 浏览量" },
       },
