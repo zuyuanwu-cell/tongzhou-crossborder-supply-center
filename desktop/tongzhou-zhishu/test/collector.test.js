@@ -461,7 +461,7 @@ test("页面恢复：about:blank 时只重开当前店铺并重新附着", async
       async visit() { throw new Error("空白页恢复不应只调用 visit"); },
     },
     store: { get: () => ({ ziniao: { headless: false } }) },
-    waits: { fresh: 0, visit: 0 },
+    waits: { fresh: 0, visit: 0, blankGrace: 0, pageReadyPoll: 0 },
   });
   const platform = { checkPage: (info) => ({ ok: /^https:\/\/seller\.shopee\.test\//.test(info?.href || ""), code: "NOT_LOGGED_IN", message: "not ready" }) };
   const info = await collector.ensurePage("store-current", platform, "https://seller.shopee.test/home");
