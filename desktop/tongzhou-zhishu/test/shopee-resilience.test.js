@@ -51,6 +51,7 @@ test("Shopee 自动登录只触发浏览器保存凭据，不返回密码内容"
   assert.match(script, /savedAccount/);
   assert.match(script, /!loginUrl && !password && !submit && !savedAccount/);
   assert.match(script, /shopee:heroComponentPaint/);
+  assert.match(script, /nativeSelectorsFor/);
   assert.match(script, /nativeSelector/);
   assert.match(script, /data-tz-login-target/);
   assert.doesNotMatch(script, /submit\.click\(\)/);
@@ -110,12 +111,17 @@ test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () =
     visit: async () => null,
     clickElement: async ({ selector }) => {
       nativeClicks += 1;
-      assert.match(selector, /data-tz-login-target/);
+      assert.equal(selector, '[elementtiming="shopee:heroComponentPaint"]');
     },
     runInPage: async (_storeId, body) => {
       if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
         loginRuns += 1;
-        return { attempted: true, method: "login-button", nativeSelector: '[data-tz-login-target="login-button"]' };
+        return {
+          attempted: true,
+          method: "login-button",
+          nativeSelectors: ['[elementtiming="shopee:heroComponentPaint"]', '[data-tz-login-target="login-button"]'],
+          nativeSelector: '[elementtiming="shopee:heroComponentPaint"]',
+        };
       }
       pageChecks += 1;
       if (pageChecks === 1) {
@@ -128,6 +134,42 @@ test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () =
   const info = await collector.ensurePage("store-login", shopee, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(loginRuns, 1);
   assert.equal(nativeClicks, 1);
+  assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+});
+
+test("Shopee 登录原生点击可在稳定选择器失效后自动回退临时标记", async () => {
+  let pageChecks = 0;
+  const clicked = [];
+  const collector = new Collector({
+    cli: {
+      visit: async () => null,
+      clickElement: async ({ selector }) => {
+        clicked.push(selector);
+        if (clicked.length === 1) {
+          const error = new Error("Element could not be located");
+          error.code = "ELEMENT_NOT_FOUND";
+          throw error;
+        }
+      },
+      runInPage: async (_storeId, body) => {
+        if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
+          return {
+            attempted: true,
+            method: "login-button",
+            nativeSelectors: ['[elementtiming="shopee:heroComponentPaint"]', '[data-tz-login-target="login-button"]'],
+          };
+        }
+        pageChecks += 1;
+        return pageChecks === 1
+          ? { href: "https://seller.shopee.co.id/account/signin", title: "Login", text: "Login" }
+          : { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+      },
+    },
+    store: storeStub(),
+    waits: { visit: 0, shopeeLogin: 0 },
+  });
+  const info = await collector.ensurePage("store-login-fallback", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.deepEqual(clicked, ['[elementtiming="shopee:heroComponentPaint"]', '[data-tz-login-target="login-button"]']);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
 });
 

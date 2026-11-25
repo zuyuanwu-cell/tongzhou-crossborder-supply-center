@@ -285,6 +285,30 @@ const label = (element) => String(
   || ""
 ).trim();
 const enabled = (element) => !!(element && !element.disabled && element.getAttribute("aria-disabled") !== "true");
+const nativeSelectorsFor = (element, marker) => {
+  const selectors = [];
+  const tag = String(element && element.tagName || "").toLowerCase();
+  const addStableAttribute = (name) => {
+    const value = String(element && element.getAttribute(name) || "").trim();
+    if (!value || !/^[a-z0-9_.:-]+$/i.test(value)) return;
+    const selector = '[' + name + '="' + value + '"]';
+    const matches = Array.from(document.querySelectorAll(selector) || []).filter(visible);
+    if (matches.length === 1 && matches[0] === element) selectors.push(selector);
+  };
+  addStableAttribute("elementtiming");
+  addStableAttribute("data-testid");
+  addStableAttribute("id");
+  addStableAttribute("name");
+  const type = String(element && (element.type || element.getAttribute("type")) || "").toLowerCase();
+  if (tag && type) {
+    const typed = tag + '[type="' + type + '"]';
+    const matches = Array.from(document.querySelectorAll(typed) || []).filter(visible);
+    if (matches.length === 1 && matches[0] === element) selectors.push(typed);
+  }
+  element.setAttribute("data-tz-login-target", marker);
+  selectors.push('[data-tz-login-target="' + marker + '"]');
+  return Array.from(new Set(selectors));
+};
 const passwordToggle = (element) => /show password|hide password|password.*(?:show|hide)|eye|visibility|显示密码|隐藏密码/i.test([
   label(element),
   element && element.getAttribute("aria-label"),
@@ -300,12 +324,12 @@ if (!loginUrl && !password && !submit && !savedAccount) {
   return { attempted: false, alreadyLoggedIn: true };
 }
 if (savedAccount) {
-  savedAccount.setAttribute("data-tz-login-target", "saved-account");
-  return { attempted: true, nativeClick: true, nativeSelector: '[data-tz-login-target="saved-account"]', method: "saved-account" };
+  const nativeSelectors = nativeSelectorsFor(savedAccount, "saved-account");
+  return { attempted: true, nativeClick: true, nativeSelectors, nativeSelector: nativeSelectors[0], method: "saved-account" };
 }
 if (password && enabled(submit)) {
-  submit.setAttribute("data-tz-login-target", "login-button");
-  return { attempted: true, nativeClick: true, nativeSelector: '[data-tz-login-target="login-button"]', method: "login-button" };
+  const nativeSelectors = nativeSelectorsFor(submit, "login-button");
+  return { attempted: true, nativeClick: true, nativeSelectors, nativeSelector: nativeSelectors[0], method: "login-button" };
 }
 return {
   attempted: false,

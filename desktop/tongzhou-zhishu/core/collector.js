@@ -627,17 +627,35 @@ class Collector {
         check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
       } else if (recovery?.attempted) {
         const runNativeLoginClick = async (action) => {
-          if (!action?.nativeSelector) return;
+          const selectors = Array.from(new Set([
+            ...(Array.isArray(action?.nativeSelectors) ? action.nativeSelectors : []),
+            action?.nativeSelector,
+          ].filter(Boolean).map((value) => String(value))));
+          if (!selectors.length) return;
           if (typeof this.cli.clickElement !== "function") {
             const error = new Error("当前紫鸟连接器不支持可信登录点击，请更新同舟智数后重试。");
             error.code = "NATIVE_CLICK_UNAVAILABLE";
             throw error;
           }
-          await this.cli.clickElement({
-            storeId,
-            selector: action.nativeSelector,
-            hint: action.method === "saved-account" ? "Shopee 已保存账号继续按钮" : "Shopee 登录按钮",
-          }, { timeoutMs: 30000 });
+          let lastError;
+          for (const selector of selectors) {
+            try {
+              await this.cli.clickElement({
+                storeId,
+                selector,
+                hint: action.method === "saved-account" ? "Shopee 已保存账号继续按钮" : "Shopee 登录按钮",
+              }, { timeoutMs: 30000 });
+              lastError = null;
+              break;
+            } catch (error) {
+              lastError = error;
+              const missing = String(error?.code || "") === "ELEMENT_NOT_FOUND"
+                || /element could not be located|element not found/i.test(String(error?.message || ""));
+              if (!missing) throw error;
+              this.log("warn", "Shopee 登录按钮选择器已失效，自动尝试备用入口。");
+            }
+          }
+          if (lastError) throw lastError;
           this.log("info", action.method === "saved-account"
             ? "已通过紫鸟原生点击选择保存账号，等待登录表单。"
             : "已通过紫鸟原生点击提交保存的账号密码，等待进入卖家中心。");
