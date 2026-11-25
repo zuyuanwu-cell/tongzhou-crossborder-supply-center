@@ -47,21 +47,24 @@ test("Shopee 自动登录只触发浏览器保存凭据，不返回密码内容"
 test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () => {
   let pageChecks = 0;
   let loginRuns = 0;
+  let loggedIn = false;
   const cli = {
     visit: async () => null,
     runInPage: async (_storeId, body) => {
       if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) {
         loginRuns += 1;
+        loggedIn = true;
         return { attempted: true, method: "button" };
       }
+      if (body.includes("TZ_DISMISS_INTERFERENCE")) return { dismissed: 0 };
       pageChecks += 1;
-      if (pageChecks === 1) {
+      if (!loggedIn) {
         return { href: "https://seller.shopee.co.id/account/signin", title: "Login", text: "Login" };
       }
       return { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
     },
   };
-  const collector = new Collector({ cli, store: storeStub(), waits: { visit: 0, shopeeLogin: 0 } });
+  const collector = new Collector({ cli, store: storeStub(), waits: { visit: 0, shopeeLogin: 0, pageReadyPoll: 0 } });
   const info = await collector.ensurePage("store-login", shopee, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(loginRuns, 1);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
@@ -75,9 +78,11 @@ test("Shopee 自动登录遇到验证码或未自动填充时明确转人工", a
     const collector = new Collector({
       cli: {
         visit: async () => null,
-        runInPage: async (_storeId, body) => body.includes("TZ_SHOPEE_LOGIN_RECOVERY")
-          ? recovery
-          : { href: "https://seller.shopee.co.id/account/signin", title: "Login", text: "Login" },
+        runInPage: async (_storeId, body) => {
+          if (body.includes("TZ_SHOPEE_LOGIN_RECOVERY")) return recovery;
+          if (body.includes("TZ_DISMISS_INTERFERENCE")) return { dismissed: 0 };
+          return { href: "https://seller.shopee.co.id/account/signin", title: "Login", text: "Login" };
+        },
       },
       store: storeStub(),
       waits: { visit: 0, shopeeLogin: 0 },
@@ -101,7 +106,8 @@ test("Shopee about:blank 会重新打开当前店铺页面", async () => {
       },
       closeStore: async ({ storeId }) => reopened.push(["close", storeId]),
       openStore: async ({ storeId, url }) => reopened.push(["open", storeId, url]),
-      runInPage: async () => {
+      runInPage: async (_storeId, body) => {
+        if (body.includes("TZ_DISMISS_INTERFERENCE")) return { dismissed: 0 };
         checks += 1;
         return checks === 1
           ? { href: "about:blank", title: "", text: "" }
@@ -109,7 +115,7 @@ test("Shopee about:blank 会重新打开当前店铺页面", async () => {
       },
     },
     store: storeStub(),
-    waits: { visit: 0 },
+    waits: { visit: 0, blankGrace: 0, pageReadyPoll: 0 },
   });
   const info = await collector.ensurePage("blank-store", shopee, "https://seller.shopee.co.id/portal/sale/order");
   assert.equal(visits, 0);
@@ -118,6 +124,37 @@ test("Shopee about:blank 会重新打开当前店铺页面", async () => {
     ["open", "blank-store", "https://seller.shopee.co.id/portal/sale/order"],
   ]);
   assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+});
+
+test("Shopee 页面 readyState 完成但正文为空时继续等待渲染", async () => {
+  let reads = 0;
+  const collector = new Collector({
+    cli: {
+      runInPage: async () => {
+        reads += 1;
+        if (reads === 1) {
+          return {
+            href: "https://seller.shopee.co.id/portal/sale/order",
+            ready: "complete",
+            bodyLength: 0,
+            htmlLength: 40,
+          };
+        }
+        return {
+          href: "https://seller.shopee.co.id/portal/sale/order",
+          ready: "interactive",
+          bodyLength: 120,
+          htmlLength: 500,
+        };
+      },
+    },
+    store: storeStub(),
+    waits: { pageReadyTimeout: 100, pageReadyPoll: 0, blankGrace: 0 },
+  });
+
+  const info = await collector.waitForPageReady("slow-store");
+  assert.equal(reads, 2);
+  assert.equal(info.bodyLength, 120);
 });
 
 test("Shopee 429 只重试当前报表窗口，不回到整店采集", async () => {

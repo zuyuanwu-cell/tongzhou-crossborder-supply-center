@@ -86,7 +86,68 @@ return { href: location.href, title: document.title, requests: captured.concat(r
 
 /** 页面基本信息（用于判断是否掉登录）。 */
 function pageInfoBody() {
-  return `return { href: location.href, title: document.title, ready: document.readyState, text: (document.body && document.body.innerText || "").slice(0, 600) };`;
+  return `
+// TZ_PAGE_INFO
+const body = document.body;
+const text = (body && body.innerText) || "";
+const root = document.documentElement;
+const query = typeof document.querySelector === "function"
+  ? (selector) => document.querySelector(selector)
+  : () => null;
+return {
+  href: location.href,
+  title: document.title,
+  ready: document.readyState,
+  text: text.slice(0, 600),
+  bodyLength: text.trim().length,
+  htmlLength: (root && root.innerHTML || "").length,
+  hasPassword: !!query('input[type="password"]'),
+};`;
+}
+
+/**
+ * 关闭会遮挡报表和登录按钮的公告、广告、引导与通知弹窗。
+ * 仅点击弹窗容器内明确表达“关闭/稍后/知道了”的按钮，避免误触业务动作。
+ */
+function dismissInterferenceBody() {
+  return `
+// TZ_DISMISS_INTERFERENCE
+const visible = (element) => !!(element && element.offsetParent !== null);
+const queryAll = (root, selector) => root && typeof root.querySelectorAll === "function"
+  ? Array.from(root.querySelectorAll(selector) || [])
+  : [];
+const label = (element) => [
+  element && element.innerText,
+  element && element.value,
+  element && element.getAttribute && element.getAttribute("aria-label"),
+  element && element.getAttribute && element.getAttribute("title"),
+].filter(Boolean).join(" ").trim();
+const CLOSE_TEXT = /^(关闭|关掉|稍后|以后再说|我知道了|知道了|暂不|跳过|close|dismiss|not now|later|got it|skip|tutup|nanti|lewati|đóng|để sau|bỏ qua)$/i;
+const containers = queryAll(document, [
+  '[role="dialog"]', '[aria-modal="true"]',
+  '[class*="modal"]', '[class*="popup"]', '[class*="dialog"]',
+  '[class*="announcement"]', '[class*="notice"]', '[class*="onboarding"]',
+].join(",")).filter(visible);
+const candidates = [];
+for (const container of containers) {
+  candidates.push(...queryAll(container, [
+    'button', '[role="button"]', 'input[type="button"]',
+    '[aria-label*="close" i]', '[title*="close" i]',
+    '[class*="close"]', '[class*="dismiss"]',
+  ].join(",")).filter(visible));
+}
+const unique = Array.from(new Set(candidates));
+let dismissed = 0;
+for (const element of unique) {
+  const value = label(element);
+  const explicitClose = /close|dismiss/i.test(String(element.className || "") + " " + value);
+  if (!explicitClose && !CLOSE_TEXT.test(value)) continue;
+  element.click();
+  dismissed += 1;
+  if (dismissed >= 6) break;
+}
+return { dismissed };
+`;
 }
 
 /**
@@ -350,4 +411,4 @@ return { restored: Boolean(option) };
 `;
 }
 
-module.exports = { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody };
+module.exports = { hookBody, probeBody, pageInfoBody, dismissInterferenceBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody };

@@ -104,13 +104,15 @@ class FakePage {
         });
       }
     }
+    const renderedText = "Shopee 卖家中心 商业分析 访客数 浏览量 加购人数 订单数 销售额 广告数据 商品表现 店铺表现 数据中心 报表下载 订单管理 物流管理 营销中心 财务中心";
     const window = {
       location: { get href() { return page.href; } },
       document: {
         title: "Shopee 卖家中心 - 商业分析",
         readyState: "complete",
         get cookie() { return Object.entries(page.cookies).filter(([key]) => key !== "SPC_EC").map(([key, value]) => `${key}=${value}`).join("; "); },
-        body: { innerText: "商业分析 访客数 浏览量" },
+        body: { innerText: renderedText },
+        documentElement: { innerHTML: `<html><body>${renderedText}</body></html>` },
       },
       performance: { getEntriesByType: () => page.resources.slice() },
       fetch: doFetch,

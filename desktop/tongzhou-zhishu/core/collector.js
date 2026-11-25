@@ -4,7 +4,7 @@
 
 const crypto = require("node:crypto");
 const { getPlatform, guessPlatform, allTemplates } = require("./platforms");
-const { hookBody, probeBody, pageInfoBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
+const { hookBody, probeBody, pageInfoBody, dismissInterferenceBody, replayBody, orderReportBody, loginRecoveryBody, pageCheckBody, restoreOrderTypeBody } = require("./page-scripts");
 const { templatizeRequest, flattenNumbers, suggestMetrics, extractMetrics, mappingParts, fillRequest, placeholderValues, validateTemplate, METRIC_KEYS } = require("./recipe");
 const { comparePageCheck, evidenceEndpoint, pageDateText } = require("./quality");
 const { siteInfo, siteToday, addDays, dateList } = require("./sites");
@@ -41,7 +41,7 @@ function classifyFailure(error) {
   if (code === "NOT_LOGGED_IN" || /not logged|未登录|登录失效/i.test(message)) return "login";
   if (code === "CAPTCHA" || /captcha|验证码|二次验证|mfa/i.test(message)) return "manual_verification";
   if (code === "SHOPEE_RATE_LIMIT" || /HTTP\s*429|rate.?limit|限流/i.test(message)) return "rate_limit";
-  if (["ENAMETOOLONG", "E2BIG", "COMMAND_LINE_TOO_LONG"].includes(code)
+  if (["ENAMETOOLONG", "E2BIG", "COMMAND_LINE_TOO_LONG", "PAGE_NOT_READY"].includes(code)
     || /ENAMETOOLONG|E2BIG|CDP|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message)) return "browser_session";
   if (/报表|表头|header|schema|字段.*缺失/i.test(message)) return "report_schema";
   if (/UPLOAD_|写入中台|upload|fetch failed|ECONN|ETIMEDOUT|timeout|network/i.test(`${code} ${message}`)) return "upload_network";
@@ -199,6 +199,12 @@ class Collector {
       shopeeRateLimitJitterMin: 20_000,
       shopeeRateLimitJitterMax: 45_000,
       shopeeReportRetries: 1,
+      pageReadyTimeout: 45_000,
+      pageReadyPoll: 1_200,
+      blankGrace: 6_000,
+      loginAutofill: 1_800,
+      loginAttempts: 5,
+      popupSettle: 350,
       ...waits,
     };
     this.store = store;
@@ -400,13 +406,72 @@ class Collector {
     await this.waitCancelable(500);
     await this.cli.openStore({ storeId, url, headless });
     await this.waitCancelable(this.waits.fresh);
-    return this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+    return this.waitForPageReady(storeId);
+  }
+
+  pageIsBlank(info) {
+    return !info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href));
+  }
+
+  pageIsReady(info) {
+    if (this.pageIsBlank(info)) return false;
+    // Older ZClaw builds did not expose ready/bodyLength. Treat a real URL as
+    // ready there so the compatibility path is not broken by this preflight.
+    if (info.ready == null && info.bodyLength == null && info.htmlLength == null) return true;
+    const ready = String(info.ready || "").toLowerCase();
+    const bodyLength = Number(info.bodyLength || 0);
+    const htmlLength = Number(info.htmlLength || 0);
+    // A seller-center tab may report `complete` before its SPA shell has
+    // rendered anything useful (or after a failed navigation left an empty
+    // document). Do not let that transient empty page enter login/template
+    // checks, otherwise it is incorrectly recorded as a store failure.
+    const hasUsefulDocument = Math.max(bodyLength, htmlLength) > 80;
+    return (ready === "complete" || ready === "interactive") && hasUsefulDocument;
+  }
+
+  async waitForPageReady(storeId, {
+    timeoutMs = this.waits.pageReadyTimeout,
+    blankTimeoutMs = this.waits.blankGrace,
+  } = {}) {
+    const startedAt = Date.now();
+    let info = null;
+    let lastError = null;
+    do {
+      try {
+        info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+        if (this.pageIsReady(info)) return info;
+        const blankFor = Date.now() - startedAt;
+        if (this.pageIsBlank(info) && blankFor >= Math.max(0, Number(blankTimeoutMs) || 0)) return info;
+      } catch (error) {
+        lastError = error;
+      }
+      await this.waitCancelable(Math.max(0, Number(this.waits.pageReadyPoll) || 0));
+    } while (Date.now() - startedAt < Math.max(0, Number(timeoutMs) || 0));
+    if (info && this.pageIsBlank(info)) return info;
+    const error = new Error(lastError?.message || "页面长时间未完成加载，请稍后重试。");
+    error.code = "PAGE_NOT_READY";
+    error.cause = lastError || undefined;
+    throw error;
+  }
+
+  async dismissPageInterference(storeId) {
+    let dismissed = 0;
+    for (let round = 0; round < 2; round += 1) {
+      const result = await this.cli.runInPage(storeId, dismissInterferenceBody(), { timeoutMs: 30000 })
+        .catch(() => ({ dismissed: 0 }));
+      const count = Math.max(0, Number(result?.dismissed || 0));
+      dismissed += count;
+      if (!count) break;
+      await this.waitCancelable(this.waits.popupSettle);
+    }
+    if (dismissed) this.log("info", `已自动关闭 ${dismissed} 个登录提示或广告弹窗。`);
+    return dismissed;
   }
 
   async ensurePage(storeId, platform, url) {
     let info;
     try {
-      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+      info = await this.waitForPageReady(storeId);
     } catch (error) {
       this.log("warn", `店铺页面连接失效，正在只重开当前店铺并重新附着：${error.message}`);
       info = await this.reopenCurrentStore(storeId, url);
@@ -415,6 +480,8 @@ class Collector {
       this.log("warn", "检测到空白页，正在只重开当前店铺并重新附着。");
       info = await this.reopenCurrentStore(storeId, url);
     }
+    await this.dismissPageInterference(storeId);
+    info = await this.waitForPageReady(storeId, { blankTimeoutMs: 0 });
     let check = platform.checkPage(info);
     const wantOrigin = (() => {
       try {
@@ -432,23 +499,44 @@ class Collector {
     })();
     if (check.ok && !onOrigin && wantOrigin) {
       await this.cli.visit({ storeId, url });
-      await sleep(this.waits.visit);
-      info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
+      await this.waitCancelable(this.waits.visit);
+      info = await this.waitForPageReady(storeId);
+      await this.dismissPageInterference(storeId);
       check = platform.checkPage(info);
     }
     if (!check.ok && check.code === "NOT_LOGGED_IN" && platform?.id === "shopee") {
       this.log("info", "检测到 Shopee 登录失效，正在尝试使用浏览器已保存的账号密码自动登录。");
-      const recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 }).catch((error) => ({ attempted: false, reason: error.message }));
-      if (recovery?.requiresManual) {
-        check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
-      } else if (recovery?.attempted) {
-        await this.waitCancelable(this.waits.shopeeLogin);
-        await this.cli.visit({ storeId, url });
-        await this.waitCancelable(this.waits.visit);
-        info = await this.cli.runInPage(storeId, pageInfoBody(), { timeoutMs: 30000 });
-        check = platform.checkPage(info);
-        if (check.ok) this.log("info", "Shopee 已使用浏览器保存的登录信息自动恢复。");
-      } else {
+      let recovery = null;
+      for (let attempt = 1; attempt <= Math.max(1, Number(this.waits.loginAttempts) || 1); attempt += 1) {
+        await this.dismissPageInterference(storeId);
+        recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 })
+          .catch((error) => ({ attempted: false, reason: error.message }));
+        if (recovery?.requiresManual) {
+          check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
+          break;
+        }
+        if (recovery?.attempted) {
+          await this.waitCancelable(this.waits.shopeeLogin);
+          await this.cli.visit({ storeId, url });
+          await this.waitCancelable(this.waits.visit);
+          info = await this.waitForPageReady(storeId);
+          await this.dismissPageInterference(storeId);
+          check = platform.checkPage(info);
+          if (check.ok) {
+            this.log("info", "Shopee 已使用浏览器保存的登录信息自动恢复。");
+            break;
+          }
+        } else if (recovery?.reason === "autofillMissing" && attempt < Math.max(1, Number(this.waits.loginAttempts) || 1)) {
+          // Password managers often fill after the initial DOM ready event.
+          await this.waitCancelable(this.waits.loginAutofill);
+          info = await this.waitForPageReady(storeId);
+          check = platform.checkPage(info);
+          continue;
+        } else {
+          break;
+        }
+      }
+      if (!check.ok && check.code !== "CAPTCHA") {
         check = { ok: false, code: "NOT_LOGGED_IN", message: `Shopee 卖家中心未登录。${recovery?.reason || "自动登录未成功。"} 请在紫鸟里确认已保存密码；如有验证码请手动完成一次。` };
       }
     }
