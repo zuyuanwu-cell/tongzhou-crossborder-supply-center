@@ -63,6 +63,7 @@ function isBrowserSessionError(error) {
     "ENAMETOOLONG",
     "E2BIG",
     "COMMAND_LINE_TOO_LONG",
+    "PAGE_NOT_READY",
   ].includes(code))
     || /ENAMETOOLONG|E2BIG|CDP|Browser automation failed|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message);
 }
@@ -247,7 +248,11 @@ class Collector {
       retry: 5000,
       pageProbeRetry: 1000,
       pageProbeAttempts: 3,
+      pageReadyRetry: 1500,
+      pageReadyAttempts: 8,
       shopeeLogin: 8000,
+      shopeeLoginPollRetry: 1500,
+      shopeeLoginPollAttempts: 12,
       shopeeReportGapMin: 20_000,
       shopeeReportGapMax: 45_000,
       shopeeRateLimitSchedule: [15 * 60_000, 30 * 60_000, 60 * 60_000],
@@ -457,7 +462,43 @@ class Collector {
     await this.waitCancelable(500);
     await this.cli.openStore({ storeId, url, headless });
     await this.waitCancelable(this.waits.fresh);
-    return this.readPageInfoWithRetry(storeId);
+    return this.waitForReadyPage(storeId, url, { allowVisit: true });
+  }
+
+  isPageReady(info) {
+    const href = String(info?.href || "");
+    return Boolean(href)
+      && !/^about:blank(?:$|[?#])/i.test(href)
+      && String(info?.ready || "complete").toLowerCase() !== "loading";
+  }
+
+  logDismissedObstructions(info) {
+    const count = Math.max(0, Number(info?.dismissed) || 0);
+    if (count) this.log("info", `已关闭 ${count} 个广告、公告或引导遮挡层，继续采集。`);
+  }
+
+  async waitForReadyPage(storeId, url, {
+    attempts = this.waits.pageReadyAttempts,
+    delayMs = this.waits.pageReadyRetry,
+    allowVisit = false,
+  } = {}) {
+    const maxAttempts = Math.max(1, Math.round(Number(attempts) || 1));
+    let info = null;
+    let visited = false;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      info = await this.readPageInfoWithRetry(storeId);
+      this.logDismissedObstructions(info);
+      if (this.isPageReady(info)) return info;
+      if (allowVisit && !visited && attempt >= Math.min(3, maxAttempts)) {
+        visited = true;
+        this.log("info", "店铺窗口仍为空白，正在重新导航到采集页面并等待加载完成。");
+        await this.cli.visit({ storeId, url });
+      }
+      if (attempt < maxAttempts) await this.waitCancelable(delayMs);
+    }
+    const error = new Error(`店铺页面在等待后仍未加载完成：${info?.href || "空白页"}`);
+    error.code = "PAGE_NOT_READY";
+    throw error;
   }
 
   async readPageInfoWithRetry(storeId, {
@@ -481,9 +522,13 @@ class Collector {
 
   async ensurePage(storeId, platform, url) {
     let info = await this.readPageInfoWithRetry(storeId);
+    this.logDismissedObstructions(info);
     if (!info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href))) {
-      this.log("warn", "检测到空白页，正在只重开当前店铺并重新附着。");
+      this.log("warn", "检测到空白页，正在只重开当前店铺并等待页面真正加载完成。");
       info = await this.reopenCurrentStore(storeId, url);
+    } else if (!this.isPageReady(info)) {
+      this.log("info", "店铺页面仍在加载，等待完成后再开始采集。");
+      info = await this.waitForReadyPage(storeId, url, { allowVisit: true });
     }
     let check = platform.checkPage(info);
     const wantOrigin = (() => {
@@ -502,27 +547,40 @@ class Collector {
     })();
     if (check.ok && !onOrigin && wantOrigin) {
       await this.cli.visit({ storeId, url });
-      await sleep(this.waits.visit);
-      info = await this.readPageInfoWithRetry(storeId);
+      await this.waitCancelable(this.waits.visit);
+      info = await this.waitForReadyPage(storeId, url);
       check = platform.checkPage(info);
     }
     if (!check.ok && check.code === "NOT_LOGGED_IN" && platform?.id === "shopee") {
       this.log("info", "检测到 Shopee 登录失效，正在尝试使用浏览器已保存的账号密码自动登录。");
       let recovery;
-      try {
-        recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
-      } catch (error) {
-        this.log("warn", `Shopee 登录状态恢复脚本未能连接页面，保留浏览器会话错误：${error.message}`);
-        throw error;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
+          break;
+        } catch (error) {
+          if (attempt >= 2 || !isTransientPageProbeError(error)) throw error;
+          this.log("warn", `Shopee 登录页面连接瞬时中断，正在重开当前店铺后重试登录：${error.message}`);
+          info = await this.reopenCurrentStore(storeId, url);
+          check = platform.checkPage(info);
+          if (check.ok) {
+            recovery = { attempted: false, alreadyLoggedIn: true };
+            break;
+          }
+        }
       }
       if (recovery?.requiresManual) {
         check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
       } else if (recovery?.attempted) {
         await this.waitCancelable(this.waits.shopeeLogin);
-        await this.cli.visit({ storeId, url });
-        await this.waitCancelable(this.waits.visit);
-        info = await this.readPageInfoWithRetry(storeId);
-        check = platform.checkPage(info);
+        const maxPolls = Math.max(1, Math.round(Number(this.waits.shopeeLoginPollAttempts) || 1));
+        for (let poll = 1; poll <= maxPolls; poll += 1) {
+          info = await this.readPageInfoWithRetry(storeId);
+          this.logDismissedObstructions(info);
+          check = platform.checkPage(info);
+          if (check.ok || check.code === "CAPTCHA") break;
+          if (poll < maxPolls) await this.waitCancelable(this.waits.shopeeLoginPollRetry);
+        }
         if (check.ok) this.log("info", "Shopee 已使用浏览器保存的登录信息自动恢复。");
       } else if (recovery?.alreadyLoggedIn) {
         // 检测与恢复之间页面可能已由浏览器自动跳回卖家中心，重新读取后再定性。

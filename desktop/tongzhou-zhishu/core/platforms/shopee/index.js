@@ -53,6 +53,12 @@ function originFor(sellerCenter) {
 function checkPage(info) {
   const href = String(info?.href || "");
   const textValue = `${info?.title || ""} ${info?.text || ""}`;
+  if (info?.hasCaptcha) {
+    return { ok: false, code: "CAPTCHA", message: "Shopee 要求安全验证，请在紫鸟窗口里手动完成后重试。" };
+  }
+  if (info?.hasPassword || info?.hasLoginControl) {
+    return { ok: false, code: "NOT_LOGGED_IN", message: "Shopee 卖家中心等待登录，正在尝试使用浏览器已保存的账号密码。" };
+  }
   if (/\/account\/signin|\/login|accounts\.shopee/i.test(href)) {
     return { ok: false, code: "NOT_LOGGED_IN", message: "Shopee 卖家中心未登录，请在紫鸟里打开这个店铺手动登录一次。" };
   }
