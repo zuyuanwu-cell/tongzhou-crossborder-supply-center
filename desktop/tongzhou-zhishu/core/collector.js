@@ -250,6 +250,8 @@ class Collector {
       pageProbeAttempts: 3,
       pageReadyRetry: 1500,
       pageReadyAttempts: 8,
+      storeReconnectAttempts: 2,
+      storeReconnectDelay: 1500,
       shopeeLogin: 8000,
       shopeeLoginPollRetry: 1500,
       shopeeLoginPollAttempts: 12,
@@ -465,6 +467,27 @@ class Collector {
     return this.waitForReadyPage(storeId, url, { allowVisit: true });
   }
 
+  async recoverStoreConnection(storeId, url, cause) {
+    const maxAttempts = Math.max(1, Math.round(Number(this.waits.storeReconnectAttempts) || 1));
+    let lastError = cause;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.log(
+        "warn",
+        `原页面自动化连接已失效，正在完全关闭并重新打开当前店铺（${attempt}/${maxAttempts}）：${lastError?.message || "连接中断"}`,
+      );
+      try {
+        const info = await this.reopenCurrentStore(storeId, url);
+        this.log("info", "已建立新的店铺页面连接，继续采集。");
+        return info;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts || !isTransientPageProbeError(error)) throw error;
+        await this.waitCancelable(Math.max(0, Number(this.waits.storeReconnectDelay) || 0) * attempt);
+      }
+    }
+    throw lastError;
+  }
+
   isPageReady(info) {
     const href = String(info?.href || "");
     return Boolean(href)
@@ -521,7 +544,13 @@ class Collector {
   }
 
   async ensurePage(storeId, platform, url) {
-    let info = await this.readPageInfoWithRetry(storeId);
+    let info;
+    try {
+      info = await this.readPageInfoWithRetry(storeId);
+    } catch (error) {
+      if (!isTransientPageProbeError(error)) throw error;
+      info = await this.recoverStoreConnection(storeId, url, error);
+    }
     this.logDismissedObstructions(info);
     if (!info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href))) {
       this.log("warn", "检测到空白页，正在只重开当前店铺并等待页面真正加载完成。");

@@ -318,3 +318,81 @@ test("Shopee 429 只重试当前报表窗口，不回到整店采集", async () 
   );
   assert.equal(attempts, 2);
 });
+
+test("Shopee initial CDP session failure fully reopens the current store", async () => {
+  let pageReads = 0;
+  const storeActions = [];
+  const collector = new Collector({
+    cli: {
+      runInPage: async () => {
+        pageReads += 1;
+        if (pageReads <= 3) {
+          const error = new Error("Browser automation failed: stale CDP session");
+          error.code = "CDP_ERROR";
+          throw error;
+        }
+        return { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+      },
+      closeStore: async ({ storeId }) => storeActions.push(["close", storeId]),
+      openStore: async ({ storeId, url }) => storeActions.push(["open", storeId, url]),
+      visit: async () => null,
+    },
+    store: storeStub(),
+    waits: {
+      fresh: 0,
+      pageProbeRetry: 0,
+      pageProbeAttempts: 3,
+      pageReadyRetry: 0,
+      storeReconnectAttempts: 2,
+      storeReconnectDelay: 0,
+      visit: 0,
+    },
+  });
+  const info = await collector.ensurePage("store-stale-session", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(pageReads, 4);
+  assert.deepEqual(storeActions, [
+    ["close", "store-stale-session"],
+    ["open", "store-stale-session", "https://seller.shopee.co.id/portal/sale/order"],
+  ]);
+});
+
+test("Shopee store reconnect retries once and remains bounded", async () => {
+  let pageReads = 0;
+  const storeActions = [];
+  const collector = new Collector({
+    cli: {
+      runInPage: async () => {
+        pageReads += 1;
+        if (pageReads <= 4) {
+          const error = new Error("ZClaw request timed out");
+          error.code = "ZCLAW_TIMEOUT";
+          throw error;
+        }
+        return { href: "https://seller.shopee.co.id/portal/sale/order", title: "Shopee", text: "Orders" };
+      },
+      closeStore: async ({ storeId }) => storeActions.push(["close", storeId]),
+      openStore: async ({ storeId, url }) => storeActions.push(["open", storeId, url]),
+      visit: async () => null,
+    },
+    store: storeStub(),
+    waits: {
+      fresh: 0,
+      pageProbeRetry: 0,
+      pageProbeAttempts: 2,
+      pageReadyRetry: 0,
+      storeReconnectAttempts: 2,
+      storeReconnectDelay: 0,
+      visit: 0,
+    },
+  });
+  const info = await collector.ensurePage("store-reopen-twice", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(info.href, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(pageReads, 5);
+  assert.deepEqual(storeActions, [
+    ["close", "store-reopen-twice"],
+    ["open", "store-reopen-twice", "https://seller.shopee.co.id/portal/sale/order"],
+    ["close", "store-reopen-twice"],
+    ["open", "store-reopen-twice", "https://seller.shopee.co.id/portal/sale/order"],
+  ]);
+});
