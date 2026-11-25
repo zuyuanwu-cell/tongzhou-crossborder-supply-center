@@ -3,13 +3,22 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Collector, shopeeRateLimitDetails, shopeeRateLimitCooldown } = require("../core/collector");
+const { Collector, shopeeRateLimitDetails, shopeeRateLimitCooldown, shopeeReportGap } = require("../core/collector");
 const { orderReportBody, loginRecoveryBody } = require("../core/page-scripts");
 const shopee = require("../core/platforms/shopee");
 
 function storeStub() {
   return { get: () => ({ ziniao: {} }) };
 }
+
+test("Shopee normal report requests use a randomized 20-45 second gap", () => {
+  assert.equal(shopeeReportGap({ minMs: 20_000, maxMs: 45_000, random: () => 0 }), 20_000);
+  assert.equal(shopeeReportGap({ minMs: 20_000, maxMs: 45_000, random: () => 1 }), 45_000);
+  const collector = new Collector({ cli: {}, store: storeStub(), random: () => 0.5 });
+  assert.equal(collector.nextShopeeReportGap(), 32_500);
+  const disabled = new Collector({ cli: {}, store: storeStub(), waits: { shopeeReportGap: 0 } });
+  assert.equal(disabled.nextShopeeReportGap(), 0);
+});
 
 test("Shopee 报表限流标记可解析，普通错误不会误判", () => {
   assert.deepEqual(

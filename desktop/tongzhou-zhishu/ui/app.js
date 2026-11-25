@@ -197,12 +197,16 @@ function viewHome() {
 
 function runSummary(run, { detail = false } = {}) {
   const upload = run.upload;
+  const uploadAttempts = Math.max(0, Number(upload?.attempts || 0));
+  const uploadMeta = upload
+    ? `${upload.at ? ` · ${upload.ok ? "成功于" : "最近尝试于"} ${fmtTime(upload.at)}` : ""}${uploadAttempts ? ` · 共尝试 ${uploadAttempts} 次` : ""}`
+    : "";
   return `
     <div class="panel-head">
       <div><h2>${detail ? "采集详情" : "最近一次采集"} ${statusTag(run.status)}</h2><p>${fmtTime(run.startedAt)} 开始${run.finishedAt ? ` · ${fmtTime(run.finishedAt)} 结束` : ""} · ${run.trigger === "schedule" ? "定时" : "手动"} · ${run.rowCount} 行</p></div>
       ${detail ? "" : `<button class="btn small" data-action="history-open" data-id="${esc(run.id)}">查看详情</button>`}
     </div>
-    ${upload ? `<div class="notice ${upload.ok ? "" : "err"}" style="margin-bottom:10px">${upload.ok ? `中台${upload.dryRun ? "试匹配" : "写入"}：${upload.rowCount} 行 / ${upload.shopCount} 个店铺${upload.dryRun ? "" : `，已写入 ${upload.written} 行`}${upload.errors.length ? `；${upload.errors.length} 条错误` : ""}${upload.warnings.length ? `；${upload.warnings.length} 条提醒` : ""}` : `写入中台失败：${esc(upload.message)}（可在「采集记录」里重新上传）`}</div>` : ""}
+    ${upload ? `<div class="notice ${upload.ok ? "" : "err"}" style="margin-bottom:10px">${upload.ok ? `中台${upload.dryRun ? "试匹配" : "写入"}：${upload.rowCount} 行 / ${upload.shopCount} 个店铺${upload.dryRun ? "" : `，已写入 ${upload.written} 行`}${(upload.errors || []).length ? `；${upload.errors.length} 条错误` : ""}${(upload.warnings || []).length ? `；${upload.warnings.length} 条提醒` : ""}` : `写入中台失败：${esc(upload.message)}（可在「采集记录」里重新上传）`}${uploadMeta}</div>` : ""}
     <div class="table-wrap" style="max-height:260px"><table class="data">
       <thead><tr><th>紫鸟店铺</th><th>状态</th><th class="num">行数</th><th>说明</th></tr></thead>
       <tbody>${run.stores.map((store) => `<tr><td>${esc(store.storeName)}</td><td>${statusTag(store.status)}</td><td class="num">${store.rowCount}</td><td class="muted">${esc(store.message)}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">没有店铺</td></tr>`}</tbody>

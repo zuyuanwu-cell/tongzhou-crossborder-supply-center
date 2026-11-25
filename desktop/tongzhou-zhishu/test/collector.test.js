@@ -26,7 +26,7 @@ const { ZhongtaiClient } = require("../core/zhongtai");
 const { templatizeRequest, readPath, extractMetrics, placeholderValues, fill } = require("../core/recipe");
 const { dayRange, siteToday, dateList } = require("../core/sites");
 const { dueSlots } = require("../core/scheduler");
-const { SHOPEE_REPORT_SCHEMA_VERSION, columnMap, orderReportWindows, parseMoney, parseShopeeOrderReport } = require("../core/shopee-order-report");
+const { SHOPEE_REPORT_SCHEMA_VERSION, columnMap, orderReportWindows, parseMoney, parseShopeeOrderReport, safeHeaderDiagnostic } = require("../core/shopee-order-report");
 const { startMockBrowser, metricsFor, ORIGIN } = require("./mock-browser");
 
 const TOKEN = "test-ingest-token-0123456789abcdef";
@@ -34,6 +34,40 @@ const TOKEN = "test-ingest-token-0123456789abcdef";
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tzzs-test-"));
 }
+
+test("Shopee 58-column reports produce a complete bounded header diagnostic", () => {
+  const header = Array.from({ length: 58 }, (_, index) => `Column ${index + 1}`);
+  header[0] = "Order ID";
+  header[45] = "Payment timestamp\r\nwith control";
+  header[57] = "Buyer paid amount";
+  const diagnostic = safeHeaderDiagnostic(header);
+  assert.equal(diagnostic.count, 58);
+  assert.match(diagnostic.fingerprint, /^[0-9a-f]{16}$/);
+  assert.equal(diagnostic.matched.orderId.index, 0);
+  assert.deepEqual(diagnostic.missing, ["paidAt", "totalPayment"]);
+  assert.equal(diagnostic.headers.length, 58);
+  assert.equal(diagnostic.headers[45], "Payment timestamp with control");
+  assert.equal(JSON.stringify(diagnostic).includes("\\n"), false);
+
+  assert.throws(() => columnMap(header), (error) => {
+    assert.match(error.message, /columns=58/);
+    assert.match(error.message, new RegExp(diagnostic.fingerprint));
+    assert.match(error.message, /Buyer paid amount/);
+    assert.match(error.message, /\"missing\":\[\"paidAt\",\"totalPayment\"\]/);
+    return true;
+  });
+});
+
+test("Shopee required headers are recognized at arbitrary positions in a 58-column report", () => {
+  const header = Array.from({ length: 58 }, (_, index) => `Extra ${index + 1}`);
+  header[0] = "Order ID";
+  header[45] = "Order Paid Time";
+  header[57] = "Total Payment";
+  const columns = columnMap(header);
+  assert.equal(columns.orderId, 0);
+  assert.equal(columns.paidAt, 45);
+  assert.equal(columns.totalPayment, 57);
+});
 
 function crc32(buffer) {
   let crc = 0xffffffff;

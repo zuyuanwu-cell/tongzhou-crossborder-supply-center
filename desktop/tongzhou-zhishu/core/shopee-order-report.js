@@ -1,5 +1,6 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
 const { parseXlsx } = require("./xlsx-lite");
 const { addDays } = require("./sites");
 
@@ -38,8 +39,46 @@ function normalizeHeader(value) {
     .replace(/[\s._/()\-:：\[\]【】]+/g, "");
 }
 
+function safeHeaderValue(value, maxLength = 64) {
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function safeHeaderDiagnostic(header, { maxColumns = 80, maxChars = 3200 } = {}) {
+  const values = [];
+  let usedChars = 0;
+  for (const raw of header.slice(0, maxColumns)) {
+    const value = safeHeaderValue(raw);
+    const nextChars = value.length + 3;
+    if (usedChars + nextChars > maxChars) break;
+    values.push(value);
+    usedChars += nextChars;
+  }
+  const normalized = header.map(normalizeHeader);
+  const matched = {};
+  for (const [key, spec] of Object.entries(COLUMN_SPECS)) {
+    const index = spec.names
+      .map(normalizeHeader)
+      .map((name) => normalized.indexOf(name))
+      .find((candidate) => candidate >= 0);
+    if (index >= 0) matched[key] = { index, header: safeHeaderValue(header[index]) };
+  }
+  const required = ["orderId", "paidAt", "totalPayment"];
+  return {
+    count: header.length,
+    fingerprint: createHash("sha256").update(normalized.join("\u001f")).digest("hex").slice(0, 16),
+    matched,
+    missing: required.filter((key) => !matched[key]),
+    headers: values,
+    truncated: values.length < header.length,
+  };
+}
+
 function safeHeaderPreview(header) {
-  return header.slice(0, 12).map((value) => String(value || "").replace(/[\r\n\t]+/g, " ").slice(0, 48));
+  return safeHeaderDiagnostic(header);
 }
 
 function columnMap(header) {
@@ -183,4 +222,5 @@ module.exports = {
   parseDate,
   parseMoney,
   parseShopeeOrderReport,
+  safeHeaderDiagnostic,
 };

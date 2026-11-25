@@ -72,6 +72,17 @@ function shopeeRateLimitCooldown(strikes, retryAfterMs = 0, {
   return Math.max(0, Number(retryAfterMs) || 0, Number(safeSchedule[index]) || 0) + jitter;
 }
 
+function shopeeReportGap({
+  minMs = 20_000,
+  maxMs = 45_000,
+  random = Math.random,
+} = {}) {
+  const min = Math.max(0, Number(minMs) || 0);
+  const max = Math.max(min, Number(maxMs) || min);
+  const ratio = Math.max(0, Math.min(1, Number(random()) || 0));
+  return min + Math.floor(ratio * (max - min));
+}
+
 function parseJson(textValue) {
   try {
     return JSON.parse(textValue);
@@ -184,7 +195,7 @@ function requestedDates(input, { maxDays = 21 } = {}) {
 }
 
 class Collector {
-  constructor({ cli, store, log = () => {}, zhongtaiFactory, waits = {}, imageEncoder = null }) {
+  constructor({ cli, store, log = () => {}, zhongtaiFactory, waits = {}, imageEncoder = null, random = Math.random }) {
     this.cli = cli;
     // 截图压缩（Electron 主进程里用 nativeImage 转 JPEG）；返回 { mime, base64 } 或 null。
     this.imageEncoder = imageEncoder;
@@ -194,7 +205,8 @@ class Collector {
       visit: 3000,
       retry: 5000,
       shopeeLogin: 8000,
-      shopeeReportGap: 20000,
+      shopeeReportGapMin: 20_000,
+      shopeeReportGapMax: 45_000,
       shopeeRateLimitSchedule: [15 * 60_000, 30 * 60_000, 60 * 60_000],
       shopeeRateLimitJitterMin: 20_000,
       shopeeRateLimitJitterMax: 45_000,
@@ -210,6 +222,8 @@ class Collector {
     this.shopeeRateLimitUntil = 0;
     this.shopeeRateLimitStrikes = 0;
     this.shopeeLastReportAt = 0;
+    this.shopeeNextReportGapMs = 0;
+    this.random = typeof random === "function" ? random : Math.random;
     this.uploadFlushPromise = null;
   }
 
@@ -475,8 +489,19 @@ class Collector {
     }
   }
 
+  nextShopeeReportGap() {
+    if (Object.prototype.hasOwnProperty.call(this.waits, "shopeeReportGap")) {
+      return Math.max(0, Number(this.waits.shopeeReportGap) || 0);
+    }
+    return shopeeReportGap({
+      minMs: this.waits.shopeeReportGapMin,
+      maxMs: this.waits.shopeeReportGapMax,
+      random: this.random,
+    });
+  }
+
   async waitForShopeeReportSlot({ storeId, onProgress = () => {} } = {}) {
-    const gapUntil = this.shopeeLastReportAt + Math.max(0, Number(this.waits.shopeeReportGap) || 0);
+    const gapUntil = this.shopeeLastReportAt + Math.max(0, Number(this.shopeeNextReportGapMs) || 0);
     const until = Math.max(this.shopeeRateLimitUntil, gapUntil);
     const waitMs = Math.max(0, until - Date.now());
     if (!waitMs) return;
@@ -692,6 +717,7 @@ class Collector {
         try {
           downloaded = await this.cli.runInPage(store.storeId, orderReportBody(window), { timeoutMs: Math.max(timeoutMs, 5 * 60 * 1000) });
           this.shopeeLastReportAt = Date.now();
+          this.shopeeNextReportGapMs = this.nextShopeeReportGap();
           this.shopeeRateLimitStrikes = 0;
         } catch (error) {
           const rateLimit = shopeeRateLimitDetails(error);
@@ -1295,6 +1321,7 @@ module.exports = {
   isCommandLineTooLong,
   shopeeRateLimitDetails,
   shopeeRateLimitCooldown,
+  shopeeReportGap,
   publicUploadRow,
   collectionCheckpointKey,
   classifyFailure,
