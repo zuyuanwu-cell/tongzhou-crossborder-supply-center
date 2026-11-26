@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const { Collector, classifyFailure, shopeeRateLimitDetails, shopeeRateLimitCooldown, shopeeReportGap } = require("../core/collector");
 const { orderReportBody, loginRecoveryBody, pageInfoBody } = require("../core/page-scripts");
 const shopee = require("../core/platforms/shopee");
+const { fakeShopeeOrderXlsx } = require("./helpers/fake-shopee-xlsx");
 
 function storeStub() {
   return { get: () => ({ ziniao: {} }) };
@@ -98,11 +99,113 @@ test("Shopee 白屏外壳不会被当成已加载完成", async () => {
       },
     },
     store: storeStub(),
-    waits: { pageReadyRetry: 0, pageReadyAttempts: 2, visit: 0 },
+    waits: { pageReadyRetry: 0, pageReadyAttempts: 3, visit: 0 },
   });
   const info = await collector.ensurePage("store-white-shell", shopee, "https://seller.shopee.co.id/portal/sale/order");
-  assert.equal(reads, 2);
+  assert.equal(reads, 3);
   assert.equal(info.text, "Orders");
+});
+
+test("Shopee 弹窗刚关闭后必须重新连续稳定两次才开始采集", async () => {
+  let reads = 0;
+  const collector = new Collector({
+    cli: {
+      visit: async () => null,
+      runInPage: async () => {
+        reads += 1;
+        return {
+          href: "https://seller.shopee.co.id/portal/sale/order",
+          ready: "complete",
+          visuallyBlank: false,
+          dismissed: reads === 1 ? 1 : 0,
+          text: "Orders",
+        };
+      },
+    },
+    store: storeStub(),
+    waits: { pageReadyRetry: 0, pageReadyAttempts: 3, visit: 0 },
+  });
+  const info = await collector.ensurePage("store-popup", shopee, "https://seller.shopee.co.id/portal/sale/order");
+  assert.equal(reads, 3);
+  assert.equal(info.text, "Orders");
+});
+
+test("Shopee 长周期补采后续分片失败时保留已成功分片", async () => {
+  let reportRuns = 0;
+  const collector = new Collector({
+    cli: {
+      visit: async () => null,
+      runInPage: async (_storeId, body) => {
+        if (body.includes("TZ_PAGE_PREFLIGHT")) {
+          return {
+            href: "https://seller.shopee.co.id/portal/sale/order",
+            ready: "complete",
+            visuallyBlank: false,
+            text: "Orders",
+          };
+        }
+        reportRuns += 1;
+        if (reportRuns === 2) {
+          const error = new Error("Shopee 订单报表接口 HTTP 429");
+          error.code = "PAGE_SCRIPT_ERROR";
+          throw error;
+        }
+        const header = Array(41).fill("");
+        Object.assign(header, {
+          0: "Order ID",
+          1: "Order Status",
+          9: "Order Creation Date",
+          10: "Order Paid Time",
+          21: "Order Subtotal",
+          28: "Seller Voucher",
+          39: "Total Payment",
+          40: "Estimated Shipping Fee",
+        });
+        const row = Array(41).fill("");
+        Object.assign(row, {
+          0: "PARTIAL-1",
+          1: "Shipped",
+          9: "2026-10-01 08:00",
+          10: "2026-10-01 09:00",
+          21: "100",
+          28: "10",
+          39: "95",
+        });
+        const payload = fakeShopeeOrderXlsx([header, row]);
+        return { reportId: "report-1", bytes: payload.length, base64: payload.toString("base64") };
+      },
+    },
+    store: storeStub(),
+    waits: {
+      visit: 0,
+      pageReadyRetry: 0,
+      pageReadyStablePasses: 1,
+      shopeeReportGap: 0,
+      shopeeReportRetries: 0,
+      shopeeRateLimitSchedule: [0],
+      shopeeRateLimitJitterMin: 0,
+      shopeeRateLimitJitterMax: 0,
+    },
+  });
+  const dates = Array.from({ length: 10 }, (_, index) => `2026-10-${String(index + 1).padStart(2, "0")}`);
+  await assert.rejects(
+    collector.collectShopeeOrderReport({
+      store: { storeId: "store-report", storeName: "测试店铺" },
+      target: { country: "ID" },
+      platform: shopee,
+      origin: "https://seller.shopee.co.id",
+      dates,
+      timeoutMs: 1000,
+    }),
+    (error) => {
+      assert.equal(error.code, "SHOPEE_RATE_LIMIT");
+      assert.equal(error.partialOrderReport.reports.length, 1);
+      assert.deepEqual(error.failedWindow.dates, dates.slice(7));
+      assert.ok(error.partialOrderReport.days[dates[0]]);
+      assert.equal(error.partialOrderReport.days[dates[7]], undefined);
+      return true;
+    },
+  );
 });
 
 test("Shopee 掉登录时会先自动提交浏览器已保存账号", async () => {
