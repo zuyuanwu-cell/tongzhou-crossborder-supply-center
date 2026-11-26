@@ -65,10 +65,12 @@ async function main() {
     assert.ok(shopA, `中台店铺名单应包含 店铺A-MY：${JSON.stringify(shops)}`);
     assert.equal(shopA.countryCode, "MY");
 
-    const cliFile = path.join(dir, "ziniao-cli");
-    fs.writeFileSync(cliFile, `#!/bin/sh\nexec "${process.execPath}" "${path.join(__dirname, "mock-ziniao-cli.js")}" "$@"\n`);
-    fs.chmodSync(cliFile, 0o755);
-    const cli = new ZiniaoCli({ cliPath: cliFile, extraEnv: { MOCK_ZINIAO_URL: browser.url } });
+    const mockCliScript = path.join(__dirname, "mock-ziniao-cli.js");
+    const cli = new ZiniaoCli({
+      cliPath: mockCliScript,
+      spawnImpl: (_bin, args, options) => spawn(process.execPath, [mockCliScript, ...args], options),
+      extraEnv: { MOCK_ZINIAO_URL: browser.url },
+    });
     const store = new ConfigStore(path.join(dir, "app"));
     const collector = new Collector({ cli, store, zhongtaiFactory: () => client, waits: { fresh: 10, reused: 10, visit: 10, retry: 10 } });
     await collector.refreshStores();
@@ -134,7 +136,7 @@ async function main() {
     assert.equal(store.get().schedule.managed, true);
 
     // 中台下发立即采集 → 节点执行并上报运行记录
-    const command = await admin(`/api/collector/nodes/${node.id}/commands`, { method: "POST", body: JSON.stringify({ type: "collect", dates: ["2026-11-03"] }) });
+    const command = await admin(`/api/collector/nodes/${node.id}/commands`, { method: "POST", body: JSON.stringify({ type: "collect", dates: ["2026-11-01"] }) });
     assert.equal(command.status, 200, JSON.stringify(command.body));
     await agent.heartbeat();
     for (let i = 0; i < 100 && (agent.draining || nodeCollector.running); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
@@ -144,7 +146,8 @@ async function main() {
     assert.ok(commandRun, `中台应收到命令触发的运行记录：${JSON.stringify(runs.body).slice(0, 300)}`);
     assert.equal(commandRun.status, "ok");
     assert.equal(commandRun.trigger, "command");
-    assert.deepEqual(commandRun.dates, ["2026-11-03"]);
+    assert.deepEqual(commandRun.dates, ["2026-11-01"]);
+    assert.ok(commandRun.upload, `运行记录缺少最终上传结果：${JSON.stringify({ commandRun, pendingRuns: [...agent.pendingRuns.values()] }).slice(0, 1200)}`);
     assert.equal(commandRun.upload.written, 2);
     const detail = await admin(`/api/collector/nodes/${node.id}`);
     assert.equal(detail.body.node.commands.find((item) => item.id === command.body.command.id).status, "done");
@@ -157,13 +160,13 @@ async function main() {
 
     // 数据质量：节点写入时附带的采集证据已归档，可查看明细、上传截图、手动补采
     const shopKeyA = shopA.shopKey;
-    const evidence = await admin(`/api/collector/quality/evidence?shopKey=${encodeURIComponent(shopKeyA)}&date=2026-11-03`);
+    const evidence = await admin(`/api/collector/quality/evidence?shopKey=${encodeURIComponent(shopKeyA)}&date=2026-11-01`);
     assert.equal(evidence.status, 200, JSON.stringify(evidence.body).slice(0, 300));
     assert.equal(evidence.body.summary.storeId, "1001");
     assert.ok(Object.keys(evidence.body.endpoints).length >= 1, "证据里有接口原始返回");
-    const shot = await nodeClient.agent("evidence/screenshot", { storeId: "1001", shopName: "店铺A-MY", date: "2026-11-03", mime: "image/jpeg", base64: Buffer.from("fake-jpeg").toString("base64") });
+    const shot = await nodeClient.agent("evidence/screenshot", { storeId: "1001", shopName: "店铺A-MY", date: "2026-11-01", mime: "image/jpeg", base64: Buffer.from("fake-jpeg").toString("base64") });
     assert.equal(shot.ok, true);
-    const image = await fetch(`${baseUrl}/api/collector/quality/screenshot?shopKey=${encodeURIComponent(shopKeyA)}&date=2026-11-03`, { headers: { authorization: `Bearer ${session.token}` } });
+    const image = await fetch(`${baseUrl}/api/collector/quality/screenshot?shopKey=${encodeURIComponent(shopKeyA)}&date=2026-11-01`, { headers: { authorization: `Bearer ${session.token}` } });
     assert.equal(image.status, 200);
     assert.equal(Buffer.from(await image.arrayBuffer()).toString(), "fake-jpeg");
     const qualityView = await admin("/api/collector/quality?refresh=1");

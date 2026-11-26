@@ -46,6 +46,7 @@ class NodeAgent {
     this.logFlushMs = logFlushMs;
     this.logQueue = [];
     this.pendingRuns = new Map();
+    this.flushingRuns = null;
     this.commandQueue = [];
     this.timers = [];
     this.lastHeartbeat = null;
@@ -249,16 +250,38 @@ class NodeAgent {
   }
 
   async flushRuns() {
-    if (!this.enabled() || !this.pendingRuns.size) return;
-    const client = this.clientFactory();
-    for (const [id, run] of [...this.pendingRuns.entries()]) {
-      try {
-        await client.agent("runs", { run });
-        if (this.pendingRuns.get(id) === run) this.pendingRuns.delete(id);
-      } catch {
-        return;
-      }
+    if (!this.enabled()) return;
+    if (this.flushingRuns) {
+      await this.flushingRuns;
+      // A final run snapshot can arrive after the active flusher observed an
+      // empty queue but before its promise is cleared.  Re-check after joining
+      // so a caller never returns while that newer snapshot is still pending.
+      if (this.pendingRuns.size) return this.flushRuns();
+      return;
     }
+    if (!this.pendingRuns.size) return;
+    this.flushingRuns = (async () => {
+      const client = this.clientFactory();
+      while (this.pendingRuns.size) {
+        const batch = [...this.pendingRuns.entries()];
+        for (const [id, run] of batch) {
+          try {
+            await client.agent("runs", { run });
+            // 同一运行在请求途中可能由“进行中”更新为“已完成”；只删除实际已发送的版本。
+            if (this.pendingRuns.get(id) === run) this.pendingRuns.delete(id);
+          } catch {
+            // 保留未上报版本，下次心跳继续补报。
+            return;
+          }
+        }
+      }
+    })();
+    try {
+      await this.flushingRuns;
+    } finally {
+      this.flushingRuns = null;
+    }
+    if (this.pendingRuns.size) return this.flushRuns();
   }
 
   async flushLogs() {

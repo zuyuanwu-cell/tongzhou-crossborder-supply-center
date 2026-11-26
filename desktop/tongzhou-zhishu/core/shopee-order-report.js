@@ -4,7 +4,7 @@ const { createHash } = require("node:crypto");
 const { parseXlsx } = require("./xlsx-lite");
 const { addDays } = require("./sites");
 
-const SHOPEE_REPORT_SCHEMA_VERSION = "2026-11-v2";
+const SHOPEE_REPORT_SCHEMA_VERSION = "2026-11-v3";
 
 const COLUMN_SPECS = Object.freeze({
   orderId: { index: 0, names: ["No. Pesanan", "ID Pesanan", "Order ID", "Order No.", "订单编号", "訂單編號", "Mã đơn hàng"] },
@@ -22,7 +22,7 @@ const COLUMN_SPECS = Object.freeze({
   buyerShipping: { index: 36, names: ["Ongkos Kirim Dibayar oleh Pembeli", "Shipping Fee Paid by Buyer", "买家支付运费", "買家支付運費", "Phí vận chuyển người mua trả"] },
   shippingDiscount: { index: 37, names: ["Estimasi Potongan Biaya Pengiriman", "Estimated Shipping Fee Discount", "预估运费优惠", "預估運費優惠", "Ước tính giảm phí vận chuyển"] },
   reverseShipping: { index: 38, names: ["Ongkos Kirim Pengembalian Barang", "Return Shipping Fee", "退货运费", "退貨運費", "Phí vận chuyển trả hàng"] },
-  totalPayment: { index: 39, names: ["Total Pembayaran", "Jumlah Bayaran", "Total Payment", "买家实付金额", "買家實付金額", "订单总金额", "訂單總金額", "Tổng thanh toán"] },
+  totalPayment: { index: 39, names: ["Total Pembayaran", "Jumlah Bayaran", "Total Payment", "Grand Total", "买家实付金额", "買家實付金額", "订单总金额", "訂單總金額", "Tổng thanh toán"] },
   estimatedShipping: { index: 40, names: ["Perkiraan Ongkos Kirim", "Estimated Shipping Fee", "预估运费", "預估運費", "Phí vận chuyển ước tính"] },
 });
 

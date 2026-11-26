@@ -121,6 +121,25 @@ const inputs = Array.from(document.querySelectorAll("input") || []).filter(visib
 const buttons = Array.from(document.querySelectorAll("button, [role=button], input[type=submit]") || []).filter(visible);
 const hasPassword = inputs.some((element) => element.type === "password" || /password|密码|kata sandi|mật khẩu/i.test((element.name || "") + " " + (element.placeholder || "")));
 const hasLoginControl = buttons.some((element) => /登录|登入|log[ -]?in|sign[ -]?in|masuk|đăng nhập|继续登录|使用此账号|continue|lanjutkan/i.test(String(element.innerText || element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || "").trim()));
+const busyMarkers = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], [class*="loading"], [class*="spinner"], [class*="skeleton"], [data-testid*="loading"]'))
+  .filter(visible);
+const viewportWidth = Number(globalThis.innerWidth || document.documentElement?.clientWidth || 0);
+const viewportHeight = Number(globalThis.innerHeight || document.documentElement?.clientHeight || 0);
+const viewportArea = Math.max(1, viewportWidth * viewportHeight);
+const largeBusyMarkers = busyMarkers.filter((element) => {
+  const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : null;
+  const area = rect ? Math.max(0, Number(rect.width || 0)) * Math.max(0, Number(rect.height || 0)) : 0;
+  const identity = String(
+    (element.tagName || '') + ' '
+    + (typeof element.className === 'string' ? element.className : '') + ' '
+    + (element.id || '') + ' '
+    + (element.getAttribute('data-testid') || '')
+  );
+  return /^(?:body|main)\b/i.test(identity)
+    || /(?:^|[\s_-])(?:app|page|root|full|overlay)[\s_-]*(?:loading|spinner|skeleton)(?:[\s_-]|$)/i.test(identity)
+    || area >= viewportArea * 0.15;
+});
+const busy = largeBusyMarkers.length > 0 || (busyMarkers.length > 0 && bodyText.trim().length < 120);
 return {
   href: location.href,
   title: document.title,
@@ -131,6 +150,8 @@ return {
   visuallyBlank: bodyText.trim().length < 2 && bodyNodes < 8 && !hasPassword && !hasLoginControl,
   hasPassword,
   hasLoginControl,
+  busy,
+  busyCount: busyMarkers.length,
   hasCaptcha: /captcha|security check|验证码|安全验证|二次验证|one.time.password|otp/i.test(location.href + " " + bodyText.slice(0, 3000)),
 };
 `;
@@ -198,10 +219,11 @@ const apiUrl = (pathname, params = {}) => {
 };
 const retryAfterMs = (response, fallbackMs) => {
   const raw = response.headers.get("retry-after") || "";
+  const maxRetryAfterMs = 6 * 60 * 60 * 1000;
   const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, Math.min(120000, seconds * 1000));
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, Math.min(maxRetryAfterMs, seconds * 1000));
   const at = Date.parse(raw);
-  if (Number.isFinite(at)) return Math.max(1000, Math.min(120000, at - Date.now()));
+  if (Number.isFinite(at)) return Math.max(1000, Math.min(maxRetryAfterMs, at - Date.now()));
   return fallbackMs;
 };
 const fetchWithRateLimit = async (url, label) => {

@@ -140,6 +140,8 @@ function viewHome() {
   const estimatedReports = estimatedStores.reduce((sum, store) => (
     sum + (store.officialReport ? Math.max(1, store.targets.length) * Math.ceil(estimatedDays / 7) : 0)
   ), 0);
+  const backfillNeedsSingleStore = S.run.range === "custom" && estimatedDays > 21 && !selectedStore;
+  const backfillTooLong = S.run.range === "custom" && estimatedDays > 366;
   const throttleRisk = estimatedReports >= 12 || estimatedApiCalls >= 500
     ? { label: "高", css: "err", hint: "建议拆成单店、7 天一批，避免 Shopee 429" }
     : (estimatedReports >= 5 || estimatedApiCalls >= 180
@@ -147,7 +149,7 @@ function viewHome() {
       : { label: "低", css: "", hint: "可直接开始" });
   const last = history[0];
   const pct = S.progressCount.total ? Math.round((S.progressCount.index / S.progressCount.total) * 100) : 0;
-  const ready = connected && cliPath && enabled.length && (!S.run.storeId || selectedStore) && !blockedByMapping;
+  const ready = connected && cliPath && enabled.length && (!S.run.storeId || selectedStore) && !blockedByMapping && !backfillNeedsSingleStore && !backfillTooLong;
   return `
     <h1>总览</h1>
     <p class="subtitle">自动从紫鸟里已登录的 Shopee 店铺读取访客、曝光、加购、支付金额、订单和广告花费，写入中台「店铺日报」。</p>
@@ -187,6 +189,8 @@ function viewHome() {
         <b>执行前估算</b> · ${estimatedStores.length} 家店 · ${estimatedMappings} 个映射 · ${estimatedDays} 天 · 约 ${estimatedApiCalls} 次数据接口${estimatedReports ? ` + ${estimatedReports} 次官方导表` : ""}
         · 限流风险：<b>${throttleRisk.label}</b>（${throttleRisk.hint}）
       </div>` : ""}
+      ${backfillNeedsSingleStore ? `<div class="notice err" style="margin-bottom:10px"><b>长周期补采必须先选择一个店铺</b> · 当前 ${estimatedDays} 天；选店后系统会自动按最多 7 天分片，逐片保存并上传，失败可从断点继续。</div>` : ""}
+      ${backfillTooLong ? `<div class="notice err" style="margin-bottom:10px"><b>日期范围超过 366 天</b> · 请缩短后再执行。</div>` : ""}
       ${running || S.progress.length ? `
         <div class="bar"><div style="width:${running ? pct : 100}%"></div></div>
         <ul class="progress-list">${S.progress.slice(-80).reverse().map((item) => `<li><span class="muted">${esc(item.time)}</span> ${esc(item.message)}</li>`).join("")}</ul>` : ""}
@@ -655,8 +659,12 @@ function collectDates() {
     const from = new Date(`${S.run.from}T00:00:00Z`);
     const to = new Date(`${S.run.to}T00:00:00Z`);
     const dayCount = Math.floor((to.getTime() - from.getTime()) / 86400000) + 1;
-    if (dayCount > 21) {
-      toast(`单次历史补采最多 21 天，当前选择 ${dayCount} 天，请拆分日期后重试`, "err");
+    if (dayCount > 366) {
+      toast(`单次历史补采最多 366 天，当前选择 ${dayCount} 天，请缩短日期后重试`, "err");
+      return undefined;
+    }
+    if (dayCount > 21 && !S.run.storeId) {
+      toast(`补采 ${dayCount} 天必须先选择一个店铺，系统会自动按最多 7 天分片执行`, "err");
       return undefined;
     }
     const list = [];
@@ -717,6 +725,15 @@ const actions = {
       toast(`请先完成 ${blockingStores.length} 个店铺的中台映射，系统不会把未映射数据写入中台`, "err");
       S.page = "stores";
       return render();
+    }
+    if (S.run.range === "custom" && !S.run.storeId) {
+      const from = Date.parse(`${S.run.from}T00:00:00Z`);
+      const to = Date.parse(`${S.run.to}T00:00:00Z`);
+      const dayCount = Number.isFinite(from) && Number.isFinite(to) ? Math.floor((to - from) / 86400000) + 1 : 0;
+      if (dayCount > 21) {
+        toast(`补采 ${dayCount} 天必须先选择一个店铺，避免多店整月任务触发平台限流`, "err");
+        return;
+      }
     }
     const dates = collectDates();
     if (dates === undefined) return;

@@ -21,15 +21,46 @@ const {
   MAX_WINDOWS_COMMAND_LINE_UNITS,
 } = require("../core/ziniao");
 const { ConfigStore } = require("../core/config");
-const { Collector, defaultDates, requestedDates, businessError, buildReplayBatches, isCommandLineTooLong, collectionCheckpointKey } = require("../core/collector");
+const { Collector, defaultDates, requestedDates, validateBackfillScope, businessError, buildReplayBatches, isCommandLineTooLong, collectionCheckpointKey } = require("../core/collector");
 const { ZhongtaiClient } = require("../core/zhongtai");
 const { templatizeRequest, readPath, extractMetrics, placeholderValues, fill } = require("../core/recipe");
 const { dayRange, siteToday, dateList } = require("../core/sites");
 const { dueSlots } = require("../core/scheduler");
+const { NodeAgent } = require("../core/agent");
 const { SHOPEE_REPORT_SCHEMA_VERSION, columnMap, orderReportWindows, parseMoney, parseShopeeOrderReport, safeHeaderDiagnostic } = require("../core/shopee-order-report");
 const { startMockBrowser, metricsFor, ORIGIN } = require("./mock-browser");
 
 const TOKEN = "test-ingest-token-0123456789abcdef";
+
+test("运行开始态上报过程中收到最终态时仍会补报最终结果", async () => {
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const sent = [];
+  const client = {
+    token: "node-token",
+    agent: async (_name, { run }) => {
+      sent.push(run);
+      if (sent.length === 1) await firstBlocked;
+      return { ok: true };
+    },
+  };
+  const agent = new NodeAgent({
+    store: { get: () => ({ node: { id: "node-1" } }) },
+    collector: { running: null },
+    cli: { path: "mock" },
+    clientFactory: () => client,
+  });
+  agent.reportRun({ id: "run-1", status: "running", upload: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  agent.reportRun({ id: "run-1", status: "ok", upload: { written: 2 } });
+  releaseFirst();
+  await agent.flushRuns();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].status, "running");
+  assert.equal(sent[1].status, "ok");
+  assert.equal(sent[1].upload.written, 2);
+  assert.equal(agent.pendingRuns.size, 0);
+});
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tzzs-test-"));
@@ -96,6 +127,17 @@ test("Shopee required headers are recognized at arbitrary positions in a 58-colu
   assert.equal(columns.orderId, 0);
   assert.equal(columns.paidAt, 45);
   assert.equal(columns.totalPayment, 57);
+});
+
+test("Shopee QLEV reports recognize Grand Total as buyer payment", () => {
+  const header = Array.from({ length: 58 }, (_, index) => `Extra ${index + 1}`);
+  header[0] = "Order ID";
+  header[10] = "Order Paid Time";
+  header[43] = "Grand Total";
+  const columns = columnMap(header);
+  assert.equal(columns.orderId, 0);
+  assert.equal(columns.paidAt, 10);
+  assert.equal(columns.totalPayment, 43);
 });
 
 function crc32(buffer) {
@@ -438,12 +480,23 @@ test("Shopee 官方订单导表：订单去重，支付销售额只减卖家券�
   ]);
 });
 
-test("历史补采：后端拒绝超过 21 天和无效日期，允许 21 天边界", () => {
+test("历史补采：允许整月日期并限制最长一年", () => {
   const days = dateList("2026-10-01", "2026-10-21");
   assert.deepEqual(requestedDates([...days].reverse()), days);
-  assert.throws(() => requestedDates(["2026-10-01", "2026-10-22"]), (error) => error.code === "BACKFILL_RANGE_TOO_LARGE" && error.retryable === false);
+  assert.deepEqual(requestedDates(dateList("2026-10-01", "2026-10-31")), dateList("2026-10-01", "2026-10-31"));
+  assert.throws(() => requestedDates(["2025-01-01", "2026-01-02"]), (error) => error.code === "BACKFILL_RANGE_TOO_LARGE" && error.retryable === false);
   assert.throws(() => requestedDates(["2026-02-30"]), (error) => error.code === "INVALID_BACKFILL_DATES" && error.retryable === false);
   assert.equal(requestedDates([]), null);
+});
+
+test("历史补采：超过 21 天必须限定单个紫鸟店铺", () => {
+  const month = dateList("2026-10-01", "2026-10-31");
+  assert.doesNotThrow(() => validateBackfillScope(month, [{ store: { storeId: "one" } }]));
+  assert.throws(() => validateBackfillScope(month, [
+    { store: { storeId: "one" } },
+    { store: { storeId: "two" } },
+  ]), (error) => error.code === "BACKFILL_SINGLE_STORE_REQUIRED" && error.retryable === false);
+  assert.doesNotThrow(() => validateBackfillScope(dateList("2026-10-01", "2026-10-21"), []));
 });
 
 test("页面恢复：about:blank 时只重开当前店铺并重新附着", async () => {

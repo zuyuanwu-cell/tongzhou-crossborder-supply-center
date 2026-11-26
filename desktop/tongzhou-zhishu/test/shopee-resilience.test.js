@@ -32,6 +32,8 @@ test("Shopee 报表限流标记可解析，普通错误不会误判", () => {
 test("Shopee 报表脚本使用 Retry-After、退避与较慢轮询", () => {
   const script = orderReportBody({ startDate: "2026-10-01", endDate: "2026-10-31" });
   assert.match(script, /retry-after/i);
+  assert.match(script, /6 \* 60 \* 60 \* 1000/);
+  assert.doesNotMatch(script, /Math\.min\(120000/);
   assert.doesNotMatch(script, /5000, 15000, 30000, 60000/);
   assert.match(script, /await sleep\(3000\)/);
   assert.match(script, /SHOPEE_RATE_LIMIT/);
@@ -314,6 +316,11 @@ test("Shopee 页面脚本内的 429 仍归入限流，不被浏览器会话分�
     code: "PAGE_SCRIPT_ERROR",
   });
   assert.equal(classifyFailure(wrapped), "rate_limit");
+});
+
+test("ZClaw 未包装的 Uncaught 故障按浏览器会话异常恢复", () => {
+  const error = new Error("ZClaw 工具调用失败 [-1]: Uncaught");
+  assert.equal(classifyFailure(error), "browser_session");
 });
 
 test("Shopee 自动登录遇到验证码或未自动填充时明确转人工", async () => {

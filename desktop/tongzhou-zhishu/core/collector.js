@@ -65,7 +65,7 @@ function isBrowserSessionError(error) {
     "COMMAND_LINE_TOO_LONG",
     "PAGE_NOT_READY",
   ].includes(code))
-    || /ENAMETOOLONG|E2BIG|CDP|Browser automation failed|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message);
+    || /ENAMETOOLONG|E2BIG|CDP|Browser automation failed|ZClaw 工具调用失败\s*\[-1\]\s*:\s*Uncaught|about:blank|页面.*刷新|页面.*跳转|navigation|session closed/i.test(message);
 }
 
 function isTransientPageProbeError(error) {
@@ -199,7 +199,7 @@ function defaultDates({ lookbackDays = 3, includeToday = false, site = "SG", now
   return dateList(addDays(to, -(Math.max(1, lookbackDays) - 1)), to);
 }
 
-function requestedDates(input, { maxDays = 21 } = {}) {
+function requestedDates(input, { maxDays = 366 } = {}) {
   if (input == null || (Array.isArray(input) && input.length === 0)) return null;
   if (!Array.isArray(input)) {
     const error = new Error("补采日期格式无效，请重新选择日期范围。");
@@ -236,6 +236,15 @@ function requestedDates(input, { maxDays = 21 } = {}) {
   return dates;
 }
 
+function validateBackfillScope(dates, plan) {
+  if (!Array.isArray(dates) || dates.length <= 21) return;
+  if (Array.isArray(plan) && plan.length === 1) return;
+  const error = new Error(`超过 21 天的历史补采必须先选择单个紫鸟店铺；当前日期共 ${dates.length} 天。程序会在单店内按最多 7 天自动分片。`);
+  error.code = "BACKFILL_SINGLE_STORE_REQUIRED";
+  error.retryable = false;
+  throw error;
+}
+
 class Collector {
   constructor({ cli, store, log = () => {}, zhongtaiFactory, waits = {}, imageEncoder = null, random = Math.random }) {
     this.cli = cli;
@@ -250,11 +259,16 @@ class Collector {
       pageProbeAttempts: 3,
       pageReadyRetry: 2000,
       pageReadyAttempts: 20,
+      // 页面探针本身会识别 loading/skeleton/大面积遮罩；一旦这些信号消失即可继续。
+      // 额外重复读取会放大 CDP 瞬断概率，也会打乱登录页的一次性状态。
+      pageReadyStablePasses: 1,
       storeReconnectAttempts: 2,
       storeReconnectDelay: 1500,
       shopeeLogin: 8000,
       shopeeLoginPollRetry: 1500,
       shopeeLoginPollAttempts: 12,
+      shopeeAutofillPollRetry: 1000,
+      shopeeAutofillPollAttempts: 8,
       shopeeReportGapMin: 20_000,
       shopeeReportGapMax: 45_000,
       shopeeRateLimitSchedule: [15 * 60_000, 30 * 60_000, 60 * 60_000],
@@ -517,7 +531,8 @@ class Collector {
     return Boolean(href)
       && !/^about:blank(?:$|[?#])/i.test(href)
       && String(info?.ready || "complete").toLowerCase() !== "loading"
-      && info?.visuallyBlank !== true;
+      && info?.visuallyBlank !== true
+      && info?.busy !== true;
   }
 
   logDismissedObstructions(info) {
@@ -529,18 +544,48 @@ class Collector {
     attempts = this.waits.pageReadyAttempts,
     delayMs = this.waits.pageReadyRetry,
     allowVisit = false,
+    initialInfo = null,
+    stablePasses = this.waits.pageReadyStablePasses,
   } = {}) {
-    const maxAttempts = Math.max(1, Math.round(Number(attempts) || 1));
+    const requiredPasses = Math.max(1, Math.round(Number(stablePasses) || 1));
+    const maxAttempts = Math.max(requiredPasses, Math.round(Number(attempts) || 1));
     let info = null;
     let visited = false;
+    let usedInitialInfo = false;
+    let stableCount = 0;
+    let stableFingerprint = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      info = await this.readPageInfoWithRetry(storeId);
+      if (!usedInitialInfo && initialInfo) {
+        info = initialInfo;
+        usedInitialInfo = true;
+      } else {
+        info = await this.readPageInfoWithRetry(storeId);
+      }
       this.logDismissedObstructions(info);
-      if (this.isPageReady(info)) return info;
+      const ready = this.isPageReady(info);
+      const dismissed = Math.max(0, Number(info?.dismissed) || 0) > 0;
+      const fingerprint = JSON.stringify([
+        String(info?.href || ""),
+        Boolean(info?.hasPassword),
+        Boolean(info?.hasLoginControl),
+        Boolean(info?.hasCaptcha),
+      ]);
+      if (!ready || dismissed) {
+        stableCount = 0;
+        stableFingerprint = "";
+      } else if (fingerprint === stableFingerprint) {
+        stableCount += 1;
+      } else {
+        stableFingerprint = fingerprint;
+        stableCount = 1;
+      }
+      if (stableCount >= requiredPasses) return info;
       if (allowVisit && !visited && attempt >= Math.min(3, maxAttempts)) {
         visited = true;
         this.log("info", "店铺窗口仍为空白，正在重新导航到采集页面并等待加载完成。");
         await this.cli.visit({ storeId, url });
+        stableCount = 0;
+        stableFingerprint = "";
       }
       if (attempt < maxAttempts) await this.waitCancelable(delayMs);
     }
@@ -580,9 +625,9 @@ class Collector {
     if (!info?.href || /^about:blank(?:$|[?#])/i.test(String(info.href))) {
       this.log("warn", "检测到空白页，正在只重开当前店铺并等待页面真正加载完成。");
       info = await this.reopenCurrentStore(storeId, url);
-    } else if (!this.isPageReady(info)) {
-      this.log("info", "店铺页面仍在加载，等待完成后再开始采集。");
-      info = await this.waitForReadyPage(storeId, url, { allowVisit: true });
+    } else {
+      if (!this.isPageReady(info)) this.log("info", "店铺页面仍在加载，等待完成后再开始采集。");
+      info = await this.waitForReadyPage(storeId, url, { allowVisit: true, initialInfo: info });
     }
     let check = platform.checkPage(info);
     const wantOrigin = (() => {
@@ -607,22 +652,37 @@ class Collector {
     }
     if (!check.ok && check.code === "NOT_LOGGED_IN" && platform?.id === "shopee") {
       this.log("info", "检测到 Shopee 登录失效，正在尝试使用浏览器已保存的账号密码自动登录。");
-      let recovery;
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-          recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
-          break;
-        } catch (error) {
-          if (attempt >= 2 || !isTransientPageProbeError(error)) throw error;
-          this.log("warn", `Shopee 登录页面连接瞬时中断，正在重开当前店铺后重试登录：${error.message}`);
-          info = await this.reopenCurrentStore(storeId, url);
-          check = platform.checkPage(info);
-          if (check.ok) {
-            recovery = { attempted: false, alreadyLoggedIn: true };
+      const readLoginRecovery = async () => {
+        let recovery;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            recovery = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
             break;
+          } catch (error) {
+            if (attempt >= 2 || !isTransientPageProbeError(error)) throw error;
+            this.log("warn", `Shopee 登录页面连接瞬时中断，正在重开当前店铺后重试登录：${error.message}`);
+            info = await this.reopenCurrentStore(storeId, url);
+            check = platform.checkPage(info);
+            if (check.ok) {
+              recovery = { attempted: false, alreadyLoggedIn: true };
+              break;
+            }
           }
         }
-      }
+        return recovery;
+      };
+      const waitForLoginRecovery = async () => {
+        const maxPolls = Math.max(1, Math.round(Number(this.waits.shopeeAutofillPollAttempts) || 1));
+        let recovery = null;
+        for (let poll = 1; poll <= maxPolls; poll += 1) {
+          recovery = await readLoginRecovery();
+          if (!recovery?.autofillMissing || recovery?.requiresManual || recovery?.attempted || recovery?.alreadyLoggedIn) return recovery;
+          if (poll === 1) this.log("info", "登录表单已出现，正在等待紫鸟自动填充已保存的账号密码。");
+          if (poll < maxPolls) await this.waitCancelable(this.waits.shopeeAutofillPollRetry);
+        }
+        return recovery;
+      };
+      let recovery = await waitForLoginRecovery();
       if (recovery?.requiresManual) {
         check = { ok: false, code: "CAPTCHA", message: `${recovery.reason} 请在紫鸟里完成验证后重试。` };
       } else if (recovery?.attempted) {
@@ -675,7 +735,7 @@ class Collector {
         await runNativeLoginClick(recovery);
         await pollLoginResult();
         if (!check.ok && check.code === "NOT_LOGGED_IN" && recovery.method === "saved-account") {
-          const secondStep = await this.cli.runInPage(storeId, loginRecoveryBody(), { timeoutMs: 30000 });
+          const secondStep = await waitForLoginRecovery();
           if (secondStep?.requiresManual) {
             check = { ok: false, code: "CAPTCHA", message: `${secondStep.reason} 请在紫鸟里完成验证后重试。` };
           } else if (secondStep?.attempted) {
@@ -1399,6 +1459,7 @@ class Collector {
     const startedAt = new Date().toISOString();
     this.cancelRequested = false;
     const { plan, skipped } = this.plan({ storeIds });
+    validateBackfillScope(selectedDates, plan);
     const entry = {
       id: runId,
       trigger,
@@ -1546,6 +1607,7 @@ module.exports = {
   Collector,
   defaultDates,
   requestedDates,
+  validateBackfillScope,
   businessError,
   buildReplayBatches,
   isCommandLineTooLong,
